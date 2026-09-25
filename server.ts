@@ -4978,6 +4978,9 @@ const DISPATCH_TICK_MS = Math.max(TICK_FLOOR_MS, Number(process.env.FLEET_DISPAT
 const STATE_SNAPSHOT_RAW = Number(process.env.FLEET_STATE_SNAPSHOT_MS ?? 60_000) | 0;
 const STATE_SNAPSHOT_MS = STATE_SNAPSHOT_RAW > 0 ? Math.max(TICK_FLOOR_MS, STATE_SNAPSHOT_RAW) : 0;
 const GIT_TIMEOUT_MS = Number(process.env.FLEET_GIT_TIMEOUT_MS) || 30_000;
+const CONTENTS_TIMEOUT_MS = 2_500;
+const CONTENTS_HIT_CAP = 200;
+const CONTENTS_QUERY_MAX = 200;
 // The git/liveness display cache's cadence (tickGit). Unset is the old 10 s literal; the suites
 // shorten it for the families whose whole subject IS that cache (e2e/deploy-facts.ts), because
 // there every assertion otherwise out-waits a 10 s tick. Floor 1 s, not TICK_FLOOR_MS: one pass
@@ -5386,6 +5389,56 @@ async function gitReadRaw(dir: string, ...args: string[]): Promise<{ out: string
     return { out, code };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+interface ContentsHit { path: string; line: number; text: string }
+async function grepContents(cwd: string, query: string): Promise<{
+  matches: ContentsHit[]; capped: boolean; timedOut: boolean;
+}> {
+  const p = Bun.spawn(["git", "-C", cwd, "grep", "-n", "-I", "-z", "--full-name", "-F", "-e", query, "--"],
+    { stdout: "pipe", stderr: "pipe", env: GIT_READ_ENV });
+  const stderr = new Response(p.stderr).text();
+  const reader = p.stdout.getReader();
+  const decoder = new TextDecoder();
+  const matches: ContentsHit[] = [];
+  let pending = "";
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; try { p.kill(); } catch {} }, CONTENTS_TIMEOUT_MS);
+  const take = () => {
+    while (matches.length <= CONTENTS_HIT_CAP) {
+      const pathEnd = pending.indexOf("\0");
+      if (pathEnd < 0) return;
+      const lineEnd = pending.indexOf("\0", pathEnd + 1);
+      if (lineEnd < 0) return;
+      const textEnd = pending.indexOf("\n", lineEnd + 1);
+      if (textEnd < 0) return;
+      const path = pending.slice(0, pathEnd);
+      const line = Number(pending.slice(pathEnd + 1, lineEnd));
+      const text = pending.slice(lineEnd + 1, textEnd);
+      pending = pending.slice(textEnd + 1);
+      if (path && Number.isInteger(line) && line > 0) matches.push({ path, line, text });
+    }
+  };
+  try {
+    while (matches.length <= CONTENTS_HIT_CAP) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, { stream: true });
+      take();
+      if (matches.length > CONTENTS_HIT_CAP) { try { p.kill(); } catch {} break; }
+    }
+    pending += decoder.decode();
+    take();
+    const code = await p.exited;
+    const err = (await stderr).trim();
+    const capped = matches.length > CONTENTS_HIT_CAP;
+    if (!timedOut && !capped && code !== 0 && code !== 1)
+      throw new Error(err || `git grep exited ${code}`);
+    return { matches: matches.slice(0, CONTENTS_HIT_CAP), capped, timedOut };
+  } finally {
+    clearTimeout(timer);
+    try { reader.releaseLock(); } catch {}
   }
 }
 // a mutating git op (add/commit, and the merge pre-pass's rebase/abort) in a lane races the live
@@ -41448,6 +41501,23 @@ Bun.serve<WSData>({
       if (r.code !== 0) return json({ error: "git could not list this directory" }, 502);
       const all = r.out.split("\0").filter(Boolean).sort();
       return json({ root, files: all.slice(0, TREE_CAP), total: all.length, capped: all.length > TREE_CAP });
+    }
+    if (url.pathname === "/api/contents" && req.method === "GET") {
+      const rawSlot = url.searchParams.get("slot") ?? "";
+      const s = slotFrom(rawSlot);
+      if (!s?.cwd) return json({ error: `slot ${rawSlot || "(missing)"} is not active` }, 400);
+      const query = url.searchParams.get("q") ?? "";
+      if (!query.trim() || query.length > CONTENTS_QUERY_MAX || /[\0\r\n]/.test(query))
+        return json({ error: `q must be 1–${CONTENTS_QUERY_MAX} characters without NUL or newline` }, 400);
+      let root: string;
+      try { root = realpathSync(s.cwd); } catch { return json({ error: `slot ${rawSlot}'s directory is gone` }, 400); }
+      if (!existsSync(`${root}/.git`)) return json({ error: `slot ${rawSlot} is not in a git repo` }, 400);
+      try {
+        const result = await grepContents(root, query);
+        return json({ ...result, limit: CONTENTS_HIT_CAP, timeoutMs: CONTENTS_TIMEOUT_MS });
+      } catch {
+        return json({ error: "git grep could not search this slot" }, 502);
+      }
     }
     // --- the ONE route on this server that writes a file the owner named. NOT the mirror of /api/file:
     // a read is recoverable, a write is not, and write-anywhere is an RCE gadget wearing an editor's

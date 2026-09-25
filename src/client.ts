@@ -3601,7 +3601,57 @@ type FxGit = { lines: string[]; total: number; branch: string | null } | { error
 const fxGit = new Map<string, FxGit>();
 const fxUntracked = new Map<string, boolean>();  // cwd → the Untracked switch; absent = ON (owner 2026-09-24)
 const fxChanged = new Map<string, boolean>();    // cwd → the window's Changed filter
+const fxContents = new Map<string, boolean>();   // cwd → Paths false, Contents true
+const fxContentQuery = new Map<string, string>();
 let fxShell: Shell | null = null;
+let fxMenu: { panel: HTMLElement; trigger: HTMLButtonElement } | null = null;
+function closeFxMenu(refocus: boolean): void {
+  const open = fxMenu;
+  fxMenu = null;
+  open?.panel.remove();
+  open?.trigger.classList.remove("on");
+  if (refocus) open?.trigger.focus();
+}
+popover({
+  panel: () => fxMenu?.panel ?? null,
+  trigger: () => fxMenu?.trigger ?? null,
+  isOpen: () => fxMenu !== null,
+  close: closeFxMenu,
+  rows: () => fxMenu ? [...fxMenu.panel.querySelectorAll<HTMLButtonElement>(".fxmenuitem")] : [],
+});
+function fxActions(slot: number, rel: string): HTMLElement {
+  const actions = el("div", "fxacts");
+  const more = el("button", "fxmore") as HTMLButtonElement;
+  more.appendChild(icon("dots"));
+  more.title = `Handlungen für ${rel}`;
+  more.setAttribute("aria-label", more.title);
+  more.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (fxMenu?.trigger === more) { closeFxMenu(true); return; }
+    closeFxMenu(false);
+    const menu = el("div", "fxmenu");
+    menu.setAttribute("role", "menu");
+    const item = (label: string, title: string, run: (b: HTMLButtonElement) => void) => {
+      const b = el("button", "fxmenuitem", label) as HTMLButtonElement;
+      b.title = title;
+      b.setAttribute("role", "menuitem");
+      b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); run(b); };
+      menu.appendChild(b);
+    };
+    item("Mention", `Fügt ${rel} in den Entwurf von Slot ${slot} ein — schreibt keine Datei`, () => {
+      mentionExplorerPath(slot, rel);
+      closeFxMenu(false);
+    });
+    item("Copy path", `Kopiert den relativen Pfad ${rel}`, (b) => { copyText(rel); b.textContent = "Copied"; });
+    actions.appendChild(menu);
+    more.classList.add("on");
+    fxMenu = { panel: menu, trigger: more };
+    requestAnimationFrame(() => menu.querySelector<HTMLButtonElement>(".fxmenuitem")?.focus());
+  };
+  actions.appendChild(more);
+  return actions;
+}
 // The card's search box is REBUILT by every 3s repaint (renderBoard replaceChildren's the whole
 // board), so surviving the refresh cannot mean "keep the element" — the element is gone. It means
 // restoring what the reader could lose: the text, the caret, and the focus.
@@ -3656,6 +3706,32 @@ interface PaintOpts {
   status?: Map<string, string>; // path → porcelain XY, from fxStatusOf
   statusMore?: number;          // status lines the server read but did not send (its 200-line cap)
   changedOnly?: boolean;
+  actions?: (rel: string) => HTMLElement;
+  onDrag?: (rel: string, e: DragEvent) => void;
+}
+const FX_PATH_MIME = "application/x-fleet-explorer-path";
+interface FxPathDrop { slot: number; path: string }
+function fxPathDrop(raw: string): FxPathDrop | null {
+  try {
+    const d = JSON.parse(raw) as Partial<FxPathDrop>;
+    return Number.isInteger(d.slot) && (d.slot ?? 0) > 0 && typeof d.path === "string" && !!d.path
+      && !/[\0\r\n]/.test(d.path) ? { slot: d.slot as number, path: d.path } : null;
+  } catch { return null; }
+}
+function fxAppendPath(text: string, path: string): string {
+  if (!text) return path;
+  return `${text}${/[\s]$/.test(text) ? "" : "\n"}${path}`;
+}
+function fxStartDrag(slot: number, path: string, e: DragEvent): void {
+  if (!e.dataTransfer) return;
+  e.dataTransfer.setData(FX_PATH_MIME, JSON.stringify({ slot, path } satisfies FxPathDrop));
+  e.dataTransfer.effectAllowed = "copy";
+  const source = e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
+  const explorer = source?.closest<HTMLElement>("#shell-files");
+  if (explorer && source) {
+    explorer.classList.add("fxdragging");
+    source.addEventListener("dragend", () => explorer.classList.remove("fxdragging"), { once: true });
+  }
 }
 function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
   // Folding repaints this container, which DETACHES the row that was just activated — so a reader
@@ -3701,6 +3777,18 @@ function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
     row.title = `${rel} — ${b.title}`;
   };
   const redraw = () => { into.replaceChildren(); const rows: ShellRow[] = []; walk(rows); o.onRows?.(rows); };
+  const appendRow = (row: HTMLButtonElement, rel: string, rows: ShellRow[], act: () => void) => {
+    if (o.onDrag) {
+      row.draggable = true;
+      row.ondragstart = (e) => o.onDrag?.(rel, e);
+    }
+    if (o.actions) {
+      const line = el("div", "fxline");
+      line.append(row, o.actions(rel));
+      into.appendChild(line);
+    } else into.appendChild(row);
+    rows.push({ el: row, open: act });
+  };
   const fileRow = (rel: string, name: string, depth: number, rows: ShellRow[]) => {
     const row = el("button", `fxrow fxfile${o.picked() === rel ? " fxpicked" : ""}`) as HTMLButtonElement;
     row.style.paddingLeft = `${depth * 14 + 26}px`;
@@ -3709,8 +3797,7 @@ function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
     mark(row, rel);
     const act = () => { o.onPick(rel); redraw(); };
     row.onclick = act;
-    into.appendChild(row);
-    rows.push({ el: row, open: act });
+    appendRow(row, rel, rows, act);
   };
   // a search hit or a Changed row: a PATH, whose directory half is context, not the answer
   const flatRow = (rel: string, rows: ShellRow[]) => {
@@ -3723,8 +3810,7 @@ function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
     mark(row, rel);
     const act = () => { o.onPick(rel); redraw(); };
     row.onclick = act;
-    into.appendChild(row);
-    rows.push({ el: row, open: act });
+    appendRow(row, rel, rows, act);
   };
   const walkTree = (node: TreeNode, prefix: string, depth: number, rows: ShellRow[]): void => {
     for (const [name, kid] of Array.from(node.dirs.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -3746,9 +3832,8 @@ function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
       row.setAttribute("aria-expanded", open ? "true" : "false");
       const act = () => { if (open) o.open.delete(rel); else o.open.add(rel); wantFocus = rel; redraw(); };
       row.onclick = act;
-      into.appendChild(row);
+      appendRow(row, `${rel}/`, rows, act);
       takeFocus(rel, row);
-      rows.push({ el: row, open: act });
       if (open) walkTree(kid, rel, depth + 1, rows);
     }
     for (const name of node.files.slice().sort((a, b) => a.localeCompare(b))) {
@@ -3924,7 +4009,7 @@ function fileTreeSection(slot: number, cwd: string): HTMLElement {
       picked: () => null,
       query: fxQuery.get(cwd) ?? "",
       all: v.paths, capped: t.capped, shown: t.files.length, total: t.total,
-      status: v.status,
+      status: v.status, onDrag: (rel, e) => fxStartDrag(slot, rel, e),
     });
   };
   repaint();
@@ -3955,12 +4040,18 @@ function openExplorer(slot: number, cwd: string, startAt?: string, line?: number
   fxShell?.close();
   let picked: string | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  let searchSeq = 0;
+  type ContentResult = { query: string; matches: { path: string; line: number; text: string }[];
+    capped: boolean; timedOut: boolean; limit: number; error?: string };
+  let contentResult: ContentResult | null = null;
+  let contentLoading = false;
   const shell = openShell({
     id: "files",
     title: "Files",
     detailHint: "Pick a file on the left. This window only reads — ✎ under a file is one extra click.",
     listWidth: 300,
-    onClose: () => { fxShell = null; clearInterval(timer); },
+    onClose: () => { fxShell = null; closeFxMenu(false); clearInterval(timer); clearTimeout(searchTimer); searchSeq++; },
   });
   fxShell = shell;
   // a ↻ that failed leaves the error in fxTree; the window keeps painting the last tree it had
@@ -3991,8 +4082,21 @@ function openExplorer(slot: number, cwd: string, startAt?: string, line?: number
     sub?.replaceChildren(...parts);
   };
 
-  // the tool row: search, the All | Changed filter (G3.1), the Untracked switch (G1.3)
-  const search = fxSearchInput(cwd, () => repaint(), true);
+  const search = el("input", "pkfilterin") as HTMLInputElement;
+  search.type = "text";
+  search.spellcheck = false;
+  search.autocomplete = "off";
+  search.oninput = () => {
+    if (fxContents.get(cwd)) { fxContentQuery.set(cwd, search.value); scheduleContents(); }
+    else { fxQuery.set(cwd, search.value); repaint(); }
+  };
+  const mode = el("div", "fxseg fxmode");
+  mode.setAttribute("role", "group");
+  const pathsB = el("button", "", "Paths") as HTMLButtonElement;
+  pathsB.title = "Dateinamen und Ordner im geladenen Baum durchsuchen";
+  const contentsB = el("button", "", "Contents") as HTMLButtonElement;
+  contentsB.title = "Dateiinhalte in diesem Slot mit git grep durchsuchen — nur lesend";
+  mode.append(pathsB, contentsB);
   const seg = el("div", "fxseg");
   seg.setAttribute("role", "group");
   const allB = el("button", "") as HTMLButtonElement;
@@ -4005,16 +4109,33 @@ function openExplorer(slot: number, cwd: string, startAt?: string, line?: number
   const untr = el("button", "fxtog", "Untracked") as HTMLButtonElement;
   untr.title = "Ungetrackte Dateien zeigen, gedimmt mit „?“ — gitignorte nie";
   untr.onclick = () => { fxUntracked.set(cwd, !(fxUntracked.get(cwd) ?? true)); paintHead(); repaint(); };
-  shell.tools.append(search, seg, untr);
+  const setMode = (contents: boolean) => {
+    fxContents.set(cwd, contents);
+    search.value = contents ? fxContentQuery.get(cwd) ?? "" : fxQuery.get(cwd) ?? "";
+    search.placeholder = contents ? "search contents" : "search paths — e.g. e2e/pins";
+    searchSeq++;
+    clearTimeout(searchTimer);
+    if (contents) scheduleContents(); else repaint();
+  };
+  pathsB.onclick = () => setMode(false);
+  contentsB.onclick = () => setMode(true);
+  shell.tools.append(search, mode, seg, untr);
   const paintTools = () => {
     const v = fxView(cwd, tree());
     const changed = fxChanged.get(cwd) ?? false;
+    const contents = fxContents.get(cwd) ?? false;
     allB.replaceChildren("All", el("span", "fxn", String(v.paths.length)));
     chB.replaceChildren("Changed", el("span", "fxn", `${v.status.size}${v.statusMore ? "+" : ""}`));
     for (const [b, on] of [[allB, !changed], [chB, changed], [untr, v.untrackedOn]] as const) {
       b.classList.toggle("on", on);
       b.setAttribute("aria-pressed", String(on));
     }
+    pathsB.classList.toggle("on", !contents);
+    contentsB.classList.toggle("on", contents);
+    pathsB.setAttribute("aria-pressed", String(!contents));
+    contentsB.setAttribute("aria-pressed", String(contents));
+    seg.hidden = contents;
+    untr.hidden = contents;
   };
 
   // the footer (G2.3): whether the session is writing in this tree right now, and how old the tree is
@@ -4048,7 +4169,12 @@ function openExplorer(slot: number, cwd: string, startAt?: string, line?: number
     if (cut >= 0) crumb.appendChild(el("span", "", rel.slice(0, cut + 1)));
     crumb.appendChild(el("b", "", rel.slice(cut + 1)));
     crumb.title = `${cwd}/${rel}`;
-    h.appendChild(crumb);
+    const top = el("div", "fxftop");
+    const mention = el("button", "fxmention", "Mention") as HTMLButtonElement;
+    mention.title = `Fügt ${rel} in den Entwurf von Slot ${slot} ein — schreibt keine Datei`;
+    mention.onclick = () => mentionExplorerPath(slot, rel);
+    top.append(crumb, mention, fxActions(slot, rel));
+    h.appendChild(top);
     const meta = el("div", "fxfmeta");
     meta.appendChild(el("span", "", xy === "??"
       ? "untracked — as it is on disk; git has never seen it, so there is no diff"
@@ -4064,6 +4190,7 @@ function openExplorer(slot: number, cwd: string, startAt?: string, line?: number
     return h;
   };
   const open = (rel: string, at?: number) => {
+    closeFxMenu(false);
     picked = rel;
     facts = el("span", "fxfacts");
     head = fileHead(rel);
@@ -4083,11 +4210,77 @@ function openExplorer(slot: number, cwd: string, startAt?: string, line?: number
     repaint();
   };
 
+  const paintContentResults = () => {
+    shell.list.replaceChildren();
+    const query = (fxContentQuery.get(cwd) ?? "").trim();
+    if (!query) {
+      shell.list.appendChild(el("div", "bempty fxcontentempty", "type text to search tracked file contents"));
+      shell.setRows([]);
+      return;
+    }
+    if (contentLoading || contentResult?.query !== query) {
+      shell.list.appendChild(el("div", "bempty fxcontentempty", `searching contents for “${query}”…`));
+      shell.setRows([]);
+      return;
+    }
+    if (contentResult.error) {
+      shell.list.appendChild(el("div", "hint fxcontentempty", contentResult.error));
+      shell.setRows([]);
+      return;
+    }
+    const rows: ShellRow[] = [];
+    for (const hit of contentResult.matches) {
+      const row = el("button", `fxrow fxcontent${picked === hit.path ? " fxpicked" : ""}`) as HTMLButtonElement;
+      row.append(el("span", "fxcontentpath", hit.path), el("span", "fxcontentline", String(hit.line)),
+        el("span", "fxcontenttext", hit.text.trim()));
+      row.title = `${hit.path}:${hit.line}`;
+      const act = () => open(hit.path, hit.line);
+      row.onclick = act;
+      row.draggable = true;
+      row.ondragstart = (e) => fxStartDrag(slot, hit.path, e);
+      const line = el("div", "fxline");
+      line.append(row, fxActions(slot, hit.path));
+      shell.list.appendChild(line);
+      rows.push({ el: row, open: act });
+    }
+    if (!contentResult.matches.length)
+      shell.list.appendChild(el("div", "bempty fxcontentempty", `nothing matches “${query}” in tracked file contents`));
+    if (contentResult.capped) shell.list.appendChild(el("div", "bempty fxcontentempty",
+      `showing the first ${contentResult.limit} matches — narrow the search to see beyond the cap`));
+    if (contentResult.timedOut) shell.list.appendChild(el("div", "hint fxcontentempty",
+      "the search reached its time limit — these are only the matches read before it stopped"));
+    shell.setRows(rows);
+    for (const [i, r] of rows.entries()) r.el.onfocus = () => shell.select(i, false, false);
+  };
+  const runContents = async (query: string, seq: number) => {
+    const res = await api(`/api/contents?slot=${slot}&q=${encodeURIComponent(query)}`).catch(() => null);
+    const body = res ? await res.json().catch(() => null) as ContentResult | { error?: string } | null : null;
+    if (seq !== searchSeq || !shell.isOpen()) return;
+    contentLoading = false;
+    const found = res?.ok && body && "matches" in body && Array.isArray(body.matches)
+      ? body as ContentResult : null;
+    contentResult = found ? { ...found, query }
+      : { query, matches: [], capped: false, timedOut: false, limit: 0,
+        error: body?.error ?? "contents search could not be read" };
+    repaint();
+  };
+  const scheduleContents = () => {
+    const query = (fxContentQuery.get(cwd) ?? "").trim();
+    const seq = ++searchSeq;
+    clearTimeout(searchTimer);
+    contentResult = null;
+    contentLoading = !!query;
+    repaint();
+    if (query) searchTimer = setTimeout(() => void runContents(query, seq), 180);
+  };
+
   let scrollToPicked = false;
   const repaint = () => {
+    closeFxMenu(false);
     const t = tree();
     const v = fxView(cwd, t);
     paintTools();
+    if (fxContents.get(cwd)) { paintContentResults(); return; }
     paintTree(shell.list, fxTreeOf(v.paths), {
       open: fxOpenSet(cwd),
       onPick: (rel) => open(rel),
@@ -4095,6 +4288,7 @@ function openExplorer(slot: number, cwd: string, startAt?: string, line?: number
       query: fxQuery.get(cwd) ?? "",
       all: v.paths, capped: t.capped, shown: t.files.length, total: t.total,
       status: v.status, statusMore: v.statusMore, changedOnly: fxChanged.get(cwd) ?? false,
+      actions: (rel) => fxActions(slot, rel), onDrag: (rel, e) => fxStartDrag(slot, rel, e),
       // ↑↓ walk the rows and Enter opens the selected one — the same keyboard contract every other
       // window here has. Without it this list was mouse-only, alone among the four.
       onRows: (rows) => {
@@ -4126,7 +4320,10 @@ function openExplorer(slot: number, cwd: string, startAt?: string, line?: number
     for (let i = 1; i < segs.length; i++) fxOpenSet(cwd).add(segs.slice(0, i).join("/"));
     scrollToPicked = true;
   }
-  paintHead(); paintFoot(); repaint();
+  paintHead(); paintFoot();
+  search.value = fxContents.get(cwd) ? fxContentQuery.get(cwd) ?? "" : fxQuery.get(cwd) ?? "";
+  search.placeholder = fxContents.get(cwd) ? "search contents" : "search paths — e.g. e2e/pins";
+  if (fxContents.get(cwd)) scheduleContents(); else repaint();
   if (startAt) open(startAt, line);
   // the git state is read fresh for THIS window — the board holds it only for the slot it shows
   void loadGit(slot, cwd).then(() => {
@@ -17496,6 +17693,32 @@ function switchDraft(slot: number): void {
   updateChips();
 }
 
+function mentionExplorerPath(slot: number, path: string): void {
+  const openedAt = fleet[slot - 1]?.openedAt;
+  if (!openedAt) return;
+  if (slot === draftSlot) {
+    ta.value = fxAppendPath(ta.value, path);
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+    cyc = null;
+    growComposer();
+    updateChips();
+    return;
+  }
+  const currentSlot = draftSlot;
+  const currentOpenedAt = fleet[currentSlot - 1]?.openedAt;
+  const target = drafts.swap(currentSlot, currentOpenedAt, { text: ta.value, attached }, slot, openedAt);
+  for (const a of target.dropped) if (a.thumb) URL.revokeObjectURL(a.thumb);
+  const restored = drafts.swap(slot, openedAt,
+    { text: fxAppendPath(target.text, path), attached: target.attached }, currentSlot, currentOpenedAt);
+  for (const a of restored.dropped) if (a.thumb) URL.revokeObjectURL(a.thumb);
+  ta.value = restored.text;
+  attached.length = 0;
+  attached.push(...restored.attached);
+  renderAttachments();
+  growComposer();
+  updateChips();
+}
+
 // the owner's ":1M" — bytes in the short form a file list uses: 512B, 820K, 1.4M, 12M
 function fmtSize(n: number): string {
   if (n < 1024) return `${n}B`;
@@ -17625,15 +17848,20 @@ async function uploadDrops(files: File[]): Promise<void> {
 }
 
 const dragHasFiles = (e: DragEvent): boolean => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+const dragHasExplorerPath = (e: DragEvent): boolean =>
+  Array.from(e.dataTransfer?.types ?? []).includes(FX_PATH_MIME);
 // A file dropped ANYWHERE on the page is, by browser default, a navigation to that file — the
 // board would simply disappear. So the page-level default is cancelled everywhere while only
 // #main actually accepts a drop; a miss then does nothing instead of destroying the session view.
-document.addEventListener("dragover", (e) => { if (dragHasFiles(e)) e.preventDefault(); });
-document.addEventListener("drop", (e) => { if (dragHasFiles(e)) e.preventDefault(); });
+document.addEventListener("dragover", (e) => { if (dragHasFiles(e) || dragHasExplorerPath(e)) e.preventDefault(); });
+document.addEventListener("drop", (e) => { if (dragHasFiles(e) || dragHasExplorerPath(e)) e.preventDefault(); });
 mainEl.addEventListener("dragover", (e) => {
-  if (!dragHasFiles(e)) return;
+  if (!dragHasFiles(e) && !dragHasExplorerPath(e)) return;
   e.preventDefault();
   if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  const internal = e.dataTransfer ? fxPathDrop(e.dataTransfer.getData(FX_PATH_MIME)) : null;
+  dropLay.textContent = internal ? `Drop to add ${internal.path} to slot ${internal.slot}'s prompt`
+    : "Drop to hand the file to this session";
   dropLay.classList.add("on");
 });
 // only when the pointer actually left #main — dragleave also fires when crossing between the
@@ -17645,6 +17873,12 @@ mainEl.addEventListener("dragleave", (e) => {
 });
 mainEl.addEventListener("drop", (e) => {
   dropLay.classList.remove("on");
+  const internal = e.dataTransfer ? fxPathDrop(e.dataTransfer.getData(FX_PATH_MIME)) : null;
+  if (internal) {
+    e.preventDefault();
+    mentionExplorerPath(internal.slot, internal.path);
+    return;
+  }
   if (!dragHasFiles(e)) return;
   e.preventDefault();
   void uploadDrops(Array.from(e.dataTransfer?.files ?? []));

@@ -12,6 +12,14 @@
 > hat. Ein Land, das die Nabe angenommen hat, kann Exit 3 strukturell nicht erzeugen.
 > Was unten über P1/P2/R, über ff-statt-reset und über den Build steht, gilt unverändert.
 > Kriterium `29ad3230`, Land: siehe `docs/self-api.md` §`hub-lost`/`hub-unreachable`.
+>
+> **undo-land und die Nabe (Entscheid Orchestratorin 2026-09-25, Zeile `2a5ef2b6`): Status quo.**
+> Ein Land, dessen Commit die Nabe angenommen hat, liegt auf einem Remote; `undo-land` verweigert es
+> weiterhin („already on a remote … Revert it by hand instead", `server.ts#remoteHoldsLandedRange`)
+> und schreibt geteilte Historie nie um. Der Rückweg ist ein normaler Revert-Commit auf main: im
+> Haupt-Checkout `git revert --no-commit <sha>…`, dann `./ctl.sh commit main -m <msgfile>` — das
+> wartet auf `merges` exit 0, committet den gestagten Index und pusht ff-only an die Nabe (exit 3 =
+> nur hier committet, die Zeile nennt die Reparatur). Der Revert ist danach auf beiden Hosts sichtbar.
 
 Owner-Entscheid 2026-09-05 (Weg **b**, über Controller Slot 12): **ein Host bleibt kanonisch für
 alle Repos**, der zweite **zieht per git über das private Netz, fährt Sessions und Suiten und

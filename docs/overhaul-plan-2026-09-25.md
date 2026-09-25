@@ -280,6 +280,29 @@ nicht gelandet ist, geschieht das per Skript.
     und Jev (Program 98f3eef9). Jev waehlt unter Optionen, die der Code baut, und ist nie ein Gate.
   - **T4 · Seite mit Zeitstrahl, Zoom und Klick ins Element:** gehoert zum dritten Schnitt (Program
     0d51b4d4).
+  - **Nachtrag Owner 2026-09-25 ~22:5x, woertlich:** "Der Full Trace View sollte wirklich vollen
+    Aufschluss darüber geben was in einer session wann passiert ist, jeder fleet report, die art eines
+    fleet reports, Kommunikation mit sessions, mit der main, dem orchestrator usw.  könnte man sauber
+    kennzeichnen wie auch immer. Genauso das profil, den gesamten Aufbau von einer session usw; genauso
+    die abgefragten Datenschichten und wie diese aussehen/sahen. Es ist auch wichtig das man dies sauber
+    im zeitlichen Verhältnis zu paralleler Arbeit wie auch immer beurteilen kann. Alles soll wirklich
+    maximal sauber strukturiert und ersichtlich sein. Die sollte ein Opus5.5 Worker auf xhigh übernehmen."
+  - **T5 · Fleet-Reports:** jeder Report als Ereignis, mit seiner Art (status, terminal, handoff,
+    needs-main …).
+  - **T6 · Kommunikation als gekennzeichnete Kanten:** Lane ↔ MAIN ↔ Orchestratorin ↔ Owner (`POST /send`
+    samt Zustellkopf/path, Inbox, Messages, Attention, Clarifications, Events/Watches), mit Richtung und
+    Absender je Kante. Absender heisst Aktor, nicht Credential (S2).
+  - **T7 · Session-Profil und Aufbau:** Harness, Modell, Effort, Gruendungsbrief, ContextPlan/Packs,
+    Rolle/Bindung, Nachfolge-Linie.
+  - **T8 · Abgefragte Datenschichten mit Inhalt zum Zeitpunkt:** was `/api/self/*`, program-execution
+    usw. der Session damals geantwortet haben. Wird das heute nicht aufgezeichnet, braucht es einen
+    Schreiber (Antwort-Hash plus Inhalts-Ledger mit Horizont). Die Messnotiz beziffert, was er kostet.
+  - **T9 · Paralleles Zeitverhaeltnis:** Swimlanes je Session auf einer gemeinsamen Zeitachse, damit
+    gleichzeitige Arbeit, Kollisionen und Wartezeiten sichtbar sind.
+  - **Worker dieser Linie:** jede Bau-Zeile des Full-Trace, auch die Seite, laeuft auf
+    `claude/claude-opus-5-5[1m]/xhigh` (Owner-Entscheid, gilt nur hier). Die Seite ist ein eigenes Modul
+    `src/trace.ts` mit genau einem Mount-Punkt in `src/client.ts`, abgestimmt mit der MAIN von Program
+    0d51b4d4.
   - **Reihenfolge:** Zuerst die Messnotiz zur Datenfrage (Quelle je Harness, Horizont, Groesse,
     Zuordnung Session → Lane → Task). Der erste Schnitt oben geht ohne T1–T3, sein Schema nimmt sie aber
     auf. T1/T2 werden erst danach gebaut, T3 nach der ersten Messung des Konzeptgedaechtnisses.

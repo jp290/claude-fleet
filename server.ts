@@ -63,7 +63,7 @@ import {
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, cardValid, cardAdvisoryGap, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY,
-  CARD_VALIDATOR_VERSION, type TaskCardBody, type CardValidationContext } from "./card-extract";
+  CARD_VALIDATOR_VERSION, type TaskCardBody, type CardValidationContext, type RawCard } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
 // The LAND fold of the collision facts. The wave button does not re-decide R1/R2/R3 or the program
@@ -16051,13 +16051,55 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
 // card is validated against the JOINED text — the string the model path validates against — so
 // the quote rule asks both paths the same question. `null` still hands the row to the extractor
 // exactly as before.
+const LABELED_FORMAT_LINE = /^\s*(ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|ZIEL|VERIFY|DONE|VERBOTEN)\s*:[ \t]*(.*)$/i;
+const FALSE_GOAL_LEAD = /^(SUCHE|WARUM|NACH|QUELLEN|VORBEDINGUNG)\b/i;
+const EXPLICIT_GOAL_PLACEHOLDER = "__FLEET_EXPLICIT_GOAL__";
+
+function labeledFormatCard(text: string): { raw: RawCard; zielGap?: string } | null {
+  const lines = text.split("\n");
+  let at = 0;
+  while (at < lines.length && !lines[at]!.trim()) at++;
+  if (lines[at]?.trim().startsWith("[") && !LABELED_FORMAT_LINE.test(lines[at]!)) at++;
+  const first = at;
+  let goalAt = -1;
+  let goal = "";
+  for (; at < lines.length; at++) {
+    const hit = LABELED_FORMAT_LINE.exec(lines[at]!);
+    if (!hit) break;
+    if (hit[1]!.toUpperCase() !== "ZIEL") continue;
+    if (goalAt >= 0) return null;
+    goalAt = at;
+    goal = hit[2]!.trim();
+  }
+  if (goalAt >= 0) {
+    const transformed = [
+      ...lines.slice(0, first),
+      ...lines.slice(first, at).filter((_, i) => first + i !== goalAt),
+      EXPLICIT_GOAL_PLACEHOLDER,
+      "",
+      ...lines.slice(at),
+    ].join("\n");
+    const raw = parseFormattedCard(transformed);
+    return raw ? { raw: { ...raw, ziel: goal } } : null;
+  }
+  const raw = parseFormattedCard(text);
+  if (!raw) return null;
+  const lead = typeof raw.ziel === "string" ? FALSE_GOAL_LEAD.exec(raw.ziel.trim())?.[1]?.toUpperCase() : undefined;
+  return lead
+    ? { raw: { ...raw, ziel: "" }, zielGap: `ziel: missing ZIEL: header; first prose paragraph begins with ${lead}` }
+    : { raw };
+}
+
 function formatCardOf(t: Task, snapshot: TrackedSnapshot | null, index: SymbolIndexSnapshot | null): TaskCard | null {
   const source = [t.brief?.text, t.text].filter((x): x is string => !!x).join("\n\n");
-  const raw = (t.brief?.text ? parseFormattedCard(t.brief.text) : null) ?? parseFormattedCard(t.text);
-  if (!raw) return null;
-  const checked = validateCard(raw, cardValidationContext(source, snapshot, index, cardVerifyCommandOf(snapshot)));
+  const parsed = (t.brief?.text ? labeledFormatCard(t.brief.text) : null) ?? labeledFormatCard(t.text);
+  if (!parsed) return null;
+  const checked = validateCard(parsed.raw, cardValidationContext(source, snapshot, index, cardVerifyCommandOf(snapshot)));
+  const gaps = parsed.zielGap
+    ? checked.gaps.map((gap) => gap === "ziel: the extractor returned no goal sentence" ? parsed.zielGap! : gap)
+    : checked.gaps;
   return { ...checked.body, model: "format", at: Date.now(), ms: 0, valid: checked.valid,
-    surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION, gaps: checked.gaps };
+    surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION, gaps };
 }
 // `answered` receives the worker's raw answer before anything parses it — the tick writes it to
 // cards.jsonl, so a validator bump can be judged against what the model already said.

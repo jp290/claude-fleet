@@ -105,6 +105,14 @@ wenig Gewicht. Im ersten Fall erhielt `stoecke_craften` 30 Ticks lang 0,12 bis 0
 Gefahr, die ein Lauf nicht verkraftet, wird im Code erzwungen, so wie die Nacht seit S5b-1b. Jev waehlt
 nur dort, wo ein Fehlurteil verkraftbar ist, also genau die dritte Bedingung aus dem ersten Absatz.
 
+Die Regel ist inzwischen zweimal im Lauf bestaetigt. Mit erzwungener Flucht (S5b-2) gab es 7 Fluchten
+in 6 Laeufen und 0 Kampf-Tode. Beim Essen (S5b-3a) wiederholte sich die Form ein drittes Mal: `essen`
+stand 104-mal in einer Menge mit Wahl, bei hunger 7 bis 14, und Jev nahm es 1-mal (Median etwa 0,15).
+Erzwungen bei hunger 6 oder weniger feuerte es dagegen in jedem Lauf im ersten Not-Tick. Jev waehlt
+nach dem Fortschritt zum Stufenziel. Ein Bedarf, der nicht im Stufenziel steht, bekommt kaum Gewicht,
+auch wenn er in der Beschreibung steht. Stand 2026-09-25 hat die Nacht in 18 Laeufen 0 Tode, und die
+Stein-Stufe gelang in der letzten Rueckfallrunde 3 von 3.
+
 Zwei Bauformen folgen aus §3.1: **ein Aufruf je Ereignis mit dem ganzen Frage-Set**, und die
 Umkehrung — **das Gemeinsame in den State, die N Items als N Fragen**. Wie gut Jev bei langen Fragen
 ist, hat niemand gemessen.

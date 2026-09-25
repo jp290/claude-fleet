@@ -1385,16 +1385,71 @@ export async function run(): Promise<void> {
   check("founding window: the context column tells the truth about a founding by hand, no pack switches",
     gfSrc.includes("Rollenkarte mit Ankern — beim Start stellt der Server der Orchestrator ihre Karte mit Kontext-Ankern zu.")
     && gfSrc.includes("Keine Packs — eine Gründung von Hand bekommt keinen Brief zugestellt.")
-    && gfSrc.includes("Welche Packs ein Repo mitbringt, zeigt Schritt 3 nach der Repo-Wahl.")
+    // B2b made the pointer a real choice: the packs are chosen in step 3, after the repo — the
+    // sentence stays true because the default founding (no switch on) still delivers no brief
+    && gfSrc.includes("Packs wählst du in Schritt 3, nach der Repo-Wahl.")
     // falsifiable, not vacuous: the context COLUMN renders no button at all, and the mockup's
     // open "+ Pack zusammenstecken … (Form: Frage an dich)" row is B2, not this slice
     && !gfSrc.slice(gfSrc.indexOf('"Kontext"'), gfSrc.indexOf("two.append(ctx);")).includes('el("button"')
     && !gfSrc.includes("zusammenstecken"),
     "the context column in src/client.ts");
-  check("founding window: the repo card carries the two B3 facts and the attach role seats an orphan here",
-    gfSrc.includes("Context-Packs des Repos") && gfSrc.includes("info.packs.error")
+  check("founding window: the repo card carries the B3 facts, and the B2b switches replaced the read-only packs line",
+    // the read-only line is GONE, not joined: a broken manifest still speaks — as an omitted
+    // entry with its reason in the founding plan, which is what the switches render
+    !gfSrc.includes("Context-Packs des Repos") && !gfSrc.includes("info.packs.error")
     && gfSrc.includes("info.orphans ?? []")
-    && gfSrc.includes('/api/lanes", { repo: gfRepo, attach: gfOrphan, slot, ...spawnBody() }'),
+    && gfSrc.includes('/api/lanes", { repo: gfRepo, attach: gfOrphan, slot, ...spawnBody() }')
+    && gfSrc.includes("Kontext-Packs — je Pack an/aus"),
+    "gfStep3 in src/client.ts");
+
+  // --- Gruendungsfenster B2b: the founding packs become switches. The plan hangs off the repo
+  // (foundingPlanOf reads one), the repo is only chosen in step 3 (F5), so the card's read-only
+  // line became the choice (F3, owner: je Pack an/aus bei der Gründung). One check per part of
+  // the act, source as the evidence — this suite has no DOM; the two should-rejects make the
+  // silent failures loud: an omitted pack that toggles, a body carrying a packs field nobody
+  // switched on.
+  check("founding B2b: choosing a repo loads its plan for the chosen profile, latest-wins, and a profile change refetches",
+    gfSrc.includes("gfPlan = null;\n  gfPlanErr = null;\n  void gfLoadDir();\n  void gfLoadPlan();")
+    && gfSrc.includes("if (seq !== gfPlanSeq || !gfWin || gfRepo !== path) return; // latest-wins, like gfLoadDir")
+    && gfSrc.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`")
+    && gfSrc.includes("if (gfRepo && gfPlanFor !== gfPlanKey()) void gfLoadPlan();"),
+    "gfChooseRepo/gfLoadPlan/gfStep3 in src/client.ts");
+  const omitSrc = gfSrc.slice(gfSrc.indexOf("for (const o of gfPlan.omitted)"),
+    gfSrc.indexOf("g(\"Kontext-Packs — je Pack an/aus\", pv);"));
+  check("founding B2b: each selected pack is a switch with bytes and source, default off — should-reject: an omitted pack shows its reason and is not switchable",
+    gfSrc.includes("el(\"span\", \"gfpn\", p.id), el(\"span\", \"gfpb\", kb(p.bytes)),")
+    && gfSrc.includes('b.setAttribute("aria-pressed", String(on));')
+    && gfSrc.includes("gfPacks = new Set();     // a fresh plan is a fresh choice — old switches never ride across")
+    && omitSrc.includes('el("div", "gfpack omit");') && omitSrc.includes("o.reason")
+    && !omitSrc.includes("onclick") && !omitSrc.includes("gfPacks"),
+    "gfStep3 pack rows in src/client.ts");
+  const spawnSrc = cliSrc.slice(cliSrc.indexOf("function spawnBody()"), cliSrc.indexOf("function renderDirDetail("));
+  // the count is a claim about CODE, so whole-line comments are stripped first (the §7 rule):
+  // a commented-out send would otherwise satisfy the anchor and the probe would prove nothing
+  const spawnCode = spawnSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  const closeSrc = gfSrc.slice(gfSrc.indexOf("function closeFounding()"), gfSrc.indexOf("// the repos of the running fleet"));
+  check("founding B2b — should-reject: with no switch on, the founding body stays byte-identical — exactly one packs key, and only inside the conditional",
+    (spawnCode.match(/packs:/g) ?? []).length === 1
+    && spawnCode.includes("...(gfPacks.size ? { packs: [...gfPacks] } : {})")
+    && closeSrc.includes("gfPacks = new Set();")
+    && closeSrc.includes("the pack choice dies with the window it was made in"),
+    "spawnBody + closeFounding in src/client.ts");
+  const ssSrc = cliSrc.slice(cliSrc.indexOf("async function startSession("), cliSrc.indexOf("async function startWorktree("));
+  const swSrc = cliSrc.slice(cliSrc.indexOf("async function startWorktree("), cliSrc.indexOf("// --- THE FOUNDING WINDOW (Gruendungsfenster B1"));
+  check("founding B2b: a founding with packs waits visibly, and packsDelivered:false is said where the click was, never closed over as success",
+    gfSrc.includes('"Packs werden zugestellt …"')
+    && gfSrc.includes('go.disabled = gfBusy || !gfRepo || (gfRole === "wt-old" && !gfOrphan);')
+    && ssSrc.includes("if (j.packsDelivered === false)") && swSrc.includes("if (j.packsDelivered === false)")
+    && ssSrc.indexOf("packsDelivered === false") < ssSrc.indexOf("closeFounding();")
+    && swSrc.indexOf("packsDelivered === false") < swSrc.indexOf("closeFounding();"),
+    "gfStart + the step-3 foot + startSession/startWorktree in src/client.ts");
+  check("founding B2b: a 404 of the plan route reads as SKEW_NOTE, never as a repo without packs",
+    gfSrc.includes("if (res.status === 404) { gfPlanErr = SKEW_NOTE; renderGf(); return; }"),
+    "gfLoadPlan in src/client.ts");
+  check("founding B2b: wt-old locks the switches, with the door's own refusal as the reason",
+    gfSrc.includes('if (gfRole === "wt-old") b.disabled = true;')
+    && gfSrc.includes('if (gfRole === "wt-old" && gfPlan && gfPlan.selected.length)')
+    && gfSrc.includes("attach seats a worktree that predates this founding — packs delivers only at a fresh founding\"));"),
     "gfStep3 in src/client.ts");
 
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)

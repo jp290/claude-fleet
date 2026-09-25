@@ -1809,19 +1809,21 @@ async function doRebase(slot: number): Promise<void> {
 // session's share/export/rename under another session's name.
 let boardMenuOpen = false;
 let boardMenuSlot: number | null = null;
-// the session menu's outside-click, Escape and arrow walk live in src/popover.ts too (G4.1/K5);
-// the board REBUILDS itself, so panel, trigger and rows are read at event time, and the focus
-// return waits one frame for the rebuild the close itself triggers
+// The board and Explorer action menus cannot be open on the same visible surface. They therefore
+// share this K5 registration instead of adding another document-level outside-click listener.
+// Both rebuild their rows, so panel, trigger and rows are read at event time.
 popover({
-  panel: () => boardBody.querySelector<HTMLElement>(".bmenu"),
-  trigger: () => boardBody.querySelector<HTMLElement>(".bheadmenu.on"),
-  isOpen: () => boardMenuOpen,
+  panel: () => fxMenu?.panel ?? boardBody.querySelector<HTMLElement>(".bmenu"),
+  trigger: () => fxMenu?.trigger ?? boardBody.querySelector<HTMLElement>(".bheadmenu.on"),
+  isOpen: () => fxMenu !== null || boardMenuOpen,
   close: (refocus) => {
+    if (fxMenu) { closeFxMenu(refocus); return; }
     boardMenuOpen = false;
     void renderBoard();
     if (refocus) requestAnimationFrame(() => boardBody.querySelector<HTMLElement>(".bheadmenu")?.focus());
   },
-  rows: () => [...boardBody.querySelectorAll<HTMLButtonElement>(".bmenu .bmenuitem")],
+  rows: () => fxMenu ? [...fxMenu.panel.querySelectorAll<HTMLButtonElement>(".fxmenuitem")]
+    : [...boardBody.querySelectorAll<HTMLButtonElement>(".bmenu .bmenuitem")],
 });
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
 const outline = new Map<number, { total: number; source: string | null; prompts: string[]; err: string | null }>();
@@ -3612,13 +3614,6 @@ function closeFxMenu(refocus: boolean): void {
   open?.trigger.classList.remove("on");
   if (refocus) open?.trigger.focus();
 }
-popover({
-  panel: () => fxMenu?.panel ?? null,
-  trigger: () => fxMenu?.trigger ?? null,
-  isOpen: () => fxMenu !== null,
-  close: closeFxMenu,
-  rows: () => fxMenu ? [...fxMenu.panel.querySelectorAll<HTMLButtonElement>(".fxmenuitem")] : [],
-});
 function fxActions(slot: number, rel: string): HTMLElement {
   const actions = el("div", "fxacts");
   const more = el("button", "fxmore") as HTMLButtonElement;

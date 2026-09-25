@@ -34,6 +34,18 @@ freigegeben. Quellen:
 Folgeschnitt, kein offenes Programm. Was in §4 steht, ist ausdrücklich nicht beauftragt. Ein neuer Strang
 braucht einen neuen Owner-Satz (`docs/scope-inflation.md` §7).
 
+
+### 0a. Owner-Korrektur zum Entwurf (2026-09-25 ~15:5x, woertlich) — geht jedem Strang unten vor
+
+"Das klingt doch soweit gut, aber ein zwi Dinge noch; 4.die Schalter gibt es soweit in geiwsser form schon, aber es ist noch ziemlich mies implementiert (nicht klar was wozu gehört und wann passiert) 5. Bedenke aber das wir das in großen Teilen schon haben, nur noch nicht eben super auber umgesetzte (hier bin ich vor 1-2 Monaten auch schon stark dran gescheitert, an ssauberen Berechtigungsstrukturen + Autonomie) 6.Ja gut, aber das ist erstmal auch eig nicht wirklich wichtig, ignoriere es ruhig vorerst weiterhin^^, 3. Macht sinn soweit, wobei wie gesagt eig alles geht :')"
+
+Folgen (die Nummern sind die Interview-Fragen):
+- **S3 (4):** Der erste Schnitt ist KEINE Neuerfindung der Bausteine, sondern eine Sichtung der BESTEHENDEN Schalter (Gruendungsfenster B2a/B2b und alles andere, was eine Session heute schaltet): je Schalter, wozu er gehoert, WANN er wirkt (Spawn, live, naechster Brief, nie), wo er gespeichert ist, was die UI dazu sagt. Erst daraus die saubere Neuordnung von Schaltern und Profilen.
+- **S2 (5):** Berechtigung und Autonomie gibt es in grossen Teilen schon, und ein Versuch vor 1–2 Monaten ist an sauberen Strukturen gescheitert. Der erste Schnitt ist darum KEIN neuer Prinzipal obendrauf, sondern eine Synthese: was existiert (Tokens, Grants, Tueren, Bindungen), was der Versuch im August wollte und woran er scheiterte (docs/autonomy-bausteine-2026-08-06.md, docs/attic/autonomy-map-2026-08-06.md, docs/attic/autonomy-plan.md, docs/attic/autonomy-verbs-2026-08-06.md, docs/attic/orchestrator-autonomy.md, docs/attic/authority-slice-brief-2026-08-23.md, docs/attic/lane-autonomy-future.md, `git show 09b577e9` Owner-Richtung „Effizienz vor Berechtigungs-Strenge"), und ein Konsolidierungsentwurf, der weniger Mechanik hat als heute, nicht mehr. Der im Entwurf beschriebene Orchestrator-Prinzipal ist nur EINE Kandidatenloesung darin.
+- **S6 (6):** zurueckgestellt, nicht in den Wellen. Ignorieren bis zu einem neuen Owner-Satz.
+- **S4 (3):** Pilot „Claude Fleet" bestaetigt; Konzepte koennen alles sein.
+- **Entscheidungen §6:** Blocker-Liste und private Ablage gelten als Default (Owner: „klingt soweit gut"); Leichtgewicht wird geschlossen.
+
 ---
 
 ## 1. Zielbild

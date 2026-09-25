@@ -4752,6 +4752,19 @@ Ein Produktbefund waere es nur mit nicht-leerer `residue`. Der Baum, der sie zei
 Konjunkte als Endzustand verlangen (`phase` beginnt mit `backspace:` UND Puffer leer) — auf
 `holdComposerBuf === ""` allein wuerde eine leere Zerrlesung sofort gruen.
 
+**Nachtrag 2026-09-25 — dieselbe Torn-Read-Klasse traf auch das Prompt-Journal, aber an einer
+anderen Grenze.** Post-Land-Audit `cf42fa5b`, Shard 1/3 (Job `f975f81c9c8c`, second-host), brach nach
+394 s mit `ran 1`, `0 failed`, Exit 1 und `SyntaxError: JSON Parse error: Unterminated string` aus
+`e2e/harness.ts#plogRead` ab. Der Server hing gleichzeitig eine JSONL-Zeile an
+`streams/prompts.jsonl`; der Reader sah den noch nicht newline-terminierten letzten Datensatz und
+warf aus `until(...)`, statt eine rote Invariante zu messen. Im Post-Land-Register war die Signatur
+vorher nie vorhanden. `plogRead` verwirft nun ausschliesslich eine unparsbare, nicht terminierte
+LETZTE Zeile und liefert die vollstaendigen Zeilen davor; eine unparsbare mittlere oder bereits
+newline-terminierte Zeile wirft weiter. Der Fixture-Check in `e2e/history.ts` pinnt beide Seiten
+dieser Grenze. Anders als beim Composer-Zustand oben ist hier kein Poll auf einen terminalen Wert
+noetig: das append-only Journal macht die letzte vollstaendige Zeile bereits zu einer sicheren
+Momentaufnahme.
+
 ### 11.2ac Eine dreissigste Familie: die beiden self-land-Checks in `e2e/programs.ts`, die §11.2h ausdruecklich fuer immun erklaert hat — dieselbe Requeue-Wurzel, und §11.2h's Begruendung ist die falsifizierte Stelle (2026-09-20 registriert; Rate ueber das GANZE lokale Register per Direktscan gerechnet, Signatur aus den `detail`-Feldern gelesen, Wurzel bereits REPARIERT in `f8f3ee90`)
 
 **Die zwei Checks** (`e2e/programs.ts#9689` und `#9726`, self-land-Sektion):

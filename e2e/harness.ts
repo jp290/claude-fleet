@@ -222,10 +222,22 @@ export const plogPath = `${ROOT}/streams/prompts.jsonl`;
 // first prompt it delivers, so a shard that runs no send-heavy family before its first plogRead
 // (lanes-lifecycle in `--shard 2/4`, 2026-09-13) would otherwise die on ENOENT and take every
 // later check with it. A count that stays 0 across a send still fails its check — honestly.
-export const plogRead = async (): Promise<PromptLogEntry[]> => {
-  const f = Bun.file(plogPath);
+// A concurrent append can expose its final record before the terminating newline reaches the
+// reader. Only that torn tail is absent; corruption between complete records still aborts loudly.
+export const plogRead = async (path = plogPath): Promise<PromptLogEntry[]> => {
+  const f = Bun.file(path);
   if (!(await f.exists())) return [];
-  return (await f.text()).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as PromptLogEntry);
+  const text = await f.text();
+  const lines = text.trim().split("\n").filter(Boolean);
+  const entries: PromptLogEntry[] = [];
+  for (const [index, line] of lines.entries()) {
+    try {
+      entries.push(JSON.parse(line) as PromptLogEntry);
+    } catch (error) {
+      if (index !== lines.length - 1 || text.endsWith("\n")) throw error;
+    }
+  }
+  return entries;
 };
 
 export const readText = async (p: string): Promise<string> => {

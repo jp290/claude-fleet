@@ -46,6 +46,15 @@ Folgen (die Nummern sind die Interview-Fragen):
 - **S4 (3):** Pilot „Claude Fleet" bestaetigt; Konzepte koennen alles sein.
 - **Entscheidungen §6:** Blocker-Liste und private Ablage gelten als Default (Owner: „klingt soweit gut"); Leichtgewicht wird geschlossen.
 
+
+### 0b. Owner-Nachtrag (2026-09-25 ~16:0x, woertlich)
+
+"Aber genauso ist es wichtig das dwir Datenschichten und auch sonstige Responses vom Fleet System usw, schmalern und effizienter gestalten. Wir sollten im übrigen auch diese gesamte arbeit auf einem Worktree machen, so das wir das system nicht brechen^^"
+
+Folgen:
+- **Neuer Strang S9 · Schlanke Datenschichten und Antworten:** Ledger, `fleet.json`-Tabellen, Poll- und Self-Antworten, `ctl.sh`-Ausgaben und Briefe werden auf das geschnitten, was ein Leser braucht. Erster Schnitt: Messnotiz — je Route/Ledger/Ausgabe Bytes pro Aufruf × Aufrufe pro Tag × wer liest was davon (K5 §2 `prompts.jsonl` 35 MB ungerotiert und bei jedem Dossier ganz gelesen; K2 Zustellung 1,4–8,6× Verfasstes; K4 ~988-B-Block in 213/313). Daraus eine gerankte Schnittliste mit Byte-Ersparnis. Gehoert zu „Overhaul Kern“, beruehrt S5 (Index statt Vollscan) und S7(a).
+- **Welle 0 · EIN Overhaul-Integrationszweig:** Der Code des Overhauls landet NICHT Schnitt fuer Schnitt auf `main` (das der Live-Server faehrt), sondern auf einem Zweig `overhaul` mit eigenem Worktree und eigener Testinstanz (`testinstanz.sh`). Lanes des Overhauls forken von `overhaul` und landen dorthin; `main` wird erst nach Gesamtpruefung auf der Testinstanz in einem Zug nachgezogen. Messnotizen ohne Code (S2-Synthese, S3-Sichtung, S4-Messung, S9-Messung) duerfen weiter auf `main`, weil sie nichts brechen und andere Sessions sie lesen. Offen und ERSTER Schnitt von „Overhaul Kern“: ob der Land-Pfad das heute kann — `server.ts#integrationBranch` liest EINE Basis je Repo (`repoBases`, Route `/api/repo-base`), die Lane merkt sich ihre Basis beim Fork (`worktree.base`, `server.ts#laneBaseRef`); ob `landLane`, Post-Land-Audit und der ff des Haupt-Checkouts einer Lane mit Basis `overhaul` folgen, ist ungeprueft. DONE: e2e-Check — eine Lane mit Basis `overhaul` landet dorthin, `main` bleibt unbewegt, das Audit laeuft gegen den `overhaul`-Tip; Mutationsprobe: Land-Ziel hart auf `main` → Check rot. Bis das steht, laeuft Code-Arbeit des Overhauls in genau einem Worktree nach dem Muster von 52a25990 (Sessions nacheinander im selben Worktree, gelandet wird als Ganzes).
+
 ---
 
 ## 1. Zielbild

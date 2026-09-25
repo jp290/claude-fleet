@@ -603,9 +603,51 @@ function entityKnown(kind: MdEntityKind, id: string, slot = 0): boolean {
     return !!ref && !!tree && !("error" in tree) && tree.files.includes(ref.path);
   }
   if (kind === "task") return tasksList.some((t) => t.id === id);
-  if (kind === "program") return programsPoll.some((p) => p.id === id);
+  if (kind === "program") return programsPoll.filter((p) => p.id === id || p.id.startsWith(id)).length === 1;
+  if (kind === "attention") return attnRows.some((a) => a.id === id);
+  if (kind === "report") return ownerReportRows.some((r) => r.id === id);
+  if (kind === "event") return entityEvents.some((e) => e.id === id) || opsRows.some((e) => e.id === id);
+  if (kind === "lane") return fleet.some((sl) => `${sl.id}${sl.worktree?.letter ?? ""}` === id);
   if (kind === "sha") return knownSha(id);
-  return fleet.some((sl) => sl.id === Number(id));
+  return kind === "slot" && fleet.some((sl) => sl.id === Number(id));
+}
+
+type EntityEvent = { id: string; kind: string; status: string; createdAt: number;
+  receiverSlot: number | null; subjectSlot?: number; subjectBranch?: string;
+  payload?: Record<string, unknown> };
+const entityEvents: EntityEvent[] = [];
+const entityDossiers = new Map<string, { value?: Dossier & { resolved?: { result: string; row?: { report?: { status: string; reportedAt: number } } } }; later?: Promise<void> }>();
+let entityOutcomes: OutcomeRow[] = [];
+let entityDetailsAt = 0;
+let entityDetailsBusy = false;
+async function loadEntityDetails(): Promise<void> {
+  if (entityDetailsBusy || Date.now() - entityDetailsAt < 60_000) return;
+  entityDetailsBusy = true;
+  await Promise.allSettled([
+    loadPrograms(), loadTaskTexts(), loadAttention(), loadOwnerReports(),
+    api("/api/events").then(async (r) => {
+      if (r.ok) entityEvents.splice(0, entityEvents.length,
+        ...(((await r.json()) as { events?: EntityEvent[] }).events ?? []));
+    }),
+    api("/api/lane-outcomes?limit=1000").then(async (r) => {
+      if (r.ok) entityOutcomes = ((await r.json()) as { outcomes?: OutcomeRow[] }).outcomes ?? [];
+    }),
+  ]);
+  entityDetailsAt = Date.now();
+  entityDetailsBusy = false;
+  for (const pane of panes) if (pane.savedHover) pane.refreshEntities();
+}
+
+function entityDossier(id: string): { value?: Dossier & { resolved?: { result: string; row?: { report?: { status: string; reportedAt: number } } } }; later?: Promise<void> } {
+  let row = entityDossiers.get(id);
+  if (row) return row;
+  row = {};
+  entityDossiers.set(id, row);
+  const target = row;
+  target.later = api(`/api/lane?task=${encodeURIComponent(id)}`).then(async (r) => {
+    if (r.ok) target.value = await r.json() as typeof target.value;
+  }).finally(() => { target.later = undefined; });
+  return row;
 }
 
 // COMMIT SHAS THE BOARD HAS SEEN. Transcripts cite shas as 7-12 char prefixes; the match is
@@ -620,6 +662,7 @@ function rememberShas(...candidates: (string | null | undefined)[]): void {
 function knownSha(id: string): boolean {
   if (shasSeen.has(id)) return true;
   for (const s of fleet) if (s.taskHead && s.taskHead.startsWith(id)) return true;
+  for (const o of entityOutcomes) if (o.headSha?.startsWith(id) || o.mainAfter?.startsWith(id)) return true;
   for (const s of shasSeen) if (s.startsWith(id)) return true;
   return false;
 }
@@ -669,6 +712,11 @@ function describeEntity(kind: string, id: string, slot = 0): EntFacts | null {
     const workerLine = t.slot
       ? `worker: slot ${t.slot}${worker?.label ? ` · ${worker.label}` : ""}${worker?.model ? ` · ${worker.model}` : ""}`
       : "worker: —";
+    const card = taskCardFull.get(id);
+    const dossier = entityDossier(id);
+    const resolved = dossier.value?.resolved;
+    const outcomes = dossier.value?.outcomes;
+    const last = outcomes?.state === "read" ? outcomes.value.rows.find((o) => o.disposition === "landed") : undefined;
     return {
       meta: [`task ${t.id}`, t.status, t.kind].filter(Boolean).join(" · "),
       title: text ? qFirstLine(text) : taskTextBusy || later ? "…" : "(no text on this board)",
@@ -677,27 +725,78 @@ function describeEntity(kind: string, id: string, slot = 0): EntFacts | null {
         `${taskSourceLabel(t)} · filed ${fmtDur(Math.max(0, now - t.created))} ago`,
         ...(t.cluster ? [[t.cluster.projekt, t.cluster.prozess, t.cluster.unterprozess].filter(Boolean).join(" / ")] : []),
         ...(t.size ? [`size ${t.size}`] : []),
+        ...(card ? [`goal: ${card.ziel ?? "—"}`, `done: ${card.done ?? "—"}`,
+          `card: ${card.valid ? "valid" : `INVALID · ${card.gaps?.[0] ?? "gap not named"}`}`] : ["card: not recorded"]),
+        ...(t.hold ? [`hold: ${t.hold.grund ?? `by MAIN slot ${t.hold.slot}`}`] : []),
+        ...(resolved?.row?.report ? [`last report: ${resolved.row.report.status} · ${fmtTs(resolved.row.report.reportedAt)}`] : []),
+        ...(last ? [`land: ${typeof last.mainAfter === "string" ? last.mainAfter.slice(0, 8) : "sha unknown"} · ${typeof last.ts === "number" ? fmtTs(last.ts) : "time unknown"}`] : []),
+        ...(resolved?.result === "no-lane" ? ["lane: none on record"] : []),
       ],
-      later,
+      later: later ?? dossier.later,
     };
   }
   if (kind === "program") {
-    const p = programsPoll.find((x) => x.id === id) ?? programsList.find((x) => x.id === id);
+    const matching = programsPoll.filter((x) => x.id === id || x.id.startsWith(id));
+    const p = matching.length === 1 ? matching[0] : undefined;
     if (!p) return null;
+    const full = programsList.find((x) => x.id === p.id);
+    const main = full?.main?.slot ? fleet.find((s) => s.id === full.main?.slot) : undefined;
+    const rows = tasksList.filter((t) => t.programId === p.id);
+    const landed = entityOutcomes.filter((o) => o.disposition === "landed" && (o.programId === p.id
+      || !!o.taskId && rows.some((t) => t.id === o.taskId))).sort((a, b) => b.ts - a.ts)[0];
     return {
       meta: `program ${p.id} · ${p.status}`,
       title: p.title,
-      lines: [`founded ${fmtDur(Math.max(0, now - p.createdAt))} ago`],
+      lines: [`founded ${fmtDur(Math.max(0, now - p.createdAt))} ago`,
+        full?.main?.slot ? `MAIN: slot ${full.main.slot} · ${main?.model ?? "model unknown"} · ${main?.cwd && main.openedAt === full.main.openedAt ? "live" : "not occupying bound session"}`
+          : "MAIN: unbound or not loaded",
+        `tasks: ${rows.filter((t) => t.status === "sent").length} running · ${rows.filter((t) => t.status === "pending" || t.status === "queued").length} waiting · ${rows.filter((t) => t.status === "done" || t.status === "archived").length} finished`,
+        landed ? `last land: ${landed.mainAfter?.slice(0, 8) ?? "sha unknown"} · ${fmtTs(landed.ts)}` : "last land: not in loaded outcomes"],
     };
+  }
+  if (kind === "attention") {
+    const a = attnRows.find((x) => x.id === id);
+    return a ? { meta: `attention ${a.id} · ${a.kind}`, title: a.status,
+      lines: [`raised ${fmtTs(a.raisedAt)}`, `program ${a.programId}`, `requester slot ${a.requester.slot}`,
+        ...(a.closedAt ? [`closed ${fmtTs(a.closedAt)}`] : [])] } : null;
+  }
+  if (kind === "report") {
+    const r = ownerReportRows.find((x) => x.id === id);
+    return r ? { meta: `report ${r.id}`, title: r.status,
+      lines: [`filed ${fmtTs(r.reportedAt)}`, `slot ${r.worker.slot} · ${r.worker.branch}`,
+        ...(r.provenance.programId ? [`program ${r.provenance.programId}`] : []),
+        ...(r.provenance.taskId ? [`task ${r.provenance.taskId}`] : []),
+        `decision: ${r.decision?.disposition ?? "open"}`] } : null;
+  }
+  if (kind === "event") {
+    const e = entityEvents.find((x) => x.id === id) ?? opsRows.find((x) => x.id === id);
+    return e ? { meta: `event ${e.id} · ${e.kind}`, title: e.status,
+      lines: [`created ${fmtTs(e.createdAt)}`, `receiver: ${e.receiverSlot === null ? "owner" : `slot ${e.receiverSlot}`}`,
+        ...(e.subjectSlot ? [`subject: slot ${e.subjectSlot}${e.subjectBranch ? ` · ${e.subjectBranch}` : ""}`] : []),
+        ...(typeof e.payload?.taskId === "string" ? [`task ${e.payload.taskId}`] : []),
+        ...(typeof e.payload?.programId === "string" ? [`program ${e.payload.programId}`] : [])] } : null;
+  }
+  if (kind === "lane") {
+    const s = fleet.find((x) => `${x.id}${x.worktree?.letter ?? ""}` === id);
+    return s ? { meta: `lane ${id} · slot ${s.id}`, title: s.worktree?.branch ?? "lane",
+      lines: [s.cwd ? "running" : "not occupying slot", ...(s.programId ? [`program ${s.programId}`] : []),
+        ...(s.taskId ? [`task ${s.taskId}`] : []), ...(s.awaiting ? [`awaiting ${s.awaiting}`] : [])] } : null;
   }
   if (kind === "sha") {
     if (!knownSha(id)) return null;
     const lanes = fleet.filter((s) => s.taskHead && s.taskHead.startsWith(id))
       .map((s) => `slot ${s.id}${s.label ? ` · ${s.label}` : ""}${s.worktree ? ` · ⎇ ${s.worktree.branch}` : ""}`);
+    const lands = entityOutcomes.filter((o) => o.disposition === "landed"
+      && (o.headSha?.startsWith(id) || o.mainAfter?.startsWith(id))).sort((a, b) => b.ts - a.ts);
+    const land = lands[0];
+    const check = land && postLandAudit?.mainSha === land.mainAfter
+      && postLandAudit?.covers?.includes(land.branch ?? "") ? postLandAudit : null;
     return {
       meta: `commit ${id}`,
       title: lanes.length ? "head of a lane on this board" : "seen on this board (brief/head)",
-      lines: lanes.length ? lanes : ["no lane sits on this commit right now"],
+      lines: [...(lanes.length ? lanes : ["no lane sits on this commit right now"]),
+        ...(land ? [`land: ${land.branch ?? "lane unknown"} · ${fmtTs(land.ts)}`] : []),
+        ...(check ? [`check: ${check.result} · ${fmtTs(check.at)}`] : [])],
     };
   }
   const sl = fleet.find((x) => x.id === Number(id));
@@ -711,6 +810,9 @@ function describeEntity(kind: string, id: string, slot = 0): EntFacts | null {
     lines: [
       [sl.harness ?? "claude", sl.model, sl.effort].filter(Boolean).join(" · "),
       sl.worktree ? `branch ${sl.worktree.branch}` : sl.cwd,
+      ...(sl.worktree?.letter ? [`lane ${sl.id}${sl.worktree.letter}`] : []),
+      ...(sl.programId ? [`program ${sl.programId}`] : []),
+      ...(sl.awaiting ? [`awaiting ${sl.awaiting}`] : []),
       ...(taskLine ? [taskLine] : []),
       ...(sl.lastOutput ? [`last output ${fmtDur(Math.max(0, now - sl.lastOutput))} ago`] : []),
       "Slot-Belegung kann sich seit dieser Nachricht geändert haben.",
@@ -882,6 +984,7 @@ class Pane {
       if (this.hoverOn && cwd && !fxTree.has(cwd)) {
         void loadTree(this.slot, cwd).then(() => this.refreshEntities());
       } else this.refreshEntities();
+      if (this.hoverOn) void loadEntityDetails();
     };
     const toolsTop = el("div", "ptrow ptboth");
     toolsTop.append(this.gearBtn, this.hoverBtn, this.viewBtn, this.boardBtn);
@@ -952,7 +1055,7 @@ class Pane {
 
   get savedHover(): boolean { return this.hoverOn; }
 
-  private refreshEntities(): void {
+  refreshEntities(): void {
     if (this.view !== "chat") return;
     this.resetChat();
     void this.pollChat();
@@ -1543,6 +1646,7 @@ class Pane {
     this.leavePast();
     this.slot = slot;
     if (this.hoverOn) {
+      void loadEntityDetails();
       const cwd = fleet.find((sl) => sl.id === slot)?.cwd;
       if (cwd && !fxTree.has(cwd)) void loadTree(slot, cwd).then(() => this.refreshEntities());
     }
@@ -9878,6 +9982,7 @@ async function refresh() {
     // the operations inbox reads the events the poll already carries — no extra request, and the
     // 📥 badge counts only rows that were minted FOR it (delivery inbox, still awaiting the owner)
     setOpsEvents(data.events ?? []);
+    if (panes.some((pane) => pane.savedHover)) void loadEntityDetails();
     deployGapInfo = data.deployGap ?? null;
     bundleStaleInfo = data.bundleStale ?? null;
     serverNow = data.now;
@@ -15565,6 +15670,7 @@ interface OutcomeReviewRow { state?: string; at?: number; model?: string; head?:
   scope?: string; notes?: string; raw?: boolean; findings?: ReviewFinding[] }
 interface OutcomeRow { ts: number; branch?: string | null; base?: string | null; headSha?: string | null;
   disposition?: string; model?: string | null; briefHash?: string | null; shortstat?: string;
+  taskId?: string | null; programId?: string | null;
   // HOW the row reached that model (server.ts#resolvedModel, rows since 2026-09-17): "spawn" the
   // lane pinned it · "default" it did not and the harness's spawn line passed its own · "ambient"
   // neither, so `model` is null. Absent on every older row, where a null model says only "no pin".

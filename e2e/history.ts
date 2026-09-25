@@ -512,6 +512,20 @@ function runLinks(): void {
   check("references: ports and clock times are never file references",
     rejected.length === 1 && rejected[0]?.kind === "file" && rejected[0]?.id === "src/client.ts:680",
     JSON.stringify(rejected));
+  const ids: [MdEntityKind, string, string][] = [
+    ["attention", "aaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbb"],
+    ["report", "cccccccccccccccccccccccc", "dddddddddddddddddddddddd"],
+    ["event", "eeeeeeeeeeeeeeeeeeeeeeee", "ffffffffffffffffffffffff"],
+    ["lane", "3A", "3B"],
+    ["program", "0d51b4d4", "0d51b4d5"],
+  ];
+  for (const [kind, yes, no] of ids) {
+    const accepts = (k: MdEntityKind, id: string) => k === kind && id === yes;
+    check(`references: known ${kind} gets one card marker`,
+      entityMatches(`see ${yes}`, accepts).some((m) => m.kind === kind && m.id === yes));
+    check(`references: unknown ${kind} stays plain text`,
+      entityMatches(`see ${no}`, accepts).length === 0);
+  }
   const url = "https://example.com/a_b/c?x=1&y=2#frag";
   const bare = stubAll(renderStub(`see ${url}. then`), "a");
   check("chat view: a bare https url in running text becomes exactly one link",

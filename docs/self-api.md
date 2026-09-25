@@ -5,6 +5,29 @@ Prinzipal-/Scope-Regeln (wer welche Route bekommt, 409-Semantik) und die Diszipl
 `CLAUDE.md`; hier liegen Feldformen, Deckel, Ablehnungen und die curl-Beispiele. Bei Widerspruch
 gilt der Code.
 
+## position — `GET /api/self` → `position`
+
+Jede Session liest mit ihrem eigenen `FLEET_SELF_TOKEN` ihr Lagebild. Die bisherigen Felder von
+`GET /api/self` bleiben erhalten. `position` ergänzt `role`, `taskId`, `programId`,
+`receiver`, `harness`, `model` und `waitingOnMe`.
+
+`role` ist `lane`, `program-main`, `supervisor`, `orchestrator` oder `generic`.
+Program-MAIN und Supervisor beruhen auf der Bindung der aktuellen Occupation; `orchestrator`
+beruht derzeit nur auf dem Slot-Label und verleiht keine Rechte. Für eine Program-Lane ist
+`receiver: {role:"program-main",slot,openedAt}` die lebende gebundene MAIN. Für eine MAIN
+ist es die eindeutig gelabelte lebende Orchestratorin. Ohne eindeutig auflösbare Occupation
+steht `receiver:null`, nie `owner`. `taskId` und `programId` kommen aus dem Lane-Slot;
+die MAIN erhält ihre `programId` aus der aktiven Bindung. Fehlende Werte bleiben `null`.
+`harness` und `model` sind die gespeicherten Spawn-Werte; `null` bedeutet Fleet-Default.
+
+`waitingOnMe` enthält offene Einträge `{kind,id,slot}` für fremde bewaffnete Watches auf
+die aktuelle Lane, geparkte Sends an ihre Occupation, offene Clarifications, unentschiedene
+Fleet-Reports und einen noch offenen Succession-Debt für diesen Nachfolger. `slot` bezeichnet
+den wartenden Slot; beim Debt den betroffenen Slot selbst. Der Blick ist eine aktuelle
+Momentaufnahme, keine historische Vollständigkeitszusage. Der mutierende Lane-Brief rendert
+denselben Empfänger im Footer als `Empfaenger: <Rolle> Slot <n>`; ohne Empfänger steht dort
+`Empfaenger: unbekannt`.
+
 ## gate — `GET /api/self/gate`
 
 Liefert die Gate-Konfiguration dieser Lane plus die aktuell gemessene Suite-Mutex-Sicht. `suiteLock`

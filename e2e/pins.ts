@@ -1712,9 +1712,10 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 
   const describe = SYSTEM_CAPABILITIES.find((capability) => capability.name === "describe_self");
   const safe = SELF_GET_ADAPTER_PROBE;
-  const missingDescribeFacts = ["Role", "Authority", "Capabilities", "active Act"];
+  const missingDescribeFacts = ["Authority", "Capabilities", "active Act"];
   pin("describe_self exposes only the real Self payload and names every unimplemented SYSTEM.md promise",
     describe?.adapter?.method === "GET" && describe.adapter.route === "/api/self"
+      && describe.returns.includes("position")
       && missingDescribeFacts.every((fact) => describe.gaps.some((gap) => gap.includes(fact))),
     describe ? `gaps=[${describe.gaps.join(" | ")}]` : "entry missing");
   pin("the named adapter/probe dataset is the every-session read-only Self GET with the scoped header credential",
@@ -6945,12 +6946,14 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // THREE call sites since the codex-exit cut (2026-09-18), still one construction: the
   // declaration, the dispatch seam, and the LANE SUCCESSION brief (server.ts#buildLaneSuccessionBrief).
   // The count is still pinned because the rule it enforces is unchanged — a lane's ending is
-  // appended at a seam, never retyped. Since the same cut the footer is a FUNCTION of the harness:
+  // appended at a seam, never retyped. Since the same cut the footer is a FUNCTION of the harness
+  // and the receiver resolved from the lane's current occupant:
   // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
   // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
-    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness\)\}\$\{memoryBlock\}`;/.test(server)
+    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness, selfPosition\(free\)\.receiver\)\}\$\{memoryBlock\}`;/.test(server)
       && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
+      && /footer: laneExitFooter\(s\.harness, selfPosition\(s\)\.receiver\)/.test(server)
       && (server.split("laneExitFooter(").length - 1) === 3,
     `laneExitFooter call sites=${server.split("laneExitFooter(").length - 1}`);
 }

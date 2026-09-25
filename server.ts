@@ -10423,7 +10423,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const brief = buildLaneSuccessionBrief({ branch: ref.branch, base, session,
     rows: hold.map((h) => h.task), log, handoff: laneHandoffReportFor(s),
     reason: successionReasonFor(s), decision: latestRowDecisionLine(hold.map((h) => h.task)),
-    footer: laneExitFooter(s.harness) });
+    footer: laneExitFooter(s.harness, selfPosition(s).receiver) });
   // git and the report read are awaits; the owner may have killed or recycled this slot inside them.
   if (!sameSuccessionOccupant(s, expected))
     return json({ error: "predecessor session changed during succession preflight — retry from the current occupant" }, 409);
@@ -15302,13 +15302,57 @@ const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";
 // all that differs; everything else stays a single text so the two cannot drift.
 const LANE_EXIT_HANDOFF_EXIT = "file it, then POST /api/self/succeed";
 const LANE_EXIT_HANDOFF_EXIT_CODEX = "your report IS the handover — a codex session compacts itself, and no baton door follows it";
-function laneExitFooter(harness: string | null): string {
+function selfPosition(s: Slot) {
+  const bound = boundProgramForMain(s);
+  const role = supervisor?.slot === s.id && supervisor.openedAt === s.openedAt ? "supervisor"
+    : bound.ok ? "program-main"
+    : s.worktree ? "lane"
+    : isOrchestratorLabel(s.label) ? "orchestrator" : "generic";
+  let receiver: { role: string; slot: number; openedAt: number } | null = null;
+  if (role === "lane" && s.programId) {
+    const program = programs.find((p) => p.id === s.programId && p.status === "active");
+    const main = program?.main;
+    const live = main ? slotFrom(main.slot) : null;
+    if (live?.cwd && live.openedAt === main?.openedAt)
+      receiver = { role: "program-main", slot: live.id, openedAt: live.openedAt };
+  } else if (role === "program-main") {
+    const candidates = slots.filter((x) => x.cwd && x.id !== s.id && isOrchestratorLabel(x.label));
+    if (candidates.length === 1) {
+      const orchestrator = candidates[0]!;
+      receiver = { role: "orchestrator", slot: orchestrator.id, openedAt: orchestrator.openedAt };
+    }
+  }
+  const waitingOnMe = [
+    ...watches.filter((w) => w.armed && "target" in w && w.target === s.id
+      && w.targetCwd === s.cwd && w.targetBranch === s.worktree?.branch
+      && w.slot !== s.id && w.slotOpenedAt !== undefined
+      && slots.some((x) => x.cwd && x.id === w.slot && x.openedAt === w.slotOpenedAt))
+      .map((w) => ({ kind: "watch", id: w.id, slot: w.slot })),
+    ...parkedSends.filter((p) => p.receiver.slot === s.id && p.receiver.openedAt === s.openedAt)
+      .map((p) => ({ kind: "parked-send", id: p.sendId, slot: p.occupant.slot })),
+    ...clarifications.filter((c) => (c.status === "open" || c.status === "send-uncertain")
+      && c.receiver.slot === s.id && c.receiver.openedAt === s.openedAt)
+      .map((c) => ({ kind: "clarification", id: c.id, slot: c.worker.slot })),
+    ...fleetReportsFor(s).filter((r) => !r.decision
+      && !(r.worker.slot === s.id && r.worker.openedAt === s.openedAt)
+      && ((r.receiver?.slot === s.id && r.receiver.openedAt === s.openedAt)
+        || (r.basis === "program" && bound.ok && r.provenance.programId === bound.program.id)))
+      .map((r) => ({ kind: "fleet-report", id: r.id, slot: r.worker.slot })),
+    ...successionDebts.filter((d) => d.slot === s.id && d.successorOpenedAt === s.openedAt)
+      .map((d) => ({ kind: "succession-debt", id: d.id, slot: s.id })),
+  ];
+  return { role, taskId: s.taskId, programId: s.programId ?? (bound.ok ? bound.program.id : null),
+    receiver, harness: s.harness, model: s.model, waitingOnMe };
+}
+function laneExitFooter(harness: string | null, receiver: { role: string; slot: number; openedAt: number } | null): string {
   const handoffExit = harnessOf(harness ?? "").id === CODEX_HARNESS.id
     ? LANE_EXIT_HANDOFF_EXIT_CODEX
     : LANE_EXIT_HANDOFF_EXIT;
   return `
 
 --- HOW THIS LANE ENDS (three acts, in this order — they are the deliverable, not paperwork)
+
+Empfaenger: ${receiver ? `${receiver.role} Slot ${receiver.slot}` : "unbekannt"}
 
 1. COMMIT. A lane that stops with uncommitted work cannot be landed, and NO untracked files may
    remain in the worktree — they block the land outright. Scratch files belong in the session
@@ -15604,7 +15648,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // that span as the notes/source/studio/anchor region, and a pointer there moved all of their
     // bytes (preview b546fb2cccdb, 7 red). Clarify gets none, like the notes and the footer.
     const memoryBlock = clarify ? "" : `\n\n${memoryPointer("lane")}`;
-    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness)}${memoryBlock}`;
+    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness, selfPosition(free).receiver)}${memoryBlock}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true, { path: "brief" });
@@ -38605,6 +38649,7 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return json({
         slot: s.id,
+        position: selfPosition(s),
         label: s.label,
         cwd: s.cwd,
         mission: s.mission,

@@ -24,8 +24,9 @@ import { run as checkResultRetry } from "./helper-result";
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode, pruneRuns, shardEnv, stricter, tailOf,
-  trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG, EXIT_UPDATED, type HelperConfig, type JobView } from "../helper-daemon/daemon";
+import { downloadBundle, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode, pruneRuns, shardEnv,
+  stricter, tailOf, trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG, EXIT_UPDATED, type ClaimedJob, type HelperConfig,
+  type JobView } from "../helper-daemon/daemon";
 
 interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
@@ -346,11 +347,27 @@ export async function run(h: {
   // so the OS picks a free one — the harness's own port bands say nothing about a proxy.
   const seen: string[] = [];
   const reportedBodies: Record<string, unknown>[] = [];
-  const proxy = Bun.serve({
-    port: 0, hostname: "127.0.0.1",
+  let restartNextBundle = false;
+  let restartEveryBundleJob = "";
+  let rejectBundleJob = "";
+  let bundleRestarts = 0;
+  let proxy: ReturnType<typeof Bun.serve>;
+  const startProxy = (port = 0): ReturnType<typeof Bun.serve> => Bun.serve({
+    port, hostname: "127.0.0.1",
     fetch: async (req: Request): Promise<Response> => {
       const u = new URL(req.url);
       seen.push(`${req.method} ${u.pathname}${u.search}`);
+      const bundleJob = /^\/api\/helper\/bundle\/(.+)$/.exec(u.pathname)?.[1] ?? "";
+      if (bundleJob && (restartNextBundle || bundleJob === restartEveryBundleJob)) {
+        restartNextBundle = false;
+        bundleRestarts++;
+        const restartPort = proxy.port;
+        proxy.stop(true);
+        proxy = startProxy(restartPort);
+        return new Response("the stopped proxy never sends this response");
+      }
+      if (bundleJob && bundleJob === rejectBundleJob)
+        return new Response('{"error":"bad token"}', { status: 401, headers: { "content-type": "application/json" } });
       const headers = new Headers(req.headers);
       headers.delete("host");
       const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
@@ -367,6 +384,7 @@ export async function run(h: {
       return new Response(await res.arrayBuffer(), { status: res.status, headers: out });
     },
   });
+  proxy = startProxy();
   const PROXY = `http://127.0.0.1:${proxy.port}`;
 
   // The stand-in for ./e2e-isolated.sh — same currency (exit code, tail, trail id) in milliseconds.
@@ -561,6 +579,7 @@ export async function run(h: {
     `bundle=${bundled.status} plain=${plainClone} file(s), -b main=${refClone} file(s)`);
 
   await writeConfig();
+  restartNextBundle = true;
   const daemon = startDaemon();
   check("(HD) the daemon starts and reads its config", await waitLog(daemon.log, "helper-daemon up"),
     logText(daemon.log).slice(0, 200));
@@ -595,6 +614,10 @@ export async function run(h: {
   check("(HD) …and it is a MEASURED red under init.defaultBranch=master — not the `unknown` an empty clone produces",
     remoteRow?.result !== "unknown" && (remoteRow?.checks?.ran ?? 0) > 0,
     `result=${remoteRow?.result} reason=${remoteRow?.reason ?? "-"} checks=${JSON.stringify(remoteRow?.checks)}`);
+  const bundleGets = seen.filter((request) => request === `GET /api/helper/bundle/${claimedByDaemon?.id}`).length;
+  check("(HD) a bundle GET cut by a fleet restart is retried, then the claimed suite still runs and reports",
+    bundleRestarts === 1 && bundleGets === 2 && (remoteRow?.checks?.ran ?? 0) > 0,
+    `restarts=${bundleRestarts} bundleGets=${bundleGets} checks=${JSON.stringify(remoteRow?.checks)}`);
   check("(HD) …and it is MARKED REMOTE with this machine's name and the trail id the daemon read out of the log",
     remoteRow?.remote?.name === DEVICE_NAME && remoteRow.remote.trail === TRAIL
       && remoteRow.remote.reportedAt >= remoteRow.remote.claimedAt,
@@ -615,6 +638,39 @@ export async function run(h: {
   check("(HD) the daemon's real result POST carries the exact fail names from its synthetic trail",
     JSON.stringify(reported?.fails) === '["remote trail failure alpha","remote trail failure beta"]',
     JSON.stringify(reported));
+
+  const probeCfg = loadConfig(CFG, JSON.parse(readFileSync(CFG, "utf8")) as unknown, statSync(CFG).mode);
+  const failedBundleJob: ClaimedJob = {
+    id: "bundle-failure-probe", repo: "stub-fleet", main: "main", mainSha: "f".repeat(40),
+  };
+  const failureSeenAt = seen.length;
+  const failureReportsAt = reportedBodies.length;
+  restartEveryBundleJob = failedBundleJob.id;
+  const failedBundle = await downloadBundle(probeCfg, failedBundleJob, async () => {});
+  restartEveryBundleJob = "";
+  const failureGets = seen.slice(failureSeenAt)
+    .filter((request) => request === `GET /api/helper/bundle/${failedBundleJob.id}`).length;
+  const failureReport = reportedBodies.slice(failureReportsAt).find((body) => body.jobId === failedBundleJob.id);
+  check("(HD) exhausted bundle socket retries post one named could-not-start result instead of leaving the claim held",
+    failedBundle === null && failureGets === 5 && failureReport?.exitCode === 127
+      && String(failureReport.tail).startsWith("bundle-download-failed after 5 attempts:"),
+    `bundle=${failedBundle === null ? "null" : "bytes"} gets=${failureGets} report=${JSON.stringify(failureReport)}`);
+
+  const authBundleJob: ClaimedJob = {
+    id: "bundle-auth-probe", repo: "stub-fleet", main: "main", mainSha: "e".repeat(40),
+  };
+  const authSeenAt = seen.length;
+  const authReportsAt = reportedBodies.length;
+  rejectBundleJob = authBundleJob.id;
+  let authBundleError = "";
+  try { await downloadBundle(probeCfg, authBundleJob, async () => {}); }
+  catch (error) { authBundleError = error instanceof Error ? error.message : String(error); }
+  rejectBundleJob = "";
+  const authGets = seen.slice(authSeenAt)
+    .filter((request) => request === `GET /api/helper/bundle/${authBundleJob.id}`).length;
+  check("(HD) a bundle 401 costs exactly one GET and no result POST — authentication is not transient",
+    authGets === 1 && reportedBodies.length === authReportsAt && authBundleError.includes("401 on /api/helper/bundle/"),
+    `gets=${authGets} reports=${reportedBodies.length - authReportsAt} error=${authBundleError}`);
   check("(HD) the row stores those bounded names and corroborates a summary whose FAIL lines fell outside the tail",
     JSON.stringify(remoteRow?.fails) === '["remote trail failure alpha","remote trail failure beta"]'
       && remoteRow?.checks?.failed === 2

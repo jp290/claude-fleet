@@ -205,7 +205,7 @@ export function shardEnv(shard: string | undefined): Record<string, string> | nu
 // The claim answer as it comes off the wire — unvalidated by us, so the two ref fields are typed
 // the way the server actually serves them: a lane-suite claim carries `branch`, an audit claim
 // carries `main`, and neither kind ever carries both (server.ts#helperClaim, #claimLaneSuite).
-interface ClaimedJob {
+export interface ClaimedJob {
   id: string; kind?: string; repo: string; main?: string; mainSha: string; claimedAt?: number;
   branch?: string; treeSha?: string; untracked?: number;
   // THE COMMAND KIND's three fields. `argv` is what this process execs — the fleet split the
@@ -237,6 +237,34 @@ async function api(cfg: HelperConfig, path: string,
   const res = isResult ? await retryResult(request, log) : await request();
   if (res.status === 401) throw new AuthFault(`the fleet refused this machine's helper token (401 on ${path})`);
   return res;
+}
+
+const BUNDLE_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000] as const;
+export async function downloadBundle(cfg: HelperConfig, j: ClaimedJob,
+  sleep: (ms: number) => Promise<unknown> = Bun.sleep): Promise<ArrayBuffer | null> {
+  const path = `/api/helper/bundle/${j.id}`;
+  for (let attempt = 0; ; attempt++) {
+    let failure = "";
+    try {
+      const res = await api(cfg, path);
+      if (res.ok) return await res.arrayBuffer();
+      if (res.status < 500 || res.status >= 600) {
+        await report(cfg, j, 127, `the bundle download answered HTTP ${res.status}`);
+        return null;
+      }
+      await res.body?.cancel();
+      failure = `HTTP ${res.status}`;
+    } catch (error) {
+      if (error instanceof AuthFault) throw error;
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    log(`bundle attempt ${attempt + 1}/5 failed: ${failure}`);
+    if (attempt === BUNDLE_RETRY_DELAYS_MS.length) {
+      await report(cfg, j, 127, `bundle-download-failed after 5 attempts: ${failure}`);
+      return null;
+    }
+    await sleep(BUNDLE_RETRY_DELAYS_MS[attempt]);
+  }
 }
 const bodyOf = async <T>(res: Response): Promise<T & { error?: string }> => {
   const text = await res.text();
@@ -624,10 +652,9 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
 
   try {
     const bundlePath = `${runDir}/job.bundle`;
-    const bundleRes = await api(cfg, `/api/helper/bundle/${j.id}`);
-    if (withdrawn()) return;
-    if (!bundleRes.ok) { await report(cfg, j, 127, `the bundle download answered HTTP ${bundleRes.status}`); return; }
-    await Bun.write(bundlePath, await bundleRes.arrayBuffer());
+    const bundle = await downloadBundle(cfg, j);
+    if (withdrawn() || bundle === null) return;
+    await Bun.write(bundlePath, bundle);
 
     // THE `-b` IS REQUIRED FOR BOTH KINDS, and the ref it names is the only thing that differs
     // between them. A bundle carries exactly the refs it was built from and NO HEAD, so a plain
@@ -840,9 +867,9 @@ async function selfUpdate(cfg: HelperConfig, j: ClaimedJob): Promise<void> {
   // second bookkeeper for one fact.
   try {
     log(`update ${short}: clone ${ref} → ${tree}`);
-    const bundleRes = await api(cfg, `/api/helper/bundle/${j.id}`);
-    if (!bundleRes.ok) { await report(cfg, j, 127, `the bundle download answered HTTP ${bundleRes.status}`); return; }
-    await Bun.write(bundlePath, await bundleRes.arrayBuffer());
+    const bundle = await downloadBundle(cfg, j);
+    if (bundle === null) return;
+    await Bun.write(bundlePath, bundle);
     // a half-cloned tree from an earlier attempt at this same sha must not be the thing we check
     try { rmSync(tree, { recursive: true, force: true }); } catch { /* not there */ }
     const cloned = await runCmd(`git clone -q -b ${sh(ref)} ${sh(bundlePath)} ${sh(tree)}`, cfg.workDir, logPath, 300_000);

@@ -5940,9 +5940,9 @@ function setLayout(n: number, assignments?: number[]) {
 
 // sidebar click: assign to the focused pane — unless the slot is already
 // visible in another pane (same slot twice = two sessions fighting over resize)
-function showSlot(id: number) {
-  const s = fleet[id - 1];
-  if (!s?.cwd) return;
+function showSlot(id: number): boolean {
+  const s = fleet.find((slot) => slot.id === id);
+  if (!s?.cwd) return false;
   // §F3 edge 2 — focus beats fold. Whatever route got here (a ⏸ badge, an adopt, a merge job
   // finishing, the board), the session you are now looking at must have a visible row: a pane
   // showing a lane while the sidebar pretends it isn't there is worse than no folding at all.
@@ -5952,10 +5952,11 @@ function showSlot(id: number) {
   }
   setDrawer(false);
   const existing = panes.find((p) => p.slot === id);
-  if (existing) { existing.focus(); existing.flash(); return; }
+  if (existing) { existing.focus(); existing.flash(); return true; }
   const target = panes[focused];
   target.assign(id);
   target.flash();
+  return true;
 }
 
 window.addEventListener("keydown", (e) => {
@@ -7412,6 +7413,16 @@ async function togglePin(path: string) {
   if (keepFilter) { pkFilter.value = keepFilter; applyPkFilter(); scheduleFind(); }
 }
 
+async function revealStartedSlot(slot: number): Promise<boolean> {
+  const deadline = Date.now() + 4500;
+  do {
+    await refresh();
+    if (showSlot(slot)) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  return false;
+}
+
 async function startSession(path: string, label?: string, onError?: (msg: string) => void) {
   if (!pickerSlot) return;
   const slot = pickerSlot;
@@ -7437,10 +7448,13 @@ async function startSession(path: string, label?: string, onError?: (msg: string
     else alert(`Session opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
     return;
   }
+  if (!await revealStartedSlot(slot)) {
+    const msg = `Session opened, but slot ${slot} did not appear within 5 seconds.`;
+    if (onError) onError(msg); else alert(msg);
+    return;
+  }
   closeFounding();
   closePicker();
-  await refresh();
-  showSlot(slot);
 }
 
 async function startWorktree(repo: string, onError?: (msg: string) => void) {
@@ -7471,10 +7485,13 @@ async function startWorktree(repo: string, onError?: (msg: string) => void) {
     else alert(`Lane opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
     return;
   }
+  if (!await revealStartedSlot(slot)) {
+    const msg = `Lane opened, but slot ${slot} did not appear within 5 seconds.`;
+    if (onError) onError(msg); else alert(msg);
+    return;
+  }
   closeFounding();
   closePicker();
-  await refresh();
-  showSlot(slot);
 }
 
 // --- THE FOUNDING WINDOW (Gruendungsfenster B1 · Stufen 1–3, only client) -----------------------
@@ -7700,9 +7717,12 @@ async function gfStart() {
           return;
         }
         const j = (await res.json().catch(() => ({}))) as { slot?: number };
+        const shown = j.slot ?? slot;
+        if (!await revealStartedSlot(shown)) {
+          onError(`Lane attached, but slot ${shown} did not appear within 5 seconds.`);
+          return;
+        }
         closeFounding();
-        await refresh();
-        showSlot(j.slot ?? slot);
       }
     } else if (gfRole && gfRepo) {
       await startSession(gfRepo, gfRoleLabel(gfRole), onError);

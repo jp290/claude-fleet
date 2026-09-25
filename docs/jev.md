@@ -110,8 +110,7 @@ in 6 Laeufen und 0 Kampf-Tode. Beim Essen (S5b-3a) wiederholte sich die Form ein
 stand 104-mal in einer Menge mit Wahl, bei hunger 7 bis 14, und Jev nahm es 1-mal (Median etwa 0,15).
 Erzwungen bei hunger 6 oder weniger feuerte es dagegen in jedem Lauf im ersten Not-Tick. Jev waehlt
 nach dem Fortschritt zum Stufenziel. Ein Bedarf, der nicht im Stufenziel steht, bekommt kaum Gewicht,
-auch wenn er in der Beschreibung steht. Beim Jagen (S5b-3b) trat die Form ein viertes Mal auf: Nach einem Kill gab Jev dem Aufsammeln des Fleischs 0,02 und 0,08. Erzwungen feuerte `jagen` in 3 von 3 Laeufen im ersten Hunger-Tick, aber nur 1 von 4 Kills endete im Magen. Eine Kette aus Ueberlebensschritten ist also nur so stark wie ihr nicht erzwungenes Glied. Stand 2026-09-25 hat die Nacht in 18 Laeufen 0 Tode, und die
-Stein-Stufe gelang in der letzten Rueckfallrunde 3 von 3.
+auch wenn er in der Beschreibung steht. Beim Jagen (S5b-3b) trat die Form ein viertes Mal auf: Nach einem Kill gab Jev dem Aufsammeln des Fleischs 0,02 und 0,08. Erzwungen feuerte `jagen` in 3 von 3 Laeufen im ersten Hunger-Tick, aber nur 1 von 4 Kills endete im Magen. Eine Kette aus Ueberlebensschritten ist also nur so stark wie ihr nicht erzwungenes Glied. Stand 2026-09-25 abends: Mit S5b-3e hielten zum ersten Mal alle Kippwerte einer Runde, die Tag, Nacht, Hunger und Jagd zugleich misst: 5 von 5 Laeufen erreichten die stone_pickaxe, alle 5 Jagdversuche toeteten, und kein Lauf starb. Jede Ueberlebenshandlung darin ist erzwungen; Jev waehlt nur noch zwischen den Stufenoptionen.
 
 Zwei Bauformen folgen aus §3.1: **ein Aufruf je Ereignis mit dem ganzen Frage-Set**, und die
 Umkehrung — **das Gemeinsame in den State, die N Items als N Fragen**. Wie gut Jev bei langen Fragen

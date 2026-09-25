@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Session-Marke · Pflanzen</title>
+<!-- Runde 5. Drei Fassungen pflanzlicher Marken, dieselben 16 Plätze und dieselben Seeds wie
+     marken-laufend.html (Runde 3). Jede Spalte ist EINE Canvas hinter der Liste. Der Schalter stellt
+     Repo, Rolle und Harness eines Platzes um; das Exemplar (der Seed) bleibt dabei stehen.
+     ?tafel=1 (&zustand=rest) ist der Kontaktbogen fuer die Messnotiz, ohne Liste. -->
+<link rel="stylesheet" href="marken2.css">
+<style>
+  #app { display: block; overflow: auto; }
+  #kopf { position: sticky; top: 0; z-index: 3; background: #000;
+    border-bottom: 1px solid var(--chat-edge-soft); padding: 14px 20px 12px; }
+  #kopf h1 { font-size: var(--chat-fs); font-weight: 650; color: var(--chat-ink); }
+  #kopf p { margin-top: 6px; max-width: 100ch; font-size: var(--chat-code-fs); line-height: 1.6; color: var(--chat-mute); }
+  .steuer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+  button, select { font: 500 var(--chat-ui-fs) var(--chat-sans); color: var(--chat-prose);
+    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: 7px;
+    padding: 5px 10px; cursor: pointer; }
+  button:hover, select:hover { color: var(--chat-ink); border-color: #3a3a42; }
+  button[aria-pressed="true"] { color: #000; background: var(--chat-ink); border-color: var(--chat-ink); }
+  .steuer span, .steuer label { font: 500 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-faint); }
+  .steuer label { display: inline-flex; gap: 6px; align-items: center; }
+
+  #umbau { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; margin-top: 12px;
+    padding-top: 12px; border-top: 1px solid var(--chat-edge-soft); }
+  #lupe { display: flex; gap: 14px; }
+  #lupe figure { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 150px; }
+  #lupe canvas { display: block; border: 1px solid var(--chat-edge-soft); border-radius: 8px; }
+  #lupe figcaption { font-size: var(--chat-ui-fs); color: var(--chat-mute); text-align: center; line-height: 1.4; }
+
+  #spalten { display: flex; gap: 0; align-items: flex-start; }
+  .spalte { width: 300px; flex: none; border-right: 1px solid var(--chat-edge-soft); padding-bottom: 40px; }
+  .spalte > header { padding: 14px 16px 10px; }
+  .spalte h2 { font: 650 var(--chat-fs) var(--chat-sans); color: var(--chat-ink); }
+  .spalte dl { margin-top: 8px; font-size: var(--chat-ui-fs); line-height: 1.65; }
+  .spalte dt { color: var(--chat-faint); float: left; width: 64px; }
+  .spalte dd { color: var(--chat-mute); margin-left: 64px; }
+  .messe { margin: 8px 16px 2px; font: 500 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-faint); }
+  .messe b { color: #9ee6a0; font-weight: 500; }
+
+  .liste { position: relative; padding: 4px 8px 8px; }
+  .liste canvas { position: absolute; inset: 0; pointer-events: none; }
+  .liste .row { position: relative; z-index: 1; padding-left: 41px; gap: 8px; cursor: pointer; }
+  .liste .row.gewaehlt { box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .liste .lanes { margin-left: 0; padding-left: 0; border-left: none; }
+  .liste .lanes .row { padding-left: 57px; }
+  .liste .lanes .row::before { content: ""; position: absolute; left: 41px; top: -1px; bottom: -1px;
+    width: 1px; background: var(--chat-edge); }
+  .liste .lbl { font-size: var(--chat-code-fs); }
+  body.grau canvas { filter: grayscale(1); }
+
+  body.tafel { overflow: auto; }
+  body.tafel #kopf, body.tafel #spalten { display: none; }
+  #bogen { display: none; }
+  body.tafel #bogen { display: block; }
+  #ergebnis { display: none; }
+  body.tafel #ergebnis { display: block; margin: 12px; font: 500 12px/1.5 var(--chat-mono); color: var(--chat-mute); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="kopf">
+  <h1>Session-Marke · Pflanzen aus Repo und Rolle</h1>
+  <p>Jede Session ist eine Pflanze. <b>Art = Repo</b> (dasselbe Fach wie der Farbton, also auch ohne Farbe lesbar) ·
+    <b>Wuchs = Rolle</b> (einzeln · Gruppe · Paar · geduckt · klein) · <b>Kleinmerkmal = Harness</b> ·
+    <b>Exemplar = Session</b> (Neigung, Krümmung aus demselben Seed wie Runde 3) · <b>Bewegung = Zustand</b>.
+    Die Pflanze steht fertig gewachsen da und ändert ihre Gestalt nie; bewegen darf sich nur der Zustand —
+    arbeitet: Wind · wartet: leiser Wind und atmender Rahmen · ruht: still · schläft: hängt, geschlossen ·
+    fertig: verblüht · Fehler: geknickt, rot, zittert.</p>
+  <div class="steuer">
+    <button id="b16" aria-pressed="false">alle arbeiten (Messfall)</button>
+    <button id="bruhe" aria-pressed="false">alles einfrieren</button>
+    <button id="bschlaf" aria-pressed="false">alles schlafen</button>
+    <button id="bfehler" aria-pressed="false">alles stören</button>
+    <button id="bzurueck" aria-pressed="true">echter Betrieb</button>
+    <button id="bgrau" aria-pressed="false">ohne Farbe</button>
+    <span id="hinweis"></span>
+  </div>
+  <div id="umbau">
+    <div class="steuer" style="margin-top:0; flex-direction:column; align-items:flex-start">
+      <span>Platz umstellen — oder eine Zeile anklicken:</span>
+      <label>Platz <select id="wplatz"></select></label>
+      <label>Repo <select id="wrepo"></select></label>
+      <label>Rolle <select id="wrolle"></select></label>
+      <label>Harness <select id="wharness"></select></label>
+      <button id="wzurueck">Platz zurücksetzen</button>
+    </div>
+    <div id="lupe"></div>
+  </div>
+</div>
+<div id="spalten"></div>
+<canvas id="bogen"></canvas>
+<pre id="ergebnis"></pre>
+
+<script type="module">
+import { SLOTS } from "./marken-daten.js";
+import { PflanzStage, seedOf, nameOf, ROLLEN, HARNESS, ARTEN, artOf, harnessOf, projectHue } from "./marken5.js";
+
+const FASS = [
+  { id: "bluete", name: "A · Blüte",
+    sieht: "Eine Umrisszeichnung: Stiel, Blätter, eine Blüte — man sagt „die violette Distel“, und im Wind wiegt sie sich.",
+    art: "Blütenform: Tulpe · Margerite · Glocke · Stern · Mohn · Winde · Distel · Rose",
+    merk: "Blattform: rund (claude) · schmal (codex) · gefiedert (pi)" },
+  { id: "zweig", name: "B · Zweig",
+    sieht: "Eine Wuchsregel mit der Schildkröte gezeichnet — Farn, Tanne, Baum —, und der Wind läuft als Welle von der Wurzel zur Spitze.",
+    art: "Wuchsregel: Farn · Tanne · Gras · Weide · Baum · Kaktus · Bambus · Busch",
+    merk: "Spitzen: Knospe (claude) · kahl (codex) · gegabelt (pi)" },
+  { id: "samen", name: "C · Samenstand",
+    sieht: "Ein Samenstand aus Punkten wie die Flakes — arbeitend lösen sich Samen und treiben davon, ruhend ist der Kopf voll und still.",
+    art: "Samenstand: Pusteblume · Dolde · Ähre · Rispe · Sonnenblume · Kolben · Traube · Quirl",
+    merk: "Blattform: rund (claude) · schmal (codex) · gefiedert (pi)" },
+];
+
+// Die Rolle steht in marken-daten.js nur als main/lane; die fünf Rollen des Fleet kommen aus dem Label.
+const rolleVon = (s, lane) => lane ? "lane" : s.label === "Orchestrator" ? "orch" : s.label === "Steward" ? "steward" : "main";
+// Der Seed ist EXAKT der aus marken-laufend.html (role main/lane) und bleibt beim Umstellen stehen:
+// das Exemplar ist die Session, nicht das Repo.
+const FLACH = SLOTS.flatMap((s) => s.free ? [{ ...s, lane: false }]
+  : [{ ...s, lane: false }, ...(s.lanes ?? []).map((l) => ({ ...l, lane: true }))])
+  .map((s) => s.free ? s : { ...s, rolle: rolleVon(s, s.lane),
+    seed: seedOf({ repo: s.repo, harness: s.harness, role: s.lane ? "lane" : "main", slot: s.slot, openedAt: s.openedAt }) });
+const SESS = FLACH.filter((s) => !s.free);
+
+const REPOS = ["claude-fleet", "privatraum", "private-repo-aa", "private-repo-r", "shell", "konzept-b", "imkerei", "gärtnerei"]
+  .map((r) => "/Users/o/" + r).sort((a, b) => artOf(a) - artOf(b));
+const umgestellt = new Map();                       // slot -> { repo, rolle, harness }
+const fakt = (s) => ({ repo: s.repo, rolle: s.rolle, harness: s.harness, ...(umgestellt.get(String(s.slot)) ?? {}) });
+
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+const q = new URLSearchParams(location.search);
+
+if (q.get("tafel")) tafel(); else if (q.get("arten")) arten(); else leiste();
+
+// --- Artentafel: jede Art, jede Rolle, jedes Harness, jeder Zustand, gross — zum Nachschlagen ---
+function arten() {
+  document.body.classList.add("tafel");
+  const Z = Number(q.get("z") || 56), PAD = 10, SCH = Z + PAD, LAB = 16;
+  const spalten = [
+    ...REPOS.map((r) => ({ repo: r, rolle: "main", harness: "claude", state: "rest", t: null })),
+    ...Object.keys(ROLLEN).map((k) => ({ repo: REPOS[0], rolle: k, harness: "claude", state: "rest", t: ROLLEN[k].name })),
+    ...["claude", "codex", "pi-zai"].map((h) => ({ repo: REPOS[0], rolle: "main", harness: h, state: "rest", t: h })),
+    ...["work", "need", "rest", "done", "sleep", "bad"].map((z) => ({ repo: REPOS[0], rolle: "main", harness: "claude", state: z, t: z })),
+  ];
+  const W = PAD + spalten.length * SCH, H = PAD + FASS.length * (SCH + LAB);
+  const cv = document.getElementById("bogen");
+  const stage = new PflanzStage(cv);
+  const seed = SESS[0].seed;
+  stage.setRows(FASS.flatMap((f, y) => spalten.map((s, x) => ({
+    x: PAD + x * SCH, y: PAD + y * (SCH + LAB), size: Z, fassung: f.id, seed, ...s,
+  }))), W, H);
+  const ctx = stage.ctx;
+  ctx.font = "10px ui-monospace, Menlo, monospace"; ctx.fillStyle = "#8b8b94"; ctx.textAlign = "center";
+  FASS.forEach((f, y) => spalten.forEach((s, x) => {
+    const t = s.t ?? ARTEN[f.id][artOf(s.repo)];
+    ctx.fillText(t, PAD + x * SCH + Z / 2, PAD + y * (SCH + LAB) + Z + 12);
+  }));
+}
+
+function leiste() {
+  const spalten = document.getElementById("spalten");
+  const buehnen = [];
+  for (const f of FASS) {
+    const col = el("div", "spalte");
+    const h = el("header");
+    h.append(el("h2", null, f.name));
+    const dl = el("dl");
+    for (const [k, v] of [["man sieht", f.sieht], ["Repo →", f.art], ["Rolle →", "Wuchs: einzeln (MAIN) · drei (Orchestratorin) · zwei (Astra) · geduckt mit Rosette (Steward) · klein (Lane)"], ["Harness →", f.merk]]) {
+      dl.append(el("dt", null, k), el("dd", null, v));
+    }
+    h.append(dl); col.append(h);
+    const messe = el("div", "messe"); col.append(messe);
+    const liste = el("div", "liste");
+    const cv = el("canvas"); liste.append(cv);
+    for (const s of SLOTS) {
+      liste.append(zeile(s));
+      if (s.lanes) { const box = el("div", "lanes"); s.lanes.forEach((l) => box.append(zeile(l))); liste.append(box); }
+    }
+    col.append(liste); spalten.append(col);
+    buehnen.push({ f, liste, cv, messe, stage: new PflanzStage(cv) });
+  }
+
+  function zeile(s) {
+    const r = el("div", "row " + (s.free ? "free" : s.state));
+    r.dataset.slot = String(s.slot);
+    r.append(el("span", "lbl", s.free ? "frei" : s.label));
+    r.append(el("span", "pct", s.pct != null ? s.pct + "%" : ""));
+    r.append(el("span", "meta", s.free ? "" : s.meta));
+    if (!s.free) r.addEventListener("click", () => { wplatz.value = String(s.slot); waehle(); });
+    return r;
+  }
+
+  function verteilen(zustandVon) {
+    for (const b of buehnen) {
+      const box = b.liste.getBoundingClientRect();
+      const rows = [...b.liste.querySelectorAll(".row")];
+      const cells = rows.map((row, i) => {
+        const rb = row.getBoundingClientRect(), s = FLACH[i], size = s.lane ? 19 : 24;
+        const base = { x: (s.lane ? 24 : 8) + 1, y: Math.round(rb.top - box.top + (rb.height - size) / 2), size, fassung: b.f.id };
+        if (s.free) return { ...base, state: "free", seed: 0, repo: "", rolle: "main", harness: "claude" };
+        const ff = fakt(s);
+        row.title = `${s.slot} · ${nameOf(b.f.id, ff.repo, ff.rolle)} · ${ff.harness}`;
+        return { ...base, ...ff, seed: s.seed, state: zustandVon(s) };
+      });
+      b.stage.setRows(cells, box.width, box.height);
+    }
+    lupe();
+  }
+
+  // --- der Schalter ---
+  const wplatz = document.getElementById("wplatz"), wrepo = document.getElementById("wrepo");
+  const wrolle = document.getElementById("wrolle"), wharness = document.getElementById("wharness");
+  for (const s of SESS) wplatz.append(new Option(`${s.slot} · ${s.label}`, String(s.slot)));
+  for (const r of REPOS) wrepo.append(new Option(`${r.split("/").pop()} (Art ${artOf(r) + 1})`, r));
+  for (const [k, v] of Object.entries(ROLLEN)) wrolle.append(new Option(v.name, k));
+  for (const k of ["claude", "codex", "pi-zai"]) wharness.append(new Option(k, k));
+  wplatz.value = "1";
+  const gewaehlt = () => SESS.find((s) => String(s.slot) === wplatz.value);
+  function waehle() {
+    const ff = fakt(gewaehlt());
+    wrepo.value = ff.repo; wrolle.value = ff.rolle; wharness.value = ff.harness === "codex" ? "codex" : harnessOf(ff.harness) === "pi" ? "pi-zai" : "claude";
+    for (const r of document.querySelectorAll(".liste .row")) r.classList.toggle("gewaehlt", r.dataset.slot === wplatz.value);
+    lupe();
+  }
+  const umstellen = () => { umgestellt.set(wplatz.value, { repo: wrepo.value, rolle: wrolle.value, harness: wharness.value }); verteilen(modus); waehle(); };
+  wplatz.addEventListener("change", waehle);
+  for (const w of [wrepo, wrolle, wharness]) w.addEventListener("change", umstellen);
+  document.getElementById("wzurueck").addEventListener("click", () => { umgestellt.delete(wplatz.value); verteilen(modus); waehle(); });
+
+  // --- die Lupe: der gewaehlte Platz in allen drei Fassungen, 96 px ---
+  const lupeBox = document.getElementById("lupe"), lupen = [];
+  for (const f of FASS) {
+    const fig = el("figure"), cv = el("canvas"), cap = el("figcaption");
+    fig.append(cv, cap); lupeBox.append(fig);
+    lupen.push({ f, cap, stage: new PflanzStage(cv) });
+  }
+  function lupe() {
+    const s = gewaehlt(), ff = fakt(s);
+    for (const l of lupen) {
+      l.stage.setRows([{ x: 0, y: 0, size: 96, fassung: l.f.id, ...ff, seed: s.seed, state: modus(s) }], 96, 96);
+      l.cap.textContent = `${l.f.name.split(" · ")[1]}: ${nameOf(l.f.id, ff.repo, ff.rolle)} · ${ff.harness}`;
+    }
+  }
+
+  const ECHT = (s) => s.state;
+  let modus = ECHT;
+  const knoepfe = { b16: () => "work", bruhe: () => "rest", bschlaf: () => "sleep", bfehler: () => "bad", bzurueck: ECHT };
+  for (const [id, fn] of Object.entries(knoepfe)) {
+    document.getElementById(id).addEventListener("click", () => {
+      modus = fn;
+      for (const k of Object.keys(knoepfe)) document.getElementById(k).setAttribute("aria-pressed", String(k === id));
+      verteilen(modus);
+    });
+  }
+  document.getElementById("bgrau").addEventListener("click", (e) => {
+    const on = document.body.classList.toggle("grau");
+    e.currentTarget.setAttribute("aria-pressed", String(on));
+  });
+
+  addEventListener("resize", () => verteilen(modus));
+  requestAnimationFrame(() => {
+    verteilen(modus); waehle();
+    const hin = document.getElementById("hinweis");
+    hin.textContent = matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "prefers-reduced-motion: alles steht, ein Standbild je Marke"
+      : `${SESS.length} Sessions · 16 Plätze`;
+    setInterval(() => {
+      for (const b of buehnen) {
+        const lebend = b.stage.cells.filter((c) => ["work", "need", "bad"].includes(c.state)).length;
+        b.messe.innerHTML = `<b>${b.stage.fps.toFixed(0)} Bilder/s</b> · ${lebend} laufende Marken · eine Canvas`;
+      }
+    }, 500);
+    window.__bench = () => buehnen.map((b) => ({ fassung: b.f.id, ...b.stage.bench() }));
+  });
+}
+
+// --- Kontaktbogen: alle Sessions × drei Fassungen, 24 px, dpr fest 2, Paarabstand IM Browser ---
+// Gemessen wird wie in Runde 3 (mess/kontaktbogen.py): mittlerer absoluter Kanalabstand ueber die
+// 48×48 Geraetepixel je Marke, ohne Farbe ueber die Luma (Rec. 709) derselben Pixel. Weil die Zahl
+// in der Seite entsteht, braucht sie kein Bildschirmfoto und keinen zweiten Treiber.
+function tafel() {
+  document.body.classList.add("tafel");
+  const Z = 24, PAD = 8, SCH = Z + PAD, DPR = 2;
+  const zustand = q.get("zustand");                 // leer = echter Zustand, sonst fuer alle derselbe
+  const W = PAD + SESS.length * SCH, H = PAD + FASS.length * SCH;
+  const cv = document.getElementById("bogen");
+  const stage = new PflanzStage(cv, { dpr: DPR });
+  stage.on = false;
+  const rows = [];
+  FASS.forEach((f, y) => SESS.forEach((s, x) => rows.push({
+    x: PAD + x * SCH, y: PAD + y * SCH, size: Z, fassung: f.id,
+    repo: s.repo, rolle: s.rolle, harness: s.harness, seed: s.seed, state: zustand || s.state,
+  })));
+  stage.setRows(rows, W, H);
+  const img = stage.ctx.getImageData(0, 0, cv.width, cv.height).data, BW = cv.width;
+  const zelle = (xi, yi, grau) => {
+    const out = new Float32Array(Z * DPR * Z * DPR * (grau ? 1 : 3)); let k = 0;
+    for (let y = 0; y < Z * DPR; y++) for (let x = 0; x < Z * DPR; x++) {
+      const o = (((PAD + yi * SCH) * DPR + y) * BW + (PAD + xi * SCH) * DPR + x) * 4;
+      if (grau) out[k++] = 0.2126 * img[o] + 0.7152 * img[o + 1] + 0.0722 * img[o + 2];
+      else { out[k++] = img[o]; out[k++] = img[o + 1]; out[k++] = img[o + 2]; }
+    }
+    return out;
+  };
+  const mad = (a, b) => { let d = 0; for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]); return d / a.length; };
+  const erg = { zustand: zustand || "echt", sessions: SESS.length, paare: SESS.length * (SESS.length - 1) / 2, fassungen: {} };
+  FASS.forEach((f, yi) => {
+    const r = {};
+    for (const grau of [false, true]) {
+      const zs = SESS.map((_, xi) => zelle(xi, yi, grau));
+      const ds = [];
+      for (let i = 0; i < SESS.length; i++) for (let j = i + 1; j < SESS.length; j++) {
+        const a = SESS[i], b = SESS[j];
+        // "gleiche Fakten": gleiche Art, gleiche Rolle, gleiches Harness — nur das Exemplar trennt sie
+        const gleich = artOf(a.repo) === artOf(b.repo) && a.rolle === b.rolle && harnessOf(a.harness) === harnessOf(b.harness);
+        ds.push({ p: `${a.slot}~${b.slot}`, d: mad(zs[i], zs[j]), gleich });
+      }
+      ds.sort((u, v) => u.d - v.d);
+      const vals = ds.map((x) => x.d), med = vals[Math.floor(vals.length / 2)];
+      const gl = ds.filter((x) => x.gleich);
+      let tinte = 0;
+      for (const z of zs) { let n = 0; const st = grau ? 1 : 3; for (let i = 0; i < z.length; i += st) { let m = z[i]; if (!grau) m = Math.max(z[i], z[i + 1], z[i + 2]); if (m > 24) n++; } tinte += n / (z.length / st); }
+      r[grau ? "ohneFarbe" : "farbe"] = {
+        kleinster: +vals[0].toFixed(2), median: +med.toFixed(2), unter4: vals.filter((v) => v < 4).length,
+        engste: ds.slice(0, 3).map((x) => `${x.p} ${x.d.toFixed(2)}`),
+        gleicheFakten: gl.length ? { paare: gl.length, kleinster: +gl[0].d.toFixed(2), welches: gl[0].p } : null,
+        tinteProzent: +(tinte / zs.length * 100).toFixed(1),
+      };
+    }
+    erg.fassungen[f.id] = r;
+  });
+  window.__tafel = erg;
+  document.getElementById("ergebnis").textContent = JSON.stringify(erg, null, 1);
+  document.documentElement.dataset.ready = "1";
+}
+</script>
+</body>
+</html>

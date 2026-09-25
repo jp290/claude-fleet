@@ -1092,7 +1092,7 @@ export async function run(ctx: Ctx): Promise<void> {
       if (!founding) await Bun.sleep(100);
     }
     // (b) a repo WITHOUT .fleet/init.md: the neutral entry — lineage.record, HANDOFF.md, README/AGENTS —
-    // and not one of claude-fleet's own entry points (2026-09-13: slot 14 in ~/private-repo-a went
+    // and not one of claude-fleet's own entry points (2026-09-13: a successor in a private Owner repo went
     // searching ~/.claude for ./state.sh)
     const neutral = ["lineage.record", "HANDOFF.md", "README.md bzw. AGENTS.md"].map((x) => founding.indexOf(x));
     check("the founding brief names the LINE RECORD; a repo without .fleet/init.md gets the neutral entry: lineage.record · HANDOFF.md · README/AGENTS",

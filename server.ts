@@ -9878,7 +9878,7 @@ function successionScopeError(s: Slot, opts: { lane: "refuse" | "own-rail" }): R
   return null;
 }
 
-// THE STEPS BELONG TO THE SUCCESSOR'S REPO, not to Fleet's (2026-09-13: slot 14 in ~/private-repo-a
+// THE STEPS BELONG TO THE SUCCESSOR'S REPO, not to Fleet's (2026-09-13: a successor in a private Owner repo
 // was sent to ./state.sh and ./register.sh, which exist only here, and went searching ~/.claude for
 // them). A tracked, non-empty `<cwd>/.fleet/init.md` is quoted verbatim, capped loudly; without one
 // the entry names no script and no board — only files a checkout may carry, each "falls vorhanden".

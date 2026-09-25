@@ -92,7 +92,7 @@ This is a client-only change in all likelihood, which does **not** make the gate
 
 **Those suites cannot see layout.** The four windows have had zero e2e coverage since Session 15
 and the decision about that has now been deferred four times (15 §3, 16 §1, 17, 18) — 100 working
-Playwright checks already live in `~/claude-fleet-private/ui-checks-2026-08-02/`. If this refactor
+Playwright checks already live in `~/[privater Owner-Ordner]/ui-checks-2026-08-02/`. If this refactor
 moves controls, driving them in a real browser is the only thing that proves it, and this session
 showed why: two "it's fixed" claims about one button were wrong, and the third was only right
 because a headless browser clicked it and sampled the label. The harness lied first, too — a 2.5 s

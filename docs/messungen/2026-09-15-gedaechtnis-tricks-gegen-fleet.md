@@ -9,7 +9,7 @@ stand: 2026-09-15
 
 # Neun Gedächtnis-Techniken gegen Fleets Nachfolge und Kontext
 
-Gelesener Stand: `main` und Lane-HEAD waren zu Beginn identisch: `364cdca090dd1d388cd019a33f5da0f84e7a6665`. Alle Codezeilen unten beziehen sich auf diesen Stand. Quellpaket: `/Users/owner/claude-fleet-private/astra-inputs-2026-09-15/x-thread-memory-tricks.md` und `lineage-record-f54c5977.json` im selben Verzeichnis. Zur Herkunft gilt ausschließlich der Kopf der Eingabedatei: kein Repo genannt; Herkunftsbehauptungen unbelegt. Keine Webrecherche.
+Gelesener Stand: `main` und Lane-HEAD waren zu Beginn identisch: `364cdca090dd1d388cd019a33f5da0f84e7a6665`. Alle Codezeilen unten beziehen sich auf diesen Stand. Quellpaket: `/Users/owner/[privater Owner-Ordner]/astra-inputs-2026-09-15/x-thread-memory-tricks.md` und `lineage-record-f54c5977.json` im selben Verzeichnis. Zur Herkunft gilt ausschließlich der Kopf der Eingabedatei: kein Repo genannt; Herkunftsbehauptungen unbelegt. Keine Webrecherche.
 
 **Abstraktionsentscheid:** Fleet braucht rekonstruierbare Übergaben seiner eigenen Pflichten, weil es deren Lebensdauer steuert; eine allgemeine Gesprächsgedächtnisschicht ist aus diesem Material nicht begründet. Geprüft wurden die benannten Nachfolgefunktionen, Typen, Kontextauswahl, Kartenform und Regelbuchzusammensetzung sowie gezielte Nachfolgetests; Maßstab ist ein ausführbarer Mechanismus mit erkennbarer Grenze, nicht eine gleichlautende Regel.
 

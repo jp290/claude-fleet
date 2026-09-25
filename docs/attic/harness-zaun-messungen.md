@@ -33,7 +33,7 @@ wurde gelöscht. Bei Widerspruch gilt der Code.
   aussagekraeftig macht: Lesen INNERHALB gelang (die Sonde misst also etwas), und SCHREIBEN ausserhalb wurde
   mit `Operation not permitted` mechanisch verweigert (seatbelt, keine Modell-Hoeflichkeit — dieselbe
   Beweisregel wie beim `--allowedTools`-Befund unten). **Konsequenz:** ein Codex-Slot auf dieser Maschine kann
-  `~/private-repo-a` und `~/private-repo-b` lesen, egal in welchem Worktree er laeuft — und was ein
+  `~/[privates Owner-Repo]` und `~/private-repo-b` lesen, egal in welchem Worktree er laeuft — und was ein
   Agent liest, geht als Kontext an seinen Anbieter. Das ist eine VERTRAUENSFRAGE, keine Sandbox-Frage; fuer
   claude/pi gilt dasselbe, nur ist der Anbieter dort einer, dem der Owner vertraut. Zwei weitere Fakten aus
   derselben Messung: `codex exec` verweigert ausserhalb eines git-Repos/trusted directory

@@ -439,6 +439,6 @@ keine Routine.
    - fremde Slots schließen
    - Owner-Memory überschreiben
 2. **Ablage des Konzeptgedächtnisses:** im Repo (getrackt, damit öffentlich; das Repo ist PUBLIC) oder
-   privat (`~/claude-fleet-private/` bzw. ein eigenes Verzeichnis außerhalb)? Vorschlag: privat, mit
+   privat (`~/[privater Owner-Ordner]/` bzw. ein eigenes Verzeichnis außerhalb)? Vorschlag: privat, mit
    öffentlichem Schema.
 3. **Leichtgewicht f9dc8e10 schließen** und die Notizen übernehmen: ja oder nein.

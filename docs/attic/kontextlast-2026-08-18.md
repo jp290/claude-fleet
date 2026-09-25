@@ -41,7 +41,7 @@ Dieselbe Messung über alle Projekt-Transkripte der Maschine, jeweils erster Tur
 | `claude-fleet` Lanes (9 gemessen, 2026-08-16..18) | 96.000 – 105.410 |
 | **`claude-fleet` MAIN** | **98.368** |
 | `private-repo-f`, `private-repo-c` | ~42.000 |
-| `pocock-research`, `private-repo-a` | ~40.500 |
+| `pocock-research`, `[privates Owner-Repo]` | ~40.500 |
 | `private-repo-b` | ~37.900 |
 | `/Users/owner` (nur globale Regeln) | ~46.500 |
 

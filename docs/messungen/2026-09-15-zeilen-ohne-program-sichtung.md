@@ -7,7 +7,7 @@ stand: 2026-09-14
 
 # Sichtung der zwölf Aufträge ohne Program
 
-Grundgesamtheit: `open-tasks.json`, Snapshot vom 2026-09-14, 21:39 laut Brief; Filter `kind == "auftrag"`, fehlende oder leere `programId`, Status pending/queued/sent. Ergebnis: **12**, alle pending. Quelle und aktive Programs liegen unter `/Users/owner/claude-fleet-private/astra-inputs-2026-09-14/`. Kopf = erste 80 Unicode-Zeichen des Texts, Zeilenumbrüche zu Leerzeichen; keine hinzugefügte Ellipse.
+Grundgesamtheit: `open-tasks.json`, Snapshot vom 2026-09-14, 21:39 laut Brief; Filter `kind == "auftrag"`, fehlende oder leere `programId`, Status pending/queued/sent. Ergebnis: **12**, alle pending. Quelle und aktive Programs liegen unter `/Users/owner/[privater Owner-Ordner]/astra-inputs-2026-09-14/`. Kopf = erste 80 Unicode-Zeichen des Texts, Zeilenumbrüche zu Leerzeichen; keine hinzugefügte Ellipse.
 
 Geprüfter main-Stand: `1ab5fa25a86175e9f84dbb8ea20caf82bba6393c`. Die Fundstellen beziehen sich auf diesen Commit; insbesondere wurde `server.ts` mit `git show main:server.ts` gelesen, nicht aus Symbolnamen erschlossen. Gelesen wurden die zwölf Texte, Kartenlücken und Kommentare, alle drei aktiven Program-Intents, die genannten Codebereiche und die einschlägigen bisherigen Messnotizen. Die bestehenden Merge-, Event- und Profilträger sind für diese Aufträge passend; neue parallele Mechanismen sind daraus nicht abzuleiten.
 

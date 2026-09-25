@@ -77,7 +77,7 @@ Ob Credentials im Betrieb getrennt ausgegeben/verwahrt werden, bleibt unbekannt;
 
 ## 3. Reproduzierte Zählung des bereitgestellten Snapshots
 
-**Messung, keine aktuelle Live-Queue:** Eingaben ausschließlich aus `/Users/owner/claude-fleet-private/astra-inputs-2026-09-14/`.
+**Messung, keine aktuelle Live-Queue:** Eingaben ausschließlich aus `/Users/owner/[privater Owner-Ordner]/astra-inputs-2026-09-14/`.
 `active-programs.json`: Fleet-Betrieb `card-valid`, Leichtgewicht und Private-repo-j `manual`; fehlende Politik wird wie im Code gelesen.
 Die folgende Zählung verwendet die Release-Urteile aus `start-plan.json` und ergänzt Program/Hold aus `open-tasks.json`; Zeilen werden je Grund exklusiv zugeordnet, Gründe können sachlich trotzdem gemeinsam vorliegen.
 
@@ -95,7 +95,7 @@ Repo-Belegung im Snapshot: Fleet **2/3**, Biber **0/1**; Biber trägt zusätzlic
 Der Task-Auszug enthält 82 Zeilen: 54 Auftrag, 19 Notiz, 8 Richtung, 1 Betrieb; Status 76 pending, 4 queued, 2 sent.
 Damit sind 28 beratende Zeilen absichtlich außerhalb des Startplans; die 2 gesendeten Aufträge erklären den verbleibenden Abstand zwischen Task-Auszug und Plan.
 Die ältere Zahlenreihe im Text von `247c2f37` (13 freigegeben, 3/3 belegt, 12 Kollisionen an `server.ts`, 21 Notizen/Richtungen) ist für diesen Snapshot **nicht reproduziert** und wird nicht als Messung übernommen.
-Quelltext dieser älteren Behauptung: `python3 -c 'import json; print(next(t["text"] for t in json.load(open("/Users/owner/claude-fleet-private/astra-inputs-2026-09-14/open-tasks.json")) if t["id"]=="247c2f37"))'`.
+Quelltext dieser älteren Behauptung: `python3 -c 'import json; print(next(t["text"] for t in json.load(open("/Users/owner/[privater Owner-Ordner]/astra-inputs-2026-09-14/open-tasks.json")) if t["id"]=="247c2f37"))'`.
 
 Wichtig für „alles Gültige“: `ee47b0f8`, `1832c7eb`, `e4409bf2` haben `cardValid=true` und scheitern dennoch an fehlenden belegten Dateien; umgekehrt sind 7 freigegebene Zeilen `cardValid=false`.
 `rolle.harness: Codex` oder eine Symbol-Lücke allein sind Hinweise, keine harte Sperre (`start-plan.ts:90–120`; ausführbare Gegenfälle `e2e/tasks.ts:6740–6790`).
@@ -106,7 +106,7 @@ Kosten einer Gleichsetzung mit dem UI-Kartenflag: ungeeignete Zeilen freigeben u
 ```sh
 bun - <<'JS'
 import { releaseVerdict } from './start-plan.ts';
-const root='/Users/owner/claude-fleet-private/astra-inputs-2026-09-14/';
+const root='/Users/owner/[privater Owner-Ordner]/astra-inputs-2026-09-14/';
 const plan=await Bun.file(root+'start-plan.json').json();
 const tasks=await Bun.file(root+'open-tasks.json').json();
 const programs=await Bun.file(root+'active-programs.json').json();

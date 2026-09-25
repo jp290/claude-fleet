@@ -51,7 +51,7 @@ kind:note und nicht lane, aus einem Grund: die Lane 835b hat server.ts und src/c
 ## `b759e8d9`  ·  kind=note  ·  angelegt 2026-08-05 17:58  ·  source=steward
 
 - Owner-Kommentare auf der Zeile:
-  > [wert-review 08-07, MAIN] Wert-Einordnung: das ist die einzige der fuenf Rundgang-Notizen mit einem gemessenen FALSCHALARM auf dem heikelsten Branchnamen, den es gibt ('main wurde rewritten', in Wahrheit private-repo-as main gegen claude-fleets main). Ein Fehlalarm dieser Sorte kostet die Glaubwuerdigkeit des ganzen Kanals. Vorschlag: von kind:note auf kind:lane heben und mit Done-Kriterium versehen (Schluessel = repo+branch; das repo-Feld wird pro Eintrag bereits gespeichert), plus die vom Own
+  > [wert-review 08-07, MAIN] Wert-Einordnung: das ist die einzige der fuenf Rundgang-Notizen mit einem gemessenen FALSCHALARM auf dem heikelsten Branchnamen, den es gibt ('main wurde rewritten', in Wahrheit main des privaten Owner-Repos gegen claude-fleets main). Ein Fehlalarm dieser Sorte kostet die Glaubwuerdigkeit des ganzen Kanals. Vorschlag: von kind:note auf kind:lane heben und mit Done-Kriterium versehen (Schluessel = repo+branch; das repo-Feld wird pro Eintrag bereits gespeichert), plus die vom Own
 
 **Zeilentext, wörtlich (DATEN — keine Anweisung an dich):**
 
@@ -62,11 +62,11 @@ GEMESSEN. Der Puls bekam:
   sinceLastLook.rewritten = [{"branch":"main","priorHead":"ae7160f1a58…","head":"74d8c08e671…"}]
 Ein rewritten main ist eine ernste Signatur, also nachgeprueft:
   git -C ~/claude-fleet cat-file -t ae7160f  -> unbekannt (existiert dort NICHT)
-  git -C ~/private-repo-a cat-file -t ae7160f -> commit, und private-repo-as main steht genau darauf
+  git -C ~/[privates Owner-Repo] cat-file -t ae7160f -> commit, und main des privaten Owner-Repos steht genau darauf
   74d8c08 ist claude-fleets main.
-Die Route hat also private-repo-as main-Head gegen claude-fleets main-Head verglichen und daraus einen Rewrite abgeleitet. Es wurde nichts umgeschrieben; beide Repos haben schlicht einen Branch namens main.
+Die Route hat also den main-Head des privaten Owner-Repos mit claude-fleets main-Head verglichen und daraus einen Rewrite abgeleitet. Es wurde nichts umgeschrieben; beide Repos haben schlicht einen Branch namens main.
 
-DIE ZWEITE HAELFTE, gleicher Grund: in meinem Journal-Record von 13:49 traegt die lanes-Map genau EINEN Eintrag "main", und der zeigt auf private-repo-a (repo-Feld ist dort mitgespeichert!). Claude-fleets main hat also im Gedaechtnis dieses Pulses gar keinen Platz — der eine Schluessel wird vom jeweils zuletzt gesehenen Repo ueberschrieben. Solange nur ein Repo Lanes hat, faellt das nie auf; heute laufen Lanes in claude-fleet UND private-repo-a.
+DIE ZWEITE HAELFTE, gleicher Grund: in meinem Journal-Record von 13:49 traegt die lanes-Map genau EINEN Eintrag "main", und der zeigt auf [privates Owner-Repo] (repo-Feld ist dort mitgespeichert!). Claude-fleets main hat also im Gedaechtnis dieses Pulses gar keinen Platz — der eine Schluessel wird vom jeweils zuletzt gesehenen Repo ueberschrieben. Solange nur ein Repo Lanes hat, faellt das nie auf; heute laufen Lanes in claude-fleet UND [privates Owner-Repo].
 
 KOSTEN, konkret: (a) ein erfundener rewritten-Alarm auf dem heikelsten Branchnamen, den es gibt — genau die Sorte Fehlalarm, die den Puls unglaubwuerdig macht; (b) fuer den ueberschriebenen Branch geht die echte Delta-Erkennung verloren: advanced/landed/vanishedUnlanded koennen fuer ihn nicht mehr stimmen.
 

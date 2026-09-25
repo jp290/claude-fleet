@@ -1,6 +1,6 @@
 ---
 frage: Was wurde in der Owner-Session Slot 15 („fable5", Fable 5, 2026-09-04) gewollt, entschieden, gebaut und offen gelassen?
-urteil: Eine reine Denk-Session entwarf das Nachfolge-Konzept „Konzept-B" (dezentrales Agenten-Kollaborationsnetzwerk mit Typisierungs-Trichter, Ledger-Reputation, Stolperdrähten), veröffentlichte es als Claude-Artifact in sechs Revisionen (bis §18), fand im eigenen Bestand die halbe Implementierung (private-repo-v), blieb aber beim beauftragten Sol+GLM-Review zur Hälfte stecken: Sol lief ohne im Transkript sichtbares Ergebnis, GLM startete nie (ZAI_API_KEY fehlt, Owner lieferte ihn nicht mehr).
+urteil: Eine reine Denk-Session entwarf das Nachfolge-Konzept „[privater Konzeptname]" (dezentrales Agenten-Kollaborationsnetzwerk mit Typisierungs-Trichter, Ledger-Reputation, Stolperdrähten), veröffentlichte es als Claude-Artifact in sechs Revisionen (bis §18), fand im eigenen Bestand die halbe Implementierung (private-repo-v), blieb aber beim beauftragten Sol+GLM-Review zur Hälfte stecken: Sol lief ohne im Transkript sichtbares Ergebnis, GLM startete nie (ZAI_API_KEY fehlt, Owner lieferte ihn nicht mehr).
 bereich: [session-summary, konzept, autoritaet]
 belege: [~/.claude/projects/-Users-owner-claude-fleet/5ac3f16c-df24-465a-9322-2b740ac75ed7.jsonl (nur Gesprächstext extrahiert), Artifact-URL https://claude.ai/code/artifact/81807125-d855-406b-8503-21856eafb0b9, Task-Zeile 0c0ee831, Sub-Agent-Report aa193a4a93fdd5dee]
 nicht-gemessen: Tool-Results/Streams der Session (per Auftrag ausgeklammert); ob Sols Review jemals ein Ergebnis lieferte; private-repo-v-Code selbst (nur der Sub-Agent-Report, von der Session selbst als ungeprüft markiert).
@@ -18,7 +18,7 @@ vermutlich Zonenversatz, unsicher). Geschrieben von einer GLM-Lane (pi) am 2026-
 Slot 15 (Modell „Fable 5", gewählt 15:42 per /model; erste inhaltliche Nachricht 17:01) war eine
 Denk-Session zur Frage, was Claude Fleet am Ende werden soll, angestoßen durch Modell- und
 Sicherheitsnachrichten (Astra-Ankündigung, Agenten-Schwarm-Hack, finetuned Opus). Heraus kam das
-Konzept **„Konzept-B"**: ein dezentrales Kollaborationsnetzwerk, in dem Agenten als Pseudonym+Lens+Ledger
+Konzept **„[privater Konzeptname]"**: ein dezentrales Kollaborationsnetzwerk, in dem Agenten als Pseudonym+Lens+Ledger
 typisierte Aussagen (Befund/Einschätzung/Zeugnis) durch einen Verifikations-Trichter tauschen, mit
 Stolperdraht-Wachen auf tragenden Annahmen und Ledger- statt Upvote-Reputation. Ein Such-Agent fand
 in `~/private-repo-v` eine seit Juli lauffähige 6-Phasen-Extraktions-Pipeline, die große Teile des
@@ -58,11 +58,11 @@ mit Modellwechsel auf Opus 5 (19:01) und ging idle.
   durch Ledger-Signale als Reward ersetzt; drei Reputationachsen (Kalibrierung, Ehrlichkeit,
   Dienlichkeit); Betrieb als Schwungrad eigener Trainingsdaten mit Lineage-Diversitätspflicht.
 - **17:35–17:41 · Konzeptpapier.** Owner: „ja mach das!" (plus Artifact-Design-Vorgaben 17:36).
-  Claude veröffentlicht **„Konzept-B — Konzeptpapier v0.1"**
+  Claude veröffentlicht **„[privater Konzeptname] — Konzeptpapier v0.1"**
   (https://claude.ai/code/artifact/81807125-d855-406b-8503-21856eafb0b9), §-nummeriert zum Zitieren,
   mit §14-Vier-Lücken (ownerlose Fälle, Rückruf-Kaskade, proportionale Verifikationstiefe,
   Rechtsrealität) und Register bekannter Feinde; Footer: „Entwurf, normativ wird hiervon nichts ohne
-  deinen Entscheid". Titel „Konzept-B" ausdrücklich Arbeitstitel.
+  deinen Entscheid". Titel „[privater Konzeptname]" ausdrücklich Arbeitstitel.
 - **17:43–17:48 · Review-Auftrag.** Owner will kritische Prüfung durch **sol und GLM**, gleicher
   Brief, blind (Delphi). Claude probt mechanisch: `pi` kennt `gpt-5.6-sol` → Sol läuft (thinking
   high; adversarialer Brief: max. 10 gerankte Befunde, fünf Suchrichtungen u. a. Prior Art,
@@ -145,6 +145,6 @@ mit Modellwechsel auf Opus 5 (19:01) und ging idle.
 2. **ZAI_API_KEY ist ein systematisches Loch:** Jede künftige GLM-Lane oder GLM-Gegencheck scheitert
    so wie diese; bis zur Key-Lösung (per Hand oder per 0c0ee831) GLM-Anteile in Briefs nicht
    einplanen bzw. Key-Übergabe vorab klären.
-3. **„Konzept-B" existiert nur außerhalb des Repos** (Artifact-URL) und ist nirgends promoviert; für
+3. **„[privater Konzeptname]" existiert nur außerhalb des Repos** (Artifact-URL) und ist nirgends promoviert; für
    künftige Briefs zuerst Owner-Entscheid und Kopie/Destillation ins Repo. Slot 15 ist seit 18:28
    inhaltlich idle (Modell inzwischen Opus 5) und damit wiederverwendbar.

@@ -25,7 +25,7 @@ BEFUND, gemessen 2026-08-08 an codex 0.147.0 (nicht aus der Doku, sondern aus de
   - `codex --remote ws://host:port` haengt eine TUI an einen ENTFERNTEN app-server. Das trennt, WO der Agent laeuft, von dort, WO er bedient wird — und ist damit dasselbe Bauteil, das `29cd2610` (Repo auf der Main-Maschine, Container auf der Dev-Maschine) braucht.
   - `CommandExecParams` traegt Terminalgroesse/Resize, dazu Output-Delta-Notifications: ein solcher Slot koennte weiterhin wie eine Pane AUSSEHEN.
 
-DER EIGENTLICHE FUND, und er ist der Grund fuer diese Zeile: das Protokoll stellt Sandbox- und Berechtigungsentscheidungen als ANFRAGEN AN DEN KLIENTEN — `CommandExecutionRequestApprovalParams`, `PermissionsRequestApprovalParams`, `FileSystemSandboxEntry`, `NetworkApprovalContext`. Heute setzt der Adapter `--ask-for-approval never`, weil eine PANE sonst an einer Rueckfrage haengenbleibt, auf die niemand antwortet. Ueber den app-server ist Approval kein Mensch an einem Dialog, sondern eine Anfrage, die der SERVER nach Regel in Millisekunden beantwortet — der Zwang zu `never` faellt weg. Damit koennte Fleet erstmals mechanisch sagen "nein, du liest ~/private-repo-a nicht", statt darauf zu vertrauen, dass das Modell es nicht tut. Gemessen ist naemlich das Gegenteil (CLAUDE.md, 2026-08-08): `--sandbox workspace-write` ist ein Schreib-Zaun, kein Lese-Zaun.
+DER EIGENTLICHE FUND, und er ist der Grund fuer diese Zeile: das Protokoll stellt Sandbox- und Berechtigungsentscheidungen als ANFRAGEN AN DEN KLIENTEN — `CommandExecutionRequestApprovalParams`, `PermissionsRequestApprovalParams`, `FileSystemSandboxEntry`, `NetworkApprovalContext`. Heute setzt der Adapter `--ask-for-approval never`, weil eine PANE sonst an einer Rueckfrage haengenbleibt, auf die niemand antwortet. Ueber den app-server ist Approval kein Mensch an einem Dialog, sondern eine Anfrage, die der SERVER nach Regel in Millisekunden beantwortet — der Zwang zu `never` faellt weg. Damit koennte Fleet erstmals mechanisch sagen "nein, du liest ~/[privates Owner-Repo] nicht", statt darauf zu vertrauen, dass das Modell es nicht tut. Gemessen ist naemlich das Gegenteil (CLAUDE.md, 2026-08-08): `--sandbox workspace-write` ist ein Schreib-Zaun, kein Lese-Zaun.
 
 DREI KOSTEN, die den Zuschnitt bestimmen und nicht wegdiskutiert werden duerfen:
   1. ALLES DAVON IST `[experimental]`. Ein experimentelles Protokoll als tragende Integration bricht bei `npm update`, und zwar STILL. Was auch immer gebaut wird, braucht eine Version-Sonde, die LAUT scheitert, statt in ein Fallback zu rutschen.
@@ -61,7 +61,7 @@ WAS ZU TUN IST, und die Reihenfolge ist die Sicherheit:
   1. Eine neutrale VM laufen lassen (`colima start fleetbuild`) — NICHT fleetguest mitbenutzen.
   2. Ein MINIMALES Image: python3 und sonst nichts. Nicht `claude-fleet:guest` wiederverwenden — das ist ein Gast-Image mit anderem Zweck und 912 MB.
   3. Den Key hineinreichen, ohne ihn ins Image zu backen: `~/.claude-fleet-workers/deepseek.key` als read-only bind-mount, 0600, und NICHT als Env-Variable (ein Env-Wert steht in `docker inspect`).
-  4. Den commitMsg-Worker dieses Repos darauf zeigen lassen (`POST /api/repo-worker`), NUR fuer claude-fleet — `private-repo-a` und `private-repo-b` bleiben unberuehrt.
+  4. Den commitMsg-Worker dieses Repos darauf zeigen lassen (`POST /api/repo-worker`), NUR fuer claude-fleet — `[privates Owner-Repo]` und `private-repo-b` bleiben unberuehrt.
   5. Netz: der Wrapper MUSS api.deepseek.com erreichen. Das ist der einzige Ausgang, den der Container braucht — alles andere zu.
 
 DONE-KRITERIUM: ein Commit ueber den `⌨ commit`-Knopf in claude-fleet erzeugt eine Message vom Wrapper IM CONTAINER (belegt am Subject, nicht an der Abwesenheit eines Fehlers), waehrend ein Commit in einem anderen Repo weiter den Fleet-Default nimmt. Und: der Fehlschlag-Pfad bleibt intakt — stirbt der Container, gelingt der Commit mit `wip:` und `messageFallback: true`.
@@ -109,7 +109,7 @@ bevor sie startet — `clarify first` oder eine Brief-Schaerfung.
 
 ## `29cd2610`  ·  kind=lane  ·  angelegt 2026-08-08 11:42  ·  source=owner
 
-- Analyst (Opus-5, 08-08): **needs-you** — The brief says it of itself — "DIESE ZEILE IST EIN ZIELBILD, KEIN AUFTRAG", with the cut (volume layout, push-back, netloss, repo-dir vs remote URL) explicitly undecided — so there is no finished state to judge. It also reaches well past a worktree: cloning the private-repo-a repo from the MAIN machine over Tailscale and pushing back, Docker volumes and containers on the host, and opening `automa
+- Analyst (Opus-5, 08-08): **needs-you** — The brief says it of itself — "DIESE ZEILE IST EIN ZIELBILD, KEIN AUFTRAG", with the cut (volume layout, push-back, netloss, repo-dir vs remote URL) explicitly undecided — so there is no finished state to judge. It also reaches well past a worktree: cloning the [privates Owner-Repo] repo from the MAIN machine over Tailscale and pushing back, Docker volumes and containers on the host, and opening `automa
 - Analyst sagt kollidiert mit: fleet/260808114656-6e86
 - Analyst-Blocker: ["criterion", "reach"]
 - Ein Brief existiert (model=claude-sonnet-5[1m], edited=False) — NICHT hier abgedruckt, er ist eine Ableitung des Texts.
@@ -119,9 +119,9 @@ bevor sie startet — `clarify first` oder eine Brief-Schaerfung.
 ```text
 [isolation, Zielbild] Ein Repo, das auf der MAIN-Maschine wohnt, auf der Dev-Maschine per Knopf vollstaendig IM CONTAINER fahren — ohne dass seine Dateien je die Host-Platte beruehren.
 
-OWNER 2026-08-08, woertlich: "was ich ab da so richtig interessant faende, waere es so zu bauen das das private-repo-a repo auf meiner mainMaschiene liegt und nicht auf dieser dev maschiene. Ich das repo aber dann ueber den client einfach in einem container auf der dev maschiene, voll laufen lassen kann". Anlass ist der Satz davor: "bevor wir codex vollen zugriff geben sollte ich auch erst den private-repo-a irgendwie abtrennen".
+OWNER 2026-08-08, woertlich: "was ich ab da so richtig interessant faende, waere es so zu bauen das das [privates Owner-Repo] repo auf meiner mainMaschiene liegt und nicht auf dieser dev maschiene. Ich das repo aber dann ueber den client einfach in einem container auf der dev maschiene, voll laufen lassen kann". Anlass ist der Satz davor: "bevor wir codex vollen zugriff geben sollte ich auch erst den [privates Owner-Repo] irgendwie abtrennen".
 
-WARUM DAS EIN ECHTES PROBLEM LOEST UND NICHT NUR HYGIENE IST (gemessen 2026-08-08, Details in CLAUDE.md): Codex' `--sandbox workspace-write` ist ein SCHREIB-Zaun, kein Lese-Zaun. Ein `cat` ausserhalb des Workspace gelang auf dem echten Agenten-Pfad in 0 ms, der Inhalt kam als Modell-Antwort zurueck; Schreiben ausserhalb wurde mechanisch verweigert. Ein Codex-Slot kann heute also `~/private-repo-a` (CVs, Profil) lesen, egal in welchem Worktree er laeuft.
+WARUM DAS EIN ECHTES PROBLEM LOEST UND NICHT NUR HYGIENE IST (gemessen 2026-08-08, Details in CLAUDE.md): Codex' `--sandbox workspace-write` ist ein SCHREIB-Zaun, kein Lese-Zaun. Ein `cat` ausserhalb des Workspace gelang auf dem echten Agenten-Pfad in 0 ms, der Inhalt kam als Modell-Antwort zurueck; Schreiben ausserhalb wurde mechanisch verweigert. Ein Codex-Slot kann heute also `~/[privates Owner-Repo]` (CVs, Profil) lesen, egal in welchem Worktree er laeuft.
 
 DIE FALLE, an der der naheliegende Bau scheitert: der heutige Container-Adapter (`ec7d191`) BIND-MOUNTET den Worktree vom Host. Ein bind-gemounteter Checkout liegt auf der Host-Platte und ist von genau dieser Lese-Reichweite erfasst — der Container sieht dann nach Isolation aus, ohne welche zu sein. Die Arbeitskopie muss in einem VOLUME liegen und der Agent DRINNEN laufen. Wer das uebersieht, baut die Fassade.
 

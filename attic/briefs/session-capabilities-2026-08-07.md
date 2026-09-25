@@ -30,12 +30,12 @@ identisch, die Zeile ist also nicht nur die der Pane-Shell.
 |---|---|---|---|
 | **Lane** (Fleet-Repo) | s1 · `~/claude-fleet.worktrees/fleet-260806231635-0040` | 49410 | `FLEET_SELF_TOKEN='<32hex>'` · `FLEET_SELF_SLOT='1'` |
 | **Lane** (Fleet-Repo) | s2 · `~/claude-fleet.worktrees/fleet-260806234457-e00d` | 72712 | `FLEET_SELF_TOKEN='<32hex>'` · `FLEET_SELF_SLOT='2'` |
-| **Lane** (**fremdes** Repo) | s8 · `~/private-repo-a.worktrees/fleet-260804144705-6c1e` | 37554 | `FLEET_SELF_TOKEN='<32hex>'` · `FLEET_SELF_SLOT='8'` |
+| **Lane** (**fremdes** Repo) | s8 · `~/[privates Owner-Repo].worktrees/fleet-260804144705-6c1e` | 37554 | `FLEET_SELF_TOKEN='<32hex>'` · `FLEET_SELF_SLOT='8'` |
 | **⚙ steward** | s12 · `~/claude-fleet.worktrees/steward` | 99921 | `FLEET_STEWARD_TOKEN='<32hex>'` — **sonst nichts** |
 | **plain, Fleet-Checkout** | s3 · `~/claude-fleet` (der Heartbeat-Slot) | 17202 | *(keine)* |
 | **plain, Fleet-Checkout** | s6 · `~/claude-fleet` | 73751 | *(keine)* |
 | **plain, Fleet-Checkout** | s13 · `~/claude-fleet` | 62679 | *(keine)* |
-| **plain, fremdes Repo** | s10 · `~/private-repo-a` | 20462 | *(keine)* |
+| **plain, fremdes Repo** | s10 · `~/[privates Owner-Repo]` | 20462 | *(keine)* |
 | **plain, fremdes Repo** | s16 · `~/private-repo-b` | 986 | *(keine)* |
 | **plain, kein Repo** | s15 · `~` | 5125 | *(keine)* |
 

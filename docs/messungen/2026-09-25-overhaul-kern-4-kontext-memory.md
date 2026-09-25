@@ -110,7 +110,7 @@
 | Referenz (Maschinen, Modelle, Pakete) | ebenda `reference-*` | 7 (+2 im attic) | wie oben | teils doppelt im Home-Memory |
 | Projektzustand | Fleet: ausgelagert nach `attic/` (24) → `docs/`, Commit-Bodies, `state.sh` | – | per Tool | ok nach der Disziplin vom 25.08. |
 | Home-Memory | `-Users-owner/memory` | 388 Dateien, `MEMORY.md` 17,5 KB | nur Sessions mit cwd `$HOME` | 21 Fleet-bezogene Dateien, die Fleet nie sieht |
-| Andere Projekte | 12 weitere Verzeichnisse | 2–15 Dateien je Projekt (Themen: private-repo-a, private-repo-o, content-pipeline, private-repo-p, private-repo-ad, Spiele …) | nur das jeweilige Projekt | Fleet-Betriebswissen (Präfix `fleet-*`) liegt in ≥ 6 fremden Projekt-Memories |
+| Andere Projekte | 12 weitere Verzeichnisse | 2–15 Dateien je Projekt (Themen: [privates Owner-Repo], private-repo-o, content-pipeline, private-repo-p, private-repo-ad, Spiele …) | nur das jeweilige Projekt | Fleet-Betriebswissen (Präfix `fleet-*`) liegt in ≥ 6 fremden Projekt-Memories |
 | Regeln | `AGENTS.md`, `rulebook/` → `CLAUDE.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` | 31,5 + 78,4 + 8,1 + 4,7 KB | je Harness verschieden | Widersprüche zwischen den Schichten (Befunde 5/6) |
 | Arbeitsstand | `/api/self/memory` (`server.ts#memoryWorkView`) | Projektion | alle Harnesses per HTTP | heißt „Memory“, ist aber ein Zustandsleser |
 | Handwerkswissen | `~/.claude/knowledge/` | 65 Dateien, 397 KB | Claude, per Zeiger | in 2/100 Sessions benutzt |

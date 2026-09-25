@@ -383,10 +383,10 @@ vollständig, formatkonform, 24 s alt gewesen und **nie gelesen worden**.
 ## 5 · Der eine Live-Beweis
 
 Der einzige Send der Geschichte, vollständig rekonstruiert (Audit-Zeile + Transkript
-`~/.claude/projects/…-private-repo-a-worktrees-fleet-260804144705-6c1e/c446cd74….jsonl`):
+`~/.claude/projects/…-[privates Owner-Repo]-worktrees-fleet-260804144705-6c1e/c446cd74….jsonl`):
 
 - **08:39:57** — `steward_send`, Slot 8, `pulse:pulse`. Ziel war eine **Lane in einem anderen Repo**
-  (`private-repo-a`), idle seit 14 299 s, 573 KB Transkript.
+  (`[privates Owner-Repo]`), idle seit 14 299 s, 573 KB Transkript.
 - **08:39:58** — angekommen. DATA-Block korrekt (`+0/-3`, Lane-Zweig), Frage einzeilig.
 - **08:40:22** — Antwort, exakt im vorgeschriebenen Format:
   `[pulse-reply] hilfreich | bestätigt, dass die Research fertig und die zwei Dateien noch

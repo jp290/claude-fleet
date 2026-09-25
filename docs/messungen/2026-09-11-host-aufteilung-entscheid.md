@@ -45,7 +45,7 @@ Methode: Read-only-ssh, `ps`, `ls`, `git`, plus ein `curl` vom `oldmac` aus. Nic
 | eigene Queue-Datei | `~/claude-fleet/fleet.json`, 123 326 B, **mtime 13:44 desselben Tages** |
 | eigene Ledger | `audit.jsonl` 220 Z. · `lane-outcomes.jsonl` 11 Z. · `deploys.jsonl` 5 Z. · `context-receipts.jsonl` 15 Z. |
 | eigener Bestand | 11 tasks · 2 programs · `dispatch: true` |
-| **vier belegte Slots zur Messzeit** | Slot 8 `scrollFix` im dortigen `~/claude-fleet`, zwei in `private-repo-a`, einer in `Dokumente` |
+| **vier belegte Slots zur Messzeit** | Slot 8 `scrollFix` im dortigen `~/claude-fleet`, zwei in `[privates Owner-Repo]`, einer in `Dokumente` |
 
 **`FLEET_LANDS='0'` steht wirklich in der dortigen `.env`**, mit Datum und Begruendung
 („2026-09-05 W2 Controller Slot 7: Folger landet nie (Dual-Host S2)"). `HANDOFF.md` §8 fuehrte das
@@ -124,7 +124,7 @@ der Notiz `lane closed before landing — review and requeue if still wanted`. I
 | `b750f712` (Act B6) | `fleet/260911044507-8055` | `1d39dc7` feat(jd): elf JD-Volltexte woertlich fuer den Korb vom 10.09. |
 | `a2366439` (Act B7) | `fleet/260911080412-137d` | `a4081e4` fix(sweep): drei gemessene Lecks in der Suche schliessen |
 
-Dazu **zehn verwaiste Worktrees** unter `private-repo-a.worktrees/`, alle 0 Commits vor `main`.
+Dazu **zehn verwaiste Worktrees** unter `[privates Owner-Repo].worktrees/`, alle 0 Commits vor `main`.
 
 **Die Ursache ist kein Bug, sondern eine Naht, die niemand zu Ende gedacht hat.** Die Briefs dieser
 Zeilen schreiben ausdruecklich vor: *„Dein Ergebnis wird als ein Diff gelesen und von der MAIN

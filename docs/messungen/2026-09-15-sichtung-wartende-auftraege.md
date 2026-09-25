@@ -95,7 +95,7 @@ Diese lesende Probe prueft den Export gegen die Tabelle und die Startliste; ihre
 python3 - <<'PY'
 import collections, html, json, re
 from pathlib import Path
-source = Path('/Users/owner/claude-fleet-private/astra-inputs-2026-09-15/pending-auftraege.json')
+source = Path('/Users/owner/[privater Owner-Ordner]/astra-inputs-2026-09-15/pending-auftraege.json')
 rows = [r for r in json.loads(source.read_text()) if r['programId'] in
         {'f170dc46e4b026ee34d9392e', 'f9dc8e101bcc10c5e90b0eed'}]
 md = Path('docs/messungen/2026-09-15-sichtung-wartende-auftraege.md').read_text()

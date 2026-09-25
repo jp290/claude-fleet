@@ -11,7 +11,7 @@ stand: 2026-09-15
 
 ## Auswahl und Beweisgrenze
 
-Quelle: `/Users/owner/claude-fleet-private/astra-inputs-2026-09-14/open-tasks.json`, SHA-256 `d95169d12d07f317d72ea5938a77e699f1fadc9618e9a42c5900b884b604669b`; gepruefter Quellstand `fc1c18ad078ae942854c7eca62154d57365951fb`.
+Quelle: `/Users/owner/[privater Owner-Ordner]/astra-inputs-2026-09-14/open-tasks.json`, SHA-256 `d95169d12d07f317d72ea5938a77e699f1fadc9618e9a42c5900b884b604669b`; gepruefter Quellstand `fc1c18ad078ae942854c7eca62154d57365951fb`.
 
 Der exakte Filter `kind === "auftrag" && programId === "f170dc46e4b026ee34d9392e" && ["pending", "queued"].includes(status) && card.valid === false` liefert **15 Zeilen: 11 pending, 4 queued**. Die erwarteten 12 entstehen erst durch den zusaetzlichen, im DONE nicht verlangten Ausschluss der drei gehaltenen Einzelauftraege 1216923f, 88a0bf52 und 54de1085. Hier stehen alle 15; gehaltene Vorlaeufer werden nicht wiederbelebt. Die Titelangabe „acht“ ist ebenfalls nicht der Auswahlfilter.
 
@@ -401,7 +401,7 @@ Der Test liest die Ersatzkoepfe direkt aus dieser Notiz, vergleicht die alten ga
 ```sh
 bun -e '
 import { parseFormattedCard, validateCard, declaresSymbol } from "./card-extract.ts";
-const source = "/Users/owner/claude-fleet-private/astra-inputs-2026-09-14/open-tasks.json";
+const source = "/Users/owner/[privater Owner-Ordner]/astra-inputs-2026-09-14/open-tasks.json";
 const note = "docs/messungen/2026-09-15-karten-schaerfer-lauf-1.md";
 const base = "fc1c18ad078ae942854c7eca62154d57365951fb";
 function git(...args: string[]): string {

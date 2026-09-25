@@ -147,7 +147,7 @@ Deploy-Luecke 15 Commits (ba6177e8 Formatkarten, Dispatch-Fixes, β …), `codeB
   nutzen schon das freie Task-Tool; keine Dispatch-Tuer fuer Lanes). Empfehlung: Rail bewaffnen (= e23a727a + Arming),
   Erdung senken (c71b96eb/ctxPacks), EINE GLM-Paritaetsprobe als normale e2e/server-Lane. Dem Owner noch nicht berichtet
   — das ist dein erster Bericht.
-- **Succession Slot 14 → Slot 6** (private-repo-a) gefahren; der Server-Brief nennt dort faelschlich state.sh/register.sh
+- **Succession Slot 14 → Slot 6** ([privates Owner-Repo]) gefahren; der Server-Brief nennt dort faelschlich state.sh/register.sh
   → Zeile **e04d15f0** (.fleet/init.md je Repo).
 - Aufraeum-Prompt fuer eine Owner-eigene Speicher-Session geschrieben (im Transkript, nicht gefilet). Mac: 8 GB, Swap 2,6 GB.
 
@@ -852,7 +852,7 @@ knapper berichten: „klare Ausgabe, die ich direkt verstehe, und andere Session
   repariert und die eigentliche Luecke stehen lassen.
 
 - **AUF DEM SECOND-HOST SIND ZEHN WORKTREES WEG, UND KEIN LEDGER DIESER MASCHINE WEISS DAS.**
-  `~/private-repo-a.worktrees/` ist leer, `git worktree list` dort zeigt nur noch `main`
+  `~/[privates Owner-Repo].worktrees/` ist leer, `git worktree list` dort zeigt nur noch `main`
   (`6516a1a`). Vorher selbst geprueft, nicht uebernommen: alle zehn `ahead=0` gegen `main`, alle
   `dirty=0`, kein Slot der dortigen `fleet.json` zeigte auf einen (Slots 6/7 sitzen im
   Haupt-Checkout, nicht in einem Worktree). Owner-Wort liegt vor. **Konsequenz fuer die naechste
@@ -1001,7 +1001,7 @@ das die Verteilungstabelle gar nicht zaehlt — ich habe sie NICHT neu gerechnet
 3. **Die Rail-Luecke aus §0 als Queue-Zeile filen**, wenn die Kappe es zulaesst — sie hat heute
    zweimal gekostet und hat kein Zuhause.
 4. **Die 129-Ursache braucht eine eigene Zeile.** `fe050453` deckt sie NICHT ab.
-5. **Zehn verwaiste Worktrees** in `private-repo-a` auf dem Second-host, alle 0 Commits vor `main` —
+5. **Zehn verwaiste Worktrees** in `[privates Owner-Repo]` auf dem Second-host, alle 0 Commits vor `main` —
    Loeschvorgang auf der anderen Maschine, wartet auf ein Owner-Wort.
 6. **Astra steht bei ctx 67,7-68,1 %** und bewegt sich seit Stunden kaum. Codex kompaktiert selbst;
    das 25/30-Band gilt fuer sie NICHT. Trotzdem im Blick behalten.
@@ -1276,7 +1276,7 @@ Der Eingang ist eine bestätigte Dateifläche, und die Tür dafür ist halb: `PO
   - Slot 5 `ce37f5e5` (Zustellung ehrlich, Commit `60155be7`, server.ts/e2e/watch.ts/e2e/pins.ts): idle+sauber+ahead 1, aber NICHT fertig — Gate-Kette hinter dem Suite-Lock von Slot 4, Helper-Vorschau geclaimt; Report folgt. Ueberlappt server.ts/e2e/watch.ts mit Slot 4 (S3d): seriell landen.
   - Slot 1 `db76262c` (Astras Zeile: Task.analysis entfernen): in Arbeit, 0 Commits, 20 Dateien dirty (21:5x).
 - **KLAR SCHIFF, ausgefuehrt:** Orphan-Worktrees `fleet-260908162545-18e2` (0 Commits) und `fleet-260908171345-3941` (2 Commits, zurueckgezogener Auto-Compact-Kandidat) entfernt, BRANCHES BEHALTEN; 26 tote `fleet-e2e-instance-*` in TMPDIR gereapt (~1 023 MB), nur PID-tot; Slot 4s lebende Instanz `71437` und ihr Socket `fleettest71437` NICHT angefasst. Mein Report-Monitor gestoppt. Vorgaengerin Slot 13 war bereits weg (Pane fehlt).
-- **BEWUSST LIEGEN GELASSEN, mit Grund:** `/private/tmp/astra-*` (zwei detached Worktrees von „Astra Review", 07.09., sauber) und `.hub-prototype` (detached, JP 08.09., 1 uncommitted Datei) — fremde Herkunft, nicht meine; Owner-Entscheid. Slot 12 (private-repo-a), Slot 15 („RolleLeichtigkeit", `/usage`-Screen) und Slot 16 (codex, Miniatur-Private-repo-aa-Konzept) sind eigene Arbeit des Owners ausserhalb dieses Programs — nicht geschlossen. Mein eigener Lane-Watch `09834d5a` auf Slot 1 bleibt armiert (keine Self-Unwatch-Route); er feuert einmal in diese Pane und ist dann verbraucht. Program `eec69528` ist auf Slot-NUMMER 7 gebunden (openedAt alt, stale) — nicht diese Session; Rebind ist `bootstrap-main`, Owner-Akt.
+- **BEWUSST LIEGEN GELASSEN, mit Grund:** `/private/tmp/astra-*` (zwei detached Worktrees von „Astra Review", 07.09., sauber) und `.hub-prototype` (detached, JP 08.09., 1 uncommitted Datei) — fremde Herkunft, nicht meine; Owner-Entscheid. Slot 12 ([privates Owner-Repo]), Slot 15 („RolleLeichtigkeit", `/usage`-Screen) und Slot 16 (codex, Miniatur-Private-repo-aa-Konzept) sind eigene Arbeit des Owners ausserhalb dieses Programs — nicht geschlossen. Mein eigener Lane-Watch `09834d5a` auf Slot 1 bleibt armiert (keine Self-Unwatch-Route); er feuert einmal in diese Pane und ist dann verbraucht. Program `eec69528` ist auf Slot-NUMMER 7 gebunden (openedAt alt, stale) — nicht diese Session; Rebind ist `bootstrap-main`, Owner-Akt.
 - **Noch offene Owner-Akte:** Doc-Nachzug der R2-Promotion (§R2 in docs/queue-wellen-2026-09-06.md + rulebook-Fragment); Private-repo-j `9ce08219` auf Eis (5 pending Auftraege, Slot 2 ist heute Supervisor); Verbleib von `/private/tmp/astra-*` und `.hub-prototype`.
 - **Was diese Session inhaltlich hinterlaesst (gelandet, main `c33697d2`):** drei Messnotizen `docs/messungen/2026-09-10-*.md` — Datenschichten-Matrix, GLM-Gegencheck (B1/B2/B4 bestaetigt, B3 zurueckgezogen, B5 halb, drei neue Befunde §3), Sweep Brief/Nachfolge/Client-Poll/e2e. Owner-Artifact „Fleet Datenschichten-Audit 09-09" ist damit in B3/B5 ueberholt.
 
@@ -2343,7 +2343,7 @@ waere teurer als der Fehler. Diese Abwaegung teile ich.
 - Kein anderer lokaler Ref haelt den Commit (`git branch -a --contains` nennt nur `main`).
 
 **Wo der Fix hingehoert: in den Publikationsweg, nicht in einen Rewrite.** Das Publikations-Paket
-(`~/claude-fleet-private/publish-r5-*`, `scrub.py` + `replay.sh`) ist genau dafuer gebaut. Wer
+(`~/[privater Owner-Ordner]/publish-r5-*`, `scrub.py` + `replay.sh`) ist genau dafuer gebaut. Wer
 dieses Repo je veroeffentlicht, muss `9f9f75ad` mitscrubben — das ist der Satz, der ueberleben muss,
 und deshalb steht er hier und nicht nur im Handoff der Autorin.
 
@@ -4479,7 +4479,7 @@ Was es im Repo schon gibt — LESEN, nicht neu erfinden:
   `docs/messungen/2026-09-review-aussen-nach-innen.md` main-direkt schreiben statt auf eine Lane zu
   warten — noch NICHT an sie gesendet. Bleibt es aus, HANDOFF+RETIRE.
 - **Slot 15 „fable5" = eigene Owner-Session (Opus):** wartet seit 09-04 auf GLM-Key-Entscheid
-  (Konzept-B); haelt einen ungeschriebenen Befund (Helfer 22 Check-Namen vs lokal 8). Frage an den
+  ([privater Konzeptname]); haelt einen ungeschriebenen Befund (Helfer 22 Check-Namen vs lokal 8). Frage an den
   Owner ist gestellt, unbeantwortet — NICHT anfassen.
 - **Deploy `6f052d61` gruen** (bootHead = main = c7184f8, 15 Sessions ueberlebt). Helfer
   `secondhostlinux1` ist AKTIV (maxParallelSuites 1); meine fruehere Aussage „nimmt keine Audits

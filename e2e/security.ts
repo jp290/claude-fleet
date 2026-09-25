@@ -213,6 +213,10 @@ const PRE_AUTH_ROUTES = [
   // pending notiz/richtung/betrieb rows awaiting owner disposition, so neither kind can close the
   // other's filing door. It writes into no pane, starts nothing and reaches no foreign slot.
   '= /api/self/tasks',
+  // REVIEW PARK (2026-09-25, server.ts#reviewParkTaskForMain): the exact bound Program-MAIN may
+  // retire one live lane of its own Program into a review candidate. The task comes from the path,
+  // note/hours are the closed body, and mintReviewCandidate keeps the owner's admission rules.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/park$/`,
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
   // Schnitt 3 (2026-09-14) · THE HOLD, the counter-act to a program's release policy. REVIEWED: same
   // principal and same derivation as the release door beside it — non-lane only (409), the program

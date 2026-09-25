@@ -2167,7 +2167,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const phaseInput = (over: Partial<PhaseInput> = {}): PhaseInput => ({
     task: { id: "phasetask", kind: "auftrag", status: "sent", note: null },
     lane: laneFacts(), merge: { inflight: false, start: false, last: null },
-    openAttention: 0, outcome: null, idleThresholdMs: 1_500, report: null, preview: null, ...over,
+    openAttention: 0, outcome: null, idleThresholdMs: 1_500, report: null, preview: null, reviewPark: null, ...over,
   });
   const basisHas = (result: { phaseBasis: string[] }, needle: string): boolean =>
     result.phaseBasis.some((line) => line.includes(needle));
@@ -2263,6 +2263,13 @@ export async function run(ctx: Ctx): Promise<void> {
       && r5other.phase === "READY" && r5other.note === null,
     JSON.stringify({ r4, r5, r5other }));
 
+  const r6p = phaseOf(phaseInput({ task: { id: "t6p", kind: "auftrag", status: "sent", note: null }, lane: null,
+    reviewPark: { id: "abc123def456", expiresAt: 1_790_000_000_000, path: "/tmp/review-park" } }));
+  check("phase R6p: a sent row held by a review candidate is REVIEW_PARKED before the orphan rule, with identity and deadline in its basis",
+    r6p.phase === "REVIEW_PARKED" && r6p.unknown === null
+      && basisHas(r6p, "candidate abc123def456") && basisHas(r6p, "expiresAt=1790000000000"),
+    JSON.stringify(r6p));
+
   const r6 = phaseOf(phaseInput({ task: { id: "t6", kind: "auftrag", status: "sent", note: null }, lane: null }));
   check("phase R6: a sent row owning no live lane is UNKNOWN — never READY and never RUNNING",
     r6.phase === "UNKNOWN" && r6.unknown?.includes("owns no live lane") === true,
@@ -2337,10 +2344,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && !PHASE_RULES.some((rule) => String(rule.phase) === "STALLED" || String(rule.phase) === "BLOCKED"),
     JSON.stringify(stuck));
 
-  const allPhases: Phase[] = ["READY", "RUNNING", "REVIEWABLE", "INTEGRATING", "OWNER_GATE", "CONTINUE", "UNKNOWN"];
-  const sampled = [r0, r1, r2none, r3, r4, r5, r6, r7inflight, r8, r9, r10alive, r11done, r11b, r12, r13, stuck];
-  check("phase vocabulary: the table yields exactly the seven declared values, ids R0..R13 with R11b inserted between R11 and R12, and no eighth value",
-    PHASE_RULES.map((rule) => rule.id).join(",") === "R0,R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,R11b,R12,R13"
+  const allPhases: Phase[] = ["READY", "RUNNING", "REVIEWABLE", "REVIEW_PARKED", "INTEGRATING", "OWNER_GATE", "CONTINUE", "UNKNOWN"];
+  const sampled = [r0, r1, r2none, r3, r4, r5, r6p, r6, r7inflight, r8, r9, r10alive, r11done, r11b, r12, r13, stuck];
+  check("phase vocabulary: the table yields exactly the eight declared values, with R6p before R6 and R11b between R11 and R12",
+    PHASE_RULES.map((rule) => rule.id).join(",") === "R0,R1,R2,R3,R4,R5,R6p,R6,R7,R8,R9,R10,R11,R11b,R12,R13"
       && PHASE_RULES.every((rule) => allPhases.includes(rule.phase))
       && [...new Set(PHASE_RULES.map((rule) => rule.phase))].sort().join(",") === [...allPhases].sort().join(",")
       && sampled.every((r) => allPhases.includes(r.phase)),
@@ -2618,7 +2625,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // not necessarily polled git or alive for that lane yet, so REVIEWABLE, RUNNING and the R10
   // UNKNOWN arm are all legitimate here and pinning one would be pinning the tick's timing.
   const derivedRow = activeFacts?.tasks.rows.find((row) => row.id === matchingTaskId);
-  const sentArms: Phase[] = ["RUNNING", "REVIEWABLE", "INTEGRATING", "OWNER_GATE", "UNKNOWN"];
+  const sentArms: Phase[] = ["RUNNING", "REVIEWABLE", "REVIEW_PARKED", "INTEGRATING", "OWNER_GATE", "UNKNOWN"];
   check("ProgramExecutionView derived phase: the sent row projects a sent-arm phase with an R-numbered basis and never a queue arm",
     !!derivedRow && sentArms.includes(derivedRow.phase)
       && derivedRow.phaseBasis.length > 0 && /^R\d+: /.test(derivedRow.phaseBasis[0] ?? ""),

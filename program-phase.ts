@@ -38,7 +38,7 @@ import {
 } from "./lane-signals";
 
 export type Phase =
-  "READY" | "RUNNING" | "REVIEWABLE" | "INTEGRATING" | "OWNER_GATE" | "CONTINUE" | "UNKNOWN";
+  "READY" | "RUNNING" | "REVIEWABLE" | "REVIEW_PARKED" | "INTEGRATING" | "OWNER_GATE" | "CONTINUE" | "UNKNOWN";
 
 // I1 — the row itself. `kind` and `status` are the closed persisted vocabularies; the reducer
 // compares them as strings so a value this build has never heard of falls through the table
@@ -145,6 +145,9 @@ export interface PhaseInput {
   // "may I land" is answered by the row's nextAction (programExecutionView#owedPreviewDoor), not
   // by a phase.
   preview: { state: "offered" | "running" | "red"; id: string } | null;
+  // I9 — the persisted review candidate holding this row after its lane was deliberately parked.
+  // `path` is carried for the view's resume pointer; the reducer reads only identity + deadline.
+  reviewPark: { id: string; expiresAt: number; path: string } | null;
 }
 
 export interface PhaseCandidate {
@@ -238,6 +241,12 @@ export const PHASE_RULES: readonly PhaseRule[] = [
     id: "R5", phase: "READY",
     prose: "queued — awaiting the dispatch tick",
     holds: (v) => v.task.status === "queued",
+  },
+  {
+    id: "R6p", phase: "REVIEW_PARKED",
+    prose: "sent row is held by a parked review candidate",
+    holds: (v) => v.task.status === "sent" && v.lane === null && v.reviewPark !== null,
+    detail: (v) => `candidate ${v.reviewPark?.id}, expiresAt=${v.reviewPark?.expiresAt}`,
   },
   {
     id: "R6", phase: "UNKNOWN",

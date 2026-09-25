@@ -48,7 +48,14 @@ function paint(target: HTMLElement, describe: (kind: string, id: string) => EntF
   if (!facts) { close(); return; }
   const c = ensureCard();
   c.replaceChildren(line("enttitle", facts.title), line("entmeta", facts.meta),
-    ...facts.lines.slice(0, kind === "file" ? 12 : 4).map((l) => line("entline", l)));
+    ...facts.lines.slice(0, kind === "file" ? 12 : 10).map((l) => {
+      const row = line("entline", l);
+      row.style.whiteSpace = "pre-wrap";
+      row.style.overflowWrap = "anywhere";
+      return row;
+    }));
+  c.style.maxHeight = "calc(100vh - 16px)";
+  c.style.overflowY = "auto";
   if (facts.open) {
     const button = document.createElement("button");
     button.className = "entopen";

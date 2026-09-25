@@ -48,14 +48,14 @@ function node(tag: string, cls: string, text?: string): HTMLElement {
 // confirms exist; what a hover shows is the caller's business. Unset (the guest reader, §7b), the
 // text path below is the plain createTextNode it always was. Module state rather than a parameter
 // threaded through every recursion: mdInto is synchronous, so the hook cannot leak across calls.
-export type MdEntityKind = "task" | "slot" | "program" | "sha" | "file";
+export type MdEntityKind = "task" | "slot" | "program" | "sha" | "file" | "attention" | "report" | "event" | "lane";
 export interface MdOpts { entity?: (kind: MdEntityKind, id: string) => boolean }
 let entityOk: MdOpts["entity"] | null = null;
 
-// 7-12 hex covers task ids (8), program ids (8) and commit shas (7-12, cited as prefixes) — which
-// KIND a hex string names is the caller's answer (entityOk is asked in that order; an unknown
-// string stays plain text, the negative case the view relies on)
-const ENT = /\b([0-9a-f]{7,12})\b|\b([Ss]lots?\s*#?)(\d{1,3}(?:\s*[/,+&]\s*#?\d{1,3})*)\b/g;
+// Full 24-hex ids name programs, attentions, reports or events; 8-hex ids also name task rows,
+// program prefixes and observed commit prefixes. The caller resolves the kind and rejects unknown
+// ids, so a matching shape alone never earns a card.
+const ENT = /\b([0-9a-f]{24}|[0-9a-f]{7,12})\b|\b([Ss]lots?\s*#?)(\d{1,3}(?:\s*[/,+&]\s*#?\d{1,3})*)\b|\b(\d{1,3}[A-Z])\b/g;
 const FILE_REF = /\b((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][\w-]*(?::\d+(?:-\d+)?|#[A-Za-z_$][\w.$-]*))\b/g;
 
 export function entityMatches(s: string, ok: (kind: MdEntityKind, id: string) => boolean):
@@ -70,16 +70,18 @@ export function entityMatches(s: string, ok: (kind: MdEntityKind, id: string) =>
     if (found.some((f) => start >= f.start && start < f.end)) continue;
     if (m[1]) {
       const id = m[1];
-      const kind = id.length === 8 && ok("task", id) ? "task"
+      const kind = id.length === 24
+        ? (["program", "attention", "report", "event"] as const).find((k) => ok(k, id)) ?? null
+        : id.length === 8 && ok("task", id) ? "task"
         : id.length === 8 && ok("program", id) ? "program" : ok("sha", id) ? "sha" : null;
       if (kind) found.push({ kind, id, start, end: start + id.length });
-    } else {
+    } else if (m[2]) {
       let pos = start + m[2].length;
       for (const part of m[3].split(/(\d+)/)) {
         if (/^\d+$/.test(part) && ok("slot", part)) found.push({ kind: "slot", id: part, start: pos, end: pos + part.length });
         pos += part.length;
       }
-    }
+    } else if (m[4] && ok("lane", m[4])) found.push({ kind: "lane", id: m[4], start, end: start + m[4].length });
   }
   return found.sort((a, b) => a.start - b.start);
 }

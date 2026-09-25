@@ -603,7 +603,9 @@ function entityKnown(kind: MdEntityKind, id: string, slot = 0): boolean {
     return !!ref && !!tree && !("error" in tree) && tree.files.includes(ref.path);
   }
   if (kind === "task") return tasksList.some((t) => t.id === id);
-  if (kind === "program") return programsPoll.filter((p) => p.id === id || p.id.startsWith(id)).length === 1;
+  if (kind === "program" && id.length === 8)
+    return programsPoll.filter((p) => p.id.startsWith(id)).length === 1;
+  if (kind === "program") return programsPoll.some((p) => p.id === id);
   if (kind === "attention") return attnRows.some((a) => a.id === id);
   if (kind === "report") return ownerReportRows.some((r) => r.id === id);
   if (kind === "event") return entityEvents.some((e) => e.id === id) || opsRows.some((e) => e.id === id);

@@ -95,6 +95,16 @@ als legal gebaut hat, und kam in 3/3 Laeufen bis zur Holzspitzhacke, mit 0 ungue
 unter 0,001 $ (`docs/messungen/2026-09-24-example-project-s3-live.md`). Ein Fehler zeigte sich in der
 Optionsbeschreibung, nicht in Jev.
 
+Bis 2026-09-25 folgten die Stein-Stufe und die Nacht, jede mit Kippwerten, die vor dem Lauf feststanden
+(`docs/messungen/2026-09-24-example-project-s5a.md`). In fast jedem gescheiterten Lauf lag der Fehler im
+Code um Jev herum: Timing beim Setzen, Material, Rezeptwahl, Geometrie. Zweimal wurde eine Fehlwahl von
+Jev selbst gemessen, und beide Male in derselben Form: eine sichere, aber aufwendigere Option bekam
+wenig Gewicht. Im ersten Fall erhielt `stoecke_craften` 30 Ticks lang 0,12 bis 0,33 gegen
+`stamm_abbauen`. Im zweiten nahm Jev `fliehen` 1-mal von 93 Angeboten, und einmal kostete das den Lauf
+(0,05 gegen `erkunden` 0,95, Zombie). Daraus folgt eine Bauregel: **Ueberleben ist keine Wahl.** Eine
+Gefahr, die ein Lauf nicht verkraftet, wird im Code erzwungen, so wie die Nacht seit S5b-1b. Jev waehlt
+nur dort, wo ein Fehlurteil verkraftbar ist, also genau die dritte Bedingung aus dem ersten Absatz.
+
 Zwei Bauformen folgen aus §3.1: **ein Aufruf je Ereignis mit dem ganzen Frage-Set**, und die
 Umkehrung — **das Gemeinsame in den State, die N Items als N Fragen**. Wie gut Jev bei langen Fragen
 ist, hat niemand gemessen.

@@ -2198,6 +2198,98 @@ export async function run(lc: LaneCtx): Promise<void> {
     await restartSrv();
   }
 
+  // The owner route above and the bound MAIN's self-land door must use the same LaneRef base.
+  // REPO2 has its own verify entry, which lets a guarded self-land reach the actual merge job.
+  {
+    if (!existsSync(`${REPO2}/AGENTS.md`)) {
+      writeFileSync(`${REPO2}/AGENTS.md`, "# Throwaway repository contract\nUse this repository own commands and evidence.\n");
+      spawnSync("git", ["-C", REPO2, "add", "AGENTS.md"]);
+      spawnSync("git", ["-C", REPO2, "commit", "-qm", "root contract"]);
+    }
+    const mainBefore = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    spawnSync("git", ["-C", REPO2, "branch", "overhaul", mainBefore]);
+    const programR = await post("/api/programs", {
+      title: "Overhaul self-land base", intent: "Land a lane on its selected base.",
+      successCriterion: "Overhaul advances and main stays fixed.", nonGoals: [], decisions: [],
+      evidence: [], openQuestions: [],
+    });
+    const program = (await programR.json()) as { program?: { id: string }; error?: string };
+    const programId = program.program?.id ?? "";
+    const confirmR = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
+    const activateR = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+    const bootR = programId ? await post(`/api/programs/${programId}/bootstrap-main`, { cwd: REPO2 }) : null;
+    const boot = bootR ? (await bootR.json()) as { slot?: number; error?: string } : null;
+    const promotionR = programId ? await post(`/api/programs/${programId}/promotion`,
+      { policy: { v: 1, selfLand: "guarded" } }) : null;
+    const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string }> };
+    const mainToken = boot?.slot ? state.slots?.[String(boot.slot)]?.selfToken ?? "" : "";
+    check("integration base self-land setup: a guarded MAIN is bound in the verified repo",
+      programR.ok && confirmR?.ok === true && activateR?.ok === true && bootR?.ok === true
+        && promotionR?.ok === true && /^[0-9a-f]{32}$/.test(mainToken),
+      JSON.stringify({ program: programR.status, confirm: confirmR?.status, activate: activateR?.status,
+        boot: bootR?.status, bootError: boot?.error, promotion: promotionR?.status, tokenLength: mainToken.length }));
+    const taskR = await post("/api/tasks", {
+      text: "guarded self-land on overhaul", repo: REPO2, programId, queue: false, base: "overhaul",
+    });
+    const task = (await taskR.json()) as { task?: { id: string }; error?: string };
+    const rowId = task.task?.id ?? "";
+    const dispatchR = rowId ? await post(`/api/tasks/${rowId}/dispatch`, {}) : null;
+    const dispatch = dispatchR ? (await dispatchR.json()) as { slot?: number; error?: string } : null;
+    const laneSlot = dispatch?.slot ?? 0;
+    const session = (await (await get("/api/sessions")).json()) as {
+      slots: { id: number; cwd: string | null; worktree?: { base?: string } }[];
+    };
+    const lane = session.slots.find((s) => s.id === laneSlot);
+    if (lane?.cwd) {
+      writeFileSync(`${lane.cwd}/overhaul-self-land.txt`, "land on overhaul\n");
+      spawnSync("git", ["-C", lane.cwd, "add", "overhaul-self-land.txt"]);
+      spawnSync("git", ["-C", lane.cwd, "commit", "-qm", "guarded self-land on overhaul"]);
+    }
+    let ready = false;
+    try {
+      ready = await until(async () => {
+        const brief = (await plogRead()).some((e) => e.cwd === lane?.cwd && e.source === "auto");
+        const sx = (await (await get("/api/sessions")).json()) as {
+          now: number; slots: { id: number; lastOutput: number; git: { dirty: number; ahead: number } | null }[];
+        };
+        const current = sx.slots.find((s) => s.id === laneSlot);
+        return brief && !!current?.lastOutput && !!current.git && current.git.dirty === 0
+          && current.git.ahead > 0 && sx.now - current.lastOutput >= 1500;
+      }, { timeoutMs: 30_000, stepMs: 100, what: "overhaul self-land lane done-looking" });
+    } catch { /* setup check below names the missing precondition */ }
+    check("integration base self-land setup: the dispatched lane carries overhaul and is done-looking",
+      taskR.ok && dispatchR?.ok === true && lane?.worktree?.base === "overhaul" && ready,
+      JSON.stringify({ task: taskR.status, dispatch: dispatchR?.status, error: dispatch?.error,
+        laneBase: lane?.worktree?.base, ready }));
+    const landR = rowId && mainToken ? await fetch(`${BASE}/api/self/tasks/${rowId}/land`, {
+      method: "POST", headers: { "x-fleet-self-token": mainToken },
+    }) : null;
+    const land = landR ? (await landR.json()) as { running?: boolean; error?: string } : null;
+    let done = false;
+    try {
+      done = await until(async () => {
+        const rows = (await (await get("/api/tasks")).json()) as { tasks: { id: string; status: string }[] };
+        return rows.tasks.some((r) => r.id === rowId && r.status === "done");
+      }, { timeoutMs: 20_000, stepMs: 100, what: "overhaul self-land row done" });
+    } catch { /* the land check reports the missing terminal state */ }
+    const overhaulAfter = spawnSync("git", ["-C", REPO2, "rev-parse", "overhaul"]).stdout.toString().trim();
+    const mainAfter = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const noteRaw = spawnSync("git", ["-C", REPO2, "notes", "--ref=fleet/land", "show", overhaulAfter]);
+    let note: { base?: string; actor?: { kind?: string } } | null = null;
+    try { note = JSON.parse(noteRaw.stdout.toString()) as { base?: string; actor?: { kind?: string } }; }
+    catch { /* checked below */ }
+    check("integration base self-land: guarded MAIN lands on overhaul, main stays byte-identical, note names base",
+      landR?.ok === true && land?.running === true && done && overhaulAfter !== mainBefore
+        && mainAfter === mainBefore && noteRaw.status === 0 && note?.base === "overhaul"
+        && note.actor?.kind === "main",
+      JSON.stringify({ land: landR?.status, error: land?.error, done, mainBefore, mainAfter,
+        overhaulAfter, note: noteRaw.status === 0 ? note : noteRaw.stderr.toString().slice(0, 120) }));
+    if (boot?.slot) await post(`/api/slots/${boot.slot}/kill`, {});
+    if (programId) await post(`/api/programs/${programId}/complete`, {});
+    spawnSync("git", ["-C", REPO2, "branch", "-D", "overhaul"]);
+  }
+
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed
   const ln2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

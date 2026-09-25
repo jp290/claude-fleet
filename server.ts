@@ -14014,8 +14014,8 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
     const repo = lane.worktree.repo;
     const cwd = lane.cwd;
     const branch = lane.worktree.branch;
-    const integration = await integrationBranch(repo);
-    if (!integration) return json({ error: "cannot resolve the repo's integration branch" }, 409);
+    const integration = await laneBaseRef(lane);
+    if (!integration) return json({ error: "cannot resolve the lane's integration base" }, 409);
     if (integration === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
     // the lane's ref mirror, for the same reason every advanceIntegration call site refreshes it:
     // on a clone lane the root-side refs do not describe this lane until they are synced.
@@ -22934,11 +22934,11 @@ async function catchUpMainToHub(repo: string, main: string): Promise<string | nu
   const adv = await advanceIntegration(repo, main, tip);
   return adv ? `could not fast-forward ${main} onto the hub's ${tip.slice(0, 8)}: ${adv.error}` : null;
 }
-async function writeLandNote(repo: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
+async function writeLandNote(repo: string, base: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
   const tip = mainAfter; // the fast-forwarded integration branch IS the landed commit
   try {
     const note = {
-      branch, mainBefore, mainAfter,
+      branch, base, mainBefore, mainAfter,
       ...(prov.forkSha ? { forkSha: prov.forkSha } : {}),
       ...(prov.conflicted && prov.conflicted.length ? { conflicted: prov.conflicted } : {}),
       ...(prov.resolverDetail ? { resolverDetail: prov.resolverDetail } : {}),
@@ -23010,7 +23010,7 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
     ? { remote: HUB_REMOTE, reason: "no-remote" as const } : undefined;
   if (hubSkipped) audit("hub_skip", undefined,
     `${basename(repo)} ${branch} ${mainAfter.slice(0, 8)}: no remote named ${HUB_REMOTE} in this repo — landed here, no hub`);
-  await writeLandNote(repo, branch, mainBefore, mainAfter,
+  await writeLandNote(repo, main, branch, mainBefore, mainAfter,
     hubPush ? { ...prov, hubPush } : hubSkipped ? { ...prov, hubSkipped } : prov); // best-effort — never throws
   // ACP-17 · THE ONE READER WHO IS NOT AT THE BOARD. Everything written above this line is a PULL
   // surface: the note lives at the commit, the trail row in audit.jsonl, and both are found by
@@ -30366,7 +30366,7 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
     audit("merge_verdict_skip", target.id, `${branch}: ${kind} — ${gate.gate} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS})${suffix}`);
     return;
   }
-  const main = (s.worktree ? await integrationBranch(s.worktree.repo) : null) ?? "the integration branch";
+  const main = (await laneBaseRef(s)) ?? "the integration branch";
   const text = mergeVerdictMessage(kind, outcome, main);
   let acceptance: Acceptance;
   try {
@@ -37834,7 +37834,7 @@ async function laneFacts(): Promise<Record<string, LaneFact>> {
     const base = await laneBaseRef(s);
     let landed = false;
     if (head) {
-      const intRef = await integrationBranch(wt.repo);
+      const intRef = base;
       if (intRef) landed = (await git(wt.repo, "merge-base", "--is-ancestor", head, intRef)).code === 0;
     }
     out[wt.branch] = { head, base, landed, repo: wt.repo };

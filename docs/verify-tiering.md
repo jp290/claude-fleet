@@ -2364,7 +2364,7 @@ enthalten. Stand 2026-09-05 12:45: **3 saubere Laeufe, 0 Family-Fails — sieben
 kommen von selbst (jeder Post-Land-Audit zaehlt mit); die Zahl ist das Kriterium des Programs,
 nicht die Bringschuld dieser Lane.
 
-**REPARIERT (2), 2026-09-26, Fix-Commit `<sha>` (von MAIN einzusetzen).** Das lokale Register
+**REPARIERT (2), 2026-09-26, Fix-Commit `e784913e`.** Das lokale Register
 zaehlte fuer die feste `pi-unfenced`-Prompt-Log-Zeile 0/213 rote Laeufe vom 2026-09-05 bis
 2026-09-20 und 12/54 seit 2026-09-21. Im roten Fork-Lauf war die Zeile `send-uncertain`,
 `attempts:1`, `deliveredAt:null`; der Send-Audit schrieb `acceptance unobservable`, obwohl der

@@ -1,5 +1,6 @@
 # Index der Messnotizen
 
+- S4 Konzeptgedaechtnis, Jev-Messung vorregistriert vor jedem API-Aufruf: vier SHA-256-Siegel (Stichprobe 60 Quellen, Rubrik v1, blindes Gold v1, Treiber), acht Fragen je Quelle (Arm A zwei Choices, Arm B sechs benannte Nouls), Retrieval-Probe `[1,0,0,1,1,0]` mit P@10-Maximum 0,3; Stichprobe schief (1 `kern`); Versand wartet auf Owner-Freigabe (Memory-Schicht). Kein Ergebnis. — docs/messungen/2026-09-26-s4-jev-vorregistrierung.md · bereich: jev,konzeptgedaechtnis,s4,vorregistrierung · stand: 2026-09-26
 - Grok-Prompt zur Session-Marke nach Runde 5 (Owner: "gut, aber ich glaube das können wir nochmal besser"): was die Marke leisten soll, Randbedingungen (19-24 px, reines Schwarz, 13 von 19 Sessions im selben Repo), die bisherigen Runden und die Bitte um neue Richtungen statt eines Urteils; zwei Bilder zum Anhaengen. — docs/messungen/2026-09-26-grok-fragen-session-marke.md
 - Im Sieben-Tage-Fenster 19.–26.09. wurden 1 829 Pane-Ankuenfte bestaetigt und 901 weitere blieben `unobservable`; Lane-Aktionspfade tragen die groesste Byte-Menge. `path=owner` laesst 575 Sends zur Sprecherzuordnung offen; Kontext-Tokens sind nur fuer 63 Send-Snapshots mit belegtem Slot-Modell-Fenster schaetzbar. — docs/messungen/2026-09-26-zustellungen-klassen-kosten.md · bereich: zustellung,kontext,buendelung,rollen · stand: 2026-09-26
 

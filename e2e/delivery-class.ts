@@ -122,6 +122,7 @@ export async function run(): Promise<void> {
     appendFileSync(`${ROOT}/deploys.jsonl`, `${JSON.stringify({ at: Date.now(), id: largeDeployId,
       by: "owner", stage: "boot", ok: true, target: "1".repeat(40), bootHead: "1".repeat(40),
       head: "1".repeat(40), hitTarget: true, bundleStale: false })}\n`);
+    const largeQueueBefore = auditRows().length;
     const largeSub = await fetch(`${BASE}/api/self/watch`, { method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": largeToken },
       body: JSON.stringify({ kind: "deploy", deployId: largeDeployId, idleSec: 0 }) });
@@ -132,7 +133,7 @@ export async function run(): Promise<void> {
       const row = (await (await get("/api/events")).json() as
         { events: { id: string; watchId: string | null; status: string }[] }).events
         .find((r) => r.watchId === largeWatch.watch?.id);
-      return row?.status === "pending" && auditRows().some((a) => a.event === "delivery_bundle_queued"
+      return row?.status === "pending" && auditRows().slice(largeQueueBefore).some((a) => a.event === "delivery_bundle_queued"
         && a.slot === 2 && a.path === "fleet-event") ? row : null;
     }, { timeoutMs: 8_000, what: "large fixture event waits in the ten-second bundle window" });
     const eventRead = await fetch(`${BASE}/api/self/events/${largeEvent.id}`,
@@ -416,13 +417,19 @@ export async function run(): Promise<void> {
     const roleSend = await until(() => auditRows().slice(roleBefore).find((r) =>
       r.event === "send" && r.slot === roleNext && r.path === "bundle") ?? null,
     { timeoutMs: 12_000, what: "role bundle is typed in the successor's session" });
+    const roleOutcome = await until(async () => {
+      const state = (await eventRows()).find((e) => e.id === roleEvent.id)?.status;
+      const uncertain = auditRows().slice(roleBefore).some((r) => r.event === "fleet_event_send_uncertain"
+        && r.slot === roleNext && r.detail?.includes(roleEvent.id));
+      return state === "delivered" || uncertain ? { state, uncertain } : null;
+    }, { timeoutMs: 5_000, what: "role bundle records observed delivery or uncertain paste" });
     check("unattempted role bundle is typed to the current occupant across slots with an audit",
       roleSend.deliveryClass === "buendelbar"
         && auditRows().slice(roleBefore).some((r) => r.event === "delivery_bundle_rerouted"
           && r.slot === roleNext && r.detail?.includes(`from slot=${vacant}`)
           && r.eventId === roleEvent.id)
-        && auditRows().slice(roleBefore).some((r) => r.event === "fleet_event_send_uncertain"
-          && r.slot === roleNext && r.detail?.includes(roleEvent.id)),
+        && (roleSend.acceptance === "observed" ? roleOutcome.state === "delivered"
+          : roleOutcome.uncertain && roleOutcome.state !== "delivered"),
       `from=${vacant} to=${roleNext} acceptance=${roleSend.acceptance}`);
     await post(`/api/slots/${roleNext}/kill`, {});
   } finally {

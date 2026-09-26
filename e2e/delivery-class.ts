@@ -1,12 +1,22 @@
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut, until } from "./harness";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 
 interface SendAudit { event?: string; slot?: number; path?: string; detail?: string; file?: string;
-  deliveryClass?: string; ttlSec?: number; ttlQuelle?: string; cache?: string }
+  ts?: number; dueAt?: number; deliveryClass?: string; ttlSec?: number; ttlQuelle?: string;
+  cache?: string; eventId?: string; acceptance?: string }
+interface DeliveryEvent { id: string; watchId: string | null; status: string; kind: string;
+  receiverSlot: number; receiverOpenedAt: number; payload?: { result?: string } }
 const auditRows = (): SendAudit[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
   .filter(Boolean).flatMap((line) => {
     try { return [JSON.parse(line) as SendAudit]; } catch { return []; }
   });
+const eventRows = async (): Promise<DeliveryEvent[]> =>
+  (await (await get("/api/events")).json() as { events: DeliveryEvent[] }).events;
+const currentSelfToken = (slot: number): string => {
+  const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots?: Record<string, { selfToken?: string }> };
+  return state.slots?.[String(slot)]?.selfToken ?? "";
+};
 
 export async function run(): Promise<void> {
   const marker = `delivery-class-${Date.now()}`;
@@ -26,14 +36,19 @@ export async function run(): Promise<void> {
     const queued = await until(() => auditRows().find((r) => r.event === "delivery_bundle_queued"
       && r.slot === 2 && r.path === "auto" && r.cache === "kalt"),
     { timeoutMs: 8_000, what: "cold auto enters a nonzero bundle window" });
-    check("cold bundle audit names the class and a derived TTL",
-      queued.deliveryClass === "buendelbar" && queued.ttlSec === 300 && queued.ttlQuelle === "unknown",
+    check("cold bundle audit names its delivery class",
+      queued.deliveryClass === "buendelbar", JSON.stringify(queued));
+    check("a recipient without readable assistant usage gets the five-minute TTL, never a guessed hour",
+      queued.ttlSec === 300 && queued.ttlQuelle === "unknown" && queued.cache === "kalt",
       JSON.stringify(queued));
     await Bun.sleep(2200);
     check("a cold bundle waits beyond its two-second configured window for an immediate delivery",
       !(await plogRead()).slice(before).some((p) => p.slot === 2 && p.text.includes(autoText)));
-    const owner = await post("/send", { slot: 2, text: ownerText });
-    check("the immediate Owner delivery succeeds while the cold bundle is waiting", owner.ok, `${owner.status}`);
+    const owner = await Promise.race([post("/send", { slot: 2, text: ownerText }),
+      Bun.sleep(3_000).then(() => null)]);
+    check("the immediate Owner delivery succeeds while the cold bundle is waiting",
+      owner?.ok === true, `${owner?.status ?? "timed out before the bundle window"}`);
+    if (!owner?.ok) return;
     const typed = await until(async () => {
       const rows = (await plogRead()).slice(before).filter((p) => p.slot === 2 && p.text.includes(marker));
       return rows.length === 2 ? rows : null;
@@ -47,8 +62,62 @@ export async function run(): Promise<void> {
       JSON.stringify({ texts: typed.map((p) => p.text), sends: sends.length - sendsBefore,
         path: sends.at(-1)?.path, bundle: bundled.at(-1)?.detail }));
 
+    await stopSrv();
+    const coldState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+      slots: Record<string, { openedAt: number; sessionId: string | null }>;
+      events?: Record<string, unknown>[] };
+    const coldOccupant = coldState.slots["2"]!;
+    const coldIds = [0, 1, 2].map((i) => `${(Date.now() + i).toString(16).padStart(24, "0")}`);
+    coldState.events = [...(coldState.events ?? []), ...coldIds.map((id, i) => ({
+      id, watchId: null, receiverSlot: 2, receiverOpenedAt: coldOccupant.openedAt,
+      receiverSessionId: coldOccupant.sessionId, receiverAddress: { kind: "slot", id: 2 },
+      receiverIdleSec: 0, subjectJobId: `${(Date.now() + i).toString(16).padStart(12, "0")}`,
+      kind: "lane-suite", payload: { result: "green", branch: `fleet/delivery-cold-${i}`,
+        exitCode: 0, fails: [], failCount: 0, tail: "ALL PASS" },
+      createdAt: Date.now(), status: "pending", attempts: 0, deliveredAt: null,
+      acknowledgedAt: null, delivery: "pane",
+    }))];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(coldState, null, 2));
+    const coldSendsBefore = auditRows().filter((r) => r.event === "send" && r.slot === 2).length;
     await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "10" });
-    const largeToken = await paneEnv("s2", "FLEET_SELF_TOKEN") ?? "";
+    const coldQueued = await until(async () => {
+      const rows = await eventRows();
+      return coldIds.every((id) => rows.some((e) => e.id === id && e.status === "pending"))
+        && auditRows().some((r) => r.event === "delivery_bundle_queued" && r.slot === 2
+          && r.path === "fleet-event") ? true : null;
+    }, { timeoutMs: 8_000, what: "three validated green watchless events enter the cold queue" });
+    check("cold three-event fixture is present and queued for the same recipient",
+      coldQueued && coldIds.length === 3);
+    await Bun.sleep(10_300);
+    const coldStill = await eventRows();
+    check("three green events to a cold recipient stay pending beyond the whole window",
+      coldIds.every((id) => coldStill.some((e) => e.id === id && e.status === "pending"))
+        && auditRows().filter((r) => r.event === "send" && r.slot === 2).length === coldSendsBefore,
+      `pending=${coldIds.filter((id) => coldStill.some((e) => e.id === id && e.status === "pending")).length}`);
+    const redAfter = `${(Date.now() >>> 0).toString(16).padStart(8, "0")}${"2".repeat(32)}`;
+    const redAt = Date.now();
+    appendFileSync(`${ROOT}/post-land-audits.jsonl`, `${JSON.stringify({ at: redAt, startedAt: redAt - 1,
+      ms: 1, repo: REPO, main: "main", mainSha: redAfter, result: "red", cmd: "delivery-red-fixture",
+      exitCode: 1, out: "FAIL", checks: { ran: 1, failed: 1 },
+      covers: [{ branch: "fleet/delivery-red", mainAfter: redAfter, at: redAt - 2 }] })}\n`);
+    const redWatch = await post("/api/slots/2/watch", { kind: "audit", repo: REPO,
+      mainAfter: redAfter, idleSec: 0 });
+    const redBody = await redWatch.json() as { watch?: { id: string } };
+    check("red audit fixture is a subscribed audit event", redWatch.ok && !!redBody.watch?.id,
+      `${redWatch.status}`);
+    const redEvent = await until(async () => (await eventRows()).find((e) =>
+      e.watchId === redBody.watch?.id && e.status === "delivered") ?? null,
+    { timeoutMs: 8_000, what: "red audit wakes the cold recipient" });
+    const afterRed = await eventRows();
+    const redSends = auditRows().filter((r) => r.event === "send" && r.slot === 2).slice(coldSendsBefore);
+    check("a red audit bypasses the window and carries all three cold green events in one turn",
+      redEvent.kind === "post-land-audit" && redEvent.payload?.result === "red"
+        && coldIds.every((id) => afterRed.some((e) => e.id === id && e.status === "delivered"))
+        && redSends.length === 1 && redSends[0]?.path === "bundle"
+        && redSends[0]?.deliveryClass === "sofort"
+        && typeof redSends[0]?.ts === "number" && redSends[0].ts - redAt < 10_000,
+      `${redSends.length} sends; green=${coldIds.filter((id) => afterRed.some((e) => e.id === id && e.status === "delivered")).length}; elapsed=${(redSends[0]?.ts ?? 0) - redAt}`);
+    const largeToken = currentSelfToken(2);
     const largeDeployId = ((Date.now() + 2) >>> 0).toString(16).padStart(8, "0");
     appendFileSync(`${ROOT}/deploys.jsonl`, `${JSON.stringify({ at: Date.now(), id: largeDeployId,
       by: "owner", stage: "boot", ok: true, target: "1".repeat(40), bootHead: "1".repeat(40),
@@ -91,6 +160,110 @@ export async function run(): Promise<void> {
       largeCap.includes(largeEvent.id) && largeCap.includes("sofort(owner)")
         && largeCap.includes("buendelbar(fleet-event)")
         && largeCap.includes(stored[0]?.file ?? "missing file"), largeCap.slice(-400));
+
+    const warmSlot = (await (await get("/api/sessions")).json() as
+      { slots: { id: number; cwd: string | null }[] }).slots.find((s) => !s.cwd)?.id ?? 0;
+    const warmOpen = warmSlot ? await post(`/api/slots/${warmSlot}/open`, { cwd: REPO }) : null;
+    const warmToken = warmOpen?.ok ? currentSelfToken(warmSlot) : "";
+    check("warm delivery fixture opens one separate Claude recipient with a self token",
+      !!warmOpen?.ok && !!warmToken, `${warmSlot} ${warmOpen?.status}`);
+    await stopSrv();
+    const warmState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+      slots: Record<string, { cwd: string; sessionId: string | null }> };
+    const warmOccupant = warmState.slots[String(warmSlot)]!;
+    warmOccupant.sessionId ??= "e2e0feed-0000-4000-8000-000000000126";
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(warmState, null, 2));
+    const projectRoot = `${ROOT}/delivery-cache-projects`;
+    const projectDir = `${projectRoot}/${warmOccupant.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(projectDir, { recursive: true });
+    const usageFile = `${projectDir}/${warmOccupant.sessionId}.jsonl`;
+    let usageSerial = 0;
+    const writeUsage = (tier: "1h" | "5m", ageSec: number): number => {
+      const at = Date.now() - ageSec * 1000;
+      writeFileSync(usageFile, `${JSON.stringify({ type: "assistant", timestamp: new Date(at).toISOString(),
+        message: { id: `delivery-usage-${++usageSerial}`, model: "claude-opus-5-5[1m]",
+          usage: { input_tokens: 100, cache_creation_input_tokens: 1, cache_read_input_tokens: 200,
+            cache_creation: { ephemeral_1h_input_tokens: tier === "1h" ? 1 : 0,
+              ephemeral_5m_input_tokens: tier === "5m" ? 1 : 0 } } } })}\n`);
+      return at;
+    };
+    let deploySerial = Date.now() >>> 0;
+    const subscribeGreen = async (): Promise<string> => {
+      const id = (deploySerial++).toString(16).padStart(8, "0");
+      appendFileSync(`${ROOT}/deploys.jsonl`, `${JSON.stringify({ at: Date.now(), id, by: "owner",
+        stage: "boot", ok: true, target: "1".repeat(40), bootHead: "1".repeat(40),
+        head: "1".repeat(40), hitTarget: true, bundleStale: false })}\n`);
+      const res = await post(`/api/slots/${warmSlot}/watch`, { kind: "deploy", deployId: id, idleSec: 0 });
+      const body = await res.json() as { watch?: { id: string } };
+      check(`green deploy fixture ${id} subscribes`, res.ok && !!body.watch?.id, `${res.status}`);
+      return body.watch?.id ?? "";
+    };
+    writeUsage("1h", 0);
+    await restartSrv({ FLEET_CLAUDE_PROJECTS_DIR: projectRoot, FLEET_DELIVERY_BUNDLE_SEC: "5" });
+    const warmSendsBefore = auditRows().filter((r) => r.event === "send" && r.slot === warmSlot).length;
+    const warmWatchIds = await Promise.all([subscribeGreen(), subscribeGreen(), subscribeGreen()]);
+    const warmPending = await until(async () => {
+      const rows = await eventRows();
+      return warmWatchIds.every((id) => rows.some((e) => e.watchId === id && e.status === "pending"))
+        && auditRows().some((r) => r.event === "delivery_bundle_queued" && r.slot === warmSlot
+          && r.ttlQuelle === "1h") ? true : null;
+    }, { timeoutMs: 8_000, what: "three warm green events are queued" });
+    check("warm green fixture has three pending events under a one-hour Usage record", warmPending);
+    const warmQueued = auditRows().find((r) => r.event === "delivery_bundle_queued"
+      && r.slot === warmSlot && r.ttlQuelle === "1h")!;
+    await Bun.sleep(1_500);
+    check("three green events to an idle warm recipient do not arrive before the window",
+      auditRows().filter((r) => r.event === "send" && r.slot === warmSlot).length === warmSendsBefore
+        && warmWatchIds.every((id) => id !== ""),
+      `queued=${warmWatchIds.length} sends=${auditRows().filter((r) => r.event === "send" && r.slot === warmSlot).length - warmSendsBefore}`);
+    const warmDone = await until(async () => {
+      const rows = await eventRows();
+      return warmWatchIds.every((id) => rows.some((e) => e.watchId === id && e.status === "delivered"))
+        ? rows.filter((e) => warmWatchIds.includes(e.watchId ?? "")) : null;
+    }, { timeoutMs: 9_000, what: "three green events flush after the warm window" });
+    const warmSends = auditRows().filter((r) => r.event === "send" && r.slot === warmSlot)
+      .slice(warmSendsBefore);
+    check("three green events to one idle warm recipient flush as one send after the window",
+      warmDone.length === 3 && warmSends.length === 1 && warmSends[0]?.path === "bundle"
+        && warmSends[0]?.deliveryClass === "buendelbar"
+        && warmQueued.dueAt !== undefined && (warmSends[0]?.ts ?? 0) >= warmQueued.dueAt - 100,
+      `events=${warmDone.length} sends=${warmSends.length} due=${warmQueued.dueAt} sent=${warmSends[0]?.ts}`);
+    for (const e of warmDone) await fetch(`${BASE}/api/self/events/${e.id}/ack`, { method: "POST",
+      headers: { "x-fleet-self-token": currentSelfToken(warmSlot) } });
+
+    for (const tier of ["1h", "5m"] as const) {
+      const edgeSec = tier === "1h" ? 3300 : 240;
+      const usageAt = writeUsage(tier, edgeSec - 4);
+      await restartSrv({ FLEET_CLAUDE_PROJECTS_DIR: projectRoot, FLEET_DELIVERY_BUNDLE_SEC: "10" });
+      const edgeBefore = auditRows().length;
+      const edgeWatch = await subscribeGreen();
+      const edgeQueued = await until(() => auditRows().slice(edgeBefore).find((r) =>
+        r.event === "delivery_bundle_queued" && r.slot === warmSlot && r.path === "fleet-event") ?? null,
+      { timeoutMs: 5_000, what: `${tier} event enters the edge-limited window` });
+      const edgeAt = usageAt + edgeSec * 1000;
+      check(`${tier} Usage calculates the ${edgeSec}-second cache edge before the ten-second window`,
+        edgeQueued.ttlSec === (tier === "1h" ? 3600 : 300)
+          && edgeQueued.ttlQuelle === tier && edgeQueued.cache === "warm"
+          && typeof edgeQueued.dueAt === "number"
+          && edgeQueued.dueAt <= edgeAt && edgeQueued.dueAt >= edgeAt - 1000
+          && edgeQueued.dueAt < (edgeQueued.ts ?? 0) + 10_000,
+        JSON.stringify({ tier: edgeQueued.ttlQuelle, ttlSec: edgeQueued.ttlSec,
+          queuedAt: edgeQueued.ts, dueAt: edgeQueued.dueAt, edgeAt }));
+      const edgeEvent = await until(async () => (await eventRows()).find((e) =>
+        e.watchId === edgeWatch && e.status === "delivered") ?? null,
+      { timeoutMs: 13_000, what: `${tier} cache-edge delivery resolves` });
+      const edgeSends = auditRows().slice(edgeBefore).filter((r) => r.event === "send" && r.slot === warmSlot);
+      check(`${tier} edge delivers the green event before the full ten-second bundle window`,
+        edgeEvent.kind === "deploy-terminal" && edgeSends.length === 1
+          && edgeSends[0]?.path === "bundle"
+          && (edgeSends[0]?.ts ?? Infinity) < (edgeQueued.ts ?? 0) + 10_000
+          && (edgeSends[0]?.ts ?? Infinity) <= edgeAt + 1000,
+        `sends=${edgeSends.length} queued=${edgeQueued.ts} sent=${edgeSends[0]?.ts} edge=${edgeAt}`);
+      await fetch(`${BASE}/api/self/events/${edgeEvent.id}/ack`, { method: "POST",
+        headers: { "x-fleet-self-token": currentSelfToken(warmSlot) } });
+    }
+    await post(`/api/slots/${warmSlot}/kill`, {});
+    rmSync(projectRoot, { recursive: true, force: true });
     await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
 
     const vacant = (await (await get("/api/sessions")).json() as
@@ -236,20 +409,21 @@ export async function run(): Promise<void> {
       { slots: { id: number; cwd: string | null }[] }).slots
       .find((s) => !s.cwd && s.id !== vacant)?.id ?? 0;
     const roleSuccessor = roleNext ? await post(`/api/slots/${roleNext}/open`,
-      { cwd: REPO, label: "Orchestratorin delivery successor" }) : null;
+      { cwd: REPO, label: "Orchestratorin delivery successor", harness: "pi" }) : null;
     check("role bundle fixture: the successor occupies a different slot",
       roleKilled.ok && !!roleSuccessor?.ok && roleNext !== vacant,
       `${roleKilled.status}/${roleSuccessor?.status} slot=${roleNext}`);
-    const roleReceipt = await until(async () =>
-      (await (await get("/api/events")).json() as
-        { events: { id: string; status: string; receiverSlot: number; receiverOpenedAt: number }[] }).events
-        .find((r) => r.id === roleEvent.id && r.status === "delivered") ?? null,
-    { timeoutMs: 12_000, what: "role watch reaches successor's session" });
-    check("unattempted role bundle follows the current occupant across slots with an audit",
-      roleReceipt.receiverSlot === roleNext && roleReceipt.receiverOpenedAt !== roleEvent.receiverOpenedAt
+    const roleSend = await until(() => auditRows().slice(roleBefore).find((r) =>
+      r.event === "send" && r.slot === roleNext && r.path === "bundle") ?? null,
+    { timeoutMs: 12_000, what: "role bundle is typed in the successor's session" });
+    check("unattempted role bundle is typed to the current occupant across slots with an audit",
+      roleSend.deliveryClass === "buendelbar"
         && auditRows().slice(roleBefore).some((r) => r.event === "delivery_bundle_rerouted"
-          && r.slot === roleNext && r.detail?.includes(`from slot=${vacant}`)),
-      `from=${vacant} to=${roleNext}`);
+          && r.slot === roleNext && r.detail?.includes(`from slot=${vacant}`)
+          && r.eventId === roleEvent.id)
+        && auditRows().slice(roleBefore).some((r) => r.event === "fleet_event_send_uncertain"
+          && r.slot === roleNext && r.detail?.includes(roleEvent.id)),
+      `from=${vacant} to=${roleNext} acceptance=${roleSend.acceptance}`);
     await post(`/api/slots/${roleNext}/kill`, {});
   } finally {
     if (composerMode) writeFileSync(composerMode, "normal\n");

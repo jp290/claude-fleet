@@ -787,6 +787,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     receiverSessionId: e.receiverSessionId ?? null, receiverIdleSec: e.receiverIdleSec!,
     createdAt: e.createdAt, status: e.status as FleetEventStatus, attempts: e.attempts!,
     deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
+    ...(address !== undefined ? { receiverAddress: address as FleetEventBase["receiverAddress"] } : {}),
     ...(e.delivery !== undefined ? { delivery: e.delivery as "pane" | "inbox" } : {}),
     ...(recovery ? { recovery } : {}),
   };

@@ -8965,8 +8965,11 @@ function scheduleDeliveryBundle(key: string, bundle: DeliveryBundle): void {
 }
 function bundleDeadline(bundle: DeliveryBundle, s: Slot, now: number): number {
   const cache = deliveryCacheState(s, now);
+  // A timer woken exactly at the conservative cache edge can run a few ms late; reserve one second
+  // of its grace so the last warm bundle is actually sent before the edge, not held as newly cold.
+  const warmEdge = cache.edgeAt === null ? null : cache.edgeAt - 1000;
   const first = Math.min(...bundle.entries.map((entry) =>
-    cache.cache === "warm" ? Math.min(entry.queuedAt + DELIVERY_BUNDLE_SEC * 1000, cache.edgeAt!)
+    cache.cache === "warm" ? Math.min(entry.queuedAt + DELIVERY_BUNDLE_SEC * 1000, warmEdge!)
       : entry.options.subscribedWatch ? entry.queuedAt + DELIVERY_BUNDLE_SEC * 1000 : Infinity));
   return Math.max(first, bundle.retryAt);
 }
@@ -9140,7 +9143,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   } else {
   const now = Date.now();
   const cache = deliveryCacheState(s, now);
-  const deadline = cache.cache === "warm" ? Math.min(now + DELIVERY_BUNDLE_SEC * 1000, cache.edgeAt!)
+  const deadline = cache.cache === "warm" ? Math.min(now + DELIVERY_BUNDLE_SEC * 1000, cache.edgeAt! - 1000)
     : options.subscribedWatch ? now + DELIVERY_BUNDLE_SEC * 1000 : Infinity;
   return new Promise((resolve, reject) => {
     let bundle = deliveryBundles.get(key);

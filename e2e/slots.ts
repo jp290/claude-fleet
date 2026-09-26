@@ -1146,7 +1146,8 @@ export async function run(): Promise<void> {
   let cliSrcError = "", indexSrcError = "";
   const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
   try {
-    cliSrc = readFileSync(`${sourceRoot}/src/client.ts`, "utf8");
+    cliSrc = ["client", "attention", "devices", "composer", "board", "queue"]
+      .map((name) => readFileSync(`${sourceRoot}/src/${name}.ts`, "utf8")).join("\n");
   } catch (e) { cliSrcError = e instanceof Error ? e.message : String(e); }
   try {
     indexSrc = readFileSync(`${sourceRoot}/public/index.html`, "utf8");
@@ -2127,7 +2128,7 @@ export async function run(): Promise<void> {
 
     const deps = cut("const isActive = ", "// A LANE'S ONE ADDRESS")
       + cut("function projectOf(", "// Eight hues");
-    const stackSrc = cut("function stacksOf()", "function startRename(");
+    const stackSrc = cut("function stacksOf()", "export function startRename(");
     type FxSlot = {
       id: number; cwd: string | null; lastOutput: number; openedAt?: number; repo?: string | null;
       worktree?: { repo: string; branch: string; anchor?: LaneAnchor } | null;

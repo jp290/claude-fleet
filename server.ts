@@ -6624,7 +6624,12 @@ async function worktreeRisk(repo: string, path: string, preservedBy?: string): P
   // branch. Measured against the integration branch — NOT the primary's HEAD, which may be
   // parked off it — so a lane landed via a ref-advance still reads as merged/safe-to-remove.
   // @{push} is unresolvable for a branch with no upstream — same fallback as before.
-  const intRef = preservedBy ?? (await integrationBranch(repo)) ?? "HEAD";
+  // A lane's recorded base (preservedBy) and the repo's CURRENT integration branch can differ —
+  // the base is fixed at fork, the repo's branch is configurable later. Merged into EITHER means
+  // the commits are preserved; the recorded base still scopes the lane's own commits below.
+  const repoRef = await integrationBranch(repo);
+  const intRef = preservedBy ?? repoRef ?? "HEAD";
+  const preservingRefs = [...new Set([intRef, ...(repoRef ? [repoRef] : [])])];
   const unpushed = await git(path, "log", "--no-color", "@{push}..", "--format=%h%x09%ct%x09%s");
   if (unpushed.code === 0) {
     unpushedCommits = parseCommitLog(unpushed.out);
@@ -6632,8 +6637,11 @@ async function worktreeRisk(repo: string, path: string, preservedBy?: string): P
     const br = await git(path, "rev-parse", "--abbrev-ref", "HEAD");
     const branch = br.code === 0 ? br.out : "";
     const onRemote = await git(path, "branch", "-r", "--contains", "HEAD");
-    const merged = branch ? await git(repo, "branch", "--merged", intRef, "--list", branch) : { out: "" };
-    if (!onRemote.out.trim() && !merged.out.trim()) {
+    let merged = false;
+    for (const ref of branch ? preservingRefs : []) {
+      if ((await git(repo, "branch", "--merged", ref, "--list", branch)).out.trim()) { merged = true; break; }
+    }
+    if (!onRemote.out.trim() && !merged) {
       // scope to the lane's OWN commits (HEAD not in the integration branch's base),
       // else a no-upstream lane over-reports all of main's history as "unpushed"
       const baseSha = (await git(repo, "rev-parse", intRef)).out;

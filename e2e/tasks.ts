@@ -1637,6 +1637,24 @@ export async function run(ctx: Ctx): Promise<void> {
       && !!trail[0]?.detail?.includes("claude-opus-5") && !!trail[0]?.detail?.includes("gpt-6-sol")
       && !!trail[1]?.detail?.includes("gpt-6-sol") && !!trail[1]?.detail?.endsWith("->null"), JSON.stringify(trail));
 
+    const policyRow = ((await (await post("/api/tasks", {
+      text: "model supersession queue fixture", queue: true,
+      harness: "codex", model: "gpt-5.6-sol", effort: "high",
+    })).json()) as { task: SpawnRow }).task;
+    const policyDigest = async (): Promise<{ modelSuperseded?: { id: string; supersededBy?: string } } | undefined> =>
+      ((await (await get("/api/sessions")).json()) as { tasks: { id: string; modelSuperseded?: { id: string; supersededBy?: string } }[] })
+        .tasks.find((task) => task.id === policyRow.id);
+    const oldPolicy = await policyDigest();
+    check("queue row: gpt-5.6-sol is marked superseded with gpt-6-sol as its successor",
+      oldPolicy?.modelSuperseded?.id === "gpt-5.6-sol" && oldPolicy.modelSuperseded.supersededBy === "gpt-6-sol",
+      JSON.stringify(oldPolicy));
+    const currentPolicySet = await set(policyRow.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    const currentPolicy = await policyDigest();
+    check("same queue row: gpt-6-sol clears the superseded marker without refusing the choice",
+      currentPolicySet.status === 200 && currentPolicy !== undefined && currentPolicy.modelSuperseded === undefined,
+      JSON.stringify({ status: currentPolicySet.status, currentPolicy }));
+    await post(`/api/tasks/${policyRow.id}/delete`, {});
+
     const sent = ((await (await post("/api/tasks", { text: "spawn replacement sent refusal", queue: false })).json()) as { task: SpawnRow }).task;
     const starting = post(`/api/tasks/${sent.id}/dispatch`, {});
     const midDispatch = await refusal(sent.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });

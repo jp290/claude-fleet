@@ -2,7 +2,7 @@ import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
 import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness } from "./model-register";
+import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel } from "./model-register";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServerWebSocket } from "bun";
@@ -4581,6 +4581,7 @@ const MAX_TASK_TEXT = 20_000;
 // blockers and staleness, enough to GROUP and label a row. It is gone with its producer, and so is
 // the per-row git process its staleness arm asked for on every poll.
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
+  & { modelSuperseded?: { id: string; supersededBy?: string } }
   & Partial<Pick<Task, "slot" | "note" | "repo" | "programId" | "review" | "files" | "filesOrigin" | "cluster"
     | "variants" | "variantOf" | "variantIndex" | "variantDecision" | "variantCompareArmedAt"
     | "variantCompare" | "hold">>
@@ -4612,8 +4613,12 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & Partial<Pick<Task, "touched">>;
 function taskDigest(t: Task): TaskDigest {
   const view = taskView(t);
+  const spawn = t.spawn;
+  const modelSuperseded = spawn?.model
+    ? supersededModel(harnessOf(spawn.harness).id, spawn.model) : undefined;
   return {
     id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
+    ...(modelSuperseded ? { modelSuperseded } : {}),
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
@@ -40214,6 +40219,7 @@ Bun.serve<WSData>({
           const inb = s.cwd ? inboundToday(s.id, pollNow) : null;
           const paneModel = s.cwd ? paneModelInfo.get(s.id) : undefined;
           const parked = parkedSendView(s);
+          const modelSuperseded = s.cwd ? supersededModel(harnessOf(s.harness).id, s.model) : undefined;
           return {
             id: s.id, cwd: s.cwd, label: s.label, openedAt: s.openedAt,
             // Canonical checkout identity, separate from cwd: a main session may live in a
@@ -40227,6 +40233,7 @@ Bun.serve<WSData>({
             // wherever a transcript names a model would hide a push's read-back — right after a push
             // the file still names the old request, and modelPushedAt is exactly how its landing is seen.
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
+            ...(modelSuperseded ? { modelSuperseded } : {}),
             // the lane's address (laneNameOf, S3c); omitted for a MAIN and a pre-letter lane;
             // spelled `name: name`, not shorthand: e2e/pins.ts derives the emitted keys from `key:`
             ...(() => { const name = laneNameOf(s); return name ? { name: name } : {}; })(),

@@ -272,6 +272,7 @@ interface SlotInfo {
   // widened, none of them read by the board before. `model` is the spawn-time model the server
   // already puts on the row; `browser`/`context` are omitted unless chosen.
   model?: string | null; browser?: true; context?: { window: number; compactAt: number };
+  modelSuperseded?: { id: string; supersededBy?: string };
   // "no-agent" is the one value that matters: a typeable pane with nothing behind it. null/absent
   // = the slow tick has not reached this slot, which is not an answer and must not paint one.
   agent?: "alive" | "no-agent" | "no-pane" | "unprobed" | null;
@@ -353,6 +354,7 @@ const agentHarnesses = (): HarnessInfo[] => harnesses.filter((h) => (h.role ?? "
 // owner|intake|steward after ACP-23 added „[Zitat entfernt]“, and the `as` cast in refresh hid it, so every
 // MAIN-filed row rendered as "owner". A new producer now fails tsc in taskSourceLabel's switch.
 interface TaskInfo { id: string; source: ServerTask["source"];
+  modelSuperseded?: { id: string; supersededBy?: string };
   // MIRRORS server.ts's TASK_KINDS — and it is a claim about a foreign surface, not a type the
   // server hands us. It said `"lane" | "note"` for the whole life of the four-kind rename
   // (dd0c9a8): every `kind === "note"` below still compiled and was simply false forever, so the
@@ -433,7 +435,8 @@ let modelRegistry: (ModelEntry & { availability: ModelAvailability })[] = [];
 function modelNotice(harness: string, id: string): string {
   const entry = modelRegistry.find((row) => row.harness === harness && row.id === id);
   if (!entry) return "";
-  const parts = [entry.status === "superseded" ? `superseded → ${entry.supersededBy}` : ""];
+  const parts = [entry.status === "superseded"
+    ? `superseded${entry.supersededBy ? ` → ${entry.supersededBy}` : ""}` : ""];
   if (harness === "codex" && entry.availability !== "available") parts.push(entry.availability);
   return parts.filter(Boolean).join(" · ");
 }
@@ -8386,7 +8389,7 @@ function gfStep3(win: HTMLElement, body: HTMLElement) {
     for (const s of [...sel.mains, ...sel.lanes].slice(0, 7)) {
       const a = el("div", "gfag");
       a.append(el("span", "gfid mono", String(s.id)), el("span", "", s.label || baseName(s.cwd || sel.repo)),
-        el("span", "gfhm", `${s.harness ?? "default"} · ${s.model || "—"}`));
+        el("span", "gfhm", `${s.harness ?? "default"} · ${s.model || "—"}${s.modelSuperseded ? " · ⚠ superseded" : ""}`));
       who.append(a);
     }
     const rest = sel.mains.length + sel.lanes.length - 7;
@@ -11999,6 +12002,8 @@ function qTaskSummary(t: TaskInfo, text: string, now: number,
   const source = taskSourceLabel(t);
   const variant = qVariantLine(t, tasksList);
   const chips: QChip[] = [];
+  if (t.modelSuperseded) chips.push({ text: `⚠ ${t.modelSuperseded.id}`, cls: "need",
+    title: `superseded model${t.modelSuperseded.supersededBy ? ` → ${t.modelSuperseded.supersededBy}` : ""}` });
   if (t.status === "sent" && t.slot) chips.push({ text: `▶ slot ${t.slot}`, cls: "run" });
   if (t.hold) chips.push({ text: "⏸ held", cls: "hold",
     title: `stopped by the MAIN in slot ${t.hold.slot}: ${t.hold.grund ?? "(no reason given)"}` });

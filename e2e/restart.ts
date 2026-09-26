@@ -758,7 +758,7 @@ export async function run(ctx: Ctx): Promise<void> {
       // (printf ... > models.json), so "glm-5.3-flash" legitimately appears in it on every spawn —
       // only the --model flag's own quoted value says which tier this pane runs
       && !piZaiDefaultCmd.includes("--model 'glm-5.3-flash'")
-      && JSON.stringify(piZaiCatalogIds) === JSON.stringify(["glm-5.3", "glm-5.3-flash"]),
+      && piZaiCatalogIds.length === 2 && piZaiCatalogIds[0] === "glm-5.3" && piZaiCatalogIds[1] === "glm-5.3-flash",
     `${piZaiDefaultCmd.slice(-200)} / ${JSON.stringify(piZaiCatalogIds)}`);
 
   const PI_OX_PERSIST_SLOT = 13;

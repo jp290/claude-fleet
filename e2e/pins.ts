@@ -10695,10 +10695,11 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && FLEET_DEFAULT_MODEL === MODEL_DEFAULTS.main.id
       && MODEL_DEFAULTS.worker.id === "gpt-6-sol" && MODEL_DEFAULTS.denk.id === "gpt-6-astra",
     JSON.stringify(defaults));
-  pin("model register: superseded ids have registered current successors and remain in adapter menus",
+  pin("model register: every stated successor is current and superseded ids remain in adapter menus",
     MODEL_REGISTER.filter((entry) => entry.status === "superseded").every((entry) =>
-      !!entry.supersededBy && modelEntry(entry.harness, entry.supersededBy)?.status === "current"
+      (!entry.supersededBy || modelEntry(entry.harness, entry.supersededBy)?.status === "current")
       && modelsForHarness(entry.harness).includes(entry.id))
+      && modelEntry("codex", "gpt-5.6-terra")?.supersededBy === undefined
       && modelEntry("pi-zai", "glm-5.3-flash")?.status === "current",
     JSON.stringify(MODEL_REGISTER.filter((entry) => entry.status === "superseded")));
   pin("model register: the current alias and displayed GPT-6 windows come from registered ids",
@@ -10712,6 +10713,28 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && codexAvailability(null, "gpt-6-sol") === "unknown"
       && codexAvailability({ models: [{}] }, "gpt-6-sol") === "unknown",
     "synthetic present, absent, missing and malformed cache");
+}
+
+{
+  const tracked = spawnSync("git", ["-C", ROOT, "ls-files", "-z", "--", "*.ts", "*.js", "*.sh"],
+    { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+  const files = tracked.status === 0 ? tracked.stdout.split("\u0000").filter(Boolean) : [];
+  pin("model register: tracked code inventory is readable", tracked.status === 0 && files.length > 0,
+    tracked.status === 0 ? `${files.length} tracked code files`
+      : (tracked.error?.message || tracked.stderr || `git ls-files exited ${String(tracked.status)}`).trim().slice(0, 160));
+  const modelStrings = /["'](?:claude-(?:bridge\/)?[a-z0-9-]+|gpt-[0-9][a-z0-9.-]*|glm-[0-9][a-z0-9.-]*)["']/gi;
+  const listedModels = (source: string): string[] => {
+    const normalized = source.replace(/\[1m\]/g, "@1m");
+    return [...normalized.matchAll(/\[\s*["'](?:claude-|gpt-|glm-)[^\]]{0,800}\]/gs)].filter((m) =>
+      [...m[0].matchAll(modelStrings)].length >= 2).map((m) => m[0].replace(/\s+/g, " ").slice(0, 100));
+  };
+  pin("model register: list detector rejects two model literals in one array",
+    listedModels('const models = [' + '"gpt-5.6-sol", "gpt-6-sol"];').length === 1,
+    "synthetic duplicate registry list");
+  const duplicates = files.filter((f) => f !== "model-register.ts" && exists(f)).flatMap((f) =>
+    listedModels(read(f)).map((excerpt) => `${f}: ${excerpt}`));
+  pin("model register: no tracked code file outside the register lists model ids",
+    tracked.status === 0 && duplicates.length === 0, duplicates.length ? duplicates.slice(0, 8).join("; ") : "no duplicate model lists");
 }
 
 console.log(rows.join("\n"));

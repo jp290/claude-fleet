@@ -46,13 +46,18 @@ import { readLedger } from "./server/persist";
 import { landWaveUnits } from "./task-land-waves";
 import type { TaskCardSize } from "./task-waves";
 import { CARD_HEAD_MARK } from "./wave-brief";
+import { MODEL_REGISTER } from "./model-register";
 
 export const DEFAULT_A_FROM = "2026-09-13T01:17:00+02:00";
 /** the first lane brief that carried a rendered source package */
 export const DEFAULT_B_FROM = "2026-09-13T20:57:00+02:00";
-export const OPUS_MODELS: ReadonlySet<string> = new Set(["claude-opus-5[1m]", "claude-opus-5", "claude-bridge/claude-opus-5"]);
+export const OPUS_MODELS: ReadonlySet<string> = new Set([
+  ...MODEL_REGISTER.filter((entry) => entry.harness === "claude" && /^claude-opus-5(?:\[|$)/.test(entry.id)).map((entry) => entry.id),
+  "claude-bridge/claude-opus-5",
+]);
 /** its own class: Opus 5.5 lanes neither fall into "andere" nor into the Opus-5 medians */
-export const OPUS_5_5_MODELS: ReadonlySet<string> = new Set(["claude-opus-5-5[1m]", "claude-opus-5-5"]);
+export const OPUS_5_5_MODELS: ReadonlySet<string> = new Set(
+  MODEL_REGISTER.filter((entry) => entry.harness === "claude" && entry.id.startsWith("claude-opus-5-5")).map((entry) => entry.id));
 const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
 const DELEGATE_TOOLS = new Set(["Agent", "Task"]);
 const PACKAGE_HEAD = "\n\nQuellpaket — ";

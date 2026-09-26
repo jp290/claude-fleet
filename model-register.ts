@@ -1,3 +1,4 @@
+// model-register.ts — the model policy, defaults, aliases and display windows for Fleet harnesses.
 export type ModelHarness = "claude" | "codex" | "pi-zai";
 export type ModelStatus = "current" | "superseded";
 export type ModelRole = "orchestrator" | "main" | "worker" | "denk" | "summary";
@@ -31,7 +32,7 @@ export const MODEL_REGISTER: readonly ModelEntry[] = [
   { harness: "codex", id: "gpt-6-astra", status: "current", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-6-luna", status: "current", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.6-sol", status: "superseded", supersededBy: "gpt-6-sol", displayWindow: 272_000 },
-  { harness: "codex", id: "gpt-5.6-terra", status: "superseded", supersededBy: "gpt-6-astra", displayWindow: 272_000 },
+  { harness: "codex", id: "gpt-5.6-terra", status: "superseded", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.6-luna", status: "superseded", supersededBy: "gpt-6-luna", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.5", status: "current", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.3-codex-spark", status: "current" },
@@ -54,6 +55,14 @@ export const modelsForHarness = (harness: ModelHarness): string[] =>
 
 export const modelEntry = (harness: string, id: string): ModelEntry | undefined =>
   MODEL_REGISTER.find((entry) => entry.harness === harness && entry.id === id);
+
+export const supersededModel = (harness: string, id: string | null | undefined):
+  { id: string; supersededBy?: string } | undefined => {
+  const entry = id ? modelEntry(harness, id) : undefined;
+  return entry?.status === "superseded"
+    ? { id: entry.id, ...(entry.supersededBy ? { supersededBy: entry.supersededBy } : {}) }
+    : undefined;
+};
 
 export type ModelAvailability = "available" | "unavailable" | "unknown";
 export function codexAvailability(cache: unknown, id: string): ModelAvailability {

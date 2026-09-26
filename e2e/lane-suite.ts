@@ -15,13 +15,14 @@
 // see: THE TREE THAT LEAVES IS THE LANE'S WORKING TREE. A bundle of HEAD is the plausible wrong
 // implementation, and it fails SILENTLY: the suite runs, it passes, and it answers a question about
 // code the lane has not got. (LS.3) is that assertion.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, UntilTimeout, until, check, get, post, restartSrv, stopSrv } from "./harness";
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
-import { suiteMeter, laneTail, type MeterInput } from "../src/suitemeter";
+import { suiteMeter, laneTail, meterKind, meterLine, type MeterInput } from "../src/suitemeter";
 
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
@@ -154,7 +155,7 @@ export async function run(): Promise<void> {
     const phases = suiteMeter({ ...base, gate: { lock: null,
       reports: [rep(1, "waiting"), rep(2, "running"), rep(3, "done", 0), rep(4, "failed", 1)] } });
     check("(LS.meter) a lane's own phases sit at wait / run / done, green and red told apart",
-      at(phases) === "done:3 · L3:ok done:4 · L4:red run:2 · L2:plain wait:1 · L1:plain", at(phases));
+      at(phases) === "done:Slot 3 · L3:ok done:Slot 4 · L4:red run:Slot 2 · L2:plain wait:Slot 1 · L1:plain", at(phases));
     check("(LS.meter) a failed run says its exit code beside the suite",
       phases.balls.find((b) => b.slot === 4)?.what === "e2e-isolated · exit 1",
       JSON.stringify(phases.balls.find((b) => b.slot === 4)));
@@ -171,17 +172,31 @@ export async function run(): Promise<void> {
         { slot: 7, branch: "fleet/y-bbbb", state: "reported", device: "second-host", at: 3, result: "red" },
       ] });
     check("(LS.meter) offers: open waits, claimed runs on the helper, a red report lands red in done",
-      at(offers) === "done:7 · bbbb:red helper:6 · Queue:plain wait:5 · 4198:plain", at(offers));
+      at(offers) === "done:Slot 7 · bbbb:red helper:Slot 6 · Queue:plain wait:Slot 5 · 4198:plain", at(offers));
+    const referenced = suiteMeter({ ...base, slots: [{ id: 17, label: "Build", branch: "fleet/x-aaaa", letter: "3A" }],
+      gate: { lock: null, reports: [rep(17, "running")] } }).balls[0];
+    check("(LS.meter) a lane uses its worktree letter, not a slot-number threshold or branch tail",
+      referenced.name === "3A · L17" && phases.balls[0].name === "Slot 1 · L1", referenced.name);
+    check("(LS.meter) each run kind has an owner word and a German explanation",
+      meterKind("land check").label === "Landprüfung" && meterKind("land check").title.includes("bevor")
+        && meterLine(referenced, 1000, true)[0] === "Vorschau"
+        && meterKind("post-land check").label === "Nachprüfung", meterLine(referenced, 1000).join(" · "));
+    let meterClient = "", meterClientError = "";
+    try { meterClient = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8"); }
+    catch (e) { meterClientError = e instanceof Error ? e.message : String(e); }
+    check("(LS.meter) the right tab uses the German row words and explains them on hover",
+      /meterLine\(b, serverClock\(\), true\)/.test(meterClient)
+        && /meterKind\(b\.kind\)\.title/.test(meterClient), meterClientError || "suite meter renderer");
     check("(LS.meter) an unlabelled lane is named by its branch's four hex, the part lanes do NOT share",
       laneTail("fleet/260918203940-4198") === "4198" && laneTail("feature/login") === "feature/login",
       `${laneTail("fleet/260918203940-4198")} ${laneTail("feature/login")}`);
     const holder = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: true, state: "overdue" }, reports: [] } });
     check("(LS.meter) a HELD mutex nobody named still puts a ball in 'run' — an empty run station would say 'nothing runs'",
-      holder.lock === "overdue" && at(holder) === "run:unnamed holder:warn"
+      holder.lock === "overdue" && at(holder) === "run:check run:warn"
         && holder.balls[0].what === "pid 4242", JSON.stringify(holder));
     const named = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: true }, reports: [rep(2, "running")] } });
     check("(LS.meter) …but not beside a run that IS named — no phantom second holder",
-      named.lock === "held" && at(named) === "run:2 · L2:plain", at(named));
+      named.lock === "held" && at(named) === "run:Slot 2 · L2:plain", at(named));
     const stale = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: false }, reports: [] } });
     check("(LS.meter) should NOT draw a holder for a STALE lock — a finished suite's leftover dir is an idle machine",
       stale.lock === "stale" && stale.balls.length === 0, JSON.stringify(stale));
@@ -232,7 +247,7 @@ export async function run(): Promise<void> {
       reports: [], queue: [q(1, 901, true, 1), q(2, 902, true, 2)] } });
     check("(LS.meter) every live ticket at the mutex is one WAITING ball carrying its own position",
       queued.balls.filter((b) => b.station === "wait").length === 2
-        && queued.balls.filter((b) => b.station === "wait").every((b) => b.name === "queued check run")
+        && queued.balls.filter((b) => b.station === "wait").every((b) => meterKind(b.kind).label === "Wartender Prüflauf")
         && queued.balls.some((b) => b.what === "position 1 of 2")
         && queued.balls.some((b) => b.what === "position 2 of 2"),
       JSON.stringify(queued.balls.map((b) => [b.station, b.what])));
@@ -245,7 +260,7 @@ export async function run(): Promise<void> {
         && /its process is gone/.test(orphan.balls[0].what), JSON.stringify(orphan.balls));
     check("(LS.meter) a server that sends no queue draws no waiters — absent is 'not reported', not 'nobody waits'",
       suiteMeter({ ...base, gate: { lock: { pid: 900, alive: true }, reports: [rep(2, "running")] } })
-        .balls.filter((b) => b.name === "queued check run").length === 0, "a phantom waiter");
+        .balls.filter((b) => b.kind === "queued check run").length === 0, "a phantom waiter");
   }
 
   if (!REPO) return; // the runner only calls this inside its REPO block, but say so rather than throw

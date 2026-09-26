@@ -51,7 +51,7 @@
      edge. Red = the suite failed on the integration tip; amber = nothing was measured. Green
      never renders, and the “seen” receipt is the same card at its quietest. */
   #plaudit { display: none; }
-  .plasec { display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  .plasec { display: block;
     padding: 10px 12px; border-radius: var(--r2); color: var(--chat-ink); line-height: 1.45;
     background: color-mix(in srgb, var(--danger) 13%, var(--chat-void));
     border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--chat-edge-soft));
@@ -59,6 +59,9 @@
   .plasec.unknown { background: color-mix(in srgb, var(--amber) 13%, var(--chat-void));
     border-color: color-mix(in srgb, var(--amber) 30%, var(--chat-edge-soft));
     border-bottom-color: var(--amber); }
+  .plasec .plasummary { cursor: pointer; font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
+    font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .plasec .pladetail { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding-top: 8px; }
   /* the receipt an ack leaves behind — the same card at its QUIETEST: no tint, no signal edge,
      just the raised surface, one note line and the way back in */
   .plasec.seen { background: var(--chat-raised);
@@ -87,6 +90,9 @@
      borders and padding by id specificity) — it carries its own material, plus the same
      first-section rhythm the sections get */
   #board .plasec { margin-top: 16px; }
+  #malarm { display: none; flex: none; width: 40px; height: 40px; padding: 0; border: 0; background: none; cursor: pointer; }
+  #malarm::after { content: ""; display: block; width: 7px; height: 7px; margin: auto; border-radius: 50%; background: var(--danger); }
+  #malarm.unknown::after { background: var(--amber); }
   /* terminal key row: hidden only where a hardware Esc exists (fine-pointer desktop).
      Any touchscreen device shows it — that includes an iPad in the DESKTOP layout,
      whose Magic Keyboard has no Esc key */
@@ -2850,7 +2856,9 @@
   /* the named end of the meter's reach: shown only when another instance exists to confuse it with */
   .smscope { font-size: 10.5px; color: var(--b-ink3); }
   .smmore { padding-left: 14px; color: var(--b-ink3); font-size: 11px; }
-  .smdetail:not(:empty) { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: #0a0a0a; font-size: 11px; }
+  .smsectiontitle, #board .smdetail h3 { margin: 12px 0 5px; font-family: var(--chat-sans);
+    font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-ink); }
+  .smdetail:not(:empty) { margin-top: 8px; padding-left: 14px; border-top: 1px solid var(--chat-edge-soft); font-size: 11px; }
   #board .smdetail .bsec { padding: 0; }
   .smdetail .bstate, .smdetail .bidmeta { color: var(--b-ink2); font-family: var(--b-mono); font-size: 10.5px; line-height: 1.5; }
   @media (prefers-reduced-motion: reduce) { .smball, .smbulb, #board .bchev { transition: none; } }
@@ -3001,6 +3009,9 @@
   .bmergebtn:disabled { opacity: 0.55; cursor: default; }
   .bmergenote { margin-top: 5px; font-size: 10.5px; line-height: 1.45; word-break: break-word; }
   .bmergenote.ok { color: var(--add); } .bmergenote.warn { color: var(--amber); } .bmergenote.err { color: var(--del); }
+  .bmergenote.landalarm { padding: 6px 0; border-bottom: 1px solid var(--chat-edge-soft); }
+  .bmergenote.landalarm summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bmergenote.landalarm .bmergedetail { padding-top: 6px; white-space: normal; }
   /* verify badge (F-A.3): the deterministic land signal made visible — informs, never disables */
   .vbadge { display: inline-block; font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
     border: 1px solid; margin-left: 2px; vertical-align: middle; letter-spacing: .02em; white-space: nowrap; }
@@ -3065,7 +3076,7 @@
 
     /* the check alarm's phone surface: full-bleed above #mhead, in flow — it pushes the app down
        instead of floating over it (G2.1 mobil); only the signal-coloured bottom edge stays */
-    #plaudit .plasec { border-radius: 0; border-left: none; border-right: none; border-top: none; }
+    #malarm:not([hidden]) { display: block; }
 
     #mhead { flex: none; display: flex; align-items: center; gap: 10px;
       padding: calc(4px + env(safe-area-inset-top)) 10px 4px;
@@ -3373,6 +3384,7 @@
   <div id="mhead">
     <button id="menu" title="sessions">☰</button>
     <span id="mtitle">Claude Fleet</span>
+    <button id="malarm" hidden aria-label="Alarm in Info öffnen"></button>
     <button id="mset" title="Einstellungen öffnen"></button>
     <span id="mdot" class="dot off"></span>
   </div>

@@ -22,7 +22,7 @@ import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
-import { METER_STATIONS, laneTail, meterLine, mmss, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
+import { METER_STATIONS, laneTail, meterKind, meterLine, mmss, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsSubject, opsSummary, type OpsPollRow } from "./opsevents";
 import {
   projectTaskWaves,
@@ -852,6 +852,10 @@ class Pane {
   private lastCols = 0;
   private lastRows = 0;
   private resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  private bottomTimer: ReturnType<typeof setTimeout> | undefined;
+  private chatPinUntil = 0;
+  private readonly sizeObserver: ResizeObserver;
+  private observedRefit: ReturnType<typeof setTimeout> | undefined;
   readonly root: HTMLElement;
   private readonly hint: HTMLElement;
   private readonly jump: HTMLElement;
@@ -996,6 +1000,19 @@ class Pane {
     this.toolsBox.append(toolsTop, toolsView);
     this.pastBar = el("div", "pastbar");
     this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.toolsBox);
+    this.sizeObserver = new ResizeObserver(() => {
+      clearTimeout(this.observedRefit);
+      this.observedRefit = setTimeout(() => {
+        if (this.root.isConnected && this.root.clientWidth && this.root.clientHeight) {
+          const chatFollowing = this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - 120;
+          this.refit();
+          if (this.view === "chat" && Date.now() < this.chatPinUntil && chatFollowing)
+            this.chatEl.scrollTop = this.chatEl.scrollHeight;
+        }
+      }, 60);
+    });
+    this.sizeObserver.observe(this.root);
+    this.sizeObserver.observe(this.chatEl);
     this.syncCornerButtons();
     this.term = new Terminal({
       // 10k, not the 50k this carried from the first commit (f43e3fb1) without ever being
@@ -1644,7 +1661,7 @@ class Pane {
   }
 
   assign(slot: number) {
-    if (slot === this.slot) { this.focus(); return; }
+    if (slot === this.slot) { this.focus(); this.scrollToEnd(); return; }
     this.leavePast();
     this.slot = slot;
     if (this.hoverOn) {
@@ -1667,6 +1684,7 @@ class Pane {
     // at the wrong width and force an immediate second reseed once refit() catches up
     if (slot) { this.fit.fit(); this.pinPending = true; this.connect(); }
     this.focus();
+    this.scrollToEnd();
     renderSlots(); // focusPane skips no-op renders, but an assignment always changes the sidebar
     saveView();
   }
@@ -1674,6 +1692,21 @@ class Pane {
   focus() {
     focusPane(this.index);
     if (!isMobile()) this.term.focus(); // focusing would be pointless without a hardware keyboard
+  }
+
+  scrollToEnd() {
+    this.chatPinUntil = Date.now() + 1000;
+    this.term.scrollToBottom();
+    this.pinToBottom();
+    requestAnimationFrame(() => {
+      this.chatEl.scrollTop = this.chatEl.scrollHeight;
+      requestAnimationFrame(() => { this.chatEl.scrollTop = this.chatEl.scrollHeight; });
+    });
+    clearTimeout(this.bottomTimer);
+    this.bottomTimer = setTimeout(() => {
+      if (this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - 120)
+        this.chatEl.scrollTop = this.chatEl.scrollHeight;
+    }, 500);
   }
 
   // the reload/refresh button: forces a fresh WS connection that always re-seeds from a
@@ -1721,6 +1754,7 @@ class Pane {
     this.fit.fit();
     if (wasFollowing) this.pinToBottom();
     clearTimeout(this.resizeTimer);
+    clearTimeout(this.bottomTimer);
     this.resizeTimer = setTimeout(() => this.sendResize(), 500);
   }
 
@@ -1743,6 +1777,8 @@ class Pane {
     this.ws?.close();
     this.linkProvider?.dispose();
     clearTimeout(this.resizeTimer);
+    clearTimeout(this.observedRefit);
+    this.sizeObserver.disconnect();
     clearTimeout(this.chatTimer);
     // an in-flight pollChat() fetch resolving after dispose would otherwise re-arm its
     // own setTimeout forever (its finally-block re-checks view/slot, both still truthy) —
@@ -1993,6 +2029,10 @@ interface MergeState { running: boolean;
   lane?: { repo: string; branch: string };
   // the repo's most recent still-undoable land (null if none) — drives the ↩ undo button
   undoable?: { branch: string; at: number } | null }
+function failedLandVerdict(last: MergeState["last"]): boolean {
+  return !!last && !last.landed && ["blocked", "error", "interrupted"].includes(last.status);
+}
+const landAlarmOpens = new Set<string>();
 // slots with a merge job the client kicked off or observed — when such a slot goes
 // inactive (job landed the lane), its panes must be released like a manual ⏏ does
 const mergeWatch = new Set<number>();
@@ -3068,33 +3108,10 @@ function auditLiveRows(): HTMLElement[] {
 
 function gateSection(): HTMLElement | null {
   const g = gateInfo;
-  const liveRows = auditLiveRows();
-  // an audit can be in flight (or lands waiting) while the mutex says nothing — and the reverse.
-  // Neither half may suppress the other.
-  if (!g && !liveRows.length) return null;
+  if (!g) return null;
   const sec = el("div", "bsec");
-  // ...but a server that sends no `gate` at all has MEASURED nothing, and "lock free" would be a
-  // claim. The mutex half is drawn only when the server actually spoke about it.
-  if (g) sec.appendChild(gateLockHead(g.lock));
-  for (const row of liveRows) sec.appendChild(row);
-  for (const r of g?.reports ?? []) {
-    // a slotless row is fleet's own work (the tier-2 audit); its label names the repo instead. The
-    // fallback is for that row alone — "slot null" would read as a bug in this line, not on the wire.
-    const who = r.slot === null ? (r.label ?? "fleet itself") : `slot ${r.slot}${r.label ? ` · ${r.label}` : ""}`;
-    const what = r.phase === "failed" && r.exitCode !== null ? `failed exit ${r.exitCode}` : r.phase;
-    const where = r.branch ? ` · ${r.branch}` : "";
-    // fleet's own rows by their owner word (G0.5) — the wire label "land gate" stays on the wire
-    const suite = r.origin !== "server" ? r.suite
-      : `${r.slot === null ? "post-land check" : "land check"}${r.stage ? ` · ${r.stage}` : ""}`;
-    const row = el("div", "bidmeta", `${who} · ${what} ${suite}${where} · ${gateAge(Date.now() - r.at)}`);
-    // MEASUREMENT vs HEARSAY, the distinction the server keeps on the wire (`origin`) and this is
-    // the reader that must not blur it: a lane's row is its own word about itself, fleet's row is
-    // written by the process actually running the suite. Neither one gates anything.
-    row.title = r.origin === "server"
-      ? "Fleets eigener Lauf, gemeldet vom Prozess, der ihn fährt — gemessen, nicht zugesagt. Er entscheidet nichts: die Sperre sagt, was läuft (intern: origin=server)."
-      : "Von der Lane selbst gemeldet — Hinweis, keine Messung. Die Sperre entscheidet, was läuft (intern: origin=lane).";
-    sec.appendChild(row);
-  }
+  sec.appendChild(el("h3", "", "Prüfsperre"));
+  sec.appendChild(gateLockHead(g.lock));
   return sec;
 }
 function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
@@ -3155,7 +3172,8 @@ function meterModel() {
   return suiteMeter({
     instance: instanceName,
     gate: gateInfo, audit: postLandLive, offers: meterSuites, devices: helperDevicesInfo,
-    slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label, branch: s.worktree?.branch ?? null })),
+    slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label,
+      branch: s.worktree?.branch ?? null, letter: s.worktree?.letter ?? null })),
   });
 }
 const METER_TITLE: Record<MeterStation, string> = {
@@ -3168,6 +3186,7 @@ const METER_ROWS_MAX = 6;
 const meterTube = el("div", "smtube");
 const meterCols = el("div", "smcols");
 const meterRows = el("div", "smrows");
+meterRows.id = "meter-runs";
 const meterHead = el("div", "smhead");
 const meterDetail = el("div", "smdetail");
 {
@@ -3225,6 +3244,7 @@ function renderSuiteMeter() {
   const tog = el("button", `smtog${meterOpen ? " open" : ""}`) as HTMLButtonElement;
   tog.append(el("span", "bchev"), el("span", "smtitle", "Checks"));
   tog.setAttribute("aria-expanded", String(meterOpen));
+  tog.setAttribute("aria-controls", "meter-runs");
   tog.title = meterOpen ? "Lesung zuklappen" : "Lesung aufklappen — Sperre, laufende Checks, jede Meldung (intern: gate reading)";
   tog.onclick = () => {
     meterOpen = !meterOpen;
@@ -3269,7 +3289,8 @@ function renderSuiteMeter() {
   // by a column a quarter of the board wide. A name opens its lane.
   const order = [...m.balls].sort((a, b) =>
     METER_STATIONS.indexOf(a.station) - METER_STATIONS.indexOf(b.station) || a.at - b.at);
-  meterRows.replaceChildren(...order.slice(0, METER_ROWS_MAX).map((b) => {
+  meterRows.replaceChildren(...(meterOpen ? [el("h3", "smsectiontitle", "Alle Prüfläufe")] : []),
+    ...order.slice(0, meterOpen ? undefined : METER_ROWS_MAX).map((b) => {
     const mine = b.slot !== null && b.slot === focusSlot;
     const row = el("button", `smrow tone-${b.tone} st-${b.station}${mine ? " mine" : ""}`) as HTMLButtonElement;
     // NAME · WHAT · WHERE, and the row is CLASSED by its station. The state used to be a fourth
@@ -3283,10 +3304,11 @@ function renderSuiteMeter() {
     // meterLine), so a narrow board cuts the stage first and the place never. The clock is
     // recomputed on this repaint (the /api/sessions poll), no timer of its own, on serverClock()
     // because `at` is the server's stamp.
-    const line = meterLine(b, serverClock()).join(" · ");
-    row.append(el("span", "smdot"), el("span", "smname", b.name), el("span", "smwhat", line),
+    const line = meterLine(b, serverClock(), true).join(" · ");
+    const name = b.slot === null ? meterKind(b.kind).label : b.name;
+    row.append(el("span", "smdot"), el("span", "smname", name), el("span", "smwhat", line),
       el("span", "smplace", b.where));
-    row.title = `${b.name} — ${line} · ${b.where} · ${meterState(b)}`
+    row.title = `${name} — ${line} · ${b.where} · ${meterState(b)} · ${meterKind(b.kind).title}`
       + (b.expect ? ` · „~“ ist der Median früherer Läufe dieser Art (n=${b.expect.n}), „länger als üblich“ heißt: über ihrem 90. Perzentil` : "")
       + (b.kind === "land check" ? " · Die Uhr zählt das Warten auf die maschinenweite Sperre mit (intern: suite mutex)" : "")
       + (b.slot !== null ? " · Klick öffnet die Lane" : "");
@@ -3294,10 +3316,10 @@ function renderSuiteMeter() {
     if (slot !== null && fleet[slot - 1]?.cwd) row.onclick = () => showSlot(slot);
     else row.disabled = true;
     return row;
-  }), ...(order.length > METER_ROWS_MAX ? [el("div", "smmore", `+${order.length - METER_ROWS_MAX} more — ▸ for all`)] : []));
+  }), ...(!meterOpen && order.length > METER_ROWS_MAX ? [el("div", "smmore", `+${order.length - METER_ROWS_MAX} weitere — Checks öffnen`)] : []));
 
   const g = meterOpen ? gateSection() : null;
-  meterDetail.replaceChildren(...(g ? [g] : meterOpen ? [el("div", "bempty", "nothing reported running")] : []));
+  meterDetail.replaceChildren(...(g ? [g] : meterOpen ? [el("div", "bempty", "Keine Lesung der Prüfsperre vorhanden")] : []));
 }
 
 // --- WHICH MACHINES TAKE WORK OFF THIS BOX: the helper device register --------------------------
@@ -5215,6 +5237,19 @@ async function renderBoard() {
           }
           note.appendChild(acts);
           land.appendChild(note);
+        } else if (l && failedLandVerdict(l)) {
+          const note = el("details", `bmergenote ${l.status === "blocked" ? "warn" : "err"} landalarm`);
+          const alarmKey = `${l.branch}:${l.at}`;
+          (note as HTMLDetailsElement).open = landAlarmOpens.has(alarmKey);
+          note.addEventListener("toggle", () => {
+            if ((note as HTMLDetailsElement).open) landAlarmOpens.add(alarmKey);
+            else landAlarmOpens.delete(alarmKey);
+          });
+          const kind = l.status === "blocked" ? "Land blockiert" : l.status === "interrupted" ? "Land unterbrochen" : "Land fehlgeschlagen";
+          note.appendChild(el("summary", "", `${kind} · ${laneTail(l.branch)}`));
+          note.appendChild(el("div", "bmergedetail", l.detail));
+          note.appendChild(verifyBadge(l.verify));
+          land.appendChild(note);
         } else if (l) {
           // "awaiting-author" is a WAIT, not a failure: the lane's own session is resolving its own
           // conflict right now. Rendering it in the error style (the fall-through default for every
@@ -6250,10 +6285,11 @@ function showSlot(id: number): boolean {
   }
   setDrawer(false);
   const existing = panes.find((p) => p.slot === id);
-  if (existing) { existing.focus(); existing.flash(); return true; }
+  if (existing) { existing.focus(); existing.scrollToEnd(); existing.flash(); void renderMobileAlarmHint(); return true; }
   const target = panes[focused];
   target.assign(id);
   target.flash();
+  void renderMobileAlarmHint();
   return true;
 }
 
@@ -9811,11 +9847,15 @@ function plaAlarmCard(): HTMLElement | null {
   const al = postLandAlarm(postLandAudit, prefNumber(PLA_ACK_KEY));
   if (!al) { plaCard = null; return null; }
   const a = postLandAudit!;
-  const sec = el("div", `plasec ${al.tone}`);
-  sec.appendChild(scopeTag("machine"));
-  sec.appendChild(el("div", "plahd", plaOwnerHeadline(a, al.tone)));
-  sec.appendChild(el("div", "plawhere", al.where));
-  sec.appendChild(el("div", "hint planote", `${fmtTs(a.at)} · ${plaOwnerNote(al.tone)}`));
+  const sec = el("details", `plasec ${al.tone}`);
+  (sec as HTMLDetailsElement).open = plaCard instanceof HTMLDetailsElement && plaCard.open;
+  const kind = al.tone === "red" ? "Land-Nachprüfung fehlgeschlagen" : "Land-Nachprüfung ungemessen";
+  sec.appendChild(el("summary", "plasummary", `${kind} · ${a.main ?? "main"}@${a.mainSha?.slice(0, 8) || "?"}`));
+  const detail = el("div", "pladetail");
+  detail.appendChild(scopeTag("machine"));
+  detail.appendChild(el("div", "plahd", plaOwnerHeadline(a, al.tone)));
+  detail.appendChild(el("div", "plawhere", al.where));
+  detail.appendChild(el("div", "hint planote", `${fmtTs(a.at)} · ${plaOwnerNote(al.tone)}`));
   // THE WHOLE LOG, when a remote helper handed one over. `out` on the row is a 4 KB tail, and for a
   // RED audit the next question is always "which checks, and what was around them" — an answer that
   // used to live only in a run directory the helper deletes in its own `finally`. Drawn only when
@@ -9831,7 +9871,7 @@ function plaAlarmCard(): HTMLElement | null {
       + ` sha256 ${art.sha256.slice(0, 12)}…. It arrived AFTER the row was written and is joined in`
       + ` from a side rail — nothing about it changed the result above.`;
     line.appendChild(lg);
-    sec.appendChild(line);
+    detail.appendChild(line);
   }
   const ack = el("button", "plaack", "Seen") as HTMLButtonElement;
   ack.title = "blendet diese Meldung aus — nur für diesen Prüflauf; die nächste nicht-grüne Prüfung meldet sich wieder (intern: fleet.plaudit.ack).";
@@ -9839,7 +9879,8 @@ function plaAlarmCard(): HTMLElement | null {
     prefSet(PLA_ACK_KEY, String(postLandAudit?.at ?? 0));
     renderPostLandAudit();
   };
-  sec.appendChild(ack);
+  detail.appendChild(ack);
+  sec.appendChild(detail);
   plaCard = sec;
   return sec;
 }
@@ -9865,13 +9906,11 @@ const plaBoardCard = (): HTMLElement | null => plaAlarmCard() ?? plaReceiptCard(
 
 function renderPostLandAudit() {
   const bar = $("plaudit");
+  if (!isMobile()) void renderMobileAlarmHint();
   if (isMobile()) {
-    // the board never renders on a phone (renderBoard bails), so the phone's alarm surface IS
-    // #plaudit — the same card, full width above #mhead, in flow
-    const card = plaBoardCard();
     bar.replaceChildren();
-    bar.style.display = card ? "block" : "none";
-    if (card) bar.appendChild(card);
+    bar.style.display = "none";
+    void renderMobileAlarmHint();
     return;
   }
   bar.replaceChildren();
@@ -9883,6 +9922,29 @@ function renderPostLandAudit() {
   const card = plaBoardCard();
   if (had) { if (card) had.replaceWith(card); else had.remove(); }
   else if (card && boardOpen) void renderBoard();
+}
+
+let mobileAlarmGeneration = 0;
+async function renderMobileAlarmHint() {
+  const hint = $("malarm") as HTMLButtonElement;
+  const generation = ++mobileAlarmGeneration;
+  if (!isMobile()) { hint.hidden = true; return; }
+  const audit = postLandAlarm(postLandAudit, prefNumber(PLA_ACK_KEY));
+  const slot = panes[focused]?.slot ?? 0;
+  let failedLand = false;
+  if (slot && fleet[slot - 1]?.worktree) {
+    try {
+      const res = await api(`/api/slots/${slot}/merge`);
+      if (res.ok) failedLand = failedLandVerdict(((await res.json()) as MergeState).last);
+    } catch { /* a missing verdict does not invent an alarm */ }
+  }
+  if (generation !== mobileAlarmGeneration) return;
+  hint.hidden = !audit && !failedLand;
+  hint.classList.toggle("unknown", !!audit && audit.tone === "unknown" && !failedLand);
+  hint.title = failedLand ? "Land fehlgeschlagen — Details in Info öffnen" :
+    audit?.tone === "unknown" ? "Land-Nachprüfung ungemessen — Details in Info öffnen" :
+    "Land-Nachprüfung fehlgeschlagen — Details in Info öffnen";
+  hint.onclick = () => setBoard(true);
 }
 
 let chipCmds: string[] = [];

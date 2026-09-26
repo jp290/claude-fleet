@@ -1973,6 +1973,15 @@ briefed without it silently breaks everyone else's serial proof.
 
 ### 11.2j A twelfth family: the `pi-unfenced` watch-delivery quartet (2026-08-31 filed; 2026-09-01 MECHANISM ISOLATED and repaired test-side — the fixture sampled a by-design transient; 2026-09-05 die verbliebene WURZEL liegt im SERVER und ist REPARIERT, `c36c1e9` + `1db9296`)
 
+**WIEDER ROT NACH DEM FIX, 2026-09-26 (Program-MAIN Fleet-Betrieb, am lokalen Trail-Register gezaehlt, 10 994 Dateien):**
+Nach der Fix-Sha gilt ein Rot als ECHT, und es tritt wieder auf. `the fixed completion notification has exactly one matching prompt-log row on pi-unfenced`
+lief vom 2026-09-05 bis 2026-09-20 in **0 von 213** Laeufen rot und seit dem 2026-09-21 in **12 von 54** (22 %). Betroffen sind sieben Baeume aus sechs Lanes,
+sauber wie schmutzig: `892f69f4` `ebe49931` `48897903` `c0f04242` `5986dfb6` `0b8060c0` `0b15bf7b` `e4f0fca6` `ca0a274b`, erster Lauf
+`isolated-20260921T015558Z-28523`, letzter `isolated-20260926T033629Z-94488`. Stets fallen dieselben drei Zeilen mit
+(`after kill-switch release … once as delivered`, `… exactly one matching prompt-log row` mit Detail `0:`, `… remains one-shot`).
+Damit ist die Rate kein Flake, sondern ein Regress um den 2026-09-20/21. Im Post-Land-Audit-Ledger gibt es 0 Treffer, weil die Audits remote
+auf dem Second-host laufen. Warum die Familie dort gruen bleibt, ist UNGEMESSEN. Die Reparatur geht an eine Zeile des Programs f170dc46.
+
 **Status (2026-09-01, corrected — this paragraph read "open, CAUSE not proven" until the repair
 landed): MECHANISM ISOLATED and repaired test-side in `b20e7e4`.** The two cuts are further down
 in this section; everything between here and them is the FILING as it stood, kept because the
@@ -4901,6 +4910,16 @@ das Audit-Rot in der 0/120 oben, und das ist kein Widerspruch, sondern eine Luec
 (`e2e/programs.ts#3925`) fiel in Gegenprobe (a) mit `500`, `roleCard=null`, `lineage=null`, leerer
 `history` — **1 rot / 48** im Trail (Nachzaehlkontrolle 2026-09-21: 1/50), und dieses eine Rot IST
 diese Gegenprobe. Erstes Rot der Familie; als offen notiert, nicht als geklaert.
+
+**Nachtrag 2026-09-26 (Program-MAIN Fleet-Betrieb, am Ledger und am lokalen Trail-Register gezaehlt, 10 994 Dateien).** Zwei neue Sichtungen.
+(1) Das Post-Land-Audit des overhaul-Tips `7b07f26a` (2026-09-25, Shard 3/3 auf dem Second-host, co-resident) fiel mit genau den fuenf `(w3)`-Zeilen.
+Das ist die ZWEITE Audit-Sichtung dieser Setup-Gruppe nach `213a88fc`. Beide lagen auf Second-host-Shards, und beide fehlen in der lokalen Rate:
+`(w3) LAND` steht lokal bei **0/150**. Das naechste Audit am Nachfolger `2b11390f`, der `7b07f26a` enthaelt, lief 6310 / 0. Die Wiederholung
+misst Zeile `d5fa9226` (base overhaul). (2) `programs isolation: dispatch configuration is unchanged` steht lokal bei **3/609**:
+`isolated-20260920T115935Z-4070`, dazu neu `isolated-20260925T221943Z-91448` (Baum `e4f0fca6`) und `isolated-20260926T033629Z-94488`
+(Baum `ca0a274b`, main, voller Lauf unter Zusatzlast). Im Audit-Ledger ist die Zeile zweimal rot (2026-09-16 `c5296dfb`, 2026-09-20 `213a88fc`).
+Beide neuen lokalen Rot fielen im selben Lauf wie das §11.2j-Trio. Ob die zwei Familien dieselbe Bedingung teilen, ist UNGEMESSEN.
+Regel ab jetzt: faellt `programs isolation` im naechsten vollen main-Audit erneut, folgt die Reparaturzeile ohne weiteres Urteil.
 
 ### 11.2ae Eine zweiunddreißigste Familie: der LS.10-Schluss-Check liest die fire-and-forget-Audit-Zeile, BEVOR sie auf der Platte ist (2026-09-23 registriert; Signatur aus dem aufbewahrten Trail-Lauf desselben Tages gelesen, Mechanismus am Code gelesen, sondenseitig REPARIERT im selben Schnitt wie dieser Eintrag; Mutationsprobe und drei Grün-Läufe auf dem Helfer gefahren)
 

@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Session-Marke · vier Fassungen</title>
+<!-- Runde 6: vier Renderer auf den Plätzen und Seeds aus Runde 5. -->
+<link rel="stylesheet" href="marken2.css">
+<style>
+  #app { display: block; overflow: auto; }
+  #kopf { position: sticky; top: 0; z-index: 3; background: #000;
+    border-bottom: 1px solid var(--chat-edge-soft); padding: 14px 20px 12px; }
+  #kopf h1 { font-size: var(--chat-fs); font-weight: 650; color: var(--chat-ink); }
+  #kopf p { margin-top: 6px; max-width: 100ch; font-size: var(--chat-code-fs); line-height: 1.6; color: var(--chat-mute); }
+  .steuer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+  button, select { font: 500 var(--chat-ui-fs) var(--chat-sans); color: var(--chat-prose);
+    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: 7px;
+    padding: 5px 10px; cursor: pointer; }
+  button:hover, select:hover { color: var(--chat-ink); border-color: #3a3a42; }
+  button[aria-pressed="true"] { color: #000; background: var(--chat-ink); border-color: var(--chat-ink); }
+  .steuer span, .steuer label { font: 500 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-faint); }
+  .steuer label { display: inline-flex; gap: 6px; align-items: center; }
+
+  #umbau { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; margin-top: 12px;
+    padding-top: 12px; border-top: 1px solid var(--chat-edge-soft); }
+  #lupe { display: flex; gap: 14px; }
+  #lupe figure { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 150px; }
+  #lupe canvas { display: block; border: 1px solid var(--chat-edge-soft); border-radius: 8px; }
+  #lupe figcaption { font-size: var(--chat-ui-fs); color: var(--chat-mute); text-align: center; line-height: 1.4; }
+
+  #spalten { display: flex; gap: 0; align-items: flex-start; }
+  .spalte { width: 270px; flex: none; border-right: 1px solid var(--chat-edge-soft); padding-bottom: 40px; }
+  .spalte > header { padding: 14px 16px 10px; }
+  .spalte h2 { font: 650 var(--chat-fs) var(--chat-sans); color: var(--chat-ink); }
+  .spalte dl { margin-top: 8px; font-size: var(--chat-ui-fs); line-height: 1.65; }
+  .spalte dt { color: var(--chat-faint); float: left; width: 64px; }
+  .spalte dd { color: var(--chat-mute); margin-left: 64px; }
+  .messe { margin: 8px 16px 2px; font: 500 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-faint); }
+  .messe b { color: #9ee6a0; font-weight: 500; }
+
+  .liste { position: relative; padding: 4px 8px 8px; }
+  .liste canvas { position: absolute; inset: 0; pointer-events: none; }
+  .liste .row { position: relative; z-index: 1; padding-left: 41px; gap: 8px; cursor: pointer; }
+  .liste .row.gewaehlt { box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .liste .lanes { margin-left: 0; padding-left: 0; border-left: none; }
+  .liste .lanes .row { padding-left: 57px; }
+  .liste .lanes .row::before { content: ""; position: absolute; left: 41px; top: -1px; bottom: -1px;
+    width: 1px; background: var(--chat-edge); }
+  .liste .lbl { font-size: var(--chat-code-fs); }
+  body.grau canvas { filter: grayscale(1); }
+
+  body.tafel { overflow: auto; }
+  body.tafel #kopf, body.tafel #spalten { display: none; }
+  #bogen { display: none; }
+  body.tafel #bogen { display: block; }
+  .aufnahme { margin: 10px 16px; font: 500 var(--chat-ui-fs)/1.5 var(--chat-mono); color: var(--chat-mute); white-space: pre-wrap; }
+  #ergebnis { display: none; }
+  body.tafel #ergebnis { display: block; margin: 12px; font: 500 12px/1.5 var(--chat-mono); color: var(--chat-mute); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="kopf">
+  <h1>Session-Marke · vier Fassungen</h1>
+  <p>Rolle formt den Umriss, Repo die Familie und den Farbton, Harness das kleine Merkmal, der feste Session-Seed die Neigung. Arbeit beschäftigt die Marke; Warten richtet sie nach links zum Namen. Jede Spalte ist derselbe Platz mit derselben Session.</p>
+  <div class="steuer">
+    <button id="b16" aria-pressed="false">alle arbeiten (Messfall)</button>
+    <button id="bwarte" aria-pressed="false">alle warten</button>
+    <button id="bruhe" aria-pressed="false">alles einfrieren</button>
+    <button id="bschlaf" aria-pressed="false">alles schlafen</button>
+    <button id="bfehler" aria-pressed="false">alles stören</button>
+    <button id="bzurueck" aria-pressed="true">echter Betrieb</button>
+    <button id="bgrau" aria-pressed="false">ohne Farbe</button>
+    <span id="hinweis"></span>
+  </div>
+  <div id="umbau">
+    <div class="steuer" style="margin-top:0; flex-direction:column; align-items:flex-start">
+      <span>Platz umstellen — oder eine Zeile anklicken:</span>
+      <label>Platz <select id="wplatz"></select></label>
+      <label>Repo <select id="wrepo"></select></label>
+      <label>Rolle <select id="wrolle"></select></label>
+      <label>Harness <select id="wharness"></select></label>
+      <button id="wzurueck">Platz zurücksetzen</button>
+    </div>
+    <div id="lupe"></div>
+  </div>
+</div>
+<div id="spalten"></div>
+<canvas id="bogen"></canvas>
+<pre id="ergebnis"></pre>
+
+<script type="module">
+import { SLOTS } from "./marken-daten.js";
+import { MarkenStage, RENDERERS, ROLES, seedOf, repoOf, harnessOf } from "./marken6.js";
+
+const FASS = RENDERERS;
+const rolleVon = (s, lane) => lane ? "lane" : s.label === "Orchestrator" ? "orch" : s.label === "Steward" ? "steward" : "main";
+const FLACH = SLOTS.flatMap((s) => s.free ? [{ ...s, lane: false }]
+  : [{ ...s, lane: false }, ...(s.lanes ?? []).map((l) => ({ ...l, lane: true }))])
+  .map((s) => s.free ? s : { ...s, rolle: rolleVon(s, s.lane),
+    seed: seedOf({ repo: s.repo, harness: s.harness, role: s.lane ? "lane" : "main", slot: s.slot, openedAt: s.openedAt }) });
+const SESS = FLACH.filter((s) => !s.free);
+const REPOS = ["claude-fleet", "privatraum", "private-repo-aa", "private-repo-r", "shell", "konzept-b", "imkerei", "gärtnerei"]
+  .map((r) => "/Users/o/" + r).sort((a, b) => repoOf(a) - repoOf(b));
+const DETAILS = {
+  arm: ["Gelenkwerk mit Zange; arbeitend greift es, wartend öffnet es sich nach links.", "Sockelprofil", "Armzahl und Reichweite", "Gelenkform"],
+  kamon: ["Ein ruhendes Siegel mit beweglichem Kern; wartend tickt der Kern links.", "Innenmotiv", "Anordnung und Größe", "Kernform"],
+  lantern: ["Ein Gefäß und eine Flamme; wartend lehnt sich die Flamme nach links.", "Glasgitter", "Gefäßumriss", "Docht"],
+  branch: ["Ein Zweig mit fünf Rollentopologien; eine Welle läuft von der Wurzel zur Spitze.", "Aderung und Internodien", "Topologie", "Spitze"],
+};
+const q = new URLSearchParams(location.search);
+const DPR = 2;
+const umgestellt = new Map();
+const fakt = (s) => ({ repo: s.repo, role: s.rolle, harness: s.harness, ...(umgestellt.get(String(s.slot)) ?? {}) });
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+const markOf = (s, renderer, state = s.state, grey = false) => ({ ...fakt(s), seed: s.seed, state, grey,
+  size: s.lane ? 19 : 24, renderer });
+
+function arten() {
+  document.body.classList.add("tafel");
+  const z = Number(q.get("z") || 56), pad = 10, step = z + pad, lab = 16;
+  const samples = [
+    ...REPOS.map((repo) => ({ repo, role: "main", harness: "claude", state: "rest", title: repo.split("/").pop() })),
+    ...Object.keys(ROLES).map((role) => ({ repo: REPOS[0], role, harness: "claude", state: "rest", title: ROLES[role] })),
+    ...["claude", "codex", "pi-zai"].map((harness) => ({ repo: REPOS[0], role: "main", harness, state: "rest", title: harness })),
+    ...["work", "need", "rest", "done", "sleep", "bad"].map((state) => ({ repo: REPOS[0], role: "main", harness: "claude", state, title: state })),
+  ];
+  const canvas = document.getElementById("bogen"), stage = new MarkenStage(canvas);
+  stage.on = false;
+  stage.setRows(FASS.flatMap((f, y) => samples.map((m, x) => ({ ...m, renderer: f.id, seed: SESS[0].seed,
+    size: z, x: pad + x * step, y: pad + y * (step + lab) }))), pad + samples.length * step, pad + FASS.length * (step + lab));
+  const ctx = stage.ctx;
+  ctx.font = "10px ui-monospace, Menlo, monospace"; ctx.fillStyle = "#8b8b94"; ctx.textAlign = "center";
+  FASS.forEach((f, y) => samples.forEach((m, x) => ctx.fillText(m.title, pad + x * step + z / 2, pad + y * (step + lab) + z + 12)));
+}
+
+function leiste() {
+  const spalten = document.getElementById("spalten"), buehnen = [];
+  for (const f of FASS) {
+    const col = el("div", "spalte"), head = el("header"), desc = DETAILS[f.id];
+    head.append(el("h2", null, f.label));
+    const dl = el("dl");
+    for (const [key, value] of [["man sieht", desc[0]], ["Repo →", desc[1]], ["Rolle →", desc[2]], ["Harness →", desc[3]]])
+      dl.append(el("dt", null, key), el("dd", null, value));
+    head.append(dl); col.append(head);
+    const messe = el("div", "messe"), aufnahme = el("div", "aufnahme"), liste = el("div", "liste"), canvas = el("canvas");
+    col.append(messe, aufnahme); liste.append(canvas);
+    for (const s of SLOTS) {
+      liste.append(zeile(s));
+      if (s.lanes) { const box = el("div", "lanes"); s.lanes.forEach((lane) => box.append(zeile(lane))); liste.append(box); }
+    }
+    col.append(liste); spalten.append(col);
+    buehnen.push({ f, liste, messe, aufnahme, stage: new MarkenStage(canvas) });
+  }
+  function zeile(s) {
+    const row = el("div", "row " + (s.free ? "free" : s.state));
+    row.dataset.slot = String(s.slot);
+    row.append(el("span", "lbl", s.free ? "frei" : s.label), el("span", "pct", s.pct != null ? s.pct + "%" : ""),
+      el("span", "meta", s.free ? "" : s.meta));
+    if (!s.free) row.addEventListener("click", () => { wplatz.value = String(s.slot); waehle(); });
+    return row;
+  }
+  function verteilen(stateOf) {
+    for (const b of buehnen) {
+      const box = b.liste.getBoundingClientRect();
+      const rows = [...b.liste.querySelectorAll(".row")].map((row, i) => {
+        const s = FLACH[i], rect = row.getBoundingClientRect(), size = s.lane ? 19 : 24;
+        const place = { x: (s.lane ? 24 : 8) + 1, y: Math.round(rect.top - box.top + (rect.height - size) / 2), size };
+        if (s.free) return { ...place, state: "free", seed: 0, renderer: b.f.id, repo: "", role: "main", harness: "claude" };
+        const m = { ...markOf(s, b.f.id, stateOf(s), document.body.classList.contains("grau")), ...place };
+        row.title = `${s.slot} · ${b.f.label} · ${ROLES[m.role]} · ${m.harness}`;
+        return m;
+      });
+      b.stage.setRows(rows, box.width, box.height);
+    }
+    lupe();
+  }
+  const wplatz = document.getElementById("wplatz"), wrepo = document.getElementById("wrepo");
+  const wrolle = document.getElementById("wrolle"), wharness = document.getElementById("wharness");
+  for (const s of SESS) wplatz.append(new Option(`${s.slot} · ${s.label}`, String(s.slot)));
+  for (const repo of REPOS) wrepo.append(new Option(`${repo.split("/").pop()} (Familie ${repoOf(repo) + 1})`, repo));
+  for (const [key, name] of Object.entries(ROLES)) wrolle.append(new Option(name, key));
+  for (const h of ["claude", "codex", "pi-zai"]) wharness.append(new Option(h, h));
+  wplatz.value = "1";
+  const gewaehlt = () => SESS.find((s) => String(s.slot) === wplatz.value);
+  function waehle() {
+    const m = fakt(gewaehlt());
+    wrepo.value = m.repo; wrolle.value = m.role; wharness.value = harnessOf(m.harness) === "pi" ? "pi-zai" : harnessOf(m.harness);
+    for (const row of document.querySelectorAll(".liste .row")) row.classList.toggle("gewaehlt", row.dataset.slot === wplatz.value);
+    lupe();
+  }
+  const umstellen = () => { umgestellt.set(wplatz.value, { repo: wrepo.value, role: wrolle.value, harness: wharness.value }); verteilen(modus); waehle(); };
+  wplatz.addEventListener("change", waehle);
+  for (const w of [wrepo, wrolle, wharness]) w.addEventListener("change", umstellen);
+  document.getElementById("wzurueck").addEventListener("click", () => { umgestellt.delete(wplatz.value); verteilen(modus); waehle(); });
+  const lupen = [];
+  for (const f of FASS) {
+    const fig = el("figure"), canvas = el("canvas"), caption = el("figcaption");
+    fig.append(canvas, caption); document.getElementById("lupe").append(fig);
+    lupen.push({ f, caption, stage: new MarkenStage(canvas) });
+  }
+  function lupe() {
+    const s = gewaehlt(); if (!s) return;
+    for (const l of lupen) {
+      l.stage.setRows([{ ...markOf(s, l.f.id, modus(s)), size: 96, x: 0, y: 0 }], 96, 96);
+      l.caption.textContent = `${l.f.label} · ${ROLES[fakt(s).role]} · ${harnessOf(fakt(s).harness)}`;
+    }
+  }
+  const echt = (s) => s.state;
+  let modus = echt;
+  const knoepfe = { b16: () => "work", bwarte: () => "need", bruhe: () => "rest", bschlaf: () => "sleep", bfehler: () => "bad", bzurueck: echt };
+  for (const [id, fn] of Object.entries(knoepfe)) document.getElementById(id).addEventListener("click", () => {
+    modus = fn;
+    for (const key of Object.keys(knoepfe)) document.getElementById(key).setAttribute("aria-pressed", String(key === id));
+    verteilen(modus);
+  });
+  document.getElementById("bgrau").addEventListener("click", (event) => {
+    document.body.classList.toggle("grau");
+    event.currentTarget.setAttribute("aria-pressed", String(document.body.classList.contains("grau")));
+    verteilen(modus);
+  });
+  addEventListener("resize", () => verteilen(modus));
+  requestAnimationFrame(() => {
+    verteilen(modus); waehle();
+    document.getElementById("hinweis").textContent = matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "Bewegung reduziert: volles Standbild" : `${SESS.length} Sessions · 16 Plätze`;
+    for (const b of [...buehnen, ...lupen]) { b.stage.on = false; b.stage.sync(); }
+    const results = FASS.map((f, i) => admission(f, buehnen[i].stage, false));
+    for (const b of [...buehnen, ...lupen]) { b.stage.on = true; b.stage.sync(); }
+    const zeige = () => {
+      const accepted = results.filter((r) => Object.values(r.ja).every(Boolean));
+      const selected = accepted.toSorted((a, b) => b.paar.kleinster - a.paar.kleinster)[0]?.id ?? null;
+      window.__aufnahme = { results, umschalter: accepted.map((r) => r.id), default: selected };
+      for (let i = 0; i < FASS.length; i++) {
+        const r = results[i];
+        buehnen[i].aufnahme.textContent = `Paare ${r.ja.paare ? "JA" : "NEIN"} ${r.paar.kleinster.toFixed(2)} · Zustand ${r.ja.zustand ? "JA" : "NEIN"} ${r.zustand.kleinster.toFixed(2)}\nKosten ${r.ja.kosten ? "JA" : "NEIN"} ${r.kosten.prozent.toFixed(2)} % · reduziert ${r.ja.reduziert ? "JA" : "NEIN"} · Tinte ${r.reduziert.tinte.toFixed(1)} %`;
+      }
+      document.documentElement.dataset.ready = "1";
+    };
+    const messeKosten = () => {
+      for (const b of [...buehnen, ...lupen]) { b.stage.on = false; b.stage.sync(); }
+      for (let i = 0; i < FASS.length; i++) {
+        const ms = kosten(buehnen[i].stage, FASS[i]);
+        results[i].kosten = { ms, prozent: ms / (1000 / 60) * 100 };
+        results[i].ja.kosten = ms <= (1000 / 60) * 0.02;
+      }
+      for (const b of [...buehnen, ...lupen]) { b.stage.on = true; b.stage.sync(); }
+      zeige();
+    };
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) messeKosten();
+    else setTimeout(messeKosten, 3500);
+    setInterval(() => {
+      for (const b of buehnen) {
+        const count = b.stage.cells.filter((c) => ["work", "need", "bad"].includes(c.mark.state)).length;
+        b.messe.innerHTML = `<b>${b.stage.fps.toFixed(0)} Bilder/s</b> · ${count} laufende Marken · eine Canvas`;
+      }
+    }, 500);
+    window.__bench = () => buehnen.map((b) => ({ fassung: b.f.id, ...b.stage.bench() }));
+  });
+}
+
+function pixels(f, s, state, t, reduced = false) {
+  const z = 24, canvas = document.createElement("canvas"); canvas.width = z * DPR; canvas.height = z * DPR;
+  const ctx = canvas.getContext("2d"); ctx.scale(DPR, DPR); ctx.fillStyle = "#000"; ctx.fillRect(0, 0, z, z);
+  const mark = { ...markOf(s, f.id, state, true), x: 0, y: 0 };
+  ctx.save(); ctx.translate((z - mark.size) / 2, (z - mark.size) / 2);
+  f.draw(ctx, mark, f.layout(mark), t, reduced); ctx.restore();
+  const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const luma = new Float32Array(z * DPR * z * DPR);
+  for (let i = 0; i < luma.length; i++) luma[i] = data[i * 4] * 0.2126 + data[i * 4 + 1] * 0.7152 + data[i * 4 + 2] * 0.0722;
+  return { luma, png: canvas.toDataURL("image/png") };
+}
+const mad = (a, b) => { let sum = 0; for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]); return sum / a.length; };
+const motion = (a, b) => { let changed = 0; for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 12) changed++; return changed / a.length * 100; };
+function kosten(stage, f) {
+  const cells = stage.cells.filter((c) => c.renderer.id === f.id);
+  const allCells = stage.cells;
+  stage.cells = cells;
+  const states = cells.map((c) => c.mark.state);
+  cells.forEach((c) => { if (c.mark.state !== "free") c.mark.state = "work"; });
+  stage.bench();
+  const samples = Array.from({ length: 5 }, () => stage.bench().ms).sort((a, b) => a - b);
+  cells.forEach((c, i) => { c.mark.state = states[i]; });
+  stage.cells = allCells;
+  stage.sync();
+  return samples[2];
+}
+function admission(f, stage, measureCost = true) {
+  const rest = SESS.map((s) => pixels(f, s, "rest", 0.7));
+  let smallest = Infinity, pair = "";
+  for (let i = 0; i < SESS.length; i++) for (let j = i + 1; j < SESS.length; j++) {
+    const distance = mad(rest[i].luma, rest[j].luma);
+    if (distance < smallest) { smallest = distance; pair = `${SESS[i].slot}~${SESS[j].slot}`; }
+  }
+  let stateMin = Infinity, stateSlot = "";
+  const changes = { work: [], need: [], rest: [], sleep: [] };
+  for (const s of SESS) {
+    const work = pixels(f, s, "work", 0.7), need = pixels(f, s, "need", 0.7);
+    const d = mad(work.luma, need.luma);
+    if (d < stateMin) { stateMin = d; stateSlot = String(s.slot); }
+    for (const state of Object.keys(changes)) changes[state].push(motion(pixels(f, s, state, 0).luma, pixels(f, s, state, 1.5).luma));
+  }
+  const moving = Object.fromEntries(Object.entries(changes).map(([key, a]) => [key, a.reduce((x, y) => x + y, 0) / a.length]));
+  const ms = measureCost ? kosten(stage, f) : null;
+  const still = SESS.map((s) => [pixels(f, s, "work", 0, true), pixels(f, s, "work", 2, true)]);
+  const bytegleich = still.every(([a, b]) => a.png === b.png);
+  const ink = still.reduce((sum, [a]) => sum + a.luma.filter((v) => v > 24).length / a.luma.length * 100, 0) / still.length;
+  return { id: f.id, paar: { kleinster: smallest, engste: pair, paare: 171 },
+    zustand: { kleinster: stateMin, slot: stateSlot, bewegung: moving },
+    kosten: ms == null ? null : { ms, prozent: ms / (1000 / 60) * 100 },
+    reduziert: { bytegleich, tinte: ink },
+    ja: { paare: smallest >= 4, zustand: stateMin >= 4 && moving.rest === 0 && moving.sleep === 0,
+      kosten: ms == null ? null : ms <= (1000 / 60) * 0.02, reduziert: bytegleich && ink > 0 } };
+}
+
+function tafel() {
+  document.body.classList.add("tafel");
+  const size = 24, pad = 8, step = size + pad, state = q.get("zustand") || "echt";
+  const canvas = document.getElementById("bogen"), stage = new MarkenStage(canvas, { dpr: 2 }); stage.on = false;
+  stage.setRows(FASS.flatMap((f, y) => SESS.map((s, x) => ({ ...markOf(s, f.id, state === "echt" ? s.state : state, true),
+    x: pad + x * step + (s.lane ? 2.5 : 0), y: pad + y * step + (s.lane ? 2.5 : 0) }))),
+  pad + SESS.length * step, pad + FASS.length * step);
+  const results = FASS.map((f) => admission(f, stage, false));
+  window.__tafel = { zustand: state, sessions: SESS.length, fassungen: results };
+  document.getElementById("ergebnis").textContent = JSON.stringify(window.__tafel, null, 1);
+  document.documentElement.dataset.ready = "1";
+}
+if (q.get("tafel")) tafel(); else if (q.get("arten")) arten(); else leiste();
+</script>
+</body>
+</html>

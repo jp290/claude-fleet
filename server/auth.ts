@@ -39,6 +39,45 @@ export function secretEq(a: string, b: string): boolean {
   return A.length === B.length && timingSafeEqual(A, B);
 }
 
+export type Principal =
+  | { kind: "owner"; via: "cookie" | "bearer" | "query" }
+  | { kind: "session"; slot: number; openedAt: number; role: "lane" | "main" | "generic" }
+  | { kind: "device"; deviceId: string }
+  | { kind: "guest"; shareId: string }
+  | { kind: "machine"; why: "tick" | "sensor" | "policy" | "boot" };
+
+type PrincipalState = {
+  slots: () => readonly Slot[];
+  ownerToken: () => string;
+  helperToken: () => string | null;
+  shares: () => readonly Share[];
+  sessionRole: (slot: Slot) => Extract<Principal, { kind: "session" }>["role"];
+};
+let principalState: PrincipalState | null = null;
+export function setPrincipalState(state: PrincipalState): void { principalState = state; }
+
+export function resolvePrincipal(req: Request): Principal | null {
+  const state = principalState;
+  if (!state) return null;
+  const given = req.headers.get("x-fleet-self-token") ?? "";
+  const slot = given ? state.slots().find((s) => s.cwd && s.selfToken && secretEq(given, s.selfToken)) : undefined;
+  if (slot) return { kind: "session", slot: slot.id, openedAt: slot.openedAt, role: state.sessionRole(slot) };
+  const offered = tokenFrom(req);
+  if (offered && secretEq(offered, state.ownerToken())) {
+    const auth = req.headers.get("authorization");
+    return { kind: "owner", via: auth?.startsWith("Bearer ") ? "bearer" : cookieToken(req) ? "cookie" : "query" };
+  }
+  const helper = req.headers.get("x-fleet-helper-token") ?? "";
+  if (helper && state.helperToken() && secretEq(helper, state.helperToken()!))
+    return { kind: "device", deviceId: "helper-token" };
+  const cookie = req.headers.get("cookie") ?? "";
+  const share = state.shares().find((sh) => {
+    const match = new RegExp(`(?:^|;\\s*)share_${sh.id}=([^;]+)`).exec(cookie);
+    return !!match && secretEq(match[1], sh.secret);
+  });
+  return share ? { kind: "guest", shareId: share.id } : null;
+}
+
 // --- share auth: per-share cookie, brute-force throttled (public-facing) ---
 // comment flood guard: per-share sliding minute, cheap and in-memory — guests are
 // already authed, this only stops a stuck key / paste loop from filling the thread

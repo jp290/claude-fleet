@@ -673,6 +673,21 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const preAuth = src.slice(src.indexOf("async fetch(req, server) {"), gate);
   check("§1 the owner gate is still the last line of fetch()'s chain (the whole pin rests on it)",
     gate > 0 && preAuth.length > 1000 && src.slice(gate, gate + 200).includes("tokenGate"), `gate@${gate}`);
+  const authSrc = await readText(`${ROOT}/server/auth.ts`);
+  const resolverAt = authSrc.indexOf("export function resolvePrincipal(req: Request)");
+  const resolverBody = resolverAt < 0 ? "" : authSrc.slice(resolverAt, authSrc.indexOf("\n}\n", resolverAt));
+  check("§1 the self credential has one resolver with a live-slot and secret comparison",
+    resolverBody.includes('req.headers.get("x-fleet-self-token")')
+      && resolverBody.includes("s.cwd && s.selfToken && secretEq(given, s.selfToken)")
+      && resolverBody.includes('kind: "session"'),
+    `resolver=${resolverAt >= 0} slot=${resolverBody.includes("s.cwd && s.selfToken")}`);
+  const selfAuth = preAuth.slice(preAuth.indexOf('url.pathname === "/api/self"'));
+  const inlineSelf = /const s = given \? slots\.find\(\(x\) => x\.cwd && x\.selfToken && secretEq\(given, x\.selfToken\)\)/;
+  check("§1 self routes call the resolver rather than copy the credential comparison",
+    selfAuth.includes("resolvePrincipal(req)") && !inlineSelf.test(selfAuth),
+    `resolver=${selfAuth.includes("resolvePrincipal(req)")} inline=${inlineSelf.test(selfAuth)}`);
+  check("§1 the inline-self detector rejects a reintroduced credential comparison",
+    inlineSelf.test(selfAuth + '\nconst s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;'));
   const stray = unrecognized(preAuth);
   check("§1 every pre-auth pathname match uses a form the extractor reads (a new form cannot slip past the pin)",
     stray.length === 0, stray.join(" | "));

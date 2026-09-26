@@ -174,7 +174,7 @@ import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, F
   TREE_CAP, FILE_WRITE_DENY, dirEntries, type DirEntry } from "./server/dir-explorer";
 import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
-import { tokenFrom, cookieToken, cookieName, secretEq, commentStrike, authFails, failStrike,
+import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, setPrincipalState, commentStrike, authFails, failStrike,
   shareGate, closeShareClients, guard } from "./server/auth";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { readCodexRollout, readPiSession, type ConversationRead, type TBlock, type TEntry } from "./server/conversation-read";
@@ -12785,6 +12785,16 @@ function boundProgramForMain(s: Slot): BoundMain {
   return { ok: true, program,
     sessionIdMatch: sessionIdMatchOf(bound.sessionId, s.sessionId) };
 }
+setPrincipalState({
+  slots: () => slots,
+  ownerToken: () => TOKEN,
+  helperToken: () => helperToken,
+  shares: () => shares,
+  sessionRole: (s) => {
+    const role = positionRole(s);
+    return role === "program-main" ? "main" : role === "lane" ? "lane" : "generic";
+  },
+});
 
 // THE SCOPE OF BOTH INBOX DOORS, in one place because they answer the SAME two questions in the
 // same words. A lane is refused FIRST and by its own sentence: it has no program inbox at all, and
@@ -15311,12 +15321,15 @@ const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";
 // all that differs; everything else stays a single text so the two cannot drift.
 const LANE_EXIT_HANDOFF_EXIT = "file it, then POST /api/self/succeed";
 const LANE_EXIT_HANDOFF_EXIT_CODEX = "your report IS the handover — a codex session compacts itself, and no baton door follows it";
-function selfPosition(s: Slot) {
-  const bound = boundProgramForMain(s);
-  const role = supervisor?.slot === s.id && supervisor.openedAt === s.openedAt ? "supervisor"
+function positionRole(s: Slot, bound = boundProgramForMain(s)): "supervisor" | "program-main" | "lane" | "orchestrator" | "generic" {
+  return supervisor?.slot === s.id && supervisor.openedAt === s.openedAt ? "supervisor"
     : bound.ok ? "program-main"
     : s.worktree ? "lane"
     : isOrchestratorLabel(s.label) ? "orchestrator" : "generic";
+}
+function selfPosition(s: Slot) {
+  const bound = boundProgramForMain(s);
+  const role = positionRole(s, bound);
   let receiver: { role: string; slot: number; openedAt: number } | null = null;
   if (role === "lane" && s.programId) {
     const program = programs.find((p) => p.id === s.programId && p.status === "active");
@@ -38653,8 +38666,8 @@ Bun.serve<WSData>({
     // purpose: a watch disarmed by its target's death delivers NOTHING into the pane, so armed-only
     // would make "still waiting" and "will never come" identical from inside. Narrativ: server-narrativ-archiv.md#fetch-get-apiself
     if (url.pathname === "/api/self" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return json({
         slot: s.id,
@@ -38681,8 +38694,8 @@ Bun.serve<WSData>({
     // NOTHING: the proof order it replaces is an obligation CLAUDE.md puts on lanes. Read-only,
     // aggregate payload, no capability granted. Why this tier: server-narrativ-archiv.md#fetch-get-apiselfflakes
     if (url.pathname === "/api/self/flakes" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return json(trailStatsFromQuery(url));
     }
@@ -38691,8 +38704,8 @@ Bun.serve<WSData>({
     // unlike /intake. The target slot is HARD-DERIVED from the token — a `slot` field in the body is
     // structurally never read (createAutoForSlot takes `s`). No lane check, by design.
     if (url.pathname === "/api/self/autos" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return createAutoForSlot(s, await readJson(req));
     }
@@ -38701,8 +38714,8 @@ Bun.serve<WSData>({
     // session credential may therefore propose/read only from a non-lane planning session. The
     // authenticated session triple is copied from the slot, never accepted from the body.
     if (url.pathname === "/api/self/programs" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot propose or read them as its own" }, 409);
@@ -38726,8 +38739,8 @@ Bun.serve<WSData>({
     }
 
     if (url.pathname === "/api/self/program-execution" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot read execution as its own" }, 409);
@@ -38739,8 +38752,8 @@ Bun.serve<WSData>({
     // bound MAIN's own Program) and a query parameter can only narrow it. The occupant is re-checked
     // after the last await, so a slot recycled mid-read answers 409 instead of a foreign slice.
     if (url.pathname === "/api/self/memory" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const openedAt = s.openedAt;
       const view = url.searchParams.get("view") ?? "work";
@@ -38751,7 +38764,8 @@ Bun.serve<WSData>({
         if (!pScope.ok) return pScope.response;
         const folded = await memoryPortfolioView(s, pScope, url);
         const g = effectiveGrant(s);
-        if (s.openedAt !== openedAt || !s.selfToken || !secretEq(given, s.selfToken))
+        const still = resolvePrincipal(req);
+        if (s.openedAt !== openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== openedAt)
           return json({ refusal: "occupant-changed", error: "the slot changed occupant while this read ran — nothing of the new occupant's is served on the old credential" }, 409);
         if (pScope.principal === "grant" && (g?.grantId !== pScope.grant?.grantId || g?.revision !== pScope.grant?.revision))
           return json({ refusal: "grant-changed", error: "the read grant was changed or revoked while this read ran — start a fresh read" }, 409);
@@ -38762,7 +38776,8 @@ Bun.serve<WSData>({
       const answer = view === "evidence" ? await memoryEvidenceView(s, scope, url)
         : view === "observations" ? await memoryObservationsView(s, scope, url)
         : json(view === "sources" ? await memorySourcesView(s, scope) : await memoryWorkView(s, scope));
-      if (s.openedAt !== openedAt || !s.selfToken || !secretEq(given, s.selfToken))
+      const still = resolvePrincipal(req);
+      if (s.openedAt !== openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== openedAt)
         return json({ refusal: "occupant-changed", error: "the slot changed occupant while this read ran — nothing of the new occupant's is served on the old credential" }, 409);
       return answer;
     }
@@ -38771,8 +38786,8 @@ Bun.serve<WSData>({
     // MAIN of an active Program. The list is validated at WRITE against that MAIN's integration HEAD,
     // so an unresolvable anchor is a named refusal here and never a surprise at dispatch.
     if (url.pathname === "/api/self/program-context-packs" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane cannot write its Program's context packs — its MAIN maintains them" }, 409);
@@ -38817,16 +38832,17 @@ Bun.serve<WSData>({
     // them is the OCCUPANCY gate — only the session the owner bound as Supervisor; a lane is never the
     // Supervisor, so the same check covers it. Narrativ: server-narrativ-archiv.md#fetch-supervisor-self-routes
     if (url.pathname === "/api/self/supervisor-view" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      // resolvePrincipal authenticates this route's x-fleet-self-token before the scope refusal.
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const refusal = supervisorRefusal(s);
       if (refusal) return json({ error: refusal }, 409);
       return supervisorView(s);
     }
     if (url.pathname === "/api/self/nudge" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const refusal = supervisorRefusal(s);
       if (refusal) return json({ error: refusal }, 409);
@@ -38837,8 +38853,8 @@ Bun.serve<WSData>({
     // path and the receiver from the watch, so the body can name nothing but the text.
     const supervisorComplete = /^\/api\/self\/supervisor-watch\/([a-z0-9]+)\/complete$/.exec(url.pathname);
     if (supervisorComplete && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const refusal = supervisorRefusal(s);
       if (refusal) return json({ error: refusal }, 409);
@@ -38848,8 +38864,8 @@ Bun.serve<WSData>({
     // MAIN-direct provenance is an explicit two-step report by THIS non-lane session. Git supplies
     // both heads; the body can only state the expected final head and the verification it ran.
     if (url.pathname === "/api/self/main-direct" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree) return json({ error: "a lane uses lane provenance, not main-direct provenance" }, 409);
       const now = Date.now();
@@ -38862,15 +38878,15 @@ Bun.serve<WSData>({
       return json({ open, outcomes });
     }
     if (url.pathname === "/api/self/main-direct/preflight" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return mainDirectPreflight(s, await readJson(req));
     }
     if ((url.pathname === "/api/self/main-direct/finalize" || url.pathname === "/api/self/main-direct/abandon")
       && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       const body = await readJson(req);
       if (url.pathname === "/api/self/main-direct/abandon") {
@@ -38886,8 +38902,8 @@ Bun.serve<WSData>({
     // The predicate is deliberately the SAME one done-looking classifies by (laneSignalView) — "whoever
     // can BE watched cannot watch", so the ⚙ steward may subscribe. Narrativ: server-narrativ-archiv.md#fetch-post-apiselfwatch
     if (url.pathname === "/api/self/watch" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not subscribe — lane-waits-on-lane is a coupling only the owner can make visible" }, 409);
@@ -38899,8 +38915,8 @@ Bun.serve<WSData>({
     // worker or receiver occupant. Receiver identity/provenance are derived inside
     // openClarification and no body field can nominate or overwrite them.
     if (url.pathname === "/api/self/clarifications" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (req.method === "GET") return json({ requests: clarificationsFor(s) });
       if (!s.worktree)
@@ -38914,16 +38930,16 @@ Bun.serve<WSData>({
     // succession changes nothing. No body is read on either verb — the program comes from the
     // binding and the entry from the path, so nothing a caller can write nominates either.
     if (url.pathname === "/api/self/inbox" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return await programInboxFor(s);
     }
 
     const selfInboxRead = /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/.exec(url.pathname);
     if (selfInboxRead && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return await readProgramInboxEntry(s, selfInboxRead[1]!);
     }
@@ -38934,8 +38950,8 @@ Bun.serve<WSData>({
     // while these three answer any principal that HOLDS AN ADDRESS about traffic addressed to it.
     // The sender is derived from the binding on every verb; no body on this rail names a principal.
     if (url.pathname === "/api/self/messages" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (req.method === "GET") return messageViewFor(s);
       return await sendMessageFor(s, await readJson(req));
@@ -38943,8 +38959,8 @@ Bun.serve<WSData>({
 
     const selfMessageRead = /^\/api\/self\/messages\/([0-9a-f]{24})\/read$/.exec(url.pathname);
     if (selfMessageRead && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return await readMessageFor(s, selfMessageRead[1]!);
     }
@@ -38958,8 +38974,8 @@ Bun.serve<WSData>({
     const selfDelegateDecision = /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/delegate\/(accept|reject|escalate)$/.exec(url.pathname);
     if ((selfDelegateDecision && req.method === "POST")
       || (url.pathname === "/api/self/fleet-report/delegated" && req.method === "GET")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree)
         return json({ refusal: "lane-scope", error: "a lane may not judge a fleet report — a lane files its own result" }, 409);
@@ -38976,8 +38992,8 @@ Bun.serve<WSData>({
     }
 
     if (url.pathname === "/api/self/fleet-report" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (req.method === "GET") return json({ reports: fleetReportsFor(s) });
       if (!s.worktree || s.label === STEWARD_LABEL)
@@ -38989,8 +39005,8 @@ Bun.serve<WSData>({
     // only on the same predicate FLEET_SELF_LANE is baked from, so hook and door can never disagree
     // about who is a lane; the steward's worktree counts, because nobody answers its pane either.
     if (url.pathname === "/api/self/harness-block" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (!s.worktree) return json({ error: "not a lane — only a lane's hook denies a dialog instead of asking" }, 409);
       return openHarnessBlock(s, await readJson(req));
@@ -39007,8 +39023,8 @@ Bun.serve<WSData>({
     // events-ack line, and this handler does read one.
     const selfReportDecision = /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/(accept|reject)$/.exec(url.pathname);
     if (selfReportDecision && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not judge a fleet report — a lane files its own result, it does not accept the results its own MAIN is owed" }, 409);
@@ -39018,8 +39034,8 @@ Bun.serve<WSData>({
 
     const selfClarificationReply = /^\/api\/self\/clarifications\/([0-9a-f]{24})\/reply$/.exec(url.pathname);
     if (selfClarificationReply && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not reply — lane-waits-on-lane is a coupling only MAIN may close" }, 409);
@@ -39032,8 +39048,8 @@ Bun.serve<WSData>({
     // derived from the caller's own MAIN binding, never taken from the body. GET is role-scoped to
     // the exact requester occupant — no worktree predicate anywhere in it.
     if (url.pathname === "/api/self/attention" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (req.method === "GET") return json({ requests: attentionFor(s) });
       if (s.worktree && s.label !== STEWARD_LABEL)
@@ -39045,8 +39061,8 @@ Bun.serve<WSData>({
     // caller's own open question. 401 for no token, 409 for a lane, never a silent no.
     const selfAttentionWithdraw = /^\/api\/self\/attention\/([0-9a-f]{24})\/withdraw$/.exec(url.pathname);
     if (selfAttentionWithdraw && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not withdraw attention — a lane raises no attention to take back" }, 409);
@@ -39064,8 +39080,8 @@ Bun.serve<WSData>({
     // that pin holds "no readJson" over the source between selfTaskRelease and selfEventAck.
     const selfTaskFilesProposal = /^\/api\/self\/tasks\/([a-z0-9]+)\/files-proposal$/.exec(url.pathname);
     if (selfTaskFilesProposal && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       const t = tasks.find((x) => x.id === selfTaskFilesProposal[1]);
       if (!t) return json({ error: "unknown task" }, 404);
@@ -39111,8 +39127,8 @@ Bun.serve<WSData>({
     // is asserting they are still exactly the work they were, and the only thing it found is that
     // they do not belong in THIS bundle. detachSlotTasks keeps its own answer for the other shape.
     if (url.pathname === "/api/self/wave/split" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — only the lane holding a wave can split it" }, 409);
       const spBody = await readJson(req);
@@ -39167,8 +39183,8 @@ Bun.serve<WSData>({
     // lane are still derived and cannot be nominated by the caller.
     const selfTaskReviewPark = /^\/api\/self\/tasks\/([a-z0-9]+)\/park$/.exec(url.pathname);
     if (selfTaskReviewPark && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not park itself for review — its bound Program-MAIN decides when the finished lane leaves its slot" }, 409);
@@ -39188,8 +39204,8 @@ Bun.serve<WSData>({
     // the events-ack line, so a body-reading route wedged in there would read as a regression of a
     // rule that had not moved.
     if (url.pathname === "/api/self/tasks" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not file a queue row — a lane executes the row it was founded on, it does not fill the queue its own MAIN releases from" }, 409);
@@ -39211,8 +39227,8 @@ Bun.serve<WSData>({
     // its own repository. Same body as the owner door, same one function behind it.
     const selfTaskNotes = /^\/api\/self\/tasks\/([a-z0-9]+)\/notes$/.exec(url.pathname);
     if (selfTaskNotes && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not assign a source — a lane executes the row it was founded on, it does not choose what the rows its own MAIN releases are worked against" }, 409);
@@ -39236,8 +39252,8 @@ Bun.serve<WSData>({
     // Placed ABOVE the release route because it reads a body (that route's "reads no body" pin).
     const selfVariantWinner = /^\/api\/self\/tasks\/([a-z0-9]+)\/variant-winner$/.exec(url.pathname);
     if (selfVariantWinner && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not decide a variant group — a lane is one of the variants, and a variant does not judge itself" }, 409);
@@ -39246,8 +39262,8 @@ Bun.serve<WSData>({
 
     const selfTaskBrief = /^\/api\/self\/tasks\/([a-z0-9]+)\/brief$/.exec(url.pathname);
     if (selfTaskBrief && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not sharpen a brief — the brief is the work order a lane was founded on, and the producer does not rewrite what it is measured against" }, 409);
@@ -39259,8 +39275,8 @@ Bun.serve<WSData>({
     // its own MAIN bundles stand on. Placed ABOVE the release route like the brief door, because
     // this handler reads a body and the release route's "reads no body" pin covers the region below.
     if (url.pathname === "/api/self/tasks/confirm-cards" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not confirm a card surface — a lane executes the row it was founded on, it does not decide what the rows its own MAIN bundles stand on" }, 409);
@@ -39273,8 +39289,8 @@ Bun.serve<WSData>({
     // from the path, the program from the caller's binding, the repo from the caller's checkout.
     const selfTaskRelease = /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/.exec(url.pathname);
     if (selfTaskRelease && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not release a queue row — releasing is the bracket above lanes" }, 409);
@@ -39286,8 +39302,8 @@ Bun.serve<WSData>({
     // from the binding, the repo from the checkout.
     const selfTaskHold = /^\/api\/self\/tasks\/([a-z0-9]+)\/hold$/.exec(url.pathname);
     if (selfTaskHold && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not hold a queue row — holding is the bracket above lanes, like releasing" }, 409);
@@ -39303,8 +39319,8 @@ Bun.serve<WSData>({
     // and the events-ack line — this handler reads no body either, but the pin is about a region.
     const selfTaskLand = /^\/api\/self\/tasks\/([a-z0-9]+)\/land$/.exec(url.pathname);
     if (selfTaskLand && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not land — a lane executes the row it was founded on, and its own MAIN adjudicates whether that work reaches the integration branch" }, 409);
@@ -39315,8 +39331,8 @@ Bun.serve<WSData>({
 
     const selfEventAck = /^\/api\/self\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
     if (selfEventAck && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return acknowledgeFleetEvent(s, selfEventAck[1]);
     }
@@ -39324,8 +39340,8 @@ Bun.serve<WSData>({
     // pane text, rendered now from the row. Same binding as the ack — this occupant's events only.
     const selfEventRead = /^\/api\/self\/events\/([a-z0-9]+)$/.exec(url.pathname);
     if (selfEventRead && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       const event = fleetEvents.find((e) => e.id === selfEventRead[1]);
       if (!event) return json({ error: "unknown event" }, 404);
@@ -39336,14 +39352,14 @@ Bun.serve<WSData>({
     // Main-session succession is the other non-lane-only self capability. The token identifies
     // the predecessor; the body may carry only a bounded label/carry, never a target slot or cwd.
     if (url.pathname === "/api/self/succeed" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return handleSelfSucceed(s, req);
     }
     if (url.pathname === "/api/self/retire" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return handleSelfRetire(s);
     }
@@ -39352,8 +39368,8 @@ Bun.serve<WSData>({
     // and no new capability: the route exists so session, board and sync path read ONE server-computed
     // answer. Narrativ: server-narrativ-archiv.md#fetch-get-apiselfdrift
     if (url.pathname === "/api/self/drift" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       // a plain session's credential is valid but the question is not askable: drift measures a
       // LANE against its integration branch. 409 with the why, not a generic 401 (same distinction
@@ -39380,8 +39396,8 @@ Bun.serve<WSData>({
     // gate is this process's env, a lane's CLAUDE.md is a spawn-time COPY. Read-only, grants no
     // capability. Narrativ: server-narrativ-archiv.md#fetch-get-apiselfgate
     if (url.pathname === "/api/self/gate" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — the gate judges a lane's land" }, 409);
       // rulebook drift: the expected side is `laneRulebookFor`, the SAME function the spawn seam wrote
@@ -39433,8 +39449,8 @@ Bun.serve<WSData>({
     // pane. It lands as a proposal — `confirmedAt` stays null until the OWNER confirms, so a producer
     // can never author the anchor it is judged against.
     if (url.pathname === "/api/self/criterion" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a criterion belongs to a lane's founding task" }, 409);
       const body = await readJson(req);
@@ -39475,8 +39491,8 @@ Bun.serve<WSData>({
     // command is fixed. AND IT STARTS NOTHING — but it BINDS the lane: while its offer is open or
     // claimed it must not run the suite locally; withdraw is where that permission comes back. Narrativ: server-narrativ-archiv.md#fetch-apiselfsuite-offer
     if (url.pathname === "/api/self/suite-offer" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a suite offer hands over a lane's own working tree" }, 409);
       expireHelperClaims();
@@ -39547,8 +39563,8 @@ Bun.serve<WSData>({
     // can never be named by the caller. A refused command therefore leaves NO row: the 400 and the
     // absence of anything a helper could claim are one fact.
     if (url.pathname === "/api/self/jobs" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const body = await readJson(req);
       const cmdCheck = helperCmdCheck(body?.cmd);
@@ -39593,8 +39609,8 @@ Bun.serve<WSData>({
     {
       const m = /^\/api\/self\/jobs\/([0-9a-f]{12})$/.exec(url.pathname);
       if (m && req.method === "GET") {
-        const given = req.headers.get("x-fleet-self-token") ?? "";
-        const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+        const p = resolvePrincipal(req);
+        const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
         if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
         expireHelperClaims();
         const job = commandJobs.get(m[1]!);
@@ -39609,8 +39625,8 @@ Bun.serve<WSData>({
     // over, never doubled) unless `{"abandon": true}`: nothing here gates, so abandoning costs only the
     // helper's time. An EXPIRED claim is absent everywhere. Narrativ: server-narrativ-archiv.md#fetch-post-apiselfsuite-offerwithdraw
     if (url.pathname === "/api/self/suite-offer/withdraw" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a suite offer hands over a lane's own working tree" }, 409);
       expireHelperClaims();
@@ -39642,8 +39658,8 @@ Bun.serve<WSData>({
     // the lane's own account of a verify-suite run. Grants no capability: nothing is started, stopped
     // or queued; the 409 for a non-lane keeps this family's one scope rule.
     if (url.pathname === "/api/self/verify-intent" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — verify-intent reports a lane's own gate run" }, 409);
       return recordVerifyIntent(s, await readJson(req));
@@ -39659,8 +39675,8 @@ Bun.serve<WSData>({
     // An id outside that set answers 409 with the reason, not 404: hiding the row's existence would
     // read as "the note is gone" and send the lane looking for a deletion that never happened.
     if (url.pathname === "/api/self/notes" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — the notes are the ones this lane's own brief delivered" }, 409);
       const ids = await laneNoteIds(s);
@@ -39712,8 +39728,8 @@ Bun.serve<WSData>({
     // from a lane that later dies, and its 200 is never a promise that the note will close.
     const selfNoteVerdict = /^\/api\/self\/notes\/([a-z0-9]+)\/verdict$/.exec(url.pathname);
     if (selfNoteVerdict && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a verdict is a lane's report on a note it was shown" }, 409);
       const body = await readJson(req);

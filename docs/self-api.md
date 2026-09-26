@@ -5,6 +5,23 @@ Prinzipal-/Scope-Regeln (wer welche Route bekommt, 409-Semantik) und die Diszipl
 `CLAUDE.md`; hier liegen Feldformen, Deckel, Ablehnungen und die curl-Beispiele. Bei Widerspruch
 gilt der Code.
 
+## Credential-Auflösung
+
+`server/auth.ts#resolvePrincipal` benennt eine erkannte Credential als `owner` (mit Kanal
+`cookie|bearer|query`), `session` (Slot, `openedAt`, Rolle `lane|main|generic`), `device`
+(Helper-Credential), oder `guest` (Share-Cookie). Ohne erkannte Credential liefert er `null`;
+`machine{why:tick|sensor|policy|boot}` ist der interne Arm des Typs und wird aus keinem HTTP-Request
+abgeleitet. Die Session-Rolle verwendet dieselbe Positionsableitung wie `GET /api/self`;
+Supervisor- und Orchestrator-Labels verleihen hier keine zusätzliche Berechtigung. Das Helper-Token
+identifiziert keine einzelne Hardware: `deviceId:"helper-token"` benennt nur die gemeinsame
+Credential, keine verifizierte Geräte-ID.
+
+Die Self-Routen lösen ausschließlich den Header `x-fleet-self-token` als Session auf. Sie behalten
+ihre eigenen 401-Antworten mit 400 ms Verzögerung und ihre fachlichen 409-Verweigerungen; der
+Resolver erteilt selbst keinen Grant. Owner-, Helper-, Steward-, Share- und Intake-Türen behalten
+ihre eigenen Reihenfolgen und Fehlerpfade. Eine Kombination mehrerer Credentials auf einem Request
+ändert damit keine Türentscheidung.
+
 ## position — `GET /api/self` → `position`
 
 Jede Session liest mit ihrem eigenen `FLEET_SELF_TOKEN` ihr Lagebild. Die bisherigen Felder von

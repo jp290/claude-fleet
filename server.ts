@@ -41442,10 +41442,10 @@ Bun.serve<WSData>({
           if (action === "down") return json({ ok: true });
         }
         const status = await testinstanzCommand(cwd, ["status"], 15_000);
-        if (status.code !== 0) return json({ error: `testinstanz status failed (${status.code}): ${status.err.trim().slice(-500)}` }, 409);
         const fact = testinstanzFact(status.out);
         if (!fact) {
           if (action === "status" && status.out.startsWith("down ")) return json({ ok: true, state: "down" });
+          if (status.code !== 0) return json({ error: `testinstanz status failed (${status.code}): ${status.err.trim().slice(-500)}` }, 409);
           return json({ error: "testinstanz did not report a live URL, port and expiry" }, 409);
         }
         return json(action === "status" ? { ok: true, state: "up", ...fact } : fact);

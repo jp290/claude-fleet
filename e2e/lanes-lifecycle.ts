@@ -54,7 +54,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       "case $1 in",
       "  up) pwd > ti-cwd; printf '%s' \"$*\" > ti-args ;;",
       "  down) rm -f ti-cwd ti-args ;;",
-      "  status) if [ -f ti-cwd ]; then echo 'up pid 123 http://100.64.0.1:8912/?token=fixture'; echo 'ttl: 45 min left (expiresAt=2000000000)'; else echo 'down (fixture)'; fi ;;",
+      "  status) if [ -f ti-cwd ]; then echo 'up pid 123 http://100.64.0.1:8912/?token=fixture'; echo 'ttl: 45 min left (expiresAt=2000000000)'; else echo 'down (fixture)'; fi; exit 1 ;;",
       "esac",
       "",
     ].join("\n"));
@@ -78,6 +78,10 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("testinstanz down invokes the same worktree script and removes the running fixture",
       down.ok && !exists(`${emptyBranch.cwd}/ti-cwd`)
       && ((await down.json().catch(() => ({}))) as { ok?: boolean }).ok === true);
+    const downStatus = await get(route);
+    check("testinstanz status keeps the script's down fact when its final lock diagnostic exits 1",
+      downStatus.status === 200
+      && ((await downStatus.json()) as { state?: string }).state === "down");
     rmSync(script);
   }
   const emptyRemove = await post(`/api/slots/${emptyBranch.slot}/land`, {});

@@ -184,6 +184,38 @@ export async function run(): Promise<void> {
     let meterClient = "", meterClientError = "";
     try { meterClient = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/board.ts`, "utf8"); }
     catch (e) { meterClientError = e instanceof Error ? e.message : String(e); }
+    // The lane names live in client.ts (laneBandNames), the model that consumes them in board.ts
+    // (meterModel) since the client split; the probe runs both halves together, unexported.
+    let bandBalls: ReturnType<typeof suiteMeter>["balls"] = [];
+    try {
+      const namesSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+      const namesStart = namesSrc.indexOf("const bandLetter =");
+      const namesEnd = namesSrc.indexOf("// THE FOUR STATES A ROW", namesStart);
+      const modelStart = meterClient.indexOf("export function meterModel()");
+      const modelEnd = meterClient.indexOf("export const METER_TITLE", modelStart);
+      if (namesStart < 0 || namesEnd < 0 || modelStart < 0 || modelEnd < 0) throw new Error("meter model or lane names missing");
+      const source = (namesSrc.slice(namesStart, namesEnd) + meterClient.slice(modelStart, modelEnd)).replace(/^export /gm, "");
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+      const fleet = [
+        { id: 17, cwd: "/repo", label: "Main", worktree: null },
+        { id: 18, cwd: "/lane-5a", label: "L18", worktree: { branch: "fleet/x-aaaa", letter: "A" } },
+        { id: 19, cwd: "/lane-4a", label: "L19", worktree: { branch: "fleet/y-bbbb", letter: "A" } },
+      ];
+      const stacksOf = () => [
+        { anchor: { id: 5 }, lanes: [fleet[1]] },
+        { anchor: { id: 4 }, lanes: [fleet[2]] },
+      ];
+      const runModel = new Function("suiteMeter", "fleet", "stacksOf", "instanceName", "gateInfo",
+        "postLandLive", "meterSuites", "helperDevicesInfo", `${js}\nreturn meterModel();`);
+      bandBalls = (runModel(suiteMeter, fleet, stacksOf, "example-host",
+        { lock: null, reports: [rep(17, "running"), rep(18, "running"), rep(19, "running")] },
+        null, [], []) as ReturnType<typeof suiteMeter>).balls;
+    } catch (e) { meterClientError = e instanceof Error ? e.message : String(e); }
+    check("(LS.meter) Checks uses each lane's full sidebar name when both stored letters are A",
+      bandBalls.find((b) => b.slot === 18)?.name === "5A"
+        && bandBalls.find((b) => b.slot === 19)?.name === "4A"
+        && bandBalls.find((b) => b.slot === 17)?.name === "Slot 17",
+      meterClientError || bandBalls.map((b) => `${b.slot}:${b.name}`).join(" "));
     check("(LS.meter) the right tab uses the German row words and explains them on hover",
       /meterLine\(b, serverClock\(\), true\)/.test(meterClient)
         && /meterKind\(b\.kind\)\.title/.test(meterClient), meterClientError || "suite meter renderer");

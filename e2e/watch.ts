@@ -7526,9 +7526,18 @@ export async function run(): Promise<void> {
       await Bun.sleep(100);
       holdLines = await holdPrompts();
     }
-    const holdStateAfter = holdState && existsSync(holdState) ? readFileSync(holdState, "utf8") : "";
-    const holdComposerBuf = holdStateAfter.slice(holdStateAfter.indexOf("\n") + 1);
-    const holdPhase = holdStateAfter.split("\n")[0] ?? "";
+    let holdStateAfter = "";
+    let holdComposerBuf = "";
+    let holdPhase = "";
+    // tmux has queued every BSpace when the send returns; the stand-in records each key as it
+    // consumes it. Wait for its final internal state, not an intermediate prefix on a loaded Mac.
+    for (let i = 0; i < 80; i++) {
+      holdStateAfter = holdState && existsSync(holdState) ? readFileSync(holdState, "utf8") : "";
+      holdComposerBuf = holdStateAfter.slice(holdStateAfter.indexOf("\n") + 1);
+      holdPhase = holdStateAfter.split("\n")[0] ?? "";
+      if (holdPhase.startsWith("backspace:") && holdComposerBuf === "") break;
+      await Bun.sleep(50);
+    }
     check("an unattended send whose payload is NOT accepted rolls its own payload back out of the composer",
       holdLines.length >= 1 && holdPhase.startsWith("backspace:") && holdComposerBuf === "",
       JSON.stringify({ lines: holdLines.length, phase: holdPhase, residue: holdComposerBuf.slice(0, 120) }));

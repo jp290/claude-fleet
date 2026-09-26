@@ -2364,6 +2364,32 @@ enthalten. Stand 2026-09-05 12:45: **3 saubere Laeufe, 0 Family-Fails — sieben
 kommen von selbst (jeder Post-Land-Audit zaehlt mit); die Zahl ist das Kriterium des Programs,
 nicht die Bringschuld dieser Lane.
 
+**REPARIERT (2), 2026-09-26, Fix-Commit `<sha>` (von MAIN einzusetzen).** Das lokale Register
+zaehlte fuer die feste `pi-unfenced`-Prompt-Log-Zeile 0/213 rote Laeufe vom 2026-09-05 bis
+2026-09-20 und 12/54 seit 2026-09-21. Im roten Fork-Lauf war die Zeile `send-uncertain`,
+`attempts:1`, `deliveredAt:null`; der Send-Audit schrieb `acceptance unobservable`, obwohl der
+Stand-in den vollstaendigen 830-Byte-Turn mit derselben Event-ID angenommen hatte. Die
+SETTLE-Selbstprobe sah zugleich `held:true` und dennoch `send-uncertain`: ihr Gate hielt den
+Kill, die Sendung scheiterte an der Beobachtung. Ursache in `server.ts#awaitArrival`:
+`differs` aus einer einzelnen Composer-Frame-Lesung beendete die Ankunftspruefung sofort;
+`server.ts#sendText` darf seit 2026-09-21 einen leeren Composer nach Enter nur zusammen mit
+`arrival === "complete"` als beobachtete Zustellung buchen. Das auf 800 ms gekuerzte
+Suite-Fenster konnte auf diesem Mac auch nach weiteren Lesungen vor dem vollstaendigen Frame
+enden. Der Fix liest bei `fleet-event` bis zum vollstaendigen Frame oder mindestens zum
+normalen 3-s-Budget weiter; ein gesehener Teil-Paste bleibt ohne spaeteren Komplettbeweis
+blockiert. Andere Sendepfade behalten ihr bisheriges Zeitverhalten. `e2e/watch.ts` wartet beim
+unabhaengigen Rollback-Check hoechstens 4 s auf die einzeln verarbeiteten BSpaces des Stand-ins;
+die exakte Bedingung `backspace:` plus leerer interner Buffer bleibt bestehen.
+
+**Beweis am lokalen Mac, seriell und ohne Helfer:** Vor dem Fix fiel das Zustelltrio im Fork;
+`git stash push -- server.ts` nahm den ersten Fix fuer die Mutationsprobe zurueck und derselbe
+Baum fiel erneut auf allen drei `pi-unfenced`-Zeilen (Audit `acceptance unobservable`,
+vollstaendiger 830-Byte-Turn). Auf dem finalen Diff endeten acht aufeinanderfolgende lokale
+`FLEET_E2E_MODULES=watch ./e2e-isolated.sh`-Laeufe mit `ALL PASS`, je 4/4 Zielchecks gruen
+und 0 FAIL im Trail: `isolated-20260926T160347Z-74174`, `161246Z-5842`,
+`162446Z-78775`, `163515Z-34221`, `164701Z-5576`, `165850Z-82603`,
+`171547Z-29178`, `172431Z-54762` (alle mit Praefix `isolated-20260926T`).
+
 ### 11.2k A thirteenth family: the raw-review persist race in `e2e/outcomes.ts` (2026-09-01 — REPARIERT, mechanism read out of the code)
 
 **The member, a singleton:** `outcome: a reviewer answer that did NOT parse is persisted as

@@ -14349,7 +14349,8 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // an unattended release, and a filing lost inside the debounce window would vanish exactly the
   // way an unlisted `source` vanishes at the next boot: silently, with every check still green.
   await saveStateNow();
-  audit("main_task", s.id, `${t.id} program=${program.id} ${kind}${variantRows.length ? ` variants=${variantRows.length}` : ""}`);
+  audit("main_task", occupant.slot, `${t.id} program=${program.id} ${kind}${variantRows.length ? ` variants=${variantRows.length}` : ""}`,
+    targetRepo !== mainRepo ? { openedAt: occupant.openedAt, mainRepo, targetRepo } : undefined);
   // A PARKED PROPOSAL IS ITS OWN ACT, booked under the event the ledger already reserves for it
   // (server/audit-log.ts: "a lane or MAIN parks a proposal … with the proposing slot"). Two lines,
   // not one, for main_brief's reason: filing a row and declaring the surface it stands on are two

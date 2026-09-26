@@ -7154,7 +7154,8 @@ export async function run(ctx: Ctx): Promise<void> {
   await post("/api/dispatch", { on: false });
   await post("/api/autos/switch", { on: false });
   const auditLines = (): number => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
-  const auditSince = (from: number): { event?: string; slot?: number; detail?: string }[] =>
+  const auditSince = (from: number): { event?: string; slot?: number; detail?: string;
+    openedAt?: number; mainRepo?: string; targetRepo?: string }[] =>
     readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).slice(from)
       .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string });
 
@@ -7192,6 +7193,7 @@ export async function run(ctx: Ctx): Promise<void> {
     fetch(`${BASE}/api/self/tasks`, { method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": successorToken },
       body: JSON.stringify(body) });
+  const auditBeforeCrossFile = auditLines();
   const crossFile = await selfFile({ text: "cross-repo main filing", kind: "auftrag", repo: REPO2 });
   const crossBody = await crossFile.json() as { task?: TaskRow };
   const crossId = crossBody.task?.id ?? "";
@@ -7202,6 +7204,14 @@ export async function run(ctx: Ctx): Promise<void> {
       && crossStored.programId === mainProgram.id && crossStored.status === "pending"
       && crossStored.slot == null && crossStored.releasedBy === undefined,
     `${crossFile.status} ${JSON.stringify(crossStored)}`);
+  const crossAudit = auditSince(auditBeforeCrossFile)
+    .filter((r) => r.event === "main_task" && r.detail?.startsWith(`${crossId} program=`));
+  check("cross-repo filing records one main_task audit row with the filing occupant and both canonical repos",
+    crossAudit.length === 1 && crossAudit[0]?.slot === successorSlot
+      && crossAudit[0]?.openedAt === releaseBinding?.openedAt
+      && crossAudit[0]?.mainRepo === realpathSync(REPO)
+      && crossAudit[0]?.targetRepo === realpathSync(REPO2),
+    JSON.stringify(crossAudit));
   const crossRelease = await selfRelease(successorToken, crossId);
   const crossReleaseText = await crossRelease.text();
   check("cross-repo filing leaves release in the MAIN checkout: the foreign row remains pending",
@@ -7210,6 +7220,8 @@ export async function run(ctx: Ctx): Promise<void> {
     `${crossRelease.status}:${crossReleaseText}`);
   const beforeUnknown = (await allTasks()).length;
   const unknownFile = await selfFile({ text: "unknown repo", kind: "auftrag", repo: `${REPO2}-unknown` });
+  const unknownBody = await unknownFile.clone().json() as { task?: TaskRow };
+  if (unknownBody.task?.id) madeTasks.push(unknownBody.task.id);
   const unknownText = await unknownFile.text();
   check("cross-repo filing refuses a repo outside the dispatch list without minting a row",
     unknownFile.status === 400 && unknownText.includes("known dispatch repository")

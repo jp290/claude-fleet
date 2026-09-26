@@ -941,6 +941,9 @@ typisiertes oder unbekanntes `repo` wird als 400 abgewiesen und mintet keine Zei
 während der asynchronen Vorbereitung aus der Liste fällt, lautet die Antwort 409 und es wird
 ebenfalls nichts gefilt. Das Feld erweitert nur das Filen: Release, Hold, Kartenbestätigung und Land
 behalten ihre bestehenden Repo-Grenzen.
+Bei einem Filing über die Repo-Grenze trägt die bestehende `main_task`-Audit-Zeile zusätzlich
+`slot`, `openedAt`, `mainRepo` und `targetRepo` als eigene Felder. Die beiden Repo-Pfade
+sind kanonisch; `openedAt` stammt vom authentifizierten Occupant der Anfrage.
 
 **Optionale Karte (seit 08ec67c0):** der Body darf neben `text`/`kind`/Spawn-Tripel ein
 `card{ziel, surface{files, symbols}, done, verify, verboten}` tragen (dieselbe Form nimmt die

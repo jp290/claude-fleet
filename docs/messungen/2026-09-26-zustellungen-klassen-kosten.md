@@ -117,11 +117,44 @@ Deterministische Stichprobe: zehn bestaetigte Zeilen je Klasse, gleichmaessig ue
 | Lane | owner | 460 | 444 874 |
 | Lane | terminal | 2 337 | 3 934 937 |
 
+## Tür-Lücken und die Klassifikationsgrenze
+
+Die Rollen- und Pfadzaehlung misst eine Exposition gegen Rollen-Tueren, nicht den Inhalt oder den konkreten Wunsch einer Nachricht. Ohne Nachrichteninhalt kann die Messung nicht behaupten, eine Zustellung sei tatsaechlich an einer fehlenden Tuer gescheitert.
+
+| Tür / Frage | Sieben-Tage-Beleg | Anteil / Aussage |
+|---|---|---|
+| MAIN hat keine separate Spawn-Tuer fuer eine bereits gefeilte Task | 79 angenommene Zustellungen an Program-MAIN; davon 25 auf Aktionspfaden | 2,9 % aller 2 730 angenommenen Sends gingen an Program-MAIN; Aktionspfade sind 25/79 = 31,6 %. Die optionale Spawn-Auswahl kann MAIN beim Filen setzen, aber nicht ueber eine Self-Spawn-Route nachtraeglich aendern. `task_spawn` steht 177-mal im Audit ohne Slot-Prinzipal; das belegt den Owner-Route-Umweg, aber ordnet ihn keiner MAIN zu. Die 25 Aktionspfade sind eine Obergrenze moeglicher Exposition, keine nachgewiesenen Spawn-Anfragen. |
+| MAIN kann keine Task ins fremde Repo einstellen | `server.ts#createTaskForMain` leitet `repo` aus dem MAIN-Checkout ab; eine Repo-Auswahl steht nicht in den erlaubten Feldern. | Die 79/25 Program-MAIN-Zahlen sind nur die Rollen-Obergrenze. Audit-`send` traegt kein Ziel-Repo; die Zahl konkreter grenzueberschreitender Anfragen ist `UNGEMESSEN`. |
+| MAIN hat kein Self-Land auf Overhaul | `program_promotion` auditiert `guarded` innerhalb des Fensters; der Overhaul-Record bindet MAIN Slot 5. Es gibt vier `self_land_start`-Zeilen auf Slot 5 im Fenster, davon eine nach Oeffnung der aktuellen Slot-5-Session. `server.ts#selfLandTaskForMain` enthaelt die gebundene Self-Land-Tuer. | Fuer diesen Program-Stand ist die Tuer nicht abwesend. Ein Start ist kein Beleg fuer einen erfolgreichen Land. Die Program-MAIN-Exposition bleibt 79/2 730 = 2,9 %; konkrete aufgrund der Promotion blockierte Sends sind nicht erkennbar. |
+
+Als gemeinsamer Expositions-Zaehler sind 288/2 730 = 10,5 % der angenommenen Sends an Orchestratorin oder Program-MAIN gerichtet; davon liegen 148 (123 an die Orchestratorin, 25 an Program-MAIN) auf Aktionspfaden, also 5,4 % aller Sends. Das ist ein Rollen-/Pfad-Oberwert fuer moegliche Tuerrelevanz, keine kausale Betroffenheitsquote. Der Messpfad enthaelt keine typisierte Tuer-Ablehnung pro Zustellung.
+
+### Was eine Pfadregel offenlaesst
+
+`path=owner` klassifiziert eine Route bzw. das verwendete Owner-Credential, nicht den Sprecher. Im Fenster sind das 575/2 730 angenommene Sends (21,1 %); davon gingen 99/209 Orchestratorin-Sends ueber `owner` (47,4 %). Fuer diese 99 kann die Regel allein Owner→Orchestratorin und MAIN→Orchestratorin nicht trennen. Die vorgegebene Ein-Session-Beobachtung (Slot 9: 27 `owner`, ungefaehr 12 Owner und 15 MAIN→Orchestratorin) ist ein Beleg fuer genau diese Mehrdeutigkeit, aber keine Aufteilung der 99 Wochenzeilen. Diese 99 sind daher ein **Jev-Kandidat**; die Textinhalte wurden nicht gelesen und erlauben hier keine Intent-Klassifikation.
+
+## Kontext-Tokens je belegbarem Slot-Modell
+
+Der Token-Nenner wird nicht aus einer Modellfamilie geraten. `server.ts#contextReading` nimmt bei Claude das Modellfenster aus `src/protocol.ts#contextWindowFor`; fuer die an `fleet.json`-`openedAt` und Audit-`slot_open` gebundene aktuelle Empfaenger-Session ergibt `claude-opus-5-5[1m]` damit 1 000 000 Tokens. Beim Codex-Adapter kommt das Fenster dagegen aus derselben Rollout-Zeile wie `usedTokens` (`windowFromFile`), waehrend `audit.jsonl` nur `ctxPct`, nicht `windowTokens`, speichert. Darum bleiben die Codex-Snapshots trotz bekanntem Slot-Modell tokenmaessig `UNGEMESSEN`; der generische GPT-Nenner waere hier kein belegter Runtime-Nenner. Die Formel fuer jeden auswertbaren Sensorwert lautet `ctxPct / 100 × Modellfenster`. Mittelwerte sind Snapshots, nicht addierbarer Tokenverbrauch.
+
+| Empfaengerrolle | Slot-Modell | Fenster | `ctxPct` n / Mittel | Mittlerer Kontextstand | Median |
+|---|---|---:|---:|---:|---:|
+| Program-MAIN | claude-opus-5-5[1m] | 1 000 000 | 53 / 16,6 % | ~165 981 Tokens | ~158 000 Tokens |
+| Orchestratorin | claude-opus-5-5[1m] | 1 000 000 | 10 / 17,2 % | ~171 600 Tokens | ~183 000 Tokens |
+| Program-MAIN | gpt-6-astra | UNBEKANNT | 18 / 25,0 % | `UNGEMESSEN` | `UNGEMESSEN` |
+| Lane | gpt-6-astra | UNBEKANNT | 5 / 54,5 % | `UNGEMESSEN` | `UNGEMESSEN` |
+| Lane | gpt-6-sol | UNBEKANNT | 3 / 43,4 % | `UNGEMESSEN` | `UNGEMESSEN` |
+| Lane | gpt-6-luna | UNBEKANNT | 0 / — | `UNGEMESSEN` (1 Send ohne `ctxPct`) | `UNGEMESSEN` |
+
+Von den 2 294 Sends mit `ctxPct` lassen sich 63 einem aktuellen Slot-Modell mit bekanntem Nenner zuordnen, 26 einer aktuellen GPT-6-Session ohne belegbaren Modellnenner. Weitere 2 205 Prozentwerte gehoeren zu historischen Slot-Besetzungen, deren damaliges Modell die erlaubten Snapshots nicht mehr tragen. 436 angenommene Sends haben schon keinen `ctxPct`-Sensorwert. Damit sind Kontext-Tokens fuer 2 667/2 730 angenommene Sends `UNGEMESSEN`; die 63 schaetzbaren Werte beschreiben nur den Kontextstand dieser Send-Momente, nicht die Tokenmenge der Nachricht.
+
 ## Methode und Grenzen
 
 - Quellen: `audit.jsonl.1`, `audit.jsonl`, `streams/prompts.jsonl` sowie `fleet.json` im Haupt-Checkout. Die Audit-Rotation deckt das Fenster ohne Luecke ab; `audit.jsonl.archive` endet am 2026-09-07 und traegt nichts zum Messfenster bei.
 - Zustellzaehlung: nur Audit-`event=send`; `acceptance=observed` ist bestaetigt, `unobservable` bleibt als Ankunft unbekannt separat, refusals und nicht angenommene Sends sind ausgeschlossen. `fleet_event_delivered` wurde nicht nochmals gezaehlt, um denselben Pane-Send nicht doppelt zu zaehlen.
 - Rollen: Slot 9 ist die Orchestratorin. Program-MAIN-Sessions werden ueber `programs[].main.openedAt` mit dem naechsten `slot_open` desselben Slots (Abstand unter 2 s) verbunden. Die verbleibenden Empfaenger werden als Lane eingeordnet. Das ist die Zuordnung aus den aktuellen Fleet-Daten; historische Occupant-Wechsel, die in `fleet.json` nicht mehr stehen, sind damit nicht unabhaengig belegt.
+- Tür-Proxies: `server.ts#createTaskForMain` und `server.ts#selfLandTaskForMain` pruefen die Repo- bzw. Land-Bindung; Audit-`send` hat keinen ablehnenden Tuergrund und `task_spawn` keinen Slot-Prinzipal. Daher sind die oben genannten Anteilswerte nur Rollen-/Routen-Obergrenzen.
+- Modellnenner: `src/protocol.ts#contextWindowFor` plus `server.ts#contextReading` bestimmen die Claude-Fenster; der Codex-Adapter liest sein Fenster aus dem Rollout, aber das Audit persistiert es nicht. Historische Slot-Modelle sind in den erlaubten Audit-/Slot-Feldern nicht vollstaendig enthalten und werden nicht aus Harness oder Rolle erraten.
 - Prompt-Stream-Schema: die Zeilen tragen `ts`, `slot`, `source` und `text`, aber kein `openedAt`-Feld. Die Zeitfilterung nutzt daher `ts`; Rollen werden wie oben ueber Slot-Oeffnung und MAIN-Bindung zugeordnet. Byte-Laenge ist UTF-8-Bytes von `text`.
 - Kontextstand: `ctxPct` ist nur fuer 2 294 von 2 730 angenommenen Sends vorhanden. Die uebrigen 436 Kontextstaende bleiben `UNGEMESSEN`; Bytes erlauben keinen belastbaren Rueckschluss auf den vorbestehenden Session-Kontext. Nur als getrennte Groessenheuristik: `~5 858 438 B / 4 B je Token = ~1 464 610 Payload-Tokens`; das ist keine gemessene Tokenzahl und kein Kontextverbrauch.
 - Inhaltsfreie Messung: kein Zustell- oder Prompttext, keine Tokenwerte aus Modellantworten, keine Klar- oder Klarnamen und keine Netzwerkadressen wurden in die Notiz uebernommen.

@@ -155,7 +155,7 @@ export async function run(): Promise<void> {
     const phases = suiteMeter({ ...base, gate: { lock: null,
       reports: [rep(1, "waiting"), rep(2, "running"), rep(3, "done", 0), rep(4, "failed", 1)] } });
     check("(LS.meter) a lane's own phases sit at wait / run / done, green and red told apart",
-      at(phases) === "done:Slot 3 · L3:ok done:Slot 4 · L4:red run:Slot 2 · L2:plain wait:Slot 1 · L1:plain", at(phases));
+      at(phases) === "done:Slot 3:ok done:Slot 4:red run:Slot 2:plain wait:Slot 1:plain", at(phases));
     check("(LS.meter) a failed run says its exit code beside the suite",
       phases.balls.find((b) => b.slot === 4)?.what === "e2e-isolated · exit 1",
       JSON.stringify(phases.balls.find((b) => b.slot === 4)));
@@ -172,14 +172,14 @@ export async function run(): Promise<void> {
         { slot: 7, branch: "fleet/y-bbbb", state: "reported", device: "workhorse", at: 3, result: "red" },
       ] });
     check("(LS.meter) offers: open waits, claimed runs on the helper, a red report lands red in done",
-      at(offers) === "done:Slot 7 · bbbb:red helper:Slot 6 · Queue:plain wait:Slot 5 · 4198:plain", at(offers));
+      at(offers) === "done:Slot 7:red helper:Slot 6:plain wait:Slot 5:plain", at(offers));
     const referenced = suiteMeter({ ...base, slots: [{ id: 17, label: "Build", branch: "fleet/x-aaaa", letter: "3A" }],
       gate: { lock: null, reports: [rep(17, "running")] } }).balls[0];
     check("(LS.meter) a lane uses its worktree letter, not a slot-number threshold or branch tail",
-      referenced.name === "3A · L17" && phases.balls[0].name === "Slot 1 · L1", referenced.name);
+      referenced.name === "3A" && phases.balls[0].name === "Slot 1", referenced.name);
     check("(LS.meter) each run kind has an owner word and a German explanation",
       meterKind("land check").label === "Landprüfung" && meterKind("land check").title.includes("bevor")
-        && meterLine(referenced, 1000, true)[0] === "Vorschau"
+        && meterLine(referenced, 1000, true).at(-1) === "Vorschau"
         && meterKind("post-land check").label === "Nachprüfung", meterLine(referenced, 1000).join(" · "));
     let meterClient = "", meterClientError = "";
     try { meterClient = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8"); }
@@ -194,11 +194,11 @@ export async function run(): Promise<void> {
       `${laneTail("fleet/260918203940-4198")} ${laneTail("fleet/260918-aepfel-oel-und-strassen-abcd")} ${laneTail("feature/login")}`);
     const holder = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: true, state: "overdue" }, reports: [] } });
     check("(LS.meter) a HELD mutex nobody named still puts a ball in 'run' — an empty run station would say 'nothing runs'",
-      holder.lock === "overdue" && at(holder) === "run:check run:warn"
+      holder.lock === "overdue" && at(holder) === "run:Fleet:warn"
         && holder.balls[0].what === "pid 4242", JSON.stringify(holder));
     const named = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: true }, reports: [rep(2, "running")] } });
     check("(LS.meter) …but not beside a run that IS named — no phantom second holder",
-      named.lock === "held" && at(named) === "run:Slot 2 · L2:plain", at(named));
+      named.lock === "held" && at(named) === "run:Slot 2:plain", at(named));
     const stale = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: false }, reports: [] } });
     check("(LS.meter) should NOT draw a holder for a STALE lock — a finished suite's leftover dir is an idle machine",
       stale.lock === "stale" && stale.balls.length === 0, JSON.stringify(stale));
@@ -211,7 +211,7 @@ export async function run(): Promise<void> {
     check("(LS.meter) the post-land audit is ONE ball in 'run' (its slotless lock row steps aside), its folded land waits",
       at(audit) === "run:post-land check:plain wait:post-land check:plain"
         && audit.balls.find((b) => b.station === "run")?.what === "main@abcdef01"
-        && audit.balls.find((b) => b.station === "wait")?.what === "after 2222", JSON.stringify(audit.balls));
+        && audit.balls.find((b) => b.station === "wait")?.what === "nach Land von Lane 2222 (2222)", JSON.stringify(audit.balls));
     const onHelper = suiteMeter({ ...base, audit: live,
       devices: [{ name: "workhorse", claims: [{ kind: "audit", repo: "claude-fleet", ref: "main", expiresAt: 0 }] }] });
     check("(LS.meter) an audit a helper holds sits at 'helper' and names the device as its PLACE",
@@ -245,21 +245,35 @@ export async function run(): Promise<void> {
     // no verify-intent, so a 20-minute hold used to be drawn with an empty waiting station behind it.
     const q = (n: number, pid: number, alive: boolean, position: number, sinceMs: number | null = 1000) =>
       ({ n, pid, alive, sinceMs, position });
-    const queued = suiteMeter({ ...base, gate: { lock: { pid: 900, alive: true },
-      reports: [], queue: [q(1, 901, true, 1), q(2, 902, true, 2)] } });
-    check("(LS.meter) every live ticket at the mutex is one WAITING ball carrying its own position",
+    const queued = suiteMeter({ ...base, slots: [{ id: 5, label: null, branch: "fleet/x-aaaa", letter: "5A" },
+      { id: 6, label: null, branch: "fleet/x-bbbb", letter: "6B" }], gate: {
+      lock: { pid: 900, alive: true, owner: { slot: 5, branch: "fleet/x-aaaa" } }, reports: [],
+      queue: [{ ...q(1, 901, true, 1), owner: { slot: 6, branch: "fleet/x-bbbb" } }, q(2, 902, true, 2)] } });
+    check("(LS.meter) waiters name their slot and branch and say whose run is ahead",
       queued.balls.filter((b) => b.station === "wait").length === 2
-        && queued.balls.filter((b) => b.station === "wait").every((b) => meterKind(b.kind).label === "Wartender Prüflauf")
-        && queued.balls.some((b) => b.what === "position 1 of 2")
-        && queued.balls.some((b) => b.what === "position 2 of 2"),
+        && queued.balls.some((b) => b.name === "6B" && b.branch === "fleet/x-bbbb"
+          && b.what === "wartet hinter 5A · Platz 1/2")
+        && queued.balls.some((b) => b.what === "wartet hinter 6B · Platz 2/2"),
       JSON.stringify(queued.balls.map((b) => [b.station, b.what])));
+    const firstWaiter = queued.balls.find((b) => b.name === "6B");
+    check("(LS.meter) a narrow row reads branch, wait state, then kind",
+      firstWaiter !== undefined && meterLine(firstWaiter, Date.now(), true)[0] === "bbbb"
+        && meterLine(firstWaiter, Date.now(), true)[1] === "wartet hinter 5A"
+        && meterLine(firstWaiter, Date.now(), true)[2].startsWith("seit ")
+        && meterLine(firstWaiter, Date.now(), true).at(-1) === "Wartender Prüflauf",
+      JSON.stringify(firstWaiter && meterLine(firstWaiter, Date.now(), true)));
+    const ownedHolder = queued.balls.find((b) => b.station === "run");
+    check("(LS.meter) an unreported holder uses the same board name and branch as its lock owner",
+      ownedHolder?.name === "5A" && ownedHolder.branch === "fleet/x-aaaa", JSON.stringify(ownedHolder));
+    check("(LS.meter) missing owner metadata stays explicit instead of borrowing another lane",
+      queued.balls.some((b) => b.name === "Lauf 902" && b.branch === null), JSON.stringify(queued.balls));
     // a ticket whose process is gone is the wrappers' to reap, not this reader's to hide: it is
     // still part of what the directory says, and a silently dropped one would make the line look
     // shorter than the next contender will find it
     const orphan = suiteMeter({ ...base, gate: { lock: null, reports: [], queue: [q(3, 903, false, 0)] } });
     check("(LS.meter) a ticket whose process is gone is SHOWN and said to be gone, never silently dropped",
       orphan.balls.length === 1 && orphan.balls[0].tone === "warn"
-        && /its process is gone/.test(orphan.balls[0].what), JSON.stringify(orphan.balls));
+        && /Prozess weg/.test(orphan.balls[0].what), JSON.stringify(orphan.balls));
     check("(LS.meter) a server that sends no queue draws no waiters — absent is 'not reported', not 'nobody waits'",
       suiteMeter({ ...base, gate: { lock: { pid: 900, alive: true }, reports: [rep(2, "running")] } })
         .balls.filter((b) => b.kind === "queued check run").length === 0, "a phantom waiter");

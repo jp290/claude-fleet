@@ -29290,6 +29290,7 @@ const SUITE_HOLD_OVERDUE_MS = Math.max(60_000, Number(process.env.FLEET_SUITE_OV
 type GateLockState = "held" | "overdue" | "stale" | "parked" | "unknown";
 type GateLockBirthState = "matched" | "mismatched" | "missing" | "empty" | "malformed" | "unreadable" | "unmeasurable" | "not-applicable";
 interface GateLock {
+  owner?: SuiteOwner;
   pid: number | null;     // the recorded holder, or null when the dir carries no readable pid
   alive: boolean | null;  // null = a pid-LESS dir: a MANUAL park (a human parked the machine), and
                           // e2e-stage.sh never reaps one. false = the holder is gone; the next
@@ -29702,6 +29703,21 @@ interface GateQueueTicket {
   dead?: "gone" | "recycled";
   sinceMs: number | null;    // how long this ticket has been in the queue; null = not timeable
   position: number;          // 1-based rank among LIVE tickets; 0 = this ticket is not in the line
+  owner?: SuiteOwner;
+}
+interface SuiteOwner { slot: number | null; branch: string }
+function suiteOwner(raw: string): SuiteOwner | null {
+  const [cwd, branch, slotText] = raw.split("\n");
+  if (!cwd || !branch || cwd.length > 500 || branch.length > 200) return null;
+  const claimed = /^\d+$/.test(slotText ?? "") ? Number(slotText) : null;
+  const live = slots.find((s) => {
+    if (!s.cwd || s.worktree?.branch !== branch || (claimed !== null && s.id !== claimed)) return false;
+    try { return realpathSync(s.cwd) === cwd; } catch { return s.cwd === cwd; }
+  });
+  return { slot: live?.id ?? null, branch };
+}
+function readSuiteOwner(path: string): SuiteOwner | null {
+  try { return suiteOwner(readFileSync(path, "utf8")); } catch { return null; }
 }
 const SUITE_QUEUE = `${SUITE_LOCK}.q`;
 const SUITE_QUEUE_MAX = 20;  // the poll carries a line per waiter, not a directory listing
@@ -29736,7 +29752,8 @@ function suiteQueueView(): GateQueueTicket[] {
       const born = st.birthtimeMs || st.mtimeMs;
       if (Number.isFinite(born) && born > 0) sinceMs = Math.max(0, Date.now() - born);
     } catch { /* not timeable; the ticket still counts */ }
-    seen.push({ n, pid, alive, ...(dead ? { dead } : {}), sinceMs, position: 0 });
+    const owner = readSuiteOwner(`${SUITE_QUEUE}/${name}/owner`);
+    seen.push({ n, pid, alive, ...(dead ? { dead } : {}), sinceMs, position: 0, ...(owner ? { owner } : {}) });
   }
   seen.sort((a, b) => a.n - b.n || a.pid - b.pid);
   let rank = 0;
@@ -29783,6 +29800,15 @@ function gateView(): GateView | null {
       ...(r.stage ? { stage: r.stage } : {}), ...(stats ? { stats } : {}) });
   }
   const lock = suiteLockView();
+  if (lock?.pid && lock.identityProven === true) {
+    try {
+      const [pid, birth, ...ownerLines] = readFileSync(`${SUITE_LOCK}.owner`, "utf8").split("\n");
+      if (pid === String(lock.pid) && birth === lock.birth.stored) {
+        const owner = suiteOwner(ownerLines.join("\n"));
+        if (owner) lock.owner = owner;
+      }
+    } catch { /* an older wrapper recorded no owner */ }
+  }
   // the waiters are read even when the lock reads free: a ticket outliving its holder by a moment
   // is exactly the state a reader needs to see, and an empty queue costs one readdir that fails.
   const queue = suiteQueueView();

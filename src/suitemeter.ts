@@ -22,6 +22,7 @@ export interface MeterBall {
   station: MeterStation;
   slot: number | null;     // null = fleet's own work (the audit) or a holder nobody named
   name: string;            // who: the lane, said the way the sidebar says it
+  branch: string | null;
   // WHAT KIND OF RUN, as one fixed owner word (G0.5): „[Zitat entfernt]“, „[Zitat entfernt]“, „[Zitat entfernt]“ —
   // never the raw wire label („[Zitat entfernt]“). Where the name already says it (the slotless audit
   // balls), the row draws it once.
@@ -46,11 +47,13 @@ export interface Meter { balls: MeterBall[]; lock: MeterLock }
 // the wire shapes, restated structurally: client.ts owns GateInfo and HelperDeviceInfo, and this
 // module takes only the fields it reads so the e2e caller can hand it plain objects.
 export interface MeterGate {
-  lock: { pid: number | null; alive: boolean | null; state?: string } | null;
+  lock: { pid: number | null; alive: boolean | null; state?: string; acquiredAt?: number | null;
+    owner?: { slot: number | null; branch: string } } | null;
   // the wrappers' ticket line at the mutex (server.ts#suiteQueueView). Optional for the usual
   // wire-tolerance reason: an older server sends none, and absent must read as "not reported",
   // never as "nobody is waiting".
-  queue?: { n: number; pid: number; alive: boolean; sinceMs: number | null; position: number }[];
+  queue?: { n: number; pid: number; alive: boolean; sinceMs: number | null; position: number;
+    owner?: { slot: number | null; branch: string } }[];
   reports: { slot: number | null; label: string | null; phase: string; suite: string;
     exitCode: number | null; at: number; origin?: string; branch?: string | null;
     // a server land row's suite ("security (2/3)") and its chain's past durations (server.ts#gateStats)
@@ -93,38 +96,53 @@ export function meterKind(kind: string): { label: string; title: string } {
   }
 }
 
-// THE ROW UNDER THE TUBE, as text parts in reading order: kind → clock → stage (MAIN's order until
-// the owner answers, note 2026-09-22 §5). The renderer joins them into one ellipsised span, so a
-// narrow board cuts from the back — the stage goes first, the kind last. The clock is m:ss since
+// THE ROW UNDER THE TUBE reads branch → state (including whom it waits behind) → clock → kind.
+// The renderer joins them into one ellipsised span, so a narrow board keeps the branch and state.
+// The clock is m:ss since
 // `at`, computed on each repaint; a finished run says how long ago, a run with no known start says
 // nothing. "/ ~p50" only where a distribution exists, and past its p90 the WORD, never a colour —
 // G0.2 gives --amber to "unmeasured", and a long run is measured.
 export function meterLine(b: MeterBall, now: number, german = false): string[] {
-  const parts: string[] = [];
-  if (b.kind !== b.name) parts.push(german ? meterKind(b.kind).label : b.kind);
+  if (!german) {
+    const parts: string[] = [];
+    if (b.kind !== b.name) parts.push(b.kind);
+    if (b.at > 0) {
+      const ms = now - b.at;
+      if (b.station === "done") parts.push(`${mmss(ms)} ago`);
+      else {
+        const e = b.station !== "wait" && b.expect && b.expect.p50 >= 1000 ? b.expect : null;
+        parts.push(`${mmss(ms)}${e ? ` / ~${mmss(e.p50)}${ms > e.p90 ? " länger als üblich" : ""}` : ""}`);
+      }
+    }
+    if (b.what) parts.push(b.what);
+    return parts;
+  }
+  const parts: string[] = [b.branch ? laneTail(b.branch) : "Branch unbekannt"];
+  const waitingOn = b.station === "wait" && (b.what.startsWith("wartet ") || b.what.startsWith("nach Land"));
+  if (waitingOn) parts.push(b.what.split(" · ")[0]!);
   if (b.at > 0) {
     const ms = now - b.at;
-    if (b.station === "done") parts.push(`${mmss(ms)} ago`);
+    if (b.station === "done") parts.push(`${b.tone === "ok" ? "bestanden" : b.tone === "red" ? "fehlgeschlagen" : "beendet"} vor ${mmss(ms)}`);
     else {
       const e = b.station !== "wait" && b.expect && b.expect.p50 >= 1000 ? b.expect : null;
-      parts.push(`${mmss(ms)}${e ? ` / ~${mmss(e.p50)}${ms > e.p90 ? " länger als üblich" : ""}` : ""}`);
+      parts.push(`${waitingOn ? "seit" : b.station === "wait" ? "wartet seit" : "läuft seit"} ${mmss(ms)}${e ? ` / ~${mmss(e.p50)}${ms > e.p90 ? " länger als üblich" : ""}` : ""}`);
     }
-  }
-  if (b.what) parts.push(b.what);
+  } else if (!waitingOn) parts.push(b.station === "wait" ? "wartet" : b.station === "done" ? "beendet" : "läuft");
+  if (b.what && !waitingOn) parts.push(b.what);
+  if (waitingOn && b.what.includes(" · ")) parts.push(b.what.split(" · ").slice(1).join(" · "));
+  parts.push(meterKind(b.kind).label);
   return parts;
 }
 
 export function suiteMeter(inp: MeterInput): Meter {
   const balls: MeterBall[] = [];
   const here = inp.instance ?? "this machine";
-  const nameOf = (slot: number | null, label: string | null, branch: string | null): string => {
+  const nameOf = (slot: number | null, _label: string | null, _branch: string | null): string => {
     const s = slot === null ? undefined : inp.slots.find((x) => x.id === slot);
-    const lbl = label ?? s?.label ?? null;
-    const who = lbl ?? (branch ?? s?.branch ? laneTail(branch ?? s?.branch ?? "") : null);
-    if (slot === null) return who ?? "fleet";
-    const ref = s?.letter || `Slot ${slot}`;
-    return who ? `${ref} · ${who}` : ref;
+    return slot === null ? "Fleet" : s?.letter || `Slot ${slot}`;
   };
+  const branchOf = (slot: number | null, branch: string | null): string | null =>
+    branch ?? (slot === null ? null : inp.slots.find((s) => s.id === slot)?.branch ?? null);
 
   // who holds the audit: a helper claim of kind "audit" puts the running audit on that helper. A
   // sharded audit is ONE claim per shard, and all of them are counted — one ball for the check,
@@ -154,7 +172,7 @@ export function suiteMeter(inp: MeterInput): Meter {
     const label = server ? r.stage ?? "" : r.suite;
     const what = r.phase === "failed" && r.exitCode !== null ? `${label} · exit ${r.exitCode}` : label;
     balls.push({ key: `gate:${r.origin ?? "lane"}:${r.slot ?? r.label ?? "-"}:${r.suite}`, station,
-      slot: r.slot, name: nameOf(r.slot, r.label, r.branch ?? null), kind, what, where: here, tone, at: r.at,
+      slot: r.slot, name: nameOf(r.slot, r.label, r.branch ?? null), branch: branchOf(r.slot, r.branch ?? null), kind, what, where: here, tone, at: r.at,
       expect: server ? r.stats ?? null : null });
   }
 
@@ -167,7 +185,7 @@ export function suiteMeter(inp: MeterInput): Meter {
     balls.push({ key: `offer:${o.slot}:${o.branch}`, station, slot: o.slot,
       // owner words (G0.5, owner 2026-09-22): „[Zitat entfernt]“ leaves the visible text; „[Zitat entfernt]“ is the
       // owner's word for an audit — this name derived by MAIN from that mapping (Slot 13)
-      name: nameOf(o.slot, null, o.branch), kind: "preview", what: o.state === "open" ? "offered" : "",
+      name: nameOf(o.slot, null, o.branch), branch: o.branch, kind: "preview", what: o.state === "open" ? "offered" : "",
       where: o.state === "open" ? "unclaimed" : o.device ?? "helper", tone, at: o.at, expect: null });
   }
 
@@ -176,20 +194,22 @@ export function suiteMeter(inp: MeterInput): Meter {
     const tree = `${auditRuns.main ?? "main"}${sha ? `@${sha}` : ""}`;
     // the local distribution (`stats`) is THIS machine's cost and says nothing about a helper's run
     // (server.ts#auditCounts), so a held audit draws its clock and no expectation
-    balls.push({ key: "audit:run", station: auditHeld ? "helper" : "run", slot: null, name: "post-land check",
+    balls.push({ key: "audit:run", station: auditHeld ? "helper" : "run", slot: null, name: "post-land check", branch: auditRuns.main,
       kind: "post-land check",
       what: auditRuns.phase === "starting" && !auditHeld ? "starting"
         : auditHeld?.parts ? `${tree} · ${auditHeld.parts}` : tree,
       where: auditHeld ? auditHeld.device : here, tone: "plain", at: auditRuns.startedAt ?? 0,
       expect: auditHeld ? null : inp.audit?.stats ?? null });
   } else if (auditHeld) {
-    balls.push({ key: "audit:run", station: "helper", slot: null, name: "post-land check", kind: "post-land check",
+    balls.push({ key: "audit:run", station: "helper", slot: null, name: "post-land check", branch: auditHeld.ref, kind: "post-land check",
       what: auditHeld.parts || auditHeld.ref, where: auditHeld.device, tone: "plain",
       at: Number.isFinite(auditHeld.at) ? auditHeld.at : 0, expect: null });
   }
   for (const w of inp.audit?.waiting ?? []) {
-    balls.push({ key: `audit:wait:${w.branch}`, station: "wait", slot: null, name: "post-land check",
-      kind: "post-land check", what: `after ${laneTail(w.branch)}`, where: here, tone: "plain", at: w.at, expect: null });
+    const landed = inp.slots.find((s) => s.branch === w.branch);
+    balls.push({ key: `audit:wait:${w.branch}`, station: "wait", slot: null, name: "post-land check", branch: w.main,
+      kind: "post-land check", what: `nach Land von ${landed ? nameOf(landed.id, null, w.branch) : `Lane ${laneTail(w.branch)}`} (${laneTail(w.branch)})`,
+      where: here, tone: "plain", at: w.at, expect: null });
   }
 
   // THE TICKET LINE AT THE MUTEX. Every live ticket is one ball at `wait`, carrying the position
@@ -200,23 +220,36 @@ export function suiteMeter(inp: MeterInput): Meter {
   // next contention, and until then it is part of what a reader is looking at.
   const queue = inp.gate?.queue ?? [];
   const inLine = queue.filter((t) => t.alive).length;
+  const lk = inp.gate?.lock ?? null;
+  const holderName = lk?.owner ? lk.owner.slot !== null ? nameOf(lk.owner.slot, null, lk.owner.branch)
+    : lk.owner.branch === "main" ? "Fleet" : `Lauf ${lk.pid ?? "?"}`
+    : balls.find((b) => b.station === "run")?.name ?? "unbekanntem Lauf";
+  let ahead = holderName;
   for (const t of queue) {
-    balls.push({ key: `queue:${t.n}.${t.pid}`, station: "wait", slot: null, name: "queued check run",
+    const name = t.owner?.slot !== null && t.owner?.slot !== undefined ? nameOf(t.owner.slot, null, t.owner.branch)
+      : t.owner?.branch === "main" ? "Fleet" : `Lauf ${t.pid}`;
+    balls.push({ key: `queue:${t.n}.${t.pid}`, station: "wait", slot: t.owner?.slot ?? null, name,
+      branch: t.owner?.branch ?? null,
       kind: "queued check run", expect: null,
-      what: t.alive ? `position ${t.position} of ${inLine}` : `ticket ${t.n} · its process is gone`,
+      what: t.alive ? `${t.position === 1 && !lk ? "wartet auf Prüfsperre" : `wartet hinter ${ahead}`} · Platz ${t.position}/${inLine}`
+        : `Ticket ${t.n} · Prozess weg`,
       where: here, tone: t.alive ? "plain" : "warn",
       at: t.sinceMs === null ? 0 : Date.now() - t.sinceMs });
+    if (t.alive) ahead = name;
   }
 
-  const lk = inp.gate?.lock ?? null;
   const lock: MeterLock = !inp.gate ? null : !lk ? "free"
     : (lk.state as MeterLock) ?? (lk.alive === null ? "parked" : lk.alive ? "held" : "stale");
   // the mutex is held but no row above says by whom: that holder is still a suite on this box, and
   // leaving the run station empty would read as "nothing is running", the one thing it is not
-  if ((lock === "held" || lock === "overdue" || lock === "unknown") && !balls.some((b) => b.station === "run")) {
-    balls.push({ key: "lock:holder", station: "run", slot: null, name: "check run", kind: "check run", expect: null,
+  const holderReported = balls.some((b) => b.station === "run" && (!lk?.owner
+    || (lk.owner.slot !== null ? b.slot === lk.owner.slot : b.branch === lk.owner.branch)));
+  if ((lock === "held" || lock === "overdue" || lock === "unknown") && !holderReported) {
+    balls.push({ key: "lock:holder", station: "run", slot: lk?.owner?.slot ?? null,
+      name: lk?.owner ? holderName : "Fleet", branch: lk?.owner?.branch ?? null,
+      kind: "check run", expect: null,
       what: lk?.pid === null || lk?.pid === undefined ? "pid unreadable" : `pid ${lk.pid}`,
-      where: here, tone: lock === "overdue" ? "warn" : "plain", at: 0 });
+      where: here, tone: lock === "overdue" ? "warn" : "plain", at: lk?.acquiredAt ?? 0 });
   }
   return { balls, lock };
 }

@@ -240,7 +240,7 @@ _st_queue_scan() {
       fi
     fi
     if [ "$_st_tlive" = 0 ]; then
-      rm -f "$_st_tk/birth" 2>/dev/null || true
+      rm -f "$_st_tk/birth" "$_st_tk/owner" 2>/dev/null || true
       rmdir "$_st_tk" 2>/dev/null || true
       continue
     fi
@@ -283,6 +283,11 @@ if [ -z "$_st_self_birth" ]; then
   printf '[suite-lock-error] %s cannot record process birth for pid %s; refusing to hold %s\n' "$_st_who" "$$" "$FLEET_SUITE_LOCK" >&2
   return 3 2>/dev/null || exit 3
 fi
+_st_owner_cwd=$(pwd -P 2>/dev/null || true)
+_st_owner_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+_st_record_owner() {
+  printf '%s\n%s\n%s\n' "$_st_owner_cwd" "$_st_owner_branch" "${FLEET_SELF_SLOT:-}" > "$1/owner" 2>/dev/null || true
+}
 # Take the ticket BEFORE the first `mkdir` on the lock — the whole point is that arrival is
 # recorded on arrival. Inside the inherited guard: a step running in somebody else's hold never
 # reaches this and is never enqueued.
@@ -303,6 +308,7 @@ while [ "$_st_try" -lt 20 ]; do
 done
 if [ -n "$_st_ticket" ]; then
   printf '%s\n' "$_st_self_birth" > "$_st_ticket/birth"
+  _st_record_owner "$_st_ticket"
 else
   # Open, not closed: see the UNQUEUED note above. `_st_myn=0` makes _st_queue_scan leave _st_pos
   # at 1, so this contender races exactly as every contender did before the ticket existed.
@@ -320,6 +326,7 @@ while :; do
     if mkdir "$FLEET_SUITE_QUEUE/t$_st_myn.$$" 2>/dev/null; then
       _st_ticket="$FLEET_SUITE_QUEUE/t$_st_myn.$$"
       printf '%s\n' "$_st_self_birth" > "$_st_ticket/birth"
+      _st_record_owner "$_st_ticket"
     fi
     _st_qn=$(( _st_qn + 1 ))
   fi
@@ -396,12 +403,13 @@ while :; do
 done
 echo "$$" > "$FLEET_SUITE_LOCK/pid"
 printf '%s\n' "$_st_self_birth" > "$FLEET_SUITE_LOCK/birth"
+printf '%s\n%s\n%s\n%s\n%s\n' "$$" "$_st_self_birth" "$_st_owner_cwd" "$_st_owner_branch" "${FLEET_SELF_SLOT:-}" > "$FLEET_SUITE_LOCK.owner" 2>/dev/null || true
 # The ticket has done its job the moment the lock names the holder, and dropping it here is what
 # keeps `position N of M` a count of WAITERS. The queue dir itself is left standing: rmdir-ing it
 # would race a contender between its `mkdir -p` and its `mkdir t1.<pid>`, and an empty directory
 # costs nothing — the numbering resets on its own once the last ticket is gone.
 if [ -n "$_st_ticket" ]; then
-  rm -f "$_st_ticket/birth" 2>/dev/null || true
+  rm -f "$_st_ticket/birth" "$_st_ticket/owner" 2>/dev/null || true
   rmdir "$_st_ticket" 2>/dev/null || true
   _st_ticket=""
 fi

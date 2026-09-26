@@ -3041,13 +3041,15 @@ async function pollOutline(slot: number): Promise<{ prompts: string[]; err: stri
 // origin must then read as the only kind that server had — a lane's own word.
 interface GateInfo {
   lock: { pid: number | null; alive: boolean | null; heldMs: number; ageMs?: number; acquiredAt?: number | null;
+    owner?: { slot: number | null; branch: string };
     identityProven?: boolean | null; birth?: { stored: string | null; current: string | null; state: string };
     nextAction?: string; reason?: string; effect?: string; state?: string } | null;
   reports: { slot: number | null; label: string | null; phase: string; suite: string; exitCode: number | null; at: number;
     origin?: string; branch?: string | null; stage?: string; stats?: { n: number; p50: number; p90: number } }[];
   // the ticket line at the machine-wide suite mutex (server.ts#suiteQueueView). Absent from an
   // older server, and absent then means NOT REPORTED — never "nobody is waiting".
-  queue?: { n: number; pid: number; alive: boolean; dead?: string; sinceMs: number | null; position: number }[];
+  queue?: { n: number; pid: number; alive: boolean; dead?: string; sinceMs: number | null; position: number;
+    owner?: { slot: number | null; branch: string } }[];
 }
 let gateInfo: GateInfo | null = null;
 // fmtDur rounds to whole minutes, which reads as "0m" for the first half-minute of a hold — the
@@ -3135,6 +3137,9 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   // `pid null` is a lock file whose contents are not a pid — a lost holder either way, but
   // printing "pid null" would read as a bug in this line rather than as one on disk.
   const who = lk?.pid === null ? "unreadable pid file" : `pid ${lk?.pid}`;
+  const ownerName = lk?.owner?.slot === null ? "Fleet" : lk?.owner?.slot
+    ? laneBandNames(stacksOf()).get(lk.owner.slot) ?? `Slot ${lk.owner.slot}` : "Fleet";
+  const owner = `${ownerName} · ${lk?.owner?.branch ? laneTail(lk.owner.branch) : "Branch unbekannt"}`;
   const age = gateAge(lk?.ageMs ?? lk?.heldMs ?? 0);
   const id = lk?.identityProven === true ? "identity proven"
     : lk?.identityProven === false ? "identity mismatch"
@@ -3144,9 +3149,9 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   const head = el("div", "bstate",
     !lk ? "· check runs · idle"
       : state === "parked" ? `⏸ check runs · parked by hand (no pid) · ${age}`
-      : state === "held" ? `⏳ check run busy · ${who} · ${id} · ${age}`
-      : state === "overdue" ? `⚠ check run busy · ${who} for ${age} · ${id} — longer than any check here takes`
-      : state === "unknown" ? `? check run · holder identity unknown (${who}) · ${age}`
+      : state === "held" ? `${owner} · läuft seit ${age} · Prüfsperre (${who})`
+      : state === "overdue" ? `${owner} · läuft seit ${age} · Prüfsperre überfällig (${who})`
+      : state === "unknown" ? `${owner} · Halter unbekannt · ${age} · Prüfsperre (${who})`
       // NEUTRAL on purpose: every finished run leaves its dir behind (release is implicit), so
       // this is what an idle machine looks like — it was a ⚠ for one day and shouted constantly.
       : `· check runs · none running · stale lock (${who}, ${id}, claimed ${age} ago)`);
@@ -3182,11 +3187,13 @@ const meterState = (b: MeterBall): string =>
   b.station === "wait" ? "waiting" : b.station !== "done" ? "running"
   : b.tone === "red" ? "failed" : b.tone === "unknown" ? "no result" : "passed";
 function meterModel() {
+  const laneNames = laneBandNames(stacksOf());
   return suiteMeter({
     instance: instanceName,
     gate: gateInfo, audit: postLandLive, offers: meterSuites, devices: helperDevicesInfo,
     slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label,
-      branch: s.worktree?.branch ?? null, letter: s.worktree?.letter ?? null })),
+      branch: s.worktree?.branch ?? null,
+      letter: laneNames.get(s.id) ?? null })),
   });
 }
 const METER_TITLE: Record<MeterStation, string> = {
@@ -3313,15 +3320,15 @@ function renderSuiteMeter() {
     // rows exist for — "a lane is NAMED, never cut to three letters". So the state moved onto the
     // dot (hollow = waiting, filled = running, ringed = how it ended) and into the row's title,
     // and the place — the half a truncated row used to lose — took its column. (2026-09-20)
-    // …and the middle column says KIND → CLOCK → STAGE in one ellipsised span (src/suitemeter.ts#
-    // meterLine), so a narrow board cuts the stage first and the place never. The clock is
+    // The middle column says BRANCH → STATE → CLOCK → KIND in one ellipsised span (src/suitemeter.ts#
+    // meterLine), so a narrow board keeps the owner and wait relationship. The clock is
     // recomputed on this repaint (the /api/sessions poll), no timer of its own, on serverClock()
     // because `at` is the server's stamp.
     const line = meterLine(b, serverClock(), true).join(" · ");
-    const name = b.slot === null ? meterKind(b.kind).label : b.name;
+    const name = b.kind === "post-land check" && b.slot === null ? "Fleet" : b.name;
     row.append(el("span", "smdot"), el("span", "smname", name), el("span", "smwhat", line),
       el("span", "smplace", b.where));
-    row.title = `${name} — ${line} · ${b.where} · ${meterState(b)} · ${meterKind(b.kind).title}`
+    row.title = `${name} — ${b.branch ?? "Branch unbekannt"} · ${line} · ${b.where} · ${meterState(b)} · ${meterKind(b.kind).title}`
       + (b.expect ? ` · „~“ ist der Median früherer Läufe dieser Art (n=${b.expect.n}), „länger als üblich“ heißt: über ihrem 90. Perzentil` : "")
       + (b.kind === "land check" ? " · Die Uhr zählt das Warten auf die maschinenweite Sperre mit (intern: suite mutex)" : "")
       + (b.slot !== null ? " · Klick öffnet die Lane" : "");

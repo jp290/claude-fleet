@@ -165,13 +165,26 @@ export async function scratchReapChecks(check: CheckFn): Promise<void> {
     ready, `modules=${modulesReady} script=${existsSync(tiScript)} hashPort=${tiPort}`);
   if (ready) {
     mkdirSync(tiSource, { recursive: true });
-    const copied = spawnSync("rsync", ["-a", "--exclude=.git", "--exclude=node_modules",
-      "--exclude=.env", "--exclude=fleet.json*", "--exclude=*.jsonl", `${source}/`, `${tiSource}/`],
+    const copyScript = `${FIXROOT}/ti-copy.cjs`;
+    writeFileSync(copyScript, `const { cpSync } = require("node:fs");
+const { relative, sep } = require("node:path");
+const src = process.argv.at(-2).replace(/\\/+$/, "");
+const dst = process.argv.at(-1);
+cpSync(src, dst, { recursive: true, filter: (path) => {
+  const parts = relative(src, path).split(sep);
+  return !parts.some((part) => part === ".git" || part === "node_modules" || part === ".env"
+    || part.startsWith("fleet.json") || part.endsWith(".jsonl"));
+} });
+`);
+    const shimDir = `${FIXROOT}/bin`;
+    mkdirSync(shimDir);
+    writeFileSync(`${shimDir}/rsync`, `#!/bin/sh\nexec bun "${copyScript}" "$@"\n`, { mode: 0o755 });
+    const copied = spawnSync("bun", [copyScript, source, tiSource],
       { encoding: "utf8", timeout: 30_000 });
     if (copied.status === 0) {
       const linked = spawnSync("ln", ["-s", `${source}/node_modules`, `${tiSource}/node_modules`]);
-      const env: NodeJS.ProcessEnv = { ...process.env, FLEET_TI_ROOT: tiHome, FLEET_TI_SOCK: `fleettiprobe${process.pid}`,
-        FLEET_CMD: "true" };
+      const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${shimDir}:${process.env.PATH ?? ""}`,
+        FLEET_TI_ROOT: tiHome, FLEET_TI_SOCK: `fleettiprobe${process.pid}`, FLEET_CMD: "true" };
       delete env.FLEET_TI_PORT;
       delete env.FLEET_TI_DIR;
       delete env.FLEET_TI_TOKEN;

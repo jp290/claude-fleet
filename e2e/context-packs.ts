@@ -43,36 +43,17 @@ function manifestSourcePaths(): string[] {
 }
 
 function collectRepoFacts(): { facts: ContextPackRepoFacts | null; error: string | null } {
-  try {
-    // A direct run starts in the checkout. e2e-isolated starts in a non-git staged copy whose
-    // node_modules symlink is its sole pointer to that checkout; use it only when the local probe
-    // says this is the staged shape.
-    let root = resolve(import.meta.dir, "..");
-    const gitAt = (candidate: string) => spawnSync("git", ["-C", candidate, "ls-files", "-z"], {
-      encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    let git = gitAt(root);
-    if (git.status !== 0) {
-      const modules = realpathSync(resolve(root, "node_modules"));
-      root = dirname(modules);
-      git = gitAt(root);
+  const source = sourceCheckout();
+  if (!source.checkout) return { facts: null, error: source.error };
+  const { root, trackedPaths } = source.checkout;
+  const sourceBytes = new Map<string, string>();
+  for (const path of manifestSourcePaths()) {
+    try { sourceBytes.set(path, readFileSync(resolve(root, path), "utf8")); }
+    catch (error) {
+      return { facts: null, error: `could not read fixture source ${path}: ${error instanceof Error ? error.message : String(error)}` };
     }
-    if (git.status !== 0)
-      return { facts: null, error: (git.stderr || `git ls-files exited ${String(git.status)}`).trim() };
-    const trackedPaths = new Set(git.stdout.split("\0").filter(Boolean));
-    const sourceBytes = new Map<string, string>();
-    for (const path of manifestSourcePaths()) {
-      try { sourceBytes.set(path, readFileSync(resolve(root, path), "utf8")); }
-      catch (error) {
-        return { facts: null, error: `could not read fixture source ${path}: ${error instanceof Error ? error.message : String(error)}` };
-      }
-    }
-    return { facts: { trackedPaths, sourceBytes }, error: null };
-  } catch (error) {
-    return { facts: null, error: `could not locate fixture tree: ${error instanceof Error ? error.message : String(error)}` };
   }
+  return { facts: { trackedPaths, sourceBytes }, error: null };
 }
 
 // THE SOURCE CHECKOUT, WHICH IS NOT ALWAYS THE TREE THIS RUN STANDS IN. Measured 2026-08-27 in

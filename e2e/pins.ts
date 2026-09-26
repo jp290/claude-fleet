@@ -10768,6 +10768,29 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   });
   pin("S3 session blocks: every declared source symbol resolves in this tree",
     stale.length === 0, stale.map((block) => `${block.id}:${block.source}`).join(", "));
+  const inventory = note.split("\n").filter((line) => /^\| `[^`]+` · /.test(line))
+    .map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim()));
+  const byId = new Map(inventory.map((cells) => [cells[0]?.split("`")[1], cells]));
+  const withoutMismatch = SESSION_BLOCKS.filter((block) => block.breaksWithout !== byId.get(block.id)?.[3]);
+  pin("S3 session blocks: breaksWithout is the note's Ohne ihn sentence",
+    withoutMismatch.length === 0, withoutMismatch.map((block) => block.id).join(", "));
+  const visibilityMismatch = SESSION_BLOCKS.filter((block) => {
+    const cells = byId.get(block.id);
+    const state = (index: number): string | undefined => /^(ja|nein|teilweise) · /.exec(cells?.[index] ?? "")?.[1];
+    return block.visibility.setup !== state(4) || block.visibility.running !== state(5)
+      || block.visibility.after !== state(6);
+  });
+  pin("S3 session blocks: visibility agrees with the note's three phases",
+    visibilityMismatch.length === 0, visibilityMismatch.map((block) => block.id).join(", "));
+  const gapRows = [...note.matchAll(/^\| `([^`]+)` \| (Aufsetzen|Im Lauf|Danach) · (nein|teilweise|unknown) \|/gm)]
+    .map((match) => `${match[1]}:${match[2]}:${match[3]}`);
+  const expectedGaps = inventory.flatMap((cells) => [
+    ["Aufsetzen", cells[4]], ["Im Lauf", cells[5]], ["Danach", cells[6]],
+  ].filter(([, cell]) => !cell?.startsWith("ja · "))
+    .map(([phase, cell]) => `${cells[0]?.split("`")[1]}:${phase}:${cell?.split(" · ")[0]}`));
+  pin("S3 session blocks: Luecken has one row for each incomplete phase",
+    JSON.stringify(gapRows) === JSON.stringify(expectedGaps),
+    `gaps=${gapRows.length}, expected=${expectedGaps.length}`);
   pin("S3 session blocks: the list is observational and no server path reads defaultOn",
     !read("server.ts").includes('from "./session-blocks"')
       && !read("server.ts").includes("defaultOn"));

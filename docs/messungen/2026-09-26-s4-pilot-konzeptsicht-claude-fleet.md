@@ -1,6 +1,6 @@
 ---
 frage: Laesst sich aus dem eingefrorenen Inventar per Code-Aufnahme K0, Map je Batch und Reduce eine Konzeptsicht "Claude Fleet" bauen, in der jeder inhaltliche Satz mechanisch auf eine Quelle zeigt?
-urteil: Ja, mechanisch belegt; 7617 K0-Quellen (JS-Semantik, MAIN-Entscheid), 25 Batches, 1718 Aussagen-Datensaetze, Sicht mit 239 Saetzen und 428 zitierten Quellen aus 25 von 25 Batches, 29 Abloesungen, check.py ALL PASS und nachweislich rot faehig; der Pruefstein Bewerbungstext steht aus und faehrt die MAIN.
+urteil: Ja, mechanisch belegt; 7617 K0-Quellen (JS-Semantik, MAIN-Entscheid), 25 Batches, 1718 Aussagen-Datensaetze, Sicht mit 239 Saetzen und 428 zitierten Quellen aus 25 von 25 Batches, 29 Abloesungen, check.py ALL PASS und nachweislich rot faehig; der Pruefstein Bewerbungstext steht aus und faehrt die MAIN. Schnitt 3 (Abloesung ueber Batch-Grenzen): 209 Saetze geprueft, 11 aufgehoben, 3 unklar; Sicht v2 mit 39 Abloesungen (vorher 29), check.py und abloesung_check.py ALL PASS, beide nachweislich rot faehig.
 bereich: [konzeptgedaechtnis, s4, pilot]
 belege: [docs/messungen/2026-09-26-s4-jev-ergebnis-messung4.md, docs/messungen/2026-09-26-s4-jev-vorregistrierung-messung4.md]
 nicht-gemessen: inhaltliche Treue der Map-Aussagen gegen Gold; Sessions als Korpus; ob ein fremder Agent aus der Sicht einen brauchbaren Bewerbungstext schreibt
@@ -97,6 +97,100 @@ Endstand: 93 Zahlen geprueft, 1 ohne Fundstelle, und das ist das genannte Artefa
 **Hashes:**
 - `quellen-k0.jsonl`: `fb5d738432048d9603efde6622374dea68cda12b68a47d131560d625c4d2894e`
 - `konzeptsicht-claude-fleet.md`: `17fc73bcc9f5bd9262c61bea35c41fa51e9a639346351630dae3b0250fbb46e1`
+
+## Schnitt 3 — Abloesung ueber Batch-Grenzen
+
+2026-09-26, Lane `fleet/260926141339-4400`, Task `c3576cf8`. Frage: **Fuehrt die Sicht Saetze als
+geltend, die eine juengere Quelle im Korpus aufhebt?** Anlass: Die Map durfte `abgeloest` nur setzen,
+wenn beide Zustaende in derselben Batch belegt sind (Vorgaben unten). Eine Abloesung ueber
+Batch-Grenzen konnte sie nicht sehen.
+
+**Methode.**
+
+1. **Urteil je Satz, ein Subagent je Abschnitt** (`general-purpose`, 7 insgesamt). Sechs liefen
+   parallel, der Kern zuletzt; er bekam die Befunde der anderen sechs als Zusatzeingang.
+   - Eingang: die Saetze des Abschnitts mit Satzdatum (juengste zitierte Quelle) und alle 1718
+     Map-Datensaetze chronologisch (nach Datum, dann Batch, `unknown` zuletzt). Die
+     Batch-Rohtexte waren kein Eingang.
+   - Zum Nachlesen: `quellen-k0.jsonl`, gezielt per Schluesselbegriff und Datum.
+   - Alle sieben meldeten die Map-Liste vollstaendig gelesen. Zusammen 2 688 372
+     Subagent-Tokens laut Laufzeitmeldung.
+2. **Regel.** Urteil `gilt`, `aufgehoben` oder `unklar`. `aufgehoben` nur, wenn der Text einer
+   juengeren Quelle dem Satz direkt widerspricht. Ergaenzungen und datierte Messungen zaehlen nicht.
+   Die Lane-Session hat jede Aufhebung am Quelltext der spaeteren Quellen nachgelesen, die zwei
+   Pflichtfaelle der MAIN zusaetzlich am Code dieses Repos.
+3. **Sicht v2.** Aufgehobene Saetze sind ersetzt; eine Teilkorrektur behaelt den geltenden Rest.
+   Die alte Fassung steht unter Abloesungen, mit beiden Daten und IDs.
+   - v1 bleibt als `konzeptsicht-claude-fleet-v1.md` liegen.
+   - Die Ersetzungen liegen als Daten in `schnitt3/ersetzungen.json`, und `schnitt3/apply_v2.py`
+     baut v2 reproduzierbar aus v1. Danach laufen `build_index.py` und `check.py`.
+4. **`abloesung_check.py`** (neu) hat eine Liste von 11 benannten Faellen, je Fall Regexe der
+   alten Aussage.
+   - Keine alte Aussage darf ausserhalb von Abloesungen stehen (Vorspann und jeder Satz).
+   - Je Fall steht genau ein Abloesungs-Eintrag mit Pflicht-IDs da. Bei den zwei Pflichtfaellen
+     muss eine zitierte Quelle den Owner-Entscheid-Commit im Text tragen.
+   - Fuer jeden Abloesungs-Eintrag, nicht nur die benannten: spaeteres Datum >= frueheres, und
+     die juengste zitierte Quelle ist nicht aelter als das fruehere Datum.
+
+**Zahlen.**
+
+- **Geprueft:** 209 Saetze, alle ausserhalb von Abloesungen, davon 16 im Kern.
+- **Urteile:** gilt 195, aufgehoben 11, unklar 3. Aufgehoben je Abschnitt:
+
+  | Abschnitt | aufgehoben |
+  |---|---|
+  | Kern | 0 |
+  | Tragende Prinzipien | 2 |
+  | Teile | 3 |
+  | Arbeitsregeln | 1 |
+  | Owner-Entscheidungen | 1 |
+  | Belegte Messbefunde | 1 |
+  | Grenzen und Nicht-Ziele | 3 |
+
+  Die 3 unklaren Saetze bleiben unveraendert, weil ihnen keine Quelle direkt widerspricht.
+- **Abloesungen:** vorher 29, nachher 39. Das sind 10 neue Eintraege, weil sich zwei aufgehobene
+  Saetze einen Eintrag teilen.
+- **Sicht v2:** 253 Saetze (v1: 239) und 448 zitierte Quellen (v1: 428). Kern unveraendert
+  334 Woerter. 5109 Woerter ohne Zitatmarken.
+- **`check.py`:** ALL PASS, exit 0.
+- **Zahlenprobe:** 109 Zahlen geprueft, 1 ohne Fundstelle; das ist das bekannte Artefakt.
+- **`abloesung_check.py` auf v2:** 11 Faelle, 213 Saetze, 39 Abloesungen datiert und geordnet.
+  ALL PASS, exit 0.
+- **Kontrolle auf v1:** alle 11 Faelle rot, 26 FAIL-Zeilen, exit 1.
+
+**Rot-Nachweis fuer abloesung_check.py** (Fallnamen und Satztext hier durch Platzhalter ersetzt):
+
+```
+$ Mutation 1: alter v1-Satz von Fall 1 zurueck in "Teile" gesetzt
+$ python3 abloesung_check.py
+benannte Fälle: 11 | Sätze außerhalb Abloesungen: 214 | Abloesungen: 39, datiert und geordnet: 39
+FAIL: [<Fall 1>] alte Aussage außerhalb Abloesungen in 'Teile': /<Regex 1>/ trifft: <alter Satz>
+exit=1
+$ Mutation 2: "seit" eines Abloesungs-Eintrags vor sein "frueher" datiert
+$ python3 abloesung_check.py
+benannte Fälle: 11 | Sätze außerhalb Abloesungen: 213 | Abloesungen: 39, datiert und geordnet: 38
+FAIL: Abloesung später 2026-08-05 < früher 2026-09-02: <Eintrag>
+exit=1
+$ zurueckgesetzt: sha256 gleich wie vor der Mutation; abloesung_check.py ALL PASS exit=0; check.py ALL PASS exit=0
+```
+
+**Hashes:**
+- `konzeptsicht-claude-fleet.md` (v2): `a085430ef83f317157cfc613561c99a72317cf6e129d8276843d11a956ea00dc`
+- `konzeptsicht-claude-fleet-v1.md`: `17fc73bcc9f5bd9262c61bea35c41fa51e9a639346351630dae3b0250fbb46e1`
+  (byte-gleich mit der Sicht aus Schnitt 2)
+- `abloesung_check.py`: `834dcec12b1ac53e47c53501e03bf25b2b26814e7904827439b8be099a4cc94f`
+
+**Nicht gemessen in Schnitt 3:**
+
+- **Recall.** Die Urteile sind LLM-Urteil ohne Gold. Nachgelesen sind die 11 Aufhebungen, nicht die
+  195 `gilt`. Eine uebersehene Abloesung bleibt moeglich.
+- **Reichweite der Regexe.** `abloesung_check.py` sieht eine alte Aussage nur, wenn einer ihrer
+  Regexe sie trifft. Eine umformulierte Rueckkehr entgeht ihm. Die Datumspruefung gilt fuer alle 39
+  Eintraege.
+- **Ketten.** Ob die "spaeter"-Seite der 29 alten Abloesungen selbst wieder abgeloest ist, wurde
+  nicht geprueft.
+- **Korpusende.** Die juengste datierte Map-Aussage stammt vom 2026-09-25. Was danach entschieden
+  wurde, kennt die Sicht nicht.
 
 ## Methode
 

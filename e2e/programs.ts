@@ -1987,8 +1987,9 @@ export async function run(ctx: Ctx): Promise<void> {
     let sheetClientSource = "";
     let sheetClientError = "";
     try {
-      sheetClientSource = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/queue.ts`, "utf8")
-        .replace(/^export /gm, "");
+      const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+      sheetClientSource = ["client", "queue"].map((name) => readFileSync(`${sourceRoot}/src/${name}.ts`, "utf8")
+        .replace(/^export /gm, "")).join("\n");
     } catch (e) { sheetClientError = e instanceof Error ? e.message : String(e); }
     const sheetModelStart = sheetClientSource.indexOf("type RepoSheetFact =");
     const sheetModelEnd = sheetClientSource.indexOf("// the repo sheet's DOM painter", sheetModelStart);

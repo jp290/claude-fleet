@@ -29,6 +29,7 @@ import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLi
   type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
+import { CONTEXT_PACKS } from "../context-packs";
 import type { Ctx } from "./ctx";
 
 // WAIT ON THE KILL, NOT ON A CLOCK (the slotsEmptied shape from e3a936f7's programs.ts). A lane
@@ -2896,8 +2897,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && deliveredReceipt.taskId === tid && deliveredReceipt.originId === tid
       && deliveredReceipt.programId === provenanceProgramId && deliveredReceipt.head === expectedHead,
       JSON.stringify(deliveredReceipt ?? null));
-    check("the foreign receipt names nothing it cannot resolve: zero selected, all six packs source-unavailable",
-      deliveredReceipt?.selected.length === 0 && deliveredReceipt.omitted.length === 6
+    check("the foreign receipt names nothing it cannot resolve: zero selected, all Fleet seeds source-unavailable",
+      deliveredReceipt?.selected.length === 0 && deliveredReceipt.omitted.length === CONTEXT_PACKS.length
       && deliveredReceipt.omitted.every((entry) => entry.why === "source-unavailable"),
       JSON.stringify(deliveredReceipt ?? null));
     const anchorBlock = anchorRegion; // exactly the bytes the receipt hashed — footer excluded
@@ -4893,7 +4894,8 @@ export async function run(ctx: Ctx): Promise<void> {
     check("a dispatch INSIDE the Fleet checkout still renders the two-pack anchor block (the derivation is not a blanket refusal)",
       fd.ok && fdJ.ok === true && fPrompt.startsWith(fBrief) && fPrompt.includes("\n\nContextPlan v2 anchors")
       && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
-      && fReceipt.omitted.length === 4 && fReceipt.omitted.every((entry) => entry.why !== "source-unavailable"),
+      && fReceipt.omitted.length === CONTEXT_PACKS.length - fReceipt.selected.length
+      && fReceipt.omitted.every((entry) => entry.why !== "source-unavailable"),
       `${fd.status} ${JSON.stringify(fReceipt ?? null)} ${fPrompt.slice(0, 200)}`);
     check("the Fleet-frame receipt is one row, names this checkout at its integration head, and every anchor it names is in the delivered bytes",
       !!fReceipt && (await contextReceipts()).total === fBefore.total + 1
@@ -5964,9 +5966,9 @@ export async function run(ctx: Ctx): Promise<void> {
       validCommit === 0 && ok.prompt.startsWith(`${okBrief}\n\nContextPlan v2 anchors`)
       && ok.prompt.includes("dispatch-declared") && ok.prompt.includes("AGENTS.md | ## Repo contract")
       && ok.receipt?.selected.length === 1 && ok.receipt.selected[0]?.id === "dispatch-declared"
-      // the six Fleet seeds keep their honest verdict in a foreign tree — the manifest row is added,
+      // the Fleet seeds keep their honest verdict in a foreign tree — the manifest row is added,
       // never substituted, which is the whole shape of the merge at this seam
-      && ok.receipt.omitted.length === 6
+      && ok.receipt.omitted.length === CONTEXT_PACKS.length
       && ok.receipt.omitted.every((entry) => entry.why === "source-unavailable"),
       `${JSON.stringify(ok.receipt ?? null)} ${ok.prompt.slice(-200)}`);
 
@@ -5982,7 +5984,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("an invalid manifest at the dispatch seam is the named @manifest omission, never a silent drop",
       brokenCommit === 0 && bad.prompt.startsWith(badBrief) && badAnchorRegion === ""
       && !bad.prompt.includes("ContextPlan v2 anchors")
-      && bad.receipt?.selected.length === 0 && bad.receipt.omitted.length === 7
+      && bad.receipt?.selected.length === 0 && bad.receipt.omitted.length === CONTEXT_PACKS.length + 1
       && JSON.stringify(bad.receipt.omitted.at(-1)) === JSON.stringify({ id: "@manifest", why: "manifest-invalid" }),
       JSON.stringify(bad.receipt ?? null));
 

@@ -8,6 +8,7 @@ import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check,
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
+import { CONTEXT_PACKS } from "../context-packs";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09 } from "../task-land-waves";
@@ -782,7 +783,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN decoy frame: Fleet-shaped filenames never override foreign git identity",
     decoyResponse.ok && targetContractPresent(decoyPrompt, decoyProgram.title)
       && targetContractClean(decoyPrompt) && decoyReceipt?.repo === resolve(REPO4)
-      && decoyReceipt.selected.length === 0 && decoyReceipt.omitted.length === 6
+      && decoyReceipt.selected.length === 0 && decoyReceipt.omitted.length === CONTEXT_PACKS.length
       && decoyReceipt.omitted.every((entry) => entry.why === "source-unavailable"),
     `${decoyResponse.status} ${decoyPrompt.slice(0, 400)}`);
   if (decoyBody.slot) await post(`/api/slots/${decoyBody.slot}/kill`, {});
@@ -837,7 +838,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN carrier: a target repo without the manifest keeps today's empty-block founding",
     manifestRepoInit.status === 0 && !!carrierBefore.receipt
       && !carrierBefore.prompt.includes("ContextPlan v2 anchors")
-      && carrierBefore.receipt.selected.length === 0 && carrierBefore.receipt.omitted.length === 6
+      && carrierBefore.receipt.selected.length === 0 && carrierBefore.receipt.omitted.length === CONTEXT_PACKS.length
       && carrierBefore.receipt.omitted.every((entry) => entry.why === "source-unavailable"),
     JSON.stringify(carrierBefore.receipt ?? null));
 
@@ -871,8 +872,8 @@ export async function run(ctx: Ctx): Promise<void> {
         { path: "docs/promise.md", anchor: "## Product promise" }],
       sourceHash: expectedPromiseHash,
     }])
-      && carrierOn.receipt.omitted.length === 7
-      && carrierOn.receipt.omitted.filter((entry) => entry.why === "source-unavailable").length === 6
+      && carrierOn.receipt.omitted.length === CONTEXT_PACKS.length + 1
+      && carrierOn.receipt.omitted.filter((entry) => entry.why === "source-unavailable").length === CONTEXT_PACKS.length
       && JSON.stringify(carrierOn.receipt.omitted.at(-1)) === JSON.stringify({ id: "broken-pointer", why: "manifest-invalid" })
       // A repo pack declaring no useWhen keeps every pointer and grows no purpose line — the
       // pre-field manifests that exist today must deliver byte-identically under v2.
@@ -885,7 +886,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const carrierBroken = await foundInto(manifestRepo, "program-main-carrier-broken");
   check("Program-MAIN carrier: a malformed manifest still delivers, byte-identical, and says so on the receipt",
     brokenCommit === 0 && carrierBroken.prompt === carrierBefore.prompt && !!carrierBroken.receipt
-      && carrierBroken.receipt.selected.length === 0 && carrierBroken.receipt.omitted.length === 7
+      && carrierBroken.receipt.selected.length === 0 && carrierBroken.receipt.omitted.length === CONTEXT_PACKS.length + 1
       && JSON.stringify(carrierBroken.receipt.omitted.at(-1)) === JSON.stringify({ id: "@manifest", why: "manifest-invalid" })
       && carrierBroken.receipt.hash === promptHash(carrierBroken.prompt, carrierBroken.receipt),
     JSON.stringify(carrierBroken.receipt ?? null));
@@ -923,12 +924,12 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN Fleet frame: founding prompt keeps exactly the four existing grounding steps in order",
     fleetResponse.ok && JSON.stringify(fleetPrompt.split("\n").filter((line) => /^\d+\./.test(line)))
       === JSON.stringify(groundingSteps), fleetPrompt.slice(0, 500));
-  check("Program-MAIN Fleet frame: binding, bytes, git facts, six-way plan, anchors, and the receipt hash stay equivalent",
+  check("Program-MAIN Fleet frame: binding, bytes, git facts, seed plan, anchors, and the receipt hash stay equivalent",
     !!fleetReceipt && fleetReceiptRows.total === fleetReceiptsBefore.total + 1
       && fleetBody.program?.main?.slot === fleetSlot && fleetReceipt.repo === ROOT
       && fleetReceipt.head === fleetExpectedHead && fleetReceipt.branch === fleetExpectedBranch
-      && fleetReceipt.selected.length === 3 && fleetReceipt.omitted.length === 4
-      && fleetReceipt.selected.length + fleetReceipt.omitted.length === 7
+      && fleetReceipt.selected.length === 3 && fleetReceipt.omitted.length === CONTEXT_PACKS.length - 2
+      && fleetReceipt.selected.length + fleetReceipt.omitted.length === CONTEXT_PACKS.length + 1
       && anchorsResolve(fleetReceipt) && fleetReceipt.hash === promptHash(fleetPrompt, fleetReceipt)
       && fleetReceipt.deliveredBytes === new TextEncoder().encode(fleetPrompt).byteLength,
     JSON.stringify(fleetReceipt ?? null));
@@ -1055,7 +1056,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(fleetSuccessionPrompt.split("\n").filter((line) => /^\d+\./.test(line)))
         === JSON.stringify(successionGroundingSteps)
       && fleetSuccessionPrompt.includes(fleetCarry) && fleetSuccessionReceipt?.selected.length === 3
-      && fleetSuccessionReceipt.omitted.length === 4 && anchorsResolve(fleetSuccessionReceipt)
+      && fleetSuccessionReceipt.omitted.length === CONTEXT_PACKS.length - 2 && anchorsResolve(fleetSuccessionReceipt)
       && fleetSuccessionReceipt.hash === promptHash(fleetSuccessionPrompt, fleetSuccessionReceipt)
       && fleetSuccessionReceipt.deliveredBytes === new TextEncoder().encode(fleetSuccessionPrompt).byteLength,
     `${fleetSuccessionResponse.status} ${fleetSuccessionPrompt.slice(0, 500)}`);
@@ -1490,9 +1491,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && receipt.model === "gpt-5.5" && receipt.effort === "high",
     JSON.stringify(receipt ?? null));
   const recomputedHash = promptHash(deliveredPrompt, receipt);
-  check("Program-MAIN target receipt: all six packs name source-unavailable and empty-anchor v1 hash recomputes",
-    !!receipt && receipt.selected.length + receipt.omitted.length === 6
-      && receipt.selected.length === 0 && receipt.omitted.length === 6
+  check("Program-MAIN target receipt: all Fleet seeds name source-unavailable and empty-anchor v1 hash recomputes",
+    !!receipt && receipt.selected.length + receipt.omitted.length === CONTEXT_PACKS.length
+      && receipt.selected.length === 0 && receipt.omitted.length === CONTEXT_PACKS.length
       && receipt.omitted.every((entry) => entry.why === "source-unavailable")
       && receipt.hash === recomputedHash
       && receipt.deliveredBytes === new TextEncoder().encode(deliveredPrompt).byteLength
@@ -3760,7 +3761,7 @@ export async function run(ctx: Ctx): Promise<void> {
     !!successionReceipt && successionReceipts.total === receiptsBeforeSuccession.total + 1
       && successionReceipt.taskId === null && successionReceipt.originId === null
       && successionReceipt.repo === resolve(REPO) && successionReceipt.head === successionHead && successionReceipt.branch === successionBranch
-      && successionReceipt.selected.length === 0 && successionReceipt.omitted.length === 6
+      && successionReceipt.selected.length === 0 && successionReceipt.omitted.length === CONTEXT_PACKS.length
       && successionReceipt.omitted.every((entry) => entry.why === "source-unavailable")
       && successionReceipt.slot === successorSlot && successionReceipt.hash === successionHash
       && successionReceipt.deliveredBytes === new TextEncoder().encode(successionPrompt).byteLength

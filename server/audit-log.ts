@@ -482,6 +482,8 @@ type AuditEvent =
   // parked (`deadlineAt`), end = settled (`delivery` delivered/dropped/uncertain, `holds`, `heldMs`);
   // the detail names the sendId and the draft's LENGTH — never the text, never the draft.
   | "send_parked"
+  | "delivery_bundle_queued" | "delivery_bundle_sent" | "delivery_bundle_refused"
+  | "delivery_bundle_uncertain" | "delivery_bundle_dropped" | "delivery_bundle_rerouted"
   // a review candidate's isolated preview (server.ts#startLanePreview): start / stopped / expired /
   // failed, the candidate and preview ids and the port — never the instance token
   | "lane_preview"

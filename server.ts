@@ -8575,6 +8575,7 @@ function sendFailureDelivery(e: unknown): "SendRefused" | "SendNotAccepted" | "s
 // contain it), and it is OMITTED when contextFill returns null: "Fleet cannot measure this pane" is
 // not 0 %.
 type SendPath =
+  | "bundle"            // full texts from one receiver's held delivery window
   | "owner"             // POST /send — the owner typing into a pane
   | "brief"             // a task's founding brief into a fresh lane (briefAndSend)
   | "founding"          // a Program-MAIN / Supervisor / orchestrator founding or bind brief
@@ -8593,7 +8594,22 @@ type SendPath =
   | "backlog-nudge"     // the open-backlog reminder
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
   | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
-  | "rate-limit-resume"; // "resume" into a pane parked on a usage limit whose reset time has passed (tickRateLimitResume)
+  // "resume" into a pane parked on a usage limit whose reset time has passed (tickRateLimitResume)
+  | "rate-limit-resume";
+type DeliveryClass = "sofort" | "buendelbar";
+function deliveryClass(path: SendPath): DeliveryClass {
+  return path === "bundle" || path === "report-decision" || path === "inbox-nudge" || path === "backlog-nudge"
+    || path === "migrate-nudge" || path === "auto" ? "buendelbar" : "sofort";
+}
+function deliveryCacheState(s: Slot, now = Date.now()): DeliveryCacheFact & { cache: "warm" | "kalt"; edgeAt: number | null } {
+  const fact = deliveryCacheReading(s);
+  const edgeAt = fact.at === null ? null : fact.at + (fact.ttlSec - Math.min(300, fact.ttlSec / 5)) * 1000;
+  return { ...fact, edgeAt, cache: edgeAt !== null && now < edgeAt ? "warm" : "kalt" };
+}
+function deliveryAuditCache(s: Slot | null): { ttlSec: number; ttlQuelle: DeliveryTtlSource; cache: "warm" | "kalt" } {
+  const state = s ? deliveryCacheState(s) : { ttlSec: 300, ttlQuelle: "unknown" as const, cache: "kalt" as const };
+  return { ttlSec: state.ttlSec, ttlQuelle: state.ttlQuelle, cache: state.cache };
+}
 
 // THE DELIVERY HEADER (4b085fd9): one line TYPED into a claude pane before the pasted body, naming the
 // path and the source the server actually knows. Claude Code frames a collapsed paste as
@@ -8607,6 +8623,7 @@ type SendPath =
 // the composer holds, or claude takes it as prose.
 const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
 const DELIVERY_SOURCE: Record<SendPath, string | null> = {
+  "bundle": "gebuendelte Fleet-Zustellungen",
   "owner": "POST /send mit Owner-Credential",
   "brief": "Gruendungs-Brief einer Lane",
   "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Supervisor, Orchestratorin)",
@@ -8685,10 +8702,12 @@ async function seedInbound(): Promise<void> {
 // exception and would fail loudly in their temporal dead zone (the hazard commsFor documents one
 // region above); no boot path reaches sendText today, checked at both of the boot awaits.
 function auditSend(s: Slot, path: SendPath, bytes: number,
-  acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>): void {
+  acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>, klass = deliveryClass(path)): void {
   const fill = contextFill(s);
+  const cache = deliveryCacheState(s);
   audit("send", s.id, `${path} ${bytes}B ${acceptance}`,
-    { path, bytes, acceptance, ...(fill ? { ctxPct: fill.pct } : {}) });
+    { path, bytes, acceptance, deliveryClass: klass, ttlSec: cache.ttlSec,
+      ttlQuelle: cache.ttlQuelle, cache: cache.cache, ...(fill ? { ctxPct: fill.pct } : {}) });
   bumpInbound(s.id, Date.now(), bytes);
 }
 
@@ -8886,7 +8905,7 @@ const PANE_INBOX_DIR = `${STREAM_DIR}/pane-inbox`;
 // Stores `text` for this slot's CURRENT occupant and returns the one line that replaces the paste.
 // Content-addressed inside the occupant's folder, so a retried send of the same text writes the
 // same file rather than a second one. Throws when there is no occupant — the send would anyway.
-function storePaneInboxText(s: Slot, text: string, path: SendPath): string {
+function storePaneInboxText(s: Slot, text: string, path: SendPath, notice?: string): string {
   const occupant = slotStreamOccupant(s);
   if (!occupant) throw new Error("slot unavailable for send");
   const bytes = Buffer.byteLength(text, "utf8");
@@ -8898,16 +8917,252 @@ function storePaneInboxText(s: Slot, text: string, path: SendPath): string {
   audit("pane_inbox_stored", s.id, `${sha.slice(0, 16)} ${bytes}B path=${path}`,
     { bytes, sha256: sha, file, sendPath: path });
   return `[fleet] message ${sha.slice(0, 16)}: ${bytes} bytes (sha256 ${sha}) is too long to paste `
-    + `into a terminal, so it was stored whole. Read the complete text from ${file} before acting on it.`;
+    + `into a terminal, so it was stored whole. Read the complete text from ${file} before acting on it.`
+    + (notice ? ` ${notice}` : "");
 }
 
-async function sendText(s: Slot, given: string, submit: boolean,
-  options: { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true }): Promise<{ acceptance: Acceptance }> {
+type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true;
+  deliveryClass?: DeliveryClass; subscribedWatch?: true; beforeSend?: (receiver: Slot) => Promise<void>;
+  onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
+  eventIds?: readonly string[]; paneInboxNotice?: string };
+type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
+type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
+  origin: { slot: number; openedAt: number }; queuedAt: number;
+  resolve: (value: { acceptance: Acceptance }) => void; reject: (error: unknown) => void };
+class DeliveryCancelled extends Error {}
+type DeliveryBundle = { address: DeliveryAddress; entries: QueuedDelivery[]; dueAt: number;
+  retryAt: number; absentAt: number | null;
+  timer: ReturnType<typeof setTimeout> | null; inflight: Promise<{ acceptance: Acceptance } | void> | null };
+type ImmediateDelivery = { slot: Slot; text: string; submit: boolean; options: SendTextOptions };
+const deliveryBundles = new Map<string, DeliveryBundle>();
+const DELIVERY_BUNDLE_SEC = Math.max(0, Number(process.env.FLEET_DELIVERY_BUNDLE_SEC ?? 900) | 0);
+function deliveryAddress(s: Slot): DeliveryAddress {
+  const bound = boundProgramForMain(s);
+  if (bound.ok) return { kind: "program", id: bound.program.id };
+  if (!s.worktree && isOrchestratorLabel(s.label)) return { kind: "orchestrator" };
+  return { kind: "slot", id: s.id };
+}
+function deliveryAddressKey(address: DeliveryAddress): string {
+  return address.kind === "orchestrator" ? "orchestrator" : `${address.kind}:${address.id}`;
+}
+function deliveryRecipient(address: DeliveryAddress): Slot | null {
+  if (address.kind === "program") {
+    const main = programs.find((p) => p.id === address.id && p.status === "active")?.main;
+    const s = main ? slotFrom(main.slot) : null;
+    return s?.cwd && s.openedAt === main?.openedAt ? s : null;
+  }
+  if (address.kind === "orchestrator") {
+    const candidates = slots.filter((s) => s.cwd && isOrchestratorLabel(s.label));
+    return candidates.length === 1 ? candidates[0]! : null;
+  }
+  const s = slotFrom(address.id);
+  return s?.cwd ? s : null;
+}
+function scheduleDeliveryBundle(key: string, bundle: DeliveryBundle): void {
+  if (bundle.timer) clearTimeout(bundle.timer);
+  bundle.timer = Number.isFinite(bundle.dueAt) ? setTimeout(() => void flushDeliveryBundle(key),
+    Math.max(1, bundle.dueAt - Date.now())) : null;
+}
+function bundleDeadline(bundle: DeliveryBundle, s: Slot, now: number): number {
+  const cache = deliveryCacheState(s, now);
+  const first = Math.min(...bundle.entries.map((entry) =>
+    cache.cache === "warm" ? Math.min(entry.queuedAt + DELIVERY_BUNDLE_SEC * 1000, cache.edgeAt!)
+      : entry.options.subscribedWatch ? entry.queuedAt + DELIVERY_BUNDLE_SEC * 1000 : Infinity));
+  return Math.max(first, bundle.retryAt);
+}
+function refreshDeliveryBundles(): void {
+  if (!deliveryBundles.size) return;
+  const now = Date.now();
+  for (const [key, bundle] of deliveryBundles) {
+    if (bundle.inflight || !bundle.entries.length) continue;
+    const s = deliveryRecipient(bundle.address);
+    if (!s) {
+      if (bundle.address.kind !== "slot") {
+        bundle.absentAt ??= now;
+        bundle.dueAt = Math.min(bundle.dueAt, bundle.absentAt + 30_000);
+        scheduleDeliveryBundle(key, bundle);
+      }
+      continue;
+    }
+    bundle.absentAt = null;
+    const next = bundleDeadline(bundle, s, now);
+    if (next === bundle.dueAt) continue;
+    bundle.dueAt = next;
+    scheduleDeliveryBundle(key, bundle);
+  }
+}
+function bundleText(entries: QueuedDelivery[]): string {
+  if (entries.length === 1) return entries[0]!.text;
+  return entries.map((entry, i) => `[fleet-buendel ${i + 1}/${entries.length} · path=${entry.options.path}]\n${entry.text}`)
+    .join("\n\n");
+}
+function bundleNotice(entries: QueuedDelivery[]): string {
+  const classes = entries.map((entry) =>
+    `${entry.options.deliveryClass ?? deliveryClass(entry.options.path)}(${entry.options.path})`).join(", ");
+  const ids = [...new Set(entries.flatMap((entry) => entry.options.eventIds ?? []))];
+  return `Klassen: ${classes}; Event-IDs: ${ids.length ? ids.join(", ") : "keine"}.`;
+}
+async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): Promise<{ acceptance: Acceptance } | void> {
+  const bundle = deliveryBundles.get(key);
+  if (!bundle) {
+    if (!immediate) return;
+    await immediate.options.beforeSend?.(immediate.slot);
+    return sendText(immediate.slot, immediate.text, immediate.submit, { ...immediate.options, bypassQueue: true });
+  }
+  if (bundle.inflight) {
+    await bundle.inflight;
+    return flushDeliveryBundle(key, immediate);
+  }
+  const run = async (): Promise<{ acceptance: Acceptance } | void> => {
+    if (bundle.timer) clearTimeout(bundle.timer);
+    bundle.timer = null;
+    const s = deliveryRecipient(bundle.address);
+    if (!s) {
+      if (bundle.address.kind !== "slot" && !immediate) {
+        bundle.absentAt ??= Date.now();
+        if (Date.now() - bundle.absentAt < 30_000) {
+          bundle.dueAt = bundle.absentAt + 30_000;
+          scheduleDeliveryBundle(key, bundle);
+          return;
+        }
+      }
+      if (bundle.address.kind === "slot" && !immediate) {
+        bundle.dueAt = Date.now() + 5000;
+        scheduleDeliveryBundle(key, bundle);
+        return;
+      }
+      deliveryBundles.delete(key);
+      audit("delivery_bundle_dropped", undefined, `${key} no current role occupant`,
+        { count: bundle.entries.length, reason: "no current role occupant", deliveryClass: "buendelbar",
+          ...deliveryAuditCache(slotFrom(bundle.entries[0]?.origin.slot ?? 0) ?? null) });
+      for (const entry of bundle.entries) entry.reject(new SendRefused("no current role occupant — nothing typed"));
+      if (immediate) {
+        await immediate.options.beforeSend?.(immediate.slot);
+        return sendText(immediate.slot, immediate.text, immediate.submit,
+          { ...immediate.options, bypassQueue: true });
+      }
+      return;
+    }
+    const entries = bundle.entries.splice(0);
+    if (!entries.length && !immediate) { deliveryBundles.delete(key); return; }
+    const recipientOpenedAt = s.openedAt;
+    if (!immediate) {
+      bundle.entries.unshift(...entries);
+      const next = bundleDeadline(bundle, s, Date.now());
+      if (next > Date.now()) {
+        bundle.dueAt = next;
+        scheduleDeliveryBundle(key, bundle);
+        return;
+      }
+      bundle.entries.splice(0, entries.length);
+    }
+    try {
+      for (const entry of entries) {
+        if (entry.origin.slot !== s.id || entry.origin.openedAt !== s.openedAt) {
+          audit("delivery_bundle_rerouted", s.id,
+            `${key} from slot=${entry.origin.slot} openedAt=${entry.origin.openedAt} to slot=${s.id} openedAt=${s.openedAt}`,
+            { fromSlot: entry.origin.slot, toSlot: s.id, reason: "unattempted bundle resolved at delivery",
+              deliveryClass: "buendelbar",
+              ...deliveryAuditCache(s) });
+          entry.origin = { slot: s.id, openedAt: s.openedAt };
+        }
+      }
+      for (const entry of [...entries]) {
+        try { await entry.options.beforeSend?.(s); }
+        catch (error) {
+          if (!(error instanceof DeliveryCancelled)) throw error;
+          entries.splice(entries.indexOf(entry), 1);
+          audit("delivery_bundle_dropped", s.id, `${key} ${error.message}`,
+            { path: entry.options.path, reason: error.message, deliveryClass: "buendelbar",
+              ...deliveryAuditCache(s) });
+          entry.reject(error);
+        }
+      }
+      if (immediate) await immediate.options.beforeSend?.(s);
+      if (!entries.length && !immediate) { deliveryBundles.delete(key); return; }
+      const ordered = immediate ? [{ text: immediate.text,
+        submit: immediate.submit, options: immediate.options,
+        origin: { slot: immediate.slot.id, openedAt: immediate.slot.openedAt }, queuedAt: Date.now(),
+        resolve: () => {}, reject: () => {} }, ...entries] : entries;
+      const payload = bundleText(ordered);
+      const { acceptance } = await sendText(s, payload, true,
+        { path: "bundle", rollbackOwnPayload: true,
+          deliveryClass: immediate ? "sofort" : "buendelbar", bypassQueue: true,
+          paneInboxNotice: bundleNotice(ordered) });
+      audit("delivery_bundle_sent", s.id, `${key} count=${entries.length}`,
+        { count: entries.length + (immediate ? 1 : 0),
+          paths: [...entries.map((e) => e.options.path), ...(immediate ? [immediate.options.path] : [])].join(","),
+          deliveryClass: immediate ? "sofort" : "buendelbar",
+          ...deliveryAuditCache(s) });
+      for (const entry of entries) entry.resolve({ acceptance });
+      if (immediate) return { acceptance };
+    } catch (error) {
+      if (error instanceof SendRefused) {
+        bundle.entries.unshift(...entries);
+        bundle.retryAt = Date.now() + 5000;
+        for (const entry of entries) {
+          try { await entry.options.onRefused?.(s); }
+          catch (rollbackError) { logError("bundleRefusalRollback", rollbackError); }
+        }
+        if (immediate) await immediate.options.onRefused?.(s);
+        if (Number.isFinite(bundle.dueAt)) bundle.dueAt = bundle.retryAt;
+        audit("delivery_bundle_refused", s.id, `${key} ${error.message}`,
+          { count: entries.length, reason: error.message, deliveryClass: immediate ? "sofort" : "buendelbar",
+            ...deliveryAuditCache(s) });
+      } else {
+        audit(error instanceof DeliveryCancelled ? "delivery_bundle_dropped" : "delivery_bundle_uncertain", s.id,
+          `${key} openedAt=${recipientOpenedAt} ${String(error)}`,
+          { count: entries.length, openedAt: recipientOpenedAt, reason: String(error),
+            deliveryClass: immediate ? "sofort" : "buendelbar", ...deliveryAuditCache(s) });
+        for (const entry of entries) entry.reject(error);
+      }
+      if (immediate) {
+        if (bundle.entries.length) scheduleDeliveryBundle(key, bundle);
+        throw error;
+      }
+    }
+    if (bundle.entries.length) scheduleDeliveryBundle(key, bundle);
+    else deliveryBundles.delete(key);
+  };
+  bundle.inflight = run().finally(() => { bundle.inflight = null; });
+  return bundle.inflight;
+}
+async function sendText(s: Slot, given: string, submit: boolean, options: SendTextOptions): Promise<{ acceptance: Acceptance }> {
+  if (!options.bypassQueue) {
+  const address = options.address ?? deliveryAddress(s);
+  const key = deliveryAddressKey(address);
+  if ((options.deliveryClass ?? deliveryClass(options.path)) === "sofort" || DELIVERY_BUNDLE_SEC === 0 || !submit) {
+    if (submit && deliveryBundles.has(key)) {
+      const sent = await flushDeliveryBundle(key, { slot: s, text: given, submit, options });
+      if (sent) return sent;
+    }
+    await options.beforeSend?.(s);
+  } else {
+  const now = Date.now();
+  const cache = deliveryCacheState(s, now);
+  const deadline = cache.cache === "warm" ? Math.min(now + DELIVERY_BUNDLE_SEC * 1000, cache.edgeAt!)
+    : options.subscribedWatch ? now + DELIVERY_BUNDLE_SEC * 1000 : Infinity;
+  return new Promise((resolve, reject) => {
+    let bundle = deliveryBundles.get(key);
+    if (!bundle) {
+      bundle = { address, entries: [], dueAt: deadline, retryAt: 0, absentAt: null, timer: null, inflight: null };
+      deliveryBundles.set(key, bundle);
+    }
+    bundle.entries.push({ text: given, submit, options, origin: { slot: s.id, openedAt: s.openedAt },
+      queuedAt: now, resolve, reject });
+    bundle.dueAt = Math.min(bundle.dueAt, deadline);
+    audit("delivery_bundle_queued", s.id, `${key} count=${bundle.entries.length}`,
+      { path: options.path, deliveryClass: "buendelbar", ...deliveryAuditCache(s),
+        ...(Number.isFinite(bundle.dueAt) ? { dueAt: bundle.dueAt } : {}) });
+    scheduleDeliveryBundle(key, bundle);
+  });
+  }
+  }
   // from here on `text` is what is TYPED: the caller's text, or the one line that stands for it
   const text = Buffer.byteLength(given, "utf8") > PASTE_MAX_BYTES
-    ? storePaneInboxText(s, given, options.path) : given;
+    ? storePaneInboxText(s, given, options.path, options.paneInboxNotice) : given;
   const occupant = slotStreamOccupant(s);
-  if (!occupant || slotTeardownInflight.has(s.id)) throw new Error("slot unavailable for send");
+  if (!occupant || slotTeardownInflight.has(s.id)) throw new SendRefused("slot unavailable for send — nothing typed");
   const harnessName = s.harness ?? "default";
   const form = harnessOf(s.harness);
   const composer = form.composer ?? null;
@@ -8931,17 +9186,17 @@ async function sendText(s: Slot, given: string, submit: boolean,
       if (!w.ok) throw new SendRefused(`slot is asleep and the wake failed (${w.reason}) — nothing typed`);
     }
     if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
-      throw new Error("slot changed before send");
+      throw new SendRefused("slot changed before send — nothing typed");
     const target = await existingTmuxTarget(sess(occupant.slot));
     if (!target || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
-      throw new Error("slot pane unavailable or changed before send");
+      throw new SendRefused("slot pane unavailable or changed before send — nothing typed");
     const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms, bootSettleMs };
     const observes = !!bound.composer;
     if (observes) {
       // an occupied composer is an owner draft: pasting would append to it and Enter would send
       // both as one turn. Read BEFORE the boot block — a draft is a draft whatever the pane's age.
       const before = await readComposer(s, bound);
-      if (!sameBoundPane(s, bound)) throw new Error("slot changed during composer probe");
+      if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed during composer probe — nothing typed");
       if (before) throw new SendComposerOccupied(before.length);
     }
     // Readiness is a process fact, not an output fact. `openedAt` asks "could this pane still be
@@ -8958,7 +9213,7 @@ async function sendText(s: Slot, given: string, submit: boolean,
           && Date.now() - started < SEND_BOOT_WAIT_MS) {
           await Bun.sleep(100);
           if (Date.now() - started >= SEND_BOOT_WAIT_MS) break;
-          if (!sameBoundPane(s, bound)) throw new Error("slot changed during send readiness probe");
+          if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed during send readiness probe — nothing typed");
           state = await paneAgentAt(bound.paneId, bound.comms);
         }
         // Count probe time against the same budget: a slow ps/pgrep must not turn a nominally
@@ -8978,19 +9233,19 @@ async function sendText(s: Slot, given: string, submit: boolean,
     } else if (options.requireAgent && bound.comms.length > 0) {
       // an established pane gets one probe, no wait: its agent either lives or is gone for good
       const state = await paneAgentAt(bound.paneId, bound.comms);
-      if (!sameBoundPane(s, bound)) throw new Error("slot changed during send agent probe");
+      if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed during send agent probe — nothing typed");
       if (state !== "alive") throw new SendAgentNotAlive(state);
     }
     const buf = `fleetbuf${occupant.slot}-${occupant.openedAt}-${randomBytes(8).toString("hex")}`;
     let ownPasteQuiet = false;
     try {
-      if (!sameBoundPane(s, bound)) throw new Error("slot changed before buffer load");
+      if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed before buffer load — nothing typed");
       const p = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });
       p.stdin.write(text);
       await p.stdin.end();
-      if ((await p.exited) !== 0) throw new Error("tmux load-buffer failed — session gone?");
+      if ((await p.exited) !== 0) throw new SendRefused("tmux load-buffer failed — nothing typed");
       await waitForSendTestLatch(SEND_BEFORE_PASTE_TEST_LATCH, "before-paste", bound, text);
-      if (!sameBoundPane(s, bound)) throw new Error("slot changed before paste");
+      if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed before paste — nothing typed");
       if (options.rollbackOwnPayload) {
         s.quietUntil = Date.now() + OWN_PASTE_QUIET_MS;
         ownPasteQuiet = true;
@@ -9069,10 +9324,11 @@ async function sendText(s: Slot, given: string, submit: boolean,
   // neighbours, so it can neither delay nor fail the send it records.
   try {
     const result = await task;
-    auditSend(s, options.path, pasted, result.acceptance);
+    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass);
     return result;
   } catch (e) {
-    auditSend(s, options.path, pasted, sendFailureDelivery(e));
+    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass);
+    if (e instanceof SendRefused) await options.onRefused?.(s);
     throw e;
   }
 }
@@ -9547,6 +9803,7 @@ async function mintMergeEvents(target: number, cwd: string, branch: string, outc
     const event: MergeFleetEvent = {
       id: randomBytes(12).toString("hex"), watchId: w.id,
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
+      receiverAddress: deliveryAddress(receiver),
       receiverIdleSec: w.idleSec, subjectSlot: target, subjectCwd: cwd, subjectBranch: branch,
       kind: "merge-terminal", payload: mergeEventPayload(outcome), createdAt: now,
       ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
@@ -9636,6 +9893,7 @@ async function mintAuditEvents(row: PostLandAuditRow): Promise<void> {
     const event: AuditFleetEvent = {
       id: randomBytes(12).toString("hex"), watchId: w.id,
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
+      receiverAddress: deliveryAddress(receiver),
       receiverIdleSec: w.idleSec, subjectRepo: w.repo, subjectMainAfter: w.mainAfter,
       kind: "post-land-audit", payload: auditEventPayload(row, w.mainAfter), createdAt: now,
       ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
@@ -9655,6 +9913,7 @@ async function mintDeployEvents(row: DeployRow): Promise<void> {
     const event: DeployFleetEvent = {
       id: randomBytes(12).toString("hex"), watchId: w.id,
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
+      receiverAddress: deliveryAddress(receiver),
       receiverIdleSec: w.idleSec, subjectDeployId: w.deployId,
       kind: "deploy-terminal", payload: deployEventPayload(row), createdAt: now,
       ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
@@ -11166,6 +11425,8 @@ function markFleetEventReceiverGone(slotId: number): boolean {
   let dirty = false;
   for (const e of fleetEvents) {
     if (e.receiverSlot !== slotId || FLEET_EVENT_TERMINAL.includes(e.status)) continue;
+    if (DELIVERY_BUNDLE_SEC > 0 && e.status === "pending" && e.receiverAddress
+      && fleetEventDeliveryClass(e) === "buendelbar") continue;
     if (e.kind === "fleet-report" && e.status === "send-uncertain"
       && (e.recovery?.state === "retryable" || e.recovery?.state === "blocked")) {
       terminalizeFleetReportRecovery(e, "receiver occupant ended or was replaced before recovery");
@@ -11970,9 +12231,11 @@ function settleFleetEventAcknowledged(event: FleetEvent): void {
 //
 // It moves nothing else, in the discipline of the doors it serves: no Task.status, no land, no
 // lane teardown, no retention pass. The verdict was already recorded when this runs.
+const queuedReportDecisions = new Set<string>();
 async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
   const decision = report.decision;
   if (!decision) return;
+  if (queuedReportDecisions.has(report.id)) return;
   // "pending" is the one record that is not an outcome: the watch tick calls back in for it.
   if (report.decisionDelivery !== undefined && report.decisionDelivery !== null
     && report.decisionDelivery.state !== "pending") return;
@@ -12039,28 +12302,39 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
     return;
   }
   const text = fleetReportDecisionMessage(report.id, decision.disposition, decision.reason);
-  // THE TRANSPORT MARKER, mirroring replyClarification's and tickWatches' FACT 2: persisted before
-  // tmux is touched, so a death anywhere below is visible afterwards as an UNKNOWN rather than as a
-  // delivery that may or may not have happened. Nothing replays it — the decision door is shut by
-  // then — so this row is a record, never a debt.
-  stamp("send-uncertain", "persisted before the paste; the send did not resolve");
+  stamp("pending", "held for the delivery window; no paste attempted");
   await saveStateNow();
-  try {
-    await sendText(worker, text, true, { path: "report-decision" });
-  } catch (e) {
-    audit("fleet_report_decision_send_uncertain", worker.id,
-      `${report.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
-    return;
-  }
-  const at = Date.now();
-  worker.history = [...worker.history, { text, ts: at }].slice(-MAX_HISTORY);
-  saveHistory(worker);
-  logPrompt(worker, text, "auto", at);
-  stamp("delivered", null);
-  audit("fleet_report_decision_delivered", worker.id,
-    `${report.id} ${decision.disposition}`
-    + (worker.sessionId === report.worker.sessionId ? ""
-      : ` (the pane's session id moved since filing: ${report.worker.sessionId ?? "none"} -> ${worker.sessionId ?? "none"})`));
+  queuedReportDecisions.add(report.id);
+  const delivery = (async () => {
+    let recipient = worker;
+    try {
+      await sendText(worker, text, true, { path: "report-decision",
+        beforeSend: async (current) => {
+          if (report.decision !== decision) throw new DeliveryCancelled(`report ${report.id} decision changed`);
+          recipient = current;
+          stamp("send-uncertain", "persisted before the paste; the send did not resolve");
+          await saveStateNow();
+        },
+        onRefused: async () => {
+          stamp("pending", "paste refused before any bytes; still held for delivery");
+          await saveStateNow();
+        } });
+      const at = Date.now();
+      recipient.history = [...recipient.history, { text, ts: at }].slice(-MAX_HISTORY);
+      saveHistory(recipient);
+      logPrompt(recipient, text, "auto", at);
+      stamp("delivered", recipient.sessionId !== report.worker.sessionId
+        ? "the pane's session id moved since filing; the worker occupation still matched" : null);
+      audit("fleet_report_decision_delivered", recipient.id, `${report.id} ${decision.disposition}`);
+      await saveStateNow();
+    } catch (e) {
+      if (!(e instanceof DeliveryCancelled)) {
+        audit("fleet_report_decision_send_uncertain", recipient.id,
+          `${report.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+      }
+    } finally { queuedReportDecisions.delete(report.id); }
+  })();
+  if (DELIVERY_BUNDLE_SEC === 0) await delivery;
 }
 
 // THE CRITERION TOKEN ON A VERDICT'S REASON, read by BOTH doors through this ONE function — a
@@ -14897,6 +15171,7 @@ async function canDeliver(s: Slot, opts: {
 }
 
 let autoTickBusy = false;
+const pendingAutoSends = new Set<string>();
 async function tickAutos(): Promise<void> {
   if (!autosOn) return; // global kill-switch: no scheduled auto fires while automation is paused
   if (autoTickBusy) return; // a slow tick (tmux calls) must not overlap the next one
@@ -14905,7 +15180,7 @@ async function tickAutos(): Promise<void> {
     const now = Date.now();
     let dirty = false;
     for (const a of autos) {
-      if (!a.enabled || now < a.nextAt) continue;
+      if (!a.enabled || now < a.nextAt || pendingAutoSends.has(a.id)) continue;
       const s = slotFrom(a.slot);
       if (!s?.cwd) {
         a.enabled = false;
@@ -14965,24 +15240,33 @@ async function tickAutos(): Promise<void> {
         dirty = true;
         continue;
       }
-      dirty = true;
-      try {
-        await sendText(s, a.text, true, { path: "auto" });
-      } catch (e) {
-        // sendText now surfaces tmux failures — record the truth instead of "sent"
-        a.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
-        audit("auto_skip", a.slot, a.lastResult);
-        advanceAuto(a, now);
-        continue;
-      }
-      s.history = [...s.history, { text: a.text, ts: now }].slice(-MAX_HISTORY);
-      saveHistory(s);
-      logPrompt(s, a.text, "auto", now);
-      a.lastRun = now;
-      a.lastResult = "sent";
-      audit("auto_fire", a.slot, a.id);
-      advanceAuto(a, now);
-      console.log(`auto ${a.id}: sent to slot ${a.slot}`);
+      pendingAutoSends.add(a.id);
+      void (async () => {
+        let recipient = s;
+        try {
+          await sendText(s, a.text, true, { path: "auto", beforeSend: async (current) => {
+            if (!a.enabled || !autos.includes(a)) throw new DeliveryCancelled(`auto ${a.id} was cancelled before paste`);
+            recipient = current;
+          } });
+          const sentAt = Date.now();
+          recipient.history = [...recipient.history, { text: a.text, ts: sentAt }].slice(-MAX_HISTORY);
+          saveHistory(recipient);
+          logPrompt(recipient, a.text, "auto", sentAt);
+          a.lastRun = sentAt;
+          a.lastResult = "sent";
+          audit("auto_fire", recipient.id, a.id);
+          advanceAuto(a, sentAt);
+        } catch (e) {
+          if (!(e instanceof DeliveryCancelled)) {
+            a.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
+            audit("auto_skip", a.slot, a.lastResult);
+            advanceAuto(a, Date.now());
+          }
+        } finally {
+          pendingAutoSends.delete(a.id);
+          saveState();
+        }
+      })();
     }
     if (dirty) saveState();
   } finally {
@@ -20428,13 +20712,15 @@ function nudgeableUnread(program: Program): string[] {
 }
 
 let inboxNudgeBusy = false;
+const pendingInboxNudges = new Set<string>();
 async function tickInboxNudge(): Promise<void> {
   if (inboxNudgeBusy) return;
   inboxNudgeBusy = true;
   try {
     const now = Date.now();
     for (const program of programs) {
-      if (program.status !== "active" || programOccupancy(program) !== "live" || !program.main) continue;
+      if (program.status !== "active" || programOccupancy(program) !== "live" || !program.main
+        || pendingInboxNudges.has(program.id)) continue;
       const unreadIds = nudgeableUnread(program);
       if (!unreadIds.length) continue;
       const s = slotFrom(program.main.slot);
@@ -20462,33 +20748,38 @@ async function tickInboxNudge(): Promise<void> {
         + `${quietKinds ? " (audit-red nicht mitgezaehlt: es tippt nie in eine Pane)" : ""} — `
         + "Self-Token aus $FLEET_SELF_TOKEN im Header x-fleet-self-token: "
         + "GET /api/self/inbox, dann POST /api/self/inbox/<id>/read.";
-      let acceptance: Acceptance;
-      try {
-        ({ acceptance } = await sendText(s, text, true, { path: "inbox-nudge", rollbackOwnPayload: true }));
-      } catch (e) {
-        logError("inboxNudgeSend", e);
-        logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
-        // THE COOLDOWN IS SPENT, THE DEDUPE KEY IS NOT. Without the stamp the next tick — 250 ms
-        // later on this fleet — walked straight back into the same composer, which is how one
-        // unaccepted paste became eight "composer occupied" errors in thirteen minutes. Writing
-        // `key` here instead would be the opposite error: it would mark THIS unread set as already
-        // nudged and the program would never be told again, so the prior key is carried unchanged
-        // (empty for a first attempt — no real key is ever empty, it always contains a `|`).
-        const failedAt = Date.now();
-        inboxNudgeTried.set(s.id, { key: prior?.key ?? "", lastAt: failedAt, last: { session, ids: unreadIds,
-          reading: { outcome: "not-accepted", at: failedAt, failure: sendFailureDelivery(e),
-            reason: (e instanceof Error ? e.message : String(e)).slice(0, 300) } } });
-        continue;
-      }
-      const sentAt = Date.now();
-      inboxNudgeTried.set(s.id, { key, lastAt: sentAt, last: { session, ids: unreadIds,
-        reading: acceptance === "observed" ? { outcome: "accepted", at: sentAt }
-          : acceptance === "not-observed"
-            ? { outcome: "not-accepted", at: sentAt, failure: "SendNotAccepted", reason: "acceptance not observed" }
-            : { outcome: "unobserved", at: sentAt, acceptance } } });
-      s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
-      saveHistory(s);
-      logPrompt(s, text, "auto", sentAt, undefined, acceptance);
+      pendingInboxNudges.add(program.id);
+      void (async () => {
+        let recipient = s;
+        try {
+          const { acceptance } = await sendText(s, text, true, { path: "inbox-nudge", rollbackOwnPayload: true,
+            beforeSend: async (current) => {
+              if (program.status !== "active" || nudgeableUnread(program).join(",") !== unreadIds.join(","))
+                throw new DeliveryCancelled(`inbox ${program.id} changed before paste`);
+              recipient = current;
+            } });
+          const sentAt = Date.now();
+          const currentSession = backlogSessionKey(recipient);
+          inboxNudgeTried.set(recipient.id, { key: `${currentSession}|${unreadIds.join(",")}`, lastAt: sentAt,
+            last: { session: currentSession, ids: unreadIds,
+              reading: acceptance === "observed" ? { outcome: "accepted", at: sentAt }
+                : acceptance === "not-observed"
+                  ? { outcome: "not-accepted", at: sentAt, failure: "SendNotAccepted", reason: "acceptance not observed" }
+                  : { outcome: "unobserved", at: sentAt, acceptance } } });
+          recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          saveHistory(recipient);
+          logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
+        } catch (e) {
+          if (!(e instanceof DeliveryCancelled)) {
+            logError("inboxNudgeSend", e);
+            logPrompt(recipient, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+            const failedAt = Date.now();
+            inboxNudgeTried.set(recipient.id, { key: prior?.key ?? "", lastAt: failedAt,
+              last: { session, ids: unreadIds, reading: { outcome: "not-accepted", at: failedAt,
+                failure: sendFailureDelivery(e), reason: (e instanceof Error ? e.message : String(e)).slice(0, 300) } } });
+          }
+        } finally { pendingInboxNudges.delete(program.id); }
+      })();
       return;
     }
   } finally {
@@ -20497,6 +20788,7 @@ async function tickInboxNudge(): Promise<void> {
 }
 
 let backlogNudgeBusy = false;
+const pendingBacklogNudges = new Set<string>();
 async function tickBacklogNudge(): Promise<void> {
   // The normal case is deliberately process-only: no open executable row means no liveness probe,
   // no tmux and no ps. Advisory categories never enter this set, whatever their status.
@@ -20519,6 +20811,7 @@ async function tickBacklogNudge(): Promise<void> {
       if (list) list.push(t); else byRepo.set(repo, [t]);
     }
     for (const [repo, mine] of byRepo) {
+      if (pendingBacklogNudges.has(repo)) continue;
       const openKey = mine.map((t) => t.id).sort().join(",");
       // Ascending lastOutput means longest-idle first among observed panes. A rejected oldest
       // candidate does not starve the next deliverable one, but one successful send ends the
@@ -20542,26 +20835,30 @@ async function tickBacklogNudge(): Promise<void> {
         if (!s.cwd || s.worktree !== null || s.label === STEWARD_LABEL || s.awaiting === "owner"
           || backlogSessionKey(s) !== session || (await repoKeyOf(s)) !== repo) continue;
         const text = backlogNudgeMessage(mine, repo);
-        let acceptance: Acceptance;
-        try {
-          ({ acceptance } = await sendText(s, text, true, { path: "backlog-nudge", rollbackOwnPayload: true }));
-        } catch (e) {
-          logError("backlogNudgeSend", e); // not counted as tried: nothing observed accepted
-          logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
-          // `count` (the budget) stays where it was — nothing was observed accepted — but the
-          // COOLDOWN is spent, for tickInboxNudge's reason one function up. `openKey` is written
-          // EMPTY rather than with the current backlog: a failed attempt must not dedupe this
-          // backlog away, and no real openKey is empty (the list is non-empty by the guard above).
-          backlogNudgeTried.set(s.id, { session, openKey: "", lastAt: Date.now(), count });
-          continue;
-        }
-        const sentAt = Date.now();
-        backlogNudgeTried.set(s.id, {
-          session, openKey, lastAt: sentAt, count: count + 1,
-        });
-        s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
-        saveHistory(s);
-        logPrompt(s, text, "auto", sentAt, undefined, acceptance);
+        pendingBacklogNudges.add(repo);
+        void (async () => {
+          let recipient = s;
+          try {
+            const { acceptance } = await sendText(s, text, true, { path: "backlog-nudge", rollbackOwnPayload: true,
+              beforeSend: async (current) => {
+                if (mine.some((task) => !tasks.includes(task)) || (await repoKeyOf(current)) !== repo)
+                  throw new DeliveryCancelled(`backlog ${repo} changed before paste`);
+                recipient = current;
+              } });
+            const sentAt = Date.now();
+            backlogNudgeTried.set(recipient.id, { session: backlogSessionKey(recipient), openKey, lastAt: sentAt,
+              count: count + 1 });
+            recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+            saveHistory(recipient);
+            logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
+          } catch (e) {
+            if (!(e instanceof DeliveryCancelled)) {
+              logError("backlogNudgeSend", e);
+              logPrompt(recipient, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+              backlogNudgeTried.set(recipient.id, { session, openKey: "", lastAt: Date.now(), count });
+            }
+          } finally { pendingBacklogNudges.delete(repo); }
+        })();
         return; // one send ends the round — never fanned out across panes or repos
       }
     }
@@ -20847,6 +21144,7 @@ function laneMigrateMessage(fill: ContextFill): string {
 }
 
 let migrateTickBusy = false;
+const pendingMigrateNudges = new Set<string>();
 async function tickMigrate(): Promise<void> {
   const now = Date.now();
   const due: { s: Slot; fill: ContextFill; lane: boolean; attempt: MigrateAttempt }[] = [];
@@ -20878,6 +21176,8 @@ async function tickMigrate(): Promise<void> {
   migrateTickBusy = true;
   try {
     for (const { s, fill, lane, attempt } of due) {
+      const pendingKey = `${s.id}:${attempt.sessionId}`;
+      if (pendingMigrateNudges.has(pendingKey)) continue;
       // Same unobserved-pane rule as tickWatches: contextFill's null currently masks this for a
       // fresh transcript, but that unrelated absence semantic is not an idle-safety guarantee.
       if (MIGRATE_IDLE_MS > 0 && s.lastOutput === 0) continue;
@@ -20890,33 +21190,34 @@ async function tickMigrate(): Promise<void> {
       // the rail is read HERE, after the awaits, for the same reason the kind is re-checked: a
       // binding that moved while canDeliver ran must not be answered with the stale rail's gate.
       const text = lane ? laneMigrateMessage(fill) : migrateMessage(fill, migrateRailOf(s));
-      let acceptance: Acceptance;
-      try {
-        ({ acceptance } = await sendText(s, text, true, { path: "migrate-nudge", rollbackOwnPayload: true }));
-      } catch (e) {
-        logError("migrationSend", e);
-        logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
-        // The nudge BUDGET stays untouched (a failed paste delivered no nudge, as the note below
-        // says), but `lastAt` is stamped so the cooldown covers a failure too. Without it this
-        // loop had no bound at all on the failing path: neither counter moved, so every tick
-        // pasted into the same pane again.
-        attempt.lastAt = Date.now();
-        migrateTried.set(s.id, attempt);
-        continue;
-      }
-      // Like tickBacklogNudge, delivery spends the budget; a tmux failure delivered no nudge and
-      // therefore leaves both the count and cooldown untouched for the next bounded tick attempt.
-      attempt.nudges++;
-      attempt.lastAt = now;
-      migrateTried.set(s.id, attempt);
-      if (attempt.nudges >= MIGRATE_MAX_NUDGES && !attempt.gaveUp) {
-        attempt.gaveUp = true;
-        audit("migrate_gave_up", s.id, `gave up session=${attempt.sessionId} after ${attempt.nudges} delivered nudges`);
-      }
-      s.history = [...s.history, { text, ts: now }].slice(-MAX_HISTORY);
-      saveHistory(s);
-      logPrompt(s, text, "auto", now, undefined, acceptance);
-      console.log(`migration: nudged ${lane ? "lane " : ""}slot ${s.id} at ${fill.pct}% (${attempt.nudges}/${MIGRATE_MAX_NUDGES})`);
+      pendingMigrateNudges.add(pendingKey);
+      void (async () => {
+        try {
+          const { acceptance } = await sendText(s, text, true, { path: "migrate-nudge", rollbackOwnPayload: true,
+            beforeSend: async (current) => {
+              if (current !== s || s.sessionId !== attempt.sessionId)
+                throw new DeliveryCancelled(`migration target ${pendingKey} changed before paste`);
+            } });
+          const sentAt = Date.now();
+          attempt.nudges++;
+          attempt.lastAt = sentAt;
+          migrateTried.set(s.id, attempt);
+          if (attempt.nudges >= MIGRATE_MAX_NUDGES && !attempt.gaveUp) {
+            attempt.gaveUp = true;
+            audit("migrate_gave_up", s.id, `gave up session=${attempt.sessionId} after ${attempt.nudges} delivered nudges`);
+          }
+          s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          saveHistory(s);
+          logPrompt(s, text, "auto", sentAt, undefined, acceptance);
+        } catch (e) {
+          if (!(e instanceof DeliveryCancelled)) {
+            logError("migrationSend", e);
+            logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+            attempt.lastAt = Date.now();
+            migrateTried.set(s.id, attempt);
+          }
+        } finally { pendingMigrateNudges.delete(pendingKey); }
+      })();
     }
   } finally {
     migrateTickBusy = false;
@@ -21228,13 +21529,12 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
   return true;
 }
 
-// THE BUNDLED WAKE-UP: one line of constant shape for N events, naming every id and kind and the door
-// where each full text still is. It carries no event's content — that stays on the row (c14fcd75).
+// THE BUNDLED WAKE-UP: one pane turn with every original event text under its own head.
+// The row keeps its full text for GET as well; the pane reader need not spend one GET per event.
 function fleetEventBundleMessage(events: FleetEvent[]): string {
-  return `[fleet] ${events.length} events for this session: `
-    + `${events.map((e) => `${e.id} (${e.kind})`).join(", ")}. `
-    + "Each full text stays on its event: read it with GET /api/self/events/<id>, then acknowledge it with "
-    + "POST /api/self/events/<id>/ack, both with x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.";
+  if (events.length === 1) return fleetEventMessage(events[0]!);
+  return events.map((event, i) => `[fleet-ereignis ${i + 1}/${events.length} · ${event.id}]\n${fleetEventMessage(event)}`)
+    .join("\n\n") + "\n[fleet] Ende des Buendels.";
 }
 
 // FACT 2's transport for a receiver with MORE THAN ONE ready event, and deliberately the single-event
@@ -21245,17 +21545,33 @@ function fleetEventBundleMessage(events: FleetEvent[]): string {
 // acceptance delivers — all of them, with one history row for the one line that was typed.
 async function deliverFleetEventBundle(s: Slot, events: FleetEvent[]): Promise<void> {
   const attemptsBefore = events.map((e) => e.attempts);
-  for (const event of events) {
-    event.status = "send-uncertain";
-    event.attempts++;
-  }
-  await saveStateNow();
   const ids = events.map((e) => e.id).join(",");
   const text = fleetEventBundleMessage(events);
   let acceptance: Acceptance;
+  let deliveredTo = s;
+  const klass = events.every((event) => fleetEventDeliveryClass(event) === "buendelbar")
+    ? "buendelbar" : "sofort";
+  const address = events[0]?.receiverAddress;
+  const sameAddress = DELIVERY_BUNDLE_SEC > 0 && klass === "buendelbar" && address
+    && events.every((event) => JSON.stringify(event.receiverAddress) === JSON.stringify(address));
   try {
-    ({ acceptance } = await sendText(s, text, true, { path: "fleet-event", rollbackOwnPayload: true }));
+    ({ acceptance } = await sendText(s, text, true, { path: "fleet-event", rollbackOwnPayload: true,
+      deliveryClass: sameAddress ? klass : "sofort", ...(sameAddress ? { address } : {}),
+      eventIds: events.map((event) => event.id),
+      ...(events.every((event) => event.watchId !== null) ? { subscribedWatch: true as const } : {}),
+      beforeSend: async (receiver) => {
+        if (events.some((event) => event.status !== "pending" || laneEventSubject(event) === "gone"
+          || (sameAddress && event.receiverAddress && deliveryRecipient(event.receiverAddress) !== receiver)))
+          throw new DeliveryCancelled(`bundle ${ids} ceased to be deliverable before paste`);
+        deliveredTo = receiver;
+        for (const event of events) await markFleetEventSend(event, receiver);
+      },
+      onRefused: async () => {
+        events.forEach((event, i) => { event.status = "pending"; event.attempts = attemptsBefore[i] ?? event.attempts; });
+        await saveStateNow();
+      } }));
   } catch (e) {
+    if (e instanceof DeliveryCancelled) return;
     if (e instanceof SendRefused) {
       events.forEach((event, i) => {
         event.status = "pending";
@@ -21284,15 +21600,15 @@ async function deliverFleetEventBundle(s: Slot, events: FleetEvent[]): Promise<v
     return;
   }
   const deliveredAt = Date.now();
-  s.history = [...s.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
-  saveHistory(s);
-  logPrompt(s, text, "auto", deliveredAt);
+  deliveredTo.history = [...deliveredTo.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
+  saveHistory(deliveredTo);
+  logPrompt(deliveredTo, text, "auto", deliveredAt);
   for (const event of events) {
     event.status = "delivered";
     event.deliveredAt = deliveredAt;
     const watch = watches.find((w) => w.id === event.watchId);
     if (watch) watch.lastResult = "sent";
-    audit("fleet_event_delivered", s.id, `${event.id} bundle=${events.length}`);
+    audit("fleet_event_delivered", deliveredTo.id, `${event.id} bundle=${events.length}`);
   }
   await saveStateNow();
 }
@@ -21327,7 +21643,45 @@ function fleetEventMessage(event: FleetEvent): string {
   return text;
 }
 
+function fleetEventDeliveryClass(event: FleetEvent): DeliveryClass {
+  if (event.kind === "merge-terminal" && event.payload.status === "merged" && event.payload.landed)
+    return "buendelbar";
+  if (event.kind === "post-land-audit" && event.payload.result === "green") return "buendelbar";
+  if (event.kind === "deploy-terminal" && event.payload.ok === true) return "buendelbar";
+  if (event.kind === "lane-suite" && event.payload.result === "green") return "buendelbar";
+  return "sofort";
+}
+const queuedFleetEvents = new Set<string>();
+function pendingFleetEventReceiver(event: FleetEvent): Slot | null {
+  if (DELIVERY_BUNDLE_SEC > 0 && event.status === "pending"
+    && fleetEventDeliveryClass(event) === "buendelbar" && event.receiverAddress)
+    return deliveryRecipient(event.receiverAddress);
+  return fleetEventReceiver(event);
+}
+async function markFleetEventSend(event: FleetEvent, receiver: Slot): Promise<void> {
+  if (event.status !== "pending" || laneEventSubject(event) === "gone")
+    throw new DeliveryCancelled(`event ${event.id} ceased to be pending before paste`);
+  if (DELIVERY_BUNDLE_SEC > 0 && fleetEventDeliveryClass(event) === "buendelbar"
+    && event.receiverAddress && deliveryRecipient(event.receiverAddress) !== receiver)
+    throw new DeliveryCancelled(`event ${event.id} role occupant changed before paste`);
+  if (DELIVERY_BUNDLE_SEC > 0 && fleetEventDeliveryClass(event) === "buendelbar"
+    && (event.receiverSlot !== receiver.id || event.receiverOpenedAt !== receiver.openedAt)) {
+    audit("delivery_bundle_rerouted", receiver.id,
+      `${event.id} from slot=${event.receiverSlot} openedAt=${event.receiverOpenedAt} to slot=${receiver.id} openedAt=${receiver.openedAt}`,
+      { eventId: event.id, fromSlot: event.receiverSlot ?? 0, toSlot: receiver.id,
+        deliveryClass: "buendelbar",
+        ...deliveryAuditCache(receiver) });
+    event.receiverSlot = receiver.id;
+    event.receiverOpenedAt = receiver.openedAt;
+    event.receiverSessionId = receiver.sessionId;
+  }
+  event.status = "send-uncertain";
+  event.attempts++;
+  await saveStateNow();
+}
+
 async function tickWatches(): Promise<void> {
+  refreshDeliveryBundles();
   const verdictsDue = verdictRetryDue();
   // …and an outstanding hold entry is work too: without it the round that ends a hold could be the
   // one the cheap guard below skips, and the END row would never be written.
@@ -21456,10 +21810,13 @@ async function tickWatches(): Promise<void> {
     const offered = new Map<number, { s: Slot; events: FleetEvent[] }>();
     for (const event of fleetEvents) {
       if (event.status !== "pending") continue;
-      const s = fleetEventReceiver(event);
+      if (queuedFleetEvents.has(event.id)) continue;
+      const s = pendingFleetEventReceiver(event);
       if (!s) {
+        if (event.receiverAddress?.kind === "slot") continue;
         event.status = "receiver-gone";
-        audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined, event.id);
+        audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined,
+          `${event.id} no current role occupant`);
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -21518,37 +21875,49 @@ async function tickWatches(): Promise<void> {
 
     // ONE WAKE-UP PER RECEIVER AND TICK (c14fcd75). Every event above passed its own gates; what is
     // left is transport, and a pane that three watches fired on in one round is told ONCE, with all
-    // three ids — the full text of each stays on its event (GET /api/self/events/:id). A receiver
+    // three ids and the complete original texts; GET /api/self/events/:id still reads each row. A receiver
     // with one event keeps its full message, exactly as before. The facts the first loop read are
     // read AGAIN here, synchronously and right before the marker, because the loop above awaited
     // other receivers' probes in between (the §11.2j reason, one loop further down).
     for (const { s, events: group } of offered.values()) {
-      const live = group.filter((e) => e.status === "pending" && fleetEventReceiver(e) === s);
+      const live = group.filter((e) => e.status === "pending" && pendingFleetEventReceiver(e) === s);
       if (live.some((e) => laneEventSubject(e) === "gone")) {
         markFleetEventsSubjectGone();
         dirty = true;
       }
       const ready = live.filter((e) => e.status === "pending");
       if (ready.length > 1) {
-        await deliverFleetEventBundle(s, ready);
+        if (DELIVERY_BUNDLE_SEC > 0 && ready.every((event) => fleetEventDeliveryClass(event) === "buendelbar")) {
+          for (const event of ready) queuedFleetEvents.add(event.id);
+          void deliverFleetEventBundle(s, ready).finally(() => {
+            for (const event of ready) queuedFleetEvents.delete(event.id);
+          });
+        } else await deliverFleetEventBundle(s, ready);
         dirty = true;
         continue;
       }
       const event = ready[0];
       if (!event) continue;
+      if (DELIVERY_BUNDLE_SEC > 0 && fleetEventDeliveryClass(event) === "buendelbar") {
+        queuedFleetEvents.add(event.id);
+        void deliverFleetEventBundle(s, [event]).finally(() => queuedFleetEvents.delete(event.id));
+        continue;
+      }
       // THE CRASH MARKER GOES DOWN FIRST and stays that way: persisted before tmux is touched, so
       // a death anywhere after this line is visible after restart instead of leaving a paste that
       // may or may not have landed. `attempts` is raised with it and rolled back ONLY by the one
       // refusal that proves nothing was typed (below) — everything else keeps its count.
       const attemptsBefore = event.attempts;
+      const message = fleetEventMessage(event);
       event.status = "send-uncertain";
       event.attempts++;
       await saveStateNow();
-      const message = fleetEventMessage(event);
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, message, true, { path: "fleet-event", rollbackOwnPayload: true }));
+        ({ acceptance } = await sendText(s, message, true, { path: "fleet-event", rollbackOwnPayload: true,
+          deliveryClass: fleetEventDeliveryClass(event), eventIds: [event.id] }));
       } catch (e) {
+        if (e instanceof DeliveryCancelled) continue;
         if (e instanceof SendRefused) {
           // nothing was typed (an occupied composer, i.e. an owner draft): the event stays pending and
           // is offered again once the composer is clear. AND THE COUNT GOES BACK WITH IT — a refusal
@@ -35993,6 +36362,8 @@ watches = watches.filter((w) => {
 // report. The skip stays BEFORE the call (pinned, e2e/pins.ts B4). Narrativ: server-narrativ-archiv.md#boot-tmux-adoption-and-reconciliation
 for (const e of fleetEvents) {
   if (FLEET_EVENT_TERMINAL.includes(e.status)) continue;
+  if (DELIVERY_BUNDLE_SEC > 0 && e.status === "pending" && e.receiverAddress
+    && fleetEventDeliveryClass(e) === "buendelbar") continue;
   if (e.receiverSlot === null || fleetEventReceiver(e)) continue;
   if (e.kind === "fleet-report" && e.status === "send-uncertain" && e.recovery?.state === "retryable") {
     terminalizeFleetReportRecovery(e, "receiver occupant was absent or replaced before boot recovery");
@@ -36785,7 +37156,7 @@ interface ContextFill { usedTokens: number; windowTokens: number; pct: number }
 // What a reader returns when its FILE names the window. The pair exists so that absence 5 can stay
 // absence for such a reader too: `used` alone would have to be divided by something, and there is
 // nothing honest to divide it by. Both numbers must come from ONE record — see readCodexContext.
-interface ContextRead { used: number; window: number }
+interface ContextRead { used: number; window: number; at?: number }
 // The API-error round claude writes when a turn dies on the API side ("API Error: 529 Overloaded",
 // "Connection lost mid-response", …): an assistant line with isApiErrorMessage:true, model
 // "<synthetic>" and a usage of all zeros (measured on slot 3, 2026-09-22T01:16:35Z). `at` is the
@@ -36795,7 +37166,9 @@ interface ApiErrorLine { at: number; text: string; kind: string | null; resetAt:
 // One tail read, two answers: the numerator (as `used` returns it) and whether the LAST assistant
 // line is such an error round. apiError is null both for "the last assistant line is a real one"
 // and for "no assistant line in the tail" — neither is a stall anyone can act on.
-interface ContextTail { read: number | ContextRead | null; apiError: ApiErrorLine | null }
+type DeliveryTtlSource = "1h" | "5m" | "codex" | "unknown";
+interface DeliveryCacheFact { at: number | null; ttlSec: number; ttlQuelle: DeliveryTtlSource }
+interface ContextTail { read: number | ContextRead | null; apiError: ApiErrorLine | null; cache?: DeliveryCacheFact }
 // Positive source resolutions are cached separately: Pi needs one directory read + session-head
 // validation to find its timestamped filename, but after that an unchanged file must cost exactly
 // one stat and nothing else on the 2 s owner poll. Identity includes harness/cwd/session so recycling
@@ -36907,6 +37280,20 @@ function contextReading(s: Slot): { ctx: ContextFill | null; apiError: ApiErrorL
   if (windowTokens === null) return { ctx: null, apiError };
   return { ctx: { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 }, apiError };
 }
+
+function deliveryCacheReading(s: Slot): DeliveryCacheFact {
+  const h = harnessOf(s.harness);
+  if (h.id !== "claude" && h.id !== "codex") return { at: null, ttlSec: 300, ttlQuelle: "unknown" };
+  if (!s.cwd || !s.sessionId) return { at: null, ttlSec: h.id === "codex" ? 1800 : 300,
+    ttlQuelle: h.id === "codex" ? "codex" : "unknown" };
+  contextReading(s);
+  const identity = `${h.id}\0${s.cwd}\0${s.sessionId}`;
+  const tail = ctxFiles.get(s.id)?.identity === identity ? ctxCache.get(s.id) : null;
+  if (h.id === "claude") return tail?.cache ?? { at: null, ttlSec: 300, ttlQuelle: "unknown" };
+  const read = tail?.read;
+  return { at: read && typeof read !== "number" ? read.at ?? null : null,
+    ttlSec: 1800, ttlQuelle: "codex" };
+}
 // the newest REAL `message.usage` in the file's TAIL. Tail-read for the same reason pulseLastOutput
 // is: a transcript runs to megabytes and neither the poll nor a tick may slurp one. A usage line
 // that sits entirely beyond the tail therefore reads as "no usage line" → null, which is the honest
@@ -36982,8 +37369,10 @@ function readClaudeTail(file: string, size: number): ContextTail {
   let read: number | null = null;
   let decided = false;
   let apiError: ApiErrorLine | null = null;
+  let lastUsageAt: number | null = null;
+  let tier: DeliveryTtlSource | null = null;
   // every assistant line carries message.usage, so this one cheap filter finds both kinds of line
-  for (let i = lines.length - 1; i >= 0 && (read === null || !decided); i--) {
+  for (let i = lines.length - 1; i >= 0 && (read === null || !decided || tier === null); i--) {
     if (!lines[i].includes('"usage"')) continue;
     let d: { type?: unknown; timestamp?: unknown; error?: unknown; isApiErrorMessage?: unknown;
       message?: { model?: unknown; usage?: unknown; content?: unknown } };
@@ -37004,17 +37393,28 @@ function readClaudeTail(file: string, size: number): ContextTail {
           resetAt: claudeLimitResetAt(said, at) };
       }
     }
-    if (read !== null || isError || d.message?.model === "<synthetic>") continue;
+    if (isError || d.message?.model === "<synthetic>") continue;
     const u = d.message?.usage;
     if (typeof u !== "object" || u === null) continue;
+    if (lastUsageAt === null) {
+      const at = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
+      if (Number.isFinite(at)) lastUsageAt = at;
+    }
     const num = (k: string): number => {
       const v = (u as Record<string, unknown>)[k];
       return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
     };
+    const creation = (u as Record<string, unknown>).cache_creation;
+    if (tier === null && typeof creation === "object" && creation !== null) {
+      const c = creation as Record<string, unknown>;
+      if (typeof c.ephemeral_1h_input_tokens === "number" && c.ephemeral_1h_input_tokens > 0) tier = "1h";
+      else if (typeof c.ephemeral_5m_input_tokens === "number" && c.ephemeral_5m_input_tokens > 0) tier = "5m";
+    }
     // input + both cache tiers. output_tokens is absent from this sum on purpose — see the region note.
-    read = num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
+    if (read === null) read = num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
   }
-  return { read, apiError };
+  return { read, apiError, cache: { at: lastUsageAt, ttlSec: tier === "1h" ? 3600 : 300,
+    ttlQuelle: tier ?? "unknown" } };
 }
 
 // Pi puts the timestamp in the filename, so the pinned UUID is a suffix rather than the whole
@@ -37209,7 +37609,7 @@ function readCodexContext(file: string, size: number): ContextRead | null {
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].includes('"last_token_usage"')) continue;
-    let row: { type?: unknown; payload?: { type?: unknown; info?: unknown } };
+    let row: { type?: unknown; timestamp?: unknown; payload?: { type?: unknown; info?: unknown } };
     try { row = JSON.parse(lines[i]) as typeof row; }
     catch { continue; } // torn first tail line — keep walking back
     if (row.type !== "event_msg" || row.payload?.type !== "token_count") continue;
@@ -37221,7 +37621,8 @@ function readCodexContext(file: string, size: number): ContextRead | null {
     if (typeof used !== "number" || !Number.isFinite(used) || used < 0) continue;
     const window = (info as Record<string, unknown>).model_context_window;
     if (typeof window !== "number" || !Number.isFinite(window) || window <= 0) return null;
-    return { used, window };
+    const at = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
+    return { used, window, ...(Number.isFinite(at) ? { at } : {}) };
   }
   return null;
 }

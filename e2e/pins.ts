@@ -5514,7 +5514,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // of them carried a delivery state, so a paste that never landed was indistinguishable from a
   // delivered one in the only file that records what Fleet typed.
   const senderGaps = senderBodies.filter((s) => s.body.length >= 200
-    && !(/await sendText\([^)]*rollbackOwnPayload: true \}\)/.test(s.body)
+    && !(/await sendText\([^)]*rollbackOwnPayload: true(?:,| \}\))/.test(s.body)
       && s.body.includes("sendFailureDelivery(e)")
       && /logPrompt\([^;]*undefined, acceptance\)/.test(s.body)));
   pin("every unattended sendText caller passes rollbackOwnPayload and journals its delivery — the acceptance value when it lands, the failure class when it does not",
@@ -6582,7 +6582,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // inside one occupation, which is the exact failure the carry exists to end.
   pin(`${RULE_RECEIVER} — the carry gates the worker's OCCUPATION, never the session id, and records WHY it did not deliver (D1c)`,
     carryFn.includes("worker.openedAt !== report.worker.openedAt")
-      && !/worker\.sessionId !== report\.worker\.sessionId\s*\n?\s*\?/.test(carryFn)
+      && !/if \(worker\.sessionId !== report\.worker\.sessionId\)/.test(carryFn)
       && !carryFn.includes("|| worker.sessionId !== report.worker.sessionId")
       && carryFn.includes('stamp("worker-gone"')
       && carryFn.includes("RECYCLED")
@@ -6611,10 +6611,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // touched, so a death mid-send is an UNKNOWN afterwards rather than a delivery nobody observed.
   // And nothing replays it — the decision door is shut by then, so this row is a record, not a debt.
   pin(`${RULE_RECEIVER} — the carry persists send-uncertain before the paste, and no tick replays it (D1c)`,
-    carryFn.indexOf('stamp("send-uncertain"') > 0
-      && carryFn.indexOf('stamp("send-uncertain"') < carryFn.indexOf("await sendText(")
-      && carryFn.indexOf("await saveStateNow();") < carryFn.indexOf("await sendText(")
-      && carryFn.indexOf("await saveStateNow();") > carryFn.indexOf('stamp("send-uncertain"')
+    carryFn.indexOf('stamp("send-uncertain"') > carryFn.indexOf("beforeSend: async")
+      && carryFn.indexOf("await saveStateNow();", carryFn.indexOf('stamp("send-uncertain"'))
+        < carryFn.indexOf("onRefused: async")
+      && carryFn.indexOf("await sendText(") < carryFn.indexOf('stamp("send-uncertain"')
       // the only pane-touching caller in this family, and the waiver it takes is the ONE
       // replyClarification takes: the work-prompt policy, never the kill-switch or the liveness probe
       // …and the busy gate is HONOURED (b5dc4dc2): a verdict never lands in a lane mid-turn
@@ -9294,7 +9294,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     pingLoader.includes('"program-inbox"')
       && pingTick !== "" && pingTick.includes('!== "program-inbox"')
       && nudgeGate !== "" && nudgeGate.includes('entry.kind !== "audit-red"')
-      && nudgeTick !== "" && (nudgeTick.match(/nudgeableUnread\(program\)/g) ?? []).length === 2
+      && nudgeTick !== "" && (nudgeTick.match(/nudgeableUnread\(program\)/g) ?? []).length === 3
       && !/entries \?\? \[\]\)\s*\n?\s*\.filter\(\(entry\) => entry\.readBy === null\)\.map/.test(nudgeTick),
     pingLoader === "" ? "the auditPings status loader list not found in the server universe"
       : nudgeGate === "" ? "nudgeableUnread not found in the server universe"
@@ -10482,10 +10482,29 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     if (serverU.text.slice(Math.max(0, at - 20), at).includes("function ")) continue; // the declaration
     calls.push({ args: callArgs(serverU.text, at), head: serverU.text.slice(at, at + 40) });
   }
+  const wrapperStart = serverU.text.indexOf("async function flushDeliveryBundle(");
+  const wrapperEnd = serverU.text.indexOf("async function sendText(", wrapperStart);
+  const passThrough = [...serverU.text.matchAll(/\bsendText\(/g)]
+    .filter((m) => (m.index ?? 0) >= wrapperStart && (m.index ?? 0) < wrapperEnd)
+    .map((m) => callArgs(serverU.text, m.index ?? 0));
   const nameless = calls.filter((c) => !/path: "[a-z-]+"/.test(c.args));
+  const namedOutsideWrapper = (source: string): boolean => {
+    const start = source.indexOf("async function flushDeliveryBundle(");
+    const end = source.indexOf("async function sendText(", start);
+    return [...source.matchAll(/\bsendText\(/g)].every((m) => {
+      const at = m.index ?? 0;
+      if (source.slice(Math.max(0, at - 20), at).includes("function ")) return true;
+      return /path: "[a-z-]+"/.test(callArgs(source, at)) || (at >= start && at < end);
+    });
+  };
   pin(`${RULE_SEND_LEDGER} — every sendText call passes a path`,
-    calls.length > 0 && nameless.length === 0,
-    `${calls.length} call(s), nameless: ${nameless.map((c) => c.head).join(" | ") || "none"}`);
+    calls.length > 0 && passThrough.length === 3 && nameless.length === 2
+      && passThrough.filter((args) => !/path: "[a-z-]+"/.test(args)).length === 2
+      && passThrough.every((args) => args.includes("bypassQueue: true"))
+      && /type SendTextOptions = \{ path: SendPath;/.test(serverU.text)
+      && namedOutsideWrapper(serverU.text)
+      && !namedOutsideWrapper(serverU.text + '\nvoid sendText(s, text, true, options);'),
+    `${calls.length} call(s), pass-through=${passThrough.length}, nameless=${nameless.length}`);
   // BOTH DIRECTIONS between the vocabulary and its use. Comments are cut first: the union's own
   // explanations quote pane text, and a rule that read those would pin prose.
   const unionText = /type SendPath =([\s\S]*?);\n/.exec(serverU.text)?.[1] ?? "";

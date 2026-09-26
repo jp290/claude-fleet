@@ -106,6 +106,7 @@ const DETAILS = {
   kamon: ["Ein ruhendes Siegel mit beweglichem Kern; wartend tickt der Kern links.", "Innenmotiv", "Anordnung und Größe", "Kernform"],
   lantern: ["Ein Gefäß und eine Flamme; wartend lehnt sich die Flamme nach links.", "Glasgitter", "Gefäßumriss", "Docht"],
   branch: ["Ein Zweig mit fünf Rollentopologien; eine Welle läuft von der Wurzel zur Spitze.", "Aderung und Internodien", "Topologie", "Spitze"],
+  r5b: ["Unveränderter Zweig B aus Runde 5 als Kontrollspalte für dieselbe Messung.", "Pflanzenart", "Wuchs", "Spitze"],
 };
 const q = new URLSearchParams(location.search);
 const DPR = 2;
@@ -166,7 +167,7 @@ function leiste() {
         const s = FLACH[i], rect = row.getBoundingClientRect(), size = s.lane ? 19 : 24;
         const place = { x: (s.lane ? 24 : 8) + 1, y: Math.round(rect.top - box.top + (rect.height - size) / 2), size };
         if (s.free) return { ...place, state: "free", seed: 0, renderer: b.f.id, repo: "", role: "main", harness: "claude" };
-        const m = { ...markOf(s, b.f.id, stateOf(s), document.body.classList.contains("grau")), ...place };
+        const m = { ...markOf(s, b.f.id, stateOf(s)), ...place };
         row.title = `${s.slot} · ${b.f.label} · ${ROLES[m.role]} · ${m.harness}`;
         return m;
       });
@@ -224,24 +225,33 @@ function leiste() {
     document.getElementById("hinweis").textContent = matchMedia("(prefers-reduced-motion: reduce)").matches
       ? "Bewegung reduziert: volles Standbild" : `${SESS.length} Sessions · 16 Plätze`;
     for (const b of [...buehnen, ...lupen]) { b.stage.on = false; b.stage.sync(); }
-    const results = FASS.map((f, i) => admission(f, buehnen[i].stage, false));
+    const results = FASS.map((f) => admission(f));
     for (const b of [...buehnen, ...lupen]) { b.stage.on = true; b.stage.sync(); }
     const zeige = () => {
-      const accepted = results.filter((r) => Object.values(r.ja).every(Boolean));
+      const control = results.find((r) => r.id === "r5b");
+      for (const r of results) {
+        r.kosten.verhaeltnis = r.kosten.ms / control.kosten.ms;
+        r.ja.paare = r.paar.kleinster >= control.paar.kleinster;
+        r.ja.zustand = r.zustand.kleinster >= control.paar.kleinster
+          && r.zustand.bewegung.rest === 0 && r.zustand.bewegung.sleep === 0;
+        r.ja.kosten = r.kosten.verhaeltnis <= 3;
+      }
+      const accepted = results.filter((r) => r.id !== "r5b" && Object.values(r.ja).every(Boolean));
       const selected = accepted.toSorted((a, b) => b.paar.kleinster - a.paar.kleinster)[0]?.id ?? null;
-      window.__aufnahme = { results, umschalter: accepted.map((r) => r.id), default: selected };
+      window.__aufnahme = { results, kontrolle: { paar: control.paar.kleinster, ms: control.kosten.ms,
+        wieRunde5: control.wieRunde5.kleinster }, umschalter: accepted.map((r) => r.id), default: selected };
       for (let i = 0; i < FASS.length; i++) {
         const r = results[i];
-        buehnen[i].aufnahme.textContent = `Paare ${r.ja.paare ? "JA" : "NEIN"} ${r.paar.kleinster.toFixed(2)} · Zustand ${r.ja.zustand ? "JA" : "NEIN"} ${r.zustand.kleinster.toFixed(2)}\nKosten ${r.ja.kosten ? "JA" : "NEIN"} ${r.kosten.prozent.toFixed(2)} % · reduziert ${r.ja.reduziert ? "JA" : "NEIN"} · Tinte ${r.reduziert.tinte.toFixed(1)} %`;
+        buehnen[i].aufnahme.textContent = `Paare ${r.ja.paare ? "JA" : "NEIN"} ${r.paar.kleinster.toFixed(2)} · wie R5 ${r.wieRunde5.kleinster.toFixed(2)}\nZustand ${r.ja.zustand ? "JA" : "NEIN"} ${r.zustand.kleinster.toFixed(2)} · Kosten ${r.ja.kosten ? "JA" : "NEIN"} ${r.kosten.verhaeltnis.toFixed(2)}× · reduziert ${r.ja.reduziert ? "JA" : "NEIN"}`;
       }
       document.documentElement.dataset.ready = "1";
     };
     const messeKosten = () => {
       for (const b of [...buehnen, ...lupen]) { b.stage.on = false; b.stage.sync(); }
+      const msJeFassung = kostenGemeinsam(buehnen.map((b) => b.stage));
       for (let i = 0; i < FASS.length; i++) {
-        const ms = kosten(buehnen[i].stage, FASS[i]);
+        const ms = msJeFassung[i];
         results[i].kosten = { ms, prozent: ms / (1000 / 60) * 100 };
-        results[i].ja.kosten = ms <= (1000 / 60) * 0.02;
       }
       for (const b of [...buehnen, ...lupen]) { b.stage.on = true; b.stage.sync(); }
       zeige();
@@ -258,10 +268,11 @@ function leiste() {
   });
 }
 
-function pixels(f, s, state, t, reduced = false) {
+function pixels(f, s, state, t, reduced = false, art = "echt-grau") {
   const z = 24, canvas = document.createElement("canvas"); canvas.width = z * DPR; canvas.height = z * DPR;
   const ctx = canvas.getContext("2d"); ctx.scale(DPR, DPR); ctx.fillStyle = "#000"; ctx.fillRect(0, 0, z, z);
-  const mark = { ...markOf(s, f.id, state, true), x: 0, y: 0 };
+  const mark = { ...markOf(s, f.id, state, art === "echt-grau"), x: 0, y: 0,
+    size: art === "wie-runde-5" ? 24 : s.lane ? 19 : 24 };
   ctx.save(); ctx.translate((z - mark.size) / 2, (z - mark.size) / 2);
   f.draw(ctx, mark, f.layout(mark), t, reduced); ctx.restore();
   const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -271,28 +282,35 @@ function pixels(f, s, state, t, reduced = false) {
 }
 const mad = (a, b) => { let sum = 0; for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]); return sum / a.length; };
 const motion = (a, b) => { let changed = 0; for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 12) changed++; return changed / a.length * 100; };
-function kosten(stage, f) {
-  const cells = stage.cells.filter((c) => c.renderer.id === f.id);
-  const allCells = stage.cells;
-  stage.cells = cells;
-  const states = cells.map((c) => c.mark.state);
-  cells.forEach((c) => { if (c.mark.state !== "free") c.mark.state = "work"; });
-  stage.bench();
-  const samples = Array.from({ length: 5 }, () => stage.bench().ms).sort((a, b) => a - b);
-  cells.forEach((c, i) => { c.mark.state = states[i]; });
-  stage.cells = allCells;
-  stage.sync();
-  return samples[2];
+function kostenGemeinsam(stages) {
+  const saved = stages.map((stage) => stage.cells.map((c) => c.mark.state));
+  for (const stage of stages) for (const c of stage.cells) if (c.mark.state !== "free") c.mark.state = "work";
+  const samples = stages.map(() => []);
+  for (let frame = 0; frame < 210; frame++) for (let order = 0; order < stages.length; order++) {
+    const index = (frame + order) % stages.length, start = performance.now();
+    stages[index].paint(frame / 60, true);
+    if (frame >= 30) samples[index].push(performance.now() - start);
+  }
+  stages.forEach((stage, i) => stage.cells.forEach((c, j) => { c.mark.state = saved[i][j]; }));
+  return samples.map((values) => {
+    values.sort((a, b) => a - b);
+    const middle = values.slice(18, -18);
+    return middle.reduce((a, b) => a + b, 0) / middle.length;
+  });
 }
-function admission(f, stage, measureCost = true) {
+function admission(f) {
   const rest = SESS.map((s) => pixels(f, s, "rest", 0.7));
+  const round5 = SESS.map((s) => pixels(f, s, "rest", 0.7, false, "wie-runde-5"));
   let smallest = Infinity, pair = "";
+  let round5Min = Infinity, round5Pair = "";
   for (let i = 0; i < SESS.length; i++) for (let j = i + 1; j < SESS.length; j++) {
     const distance = mad(rest[i].luma, rest[j].luma);
     if (distance < smallest) { smallest = distance; pair = `${SESS[i].slot}~${SESS[j].slot}`; }
+    const oldDistance = mad(round5[i].luma, round5[j].luma);
+    if (oldDistance < round5Min) { round5Min = oldDistance; round5Pair = `${SESS[i].slot}~${SESS[j].slot}`; }
   }
   let stateMin = Infinity, stateSlot = "";
-  const changes = { work: [], need: [], rest: [], sleep: [] };
+  const changes = { work: [], need: [], rest: [], sleep: [], done: [], bad: [] };
   for (const s of SESS) {
     const work = pixels(f, s, "work", 0.7), need = pixels(f, s, "need", 0.7);
     const d = mad(work.luma, need.luma);
@@ -300,27 +318,29 @@ function admission(f, stage, measureCost = true) {
     for (const state of Object.keys(changes)) changes[state].push(motion(pixels(f, s, state, 0).luma, pixels(f, s, state, 1.5).luma));
   }
   const moving = Object.fromEntries(Object.entries(changes).map(([key, a]) => [key, a.reduce((x, y) => x + y, 0) / a.length]));
-  const ms = measureCost ? kosten(stage, f) : null;
   const still = SESS.map((s) => [pixels(f, s, "work", 0, true), pixels(f, s, "work", 2, true)]);
   const bytegleich = still.every(([a, b]) => a.png === b.png);
   const ink = still.reduce((sum, [a]) => sum + a.luma.filter((v) => v > 24).length / a.luma.length * 100, 0) / still.length;
   return { id: f.id, paar: { kleinster: smallest, engste: pair, paare: 171 },
+    wieRunde5: { kleinster: round5Min, engste: round5Pair },
     zustand: { kleinster: stateMin, slot: stateSlot, bewegung: moving },
-    kosten: ms == null ? null : { ms, prozent: ms / (1000 / 60) * 100 },
+    kosten: null,
     reduziert: { bytegleich, tinte: ink },
-    ja: { paare: smallest >= 4, zustand: stateMin >= 4 && moving.rest === 0 && moving.sleep === 0,
-      kosten: ms == null ? null : ms <= (1000 / 60) * 0.02, reduziert: bytegleich && ink > 0 } };
+    ja: { paare: null, zustand: null, kosten: null, reduziert: bytegleich && ink > 0 } };
 }
 
 function tafel() {
   document.body.classList.add("tafel");
   const size = 24, pad = 8, step = size + pad, state = q.get("zustand") || "echt";
+  const art = q.get("messart") === "r5" ? "wie-runde-5" : "echt-grau";
   const canvas = document.getElementById("bogen"), stage = new MarkenStage(canvas, { dpr: 2 }); stage.on = false;
-  stage.setRows(FASS.flatMap((f, y) => SESS.map((s, x) => ({ ...markOf(s, f.id, state === "echt" ? s.state : state, true),
-    x: pad + x * step + (s.lane ? 2.5 : 0), y: pad + y * step + (s.lane ? 2.5 : 0) }))),
+  stage.setRows(FASS.flatMap((f, y) => SESS.map((s, x) => ({ ...markOf(s, f.id, state === "echt" ? s.state : state, art === "echt-grau"),
+    size: art === "wie-runde-5" ? 24 : s.lane ? 19 : 24,
+    x: pad + x * step + (art === "echt-grau" && s.lane ? 2.5 : 0),
+    y: pad + y * step + (art === "echt-grau" && s.lane ? 2.5 : 0) }))),
   pad + SESS.length * step, pad + FASS.length * step);
-  const results = FASS.map((f) => admission(f, stage, false));
-  window.__tafel = { zustand: state, sessions: SESS.length, fassungen: results };
+  const results = FASS.map((f) => admission(f));
+  window.__tafel = { zustand: state, messart: art, sessions: SESS.length, fassungen: results };
   document.getElementById("ergebnis").textContent = JSON.stringify(window.__tafel, null, 1);
   document.documentElement.dataset.ready = "1";
 }

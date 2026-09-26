@@ -1,5 +1,6 @@
 import { seedOf, rngOf, dsin, dcos } from "./marken3.js";
 import { projectHue, PROJECT_HUES } from "./marken.js";
+import { FASSUNGEN as ROUND5, PflanzStage, ZUSTAND as ROUND5_STATE } from "./marken5.js";
 
 export { seedOf, projectHue };
 export const ROLES = { main: "Program-MAIN", orch: "Orchestratorin", astra: "Astra", steward: "Steward", lane: "Lane" };
@@ -172,7 +173,26 @@ const Branch = {
   },
 };
 
-export const RENDERERS = [Arm, Kamon, Lantern, Branch];
+const round5Builder = new PflanzStage(document.createElement("canvas"));
+const Round5Branch = {
+  id: "r5b", label: "Kontrolle · Runde 5 B", control: true,
+  layout(mark) {
+    return round5Builder.bau({ ...mark, x: 0, y: 0, rolle: mark.role, fassung: "zweig" });
+  },
+  draw(ctx, mark, cache, t, reduced) {
+    const state = stateOf(mark, reduced), z = ROUND5_STATE[state] ?? ROUND5_STATE.rest;
+    cache.t = t;
+    const hue = z.red ? 2 : cache.hue, sat = z.gray ? 0 : z.red ? 70 : 58, light = z.light;
+    const ink = (l, a = 1) => mark.grey ? `hsl(0 0% 78% / ${a})`
+      : `hsl(${hue} ${sat}% ${Math.max(6, Math.min(94, l))}% / ${a})`;
+    const colors = { stiel: ink(light - 16), blatt: ink(light - 6), kopf: ink(light + 8),
+      hell: ink(light + 18), flaeche: ink(light - 26, 0.7), flug: (a) => ink(light + 18, a) };
+    ROUND5.zweig.paint(ctx, cache, z, colors);
+    if (z.beacon) round5Builder.paintBeacon(ctx, cache, z);
+  },
+};
+
+export const RENDERERS = [Arm, Kamon, Lantern, Branch, Round5Branch];
 const byId = Object.fromEntries(RENDERERS.map((r) => [r.id, r]));
 const REDUCE = matchMedia("(prefers-reduced-motion: reduce)");
 const moving = (s) => s === "work" || s === "need" || s === "bad";

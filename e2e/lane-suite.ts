@@ -173,17 +173,43 @@ export async function run(): Promise<void> {
       ] });
     check("(LS.meter) offers: open waits, claimed runs on the helper, a red report lands red in done",
       at(offers) === "done:Slot 7 · bbbb:red helper:Slot 6 · Queue:plain wait:Slot 5 · 4198:plain", at(offers));
-    const referenced = suiteMeter({ ...base, slots: [{ id: 17, label: "Build", branch: "fleet/x-aaaa", letter: "3A" }],
-      gate: { lock: null, reports: [rep(17, "running")] } }).balls[0];
-    check("(LS.meter) a lane uses its worktree letter, not a slot-number threshold or branch tail",
-      referenced.name === "3A · L17" && phases.balls[0].name === "Slot 1 · L1", referenced.name);
-    check("(LS.meter) each run kind has an owner word and a German explanation",
-      meterKind("land check").label === "Landprüfung" && meterKind("land check").title.includes("bevor")
-        && meterLine(referenced, 1000, true)[0] === "Vorschau"
-        && meterKind("post-land check").label === "Nachprüfung", meterLine(referenced, 1000).join(" · "));
     let meterClient = "", meterClientError = "";
     try { meterClient = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8"); }
     catch (e) { meterClientError = e instanceof Error ? e.message : String(e); }
+    let referenced: ReturnType<typeof suiteMeter>["balls"] = [];
+    try {
+      const namesStart = meterClient.indexOf("const bandLetter =");
+      const namesEnd = meterClient.indexOf("// THE FOUR STATES A ROW", namesStart);
+      const modelStart = meterClient.indexOf("function meterModel()");
+      const modelEnd = meterClient.indexOf("const METER_TITLE", modelStart);
+      if (namesStart < 0 || namesEnd < 0 || modelStart < 0 || modelEnd < 0) throw new Error("meter model or lane names missing");
+      const source = meterClient.slice(namesStart, namesEnd) + meterClient.slice(modelStart, modelEnd);
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+      const fleet = [
+        { id: 17, cwd: "/repo", label: "Main", worktree: null },
+        { id: 18, cwd: "/lane-5a", label: "L18", worktree: { branch: "fleet/x-aaaa", letter: "A" } },
+        { id: 19, cwd: "/lane-4a", label: "L19", worktree: { branch: "fleet/y-bbbb", letter: "A" } },
+      ];
+      const stacksOf = () => [
+        { anchor: { id: 5 }, lanes: [fleet[1]] },
+        { anchor: { id: 4 }, lanes: [fleet[2]] },
+      ];
+      const runModel = new Function("suiteMeter", "fleet", "stacksOf", "instanceName", "gateInfo",
+        "postLandLive", "meterSuites", "helperDevicesInfo", `${js}\nreturn meterModel();`);
+      referenced = (runModel(suiteMeter, fleet, stacksOf, "oldmac",
+        { lock: null, reports: [rep(17, "running"), rep(18, "running"), rep(19, "running")] },
+        null, [], []) as ReturnType<typeof suiteMeter>).balls;
+    } catch (e) { meterClientError = e instanceof Error ? e.message : String(e); }
+    check("(LS.meter) Checks uses each lane's full sidebar name when both stored letters are A",
+      referenced.find((b) => b.slot === 18)?.name === "5A · L18"
+        && referenced.find((b) => b.slot === 19)?.name === "4A · L19"
+        && referenced.find((b) => b.slot === 17)?.name === "Slot 17 · L17",
+      meterClientError || referenced.map((b) => `${b.slot}:${b.name}`).join(" "));
+    const namedLane = referenced.find((b) => b.slot === 18);
+    check("(LS.meter) each run kind has an owner word and a German explanation",
+      meterKind("land check").label === "Landprüfung" && meterKind("land check").title.includes("bevor")
+        && !!namedLane && meterLine(namedLane, 1000, true)[0] === "Vorschau"
+        && meterKind("post-land check").label === "Nachprüfung", namedLane ? meterLine(namedLane, 1000).join(" · ") : meterClientError);
     check("(LS.meter) the right tab uses the German row words and explains them on hover",
       /meterLine\(b, serverClock\(\), true\)/.test(meterClient)
         && /meterKind\(b\.kind\)\.title/.test(meterClient), meterClientError || "suite meter renderer");

@@ -3169,11 +3169,12 @@ const meterState = (b: MeterBall): string =>
   b.station === "wait" ? "waiting" : b.station !== "done" ? "running"
   : b.tone === "red" ? "failed" : b.tone === "unknown" ? "no result" : "passed";
 function meterModel() {
+  const refs = laneBandNames(stacksOf());
   return suiteMeter({
     instance: instanceName,
     gate: gateInfo, audit: postLandLive, offers: meterSuites, devices: helperDevicesInfo,
     slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label,
-      branch: s.worktree?.branch ?? null, letter: s.worktree?.letter ?? null })),
+      branch: s.worktree?.branch ?? null, letter: refs.get(s.id) ?? null })),
   });
 }
 const METER_TITLE: Record<MeterStation, string> = {

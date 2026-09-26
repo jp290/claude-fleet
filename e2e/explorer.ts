@@ -189,7 +189,8 @@ export async function run(): Promise<void> {
   check("explorer precondition: node_modules exposes src/client.ts for the interaction probes",
     cliSrc.length > 1000, `${cliSrc.length} bytes`);
 
-  const fxSrc = cliSrc.slice(cliSrc.indexOf("interface PaintOpts"), cliSrc.indexOf("async function loadTree"));
+  const fxSrc = cliSrc.slice(cliSrc.indexOf("interface PaintOpts"), cliSrc.indexOf("export async function loadTree"))
+    .replace(/^export /gm, "");
   // the decoder and the tree are the imports above; what is asserted about client.ts is that it
   // SHIPS those same modules — a copy re-inlined there would leave the suite measuring dead code
   check("explorer precondition: the paint block is extractable, and client.ts takes the decoder and the tree from the modules under test",

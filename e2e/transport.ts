@@ -20,7 +20,7 @@ const ledger = async (): Promise<Ledger> => (await (await get("/api/transport"))
 const fixture = (tag: string): string =>
   `// fleet e2e bundle fixture ${tag}\n` + `console.log(${JSON.stringify(tag)});\n`.repeat(400);
 
-const scriptSrc = (html: string): string => /<script src="([^"]+)"><\/script>/.exec(html)?.[1] ?? "";
+const scriptSrc = (html: string): string => /<script(?: type="module")? src="([^"]+)"><\/script>/.exec(html)?.[1] ?? "";
 const bytes = async (r: Response): Promise<Buffer> => Buffer.from(new Uint8Array(await r.arrayBuffer()));
 
 export async function run(): Promise<void> {

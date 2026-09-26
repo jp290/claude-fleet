@@ -6903,7 +6903,7 @@ export async function run(): Promise<void> {
     let cliSrc: string | null = null;
     let cliSrcError = "";
     try {
-      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/attention.ts`, "utf8");
     } catch (e) { cliSrcError = e instanceof Error ? e.message : String(e); }
     check("precondition: node_modules exposes src/client.ts for the pane-ack visibility checks",
       cliSrc !== null, cliSrcError);

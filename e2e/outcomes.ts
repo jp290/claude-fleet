@@ -1190,7 +1190,9 @@ export async function run(): Promise<void> {
     let cliSrc: string | null = null;
     let cliSrcError = "";
     try {
-      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+      const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+      cliSrc = ["client", "board"].map((name) => readFileSync(`${sourceRoot}/src/${name}.ts`, "utf8")
+        .replace(/^export /gm, "")).join("\n");
     } catch (e) { cliSrcError = e instanceof Error ? e.message : String(e); }
     check("precondition: node_modules exposes src/client.ts for outcome client checks",
       cliSrc !== null, cliSrcError);
@@ -1453,7 +1455,8 @@ export async function run(): Promise<void> {
       /not recorded|no lane/i.test(plaCall(plaRow({ covers: [] }))?.where ?? ""),
       JSON.stringify(plaCall(plaRow({ covers: [] }))));
     check("client: the poll payload's postLandAudit is read on every refresh and rendered",
-      /postLandAudit\?:/.test(cliSrc) && /postLandAudit = data\.postLandAudit \?\? null/.test(cliSrc)
+      /postLandAudit\?:/.test(cliSrc) && /setPostLandAudit\(data\.postLandAudit \?\? null\)/.test(cliSrc)
+      && /function setPostLandAudit\(value: PostLandAuditInfo \| null\): void \{ postLandAudit = value; \}/.test(cliSrc)
       && /renderPostLandAudit\(\)/.test(cliSrc), "refresh() in src/client.ts");
     check("client: the ack button records THIS audit's `at`, so a later alarm is not pre-dismissed",
       /prefSet\(PLA_ACK_KEY, String\(postLandAudit\?\.at \?\? 0\)\)/.test(cliSrc),

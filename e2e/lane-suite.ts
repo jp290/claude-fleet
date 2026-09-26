@@ -182,7 +182,7 @@ export async function run(): Promise<void> {
         && meterLine(referenced, 1000, true).at(-1) === "Vorschau"
         && meterKind("post-land check").label === "Nachprüfung", meterLine(referenced, 1000).join(" · "));
     let meterClient = "", meterClientError = "";
-    try { meterClient = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8"); }
+    try { meterClient = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/board.ts`, "utf8"); }
     catch (e) { meterClientError = e instanceof Error ? e.message : String(e); }
     check("(LS.meter) the right tab uses the German row words and explains them on hover",
       /meterLine\(b, serverClock\(\), true\)/.test(meterClient)

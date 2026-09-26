@@ -1737,7 +1737,9 @@ export async function run(ctx: Ctx): Promise<void> {
   let d2ClientSource = "";
   let d2ClientError = "";
   try {
-    d2ClientSource = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+    const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+    d2ClientSource = ["client", "queue"].map((name) => readFileSync(`${sourceRoot}/src/${name}.ts`, "utf8")
+      .replace(/^export /gm, "")).join("\n");
   } catch (e) { d2ClientError = e instanceof Error ? e.message : String(e); }
   const d2RenderStart = d2ClientSource.indexOf("type ProgramStatusFact =");
   const d2RenderEnd = d2ClientSource.indexOf("// the picker's pinned + recent roots", d2RenderStart);
@@ -1770,7 +1772,8 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(d2ProjectionOmitted ?? null));
   check("program list status: programsStale from the owner poll is visible in the Programs header",
     d2ClientSource.includes("programsStale?: number;")
-      && d2ClientSource.includes("programsStale = typeof data.programsStale === \"number\"")
+      && /setProgramsStale\(typeof data\.programsStale === "number"\s*&& Number\.isInteger\(data\.programsStale\) && data\.programsStale > 0 \? data\.programsStale : 0\)/.test(d2ClientSource)
+      && /function setProgramsStale\(value: number\): void \{ programsStale = value; \}/.test(d2ClientSource)
       && d2ClientSource.includes("programsStale > 0 ? ` · ${programsStale} stale active` : \"\""),
     "refresh + Programs subtitle in src/client.ts");
 
@@ -1984,7 +1987,8 @@ export async function run(ctx: Ctx): Promise<void> {
     let sheetClientSource = "";
     let sheetClientError = "";
     try {
-      sheetClientSource = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+      sheetClientSource = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/queue.ts`, "utf8")
+        .replace(/^export /gm, "");
     } catch (e) { sheetClientError = e instanceof Error ? e.message : String(e); }
     const sheetModelStart = sheetClientSource.indexOf("type RepoSheetFact =");
     const sheetModelEnd = sheetClientSource.indexOf("// the repo sheet's DOM painter", sheetModelStart);
@@ -9589,7 +9593,8 @@ export async function run(ctx: Ctx): Promise<void> {
     let cliSrc = "";
     let cliErr = "";
     try {
-      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/queue.ts`, "utf8")
+        .replace(/^export /gm, "");
     } catch (e) { cliErr = e instanceof Error ? e.message : String(e); }
     // the precondition fails AS ITSELF: a probe that could not read its subject must never fail as
     // the subject, or a missing symlink reads as a broken promotion pane.

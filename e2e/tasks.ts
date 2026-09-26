@@ -132,7 +132,9 @@ export async function run(ctx: Ctx): Promise<void> {
   let taskClientReadError = "";
   try {
     const checkout = resolve(realpathSync(`${ROOT}/node_modules`), "..");
-    taskClientSource = readFileSync(`${checkout}/src/client.ts`, "utf8");
+    taskClientSource = ["client", "queue", "attention", "board", "devices", "composer"]
+      .map((name) => readFileSync(`${checkout}/src/${name}.ts`, "utf8").replace(/^export /gm, ""))
+      .join("\n");
     taskPageSource = readFileSync(`${checkout}/public/index.html`, "utf8");
     taskServerSource = readFileSync(`${checkout}/server.ts`, "utf8");
   } catch (e) { taskClientReadError = e instanceof Error ? e.message : String(e); }
@@ -406,7 +408,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && modelFns.qRepoRelation(null, "/repos/alpha") === "unknown");
   }
   const openQueueSource = taskClientSource.slice(taskClientSource.indexOf("function openQueue"),
-    taskClientSource.indexOf("// --- audit trail overlay", taskClientSource.indexOf("function openQueue")));
+    taskClientSource.indexOf("function initQueue", taskClientSource.indexOf("function openQueue")));
   // D-3 (Grammatik G5.2 + G4.4): the settings window's "Fleet" section writes over EXACTLY the five
   // routes that existed before it — dispatcher, autos kill-switch, quiet hours, lane cap, integration
   // branch — each as one row's post(), and nothing reaches a route except through the section's Apply;
@@ -417,7 +419,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // apply.onclick — each turns this red.
   {
     const fsAt = taskClientSource.indexOf("function fleetSection(");
-    const fsEnd = taskClientSource.indexOf("// THE INFO COLUMN ON THE PHONE", fsAt);
+    const fsEnd = taskClientSource.indexOf("// --- the file explorer", fsAt);
     const fsSrc = fsAt >= 0 && fsEnd > fsAt ? taskClientSource.slice(fsAt, fsEnd) : "";
     const FLEET_WRITES = ["/api/autos/quiet", "/api/autos/switch", "/api/dispatch", "/api/repo-base", "/api/repo-lane-cap"];
     const named = [...new Set([...fsSrc.matchAll(/["'`](\/api\/[^"'`]+)["'`]/g)].map((m) => m[1]))].sort();

@@ -7718,10 +7718,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const client = clientU.text;
   // head and tail are DIFFERENT symbols, so the body is cut inside the module the function lives
   // in — never from a type in one module to a brace in the next.
-  const stateFnSpan = clientU.span("\nfunction programFoundingState(", "\n}\n", 3);
+  const stateFnSpan = clientU.span("\nexport function programFoundingState(", "\n}\n", 3);
   const stateMod = stateFnSpan ? clientU.module(stateFnSpan.file) : "";
   const stateHeadAt = stateMod.indexOf("type PublicProgramFoundingMode");
-  const stateFnAt = stateMod.indexOf("\nfunction programFoundingState(");
+  const stateFnAt = stateMod.indexOf("\nexport function programFoundingState(");
   const stateTailAt = stateFnAt < 0 ? -1 : stateMod.indexOf("\n}\n", stateFnAt);
   const stateSource = stateHeadAt < 0 || stateFnAt < stateHeadAt || stateTailAt < stateFnAt ? ""
     : stateMod.slice(stateHeadAt, stateTailAt + 3);
@@ -7732,7 +7732,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   let foundingStateErr = "";
   if (stateSource !== "") {
     try {
-      foundingState = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(stateSource)
+      foundingState = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(stateSource.replace(/^export /gm, ""))
         + "\nreturn programFoundingState;")() as (value: unknown) => FoundingView;
     } catch (e) { foundingStateErr = e instanceof Error ? e.message : String(e); }
   }
@@ -7761,14 +7761,14 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && views.leaked.state === "unreadable",
     JSON.stringify(views));
 
-  const markSource = clientU.span("\nfunction programMark(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
+  const markSource = clientU.span("\nexport function programMark(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
   let mark: ((p: Record<string, unknown>) => { mark: string; why: string }) | null = null;
   let markErr = "";
   if (stateSource !== "" && markSource !== "") {
     try {
       const prelude = 'let programsRead = "ok"; let fleet = []; function fmtTs(ts) { return "TS:" + ts; }\n';
       mark = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
-        prelude + stateSource + markSource) + "\nreturn programMark;")();
+        prelude + (stateSource + markSource).replace(/^export /gm, "")) + "\nreturn programMark;")();
     } catch (e) { markErr = e instanceof Error ? e.message : String(e); }
   }
   const marks = mark ? { pending: mark({ founding: V2 }), absent: mark({}), malformed: mark({ founding: null }) } : null;
@@ -7815,10 +7815,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && response.split("await loadPrograms(true);").length - 1 === 1,
     response === "" ? "bootstrap response path not found" : `refresh=${refreshAt} failure=${failureAt}`);
 
-  const failureFnSpan = clientU.span("\nfunction bootstrapFailureMessage(", "\n}\n", 3);
+  const failureFnSpan = clientU.span("\nexport function bootstrapFailureMessage(", "\n}\n", 3);
   const failureMod = failureFnSpan ? clientU.module(failureFnSpan.file) : "";
   const failureHeadAt = failureMod.indexOf("interface BootstrapUnavailable");
-  const failureFnAt = failureMod.indexOf("\nfunction bootstrapFailureMessage(");
+  const failureFnAt = failureMod.indexOf("\nexport function bootstrapFailureMessage(");
   const failureTailAt = failureFnAt < 0 ? -1 : failureMod.indexOf("\n}\n", failureFnAt);
   const failureSource = failureHeadAt < 0 || failureFnAt < failureHeadAt || failureTailAt < failureFnAt ? ""
     : failureMod.slice(failureHeadAt, failureTailAt + 3);
@@ -7828,7 +7828,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     try {
       const prelude = 'function fmtTs(ts) { return "TS:" + ts; }\n';
       failureMessage = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
-        prelude + stateSource + failureSource) + "\nreturn bootstrapFailureMessage;")();
+        prelude + (stateSource + failureSource).replace(/^export /gm, "")) + "\nreturn bootstrapFailureMessage;")();
     } catch (e) { failureErr = e instanceof Error ? e.message : String(e); }
   }
   const pending503 = failureMessage?.(503, { error: "founding delivery outcome is unknown",
@@ -8153,7 +8153,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // and RUN it over all five states. A DOM reference or a clock inside it would make that probe
   // impossible and would also let the pane date the owner's act for them: the stamp is the
   // SERVER's confirmedAt through fmtTs and nothing else.
-  const ps = clientU.span("\nfunction promotionState(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
+  const ps = clientU.span("\nexport function promotionState(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
   const states = ["absent", "off", "green-only", "guarded", "unreadable"];
   pin(`${RULE_PROMOTION_UI} — promotionState is top-level, DOM-free and clock-free, and names all five displayed states`,
     ps !== "" && !/document|\bel\(|chip\(|Date\.now\(|new Date\(/.test(ps)
@@ -8613,11 +8613,14 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_ONLINE} — /api/sessions ships helperOnlineMs in the SAME conditional as helperDevices`,
     /helperDevices:/.test(proj) && /helperOnlineMs: DEVICE_ONLINE_MS/.test(proj),
     proj.trim().slice(0, 160) || "the helperDevices projection was not found");
-  const clientText = clientU.text;
+  const clientText = clientU.module("src/client.ts");
+  const devicesText = clientU.module("src/devices.ts");
   pin(`${RULE_ONLINE} — the client reads the served window and never falls back to a number of its own`,
-    /deviceOnlineMs = data\.helperOnlineMs \?\? null/.test(clientText)
+    /setDeviceSnapshot\(data\.helperDevices \?\? \[\], data\.helperOnlineMs \?\? null\)/.test(clientText)
+      && /deviceOnlineMs = onlineMs/.test(devicesText)
       && !/helperOnlineMs \?\? \d/.test(clientText),
-    /deviceOnlineMs = data\.helperOnlineMs/.test(clientText) ? "reads the projection" : "no read of data.helperOnlineMs found");
+    /setDeviceSnapshot\(data\.helperDevices \?\? \[\], data\.helperOnlineMs/.test(clientText)
+      ? "reads the projection" : "no read of data.helperOnlineMs found");
   // …and the harness ARMS the knob. Same shape as the FLEET_MIGRATE_PCT pin above and the same
   // reason: with the 90 s production default, e2e/lane-suite.ts's "nothing is beating" precondition
   // would be a race against how long the nine modules before it happened to take, not a fact.

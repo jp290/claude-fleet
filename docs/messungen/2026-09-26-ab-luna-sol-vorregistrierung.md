@@ -70,3 +70,7 @@ Luna wird Default einer Klasse, wenn **alle** fünf Bedingungen gelten:
 ## 5. Was schon mit Luna lief (kein Arm dieses Versuchs)
 
 Vier Zeilen sind mit `gpt-6-luna` gelaufen und gelandet: 595dde92, 08377558, 8ffd0e69 und 3ce4f1b4. Zwei weitere stehen in der Queue: 48006ce2 und dcb96685; bei dcb96685 nennt die Karte Sol, der Spawn-Datensatz aber Luna. Keine davon gehört zur Auswahl. Sie werden im Ergebnis beschreibend genannt und nicht gezählt, weil ihnen der gepaarte Sol-Arm fehlt.
+
+## Nachtrag vor dem ersten Luna-Lauf (2026-09-26, Auflage der Orchestratorin)
+
+**Zur Messgröße 2, Gate im ersten Anlauf.** Die beiden Arme laufen unter verschiedenen Bedingungen: Sol wurde am Land-Gate auf einem bewegten main gemessen, Luna einmal auf dem forkSha. Als Fail zählt deshalb auf beiden Seiten nur ein Verify-Fail, dessen Ursache der Baum ist. Nicht gezählt werden `ff-lost`, `waitedOut` (Warten auf den Suite-Mutex, der den Baum nie gesehen hat) und Fails aus einer Flake-Familie, die `docs/verify-tiering.md` führt. Ein solcher Fall zählt als „nicht gemessen" und nicht als rot. Ist dadurch eine Zeile auf einer Seite ungemessen, fällt sie für Bedingung (b) aus beiden Armen heraus. Diese Regel steht fest, bevor die erste Luna-Zeile gefilet wird. Für die acht Sol-Arme zeigt die Tabelle oben durchweg „ja"; die Regel betrifft also vor allem die Luna-Seite und spätere Nachzählungen.

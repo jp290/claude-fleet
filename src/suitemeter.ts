@@ -69,7 +69,7 @@ export interface MeterInput {
   slots: MeterSlot[];
 }
 
-// A fleet branch is `fleet/<yymmddhhmmss>-<4 hex>`; the four hex are what tells two lanes apart, so
+// Auto fleet branches end in four hex after either a timestamp or a date and task slug, so
 // an unlabelled lane is named by them rather than by a prefix every lane shares.
 export function laneTail(branch: string): string {
   const m = /-([0-9a-f]{4})$/.exec(branch);

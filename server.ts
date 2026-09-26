@@ -6465,12 +6465,23 @@ async function excludeLaneScratch(lanePath: string): Promise<void> {
 // `startAt`: a commit to fork from INSTEAD of the integration branch's current tip. Only the variant
 // group passes one (startVariantGroup): its n lanes must stand on ONE base, and main may move between
 // the n spawns. Absent — every other caller — keeps the integration branch as the start point.
-async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
+function taskBranchSlug(title: string): string {
+  const words = title.toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "").match(/[a-z0-9]+/g) ?? [];
+  let slug = "";
+  for (const word of words) {
+    const next = slug ? `${slug}-${word}` : word;
+    if (next.length > 24) break;
+    slug = next;
+  }
+  return slug;
+}
+
+async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string, title?: string): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
   const root = await repoRootOf(repoRaw);
-  // auto name carries seconds + a random suffix so two lanes spawned in the same minute
-  // (e.g. back-to-back dispatcher ticks) can't slug to the same worktree path and collide
+  const slug = title ? taskBranchSlug(title) : "";
   const stamp = new Date().toISOString().slice(2, 19).replace(/[-:T]/g, "");
-  const branch = branchRaw.trim() || `fleet/${stamp}-${randomBytes(2).toString("hex")}`;
+  const branch = branchRaw.trim() || `fleet/${slug ? `${stamp.slice(0, 6)}-${slug}` : stamp}-${randomBytes(2).toString("hex")}`;
   const chk = await git(root, "check-ref-format", "--branch", branch);
   if (chk.code !== 0) throw new Error(`invalid branch name: ${branch}`);
   const path = worktreePathFor(root, branch);
@@ -15167,7 +15178,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
       ? (await git(dispatchRepo, "rev-parse", `refs/heads/${base}`)).out
       : undefined);
     if (base && !baseTip) throw new Error(`base branch does not exist at dispatch: ${base}`);
-    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip);
+    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined);
     // `base` from the same source and with the same omission as openLaneInSlot: a dispatched lane
     // that left it out sent every `worktree.base` reader (laneBaseRef, the plan CLI's lane read) to
     // its fallback in the normal case — all four open lanes on the live fleet.json, 2026-09-22.
@@ -15192,7 +15203,8 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     } finally {
       releaseLaneLetter(letterBand, letter);
     }
-    free.label = `⎇ task ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
+    const named = /^fleet\/\d{6}-(.+)-[0-9a-f]{4}$/.exec(wt.branch);
+    free.label = `⎇ task ${named ? `${named[1]}-${wt.branch.slice(-4)}` : wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     // An attended click IS a release — the only one that never passes through `queued` — stamped
     // OVER whatever the row carried: the lane that actually ran was attended. The tick's path
     // (ownerAct false) writes nothing: it only picks rows already released, and inventing a value

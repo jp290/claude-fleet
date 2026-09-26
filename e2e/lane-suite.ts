@@ -188,8 +188,10 @@ export async function run(): Promise<void> {
       /meterLine\(b, serverClock\(\), true\)/.test(meterClient)
         && /meterKind\(b\.kind\)\.title/.test(meterClient), meterClientError || "suite meter renderer");
     check("(LS.meter) an unlabelled lane is named by its branch's four hex, the part lanes do NOT share",
-      laneTail("fleet/260918203940-4198") === "4198" && laneTail("feature/login") === "feature/login",
-      `${laneTail("fleet/260918203940-4198")} ${laneTail("feature/login")}`);
+      laneTail("fleet/260918203940-4198") === "4198"
+      && laneTail("fleet/260918-aepfel-oel-und-strassen-abcd") === "abcd"
+      && laneTail("feature/login") === "feature/login",
+      `${laneTail("fleet/260918203940-4198")} ${laneTail("fleet/260918-aepfel-oel-und-strassen-abcd")} ${laneTail("feature/login")}`);
     const holder = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: true, state: "overdue" }, reports: [] } });
     check("(LS.meter) a HELD mutex nobody named still puts a ball in 'run' — an empty run station would say 'nothing runs'",
       holder.lock === "overdue" && at(holder) === "run:check run:warn"

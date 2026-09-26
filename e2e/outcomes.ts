@@ -581,8 +581,11 @@ export async function run(): Promise<void> {
     check("provenance setup: an owner Program is confirmed for the task→slot→outcome chain",
       outcomeProgramRes.ok && outcomeProgramConfirm.ok && /^[0-9a-f]{24}$/.test(outcomeProgramId),
       `${outcomeProgramRes.status}/${outcomeProgramConfirm.status} ${JSON.stringify(outcomeProgram)}`);
+    const pinTitle = "Äpfel Öl und Straßen reparieren";
     const pinTask = (await (await post("/api/tasks", {
       text: "execution-provenance explicit-pin probe", repo: oRepo, programId: outcomeProgramId,
+      card: { ziel: pinTitle, surface: { files: ["seed.txt"], symbols: [] },
+        done: "the named lane exists", verify: "bun e2e/pins.ts", verboten: ["no extra edits"] },
     })).json()) as { task: { id: string; originId?: string; programId?: string } };
     const pinModel = "openai/gpt-5-codex";
     const pinDispatch = await post(`/api/tasks/${pinTask.task.id}/dispatch`, {
@@ -592,6 +595,13 @@ export async function run(): Promise<void> {
     check("provenance setup: explicit harness/model/effort dispatch creates a task-bound lane",
       pinDispatch.ok && pinLane.ok === true && typeof pinLane.slot === "number" && typeof pinLane.branch === "string",
       `${pinDispatch.status} ${JSON.stringify(pinLane)}`);
+    const pinSession = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null; label: string | null }[] }).slots.find((s) => s.id === pinLane.slot);
+    check("a valid card names the dispatched branch with date, whole-word ASCII slug and hex; label keeps the hex",
+      /^fleet\/\d{6}-aepfel-oel-und-strassen-[0-9a-f]{4}$/.test(pinLane.branch ?? "")
+      && pinSession?.label === `⎇ task aepfel-oel-und-strassen-${pinLane.branch?.slice(-4)}`
+      && pinSession.cwd === `${realpathSync(oRepo)}.worktrees/${pinLane.branch?.replace("/", "-")}`,
+      JSON.stringify({ branch: pinLane.branch, slot: pinSession }));
     type PinSlot = { taskId?: string | null; originId?: string | null; programId?: string | null; harness?: string | null;
       model?: string | null; effort?: string | null };
     let pinSlot: PinSlot | undefined;
@@ -629,6 +639,8 @@ export async function run(): Promise<void> {
     check("provenance setup: body-less dispatch creates a task-bound default-adapter lane",
       defaultDispatch.ok && defaultLane.ok === true && typeof defaultLane.slot === "number"
       && typeof defaultLane.branch === "string", `${defaultDispatch.status} ${JSON.stringify(defaultLane)}`);
+    check("a task without a valid card keeps the seconds-stamp branch",
+      /^fleet\/\d{12}-[0-9a-f]{4}$/.test(defaultLane.branch ?? ""), defaultLane.branch ?? "");
     if (typeof defaultLane.slot === "number")
       await post(`/api/slots/${defaultLane.slot}/shelve`, { note: "default adapter provenance probe" });
     const defaultOutcome = forBranch(await readOutcomes(), defaultLane.branch ?? "");
@@ -653,9 +665,14 @@ export async function run(): Promise<void> {
     // hand (ff-only: pure ancestry, the measured shape), then the lane is killed like any abort.
     // Mutation caught: restoring the constant note at server.ts#teardownSlotOccupant.
     const offMark = "closed-off-fleet probe — work on main without a land";
-    const offTask = (await (await post("/api/tasks", { text: offMark, repo: oRepo })).json()) as { task: { id: string } };
+    const offTask = (await (await post("/api/tasks", { text: offMark, repo: oRepo,
+      card: { ziel: "⚙️", surface: { files: ["seed.txt"], symbols: [] },
+        done: "the fallback lane exists", verify: "bun e2e/pins.ts", verboten: ["no extra edits"] },
+    })).json()) as { task: { id: string } };
     const offD = await post(`/api/tasks/${offTask.task.id}/dispatch`, {});
     const offJ = (await offD.json()) as { slot?: number; branch?: string };
+    check("a valid card whose title has no ASCII words keeps the seconds-stamp branch",
+      /^fleet\/\d{12}-[0-9a-f]{4}$/.test(offJ.branch ?? ""), offJ.branch ?? "");
     const offCwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
       .slots.find((s) => s.id === offJ.slot)?.cwd ?? "";
     // SETTLE on the founding brief for the same reason as (7b) below: a teardown inside that

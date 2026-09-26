@@ -588,6 +588,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   // prints, so each one is asserted BY ITS REASON, not merely by its status code. ---
   {
     const g = (dir: string, ...a: string[]) => spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+    const gitDir = (dir: string) => g(dir, "rev-parse", "--absolute-git-dir").stdout.trim();
     const sha = (dir: string) => g(dir, "rev-parse", "HEAD").stdout.trim();
     const status = (dir: string) => g(dir, "status", "--porcelain").stdout;
     type Rb = { ok?: boolean; reason?: string; error?: string; files?: string[]; restored?: boolean;
@@ -690,7 +691,7 @@ export async function run(lc: LaneCtx): Promise<void> {
         sha(ln.cwd) !== before && exists(`${ln.cwd}/rebase-lane.txt`) && exists(`${ln.cwd}/rebase-main.txt`),
         `${before.slice(0, 7)} → ${sha(ln.cwd).slice(0, 7)}`);
       check("rebase leaves no rebase in progress behind it",
-        !exists(`${REPO}/.git/worktrees/${ln.branch.split("/").pop()}/rebase-merge`) && status(ln.cwd) === "",
+        exists(gitDir(ln.cwd)) && !exists(`${gitDir(ln.cwd)}/rebase-merge`) && status(ln.cwd) === "",
         JSON.stringify(status(ln.cwd)));
     }
     await post(`/api/slots/${ln.slot}/kill`, {});
@@ -713,8 +714,8 @@ export async function run(lc: LaneCtx): Promise<void> {
       sha(cl.cwd) === headBefore && status(cl.cwd) === stBefore && conflict.j.restored === true,
       `${headBefore.slice(0, 7)} vs ${sha(cl.cwd).slice(0, 7)} · restored=${conflict.j.restored}`);
     check("a conflicting rebase leaves no rebase state in the worktree",
-      !exists(`${REPO}/.git/worktrees/${cl.branch.split("/").pop()}/rebase-merge`)
-      && !exists(`${REPO}/.git/worktrees/${cl.branch.split("/").pop()}/rebase-apply`),
+      exists(gitDir(cl.cwd)) && !exists(`${gitDir(cl.cwd)}/rebase-merge`)
+      && !exists(`${gitDir(cl.cwd)}/rebase-apply`),
       "rebase-merge / rebase-apply");
     check("the lane's own commit survived the aborted rebase",
       readFileSync(`${cl.cwd}/rebase-main.txt`, "utf8") === "the lane's version\n",

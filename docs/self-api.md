@@ -932,6 +932,16 @@ eigene MAIN freigibt. Der `⚙ steward` darf.
 Lane (409, an der Route): `a lane may not file a queue row — a lane executes the row it was founded
 on, it does not fill the queue its own MAIN releases from`.
 
+**Optionales `repo`:** Ohne das Feld zielt die pending Zeile weiter auf das Git-Repo des
+MAIN-Checkouts. Eine exakt gebundene Program-MAIN darf beim Filen ein anderes Repo benennen, wenn
+es bereits in der Liste offener Arbeits-Repos des Dispatch-Ticks steht oder das konfigurierte
+`FLEET_DISPATCH_REPO` ist. Der Body setzt nie die `programId`; sie kommt aus der Bindung.
+`base`, `card` und `files.unknownPaths` werden gegen das Ziel-Repo geprüft. Ein leeres, falsch
+typisiertes oder unbekanntes `repo` wird als 400 abgewiesen und mintet keine Zeile. Falls das Repo
+während der asynchronen Vorbereitung aus der Liste fällt, lautet die Antwort 409 und es wird
+ebenfalls nichts gefilt. Das Feld erweitert nur das Filen: Release, Hold, Kartenbestätigung und Land
+behalten ihre bestehenden Repo-Grenzen.
+
 **Optionale Karte (seit 08ec67c0):** der Body darf neben `text`/`kind`/Spawn-Tripel ein
 `card{ziel, surface{files, symbols}, done, verify, verboten}` tragen (dieselbe Form nimmt die
 Owner-Tür `POST /api/tasks`). Validiert wird mit `card-extract.ts#validateCard` gegen den Repo der

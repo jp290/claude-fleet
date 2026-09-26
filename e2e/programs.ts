@@ -7171,6 +7171,45 @@ export async function run(ctx: Ctx): Promise<void> {
       && releaseTrail[0]?.detail === `${ownId} program=${mainProgram.id}`,
     `${releaseOk.status} ${JSON.stringify(releaseOkBody)} row=${JSON.stringify(releasedRow)} trail=${JSON.stringify(releaseTrail)}`);
 
+  // A second repo enters the tick's open-work list through an owner row. The same MAIN may file
+  // there, but its release door must still refuse to carry the new row across the repo boundary.
+  const crossRepoKnown = !!REPO2 && existsSync(`${REPO2}/.git`);
+  check("cross-repo filing fixture: REPO2 is a separate git repo before the owner seeds its dispatch row",
+    crossRepoKnown && realpathSync(REPO2) !== realpathSync(REPO),
+    `repo2=${REPO2} known=${crossRepoKnown}`);
+  const dispatchSeed = await makeTask({ text: "cross-repo dispatch seed", repo: REPO2 });
+  const seedRow = await taskRow(dispatchSeed);
+  check("cross-repo filing fixture: the dispatcher's open-work list contains the foreign repo before MAIN filing",
+    seedRow?.repo === realpathSync(REPO2) && seedRow.status === "pending" && seedRow.kind === "auftrag",
+    JSON.stringify(seedRow));
+  const selfFile = (body: Record<string, unknown>): Promise<Response> =>
+    fetch(`${BASE}/api/self/tasks`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": successorToken },
+      body: JSON.stringify(body) });
+  const crossFile = await selfFile({ text: "cross-repo main filing", kind: "auftrag", repo: REPO2 });
+  const crossBody = await crossFile.json() as { task?: TaskRow };
+  const crossId = crossBody.task?.id ?? "";
+  if (crossId) madeTasks.push(crossId);
+  const crossStored = await taskRow(crossId);
+  check("cross-repo filing: a bound MAIN files pending work in a repo the dispatch tick already knows, under its own program",
+    crossFile.status === 200 && crossStored?.repo === realpathSync(REPO2)
+      && crossStored.programId === mainProgram.id && crossStored.status === "pending"
+      && crossStored.slot == null && crossStored.releasedBy === undefined,
+    `${crossFile.status} ${JSON.stringify(crossStored)}`);
+  const crossRelease = await selfRelease(successorToken, crossId);
+  const crossReleaseText = await crossRelease.text();
+  check("cross-repo filing leaves release in the MAIN checkout: the foreign row remains pending",
+    crossRelease.status === 409 && crossReleaseText.includes("a release never reaches across repositories")
+      && (await taskRow(crossId))?.status === "pending",
+    `${crossRelease.status}:${crossReleaseText}`);
+  const beforeUnknown = (await allTasks()).length;
+  const unknownFile = await selfFile({ text: "unknown repo", kind: "auftrag", repo: `${REPO2}-unknown` });
+  const unknownText = await unknownFile.text();
+  check("cross-repo filing refuses a repo outside the dispatch list without minting a row",
+    unknownFile.status === 400 && unknownText.includes("known dispatch repository")
+      && (await allTasks()).length === beforeUnknown,
+    `${unknownFile.status}:${unknownText}`);
+
   // (f) RELEASING IS NOT STARTING. Three separate absences, because they fail differently: the
   // answer names no slot, the row keeps none, and no occupant appeared. Then a FULL dispatch tick
   // passes with the master stops engaged and the row is still exactly where the release left it.

@@ -3393,14 +3393,16 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const crCode = crBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
     crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
-  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED body — text, kind, the spawn triple, an optional card, optional variants and an optional files proposal",
+  pin("the Program-MAIN filing door DERIVES its program, limits repo to known dispatch targets and reads a CLOSED body",
     crBody.length > 0
       && /const bound = boundProgramForMain\(s\);/.test(crBody)
       && /programId: program\.id,/.test(crBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(crBody)
-      && /repo: mainRepo,/.test(crBody)
+      && /repo: targetRepo,/.test(crBody)
+      && /landWaveProjectionNow\(\)\.repos/.test(crBody)
+      && /dispatchRepos\.has\(requested\)/.test(crBody)
       && /if \(body\.programId !== undefined\)/.test(crBody)
-      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants", "files"\];/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo"\];/.test(crBody)
       && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
     crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
   // …and the `files` the set above admits is a PROPOSAL, held over the source because nothing at

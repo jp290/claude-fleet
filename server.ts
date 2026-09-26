@@ -14191,10 +14191,10 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // words the attended ▸ start button sends, validated below by the same validators. The refusal
   // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
   // separately because it is optional and travels as a unit, not three independent fields.
-  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files"];
+  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo"];
   const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k)).filter((k) => k !== "base");
   if (extra.length)
-    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants, an optional files PROPOSAL and optional base — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants, an optional files PROPOSAL, optional base and optional repo — [${extra.join(", ")}] is not read; a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
   if (typeof body.text !== "string" || !body.text.trim())
     return json({ error: "text must be a non-empty string" }, 400);
   // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
@@ -14242,22 +14242,33 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // declaration nothing can ever consume.
   if (proposedFiles && kind !== "auftrag")
     return json({ error: `${kind} is advisory — only an auftrag row carries a work surface to bundle by` }, 400);
-  // (4) THE REPO COMES FROM THE BINDING'S CHECKOUT, by the same helper as at the release door.
-  // Deliberately DERIVED rather than left null, and the reason is that other door: it compares
-  // `t.repo ?? DISPATCH_REPO` against the caller's own checkout, so on a fleet whose configured
-  // FLEET_DISPATCH_REPO is a DIFFERENT repository a null-repo row would be refused by the very MAIN
-  // that wrote it. An underivable repo fails as ITSELF rather than silently becoming that null.
+  // (4) An omitted target uses the MAIN's checkout. An explicit target must already occur among
+  // the open work repos that the dispatch tick reads, or be the configured dispatch default.
+  // Filing adds no new repo; release and land retain their own repo brackets.
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the row's target repo cannot be derived" }, 409);
+  let targetRepo = mainRepo;
+  if (body.repo !== undefined) {
+    if (typeof body.repo !== "string" || !body.repo.trim())
+      return json({ error: "repo must name a known dispatch repository" }, 400);
+    const requested = repoCanon(body.repo.trim());
+    if (requested === mainRepo)
+      return json({ error: "this door reads text and kind only with optional repo for a different known dispatch repository — [repo] names this session's checkout already; omit it" }, 400);
+    const dispatchRepos = new Set(landWaveProjectionNow().repos.map(({ repo }) => repoCanon(repo)));
+    if (DISPATCH_REPO) dispatchRepos.add(repoCanon(DISPATCH_REPO));
+    if (!dispatchRepos.has(requested))
+      return json({ error: "repo must name a known dispatch repository" }, 400);
+    targetRepo = requested;
+  }
   if (body.base !== undefined && kind !== "auftrag")
     return json({ error: `${kind} is advisory — only an auftrag row can name an integration base` }, 400);
-  const taskBase = await taskBaseFromBody(body, mainRepo);
+  const taskBase = await taskBaseFromBody(body, targetRepo);
   if (!taskBase.ok) return json({ error: taskBase.error }, 400);
   const mainText = body.text.slice(0, MAX_TASK_TEXT).trim();
-  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, mainRepo, program.id);
+  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, targetRepo, program.id);
   if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
-  // (4b) THE TWO RE-PROOFS, and they are the last thing between the awaits above and the first
+  // (4b) THE OCCUPANT AND BINDING RE-PROOFS, followed by a fresh repo-list read before the first
   // mutation below (there is no await from here to `tasks = capTasks`). The succession door states
   // the rule this implements: "no await can admit a revoked caller".
   await waitForMainFileTestLatch(occupant);
@@ -14278,6 +14289,12 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   if (!stillBound.ok) return json({ error: stillBound.error }, 409);
   if (stillBound.program.id !== program.id)
     return json({ error: `this session's MAIN binding moved from program ${program.id} to ${stillBound.program.id} while the row was being prepared — nothing filed` }, 409);
+  if (body.repo !== undefined) {
+    const dispatchRepos = new Set(landWaveProjectionNow().repos.map(({ repo }) => repoCanon(repo)));
+    if (DISPATCH_REPO) dispatchRepos.add(repoCanon(DISPATCH_REPO));
+    if (!dispatchRepos.has(targetRepo))
+      return json({ error: "repo is no longer a known dispatch repository — nothing filed" }, 409);
+  }
   // …and the reported match comes from the RE-READ, for the same reason: it is a fact about the
   // binding this row was actually filed under.
   const { sessionIdMatch } = stillBound;
@@ -14302,7 +14319,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // CREATE is the ordinary case, which is precisely why neither door refuses one. The three states
   // must not collapse: `null` (tree unreadable) drops the field rather than storing `[]`, because
   // "not measured" reading as "all tracked" is the one direction this repo never lets a check fall.
-  const proposalUnknown = proposedFiles ? untrackedAmong(proposedFiles, mainRepo) : null;
+  const proposalUnknown = proposedFiles ? untrackedAmong(proposedFiles, targetRepo) : null;
   // WHO proposed is derived from the caller's own slot, never from the body — the same rule and the
   // same helper as the standing propose route, so a reader chases one provenance format, not two.
   const filedProposal: TaskFilesProposal | undefined = proposedFiles
@@ -14312,7 +14329,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const id = randomBytes(4).toString("hex");
   const t: Task = {
     id, originId: id, text: mainText,
-    source: "main", kind, kindAtCreate: kind, repo: mainRepo, programId: program.id,
+    source: "main", kind, kindAtCreate: kind, repo: targetRepo, programId: program.id,
     ...(taskBase.base ? { base: taskBase.base } : {}),
     ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
     ...(authorCard?.ok ? { card: authorCard.card } : {}),

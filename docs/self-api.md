@@ -4337,3 +4337,66 @@ Lesarten, die der Code festlegt:
 - **Nur `kind: "server_error"`.** `rate_limit` und `authentication_failed` löst kein `resume`, und bei
   `invalid_request` (Safeguard-Verweigerung) schickte es genau die markierte Runde erneut. Diese
   bleiben als `apiStall` sichtbar und werden nie beschrieben.
+
+## trace — `GET /api/trace?task=<id>` (OWNER-Route, nicht `/api/self/*`)
+
+Die Spur EINER Queue-Zeile als `TraceEvent`-Folge, sortiert nach `at` (Overhaul S5, erster Schnitt;
+`trace-index.ts#buildTrace`). Eine **Projektion**: kein Schreiber, keine neue Datei, kein Feld an einem
+Ledger. Jedes Ereignis kommt aus einer Zeile, die ein bestehender Schreiber angehängt hat, und zeigt per
+`detailRef` auf sie, statt sie zu kopieren — Report-Text, `verify.out`, Audit-`out` und Task-Text
+erreichen kein Ereignis.
+
+```
+curl -s -H "authorization: Bearer $FLEET_TOKEN" "http://<fleet-host>:<port>/api/trace?task=<id>"
+```
+
+**Quellen:** `audit.jsonl` in ALLEN DREI Generationen (`.archive`, `.1`, aktiv — `readLedger` liest nur
+zwei, deshalb war die Zeit vor der zweiten Rotation für den Dossier unsichtbar, K5 Ä1),
+`lane-outcomes.jsonl`, `post-land-audits.jsonl`, `fleet-reports.jsonl` (je Report ein Ereignis mit seiner
+Art im `kind`, die Entscheidung und die Eskalation je ein eigenes), `tasks-archive.jsonl` (die Zeile, wenn
+sie `fleet.json` verlassen hat), die Land-Notizen `git notes --ref=fleet/land` und `git log base..head`
+der Lane (mit Dateiliste). Eine Rotation zwischen zwei Generationslesungen wiederholt den Lesevorgang
+(Inode vorher/nachher), statt eine Generation zu verlieren.
+
+**Die Form:** `{result:"trace", task, row, anchorAt, events[], horizon[], coverage[]}`.
+
+- `TraceEvent{source, kind, at, refs, files[], edge?, detailRef?}`. `kind` ist
+  `<familie>.<verb>[.<art>]` aus einer offenen Menge (`trace-index.ts#TRACE_FAMILIES`: `task lane land
+  audit report commit send event`) — z. B. `lane.opened` (der `slot_open` des Lane-Worktrees = Dispatch),
+  `task.dispatched` (▸ start), `lane.landed`, `land.gate.green` (Land-Notiz), `audit.red`,
+  `report.filed.needs-main`, `report.decided.accepted`, `commit.lane`; ein Audit-Ereignis ohne eigenen
+  Namen bleibt `event.<name>`. `refs` trägt jeden bekannten Schlüssel aus
+  `{task, slot, openedAt, branch, sha, program, session, call, parent}` — `session`/`call`/`parent` sind
+  für die Transkript-Quellen (T1) reserviert, damit sie ohne Schemawechsel dazukommen. `openedAt` steht
+  nur, wo es BEWIESEN ist (die gerade laufende Lane, eine `main-direct`-Zeile), nie aus
+  `slot_open.ts` gleichgesetzt. `files[]` leer heißt „kein Pfad belegt", nicht „nichts geschrieben".
+- `edge{from, to, channel}` nennt AKTOREN mit ihrer Tür daneben (`via`): ein Report läuft
+  `lane → main` (`fleet-report`), seine Entscheidung `occupant → lane` (`fleet-report.decision`), ein
+  `send` `unknown → lane` — der Absender steht auf keiner Audit-Zeile. Die Owner-Tür beweist ein Token,
+  keinen Menschen: sie heißt `{kind:"unknown", via:"owner credential"}` (S2 macht das ehrlich).
+- `detailRef{source, locator, fp?}`: `locator` = `<datei><gen>@<offset>+<bytes>` bzw. `<repo>@<sha>`,
+  `fp` = die ersten 16 Hex des sha256 der Zeile. Nach einer Rotation liegt die Zeile unter anderem
+  Offset; sie wird über `fp` wiedergefunden, und ein Zeiger, dessen Bytes nicht mehr darauf hashen, ist
+  veraltet — nie ein anderer Inhalt unter demselben Zeiger.
+- `horizon[]` je Quelle: `{source, state:"read", oldestAt, newestAt?, rows?, malformed?, generations?,
+  repo?, clock}` oder `{source, state:"unmeasured", reason, clock}`. `clock` nennt die Uhr (Server-
+  Wallclock für die Ledger, Committer-Uhr für `git-log`) — zwei Uhren, keine Kausalität aus Gleichstand.
+  Eine kaputte Zeile zählt in `malformed`, nie still verworfen.
+- `coverage[]` je Quelle, gegen `anchorAt` (Anlage der Zeile, sonst ihr frühestes Ereignis): `read`
+  (die Quelle reicht über das ganze Leben der Zeile — eine Null dort ist eine echte Null), `partial`
+  (beginnt später; was sie hält, steht da), `unmeasured` (nicht lesbar, oder beginnt später und hält
+  nichts). **Eine Zeile älter als jeder Horizont antwortet mit den Quellnamen, nie mit einer leeren
+  Liste**; eine unbekannte id ist 404 `unknown-task` mit `searched` und `horizon`, eine ungültige 400.
+
+**Wie `audit.jsonl`-Zeilen zugeordnet werden** — vier Regeln, jede eine Tatsache über einen Schreiber,
+keine Textsuche: das Feld `taskId`; die FÜHRENDE id der Ereignisse, deren Schreiber `detail` mit der
+Zeilen-id beginnt (`trace-index.ts#LEAD_ID_EVENTS`); ein `task=<id>`-Token; das SLOT-FENSTER der Lane
+(`slot_open` mit dem Worktree-Pfad bis zum nächsten `slot_open` desselben Slots — ein recycelter Slot
+gehört ab da jemand anderem).
+
+**Grenzen dieses Schnitts:** ein Wellen-Folger wird nicht gefunden (seine Lane steht unter der id des
+Kopfes, wie bei `/api/lane?task=`); der Tick-Dispatch schreibt kein Ereignis mit taskId (K5 Ä2), der
+Dispatch ist `lane.opened`; Kommunikation außerhalb von Report und `send` (Inbox, Messages, Attention,
+Clarifications als Inhalt), Session-Profil, Datenschicht-Antworten und Tool-Calls (T1–T3, T6–T8) sind
+spätere Schnitte. Kosten gemessen am 2026-09-26 gegen die echten Ledger (≈ 27 MB): 120–350 ms je Aufruf,
+auf Abruf, nie aus einem Poll. Owner-only durch POSITION (unter dem Token-Gate wie `/api/lane`).

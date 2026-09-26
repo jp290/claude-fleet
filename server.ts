@@ -56,6 +56,7 @@ import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { scanTitleOnly } from "./titlebytes";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
+import { buildTrace, type TraceLiveLane } from "./trace-index";
 import {
   clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
   resolveSurfaceRanges, symbolGraphStamp, surfaceSha,
@@ -40570,6 +40571,28 @@ Bun.serve<WSData>({
     }
     const debtResend = /^\/api\/succession-debts\/([0-9a-f]{24})\/resend$/.exec(url.pathname);
     if (debtResend && req.method === "POST") return await resendSuccessionDebt(debtResend[1]!);
+    // THE TRACE (trace-index.ts, Overhaul S5 first cut): one task's life as TraceEvents over every
+    // generation of the four ledgers, the land notes and git log, sorted by time, with a horizon per
+    // source and a per-source coverage verdict for this task. Owner-only by POSITION, read-only by
+    // construction — a projection, never a writer. The live facts are handed in: the queue row (the
+    // archive copy is read inside) and the lane holding the task now, the one place an occupation
+    // key is known without inference. A wave follower is not found here: its lane is on record under
+    // its head's id (resolveTaskLane says the same).
+    if (url.pathname === "/api/trace" && req.method === "GET") {
+      const id = (url.searchParams.get("task") ?? "").trim();
+      if (!/^[a-z0-9]{1,64}$/.test(id)) return json({ error: "task must be a queue row id ([a-z0-9]{1,64})" }, 400);
+      const t = tasks.find((x) => x.id === id) ?? null;
+      const live: TraceLiveLane[] = slots.flatMap((s) => s.cwd && s.worktree
+        && (s.taskId === id || (t?.status === "sent" && t.slot === s.id))
+        ? [{ slot: s.id, openedAt: s.openedAt, session: s.sessionId ?? null, repo: s.worktree.repo, branch: s.worktree.branch }] : []);
+      const trace = await buildTrace({
+        task: id, live, git: gitRead, worktreeOf: worktreePathFor,
+        files: { audit: AUDIT_FILE, outcomes: LANE_OUTCOME_FILE, postLandAudits: POSTLAND_AUDIT_FILE,
+          reports: FLEET_REPORT_LEDGER_FILE, tasksArchive: TASK_ARCHIVE_FILE },
+        liveRow: t ? { id, from: "live", created: t.created, status: t.status, kind: t.kind, programId: t.programId ?? null } : null,
+      });
+      return json(trace, trace.result === "unknown-task" ? 404 : 200);
+    }
     // THE DOSSIER (see the dossier region): six sources joined by branch into one lane's story, plus the
     // fleet/land note. Owner-only by POSITION, read-only by construction. Branch names carry slashes, so
     // the key is a QUERY parameter, never a path segment (a proxy normalizing %2F cannot break it).

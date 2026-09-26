@@ -70,6 +70,7 @@ import * as deployFacts from "./e2e/deploy-facts";
 import * as errors from "./e2e/errors";
 import * as hostHygiene from "./e2e/host-hygiene";
 import * as stateSnapshot from "./e2e/state-snapshot";
+import * as trace from "./e2e/trace";
 import * as trail from "./e2e/trail";
 import * as trailstats from "./e2e/trailstats";
 
@@ -343,6 +344,11 @@ const steps: Step[] = [
   // process-wide FLEET_AUDIT_ROTATE_BYTES the suite's srv must not get), so it touches no fixture here.
   { unit: "state-snapshot", module: "state-snapshot", run: async () => {
     await stateSnapshot.run();
+  } },
+  // --- the trace projection (trace-index.ts). Same reason as its neighbour: it boots its OWN scratch
+  // instance over ledgers it writes itself (three audit generations), so it touches no fixture here.
+  { unit: "trace", module: "trace", run: async () => {
+    await trace.run();
   } },
 
   // --- steward principal: scoped token, typed+capped sends, read-only fleet-wide access ---

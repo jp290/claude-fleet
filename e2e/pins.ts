@@ -458,6 +458,13 @@ const IN_SOURCE = SOURCE_DIR === ROOT;
 }
 
 {
+  const launch = /^\s*\( cd "\$DIR" && exec env -i\b[\s\S]*?^\s*FLEET_HOST=/m.exec(read("testinstanz.sh"))?.[0] ?? "";
+  pin("testinstanz.sh keeps LANG in the env -i instance server launch",
+    launch !== "" && /^\s+LANG=/m.test(launch),
+    launch === "" ? "env -i launch not found" : /^\s+LANG=([^\s\\]+)/m.exec(launch)?.[1] ?? "LANG missing from env -i launch");
+}
+
+{
   // The DECAPITATION rule, and it is a measured one. 613faa3 rewrote the SRV_ENV line at the end of
   // e2e-isolated.sh and took the 22 lines behind it with it — srv spawn, port wait, `bun
   // fleet-e2e.ts`, teardown, `exit $code`. The truncated file is still valid sh: it assigns a

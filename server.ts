@@ -6622,7 +6622,12 @@ async function worktreeRisk(repo: string, path: string, preservedBy?: string): P
   // branch. Measured against the integration branch — NOT the primary's HEAD, which may be
   // parked off it — so a lane landed via a ref-advance still reads as merged/safe-to-remove.
   // @{push} is unresolvable for a branch with no upstream — same fallback as before.
-  const intRef = preservedBy ?? (await integrationBranch(repo)) ?? "HEAD";
+  // A lane's recorded base (preservedBy) and the repo's CURRENT integration branch can differ —
+  // the base is fixed at fork, the repo's branch is configurable later. Merged into EITHER means
+  // the commits are preserved; the recorded base still scopes the lane's own commits below.
+  const repoRef = await integrationBranch(repo);
+  const intRef = preservedBy ?? repoRef ?? "HEAD";
+  const preservingRefs = [...new Set([intRef, ...(repoRef ? [repoRef] : [])])];
   const unpushed = await git(path, "log", "--no-color", "@{push}..", "--format=%h%x09%ct%x09%s");
   if (unpushed.code === 0) {
     unpushedCommits = parseCommitLog(unpushed.out);
@@ -6630,8 +6635,11 @@ async function worktreeRisk(repo: string, path: string, preservedBy?: string): P
     const br = await git(path, "rev-parse", "--abbrev-ref", "HEAD");
     const branch = br.code === 0 ? br.out : "";
     const onRemote = await git(path, "branch", "-r", "--contains", "HEAD");
-    const merged = branch ? await git(repo, "branch", "--merged", intRef, "--list", branch) : { out: "" };
-    if (!onRemote.out.trim() && !merged.out.trim()) {
+    let merged = false;
+    for (const ref of branch ? preservingRefs : []) {
+      if ((await git(repo, "branch", "--merged", ref, "--list", branch)).out.trim()) { merged = true; break; }
+    }
+    if (!onRemote.out.trim() && !merged) {
       // scope to the lane's OWN commits (HEAD not in the integration branch's base),
       // else a no-upstream lane over-reports all of main's history as "unpushed"
       const baseSha = (await git(repo, "rev-parse", intRef)).out;
@@ -14020,8 +14028,8 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
     const repo = lane.worktree.repo;
     const cwd = lane.cwd;
     const branch = lane.worktree.branch;
-    const integration = await integrationBranch(repo);
-    if (!integration) return json({ error: "cannot resolve the repo's integration branch" }, 409);
+    const integration = await laneBaseRef(lane);
+    if (!integration) return json({ error: "cannot resolve the lane's integration base" }, 409);
     if (integration === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
     // the lane's ref mirror, for the same reason every advanceIntegration call site refreshes it:
     // on a clone lane the root-side refs do not describe this lane until they are synced.
@@ -22981,11 +22989,11 @@ async function catchUpMainToHub(repo: string, main: string): Promise<string | nu
   const adv = await advanceIntegration(repo, main, tip);
   return adv ? `could not fast-forward ${main} onto the hub's ${tip.slice(0, 8)}: ${adv.error}` : null;
 }
-async function writeLandNote(repo: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
+async function writeLandNote(repo: string, base: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
   const tip = mainAfter; // the fast-forwarded integration branch IS the landed commit
   try {
     const note = {
-      branch, mainBefore, mainAfter,
+      branch, base, mainBefore, mainAfter,
       ...(prov.forkSha ? { forkSha: prov.forkSha } : {}),
       ...(prov.conflicted && prov.conflicted.length ? { conflicted: prov.conflicted } : {}),
       ...(prov.resolverDetail ? { resolverDetail: prov.resolverDetail } : {}),
@@ -23057,7 +23065,7 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
     ? { remote: HUB_REMOTE, reason: "no-remote" as const } : undefined;
   if (hubSkipped) audit("hub_skip", undefined,
     `${basename(repo)} ${branch} ${mainAfter.slice(0, 8)}: no remote named ${HUB_REMOTE} in this repo — landed here, no hub`);
-  await writeLandNote(repo, branch, mainBefore, mainAfter,
+  await writeLandNote(repo, main, branch, mainBefore, mainAfter,
     hubPush ? { ...prov, hubPush } : hubSkipped ? { ...prov, hubSkipped } : prov); // best-effort — never throws
   // ACP-17 · THE ONE READER WHO IS NOT AT THE BOARD. Everything written above this line is a PULL
   // surface: the note lives at the commit, the trail row in audit.jsonl, and both are found by
@@ -30426,7 +30434,7 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
     audit("merge_verdict_skip", target.id, `${branch}: ${kind} — ${gate.gate} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS})${suffix}`);
     return;
   }
-  const main = (s.worktree ? await integrationBranch(s.worktree.repo) : null) ?? "the integration branch";
+  const main = (await laneBaseRef(s)) ?? "the integration branch";
   const text = mergeVerdictMessage(kind, outcome, main);
   let acceptance: Acceptance;
   try {
@@ -37899,7 +37907,7 @@ async function laneFacts(): Promise<Record<string, LaneFact>> {
     const base = await laneBaseRef(s);
     let landed = false;
     if (head) {
-      const intRef = await integrationBranch(wt.repo);
+      const intRef = base;
       if (intRef) landed = (await git(wt.repo, "merge-base", "--is-ancestor", head, intRef)).code === 0;
     }
     out[wt.branch] = { head, base, landed, repo: wt.repo };
@@ -37927,7 +37935,7 @@ interface SinceLastLook {
 async function sinceLastLookView(prior: Record<string, unknown> | null): Promise<SinceLastLook | null> {
   const pl = prior?.lanes;
   if (typeof pl !== "object" || pl === null || Array.isArray(pl)) return null;
-  const priorLanes = pl as Record<string, { head?: unknown; landed?: unknown; repo?: unknown }>;
+  const priorLanes = pl as Record<string, { head?: unknown; base?: unknown; landed?: unknown; repo?: unknown }>;
   const cur = await laneFacts();
   const d: SinceLastLook = { new: [], advanced: [], landed: [], vanishedUnlanded: [], rewritten: [] };
   for (const b of Object.keys(cur)) if (!(b in priorLanes)) d.new.push(b);
@@ -37942,7 +37950,7 @@ async function sinceLastLookView(prior: Record<string, unknown> | null): Promise
       // runs in the primary repo even though the lane's tree is gone.
       let merged = false;
       if (pHead && pRepo) {
-        const intRef = await integrationBranch(pRepo);
+        const intRef = typeof p.base === "string" && p.base ? p.base : await integrationBranch(pRepo);
         if (intRef) merged = (await git(pRepo, "merge-base", "--is-ancestor", pHead, intRef)).code === 0;
       }
       (merged ? d.landed : d.vanishedUnlanded).push(b);
@@ -40909,7 +40917,7 @@ Bun.serve<WSData>({
     if (req.method === "GET" && riskMatch) {
       const s = slotFrom(riskMatch[1]);
       if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
-      const risk = await worktreeRisk(s.worktree.repo, s.cwd);
+      const risk = await worktreeRisk(s.worktree.repo, s.cwd, (await laneBaseRef(s)) ?? undefined);
       return json({ path: s.cwd, branch: s.worktree.branch, ...risk });
     }
     // one-click lane: the server picks the first free slot itself (create), or re-seats an

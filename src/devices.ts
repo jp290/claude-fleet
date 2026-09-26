@@ -1,4 +1,5 @@
-import { $, el, post, setDrawer, boardHead, gateAge, renderBoard } from "./client";
+import { $, el, post, setDrawer } from "./client";
+import { boardHead, gateAge, renderBoard } from "./board";
 
 // --- WHICH MACHINES TAKE WORK OFF THIS BOX: the helper device register --------------------------
 // The board's only view of the second machine. It sits with the gate line rather than in the lane

@@ -4096,6 +4096,35 @@ function testinstanzFact(out: string): { url: string; port: number; expiresAt: n
     return port >= 8900 && port <= 8999 && Number.isSafeInteger(expiresAt) ? { url: url.href, port, expiresAt } : null;
   } catch { return null; }
 }
+
+function testinstanzList(out: string): Array<{ worktree: string; port: number; url: string; expiresAt: number | null; state: string }> {
+  const lines = out.trim().split("\n");
+  if (lines.length === 1 && lines[0]?.startsWith("no test instances on this machine")) return [];
+  const expiryByInstance = new Map<string, number | null>();
+  for (const entry of readdirSync("/tmp", { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith("fleet-testinstanz-")) continue;
+    let state: string;
+    try { state = readFileSync(`/tmp/${entry.name}/testinstanz.state`, "utf8"); }
+    catch { continue; }
+    const field = (key: string): string => new RegExp(`^${key}=(.*)$`, "m").exec(state)?.[1] ?? "";
+    const worktree = field("src");
+    const port = Number(field("port"));
+    const expiry = Number(field("expiresAt"));
+    if (worktree && Number.isInteger(port)) expiryByInstance.set(`${worktree}\0${port}`,
+      Number.isSafeInteger(expiry) && expiry > 0 ? expiry * 1000 : null);
+  }
+  return lines.map((line) => {
+    const parts = line.split("  ");
+    const state = parts[0];
+    const port = Number(/^port (\d+)$/.exec(parts[1] ?? "")?.[1]);
+    const url = parts.at(-1) ?? "";
+    const worktree = parts.slice(3, -1).join("  ");
+    if ((state !== "up" && state !== "down") || !Number.isInteger(port) || !worktree
+      || !/^rest /.test(parts[2] ?? "") || !/^https?:\/\/\S+\/$/.test(url))
+      throw new Error(`unrecognized testinstanz list row: ${line.slice(0, 200)}`);
+    return { worktree, port, url, expiresAt: expiryByInstance.get(`${worktree}\0${port}`) ?? null, state };
+  });
+}
 // candidate id -> its ONE record (start, stop and expiry evidence in one)
 let lanePreviews: Record<string, LanePreview> = {};
 const lanePreviewTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -41365,6 +41394,18 @@ Bun.serve<WSData>({
       else worktreeNotes[wt.path] = body.text;
       await saveStateNow(); // the note is on disk before the answer — a restart right after keeps it
       return json({ ok: true, path: wt.path, length: body.text.length });
+    }
+    if (url.pathname === "/api/testinstanzen" && req.method === "GET") {
+      const script = `${import.meta.dir}/testinstanz.sh`;
+      try {
+        const st = lstatSync(script);
+        if (!st.isFile() || (st.mode & 0o111) === 0) return json({ error: "testinstanz.sh is missing or not executable" }, 409);
+        const run = await testinstanzCommand(import.meta.dir, ["list"], 15_000);
+        if (run.code !== 0) return json({ error: `testinstanz list failed (${run.code}): ${(run.err.trim() || run.out.trim()).slice(-500)}` }, 409);
+        return json({ testinstanzen: testinstanzList(run.out) });
+      } catch (error) {
+        return json({ error: `testinstanz list could not run: ${String(error instanceof Error ? error.message : error).slice(0, 300)}` }, 409);
+      }
     }
     const tiMatch = /^\/api\/slots\/(\d+)\/testinstanz$/.exec(url.pathname);
     if (tiMatch && (req.method === "GET" || req.method === "POST")) {

@@ -2,7 +2,7 @@
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plogRead, post, restartSrv,
@@ -13,6 +13,30 @@ import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers"
 export async function run(lc: LaneCtx): Promise<void> {
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
   // assertions fail on real teardown paths.
+  {
+    const listScript = `${ROOT}/testinstanz.sh`;
+    const original = exists(listScript) ? { bytes: readFileSync(listScript), mode: lstatSync(listScript).mode & 0o777 } : null;
+    const stateDir = mkdtempSync("/tmp/fleet-testinstanz-e2e-");
+    const worktree = `${stateDir}/fixture worktree`;
+    try {
+      writeFileSync(`${stateDir}/testinstanz.state`, `src=${worktree}\nport=8912\nexpiresAt=2000000000\n`);
+      writeFileSync(listScript, `#!/bin/sh\n[ "$1" = list ] && echo 'up  port 8912  rest 45 min  ${worktree}  http://100.64.0.1:8912/'\n`);
+      chmodSync(listScript, 0o700);
+      const anonymous = await fetch(BASE + "/api/testinstanzen");
+      check("testinstanz list requires the owner token", anonymous.status === 401);
+      const listed = await get("/api/testinstanzen");
+      const body = (await listed.json().catch(() => ({}))) as { testinstanzen?: Array<Record<string, unknown>> };
+      const instance = body.testinstanzen?.[0];
+      check("testinstanz list serves script rows as JSON with worktree, port, URL and exact expiry",
+        listed.status === 200 && body.testinstanzen?.length === 1 && instance?.worktree === worktree
+        && instance.port === 8912 && instance.url === "http://100.64.0.1:8912/"
+        && instance.expiresAt === 2_000_000_000_000 && instance.state === "up", JSON.stringify(body));
+    } finally {
+      if (original) { writeFileSync(listScript, original.bytes); chmodSync(listScript, original.mode); }
+      else rmSync(listScript, { force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }
   const emptyBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   {
     const route = `/api/slots/${emptyBranch.slot}/testinstanz`;
@@ -62,7 +86,8 @@ export async function run(lc: LaneCtx): Promise<void> {
       && spawnSync("git", ["-C", REPO, "branch", "--list", emptyBranch.branch]).stdout.toString().trim() === "",
     `${emptyRemove.status} ${emptyBranch.branch}`);
   const noWorktree = await post(`/api/slots/${emptyBranch.slot}/testinstanz`, { action: "up" });
-  check("testinstanz needs an occupied lane worktree", noWorktree.status === 409);
+  check("testinstanz needs an occupied lane worktree", noWorktree.status === 409
+    && ((await noWorktree.json()) as { error?: string }).error === `slot ${emptyBranch.slot} has no lane worktree`);
   const keptBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   const preserve = `${ROOT}/branch-preserve.git`;
   spawnSync("git", ["init", "--bare", "-q", preserve]);

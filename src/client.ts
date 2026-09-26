@@ -3149,7 +3149,7 @@ function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   const head = el("div", "bstate",
     !lk ? "· check runs · idle"
       : state === "parked" ? `⏸ check runs · parked by hand (no pid) · ${age}`
-      : state === "held" ? `${owner} · läuft seit ${age} · Prüfsperre (${who})`
+      : state === "held" ? `${owner} · läuft seit ${age} · check run busy · ${who}`
       : state === "overdue" ? `${owner} · läuft seit ${age} · Prüfsperre überfällig (${who})`
       : state === "unknown" ? `${owner} · Halter unbekannt · ${age} · Prüfsperre (${who})`
       // NEUTRAL on purpose: every finished run leaves its dir behind (release is implicit), so

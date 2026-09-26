@@ -57,7 +57,7 @@ export interface MeterGate {
     stage?: string; stats?: { n: number; p50: number; p90: number } }[];
 }
 export interface MeterDevice { name: string; claims?: { kind?: string; repo: string; ref: string; claimedAt?: number; expiresAt: number }[] }
-export interface MeterSlot { id: number; label: string | null; branch: string | null }
+export interface MeterSlot { id: number; label: string | null; branch: string | null; letter?: string | null }
 export interface MeterInput {
   // what THIS fleet calls itself (FLEET_INSTANCE). null = the operator named none, and the meter
   // then says "this machine" rather than inventing a name two hosts could share.
@@ -83,15 +83,25 @@ export function mmss(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+export function meterKind(kind: string): { label: string; title: string } {
+  switch (kind) {
+    case "land check": return { label: "Landprüfung", title: "Prüft eine Lane, bevor ihre Änderung auf main landet." };
+    case "preview": return { label: "Vorschau", title: "Prüft den aktuellen Stand einer Lane vor dem Land." };
+    case "post-land check": return { label: "Nachprüfung", title: "Prüft main nach einem Land erneut." };
+    case "queued check run": return { label: "Wartender Prüflauf", title: "Dieser Prüflauf wartet auf die gemeinsame Sperre." };
+    default: return { label: "Prüflauf", title: "Ein Prüflauf ohne näher gemeldete Art." };
+  }
+}
+
 // THE ROW UNDER THE TUBE, as text parts in reading order: kind → clock → stage (MAIN's order until
 // the owner answers, note 2026-09-22 §5). The renderer joins them into one ellipsised span, so a
 // narrow board cuts from the back — the stage goes first, the kind last. The clock is m:ss since
 // `at`, computed on each repaint; a finished run says how long ago, a run with no known start says
 // nothing. "/ ~p50" only where a distribution exists, and past its p90 the WORD, never a colour —
 // G0.2 gives --amber to "unmeasured", and a long run is measured.
-export function meterLine(b: MeterBall, now: number): string[] {
+export function meterLine(b: MeterBall, now: number, german = false): string[] {
   const parts: string[] = [];
-  if (b.kind !== b.name) parts.push(b.kind);
+  if (b.kind !== b.name) parts.push(german ? meterKind(b.kind).label : b.kind);
   if (b.at > 0) {
     const ms = now - b.at;
     if (b.station === "done") parts.push(`${mmss(ms)} ago`);
@@ -110,9 +120,10 @@ export function suiteMeter(inp: MeterInput): Meter {
   const nameOf = (slot: number | null, label: string | null, branch: string | null): string => {
     const s = slot === null ? undefined : inp.slots.find((x) => x.id === slot);
     const lbl = label ?? s?.label ?? null;
-    const br = branch ?? s?.branch ?? null;
-    const who = lbl ?? (br ? laneTail(br) : null);
-    return slot === null ? (who ?? "fleet") : who ? `${slot} · ${who}` : `slot ${slot}`;
+    const who = lbl ?? (branch ?? s?.branch ? laneTail(branch ?? s?.branch ?? "") : null);
+    if (slot === null) return who ?? "fleet";
+    const ref = s?.letter || `Slot ${slot}`;
+    return who ? `${ref} · ${who}` : ref;
   };
 
   // who holds the audit: a helper claim of kind "audit" puts the running audit on that helper. A
@@ -203,7 +214,7 @@ export function suiteMeter(inp: MeterInput): Meter {
   // the mutex is held but no row above says by whom: that holder is still a suite on this box, and
   // leaving the run station empty would read as "nothing is running", the one thing it is not
   if ((lock === "held" || lock === "overdue" || lock === "unknown") && !balls.some((b) => b.station === "run")) {
-    balls.push({ key: "lock:holder", station: "run", slot: null, name: "unnamed holder", kind: "check run", expect: null,
+    balls.push({ key: "lock:holder", station: "run", slot: null, name: "check run", kind: "check run", expect: null,
       what: lk?.pid === null || lk?.pid === undefined ? "pid unreadable" : `pid ${lk.pid}`,
       where: here, tone: lock === "overdue" ? "warn" : "plain", at: 0 });
   }

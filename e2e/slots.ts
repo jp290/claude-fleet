@@ -1249,6 +1249,46 @@ export async function run(): Promise<void> {
       seedFramePlan(5, 5, true)?.reset === true && seedFramePlan(5, 5, true)?.pin === true
         && seedFramePlan(5, 5, false)?.pin === false);
   }
+  const scrollSource = /  scrollToEnd\(\) \{[\s\S]*?\n  \}/.exec(cliSrc)?.[0] ?? "";
+  let pinnedOnSwitch = 0;
+  const scrollToEnd = scrollSource ? new Function("requestAnimationFrame",
+    `return function ${scrollSource.trim()}`)((cb: () => void) => cb()) as
+    (this: { term: { scrollToBottom: () => void }; pinToBottom: () => void;
+      chatEl: { scrollTop: number; scrollHeight: number } }) => void : null;
+  const switched = { term: { scrollToBottom: () => { pinnedOnSwitch++; } },
+    pinToBottom: () => { pinnedOnSwitch++; }, chatEl: { scrollTop: 0, scrollHeight: 300 } };
+  scrollToEnd?.call(switched);
+  check("B1: switching a pane pins both the terminal and the chat to their ends",
+    pinnedOnSwitch === 2 && switched.chatEl.scrollTop === 300
+      && /if \(existing\) \{ existing\.focus\(\); existing\.scrollToEnd\(\)/.test(cliSrc)
+      && /this\.scrollToEnd\(\);\n    renderSlots\(\)/.test(cliSrc),
+    `${pinnedOnSwitch} terminal pins · chat ${switched.chatEl.scrollTop}`);
+  check("B2: every pane observes its own size, debounces refit, and disconnects at disposal",
+    /this\.sizeObserver = new ResizeObserver\(/.test(cliSrc)
+      && /this\.sizeObserver\.observe\(this\.root\)/.test(cliSrc)
+      && /this\.observedRefit = setTimeout\([\s\S]{0,500}this\.refit\(\)/.test(cliSrc)
+      && /this\.sizeObserver\.disconnect\(\)/.test(cliSrc), "Pane size observer");
+  const landSource = /function failedLandVerdict\([\s\S]*?\n\}/.exec(cliSrc)?.[0] ?? "";
+  const failedLandVerdict = landSource ? new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(landSource)
+    + "\nreturn failedLandVerdict;")() as (v: { status: string; landed: boolean } | null) => boolean : null;
+  check("B4: failed and interrupted unlanded verdicts alarm, while merged and landed verdicts do not",
+    !!failedLandVerdict && ["blocked", "error", "interrupted"].every((status) => failedLandVerdict({ status, landed: false }))
+      && !failedLandVerdict({ status: "merged", landed: false })
+      && !failedLandVerdict({ status: "error", landed: true })
+      && /hint\.onclick = \(\) => setBoard\(true\)/.test(cliSrc)
+      && /bar\.style\.display = "none";\n    void renderMobileAlarmHint\(\)/.test(cliSrc)
+      && /id="malarm" hidden/.test(indexSrc), "failedLandVerdict + mobile Info hint");
+  check("B4: both alarm cards disclose detail under one compact summary",
+    /el\("details", `plasec \$\{al\.tone\}`\)/.test(cliSrc)
+      && /el\("summary", "plasummary"/.test(cliSrc)
+      && /el\("details", `bmergenote/.test(cliSrc)
+      && /class="plasummary"/.test(indexSrc) === false
+      && /\.plasec \.plasummary/.test(indexSrc), "audit and land details");
+  check("B5: expanded checks name their section and show every run once",
+    /el\("h3", "smsectiontitle", "Alle Prüfläufe"\)/.test(cliSrc)
+      && /order\.slice\(0, meterOpen \? undefined : METER_ROWS_MAX\)/.test(cliSrc)
+      && /sec\.appendChild\(gateLockHead\(g\.lock\)\)/.test(cliSrc)
+      && !/function gateSection[\s\S]*?\n\}/.exec(cliSrc)?.[0]?.includes("g?.reports"), "meter expand and gate detail");
   // what is asserted about client.ts is that it SHIPS the module under test — a plan re-inlined
   // there would leave the checks below measuring code the bundle never runs
   check("client: the poll pump takes pollPlan from src/pollplan.ts, the module under test",
@@ -1354,7 +1394,7 @@ export async function run(): Promise<void> {
     && cliSrc.includes("⏳ post-land check · ") && !cliSrc.includes("⏳ post-land audit · ")
     && cliSrc.includes("waiting for its check · ") && !cliSrc.includes("waiting for an audit · ")
     && cliSrc.includes("Angefragt, nicht gestartet") && !cliSrc.includes("asked for, not started")
-    && cliSrc.includes("nothing reported running") && !cliSrc.includes("nothing on the gate")
+    && cliSrc.includes("Keine Lesung der Prüfsperre vorhanden") && !cliSrc.includes("nothing on the gate")
     && cliSrc.includes("· Klick öffnet die Lane") && !cliSrc.includes("click to open the lane"),
     "meter head, gate lock head, audit rows in src/client.ts");
   check("G0.5 deploy due: consequence + action in owner words, the command and srv/bundle live in the tooltip",

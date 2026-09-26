@@ -141,6 +141,7 @@ export async function run(): Promise<void> {
       // optional for the same reason again: rows written before the sensor existed carry no key at
       // all, and `null` (measured, unknowable) is a different answer from that absence
       toolResultBytes?: { total: number; byTool: Record<string, number> } | null;
+      subagentCalls?: number | null; subagentTokens?: number | null;
       dirtyFiles?: number | null };
     const readOutcomes = async (): Promise<Outcome[]> =>
       ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[] }).outcomes;
@@ -296,28 +297,45 @@ export async function run(): Promise<void> {
     // before tasks.run(), whose payload-budget probe measures a /api/sessions response with only
     // ~76 B of headroom left — an extra lane here spends that budget in a check three families away,
     // where nobody would look for it. (Measured 2026-08-19: base 12212 B, +1 fixture lane 12722 B.)
+    let projectRoot = `${process.env.HOME}/.claude/projects`;
     const projDirOf = (cwd: string) =>
-      `${process.env.HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+      `${projectRoot}/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
     // the precondition fails as ITSELF: if this dir somehow existed, "null" below would be a real
     // (and wrong) measurement rather than this assertion's subject
     check("outcome: tool_result fixture precondition — the killed lane's project dir does not exist",
       !existsSync(projDirOf(oc2.cwd)), projDirOf(oc2.cwd));
     check("outcome: a lane with no transcript dir records toolResultBytes null — the key is PRESENT (measured: unknowable), never 0",
       rec2 !== undefined && "toolResultBytes" in rec2 && rec2.toolResultBytes === null, JSON.stringify(rec2?.toolResultBytes));
+    check("outcome: absent transcript leaves subagent calls and tokens unknown, never zero",
+      rec2?.subagentCalls === null && rec2.subagentTokens === null,
+      JSON.stringify({ calls: rec2?.subagentCalls, tokens: rec2?.subagentTokens }));
 
     // the CONTROL for dirtyFiles below: this lane's one change is committed, so its tree is clean.
     // Present-and-0 — a clean tree is a measurement, not an absence.
     check("outcome: a killed lane whose work is all committed records dirtyFiles 0 (key present)",
       rec2 !== undefined && rec2.dirtyFiles === 0, JSON.stringify({ dirtyFiles: rec2?.dirtyFiles }));
+    projectRoot = `${ROOT}/subagent-projects`;
+    mkdirSync(projectRoot, { recursive: true });
+    await restartSrv({ FLEET_CLAUDE_PROJECTS_DIR: projectRoot });
 
     // (3) KILLED-EMPTY — a lane with no commits at all, but ONE uncommitted file. The disposition stays
     // commit-based on purpose; `dirtyFiles` is the separate number that says work was on the tree.
     const oc3 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    const zeroDir = projDirOf(oc3.cwd);
+    mkdirSync(zeroDir, { recursive: true });
+    writeFileSync(`${zeroDir}/fixture.jsonl`, JSON.stringify({ type: "assistant", cwd: oc3.cwd,
+      message: { content: [] } }) + "\n");
+    check("outcome: zero-call fixture is in the instance project directory with the lane's cwd",
+      existsSync(`${zeroDir}/fixture.jsonl`) && zeroDir.startsWith(`${ROOT}/`), zeroDir);
     await Bun.write(`${oc3.cwd}/uncommitted.txt`, "never committed\n");
     await post(`/api/slots/${oc3.slot}/kill`, {});
     const rec3 = forBranch(await readOutcomes(), oc3.branch);
     check("outcome: killed lane with NO commits → killed-empty, commitCount 0",
       rec3?.disposition === "killed-empty" && rec3?.commitCount === 0, JSON.stringify(rec3));
+    check("outcome: readable transcript with no Agent use measures zero calls and zero tokens",
+      rec3?.subagentCalls === 0 && rec3.subagentTokens === 0,
+      JSON.stringify({ calls: rec3?.subagentCalls, tokens: rec3?.subagentTokens }));
+    rmSync(zeroDir, { recursive: true, force: true });
     check("outcome: a killed-empty lane with one uncommitted file records dirtyFiles 1 (disposition unchanged)",
       rec3?.disposition === "killed-empty" && rec3.dirtyFiles === 1, JSON.stringify({ d: rec3?.disposition, dirtyFiles: rec3?.dirtyFiles }));
 
@@ -335,18 +353,23 @@ export async function run(): Promise<void> {
     const trDir = projDirOf(oc4.cwd);
     mkdirSync(trDir, { recursive: true });
     await Bun.write(`${trDir}/fixture.jsonl`, [
-      JSON.stringify({ type: "assistant", message: { content: [
+      JSON.stringify({ type: "assistant", cwd: oc4.cwd, message: { content: [
         { type: "tool_use", id: "tu_bash", name: "Bash" },
         { type: "tool_use", id: "tu_read", name: "Read" },
+        { type: "tool_use", id: "tu_agent", name: "Agent" },
       ] } }),
       JSON.stringify({ type: "user", message: { content: [
         { type: "tool_result", tool_use_id: "tu_bash", content: "0123456789" },
         { type: "tool_result", tool_use_id: "tu_read", content: [{ type: "text", text: "hi" }] },
         { type: "tool_result", tool_use_id: "tu_never_declared", content: "abc" },
       ] } }),
+      JSON.stringify({ type: "assistant", isSidechain: true, message: { id: "side-1", usage: {
+        input_tokens: 3, cache_creation_input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 11 } } }),
       "{ not json",
       "",
     ].join("\n"));
+    check("outcome: Agent fixture is in the instance project directory with the lane's cwd",
+      existsSync(`${trDir}/fixture.jsonl`) && trDir.startsWith(`${ROOT}/`), trDir);
     check("outcome: tool_result fixture precondition — the planted transcript is on disk where projDir() looks",
       existsSync(`${trDir}/fixture.jsonl`), trDir);
     await post(`/api/slots/${oc4.slot}/shelve`, { note: "resume later" });
@@ -357,7 +380,11 @@ export async function run(): Promise<void> {
       && rec4.toolResultBytes.byTool.Bash === 10
       && rec4.toolResultBytes.byTool.Read === 29
       && rec4.toolResultBytes.byTool["?"] === 3, JSON.stringify(rec4?.toolResultBytes));
-    rmSync(trDir, { recursive: true, force: true });
+    check("outcome: Agent tool use and sidechain usage record one call and 26 tokens",
+      rec4?.subagentCalls === 1 && rec4.subagentTokens === 26,
+      JSON.stringify({ calls: rec4?.subagentCalls, tokens: rec4?.subagentTokens }));
+    rmSync(projectRoot, { recursive: true, force: true });
+    await restartSrv();
 
     // (5) REVERTED — a conflict-free lane lands via the server script path (ADVANCES main), then
     // /api/repos/undo-land reverts it. The strongest negative outcome, assembled from the undo
@@ -581,8 +608,11 @@ export async function run(): Promise<void> {
     check("provenance setup: an owner Program is confirmed for the task→slot→outcome chain",
       outcomeProgramRes.ok && outcomeProgramConfirm.ok && /^[0-9a-f]{24}$/.test(outcomeProgramId),
       `${outcomeProgramRes.status}/${outcomeProgramConfirm.status} ${JSON.stringify(outcomeProgram)}`);
+    const pinTitle = "Äpfel Öl und Straßen reparieren";
     const pinTask = (await (await post("/api/tasks", {
       text: "execution-provenance explicit-pin probe", repo: oRepo, programId: outcomeProgramId,
+      card: { ziel: pinTitle, surface: { files: ["seed.txt"], symbols: [] },
+        done: "the named lane exists", verify: "bun e2e/pins.ts", verboten: ["no extra edits"] },
     })).json()) as { task: { id: string; originId?: string; programId?: string } };
     const pinModel = "openai/gpt-5-codex";
     const pinDispatch = await post(`/api/tasks/${pinTask.task.id}/dispatch`, {
@@ -592,6 +622,13 @@ export async function run(): Promise<void> {
     check("provenance setup: explicit harness/model/effort dispatch creates a task-bound lane",
       pinDispatch.ok && pinLane.ok === true && typeof pinLane.slot === "number" && typeof pinLane.branch === "string",
       `${pinDispatch.status} ${JSON.stringify(pinLane)}`);
+    const pinSession = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null; label: string | null }[] }).slots.find((s) => s.id === pinLane.slot);
+    check("a valid card names the dispatched branch with date, whole-word ASCII slug and hex; label keeps the hex",
+      /^fleet\/\d{6}-aepfel-oel-und-strassen-[0-9a-f]{4}$/.test(pinLane.branch ?? "")
+      && pinSession?.label === `⎇ task aepfel-oel-und-strassen-${pinLane.branch?.slice(-4)}`
+      && pinSession.cwd === `${realpathSync(oRepo)}.worktrees/${pinLane.branch?.replace("/", "-")}`,
+      JSON.stringify({ branch: pinLane.branch, slot: pinSession }));
     type PinSlot = { taskId?: string | null; originId?: string | null; programId?: string | null; harness?: string | null;
       model?: string | null; effort?: string | null };
     let pinSlot: PinSlot | undefined;
@@ -629,6 +666,8 @@ export async function run(): Promise<void> {
     check("provenance setup: body-less dispatch creates a task-bound default-adapter lane",
       defaultDispatch.ok && defaultLane.ok === true && typeof defaultLane.slot === "number"
       && typeof defaultLane.branch === "string", `${defaultDispatch.status} ${JSON.stringify(defaultLane)}`);
+    check("a task without a valid card keeps the seconds-stamp branch",
+      /^fleet\/\d{12}-[0-9a-f]{4}$/.test(defaultLane.branch ?? ""), defaultLane.branch ?? "");
     if (typeof defaultLane.slot === "number")
       await post(`/api/slots/${defaultLane.slot}/shelve`, { note: "default adapter provenance probe" });
     const defaultOutcome = forBranch(await readOutcomes(), defaultLane.branch ?? "");
@@ -653,9 +692,14 @@ export async function run(): Promise<void> {
     // hand (ff-only: pure ancestry, the measured shape), then the lane is killed like any abort.
     // Mutation caught: restoring the constant note at server.ts#teardownSlotOccupant.
     const offMark = "closed-off-fleet probe — work on main without a land";
-    const offTask = (await (await post("/api/tasks", { text: offMark, repo: oRepo })).json()) as { task: { id: string } };
+    const offTask = (await (await post("/api/tasks", { text: offMark, repo: oRepo,
+      card: { ziel: "⚙️", surface: { files: ["seed.txt"], symbols: [] },
+        done: "the fallback lane exists", verify: "bun e2e/pins.ts", verboten: ["no extra edits"] },
+    })).json()) as { task: { id: string } };
     const offD = await post(`/api/tasks/${offTask.task.id}/dispatch`, {});
     const offJ = (await offD.json()) as { slot?: number; branch?: string };
+    check("a valid card whose title has no ASCII words keeps the seconds-stamp branch",
+      /^fleet\/\d{12}-[0-9a-f]{4}$/.test(offJ.branch ?? ""), offJ.branch ?? "");
     const offCwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
       .slots.find((s) => s.id === offJ.slot)?.cwd ?? "";
     // SETTLE on the founding brief for the same reason as (7b) below: a teardown inside that
@@ -1173,7 +1217,9 @@ export async function run(): Promise<void> {
     let cliSrc: string | null = null;
     let cliSrcError = "";
     try {
-      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+      const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+      cliSrc = ["client", "board"].map((name) => readFileSync(`${sourceRoot}/src/${name}.ts`, "utf8")
+        .replace(/^export /gm, "")).join("\n");
     } catch (e) { cliSrcError = e instanceof Error ? e.message : String(e); }
     check("precondition: node_modules exposes src/client.ts for outcome client checks",
       cliSrc !== null, cliSrcError);
@@ -1436,7 +1482,8 @@ export async function run(): Promise<void> {
       /not recorded|no lane/i.test(plaCall(plaRow({ covers: [] }))?.where ?? ""),
       JSON.stringify(plaCall(plaRow({ covers: [] }))));
     check("client: the poll payload's postLandAudit is read on every refresh and rendered",
-      /postLandAudit\?:/.test(cliSrc) && /postLandAudit = data\.postLandAudit \?\? null/.test(cliSrc)
+      /postLandAudit\?:/.test(cliSrc) && /setPostLandAudit\(data\.postLandAudit \?\? null\)/.test(cliSrc)
+      && /function setPostLandAudit\(value: PostLandAuditInfo \| null\): void \{ postLandAudit = value; \}/.test(cliSrc)
       && /renderPostLandAudit\(\)/.test(cliSrc), "refresh() in src/client.ts");
     check("client: the ack button records THIS audit's `at`, so a later alarm is not pre-dismissed",
       /prefSet\(PLA_ACK_KEY, String\(postLandAudit\?\.at \?\? 0\)\)/.test(cliSrc),

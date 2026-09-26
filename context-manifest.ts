@@ -20,6 +20,11 @@ export const CONTEXT_MANIFEST_MAX_BYTES = 65_536;
 export const CONTEXT_MANIFEST_MAX_PACKS = 64;
 export const CONTEXT_MANIFEST_MAX_SOURCE_PATHS = 64;
 
+export function taskContextTriggers(texts: readonly string[], possible: readonly ContextPackTrigger[]): ContextPackTrigger[] {
+  const relevant = texts.some((value) => /\bjev\b/i.test(value));
+  return possible.filter((trigger) => trigger !== "jev-use" || relevant);
+}
+
 export type ContextManifestRead =
   | { readonly kind: "absent" }
   | { readonly kind: "invalid"; readonly detail: string }

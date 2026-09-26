@@ -13,7 +13,7 @@ export const CONTEXT_PACK_AUDIENCES = ["agent", "user", "maintainer", "private-o
 export type ContextPackAudience = (typeof CONTEXT_PACK_AUDIENCES)[number];
 
 export const CONTEXT_PACK_TRIGGERS = [
-  "always", "verification", "landing", "task-queue", "harness-selection", "deployment",
+  "always", "verification", "landing", "task-queue", "harness-selection", "deployment", "jev-use",
 ] as const;
 export type ContextPackTrigger = (typeof CONTEXT_PACK_TRIGGERS)[number];
 
@@ -84,7 +84,7 @@ export type ContextPack = PublicContextPack | PrivateContextPack;
 const ALL_HARNESSES = CONTEXT_PACK_HARNESSES;
 const ALL_MODES = CONTEXT_PACK_MODES;
 
-// Six deliberately small seeds. Public sources carry only tracked path + exact anchor metadata;
+// Fleet seeds stay small. Public sources carry only tracked path + exact anchor metadata;
 // the private overlay carries only an opaque reference, content hash, and observation time.
 export const CONTEXT_PACKS = [
   {
@@ -119,6 +119,22 @@ export const CONTEXT_PACKS = [
     harnesses: ALL_HARNESSES,
     modes: ["read-only", "mutating"],
     estimatedBytes: 6313,
+    evidence: "tree-anchor",
+    owner: "owner",
+    status: "active",
+  },
+  {
+    id: "jev-use",
+    useWhen: "Wenn die Aufgabe Jev betrifft: die Verwendungsform und ihre Stelle in der Attribut-Topologie lesen.",
+    scope: "product-quality",
+    audience: "agent",
+    triggers: ["jev-use"],
+    hardness: "guidance",
+    sources: [{ path: "docs/jev.md", anchor: "## Verwendungsform" }],
+    requiredCapabilities: ["tracked-source-read"],
+    harnesses: ALL_HARNESSES,
+    modes: ["read-only", "mutating"],
+    estimatedBytes: 2400,
     evidence: "tree-anchor",
     owner: "owner",
     status: "active",

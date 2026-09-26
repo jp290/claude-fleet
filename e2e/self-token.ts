@@ -97,13 +97,20 @@ export async function run(ctx: Ctx): Promise<void> {
   });
   type Self = { slot: number; label: string | null; cwd: string; mission: string | null;
     awaiting: "owner" | "main" | null; lane: { repo: string; branch: string } | null;
-    idleMs: number; observed: boolean; autos: { id: string; slot: number; text: string }[] };
+    idleMs: number; observed: boolean; autos: { id: string; slot: number; text: string }[];
+    position: { role: string; taskId: string | null; programId: string | null;
+      receiver: { role: string; slot: number; openedAt: number } | null;
+      harness: string | null; model: string | null; waitingOnMe: { kind: string; id: string; slot: number }[] } };
   const pRes = await selfState(plainTok ?? "");
   const pSelf = (await pRes.json()) as Self;
   check("GET /api/self: a plain session reads its own row — its slot, its cwd, lane:null",
     pRes.ok && pSelf.slot === 2 && pSelf.cwd === process.env.HOME && pSelf.lane === null
       && typeof pSelf.idleMs === "number" && pSelf.idleMs >= 0 && typeof pSelf.observed === "boolean",
     JSON.stringify({ slot: pSelf.slot, cwd: pSelf.cwd, lane: pSelf.lane, idleMs: pSelf.idleMs, observed: pSelf.observed }));
+  check("GET /api/self: an unbound session has the generic position and no invented receiver",
+    pSelf.position?.role === "generic" && pSelf.position.taskId === null
+      && pSelf.position.programId === null && pSelf.position.receiver === null
+      && Array.isArray(pSelf.position.waitingOnMe), JSON.stringify(pSelf.position));
   check("GET /api/self serves the session its OWN autos and only those",
     pSelf.autos.some((a) => a.id === plainOkJ.auto?.id) && pSelf.autos.every((a) => a.slot === 2),
     JSON.stringify(pSelf.autos.map((a) => `${a.slot}:${a.id}`)));
@@ -1657,6 +1664,25 @@ async function memoryDoor(): Promise<void> {
     }
     check("memory fixture: one lane per repository was dispatched on its T row", laneTok.every(Boolean),
       JSON.stringify(laneSlot));
+    type Position = { role: string; taskId: string | null; programId: string | null;
+      receiver: { role: string; slot: number; openedAt: number } | null; waitingOnMe: unknown[] };
+    const getPosition = (token: string) => fetch(`${i.base}/api/self`, {
+      headers: { "x-fleet-self-token": token },
+    });
+    const positionRes = await getPosition(laneTok[0]!);
+    const lanePosition = ((await positionRes.json()) as { position: Position }).position;
+    const mainPositionRes = await getPosition(mainTok[0]!);
+    const mainPosition = ((await mainPositionRes.json()) as { position: Position }).position;
+    check("GET /api/self position: dispatched lane sees its own task and Program plus its live MAIN receiver",
+      positionRes.ok && lanePosition.role === "lane" && lanePosition.taskId === T[0]
+        && lanePosition.programId === P[0] && lanePosition.receiver?.role === "program-main"
+        && lanePosition.receiver.slot === 1 && lanePosition.receiver.openedAt === rows[0]!.openedAt
+        && Array.isArray(lanePosition.waitingOnMe), JSON.stringify(lanePosition));
+    check("GET /api/self position: bound MAIN sees its Program and the labelled orchestrator occupant",
+      mainPositionRes.ok && mainPosition.role === "program-main" && mainPosition.programId === P[0]
+        && mainPosition.receiver?.role === "orchestrator" && mainPosition.receiver.slot === 5
+        && mainPosition.receiver.openedAt === readState().slots["5"]?.openedAt,
+      JSON.stringify(mainPosition));
     // wait for the founding brief of every lane (the receipt is appended right after the send)
     let prompts: { slot: number; text: string }[] = [];
     for (let k = 0; k < 100; k++) {
@@ -1665,6 +1691,9 @@ async function memoryDoor(): Promise<void> {
       if (laneSlot.every((s) => prompts.some((p) => p.slot === s && p.text.includes("HOW THIS LANE ENDS")))) break;
       await Bun.sleep(150);
     }
+    check("the delivered lane footer names the same MAIN receiver as GET /api/self position",
+      prompts.some((p) => p.slot === laneSlot[0] && p.text.includes("Empfaenger: program-main Slot 1")),
+      JSON.stringify(prompts.filter((p) => p.slot === laneSlot[0]).map((p) => p.text.includes("Empfaenger: program-main Slot 1"))));
 
     // --- six positive cases: 3 repositories × {lane, Program-MAIN} ---
     for (const n of [0, 1, 2]) {

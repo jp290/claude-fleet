@@ -17,7 +17,8 @@ import {
   type ContextPackTrigger,
 } from "../context-packs";
 import { USE_WHEN_MAX, validateContextPacks, type ContextPackRepoFacts } from "../context-pack-validator";
-import { CONTEXT_MANIFEST_PATH, planRepoContext, readContextManifest } from "../context-manifest";
+import { CONTEXT_MANIFEST_PATH, planRepoContext, readContextManifest, taskContextTriggers } from "../context-manifest";
+import { planContext } from "../context-plan";
 
 export type ContextPackCheck = (name: string, ok: boolean, detail?: string) => void;
 
@@ -42,36 +43,17 @@ function manifestSourcePaths(): string[] {
 }
 
 function collectRepoFacts(): { facts: ContextPackRepoFacts | null; error: string | null } {
-  try {
-    // A direct run starts in the checkout. e2e-isolated starts in a non-git staged copy whose
-    // node_modules symlink is its sole pointer to that checkout; use it only when the local probe
-    // says this is the staged shape.
-    let root = resolve(import.meta.dir, "..");
-    const gitAt = (candidate: string) => spawnSync("git", ["-C", candidate, "ls-files", "-z"], {
-      encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    let git = gitAt(root);
-    if (git.status !== 0) {
-      const modules = realpathSync(resolve(root, "node_modules"));
-      root = dirname(modules);
-      git = gitAt(root);
+  const source = sourceCheckout();
+  if (!source.checkout) return { facts: null, error: source.error };
+  const { root, trackedPaths } = source.checkout;
+  const sourceBytes = new Map<string, string>();
+  for (const path of manifestSourcePaths()) {
+    try { sourceBytes.set(path, readFileSync(resolve(root, path), "utf8")); }
+    catch (error) {
+      return { facts: null, error: `could not read fixture source ${path}: ${error instanceof Error ? error.message : String(error)}` };
     }
-    if (git.status !== 0)
-      return { facts: null, error: (git.stderr || `git ls-files exited ${String(git.status)}`).trim() };
-    const trackedPaths = new Set(git.stdout.split("\0").filter(Boolean));
-    const sourceBytes = new Map<string, string>();
-    for (const path of manifestSourcePaths()) {
-      try { sourceBytes.set(path, readFileSync(resolve(root, path), "utf8")); }
-      catch (error) {
-        return { facts: null, error: `could not read fixture source ${path}: ${error instanceof Error ? error.message : String(error)}` };
-      }
-    }
-    return { facts: { trackedPaths, sourceBytes }, error: null };
-  } catch (error) {
-    return { facts: null, error: `could not locate fixture tree: ${error instanceof Error ? error.message : String(error)}` };
   }
+  return { facts: { trackedPaths, sourceBytes }, error: null };
 }
 
 // THE SOURCE CHECKOUT, WHICH IS NOT ALWAYS THE TREE THIS RUN STANDS IN. Measured 2026-08-27 in
@@ -119,7 +101,7 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
   if (fixture.facts) {
     const capabilities = fullCapabilities();
     const real = validateContextPacks({ packs: CONTEXT_PACKS, repo: fixture.facts, capabilities });
-    check("context packs: real six-pack manifest resolves", real.verdict === "pass" && real.issues.length === 0,
+    check("context packs: real seed manifest resolves", real.verdict === "pass" && real.issues.length === 0,
       issueSummary(real));
 
     const missingPath = clonePacks();
@@ -279,6 +261,30 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
         `root=${root} server=${server === null ? "unreadable" : "ok"} manifest=${manifest.kind}`
           + ` mode=${modeMatch?.[1] ?? "not found"} triggers=${triggers ?? "not found"} capabilities=${capabilities ?? "not found"}`);
     else {
+      check("context packs: dispatch derives task triggers from the delivered brief",
+        server.includes("triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS)"),
+        "the dispatch plan must use the brief chosen for this delivery");
+      const jevTriggers = taskContextTriggers(["ZIEL: Jev-Verwendungsform im Aufruf pruefen"],
+        triggers as ContextPackTrigger[]);
+      const ordinaryTriggers = taskContextTriggers(["ZIEL: Queue-Ansicht pruefen"],
+        triggers as ContextPackTrigger[]);
+      const seedFacts = { sourceTree: "fleet" as const, harness: "claude", mode: modeMatch[1] as ContextPackMode,
+        capabilities: capabilities as ContextPackCapability[] };
+      const jevPlan = planContext({ ...seedFacts, triggers: jevTriggers });
+      const ordinaryPlan = planContext({ ...seedFacts, triggers: ordinaryTriggers });
+      const jevPack = jevPlan.selected.find((pack) => pack.id === "jev-use");
+      check("context packs: a Jev lane gets the Verwendungsform anchor",
+        jevTriggers.includes("jev-use") && jevPack !== undefined
+          && Array.isArray(jevPack.sources)
+          && JSON.stringify(jevPack.sources) === JSON.stringify([{ path: "docs/jev.md", anchor: "## Verwendungsform" }]),
+        `selected=[${jevPlan.selected.map((pack) => pack.id).join(",")}]`);
+      check("context packs: a lane without Jev omits only the Jev trigger",
+        !ordinaryTriggers.includes("jev-use")
+          && ordinaryPlan.omitted.some((pack) => pack.id === "jev-use" && pack.why === "trigger-not-matched")
+          && ordinaryPlan.selected.some((pack) => pack.id === "portable-core")
+          && ordinaryPlan.selected.some((pack) => pack.id === "verify-e2e"),
+        `selected=[${ordinaryPlan.selected.map((pack) => pack.id).join(",")}]`
+          + ` omitted=[${ordinaryPlan.omitted.map((pack) => `${pack.id}:${pack.why}`).join(",")}]`);
       // Only tracked, readable sources reach the validator — exactly what repoManifestContextPlan
       // hands it at the seam. A source this probe could not read must stay OUT, so an unchecked
       // anchor is reported as unchecked instead of hopefully delivered.

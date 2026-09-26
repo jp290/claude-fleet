@@ -15,7 +15,7 @@ import {
 } from "./src/protocol";
 
 const SELF_FIELDS = [
-  "slot", "label", "cwd", "mission", "awaiting", "lane", "idleMs", "observed",
+  "slot", "position", "label", "cwd", "mission", "awaiting", "lane", "idleMs", "observed",
   "autos", "watches", "events", "lineage",
 ] as const;
 
@@ -40,7 +40,6 @@ export const SYSTEM_CAPABILITIES = [
       assertion: "With the current session's self token, the adapter returns HTTP 200 and every declared field.",
     },
     gaps: [
-      "Role is not returned today.",
       "Authority is not returned today.",
       "Capabilities are not returned today.",
       "The active Act is not returned today.",

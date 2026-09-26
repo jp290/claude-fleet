@@ -11,6 +11,39 @@ import type { LaneCtx } from "./ctx";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 export async function run(lc: LaneCtx): Promise<void> {
+  // Mutation: removing the fork-point guard or deleting every merged branch makes these
+  // assertions fail on real teardown paths.
+  const emptyBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  const emptyRemove = await post(`/api/slots/${emptyBranch.slot}/land`, {});
+  check("teardown branch mutation: zero commits ahead removes both the worktree and its branch",
+    emptyRemove.ok && !exists(emptyBranch.cwd)
+      && spawnSync("git", ["-C", REPO, "branch", "--list", emptyBranch.branch]).stdout.toString().trim() === "",
+    `${emptyRemove.status} ${emptyBranch.branch}`);
+  const keptBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  const preserve = `${ROOT}/branch-preserve.git`;
+  spawnSync("git", ["init", "--bare", "-q", preserve]);
+  await Bun.write(`${keptBranch.cwd}/branch-preserve.txt`, "committed lane work\n");
+  spawnSync("git", ["-C", keptBranch.cwd, "add", "branch-preserve.txt"]);
+  const keepCommit = spawnSync("git", ["-C", keptBranch.cwd, "commit", "-qm", "branch preservation probe"]);
+  spawnSync("git", ["-C", keptBranch.cwd, "remote", "add", "branch-preserve", preserve]);
+  const keepPush = spawnSync("git", ["-C", keptBranch.cwd, "push", "-qu", "branch-preserve", "HEAD"]);
+  await post(`/api/slots/${keptBranch.slot}/kill`, {});
+  const keptRemove = await post("/api/worktrees/remove", { repo: REPO, path: keptBranch.cwd });
+  check("teardown branch mutation: one preserved commit ahead keeps the branch after worktree removal",
+    keepCommit.status === 0 && keepPush.status === 0 && keptRemove.ok && !exists(keptBranch.cwd)
+      && spawnSync("git", ["-C", REPO, "branch", "--list", keptBranch.branch]).stdout.toString().trim() !== "",
+    `${keepCommit.status}/${keepPush.status}/${keptRemove.status} ${keptBranch.branch}`);
+  const landedBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  await Bun.write(`${landedBranch.cwd}/branch-landed.txt`, "landed lane work\n");
+  spawnSync("git", ["-C", landedBranch.cwd, "add", "branch-landed.txt"]);
+  const landedCommit = spawnSync("git", ["-C", landedBranch.cwd, "commit", "-qm", "branch preservation after land"]);
+  await settleForMerge(landedBranch.slot);
+  const landedStart = await post(`/api/slots/${landedBranch.slot}/merge`, {});
+  const landedDone = await waitMerge(landedBranch.slot);
+  check("teardown branch mutation: a branch with work since fork survives its successful land for undo-land",
+    landedCommit.status === 0 && landedStart.ok && landedDone.gone
+      && spawnSync("git", ["-C", REPO, "branch", "--list", landedBranch.branch]).stdout.toString().trim() !== "",
+    `${landedCommit.status}/${landedStart.status} ${JSON.stringify(landedDone)}`);
   // --- the second completion FACT is served beside doneLooking, with the same lane-only scope.
   // The isolated server keeps foreign-harness automation OFF, so its policy-reduced `alive` fact
   // cannot honestly manufacture the positive Pi case here; prompts.ts owns that positive matrix.
@@ -72,7 +105,8 @@ export async function run(lc: LaneCtx): Promise<void> {
         let joinFns: JoinFns | null = null;
         let joinErr = "";
         try {
-          const src = readFileSync(`${resolve(realpathSync(`${ROOT}/node_modules`), "..")}/src/client.ts`, "utf8");
+          const src = readFileSync(`${resolve(realpathSync(`${ROOT}/node_modules`), "..")}/src/queue.ts`, "utf8")
+            .replace(/^export /gm, "");
           const a = src.indexOf("type QGroup =");
           const b = src.indexOf("function qWaveProjection", a);
           joinFns = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(src.slice(a, b))

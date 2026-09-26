@@ -8,6 +8,7 @@ import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check,
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
+import { CONTEXT_PACKS } from "../context-packs";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09 } from "../task-land-waves";
@@ -605,10 +606,15 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(tasksAfter) === JSON.stringify(tasksBefore)
       && JSON.stringify(poll.tasks) === JSON.stringify(pollBefore.tasks),
     `full:${tasksBefore.tasks.length}->${tasksAfter.tasks.length} poll:${pollBefore.tasks.length}->${poll.tasks.length}`);
-  check("programs isolation: dispatch configuration is unchanged and no task gains programId without the owner naming one",
-    JSON.stringify(poll.dispatch) === JSON.stringify(pollBefore.dispatch)
-      && tasksAfter.tasks.every((t) => !("programId" in t)) && poll.tasks.every((t) => !("programId" in t)),
+  check("programs isolation: dispatch configuration is unchanged",
+    JSON.stringify(poll.dispatch) === JSON.stringify(pollBefore.dispatch),
     `dispatch=${JSON.stringify(poll.dispatch)}`);
+  const programIdsOf = (rows: Record<string, unknown>[]): string =>
+    JSON.stringify(rows.map((t) => [t.id, "programId" in t, t.programId ?? null]));
+  check("programs isolation: no task gains programId without the owner naming one",
+    programIdsOf(tasksAfter.tasks) === programIdsOf(tasksBefore.tasks)
+      && programIdsOf(poll.tasks) === programIdsOf(pollBefore.tasks),
+    `full:${programIdsOf(tasksBefore.tasks)}->${programIdsOf(tasksAfter.tasks)} poll:${programIdsOf(pollBefore.tasks)}->${programIdsOf(poll.tasks)}`);
 
   // Owner-direct proposals use the same content validator and honestly say owner. This row also
   // supplies the proposed-state negative transition without touching the session proposal.
@@ -777,7 +783,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN decoy frame: Fleet-shaped filenames never override foreign git identity",
     decoyResponse.ok && targetContractPresent(decoyPrompt, decoyProgram.title)
       && targetContractClean(decoyPrompt) && decoyReceipt?.repo === resolve(REPO4)
-      && decoyReceipt.selected.length === 0 && decoyReceipt.omitted.length === 6
+      && decoyReceipt.selected.length === 0 && decoyReceipt.omitted.length === CONTEXT_PACKS.length
       && decoyReceipt.omitted.every((entry) => entry.why === "source-unavailable"),
     `${decoyResponse.status} ${decoyPrompt.slice(0, 400)}`);
   if (decoyBody.slot) await post(`/api/slots/${decoyBody.slot}/kill`, {});
@@ -832,7 +838,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN carrier: a target repo without the manifest keeps today's empty-block founding",
     manifestRepoInit.status === 0 && !!carrierBefore.receipt
       && !carrierBefore.prompt.includes("ContextPlan v2 anchors")
-      && carrierBefore.receipt.selected.length === 0 && carrierBefore.receipt.omitted.length === 6
+      && carrierBefore.receipt.selected.length === 0 && carrierBefore.receipt.omitted.length === CONTEXT_PACKS.length
       && carrierBefore.receipt.omitted.every((entry) => entry.why === "source-unavailable"),
     JSON.stringify(carrierBefore.receipt ?? null));
 
@@ -866,8 +872,8 @@ export async function run(ctx: Ctx): Promise<void> {
         { path: "docs/promise.md", anchor: "## Product promise" }],
       sourceHash: expectedPromiseHash,
     }])
-      && carrierOn.receipt.omitted.length === 7
-      && carrierOn.receipt.omitted.filter((entry) => entry.why === "source-unavailable").length === 6
+      && carrierOn.receipt.omitted.length === CONTEXT_PACKS.length + 1
+      && carrierOn.receipt.omitted.filter((entry) => entry.why === "source-unavailable").length === CONTEXT_PACKS.length
       && JSON.stringify(carrierOn.receipt.omitted.at(-1)) === JSON.stringify({ id: "broken-pointer", why: "manifest-invalid" })
       // A repo pack declaring no useWhen keeps every pointer and grows no purpose line — the
       // pre-field manifests that exist today must deliver byte-identically under v2.
@@ -880,7 +886,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const carrierBroken = await foundInto(manifestRepo, "program-main-carrier-broken");
   check("Program-MAIN carrier: a malformed manifest still delivers, byte-identical, and says so on the receipt",
     brokenCommit === 0 && carrierBroken.prompt === carrierBefore.prompt && !!carrierBroken.receipt
-      && carrierBroken.receipt.selected.length === 0 && carrierBroken.receipt.omitted.length === 7
+      && carrierBroken.receipt.selected.length === 0 && carrierBroken.receipt.omitted.length === CONTEXT_PACKS.length + 1
       && JSON.stringify(carrierBroken.receipt.omitted.at(-1)) === JSON.stringify({ id: "@manifest", why: "manifest-invalid" })
       && carrierBroken.receipt.hash === promptHash(carrierBroken.prompt, carrierBroken.receipt),
     JSON.stringify(carrierBroken.receipt ?? null));
@@ -918,12 +924,12 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN Fleet frame: founding prompt keeps exactly the four existing grounding steps in order",
     fleetResponse.ok && JSON.stringify(fleetPrompt.split("\n").filter((line) => /^\d+\./.test(line)))
       === JSON.stringify(groundingSteps), fleetPrompt.slice(0, 500));
-  check("Program-MAIN Fleet frame: binding, bytes, git facts, six-way plan, anchors, and the receipt hash stay equivalent",
+  check("Program-MAIN Fleet frame: binding, bytes, git facts, seed plan, anchors, and the receipt hash stay equivalent",
     !!fleetReceipt && fleetReceiptRows.total === fleetReceiptsBefore.total + 1
       && fleetBody.program?.main?.slot === fleetSlot && fleetReceipt.repo === ROOT
       && fleetReceipt.head === fleetExpectedHead && fleetReceipt.branch === fleetExpectedBranch
-      && fleetReceipt.selected.length === 3 && fleetReceipt.omitted.length === 4
-      && fleetReceipt.selected.length + fleetReceipt.omitted.length === 7
+      && fleetReceipt.selected.length === 3 && fleetReceipt.omitted.length === CONTEXT_PACKS.length - 2
+      && fleetReceipt.selected.length + fleetReceipt.omitted.length === CONTEXT_PACKS.length + 1
       && anchorsResolve(fleetReceipt) && fleetReceipt.hash === promptHash(fleetPrompt, fleetReceipt)
       && fleetReceipt.deliveredBytes === new TextEncoder().encode(fleetPrompt).byteLength,
     JSON.stringify(fleetReceipt ?? null));
@@ -1050,7 +1056,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(fleetSuccessionPrompt.split("\n").filter((line) => /^\d+\./.test(line)))
         === JSON.stringify(successionGroundingSteps)
       && fleetSuccessionPrompt.includes(fleetCarry) && fleetSuccessionReceipt?.selected.length === 3
-      && fleetSuccessionReceipt.omitted.length === 4 && anchorsResolve(fleetSuccessionReceipt)
+      && fleetSuccessionReceipt.omitted.length === CONTEXT_PACKS.length - 2 && anchorsResolve(fleetSuccessionReceipt)
       && fleetSuccessionReceipt.hash === promptHash(fleetSuccessionPrompt, fleetSuccessionReceipt)
       && fleetSuccessionReceipt.deliveredBytes === new TextEncoder().encode(fleetSuccessionPrompt).byteLength,
     `${fleetSuccessionResponse.status} ${fleetSuccessionPrompt.slice(0, 500)}`);
@@ -1485,9 +1491,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && receipt.model === "gpt-5.5" && receipt.effort === "high",
     JSON.stringify(receipt ?? null));
   const recomputedHash = promptHash(deliveredPrompt, receipt);
-  check("Program-MAIN target receipt: all six packs name source-unavailable and empty-anchor v1 hash recomputes",
-    !!receipt && receipt.selected.length + receipt.omitted.length === 6
-      && receipt.selected.length === 0 && receipt.omitted.length === 6
+  check("Program-MAIN target receipt: all Fleet seeds name source-unavailable and empty-anchor v1 hash recomputes",
+    !!receipt && receipt.selected.length + receipt.omitted.length === CONTEXT_PACKS.length
+      && receipt.selected.length === 0 && receipt.omitted.length === CONTEXT_PACKS.length
       && receipt.omitted.every((entry) => entry.why === "source-unavailable")
       && receipt.hash === recomputedHash
       && receipt.deliveredBytes === new TextEncoder().encode(deliveredPrompt).byteLength
@@ -1732,7 +1738,9 @@ export async function run(ctx: Ctx): Promise<void> {
   let d2ClientSource = "";
   let d2ClientError = "";
   try {
-    d2ClientSource = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+    const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+    d2ClientSource = ["client", "queue"].map((name) => readFileSync(`${sourceRoot}/src/${name}.ts`, "utf8")
+      .replace(/^export /gm, "")).join("\n");
   } catch (e) { d2ClientError = e instanceof Error ? e.message : String(e); }
   const d2RenderStart = d2ClientSource.indexOf("type ProgramStatusFact =");
   const d2RenderEnd = d2ClientSource.indexOf("// the picker's pinned + recent roots", d2RenderStart);
@@ -1765,7 +1773,8 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(d2ProjectionOmitted ?? null));
   check("program list status: programsStale from the owner poll is visible in the Programs header",
     d2ClientSource.includes("programsStale?: number;")
-      && d2ClientSource.includes("programsStale = typeof data.programsStale === \"number\"")
+      && /setProgramsStale\(typeof data\.programsStale === "number"\s*&& Number\.isInteger\(data\.programsStale\) && data\.programsStale > 0 \? data\.programsStale : 0\)/.test(d2ClientSource)
+      && /function setProgramsStale\(value: number\): void \{ programsStale = value; \}/.test(d2ClientSource)
       && d2ClientSource.includes("programsStale > 0 ? ` · ${programsStale} stale active` : \"\""),
     "refresh + Programs subtitle in src/client.ts");
 
@@ -1979,7 +1988,9 @@ export async function run(ctx: Ctx): Promise<void> {
     let sheetClientSource = "";
     let sheetClientError = "";
     try {
-      sheetClientSource = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+      const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+      sheetClientSource = ["client", "queue"].map((name) => readFileSync(`${sourceRoot}/src/${name}.ts`, "utf8")
+        .replace(/^export /gm, "")).join("\n");
     } catch (e) { sheetClientError = e instanceof Error ? e.message : String(e); }
     const sheetModelStart = sheetClientSource.indexOf("type RepoSheetFact =");
     const sheetModelEnd = sheetClientSource.indexOf("// the repo sheet's DOM painter", sheetModelStart);
@@ -3750,7 +3761,7 @@ export async function run(ctx: Ctx): Promise<void> {
     !!successionReceipt && successionReceipts.total === receiptsBeforeSuccession.total + 1
       && successionReceipt.taskId === null && successionReceipt.originId === null
       && successionReceipt.repo === resolve(REPO) && successionReceipt.head === successionHead && successionReceipt.branch === successionBranch
-      && successionReceipt.selected.length === 0 && successionReceipt.omitted.length === 6
+      && successionReceipt.selected.length === 0 && successionReceipt.omitted.length === CONTEXT_PACKS.length
       && successionReceipt.omitted.every((entry) => entry.why === "source-unavailable")
       && successionReceipt.slot === successorSlot && successionReceipt.hash === successionHash
       && successionReceipt.deliveredBytes === new TextEncoder().encode(successionPrompt).byteLength
@@ -7149,7 +7160,8 @@ export async function run(ctx: Ctx): Promise<void> {
   await post("/api/dispatch", { on: false });
   await post("/api/autos/switch", { on: false });
   const auditLines = (): number => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
-  const auditSince = (from: number): { event?: string; slot?: number; detail?: string }[] =>
+  const auditSince = (from: number): { event?: string; slot?: number; detail?: string;
+    openedAt?: number; mainRepo?: string; targetRepo?: string }[] =>
     readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).slice(from)
       .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string });
 
@@ -7170,6 +7182,57 @@ export async function run(ctx: Ctx): Promise<void> {
       && releaseTrail.length === 1 && releaseTrail[0]?.slot === successorSlot
       && releaseTrail[0]?.detail === `${ownId} program=${mainProgram.id}`,
     `${releaseOk.status} ${JSON.stringify(releaseOkBody)} row=${JSON.stringify(releasedRow)} trail=${JSON.stringify(releaseTrail)}`);
+
+  // A second repo enters the tick's open-work list through an owner row. The same MAIN may file
+  // there, but its release door must still refuse to carry the new row across the repo boundary.
+  const crossRepoKnown = !!REPO2 && existsSync(`${REPO2}/.git`);
+  check("cross-repo filing fixture: REPO2 is a separate git repo before the owner seeds its dispatch row",
+    crossRepoKnown && realpathSync(REPO2) !== realpathSync(REPO),
+    `repo2=${REPO2} known=${crossRepoKnown}`);
+  const dispatchSeed = await makeTask({ text: "cross-repo dispatch seed", repo: REPO2 });
+  const seedRow = await taskRow(dispatchSeed);
+  check("cross-repo filing fixture: the dispatcher's open-work list contains the foreign repo before MAIN filing",
+    !!seedRow?.repo && realpathSync(seedRow.repo) === realpathSync(REPO2)
+      && seedRow.status === "pending" && seedRow.kind === "auftrag",
+    JSON.stringify(seedRow));
+  const selfFile = (body: Record<string, unknown>): Promise<Response> =>
+    fetch(`${BASE}/api/self/tasks`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": successorToken },
+      body: JSON.stringify(body) });
+  const auditBeforeCrossFile = auditLines();
+  const crossFile = await selfFile({ text: "cross-repo main filing", kind: "auftrag", repo: REPO2 });
+  const crossBody = await crossFile.json() as { task?: TaskRow };
+  const crossId = crossBody.task?.id ?? "";
+  if (crossId) madeTasks.push(crossId);
+  const crossStored = await taskRow(crossId);
+  check("cross-repo filing: a bound MAIN files pending work in a repo the dispatch tick already knows, under its own program",
+    crossFile.status === 200 && crossStored?.repo === realpathSync(REPO2)
+      && crossStored.programId === mainProgram.id && crossStored.status === "pending"
+      && crossStored.slot == null && crossStored.releasedBy === undefined,
+    `${crossFile.status} ${JSON.stringify(crossStored)}`);
+  const crossAudit = auditSince(auditBeforeCrossFile)
+    .filter((r) => r.event === "main_task" && r.detail?.startsWith(`${crossId} program=`));
+  check("cross-repo filing records one main_task audit row with the filing occupant and both canonical repos",
+    crossAudit.length === 1 && crossAudit[0]?.slot === successorSlot
+      && crossAudit[0]?.openedAt === releaseBinding?.openedAt
+      && crossAudit[0]?.mainRepo === realpathSync(REPO)
+      && crossAudit[0]?.targetRepo === realpathSync(REPO2),
+    JSON.stringify(crossAudit));
+  const crossRelease = await selfRelease(successorToken, crossId);
+  const crossReleaseText = await crossRelease.text();
+  check("cross-repo filing leaves release in the MAIN checkout: the foreign row remains pending",
+    crossRelease.status === 409 && crossReleaseText.includes("a release never reaches across repositories")
+      && (await taskRow(crossId))?.status === "pending",
+    `${crossRelease.status}:${crossReleaseText}`);
+  const beforeUnknown = (await allTasks()).length;
+  const unknownFile = await selfFile({ text: "unknown repo", kind: "auftrag", repo: `${REPO2}-unknown` });
+  const unknownBody = await unknownFile.clone().json() as { task?: TaskRow };
+  if (unknownBody.task?.id) madeTasks.push(unknownBody.task.id);
+  const unknownText = await unknownFile.text();
+  check("cross-repo filing refuses a repo outside the dispatch list without minting a row",
+    unknownFile.status === 400 && unknownText.includes("known dispatch repository")
+      && (await allTasks()).length === beforeUnknown,
+    `${unknownFile.status}:${unknownText}`);
 
   // (f) RELEASING IS NOT STARTING. Three separate absences, because they fail differently: the
   // answer names no slot, the row keeps none, and no occupant appeared. Then a FULL dispatch tick
@@ -9532,7 +9595,8 @@ export async function run(ctx: Ctx): Promise<void> {
     let cliSrc = "";
     let cliErr = "";
     try {
-      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/queue.ts`, "utf8")
+        .replace(/^export /gm, "");
     } catch (e) { cliErr = e instanceof Error ? e.message : String(e); }
     // the precondition fails AS ITSELF: a probe that could not read its subject must never fail as
     // the subject, or a missing symlink reads as a broken promotion pane.

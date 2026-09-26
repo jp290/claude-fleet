@@ -389,7 +389,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   await settleForMerge(lnU.slot);
   const uRes = (await (await post(`/api/slots/${lnU.slot}/merge`, {})).json()) as { status?: string; detail?: string };
   check("a holder-untracked file the lane ADDS blocks the land up front, curated (not raw ff stderr)",
-    uRes.status === "blocked" && (uRes.detail ?? "").includes("UNTRACKED files this lane also adds")
+    uRes.status === "blocked" && (uRes.detail ?? "").includes("main checkout holds uncommitted changes")
     && (uRes.detail ?? "").includes("untracked-collide.txt"), JSON.stringify(uRes));
   rmSync(`${REPO}/untracked-collide.txt`, { force: true });
   await settleForMerge(lnU.slot);
@@ -677,6 +677,18 @@ export async function run(lc: LaneCtx): Promise<void> {
     vVf.last?.verify?.ok === false && vVf.last.verify.cmd.endsWith("fakeverify")
       && vVf.last.verify.out.includes("VERIFYBAD") && typeof vVf.last.verify.mainSha === "string" && /^[0-9a-f]{40,64}$/.test(vVf.last.verify.mainSha),
     JSON.stringify(vVf.last?.verify));
+  const verdictRows = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .flatMap((line) => { try { return [JSON.parse(line) as { event?: string; detail?: string;
+      verifyOk?: boolean | null; stopKind?: string | null }]; } catch { return []; } })
+    .filter((row) => row.event === "merge_verdict");
+  const redLedger = verdictRows.findLast((row) => row.detail === lnVf.branch);
+  check("land-ledger mutation: clean rebase plus red fake verify writes verifyOk:false and stopKind:red at the verdict site",
+    redLedger?.verifyOk === false && redLedger.stopKind === "red", JSON.stringify(redLedger));
+  check("land-ledger mutation: every merge verdict has explicit tri-state verifyOk and stopKind vocabulary",
+    verdictRows.length > 0 && verdictRows.every((row) =>
+      Object.hasOwn(row, "verifyOk") && [true, false, null].includes(row.verifyOk ?? null)
+      && Object.hasOwn(row, "stopKind") && ["conflict", "red", "unmeasured", "review", null].includes(row.stopKind ?? null)),
+    JSON.stringify(verdictRows.filter((row) => !Object.hasOwn(row, "verifyOk") || !Object.hasOwn(row, "stopKind")).slice(-3)));
   check("ACP-03 Q1: the real merge verdict binds mainSha + candidateSha + stable diffHash",
     /^[0-9a-f]{40,64}$/.test(vVf.last?.mainSha ?? "")
       && /^[0-9a-f]{40,64}$/.test(vVf.last?.candidateSha ?? "")

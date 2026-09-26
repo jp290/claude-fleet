@@ -45,6 +45,48 @@ Ausgaenge trainiert (RLCD) [Doc].
 Die Frage-ID geht nicht ans Modell. `usage.output_tokens` ist eine Abrechnungsgroesse der
 serialisierten Antwort, kein Mass fuer Generation [Essay]. Ueber einem Limit antwortet die API 429.
 
+## Verwendungsform
+
+Owner (26.09.), woertlich: „[Zitat entfernt]“
+
+Owner (26.09.), zweite Regel, woertlich: „[Zitat entfernt]“
+
+Die Messung S4, Messung 4 (`2a4064de`,
+`docs/messungen/2026-09-26-s4-jev-ergebnis-messung4.md`) traegt Sicherheitswerte je Attribut:
+die Knoten-AUC liegt gerundet bei 0,85–1,00. Ein Vorteil des Einzelaufrufs mit Logik-Text gegenueber
+dem Buendel ist bei 34 Quellen nicht belegt; K1 erreichte 0,863 gegen 0,876, K3c 0,941 gegen 0,978.
+Schwach war vor allem die feste Schwelle 0,5. Schwellen kommen aus eigenen Labels (§5), mit einer
+Pruefung auf getrenntem Material. **Einzelaufruf mit Logik-Erklaerung ist die Form, gemessen
+gleichwertig zum Buendel in S4; die Topologie im Code ist der eigentliche Gewinn.**
+
+In dieser Form fragt **ein Jev-Aufruf ein Attribut und liefert einen Sicherheitswert**. Die API kann
+mehrere Fragen in einem Request beantworten (§2); S4 belegt keinen Qualitaetsvorteil einer der beiden
+Aufrufformen. Der State enthaelt den konkreten Input und eine knappe Erklaerung der Logik: wozu dieser
+Wert dient, was davor bereits entschieden oder berechnet wurde und welche spaeteren Schritte ihn
+verwenden. Die 32k fuer State plus
+laengste Frage sind eine Obergrenze, kein Fuellziel; nur fuer dieses Attribut noetige Fakten gelangen
+hinein.
+
+**Die Input-Auswahl steht vor dem Prompt fest.** Fuer jedes Feld benennt die Knoten-Logik seine Quelle
+und warum es fuer das Attribut oder den nachfolgenden Code noetig ist. Nachvollziehbare Worktrails
+helfen, diese Quellen und fehlende Felder zu pruefen. Die eigene Messnotiz zur Input-Logik ist in
+Arbeit (Zeile `f9c1749b`, `docs/messungen/2026-09-26-jev-input-logik.md`); ihr Ergebnis ist offen.
+
+Die Topologie liegt im Code: Er benennt die Attribute und ihre Abhaengigkeiten, baut den State je
+Knoten aus bereits vorliegenden Fakten und wertet erst dann das Jev-Urteil aus. Ein nachfolgender
+Knoten bekommt benoetigte Vorwerte explizit in seinen eigenen State, weil Fragen im selben Aufruf
+einander nicht sehen (§3.1). Code prueft Antwortform, Schwelle und Folgen; `null` bleibt unbekannt
+und gibt keine Erlaubnis (§5). So wird Jevs rohe Intelligenz fuer genau den jeweiligen, im State
+erklaerten Anwendungsfall genutzt, ohne die Ablauf- und Sicherheitsregeln an das Modell zu geben.
+
+example-project T1 hat den Bedrohungs-Knoten K1 offline gegen Handregeln geprueft
+(`docs/messungen/2026-09-26-example-project-attribut-topologie.md`: Vorregistrierung `d9838f90`,
+Schwelle aus Kalibrierung `3e7d4d0c`, Ergebnis `16fbd3e8`, Input-Begruendung je Feld `7eb8625f`).
+**K1 wurde nach dem vorab gesetzten Kippwert verworfen:** Pruef-AUC 0,663; ohne sichtbaren Gegner 0,89,
+mit sichtbarem Gegner 0,44. Der State enthielt keine Deckung (`unterstand`/`grube`); ein naher Gegner
+hinter einem Dach sah deshalb wie eine Gefahr im Freien aus. Das fehlende Feld kippte diesen Knoten,
+nicht die Aufrufform. Die Handregel bleibt, bis neues Material mit Deckung eine neue Messung traegt.
+
 ## 3. Wie es sich verhaelt
 
 1. **Der State wird einmal kodiert, jede Frage liest ihn fuer sich; Fragen sehen einander nicht.**

@@ -1,0 +1,34 @@
+{
+  "version": "entwurf-1",
+  "klassen": {
+    "kopf": {
+      "version": 1,
+      "zweck": "orchestrieren, entscheiden, adjudizieren",
+      "qualifikation": "Owner-Politik 2026-09-22",
+      "executor": { "harness": "claude", "model": "claude-opus-5-5[1m]", "effort": "high" }
+    },
+    "hand": {
+      "version": 1,
+      "zweck": "einen Schnitt bauen und beweisen",
+      "qualifikation": "Owner-Politik 2026-09-02",
+      "executor": { "harness": "claude", "model": "claude-opus-5-5[1m]", "effort": "high" }
+    },
+    "urteil": {
+      "version": 1,
+      "zweck": "analysieren, reviewen, Kriterium klaeren",
+      "qualifikation": "auftragsgebunden; keine pauschale Paritaet",
+      "executor": { "harness": "codex", "model": "gpt-6-astra", "effort": "medium" }
+    },
+    "form": {
+      "version": 1,
+      "zweck": "eine Textantwort ohne Session",
+      "qualifikation": "Code-Routen bleiben Quelle",
+      "executor": null
+    }
+  },
+  "regeln": {
+    "override": "ein ROLLE-Tripel gewinnt ueber die Klasse und wird im Receipt festgehalten",
+    "unbekannteKlasse": "Karten-Luecke, nie ein Default",
+    "legacy": "Zeile ohne KLASSE behaelt ihr bisheriges Verhalten"
+  }
+}

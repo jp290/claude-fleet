@@ -29,6 +29,7 @@ import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLi
   type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
+import { CONTEXT_PACKS } from "../context-packs";
 import type { Ctx } from "./ctx";
 
 // WAIT ON THE KILL, NOT ON A CLOCK (the slotsEmptied shape from e3a936f7's programs.ts). A lane
@@ -115,6 +116,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // absent on a row written before the fields existed — a date, never "no model" or "no block"
     modelOrigin?: string;
     snippet?: { bytes: number; hits: number; omitted: { ref: string; why: string }[] };
+    executionClass?: string | null;
+    executionRole?: { harness: string; model: string; effort: string } | null;
   }
   // server-side briefHashOf, verbatim: the join key is only worth asserting if the test computes it
   // the same way the OUTCOME ledger does, not the same way the receipt writer does
@@ -132,7 +135,9 @@ export async function run(ctx: Ctx): Promise<void> {
   let taskClientReadError = "";
   try {
     const checkout = resolve(realpathSync(`${ROOT}/node_modules`), "..");
-    taskClientSource = readFileSync(`${checkout}/src/client.ts`, "utf8");
+    taskClientSource = ["client", "queue", "attention", "board", "devices", "composer"]
+      .map((name) => readFileSync(`${checkout}/src/${name}.ts`, "utf8").replace(/^export /gm, ""))
+      .join("\n");
     taskPageSource = readFileSync(`${checkout}/public/index.html`, "utf8");
     taskServerSource = readFileSync(`${checkout}/server.ts`, "utf8");
   } catch (e) { taskClientReadError = e instanceof Error ? e.message : String(e); }
@@ -406,7 +411,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && modelFns.qRepoRelation(null, "/repos/alpha") === "unknown");
   }
   const openQueueSource = taskClientSource.slice(taskClientSource.indexOf("function openQueue"),
-    taskClientSource.indexOf("// --- audit trail overlay", taskClientSource.indexOf("function openQueue")));
+    taskClientSource.indexOf("function initQueue", taskClientSource.indexOf("function openQueue")));
   // D-3 (Grammatik G5.2 + G4.4): the settings window's "Fleet" section writes over EXACTLY the five
   // routes that existed before it — dispatcher, autos kill-switch, quiet hours, lane cap, integration
   // branch — each as one row's post(), and nothing reaches a route except through the section's Apply;
@@ -417,7 +422,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // apply.onclick — each turns this red.
   {
     const fsAt = taskClientSource.indexOf("function fleetSection(");
-    const fsEnd = taskClientSource.indexOf("// THE INFO COLUMN ON THE PHONE", fsAt);
+    const fsEnd = taskClientSource.indexOf("// --- the file explorer", fsAt);
     const fsSrc = fsAt >= 0 && fsEnd > fsAt ? taskClientSource.slice(fsAt, fsEnd) : "";
     const FLEET_WRITES = ["/api/autos/quiet", "/api/autos/switch", "/api/dispatch", "/api/repo-base", "/api/repo-lane-cap"];
     const named = [...new Set([...fsSrc.matchAll(/["'`](\/api\/[^"'`]+)["'`]/g)].map((m) => m[1]))].sort();
@@ -1276,6 +1281,18 @@ export async function run(ctx: Ctx): Promise<void> {
       // the LIVE catalogue, exactly as the client fetches it: the fixtures are drawn from it, so a
       // harness renamed or re-scoped on the server fails here instead of in a picker nobody opened
       const cat = ((await (await get("/api/harnesses")).json()) as { harnesses: SpCat[] }).harnesses;
+      const modelCat = (await (await get("/api/harnesses")).json()) as {
+        modelDefaults?: Record<string, { harness: string; id: string; effort: string }>;
+        modelRegistry?: { harness: string; id: string; status: string; supersededBy?: string; availability: string }[];
+      };
+      const oldSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-5.6-sol");
+      const newSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6-sol");
+      check("model catalogue serves the role default and warns on superseded Sol without removing it",
+        modelCat.modelDefaults?.worker?.id === "gpt-6-sol"
+          && oldSol?.status === "superseded" && oldSol.supersededBy === "gpt-6-sol"
+          && newSol?.status === "current"
+          && ["available", "unavailable", "unknown"].includes(newSol?.availability ?? ""),
+        JSON.stringify({ oldSol, newSol, worker: modelCat.modelDefaults?.worker }));
       const dflt = cat.find((h) => h.default);
       const codex = cat.find((h) => h.id === "codex");
       const noEffort = cat.find((h) => (h.role ?? "agent") === "agent" && !h.supports.effort);
@@ -1624,6 +1641,24 @@ export async function run(ctx: Ctx): Promise<void> {
     check("task spawn audits each change with old and new choices", trail.length === 2
       && !!trail[0]?.detail?.includes("claude-opus-5") && !!trail[0]?.detail?.includes("gpt-6-sol")
       && !!trail[1]?.detail?.includes("gpt-6-sol") && !!trail[1]?.detail?.endsWith("->null"), JSON.stringify(trail));
+
+    const policyRow = ((await (await post("/api/tasks", {
+      text: "model supersession queue fixture", queue: true,
+      harness: "codex", model: "gpt-5.6-sol", effort: "high",
+    })).json()) as { task: SpawnRow }).task;
+    const policyDigest = async (): Promise<{ modelSuperseded?: { id: string; supersededBy?: string } } | undefined> =>
+      ((await (await get("/api/sessions")).json()) as { tasks: { id: string; modelSuperseded?: { id: string; supersededBy?: string } }[] })
+        .tasks.find((task) => task.id === policyRow.id);
+    const oldPolicy = await policyDigest();
+    check("queue row: gpt-5.6-sol is marked superseded with gpt-6-sol as its successor",
+      oldPolicy?.modelSuperseded?.id === "gpt-5.6-sol" && oldPolicy.modelSuperseded.supersededBy === "gpt-6-sol",
+      JSON.stringify(oldPolicy));
+    const currentPolicySet = await set(policyRow.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    const currentPolicy = await policyDigest();
+    check("same queue row: gpt-6-sol clears the superseded marker without refusing the choice",
+      currentPolicySet.status === 200 && currentPolicy !== undefined && currentPolicy.modelSuperseded === undefined,
+      JSON.stringify({ status: currentPolicySet.status, currentPolicy }));
+    await post(`/api/tasks/${policyRow.id}/delete`, {});
 
     const sent = ((await (await post("/api/tasks", { text: "spawn replacement sent refusal", queue: false })).json()) as { task: SpawnRow }).task;
     const starting = post(`/api/tasks/${sent.id}/dispatch`, {});
@@ -2862,8 +2897,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && deliveredReceipt.taskId === tid && deliveredReceipt.originId === tid
       && deliveredReceipt.programId === provenanceProgramId && deliveredReceipt.head === expectedHead,
       JSON.stringify(deliveredReceipt ?? null));
-    check("the foreign receipt names nothing it cannot resolve: zero selected, all six packs source-unavailable",
-      deliveredReceipt?.selected.length === 0 && deliveredReceipt.omitted.length === 6
+    check("the foreign receipt names nothing it cannot resolve: zero selected, all Fleet seeds source-unavailable",
+      deliveredReceipt?.selected.length === 0 && deliveredReceipt.omitted.length === CONTEXT_PACKS.length
       && deliveredReceipt.omitted.every((entry) => entry.why === "source-unavailable"),
       JSON.stringify(deliveredReceipt ?? null));
     const anchorBlock = anchorRegion; // exactly the bytes the receipt hashed — footer excluded
@@ -4859,7 +4894,8 @@ export async function run(ctx: Ctx): Promise<void> {
     check("a dispatch INSIDE the Fleet checkout still renders the two-pack anchor block (the derivation is not a blanket refusal)",
       fd.ok && fdJ.ok === true && fPrompt.startsWith(fBrief) && fPrompt.includes("\n\nContextPlan v2 anchors")
       && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
-      && fReceipt.omitted.length === 4 && fReceipt.omitted.every((entry) => entry.why !== "source-unavailable"),
+      && fReceipt.omitted.length === CONTEXT_PACKS.length - fReceipt.selected.length
+      && fReceipt.omitted.every((entry) => entry.why !== "source-unavailable"),
       `${fd.status} ${JSON.stringify(fReceipt ?? null)} ${fPrompt.slice(0, 200)}`);
     check("the Fleet-frame receipt is one row, names this checkout at its integration head, and every anchor it names is in the delivered bytes",
       !!fReceipt && (await contextReceipts()).total === fBefore.total + 1
@@ -5231,7 +5267,15 @@ export async function run(ctx: Ctx): Promise<void> {
       // carry identical brief bytes on purpose, which is exactly when that would go unnoticed.
       const since = Date.now();
       const res = await post(`/api/tasks/${taskId}/dispatch`, {});
-      const slot = ((await res.json()) as { slot?: number }).slot ?? null;
+      const dispatchText = await res.text();
+      let dispatchBody: { slot?: number } = {};
+      try { dispatchBody = JSON.parse(dispatchText) as { slot?: number }; }
+      catch { /* the fixture check below names the response rather than claiming dispatch succeeded */ }
+      check("(d5-live) dispatch fixture receives a successful JSON slot response",
+        res.ok && typeof dispatchBody.slot === "number",
+        `${taskId}: ${res.status} ${dispatchText.slice(0, 300)}`);
+      const slot = dispatchBody.slot ?? null;
+      if (slot === null) return { prompt: "", slot };
       let receipt: ContextReceipt | undefined;
       let prompt = "";
       for (let i = 0; i < 24; i++) { // same window as (d): sendText lands after the boot sleep
@@ -5285,6 +5329,49 @@ export async function run(ctx: Ctx): Promise<void> {
       && s7Sent.receipt.model === FLEET_DEFAULT_MODEL && s7Sent.receipt.modelOrigin === "default"
       && s7Sent.receipt.effort === null,
       JSON.stringify({ receipt: s7Sent.receipt ?? null, prompt: s7Sent.prompt.slice(0, 300) }));
+    const classBrief = ["KLASSE: hand", "GROESSE: klein", "FLAECHE: wave-brief.ts",
+      "VERIFY: bun e2e/pins.ts", "DONE: das Klassen-Receipt nennt das Tripel", "",
+      "ZIEL: wave-brief.ts bleibt dieselbe Arbeit."].join("\n");
+    const classPost = await post("/api/tasks", { text: classBrief, kind: "auftrag", queue: false, repo: ROOT,
+      card: { ziel: "wave-brief.ts bleibt dieselbe Arbeit", klasse: "hand",
+        surface: { files: ["wave-brief.ts"], symbols: [] },
+        done: "das Klassen-Receipt nennt das Tripel", verify: "bun e2e/pins.ts" } });
+    const classPostText = await classPost.text();
+    let classId = "";
+    try { classId = (JSON.parse(classPostText) as { task?: { id?: string } }).task?.id ?? ""; } catch { /* named below */ }
+    check("(s3-shadow) class fixture files a card against the tracked register",
+      classPost.ok && !!classId, `${classPost.status}: ${classPostText.slice(0, 300)}`);
+    const classBefore = ((await (await get("/api/tasks")).json()) as
+      { tasks: { id: string; spawn?: unknown; card?: { klasse?: string; valid?: boolean } }[] }).tasks.find((t) => t.id === classId);
+    const classSent = classId ? await dispatchAndRead(classId, classBrief) : { prompt: "", slot: null };
+    await closeLane(classSent.slot);
+    check("(s3-shadow) a class card resolves hand@1 and Opus 5.5 in the receipt while spawn stays absent",
+      classPost.ok && classBefore?.card?.valid === true && classBefore.card.klasse === "hand"
+      && classBefore.spawn === undefined && classSent.receipt?.executionClass === "hand@1"
+      && JSON.stringify(classSent.receipt.executionRole) === JSON.stringify({
+        harness: "claude", model: "claude-opus-5-5[1m]", effort: "high" })
+      && classSent.receipt.harness === null && classSent.receipt.model === FLEET_DEFAULT_MODEL,
+      JSON.stringify({ before: classBefore, receipt: classSent.receipt }));
+    await post(`/api/tasks/${classId}/delete`, {});
+    const overrideBrief = classBrief.replace("KLASSE: hand", "KLASSE: hand\nROLLE: claude/claude-sonnet-5/medium");
+    const overridePost = await post("/api/tasks", { text: overrideBrief, kind: "auftrag", queue: false, repo: ROOT,
+      card: { ziel: "wave-brief.ts bleibt dieselbe Arbeit", klasse: "hand",
+        rolle: { harness: "claude", model: "claude-sonnet-5", effort: "medium" },
+        surface: { files: ["wave-brief.ts"], symbols: [] },
+        done: "das Klassen-Receipt nennt das Tripel", verify: "bun e2e/pins.ts" } });
+    const overridePostText = await overridePost.text();
+    let overrideId = "";
+    try { overrideId = (JSON.parse(overridePostText) as { task?: { id?: string } }).task?.id ?? ""; } catch { /* named below */ }
+    check("(s3-shadow) override fixture files a card against the tracked register",
+      overridePost.ok && !!overrideId, `${overridePost.status}: ${overridePostText.slice(0, 300)}`);
+    const overrideSent = overrideId ? await dispatchAndRead(overrideId, overrideBrief) : { prompt: "", slot: null };
+    await closeLane(overrideSent.slot);
+    check("(s3-shadow) explicit ROLLE wins in the class receipt",
+      overridePost.ok && overrideSent.receipt?.executionClass === "hand@1"
+      && JSON.stringify(overrideSent.receipt.executionRole) === JSON.stringify({
+        harness: "claude", model: "claude-sonnet-5", effort: "medium" }),
+      JSON.stringify(overrideSent.receipt ?? null));
+    await post(`/api/tasks/${overrideId}/delete`, {});
 
     // (b1) THE CONTROL: the same brief, the same task text, in a world with no notes at all.
     const HUB_TEXT = "N1 hub probe over server.ts, AGENTS.md and task-metadata.ts";
@@ -5295,7 +5382,8 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(d5-live-control) a dispatch with no candidate note carries no block and receipts notes:[]",
       ctl.prompt.startsWith(`${HUB_BRIEF}\n\nContextPlan v2 anchors`)
       && !ctl.prompt.includes("Notizen auf deiner Flaeche")
-      && Array.isArray(ctl.receipt?.notes) && ctl.receipt.notes.length === 0,
+      && Array.isArray(ctl.receipt?.notes) && ctl.receipt.notes.length === 0
+      && !("executionClass" in (ctl.receipt ?? {})),
       `${JSON.stringify(ctl.receipt?.notes ?? null)} ${ctl.prompt.slice(0, 160)}`);
 
     // the eight fixture notes. `nC` is created BEFORE `nB` and the gap is asserted, because the
@@ -5878,9 +5966,9 @@ export async function run(ctx: Ctx): Promise<void> {
       validCommit === 0 && ok.prompt.startsWith(`${okBrief}\n\nContextPlan v2 anchors`)
       && ok.prompt.includes("dispatch-declared") && ok.prompt.includes("AGENTS.md | ## Repo contract")
       && ok.receipt?.selected.length === 1 && ok.receipt.selected[0]?.id === "dispatch-declared"
-      // the six Fleet seeds keep their honest verdict in a foreign tree — the manifest row is added,
+      // the Fleet seeds keep their honest verdict in a foreign tree — the manifest row is added,
       // never substituted, which is the whole shape of the merge at this seam
-      && ok.receipt.omitted.length === 6
+      && ok.receipt.omitted.length === CONTEXT_PACKS.length
       && ok.receipt.omitted.every((entry) => entry.why === "source-unavailable"),
       `${JSON.stringify(ok.receipt ?? null)} ${ok.prompt.slice(-200)}`);
 
@@ -5896,7 +5984,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("an invalid manifest at the dispatch seam is the named @manifest omission, never a silent drop",
       brokenCommit === 0 && bad.prompt.startsWith(badBrief) && badAnchorRegion === ""
       && !bad.prompt.includes("ContextPlan v2 anchors")
-      && bad.receipt?.selected.length === 0 && bad.receipt.omitted.length === 7
+      && bad.receipt?.selected.length === 0 && bad.receipt.omitted.length === CONTEXT_PACKS.length + 1
       && JSON.stringify(bad.receipt.omitted.at(-1)) === JSON.stringify({ id: "@manifest", why: "manifest-invalid" }),
       JSON.stringify(bad.receipt ?? null));
 
@@ -6353,6 +6441,15 @@ export async function run(ctx: Ctx): Promise<void> {
       check("a DIFFERENT screen resets the streak — trust, trust, sign-in, trust stays queued",
         afterSwitch?.status === "queued" && /codex trust prompt/.test(afterSwitch.note ?? "") && parkAudit().length === 1,
         JSON.stringify(afterSwitch));
+      const noMarker = "booting, no marker yet";
+      await parkAttempt(noMarker, "never alive 1");
+      const noMarker2 = await parkAttempt(noMarker, "never alive 2");
+      const noMarker3 = await parkAttempt(noMarker, "never alive 3");
+      check("dispatch-tail mutation: two equal non-screen refusals requeue, the third parks this row with its reason",
+        noMarker2?.status === "queued" && noMarker3?.status === "pending"
+          && (noMarker3.note ?? "").includes("never showed its ready marker")
+          && (noMarker3.note ?? "").includes("3 attempts"),
+        JSON.stringify({ two: noMarker2, three: noMarker3 }));
       await post(`/api/tasks/${parkId}/delete`, {});
     }
 
@@ -9259,7 +9356,7 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(roles.unresolvable));
     // Opus 5.5 is its own model (row "ZWEI STELLEN KENNEN DAS NEUE MODELL NICHT", 2026-09-23): its
     // spellings resolve to claude-opus-5-5[1m] — including a lone "ROLLE: Opus 5.5", which the parser
-    // files in the harness slot — while "opus"/"Opus 5" keep naming Opus 5, never silently upgraded.
+    // files in the harness slot — "opus" follows the current default while "Opus 5" names the old id.
     // The adopted spawn is this rolle (server.ts#adoptSpawnFromCard), so the model here IS spawn.model.
     const roleLine = (line: string) => {
       const text = ["[OPUS-5.5-PROBE]", `ROLLE: ${line}`, "GROESSE: klein", "FLAECHE: server.ts", "VERIFY: bun e2e/pins.ts", "DONE: x", "BAU: y"].join("\n");
@@ -9274,9 +9371,10 @@ export async function run(ctx: Ctx): Promise<void> {
       opus5: roleOf({ harness: "claude", model: "Opus 5", effort: "high" }).body.rolle.model,
       bareWordStaysGap: roleLine("pi-zai-gibt-es-nicht"),
     };
-    check("(v5) card rolle: \"ROLLE: Opus 5.5\", \"opus 5.5\" and \"claude opus 5.5\" name claude-opus-5-5[1m]; \"opus\" and \"Opus 5\" still name claude-opus-5[1m]",
+    check("(v5) card rolle: Opus 5.5 and opus name the current id; explicit Opus 5 names the superseded id",
       [opus55.line, opus55.triple, opus55.lower, opus55.claude].every((m) => m === "claude-opus-5-5[1m]")
-      && [opus55.opus, opus55.opus5Line, opus55.opus5].every((m) => m === "claude-opus-5[1m]")
+      && opus55.opus === "claude-opus-5-5[1m]"
+      && [opus55.opus5Line, opus55.opus5].every((m) => m === "claude-opus-5[1m]")
       && opus55.bareWordStaysGap === null,
       JSON.stringify(opus55));
     // …and the lane-cost measurement counts it as its own class: not "andere", not inside the Opus-5 medians
@@ -9622,6 +9720,30 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(vbRaw?.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"])
       && vbRaw?.ziel === vbZiel,
       JSON.stringify({ verboten: vbRaw?.verboten ?? null, ziel: vbRaw?.ziel ?? null }));
+    const delegationText = vbText.replaceAll("fleet-e2e.ts", "server.ts")
+      .replace("VERBOTEN:", "DELEGATION: erdung:read-only, max 2\nVERBOTEN:");
+    const delegationRaw = parseFormattedCard(delegationText);
+    const delegationCard = validateCard(delegationRaw ?? {}, { ...cardCtx, sourceText: delegationText });
+    check("(s2) DELEGATION and VERBOTEN survive a formatted card read and validation",
+      delegationCard.valid && delegationCard.body.delegation === "erdung:read-only, max 2"
+      && JSON.stringify(delegationCard.body.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"]),
+      JSON.stringify({ gaps: delegationCard.gaps, delegation: delegationCard.body.delegation,
+        verboten: delegationCard.body.verboten }));
+    check("(s2) a card with no DELEGATION header grants no delegation field",
+      vbRaw !== null && !("delegation" in validateCard(vbRaw, { ...cardCtx,
+        sourceText: vbText.replaceAll("fleet-e2e.ts", "server.ts") }).body),
+      JSON.stringify(vbRaw));
+    const classText = delegationText.replace(/^ROLLE:.*\n/m, "KLASSE: hand\n");
+    const classRaw = parseFormattedCard(classText);
+    const classCard = validateCard(classRaw ?? {}, { ...cardCtx, sourceText: classText,
+      classKnown: (name) => name === "hand" });
+    const unknownText = classText.replace("KLASSE: hand", "KLASSE: erfunden");
+    const unknownCard = validateCard(parseFormattedCard(unknownText) ?? {}, { ...cardCtx,
+      sourceText: unknownText, classKnown: (name) => name === "hand" });
+    check("(s3) KLASSE alone is a valid formatted card; an unknown name has a named refusing gap",
+      classCard.valid && classCard.body.klasse === "hand"
+      && !unknownCard.valid && unknownCard.gaps.includes('klasse: "erfunden" is not a registered execution class'),
+      JSON.stringify({ valid: classCard.valid, klasse: classCard.body.klasse, gaps: unknownCard.gaps }));
     const vbNone = parseFormattedCard(vbText.replace(/^VERBOTEN: .*$/m, "VERBOTEN: \u2014"));
     const vbAbsent = parseFormattedCard(vbText.replace(/^VERBOTEN: .*$/m, ""));
     check("(fmt) an empty VERBOTEN (the \u2014 renderCardHead writes) and an absent one both read as NO constraint, not an invented one",
@@ -9816,8 +9938,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v8) CARD_VALIDATOR_VERSION is 8, so cards refused before the verbatim long repo command (or by earlier rules) are read once more",
-      CARD_VALIDATOR_VERSION === 8, String(CARD_VALIDATOR_VERSION));
+    check("(v10) CARD_VALIDATOR_VERSION is 10, so cards refused before KLASSE or earlier rules are read once more",
+      CARD_VALIDATOR_VERSION === 10, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the

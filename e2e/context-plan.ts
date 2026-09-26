@@ -35,7 +35,8 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   check("context plan: the delivery facts select the always + verification packs",
     normal.selected.map((pack) => pack.id).join(",") === "portable-core,verify-e2e", summary(normal));
   check("context plan: each real omission names the first failed rule",
-    normal.omitted.length === 4 && normal.omitted.every((pack) => pack.why === "trigger-not-matched"),
+    normal.omitted.length === CONTEXT_PACKS.length - normal.selected.length
+    && normal.omitted.every((pack) => pack.why === "trigger-not-matched"),
     summary(normal));
 
   // The plan is what the renderer sees, so PURPOSE must survive selection — a seed's mandatory

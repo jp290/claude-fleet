@@ -311,6 +311,12 @@ if (!res.ok) {
   console.error(`ctl.sh get: ${path} -> ${res.status}${why}${snip ? `\n  ${snip}` : ""}`);
   process.exit(1);
 }
+if (path.split("?")[0] === "/api/sessions" && isJson) {
+  const staleSlots = Array.isArray(body?.slots) ? body.slots.filter((row) => row.modelSuperseded).map((row) => String(row.id)) : [];
+  const staleTasks = Array.isArray(body?.tasks) ? body.tasks.filter((row) => row.modelSuperseded).map((row) => String(row.id)) : [];
+  if (staleSlots.length || staleTasks.length)
+    console.error(`ctl.sh get: superseded models — slots ${staleSlots.join(",") || "none"}; queue ${staleTasks.join(",") || "none"}`);
+}
 // NO `process.exit()` PAST THIS POINT, and it is not a style preference. Measured on this machine
 // while writing it: `process.stdout.write(<745 KB suite.log>)` followed by `process.exit(0)` handed
 // a PIPE exactly 65 536 bytes — one buffer — three times out of three, and said nothing. A reader

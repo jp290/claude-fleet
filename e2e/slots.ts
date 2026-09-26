@@ -1146,7 +1146,8 @@ export async function run(): Promise<void> {
   let cliSrcError = "", indexSrcError = "";
   const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
   try {
-    cliSrc = readFileSync(`${sourceRoot}/src/client.ts`, "utf8");
+    cliSrc = ["client", "attention", "devices", "composer", "board", "queue"]
+      .map((name) => readFileSync(`${sourceRoot}/src/${name}.ts`, "utf8")).join("\n");
   } catch (e) { cliSrcError = e instanceof Error ? e.message : String(e); }
   try {
     indexSrc = readFileSync(`${sourceRoot}/public/index.html`, "utf8");
@@ -1997,7 +1998,7 @@ export async function run(): Promise<void> {
     // the band is the anchor's slot number, that the letters count within one band and not across
     // the bar, that a bandless lane lands on band 0 rather than colliding with band 1, and that
     // neither ordering of the input changes an answer.
-    const refSrc = cut("const bandLetter =", "// THE FOUR STATES A ROW");
+    const refSrc = cut("const bandLetter =", "// THE FOUR STATES A ROW").replace(/^export /gm, "");
     type BandStack = { anchor: { id: number } | null; lanes: { id: number; worktree?: { letter?: string } | null }[] };
     let laneBandNames: ((stacks: readonly BandStack[]) => Map<number, string>) | null = null;
     try {
@@ -2127,7 +2128,7 @@ export async function run(): Promise<void> {
 
     const deps = cut("const isActive = ", "// A LANE'S ONE ADDRESS")
       + cut("function projectOf(", "// Eight hues");
-    const stackSrc = cut("function stacksOf()", "function startRename(");
+    const stackSrc = cut("function stacksOf()", "export function startRename(");
     type FxSlot = {
       id: number; cwd: string | null; lastOutput: number; openedAt?: number; repo?: string | null;
       worktree?: { repo: string; branch: string; anchor?: LaneAnchor } | null;

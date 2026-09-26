@@ -1,4 +1,5 @@
 import { contextWindowFor } from "./protocol";
+import { MODEL_REGISTER } from "../model-register";
 
 // A model id as a person reads it (owner, tenth cut: „[Zitat entfernt]“ — „[Zitat entfernt]“, not
 // "claude-opus-5[1m]"). DISPLAY ONLY: the raw id stays the value that is staged, applied and
@@ -18,20 +19,9 @@ import { contextWindowFor } from "./protocol";
 // Then protocol.ts#contextWindowFor for everything else it names. GPT ids never take its 258,400 —
 // that is the USABLE share (95 %) and matches every gpt-* by shape; a label shows the nominal
 // window, and only for a slug Codex's own catalogue lists. No row, no number.
-const DISPLAY_WINDOWS: Readonly<Record<string, number>> = {
-  "claude-opus-5": 1_000_000,
-  // the successor id — same source as protocol.ts#CLAUDE_CONTEXT_WINDOWS: the installed 2.1.280
-  // model table carries display_name:"Opus 5.5" with context:{window:1e6,native_1m:!0,…} (read 2026-09-22)
-  "claude-opus-5-5": 1_000_000,
-  "claude-sonnet-5": 1_000_000,
-  "claude-fable-5-1": 1_000_000,
-  "claude-haiku-4-5-20251001": 200_000,
-  // server.ts#PI_ZAI_HARNESS injects contextWindow 1000000 for it; pi-ai's zai.json says the same
-  "glm-5.3-flash": 1_000_000,
-  // ~/.codex/models_cache.json fetched 2026-09-19: context_window 272000 for both slugs
-  "gpt-5.6-sol": 272_000,
-  "gpt-5.5": 272_000,
-};
+const DISPLAY_WINDOWS: Readonly<Record<string, number>> = Object.fromEntries(
+  MODEL_REGISTER.filter((entry) => entry.displayWindow !== undefined).map((entry) => [entry.id, entry.displayWindow!]),
+);
 const isGpt = (id: string): boolean => /(?:^|\/)gpt-/i.test(id);
 
 export function modelWindow(id: string): number | null {

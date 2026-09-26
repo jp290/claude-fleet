@@ -5,6 +5,46 @@ Prinzipal-/Scope-Regeln (wer welche Route bekommt, 409-Semantik) und die Diszipl
 `CLAUDE.md`; hier liegen Feldformen, Deckel, Ablehnungen und die curl-Beispiele. Bei Widerspruch
 gilt der Code.
 
+## Credential-Auflösung
+
+`server/auth.ts#resolvePrincipal` benennt eine erkannte Credential als `owner` (mit Kanal
+`cookie|bearer|query`), `session` (Slot, `openedAt`, Rolle `lane|main|generic`), `device`
+(Helper-Credential), oder `guest` (Share-Cookie). Ohne erkannte Credential liefert er `null`;
+`machine{why:tick|sensor|policy|boot}` ist der interne Arm des Typs und wird aus keinem HTTP-Request
+abgeleitet. Die Session-Rolle verwendet dieselbe Positionsableitung wie `GET /api/self`;
+Supervisor- und Orchestrator-Labels verleihen hier keine zusätzliche Berechtigung. Das Helper-Token
+identifiziert keine einzelne Hardware: `deviceId:"helper-token"` benennt nur die gemeinsame
+Credential, keine verifizierte Geräte-ID.
+
+Die Self-Routen lösen ausschließlich den Header `x-fleet-self-token` als Session auf. Sie behalten
+ihre eigenen 401-Antworten mit 400 ms Verzögerung und ihre fachlichen 409-Verweigerungen; der
+Resolver erteilt selbst keinen Grant. Owner-, Helper-, Steward-, Share- und Intake-Türen behalten
+ihre eigenen Reihenfolgen und Fehlerpfade. Eine Kombination mehrerer Credentials auf einem Request
+ändert damit keine Türentscheidung.
+
+## position — `GET /api/self` → `position`
+
+Jede Session liest mit ihrem eigenen `FLEET_SELF_TOKEN` ihr Lagebild. Die bisherigen Felder von
+`GET /api/self` bleiben erhalten. `position` ergänzt `role`, `taskId`, `programId`,
+`receiver`, `harness`, `model` und `waitingOnMe`.
+
+`role` ist `lane`, `program-main`, `supervisor`, `orchestrator` oder `generic`.
+Program-MAIN und Supervisor beruhen auf der Bindung der aktuellen Occupation; `orchestrator`
+beruht derzeit nur auf dem Slot-Label und verleiht keine Rechte. Für eine Program-Lane ist
+`receiver: {role:"program-main",slot,openedAt}` die lebende gebundene MAIN. Für eine MAIN
+ist es die eindeutig gelabelte lebende Orchestratorin. Ohne eindeutig auflösbare Occupation
+steht `receiver:null`, nie `owner`. `taskId` und `programId` kommen aus dem Lane-Slot;
+die MAIN erhält ihre `programId` aus der aktiven Bindung. Fehlende Werte bleiben `null`.
+`harness` und `model` sind die gespeicherten Spawn-Werte; `null` bedeutet Fleet-Default.
+
+`waitingOnMe` enthält offene Einträge `{kind,id,slot}` für fremde bewaffnete Watches auf
+die aktuelle Lane, geparkte Sends an ihre Occupation, offene Clarifications, unentschiedene
+Fleet-Reports und einen noch offenen Succession-Debt für diesen Nachfolger. `slot` bezeichnet
+den wartenden Slot; beim Debt den betroffenen Slot selbst. Der Blick ist eine aktuelle
+Momentaufnahme, keine historische Vollständigkeitszusage. Der mutierende Lane-Brief rendert
+denselben Empfänger im Footer als `Empfaenger: <Rolle> Slot <n>`; ohne Empfänger steht dort
+`Empfaenger: unbekannt`.
+
 ## gate — `GET /api/self/gate`
 
 Liefert die Gate-Konfiguration dieser Lane plus die aktuell gemessene Suite-Mutex-Sicht. `suiteLock`
@@ -892,6 +932,19 @@ eigene MAIN freigibt. Der `⚙ steward` darf.
 Lane (409, an der Route): `a lane may not file a queue row — a lane executes the row it was founded
 on, it does not fill the queue its own MAIN releases from`.
 
+**Optionales `repo`:** Ohne das Feld zielt die pending Zeile weiter auf das Git-Repo des
+MAIN-Checkouts. Eine exakt gebundene Program-MAIN darf beim Filen ein anderes Repo benennen, wenn
+es bereits in der Liste offener Arbeits-Repos des Dispatch-Ticks steht oder das konfigurierte
+`FLEET_DISPATCH_REPO` ist. Der Body setzt nie die `programId`; sie kommt aus der Bindung.
+`base`, `card` und `files.unknownPaths` werden gegen das Ziel-Repo geprüft. Ein leeres, falsch
+typisiertes oder unbekanntes `repo` wird als 400 abgewiesen und mintet keine Zeile. Falls das Repo
+während der asynchronen Vorbereitung aus der Liste fällt, lautet die Antwort 409 und es wird
+ebenfalls nichts gefilt. Das Feld erweitert nur das Filen: Release, Hold, Kartenbestätigung und Land
+behalten ihre bestehenden Repo-Grenzen.
+Bei einem Filing über die Repo-Grenze trägt die bestehende `main_task`-Audit-Zeile zusätzlich
+`slot`, `openedAt`, `mainRepo` und `targetRepo` als eigene Felder. Die beiden Repo-Pfade
+sind kanonisch; `openedAt` stammt vom authentifizierten Occupant der Anfrage.
+
 **Optionale Karte (seit 08ec67c0):** der Body darf neben `text`/`kind`/Spawn-Tripel ein
 `card{ziel, surface{files, symbols}, done, verify, verboten}` tragen (dieselbe Form nimmt die
 Owner-Tür `POST /api/tasks`). Validiert wird mit `card-extract.ts#validateCard` gegen den Repo der
@@ -900,6 +953,8 @@ ohne bekannten Kettenschritt — ist 400 mit dem Befund wörtlich, und nichts wi
 als `Task.card{model:"author", valid:true}`; Oberfläche, Wellen-Projektion und `register.sh`
 (`surface [karte]`) lesen `card.surface.files` vor der Prosa-Ableitung. Ohne `card` unverändert.
 Vorlage: `AGENTS.md` §Filing a queue row.
+Für eine Klassenkarte lesen beide Türen zusätzlich `card.klasse` und optional `card.rolle`;
+unbekannte Klassen oder ungültige Rollen werden als benannte Kartenlücken abgewiesen.
 
 **Optionale Flächen-VORSCHLAG-Liste `files`:** der Body darf zusätzlich eine explizite
 `files: ["pfad", …]` tragen. Sie wird AUSSCHLIESSLICH nach `Task.filesProposal` geschrieben — nie
@@ -3006,6 +3061,12 @@ Kopie, aus demselben Grund, aus dem `stalled` eine ist):
 | `laneAutoclose` | einmal pro Antwort, neben `lands` | ob der Schalter auf DIESER Fleet scharf ist |
 | `autoCloseRefusal` | je LANE-Zeile, nur wenn scharf | der Satz, auf den der nächste Tick entscheidet; `null` = nichts lehnt ab, der nächste Tick schließt sie |
 
+`removeWorktreeSafe` löscht beim erfolgreichen Teardown den Branch nur, wenn `git rev-list
+<Fork-SHA>..<Branch>` null Commits ergibt. Fehlt der gespeicherte Fork-Punkt, bleibt der Branch.
+Ein gelandeter Branch mit eigener Arbeit bleibt für `undo-land` erhalten. Der Dispatch-Tail zählt
+jeden gleichen Ablehnungsgrund pro Task-Zeile; beim
+dritten gleichen Versuch setzt er sie auf `pending` und schreibt den Grund in die Note.
+
 Auf einer Nicht-Lane fehlt der Schlüssel ganz (die Antwort der Liste wäre „not a fleet-created
 worktree lane" — Rauschen auf 13 von 16 Zeilen); auf einer unscharfen Fleet fehlt er auch, weil
 `laneAutoclose` diesen Fall EINMAL beantwortet statt 16×.
@@ -3088,6 +3149,12 @@ Felder an allen fünf Schreibern (Lane-Dispatch, zwei Supervisor-, zwei Program-
   `omitted` die im Brief genannten, aber nicht gelieferten Refs als `{ref, why}` (Prosa-Tokens
   zählen nicht). `{bytes:0, hits:0, omitted:[]}` heißt „dieser Brief trug keinen Block"; das gilt für
   jede Gründung und jede Clarify-Lane. Fehlt das Feld, ist die Zeile älter als dieser Stand.
+
+Ein Lane-Dispatch mit gültiger `KLASSE:`-Karte ergänzt `executionClass` (`hand@1`)
+und `executionRole` (`{harness, model, effort}` oder `null` für eine Klasse ohne Executor).
+Das Tripel ist aus `.fleet/klassen.json` aufgelöst; ein gültiges `ROLLE:`-Tripel hat
+im Receipt Vorrang. Der Spawn liest weiterhin ausschließlich die bestehende Wahl aus
+`Task.spawn`. Legacy-Receipts ohne Klasse tragen keines der beiden Felder.
 
 ### `tasks-archive.jsonl` — archivieren löscht nicht (seit 2026-09-15)
 
@@ -3415,8 +3482,10 @@ Seit M3 wird derselbe Fakt **zuerst** gemessen, in zwei git-Reads und ohne Gate:
   dort wäre `dirty-main` eine Aussage über einen fremden Baum, die ungeprüfte Auflösungen verdeckt.
 - **Was gemessen wird:** die schmutzige Seite aus `git status --porcelain -z` des Checkouts, der
   main HÄLT (kein Halter ⇒ `branch -f` bewegt eine Ref, kein Baum steht im Weg ⇒ leer, nie
-  unbekannt), geschnitten mit `git diff --name-only --no-renames -z <mainSha>..<branch>`.
+  unbekannt), geschnitten mit `git diff --name-only --no-renames -z <merge-base>..<branch>`.
   `--no-renames` mit Absicht: die Vorspulung muss den neuen Pfad schreiben UND den alten entfernen.
+  Die Owner-Merge-Route und `mergeJob` rufen dafür dieselbe `dirtyMainStop`-Funktion; auch eine
+  untracked Datei mit einem vom Land angelegten Namen wird auf beiden Wegen verweigert.
 - **Eine Sonde, die nicht laufen konnte, mintet nichts.** Ein unlesbarer Status oder Diff gibt
   `null` und der Land läuft wie vor M3 weiter — die Vorspulung selbst fängt den Fall dann immer
   noch. Der Schnitt ist eine Abkürzung, kein neues Tor.
@@ -3482,6 +3551,14 @@ jetzt von einer Maschine abgelehnt werden, die nicht diese ist — zwei getrennt
   bleibt ein rotes `hubPush`-Feld auf der Land-Note.
 
 ### Wohin das Verdikt geht: an den, der gelandet hat (seit 2026-09-04)
+
+`merge_verdict` im Audit-Trail trägt aus dem einzigen `mergeJob#record`-Schreibort immer
+`verifyOk` (`true`, `false`, `null`) und `stopKind` (`conflict`, `red`, `unmeasured`, `review`,
+`null`). Ein rotes Verify auf sauberem Rebase bleibt `status:resolved`, wird aber als
+`verifyOk:false, stopKind:red` gezählt. Wenn ein konfiguriertes Audit-Kommando seine Repo-Voraussetzungen
+nicht erfüllt, schreibt der Land-Pfad eine `post-land-audits.jsonl`-Zeile mit `result:not-applicable`;
+die Lane sieht dann
+`postlandAudit:false` auf `GET /api/self/gate`.
 
 **Gemessen am 2026-09-04:** genau das `ff-lost`-Verdikt von oben wurde in die **LANE**-Pane
 gepastet. Die Lane las es als Arbeitsauftrag und fuhr ihre komplette Verify-Kette neu — je ~10 min
@@ -4298,3 +4375,66 @@ Lesarten, die der Code festlegt:
 - **Nur `kind: "server_error"`.** `rate_limit` und `authentication_failed` löst kein `resume`, und bei
   `invalid_request` (Safeguard-Verweigerung) schickte es genau die markierte Runde erneut. Diese
   bleiben als `apiStall` sichtbar und werden nie beschrieben.
+
+## trace — `GET /api/trace?task=<id>` (OWNER-Route, nicht `/api/self/*`)
+
+Die Spur EINER Queue-Zeile als `TraceEvent`-Folge, sortiert nach `at` (Overhaul S5, erster Schnitt;
+`trace-index.ts#buildTrace`). Eine **Projektion**: kein Schreiber, keine neue Datei, kein Feld an einem
+Ledger. Jedes Ereignis kommt aus einer Zeile, die ein bestehender Schreiber angehängt hat, und zeigt per
+`detailRef` auf sie, statt sie zu kopieren — Report-Text, `verify.out`, Audit-`out` und Task-Text
+erreichen kein Ereignis.
+
+```
+curl -s -H "authorization: Bearer $FLEET_TOKEN" "http://<fleet-host>:<port>/api/trace?task=<id>"
+```
+
+**Quellen:** `audit.jsonl` in ALLEN DREI Generationen (`.archive`, `.1`, aktiv — `readLedger` liest nur
+zwei, deshalb war die Zeit vor der zweiten Rotation für den Dossier unsichtbar, K5 Ä1),
+`lane-outcomes.jsonl`, `post-land-audits.jsonl`, `fleet-reports.jsonl` (je Report ein Ereignis mit seiner
+Art im `kind`, die Entscheidung und die Eskalation je ein eigenes), `tasks-archive.jsonl` (die Zeile, wenn
+sie `fleet.json` verlassen hat), die Land-Notizen `git notes --ref=fleet/land` und `git log base..head`
+der Lane (mit Dateiliste). Eine Rotation zwischen zwei Generationslesungen wiederholt den Lesevorgang
+(Inode vorher/nachher), statt eine Generation zu verlieren.
+
+**Die Form:** `{result:"trace", task, row, anchorAt, events[], horizon[], coverage[]}`.
+
+- `TraceEvent{source, kind, at, refs, files[], edge?, detailRef?}`. `kind` ist
+  `<familie>.<verb>[.<art>]` aus einer offenen Menge (`trace-index.ts#TRACE_FAMILIES`: `task lane land
+  audit report commit send event`) — z. B. `lane.opened` (der `slot_open` des Lane-Worktrees = Dispatch),
+  `task.dispatched` (▸ start), `lane.landed`, `land.gate.green` (Land-Notiz), `audit.red`,
+  `report.filed.needs-main`, `report.decided.accepted`, `commit.lane`; ein Audit-Ereignis ohne eigenen
+  Namen bleibt `event.<name>`. `refs` trägt jeden bekannten Schlüssel aus
+  `{task, slot, openedAt, branch, sha, program, session, call, parent}` — `session`/`call`/`parent` sind
+  für die Transkript-Quellen (T1) reserviert, damit sie ohne Schemawechsel dazukommen. `openedAt` steht
+  nur, wo es BEWIESEN ist (die gerade laufende Lane, eine `main-direct`-Zeile), nie aus
+  `slot_open.ts` gleichgesetzt. `files[]` leer heißt „kein Pfad belegt", nicht „nichts geschrieben".
+- `edge{from, to, channel}` nennt AKTOREN mit ihrer Tür daneben (`via`): ein Report läuft
+  `lane → main` (`fleet-report`), seine Entscheidung `occupant → lane` (`fleet-report.decision`), ein
+  `send` `unknown → lane` — der Absender steht auf keiner Audit-Zeile. Die Owner-Tür beweist ein Token,
+  keinen Menschen: sie heißt `{kind:"unknown", via:"owner credential"}` (S2 macht das ehrlich).
+- `detailRef{source, locator, fp?}`: `locator` = `<datei><gen>@<offset>+<bytes>` bzw. `<repo>@<sha>`,
+  `fp` = die ersten 16 Hex des sha256 der Zeile. Nach einer Rotation liegt die Zeile unter anderem
+  Offset; sie wird über `fp` wiedergefunden, und ein Zeiger, dessen Bytes nicht mehr darauf hashen, ist
+  veraltet — nie ein anderer Inhalt unter demselben Zeiger.
+- `horizon[]` je Quelle: `{source, state:"read", oldestAt, newestAt?, rows?, malformed?, generations?,
+  repo?, clock}` oder `{source, state:"unmeasured", reason, clock}`. `clock` nennt die Uhr (Server-
+  Wallclock für die Ledger, Committer-Uhr für `git-log`) — zwei Uhren, keine Kausalität aus Gleichstand.
+  Eine kaputte Zeile zählt in `malformed`, nie still verworfen.
+- `coverage[]` je Quelle, gegen `anchorAt` (Anlage der Zeile, sonst ihr frühestes Ereignis): `read`
+  (die Quelle reicht über das ganze Leben der Zeile — eine Null dort ist eine echte Null), `partial`
+  (beginnt später; was sie hält, steht da), `unmeasured` (nicht lesbar, oder beginnt später und hält
+  nichts). **Eine Zeile älter als jeder Horizont antwortet mit den Quellnamen, nie mit einer leeren
+  Liste**; eine unbekannte id ist 404 `unknown-task` mit `searched` und `horizon`, eine ungültige 400.
+
+**Wie `audit.jsonl`-Zeilen zugeordnet werden** — vier Regeln, jede eine Tatsache über einen Schreiber,
+keine Textsuche: das Feld `taskId`; die FÜHRENDE id der Ereignisse, deren Schreiber `detail` mit der
+Zeilen-id beginnt (`trace-index.ts#LEAD_ID_EVENTS`); ein `task=<id>`-Token; das SLOT-FENSTER der Lane
+(`slot_open` mit dem Worktree-Pfad bis zum nächsten `slot_open` desselben Slots — ein recycelter Slot
+gehört ab da jemand anderem).
+
+**Grenzen dieses Schnitts:** ein Wellen-Folger wird nicht gefunden (seine Lane steht unter der id des
+Kopfes, wie bei `/api/lane?task=`); der Tick-Dispatch schreibt kein Ereignis mit taskId (K5 Ä2), der
+Dispatch ist `lane.opened`; Kommunikation außerhalb von Report und `send` (Inbox, Messages, Attention,
+Clarifications als Inhalt), Session-Profil, Datenschicht-Antworten und Tool-Calls (T1–T3, T6–T8) sind
+spätere Schnitte. Kosten gemessen am 2026-09-26 gegen die echten Ledger (≈ 27 MB): 120–350 ms je Aufruf,
+auf Abruf, nie aus einem Poll. Owner-only durch POSITION (unter dem Token-Gate wie `/api/lane`).

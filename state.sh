@@ -180,7 +180,7 @@ else:
         dur = wk if isinstance(wk, (int, float)) else ms
         suspect = not prop and isinstance(dur, (int, float)) and dur < 60_000
         print(f"  newest audit: {last.get('result')} on {str(last.get('mainSha'))[:8]}{shape}"
-              f" covering {[c.get('branch','')[-9:] for c in last.get('covers',[])]}")
+              f" covering {[c.get('branch','').removeprefix('fleet/') for c in last.get('covers',[])]}")
         if suspect:
             print("    ^ under a minute of WORK: a full isolated run is ~11 min. This may be a"
                   " suite that never ran — read the row's out, do not trust the colour")

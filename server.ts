@@ -1,7 +1,8 @@
 import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
 import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
+import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel } from "./model-register";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServerWebSocket } from "bun";
@@ -41,7 +42,7 @@ import { planContext, planProgramContext, programContextPacksFrom, resolveContex
   type ProgramContextPack } from "./context-plan";
 import { buildSnippetPackage, planSnippets, snippetReceipt, renderSnippetBlock, type SnippetFile, type SnippetReceipt } from "./context-snippets";
 import {
-  CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest,
+  CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest, taskContextTriggers,
   stampObservedSourceHashes, type ContextManifestRead,
 } from "./context-manifest";
 import {
@@ -56,6 +57,7 @@ import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { scanTitleOnly } from "./titlebytes";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
+import { buildTrace, type TraceLiveLane } from "./trace-index";
 import {
   clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
   resolveSurfaceRanges, symbolGraphStamp, surfaceSha,
@@ -173,7 +175,7 @@ import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, F
   TREE_CAP, FILE_WRITE_DENY, dirEntries, type DirEntry } from "./server/dir-explorer";
 import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
-import { tokenFrom, cookieToken, cookieName, secretEq, commentStrike, authFails, failStrike,
+import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, setPrincipalState, commentStrike, authFails, failStrike,
   shareGate, closeShareClients, guard } from "./server/auth";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { readCodexRollout, readPiSession, type ConversationRead, type TBlock, type TEntry } from "./server/conversation-read";
@@ -755,7 +757,7 @@ const CLAUDE_HARNESS: Harness = {
   // orchestrating roles (Orchestratorin, Program-MAINs, steward) run on claude-opus-5-5[1m]/high,
   // so the successor id leads — both ids answer on this machine (probed with `claude --model <id> -p`)
   // and the installed 2.1.280 registry carries claude-opus-5-5 with context window 1e6.
-  models: ["claude-opus-5-5[1m]", "claude-opus-5-5", "claude-opus-5[1m]", "claude-opus-5", "claude-fable-5-1[1m]", "claude-sonnet-5[1m]", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+  models: modelsForHarness("claude"),
   effortLevels: ["low", "medium", "high", "xhigh", "max"],
   supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false },
   note: null,
@@ -1052,7 +1054,7 @@ const PI_ZAI_HARNESS: Harness = {
     { name: "/compact", purpose: "Manually compact context, optionally with custom instructions", confirm: true },
     { name: "/session", purpose: "Show session file, ID, messages, tokens, and cost" },
   ],
-  models: ["glm-5.3", "glm-5.3-flash"],
+  models: modelsForHarness("pi-zai"),
   effortLevels: ["low", "high", "max"],
   supports: {
     resume: true,
@@ -1556,7 +1558,7 @@ const CODEX_HARNESS: Harness = {
   // PINNED binary in this slice (its upstream reference tracks the latest release, not the 0.153.x
   // this fleet runs) — under the field's evidence rule that means no entries, not guessed ones.
   commands: [],
-  models: ["gpt-5.6-sol", "gpt-5.5", "gpt-5.3-codex-spark"],
+  models: modelsForHarness("codex"),
   effortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
   supports: {
     // TRUE only beside the discovery seam: `codex resume <exact-id>` was measured to continue the
@@ -3076,8 +3078,15 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
     if (scope.principal === "lane") {
       repoRoot = await repoRootOf(repoPath);
       head = await integrationHead(repoRoot);
+      const taskTexts = tasks.filter((row) => row.slot === s.id && row.status === "sent")
+        .flatMap((row) => {
+          const source = variantSourceOf(row);
+          return [source.text, source.brief?.text ?? "", source.card?.ziel ?? "",
+            ...(source.comments ?? []).map((comment) => comment.text)];
+        });
       facts = { sourceTree: await dispatchSourceTree(repoPath), harness: s.harness ?? null, mode: DISPATCH_CONTEXT_MODE,
-        triggers: DISPATCH_CONTEXT_TRIGGERS, capabilities: DISPATCH_CONTEXT_CAPABILITIES };
+        triggers: taskContextTriggers(taskTexts, DISPATCH_CONTEXT_TRIGGERS),
+        capabilities: DISPATCH_CONTEXT_CAPABILITIES };
     } else {
       const pre = await preflightProgramMain(repoPath);
       if (!pre.ok) throw new Error(pre.error);
@@ -4544,22 +4553,22 @@ function releaseTask(t: Task, by: "owner" | "machine"): void {
   // a release is the act a hold waits for (TaskHold) — whoever releases, the stop is lifted with it
   t.hold = undefined;
   // …and the act a PARKED row waits for: a fresh queue starts the screen streak at zero
-  dispatchScreenStreak.delete(t.id);
+  dispatchRefusalStreak.delete(t.id);
 }
-// THE SAME BLOCKING SCREEN, DISPATCH AFTER DISPATCH (briefAndSend's requeue). A screen only a human
+// THE SAME POST-SPAWN REFUSAL, DISPATCH AFTER DISPATCH (briefAndSend's requeue). A screen only a human
 // answers (claude's trust dialog, codex sign-in) does not resolve by retrying, and until 2026-09-24
 // the tick retried anyway: 55 requeues of f02fbb36 in 8 minutes, 243 of 52c33c3b in two hours, a fresh
 // worktree and session every ~8 s, one lane place held, and nothing on the board reading as a stall.
-// Per row: the screen the last post-spawn refusal named and how many refusals in a row named it. Any
+// Per row: the reason the last post-spawn refusal named and how many refusals in a row named it. Any
 // other outcome clears it (a delivered brief, another screen, another reason), and so does every
 // release (releaseTask). At DISPATCH_PARK_AFTER the row goes to `pending` and stays there: it is
 // neither the tick's (tickOwnsRow) nor a policy's to start (startPlanRowOf) until someone queues it.
 // In memory on purpose — a restart forgets the streak, which costs at most DISPATCH_PARK_AFTER more
 // attempts under a release policy and nothing under `manual`, where the parked `pending` row stays.
 const DISPATCH_PARK_AFTER = 3;
-const dispatchScreenStreak = new Map<string, { screen: string; n: number }>();
+const dispatchRefusalStreak = new Map<string, { reason: string; n: number }>();
 const dispatchParked = (t: Task): boolean =>
-  t.status === "pending" && (dispatchScreenStreak.get(t.id)?.n ?? 0) >= DISPATCH_PARK_AFTER;
+  t.status === "pending" && (dispatchRefusalStreak.get(t.id)?.n ?? 0) >= DISPATCH_PARK_AFTER;
 // THE ONE WRITE OF A CHANGED KIND (Task.kindChanges): the category and its on-row pair move together,
 // so no door can change a row's kind without the row remembering it. It adds no condition — each
 // caller keeps its own refusals and runs this only once it has decided to change the kind.
@@ -4579,6 +4588,7 @@ const MAX_TASK_TEXT = 20_000;
 // blockers and staleness, enough to GROUP and label a row. It is gone with its producer, and so is
 // the per-row git process its staleness arm asked for on every poll.
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
+  & { modelSuperseded?: { id: string; supersededBy?: string } }
   & Partial<Pick<Task, "slot" | "note" | "repo" | "programId" | "review" | "files" | "filesOrigin" | "cluster"
     | "variants" | "variantOf" | "variantIndex" | "variantDecision" | "variantCompareArmedAt"
     | "variantCompare" | "hold">>
@@ -4610,8 +4620,12 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & Partial<Pick<Task, "touched">>;
 function taskDigest(t: Task): TaskDigest {
   const view = taskView(t);
+  const spawn = t.spawn;
+  const modelSuperseded = spawn?.model
+    ? supersededModel(harnessOf(spawn.harness).id, spawn.model) : undefined;
   return {
     id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
+    ...(modelSuperseded ? { modelSuperseded } : {}),
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
@@ -5122,7 +5136,7 @@ const occupantStreamStagePath = (occupant: SlotStreamOccupant): string => `${occ
 const legacyStreamPath = (id: number): string => `${STREAM_DIR}/s${id}.raw`;
 // claude's transcript dir for a cwd (used by ensureSlot's resume check at boot,
 // so it must be defined before the startup section runs)
-const projDir = (cwd: string) => `${HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+const projDir = (cwd: string) => `${process.env.FLEET_CLAUDE_PROJECTS_DIR ?? `${HOME}/.claude/projects`}/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
 const historyPath = (id: number) => `${STREAM_DIR}/s${id}.history.json`;
 const MAX_HISTORY = 100;
 
@@ -6464,12 +6478,23 @@ async function excludeLaneScratch(lanePath: string): Promise<void> {
 // `startAt`: a commit to fork from INSTEAD of the integration branch's current tip. Only the variant
 // group passes one (startVariantGroup): its n lanes must stand on ONE base, and main may move between
 // the n spawns. Absent — every other caller — keeps the integration branch as the start point.
-async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
+function taskBranchSlug(title: string): string {
+  const words = title.toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "").match(/[a-z0-9]+/g) ?? [];
+  let slug = "";
+  for (const word of words) {
+    const next = slug ? `${slug}-${word}` : word;
+    if (next.length > 24) break;
+    slug = next;
+  }
+  return slug;
+}
+
+async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string, title?: string): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
   const root = await repoRootOf(repoRaw);
-  // auto name carries seconds + a random suffix so two lanes spawned in the same minute
-  // (e.g. back-to-back dispatcher ticks) can't slug to the same worktree path and collide
+  const slug = title ? taskBranchSlug(title) : "";
   const stamp = new Date().toISOString().slice(2, 19).replace(/[-:T]/g, "");
-  const branch = branchRaw.trim() || `fleet/${stamp}-${randomBytes(2).toString("hex")}`;
+  const branch = branchRaw.trim() || `fleet/${slug ? `${stamp.slice(0, 6)}-${slug}` : stamp}-${randomBytes(2).toString("hex")}`;
   const chk = await git(root, "check-ref-format", "--branch", branch);
   if (chk.code !== 0) throw new Error(`invalid branch name: ${branch}`);
   const path = worktreePathFor(root, branch);
@@ -6716,7 +6741,7 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
 // dirty/unmerged refusal in `worktree remove` is the backstop — on top we refuse while
 // commits are neither pushed to any remote nor merged, so removal can never eat work
 async function removeWorktreeSafe(repo: string, path: string, branch: string, form: LaneForm = "worktree",
-  preservedBy?: string): Promise<{ error: string; code: number } | null> {
+  preservedBy?: string, forkSha?: string): Promise<{ error: string; code: number } | null> {
   const st = await git(path, "status", "--porcelain");
   if (st.code !== 0) return { error: "git status failed — worktree gone?", code: 400 };
   // A clone's commits are invisible to the root until mirrored, and the "is this work preserved"
@@ -6750,6 +6775,12 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
   } else {
     const rmv = await git(repo, "worktree", "remove", path);
     if (rmv.code !== 0) return { error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}`, code: 409 };
+  }
+  // A moving main ref reads zero after land even when this lane produced commits; undo needs
+  // that branch, so only the lane's recorded fork SHA can justify deleting it.
+  if (forkSha && /^[0-9a-f]{40,64}$/.test(forkSha)) {
+    const ahead = await git(repo, "rev-list", "--count", `${forkSha}..${branch}`);
+    if (ahead.code === 0 && ahead.out === "0") await git(repo, "branch", "-D", branch);
   }
   dropShelved(path, "its worktree was removed"); // the tree is gone — drop any shelve note with it
   return null;
@@ -6920,7 +6951,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   // assemble the "landed" outcome while the worktree still exists (git reads need the tree);
   // emit only AFTER teardown succeeds, so a failed removeWorktreeSafe records no false land.
   const landed = await buildLaneOutcome(s, "landed", facts);
-  const fail = await removeWorktreeSafe(repo, path, branch, s.worktree.form ?? "worktree", s.worktree.base);
+  const fail = await removeWorktreeSafe(repo, path, branch, s.worktree.form ?? "worktree", s.worktree.base, s.worktree.baseSha);
   if (fail) return fail;
   // the branch is landed and gone — a parked ⏸ must not outlive it. BOTH keyed views have to go,
   // because the park is RE-CREATED from the slot-keyed one: killSlot below calls parkMergeVerdict,
@@ -7019,7 +7050,7 @@ async function advanceIntegration(repo: string, main: string, branch: string): P
 //   · the dirty side from the HOLDER of main, found exactly as advanceIntegration finds it. No
 //     holder means `branch -f` moves a ref with no working tree in the way, so there is nothing
 //     to be dirty: that is an EMPTY answer (measured absence), never an unknown.
-//   · the touched side from `mainSha..branch`, the commits this land is about to put on main.
+//   · the touched side from `merge-base(mainSha, branch)..branch`, the lane's changes.
 //     `--no-renames` on purpose: with rename detection a moved file reports only its NEW name,
 //     and the ff has to write the new path AND remove the old one — the old name is exactly the
 //     kind of path a stale editor buffer is sitting on.
@@ -7057,7 +7088,9 @@ async function dirtyMainOverlap(repo: string, main: string, mainSha: string, bra
   if (st.code !== 0) return null;
   const dirty = porcelainZPaths(st.out);
   if (dirty.size === 0) return [];
-  const diff = await gitReadRaw(repo, "diff", "--name-only", "--no-renames", "-z", `${mainSha}..${branch}`);
+  const base = await gitRead(repo, "merge-base", mainSha, branch);
+  if (base.code !== 0 || !base.out) return null;
+  const diff = await gitReadRaw(repo, "diff", "--name-only", "--no-renames", "-z", `${base.out}..${branch}`);
   if (diff.code !== 0) return null;
   const hit = new Set<string>();
   for (const path of diff.out.split("\0")) if (path && dirty.has(path)) hit.add(path);
@@ -9509,7 +9542,7 @@ function validAuditRow(raw: unknown): PostLandAuditRow | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Partial<PostLandAuditRow>;
   if (typeof row.repo !== "string" || typeof row.mainSha !== "string"
-    || !["green", "red", "unknown"].includes(String(row.result)) || !Array.isArray(row.covers)
+    || !["green", "red", "unknown", "not-applicable"].includes(String(row.result)) || !Array.isArray(row.covers)
     || row.covers.some((c) => !c || typeof c.branch !== "string" || typeof c.mainAfter !== "string")) return null;
   return row as PostLandAuditRow;
 }
@@ -9528,7 +9561,7 @@ function auditEventPayload(row: PostLandAuditRow, mainAfter: string): AuditWatch
   let covers = all.slice(-50);
   const match = all.find((c) => c.mainAfter === mainAfter);
   if (match && !covers.some((c) => c.mainAfter === mainAfter)) covers = [match, ...covers.slice(-49)];
-  return { result: row.result, mainSha: row.mainSha, covers, checks: row.checks,
+  return { result: row.result as AuditWatchEventPayload["result"], mainSha: row.mainSha, covers, checks: row.checks,
     ...(row.reason ? { reason: row.reason.slice(0, 200) } : {}),
     ...(row.proportional ? { proportional: true as const } : {}) };
 }
@@ -10431,7 +10464,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const brief = buildLaneSuccessionBrief({ branch: ref.branch, base, session,
     rows: hold.map((h) => h.task), log, handoff: laneHandoffReportFor(s),
     reason: successionReasonFor(s), decision: latestRowDecisionLine(hold.map((h) => h.task)),
-    footer: laneExitFooter(s.harness) });
+    footer: laneExitFooter(s.harness, selfPosition(s).receiver) });
   // git and the report read are awaits; the owner may have killed or recycled this slot inside them.
   if (!sameSuccessionOccupant(s, expected))
     return json({ error: "predecessor session changed during succession preflight — retry from the current occupant" }, 409);
@@ -12554,7 +12587,7 @@ interface ProgramStatusRepoLand {
 }
 interface ProgramStatusView extends ProgramStatusMemoryView {
   lastLand: ProgramStatusRepoLand[];
-  lastAudit: { at: number; result: "green" | "red" | "unknown"; fails: string[] | null;
+  lastAudit: { at: number; result: "green" | "red" | "unknown" | "not-applicable"; fails: string[] | null;
     adjudicated: AdjudicationVerdict | null } | null;
 }
 interface ProgramStatusContext {
@@ -12784,6 +12817,16 @@ function boundProgramForMain(s: Slot): BoundMain {
   return { ok: true, program,
     sessionIdMatch: sessionIdMatchOf(bound.sessionId, s.sessionId) };
 }
+setPrincipalState({
+  slots: () => slots,
+  ownerToken: () => TOKEN,
+  helperToken: () => helperToken,
+  shares: () => shares,
+  sessionRole: (s) => {
+    const role = positionRole(s);
+    return role === "program-main" ? "main" : role === "lane" ? "lane" : "generic";
+  },
+});
 
 // THE SCOPE OF BOTH INBOX DOORS, in one place because they answer the SAME two questions in the
 // same words. A lane is refused FIRST and by its own sentence: it has no program inbox at all, and
@@ -14163,10 +14206,10 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // words the attended ▸ start button sends, validated below by the same validators. The refusal
   // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
   // separately because it is optional and travels as a unit, not three independent fields.
-  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files"];
+  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo"];
   const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k)).filter((k) => k !== "base");
   if (extra.length)
-    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants, an optional files PROPOSAL and optional base — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants, an optional files PROPOSAL, optional base and optional repo — [${extra.join(", ")}] is not read; a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
   if (typeof body.text !== "string" || !body.text.trim())
     return json({ error: "text must be a non-empty string" }, 400);
   // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
@@ -14214,22 +14257,33 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // declaration nothing can ever consume.
   if (proposedFiles && kind !== "auftrag")
     return json({ error: `${kind} is advisory — only an auftrag row carries a work surface to bundle by` }, 400);
-  // (4) THE REPO COMES FROM THE BINDING'S CHECKOUT, by the same helper as at the release door.
-  // Deliberately DERIVED rather than left null, and the reason is that other door: it compares
-  // `t.repo ?? DISPATCH_REPO` against the caller's own checkout, so on a fleet whose configured
-  // FLEET_DISPATCH_REPO is a DIFFERENT repository a null-repo row would be refused by the very MAIN
-  // that wrote it. An underivable repo fails as ITSELF rather than silently becoming that null.
+  // (4) An omitted target uses the MAIN's checkout. An explicit target must already occur among
+  // the open work repos that the dispatch tick reads, or be the configured dispatch default.
+  // Filing adds no new repo; release and land retain their own repo brackets.
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the row's target repo cannot be derived" }, 409);
+  let targetRepo = mainRepo;
+  if (body.repo !== undefined) {
+    if (typeof body.repo !== "string" || !body.repo.trim())
+      return json({ error: "repo must name a known dispatch repository" }, 400);
+    const requested = repoCanon(body.repo.trim());
+    if (requested === mainRepo)
+      return json({ error: "this door reads text and kind only with optional repo for a different known dispatch repository — [repo] names this session's checkout already; omit it" }, 400);
+    const dispatchRepos = new Set(landWaveProjectionNow().repos.map(({ repo }) => repoCanon(repo)));
+    if (DISPATCH_REPO) dispatchRepos.add(repoCanon(DISPATCH_REPO));
+    if (!dispatchRepos.has(requested))
+      return json({ error: "repo must name a known dispatch repository" }, 400);
+    targetRepo = requested;
+  }
   if (body.base !== undefined && kind !== "auftrag")
     return json({ error: `${kind} is advisory — only an auftrag row can name an integration base` }, 400);
-  const taskBase = await taskBaseFromBody(body, mainRepo);
+  const taskBase = await taskBaseFromBody(body, targetRepo);
   if (!taskBase.ok) return json({ error: taskBase.error }, 400);
   const mainText = body.text.slice(0, MAX_TASK_TEXT).trim();
-  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, mainRepo, program.id);
+  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, targetRepo, program.id);
   if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
-  // (4b) THE TWO RE-PROOFS, and they are the last thing between the awaits above and the first
+  // (4b) THE OCCUPANT AND BINDING RE-PROOFS, followed by a fresh repo-list read before the first
   // mutation below (there is no await from here to `tasks = capTasks`). The succession door states
   // the rule this implements: "no await can admit a revoked caller".
   await waitForMainFileTestLatch(occupant);
@@ -14250,6 +14304,12 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   if (!stillBound.ok) return json({ error: stillBound.error }, 409);
   if (stillBound.program.id !== program.id)
     return json({ error: `this session's MAIN binding moved from program ${program.id} to ${stillBound.program.id} while the row was being prepared — nothing filed` }, 409);
+  if (body.repo !== undefined) {
+    const dispatchRepos = new Set(landWaveProjectionNow().repos.map(({ repo }) => repoCanon(repo)));
+    if (DISPATCH_REPO) dispatchRepos.add(repoCanon(DISPATCH_REPO));
+    if (!dispatchRepos.has(targetRepo))
+      return json({ error: "repo is no longer a known dispatch repository — nothing filed" }, 409);
+  }
   // …and the reported match comes from the RE-READ, for the same reason: it is a fact about the
   // binding this row was actually filed under.
   const { sessionIdMatch } = stillBound;
@@ -14274,7 +14334,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // CREATE is the ordinary case, which is precisely why neither door refuses one. The three states
   // must not collapse: `null` (tree unreadable) drops the field rather than storing `[]`, because
   // "not measured" reading as "all tracked" is the one direction this repo never lets a check fall.
-  const proposalUnknown = proposedFiles ? untrackedAmong(proposedFiles, mainRepo) : null;
+  const proposalUnknown = proposedFiles ? untrackedAmong(proposedFiles, targetRepo) : null;
   // WHO proposed is derived from the caller's own slot, never from the body — the same rule and the
   // same helper as the standing propose route, so a reader chases one provenance format, not two.
   const filedProposal: TaskFilesProposal | undefined = proposedFiles
@@ -14284,7 +14344,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const id = randomBytes(4).toString("hex");
   const t: Task = {
     id, originId: id, text: mainText,
-    source: "main", kind, kindAtCreate: kind, repo: mainRepo, programId: program.id,
+    source: "main", kind, kindAtCreate: kind, repo: targetRepo, programId: program.id,
     ...(taskBase.base ? { base: taskBase.base } : {}),
     ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
     ...(authorCard?.ok ? { card: authorCard.card } : {}),
@@ -14304,7 +14364,8 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // an unattended release, and a filing lost inside the debounce window would vanish exactly the
   // way an unlisted `source` vanishes at the next boot: silently, with every check still green.
   await saveStateNow();
-  audit("main_task", s.id, `${t.id} program=${program.id} ${kind}${variantRows.length ? ` variants=${variantRows.length}` : ""}`);
+  audit("main_task", occupant.slot, `${t.id} program=${program.id} ${kind}${variantRows.length ? ` variants=${variantRows.length}` : ""}`,
+    targetRepo !== mainRepo ? { openedAt: occupant.openedAt, mainRepo, targetRepo } : undefined);
   // A PARKED PROPOSAL IS ITS OWN ACT, booked under the event the ledger already reserves for it
   // (server/audit-log.ts: "a lane or MAIN parks a proposal … with the proposing slot"). Two lines,
   // not one, for main_brief's reason: filing a row and declaring the surface it stands on are two
@@ -15173,7 +15234,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
       ? (await git(dispatchRepo, "rev-parse", `refs/heads/${base}`)).out
       : undefined);
     if (base && !baseTip) throw new Error(`base branch does not exist at dispatch: ${base}`);
-    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip);
+    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined);
     // `base` from the same source and with the same omission as openLaneInSlot: a dispatched lane
     // that left it out sent every `worktree.base` reader (laneBaseRef, the plan CLI's lane read) to
     // its fallback in the normal case — all four open lanes on the live fleet.json, 2026-09-22.
@@ -15198,7 +15259,8 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     } finally {
       releaseLaneLetter(letterBand, letter);
     }
-    free.label = `⎇ task ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
+    const named = /^fleet\/\d{6}-(.+)-[0-9a-f]{4}$/.exec(wt.branch);
+    free.label = `⎇ task ${named ? `${named[1]}-${wt.branch.slice(-4)}` : wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     // An attended click IS a release — the only one that never passes through `queued` — stamped
     // OVER whatever the row carried: the lane that actually ran was attended. The tick's path
     // (ownerAct false) writes nothing: it only picks rows already released, and inventing a value
@@ -15262,7 +15324,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
 // leaves a bare shell that would EXECUTE the brief. Never rejects — every failure requeues.
 // Why the compile left this function: server-narrativ-archiv.md#briefandsend
 const DISPATCH_CONTEXT_MODE: ContextPackMode = "mutating";
-const DISPATCH_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification"];
+const DISPATCH_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification", "jev-use"];
 // Every normal worktree lane has the tracked checkout, Bun, git, the e2e harnesses, server.ts and
 // the copied private overlay, so these six are real for every adapter. Deliberately absent:
 // `task-queue-read` (a lane's scoped token cannot read the owner queue) and `deploy-observe`.
@@ -15327,13 +15389,60 @@ const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";
 // all that differs; everything else stays a single text so the two cannot drift.
 const LANE_EXIT_HANDOFF_EXIT = "file it, then POST /api/self/succeed";
 const LANE_EXIT_HANDOFF_EXIT_CODEX = "your report IS the handover — a codex session compacts itself, and no baton door follows it";
-function laneExitFooter(harness: string | null): string {
+function positionRole(s: Slot, bound = boundProgramForMain(s)): "supervisor" | "program-main" | "lane" | "orchestrator" | "generic" {
+  return supervisor?.slot === s.id && supervisor.openedAt === s.openedAt ? "supervisor"
+    : bound.ok ? "program-main"
+    : s.worktree ? "lane"
+    : isOrchestratorLabel(s.label) ? "orchestrator" : "generic";
+}
+function selfPosition(s: Slot) {
+  const bound = boundProgramForMain(s);
+  const role = positionRole(s, bound);
+  let receiver: { role: string; slot: number; openedAt: number } | null = null;
+  if (role === "lane" && s.programId) {
+    const program = programs.find((p) => p.id === s.programId && p.status === "active");
+    const main = program?.main;
+    const live = main ? slotFrom(main.slot) : null;
+    if (live?.cwd && live.openedAt === main?.openedAt)
+      receiver = { role: "program-main", slot: live.id, openedAt: live.openedAt };
+  } else if (role === "program-main") {
+    const candidates = slots.filter((x) => x.cwd && x.id !== s.id && isOrchestratorLabel(x.label));
+    if (candidates.length === 1) {
+      const orchestrator = candidates[0]!;
+      receiver = { role: "orchestrator", slot: orchestrator.id, openedAt: orchestrator.openedAt };
+    }
+  }
+  const waitingOnMe = [
+    ...watches.filter((w) => w.armed && "target" in w && w.target === s.id
+      && w.targetCwd === s.cwd && w.targetBranch === s.worktree?.branch
+      && w.slot !== s.id && w.slotOpenedAt !== undefined
+      && slots.some((x) => x.cwd && x.id === w.slot && x.openedAt === w.slotOpenedAt))
+      .map((w) => ({ kind: "watch", id: w.id, slot: w.slot })),
+    ...parkedSends.filter((p) => p.receiver.slot === s.id && p.receiver.openedAt === s.openedAt)
+      .map((p) => ({ kind: "parked-send", id: p.sendId, slot: p.occupant.slot })),
+    ...clarifications.filter((c) => (c.status === "open" || c.status === "send-uncertain")
+      && c.receiver.slot === s.id && c.receiver.openedAt === s.openedAt)
+      .map((c) => ({ kind: "clarification", id: c.id, slot: c.worker.slot })),
+    ...fleetReportsFor(s).filter((r) => !r.decision
+      && !(r.worker.slot === s.id && r.worker.openedAt === s.openedAt)
+      && ((r.receiver?.slot === s.id && r.receiver.openedAt === s.openedAt)
+        || (r.basis === "program" && bound.ok && r.provenance.programId === bound.program.id)))
+      .map((r) => ({ kind: "fleet-report", id: r.id, slot: r.worker.slot })),
+    ...successionDebts.filter((d) => d.slot === s.id && d.successorOpenedAt === s.openedAt)
+      .map((d) => ({ kind: "succession-debt", id: d.id, slot: s.id })),
+  ];
+  return { role, taskId: s.taskId, programId: s.programId ?? (bound.ok ? bound.program.id : null),
+    receiver, harness: s.harness, model: s.model, waitingOnMe };
+}
+function laneExitFooter(harness: string | null, receiver: { role: string; slot: number; openedAt: number } | null): string {
   const handoffExit = harnessOf(harness ?? "").id === CODEX_HARNESS.id
     ? LANE_EXIT_HANDOFF_EXIT_CODEX
     : LANE_EXIT_HANDOFF_EXIT;
   return `
 
 --- HOW THIS LANE ENDS (three acts, in this order — they are the deliverable, not paperwork)
+
+Empfaenger: ${receiver ? `${receiver.role} Slot ${receiver.slot}` : "unbekannt"}
 
 1. COMMIT. A lane that stops with uncommitted work cannot be landed, and NO untracked files may
    remain in the worktree — they block the land outright. Scratch files belong in the session
@@ -15429,8 +15538,6 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // write, and a land that is still RUNNING on this lane owns it outright: no teardown under its
   // rebase, no row write it would then fail to retire. A kill's `pending` is NOT terminal and keeps
   // today's answer — a lost lane requeues its row (e2e/tasks.ts, the foreign-harness kill probe).
-  // `screen` = the blocking screen this refusal named (canDeliver's blocked-screen, or the readiness
-  // wait's own blocked verdict — the same screen seen a moment later); null for every other reason.
   const requeue = async (note: string, screen: string | null = null): Promise<void> => {
     const ours = free.cwd === wt.path && free.worktree?.branch === wt.branch;
     const landing = ours && (mergeInflight.has(free.id) || mergeStart.has(free.id));
@@ -15445,7 +15552,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     if (other) {
       kept = `; lane kept (slot ${other.id} holds it)`;
     } else {
-      const fail = await removeWorktreeSafe(wt.repo, wt.path, wt.branch, wt.form);
+      const fail = await removeWorktreeSafe(wt.repo, wt.path, wt.branch, wt.form, free.worktree?.base, free.worktree?.baseSha);
       if (fail) kept = `; lane kept (${fail.error.split("\n")[0]})`;
       else if (ours) await killSlot(free, "reopen");
     }
@@ -15453,21 +15560,21 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // left on `sent` would point at a slot that no longer holds it — and `queued` is right here for
     // the same reason it is right for the head: a post-spawn hold is transient and the dispatcher
     // picks the row up again. (An ABORT is the other shape and keeps its own answer: detachSlotTasks.)
-    // …unless the SAME screen refused this row DISPATCH_PARK_AFTER times in a row (dispatchScreenStreak):
+    // …unless the SAME reason refused this row DISPATCH_PARK_AFTER times in a row:
     // then it goes to `pending`, parked, with the screen, the repo and the count in its note, and the
     // tick leaves it there until someone queues it again. The teardown above is the same either way.
     const parked: Task[] = [];
     let parkedAfter = 0;
     for (const row of owned) {
-      const prev = dispatchScreenStreak.get(row.id);
-      const n = screen === null ? 0 : prev?.screen === screen ? prev.n + 1 : 1;
-      if (screen === null) dispatchScreenStreak.delete(row.id);
-      else dispatchScreenStreak.set(row.id, { screen, n });
+      const prev = dispatchRefusalStreak.get(row.id);
+      const reason = screen ?? note.replace(/ — requeued$/, "");
+      const n = prev?.reason === reason ? prev.n + 1 : 1;
+      dispatchRefusalStreak.set(row.id, { reason, n });
       row.slot = null;
       if (n >= DISPATCH_PARK_AFTER) {
         parkedAfter = Math.max(parkedAfter, n);
         row.status = "pending";
-        row.note = `dispatch parked: blocked-screen "${screen}" in ${wt.repo} on ${n} attempts in a row — answer it there, then queue again${kept}`.slice(0, 300);
+        row.note = `dispatch parked: ${reason} in ${wt.repo} on ${n} attempts in a row — answer it there, then queue again${kept}`.slice(0, 300);
         parked.push(row);
       } else {
         row.status = "queued";
@@ -15482,10 +15589,10 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       audit("dispatch_requeued", free.id,
         `${requeued.map((row) => row.id).join(",")} (${wt.branch}): ${note}${kept}`.slice(0, 240),
         { taskId: requeued[0].id, reason: note.slice(0, 200) });
-    if (parked.length && screen !== null)
+    if (parked.length)
       audit("dispatch_parked", free.id,
-        `${parked.map((row) => row.id).join(",")} (${wt.branch}): ${screen} in ${wt.repo} ×${parkedAfter}${kept}`.slice(0, 240),
-        { taskId: parked[0].id, screen, repo: wt.repo, attempts: parkedAfter });
+        `${parked.map((row) => row.id).join(",")} (${wt.branch}): ${screen ?? note} in ${wt.repo} ×${parkedAfter}${kept}`.slice(0, 240),
+        { taskId: parked[0].id, ...(screen ? { screen } : { reason: note }), repo: wt.repo, attempts: parkedAfter });
   };
   // the owner may have killed/re-opened this slot during the boot sleep — re-verify it
   // is still OUR lane before injecting external text, or we'd prompt an unrelated session
@@ -15535,7 +15642,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     const head = await integrationHead(wt.repo);
     if (!head) throw new Error("could not read integration HEAD for context receipt");
     const planFacts = { sourceTree, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
-      triggers: DISPATCH_CONTEXT_TRIGGERS, capabilities: DISPATCH_CONTEXT_CAPABILITIES };
+      triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS), capabilities: DISPATCH_CONTEXT_CAPABILITIES };
     // The Fleet seeds plus whatever THIS repository declares about itself at that commit — the same
     // merge Program-MAIN founding does, deliberately with no frame branch: a Fleet-only or
     // foreign-only rule would be a second, quieter policy. `repoRootOf` throws → the catch requeues.
@@ -15631,12 +15738,12 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // that span as the notes/source/studio/anchor region, and a pointer there moved all of their
     // bytes (preview b546fb2cccdb, 7 red). Clarify gets none, like the notes and the footer.
     const memoryBlock = clarify ? "" : `\n\n${memoryPointer("lane")}`;
-    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness)}${memoryBlock}`;
+    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness, selfPosition(free).receiver)}${memoryBlock}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true, { path: "brief" });
-    // a delivered brief ends every screen streak this lane's rows carried (dispatchScreenStreak)
-    for (const row of waveRows) dispatchScreenStreak.delete(row.id);
+    // a delivered brief ends every refusal streak this lane's rows carried
+    for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();
     // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
     // facts. A later reader reconstructs every byte from the row and the renderer the row NAMES
@@ -15645,11 +15752,19 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       anchorBlock,
       planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
     })).digest("hex");
+    const className = src.card?.valid ? src.card.klasse : undefined;
+    const executionClass = className ? executionClassFor(wt.path, className) : null;
+    const role = src.card?.rolle;
+    const override = role?.harness && role.model && role.effort
+      && taskSpawnFromBody({ harness: role.harness, model: role.model, effort: role.effort }).ok
+      ? { harness: role.harness, model: role.model, effort: role.effort } : null;
     await appendEvent(CONTEXT_RECEIPT_FILE, {
       id: randomBytes(16).toString("hex"), hash, at, repo: wt.repo, head,
       taskId: free.taskId ?? null, originId: free.originId ?? null,
       programId: free.programId ?? null, slot: free.id, branch: wt.branch,
       harness: free.harness, ...receiptModel(free), effort: free.effort,
+      ...(className ? { executionClass: executionClass ? `${className}@${executionClass.version}` : null,
+        executionRole: executionClass ? override ?? executionClass.executor : null } : {}),
       mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
       deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength,
       truncated: false,
@@ -16046,6 +16161,24 @@ const cardVerifyCommandOf = (snapshot: TrackedSnapshot | null): string | null | 
   if (!cardVerifyCommands.has(key)) throw new Error(`card verify command was not resolved for ${key}`);
   return cardVerifyCommands.get(key);
 };
+type ExecutionRole = { harness: string; model: string; effort: string };
+type ExecutionClass = { version: number; executor: ExecutionRole | null };
+function executionClassFor(repo: string, name: string): ExecutionClass | null {
+  try {
+    const register = JSON.parse(readFileSync(resolve(repo, ".fleet/klassen.json"), "utf8")) as
+      { klassen?: Record<string, { version?: unknown; executor?: unknown }> };
+    const entry = register.klassen?.[name];
+    if (!entry || !Number.isInteger(entry.version) || (entry.version as number) < 1) return null;
+    if (entry.executor === null) return { version: entry.version as number, executor: null };
+    if (!entry.executor || typeof entry.executor !== "object") return null;
+    const raw = entry.executor as Record<string, unknown>;
+    if (typeof raw.harness !== "string" || typeof raw.model !== "string" || typeof raw.effort !== "string") return null;
+    const checked = taskSpawnFromBody(raw);
+    if (!checked.ok) return null;
+    return { version: entry.version as number,
+      executor: { harness: raw.harness, model: raw.model, effort: raw.effort } };
+  } catch { return null; }
+}
 const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null, foreignVerifyCommand?: string | null): CardValidationContext => {
   const sources = new Map<string, string>();
@@ -16065,6 +16198,7 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
     harnessKnown: (v) => HARNESSES.some((h) => h.id === v),
     modelKnown: (v) => MODEL_RE.test(v),
     effortKnown: (v) => HARNESSES.some((h) => h.effortLevels.includes(v)),
+    classKnown: (v) => !!snapshot && executionClassFor(snapshot.repo, v) !== null,
     declares: (file, symbol) => !!snapshot?.paths.has(file) && declaresSymbol(sourceOf(file), symbol),
     rowKnown: (id) => tasks.some((t) => t.id === id),
   };
@@ -16319,6 +16453,8 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
   const unchecked = cardUncheckedSymbols({ symbols, ranges });
   return {
     ziel: str(raw.ziel), done: str(raw.done), verify: str(raw.verify), verboten: strs(raw.verboten),
+    ...(str(raw.delegation) ? { delegation: str(raw.delegation) } : {}),
+    ...(field(raw.klasse) ? { klasse: field(raw.klasse)! } : {}),
     rolle: { harness: field(role.harness), model: field(role.model), effort: field(role.effort) },
     surface: { files: strs(surface.files), symbols, ranges,
       ...(strs(surface.creates).length ? { creates: strs(surface.creates) } : {}),
@@ -16443,7 +16579,7 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
 }
 
 // THE AUTHOR'S CARD (S6, queue row 08ec67c0): whoever files a row knows its files and symbols at
-// that moment, so both create doors accept `card{ziel,surface{files,symbols},done,verify,verboten}`
+// that moment, so both create doors accept `card{ziel,rolle?,klasse?,surface{files,symbols},done,verify,verboten}`
 // and run it through the SAME validator and context the extractor tick uses. Two differences, both
 // because the author is present and the extractor is not:
 //   · ANY gap is a 400 naming it (an untracked path verbatim), and nothing is filed. A stored
@@ -16456,9 +16592,9 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
 async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined): Promise<
   { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string }> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
-    return { ok: false, status: 400, error: "card must be an object {ziel, surface{files, symbols}, done, verify, verboten, size?, after?}" };
+    return { ok: false, status: 400, error: "card must be an object {ziel, rolle?, klasse?, surface{files, symbols}, done, verify, verboten, size?, after?}" };
   const c = raw as Record<string, unknown>;
-  const known = ["ziel", "surface", "done", "verify", "verboten", "size", "after"];
+  const known = ["ziel", "rolle", "klasse", "surface", "done", "verify", "verboten", "size", "after"];
   const extra = Object.keys(c).filter((k) => !known.includes(k));
   if (extra.length) return { ok: false, status: 400, error: `card reads ${known.join(", ")} only — [${extra.join(", ")}] is not read` };
   const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
@@ -17168,7 +17304,7 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
       if (!s) continue;
       const ref = s.worktree;
       await killSlot(s, "owner");
-      if (ref) await removeWorktreeSafe(ref.repo, s.cwd ?? "", ref.branch, ref.form ?? "worktree", ref.base);
+      if (ref) await removeWorktreeSafe(ref.repo, s.cwd ?? "", ref.branch, ref.form ?? "worktree", ref.base, ref.baseSha);
       laneSpawn.delete(slot);
       row.status = was.get(row.id) ?? "queued";
       row.slot = null;
@@ -18544,7 +18680,7 @@ const SUMMARY_CMD = process.env.FLEET_SUMMARY_CMD ?? null;
 // line in summaryViaSession, so it is single-quoted there — see the MODEL_RE note.
 const SUMMARY_MODEL =
   process.env.FLEET_SUMMARY_MODEL && MODEL_RE.test(process.env.FLEET_SUMMARY_MODEL)
-    ? process.env.FLEET_SUMMARY_MODEL : "claude-sonnet-5[1m]";
+    ? process.env.FLEET_SUMMARY_MODEL : MODEL_DEFAULTS.summary.id;
 const SUMMARY_TIMEOUT_MS = 180_000;
 interface SummaryResult {
   summary: string; openThreads: string[]; verification: string;
@@ -19860,7 +19996,7 @@ async function tickLaneAutoClose(): Promise<void> {
       // whatever occupant it would otherwise find in the slot.
       const wt = s.worktree;
       if (wt && s.cwd) {
-        const rm = await removeWorktreeSafe(wt.repo, s.cwd, wt.branch, wt.form ?? "worktree", wt.base);
+        const rm = await removeWorktreeSafe(wt.repo, s.cwd, wt.branch, wt.form ?? "worktree", wt.base, wt.baseSha);
         if (rm) console.log(`lane auto-close: slot ${s.id} closed but its worktree stays (${wt.branch})`
           + ` — ${rm.error.split("\n")[0]}`);
         if (s.openedAt !== occupant.openedAt || s.sessionId !== occupant.sessionId
@@ -23091,7 +23227,7 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // …carrying the gate's own proportion verdict, which the note one line above has just recorded
   // under `verify.proportional`. `prov.verify` absent (no gate configured) or `proportional` absent
   // (an older persisted verdict) both mean NOT PROVEN and buy the full suite.
-  schedulePostLandAudit(repo, main, branch, mainAfter, prov.verify?.proportional === true);
+  await schedulePostLandAudit(repo, main, branch, mainAfter, prov.verify?.proportional === true);
   // the owner's graph follows the moved main — synchronous and never awaited, like the line above
   scheduleMainGraphRebuild(repo, main);
   // ...and only now is the land fully recorded. Clearing LAST, after the note and the audit
@@ -23180,7 +23316,10 @@ type AuditCmdSource = "repo-worker" | "env" | "proportional";
 function auditCmdFor(repo: string): { cmd: string; source: AuditCmdSource } | null {
   const own = workerCmdFor("audit", repo, null);
   if (own) return { cmd: own, source: "repo-worker" };
-  return POSTLAND_AUDIT_CMD ? { cmd: POSTLAND_AUDIT_CMD, source: "env" } : null;
+  if (!POSTLAND_AUDIT_CMD) return null;
+  const root = repoCanon(repo);
+  if (auditCmdPreconditions(POSTLAND_AUDIT_CMD).some((f) => !existsSync(`${root}/${f}`))) return null;
+  return { cmd: POSTLAND_AUDIT_CMD, source: "env" };
 }
 // "is tier 2 armed at all" — for the surfaces that speak about the deployment rather than a repo
 // (the ledgers view's auditConfigured, the audit route's `configured`, the drain kick). A
@@ -23323,7 +23462,8 @@ const HELPER_CLAIM_BAR_REASON: Record<HelperClaimBar, string> = {
 // since the previous run, so the two questions this tier exists to answer are plain joins over the
 // trail: "which land was the last GREEN audit" = the newest green row's covers/mainSha, and "which
 // lands came after a RED one" = every cover in every row after that red row (plus the red row's own).
-// `result` is TRI-STATE, and the third state is load-bearing (A4, unknown ≠ zero): an audit that
+// `result` distinguishes a measured pass or failure, unknown measurement, and no applicable command:
+// an audit that
 // timed out, could not be started, or declined to run is `unknown` — never green, and never red
 // either (a failed measurement is not evidence of a defect).
 interface PostLandAuditChecks { ran: number; failed: number; ranIsLowerBound?: true }
@@ -23366,8 +23506,8 @@ interface PostLandAuditRow {
   repo: string;        // git toplevel — joins to the LandRecord / the fleet/land note's repo
   main: string;        // integration branch name
   mainSha: string;     // the tip the audit actually ran against — joins to a note's `mainAfter`
-  result: "green" | "red" | "unknown";
-  reason?: string;     // present on `unknown` only: WHY no measurement happened
+  result: "green" | "red" | "unknown" | "not-applicable";
+  reason?: string;     // why an unknown run or a not-applicable land had no measurement
   cmd: string;
   // which config chose `cmd` — the repo's own worker or the env default. Optional so historical
   // rows (all env) and remote rows (the helper's own suite) claim nothing they never recorded.
@@ -24501,9 +24641,18 @@ function savePostLandAuditQueue(): void {
 // into exactly ONE follow-up run against the then-current tip, and that run's `covers` names every
 // land it stands for. Nothing is silently dropped: a land is either covered by the run in flight's
 // successor or by the run it triggered.
-function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string,
-  proportional: boolean): void {
-  if (!auditCmdFor(repo)) return; // tier 2 not configured FOR THIS REPO — today's behaviour, unchanged
+async function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string,
+  proportional: boolean): Promise<void> {
+  if (!auditCmdFor(repo)) {
+    if (!POSTLAND_AUDIT_CMD) return;
+    const at = Date.now();
+    const row: PostLandAuditRow = { at, startedAt: at, ms: 0, repo, main, mainSha: mainAfter,
+      result: "not-applicable", reason: "no audit command applies to this repo", cmd: "",
+      exitCode: null, out: "", checks: null, covers: [{ branch, mainAfter, at }] };
+    await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+    lastPostLandAudit = row;
+    return;
+  }
   const q = auditQueue.get(repo) ?? { main, covers: [] };
   q.main = main;
   // the flag is written ONLY when the gate proved it, never as `proportional: false` — absence is
@@ -26127,7 +26276,7 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
 // remote green and a local green mean the same thing only if ONE function decides what green is.
 // Tri-state, and the third state is load-bearing (A4, unknown ≠ zero) — a command that declined
 // (VERIFY_SKIP_EXIT) or could not be started (126/127) measured NOTHING, which is never a red.
-function remoteVerdictOf(exitCode: number | null): { result: PostLandAuditRow["result"]; reason?: string } {
+function remoteVerdictOf(exitCode: number | null): { result: "green" | "red" | "unknown"; reason?: string } {
   if (exitCode === null) return { result: "unknown", reason: "the helper reported no exit code — no verdict" };
   if (exitCode === VERIFY_SKIP_EXIT) return { result: "unknown", reason: `the audit command declined to run (exit ${VERIFY_SKIP_EXIT})` };
   if (exitCode === 126 || exitCode === 127) return { result: "unknown", reason: `the audit command could not be started (exit ${exitCode})` };
@@ -27657,6 +27806,8 @@ interface LaneOutcome {
   // would make an unmeasurable lane read as a frugal one. Optional because every row written before
   // this field existed carries no answer at all, and the reader must say so rather than default.
   toolResultBytes?: ToolResultBytes | null;
+  subagentCalls?: number | null;
+  subagentTokens?: number | null;
   // WHO ENDED THIS LANE, written ONLY by the automatic close (tickLaneAutoClose) and absent on
   // every hand kill, land, shelve and revert. It exists because the answer does not fit anywhere
   // else: `SlotEnding` is slotstats.ts's closed vocabulary, so an automatic close is counted there
@@ -27831,6 +27982,43 @@ async function laneToolResultBytes(cwd: string): Promise<ToolResultBytes | null>
       } catch { /* one unreadable file must not sink the whole measurement */ }
     }
     return { total, byTool };
+  } catch {
+    return null;
+  }
+}
+async function laneSubagentUsage(s: Slot): Promise<{ subagentCalls: number; subagentTokens: number } | null> {
+  const path = transcriptFile(s);
+  if (!path) return null;
+  try {
+    if (statSync(path).size > TOOL_RESULT_FILE_MAX_BYTES) return null;
+    const calls = new Set<string>();
+    const sidechain = new Map<string, number>();
+    for (const line of (await Bun.file(path).text()).split("\n")) {
+      if (!line.startsWith("{")) continue;
+      let row: unknown;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (!row || typeof row !== "object") continue;
+      const entry = row as { type?: unknown; isSidechain?: unknown; uuid?: unknown;
+        message?: { id?: unknown; content?: unknown; usage?: Record<string, unknown> } };
+      if (entry.type !== "assistant") continue;
+      if (entry.isSidechain === true) {
+        const usage = entry.message?.usage;
+        if (!usage || typeof usage !== "object") continue;
+        const token = (key: string): number => typeof usage[key] === "number" && Number.isFinite(usage[key])
+          ? Math.max(0, usage[key] as number) : 0;
+        const id = typeof entry.message?.id === "string" ? entry.message.id
+          : typeof entry.uuid === "string" ? entry.uuid : null;
+        if (id) sidechain.set(id, token("input_tokens") + token("cache_creation_input_tokens")
+          + token("cache_read_input_tokens") + token("output_tokens"));
+        continue;
+      }
+      if (!Array.isArray(entry.message?.content)) continue;
+      for (const raw of entry.message.content) {
+        const block = raw as { type?: unknown; name?: unknown; id?: unknown };
+        if (block.type === "tool_use" && block.name === "Agent" && typeof block.id === "string") calls.add(block.id);
+      }
+    }
+    return { subagentCalls: calls.size, subagentTokens: [...sidechain.values()].reduce((sum, value) => sum + value, 0) };
   } catch {
     return null;
   }
@@ -28028,6 +28216,8 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
   // A codex lane answers from its own rollout instead (codexRolloutFacts), never from projDir().
   const toolResultBytes = isCodex ? rollout?.toolResultBytes ?? null
     : harnessOf(s.harness).supports.transcript ? await laneToolResultBytes(cwd) : null;
+  const subagentUsage = harnessOf(s.harness).supports.transcript
+    ? await laneSubagentUsage(s) : null;
   return {
     ts,
     branch: s.worktree.branch,
@@ -28099,6 +28289,8 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // written on EVERY live-lane row including the null: here the key's PRESENCE is what separates
     // "measured, and the answer is unknowable" from a row that predates the field and cannot say.
     toolResultBytes,
+    subagentCalls: subagentUsage?.subagentCalls ?? null,
+    subagentTokens: subagentUsage?.subagentTokens ?? null,
     dirtyFiles,
     ...modelResolved,
     ...codexRollout,
@@ -29220,6 +29412,7 @@ const SUITE_HOLD_OVERDUE_MS = Math.max(60_000, Number(process.env.FLEET_SUITE_OV
 type GateLockState = "held" | "overdue" | "stale" | "parked" | "unknown";
 type GateLockBirthState = "matched" | "mismatched" | "missing" | "empty" | "malformed" | "unreadable" | "unmeasurable" | "not-applicable";
 interface GateLock {
+  owner?: SuiteOwner;
   pid: number | null;     // the recorded holder, or null when the dir carries no readable pid
   alive: boolean | null;  // null = a pid-LESS dir: a MANUAL park (a human parked the machine), and
                           // e2e-stage.sh never reaps one. false = the holder is gone; the next
@@ -29632,6 +29825,21 @@ interface GateQueueTicket {
   dead?: "gone" | "recycled";
   sinceMs: number | null;    // how long this ticket has been in the queue; null = not timeable
   position: number;          // 1-based rank among LIVE tickets; 0 = this ticket is not in the line
+  owner?: SuiteOwner;
+}
+interface SuiteOwner { slot: number | null; branch: string }
+function suiteOwner(raw: string): SuiteOwner | null {
+  const [cwd, branch, slotText] = raw.split("\n");
+  if (!cwd || !branch || cwd.length > 500 || branch.length > 200) return null;
+  const claimed = /^\d+$/.test(slotText ?? "") ? Number(slotText) : null;
+  const live = slots.find((s) => {
+    if (!s.cwd || s.worktree?.branch !== branch || (claimed !== null && s.id !== claimed)) return false;
+    try { return realpathSync(s.cwd) === cwd; } catch { return s.cwd === cwd; }
+  });
+  return { slot: live?.id ?? null, branch };
+}
+function readSuiteOwner(path: string): SuiteOwner | null {
+  try { return suiteOwner(readFileSync(path, "utf8")); } catch { return null; }
 }
 const SUITE_QUEUE = `${SUITE_LOCK}.q`;
 const SUITE_QUEUE_MAX = 20;  // the poll carries a line per waiter, not a directory listing
@@ -29666,7 +29874,8 @@ function suiteQueueView(): GateQueueTicket[] {
       const born = st.birthtimeMs || st.mtimeMs;
       if (Number.isFinite(born) && born > 0) sinceMs = Math.max(0, Date.now() - born);
     } catch { /* not timeable; the ticket still counts */ }
-    seen.push({ n, pid, alive, ...(dead ? { dead } : {}), sinceMs, position: 0 });
+    const owner = readSuiteOwner(`${SUITE_QUEUE}/${name}/owner`);
+    seen.push({ n, pid, alive, ...(dead ? { dead } : {}), sinceMs, position: 0, ...(owner ? { owner } : {}) });
   }
   seen.sort((a, b) => a.n - b.n || a.pid - b.pid);
   let rank = 0;
@@ -29713,6 +29922,15 @@ function gateView(): GateView | null {
       ...(r.stage ? { stage: r.stage } : {}), ...(stats ? { stats } : {}) });
   }
   const lock = suiteLockView();
+  if (lock?.pid && lock.identityProven === true) {
+    try {
+      const [pid, birth, ...ownerLines] = readFileSync(`${SUITE_LOCK}.owner`, "utf8").split("\n");
+      if (pid === String(lock.pid) && birth === lock.birth.stored) {
+        const owner = suiteOwner(ownerLines.join("\n"));
+        if (owner) lock.owner = owner;
+      }
+    } catch { /* an older wrapper recorded no owner */ }
+  }
   // the waiters are read even when the lock reads free: a ticket outliving its holder by a moment
   // is exactly the state a reader needs to see, and an empty queue costs one readdir that fails.
   const queue = suiteQueueView();
@@ -30609,6 +30827,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       // waited 0s" are different sentences, and every count built on this row depends on it.
       audit("merge_verdict", s.id, branch, {
         status: bound.status, landed: bound.landed, actor: actor.kind,
+        verifyOk: bound.verify?.ok ?? null,
+        stopKind: bound.verify?.ok === false ? "red"
+          : bound.verify?.ok === null ? "unmeasured"
+          : (bound.conflicted?.length ?? 0) > 0 ? "conflict"
+          : bound.status === "resolved" || bound.status === "awaiting-author" ? "review" : null,
         ...(bound.errorReason ? { errorReason: bound.errorReason } : {}),
         ...(bound.ffRounds !== undefined ? { ffRounds: bound.ffRounds } : {}),
         ...(bound.waitRounds !== undefined ? { waitRounds: bound.waitRounds } : {}),
@@ -30618,7 +30841,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         ...(bound.verify?.waitMs !== undefined ? { waitMs: bound.verify.waitMs } : {}),
         // which chain and which repo this gate measured — what gateStats files the sample under
         ...(bound.verify?.proportional !== undefined ? { repo: root, proportional: bound.verify.proportional } : {}),
-      });
+      } as unknown as NonNullable<Parameters<typeof audit>[3]>);
       if (bound.landed && bound.verify?.ms !== undefined && bound.verify.proportional !== undefined
         && !bound.verify.timedOut && !bound.verify.waitedOut)
         recordGateDuration(root, bound.verify.proportional, bound.verify.ms);
@@ -31720,7 +31943,7 @@ async function foundingPlanOf(repo: string, harness: string | null,
   const frame: ProgramMainFrame = sourceTree === "fleet" ? "fleet-control" : "target-repo";
   const facts = foundingMode === "lane"
     ? { sourceTree, harness,
-        mode: DISPATCH_CONTEXT_MODE, triggers: DISPATCH_CONTEXT_TRIGGERS,
+        mode: DISPATCH_CONTEXT_MODE, triggers: taskContextTriggers([], DISPATCH_CONTEXT_TRIGGERS),
         capabilities: DISPATCH_CONTEXT_CAPABILITIES }
     : programMainContextFacts(frame, harness);
   const base = planContext(facts);
@@ -38609,11 +38832,12 @@ Bun.serve<WSData>({
     // purpose: a watch disarmed by its target's death delivers NOTHING into the pane, so armed-only
     // would make "still waiting" and "will never come" identical from inside. Narrativ: server-narrativ-archiv.md#fetch-get-apiself
     if (url.pathname === "/api/self" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return json({
         slot: s.id,
+        position: selfPosition(s),
         label: s.label,
         cwd: s.cwd,
         mission: s.mission,
@@ -38636,8 +38860,8 @@ Bun.serve<WSData>({
     // NOTHING: the proof order it replaces is an obligation CLAUDE.md puts on lanes. Read-only,
     // aggregate payload, no capability granted. Why this tier: server-narrativ-archiv.md#fetch-get-apiselfflakes
     if (url.pathname === "/api/self/flakes" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return json(trailStatsFromQuery(url));
     }
@@ -38646,8 +38870,8 @@ Bun.serve<WSData>({
     // unlike /intake. The target slot is HARD-DERIVED from the token — a `slot` field in the body is
     // structurally never read (createAutoForSlot takes `s`). No lane check, by design.
     if (url.pathname === "/api/self/autos" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return createAutoForSlot(s, await readJson(req));
     }
@@ -38656,8 +38880,8 @@ Bun.serve<WSData>({
     // session credential may therefore propose/read only from a non-lane planning session. The
     // authenticated session triple is copied from the slot, never accepted from the body.
     if (url.pathname === "/api/self/programs" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot propose or read them as its own" }, 409);
@@ -38681,8 +38905,8 @@ Bun.serve<WSData>({
     }
 
     if (url.pathname === "/api/self/program-execution" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot read execution as its own" }, 409);
@@ -38694,8 +38918,8 @@ Bun.serve<WSData>({
     // bound MAIN's own Program) and a query parameter can only narrow it. The occupant is re-checked
     // after the last await, so a slot recycled mid-read answers 409 instead of a foreign slice.
     if (url.pathname === "/api/self/memory" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const openedAt = s.openedAt;
       const view = url.searchParams.get("view") ?? "work";
@@ -38706,7 +38930,8 @@ Bun.serve<WSData>({
         if (!pScope.ok) return pScope.response;
         const folded = await memoryPortfolioView(s, pScope, url);
         const g = effectiveGrant(s);
-        if (s.openedAt !== openedAt || !s.selfToken || !secretEq(given, s.selfToken))
+        const still = resolvePrincipal(req);
+        if (s.openedAt !== openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== openedAt)
           return json({ refusal: "occupant-changed", error: "the slot changed occupant while this read ran — nothing of the new occupant's is served on the old credential" }, 409);
         if (pScope.principal === "grant" && (g?.grantId !== pScope.grant?.grantId || g?.revision !== pScope.grant?.revision))
           return json({ refusal: "grant-changed", error: "the read grant was changed or revoked while this read ran — start a fresh read" }, 409);
@@ -38717,7 +38942,8 @@ Bun.serve<WSData>({
       const answer = view === "evidence" ? await memoryEvidenceView(s, scope, url)
         : view === "observations" ? await memoryObservationsView(s, scope, url)
         : json(view === "sources" ? await memorySourcesView(s, scope) : await memoryWorkView(s, scope));
-      if (s.openedAt !== openedAt || !s.selfToken || !secretEq(given, s.selfToken))
+      const still = resolvePrincipal(req);
+      if (s.openedAt !== openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== openedAt)
         return json({ refusal: "occupant-changed", error: "the slot changed occupant while this read ran — nothing of the new occupant's is served on the old credential" }, 409);
       return answer;
     }
@@ -38726,8 +38952,8 @@ Bun.serve<WSData>({
     // MAIN of an active Program. The list is validated at WRITE against that MAIN's integration HEAD,
     // so an unresolvable anchor is a named refusal here and never a surprise at dispatch.
     if (url.pathname === "/api/self/program-context-packs" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane cannot write its Program's context packs — its MAIN maintains them" }, 409);
@@ -38772,16 +38998,17 @@ Bun.serve<WSData>({
     // them is the OCCUPANCY gate — only the session the owner bound as Supervisor; a lane is never the
     // Supervisor, so the same check covers it. Narrativ: server-narrativ-archiv.md#fetch-supervisor-self-routes
     if (url.pathname === "/api/self/supervisor-view" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      // resolvePrincipal authenticates this route's x-fleet-self-token before the scope refusal.
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const refusal = supervisorRefusal(s);
       if (refusal) return json({ error: refusal }, 409);
       return supervisorView(s);
     }
     if (url.pathname === "/api/self/nudge" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const refusal = supervisorRefusal(s);
       if (refusal) return json({ error: refusal }, 409);
@@ -38792,8 +39019,8 @@ Bun.serve<WSData>({
     // path and the receiver from the watch, so the body can name nothing but the text.
     const supervisorComplete = /^\/api\/self\/supervisor-watch\/([a-z0-9]+)\/complete$/.exec(url.pathname);
     if (supervisorComplete && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const refusal = supervisorRefusal(s);
       if (refusal) return json({ error: refusal }, 409);
@@ -38803,8 +39030,8 @@ Bun.serve<WSData>({
     // MAIN-direct provenance is an explicit two-step report by THIS non-lane session. Git supplies
     // both heads; the body can only state the expected final head and the verification it ran.
     if (url.pathname === "/api/self/main-direct" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree) return json({ error: "a lane uses lane provenance, not main-direct provenance" }, 409);
       const now = Date.now();
@@ -38817,15 +39044,15 @@ Bun.serve<WSData>({
       return json({ open, outcomes });
     }
     if (url.pathname === "/api/self/main-direct/preflight" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return mainDirectPreflight(s, await readJson(req));
     }
     if ((url.pathname === "/api/self/main-direct/finalize" || url.pathname === "/api/self/main-direct/abandon")
       && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       const body = await readJson(req);
       if (url.pathname === "/api/self/main-direct/abandon") {
@@ -38841,8 +39068,8 @@ Bun.serve<WSData>({
     // The predicate is deliberately the SAME one done-looking classifies by (laneSignalView) — "whoever
     // can BE watched cannot watch", so the ⚙ steward may subscribe. Narrativ: server-narrativ-archiv.md#fetch-post-apiselfwatch
     if (url.pathname === "/api/self/watch" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not subscribe — lane-waits-on-lane is a coupling only the owner can make visible" }, 409);
@@ -38854,8 +39081,8 @@ Bun.serve<WSData>({
     // worker or receiver occupant. Receiver identity/provenance are derived inside
     // openClarification and no body field can nominate or overwrite them.
     if (url.pathname === "/api/self/clarifications" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (req.method === "GET") return json({ requests: clarificationsFor(s) });
       if (!s.worktree)
@@ -38869,16 +39096,16 @@ Bun.serve<WSData>({
     // succession changes nothing. No body is read on either verb — the program comes from the
     // binding and the entry from the path, so nothing a caller can write nominates either.
     if (url.pathname === "/api/self/inbox" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return await programInboxFor(s);
     }
 
     const selfInboxRead = /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/.exec(url.pathname);
     if (selfInboxRead && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return await readProgramInboxEntry(s, selfInboxRead[1]!);
     }
@@ -38889,8 +39116,8 @@ Bun.serve<WSData>({
     // while these three answer any principal that HOLDS AN ADDRESS about traffic addressed to it.
     // The sender is derived from the binding on every verb; no body on this rail names a principal.
     if (url.pathname === "/api/self/messages" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (req.method === "GET") return messageViewFor(s);
       return await sendMessageFor(s, await readJson(req));
@@ -38898,8 +39125,8 @@ Bun.serve<WSData>({
 
     const selfMessageRead = /^\/api\/self\/messages\/([0-9a-f]{24})\/read$/.exec(url.pathname);
     if (selfMessageRead && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return await readMessageFor(s, selfMessageRead[1]!);
     }
@@ -38913,8 +39140,8 @@ Bun.serve<WSData>({
     const selfDelegateDecision = /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/delegate\/(accept|reject|escalate)$/.exec(url.pathname);
     if ((selfDelegateDecision && req.method === "POST")
       || (url.pathname === "/api/self/fleet-report/delegated" && req.method === "GET")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree)
         return json({ refusal: "lane-scope", error: "a lane may not judge a fleet report — a lane files its own result" }, 409);
@@ -38931,8 +39158,8 @@ Bun.serve<WSData>({
     }
 
     if (url.pathname === "/api/self/fleet-report" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (req.method === "GET") return json({ reports: fleetReportsFor(s) });
       if (!s.worktree || s.label === STEWARD_LABEL)
@@ -38944,8 +39171,8 @@ Bun.serve<WSData>({
     // only on the same predicate FLEET_SELF_LANE is baked from, so hook and door can never disagree
     // about who is a lane; the steward's worktree counts, because nobody answers its pane either.
     if (url.pathname === "/api/self/harness-block" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (!s.worktree) return json({ error: "not a lane — only a lane's hook denies a dialog instead of asking" }, 409);
       return openHarnessBlock(s, await readJson(req));
@@ -38962,8 +39189,8 @@ Bun.serve<WSData>({
     // events-ack line, and this handler does read one.
     const selfReportDecision = /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/(accept|reject)$/.exec(url.pathname);
     if (selfReportDecision && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not judge a fleet report — a lane files its own result, it does not accept the results its own MAIN is owed" }, 409);
@@ -38973,8 +39200,8 @@ Bun.serve<WSData>({
 
     const selfClarificationReply = /^\/api\/self\/clarifications\/([0-9a-f]{24})\/reply$/.exec(url.pathname);
     if (selfClarificationReply && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not reply — lane-waits-on-lane is a coupling only MAIN may close" }, 409);
@@ -38987,8 +39214,8 @@ Bun.serve<WSData>({
     // derived from the caller's own MAIN binding, never taken from the body. GET is role-scoped to
     // the exact requester occupant — no worktree predicate anywhere in it.
     if (url.pathname === "/api/self/attention" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (req.method === "GET") return json({ requests: attentionFor(s) });
       if (s.worktree && s.label !== STEWARD_LABEL)
@@ -39000,8 +39227,8 @@ Bun.serve<WSData>({
     // caller's own open question. 401 for no token, 409 for a lane, never a silent no.
     const selfAttentionWithdraw = /^\/api\/self\/attention\/([0-9a-f]{24})\/withdraw$/.exec(url.pathname);
     if (selfAttentionWithdraw && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not withdraw attention — a lane raises no attention to take back" }, 409);
@@ -39019,8 +39246,8 @@ Bun.serve<WSData>({
     // that pin holds "no readJson" over the source between selfTaskRelease and selfEventAck.
     const selfTaskFilesProposal = /^\/api\/self\/tasks\/([a-z0-9]+)\/files-proposal$/.exec(url.pathname);
     if (selfTaskFilesProposal && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       const t = tasks.find((x) => x.id === selfTaskFilesProposal[1]);
       if (!t) return json({ error: "unknown task" }, 404);
@@ -39066,8 +39293,8 @@ Bun.serve<WSData>({
     // is asserting they are still exactly the work they were, and the only thing it found is that
     // they do not belong in THIS bundle. detachSlotTasks keeps its own answer for the other shape.
     if (url.pathname === "/api/self/wave/split" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — only the lane holding a wave can split it" }, 409);
       const spBody = await readJson(req);
@@ -39122,8 +39349,8 @@ Bun.serve<WSData>({
     // lane are still derived and cannot be nominated by the caller.
     const selfTaskReviewPark = /^\/api\/self\/tasks\/([a-z0-9]+)\/park$/.exec(url.pathname);
     if (selfTaskReviewPark && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not park itself for review — its bound Program-MAIN decides when the finished lane leaves its slot" }, 409);
@@ -39143,8 +39370,8 @@ Bun.serve<WSData>({
     // the events-ack line, so a body-reading route wedged in there would read as a regression of a
     // rule that had not moved.
     if (url.pathname === "/api/self/tasks" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not file a queue row — a lane executes the row it was founded on, it does not fill the queue its own MAIN releases from" }, 409);
@@ -39166,8 +39393,8 @@ Bun.serve<WSData>({
     // its own repository. Same body as the owner door, same one function behind it.
     const selfTaskNotes = /^\/api\/self\/tasks\/([a-z0-9]+)\/notes$/.exec(url.pathname);
     if (selfTaskNotes && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not assign a source — a lane executes the row it was founded on, it does not choose what the rows its own MAIN releases are worked against" }, 409);
@@ -39191,8 +39418,8 @@ Bun.serve<WSData>({
     // Placed ABOVE the release route because it reads a body (that route's "reads no body" pin).
     const selfVariantWinner = /^\/api\/self\/tasks\/([a-z0-9]+)\/variant-winner$/.exec(url.pathname);
     if (selfVariantWinner && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not decide a variant group — a lane is one of the variants, and a variant does not judge itself" }, 409);
@@ -39201,8 +39428,8 @@ Bun.serve<WSData>({
 
     const selfTaskBrief = /^\/api\/self\/tasks\/([a-z0-9]+)\/brief$/.exec(url.pathname);
     if (selfTaskBrief && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not sharpen a brief — the brief is the work order a lane was founded on, and the producer does not rewrite what it is measured against" }, 409);
@@ -39214,8 +39441,8 @@ Bun.serve<WSData>({
     // its own MAIN bundles stand on. Placed ABOVE the release route like the brief door, because
     // this handler reads a body and the release route's "reads no body" pin covers the region below.
     if (url.pathname === "/api/self/tasks/confirm-cards" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not confirm a card surface — a lane executes the row it was founded on, it does not decide what the rows its own MAIN bundles stand on" }, 409);
@@ -39228,8 +39455,8 @@ Bun.serve<WSData>({
     // from the path, the program from the caller's binding, the repo from the caller's checkout.
     const selfTaskRelease = /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/.exec(url.pathname);
     if (selfTaskRelease && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not release a queue row — releasing is the bracket above lanes" }, 409);
@@ -39241,8 +39468,8 @@ Bun.serve<WSData>({
     // from the binding, the repo from the checkout.
     const selfTaskHold = /^\/api\/self\/tasks\/([a-z0-9]+)\/hold$/.exec(url.pathname);
     if (selfTaskHold && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not hold a queue row — holding is the bracket above lanes, like releasing" }, 409);
@@ -39258,8 +39485,8 @@ Bun.serve<WSData>({
     // and the events-ack line — this handler reads no body either, but the pin is about a region.
     const selfTaskLand = /^\/api\/self\/tasks\/([a-z0-9]+)\/land$/.exec(url.pathname);
     if (selfTaskLand && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not land — a lane executes the row it was founded on, and its own MAIN adjudicates whether that work reaches the integration branch" }, 409);
@@ -39270,8 +39497,8 @@ Bun.serve<WSData>({
 
     const selfEventAck = /^\/api\/self\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
     if (selfEventAck && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return acknowledgeFleetEvent(s, selfEventAck[1]);
     }
@@ -39279,8 +39506,8 @@ Bun.serve<WSData>({
     // pane text, rendered now from the row. Same binding as the ack — this occupant's events only.
     const selfEventRead = /^\/api\/self\/events\/([a-z0-9]+)$/.exec(url.pathname);
     if (selfEventRead && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       const event = fleetEvents.find((e) => e.id === selfEventRead[1]);
       if (!event) return json({ error: "unknown event" }, 404);
@@ -39291,14 +39518,14 @@ Bun.serve<WSData>({
     // Main-session succession is the other non-lane-only self capability. The token identifies
     // the predecessor; the body may carry only a bounded label/carry, never a target slot or cwd.
     if (url.pathname === "/api/self/succeed" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return handleSelfSucceed(s, req);
     }
     if (url.pathname === "/api/self/retire" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return handleSelfRetire(s);
     }
@@ -39307,8 +39534,8 @@ Bun.serve<WSData>({
     // and no new capability: the route exists so session, board and sync path read ONE server-computed
     // answer. Narrativ: server-narrativ-archiv.md#fetch-get-apiselfdrift
     if (url.pathname === "/api/self/drift" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       // a plain session's credential is valid but the question is not askable: drift measures a
       // LANE against its integration branch. 409 with the why, not a generic 401 (same distinction
@@ -39335,8 +39562,8 @@ Bun.serve<WSData>({
     // gate is this process's env, a lane's CLAUDE.md is a spawn-time COPY. Read-only, grants no
     // capability. Narrativ: server-narrativ-archiv.md#fetch-get-apiselfgate
     if (url.pathname === "/api/self/gate" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — the gate judges a lane's land" }, 409);
       // rulebook drift: the expected side is `laneRulebookFor`, the SAME function the spawn seam wrote
@@ -39388,8 +39615,8 @@ Bun.serve<WSData>({
     // pane. It lands as a proposal — `confirmedAt` stays null until the OWNER confirms, so a producer
     // can never author the anchor it is judged against.
     if (url.pathname === "/api/self/criterion" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a criterion belongs to a lane's founding task" }, 409);
       const body = await readJson(req);
@@ -39430,8 +39657,8 @@ Bun.serve<WSData>({
     // command is fixed. AND IT STARTS NOTHING — but it BINDS the lane: while its offer is open or
     // claimed it must not run the suite locally; withdraw is where that permission comes back. Narrativ: server-narrativ-archiv.md#fetch-apiselfsuite-offer
     if (url.pathname === "/api/self/suite-offer" && (req.method === "GET" || req.method === "POST")) {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a suite offer hands over a lane's own working tree" }, 409);
       expireHelperClaims();
@@ -39502,8 +39729,8 @@ Bun.serve<WSData>({
     // can never be named by the caller. A refused command therefore leaves NO row: the 400 and the
     // absence of anything a helper could claim are one fact.
     if (url.pathname === "/api/self/jobs" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const body = await readJson(req);
       const cmdCheck = helperCmdCheck(body?.cmd);
@@ -39548,8 +39775,8 @@ Bun.serve<WSData>({
     {
       const m = /^\/api\/self\/jobs\/([0-9a-f]{12})$/.exec(url.pathname);
       if (m && req.method === "GET") {
-        const given = req.headers.get("x-fleet-self-token") ?? "";
-        const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+        const p = resolvePrincipal(req);
+        const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
         if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
         expireHelperClaims();
         const job = commandJobs.get(m[1]!);
@@ -39564,8 +39791,8 @@ Bun.serve<WSData>({
     // over, never doubled) unless `{"abandon": true}`: nothing here gates, so abandoning costs only the
     // helper's time. An EXPIRED claim is absent everywhere. Narrativ: server-narrativ-archiv.md#fetch-post-apiselfsuite-offerwithdraw
     if (url.pathname === "/api/self/suite-offer/withdraw" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a suite offer hands over a lane's own working tree" }, 409);
       expireHelperClaims();
@@ -39597,8 +39824,8 @@ Bun.serve<WSData>({
     // the lane's own account of a verify-suite run. Grants no capability: nothing is started, stopped
     // or queued; the 409 for a non-lane keeps this family's one scope rule.
     if (url.pathname === "/api/self/verify-intent" && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — verify-intent reports a lane's own gate run" }, 409);
       return recordVerifyIntent(s, await readJson(req));
@@ -39614,8 +39841,8 @@ Bun.serve<WSData>({
     // An id outside that set answers 409 with the reason, not 404: hiding the row's existence would
     // read as "the note is gone" and send the lane looking for a deletion that never happened.
     if (url.pathname === "/api/self/notes" && req.method === "GET") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — the notes are the ones this lane's own brief delivered" }, 409);
       const ids = await laneNoteIds(s);
@@ -39667,8 +39894,8 @@ Bun.serve<WSData>({
     // from a lane that later dies, and its 200 is never a promise that the note will close.
     const selfNoteVerdict = /^\/api\/self\/notes\/([a-z0-9]+)\/verdict$/.exec(url.pathname);
     if (selfNoteVerdict && req.method === "POST") {
-      const given = req.headers.get("x-fleet-self-token") ?? "";
-      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a verdict is a lane's report on a note it was shown" }, 409);
       const body = await readJson(req);
@@ -40140,6 +40367,7 @@ Bun.serve<WSData>({
           const inb = s.cwd ? inboundToday(s.id, pollNow) : null;
           const paneModel = s.cwd ? paneModelInfo.get(s.id) : undefined;
           const parked = parkedSendView(s);
+          const modelSuperseded = s.cwd ? supersededModel(harnessOf(s.harness).id, s.model) : undefined;
           return {
             id: s.id, cwd: s.cwd, label: s.label, openedAt: s.openedAt,
             // Canonical checkout identity, separate from cwd: a main session may live in a
@@ -40153,6 +40381,7 @@ Bun.serve<WSData>({
             // wherever a transcript names a model would hide a push's read-back — right after a push
             // the file still names the old request, and modelPushedAt is exactly how its landing is seen.
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
+            ...(modelSuperseded ? { modelSuperseded } : {}),
             // the lane's address (laneNameOf, S3c); omitted for a MAIN and a pre-letter lane;
             // spelled `name: name`, not shorthand: e2e/pins.ts derives the emitted keys from `key:`
             ...(() => { const name = laneNameOf(s); return name ? { name: name } : {}; })(),
@@ -40526,6 +40755,28 @@ Bun.serve<WSData>({
     }
     const debtResend = /^\/api\/succession-debts\/([0-9a-f]{24})\/resend$/.exec(url.pathname);
     if (debtResend && req.method === "POST") return await resendSuccessionDebt(debtResend[1]!);
+    // THE TRACE (trace-index.ts, Overhaul S5 first cut): one task's life as TraceEvents over every
+    // generation of the four ledgers, the land notes and git log, sorted by time, with a horizon per
+    // source and a per-source coverage verdict for this task. Owner-only by POSITION, read-only by
+    // construction — a projection, never a writer. The live facts are handed in: the queue row (the
+    // archive copy is read inside) and the lane holding the task now, the one place an occupation
+    // key is known without inference. A wave follower is not found here: its lane is on record under
+    // its head's id (resolveTaskLane says the same).
+    if (url.pathname === "/api/trace" && req.method === "GET") {
+      const id = (url.searchParams.get("task") ?? "").trim();
+      if (!/^[a-z0-9]{1,64}$/.test(id)) return json({ error: "task must be a queue row id ([a-z0-9]{1,64})" }, 400);
+      const t = tasks.find((x) => x.id === id) ?? null;
+      const live: TraceLiveLane[] = slots.flatMap((s) => s.cwd && s.worktree
+        && (s.taskId === id || (t?.status === "sent" && t.slot === s.id))
+        ? [{ slot: s.id, openedAt: s.openedAt, session: s.sessionId ?? null, repo: s.worktree.repo, branch: s.worktree.branch }] : []);
+      const trace = await buildTrace({
+        task: id, live, git: gitRead, worktreeOf: worktreePathFor,
+        files: { audit: AUDIT_FILE, outcomes: LANE_OUTCOME_FILE, postLandAudits: POSTLAND_AUDIT_FILE,
+          reports: FLEET_REPORT_LEDGER_FILE, tasksArchive: TASK_ARCHIVE_FILE },
+        liveRow: t ? { id, from: "live", created: t.created, status: t.status, kind: t.kind, programId: t.programId ?? null } : null,
+      });
+      return json(trace, trace.result === "unknown-task" ? 404 : 200);
+    }
     // THE DOSSIER (see the dossier region): six sources joined by branch into one lane's story, plus the
     // fleet/land note. Owner-only by POSITION, read-only by construction. Branch names carry slashes, so
     // the key is a QUERY parameter, never a path segment (a proxy normalizing %2F cannot break it).
@@ -41460,37 +41711,10 @@ Bun.serve<WSData>({
         // the collision guard only matters when the integration branch is checked out somewhere: an ff-merge
         // THERE rewrites files on disk. Checked out nowhere (primary parked off it), landing advances the
         // ref with branch -f and touches no working tree — skip the guard entirely.
-        const landHolder = (await listWorktrees(repo)).find((w) => w.branch === main);
-        if (landHolder) {
-          // an ff-merge rewrites ONLY the files the lane changed — so refuse only if one of THOSE is
-          // uncommitted in the holder tree; an unrelated dirty file (a working HANDOFF.md) must not block.
-          // git's own --ff-only stays the final arbiter below. Narrativ: server-narrativ-archiv.md#fetch-post-apislotsidmerge
-          const pst = await git(landHolder.path, "status", "--porcelain");
-          if (pst.code === 0 && pst.out) {
-            const rows = pst.out.split("\n").filter((l) => l && !l.startsWith("!!"));
-            const pathOf = (l: string): string =>
-              (l.includes(" -> ") ? l.slice(l.indexOf(" -> ") + 4) : l.slice(3)).trim();
-            const dirty = new Set(rows.filter((l) => !l.startsWith("??")).map(pathOf));
-            // UNTRACKED twin of the same refusal (2026-08-05): git's ff-only refuses to overwrite an untracked
-            // holder file just as hard — caught here, before the verify spend. Only a name the lane itself adds collides.
-            const untracked = new Set(rows.filter((l) => l.startsWith("??")).map(pathOf));
-            if (dirty.size || untracked.size) {
-              const mb = await git(repo, "merge-base", main, branch);
-              const changed = mb.code === 0 && mb.out
-                ? await git(repo, "diff", "--name-only", `${mb.out}..${branch}`)
-                : { code: 1, out: "", err: "" };
-              const laneFiles = changed.code === 0
-                ? changed.out.split("\n").map((f) => f.trim()).filter(Boolean) : null;
-              // couldn't compute the lane's file set → fall back to the safe (broad) refusal
-              const collide = laneFiles ? laneFiles.filter((f) => dirty.has(f)) : [...dirty];
-              if (collide.length) return json({ status: "blocked",
-                detail: `${main} is checked out at ${landHolder.path} with uncommitted changes to ${collide.join(", ")} — the land would overwrite them; commit or stash there first` });
-              const collideU = laneFiles ? laneFiles.filter((f) => untracked.has(f)) : [];
-              if (collideU.length) return json({ status: "blocked",
-                detail: `${main} is checked out at ${landHolder.path} with UNTRACKED files this lane also adds (${collideU.join(", ")}) — the land would overwrite them; move or commit them there first` });
-            }
-          }
-        }
+        const mainSha = await git(repo, "rev-parse", main);
+        if (mainSha.code !== 0 || !mainSha.out) return json({ status: "blocked", detail: `cannot read ${main} before land` });
+        const dirty = await dirtyMainStop(repo, main, mainSha.out, branch, {});
+        if (dirty) return json({ status: "blocked", detail: dirty.detail, errorReason: dirty.errorReason });
         // confirm-land: the owner reviewed an agent conflict resolution and is landing it. No agent, no
         // trust in the stored verdict — the guarantee is purely git: main is an ancestor of the clean lane
         // branch. If main moved since, the ancestry fails and they re-run ⏫.
@@ -41633,6 +41857,10 @@ Bun.serve<WSData>({
     // the harness catalogue: STATIC, fetched once instead of per slot per poll. Without it the client
     // would hardcode a second copy of `supports` — exactly the drift the registry exists to prevent.
     if (url.pathname === "/api/harnesses" && req.method === "GET") {
+      let codexCache: unknown = null;
+      try {
+        codexCache = JSON.parse(readFileSync(resolve(process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), "models_cache.json"), "utf8"));
+      } catch { /* missing or unreadable sensor: availability remains unknown */ }
       return json({
         harnesses: HARNESSES.map((h) => ({
           // `chat`: whether the conversation view (💬) has something to read — a Claude Code
@@ -41661,6 +41889,10 @@ Bun.serve<WSData>({
         // A null model on the default adapter still launches this concrete model, and the picker must be
         // able to say WHICH. Claude-only on purpose: a foreign adapter keeps its own implicit default.
         defaultModel: DEFAULT_MODEL,
+        modelDefaults: MODEL_DEFAULTS,
+        modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry,
+          availability: entry.harness === "codex" ? codexAvailability(codexCache, entry.id) : "unknown",
+        })),
         // the fleet's box defaults, published for the same reason `default` is: a fact about THIS fleet
         // (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and the alternative is the client hardcoding a copy.
         containerDefaults: { container: CONTAINER_NAME, containerContext: CONTAINER_CONTEXT },

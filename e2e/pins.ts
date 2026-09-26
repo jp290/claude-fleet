@@ -65,6 +65,9 @@ import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatom
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 import { DraftBook } from "../src/drafts";
 import { runningEffort, runningModel } from "../src/running";
+import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness } from "../model-register";
+import { FLEET_DEFAULT_MODEL } from "../src/protocol";
+import { modelWindow } from "../src/modelname";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
 // the deploy-gap's path classifier is IMPORTED and RUN over this very tree: the whole finding it
@@ -1719,9 +1722,10 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 
   const describe = SYSTEM_CAPABILITIES.find((capability) => capability.name === "describe_self");
   const safe = SELF_GET_ADAPTER_PROBE;
-  const missingDescribeFacts = ["Role", "Authority", "Capabilities", "active Act"];
+  const missingDescribeFacts = ["Authority", "Capabilities", "active Act"];
   pin("describe_self exposes only the real Self payload and names every unimplemented SYSTEM.md promise",
     describe?.adapter?.method === "GET" && describe.adapter.route === "/api/self"
+      && describe.returns.includes("position")
       && missingDescribeFacts.every((fact) => describe.gaps.some((gap) => gap.includes(fact))),
     describe ? `gaps=[${describe.gaps.join(" | ")}]` : "entry missing");
   pin("the named adapter/probe dataset is the every-session read-only Self GET with the scoped header credential",
@@ -2778,13 +2782,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // writer can emit is a category the ledger promises and never delivers. ("main" joined 2026-09-11
   // with POST /api/self/tasks/:id/brief — a MAIN-sharpened brief booked as "owner" would put the
   // very falsehood that door was built to end into a RATE.)
-  // S6 (08ec67c0) · THE FILING TEMPLATE IS A DOC↔CODE PAIR. AGENTS.md tells every filer which card
-  // fields the create doors read; authorCardFrom's closed list decides it. A field renamed on one
-  // side only would teach filers a 400 — and no compiler sees prose.
+  // S6 (08ec67c0) · THE FILING TEMPLATE IS A DOC↔CODE PAIR. AGENTS.md names the core author card;
+  // docs/self-api.md names the optional class extension. authorCardFrom's closed list decides both.
   const cardDoorFields = /const known = \[([^\]]+)\];\n  const extra = Object\.keys\(c\)/.exec(server)?.[1] ?? "";
   const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten, size, after\?\}`/.test(read("AGENTS.md"));
-  pin("AGENTS.md's card template names exactly the card fields the create doors read",
-    cardDoorFields.replace(/\s/g, "") === '"ziel","surface","done","verify","verboten","size","after"' && agentsCard
+  const classCardDocs = /`card\.klasse` und optional `card\.rolle`/.test(read("docs/self-api.md"));
+  pin("the card template and class extension name the fields the create doors read",
+    cardDoorFields.replace(/\s/g, "") === '"ziel","rolle","klasse","surface","done","verify","verboten","size","after"'
+    && agentsCard && classCardDocs
     && /ZIEL: [^\n]*\nFLAECHE: [^\n]*\nDONE: [^\n]*\nVERIFY: [^\n]*\nVERBOTEN: [^\n]*\nROLLE: /.test(read("AGENTS.md")),
     `door=[${cardDoorFields}] agents=${agentsCard}`);
   const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";
@@ -3396,14 +3401,16 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const crCode = crBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
     crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
-  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED body — text, kind, the spawn triple, an optional card, optional variants and an optional files proposal",
+  pin("the Program-MAIN filing door DERIVES its program, limits repo to known dispatch targets and reads a CLOSED body",
     crBody.length > 0
       && /const bound = boundProgramForMain\(s\);/.test(crBody)
       && /programId: program\.id,/.test(crBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(crBody)
-      && /repo: mainRepo,/.test(crBody)
+      && /repo: targetRepo,/.test(crBody)
+      && /landWaveProjectionNow\(\)\.repos/.test(crBody)
+      && /dispatchRepos\.has\(requested\)/.test(crBody)
       && /if \(body\.programId !== undefined\)/.test(crBody)
-      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants", "files"\];/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo"\];/.test(crBody)
       && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
     crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
   // …and the `files` the set above admits is a PROPOSAL, held over the source because nothing at
@@ -6175,7 +6182,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && ffIntent < m3Second
       && m3Entry < server.indexOf("gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS, holdOwner));")
       && (server.match(/errorReason: "dirty-main"/g) ?? []).length === 1
-      && (server.match(/await dirtyMainStop\(/g) ?? []).length === 3
+      && (server.match(/await dirtyMainStop\(/g) ?? []).length === 4
       && server.includes("if (dirtyNow) { clearLandIntent(root); res = dirtyNow; break; }"),
     `entry=${m3Entry} pre=${m3Pre} plan=${m3Plan} second=${m3Second} intent=${ffIntent} advance=${ffAdvance}`);
   // …and the probe cannot MINT what it could not MEASURE: an unreadable status or diff returns
@@ -6952,12 +6959,14 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // THREE call sites since the codex-exit cut (2026-09-18), still one construction: the
   // declaration, the dispatch seam, and the LANE SUCCESSION brief (server.ts#buildLaneSuccessionBrief).
   // The count is still pinned because the rule it enforces is unchanged — a lane's ending is
-  // appended at a seam, never retyped. Since the same cut the footer is a FUNCTION of the harness:
+  // appended at a seam, never retyped. Since the same cut the footer is a FUNCTION of the harness
+  // and the receiver resolved from the lane's current occupant:
   // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
   // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
-    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness\)\}\$\{memoryBlock\}`;/.test(server)
+    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness, selfPosition\(free\)\.receiver\)\}\$\{memoryBlock\}`;/.test(server)
       && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
+      && /footer: laneExitFooter\(s\.harness, selfPosition\(s\)\.receiver\)/.test(server)
       && (server.split("laneExitFooter(").length - 1) === 3,
     `laneExitFooter call sites=${server.split("laneExitFooter(").length - 1}`);
 }
@@ -7717,10 +7726,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const client = clientU.text;
   // head and tail are DIFFERENT symbols, so the body is cut inside the module the function lives
   // in — never from a type in one module to a brace in the next.
-  const stateFnSpan = clientU.span("\nfunction programFoundingState(", "\n}\n", 3);
+  const stateFnSpan = clientU.span("\nexport function programFoundingState(", "\n}\n", 3);
   const stateMod = stateFnSpan ? clientU.module(stateFnSpan.file) : "";
   const stateHeadAt = stateMod.indexOf("type PublicProgramFoundingMode");
-  const stateFnAt = stateMod.indexOf("\nfunction programFoundingState(");
+  const stateFnAt = stateMod.indexOf("\nexport function programFoundingState(");
   const stateTailAt = stateFnAt < 0 ? -1 : stateMod.indexOf("\n}\n", stateFnAt);
   const stateSource = stateHeadAt < 0 || stateFnAt < stateHeadAt || stateTailAt < stateFnAt ? ""
     : stateMod.slice(stateHeadAt, stateTailAt + 3);
@@ -7731,7 +7740,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   let foundingStateErr = "";
   if (stateSource !== "") {
     try {
-      foundingState = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(stateSource)
+      foundingState = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(stateSource.replace(/^export /gm, ""))
         + "\nreturn programFoundingState;")() as (value: unknown) => FoundingView;
     } catch (e) { foundingStateErr = e instanceof Error ? e.message : String(e); }
   }
@@ -7760,14 +7769,14 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && views.leaked.state === "unreadable",
     JSON.stringify(views));
 
-  const markSource = clientU.span("\nfunction programMark(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
+  const markSource = clientU.span("\nexport function programMark(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
   let mark: ((p: Record<string, unknown>) => { mark: string; why: string }) | null = null;
   let markErr = "";
   if (stateSource !== "" && markSource !== "") {
     try {
       const prelude = 'let programsRead = "ok"; let fleet = []; function fmtTs(ts) { return "TS:" + ts; }\n';
       mark = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
-        prelude + stateSource + markSource) + "\nreturn programMark;")();
+        prelude + (stateSource + markSource).replace(/^export /gm, "")) + "\nreturn programMark;")();
     } catch (e) { markErr = e instanceof Error ? e.message : String(e); }
   }
   const marks = mark ? { pending: mark({ founding: V2 }), absent: mark({}), malformed: mark({ founding: null }) } : null;
@@ -7814,10 +7823,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && response.split("await loadPrograms(true);").length - 1 === 1,
     response === "" ? "bootstrap response path not found" : `refresh=${refreshAt} failure=${failureAt}`);
 
-  const failureFnSpan = clientU.span("\nfunction bootstrapFailureMessage(", "\n}\n", 3);
+  const failureFnSpan = clientU.span("\nexport function bootstrapFailureMessage(", "\n}\n", 3);
   const failureMod = failureFnSpan ? clientU.module(failureFnSpan.file) : "";
   const failureHeadAt = failureMod.indexOf("interface BootstrapUnavailable");
-  const failureFnAt = failureMod.indexOf("\nfunction bootstrapFailureMessage(");
+  const failureFnAt = failureMod.indexOf("\nexport function bootstrapFailureMessage(");
   const failureTailAt = failureFnAt < 0 ? -1 : failureMod.indexOf("\n}\n", failureFnAt);
   const failureSource = failureHeadAt < 0 || failureFnAt < failureHeadAt || failureTailAt < failureFnAt ? ""
     : failureMod.slice(failureHeadAt, failureTailAt + 3);
@@ -7827,7 +7836,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     try {
       const prelude = 'function fmtTs(ts) { return "TS:" + ts; }\n';
       failureMessage = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
-        prelude + stateSource + failureSource) + "\nreturn bootstrapFailureMessage;")();
+        prelude + (stateSource + failureSource).replace(/^export /gm, "")) + "\nreturn bootstrapFailureMessage;")();
     } catch (e) { failureErr = e instanceof Error ? e.message : String(e); }
   }
   const pending503 = failureMessage?.(503, { error: "founding delivery outcome is unknown",
@@ -8152,7 +8161,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // and RUN it over all five states. A DOM reference or a clock inside it would make that probe
   // impossible and would also let the pane date the owner's act for them: the stamp is the
   // SERVER's confirmedAt through fmtTs and nothing else.
-  const ps = clientU.span("\nfunction promotionState(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
+  const ps = clientU.span("\nexport function promotionState(p: ProgramInfo)", "\n}\n", 3)?.text ?? "";
   const states = ["absent", "off", "green-only", "guarded", "unreadable"];
   pin(`${RULE_PROMOTION_UI} — promotionState is top-level, DOM-free and clock-free, and names all five displayed states`,
     ps !== "" && !/document|\bel\(|chip\(|Date\.now\(|new Date\(/.test(ps)
@@ -8612,11 +8621,14 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_ONLINE} — /api/sessions ships helperOnlineMs in the SAME conditional as helperDevices`,
     /helperDevices:/.test(proj) && /helperOnlineMs: DEVICE_ONLINE_MS/.test(proj),
     proj.trim().slice(0, 160) || "the helperDevices projection was not found");
-  const clientText = clientU.text;
+  const clientText = clientU.module("src/client.ts");
+  const devicesText = clientU.module("src/devices.ts");
   pin(`${RULE_ONLINE} — the client reads the served window and never falls back to a number of its own`,
-    /deviceOnlineMs = data\.helperOnlineMs \?\? null/.test(clientText)
+    /setDeviceSnapshot\(data\.helperDevices \?\? \[\], data\.helperOnlineMs \?\? null\)/.test(clientText)
+      && /deviceOnlineMs = onlineMs/.test(devicesText)
       && !/helperOnlineMs \?\? \d/.test(clientText),
-    /deviceOnlineMs = data\.helperOnlineMs/.test(clientText) ? "reads the projection" : "no read of data.helperOnlineMs found");
+    /setDeviceSnapshot\(data\.helperDevices \?\? \[\], data\.helperOnlineMs/.test(clientText)
+      ? "reads the projection" : "no read of data.helperOnlineMs found");
   // …and the harness ARMS the knob. Same shape as the FLEET_MIGRATE_PCT pin above and the same
   // reason: with the 90 s production default, e2e/lane-suite.ts's "nothing is beating" precondition
   // would be a race against how long the nine modules before it happened to take, not a fact.
@@ -9998,8 +10010,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_CARD_V2 = "a card is refused by the tree, not by a stale graph or a foreign field";
   const cx = read("card-extract.ts");
   // v6 (2026-09-18): POST /api/self/criterion is a clarify row's verify.
-  const versionConst = /^export const CARD_VALIDATOR_VERSION = 8;$/m.test(cx);
-  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 8 (bump it when a rule change can turn a refusal into an acceptance)`,
+  const versionConst = /^export const CARD_VALIDATOR_VERSION = 10;$/m.test(cx);
+  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 10 (bump it when a rule change can turn a refusal into an acceptance)`,
     versionConst, `const=${versionConst}`);
   // v3 (2026-09-13): the filing format. A formatted row is read by the PARSER before the extractor
   // is ever started, and the ledger says which of the two produced each card.
@@ -10017,7 +10029,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     declFallback, `declFallback=${declFallback}`);
   // v6 (2026-09-17): the re-read may not make the row poorer. A field the filing format cannot
   // spell is DROPPED by the sweep's unconditional overwrite the moment a brief moves the row.
-  const formatVerboten = /const FORMAT_KEYS = \["ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "VERBOTEN"\] as const;/.test(cx)
+  const formatVerboten = /const FORMAT_KEYS = \["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"\] as const;/.test(cx)
     && /verboten: formatPhrases\(field\("VERBOTEN"\)\),/.test(cx) && !/verboten: \[\],\n/.test(cx.split("parseFormattedCard")[1] ?? "");
   pin(`${RULE_CARD_V2} — VERBOTEN is a FORMAT_KEY, so a re-read through the format path cannot drop the card's forbidding half`,
     formatVerboten, `formatVerboten=${formatVerboten}`);
@@ -10687,6 +10699,55 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const precedence = ruleDoc.slice(ruleDoc.indexOf("## Welches Modell läuft"), ruleDoc.indexOf("## Die Faktschicht"));
   pin("the model precedence rule is described in docs/harness-adapter.md as file before footer before record, named at src/running.ts",
     precedence.includes("Session-Datei vor Footer vor Slot-Datensatz") && precedence.includes("src/running.ts#runningModel"));
+}
+
+{
+  const defaults = [MODEL_DEFAULTS.orchestrator, MODEL_DEFAULTS.main, MODEL_DEFAULTS.worker, MODEL_DEFAULTS.denk];
+  pin("model register: role defaults are current entries and the interactive protocol uses main",
+    defaults.every(({ harness, id }) => modelEntry(harness, id)?.status === "current")
+      && FLEET_DEFAULT_MODEL === MODEL_DEFAULTS.main.id
+      && MODEL_DEFAULTS.worker.id === "gpt-6-sol" && MODEL_DEFAULTS.denk.id === "gpt-6-astra",
+    JSON.stringify(defaults));
+  pin("model register: every stated successor is current and superseded ids remain in adapter menus",
+    MODEL_REGISTER.filter((entry) => entry.status === "superseded").every((entry) =>
+      (!entry.supersededBy || modelEntry(entry.harness, entry.supersededBy)?.status === "current")
+      && modelsForHarness(entry.harness).includes(entry.id))
+      && modelEntry("codex", "gpt-5.6-terra")?.supersededBy === undefined
+      && modelEntry("pi-zai", "glm-5.3-flash")?.status === "current",
+    JSON.stringify(MODEL_REGISTER.filter((entry) => entry.status === "superseded")));
+  pin("model register: the current alias and displayed GPT-6 windows come from registered ids",
+    MODEL_ALIASES.opus === MODEL_DEFAULTS.main.id && MODEL_ALIASES.astra === MODEL_DEFAULTS.denk.id
+      && modelWindow("gpt-6-sol") === 272_000 && modelWindow("gpt-6-astra") === 272_000
+      && modelWindow("gpt-6-unlisted") === null,
+    JSON.stringify([MODEL_ALIASES.opus, modelWindow("gpt-6-sol"), modelWindow("gpt-6-unlisted")]));
+  pin("model register: Codex availability distinguishes listed, absent, and missing or malformed cache",
+    codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-sol") === "available"
+      && codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-astra") === "unavailable"
+      && codexAvailability(null, "gpt-6-sol") === "unknown"
+      && codexAvailability({ models: [{}] }, "gpt-6-sol") === "unknown",
+    "synthetic present, absent, missing and malformed cache");
+}
+
+{
+  const tracked = spawnSync("git", ["-C", ROOT, "ls-files", "-z", "--", "*.ts", "*.js", "*.sh"],
+    { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+  const files = tracked.status === 0 ? tracked.stdout.split("\u0000").filter(Boolean) : [];
+  pin("model register: tracked code inventory is readable", tracked.status === 0 && files.length > 0,
+    tracked.status === 0 ? `${files.length} tracked code files`
+      : (tracked.error?.message || tracked.stderr || `git ls-files exited ${String(tracked.status)}`).trim().slice(0, 160));
+  const modelStrings = /["'](?:claude-(?:bridge\/)?[a-z0-9-]+|gpt-[0-9][a-z0-9.-]*|glm-[0-9][a-z0-9.-]*)["']/gi;
+  const listedModels = (source: string): string[] => {
+    const normalized = source.replace(/\[1m\]/g, "@1m");
+    return [...normalized.matchAll(/\[\s*["'](?:claude-|gpt-|glm-)[^\]]{0,800}\]/gs)].filter((m) =>
+      [...m[0].matchAll(modelStrings)].length >= 2).map((m) => m[0].replace(/\s+/g, " ").slice(0, 100));
+  };
+  pin("model register: list detector rejects two model literals in one array",
+    listedModels('const models = [' + '"gpt-5.6-sol", "gpt-6-sol"];').length === 1,
+    "synthetic duplicate registry list");
+  const duplicates = files.filter((f) => f !== "model-register.ts" && exists(f)).flatMap((f) =>
+    listedModels(read(f)).map((excerpt) => `${f}: ${excerpt}`));
+  pin("model register: no tracked code file outside the register lists model ids",
+    tracked.status === 0 && duplicates.length === 0, duplicates.length ? duplicates.slice(0, 8).join("; ") : "no duplicate model lists");
 }
 
 console.log(rows.join("\n"));

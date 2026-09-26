@@ -1998,7 +1998,7 @@ export async function run(): Promise<void> {
     // the band is the anchor's slot number, that the letters count within one band and not across
     // the bar, that a bandless lane lands on band 0 rather than colliding with band 1, and that
     // neither ordering of the input changes an answer.
-    const refSrc = cut("const bandLetter =", "// THE FOUR STATES A ROW");
+    const refSrc = cut("const bandLetter =", "// THE FOUR STATES A ROW").replace(/^export /gm, "");
     type BandStack = { anchor: { id: number } | null; lanes: { id: number; worktree?: { letter?: string } | null }[] };
     let laneBandNames: ((stacks: readonly BandStack[]) => Map<number, string>) | null = null;
     try {

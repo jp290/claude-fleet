@@ -12,7 +12,7 @@ stand: 2026-09-26
 Zum Anhaengen (Grok kann unsere Tailscale-Adressen nicht oeffnen, also als Bilddatei hochladen):
 `marken5-leiste.png` (die drei Fassungen A/B/C nebeneinander, wie sie in der Leiste laufen) und
 `marken5-arten.png` (Artentafel: jede Art, jede Rolle, jedes Harness, jeder Zustand). Beide liegen
-fuer den Owner unter http://100.64.0.1:8896/ (Scratchpad der Oberflaeche-MAIN, nicht im Baum).
+fuer den Owner unter dem Tailscale-Host, Port 8896 (Scratchpad der Oberflaeche-MAIN, nicht im Baum).
 
 ```text
 KONTEXT

@@ -14984,12 +14984,28 @@ const startPlanRowOf = (t: Task): StartPlanRow => {
 // STARTS anything reads it (the tick walks plan.repos through startPlanWaves()).
 type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView>; buendel: BundleProposal[] };
 function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlanView {
+  const baseCache = new Map<string, string | null>();
+  const baseOf = (repo: string | null): string | null => {
+    if (!repo) return null;
+    const key = repoCanon(repo);
+    if (baseCache.has(key)) return baseCache.get(key) ?? null;
+    const configured = repoBases[key];
+    const branch = configured ?? (() => {
+      const result = Bun.spawnSync(["git", "-C", key, "rev-parse", "--abbrev-ref", "HEAD"],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      const name = result.stdout.toString().trim();
+      return result.success && name && name !== "HEAD" ? name : null;
+    })();
+    baseCache.set(key, branch);
+    return branch;
+  };
   const statuses: Record<string, string> = {};
   const rows: StartPlanRow[] = [];
   for (const t of tasks) {
     statuses[t.id] = t.status;
     if (t.kind !== "auftrag" || (t.status !== "queued" && t.status !== "pending") || t.variants) continue;
     rows.push(startPlanRowOf(t));
+    rows[rows.length - 1].base = t.base ?? baseOf(t.repo ?? DISPATCH_REPO);
   }
   const projectionRepoFor = new Map(projection.repos.map((r) => [repoCanon(r.repo), r.repo]));
   const lanes: StartPlanLane[] = slots.filter((s) => s.cwd && (s.worktree || s.programId)).map((s) => {
@@ -15012,6 +15028,7 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
     });
     return { slot: s.id, programId: s.programId, ...(variantOf ? { variantOf } : {}), ...(hunks ? { hunks } : {}),
       repo: s.worktree ? projectionRepoFor.get(s.worktree.repo) ?? s.worktree.repo : null,
+      base: s.worktree ? s.worktree.base ?? baseOf(s.worktree.repo) : null,
       ...startPlanLaneSurface(claims, own, hunks) };
   });
   const programIds = [...new Set(rows.map((r) => r.programId).filter((p): p is string => !!p))].sort();

@@ -353,6 +353,14 @@ kommt nur aus einem gespeicherten Fakt (`hold.at`, `criterion.proposedAt`), nie 
 Tabelle wird bei jedem GET neu abgeleitet und nie persistiert; die Plan-Hälfte des Objekts ist
 weiter byte-gleich mit `bun start-plan.ts --state fleet.json`.
 
+**Kollision nach Integrationsbasis.** Die Startplan-Zeile liest `Task.base`, die laufende Lane
+`Slot.worktree.base`; fehlt der Wert, gilt der Integrationszweig des Repos (`repoBases`, sonst
+dessen aktueller Branch). `start-plan.ts#collision` prüft eine gemeinsame Datei nur bei gleicher
+effektiver Basis weiter auf Ranges und Symbole. Verschiedene bekannte Basen erzeugen keine
+Startplan-Kollision. Ist eine Basis unbekannt, bleibt die gemeinsame Datei konservativ eine
+Kollision. Ein späterer Abgleich von `main` nach `overhaul` kann die getrennten Änderungen
+zusammenführen müssen; der Konflikt zeigt sich dann beim Merge oder Rebase des Integrationszweigs.
+
 **Der Sensor (`server.ts#tickStallSensor`, erste Zeile von `tickDispatch`).** Je Repo ist ein Stau
 `waits.ts#stallReadings`: freigegebene Arbeit wartet, keine Welle ist `now`, die Lanes liegen UNTER
 dem Repo-Deckel, und mindestens eine freigegebene Zeile wartet auf jemanden statt auf den Tick (ein

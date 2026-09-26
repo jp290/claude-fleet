@@ -605,10 +605,15 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(tasksAfter) === JSON.stringify(tasksBefore)
       && JSON.stringify(poll.tasks) === JSON.stringify(pollBefore.tasks),
     `full:${tasksBefore.tasks.length}->${tasksAfter.tasks.length} poll:${pollBefore.tasks.length}->${poll.tasks.length}`);
-  check("programs isolation: dispatch configuration is unchanged and no task gains programId without the owner naming one",
-    JSON.stringify(poll.dispatch) === JSON.stringify(pollBefore.dispatch)
-      && tasksAfter.tasks.every((t) => !("programId" in t)) && poll.tasks.every((t) => !("programId" in t)),
+  check("programs isolation: dispatch configuration is unchanged",
+    JSON.stringify(poll.dispatch) === JSON.stringify(pollBefore.dispatch),
     `dispatch=${JSON.stringify(poll.dispatch)}`);
+  const programIdsOf = (rows: Record<string, unknown>[]): string =>
+    JSON.stringify(rows.map((t) => [t.id, "programId" in t, t.programId ?? null]));
+  check("programs isolation: no task gains programId without the owner naming one",
+    programIdsOf(tasksAfter.tasks) === programIdsOf(tasksBefore.tasks)
+      && programIdsOf(poll.tasks) === programIdsOf(pollBefore.tasks),
+    `full:${programIdsOf(tasksBefore.tasks)}->${programIdsOf(tasksAfter.tasks)} poll:${programIdsOf(pollBefore.tasks)}->${programIdsOf(poll.tasks)}`);
 
   // Owner-direct proposals use the same content validator and honestly say owner. This row also
   // supplies the proposed-state negative transition without touching the session proposal.
@@ -7180,7 +7185,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const dispatchSeed = await makeTask({ text: "cross-repo dispatch seed", repo: REPO2 });
   const seedRow = await taskRow(dispatchSeed);
   check("cross-repo filing fixture: the dispatcher's open-work list contains the foreign repo before MAIN filing",
-    seedRow?.repo === realpathSync(REPO2) && seedRow.status === "pending" && seedRow.kind === "auftrag",
+    !!seedRow?.repo && realpathSync(seedRow.repo) === realpathSync(REPO2)
+      && seedRow.status === "pending" && seedRow.kind === "auftrag",
     JSON.stringify(seedRow));
   const selfFile = (body: Record<string, unknown>): Promise<Response> =>
     fetch(`${BASE}/api/self/tasks`, { method: "POST",

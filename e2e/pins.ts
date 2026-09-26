@@ -80,6 +80,7 @@ import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES,
   renderBriefReviewBlock, BRIEF_REVIEW_MARK, BRIEF_REVIEW_MAX_BYTES } from "../wave-brief";
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
+import { SESSION_BLOCKS } from "../session-blocks";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
 // the lane-permission hook is IMPORTED for its pure decision and SPAWNED for its stdin/exit contract —
@@ -10748,6 +10749,28 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     listedModels(read(f)).map((excerpt) => `${f}: ${excerpt}`));
   pin("model register: no tracked code file outside the register lists model ids",
     tracked.status === 0 && duplicates.length === 0, duplicates.length ? duplicates.slice(0, 8).join("; ") : "no duplicate model lists");
+}
+
+// S3's inventory is declaration only. Pin the doc's rows to the declaration and every named
+// source symbol to tracked code; a stale inventory must fail before someone designs switches on it.
+{
+  const note = read("docs/messungen/2026-09-26-session-bausteine.md");
+  const listed = [...note.matchAll(/^\| `(.*?)` · /gm)].map((m) => m[1]);
+  const declared = SESSION_BLOCKS.map((block) => block.id);
+  pin("S3 session blocks: note and declaration name every block once in the same order",
+    declared.length > 0 && new Set(declared).size === declared.length
+      && JSON.stringify(listed) === JSON.stringify(declared),
+    `declared=${declared.length}, documented=${listed.length}`);
+  const stale = SESSION_BLOCKS.filter((block) => {
+    const [path, symbol] = block.source.split("#");
+    return !path || !symbol || !exists(path)
+      || !new RegExp(`\\b${symbol}\\b`).test(read(path));
+  });
+  pin("S3 session blocks: every declared source symbol resolves in this tree",
+    stale.length === 0, stale.map((block) => `${block.id}:${block.source}`).join(", "));
+  pin("S3 session blocks: the list is observational and no server path reads defaultOn",
+    !read("server.ts").includes('from "./session-blocks"')
+      && !read("server.ts").includes("defaultOn"));
 }
 
 console.log(rows.join("\n"));

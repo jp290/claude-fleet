@@ -17,7 +17,8 @@ import {
   type ContextPackTrigger,
 } from "../context-packs";
 import { USE_WHEN_MAX, validateContextPacks, type ContextPackRepoFacts } from "../context-pack-validator";
-import { CONTEXT_MANIFEST_PATH, planRepoContext, readContextManifest } from "../context-manifest";
+import { CONTEXT_MANIFEST_PATH, planRepoContext, readContextManifest, taskContextTriggers } from "../context-manifest";
+import { planContext } from "../context-plan";
 
 export type ContextPackCheck = (name: string, ok: boolean, detail?: string) => void;
 
@@ -119,7 +120,7 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
   if (fixture.facts) {
     const capabilities = fullCapabilities();
     const real = validateContextPacks({ packs: CONTEXT_PACKS, repo: fixture.facts, capabilities });
-    check("context packs: real six-pack manifest resolves", real.verdict === "pass" && real.issues.length === 0,
+    check("context packs: real seed manifest resolves", real.verdict === "pass" && real.issues.length === 0,
       issueSummary(real));
 
     const missingPath = clonePacks();
@@ -279,6 +280,30 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
         `root=${root} server=${server === null ? "unreadable" : "ok"} manifest=${manifest.kind}`
           + ` mode=${modeMatch?.[1] ?? "not found"} triggers=${triggers ?? "not found"} capabilities=${capabilities ?? "not found"}`);
     else {
+      check("context packs: dispatch derives task triggers from the delivered brief",
+        server.includes("triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS)"),
+        "the dispatch plan must use the brief chosen for this delivery");
+      const jevTriggers = taskContextTriggers(["ZIEL: Jev-Verwendungsform im Aufruf pruefen"],
+        triggers as ContextPackTrigger[]);
+      const ordinaryTriggers = taskContextTriggers(["ZIEL: Queue-Ansicht pruefen"],
+        triggers as ContextPackTrigger[]);
+      const seedFacts = { sourceTree: "fleet" as const, harness: "claude", mode: modeMatch[1] as ContextPackMode,
+        capabilities: capabilities as ContextPackCapability[] };
+      const jevPlan = planContext({ ...seedFacts, triggers: jevTriggers });
+      const ordinaryPlan = planContext({ ...seedFacts, triggers: ordinaryTriggers });
+      const jevPack = jevPlan.selected.find((pack) => pack.id === "jev-use");
+      check("context packs: a Jev lane gets the Verwendungsform anchor",
+        jevTriggers.includes("jev-use") && jevPack !== undefined
+          && Array.isArray(jevPack.sources)
+          && JSON.stringify(jevPack.sources) === JSON.stringify([{ path: "docs/jev.md", anchor: "## Verwendungsform" }]),
+        `selected=[${jevPlan.selected.map((pack) => pack.id).join(",")}]`);
+      check("context packs: a lane without Jev omits only the Jev trigger",
+        !ordinaryTriggers.includes("jev-use")
+          && ordinaryPlan.omitted.some((pack) => pack.id === "jev-use" && pack.why === "trigger-not-matched")
+          && ordinaryPlan.selected.some((pack) => pack.id === "portable-core")
+          && ordinaryPlan.selected.some((pack) => pack.id === "verify-e2e"),
+        `selected=[${ordinaryPlan.selected.map((pack) => pack.id).join(",")}]`
+          + ` omitted=[${ordinaryPlan.omitted.map((pack) => `${pack.id}:${pack.why}`).join(",")}]`);
       // Only tracked, readable sources reach the validator — exactly what repoManifestContextPlan
       // hands it at the seam. A source this probe could not read must stay OUT, so an unchecked
       // anchor is reported as unchecked instead of hopefully delivered.

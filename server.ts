@@ -42,7 +42,7 @@ import { planContext, planProgramContext, programContextPacksFrom, resolveContex
   type ProgramContextPack } from "./context-plan";
 import { buildSnippetPackage, planSnippets, snippetReceipt, renderSnippetBlock, type SnippetFile, type SnippetReceipt } from "./context-snippets";
 import {
-  CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest,
+  CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest, taskContextTriggers,
   stampObservedSourceHashes, type ContextManifestRead,
 } from "./context-manifest";
 import {
@@ -3078,8 +3078,15 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
     if (scope.principal === "lane") {
       repoRoot = await repoRootOf(repoPath);
       head = await integrationHead(repoRoot);
+      const taskTexts = tasks.filter((row) => row.slot === s.id && row.status === "sent")
+        .flatMap((row) => {
+          const source = variantSourceOf(row);
+          return [source.text, source.brief?.text ?? "", source.card?.ziel ?? "",
+            ...(source.comments ?? []).map((comment) => comment.text)];
+        });
       facts = { sourceTree: await dispatchSourceTree(repoPath), harness: s.harness ?? null, mode: DISPATCH_CONTEXT_MODE,
-        triggers: DISPATCH_CONTEXT_TRIGGERS, capabilities: DISPATCH_CONTEXT_CAPABILITIES };
+        triggers: taskContextTriggers(taskTexts, DISPATCH_CONTEXT_TRIGGERS),
+        capabilities: DISPATCH_CONTEXT_CAPABILITIES };
     } else {
       const pre = await preflightProgramMain(repoPath);
       if (!pre.ok) throw new Error(pre.error);
@@ -15292,7 +15299,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
 // leaves a bare shell that would EXECUTE the brief. Never rejects — every failure requeues.
 // Why the compile left this function: server-narrativ-archiv.md#briefandsend
 const DISPATCH_CONTEXT_MODE: ContextPackMode = "mutating";
-const DISPATCH_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification"];
+const DISPATCH_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification", "jev-use"];
 // Every normal worktree lane has the tracked checkout, Bun, git, the e2e harnesses, server.ts and
 // the copied private overlay, so these six are real for every adapter. Deliberately absent:
 // `task-queue-read` (a lane's scoped token cannot read the owner queue) and `deploy-observe`.
@@ -15610,7 +15617,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     const head = await integrationHead(wt.repo);
     if (!head) throw new Error("could not read integration HEAD for context receipt");
     const planFacts = { sourceTree, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
-      triggers: DISPATCH_CONTEXT_TRIGGERS, capabilities: DISPATCH_CONTEXT_CAPABILITIES };
+      triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS), capabilities: DISPATCH_CONTEXT_CAPABILITIES };
     // The Fleet seeds plus whatever THIS repository declares about itself at that commit — the same
     // merge Program-MAIN founding does, deliberately with no frame branch: a Fleet-only or
     // foreign-only rule would be a second, quieter policy. `repoRootOf` throws → the catch requeues.
@@ -31839,7 +31846,7 @@ async function foundingPlanOf(repo: string, harness: string | null,
   const frame: ProgramMainFrame = sourceTree === "fleet" ? "fleet-control" : "target-repo";
   const facts = foundingMode === "lane"
     ? { sourceTree, harness,
-        mode: DISPATCH_CONTEXT_MODE, triggers: DISPATCH_CONTEXT_TRIGGERS,
+        mode: DISPATCH_CONTEXT_MODE, triggers: taskContextTriggers([], DISPATCH_CONTEXT_TRIGGERS),
         capabilities: DISPATCH_CONTEXT_CAPABILITIES }
     : programMainContextFacts(frame, harness);
   const base = planContext(facts);

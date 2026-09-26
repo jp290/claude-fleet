@@ -43,7 +43,8 @@ an. `status` druckt `./ctl.sh lock` mit — der Beweis gehört neben die Behaupt
    `FLEET_*`-Werte, die das Skript selbst setzt. Vor dem Start schreibt das Skript deren NAMEN
    (nie Werte) in `<instanzdir>/env-names`; keiner von `FLEET_HUB_REMOTE`, `FLEET_HELPER_*`,
    `FLEET_SHARE_*` kann darin stehen, und das Skript prüft das mit einer scharfen Verweigerung,
-   statt es nur anzunehmen.
+   statt es nur anzunehmen. `LANG=en_US.UTF-8` steht zusätzlich in `env-names`, weil tmux das Tab
+   unter C-Locale als `_` ausgibt.
 3. **Beim Ableiten:** Port 8790, Socket `claudefleet` und ein Verzeichnis INNERHALB des Checkouts
    werden mit Namen abgewiesen (exit 2) — ein Env-Override ist genau der Weg, auf dem jemand dem
    Skript versehentlich den Live-Fleet reicht. Abräumt wird per notierter PID — aber nur bei

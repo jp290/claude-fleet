@@ -134,7 +134,7 @@ ti_serve() {
   # live token the lane happens to carry. The refusal underneath is belt and braces — with the
   # whitelist it cannot fire — but the invariant is CHECKED, not assumed.
   : > "$DIR/env-names"
-  for TI_V in FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
+  for TI_V in LANG FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
               FLEET_LANE_SUCCEED_MAX FLEET_TOKEN; do
     echo "$TI_V" >> "$DIR/env-names"
   done
@@ -151,6 +151,7 @@ ti_serve() {
   # env -i, the card's "the server gets only the values the script itself sets": BY CONSTRUCTION,
   # not by filtering — the child env is exactly the names written to env-names above.
   ( cd "$DIR" && exec env -i HOME="$DIR/home" PATH="$DIR/bin:$PATH" TMPDIR="${TMPDIR:-/tmp}" \
+      LANG=en_US.UTF-8 \
       FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD=true \
       FLEET_INSTANCE="$TI_NAME" FLEET_INSTANCES="$TI_INST" FLEET_LANE_SUCCEED_MAX=5 \
       FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &

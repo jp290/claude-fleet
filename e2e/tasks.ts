@@ -3458,6 +3458,27 @@ export async function run(ctx: Ctx): Promise<void> {
       && (await rVars(rGroup3)).every((t) => t.status === "queued"),
       JSON.stringify({ single: rFreed, variants: await rVars(rGroup3) }));
 
+    // A restart may park this group's claim again before cleanup turns dispatch off. An unqueued
+    // group can no longer start, so even a fresh claim must release the next single row.
+    await rClean();
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "2" });
+    const rFill3b = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
+    await post(`/api/tasks/${rGroup3}/queue`, {});
+    const rSingle3b = await rFileRow("(v-res) single row behind an unqueued group — its claim must fall");
+    await post("/api/dispatch", { on: true });
+    const rHeld3b = await rTill(() => rRow(rSingle3b), (t) => (t?.note ?? "").startsWith("waiting: the next lane is reserved"));
+    check("(v-res)(3b) fixture: the group holds the next lane before it is unqueued",
+      rHeld3b?.status === "queued" && (rHeld3b?.note ?? "").includes(rGroup3) && typeof rFill3b.slot === "number",
+      JSON.stringify({ status: rHeld3b?.status, note: rHeld3b?.note, filler: rFill3b.slot ?? null }));
+    await post(`/api/tasks/${rGroup3}/unqueue`, {});
+    const rFreed3b = await rTill(() => rRow(rSingle3b), (t) => t?.status === "sent", 40);
+    check("(v-res)(3b) unqueue ends the group's claim and the single row starts within the reserve span",
+      (await rRow(rGroup3))?.status === "pending" && (await rVars(rGroup3)).every((t) => t.status === "pending")
+      && rFreed3b?.status === "sent" && typeof rFreed3b?.slot === "number",
+      JSON.stringify({ group: (await rRow(rGroup3))?.status, variants: (await rVars(rGroup3)).map((t) => t.status), single: rFreed3b }));
+    await rClean();
+    await post(`/api/tasks/${rSingle3b}/delete`, {});
+
     // (4) · E4 4b02bd09 · THE RELEASE DECKEL COUNTS A GROUP'S n VARIANTS (server.ts#releaseTaskForMain).
     // A bound MAIN releases rows of its OWN program; under `manual` — every program without an
     // explicit release policy — the deckel applies. Deckel 5 (the default), four single rows

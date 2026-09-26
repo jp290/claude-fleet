@@ -17471,7 +17471,7 @@ function variantReserveSet(groupId: string, g: VariantGroupStart): void {
 }
 // …and the tick's single reader: does the standing claim hold THIS single row back? Three ways it
 // does not, checked here rather than trusted: the span ran out, the group moved (it started through
-// any door, was decided, deleted or held — whoever moved it, the claim dies with it), or the row
+// any door, was unqueued, decided, deleted or held — whoever moved it, the claim dies with it), or the row
 // is outside the claim's scope.
 function variantReserveHolds(row: Task, repo: string): VariantReservation | null {
   const r = variantReservation;
@@ -17479,10 +17479,9 @@ function variantReserveHolds(row: Task, repo: string): VariantReservation | null
   if (Date.now() - r.since >= VARIANT_RESERVE_MS) return null;
   const group = tasks.find((t) => t.id === r.groupId);
   // A HOLD moves a row without touching its status — a held row stays `queued` — so the status read
-  // below is not enough: the claim dies with a hold on the group row or on any variant too. The
-  // comment above promised "decided, deleted or held"; comment and code say the same thing now
-  // (f733e80d), and the wave order never re-reaches a held group to let the writer clear it.
-  if (!group || group.hold || variantsOfGroup(group).some((v) => v.hold || (v.status !== "pending" && v.status !== "queued"))) {
+  // below is not enough: the claim dies with a hold or unqueue on the group or a variant. The
+  // wave order may never re-reach that group to let the writer clear it.
+  if (!group || group.status !== "queued" || group.hold || variantsOfGroup(group).some((v) => v.hold || v.status !== "queued")) {
     variantReserveRelease(r.groupId);
     return null;
   }

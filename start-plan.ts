@@ -153,6 +153,7 @@ export function releaseVerdict(row: { status: string; checks: StartPlanChecks; r
 // (see collision below) and is held by the lane caps alone, never read as "touches nothing".
 export interface StartPlanRow {
   id: string; status: string; programId: string | null;
+  base?: string | null;
   files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null;
   after: readonly string[]; checks: StartPlanChecks;
   // the row's PROGRAM policy (absent = manual) and whether its MAIN holds it — releaseVerdict's inputs
@@ -162,6 +163,7 @@ export interface StartPlanRow {
 }
 export interface StartPlanLane {
   slot: number; repo: string | null; programId: string | null;
+  base?: string | null;
   files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null;
   // the variant group of the row this lane runs, if it runs one — absent otherwise
   variantOf?: string;
@@ -288,7 +290,7 @@ export interface StartPlan {
   version: 1; budget: number; repos: StartPlanRepo[]; unresolved: LandWaveUnresolved[];
 }
 
-interface Surface { files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null; hunks?: StartPlanLane["hunks"] }
+interface Surface { files: readonly string[] | null; ranges: readonly TaskWaveRange[] | null; base?: string | null; hunks?: StartPlanLane["hunks"] }
 
 // The ranges a surface holds on one file: its row ranges there; else, for a running lane, the hunks it
 // already wrote there; else none — and none is rangesCollide's whole-file fallback. A named file the
@@ -336,11 +338,15 @@ export const APPEND_REGISTERS: readonly string[] = ["docs/messungen/INDEX.md"];
  * lane's coordinates, row ranges in main's — the ±LAND_WAVE_RANGE_GAP of R4 is the only slack, and n
  * is small, so hunks only replace the fallback on a file the lane already changed.
  *
+ * Different known integration bases do not collide at this start. If either base is unknown,
+ * the shared-file check still holds the row; unknown does not grant a parallel start.
+ *
  * `known` DROPS THE FALLBACK — for the claim of a WAITING wave only (2026-09-15, see `claims` below
  * and docs/messungen/2026-09-15-start-plan-stau-schnitt.md): a file counts only where both sides
  * carry ranges there. Never for a lane or a "now" wave: those edges decide what runs AT ONCE.
  */
 function collision(a: Surface, b: Surface, known = false): { file: string; symbol?: string } | null {
+  if (a.base && b.base && a.base !== b.base) return null;
   if (!a.files?.length || !b.files?.length) return null;
   for (const file of a.files) {
     if (!b.files.includes(file)) continue;
@@ -489,6 +495,7 @@ const argAfter = (name: string): string | null => {
 
 interface StateTask {
   id?: unknown; kind?: unknown; text?: unknown; source?: unknown; status?: unknown; slot?: unknown; programId?: unknown;
+  base?: unknown; repo?: unknown;
   card?: StartPlanCardFacts | null; brief?: { at?: unknown; text?: unknown } | null; hold?: unknown;
   variantOf?: unknown; variants?: unknown; criterion?: { proposedAt?: unknown; confirmedAt?: unknown } | null;
 }
@@ -535,42 +542,9 @@ async function cli(): Promise<void> {
     const files = policyOf(task) === "manual" ? read : [...new Set([...read, ...startPlanCardPaths(task.card ?? null)])];
     return { files: files.length ? files : null, ranges: derived?.ranges ?? null };
   };
-  const statuses: Record<string, string> = {};
-  const rows: StartPlanRow[] = [];
-  // WHO IS A QUEUE ROW, for the order the text names: every id the state file carries, decided BEFORE
-  // the row loop so a NACH onto a later row is read exactly as the live server reads it.
-  const rowIds = new Set<string>(tasks.map((t) => t.id).filter((id): id is string => typeof id === "string"));
-  // A VARIANT reads its card, text and brief off its GROUP row, as server.ts#startPlanRowOf does: the
-  // group is the one source every variant is briefed from, and a variant carries no reading of its own.
-  const sourceOf = (task: StateTask): StateTask =>
-    (typeof task.variantOf === "string" && tasks.find((t) => t.id === task.variantOf)) || task;
-  for (const task of tasks) {
-    if (typeof task.id !== "string") continue;
-    const status = typeof task.status === "string" ? task.status : "";
-    statuses[task.id] = status;
-    if (task.kind !== "auftrag" || (status !== "pending" && status !== "queued") || Array.isArray(task.variants)) continue;
-    const src = sourceOf(task);
-    rows.push({ id: task.id, status, programId: typeof task.programId === "string" && task.programId ? task.programId : null,
-      ...surfaceOf(task), after: strings(src.card?.after),
-      checks: startPlanChecks({ text: typeof src.text === "string" ? src.text : "",
-        source: typeof task.source === "string" ? task.source : "unknown", card: src.card ?? null,
-        briefText: typeof src.brief?.text === "string" ? src.brief.text : null,
-        briefAt: typeof src.brief?.at === "number" ? src.brief.at : null,
-        queueKnown: (id) => rowIds.has(id), selfId: task.id }),
-      ...(policyOf(task) !== "manual" ? { release: policyOf(task) } : {}),
-      ...(task.hold ? { held: true } : {}),
-      ...(typeof task.variantOf === "string" && task.variantOf ? { variantOf: task.variantOf } : {}) });
-  }
-
-  // a lane's repo is stored canonical; map it back onto the projection's own repo string
-  const projectionRepoFor = new Map(projection.repos.map((r) => [canon(r.repo), r.repo]));
   // THE LANE'S BASE WHEN THE RECORD CARRIES NONE, resolved exactly as server.ts#laneBaseRef falls
-  // back (repoBases → the primary's branch → its HEAD sha). A DISPATCHED lane's persisted record
-  // has NO `base` at all — server.ts writes `dRef` with repo/branch/baseSha only — so without this
-  // the merge-base anchor below would resolve for hand-opened lanes and silently fall back to the
-  // spawn-time baseSha for every dispatched one, which is precisely the phantom the anchor removes.
-  // Measured 2026-09-22: the route was right and this CLI was wrong on the same tree, in the same
-  // second. Cached per repo — several lanes share one, and this shells out.
+  // back (repoBases → the primary's branch). Cached per repo for rows and lanes.
+  // An unresolvable branch stays unknown and cannot separate two shared files.
   const bases: Record<string, string> = state.repoBases && typeof state.repoBases === "object"
     ? Object.fromEntries(Object.entries(state.repoBases as Record<string, unknown>)
       .filter((e): e is [string, string] => typeof e[1] === "string" && !!e[1])) : {};
@@ -588,11 +562,42 @@ async function cli(): Promise<void> {
     };
     const branch = cfg ?? ((): string | null => {
       const b = git("rev-parse", "--abbrev-ref", "HEAD");
-      return b && b !== "HEAD" ? b : git("rev-parse", "HEAD");
+      return b && b !== "HEAD" ? b : null;
     })();
     integrationBaseCache.set(repo, branch);
     return branch;
   };
+  const statuses: Record<string, string> = {};
+  const rows: StartPlanRow[] = [];
+  // WHO IS A QUEUE ROW, for the order the text names: every id the state file carries, decided BEFORE
+  // the row loop so a NACH onto a later row is read exactly as the live server reads it.
+  const rowIds = new Set<string>(tasks.map((t) => t.id).filter((id): id is string => typeof id === "string"));
+  // A VARIANT reads its card, text and brief off its GROUP row, as server.ts#startPlanRowOf does: the
+  // group is the one source every variant is briefed from, and a variant carries no reading of its own.
+  const sourceOf = (task: StateTask): StateTask =>
+    (typeof task.variantOf === "string" && tasks.find((t) => t.id === task.variantOf)) || task;
+  for (const task of tasks) {
+    if (typeof task.id !== "string") continue;
+    const status = typeof task.status === "string" ? task.status : "";
+    statuses[task.id] = status;
+    if (task.kind !== "auftrag" || (status !== "pending" && status !== "queued") || Array.isArray(task.variants)) continue;
+    const src = sourceOf(task);
+    const rowRepo = typeof task.repo === "string" && task.repo ? task.repo : defaultRepo;
+    const base = typeof task.base === "string" && task.base ? task.base : integrationBaseOf(rowRepo);
+    rows.push({ id: task.id, status, programId: typeof task.programId === "string" && task.programId ? task.programId : null, base,
+      ...surfaceOf(task), after: strings(src.card?.after),
+      checks: startPlanChecks({ text: typeof src.text === "string" ? src.text : "",
+        source: typeof task.source === "string" ? task.source : "unknown", card: src.card ?? null,
+        briefText: typeof src.brief?.text === "string" ? src.brief.text : null,
+        briefAt: typeof src.brief?.at === "number" ? src.brief.at : null,
+        queueKnown: (id) => rowIds.has(id), selfId: task.id }),
+      ...(policyOf(task) !== "manual" ? { release: policyOf(task) } : {}),
+      ...(task.hold ? { held: true } : {}),
+      ...(typeof task.variantOf === "string" && task.variantOf ? { variantOf: task.variantOf } : {}) });
+  }
+
+  // a lane's repo is stored canonical; map it back onto the projection's own repo string
+  const projectionRepoFor = new Map(projection.repos.map((r) => [canon(r.repo), r.repo]));
   const slots = state.slots && typeof state.slots === "object" ? state.slots as Record<string, StateSlot> : {};
   // The two facts startPlanLaneClaims needs that a state file does not hold, read here once per lane
   // exactly as server.ts#tickGit caches them per tick: `ahead` as commits of the lane's own (HEAD
@@ -639,10 +644,16 @@ async function cli(): Promise<void> {
     const laneRepoRaw = typeof slot.worktree?.repo === "string" ? slot.worktree.repo : null;
     const laneBase = typeof slot.worktree?.base === "string" && slot.worktree.base
       ? slot.worktree.base : integrationBaseOf(laneRepoRaw);
+    const laneDiffBase = laneBase ?? (laneRepoRaw ? (() => {
+      const r = Bun.spawnSync(["git", "-C", laneRepoRaw, "rev-parse", "HEAD"],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      const out = r.stdout.toString().trim();
+      return r.success && out ? out : null;
+    })() : null);
     const baseSha = typeof slot.worktree?.baseSha === "string" && slot.worktree.baseSha ? slot.worktree.baseSha : null;
     const mergeBase = ((): string | null => {
-      if (!laneCwd || !laneBase) return null;
-      const r = Bun.spawnSync(["git", "-C", laneCwd, "merge-base", laneBase, "HEAD"],
+      if (!laneCwd || !laneDiffBase) return null;
+      const r = Bun.spawnSync(["git", "-C", laneCwd, "merge-base", laneDiffBase, "HEAD"],
         { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
       const out = r.stdout.toString().trim();
       return r.success && out ? out : null;
@@ -658,7 +669,7 @@ async function cli(): Promise<void> {
       git: laneCwd && forkSha ? laneGitOf(laneCwd, forkSha) : null,
     });
     const hunks = diff?.success ? laneHunkRanges(diff.stdout.toString()) : undefined;
-    lanes.push({ ...(hunks ? { hunks } : {}), slot: Number(id), repo: laneRepo ? projectionRepoFor.get(canon(laneRepo)) ?? laneRepo : null, programId,
+    lanes.push({ ...(hunks ? { hunks } : {}), slot: Number(id), repo: laneRepo ? projectionRepoFor.get(canon(laneRepo)) ?? laneRepo : null, programId, base: laneBase,
       // startPlanLaneClaims decides WHETHER this lane claims a surface, startPlanLaneSurface WHAT:
       // its rows' files plus every file it already wrote (start-plan.ts#startPlanLaneSurface)
       ...startPlanLaneSurface(claims, own, hunks),

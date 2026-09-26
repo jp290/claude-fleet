@@ -10190,11 +10190,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const spValid = { valid: true, surfaceValid: true, done: "done sentence", verify: "bun e2e/pins.ts", size: "klein", gaps: [] };
     const spRow = (id: string, created: number, files: string[] | null, o: { status?: string; after?: string[];
       ranges?: StartPlanRow["ranges"]; card?: StartPlanCardFacts | null; text?: string; programId?: string;
-      release?: StartPlanRelease; held?: boolean; queueIds?: string[] } = {}) => ({
+      release?: StartPlanRelease; held?: boolean; queueIds?: string[]; base?: string | null } = {}) => ({
       wave: { id, created, kind: "auftrag", status: o.status ?? "queued", repo: spRepo, programId: o.programId ?? `p-${id}`,
         filesOrigin: "confirmed" as const, ...(files ? { files } : {}), ...(o.after ? { after: o.after } : {}),
         ranges: o.ranges ?? null } satisfies TaskWaveInput,
       row: { id, status: o.status ?? "queued", programId: o.programId ?? `p-${id}`, files, ranges: o.ranges ?? null,
+        ...(o.base !== undefined ? { base: o.base } : {}),
         after: o.after ?? [], checks: startPlanChecks({ text: o.text ?? `row ${id}`, source: "main",
           card: o.card === undefined ? spValid : o.card,
           // which fixture ids are QUEUE ROWS is each row's own explicit decision — the caller
@@ -10228,6 +10229,29 @@ export async function run(ctx: Ctx): Promise<void> {
       statuses: { z: "sent", ...Object.fromEntries(fixture.map((f) => [f.row.id, f.row.status])), ...statuses },
     });
     const spMain = spInput(spFixture, spLanes, { [spRepo]: { max: 5, source: "repo", programs: {} } });
+    const baseCaps = { [spRepo]: { max: 5, source: "repo" as const, programs: {} } };
+    const baseLane = (base?: string | null): StartPlanLane =>
+      ({ slot: 17, repo: spRepo, programId: null, files: ["server.ts"], ranges: null,
+        ...(base !== undefined ? { base } : {}) });
+    const baseNext = (rowBase: string | null | undefined, laneBase: string | null | undefined) =>
+      projectStartPlan(spInput([spRow("base", 1, ["server.ts"], { base: rowBase })], [baseLane(laneBase)], baseCaps))
+        .repos[0]?.waves[0]?.next;
+    const otherBase = baseNext("main", "overhaul");
+    const sameBase = baseNext("main", "main");
+    check("(sp-base) a queued main row and a running overhaul lane on server.ts can start; changing only the lane base to main restores the collision",
+      otherBase === "now" && JSON.stringify(sameBase) === JSON.stringify({ collides: { slot: 17, file: "server.ts" } }),
+      JSON.stringify({ otherBase, sameBase }));
+    const sameRows = projectStartPlan(spInput([
+      spRow("base-a", 1, ["server.ts"], { base: "main" }),
+      spRow("base-b", 2, ["server.ts"], { base: "main" }),
+    ], [], baseCaps)).repos[0]?.waves.map((w) => w.next);
+    check("(sp-base) two queued rows on server.ts with the same base still collide",
+      JSON.stringify(sameRows) === JSON.stringify(["now", { collides: { row: "base-a", file: "server.ts" } }]),
+      JSON.stringify(sameRows));
+    const unknownBase = [baseNext("main", null), baseNext(null, "overhaul")];
+    check("(sp-base) an unknown row or lane base still holds a shared file",
+      unknownBase.every((next) => JSON.stringify(next) === JSON.stringify({ collides: { slot: 17, file: "server.ts" } })),
+      JSON.stringify(unknownBase));
     const spMainJson = JSON.stringify(spMain);
     const spPlan = projectStartPlan(spMain);
     const spNexts = (plan: StartPlan) => plan.repos.flatMap((r) => r.waves.map((w) => [w.ids.join("+"), w.next]));
@@ -10461,6 +10485,13 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(sp-criterion) PROBE: both lane builders are readable",
         spSrv.length > 1000 && spCliSrc.length > 1000, `server=${spSrv.length} cli=${spCliSrc.length}`);
       const spPlanFn = spSrv.match(/function startPlanNow\([\s\S]*?\n\}\n/)?.[0] ?? "";
+      check("(sp-base) the live and CLI builders attach Task.base and Slot.worktree.base, falling back to the repo integration branch",
+        /rows\[rows\.length - 1\]\.base = t\.base \?\? baseOf\(t\.repo \?\? DISPATCH_REPO\)/.test(spPlanFn)
+        && /base: s\.worktree \? s\.worktree\.base \?\? baseOf\(s\.worktree\.repo\) : null/.test(spPlanFn)
+        && /const configured = repoBases\[key\]/.test(spPlanFn)
+        && /const base = typeof task\.base === "string" && task\.base \? task\.base : integrationBaseOf\(rowRepo\)/.test(spCliSrc)
+        && /base: laneBase/.test(spCliSrc),
+        `live=${spPlanFn.length} cli=${spCliSrc.length}`);
       check("(sp-criterion) startPlanNow reads the rule off the live slot — the founding row's criterion, the slot's own awaiting, the git tick's cached reading — and takes the surface itself from startPlanLaneSurface (rows' files plus what the lane already wrote)",
         /const claims = startPlanLaneClaims\(\{/.test(spPlanFn)
         && /criterion: foundingRowOf\(s\)\?\.criterion \?\? null,/.test(spPlanFn)

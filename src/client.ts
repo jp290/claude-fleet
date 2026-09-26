@@ -1,5 +1,5 @@
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
-import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, newLane, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo } from "./board";
+import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, newLane, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, fitTextarea, growComposer, reshapeSurface, mountComposer, renderParkHint, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
@@ -2350,11 +2350,8 @@ export const fxInputEl = new Map<string, HTMLInputElement>();
 // `boardBody.replaceChildren(...)` runs, the card this built is not in the document, and .focus()
 // on a detached node is a silent no-op. A microtask is not good enough — renderBoard is async, so
 // one can land between the build and the commit. renderBoard calls this at the commit point.
-export let fxAfterPaint: (() => void) | null = null;
-export function setFxAfterPaint(fn: () => void): void { fxAfterPaint = fn; }
 export function fxRestoreAfterPaint(): void {
-  const fn = fxAfterPaint;
-  fxAfterPaint = null;
+  const fn = takeFxAfterPaint();
   fn?.();
 }
 export const fxOpenSet = (cwd: string): Set<string> => {

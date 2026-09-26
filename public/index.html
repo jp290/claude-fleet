@@ -672,7 +672,7 @@
   #comp.tall #send, #comp.tall #dropbtn, #comp.tall .optsw { height: 28px; }
   #comp.tall #send, #comp.tall #dropbtn { width: 28px; }
   #comprow { display: flex; align-items: center; gap: 4px; }
-  /* an owner send parked behind a draft (src/client.ts#renderParkHint): the chat view's quiet ink */
+  /* an owner send parked behind a draft (src/composer.ts#renderParkHint): the chat view's quiet ink */
   #comppark { padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute); }
   #comppark[hidden] { display: none; }
   #compspace { flex: 1; }
@@ -742,7 +742,7 @@
     transition: color var(--t), background-color var(--t); }
   .attx .ico { width: 12px; height: 12px; }
   .attx:hover { color: var(--chat-ink); background: var(--c-hover); }
-  /* the slim tray outside the surface: entries are DATA (src/client.ts#TRAY), not layout */
+  /* the slim tray outside the surface: entries are DATA (src/composer.ts#TRAY), not layout */
   #comptray { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 0 8px; }
   #comptray button { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border: 0;
     border-radius: var(--r1); background: transparent; color: var(--chat-mute);
@@ -821,7 +821,7 @@
   /* a staged value shows on the switch itself, underlined until it is applied or discarded */
   .optswrap.staged .optval { color: var(--chat-ink); text-decoration: underline dotted; text-underline-offset: 3px; }
   .optmark { flex: none; display: grid; margin-right: 4px; color: var(--chat-mute); }
-  /* time since the session's last message (src/client.ts#tickCacheAge): quiet mute under 4:40,
+  /* time since the session's last message (src/composer.ts#tickCacheAge): quiet mute under 4:40,
      faint + dashed underline from 4:40 (CACHE_COLD_AT_MS), 20 s before the 5 min TTL — the tooltip says why */
   .optage { flex: none; margin-right: 4px; padding: 0 4px; font: 400 12px var(--chat-sans);
     font-variant-numeric: tabular-nums; color: var(--chat-mute); cursor: default;
@@ -1289,7 +1289,7 @@
   .shellrow .shrsub { font-size: var(--chat-ui-fs); color: var(--chat-faint); overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; margin-top: 1px; }
   /* the lane line under a task row: the dispatcher's slot pointer resolved client-side
-     (src/client.ts qLaneJoins) — one line, ellipsised, so the row never grows past it */
+     (src/queue.ts qLaneJoins) — one line, ellipsised, so the row never grows past it */
   .qlane { font-family: ui-monospace, Menlo, Consolas, monospace; margin-top: 2px; }
   .qlane-off { color: var(--amber); }
   .qlane-done-looking { color: var(--add); }
@@ -3443,7 +3443,7 @@
       <!-- ONE composer for the whole board (owner 2026-09-19: the conversation view's input
            REPLACES the box under the terminal). Two sizes of the same element: #comp.bar under a
            terminal, #comp.tall mounted into the focused pane's chat dock. Nothing below is built
-           twice — src/client.ts#mountComposer moves this node. -->
+           twice — src/composer.ts#mountComposer moves this node. -->
       <div id="comp" class="bar">
         <div id="comppark" hidden></div>
         <div id="compsurface">
@@ -3521,6 +3521,6 @@
   </div>
 </div>
 
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

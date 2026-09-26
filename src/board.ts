@@ -1,4 +1,4 @@
-import { $, el, RECENT_MS, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, landsEnabled, laneBandNames, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename, setFxAfterPaint } from "./client";
+import { $, el, RECENT_MS, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, landsEnabled, laneBandNames, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename } from "./client";
 import { openQueue, programsPoll } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool } from "./prefs";
 import { popover } from "./popover";
@@ -1210,6 +1210,12 @@ export function errorsSection(): HTMLElement | null {
 }
 
 
+let fxAfterPaint: (() => void) | null = null;
+export function takeFxAfterPaint(): (() => void) | null {
+  const fn = fxAfterPaint;
+  fxAfterPaint = null;
+  return fn;
+}
 export function fileTreeSection(slot: number, cwd: string): HTMLElement {
   const sec = el("div", "bsec");
   const hd = el("div", "bwthead");
@@ -1267,10 +1273,10 @@ export function fileTreeSection(slot: number, cwd: string): HTMLElement {
   // module state and re-applied; without it the card silently jumped to the top every three seconds
   box.onscroll = () => { fxScroll.set(cwd, box.scrollTop); };
   const y = fxScroll.get(cwd) ?? 0;
-  setFxAfterPaint(() => {
+  fxAfterPaint = () => {
     if (y) box.scrollTop = y;
     if (refocus) { inp.focus(); inp.setSelectionRange(caret, caret); }
-  });
+  };
   sec.appendChild(box);
   return sec;
 }

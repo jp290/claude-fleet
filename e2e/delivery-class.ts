@@ -41,8 +41,7 @@ export async function run(): Promise<void> {
     check("a recipient without readable assistant usage gets the five-minute TTL, never a guessed hour",
       queued.ttlSec === 300 && queued.ttlQuelle === "unknown" && queued.cache === "kalt",
       JSON.stringify(queued));
-    await Bun.sleep(2200);
-    check("a cold bundle waits beyond its two-second configured window for an immediate delivery",
+    check("a cold auto stays queued before its two-second window ends",
       !(await plogRead()).slice(before).some((p) => p.slot === 2 && p.text.includes(autoText)));
     const owner = await Promise.race([post("/send", { slot: 2, text: ownerText }),
       Bun.sleep(3_000).then(() => null)]);
@@ -61,6 +60,27 @@ export async function run(): Promise<void> {
         && bundled.at(-1)?.detail === "slot:2 count=1",
       JSON.stringify({ texts: typed.map((p) => p.text), sends: sends.length - sendsBefore,
         path: sends.at(-1)?.path, bundle: bundled.at(-1)?.detail }));
+
+    const timedAuto = `${marker}: kalter Auto-Termin`;
+    const timedAutoAuditBefore = auditRows().length;
+    const timedAutoPlBefore = (await plogRead()).length;
+    const timedAutoScheduled = await post("/api/slots/2/autos", { text: timedAuto, inSec: 1, idleSec: 0 });
+    check("cold auto window fixture is scheduled", timedAutoScheduled.ok, `${timedAutoScheduled.status}`);
+    const timedAutoQueued = await until(() => auditRows().slice(timedAutoAuditBefore).find((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto" && r.cache === "kalt") ?? null,
+    { timeoutMs: 8_000, what: "second cold auto enters its own window" });
+    await Bun.sleep(3_000);
+    const timedAutoSends = auditRows().slice(timedAutoAuditBefore).filter((r) =>
+      r.event === "send" && r.slot === 2 && r.path === "bundle");
+    const timedAutoPrompts = (await plogRead()).slice(timedAutoPlBefore).filter((p) =>
+      p.slot === 2 && p.text === timedAuto);
+    const timedAutoFlushed = timedAutoQueued.deliveryClass === "buendelbar"
+      && typeof timedAutoQueued.dueAt === "number"
+      && timedAutoSends.length === 1 && (timedAutoSends[0]?.ts ?? 0) >= timedAutoQueued.dueAt - 100
+      && timedAutoPrompts.length === 1;
+    check("a cold auto arrives after its bundle window without another wakeup", timedAutoFlushed,
+      `due=${timedAutoQueued.dueAt} sends=${timedAutoSends.length} prompts=${timedAutoPrompts.length}`);
+    if (!timedAutoFlushed) return;
 
     await stopSrv();
     const coldState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
@@ -267,6 +287,54 @@ export async function run(): Promise<void> {
     rmSync(projectRoot, { recursive: true, force: true });
     await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
 
+    const inboxOpen = await post(`/api/slots/${warmSlot}/open`,
+      { cwd: REPO, label: "cold inbox MAIN fixture", harness: "pi" });
+    check("cold inbox fixture opens its own MAIN recipient", inboxOpen.ok, `${inboxOpen.status}`);
+    await stopSrv();
+    const inboxProgramId = "d".repeat(24);
+    const inboxState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+      slots: Record<string, { openedAt: number; sessionId: string | null }>;
+      programs?: Record<string, unknown>[] };
+    const inboxOccupant = inboxState.slots[String(warmSlot)]!;
+    const inboxAt = Date.now() - 5000;
+    inboxState.programs = [...(inboxState.programs ?? []), {
+      id: inboxProgramId, title: "Cold inbox bundle fixture", intent: "Deliver one unread inbox hint",
+      successCriterion: "The cold hint is delivered after its window", nonGoals: [], decisions: [],
+      evidence: [], openQuestions: [], status: "active", createdAt: inboxAt - 1000,
+      proposedBy: { kind: "owner" }, confirmedAt: inboxAt - 900, activatedAt: inboxAt - 800,
+      main: { slot: warmSlot, openedAt: inboxOccupant.openedAt,
+        sessionId: inboxOccupant.sessionId, boundAt: inboxAt - 700 },
+      inbox: { v: 1, dropped: 0, entries: [{ id: "e".repeat(24), kind: "attention-answer",
+        at: inboxAt - 500, ref: "cold-inbox-fixture", readBy: null, readAt: null }] },
+    }];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(inboxState, null, 2));
+    const inboxAuditBefore = auditRows().length;
+    const inboxPlBefore = (await plogRead()).length;
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2", FLEET_HARNESS_AUTOMATION: "1",
+      FLEET_INBOX_NUDGE_MS: "100", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
+    await tmuxOut("send-keys", "-t", `s${warmSlot}`, "Enter");
+    const inboxQueued = await until(() => auditRows().slice(inboxAuditBefore).find((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === warmSlot
+        && r.path === "inbox-nudge" && r.cache === "kalt") ?? null,
+    { timeoutMs: 8_000, what: "cold program inbox nudge enters its window" });
+    await Bun.sleep(2_700);
+    const inboxSends = auditRows().slice(inboxAuditBefore).filter((r) =>
+      r.event === "send" && r.slot === warmSlot && r.path === "bundle");
+    const inboxPrompts = (await plogRead()).slice(inboxPlBefore).filter((p) =>
+      p.slot === warmSlot && p.text.startsWith(`[fleet inbox] 1 ungelesene Eintraege in der Inbox deines Programs ${inboxProgramId}`));
+    check("a cold inbox nudge reaches its MAIN after the bundle window without another wakeup",
+      inboxQueued.deliveryClass === "buendelbar" && typeof inboxQueued.dueAt === "number"
+        && inboxSends.length === 1 && (inboxSends[0]?.ts ?? 0) >= inboxQueued.dueAt - 100
+        && inboxPrompts.length === 1,
+      `due=${inboxQueued.dueAt} sends=${inboxSends.length} prompts=${inboxPrompts.length}`);
+    await post(`/api/slots/${warmSlot}/kill`, {});
+    await stopSrv();
+    const inboxClean = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+      programs?: { id?: string }[] };
+    inboxClean.programs = (inboxClean.programs ?? []).filter((p) => p.id !== inboxProgramId);
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(inboxClean, null, 2));
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
+
     const vacant = (await (await get("/api/sessions")).json() as
       { slots: { id: number; cwd: string | null }[] }).slots.find((s) => !s.cwd)?.id ?? 0;
     const opened = vacant ? await post(`/api/slots/${vacant}/open`, { cwd: REPO, harness: "pi" }) : null;
@@ -405,15 +473,21 @@ export async function run(): Promise<void> {
           { events: { id: string; status: string }[] }).events.find((e) => e.id === roleEvent.id)?.status === "pending",
       roleRefused.detail ?? "");
     const roleBefore = auditRows().length;
-    const roleKilled = await post(`/api/slots/${vacant}/kill`, {});
     const roleNext = (await (await get("/api/sessions")).json() as
       { slots: { id: number; cwd: string | null }[] }).slots
       .find((s) => !s.cwd && s.id !== vacant)?.id ?? 0;
     const roleSuccessor = roleNext ? await post(`/api/slots/${roleNext}/open`,
-      { cwd: REPO, label: "Orchestratorin delivery successor", harness: "pi" }) : null;
+      { cwd: REPO, label: "delivery successor staging", harness: "pi" }) : null;
+    await stopSrv();
+    const roleState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+      slots: Record<string, { label: string | null }> };
+    roleState.slots[String(vacant)]!.label = "retired delivery occupant";
+    roleState.slots[String(roleNext)]!.label = "Orchestratorin delivery successor";
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(roleState, null, 2));
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
     check("role bundle fixture: the successor occupies a different slot",
-      roleKilled.ok && !!roleSuccessor?.ok && roleNext !== vacant,
-      `${roleKilled.status}/${roleSuccessor?.status} slot=${roleNext}`);
+      !!roleSuccessor?.ok && roleNext !== vacant,
+      `${roleSuccessor?.status} slot=${roleNext}`);
     const roleSend = await until(() => auditRows().slice(roleBefore).find((r) =>
       r.event === "send" && r.slot === roleNext && r.path === "bundle") ?? null,
     { timeoutMs: 12_000, what: "role bundle is typed in the successor's session" });
@@ -431,6 +505,7 @@ export async function run(): Promise<void> {
         && (roleSend.acceptance === "observed" ? roleOutcome.state === "delivered"
           : roleOutcome.uncertain && roleOutcome.state !== "delivered"),
       `from=${vacant} to=${roleNext} acceptance=${roleSend.acceptance}`);
+    await post(`/api/slots/${vacant}/kill`, {});
     await post(`/api/slots/${roleNext}/kill`, {});
   } finally {
     if (composerMode) writeFileSync(composerMode, "normal\n");

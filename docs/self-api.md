@@ -4254,8 +4254,10 @@ isolierte Suites. Der Server liest die letzte Assistant-Usage derselben Session:
 bei beiden 0 gilt die zuletzt gesehene Stufe derselben Session, ohne lesbare Stufe 300 s.
 Codex nimmt 1800 s, andere Harnesses 300 s. Die Kante ist letzter Request plus TTL minus
 `min(300 s, TTL/5)`; das Buendelfenster endet spaetestens an dieser Kante. Ist sie vorbei,
-warten buendelbare Hinweise bis zur naechsten sofortigen Zustellung. Ein selbst abonniertes
-Watch-Ereignis wartet auch dann hoechstens das Buendelfenster. Solange ein Buendel wartet,
+wartet nur ein `fleet-event` ohne eigenes Watch-Abo bis zur naechsten sofortigen Zustellung.
+`auto`, `inbox-nudge`, `report-decision` und alle anderen buendelbaren Pfade werden auch kalt
+nach ihrem Buendelfenster zugestellt; ein selbst abonniertes Watch-Ereignis ebenso. Solange ein
+Buendel wartet,
 berechnet der Watch-Tick die Kante aus der neuesten Session-Usage erneut; ein Wechsel der
 Claude-Cache-Stufe bleibt nicht am alten Timer haengen.
 

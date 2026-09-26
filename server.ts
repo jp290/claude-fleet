@@ -8963,6 +8963,9 @@ function scheduleDeliveryBundle(key: string, bundle: DeliveryBundle): void {
   bundle.timer = Number.isFinite(bundle.dueAt) ? setTimeout(() => void flushDeliveryBundle(key),
     Math.max(1, bundle.dueAt - Date.now())) : null;
 }
+function coldDeliveryHeld(options: SendTextOptions): boolean {
+  return options.path === "fleet-event" && !options.subscribedWatch;
+}
 function bundleDeadline(bundle: DeliveryBundle, s: Slot, now: number): number {
   const cache = deliveryCacheState(s, now);
   // A timer woken exactly at the conservative cache edge can run a few ms late; reserve one second
@@ -8970,7 +8973,7 @@ function bundleDeadline(bundle: DeliveryBundle, s: Slot, now: number): number {
   const warmEdge = cache.edgeAt === null ? null : cache.edgeAt - 1000;
   const first = Math.min(...bundle.entries.map((entry) =>
     cache.cache === "warm" ? Math.min(entry.queuedAt + DELIVERY_BUNDLE_SEC * 1000, warmEdge!)
-      : entry.options.subscribedWatch ? entry.queuedAt + DELIVERY_BUNDLE_SEC * 1000 : Infinity));
+      : coldDeliveryHeld(entry.options) ? Infinity : entry.queuedAt + DELIVERY_BUNDLE_SEC * 1000));
   return Math.max(first, bundle.retryAt);
 }
 function refreshDeliveryBundles(): void {
@@ -9144,7 +9147,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   const now = Date.now();
   const cache = deliveryCacheState(s, now);
   const deadline = cache.cache === "warm" ? Math.min(now + DELIVERY_BUNDLE_SEC * 1000, cache.edgeAt! - 1000)
-    : options.subscribedWatch ? now + DELIVERY_BUNDLE_SEC * 1000 : Infinity;
+    : coldDeliveryHeld(options) ? Infinity : now + DELIVERY_BUNDLE_SEC * 1000;
   return new Promise((resolve, reject) => {
     let bundle = deliveryBundles.get(key);
     if (!bundle) {

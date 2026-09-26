@@ -15727,11 +15727,19 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       anchorBlock,
       planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
     })).digest("hex");
+    const className = src.card?.valid ? src.card.klasse : undefined;
+    const executionClass = className ? executionClassFor(wt.path, className) : null;
+    const role = src.card?.rolle;
+    const override = role?.harness && role.model && role.effort
+      && taskSpawnFromBody({ harness: role.harness, model: role.model, effort: role.effort }).ok
+      ? { harness: role.harness, model: role.model, effort: role.effort } : null;
     await appendEvent(CONTEXT_RECEIPT_FILE, {
       id: randomBytes(16).toString("hex"), hash, at, repo: wt.repo, head,
       taskId: free.taskId ?? null, originId: free.originId ?? null,
       programId: free.programId ?? null, slot: free.id, branch: wt.branch,
       harness: free.harness, ...receiptModel(free), effort: free.effort,
+      ...(className ? { executionClass: executionClass ? `${className}@${executionClass.version}` : null,
+        executionRole: executionClass ? override ?? executionClass.executor : null } : {}),
       mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
       deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength,
       truncated: false,
@@ -16128,6 +16136,24 @@ const cardVerifyCommandOf = (snapshot: TrackedSnapshot | null): string | null | 
   if (!cardVerifyCommands.has(key)) throw new Error(`card verify command was not resolved for ${key}`);
   return cardVerifyCommands.get(key);
 };
+type ExecutionRole = { harness: string; model: string; effort: string };
+type ExecutionClass = { version: number; executor: ExecutionRole | null };
+function executionClassFor(repo: string, name: string): ExecutionClass | null {
+  try {
+    const register = JSON.parse(readFileSync(resolve(repo, ".fleet/klassen.json"), "utf8")) as
+      { klassen?: Record<string, { version?: unknown; executor?: unknown }> };
+    const entry = register.klassen?.[name];
+    if (!entry || !Number.isInteger(entry.version) || (entry.version as number) < 1) return null;
+    if (entry.executor === null) return { version: entry.version as number, executor: null };
+    if (!entry.executor || typeof entry.executor !== "object") return null;
+    const raw = entry.executor as Record<string, unknown>;
+    if (typeof raw.harness !== "string" || typeof raw.model !== "string" || typeof raw.effort !== "string") return null;
+    const checked = taskSpawnFromBody(raw);
+    if (!checked.ok) return null;
+    return { version: entry.version as number,
+      executor: { harness: raw.harness, model: raw.model, effort: raw.effort } };
+  } catch { return null; }
+}
 const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null, foreignVerifyCommand?: string | null): CardValidationContext => {
   const sources = new Map<string, string>();
@@ -16147,6 +16173,7 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
     harnessKnown: (v) => HARNESSES.some((h) => h.id === v),
     modelKnown: (v) => MODEL_RE.test(v),
     effortKnown: (v) => HARNESSES.some((h) => h.effortLevels.includes(v)),
+    classKnown: (v) => !!snapshot && executionClassFor(snapshot.repo, v) !== null,
     declares: (file, symbol) => !!snapshot?.paths.has(file) && declaresSymbol(sourceOf(file), symbol),
     rowKnown: (id) => tasks.some((t) => t.id === id),
   };
@@ -16402,6 +16429,7 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
   return {
     ziel: str(raw.ziel), done: str(raw.done), verify: str(raw.verify), verboten: strs(raw.verboten),
     ...(str(raw.delegation) ? { delegation: str(raw.delegation) } : {}),
+    ...(field(raw.klasse) ? { klasse: field(raw.klasse)! } : {}),
     rolle: { harness: field(role.harness), model: field(role.model), effort: field(role.effort) },
     surface: { files: strs(surface.files), symbols, ranges,
       ...(strs(surface.creates).length ? { creates: strs(surface.creates) } : {}),
@@ -16526,7 +16554,7 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
 }
 
 // THE AUTHOR'S CARD (S6, queue row 08ec67c0): whoever files a row knows its files and symbols at
-// that moment, so both create doors accept `card{ziel,surface{files,symbols},done,verify,verboten}`
+// that moment, so both create doors accept `card{ziel,rolle?,klasse?,surface{files,symbols},done,verify,verboten}`
 // and run it through the SAME validator and context the extractor tick uses. Two differences, both
 // because the author is present and the extractor is not:
 //   · ANY gap is a 400 naming it (an untracked path verbatim), and nothing is filed. A stored
@@ -16539,9 +16567,9 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
 async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined): Promise<
   { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string }> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
-    return { ok: false, status: 400, error: "card must be an object {ziel, surface{files, symbols}, done, verify, verboten, size?, after?}" };
+    return { ok: false, status: 400, error: "card must be an object {ziel, rolle?, klasse?, surface{files, symbols}, done, verify, verboten, size?, after?}" };
   const c = raw as Record<string, unknown>;
-  const known = ["ziel", "surface", "done", "verify", "verboten", "size", "after"];
+  const known = ["ziel", "rolle", "klasse", "surface", "done", "verify", "verboten", "size", "after"];
   const extra = Object.keys(c).filter((k) => !known.includes(k));
   if (extra.length) return { ok: false, status: 400, error: `card reads ${known.join(", ")} only — [${extra.join(", ")}] is not read` };
   const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;

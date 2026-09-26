@@ -115,6 +115,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // absent on a row written before the fields existed — a date, never "no model" or "no block"
     modelOrigin?: string;
     snippet?: { bytes: number; hits: number; omitted: { ref: string; why: string }[] };
+    executionClass?: string | null;
+    executionRole?: { harness: string; model: string; effort: string } | null;
   }
   // server-side briefHashOf, verbatim: the join key is only worth asserting if the test computes it
   // the same way the OUTCOME ledger does, not the same way the receipt writer does
@@ -5263,7 +5265,15 @@ export async function run(ctx: Ctx): Promise<void> {
       // carry identical brief bytes on purpose, which is exactly when that would go unnoticed.
       const since = Date.now();
       const res = await post(`/api/tasks/${taskId}/dispatch`, {});
-      const slot = ((await res.json()) as { slot?: number }).slot ?? null;
+      const dispatchText = await res.text();
+      let dispatchBody: { slot?: number } = {};
+      try { dispatchBody = JSON.parse(dispatchText) as { slot?: number }; }
+      catch { /* the fixture check below names the response rather than claiming dispatch succeeded */ }
+      check("(d5-live) dispatch fixture receives a successful JSON slot response",
+        res.ok && typeof dispatchBody.slot === "number",
+        `${taskId}: ${res.status} ${dispatchText.slice(0, 300)}`);
+      const slot = dispatchBody.slot ?? null;
+      if (slot === null) return { prompt: "", slot };
       let receipt: ContextReceipt | undefined;
       let prompt = "";
       for (let i = 0; i < 24; i++) { // same window as (d): sendText lands after the boot sleep
@@ -5317,6 +5327,49 @@ export async function run(ctx: Ctx): Promise<void> {
       && s7Sent.receipt.model === FLEET_DEFAULT_MODEL && s7Sent.receipt.modelOrigin === "default"
       && s7Sent.receipt.effort === null,
       JSON.stringify({ receipt: s7Sent.receipt ?? null, prompt: s7Sent.prompt.slice(0, 300) }));
+    const classBrief = ["KLASSE: hand", "GROESSE: klein", "FLAECHE: wave-brief.ts",
+      "VERIFY: bun e2e/pins.ts", "DONE: das Klassen-Receipt nennt das Tripel", "",
+      "ZIEL: wave-brief.ts bleibt dieselbe Arbeit."].join("\n");
+    const classPost = await post("/api/tasks", { text: classBrief, kind: "auftrag", queue: false, repo: ROOT,
+      card: { ziel: "wave-brief.ts bleibt dieselbe Arbeit", klasse: "hand",
+        surface: { files: ["wave-brief.ts"], symbols: [] },
+        done: "das Klassen-Receipt nennt das Tripel", verify: "bun e2e/pins.ts" } });
+    const classPostText = await classPost.text();
+    let classId = "";
+    try { classId = (JSON.parse(classPostText) as { task?: { id?: string } }).task?.id ?? ""; } catch { /* named below */ }
+    check("(s3-shadow) class fixture files a card against the tracked register",
+      classPost.ok && !!classId, `${classPost.status}: ${classPostText.slice(0, 300)}`);
+    const classBefore = ((await (await get("/api/tasks")).json()) as
+      { tasks: { id: string; spawn?: unknown; card?: { klasse?: string; valid?: boolean } }[] }).tasks.find((t) => t.id === classId);
+    const classSent = classId ? await dispatchAndRead(classId, classBrief) : { prompt: "", slot: null };
+    await closeLane(classSent.slot);
+    check("(s3-shadow) a class card resolves hand@1 and Opus 5.5 in the receipt while spawn stays absent",
+      classPost.ok && classBefore?.card?.valid === true && classBefore.card.klasse === "hand"
+      && classBefore.spawn === undefined && classSent.receipt?.executionClass === "hand@1"
+      && JSON.stringify(classSent.receipt.executionRole) === JSON.stringify({
+        harness: "claude", model: "claude-opus-5-5[1m]", effort: "high" })
+      && classSent.receipt.harness === null && classSent.receipt.model === FLEET_DEFAULT_MODEL,
+      JSON.stringify({ before: classBefore, receipt: classSent.receipt }));
+    await post(`/api/tasks/${classId}/delete`, {});
+    const overrideBrief = classBrief.replace("KLASSE: hand", "KLASSE: hand\nROLLE: claude/claude-sonnet-5/medium");
+    const overridePost = await post("/api/tasks", { text: overrideBrief, kind: "auftrag", queue: false, repo: ROOT,
+      card: { ziel: "wave-brief.ts bleibt dieselbe Arbeit", klasse: "hand",
+        rolle: { harness: "claude", model: "claude-sonnet-5", effort: "medium" },
+        surface: { files: ["wave-brief.ts"], symbols: [] },
+        done: "das Klassen-Receipt nennt das Tripel", verify: "bun e2e/pins.ts" } });
+    const overridePostText = await overridePost.text();
+    let overrideId = "";
+    try { overrideId = (JSON.parse(overridePostText) as { task?: { id?: string } }).task?.id ?? ""; } catch { /* named below */ }
+    check("(s3-shadow) override fixture files a card against the tracked register",
+      overridePost.ok && !!overrideId, `${overridePost.status}: ${overridePostText.slice(0, 300)}`);
+    const overrideSent = overrideId ? await dispatchAndRead(overrideId, overrideBrief) : { prompt: "", slot: null };
+    await closeLane(overrideSent.slot);
+    check("(s3-shadow) explicit ROLLE wins in the class receipt",
+      overridePost.ok && overrideSent.receipt?.executionClass === "hand@1"
+      && JSON.stringify(overrideSent.receipt.executionRole) === JSON.stringify({
+        harness: "claude", model: "claude-sonnet-5", effort: "medium" }),
+      JSON.stringify(overrideSent.receipt ?? null));
+    await post(`/api/tasks/${overrideId}/delete`, {});
 
     // (b1) THE CONTROL: the same brief, the same task text, in a world with no notes at all.
     const HUB_TEXT = "N1 hub probe over server.ts, AGENTS.md and task-metadata.ts";
@@ -5327,7 +5380,8 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(d5-live-control) a dispatch with no candidate note carries no block and receipts notes:[]",
       ctl.prompt.startsWith(`${HUB_BRIEF}\n\nContextPlan v2 anchors`)
       && !ctl.prompt.includes("Notizen auf deiner Flaeche")
-      && Array.isArray(ctl.receipt?.notes) && ctl.receipt.notes.length === 0,
+      && Array.isArray(ctl.receipt?.notes) && ctl.receipt.notes.length === 0
+      && !("executionClass" in (ctl.receipt ?? {})),
       `${JSON.stringify(ctl.receipt?.notes ?? null)} ${ctl.prompt.slice(0, 160)}`);
 
     // the eight fixture notes. `nC` is created BEFORE `nB` and the gap is asserted, because the
@@ -9664,7 +9718,8 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(vbRaw?.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"])
       && vbRaw?.ziel === vbZiel,
       JSON.stringify({ verboten: vbRaw?.verboten ?? null, ziel: vbRaw?.ziel ?? null }));
-    const delegationText = vbText.replace("VERBOTEN:", "DELEGATION: erdung:read-only, max 2\nVERBOTEN:");
+    const delegationText = vbText.replaceAll("fleet-e2e.ts", "server.ts")
+      .replace("VERBOTEN:", "DELEGATION: erdung:read-only, max 2\nVERBOTEN:");
     const delegationRaw = parseFormattedCard(delegationText);
     const delegationCard = validateCard(delegationRaw ?? {}, { ...cardCtx, sourceText: delegationText });
     check("(s2) DELEGATION and VERBOTEN survive a formatted card read and validation",
@@ -9673,8 +9728,20 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ gaps: delegationCard.gaps, delegation: delegationCard.body.delegation,
         verboten: delegationCard.body.verboten }));
     check("(s2) a card with no DELEGATION header grants no delegation field",
-      vbRaw !== null && !("delegation" in validateCard(vbRaw, { ...cardCtx, sourceText: vbText }).body),
+      vbRaw !== null && !("delegation" in validateCard(vbRaw, { ...cardCtx,
+        sourceText: vbText.replaceAll("fleet-e2e.ts", "server.ts") }).body),
       JSON.stringify(vbRaw));
+    const classText = delegationText.replace(/^ROLLE:.*\n/m, "KLASSE: hand\n");
+    const classRaw = parseFormattedCard(classText);
+    const classCard = validateCard(classRaw ?? {}, { ...cardCtx, sourceText: classText,
+      classKnown: (name) => name === "hand" });
+    const unknownText = classText.replace("KLASSE: hand", "KLASSE: erfunden");
+    const unknownCard = validateCard(parseFormattedCard(unknownText) ?? {}, { ...cardCtx,
+      sourceText: unknownText, classKnown: (name) => name === "hand" });
+    check("(s3) KLASSE alone is a valid formatted card; an unknown name has a named refusing gap",
+      classCard.valid && classCard.body.klasse === "hand"
+      && !unknownCard.valid && unknownCard.gaps.includes('klasse: "erfunden" is not a registered execution class'),
+      JSON.stringify({ valid: classCard.valid, klasse: classCard.body.klasse, gaps: unknownCard.gaps }));
     const vbNone = parseFormattedCard(vbText.replace(/^VERBOTEN: .*$/m, "VERBOTEN: \u2014"));
     const vbAbsent = parseFormattedCard(vbText.replace(/^VERBOTEN: .*$/m, ""));
     check("(fmt) an empty VERBOTEN (the \u2014 renderCardHead writes) and an absent one both read as NO constraint, not an invented one",
@@ -9869,8 +9936,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v9) CARD_VALIDATOR_VERSION is 9, so cards refused before DELEGATION or earlier rules are read once more",
-      CARD_VALIDATOR_VERSION === 9, String(CARD_VALIDATOR_VERSION));
+    check("(v10) CARD_VALIDATOR_VERSION is 10, so cards refused before KLASSE or earlier rules are read once more",
+      CARD_VALIDATOR_VERSION === 10, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the

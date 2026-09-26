@@ -56,8 +56,9 @@ export const CARD_KEY = "card";
 //   8 (2026-09-24) — a VERIFY that repeats the repo command verbatim is compared before the
 //                    MAX_SENTENCE cut, so an inline command longer than 400 chars validates
 //   9 (2026-09-26) — DELEGATION is a filing header and survives card re-reads
+//  10 (2026-09-26) — KLASSE is a checked header; its registry is supplied by the caller
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 9;
+export const CARD_VALIDATOR_VERSION = 10;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
@@ -72,6 +73,7 @@ export interface TaskCardBody {
   verify: string;
   verboten: string[];
   delegation?: string;
+  klasse?: string;
   program?: string;
   // the lane size the row's own text states (KLEINE / MITTLERE / GROSSE LANE); absent = not stated.
   // The land fold weighs a row by it (task-land-waves.ts#landWaveUnits), so it is quote-checked
@@ -85,7 +87,7 @@ export interface TaskCardBody {
 /** What the model is allowed to have said. Every field is re-checked before it becomes a card. */
 export interface RawCard {
   ziel?: unknown; rolle?: unknown; surface?: unknown;
-  done?: unknown; verify?: unknown; verboten?: unknown; delegation?: unknown; program?: unknown; size?: unknown; after?: unknown;
+  done?: unknown; verify?: unknown; verboten?: unknown; delegation?: unknown; klasse?: unknown; program?: unknown; size?: unknown; after?: unknown;
   // set only by the filing-format parser: header lines that stood AFTER the block it read. The
   // model path never carries one, so absence is the case for every other reading.
   strayHeaderLines?: unknown;
@@ -109,6 +111,7 @@ export interface CardValidationContext {
   harnessKnown: (value: string) => boolean;
   modelKnown: (value: string) => boolean;
   effortKnown: (value: string) => boolean;
+  classKnown?: (value: string) => boolean;
   // Does the tracked FILE declare this symbol? Asked only for a symbol the graph does not carry: the
   // graph is a snapshot rebuilt now and then, and measured on 2026-09-13 it lacked
   // `server.ts#taskDigest` and `server.ts#helperClaim`, both declared in the tree. The caller reads
@@ -301,6 +304,9 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     model: roleField("model", model, modelId(model), "a model id"),
     effort: roleField("effort", effort, effortId(effort), "a known effort level"),
   };
+  const klasse = typeof raw.klasse === "string" ? raw.klasse.trim() : "";
+  if (klasse && !ctx.classKnown?.(klasse))
+    gaps.push(`klasse: "${klasse.slice(0, 60)}" is not a registered execution class`);
 
   const rawSurface = (raw.surface && typeof raw.surface === "object" ? raw.surface : {}) as Record<string, unknown>;
   // THE QUOTE RULE, ENFORCED RATHER THAN REQUESTED. The prompt asks the extractor not to read a
@@ -425,6 +431,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
       ...(creates.length ? { creates } : {}), ...(unchecked.length ? { unchecked } : {}) },
     verboten: list(raw.verboten),
     ...(typeof raw.delegation === "string" && raw.delegation.trim() ? { delegation: text1(raw.delegation) } : {}),
+    ...(klasse && ctx.classKnown?.(klasse) ? { klasse } : {}),
     ...(program ? { program } : {}),
     ...(size ? { size } : {}),
     ...(after.length ? { after } : {}),
@@ -467,10 +474,10 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
 // (wave-brief.ts#renderCardHead renders it into every lane brief), so losing it silently is the
 // dangerous direction. Both readings are written to round-trip the head that renderCardHead emits:
 // `·` between entries, an em dash alone meaning none.
-const FORMAT_KEYS = ["ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"] as const;
+const FORMAT_KEYS = ["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"] as const;
 type FormatKey = typeof FORMAT_KEYS[number];
-const FORMAT_REQUIRED: readonly FormatKey[] = ["ROLLE", "GROESSE", "FLAECHE", "VERIFY", "DONE"];
-const FORMAT_LINE = /^\s*(ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|VERIFY|DONE|DELEGATION|VERBOTEN)\s*:[ \t]*(.*)$/i;
+const FORMAT_REQUIRED: readonly FormatKey[] = ["GROESSE", "FLAECHE", "VERIFY", "DONE"];
+const FORMAT_LINE = /^\s*(KLASSE|ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|VERIFY|DONE|DELEGATION|VERBOTEN)\s*:[ \t]*(.*)$/i;
 const formatKey = (word: string): FormatKey =>
   word.toUpperCase().replace("Ö", "OE").replace("Ä", "AE") as FormatKey;
 const FORMAT_DASH = /^[-\u2013\u2014]+$/;
@@ -495,7 +502,7 @@ export function parseFormattedCard(text: string): RawCard | null {
     if (fields.has(key)) return null;
     fields.set(key, hit[2].trim());
   }
-  if (!FORMAT_REQUIRED.every((key) => fields.has(key))) return null;
+  if (!FORMAT_REQUIRED.every((key) => fields.has(key)) || (!fields.has("ROLLE") && !fields.has("KLASSE"))) return null;
   const field = (key: FormatKey): string => fields.get(key) ?? "";
   const role = field("ROLLE").split("/").map((part) => part.trim());
   const files: string[] = [];
@@ -526,7 +533,7 @@ export function parseFormattedCard(text: string): RawCard | null {
     ziel: prose.trim(),
     rolle: { harness: role[0] ?? "", model: role.length > 2 ? role.slice(1, -1).join("/") : role[1] ?? "", effort: role.length > 2 ? role[role.length - 1] : "" },
     surface: { files, symbols, creates: formatTokens(field("NEU")) },
-    done: field("DONE"), verify: field("VERIFY"), delegation: field("DELEGATION"), verboten: formatPhrases(field("VERBOTEN")),
+    done: field("DONE"), verify: field("VERIFY"), delegation: field("DELEGATION"), klasse: field("KLASSE"), verboten: formatPhrases(field("VERBOTEN")),
     ...(size ? { size } : {}),
     after: formatTokens(field("NACH")),
     ...(strayHeaderLines.length ? { strayHeaderLines } : {}),

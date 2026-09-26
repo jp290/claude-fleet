@@ -953,6 +953,8 @@ ohne bekannten Kettenschritt — ist 400 mit dem Befund wörtlich, und nichts wi
 als `Task.card{model:"author", valid:true}`; Oberfläche, Wellen-Projektion und `register.sh`
 (`surface [karte]`) lesen `card.surface.files` vor der Prosa-Ableitung. Ohne `card` unverändert.
 Vorlage: `AGENTS.md` §Filing a queue row.
+Für eine Klassenkarte lesen beide Türen zusätzlich `card.klasse` und optional `card.rolle`;
+unbekannte Klassen oder ungültige Rollen werden als benannte Kartenlücken abgewiesen.
 
 **Optionale Flächen-VORSCHLAG-Liste `files`:** der Body darf zusätzlich eine explizite
 `files: ["pfad", …]` tragen. Sie wird AUSSCHLIESSLICH nach `Task.filesProposal` geschrieben — nie
@@ -3147,6 +3149,12 @@ Felder an allen fünf Schreibern (Lane-Dispatch, zwei Supervisor-, zwei Program-
   `omitted` die im Brief genannten, aber nicht gelieferten Refs als `{ref, why}` (Prosa-Tokens
   zählen nicht). `{bytes:0, hits:0, omitted:[]}` heißt „dieser Brief trug keinen Block"; das gilt für
   jede Gründung und jede Clarify-Lane. Fehlt das Feld, ist die Zeile älter als dieser Stand.
+
+Ein Lane-Dispatch mit gültiger `KLASSE:`-Karte ergänzt `executionClass` (`hand@1`)
+und `executionRole` (`{harness, model, effort}` oder `null` für eine Klasse ohne Executor).
+Das Tripel ist aus `.fleet/klassen.json` aufgelöst; ein gültiges `ROLLE:`-Tripel hat
+im Receipt Vorrang. Der Spawn liest weiterhin ausschließlich die bestehende Wahl aus
+`Task.spawn`. Legacy-Receipts ohne Klasse tragen keines der beiden Felder.
 
 ### `tasks-archive.jsonl` — archivieren löscht nicht (seit 2026-09-15)
 

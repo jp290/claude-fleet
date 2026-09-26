@@ -2775,13 +2775,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // writer can emit is a category the ledger promises and never delivers. ("main" joined 2026-09-11
   // with POST /api/self/tasks/:id/brief — a MAIN-sharpened brief booked as "owner" would put the
   // very falsehood that door was built to end into a RATE.)
-  // S6 (08ec67c0) · THE FILING TEMPLATE IS A DOC↔CODE PAIR. AGENTS.md tells every filer which card
-  // fields the create doors read; authorCardFrom's closed list decides it. A field renamed on one
-  // side only would teach filers a 400 — and no compiler sees prose.
+  // S6 (08ec67c0) · THE FILING TEMPLATE IS A DOC↔CODE PAIR. AGENTS.md names the core author card;
+  // docs/self-api.md names the optional class extension. authorCardFrom's closed list decides both.
   const cardDoorFields = /const known = \[([^\]]+)\];\n  const extra = Object\.keys\(c\)/.exec(server)?.[1] ?? "";
   const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten, size, after\?\}`/.test(read("AGENTS.md"));
-  pin("AGENTS.md's card template names exactly the card fields the create doors read",
-    cardDoorFields.replace(/\s/g, "") === '"ziel","surface","done","verify","verboten","size","after"' && agentsCard
+  const classCardDocs = /`card\.klasse` und optional `card\.rolle`/.test(read("docs/self-api.md"));
+  pin("the card template and class extension name the fields the create doors read",
+    cardDoorFields.replace(/\s/g, "") === '"ziel","rolle","klasse","surface","done","verify","verboten","size","after"'
+    && agentsCard && classCardDocs
     && /ZIEL: [^\n]*\nFLAECHE: [^\n]*\nDONE: [^\n]*\nVERIFY: [^\n]*\nVERBOTEN: [^\n]*\nROLLE: /.test(read("AGENTS.md")),
     `door=[${cardDoorFields}] agents=${agentsCard}`);
   const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";
@@ -10002,8 +10003,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_CARD_V2 = "a card is refused by the tree, not by a stale graph or a foreign field";
   const cx = read("card-extract.ts");
   // v6 (2026-09-18): POST /api/self/criterion is a clarify row's verify.
-  const versionConst = /^export const CARD_VALIDATOR_VERSION = 9;$/m.test(cx);
-  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 9 (bump it when a rule change can turn a refusal into an acceptance)`,
+  const versionConst = /^export const CARD_VALIDATOR_VERSION = 10;$/m.test(cx);
+  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 10 (bump it when a rule change can turn a refusal into an acceptance)`,
     versionConst, `const=${versionConst}`);
   // v3 (2026-09-13): the filing format. A formatted row is read by the PARSER before the extractor
   // is ever started, and the ledger says which of the two produced each card.
@@ -10021,7 +10022,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     declFallback, `declFallback=${declFallback}`);
   // v6 (2026-09-17): the re-read may not make the row poorer. A field the filing format cannot
   // spell is DROPPED by the sweep's unconditional overwrite the moment a brief moves the row.
-  const formatVerboten = /const FORMAT_KEYS = \["ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"\] as const;/.test(cx)
+  const formatVerboten = /const FORMAT_KEYS = \["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"\] as const;/.test(cx)
     && /verboten: formatPhrases\(field\("VERBOTEN"\)\),/.test(cx) && !/verboten: \[\],\n/.test(cx.split("parseFormattedCard")[1] ?? "");
   pin(`${RULE_CARD_V2} — VERBOTEN is a FORMAT_KEY, so a re-read through the format path cannot drop the card's forbidding half`,
     formatVerboten, `formatVerboten=${formatVerboten}`);

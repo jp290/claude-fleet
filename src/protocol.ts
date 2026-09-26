@@ -12,6 +12,7 @@
 // WHAT BELONGS HERE: a value or a shape that two files must hold identically.
 // WHAT DOES NOT: anything one file owns. This is not a dumping ground for constants — a constant
 // with a single reader belongs next to that reader, where its comment can say why it has its value.
+import { MODEL_DEFAULTS, MODEL_REGISTER } from "../model-register";
 
 // --- WS input frame cap -------------------------------------------------------------------------
 // The server drops any keystroke frame larger than this, silently (there is no error path to a
@@ -245,11 +246,9 @@ export interface SuiteOfferRow {
 }
 
 // --- the fleet's default interactive model ------------------------------------------------------
-// Baked into every pane command that does not pin its own model. It lives here because
-// fleet-e2e-claude-gate.ts asserts the exact quoted form `--model 'claude-opus-5[1m]'` reaches the
-// tmux line (unquoted, zsh's no-match glob kills every spawn), and that assertion used to carry its
-// own copy of the string — a copy that would keep passing after the server's default moved.
-export const FLEET_DEFAULT_MODEL = "claude-opus-5[1m]";
+// Baked into every pane command that does not pin its own model. The gate asserts the quoted
+// `--model` argument against this value; the policy itself lives in model-register.ts.
+export const FLEET_DEFAULT_MODEL = MODEL_DEFAULTS.main.id;
 
 // --- how many tokens a model's context window holds ---------------------------------------------
 // The DENOMINATOR of the context-fill sensor, and the reason that sensor cannot be a single number:
@@ -290,42 +289,13 @@ export const CONTEXT_WINDOW_GLM_5_3 = 1_000_000;
 // The named set the no-suffix door reads. Every row is a measured or structurally forced claim, not
 // a family guess; adding a model is one line plus the ground it stands on.
 const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
-  // 1M WITHOUT a suffix, read 2026-09-19 out of the installed Claude Code 2.1.278 binary
-  // (~/.local/share/claude/versions/2.1.278), whose model table carries for these two ids verbatim
-  //   "claude-opus-5",…,context:{window:1e6,native_1m:!0,supports_1m_beta:!0,supports_1m_suffix:!0}
-  //   "claude-sonnet-5",…,context:{window:1e6,native_1m:!0,native_1m_3p:{bedrock:!0,vertex:!0,foundry:!0},supports_1m_beta:!0}
-  // (Befund Chat-Lane db81f382, Report 4aef7415). REFUTED, the old ground of these rows: "the fleet
-  // asks for the 1M variant by spelling `[1m]` (FLEET_DEFAULT_MODEL, SUMMARY_MODEL), so the bare
-  // id is 200k" — a suffix the fleet writes proves nothing about what the bare id gives; it
-  // published a bare-id session's fill ~5x too high.
-  // Where Claude Code still falls back to 200k: CLAUDE_CODE_DISABLE_1M_CONTEXT set (the binary's
-  // `if(eO())return!1` gate on native_1m: "1M context is turned off here (CLAUDE_CODE_DISABLE_1M_CONTEXT
-  // is set)"), and an account whose long-context credits are off (429 long_context_credits_required,
-  // "Usage credits required for 1M context"). Neither is visible from a model id, so this row is a
-  // claim about THIS host, where the variable is unset (2026-09-19: `env | grep -c` → 0).
-  "claude-opus-5": CONTEXT_WINDOW_1M,
-  // the successor id, read 2026-09-22 out of the installed Claude Code 2.1.280 model table
-  // (~/.local/share/claude/versions/2.1.280), which carries for this id verbatim
-  //   "claude-opus-5-5",…,fallback_3p:"claude-opus-5",context:{window:1e6,native_1m:!0,supports_1m_beta:!0,supports_1m_suffix:!0}
-  // — the id answers on this machine too (probed 2026-09-22 with `claude --model claude-opus-5-5 -p`).
-  // Owner 2026-09-22: the orchestrating roles run on it. The row is the id, never the family.
-  "claude-opus-5-5": CONTEXT_WINDOW_1M,
-  "claude-sonnet-5": CONTEXT_WINDOW_1M,
-  // 200k as a ceiling rather than a tier — there is no 1M variant of this one to ask for.
+  ...Object.fromEntries(MODEL_REGISTER.filter((entry) => entry.harness === "claude" && !entry.id.includes("[")
+    && entry.displayWindow !== undefined).map((entry) => [entry.id, entry.displayWindow])),
+  // This older bare alias is absent from the adapter list but still appears in slot records.
   "claude-haiku-4-5": CONTEXT_WINDOW_BASE,
-  // the DATED release id slot records carry when spawned with the full name — same 200k ceiling, no 1M variant of it to ask for either.
-  "claude-haiku-4-5-20251001": CONTEXT_WINDOW_BASE,
   // 1M WITHOUT a suffix — the model that broke the old rule, measured 2026-08-18 on a live slot:
   // 176,680 tokens, which its own pane reported as 17.7%.
   "claude-fable-5": CONTEXT_WINDOW_1M,
-  // the successor id, named 2026-09-21 because live slots carry exactly this string and published
-  // ctx: null without a row (owner intake: „[Zitat entfernt]“).
-  // Same source as the opus-5 rows above — the installed Claude Code 2.1.278 model table, read
-  // 2026-09-21, carries for this id verbatim
-  //   "claude-fable-5-1",…,fallback_3p:"claude-fable-5",context:{window:1e6,native_1m:!0,supports_1m_beta:!0}
-  // — its own window is 1M and its third-party fallback is the 1M row above. The row is the id,
-  // never the family: `claude-fable-9` appears nowhere in the binary's table and must stay null.
-  "claude-fable-5-1": CONTEXT_WINDOW_1M,
   // `fable` — the BARE alias, and a deliberate exception to "ids only". It is what lands in a slot
   // record when a session is spawned by alias: slot 9, the standing supervisor, carries literally
   // this string, so without this row the one slot the incident above happened on publishes no fill

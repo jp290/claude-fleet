@@ -65,6 +65,9 @@ import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatom
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 import { DraftBook } from "../src/drafts";
 import { runningEffort, runningModel } from "../src/running";
+import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness } from "../model-register";
+import { FLEET_DEFAULT_MODEL } from "../src/protocol";
+import { modelWindow } from "../src/modelname";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
 // the deploy-gap's path classifier is IMPORTED and RUN over this very tree: the whole finding it
@@ -10683,6 +10686,32 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const precedence = ruleDoc.slice(ruleDoc.indexOf("## Welches Modell läuft"), ruleDoc.indexOf("## Die Faktschicht"));
   pin("the model precedence rule is described in docs/harness-adapter.md as file before footer before record, named at src/running.ts",
     precedence.includes("Session-Datei vor Footer vor Slot-Datensatz") && precedence.includes("src/running.ts#runningModel"));
+}
+
+{
+  const defaults = [MODEL_DEFAULTS.orchestrator, MODEL_DEFAULTS.main, MODEL_DEFAULTS.worker, MODEL_DEFAULTS.denk];
+  pin("model register: role defaults are current entries and the interactive protocol uses main",
+    defaults.every(({ harness, id }) => modelEntry(harness, id)?.status === "current")
+      && FLEET_DEFAULT_MODEL === MODEL_DEFAULTS.main.id
+      && MODEL_DEFAULTS.worker.id === "gpt-6-sol" && MODEL_DEFAULTS.denk.id === "gpt-6-astra",
+    JSON.stringify(defaults));
+  pin("model register: superseded ids have registered current successors and remain in adapter menus",
+    MODEL_REGISTER.filter((entry) => entry.status === "superseded").every((entry) =>
+      !!entry.supersededBy && modelEntry(entry.harness, entry.supersededBy)?.status === "current"
+      && modelsForHarness(entry.harness).includes(entry.id))
+      && modelEntry("pi-zai", "glm-5.3-flash")?.status === "current",
+    JSON.stringify(MODEL_REGISTER.filter((entry) => entry.status === "superseded")));
+  pin("model register: the current alias and displayed GPT-6 windows come from registered ids",
+    MODEL_ALIASES.opus === MODEL_DEFAULTS.main.id && MODEL_ALIASES.astra === MODEL_DEFAULTS.denk.id
+      && modelWindow("gpt-6-sol") === 272_000 && modelWindow("gpt-6-astra") === 272_000
+      && modelWindow("gpt-6-unlisted") === null,
+    JSON.stringify([MODEL_ALIASES.opus, modelWindow("gpt-6-sol"), modelWindow("gpt-6-unlisted")]));
+  pin("model register: Codex availability distinguishes listed, absent, and missing or malformed cache",
+    codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-sol") === "available"
+      && codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-astra") === "unavailable"
+      && codexAvailability(null, "gpt-6-sol") === "unknown"
+      && codexAvailability({ models: [{}] }, "gpt-6-sol") === "unknown",
+    "synthetic present, absent, missing and malformed cache");
 }
 
 console.log(rows.join("\n"));

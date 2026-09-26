@@ -25,6 +25,7 @@
 // `valid: false` is still stored — it is the honest record that a reading was attempted and what
 // it could not establish.
 import { defuseDelimiters } from "./src/protocol";
+import { MODEL_ALIASES } from "./model-register";
 import { LOCAL_PROOF_STEPS, CLARIFY_CLOSE_ROUTE } from "./verify-proportion";
 import { intentText, declaresSymbol, splitSymbolRef, IDENT_SRC } from "./task-metadata";
 import { isTaskCardSize, type TaskCardSize } from "./task-waves";
@@ -154,14 +155,6 @@ export function cardAnswerForLedger(answer: string): { answer: string; answerByt
 
 // The spellings a request uses for a model, lower-cased with whitespace collapsed. Only spellings
 // that are NOT already an id: `claude-opus-5` stays what it says, it is a real id.
-const MODEL_ALIASES: Readonly<Record<string, string>> = {
-  "opus": "claude-opus-5[1m]", "opus 5": "claude-opus-5[1m]", "claude opus 5": "claude-opus-5[1m]",
-  "opus 5.5": "claude-opus-5-5[1m]", "claude opus 5.5": "claude-opus-5-5[1m]",
-  "sonnet": "claude-sonnet-5", "sonnet 5": "claude-sonnet-5", "claude sonnet 5": "claude-sonnet-5",
-  "fable": "claude-fable-5-1[1m]", "fable 5.1": "claude-fable-5-1[1m]", "claude fable 5.1": "claude-fable-5-1[1m]",
-  "astra": "gpt-6-astra", "gpt-6 astra": "gpt-6-astra",
-};
-
 // `declaresSymbol` and `splitSymbolRef` live in task-metadata.ts beside the declaration scan that
 // shares their pattern (one fact, one definition) and are re-exported from here: server.ts and the
 // suites import them from THIS module, and the import surface does not move with the definition.

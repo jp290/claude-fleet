@@ -1276,6 +1276,18 @@ export async function run(ctx: Ctx): Promise<void> {
       // the LIVE catalogue, exactly as the client fetches it: the fixtures are drawn from it, so a
       // harness renamed or re-scoped on the server fails here instead of in a picker nobody opened
       const cat = ((await (await get("/api/harnesses")).json()) as { harnesses: SpCat[] }).harnesses;
+      const modelCat = (await (await get("/api/harnesses")).json()) as {
+        modelDefaults?: Record<string, { harness: string; id: string; effort: string }>;
+        modelRegistry?: { harness: string; id: string; status: string; supersededBy?: string; availability: string }[];
+      };
+      const oldSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-5.6-sol");
+      const newSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6-sol");
+      check("model catalogue serves the role default and warns on superseded Sol without removing it",
+        modelCat.modelDefaults?.worker?.id === "gpt-6-sol"
+          && oldSol?.status === "superseded" && oldSol.supersededBy === "gpt-6-sol"
+          && newSol?.status === "current"
+          && ["available", "unavailable", "unknown"].includes(newSol?.availability ?? ""),
+        JSON.stringify({ oldSol, newSol, worker: modelCat.modelDefaults?.worker }));
       const dflt = cat.find((h) => h.default);
       const codex = cat.find((h) => h.id === "codex");
       const noEffort = cat.find((h) => (h.role ?? "agent") === "agent" && !h.supports.effort);
@@ -9268,7 +9280,7 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(roles.unresolvable));
     // Opus 5.5 is its own model (row "ZWEI STELLEN KENNEN DAS NEUE MODELL NICHT", 2026-09-23): its
     // spellings resolve to claude-opus-5-5[1m] — including a lone "ROLLE: Opus 5.5", which the parser
-    // files in the harness slot — while "opus"/"Opus 5" keep naming Opus 5, never silently upgraded.
+    // files in the harness slot — "opus" follows the current default while "Opus 5" names the old id.
     // The adopted spawn is this rolle (server.ts#adoptSpawnFromCard), so the model here IS spawn.model.
     const roleLine = (line: string) => {
       const text = ["[OPUS-5.5-PROBE]", `ROLLE: ${line}`, "GROESSE: klein", "FLAECHE: server.ts", "VERIFY: bun e2e/pins.ts", "DONE: x", "BAU: y"].join("\n");
@@ -9283,9 +9295,10 @@ export async function run(ctx: Ctx): Promise<void> {
       opus5: roleOf({ harness: "claude", model: "Opus 5", effort: "high" }).body.rolle.model,
       bareWordStaysGap: roleLine("pi-zai-gibt-es-nicht"),
     };
-    check("(v5) card rolle: \"ROLLE: Opus 5.5\", \"opus 5.5\" and \"claude opus 5.5\" name claude-opus-5-5[1m]; \"opus\" and \"Opus 5\" still name claude-opus-5[1m]",
+    check("(v5) card rolle: Opus 5.5 and opus name the current id; explicit Opus 5 names the superseded id",
       [opus55.line, opus55.triple, opus55.lower, opus55.claude].every((m) => m === "claude-opus-5-5[1m]")
-      && [opus55.opus, opus55.opus5Line, opus55.opus5].every((m) => m === "claude-opus-5[1m]")
+      && opus55.opus === "claude-opus-5-5[1m]"
+      && [opus55.opus5Line, opus55.opus5].every((m) => m === "claude-opus-5[1m]")
       && opus55.bareWordStaysGap === null,
       JSON.stringify(opus55));
     // …and the lane-cost measurement counts it as its own class: not "andere", not inside the Opus-5 medians

@@ -1,7 +1,8 @@
 import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
 import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
+import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness } from "./model-register";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServerWebSocket } from "bun";
@@ -756,7 +757,7 @@ const CLAUDE_HARNESS: Harness = {
   // orchestrating roles (Orchestratorin, Program-MAINs, steward) run on claude-opus-5-5[1m]/high,
   // so the successor id leads — both ids answer on this machine (probed with `claude --model <id> -p`)
   // and the installed 2.1.280 registry carries claude-opus-5-5 with context window 1e6.
-  models: ["claude-opus-5-5[1m]", "claude-opus-5-5", "claude-opus-5[1m]", "claude-opus-5", "claude-fable-5-1[1m]", "claude-sonnet-5[1m]", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+  models: modelsForHarness("claude"),
   effortLevels: ["low", "medium", "high", "xhigh", "max"],
   supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false },
   note: null,
@@ -1053,7 +1054,7 @@ const PI_ZAI_HARNESS: Harness = {
     { name: "/compact", purpose: "Manually compact context, optionally with custom instructions", confirm: true },
     { name: "/session", purpose: "Show session file, ID, messages, tokens, and cost" },
   ],
-  models: ["glm-5.3", "glm-5.3-flash"],
+  models: modelsForHarness("pi-zai"),
   effortLevels: ["low", "high", "max"],
   supports: {
     resume: true,
@@ -1557,7 +1558,7 @@ const CODEX_HARNESS: Harness = {
   // PINNED binary in this slice (its upstream reference tracks the latest release, not the 0.153.x
   // this fleet runs) — under the field's evidence rule that means no entries, not guessed ones.
   commands: [],
-  models: ["gpt-5.6-sol", "gpt-5.5", "gpt-5.3-codex-spark"],
+  models: modelsForHarness("codex"),
   effortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
   supports: {
     // TRUE only beside the discovery seam: `codex resume <exact-id>` was measured to continue the
@@ -18595,7 +18596,7 @@ const SUMMARY_CMD = process.env.FLEET_SUMMARY_CMD ?? null;
 // line in summaryViaSession, so it is single-quoted there — see the MODEL_RE note.
 const SUMMARY_MODEL =
   process.env.FLEET_SUMMARY_MODEL && MODEL_RE.test(process.env.FLEET_SUMMARY_MODEL)
-    ? process.env.FLEET_SUMMARY_MODEL : "claude-sonnet-5[1m]";
+    ? process.env.FLEET_SUMMARY_MODEL : MODEL_DEFAULTS.summary.id;
 const SUMMARY_TIMEOUT_MS = 180_000;
 interface SummaryResult {
   summary: string; openThreads: string[]; verification: string;
@@ -41701,6 +41702,10 @@ Bun.serve<WSData>({
     // the harness catalogue: STATIC, fetched once instead of per slot per poll. Without it the client
     // would hardcode a second copy of `supports` — exactly the drift the registry exists to prevent.
     if (url.pathname === "/api/harnesses" && req.method === "GET") {
+      let codexCache: unknown = null;
+      try {
+        codexCache = JSON.parse(readFileSync(resolve(process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), "models_cache.json"), "utf8"));
+      } catch { /* missing or unreadable sensor: availability remains unknown */ }
       return json({
         harnesses: HARNESSES.map((h) => ({
           // `chat`: whether the conversation view (💬) has something to read — a Claude Code
@@ -41729,6 +41734,10 @@ Bun.serve<WSData>({
         // A null model on the default adapter still launches this concrete model, and the picker must be
         // able to say WHICH. Claude-only on purpose: a foreign adapter keeps its own implicit default.
         defaultModel: DEFAULT_MODEL,
+        modelDefaults: MODEL_DEFAULTS,
+        modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry,
+          availability: entry.harness === "codex" ? codexAvailability(codexCache, entry.id) : "unknown",
+        })),
         // the fleet's box defaults, published for the same reason `default` is: a fact about THIS fleet
         // (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and the alternative is the client hardcoding a copy.
         containerDefaults: { container: CONTAINER_NAME, containerContext: CONTAINER_CONTEXT },

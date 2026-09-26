@@ -9,6 +9,7 @@ import { selectionMarkdown } from "./mdcopy";
 import { Flakes } from "./flakes";
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
+import type { ModelEntry, ModelAvailability } from "../model-register";
 import { DraftBook } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { closeEntityCard, hideEntityCard, showEntityCard } from "./entcard";
@@ -428,14 +429,24 @@ let containerDefaults: { container: string; containerContext: string } | null = 
 // construction (the server says so): a foreign adapter keeps its own implicit default, and the
 // placeholder says "default" there rather than claiming this value applies to it.
 let defaultModel: string | null = null;
+let modelRegistry: (ModelEntry & { availability: ModelAvailability })[] = [];
+function modelNotice(harness: string, id: string): string {
+  const entry = modelRegistry.find((row) => row.harness === harness && row.id === id);
+  if (!entry) return "";
+  const parts = [entry.status === "superseded" ? `superseded → ${entry.supersededBy}` : ""];
+  if (harness === "codex" && entry.availability !== "available") parts.push(entry.availability);
+  return parts.filter(Boolean).join(" · ");
+}
 async function loadHarnesses(): Promise<void> {
   if (harnessesLoaded) return;
   try {
     const res = await api("/api/harnesses");
     if (!res.ok) return;
     const cat = (await res.json()) as { harnesses: HarnessInfo[]; defaultModel?: string;
+      modelRegistry?: (ModelEntry & { availability: ModelAvailability })[];
       containerDefaults?: { container: string; containerContext: string } };
     defaultModel = typeof cat.defaultModel === "string" ? cat.defaultModel : null;
+    modelRegistry = cat.modelRegistry ?? [];
     harnesses = cat.harnesses;
     containerDefaults = cat.containerDefaults ?? null; // absent against an older server: the fields
     // then carry no placeholder, which is a missing hint and not a broken control
@@ -5965,9 +5976,10 @@ function renderComposerOpts(force: boolean): void {
         if (!byName.has(name) || m === current) byName.set(name, m);
       }
       for (const m of byName.values()) {
-        const b = el("button", "cmdmodel", modelLabel(m)) as HTMLButtonElement;
+        const notice = modelNotice(h.id, m);
+        const b = el("button", "cmdmodel", `${modelLabel(m)}${notice ? ` · ${notice}` : ""}`) as HTMLButtonElement;
         b.dataset.id = m;
-        b.title = m;
+        b.title = `${m}${notice ? ` · ${notice}` : ""}`;
         b.classList.toggle("cur", m === current);
         b.classList.toggle("staged", m === optStaged.model && m !== current);
         b.onclick = () => { input.value = m; stage(m); markStaged(m); };
@@ -5984,7 +5996,11 @@ function renderComposerOpts(force: boolean): void {
     // on a phone the switch carries the name alone — with the counter, the mark and the effort
     // beside it, "GPT-5.5 · 272K" ellipsized to "GP…" at 390px (seventeenth cut); the popover
     // list keeps the window
-    }, mark, (v) => (isMobile() ? modelLabel(v).split(" · ")[0] : modelLabel(v))));
+    }, mark, (v) => {
+      const name = isMobile() ? modelLabel(v).split(" · ")[0] : modelLabel(v);
+      const notice = modelNotice(h.id, v);
+      return notice ? `${name} · ${notice}` : name;
+    }));
   }
   if (h.supports.effort && h.effortLevels.length) {
     // the level the session's own file shows it running at, the record only as the fallback
@@ -8178,17 +8194,23 @@ function gfStep2(win: HTMLElement, body: HTMLElement) {
     fld.append(el("div", "gfk", "Modell"));
     const wrap = el("div", "gfswrap");
     const sw = el("button", "gfsw") as HTMLButtonElement;
-    sw.append(el("span", "", spawnModel || "default"), icon("chevron"));
+    sw.append(el("span", "", spawnModel ? `${spawnModel}${modelNotice(chosen.id, spawnModel) ? ` · ${modelNotice(chosen.id, spawnModel)}` : ""}` : "default"), icon("chevron"));
     sw.title = "Klick öffnet die Modellwahl — „default“ lässt den Adapter seinen nehmen";
     const pop = el("div", "gfpop");
+    pop.style.maxHeight = "65vh";
+    pop.style.overflowY = "auto";
     const pick = (v: string) => { spawnModel = v; renderGf(); };
     const row = (label: string, v: string) => {
       const r = el("button", "gfpoprow" + (spawnModel === v ? " on" : ""), label) as HTMLButtonElement;
+      if (modelNotice(chosen.id, v)) { r.style.whiteSpace = "normal"; r.style.overflowWrap = "anywhere"; }
       r.onclick = () => pick(v);
       return r;
     };
     pop.append(row("default", ""));
-    for (const m of chosen.models ?? []) if (m) pop.append(row(m, m));
+    for (const m of chosen.models ?? []) if (m) {
+      const notice = modelNotice(chosen.id, m);
+      pop.append(row(`${m}${notice ? ` · ${notice}` : ""}`, m));
+    }
     const inWrap = el("label", "gfpopin");
     inWrap.append(el("span", "", "eigener Wert"));
     const min = el("input", "") as HTMLInputElement;
@@ -8200,7 +8222,18 @@ function gfStep2(win: HTMLElement, body: HTMLElement) {
     min.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); pick(min.value.trim()); } };
     inWrap.append(min);
     pop.append(inWrap);
-    sw.onclick = () => pop.classList.toggle("open");
+    sw.onclick = () => {
+      const open = pop.classList.toggle("open");
+      if (open && !isMobile()) {
+        const rect = sw.getBoundingClientRect();
+        pop.style.position = "fixed";
+        pop.style.left = `${rect.left}px`;
+        pop.style.right = "auto";
+        pop.style.width = `${rect.width}px`;
+        pop.style.bottom = "auto";
+        pop.style.top = `${rect.bottom + 6}px`;
+      }
+    };
     wrap.append(sw, pop);
     fld.append(wrap);
     prof.append(fld);

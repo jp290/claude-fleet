@@ -4066,6 +4066,36 @@ const LANE_PREVIEW_REAP_GRACE_SEC = 30;
 const LANE_PREVIEW_START_TIMEOUT_MS = 180_000;
 const LANE_PREVIEW_STOP_TIMEOUT_MS = 30_000;
 const LANE_PREVIEW_SCRIPT = `${import.meta.dir}/lane-preview.sh`;
+const testinstanzBusy = new Set<number>();
+
+async function testinstanzCommand(cwd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string; err: string }> {
+  const env: Record<string, string> = {};
+  for (const key of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL"]) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
+  const child = Bun.spawn([`${cwd}/testinstanz.sh`, ...args], { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => child.kill(), timeoutMs);
+  try {
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { code, out, err };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function testinstanzFact(out: string): { url: string; port: number; expiresAt: number } | null {
+  const line = out.split("\n")[0] ?? "";
+  const raw = /^up\s+pid\s+\d+\s+(https?:\/\/\S+)/.exec(line)?.[1];
+  const expiry = /\bexpiresAt=(\d+)\b/.exec(out)?.[1];
+  if (!raw || !expiry) return null;
+  try {
+    const url = new URL(raw);
+    const port = Number(url.port);
+    const expiresAt = Number(expiry) * 1000;
+    return port >= 8900 && port <= 8999 && Number.isSafeInteger(expiresAt) ? { url: url.href, port, expiresAt } : null;
+  } catch { return null; }
+}
 // candidate id -> its ONE record (start, stop and expiry evidence in one)
 let lanePreviews: Record<string, LanePreview> = {};
 const lanePreviewTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -41335,6 +41365,54 @@ Bun.serve<WSData>({
       else worktreeNotes[wt.path] = body.text;
       await saveStateNow(); // the note is on disk before the answer — a restart right after keeps it
       return json({ ok: true, path: wt.path, length: body.text.length });
+    }
+    const tiMatch = /^\/api\/slots\/(\d+)\/testinstanz$/.exec(url.pathname);
+    if (tiMatch && (req.method === "GET" || req.method === "POST")) {
+      const s = slotFrom(tiMatch[1]);
+      if (!s) return json({ error: "bad slot" }, 400);
+      if (!s.worktree || !s.cwd) return json({ error: `slot ${s.id} has no lane worktree` }, 409);
+      const cwd = s.cwd;
+      const script = `${cwd}/testinstanz.sh`;
+      let ready = false;
+      try {
+        const st = lstatSync(script);
+        ready = st.isFile() && (st.mode & 0o111) !== 0;
+      } catch { /* absent script is a named refusal below */ }
+      if (!ready) return json({ error: `testinstanz.sh is missing or not executable in slot ${s.id}'s worktree` }, 409);
+      if (testinstanzBusy.has(s.id)) return json({ error: `testinstanz command already running for slot ${s.id}` }, 409);
+      let action: "up" | "down" | "status" = "status";
+      let ttlMin = 240;
+      if (req.method === "POST") {
+        const body = await readJson(req);
+        if (!body || (body.action !== "up" && body.action !== "down"))
+          return json({ error: 'expected { action: "up" | "down", ttlMin?: number }' }, 400);
+        if (body.ttlMin !== undefined && (typeof body.ttlMin !== "number" || !Number.isInteger(body.ttlMin) || body.ttlMin < 1 || body.ttlMin > 1440))
+          return json({ error: "ttlMin must be a whole number from 1 to 1440" }, 400);
+        action = body.action;
+        if (typeof body.ttlMin === "number") ttlMin = body.ttlMin;
+      }
+      testinstanzBusy.add(s.id);
+      try {
+        if (action !== "status") {
+          const args = action === "up" ? ["up", "mixed", "--ttl", String(ttlMin)] : ["down"];
+          const run = await testinstanzCommand(cwd, args, action === "up" ? 240_000 : 30_000);
+          if (run.code !== 0)
+            return json({ error: `testinstanz ${action} failed (${run.code}): ${(run.err.trim() || run.out.trim()).slice(-500)}` }, 409);
+          if (action === "down") return json({ ok: true });
+        }
+        const status = await testinstanzCommand(cwd, ["status"], 15_000);
+        if (status.code !== 0) return json({ error: `testinstanz status failed (${status.code}): ${status.err.trim().slice(-500)}` }, 409);
+        const fact = testinstanzFact(status.out);
+        if (!fact) {
+          if (action === "status" && status.out.startsWith("down ")) return json({ ok: true, state: "down" });
+          return json({ error: "testinstanz did not report a live URL, port and expiry" }, 409);
+        }
+        return json(action === "status" ? { ok: true, state: "up", ...fact } : fact);
+      } catch (error) {
+        return json({ error: `testinstanz command could not run: ${String(error instanceof Error ? error.message : error).slice(0, 300)}` }, 409);
+      } finally {
+        testinstanzBusy.delete(s.id);
+      }
     }
     // THE REVIEW PREVIEW (startLanePreview): one time-boxed isolated instance of a parked candidate's
     // stored head, for the owner to look at before land. The answer carries the record — the board

@@ -9615,6 +9615,83 @@ dropFile.addEventListener("change", () => {
 
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 initBoard();
+type TestinstanzView = { ok: true; state: "up"; url: string; port: number; expiresAt: number }
+  | { ok: true; state: "down" };
+const testinstanzSeen = new Map<string, { at: number; view: TestinstanzView }>();
+const testinstanzPending = new Set<string>();
+const testinstanzReadAt = new Map<string, number>();
+const testinstanzErrors = new Map<string, string>();
+const testinstanzKey = (s: SlotInfo) => `${s.id}:${s.openedAt ?? 0}:${s.cwd ?? ""}`;
+
+function paintTestinstanzCard(): void {
+  if (!boardOpen || boardBody.querySelector(".testinstanzcard")) return;
+  const slot = panes[focused]?.slot;
+  const s = slot ? fleet[slot - 1] : undefined;
+  if (!s?.worktree || !s.cwd) return;
+  const key = testinstanzKey(s);
+  const cached = testinstanzSeen.get(key);
+  const busy = testinstanzPending.has(key);
+  const card = el("div", "bsec testinstanzcard");
+  card.appendChild(el("h3", "", "Testinstanz · dieser Worktree"));
+  const actions = el("div", "bbtnrow");
+  card.appendChild(actions);
+  const button = el("button", "bbtn", busy ? "Wird ausgeführt…"
+    : cached?.view.state === "up" ? "Testinstanz stoppen" : "Testinstanz starten") as HTMLButtonElement;
+  button.disabled = busy || !cached;
+  button.onclick = async () => {
+    if (testinstanzPending.has(key)) return;
+    testinstanzPending.add(key);
+    testinstanzErrors.delete(key);
+    card.remove(); paintTestinstanzCard();
+    const action = cached?.view.state === "up" ? "down" : "up";
+    try {
+      const res = await post(`/api/slots/${s.id}/testinstanz`, { action });
+      const answer = (await res.json()) as { error?: string; url?: string; port?: number; expiresAt?: number };
+      if (!res.ok) throw new Error(answer.error ?? `testinstanz ${action} failed (${res.status})`);
+      if (action === "up" && answer.url && answer.port && answer.expiresAt)
+        testinstanzSeen.set(key, { at: Date.now(), view: { ok: true, state: "up", url: answer.url,
+          port: answer.port, expiresAt: answer.expiresAt } });
+      else if (action === "down") testinstanzSeen.set(key, { at: Date.now(), view: { ok: true, state: "down" } });
+      else throw new Error("testinstanz started without a URL and deadline");
+    } catch (error) {
+      testinstanzErrors.set(key, error instanceof Error ? error.message : String(error));
+      testinstanzSeen.delete(key);
+    } finally {
+      testinstanzPending.delete(key);
+      boardBody.querySelector(".testinstanzcard")?.remove();
+      paintTestinstanzCard();
+    }
+  };
+  actions.appendChild(button);
+  if (cached?.view.state === "up") {
+    const link = el("a", "bbtn", "Testinstanz öffnen") as HTMLAnchorElement;
+    link.href = cached.view.url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    actions.appendChild(link);
+    card.appendChild(el("div", "hint", `Port ${cached.view.port} · bis ${new Date(cached.view.expiresAt).toLocaleString()}`));
+  }
+  const error = testinstanzErrors.get(key);
+  if (error) card.appendChild(el("div", "hint", error));
+  boardBody.prepend(card);
+  if (!busy && Date.now() - (testinstanzReadAt.get(key) ?? 0) > 15_000) {
+    testinstanzPending.add(key);
+    testinstanzReadAt.set(key, Date.now());
+    void api(`/api/slots/${s.id}/testinstanz`).then(async (res) => {
+      const answer = (await res.json()) as TestinstanzView & { error?: string };
+      if (!res.ok) throw new Error(answer.error ?? `status failed (${res.status})`);
+      testinstanzSeen.set(key, { at: Date.now(), view: answer });
+      testinstanzErrors.delete(key);
+    }).catch((error: unknown) => {
+      testinstanzErrors.set(key, error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      testinstanzPending.delete(key);
+      boardBody.querySelector(".testinstanzcard")?.remove();
+      paintTestinstanzCard();
+    });
+  }
+}
+new MutationObserver(paintTestinstanzCard).observe(boardBody, { childList: true });
 initQueue();
 initAttention();
 initDevices();

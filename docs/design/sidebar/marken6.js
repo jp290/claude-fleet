@@ -62,6 +62,51 @@ const Arm = {
   },
 };
 
+const Arm2 = {
+  id: "arm2", label: "A2 · Greifarm mit Session",
+  layout(mark) {
+    const r = rngOf(mark.seed), role = mark.role;
+    const count = role === "orch" ? 3 : role === "astra" ? 2 : 1;
+    return { phase: r() * TAU, arms: Array.from({ length: count }, (_, i) => ({
+      base: (i - (count - 1) / 2) * 0.53,
+      shoulder: (r() - 0.5) * 1.7,
+      elbow: (r() - 0.5) * 1.9,
+      length1: 0.6 + r() * 0.8,
+      length2: 0.6 + r() * 0.8,
+      claw: (r() - 0.5) * 1.7,
+    })) };
+  },
+  draw(ctx, m, c, t, reduced) {
+    const s = m.size, st = stateOf(m, reduced), repo = repoOf(m.repo);
+    ctx.save(); ctx.translate(s / 2, s * 0.84); ctx.strokeStyle = colorOf(m); ctx.fillStyle = ctx.strokeStyle;
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    const foot = 2.4 + (repo % 3) * 0.55;
+    line(ctx, [[-foot, 0], [foot, 0]], 1.6);
+    line(ctx, [[-foot + repo % 2, 1.5], [foot - (repo >> 1) % 2, 1.5]], 0.9);
+    if (repo & 4) dot(ctx, 0, 1.4, 0.55);
+    for (const a of c.arms) {
+      const reach = st === "need" ? -0.65 + 0.07 * wave(t, c.phase, 5)
+        : st === "work" ? 0.46 * wave(t, c.phase, 5)
+          : st === "sleep" ? 0.95 : st === "bad" ? -0.95 + 0.11 * wave(t, c.phase, 19) : 0;
+      const len = roleLength(m.role) * s;
+      let angle = -PI / 2 + a.base + a.shoulder + reach;
+      const x1 = dcos(angle) * len * 0.55 * a.length1, y1 = dsin(angle) * len * 0.55 * a.length1;
+      angle += a.elbow + (st === "need" ? -0.23 : st === "work" ? 0.5 * wave(t, c.phase + 1, 5) : st === "sleep" ? 0.9 : 0.13);
+      const x2 = x1 + dcos(angle) * len * 0.52 * a.length2, y2 = y1 + dsin(angle) * len * 0.52 * a.length2;
+      line(ctx, [[0, 0], [x1, y1], [x2, y2]], m.role === "steward" ? 2.1 : 1.3);
+      if (harnessOf(m.harness) === "claude") dot(ctx, x1, y1, 1.05);
+      else if (harnessOf(m.harness) === "codex") ctx.fillRect(x1 - 1, y1 - 1, 2, 2);
+      else dot(ctx, x1, y1, 1.25, false);
+      const open = st === "need" ? 0.72 : st === "work" ? 0.25 + 0.18 * wave(t, c.phase, 5) : 0.24;
+      const grip = s * 0.16, direction = angle + a.claw;
+      line(ctx, [[x2 + dcos(direction - open) * grip, y2 + dsin(direction - open) * grip], [x2, y2],
+        [x2 + dcos(direction + open) * grip, y2 + dsin(direction + open) * grip]], 1.2);
+    }
+    ctx.restore();
+  },
+};
+const roleLength = (role) => role === "lane" ? 0.37 : role === "steward" ? 0.36 : 0.46;
+
 const Kamon = {
   id: "kamon", label: "C · Kamon-Kern",
   layout(mark) { const r = rngOf(mark.seed); return { phase: r() * TAU, turn: (r() - 0.5) * 0.7 }; },
@@ -174,25 +219,37 @@ const Branch = {
 };
 
 const round5Builder = new PflanzStage(document.createElement("canvas"));
-const Round5Branch = {
-  id: "r5b", label: "Kontrolle · Runde 5 B", control: true,
+function round5Renderer(id, label, fassung, turnToName = false) {
+  return {
+  id, label, control: id === "r5b",
   layout(mark) {
-    return round5Builder.bau({ ...mark, x: 0, y: 0, rolle: mark.role, fassung: "zweig" });
+    return round5Builder.bau({ ...mark, x: 0, y: 0, rolle: mark.role, fassung });
   },
   draw(ctx, mark, cache, t, reduced) {
-    const state = stateOf(mark, reduced), z = ROUND5_STATE[state] ?? ROUND5_STATE.rest;
+    const state = stateOf(mark, reduced), original = ROUND5_STATE[state] ?? ROUND5_STATE.rest;
+    const z = turnToName && state === "need" ? { ...original, amp: 0.015, beacon: false } : original;
     cache.t = t;
     const hue = z.red ? 2 : cache.hue, sat = z.gray ? 0 : z.red ? 70 : 58, light = z.light;
     const ink = (l, a = 1) => mark.grey ? `hsl(0 0% 78% / ${a})`
       : `hsl(${hue} ${sat}% ${Math.max(6, Math.min(94, l))}% / ${a})`;
     const colors = { stiel: ink(light - 16), blatt: ink(light - 6), kopf: ink(light + 8),
       hell: ink(light + 18), flaeche: ink(light - 26, 0.7), flug: (a) => ink(light + 18, a) };
-    ROUND5.zweig.paint(ctx, cache, z, colors);
+    if (turnToName && state === "need") {
+      const baseX = mark.size * 0.5, baseY = mark.size - 1.5;
+      ctx.save(); ctx.translate(baseX, baseY); ctx.rotate(-0.65); ctx.translate(-baseX, -baseY);
+    }
+    ROUND5[fassung].paint(ctx, cache, z, colors);
+    if (turnToName && state === "need") ctx.restore();
     if (z.beacon) round5Builder.paintBeacon(ctx, cache, z);
   },
 };
+}
+const Round5Flower = round5Renderer("r5a", "R5-A · Blüte", "bluete");
+const Round5Branch = round5Renderer("r5b", "Kontrolle · R5-B", "zweig");
+const Round5Seeds = round5Renderer("r5c", "R5-C · Samenstand", "samen");
+const Branch2 = round5Renderer("b2", "B2 · Zweig zum Namen", "zweig", true);
 
-export const RENDERERS = [Arm, Kamon, Lantern, Branch, Round5Branch];
+export const RENDERERS = [Branch2, Arm2, Round5Flower, Round5Branch, Round5Seeds, Arm, Kamon, Lantern, Branch];
 const byId = Object.fromEntries(RENDERERS.map((r) => [r.id, r]));
 const REDUCE = matchMedia("(prefers-reduced-motion: reduce)");
 const moving = (s) => s === "work" || s === "need" || s === "bad";

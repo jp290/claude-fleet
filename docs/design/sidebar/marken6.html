@@ -3,8 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fleet · Session-Marke · vier Fassungen</title>
-<!-- Runde 6: vier Renderer auf den Plätzen und Seeds aus Runde 5. -->
+<title>Fleet · Session-Marke · Runde 6b</title>
 <link rel="stylesheet" href="marken2.css">
 <style>
   #app { display: block; overflow: auto; }
@@ -60,7 +59,7 @@
 </head>
 <body>
 <div id="kopf">
-  <h1>Session-Marke · vier Fassungen</h1>
+  <h1>Session-Marke · Runde 6b</h1>
   <p>Rolle formt den Umriss, Repo die Familie und den Farbton, Harness das kleine Merkmal, der feste Session-Seed die Neigung. Arbeit beschäftigt die Marke; Warten richtet sie nach links zum Namen. Jede Spalte ist derselbe Platz mit derselben Session.</p>
   <div class="steuer">
     <button id="b16" aria-pressed="false">alle arbeiten (Messfall)</button>
@@ -102,6 +101,10 @@ const SESS = FLACH.filter((s) => !s.free);
 const REPOS = ["claude-fleet", "privatraum", "private-repo-aa", "private-repo-r", "shell", "konzept-b", "imkerei", "gärtnerei"]
   .map((r) => "/Users/o/" + r).sort((a, b) => repoOf(a) - repoOf(b));
 const DETAILS = {
+  b2: ["Zweig aus Runde 5: arbeitend Welle, wartend neigt sich die ganze Pflanze zum Namen.", "Pflanzenart", "Wuchs", "Spitze"],
+  arm2: ["Greifarm mit weitem Winkel, unterschiedlichen Segmenten und Zangenrichtung je Session.", "Sockelprofil", "Armzahl und Reichweite", "Gelenkform"],
+  r5a: ["Unveränderte Blüte aus Runde 5.", "Pflanzenart", "Wuchs", "Blattform"],
+  r5c: ["Unveränderter Samenstand aus Runde 5.", "Pflanzenart", "Wuchs", "Blattform"],
   arm: ["Gelenkwerk mit Zange; arbeitend greift es, wartend öffnet es sich nach links.", "Sockelprofil", "Armzahl und Reichweite", "Gelenkform"],
   kamon: ["Ein ruhendes Siegel mit beweglichem Kern; wartend tickt der Kern links.", "Innenmotiv", "Anordnung und Größe", "Kernform"],
   lantern: ["Ein Gefäß und eine Flamme; wartend lehnt sich die Flamme nach links.", "Glasgitter", "Gefäßumriss", "Docht"],
@@ -229,20 +232,23 @@ function leiste() {
     for (const b of [...buehnen, ...lupen]) { b.stage.on = true; b.stage.sync(); }
     const zeige = () => {
       const control = results.find((r) => r.id === "r5b");
+      const basis = results.filter((r) => ["r5a", "r5b", "r5c"].includes(r.id));
+      const U = Math.min(...basis.map((r) => r.paar.kleinster));
       for (const r of results) {
         r.kosten.verhaeltnis = r.kosten.ms / control.kosten.ms;
-        r.ja.paare = r.paar.kleinster >= control.paar.kleinster;
-        r.ja.zustand = r.zustand.kleinster >= control.paar.kleinster
+        r.ja.paare = r.paar.kleinster >= U;
+        r.ja.zustand = r.zustand.kleinster >= U
           && r.zustand.bewegung.rest === 0 && r.zustand.bewegung.sleep === 0;
         r.ja.kosten = r.kosten.verhaeltnis <= 3;
       }
       const accepted = results.filter((r) => r.id !== "r5b" && Object.values(r.ja).every(Boolean));
       const selected = accepted.toSorted((a, b) => b.paar.kleinster - a.paar.kleinster)[0]?.id ?? null;
-      window.__aufnahme = { results, kontrolle: { paar: control.paar.kleinster, ms: control.kosten.ms,
+      window.__aufnahme = { results, untergrenze: U, basis: basis.map((r) => ({ id: r.id, paar: r.paar.kleinster })),
+        kontrolle: { paar: control.paar.kleinster, ms: control.kosten.ms,
         wieRunde5: control.wieRunde5.kleinster }, umschalter: accepted.map((r) => r.id), default: selected };
       for (let i = 0; i < FASS.length; i++) {
         const r = results[i];
-        buehnen[i].aufnahme.textContent = `Paare ${r.ja.paare ? "JA" : "NEIN"} ${r.paar.kleinster.toFixed(2)} · wie R5 ${r.wieRunde5.kleinster.toFixed(2)}\nZustand ${r.ja.zustand ? "JA" : "NEIN"} ${r.zustand.kleinster.toFixed(2)} · Kosten ${r.ja.kosten ? "JA" : "NEIN"} ${r.kosten.verhaeltnis.toFixed(2)}× · reduziert ${r.ja.reduziert ? "JA" : "NEIN"}`;
+        buehnen[i].aufnahme.textContent = `U ${U.toFixed(2)} · Paare ${r.ja.paare ? "JA" : "NEIN"} ${r.paar.kleinster.toFixed(2)} · wie R5 ${r.wieRunde5.kleinster.toFixed(2)}\nZustand ${r.ja.zustand ? "JA" : "NEIN"} ${r.zustand.kleinster.toFixed(2)} · Ruhe/Schlaf ${r.zustand.bewegung.rest.toFixed(3)}/${r.zustand.bewegung.sleep.toFixed(3)} %\nKosten ${r.ja.kosten ? "JA" : "NEIN"} ${r.kosten.verhaeltnis.toFixed(2)}× · reduziert ${r.ja.reduziert ? "JA" : "NEIN"}`;
       }
       document.documentElement.dataset.ready = "1";
     };
@@ -302,9 +308,13 @@ function admission(f) {
   const rest = SESS.map((s) => pixels(f, s, "rest", 0.7));
   const round5 = SESS.map((s) => pixels(f, s, "rest", 0.7, false, "wie-runde-5"));
   let smallest = Infinity, pair = "";
+  const pairs = [];
   let round5Min = Infinity, round5Pair = "";
   for (let i = 0; i < SESS.length; i++) for (let j = i + 1; j < SESS.length; j++) {
     const distance = mad(rest[i].luma, rest[j].luma);
+    pairs.push({ a: String(SESS[i].slot), b: String(SESS[j].slot), abstand: distance,
+      gleicheFakten: SESS[i].repo === SESS[j].repo && SESS[i].rolle === SESS[j].rolle
+        && harnessOf(SESS[i].harness) === harnessOf(SESS[j].harness) });
     if (distance < smallest) { smallest = distance; pair = `${SESS[i].slot}~${SESS[j].slot}`; }
     const oldDistance = mad(round5[i].luma, round5[j].luma);
     if (oldDistance < round5Min) { round5Min = oldDistance; round5Pair = `${SESS[i].slot}~${SESS[j].slot}`; }
@@ -321,7 +331,8 @@ function admission(f) {
   const still = SESS.map((s) => [pixels(f, s, "work", 0, true), pixels(f, s, "work", 2, true)]);
   const bytegleich = still.every(([a, b]) => a.png === b.png);
   const ink = still.reduce((sum, [a]) => sum + a.luma.filter((v) => v > 24).length / a.luma.length * 100, 0) / still.length;
-  return { id: f.id, paar: { kleinster: smallest, engste: pair, paare: 171 },
+  pairs.sort((a, b) => a.abstand - b.abstand);
+  return { id: f.id, paar: { kleinster: smallest, engste: pair, paare: 171, dreiEngste: pairs.slice(0, 3) },
     wieRunde5: { kleinster: round5Min, engste: round5Pair },
     zustand: { kleinster: stateMin, slot: stateSlot, bewegung: moving },
     kosten: null,

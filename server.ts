@@ -17137,7 +17137,7 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
       if (!s) continue;
       const ref = s.worktree;
       await killSlot(s, "owner");
-      if (ref) await removeWorktreeSafe(ref.repo, s.cwd ?? "", ref.branch, ref.form ?? "worktree");
+      if (ref) await removeWorktreeSafe(ref.repo, s.cwd ?? "", ref.branch, ref.form ?? "worktree", ref.base);
       laneSpawn.delete(slot);
       row.status = was.get(row.id) ?? "queued";
       row.slot = null;
@@ -19830,7 +19830,7 @@ async function tickLaneAutoClose(): Promise<void> {
       // whatever occupant it would otherwise find in the slot.
       const wt = s.worktree;
       if (wt && s.cwd) {
-        const rm = await removeWorktreeSafe(wt.repo, s.cwd, wt.branch, wt.form ?? "worktree");
+        const rm = await removeWorktreeSafe(wt.repo, s.cwd, wt.branch, wt.form ?? "worktree", wt.base);
         if (rm) console.log(`lane auto-close: slot ${s.id} closed but its worktree stays (${wt.branch})`
           + ` — ${rm.error.split("\n")[0]}`);
         if (s.openedAt !== occupant.openedAt || s.sessionId !== occupant.sessionId
@@ -37862,7 +37862,7 @@ interface SinceLastLook {
 async function sinceLastLookView(prior: Record<string, unknown> | null): Promise<SinceLastLook | null> {
   const pl = prior?.lanes;
   if (typeof pl !== "object" || pl === null || Array.isArray(pl)) return null;
-  const priorLanes = pl as Record<string, { head?: unknown; landed?: unknown; repo?: unknown }>;
+  const priorLanes = pl as Record<string, { head?: unknown; base?: unknown; landed?: unknown; repo?: unknown }>;
   const cur = await laneFacts();
   const d: SinceLastLook = { new: [], advanced: [], landed: [], vanishedUnlanded: [], rewritten: [] };
   for (const b of Object.keys(cur)) if (!(b in priorLanes)) d.new.push(b);
@@ -37877,7 +37877,7 @@ async function sinceLastLookView(prior: Record<string, unknown> | null): Promise
       // runs in the primary repo even though the lane's tree is gone.
       let merged = false;
       if (pHead && pRepo) {
-        const intRef = await integrationBranch(pRepo);
+        const intRef = typeof p.base === "string" && p.base ? p.base : await integrationBranch(pRepo);
         if (intRef) merged = (await git(pRepo, "merge-base", "--is-ancestor", pHead, intRef)).code === 0;
       }
       (merged ? d.landed : d.vanishedUnlanded).push(b);
@@ -40843,7 +40843,7 @@ Bun.serve<WSData>({
     if (req.method === "GET" && riskMatch) {
       const s = slotFrom(riskMatch[1]);
       if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
-      const risk = await worktreeRisk(s.worktree.repo, s.cwd);
+      const risk = await worktreeRisk(s.worktree.repo, s.cwd, (await laneBaseRef(s)) ?? undefined);
       return json({ path: s.cwd, branch: s.worktree.branch, ...risk });
     }
     // one-click lane: the server picks the first free slot itself (create), or re-seats an

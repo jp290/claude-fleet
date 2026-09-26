@@ -2286,6 +2286,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       JSON.stringify({ land: landR?.status, error: land?.error, done, mainBefore, mainAfter,
         overhaulAfter, note: noteRaw.status === 0 ? note : noteRaw.stderr.toString().slice(0, 120) }));
     if (boot?.slot) await post(`/api/slots/${boot.slot}/kill`, {});
+    if (rowId) await post(`/api/tasks/${rowId}/delete`, {});
     if (programId) await post(`/api/programs/${programId}/complete`, {});
     spawnSync("git", ["-C", REPO2, "branch", "-D", "overhaul"]);
   }

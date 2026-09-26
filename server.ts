@@ -5136,7 +5136,7 @@ const occupantStreamStagePath = (occupant: SlotStreamOccupant): string => `${occ
 const legacyStreamPath = (id: number): string => `${STREAM_DIR}/s${id}.raw`;
 // claude's transcript dir for a cwd (used by ensureSlot's resume check at boot,
 // so it must be defined before the startup section runs)
-const projDir = (cwd: string) => `${HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+const projDir = (cwd: string) => `${process.env.FLEET_CLAUDE_PROJECTS_DIR ?? `${HOME}/.claude/projects`}/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
 const historyPath = (id: number) => `${STREAM_DIR}/s${id}.history.json`;
 const MAX_HISTORY = 100;
 
@@ -16401,6 +16401,7 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
   const unchecked = cardUncheckedSymbols({ symbols, ranges });
   return {
     ziel: str(raw.ziel), done: str(raw.done), verify: str(raw.verify), verboten: strs(raw.verboten),
+    ...(str(raw.delegation) ? { delegation: str(raw.delegation) } : {}),
     rolle: { harness: field(role.harness), model: field(role.model), effort: field(role.effort) },
     surface: { files: strs(surface.files), symbols, ranges,
       ...(strs(surface.creates).length ? { creates: strs(surface.creates) } : {}),
@@ -27752,6 +27753,8 @@ interface LaneOutcome {
   // would make an unmeasurable lane read as a frugal one. Optional because every row written before
   // this field existed carries no answer at all, and the reader must say so rather than default.
   toolResultBytes?: ToolResultBytes | null;
+  subagentCalls?: number | null;
+  subagentTokens?: number | null;
   // WHO ENDED THIS LANE, written ONLY by the automatic close (tickLaneAutoClose) and absent on
   // every hand kill, land, shelve and revert. It exists because the answer does not fit anywhere
   // else: `SlotEnding` is slotstats.ts's closed vocabulary, so an automatic close is counted there
@@ -27926,6 +27929,43 @@ async function laneToolResultBytes(cwd: string): Promise<ToolResultBytes | null>
       } catch { /* one unreadable file must not sink the whole measurement */ }
     }
     return { total, byTool };
+  } catch {
+    return null;
+  }
+}
+async function laneSubagentUsage(s: Slot): Promise<{ subagentCalls: number; subagentTokens: number } | null> {
+  const path = transcriptFile(s);
+  if (!path) return null;
+  try {
+    if (statSync(path).size > TOOL_RESULT_FILE_MAX_BYTES) return null;
+    const calls = new Set<string>();
+    const sidechain = new Map<string, number>();
+    for (const line of (await Bun.file(path).text()).split("\n")) {
+      if (!line.startsWith("{")) continue;
+      let row: unknown;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (!row || typeof row !== "object") continue;
+      const entry = row as { type?: unknown; isSidechain?: unknown; uuid?: unknown;
+        message?: { id?: unknown; content?: unknown; usage?: Record<string, unknown> } };
+      if (entry.type !== "assistant") continue;
+      if (entry.isSidechain === true) {
+        const usage = entry.message?.usage;
+        if (!usage || typeof usage !== "object") continue;
+        const token = (key: string): number => typeof usage[key] === "number" && Number.isFinite(usage[key])
+          ? Math.max(0, usage[key] as number) : 0;
+        const id = typeof entry.message?.id === "string" ? entry.message.id
+          : typeof entry.uuid === "string" ? entry.uuid : null;
+        if (id) sidechain.set(id, token("input_tokens") + token("cache_creation_input_tokens")
+          + token("cache_read_input_tokens") + token("output_tokens"));
+        continue;
+      }
+      if (!Array.isArray(entry.message?.content)) continue;
+      for (const raw of entry.message.content) {
+        const block = raw as { type?: unknown; name?: unknown; id?: unknown };
+        if (block.type === "tool_use" && block.name === "Agent" && typeof block.id === "string") calls.add(block.id);
+      }
+    }
+    return { subagentCalls: calls.size, subagentTokens: [...sidechain.values()].reduce((sum, value) => sum + value, 0) };
   } catch {
     return null;
   }
@@ -28123,6 +28163,8 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
   // A codex lane answers from its own rollout instead (codexRolloutFacts), never from projDir().
   const toolResultBytes = isCodex ? rollout?.toolResultBytes ?? null
     : harnessOf(s.harness).supports.transcript ? await laneToolResultBytes(cwd) : null;
+  const subagentUsage = harnessOf(s.harness).supports.transcript
+    ? await laneSubagentUsage(s) : null;
   return {
     ts,
     branch: s.worktree.branch,
@@ -28194,6 +28236,8 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // written on EVERY live-lane row including the null: here the key's PRESENCE is what separates
     // "measured, and the answer is unknowable" from a row that predates the field and cannot say.
     toolResultBytes,
+    subagentCalls: subagentUsage?.subagentCalls ?? null,
+    subagentTokens: subagentUsage?.subagentTokens ?? null,
     dirtyFiles,
     ...modelResolved,
     ...codexRollout,

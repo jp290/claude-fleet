@@ -9664,6 +9664,17 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(vbRaw?.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"])
       && vbRaw?.ziel === vbZiel,
       JSON.stringify({ verboten: vbRaw?.verboten ?? null, ziel: vbRaw?.ziel ?? null }));
+    const delegationText = vbText.replace("VERBOTEN:", "DELEGATION: erdung:read-only, max 2\nVERBOTEN:");
+    const delegationRaw = parseFormattedCard(delegationText);
+    const delegationCard = validateCard(delegationRaw ?? {}, { ...cardCtx, sourceText: delegationText });
+    check("(s2) DELEGATION and VERBOTEN survive a formatted card read and validation",
+      delegationCard.valid && delegationCard.body.delegation === "erdung:read-only, max 2"
+      && JSON.stringify(delegationCard.body.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"]),
+      JSON.stringify({ gaps: delegationCard.gaps, delegation: delegationCard.body.delegation,
+        verboten: delegationCard.body.verboten }));
+    check("(s2) a card with no DELEGATION header grants no delegation field",
+      vbRaw !== null && !("delegation" in validateCard(vbRaw, { ...cardCtx, sourceText: vbText }).body),
+      JSON.stringify(vbRaw));
     const vbNone = parseFormattedCard(vbText.replace(/^VERBOTEN: .*$/m, "VERBOTEN: \u2014"));
     const vbAbsent = parseFormattedCard(vbText.replace(/^VERBOTEN: .*$/m, ""));
     check("(fmt) an empty VERBOTEN (the \u2014 renderCardHead writes) and an absent one both read as NO constraint, not an invented one",
@@ -9858,8 +9869,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v8) CARD_VALIDATOR_VERSION is 8, so cards refused before the verbatim long repo command (or by earlier rules) are read once more",
-      CARD_VALIDATOR_VERSION === 8, String(CARD_VALIDATOR_VERSION));
+    check("(v9) CARD_VALIDATOR_VERSION is 9, so cards refused before DELEGATION or earlier rules are read once more",
+      CARD_VALIDATOR_VERSION === 9, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the

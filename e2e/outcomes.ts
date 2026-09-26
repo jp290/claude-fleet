@@ -141,6 +141,7 @@ export async function run(): Promise<void> {
       // optional for the same reason again: rows written before the sensor existed carry no key at
       // all, and `null` (measured, unknowable) is a different answer from that absence
       toolResultBytes?: { total: number; byTool: Record<string, number> } | null;
+      subagentCalls?: number | null; subagentTokens?: number | null;
       dirtyFiles?: number | null };
     const readOutcomes = async (): Promise<Outcome[]> =>
       ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[] }).outcomes;
@@ -296,28 +297,45 @@ export async function run(): Promise<void> {
     // before tasks.run(), whose payload-budget probe measures a /api/sessions response with only
     // ~76 B of headroom left — an extra lane here spends that budget in a check three families away,
     // where nobody would look for it. (Measured 2026-08-19: base 12212 B, +1 fixture lane 12722 B.)
+    let projectRoot = `${process.env.HOME}/.claude/projects`;
     const projDirOf = (cwd: string) =>
-      `${process.env.HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+      `${projectRoot}/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
     // the precondition fails as ITSELF: if this dir somehow existed, "null" below would be a real
     // (and wrong) measurement rather than this assertion's subject
     check("outcome: tool_result fixture precondition — the killed lane's project dir does not exist",
       !existsSync(projDirOf(oc2.cwd)), projDirOf(oc2.cwd));
     check("outcome: a lane with no transcript dir records toolResultBytes null — the key is PRESENT (measured: unknowable), never 0",
       rec2 !== undefined && "toolResultBytes" in rec2 && rec2.toolResultBytes === null, JSON.stringify(rec2?.toolResultBytes));
+    check("outcome: absent transcript leaves subagent calls and tokens unknown, never zero",
+      rec2?.subagentCalls === null && rec2.subagentTokens === null,
+      JSON.stringify({ calls: rec2?.subagentCalls, tokens: rec2?.subagentTokens }));
 
     // the CONTROL for dirtyFiles below: this lane's one change is committed, so its tree is clean.
     // Present-and-0 — a clean tree is a measurement, not an absence.
     check("outcome: a killed lane whose work is all committed records dirtyFiles 0 (key present)",
       rec2 !== undefined && rec2.dirtyFiles === 0, JSON.stringify({ dirtyFiles: rec2?.dirtyFiles }));
+    projectRoot = `${ROOT}/subagent-projects`;
+    mkdirSync(projectRoot, { recursive: true });
+    await restartSrv({ FLEET_CLAUDE_PROJECTS_DIR: projectRoot });
 
     // (3) KILLED-EMPTY — a lane with no commits at all, but ONE uncommitted file. The disposition stays
     // commit-based on purpose; `dirtyFiles` is the separate number that says work was on the tree.
     const oc3 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    const zeroDir = projDirOf(oc3.cwd);
+    mkdirSync(zeroDir, { recursive: true });
+    writeFileSync(`${zeroDir}/fixture.jsonl`, JSON.stringify({ type: "assistant", cwd: oc3.cwd,
+      message: { content: [] } }) + "\n");
+    check("outcome: zero-call fixture is in the instance project directory with the lane's cwd",
+      existsSync(`${zeroDir}/fixture.jsonl`) && zeroDir.startsWith(`${ROOT}/`), zeroDir);
     await Bun.write(`${oc3.cwd}/uncommitted.txt`, "never committed\n");
     await post(`/api/slots/${oc3.slot}/kill`, {});
     const rec3 = forBranch(await readOutcomes(), oc3.branch);
     check("outcome: killed lane with NO commits → killed-empty, commitCount 0",
       rec3?.disposition === "killed-empty" && rec3?.commitCount === 0, JSON.stringify(rec3));
+    check("outcome: readable transcript with no Agent use measures zero calls and zero tokens",
+      rec3?.subagentCalls === 0 && rec3.subagentTokens === 0,
+      JSON.stringify({ calls: rec3?.subagentCalls, tokens: rec3?.subagentTokens }));
+    rmSync(zeroDir, { recursive: true, force: true });
     check("outcome: a killed-empty lane with one uncommitted file records dirtyFiles 1 (disposition unchanged)",
       rec3?.disposition === "killed-empty" && rec3.dirtyFiles === 1, JSON.stringify({ d: rec3?.disposition, dirtyFiles: rec3?.dirtyFiles }));
 
@@ -335,18 +353,23 @@ export async function run(): Promise<void> {
     const trDir = projDirOf(oc4.cwd);
     mkdirSync(trDir, { recursive: true });
     await Bun.write(`${trDir}/fixture.jsonl`, [
-      JSON.stringify({ type: "assistant", message: { content: [
+      JSON.stringify({ type: "assistant", cwd: oc4.cwd, message: { content: [
         { type: "tool_use", id: "tu_bash", name: "Bash" },
         { type: "tool_use", id: "tu_read", name: "Read" },
+        { type: "tool_use", id: "tu_agent", name: "Agent" },
       ] } }),
       JSON.stringify({ type: "user", message: { content: [
         { type: "tool_result", tool_use_id: "tu_bash", content: "0123456789" },
         { type: "tool_result", tool_use_id: "tu_read", content: [{ type: "text", text: "hi" }] },
         { type: "tool_result", tool_use_id: "tu_never_declared", content: "abc" },
       ] } }),
+      JSON.stringify({ type: "assistant", isSidechain: true, message: { id: "side-1", usage: {
+        input_tokens: 3, cache_creation_input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 11 } } }),
       "{ not json",
       "",
     ].join("\n"));
+    check("outcome: Agent fixture is in the instance project directory with the lane's cwd",
+      existsSync(`${trDir}/fixture.jsonl`) && trDir.startsWith(`${ROOT}/`), trDir);
     check("outcome: tool_result fixture precondition — the planted transcript is on disk where projDir() looks",
       existsSync(`${trDir}/fixture.jsonl`), trDir);
     await post(`/api/slots/${oc4.slot}/shelve`, { note: "resume later" });
@@ -357,7 +380,11 @@ export async function run(): Promise<void> {
       && rec4.toolResultBytes.byTool.Bash === 10
       && rec4.toolResultBytes.byTool.Read === 29
       && rec4.toolResultBytes.byTool["?"] === 3, JSON.stringify(rec4?.toolResultBytes));
-    rmSync(trDir, { recursive: true, force: true });
+    check("outcome: Agent tool use and sidechain usage record one call and 26 tokens",
+      rec4?.subagentCalls === 1 && rec4.subagentTokens === 26,
+      JSON.stringify({ calls: rec4?.subagentCalls, tokens: rec4?.subagentTokens }));
+    rmSync(projectRoot, { recursive: true, force: true });
+    await restartSrv();
 
     // (5) REVERTED — a conflict-free lane lands via the server script path (ADVANCES main), then
     // /api/repos/undo-land reverts it. The strongest negative outcome, assembled from the undo

@@ -10002,8 +10002,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_CARD_V2 = "a card is refused by the tree, not by a stale graph or a foreign field";
   const cx = read("card-extract.ts");
   // v6 (2026-09-18): POST /api/self/criterion is a clarify row's verify.
-  const versionConst = /^export const CARD_VALIDATOR_VERSION = 8;$/m.test(cx);
-  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 8 (bump it when a rule change can turn a refusal into an acceptance)`,
+  const versionConst = /^export const CARD_VALIDATOR_VERSION = 9;$/m.test(cx);
+  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 9 (bump it when a rule change can turn a refusal into an acceptance)`,
     versionConst, `const=${versionConst}`);
   // v3 (2026-09-13): the filing format. A formatted row is read by the PARSER before the extractor
   // is ever started, and the ledger says which of the two produced each card.
@@ -10021,7 +10021,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     declFallback, `declFallback=${declFallback}`);
   // v6 (2026-09-17): the re-read may not make the row poorer. A field the filing format cannot
   // spell is DROPPED by the sweep's unconditional overwrite the moment a brief moves the row.
-  const formatVerboten = /const FORMAT_KEYS = \["ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "VERBOTEN"\] as const;/.test(cx)
+  const formatVerboten = /const FORMAT_KEYS = \["ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"\] as const;/.test(cx)
     && /verboten: formatPhrases\(field\("VERBOTEN"\)\),/.test(cx) && !/verboten: \[\],\n/.test(cx.split("parseFormattedCard")[1] ?? "");
   pin(`${RULE_CARD_V2} — VERBOTEN is a FORMAT_KEY, so a re-read through the format path cannot drop the card's forbidding half`,
     formatVerboten, `formatVerboten=${formatVerboten}`);

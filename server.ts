@@ -8701,17 +8701,21 @@ async function rollbackOwnComposerPayload(
   const after = await awaitComposer(s, bound, (r) => r === "");
   return sameBoundPane(s, bound) && after === "" ? "cleared" : "residue";
 }
-// Poll until the whole payload is on screen. Returns the LAST answer: "partial" means the paste
-// was still a proper prefix when the budget ran out — the one state that may block a submit.
-async function awaitArrival(s: Slot, bound: BoundSlotPane, payload: string): Promise<ComposerArrival> {
+// Poll until the whole payload is on screen. A Watch event tolerates an inconsistent Mac redraw
+// until its deadline; other sends keep their original first-difference answer. A prefix seen in
+// that Watch window still forbids submission unless a later frame proves completion.
+async function awaitArrival(s: Slot, bound: BoundSlotPane, payload: string,
+  waitMs = ACCEPT_WAIT_MS, retryDiffers = false): Promise<ComposerArrival> {
   const started = Date.now();
   let last: ComposerArrival = "differs";
+  let sawPartial = false;
   for (;;) {
     if (!sameBoundPane(s, bound)) return last;
     const read = await readExactComposer(s, bound);
     last = read.kind === "rows" ? composerArrival(read.rows, payload) : "differs";
-    if (last !== "partial") return last;
-    if (Date.now() - started >= ACCEPT_WAIT_MS) return last;
+    if (last === "complete" || (last === "differs" && !retryDiffers)) return last;
+    if (retryDiffers && last === "partial") sawPartial = true;
+    if (Date.now() - started >= waitMs) return retryDiffers && sawPartial ? "partial" : last;
     await Bun.sleep(100);
   }
 }
@@ -8955,12 +8959,16 @@ async function sendText(s: Slot, given: string, submit: boolean,
       // turn" only if the payload was ever IN that composer. `null` = never asked (no composer form).
       let arrival: ComposerArrival | null = null;
       if (observes) {
-        arrival = await awaitArrival(s, bound, composed);
+        // A Watch event may be lost forever after an unobservable send. Its own arrival read gets
+        // the normal 3 s ceiling even when a suite shortens ordinary composer probes to 800 ms.
+        const watchEvent = options.path === "fleet-event";
+        const arrivalWaitMs = watchEvent ? Math.max(ACCEPT_WAIT_MS, 3000) : ACCEPT_WAIT_MS;
+        arrival = await awaitArrival(s, bound, composed, arrivalWaitMs, watchEvent);
         // identity first: a slot that changed under the window must report THAT, not a verdict.
         if (!sameBoundPane(s, bound)) throw new Error("slot changed during arrival probe");
         if (arrival === "partial") throw new SendNotAccepted(
           `prompt not submitted — the composer still held only part of the ${[...composed].length}-char `
-            + `payload after ${ACCEPT_WAIT_MS}ms; no Enter was sent`);
+            + `payload after ${arrivalWaitMs}ms; no Enter was sent`);
       }
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before Enter");
       const sk = await tmux("send-keys", "-t", bound.paneId, "Enter");

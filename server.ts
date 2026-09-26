@@ -21908,10 +21908,10 @@ async function tickWatches(): Promise<void> {
       // may or may not have landed. `attempts` is raised with it and rolled back ONLY by the one
       // refusal that proves nothing was typed (below) — everything else keeps its count.
       const attemptsBefore = event.attempts;
-      const message = fleetEventMessage(event);
       event.status = "send-uncertain";
       event.attempts++;
       await saveStateNow();
+      const message = fleetEventMessage(event);
       let acceptance: Acceptance;
       try {
         ({ acceptance } = await sendText(s, message, true, { path: "fleet-event", rollbackOwnPayload: true,

@@ -205,22 +205,27 @@ liefert eine FORM, geprueft wird gegen eine Tatsache.
 - ~~Guete auf DEUTSCHEM Text~~ — gemessen 2026-09-21 auf Klasse-A-Prosa, alle vier vorab gesetzten
   Kippwerte gehalten, zwei Laeufe gleich (`docs/messungen/2026-09-21-jev-deutsch-probe-ergebnis.md`).
   Offen bleibt die Guete auf einer FLEET-AUFGABE: die braucht eigene Labels, und ihr Material
-  (Queue-Zeilen, Pane-Text) liegt hinter dem DPA-Tor im naechsten Punkt.
-- Ob DPA und Privacy Policy des Anbieters das Senden von Fleet-Daten tragen: die Vertragstexte sind am
-  2026-09-21 gelesen (`docs/messungen/2026-09-21-jev-vertragstexte-gelesen.md`) — kein Training auf
-  Input, aber keine feste Aufbewahrungsfrist (DPA), Loeschen auf Anfrage nur fuer personenbezogene
-  Daten und unter Zweck-/Gesetzesvorbehalt (Privacy Policy „Retention“), keine Loeschpflicht fuer
-  sonstige Kundendaten (MCA 10.3), unbefristet freie „Telemetry“ (MCA 4.1 c, 4.3), ZDR nur Enterprise
-  (Formel am 2026-09-23 gegen die Live-Texte nachgeschaerft; vorher pauschal „kein Loeschanspruch“). Tragbar fuer bereits oeffentliches Material; eine Freigabe gibt es weiterhin nicht. Bis
-  dahin kein API-Aufruf mit Fleet-Daten. Vertraglich ausgeschlossen: Jev-Urteile als Trainingslabels
-  fuer ein eigenes Modell (MCA 2.3 b).
+  (Queue-Zeilen, Pane-Text) darf seit der Owner-Richtung im naechsten Punkt an Jev.
+- ~~Ob DPA und Privacy Policy des Anbieters das Senden von Fleet-Daten tragen~~ — der Owner hat es
+  am 2026-09-26 entschieden, woertlich: „[Zitat entfernt]“
+  
+   Die meisten Fleet-Daten duerfen also an Jev, Ziel ist ein Index
+  bzw. Verstaendnis ueber alle Daten. **Der Credential-Filter ist an JEDEM Abfluss Pflicht:** Keys,
+  Tokens, `.env`-Inhalte und Zeilen mit Schluesselmustern gehen nie raus; Hostadressen, Home-Pfade
+  und E-Mails werden laengentreu ersetzt; `auto`- und Backfill-Zeilen bleiben draussen
+  (`docs/messungen/2026-09-26-jev-input-logik.md` §3b). Die Vertragslage, die das stuetzt oder
+  begrenzt, steht in `docs/messungen/2026-09-21-jev-vertragstexte-gelesen.md`: kein Training auf
+  Input, keine feste Aufbewahrungsfrist, kein Loeschanspruch fuer sonstige Kundendaten, ZDR nur
+  Enterprise. Vertraglich ausgeschlossen bleibt, Jev-Urteile als Trainingslabels fuer ein eigenes
+  Modell zu verwenden (MCA 2.3 b). Seither gelaufen: P1 (200 Aufrufe,
+  `docs/messungen/2026-09-26-jev-p1-nachricht-konzept.md`) und der Index ueber 7 220 gesendete
+  Nachrichten (`docs/messungen/2026-09-27-jev-index-nachrichten.md`).
 - Session-Klassen (Bugfix/Feature/Analyse/Betrieb/gemischt) ohne Jev: Commit-Praefix plus Rolle
   (Baseline v2) trifft 8/12 auf einem frischen, vorab gelabelten Satz; das fehlende Drittel sind
   Zweck-Fragen, die das Praefix nicht sieht (`docs/messungen/2026-09-23-jev-session-klassen-pilot.md`).
-  Pakete, Filter und Offline-Validator stehen lokal bereit. Der Jev-Lauf auf den 12 Paketen folgt nach
-  Owner-Reihenfolge erst, wenn die Sperre der Fremdwurzeln fuer neue GLM-Sessions steht (Stand
-  2026-09-23: Nachfolger bd84a89f gelandet, Owner-.env und Deploy erfolgt, ein neuer pi-zai-Spawn
-  belegt die fuenf Root-/Kindpfad-Denies); danach wird der Versand dem Owner erneut vorgelegt.
-  Bis dahin ist Praefix plus Rolle die Antwort.
+  Pakete, Filter und Offline-Validator liegen lokal bereit. Die fruehere Bedingung, den Versand dem
+  Owner erneut vorzulegen, ist durch die Datenrichtung vom 2026-09-26 gedeckt; der Jev-Lauf auf den
+  12 Paketen ist damit ein gewoehnlicher Akt der Jev-MAIN, mit erneutem Credential-Filter vor dem
+  Senden. Bis dahin ist Praefix plus Rolle die Antwort.
 - Bestand der Schnittstelle: drei Tage oeffentlich, ein Anbieter, geschlossene Gewichte, Limits in
   Bewegung. Deshalb steht Jev nie auf einem kritischen Pfad.

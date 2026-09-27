@@ -510,5 +510,12 @@ export async function run(): Promise<void> {
   } finally {
     if (composerMode) writeFileSync(composerMode, "normal\n");
     await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "0" });
+    // Slot 2 is a plain shell pane shared with later modules. The bundles above were typed into it
+    // as prose, and an apostrophe in them leaves zsh at a `quote>` continuation that swallows every
+    // later paneEnv probe (self-token's plain-slot checks). Abort that line and prove the shell answers.
+    await tmuxOut("send-keys", "-t", "s2", "C-c");
+    const shellSlot = await paneEnv("s2", "FLEET_SELF_SLOT", 5_000);
+    check("delivery-class teardown: slot 2's shell answers a probe again after the typed bundles",
+      shellSlot === "2", `slot=[${shellSlot}]`);
   }
 }

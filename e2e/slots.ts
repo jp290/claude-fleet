@@ -391,6 +391,43 @@ export async function run(): Promise<void> {
     rmSync(marker, { force: true });
   }
 
+  // A successful tmux exit can still return an unreadable enumeration. That observation must
+  // refuse the open and carry its precise reason in the 503 response. Mutation caught: dropping
+  // observed.detail from openSlot's unknown-presence error.
+  {
+    const fakeBin = `${ROOT}/tmux-unreadable-enumeration-bin`;
+    const marker = `${ROOT}/tmux-unreadable-enumeration.enabled`;
+    const realTmux = Bun.which("tmux") ?? "";
+    const fakeTmux = `${fakeBin}/tmux`;
+    const detail = "tmux enumeration returned an unreadable row";
+    rmSync(fakeBin, { recursive: true, force: true });
+    rmSync(marker, { force: true });
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(fakeTmux, `#!/bin/sh\nif [ -e '${marker}' ]; then\n  case " $* " in\n    *" list-sessions "*) printf 'unreadable-row\\n'; exit 0 ;;\n  esac\nfi\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
+    chmodSync(fakeTmux, 0o700);
+    check("unknown-presence fixture: the real tmux binary and executable enumeration shim exist",
+      realTmux.startsWith("/") && await exists(fakeTmux), JSON.stringify({ realTmux, fakeTmux }));
+    try {
+      await restartSrv({ PATH: `${fakeBin}:${process.env.PATH ?? ""}` });
+      writeFileSync(marker, "enabled\n", { mode: 0o600 });
+      const unreadable = spawnSync(fakeTmux, ["-L", SOCK, "list-sessions", "-F", "#{session_name}\t#{pane_current_path}"],
+        { encoding: "utf8" });
+      check("unknown-presence fixture: tmux enumeration exits zero with a row lacking its path",
+        unreadable.status === 0 && unreadable.stdout === "unreadable-row\n",
+        JSON.stringify({ status: unreadable.status, out: unreadable.stdout, err: unreadable.stderr }));
+      const refused = await post("/api/slots/3/open", { cwd: "~" });
+      const body = await refused.json() as { error?: unknown; availability?: unknown };
+      check("an unknown pane observation refuses open with its exact tmux detail in the 503",
+        refused.status === 503 && body.availability === "unknown"
+          && body.error === `slot 3 pane availability is unknown: ${detail}`,
+        `${refused.status} ${JSON.stringify(body)}`);
+    } finally {
+      rmSync(marker, { force: true });
+      await restartSrv();
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
+  }
+
   // --- Owner input is bound to the occupant and pane observed when the socket opens. Pausing one
   // queued message lets A die and B reuse s3 before the old closure resumes. Mutation caught:
   // resolving `s3` inside the queued callback, or retaining only the reusable slot number. ---

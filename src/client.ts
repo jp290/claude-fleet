@@ -858,6 +858,17 @@ function seedFramePlan(socketGeneration: number, currentGeneration: number, firs
   return { reset: firstFrame, pin: firstFrame };
 }
 
+// keys typed while a pane's socket is closed wait for the next seed of the same slot (Pane#sendRaw).
+// A whole write fits or is refused — a paste or an escape sequence is never cut in half — and after
+// the first refusal everything after it is refused too, so what arrives is always a prefix of what
+// was typed. `lost` counts characters, as the owner typed them.
+const HELD_MAX_BYTES = 1024;
+function holdKeys(held: string, lost: number, s: string): { held: string; lost: number } {
+  const size = (t: string) => new TextEncoder().encode(t).length;
+  if (lost || size(held) + size(s) > HELD_MAX_BYTES) return { held, lost: lost + [...s].length };
+  return { held: held + s, lost };
+}
+
 // long-press copy in the terminal (Pane#selectLineAt): how long a finger stays, how far it may drift
 const PRESS_MS = 450;
 const PRESS_SLOP_PX = 10;
@@ -922,12 +933,13 @@ class Pane {
   private readonly pastBar: HTMLElement;
   // THE DROPPED SOCKET, said in the pane (T3 of the 2026-09-26 walk-through): until this pane's
   // socket is open again a strip at its foot counts down to the next try, offers "jetzt verbinden",
-  // and counts the keystrokes it could not send — before, the 6-px dot was the only sign and
-  // sendRaw dropped them without a trace.
+  // and counts the keystrokes waiting for it. They are sent once the next socket to the SAME slot
+  // has delivered its seed (flushHeld); a slot change discards them (assign).
   private readonly downBar: HTMLElement;
   private readonly downMsg: HTMLElement;
   private downTimer: ReturnType<typeof setInterval> | undefined;
   private retryAt = 0;
+  private held = "";
   private dropped = 0;
   // LONG PRESS COPIES (T2 of the same walk-through): on a phone the terminal refuses text selection
   // (.paneterm user-select:none, so a drag scrolls the scrollback) and nothing could be copied out.
@@ -1661,10 +1673,10 @@ class Pane {
 
   sendRaw(s: string) {
     if (this.ws?.readyState !== WebSocket.OPEN) {
-      // not replayed after the reconnect: a keystroke delivered seconds late lands in whatever
-      // the session shows by then (an Enter that meets a permission prompt approves it) — a
-      // visible loss is the safer of the two. Counted in characters, as the owner typed them.
-      if (this.slot) { this.dropped += [...s].length; this.paintDown(); }
+      // held for the next seed of this slot, as it was before the strip (the owner, 2026-09-27:
+      // „[Zitat entfernt]“). A late Enter could meet a prompt the session shows by
+      // then; fleet sessions skip permission prompts, and the slot binding is the one boundary.
+      if (this.slot) { ({ held: this.held, lost: this.dropped } = holdKeys(this.held, this.dropped, s)); this.paintDown(); }
       return;
     }
     const bytes = new TextEncoder().encode(s);
@@ -1718,6 +1730,7 @@ class Pane {
       const pin = this.pinPending;
       this.pinPending = false;
       this.term.write(new Uint8Array(e.data as ArrayBuffer), pin ? () => this.pinToBottom() : undefined);
+      if (action.reset) this.flushHeld();
     };
     ws.onclose = () => {
       if (g !== this.gen) return; // superseded by a reassign or dispose
@@ -1746,7 +1759,8 @@ class Pane {
     this.retries = 0; // a different pane: the old one's backoff says nothing about this one
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
     this.ws?.close();
-    this.dropped = 0; // keystrokes lost to the previous slot are not this one's to report
+    this.held = ""; // keys typed for the previous slot never reach this one
+    this.dropped = 0;
     this.hideDown();
     this.hideCopy();
     this.term.reset();
@@ -1855,16 +1869,28 @@ class Pane {
   private paintDown() {
     if (!this.root.classList.contains("down")) return;
     const s = Math.ceil((this.retryAt - Date.now()) / 1000);
-    const lost = this.dropped ? ` · ${this.dropped} Zeichen nicht gesendet` : "";
-    this.downMsg.textContent = `${s > 0 ? `getrennt — neuer Versuch in ${s} s` : "getrennt — verbinde…"}${lost}`;
+    const n = [...this.held].length;
+    const wait = n ? ` · ${n} Zeichen warten, werden nach dem Verbinden gesendet` : "";
+    const lost = this.dropped ? ` · ${this.dropped} Zeichen verworfen (über ${HELD_MAX_BYTES} B)` : "";
+    this.downMsg.textContent = `${s > 0 ? `getrennt — neuer Versuch in ${s} s` : "getrennt — verbinde…"}${wait}${lost}`;
   }
 
   private hideDown() {
     clearInterval(this.downTimer);
-    if (this.dropped && this.root.classList.contains("down"))
-      toast(`Slot ${this.slot}: ${this.dropped} Zeichen während der Trennung nicht gesendet`);
-    this.dropped = 0;
     this.root.classList.remove("down");
+  }
+
+  // the seed of a socket to this pane's slot has arrived: send what was typed meanwhile, once —
+  // emptied before the send, so a second seed or a drop mid-send cannot repeat it
+  private flushHeld() {
+    const held = this.held;
+    const lost = this.dropped;
+    if (!held && !lost) return;
+    this.held = "";
+    this.dropped = 0;
+    if (held) this.sendRaw(held);
+    // what arrived shows in the terminal itself; only a loss needs saying (toast is the error colour)
+    if (lost) toast(`Slot ${this.slot}: ${[...held].length} Zeichen nach dem Verbinden gesendet, ${lost} verworfen (über ${HELD_MAX_BYTES} B)`);
   }
 
   // called from the seed's write callback (see connect()). The buffer is already at

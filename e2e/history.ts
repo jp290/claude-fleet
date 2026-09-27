@@ -589,13 +589,72 @@ function runLinks(): void {
       && !/\.term\.scrollToBottom\(\);|\.term\.scrollLines\(/.test(client.replace(snap, "")),
     `snap ${snap.length} chars, pin ${pin.length} chars`);
   // T3 of the same walk-through: a dropped socket was a 6-px dot and sendRaw threw keystrokes away
-  // without a trace. The drop is said in the pane, and a refused keystroke is counted, not silent.
+  // without a trace. The drop is said in the pane, and (K6 follow-up, owner 2026-09-27) what was
+  // typed meanwhile waits for the next seed of the same slot instead of being discarded.
   const sendRaw = /  sendRaw\(s: string\) \{[\s\S]*?\n  \}/.exec(client)?.[0] ?? "";
-  check("terminal: a closed socket shows in the pane and counts the keystrokes it could not send",
-    /readyState !== WebSocket\.OPEN\) \{[\s\S]*?this\.dropped \+=[\s\S]*?this\.paintDown\(\)/.test(sendRaw)
-      && /const wait = reconnectDelay\(this\.retries\+\+\);\s*this\.showDown\(wait\);/.test(client)
+  const flushHeld = /  private flushHeld\(\) \{[\s\S]*?\n  \}/.exec(client)?.[0] ?? "";
+  const holdSource = /const HELD_MAX_BYTES = [\s\S]*?\nfunction holdKeys[\s\S]*?\n\}/.exec(client)?.[0] ?? "";
+  check("terminal: a closed socket shows in the pane, which counts down to the next try",
+    /const wait = reconnectDelay\(this\.retries\+\+\);\s*this\.showDown\(wait\);/.test(client)
       && /setConn\(true\);\s*this\.hideDown\(\);/.test(client) && client.includes("this.reconnect(); };\n    this.downBar.append("),
     `sendRaw ${sendRaw.length} chars`);
+  check("terminal: held keys are sent after the seed write of the current socket, and a slot change discards them",
+    /this\.term\.write\(new Uint8Array\(e\.data as ArrayBuffer\)[^\n]*\n\s*if \(action\.reset\) this\.flushHeld\(\);/.test(client)
+      && /this\.slot = slot;[\s\S]*?this\.held = "";[\s\S]*?this\.connect\(\)/.test(client)
+      && (client.match(/this\.flushHeld\(\)/g) ?? []).length === 1,
+    `flushHeld ${flushHeld.length} chars`);
+  // the buffer itself, run: the real holdKeys/sendRaw/flushHeld lifted from the source into a stub
+  // pane whose socket is a list of sent frames. A lift that cannot run fails this check, not the module.
+  const sent: string[] = [];
+  const toasts: string[] = [];
+  let holdResult = "";
+  try {
+    const OPEN = 1;
+    const factory = new Function("WebSocket", "MAX_CHUNK", "toast", new Bun.Transpiler({ loader: "ts" }).transformSync(
+      `${holdSource}\nclass P { held = ""; dropped = 0; slot = 7; ws: any = null; paints = 0;\n  paintDown() { this.paints++; }\n${sendRaw}\n${flushHeld.replace("private ", "")}\n}\nreturn { holdKeys, P, HELD_MAX_BYTES };`,
+    ));
+    const lifted = factory({ OPEN }, 1 << 16, (m: string) => toasts.push(m)) as {
+      holdKeys: (h: string, l: number, s: string) => { held: string; lost: number }; HELD_MAX_BYTES: number;
+      P: new () => { held: string; dropped: number; slot: number; paints: number;
+        ws: { readyState: number; send: (b: Uint8Array) => void } | null; sendRaw: (s: string) => void; flushHeld: () => void };
+    };
+    const { holdKeys, P, HELD_MAX_BYTES } = lifted;
+    const kb = "x".repeat(1024);
+    const cases = [
+      HELD_MAX_BYTES === 1024,
+      JSON.stringify(holdKeys("", 0, "")) === JSON.stringify({ held: "", lost: 0 }),
+      holdKeys("", 0, kb).held === kb, // exactly 1024 B fits
+      JSON.stringify(holdKeys(kb, 0, "y")) === JSON.stringify({ held: kb, lost: 1 }), // byte 1025 is refused
+      holdKeys("x".repeat(1022), 0, "ä").held.length === 1023, // 2 B: lands on 1024
+      JSON.stringify(holdKeys("x".repeat(1023), 0, "ä")) === JSON.stringify({ held: "x".repeat(1023), lost: 1 }), // counted as ONE character
+      JSON.stringify(holdKeys("ab", 0, "\x1b[A".repeat(400))) === JSON.stringify({ held: "ab", lost: 1200 }), // whole write or none
+      JSON.stringify(holdKeys("ab", 3, "c")) === JSON.stringify({ held: "ab", lost: 4 }), // after a refusal, nothing more is held
+    ];
+    const pane = new P();
+    pane.ws = null; // socket closed
+    pane.sendRaw("ls -la");
+    pane.sendRaw("\r");
+    const heldWhileDown = pane.held === "ls -la\r" && sent.length === 0 && pane.paints === 2;
+    pane.ws = { readyState: OPEN, send: (b: Uint8Array) => sent.push(new TextDecoder().decode(b)) };
+    pane.flushHeld(); // the seed arrived
+    pane.flushHeld(); // a second seed (reload) must not repeat it
+    const once = sent.join("|") === "ls -la\r" && pane.held === "" && pane.dropped === 0 && toasts.length === 0;
+    // over the cap: the prefix is sent, the refused rest is counted and said once, then forgotten
+    const over = new P();
+    over.sendRaw("ab"); over.sendRaw("y".repeat(1023)); over.sendRaw("c");
+    const overDown = over.held === "ab" && over.dropped === 1024;
+    over.ws = pane.ws;
+    over.flushHeld(); over.flushHeld();
+    const overSaid = sent.join("|") === "ls -la\r|ab" && over.dropped === 0 && toasts.length === 1
+      && toasts[0]!.includes("2 Zeichen nach dem Verbinden gesendet, 1024 verworfen");
+    const none = new P(); none.slot = 0; none.sendRaw("x"); // an unassigned pane holds nothing
+    holdResult = JSON.stringify({ cases, heldWhileDown, once, overDown, overSaid, unassigned: none.held === "" && none.paints === 0, sent: sent.map((t) => t.length), toasts });
+    check("terminal: keys typed while disconnected wait (at most 1024 B, whole writes, a prefix) and are sent exactly once after the seed",
+      cases.every(Boolean) && heldWhileDown && once && overDown && overSaid && none.held === "" && none.paints === 0, holdResult);
+  } catch (e) {
+    check("terminal: keys typed while disconnected wait (at most 1024 B, whole writes, a prefix) and are sent exactly once after the seed",
+      false, `lift failed: ${e instanceof Error ? e.message : String(e)} (holdKeys ${holdSource.length}, sendRaw ${sendRaw.length}, flushHeld ${flushHeld.length} chars)`);
+  }
   check("terminal: every socket gates stale frames and resets before its first seed write",
     client.includes("seedFramePlan(g, this.gen, firstFrame)")
       && /if \(action\.reset\) \{[\s\S]*?this\.term\.reset\(\)/.test(client));

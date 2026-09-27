@@ -16109,7 +16109,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // that span as the notes/source/studio/anchor region, and a pointer there moved all of their
     // bytes (preview b546fb2cccdb, 7 red). Clarify gets none, like the notes and the footer.
     const memoryBlock = clarify ? "" : `\n\n${memoryPointer("lane")}`;
-    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness, selfPosition(free).receiver)}${memoryBlock}`;
+    const deliveredBrief = `${brief}\n\n${LANE_ROLE_CARD}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness, selfPosition(free).receiver)}${memoryBlock}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true, { path: "brief" });
@@ -32475,12 +32475,8 @@ function chooseFoundingPacks(plan: ContextPlan, requested: readonly string[]):
 // deliberately no posture enum, size threshold or decision table, because each of those would be
 // the persisted posture the correction rules out. Every judgement inside the loop (decomposition,
 // worker choice, whether a diff is good, whether a red check is repairable) stays the session's.
-// THE RAIL IN THREE PIECES, so that a profile can SELECT its role paragraph instead of appending
-// an override after one that contradicts it. Head and tail are shared by every founding; exactly
-// one role paragraph sits between them. Composed rather than duplicated because two nearly-identical
-// rails are two texts nobody diffs again — the same argument that made this one block in the first
-// place. The STANDARD composition is byte-for-byte the text every founding delivered before the
-// profile existed, and `PROGRAM_MAIN_RAIL_BLOCK` still names it.
+// The MAIN card supplies the common role text. The game profile adds its own specialist paragraph;
+// both rails share the head and tail.
 const RAIL_HEAD = `
 
 --- HOW THIS PROGRAM IS EXECUTED (the rail Fleet already runs — read it before your first act)
@@ -32498,24 +32494,7 @@ grades the work, and it actuates nothing.
 
 ${memoryPointer("main")}`;
 
-// The generic role judgement, unchanged: the owner's correction of 2026-08-24 in its own shape.
-const RAIL_ROLE_STANDARD = `
-
-THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL. You inspect, decide, decompose, brief, review a returned
-diff, resolve ordinary merge conflicts and integrate - that is this session's work, and none of it
-is scripted for you. Small, reversible, low-risk changes inside the confirmed scope you may simply
-make here whenever delegating them would cost more than the change itself: concise control or
-documentation edits, tiny integration glue, ordinary conflict resolution, a narrowly observed
-verification repair. Use an isolated worker lane for substantial product implementation, broad or
-parallel work, specialist work, work that wants fresh criticism, and work whose independent
-evidence or isolation materially matters. When the two readings are close, the lane is the cheaper
-mistake - but a MAIN that routes every small edit through a worker has become a scheduler, and
-Fleet already has one of those.`;
-
-// THE GAME-MAKER ROLE PARAGRAPH — the whole of what the profile changes about the founding text,
-// and it REPLACES the paragraph above rather than qualifying it. Appending an override would leave
-// "substantial product implementation goes to a lane" standing beside "substantial serial work may
-// stay here", and a session reading both follows whichever it reaches first.
+// The game profile keeps its specialist obligations beside the common MAIN card.
 //
 // WHY IT EXISTS. The generic rail is right for the work Fleet was built on and wrong for a game:
 // it sends substantial product implementation to a lane, which severs the one session that has to
@@ -32691,7 +32670,7 @@ mean the owner has played it, and reporting it as though they had is a false cla
 terminal boundary - and only there - raise exactly ONE POST /api/self/attention naming the decision
 you need. A routine clean, green, in-program land is not a boundary; it is your own act.`;
 
-const PROGRAM_MAIN_RAIL_BLOCK = RAIL_HEAD + RAIL_ROLE_STANDARD + RAIL_TAIL;
+const PROGRAM_MAIN_RAIL_BLOCK = RAIL_HEAD + RAIL_TAIL;
 const GAME_MAKER_RAIL_BLOCK = RAIL_HEAD + RAIL_ROLE_GAME_MAKER + RAIL_TAIL;
 
 // === THE STUDIO BLOCK — the owner's curated workflow, delivered to the sessions that run it =====
@@ -32797,7 +32776,7 @@ function buildProgramMainBrief(program: Program, frame: ProgramMainFrame, anchor
   ];
   // ONE concatenation seam per builder, and the rail block sits between the Program payload and the
   // anchors: a second seam is how one of the four variants would end up without it.
-  return body.join("\n") + railBlockFor(program) + anchorBlock;
+  return body.join("\n") + `\n\n${MAIN_ROLE_CARD}` + railBlockFor(program) + anchorBlock;
 }
 
 // THE GAME-MAKER SUCCESSION ORDER OF OPERATIONS, and every line of it is a thing the successor
@@ -33073,7 +33052,7 @@ function buildProgramMainSuccessionBrief(program: Program, carry: string | null,
     "Owner-confirmed Program content (verbatim JSON):",
     JSON.stringify(programContent(program), null, 2),
   ];
-  return body.join("\n") + railBlockFor(program) + anchorBlock;
+  return body.join("\n") + `\n\n${MAIN_ROLE_CARD}` + railBlockFor(program) + anchorBlock;
 }
 
 // Supervisor v0 is deliberately MINIMAL: the founding text states the role, the three read/propose
@@ -33118,34 +33097,33 @@ function buildSupervisorBindBrief(): string {
   ].join("\n");
 }
 
-// --- THE ORCHESTRATOR ROLE CARD ------------------------------------------------------------------
-// THE MEASURED GAP. A Program-MAIN has had a founding text since 2026-08-24 (RAIL_HEAD/TAIL above)
-// and the Supervisor has had one since its own cut. The session that holds the PORTFOLIO — the one
-// the owner talks to, the one that files and sharpens the rows every MAIN then executes — has had
-// none: it was opened as an ordinary slot with a label, and every rule it worked by lived in the
-// owner's chat or in the predecessor's head. Slot 4's own request on 2026-09-14 is the anchor:
-// „[Zitat entfernt]“, so the handover
-// carries more than prose. What follows is the owner's text (docs/messungen/
-// 2026-09-14-rollen-briefe-synthese.md §2b, sharpened by the Orchestrator that asked for it),
-// delivered VERBATIM: a brief that paraphrased it would be a second source for the same rule.
-//
-// IT IS A ROLE CARD, NOT A BINDING. `docs/controller.md` states the rule this obeys — Controller and
-// Orchestrator are a SCOPE, not a server-held appointment — so there is no registry row, no
-// occupancy, no displacement and no rebind door here. The label IS the appointment, exactly as
-// STEWARD_LABEL is, and the only thing the server does with it is decide whether this founding
-// carries the card. Nothing downstream reads `isOrchestratorLabel` as authority: an Orchestrator's
-// self-token opens precisely the doors every other non-lane session's does.
-//
-// TWO DOORS, ONE BODY — the shape buildSupervisorBindBrief and its two siblings already have. The
-// preamble differs because how a session ARRIVED in the role is the one thing it cannot derive; the
-// card must not be able to differ between the door that spawns the role and the door that continues
-// it, which is what a second copy would eventually do.
-const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: haelt das Portfolio, uebersetzt Owner-Absicht in Program-Vorschlaege und Zeilen im Karten-Format, schaerft Karten bis sie gueltig sind; fuehrt keine Program-Lane, landet nicht (Lane-Treiben = Program-MAIN).
---- DU ENTSCHEIDEST --- Reihenfolge, Zerlegung, Klasse und Worker je Zeile; knappe Faelle per Default-Regel + Ledger (Owner 2026-09-14); kleine reversible Akte selbst (Archiv, Ersatzzeile, Attention-Antwort mit Begruendung).
---- DER OWNER ENTSCHEIDET --- Scope-Wachstum, Irreversibles, Deploy, Kosten und Aussenwirkung, erklaerter Geschmack. Genau EINE Frage je Grenze, als Kommentar an der Zeile oder in der Antwort — eine Orchestratorin stellt keine Attention (409, ungebunden).
---- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit konkreter Owner-Delegation).
---- DER LOOP --- state.sh → register.sh → Board; kleinster Akt → Zeile im Format → Karte gueltig? → warten ohne Beobachten (Rueckweg als Mechanismus) → Report ist ein CLAIM: Diff und Verify-Tail lesen → naechster Akt.
---- UEBERGABE --- Record auf der Rollen-Linie: offene Pflichten per ID, intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit (Opus 5.5 orchestriert); HANDOFF.md nur bei echter Nachfolge (Regel A); Uebergabe-ENTSCHEIDUNG bei 25 % gemessen, keine neue Tiefenarbeit ab 30 %.`;
+// --- ROLE CARDS — verbatim from docs/rollenkarten.md -------------------------------------------
+const MAIN_ROLE_CARD = `--- ROLLE --- Program-MAIN: fuehrt genau ein Program. Du briefst, beurteilst und landest; was eine Lane bauen kann, baut eine Lane. Je Projekt eine MAIN; was frueher eigene Programs am selben Repo waren, sind Straenge darin.
+--- DEIN EMPFAENGER --- die Orchestratorin: Rueckfragen, Ausnahmen, Program-Abschluss. Eine Frage an den Owner geht ueber sie, nie direkt. Deine Lanes melden an dich.
+--- DU ENTSCHEIDEST --- Schnitt und Reihenfolge der Zeilen deines Programs, Schaerfe der Karten, Freigabe und Halt, Annahme oder Rueckgabe eines Reports, Landen, Reparaturzeile nach rotem Audit (zweimal dasselbe Rot = sofort).
+--- DEINE GRENZE --- Scope ueber dein Program hinaus, fremde Programs und Slots, alles unter BLOCKER: fragen statt tun.
+--- DEINE TUEREN --- self/program-execution (Stand, Handover, Phase) · self/tasks (POST, brief, release, hold) · clarifications reply · fleet-report accept|reject · watch lane|merge|audit · ctl.sh land --wait · ctl.sh send an die Orchestratorin.
+--- DER LOOP --- program-execution lesen → naechste Zeile schaerfen, bis die Karte gueltig ist → release → Watch auf die Lane → Report = Behauptung: Diff und Verify-Tail lesen → annehmen und landen oder mit Grund zurueck → Audit-Ergebnis lesen → naechste Zeile.
+--- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
+--- UEBERGABE --- offene Pflichten bleiben in Program-, Task- und Report-Sichten mit ID; succeed auf der Standard-Schiene, kein HANDOFF-Commit. Was nicht uebergehen kann, als verloren benennen.`;
+
+const LANE_ROLE_CARD = `--- ROLLE --- Lane: fuehrst genau eine Karte aus und meldest an deine MAIN. Die Karte ist dein Scope: ZIEL, FLAECHE, VERIFY, DONE, VERBOTEN.
+--- DEIN EMPFAENGER --- deine MAIN: Rueckfragen per POST /api/self/clarifications, Abschluss per POST /api/self/fleet-report. Nie der Owner direkt.
+--- DU ENTSCHEIDEST --- wie du das DONE erreichst, innerhalb von FLAECHE und VERBOTEN.
+--- DEINE GRENZE --- alles ausserhalb der Karte, andere Repos, ~/.claude, geteilte Ports, Sockets und der Live-Server: stoppen und fragen. Nie landen, nie deployen.
+--- DEINE TUEREN --- self/gate (was dich gated, welche Beweismenge) · self/drift (vor dem Report) · criterion · suite-offer · clarifications · fleet-report · succeed (Lane-Schiene).
+--- DER LOOP --- DONE und Pruefkommando in einem Satz festlegen → bauen → committen, keine ungetrackten Dateien → Beweismenge aus self/gate fahren → drift pruefen → Report: was, Pruef-Tail woertlich, eine Zeile Offenes. Ein roter Check ist deiner, bis du das Gegenteil beweist.
+--- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
+--- UEBERGABE --- an der Kontextgrenze (FLEET_LANE_MIGRATE_PCT): committen, fleet-report mit status handoff, succeed ohne carry — die Nachfolgerin arbeitet auf deinem Worktree weiter.`;
+
+const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: uebersetzt Owner-Absicht in Programs und Karten, beaufsichtigt die MAINs und bringt dem Owner nur echte Grenzfragen. Fuehrt keine Lane, landet nicht.
+--- DEIN EMPFAENGER --- der Owner. Fragen der MAINs kommen zu dir: was du beantworten kannst, beantwortest du; den Rest bringst du dem Owner zweimal, als Push und im Gespraech.
+--- DU ENTSCHEIDEST --- Reihenfolge, Zerlegung, Klasse und Worker je Zeile; knappe Faelle per Default-Regel + Ledger; Reports der MAINs beurteilen, nur Ausnahmen an den Owner; kleine reversible Akte selbst (Archiv, Ersatzzeile, Antwort mit Begruendung); Deploy nach mechanischer Vorbedingungspruefung.
+--- DER OWNER ENTSCHEIDET --- Scope-Wachstum, Irreversibles, Geld, Veroeffentlichung und alles nach aussen, erklaerter Geschmack, die Verfassung selbst. Genau EINE Frage je Grenze.
+--- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit Owner-Delegation) · deploy (Verdikt am naechsten Boot lesen).
+--- DER LOOP --- state.sh --brief → register.sh --brief → Board; kleinster Akt → Zeile im Format → Karte gueltig? → Rueckweg als Mechanismus legen, warten ohne Beobachten → ein Report ist eine Behauptung, bis Diff und Pruefung gelesen sind → naechster Akt.
+--- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
+--- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Entscheidung bei 25 % gemessen, keine neue Tiefenarbeit ab 30 %.`;
 
 // WHICH LABEL IS THE ROLE. The owner names the role in the pane label and always has — the live
 // fleet carries „[Zitat entfernt]“, so an exact-equality test the way STEWARD_LABEL uses one
@@ -33161,8 +33139,8 @@ function buildOrchestratorSpawnBrief(anchorBlock: string): string {
     "[fleet Orchestrator] Diese Session ist die Orchestratorin dieses Fleets. Was folgt, ist deine Rollenkarte — Owner-Text, keine Empfehlung; die Langfassung steht in docs/controller.md.",
     ORCHESTRATOR_ROLE_CARD,
     "Beginne exakt in dieser Reihenfolge:",
-    "1. Führe ./state.sh aus.",
-    "2. Führe ./register.sh aus.",
+    "1. Führe ./state.sh --brief aus.",
+    "2. Führe ./register.sh --brief aus.",
     "3. Lies das Board und entscheide aus den Fakten den nächsten begrenzten Portfolio-Akt.",
     "",
     memoryPortfolioPointer(),
@@ -33175,12 +33153,14 @@ function buildOrchestratorSpawnBrief(anchorBlock: string): string {
 function buildOrchestratorSuccessionBrief(steps: readonly string[], carry: string | null,
   lineage: LineageBriefFacts, anchorBlock: string): string {
   const next = carry ? [``, `Das Erste, was die Vorgängerin als Nächstes täte (max. ${MAX_SUCCESSION_CARRY} Zeichen):`, carry] : [];
+  const briefSteps = steps.map((step) => step.replace("./state.sh aus.", "./state.sh --brief aus.")
+    .replace("./register.sh aus.", "./register.sh --brief aus."));
   return [
     `[fleet Orchestrator succession] Du bist die FORTGESETZTE Orchestratorin dieses Fleets; die Vorgängerin ist auf diesem Slot beendet; die Übergabe ist der Linien-Record ${lineage.lineageId} (GET /api/self, Feld \`lineage\`): ${lineageBriefContent(lineage)}`,
     "Was folgt, ist deine Rollenkarte — Owner-Text, keine Empfehlung; die Langfassung steht in docs/controller.md.",
     ORCHESTRATOR_ROLE_CARD,
     "Beginne exakt in dieser Reihenfolge:",
-    ...steps,
+    ...briefSteps,
     ...next,
     "",
     memoryPortfolioPointer(),

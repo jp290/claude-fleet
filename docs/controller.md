@@ -77,18 +77,9 @@ begrenztes Readiness-Warten) und schreibt eine Zeile in `context-receipts.jsonl`
 Session trotzdem offen: `roleCard` in der Antwort sagt, was passiert ist — die Tür schuldet dem
 Owner die Pane, nicht die Karte.
 
-```text
---- ROLLE --- Orchestratorin: haelt das Portfolio, uebersetzt Owner-Absicht in Program-Vorschlaege und Zeilen im Karten-Format, schaerft Karten bis sie gueltig sind; fuehrt keine Program-Lane, landet nicht (Lane-Treiben = Program-MAIN).
---- DU ENTSCHEIDEST --- Reihenfolge, Zerlegung, Klasse und Worker je Zeile; knappe Faelle per Default-Regel + Ledger (Owner 2026-09-14); kleine reversible Akte selbst (Archiv, Ersatzzeile, Attention-Antwort mit Begruendung).
---- DER OWNER ENTSCHEIDET --- Scope-Wachstum, Irreversibles, Deploy, Kosten und Aussenwirkung, erklaerter Geschmack. Genau EINE Frage je Grenze, als Kommentar an der Zeile oder in der Antwort — eine Orchestratorin stellt keine Attention (409, ungebunden).
---- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit konkreter Owner-Delegation).
---- DER LOOP --- state.sh → register.sh → Board; kleinster Akt → Zeile im Format → Karte gueltig? → warten ohne Beobachten (Rueckweg als Mechanismus) → Report ist ein CLAIM: Diff und Verify-Tail lesen → naechster Akt.
---- UEBERGABE --- Record auf der Rollen-Linie: offene Pflichten per ID, intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit (Opus 5.5 orchestriert); HANDOFF.md nur bei echter Nachfolge (Regel A); Uebergabe-ENTSCHEIDUNG bei 25 % gemessen, keine neue Tiefenarbeit ab 30 %.
-```
-
-Der Text ist **verbatim** Owner-Text (Richtung 2026-09-14 im Gespräch mit der Orchestratorin Slot 4,
-abgeleitet aus `docs/messungen/2026-09-14-rollen-briefe-synthese.md` §2b) und wird nie paraphrasiert
-— eine zusammengefasste Fassung im Brief wäre eine zweite Quelle für dieselbe Regel. Die Nachfolge
+Die Karte steht ausschließlich in [docs/rollenkarten.md](rollenkarten.md#orchestratorin).
+`server.ts#ORCHESTRATOR_ROLE_CARD` übernimmt ihren Text bytegleich; `bun e2e/pins.ts` prüft das.
+Die Nachfolge
 ändert daran nichts: sie nennt weiter den **Linien-Record** als die eine Übergabe (§Nachfolge unten,
 `e3e5084a`); die Karte ist ein zusätzlicher TEXT, kein zweiter Kanal.
 

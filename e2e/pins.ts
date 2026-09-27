@@ -195,6 +195,30 @@ pin("the client universe is derived and holds its bundle entry",
   clientU.files.length > 0 && clientU.files[0]!.file === "src/client.ts" && clientU.text.length > 0,
   `${clientU.files.length} module(s): [${clientU.files.map((f) => f.file).join(", ")}]`);
 
+{
+  const doc = read("docs/rollenkarten.md");
+  const server = read("server.ts");
+  const cards = [
+    ["Orchestratorin", "ORCHESTRATOR_ROLE_CARD"],
+    ["Program-MAIN", "MAIN_ROLE_CARD"],
+    ["Lane", "LANE_ROLE_CARD"],
+  ] as const;
+  const pairs = cards.map(([heading, symbol]) => {
+    const docMatches = [...doc.matchAll(new RegExp('^## ' + heading + '\\n\\n```text\\n([^`]*)\\n```', 'gm'))];
+    const serverMatches = [...server.matchAll(new RegExp('const ' + symbol + ' = `([^`]*)`;', 'g'))];
+    return { heading, symbol, docMatches, serverMatches };
+  });
+  const missing = pairs.filter(({ docMatches, serverMatches }) => docMatches.length !== 1 || serverMatches.length !== 1);
+  if (missing.length)
+    pin("role cards: PROBE extracted one text block and one constant per role", false,
+      missing.map(({ heading, docMatches, serverMatches }) => `${heading}: doc=${docMatches.length}, server=${serverMatches.length}`).join("; "));
+  else {
+    const changed = pairs.filter(({ docMatches, serverMatches }) => docMatches[0]![1] !== serverMatches[0]![1]);
+    pin("role cards: server constants are byte-equal to docs/rollenkarten.md text blocks",
+      changed.length === 0, changed.map(({ symbol }) => symbol).join(", "));
+  }
+}
+
 // THE CROSS-MODULE SLICE TRIPWIRE, and it is the other half of `span()`. ~95 rows below still cut
 // a server body with two bare indexOf calls — the shape that was correct while the universe was one
 // file. After the split those two anchors can land in DIFFERENT modules, and a raw slice between
@@ -6966,7 +6990,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
   // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
-    /const deliveredBrief = `\$\{brief\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness, selfPosition\(free\)\.receiver\)\}\$\{memoryBlock\}`;/.test(server)
+    /const deliveredBrief = `\$\{brief\}\\n\\n\$\{LANE_ROLE_CARD\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness, selfPosition\(free\)\.receiver\)\}\$\{memoryBlock\}`;/.test(server)
       && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
       && /footer: laneExitFooter\(s\.harness, selfPosition\(s\)\.receiver\)/.test(server)
       && (server.split("laneExitFooter(").length - 1) === 3,
@@ -6981,18 +7005,15 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 // curls that 404, exactly the way the lane exit footer would — same failure, same kind of pin.
 {
   const RULE_RAIL = "the founding execution rail, the portable role contract and the Self-API reference name ONE set of doors";
-  // The rail is COMPOSED since the execution-profile cut: one head, one selected role paragraph,
-  // one tail. Read the parts and join them the way the server joins them, so this rule keeps
-  // measuring the DELIVERED text rather than one constant's spelling — and so the game-maker
-  // composition is measurable at all.
+  // The common card precedes both rails. The game profile adds its specialist paragraph.
   const railPart = (name: string): string =>
     server.match(new RegExp(`const ${name} = \`[\\s\\S]*?\\n[^\\n]*\`;`))?.[0] ?? "";
   const railHead = railPart("RAIL_HEAD");
-  const railRoleStandard = railPart("RAIL_ROLE_STANDARD");
+  const mainCard = server.match(/const MAIN_ROLE_CARD = `([^`]*)`;/)?.[1] ?? "";
   const railRoleGameMaker = railPart("RAIL_ROLE_GAME_MAKER");
   const railTail = railPart("RAIL_TAIL");
-  const rail = railHead === "" || railRoleStandard === "" || railTail === ""
-    ? "" : railHead + railRoleStandard + railTail;
+  const rail = mainCard === "" || railHead === "" || railTail === ""
+    ? "" : mainCard + railHead + railTail;
   const selfApiDoc = read("docs/self-api.md");
   const agents = read("AGENTS.md");
   // The doors, spelled as the delivered text spells them. `<taskId>` in the brief and `:id` in the
@@ -7016,7 +7037,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_RAIL} — every door the founding block names has a section that documents it (A)`,
     rail !== "" && /^## Program-MAIN-Ausführungsschiene/m.test(selfApiDoc)
       && missingRail.length === 0 && missingDoc.length === 0,
-    rail === "" ? "the RAIL_HEAD / RAIL_ROLE_STANDARD / RAIL_TAIL parts were not all found in server.ts"
+    rail === "" ? "the MAIN_ROLE_CARD / RAIL_HEAD / RAIL_TAIL parts were not all found in server.ts"
       : `railMissing=[${missingRail.join(",")}] docMissing=[${missingDoc.join(",")}]`);
   // The ADDRESS is the falsifier the owner paid for by hand: a MAIN that has to search for Fleet.
   // It must be the server's OWN interpolated HOST/PORT — a literal would be right on this machine
@@ -7026,17 +7047,13 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && rail.includes("x-fleet-self-token: $FLEET_SELF_TOKEN")
       && !/x-fleet-token|\/api\/slots\/|\/api\/programs\//.test(rail),
     `host=${rail.includes("http://${HOST}:${PORT}")} selfToken=${rail.includes("x-fleet-self-token: $FLEET_SELF_TOKEN")}`);
-  // THE OWNER'S CORRECTION OF 2026-08-24 lives in three files and fails in opposite directions in
-  // each: a blanket „[Zitat entfernt]“ makes the MAIN a scheduler, and dropping the
-  // lane half puts the whole product back in the MAIN checkout. The portable contract is where a
-  // session actually binds to it, so it is the side that must not go silent — and it must stay a
-  // JUDGEMENT: a posture enum, a size threshold or a decision table is precisely what was refused.
+  // The portable contract retains the detailed role judgement; the card is its brief summary.
   const agentsRule = agents.includes("is a JUDGEMENT, never a posture, a")
     && agents.includes("Small, reversible, low-risk changes inside the confirmed scope")
     && agents.includes("isolated worker lane");
-  const railRule = rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
-    && rail.includes("Use an isolated worker lane for substantial product implementation");
-  pin(`${RULE_RAIL} — both halves of the role judgement stand in the block and in the portable contract (C)`,
+  const railRule = mainCard.includes("was eine Lane bauen kann, baut eine Lane")
+    && !rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL");
+  pin(`${RULE_RAIL} — the card summarizes delegation and the portable contract retains the role judgement (C)`,
     agentsRule && railRule && !/\b\d+\s*(lines|files|LOC)\b/.test(rail),
     `agents=${agentsRule} rail=${railRule}`);
   // (D) THE PROFILE SELECTS ITS ROLE PARAGRAPH, IT DOES NOT APPEND AN OVERRIDE. Two role paragraphs
@@ -7065,7 +7082,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     && gameMakerRail.includes("SENSORY CRITIC IS POST-PLAY ONLY")
     && gameMakerRail.includes('KEEP THE COMMITTED "## Current game checkpoint" CURRENT')
     && railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}')
-    && !railRoleStandard.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE");
+    && !rail.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE");
   const preflightOrder = [
     "FILE ONE NORMAL ARCHITECT TASK",
     "OPTIONALLY RUN ZERO TO TWO NAMED FACT/RISK PROBES",
@@ -7161,13 +7178,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     "ordered reader or shuffled-field runtime rejection missing");
   const agentsProfile = agents.includes("Game-Maker Program-MAIN")
     && agents.includes("causally coupled product act");
-  // (E) THE LEGACY STANDARD RAIL IS FROZEN, AND THE HASH IS THE POINT. e2e/programs.ts proves the
-  // four founding shapes carry ONE block byte for byte — which is true of four shapes that drifted
-  // TOGETHER, and the whole rail is now composed, so a change to the shared head or tail moves all
-  // four at once and that check stays green. This row is the change-control rule the composition
-  // needs: the standard rail's bytes are pinned to a baseline, so editing it is a deliberate act
-  // that updates this constant, never a side effect of touching the profile beside it. Rewrite the
-  // baseline ONLY when the text was meant to change, and say so in the commit body.
+  // The common execution rail stays pinned; the role card is checked against its document above.
   // 2026-09-23 (System 1.5 R1): RAIL_TAIL's "treat an arriving report as a CLAIM" bullet now
   // also asks the judging MAIN for the leading ERFUELLT: token on its verdict reason. A
   // deliberate text change, so the baseline moves with it.
@@ -7175,15 +7186,15 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // (server.ts#memoryPointer, GET /api/self/memory) — a pointer to the reader, no copied state.
   // 2026-09-24: RAIL_TAIL's filing bullet now explains the card header fields with one example
   // whose VERIFY is the repository's own command — a foreign-repo MAIN has no other source for it.
-  const RAIL_STANDARD_SHA256 = "9e259eb591c45a3a092b142a854b1172965be1dbb7ad4e3dd857fef5ba5c4d2a";
+  const RAIL_COMMON_SHA256 = "5fc22a5ebcf90efa9512739f71fb3ae72ba9d6ca3ac3140efe83f6c72acb9ed8";
   const railBody = (part: string): string =>
     part === "" ? "" : part.slice(part.indexOf("`") + 1, part.lastIndexOf("`"));
   const standardBytes = rail === ""
-    ? "" : railBody(railHead) + railBody(railRoleStandard) + railBody(railTail);
+    ? "" : railBody(railHead) + railBody(railTail);
   const standardSha = standardBytes === ""
     ? "" : createHash("sha256").update(standardBytes).digest("hex");
-  pin(`${RULE_RAIL} — the legacy Standard rail still hashes to its pinned baseline (E)`,
-    standardSha === RAIL_STANDARD_SHA256,
+  pin(`${RULE_RAIL} — the common execution rail still hashes to its pinned baseline (E)`,
+    standardSha === RAIL_COMMON_SHA256,
     standardBytes === "" ? "the rail parts were not all found in server.ts"
       : `bytes=${standardBytes.length} sha256=${standardSha}`);
   pin(`${RULE_RAIL} — the game-maker role paragraph REPLACES the generic one, and the portable contract names the same exception (D)`,

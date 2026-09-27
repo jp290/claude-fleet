@@ -10099,21 +10099,26 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   try {
     mkdirSync(`${onceHome}/.local/bin`, { recursive: true });
     const fakeGraphify = `${onceHome}/.local/bin/graphify`;
-    writeFileSync(fakeGraphify, "#!/bin/sh\ncat >/dev/null\nprintf 'graphify-hint\\n'\n");
+    writeFileSync(fakeGraphify, "#!/bin/sh\n[ \"$1\" = hook-guard ] && [ \"$2\" = search ] || exit 9\nbody=$(cat)\n[ -n \"$body\" ] || exit 8\nprintf 'graphify-hint\\n'\nexit \"${GRAPHIFY_FAKE_EXIT:-0}\"\n");
     chmodSync(fakeGraphify, 0o755);
-    const onceRun = (sessionId: string) => spawnSync("bun", [`${ROOT}/${graphifyOnceRel}`], {
+    const onceRun = (sessionId: string, fakeExit = "0") => spawnSync("bun", [`${ROOT}/${graphifyOnceRel}`], {
       input: JSON.stringify({ session_id: sessionId, hook_event_name: "PreToolUse", tool_name: "Bash" }),
-      env: { ...process.env, HOME: onceHome, TMPDIR: onceHome }, encoding: "utf8", timeout: 10_000,
+      env: { ...process.env, HOME: onceHome, TMPDIR: onceHome, GRAPHIFY_FAKE_EXIT: fakeExit },
+      encoding: "utf8", timeout: 10_000,
     });
     const first = onceRun("first-session");
     const repeat = onceRun("first-session");
     const next = onceRun("next-session");
     const invalid = onceRun("../escape");
+    const failedGuard = onceRun("error-session", "7");
     pin(`${RULE_HOOK} — graphify emits once per valid session, again for another session, and never for an unsafe id`,
       [first, repeat, next, invalid].every((r) => r.status === 0)
         && first.stdout === "graphify-hint\n" && repeat.stdout === ""
         && next.stdout === "graphify-hint\n" && invalid.stdout === "",
       `first=${JSON.stringify(first.stdout)} repeat=${JSON.stringify(repeat.stdout)} next=${JSON.stringify(next.stdout)} invalid=${JSON.stringify(invalid.stdout)}`);
+    pin(`${RULE_HOOK} — the first call forwards graphify's stdout and exit code`,
+      failedGuard.status === 7 && failedGuard.stdout === "graphify-hint\n",
+      `exit=${failedGuard.status} stdout=${JSON.stringify(failedGuard.stdout)}`);
   } finally { rmSync(onceHome, { recursive: true, force: true }); }
   // the two pane facts the hook reads are the two ensureSlot bakes, and the route it posts to is served
   const srvHook = read("server.ts");

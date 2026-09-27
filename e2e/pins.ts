@@ -21,10 +21,10 @@
 // NOT what this file is for: e2e/dirs-pins.ts, an unrelated neighbour, tests the directory picker's
 // bookmark list. "Pin" there is a UI feature; "pin" here is a fastener between two files.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_AUDIENCES, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
   RULEBOOK_BACKREF_HEADING,
@@ -86,6 +86,7 @@ import { validUseWhen, validateContextPacks } from "../context-pack-validator";
 // the lane-permission hook is IMPORTED for its pure decision and SPAWNED for its stdin/exit contract —
 // Claude Code runs the file, so only the file run proves what the session sees
 import { HARNESS_BLOCK_ROUTE, WAITING_NOTIFICATIONS, decide as hookDecide } from "../.claude/hooks/lane-permission";
+import { graphifyOnce } from "../.claude/hooks/graphify-once";
 
 const ROOT = resolve(import.meta.dir, "..");
 const read = (rel: string): string => readFileSync(`${ROOT}/${rel}`, "utf8");
@@ -10053,7 +10054,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const HOOK_REL = ".claude/hooks/lane-permission.ts";
   type HookCmd = { type?: string; command?: string; async?: boolean; timeout?: number };
   type HookGroup = { matcher?: string; hooks?: HookCmd[] };
-  let settings: { hooks?: Record<string, HookGroup[]> } | null = null;
+  let settings: { hooks?: Record<string, HookGroup[]>; enabledPlugins?: Record<string, boolean>; claudeMdExcludes?: string[] } | null = null;
   try { settings = JSON.parse(read(".claude/settings.json")); } catch { settings = null; }
   pin(`${RULE_HOOK} — .claude/settings.json exists and parses`, settings !== null);
   const groups = (event: string): HookGroup[] => settings?.hooks?.[event] ?? [];
@@ -10081,16 +10082,39 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // .gitignore rather than `git check-ignore`, because the post-land audit runs from a git archive.
   const ignored = read(".gitignore").split("\n").some((l) => l.trim() === ".claude/settings.json");
   pin(`${RULE_HOOK} — .claude/settings.json is not gitignored (an ignored copy never reaches a lane)`, !ignored);
-  // MERGED, never replaced: the graphify search guard the file carried before it was tracked, with no
-  // account-name path (the reason it was ignored) and a silent exit where graphify is not installed.
-  // The read guard is GONE on purpose (owner 2026-09-13, worktrail IV §3.5: 74 % of reads followed a
-  // query anyway) — a re-added one is caught here, not rediscovered in the nudge count.
-  const graphify = (matcher: string, mode: string) => groups("PreToolUse").some((g) => g.matcher === matcher
-    && (g.hooks ?? []).some((c) => c.command === `[ -x "$HOME/.local/bin/graphify" ] || exit 0; exec "$HOME/.local/bin/graphify" hook-guard ${mode}`));
+  const graphifyOnceRel = ".claude/hooks/graphify-once.ts";
+  const graphify = groups("PreToolUse").some((g) => g.matcher === "Bash|Grep"
+    && (g.hooks ?? []).some((c) => c.command === `bun "$CLAUDE_PROJECT_DIR/${graphifyOnceRel}"`));
   const readGuard = cmds("PreToolUse").some((c) => (c.command ?? "").includes("hook-guard read"));
-  pin(`${RULE_HOOK} — the graphify search guard survives beside it (no read guard), through $HOME and with no /Users/ path`,
-    graphify("Bash|Grep", "search") && !readGuard && !read(".claude/settings.json").includes("/Users/"),
-    `search=${graphify("Bash|Grep", "search")} read=${readGuard}`);
+  pin(`${RULE_HOOK} — graphify's Bash|Grep search hint runs through the session-once hook (no read guard or host path)`,
+    graphify && !readGuard && !read(".claude/settings.json").includes("/Users/"),
+    `search=${graphify} read=${readGuard}`);
+  const plugins = Object.values(settings?.enabledPlugins ?? {});
+  pin(`${RULE_HOOK} — project settings disable the measured user plugins and exclude global Claude rules`,
+    plugins.length > 0 && plugins.every((enabled) => enabled === false)
+      && settings?.claudeMdExcludes?.includes("**/.claude/CLAUDE.md") === true,
+    `disabled=${plugins.filter((enabled) => enabled === false).length} total=${plugins.length}`);
+
+  const onceHome = mkdtempSync(join(tmpdir(), "fleet-graphify-pin-"));
+  try {
+    mkdirSync(`${onceHome}/.local/bin`, { recursive: true });
+    const fakeGraphify = `${onceHome}/.local/bin/graphify`;
+    writeFileSync(fakeGraphify, "#!/bin/sh\ncat >/dev/null\nprintf 'graphify-hint\\n'\n");
+    chmodSync(fakeGraphify, 0o755);
+    const onceRun = (sessionId: string) => spawnSync("bun", [`${ROOT}/${graphifyOnceRel}`], {
+      input: JSON.stringify({ session_id: sessionId, hook_event_name: "PreToolUse", tool_name: "Bash" }),
+      env: { ...process.env, HOME: onceHome, TMPDIR: onceHome }, encoding: "utf8", timeout: 10_000,
+    });
+    const first = onceRun("first-session");
+    const repeat = onceRun("first-session");
+    const next = onceRun("next-session");
+    const invalid = onceRun("../escape");
+    pin(`${RULE_HOOK} — graphify emits once per valid session, again for another session, and never for an unsafe id`,
+      [first, repeat, next, invalid].every((r) => r.status === 0)
+        && first.stdout === "graphify-hint\n" && repeat.stdout === ""
+        && next.stdout === "graphify-hint\n" && invalid.stdout === "",
+      `first=${JSON.stringify(first.stdout)} repeat=${JSON.stringify(repeat.stdout)} next=${JSON.stringify(next.stdout)} invalid=${JSON.stringify(invalid.stdout)}`);
+  } finally { rmSync(onceHome, { recursive: true, force: true }); }
   // the two pane facts the hook reads are the two ensureSlot bakes, and the route it posts to is served
   const srvHook = read("server.ts");
   const bakesLane = srvHook.includes("export FLEET_SELF_URL='http://${HOST}:${PORT}'; ${s.worktree ? \"export FLEET_SELF_LANE='1'; \" : \"\"}");

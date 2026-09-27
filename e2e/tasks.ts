@@ -2671,6 +2671,17 @@ export async function run(ctx: Ctx): Promise<void> {
     check("a comment survives a server restart (it is state, not a live-process fact)",
       (await full())?.comments?.[0]?.text === "a second remark, after the brief was set");
     await post(`/api/tasks/${cid}/delete`, {});
+    const capped = (await (await post("/api/tasks", { text: "comment cap probe", queue: false })).json()) as
+      { task: { id: string } };
+    for (let i = 0; i < 50; i++) await post(`/api/tasks/${capped.task.id}/comment`, { text: `owner ${i}` });
+    const over = await post(`/api/tasks/${capped.task.id}/comment`, { text: "owner 50" });
+    const kept = ((await (await get("/api/tasks")).json()) as
+      { tasks: { id: string; comments?: { text: string }[] }[] }).tasks.find((t) => t.id === capped.task.id);
+    check("a full owner-only comment list refuses another remark without evicting an owner comment",
+      over.status === 409 && kept?.comments?.length === 50 && kept.comments[0]?.text === "owner 0"
+        && kept.comments[49]?.text === "owner 49",
+      JSON.stringify({ status: over.status, count: kept?.comments?.length, first: kept?.comments?.[0]?.text }));
+    await post(`/api/tasks/${capped.task.id}/delete`, {});
   }
   // --- S3 (docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md §3): DELIVERY, both cases
   // driven. A row's comments reach the lane founded on them: the founding prompt carries them as
@@ -2713,6 +2724,17 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(s3) a commentless row's founding prompt carries no comments block — byte-wise the delivery this replaces",
       s3Ohne.text.startsWith(s3Ohne.marker) && !s3Ohne.text.includes("KOMMENTARE AUF DIESER ZEILE"),
       JSON.stringify(s3Ohne.text.slice(0, 200)));
+    const liveComment = "S3 owner comment after dispatch";
+    const liveResponse = await post(`/api/tasks/${s3Ohne.id}/comment`, { text: liveComment });
+    const liveResult = await liveResponse.json() as { delivery?: string; comment?: { id: string }; acceptance?: string };
+    const livePrompt = ((await (await get("/api/prompts?limit=100")).json()) as
+      { prompts: { slot?: number; source?: string; text?: string }[] }).prompts
+      .find((p) => p.slot === s3Ohne.slot && p.source === "owner"
+        && (p.text ?? "").includes(`OWNER COMMENT on task ${s3Ohne.id}`));
+    check("(s3) a new owner comment on a sent row reaches its current lane as its own turn",
+      liveResponse.ok && liveResult.delivery === "sent" && !!liveResult.comment?.id
+        && livePrompt?.text?.includes(liveComment) === true,
+      JSON.stringify({ status: liveResponse.status, delivery: liveResult.delivery, prompt: !!livePrompt }));
     const s3Slots = [s3Mit.slot, s3Ohne.slot].filter((s): s is number => typeof s === "number");
     for (const s of s3Slots) await post(`/api/slots/${s}/kill`, {});
     await slotsEmptied(s3Slots);

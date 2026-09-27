@@ -2028,6 +2028,14 @@ const loadTaskVariantDecision = (value: unknown): TaskVariantDecision | undefine
 };
 
 const MAX_COMMENTS_PER_TASK = 50;
+function cappedTaskComments(comments: TaskComment[]): TaskComment[] {
+  const kept = [...comments];
+  while (kept.length > MAX_COMMENTS_PER_TASK) {
+    const lane = kept.findIndex((c) => !!c.from);
+    kept.splice(lane >= 0 ? lane : 0, 1);
+  }
+  return kept;
+}
 const MAX_CRITERION = 4000; // a done-criterion is a short contract, not a design document
 // A2 — the DONE parts of a criterion ({text, check?{cmd, expectExit}}). Caps keep a criterion from
 // becoming a test suite in disguise: the comparator runs these server-side, so the count and the
@@ -8842,6 +8850,16 @@ function storePaneInboxText(s: Slot, text: string, path: SendPath): string {
     + `into a terminal, so it was stored whole. Read the complete text from ${file} before acting on it.`;
 }
 
+async function submitFleetResidue(s: Slot, bound: BoundSlotPane): Promise<string | null> {
+  if (!sameBoundPane(s, bound)) throw new Error("slot changed before Fleet residue Enter");
+  const sk = await tmux("send-keys", "-t", bound.paneId, "Enter");
+  if (sk.code !== 0) throw new Error("tmux send-keys failed — Fleet residue not submitted");
+  if (!sameBoundPane(s, bound)) throw new Error("slot changed after Fleet residue Enter");
+  const after = await awaitComposer(s, bound, (r) => r === "");
+  if (!sameBoundPane(s, bound)) throw new Error("slot changed during Fleet residue probe");
+  return after;
+}
+
 async function sendText(s: Slot, given: string, submit: boolean,
   options: { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true }): Promise<{ acceptance: Acceptance }> {
   // from here on `text` is what is TYPED: the caller's text, or the one line that stands for it
@@ -8879,11 +8897,15 @@ async function sendText(s: Slot, given: string, submit: boolean,
     const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms, bootSettleMs };
     const observes = !!bound.composer;
     if (observes) {
-      // an occupied composer is an owner draft: pasting would append to it and Enter would send
-      // both as one turn. Read BEFORE the boot block — a draft is a draft whatever the pane's age.
+      // Fleet's own delivery header identifies an unsent previous paste. Submit that residue once
+      // before the next paste; every other occupied composer remains untouched.
       const before = await readComposer(s, bound);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed during composer probe");
-      if (before) throw new SendComposerOccupied(before.length);
+      if (before?.startsWith(DELIVERY_HEADER_PREFIX)) {
+        const afterResidue = await submitFleetResidue(s, bound);
+        if (afterResidue === null) throw new Error("Fleet residue submission unobservable — nothing pasted");
+        if (afterResidue) throw new SendComposerOccupied(afterResidue.length);
+      } else if (before) throw new SendComposerOccupied(before.length);
     }
     // Readiness is a process fact, not an output fact. `openedAt` asks "could this pane still be
     // booting?" without misclassifying an established dead agent. Empty comms = fast-path waiver.
@@ -35125,7 +35147,7 @@ if (existsSync(STATE_FILE)) {
           // comments carry no authority, so a malformed entry is dropped. Capped on the way back
           // IN: a hand-edit must not widen a field past what the route would have accepted.
           comments: Array.isArray(t.comments)
-            ? t.comments.filter((c): c is TaskComment => typeof c === "object" && c !== null
+            ? cappedTaskComments(t.comments.filter((c): c is TaskComment => typeof c === "object" && c !== null
               && typeof c.id === "string" && typeof c.text === "string" && !!c.text)
               // the two lane fields degrade INDEPENDENTLY and both toward the owner shape: a
               // malformed verdict leaves a plain remark rather than a fourth verdict value, and a
@@ -35133,8 +35155,7 @@ if (existsSync(STATE_FILE)) {
               // other — an invented `from` would let a hand-edited state file close a note.
               .map((c) => ({ id: c.id, ts: Number(c.ts) || 0, text: c.text.slice(0, MAX_COMMENT_TEXT),
                 ...(typeof c.from === "string" && c.from ? { from: c.from.slice(0, 200) } : {}),
-                ...(isTaskVerdict(c.verdict) ? { verdict: c.verdict } : {}) }))
-              .slice(-MAX_COMMENTS_PER_TASK)
+                ...(isTaskVerdict(c.verdict) ? { verdict: c.verdict } : {}) })))
             : undefined,
           // N3 · THE PINS. A malformed entry is DROPPED, never repaired: an invented `by` would let
           // a hand-edited state file claim the owner assigned a source, and an unreadable noteId is
@@ -39947,7 +39968,9 @@ Bun.serve<WSData>({
       }
       const c: TaskComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), text,
         from: s.worktree.branch, verdict };
-      t.comments = [...(t.comments ?? []), c].slice(-MAX_COMMENTS_PER_TASK);
+      if ((t.comments ?? []).length >= MAX_COMMENTS_PER_TASK && !(t.comments ?? []).some((x) => x.from))
+        return json({ error: `comment cap ${MAX_COMMENTS_PER_TASK} holds only owner comments` }, 409);
+      t.comments = cappedTaskComments([...(t.comments ?? []), c]);
       saveState();
       audit("note_verdict", s.id, `${t.id} ${verdict} (${s.worktree.branch})`);
       // said out loud on every answer, because the one thing a lane could get wrong here is
@@ -42808,10 +42831,36 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       const text = typeof body?.text === "string" ? body.text.slice(0, MAX_COMMENT_TEXT).trim() : "";
       if (!text) return json({ error: "bad text" }, 400);
+      if ((t.comments ?? []).length >= MAX_COMMENTS_PER_TASK && !(t.comments ?? []).some((x) => x.from))
+        return json({ error: `comment cap ${MAX_COMMENTS_PER_TASK} holds only owner comments` }, 409);
       const c: TaskComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), text };
-      t.comments = [...(t.comments ?? []), c].slice(-MAX_COMMENTS_PER_TASK);
+      t.comments = cappedTaskComments([...(t.comments ?? []), c]);
       saveState();
-      return json({ ok: true, comment: c });
+      const lane = t.status === "sent" && t.slot !== null ? slotFrom(t.slot) : null;
+      if (!lane?.cwd || !lane.worktree || !tasks.some((x) => x.id === t.id && x.slot === lane.id && x.status === "sent"))
+        return json({ ok: true, comment: c, delivery: "not-applicable" });
+      const message = `[fleet] OWNER COMMENT on task ${t.id} (comment ${c.id}):\n\n${text}`;
+      const sendId = randomBytes(12).toString("hex");
+      const receiver = { slot: lane.id, openedAt: lane.openedAt, sessionId: lane.sessionId };
+      try {
+        const { acceptance } = await sendText(lane, message, true, { path: "owner", requireAgent: true });
+        logPrompt(lane, message, "owner", Date.now(), sendId,
+          acceptance === "unobservable" ? "unobserved" : "sent");
+        return json({ ok: true, comment: c, delivery: "sent", acceptance, receiver });
+      } catch (e) {
+        if (e instanceof SendComposerOccupied) {
+          const at = Date.now();
+          const capped = parkSend(lane, { sendId, receiver, text: message, submit: true,
+            parkedAt: at, deadlineAt: at + PARKED_SEND_TTL_DEFAULT_MS, draftChars: e.chars });
+          return json({ ok: true, comment: c, delivery: capped ? "refused" : "parked",
+            ...(capped ? { reason: capped } : { receipt: parkedReceipt(sendId) }) }, capped ? 200 : 202);
+        }
+        if (e instanceof SendRefused)
+          return json({ ok: true, comment: c, delivery: "refused", reason: e.message });
+        logPrompt(lane, message, "owner", Date.now(), sendId, "uncertain");
+        return json({ ok: true, comment: c, delivery: "uncertain",
+          reason: String(e instanceof Error ? e.message : e).slice(0, 160) });
+      }
     }
     // deleting one is by id, never by index — an index names a different comment the moment an
     // earlier one is gone, which is precisely the shape of a delete that removes the wrong row

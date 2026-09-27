@@ -42838,7 +42838,7 @@ Bun.serve<WSData>({
       saveState();
       const lane = t.status === "sent" && t.slot !== null ? slotFrom(t.slot) : null;
       if (!lane?.cwd || !lane.worktree || !tasks.some((x) => x.id === t.id && x.slot === lane.id && x.status === "sent"))
-        return json({ ok: true, comment: c, delivery: "not-applicable" });
+        return json({ ok: true, comment: c, delivery: "no-live-lane" });
       const message = `[fleet] OWNER COMMENT on task ${t.id} (comment ${c.id}):\n\n${text}`;
       const sendId = randomBytes(12).toString("hex");
       const receiver = { slot: lane.id, openedAt: lane.openedAt, sessionId: lane.sessionId };

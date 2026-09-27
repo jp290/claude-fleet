@@ -1,7 +1,7 @@
 // The task queue (owner CRUD + dispatch availability) and the Tier-0 gates: the master stop and
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -2624,6 +2624,94 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(brokenLog.split("\n").filter((l) => l.includes("FLEET_INSTANCES"))));
     await restartSrv(); // the flag is a per-restart `extra`, never in process.env — leave it gone
   }
+  // The actual sendText body runs against a controlled pane boundary: the trace distinguishes
+  // Fleet's recovery Enter from the new payload's Enter, and records the fresh composer read.
+  {
+    const sendStart = taskServerSource.indexOf("async function submitFleetResidue(");
+    const sendEnd = taskServerSource.indexOf("// --- scheduled prompts ---", sendStart);
+    const sendSource = sendStart >= 0 && sendEnd > sendStart ? taskServerSource.slice(sendStart, sendEnd) : "";
+    check("delivery residue fixture: sendText and its recovery helper are readable", !!sendSource,
+      `start=${sendStart} end=${sendEnd}`);
+    type SendTrace = { events: string[]; acceptance?: string; error?: string };
+    const exerciseSend = async (source: string, before: string, afterResidue: string): Promise<SendTrace> => {
+      const events: string[] = [];
+      let composerReads = 0;
+      class Refused extends Error {}
+      class Occupied extends Refused {
+        constructor(readonly chars: number) { super(`composer occupied (${chars} chars) — nothing typed`); }
+      }
+      class NotAccepted extends Error {}
+      const occupant = { slot: 1, openedAt: 1, selfToken: "test" };
+      const deps = {
+        PASTE_MAX_BYTES: 100_000, storePaneInboxText: (_s: unknown, text: string) => text,
+        slotStreamOccupant: () => occupant, slotTeardownInflight: new Set<number>(),
+        slotWakeInflight: new Set<number>(),
+        harnessOf: () => ({ composer: { kind: "rules" }, bootSettleMs: 0 }), commsFor: () => [],
+        deliveryHeader: () => "[fleet-zustellung · probe] ", DEFAULT_BOOT_SETTLE_MS: 0,
+        wakeSlot: async () => ({ ok: true }), sameSlotStreamOccupant: () => true,
+        existingTmuxTarget: async () => ({ paneId: "%1" }), sess: () => "s1",
+        readComposer: async () => before, sameBoundPane: () => true,
+        DELIVERY_HEADER_PREFIX: "[fleet-zustellung · ",
+        awaitComposer: async () => { composerReads++; events.push(composerReads === 1 ? "reread" : "accept-read");
+          return composerReads === 1 ? afterResidue : ""; },
+        tmux: async (...args: string[]) => { events.push(args[0] === "send-keys" && args.at(-1) === "Enter"
+          ? "enter" : args[0] === "send-keys" ? "header" : args[0] === "paste-buffer" ? "paste" : args[0]!);
+          return { code: 0 }; },
+        SEND_BOOT_FRESH_MS: 0, paneAgentAt: async () => "alive", SEND_BOOT_WAIT_MS: 250,
+        SOCK: "probe", Bun: { sleep: async () => {}, spawn: () => ({ stdin: { write: () => {}, end: async () => {} },
+          exited: Promise.resolve(0) }) },
+        audit: () => {}, SendAgentNotAlive: Refused, SendRefused: Refused, SendComposerOccupied: Occupied,
+        randomBytes, waitForSendTestLatch: async () => {}, SEND_BEFORE_PASTE_TEST_LATCH: null,
+        SEND_AFTER_PASTE_TEST_LATCH: null, OWN_PASTE_QUIET_MS: 1000, OWN_PASTE_QUIET_TAIL_MS: 100,
+        ACCEPT_WAIT_MS: 200, awaitArrival: async () => "complete", SendNotAccepted: NotAccepted,
+        rollbackOwnComposerPayload: async () => "cleared", auditSend: () => {},
+        sendFailureDelivery: () => "refused",
+      };
+      const bindings = Object.keys(deps).map((name) => `const ${name} = d[${JSON.stringify(name)}];`).join("\n");
+      const send = new Function("d", `${bindings}\n${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}\nreturn sendText;`)(deps) as
+        (slot: { id: number; inputChain: Promise<unknown>; sleeping: boolean }, text: string,
+          submit: boolean, options: { path: string }) => Promise<{ acceptance: string }>;
+      try {
+        const result = await send({ id: 1, inputChain: Promise.resolve(), sleeping: false }, "next payload", true,
+          { path: "owner" });
+        return { events, acceptance: result.acceptance };
+      } catch (e) { return { events, error: e instanceof Error ? e.message : String(e) }; }
+    };
+    const fleetRest = "[fleet-zustellung · old path] [Pasted text #3]";
+    const recovered = sendSource ? await exerciseSend(sendSource, fleetRest, "") : { events: [] };
+    const recovers = (trace: SendTrace): boolean => trace.acceptance === "observed"
+      && trace.events.filter((e) => e === "enter").length === 2
+      && trace.events.indexOf("enter") < trace.events.indexOf("reread")
+      && trace.events.indexOf("reread") < trace.events.indexOf("paste")
+      && trace.events.lastIndexOf("enter") > trace.events.indexOf("paste");
+    check("(A) a Fleet-headed paste rest gets one recovery Enter, a fresh empty read, then the new paste and submit",
+      recovers(recovered), JSON.stringify(recovered));
+    const still = sendSource ? await exerciseSend(sendSource, fleetRest, "still occupied") : { events: [] };
+    const staysHeld = (trace: SendTrace): boolean => trace.events.filter((e) => e === "enter").length === 1
+      && trace.events.includes("reread") && !trace.events.includes("paste")
+      && /composer occupied/.test(trace.error ?? "");
+    check("(A) if the Fleet residue remains occupied after Enter, no new paste or second Enter follows",
+      staysHeld(still), JSON.stringify(still));
+    const draft = sendSource ? await exerciseSend(sendSource, "owner draft", "") : { events: [] };
+    check("(A) text without a Fleet head stays untouched and blocks the new paste",
+      draft.events.length === 0 && /composer occupied/.test(draft.error ?? ""), JSON.stringify(draft));
+    const noRecognition = sendSource.replace("before?.startsWith(DELIVERY_HEADER_PREFIX)", "false");
+    const noEnter = sendSource.replace("const afterResidue = await submitFleetResidue(s, bound);",
+      'const afterResidue = "";');
+    const bypassOccupied = sendSource.replace("if (afterResidue) throw new SendComposerOccupied(afterResidue.length);",
+      "if (false) throw new SendComposerOccupied(afterResidue.length);");
+    const mutatedRecognition = noRecognition !== sendSource ? await exerciseSend(noRecognition, fleetRest, "") : { events: [] };
+    const mutatedEnter = noEnter !== sendSource ? await exerciseSend(noEnter, fleetRest, "") : { events: [] };
+    const mutatedOccupied = bypassOccupied !== sendSource
+      ? await exerciseSend(bypassOccupied, fleetRest, "still occupied") : { events: [] };
+    check("(A) literal mutation without Fleet-head recognition fails the recovery trace",
+      noRecognition !== sendSource && !recovers(mutatedRecognition), JSON.stringify(mutatedRecognition));
+    check("(A) literal mutation skipping recovery Enter fails the recovery trace",
+      noEnter !== sendSource && !recovers(mutatedEnter), JSON.stringify(mutatedEnter));
+    check("(A) literal mutation bypassing the occupied reread fails the held trace",
+      bypassOccupied !== sendSource && !staysHeld(mutatedOccupied), JSON.stringify(mutatedOccupied));
+  }
+
   // --- comments: the owner's own text ON a row. Same two-tier rule as the prompt above (the poll
   // carries a count, the text rides GET /api/tasks), plus the contract that makes a comment safe
   // to write at all: it is NEVER folded into the brief a lane receives. If it were, a remark typed
@@ -2634,9 +2722,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const cid = ct.task.id;
     check("a comment with no text is refused", (await post(`/api/tasks/${cid}/comment`, { text: "  " })).status === 400);
     const c1 = await post(`/api/tasks/${cid}/comment`, { text: CM });
-    const c1j = (await c1.json()) as { ok?: boolean; comment?: { id: string; ts: number; text: string } };
-    check("an owner comment lands on the task, with an id and a timestamp of its own",
-      c1.ok && c1j.comment?.text === CM && !!c1j.comment.id && (c1j.comment.ts ?? 0) > 0,
+    const c1j = (await c1.json()) as { ok?: boolean; delivery?: string;
+      comment?: { id: string; ts: number; text: string } };
+    check("an owner comment on a row without a live lane is stored and reports no-live-lane",
+      c1.ok && c1j.delivery === "no-live-lane"
+        && c1j.comment?.text === CM && !!c1j.comment.id && (c1j.comment.ts ?? 0) > 0,
       JSON.stringify(c1j.comment));
     const rawS = await (await get("/api/sessions")).text();
     const digC = (JSON.parse(rawS) as { tasks: { id: string; comments?: { n: number; at: number } }[] })
@@ -2682,6 +2772,80 @@ export async function run(ctx: Ctx): Promise<void> {
         && kept.comments[49]?.text === "owner 49",
       JSON.stringify({ status: over.status, count: kept?.comments?.length, first: kept?.comments?.[0]?.text }));
     await post(`/api/tasks/${capped.task.id}/delete`, {});
+
+    // Execute the route body and its cap helper from server.ts with only HTTP/pane/state boundaries
+    // replaced. Mutants alter those exact bodies, so a check that merely echoes its fixture fails.
+    const capStart = taskServerSource.indexOf("function cappedTaskComments(");
+    const capEnd = taskServerSource.indexOf("const MAX_CRITERION =", capStart);
+    const routeStart = taskServerSource.indexOf("    const taskComment =", capEnd);
+    const routeEnd = taskServerSource.indexOf("    // deleting one is by id", routeStart);
+    const capSource = capStart >= 0 && capEnd > capStart ? taskServerSource.slice(capStart, capEnd) : "";
+    const routeSource = routeStart >= 0 && routeEnd > routeStart ? taskServerSource.slice(routeStart, routeEnd) : "";
+    check("comment mutation fixture: the production cap helper and POST route are readable",
+      !!capSource && !!routeSource, `cap=${capStart}:${capEnd} route=${routeStart}:${routeEnd}`);
+    type FixtureComment = { id: string; text: string; from?: string };
+    const compileCap = (source: string): (comments: FixtureComment[]) => FixtureComment[] =>
+      new Function("MAX_COMMENTS_PER_TASK", `${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}\nreturn cappedTaskComments;`)(50) as
+        (comments: FixtureComment[]) => FixtureComment[];
+    const runRoute = async (source: string, capFn: (comments: FixtureComment[]) => FixtureComment[],
+      comments: FixtureComment[], status: "pending" | "sent") => {
+      const sent: string[] = [];
+      const task = { id: "commentprobe", status, slot: status === "sent" ? 1 : null,
+        comments: [...comments] };
+      const lane = { id: 1, cwd: "/tmp/probe", worktree: { branch: "fleet/probe" },
+        openedAt: 1, sessionId: "probe" };
+      class Refused extends Error {}
+      class Occupied extends Refused { constructor(readonly chars: number) { super("occupied"); } }
+      const deps = {
+        url: { pathname: `/api/tasks/${task.id}/comment` }, req: { method: "POST" }, tasks: [task],
+        readJson: async () => ({ text: "new owner comment" }), MAX_COMMENT_TEXT: 4000,
+        MAX_COMMENTS_PER_TASK: 50, randomBytes, cappedTaskComments: capFn, saveState: () => {},
+        slotFrom: () => lane, json: (body: Record<string, unknown>, code = 200) => ({ body, code }),
+        sendText: async (_lane: unknown, message: string) => { sent.push(message); return { acceptance: "observed" }; },
+        logPrompt: () => {}, SendComposerOccupied: Occupied, SendRefused: Refused,
+        parkSend: () => null, parkedReceipt: () => null, PARKED_SEND_TTL_DEFAULT_MS: 1000,
+      };
+      const bindings = Object.keys(deps).map((name) => `const ${name} = d[${JSON.stringify(name)}];`).join("\n");
+      const route = new Function("d", `${bindings}\n${new Bun.Transpiler({ loader: "ts" })
+        .transformSync(`async function route() {\n${source}\n}`)}\nreturn route;`)(deps) as
+        () => Promise<{ body: { delivery?: string; comment?: { id: string } }; code: number }>;
+      const response = await route();
+      return { response, sent, comments: task.comments };
+    };
+    const productionCap = capSource ? compileCap(capSource) : (comments: FixtureComment[]) => comments;
+    const delivered = routeSource ? await runRoute(routeSource, productionCap, [], "sent") : null;
+    const sendsLiveComment = (result: NonNullable<typeof delivered>): boolean =>
+      result.response.code === 200 && result.response.body.delivery === "sent"
+        && result.sent.length === 1 && result.sent[0]!.includes("new owner comment")
+        && result.sent[0]!.includes(`comment ${result.response.body.comment?.id}`);
+    check("(B) the comment route sends a new owner comment to its live lane once",
+      !!delivered && sendsLiveComment(delivered), JSON.stringify(delivered));
+    const noLaneSource = routeSource.replace('const lane = t.status === "sent" && t.slot !== null ? slotFrom(t.slot) : null;',
+      "const lane = null;");
+    const noLane = noLaneSource !== routeSource ? await runRoute(noLaneSource, productionCap, [], "sent") : null;
+    check("(B) literal mutation removing the live lane makes the delivery check fail",
+      noLaneSource !== routeSource && !!noLane && !sendsLiveComment(noLane), JSON.stringify(noLane));
+    const mixed: FixtureComment[] = [
+      { id: "owner-first", text: "first owner" },
+      { id: "lane-old", text: "old lane", from: "fleet/old" },
+      { id: "lane-new", text: "new lane", from: "fleet/new" },
+      ...Array.from({ length: 47 }, (_, i) => ({ id: `owner-${i}`, text: `owner ${i}` })),
+    ];
+    const retained = routeSource ? await runRoute(routeSource, productionCap, mixed, "pending") : null;
+    const preservesOwner = (result: NonNullable<typeof retained>): boolean => {
+      const ids = result.comments.map((c) => c.id);
+      return result.response.code === 200 && result.response.body.delivery === "no-live-lane"
+        && ids.length === 50 && ids.includes("owner-first") && !ids.includes("lane-old")
+        && ids.includes("lane-new") && ids.includes(result.response.body.comment?.id ?? "");
+    };
+    check("(C) a full mixed list evicts the oldest lane comment while retaining older owner text",
+      !!retained && preservesOwner(retained), JSON.stringify(retained?.comments.map((c) => c.id)));
+    const oldestOverall = capSource.replace("kept.findIndex((c) => !!c.from)", "kept.findIndex(() => false)");
+    const mutantCap = oldestOverall !== capSource ? compileCap(oldestOverall) : productionCap;
+    const evictedOwner = routeSource ? await runRoute(routeSource, mutantCap, mixed, "pending") : null;
+    check("(C) literal mutation evicting the oldest comment fails owner preservation",
+      oldestOverall !== capSource && !!evictedOwner && !preservesOwner(evictedOwner),
+      JSON.stringify(evictedOwner?.comments.map((c) => c.id)));
   }
   // --- S3 (docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md §3): DELIVERY, both cases
   // driven. A row's comments reach the lane founded on them: the founding prompt carries them as

@@ -5537,6 +5537,25 @@ export async function run(ctx: Ctx): Promise<void> {
       && s7Sent.receipt.model === FLEET_DEFAULT_MODEL && s7Sent.receipt.modelOrigin === "default"
       && s7Sent.receipt.effort === null,
       JSON.stringify({ receipt: s7Sent.receipt ?? null, prompt: s7Sent.prompt.slice(0, 300) }));
+    const longDone = `${"d".repeat(887)} DONE-END-900`;
+    const longVerify = `bun e2e/pins.ts ${"v".repeat(469)} VERIFY-END-500`;
+    const longBrief = [`[S7A-LONG-FIELDS]`, "FLAECHE: wave-brief.ts",
+      `ZIEL: ${s7Goal}`, `DONE: ${longDone}`, `VERIFY: ${longVerify}`,
+      "VERBOTEN: kein Auto-Dispatch", "", "Die lange Karte bleibt ein Auftrag."].join("\n");
+    const longPost = await post("/api/tasks", { text: longBrief, kind: "auftrag", queue: false, repo: ROOT,
+      card: { ziel: s7Goal, surface: { files: ["wave-brief.ts"], symbols: [] },
+        done: longDone, verify: longVerify, verboten: ["kein Auto-Dispatch"] } });
+    const longId = ((await longPost.json()) as { task?: { id?: string } }).task?.id ?? "";
+    const longSent = longId ? await dispatchAndRead(longId, longBrief) : { prompt: "", slot: null };
+    await closeLane(longSent.slot);
+    // Restoring laneProse's old deletion drops the raw 900/500-character lines; the card fallback
+    // contains only the extractor's 400-character values, so both end markers disappear.
+    check("(s7a-live-long-fields) sent founding bytes keep DONE 900 and VERIFY 500 through their last words",
+      longPost.ok && longSent.prompt.includes(`DONE: ${longDone}`)
+      && longSent.prompt.includes(`VERIFY: ${longVerify}`)
+      && longSent.prompt.includes("VERBOTEN: kein Auto-Dispatch"),
+      JSON.stringify({ post: longPost.status, doneEnd: longSent.prompt.includes("DONE-END-900"),
+        verifyEnd: longSent.prompt.includes("VERIFY-END-500") }));
     const classBrief = ["KLASSE: hand", "GROESSE: klein", "FLAECHE: wave-brief.ts",
       "VERIFY: bun e2e/pins.ts", "DONE: das Klassen-Receipt nennt das Tripel", "",
       "ZIEL: wave-brief.ts bleibt dieselbe Arbeit."].join("\n");
@@ -11741,6 +11760,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && renderedOnce.includes("Die Prosa hinter dem Kopf bleibt erhalten."), renderedOnce.slice(0, 500));
     check("(s7a-role-bytes) the rendered lane bytes contain no ROLLE line",
       !/(^|\n)ROLLE\s*:/i.test(renderedOnce), renderedOnce.slice(0, 500));
+    check("(s7a-short-fields) a short card keeps the previous founding bytes",
+      renderedOnce === `${renderCardHead(cardBody)}\n\n[S7A-RENDER-PROBE]\n\nDie Prosa hinter dem Kopf bleibt erhalten.`,
+      JSON.stringify(renderedOnce.slice(0, 500)));
     const wave = renderWaveBrief({
       rows: [
         { id: "aaaa1111", text: "ROW-A-PROSA", brief: null, criterion: null, card: cardBody },
@@ -11767,6 +11789,27 @@ export async function run(ctx: Ctx): Promise<void> {
       new TextEncoder().encode(fat).byteLength <= CARD_HEAD_MAX_BYTES && fat.startsWith("KARTE")
       && fat.endsWith("--- AUFTRAG ---"),
       `${new TextEncoder().encode(fat).byteLength} bytes`);
+    const longCard = { ...cardBody, done: "ä".repeat(200),
+      verify: `bun e2e/pins.ts ${"v".repeat(230)}`, verboten: [`kein ${"x".repeat(250)}`] };
+    const longLines = [`DONE: ${longCard.done}`, `VERIFY: ${longCard.verify}`,
+      `VERBOTEN: ${longCard.verboten[0]}`];
+    const longProse = `[LANE-PROBE]\n${longLines.join("\n")}\nROLLE: alt\n\nAuftragstext`;
+    const longDelivered = withCardHead(longCard, longProse);
+    check("(j2) clipped card obligations survive prose stripping once, including VERBOTEN",
+      longLines.every((line) => !renderCardHead(longCard).split("\n").includes(line)
+        && longDelivered.split("\n").filter((part) => part === line).length === 1)
+      && !longDelivered.includes("ROLLE: alt") && longDelivered.includes("Auftragstext"),
+      JSON.stringify({ fullFields: longLines.map((line) => longDelivered.split("\n").includes(line)) }));
+    const longWave = renderWaveBrief({ rows: [
+      { id: "long1111", text: "Auftragstext", brief: null, criterion: null, card: longCard },
+      { id: "short2222", text: "Zweiter Auftrag", brief: null, criterion: null, card: null },
+    ], sharedFiles: ["wave-brief.ts"], klasse: "code", units: 2, budget: 5,
+      baseUrl: "http://127.0.0.1:1" });
+    const longRow = longWave.slice(longWave.indexOf("--- ZEILE 1 VON 2"), longWave.indexOf("--- ZEILE 2 VON 2"));
+    check("(j2) wave brief supplies full clipped card obligations even without prose headers",
+      longLines.every((line) => longRow.split("\n").includes(line)) && longRow.includes("Auftragstext")
+      && !longWave.slice(longWave.indexOf("--- ZEILE 2 VON 2")).includes(longCard.done),
+      JSON.stringify({ fullFields: longLines.map((line) => longRow.split("\n").includes(line)) }));
   }
 
   // --- S3 (docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md §3) THE ROW'S COMMENTS in the

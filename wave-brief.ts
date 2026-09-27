@@ -135,7 +135,7 @@ export function renderCardHead(card: TaskCardBody): string {
 const CARD_PROSE_FIELD = /^\s*(?:ZIEL|ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|VERIFY|DONE|VERBOTEN)\s*:/i;
 const CARD_PROSE_ROLE = /^\s*ROLLE\s*:/i;
 
-function laneProse(prose: string, renderedCard: boolean): string {
+function laneProse(prose: string, renderedCard: boolean, preserveFields: ReadonlySet<string>): string {
   const lines = prose.split("\n");
   let at = 0;
   while (at < lines.length && !lines[at]!.trim()) at++;
@@ -147,13 +147,26 @@ function laneProse(prose: string, renderedCard: boolean): string {
   const title = lines[at]?.trim().startsWith("[") ? at++ : -1;
   const first = at;
   let fields = 0;
+  let preserveContinuation = false;
+  const preserved: string[] = [];
   while (at < lines.length) {
-    if (CARD_PROSE_FIELD.test(lines[at]!)) { fields++; at++; continue; }
-    if (fields > 0 && /^\s+\S/.test(lines[at]!)) { at++; continue; }
+    const field = lines[at]!.match(CARD_PROSE_FIELD);
+    if (field) {
+      fields++;
+      preserveContinuation = preserveFields.has(field[0]!.trim().slice(0, -1).toUpperCase());
+      if (preserveContinuation) preserved.push(lines[at]!);
+      at++;
+      continue;
+    }
+    if (fields > 0 && /^\s+\S/.test(lines[at]!)) {
+      if (preserveContinuation) preserved.push(lines[at]!);
+      at++;
+      continue;
+    }
     break;
   }
   if (at > first) {
-    if (renderedCard) lines.splice(first, at - first);
+    if (renderedCard) lines.splice(first, at - first, ...preserved);
     else {
       const kept = lines.slice(first, at).filter((line) => !CARD_PROSE_ROLE.test(line));
       lines.splice(first, at - first, ...kept);
@@ -169,8 +182,16 @@ function laneProse(prose: string, renderedCard: boolean): string {
  *  when the row has none. */
 export function withCardHead(card: TaskCardBody | null, prose: string,
   comments?: readonly RowCommentInput[], review?: readonly BriefReviewFindingInput[]): string {
-  const body = laneProse(prose, !!card);
-  return `${card ? `${renderCardHead(card)}${body ? "\n\n" : ""}` : ""}${body}${renderRowComments(comments)}${renderBriefReviewBlock(review)}`;
+  const head = card ? renderCardHead(card) : "";
+  const fullFields = card ? [
+    `DONE: ${card.done}`,
+    `VERIFY: ${card.verify}`,
+    `VERBOTEN: ${card.verboten.length ? card.verboten.join(" · ") : "—"}`,
+  ].filter((line) => !head.split("\n").includes(line)) : [];
+  const body = laneProse(prose, !!card, new Set(fullFields.map((line) => line.slice(0, line.indexOf(":")))));
+  const missing = fullFields.filter((line) => !body.split("\n").includes(line));
+  const content = [missing.join("\n"), body].filter(Boolean).join("\n\n");
+  return `${card ? `${head}${content ? "\n\n" : ""}` : ""}${content}${renderRowComments(comments)}${renderBriefReviewBlock(review)}`;
 }
 
 export interface WaveBriefRow {

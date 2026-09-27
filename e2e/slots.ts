@@ -1291,16 +1291,20 @@ export async function run(): Promise<void> {
   let pinnedOnSwitch = 0;
   const scrollToEnd = scrollSource ? new Function("requestAnimationFrame",
     `return function ${scrollSource.trim()}`)((cb: () => void) => cb()) as
-    (this: { term: { scrollToBottom: () => void }; pinToBottom: () => void;
+    (this: { term: { scrollToBottom: () => void }; snapToBottom: () => void; pinToBottom: () => void;
       chatEl: { scrollTop: number; scrollHeight: number } }) => void : null;
-  const switched = { term: { scrollToBottom: () => { pinnedOnSwitch++; } },
+  // snapToBottom is Pane's one door for programmatic tail jumps (past the wheel smoothing); it
+  // counts on the same counter as the bare xterm call it replaced
+  const switched = { term: { scrollToBottom: () => { pinnedOnSwitch++; } }, snapToBottom: () => { pinnedOnSwitch++; },
     pinToBottom: () => { pinnedOnSwitch++; }, chatEl: { scrollTop: 0, scrollHeight: 300 } };
-  scrollToEnd?.call(switched);
+  // a lifted method that calls something this stub lacks must fail THIS check, not end the module
+  let scrollThrew = "";
+  try { scrollToEnd?.call(switched); } catch (e) { scrollThrew = e instanceof Error ? e.message : String(e); }
   check("B1: switching a pane pins both the terminal and the chat to their ends",
     pinnedOnSwitch === 2 && switched.chatEl.scrollTop === 300
       && /if \(existing\) \{ existing\.focus\(\); existing\.scrollToEnd\(\)/.test(cliSrc)
       && /this\.scrollToEnd\(\);\n    renderSlots\(\)/.test(cliSrc),
-    `${pinnedOnSwitch} terminal pins · chat ${switched.chatEl.scrollTop}`);
+    scrollThrew ? `scrollToEnd threw: ${scrollThrew}` : `${pinnedOnSwitch} terminal pins · chat ${switched.chatEl.scrollTop}`);
   check("B2: every pane observes its own size, debounces refit, and disconnects at disposal",
     /this\.sizeObserver = new ResizeObserver\(/.test(cliSrc)
       && /this\.sizeObserver\.observe\(this\.root\)/.test(cliSrc)

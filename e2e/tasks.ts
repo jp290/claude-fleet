@@ -2670,10 +2670,11 @@ export async function run(ctx: Ctx): Promise<void> {
       const bindings = Object.keys(deps).map((name) => `const ${name} = d[${JSON.stringify(name)}];`).join("\n");
       const send = new Function("d", `${bindings}\n${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}\nreturn sendText;`)(deps) as
         (slot: { id: number; inputChain: Promise<unknown>; sleeping: boolean }, text: string,
-          submit: boolean, options: { path: string }) => Promise<{ acceptance: string }>;
+          submit: boolean, options: { path: string; bypassQueue?: true }) => Promise<{ acceptance: string }>;
       try {
+        // bypassQueue: overhaul's delivery bundling fronts sendText; this fixture measures the paste body behind it
         const result = await send({ id: 1, inputChain: Promise.resolve(), sleeping: false }, "next payload", true,
-          { path: "owner" });
+          { path: "owner", bypassQueue: true });
         return { events, acceptance: result.acceptance };
       } catch (e) { return { events, error: e instanceof Error ? e.message : String(e) }; }
     };

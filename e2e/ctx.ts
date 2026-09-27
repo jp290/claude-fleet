@@ -98,7 +98,7 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
     "steward-outcomes", "security"] },
   { unit: "programs", seconds: 636, modules: ["self-token", "programs"] },
   { unit: "lanes", seconds: 375, modules: ["lanes-basic", "lanes-lifecycle", "merge"] },
-  { unit: "watch", seconds: 224, modules: ["watch"] },
+  { unit: "watch", seconds: 224, modules: ["watch", "delivery-class"] },
   { unit: "attention", seconds: 19, modules: ["attention"] },
   { unit: "lane-risk", seconds: 16, modules: ["lane-risk"] },
   { unit: "explorer", seconds: 2, modules: ["explorer"] },

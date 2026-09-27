@@ -6068,7 +6068,7 @@ export async function run(): Promise<void> {
   if (inflightEvent) await ackEvent(aTok, inflightEvent.id);
 
   // --- ONE WAKE-UP PER RECEIVER AND TICK (c14fcd75). Three watches of ONE receiver fire in the same
-  // round: the pane gets exactly one send naming all three ids, and each full text stays readable on
+  // round: the pane gets exactly one send carrying all three complete texts, and each remains readable on
   // its event. The same round is MADE, not raced for: the kill-switch holds every minted event
   // `pending` (canDeliver's first gate), so all three are waiting when the owner releases it, and the
   // next tick sees them together. On a receiver of its OWN, opened here and closed below: three more
@@ -6108,10 +6108,10 @@ export async function run(): Promise<void> {
     }
     const typed = (await plogRead()).slice(plogBefore).filter((p) => p.slot === rId);
     const naming = typed.filter((p) => rows.every((e) => p.text.includes(e.id)));
-    const single = typed.filter((p) => rows.some((e) => p.text.includes(`[event ${e.id}]`)));
+    const completeHeaders = typed.filter((p) => rows.every((e) => p.text.includes(`[event ${e.id}]`)));
     check("three watches of one receiver firing in one round reach its pane as EXACTLY ONE send that names all three event ids",
       released.ok && rows.length === 3 && rows.every((e) => e.status === "delivered")
-        && typed.length === 1 && naming.length === 1 && single.length === 0
+        && typed.length === 1 && naming.length === 1 && completeHeaders.length === 1
         && sendRowsOfA() - sendsBefore === 1,
       JSON.stringify({ rows: rows.map((e) => `${e.id}:${e.status}`), sends: sendRowsOfA() - sendsBefore,
         typed: typed.map((p) => p.text.slice(0, 160)) }));
@@ -6123,6 +6123,12 @@ export async function run(): Promise<void> {
       reads.every((r) => r.status === 200 && (r.body.text ?? "").includes(`[event ${r.id}]`)
         && (r.body.text ?? "").includes("ok=YES")),
       JSON.stringify(reads.map((r) => `${r.id}:${r.status}:${(r.body.text ?? "").slice(0, 60)}`)));
+    check("the one bundled pane send includes every original event text in full with its event header",
+      typed.length === 1 && reads.length === 3
+        && reads.every((r) => r.status === 200 && !!r.body.text
+          && typed[0]!.text.includes(`[event ${r.id}]`)
+          && typed[0]!.text.includes(r.body.text)),
+      `${typed.length} pane sends; complete texts=${reads.filter((r) => !!r.body.text && typed[0]?.text.includes(r.body.text)).length}`);
     const foreignRead = rows[0]
       ? await fetch(`${BASE}/api/self/events/${rows[0].id}`, { headers: { "x-fleet-self-token": bTok } })
       : new Response(null, { status: 599 });

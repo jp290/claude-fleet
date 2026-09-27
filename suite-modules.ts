@@ -146,6 +146,7 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "lanes-basic", lane: true, reads: ["server:slots-1-2-open"], writes: ["lc.lnSlot", "lc.lnPath"] },
   { module: "review", lane: true, reads: ["ctx.shIntId", "ctx.shICookie"] },
   { module: "watch", lane: true },
+  { module: "delivery-class", lane: true },
   { module: "attention", lane: true },
   { module: "lanes-lifecycle", lane: true, reads: ["lc.lnSlot", "lc.lnPath", "server:slots-1-2-open"] },
   { module: "merge", lane: true, reads: ["lc.lnSlot", "lc.lnPath", "server:slots-1-2-open"] },

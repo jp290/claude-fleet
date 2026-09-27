@@ -2,7 +2,7 @@
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plogRead, post, restartSrv,
@@ -13,12 +13,85 @@ import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers"
 export async function run(lc: LaneCtx): Promise<void> {
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
   // assertions fail on real teardown paths.
+  {
+    const listScript = `${ROOT}/testinstanz.sh`;
+    const original = exists(listScript) ? { bytes: readFileSync(listScript), mode: lstatSync(listScript).mode & 0o777 } : null;
+    const stateDir = mkdtempSync("/tmp/fleet-testinstanz-e2e-");
+    const worktree = `${stateDir}/fixture worktree`;
+    try {
+      writeFileSync(`${stateDir}/testinstanz.state`, `src=${worktree}\nport=8912\nexpiresAt=2000000000\n`);
+      writeFileSync(listScript, `#!/bin/sh\n[ "$1" = list ] && echo 'up  port 8912  rest 45 min  ${worktree}  http://100.64.0.1:8912/'\n`);
+      chmodSync(listScript, 0o700);
+      const anonymous = await fetch(BASE + "/api/testinstanzen");
+      check("testinstanz list requires the owner token", anonymous.status === 401);
+      const listed = await get("/api/testinstanzen");
+      const body = (await listed.json().catch(() => ({}))) as { testinstanzen?: Array<Record<string, unknown>> };
+      const instance = body.testinstanzen?.[0];
+      check("testinstanz list serves script rows as JSON with worktree, port, URL and exact expiry",
+        listed.status === 200 && body.testinstanzen?.length === 1 && instance?.worktree === worktree
+        && instance.port === 8912 && instance.url === "http://100.64.0.1:8912/"
+        && instance.expiresAt === 2_000_000_000_000 && instance.state === "up", JSON.stringify(body));
+    } finally {
+      if (original) { writeFileSync(listScript, original.bytes); chmodSync(listScript, original.mode); }
+      else rmSync(listScript, { force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }
   const emptyBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  {
+    const route = `/api/slots/${emptyBranch.slot}/testinstanz`;
+    const script = `${emptyBranch.cwd}/testinstanz.sh`;
+    const missing = await post(route, { action: "up" });
+    check("testinstanz refuses a missing worktree script with a named 409", missing.status === 409
+      && ((await missing.json()) as { error?: string }).error?.includes("missing") === true);
+    writeFileSync(script, "#!/bin/sh\nexit 0\n");
+    chmodSync(script, 0o600);
+    const notExecutable = await post(route, { action: "up" });
+    check("testinstanz refuses a non-executable worktree script", notExecutable.status === 409
+      && ((await notExecutable.json()) as { error?: string }).error?.includes("not executable") === true);
+    writeFileSync(script, [
+      "#!/bin/sh",
+      "case $1 in",
+      "  up) pwd > ti-cwd; printf '%s' \"$*\" > ti-args ;;",
+      "  down) rm -f ti-cwd ti-args ;;",
+      "  status) if [ -f ti-cwd ]; then echo 'up pid 123 http://100.64.0.1:8912/?token=fixture'; echo 'ttl: 45 min left (expiresAt=2000000000)'; else echo 'down (fixture)'; fi; exit 1 ;;",
+      "esac",
+      "",
+    ].join("\n"));
+    chmodSync(script, 0o700);
+    const anonymous = await fetch(BASE + route, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "up" }) });
+    check("testinstanz start requires the owner token", anonymous.status === 401);
+    const badTtl = await post(route, { action: "up", ttlMin: 0 });
+    check("testinstanz rejects an invalid TTL before running the script", badTtl.status === 400 && !exists(`${emptyBranch.cwd}/ti-cwd`));
+    const up = await post(route, { action: "up", ttlMin: 45 });
+    const upBody = (await up.json().catch(() => ({}))) as { url?: string; port?: number; expiresAt?: number };
+    check("testinstanz up runs the slot worktree script in its own cwd and returns the phone URL, port and expiry",
+      up.ok && exists(`${emptyBranch.cwd}/ti-cwd`) && exists(`${emptyBranch.cwd}/ti-args`)
+      && readFileSync(`${emptyBranch.cwd}/ti-cwd`, "utf8").trim() === emptyBranch.cwd
+      && readFileSync(`${emptyBranch.cwd}/ti-args`, "utf8") === "up mixed --ttl 45"
+      && upBody.url === "http://100.64.0.1:8912/?token=fixture" && upBody.port === 8912
+      && upBody.expiresAt === 2_000_000_000_000, JSON.stringify(upBody));
+    const status = (await (await get(route)).json().catch(() => ({}))) as { state?: string; port?: number };
+    check("testinstanz status serves the running state for a second device", status.state === "up" && status.port === 8912);
+    const down = await post(route, { action: "down" });
+    check("testinstanz down invokes the same worktree script and removes the running fixture",
+      down.ok && !exists(`${emptyBranch.cwd}/ti-cwd`)
+      && ((await down.json().catch(() => ({}))) as { ok?: boolean }).ok === true);
+    const downStatus = await get(route);
+    check("testinstanz status keeps the script's down fact when its final lock diagnostic exits 1",
+      downStatus.status === 200
+      && ((await downStatus.json()) as { state?: string }).state === "down");
+    rmSync(script);
+  }
   const emptyRemove = await post(`/api/slots/${emptyBranch.slot}/land`, {});
   check("teardown branch mutation: zero commits ahead removes both the worktree and its branch",
     emptyRemove.ok && !exists(emptyBranch.cwd)
       && spawnSync("git", ["-C", REPO, "branch", "--list", emptyBranch.branch]).stdout.toString().trim() === "",
     `${emptyRemove.status} ${emptyBranch.branch}`);
+  const noWorktree = await post(`/api/slots/${emptyBranch.slot}/testinstanz`, { action: "up" });
+  check("testinstanz needs an occupied lane worktree", noWorktree.status === 409
+    && ((await noWorktree.json()) as { error?: string }).error === `slot ${emptyBranch.slot} has no lane worktree`);
   const keptBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   const preserve = `${ROOT}/branch-preserve.git`;
   spawnSync("git", ["init", "--bare", "-q", preserve]);

@@ -4237,6 +4237,37 @@ die im Augenblick der Vergabe unsichtbar ist, wird versehentlich vergeben. Fuenf
 `promotionState`, und `unreadable` ist einer davon: ein Wunsch, den der Build nicht lesen kann,
 wird beim Confirm FALLEN GELASSEN, also waere „Sprosse" ein Versprechen und „nichts" eine Luege.
 
+## Pane-Zustellungen und Buendelfenster
+
+Jede Pane-Zustellung traegt am Transportpfad die Klasse `sofort` oder `buendelbar`. Owner-Nachrichten,
+Gruendung/Nachfolge, Rueckfragen, Land-Bitten, Entscheidungen/Attention sowie rote Verify- und
+Audit-Ereignisse sind sofort. Quittungen, Infos und gruene Ereignisse koennen pro Empfaenger in
+einem Turn mit ihren vollstaendigen Originaltexten und Kopfzeilen zugestellt werden. Eine sofortige
+Zustellung loest ein wartendes Buendel im selben Turn aus; sie wartet nie auf dessen Zeitfenster.
+Ihr Original steht im Buendel zuerst. Ueber 32 KiB speichert der bestehende Pane-Inbox-Pfad das
+gesamte Buendel bytevoll mit Koepfen in einer Datei und tippt eine Referenz in genau einem Turn;
+die Referenz nennt Event-IDs und Klassen, damit Dringlichkeit ohne Dateilesung sichtbar bleibt.
+
+`FLEET_DELIVERY_BUNDLE_SEC` ist standardmaessig `900`; `0` deaktiviert das Zeitfenster fuer
+isolierte Suites. Der Server liest die letzte Assistant-Usage derselben Session: Claude mit
+`ephemeral_1h_input_tokens > 0` hat 3600 s TTL, mit `ephemeral_5m_input_tokens > 0` 300 s;
+bei beiden 0 gilt die zuletzt gesehene Stufe derselben Session, ohne lesbare Stufe 300 s.
+Codex nimmt 1800 s, andere Harnesses 300 s. Die Kante ist letzter Request plus TTL minus
+`min(300 s, TTL/5)`; das Buendelfenster endet spaetestens an dieser Kante. Ist sie vorbei,
+wartet nur ein `fleet-event` ohne eigenes Watch-Abo bis zur naechsten sofortigen Zustellung.
+`auto`, `inbox-nudge`, `report-decision` und alle anderen buendelbaren Pfade werden auch kalt
+nach ihrem Buendelfenster zugestellt; ein selbst abonniertes Watch-Ereignis ebenso. Solange ein
+Buendel wartet,
+berechnet der Watch-Tick die Kante aus der neuesten Session-Usage erneut; ein Wechsel der
+Claude-Cache-Stufe bleibt nicht am alten Timer haengen.
+
+Ein unversuchtes Buendel loest eine Program-MAIN- oder Orchestratorin-Rolle erst beim Ausliefern
+auf; slot-adressierte Nachrichten gehen an den aktuellen Occupant des Slots. Eine Abweisung vor
+dem Paste laesst den Inhalt im Buendel. Ein bereits als `send-uncertain` persistierter Versuch
+bleibt an seinen `openedAt`-Occupant gebunden und wird nicht umgeleitet. `send` im Audit nennt
+`deliveryClass`, `ttlSec`, `ttlQuelle` (`1h`, `5m`, `codex`, `unknown`) und `cache` (`warm` oder
+`kalt`); `delivery_bundle_*` trennt Queue, Send, Abweisung, Umleitung und Drop.
+
 ## send whenFree — `POST /send` (OWNER-Route, nicht `/api/self/*`)
 
 Anlass (2026-09-19, Orchestratorin Slot 4): ein `/send` an Slot 3 kam mit

@@ -321,6 +321,7 @@ interface FleetEventBase {
   receiverSlot: number | null;
   receiverOpenedAt: number | null;
   receiverSessionId: string | null;
+  receiverAddress?: { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
   receiverIdleSec: number;
   createdAt: number;
   status: FleetEventStatus;
@@ -729,7 +730,13 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   const ownerReceiver = e.receiverSlot === null && e.receiverOpenedAt === null
     && e.receiverSessionId === null;
   const recovery = fleetEventRecoveryFrom(e.recovery);
+  const address = e.receiverAddress;
+  const validAddress = address === undefined || (typeof address === "object" && address !== null
+    && ((address.kind === "orchestrator")
+      || (address.kind === "program" && typeof address.id === "string" && address.id.length > 0)
+      || (address.kind === "slot" && Number.isInteger(address.id) && (address.id as number) > 0)));
   if (recovery === null
+    || !validAddress
     || typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
     || !(e.watchId === null || (typeof e.watchId === "string" && /^[a-z0-9]+$/.test(e.watchId)))
     || (watchless !== (e.watchId === null))
@@ -780,6 +787,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     receiverSessionId: e.receiverSessionId ?? null, receiverIdleSec: e.receiverIdleSec!,
     createdAt: e.createdAt, status: e.status as FleetEventStatus, attempts: e.attempts!,
     deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
+    ...(address !== undefined ? { receiverAddress: address as FleetEventBase["receiverAddress"] } : {}),
     ...(e.delivery !== undefined ? { delivery: e.delivery as "pane" | "inbox" } : {}),
     ...(recovery ? { recovery } : {}),
   };

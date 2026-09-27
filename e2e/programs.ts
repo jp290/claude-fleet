@@ -4803,6 +4803,10 @@ export async function run(ctx: Ctx): Promise<void> {
     ["fleet-bootstrap", fleetPrompt], ["fleet-succession", fleetSuccessionPrompt],
     ["target-bootstrap", deliveredPrompt], ["target-succession", successionPrompt],
   ];
+  const MAIN_ROLE_CARD = /const MAIN_ROLE_CARD = `([^`]*)`;/
+    .exec(readFileSync(resolve(ROOT, "server.ts"), "utf8"))?.[1] ?? "";
+  const mainCardCount = (prompt: string): number =>
+    MAIN_ROLE_CARD === "" ? 0 : prompt.split(MAIN_ROLE_CARD).length - 1;
   const rails = railShapes.map(([, prompt]) => railOf(prompt));
   const rail = rails[0] ?? "";
   check("Program-MAIN rail: all four founding shapes carry ONE execution block, byte for byte",
@@ -4885,18 +4889,12 @@ export async function run(ctx: Ctx): Promise<void> {
       && rail.includes("mean the owner has played it")
       && rail.includes("raise exactly ONE POST /api/self/attention"),
     `queueFact=${rail.includes("The reply is a QUEUE FACT")} claim=${rail.includes("as a CLAIM, not as proof")} playable=${rail.includes("mean the owner has played it")}`);
-  // THE OWNER'S CORRECTION OF 2026-08-24, and it has TWO halves that fail in opposite directions.
-  // A blanket „[Zitat entfernt]“ would make the MAIN a scheduler; dropping the lane
-  // guidance would put the whole product back in the MAIN checkout. Both halves must be in the
-  // text, and the rule must stay a JUDGEMENT — no posture enum, no size threshold, no table.
-  check("Program-MAIN rail: small reversible work stays the MAIN's own act AND substantial work goes to a lane",
-    rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
-      && rail.includes("Small, reversible, low-risk changes inside the confirmed scope you may simply")
-      && rail.includes("delegating them would cost more than the change itself")
-      && rail.includes("Use an isolated worker lane for substantial product implementation")
-      && rail.includes("has become a scheduler")
-      && !/\b\d+\s*(lines|files|LOC)\b/.test(rail) && !rail.includes("posture"),
-    `judgement=${rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")} direct=${rail.includes("Small, reversible, low-risk changes inside the confirmed scope you may simply")} lane=${rail.includes("Use an isolated worker lane for substantial product implementation")}`);
+  // The approved card replaces the older standard role paragraph in all four brief shapes.
+  check("Program-MAIN role card: each Standard brief carries one approved card and no old role paragraph",
+    MAIN_ROLE_CARD.length > 0 && railShapes.every(([, prompt]) => mainCardCount(prompt) === 1
+      && !prompt.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
+      && !prompt.includes("Use an isolated worker lane for substantial product implementation")),
+    `cardBytes=${new TextEncoder().encode(MAIN_ROLE_CARD).byteLength} counts=[${railShapes.map(([name, prompt]) => `${name}:${mainCardCount(prompt)}`).join(",")}]`);
   // THE RECEIPT KEEPS ITS TWO DIFFERENT JOBS, and the block proves the difference rather than
   // assuming it. `hash` is the CONTEXT chain (anchor block + plan facts) and must be unmoved by a
   // brief-body change; `briefHash` is the DELIVERED BYTES and must move with them — a briefHash
@@ -5851,10 +5849,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && (await sessions()).slots.find((slot) => slot.id === gmBody.slot)?.cwd === realpathSync(gameWt),
     JSON.stringify((await sessions()).slots.find((slot) => slot.id === gmBody.slot) ?? null));
 
-  // (3) THE PROFILE ROLE BLOCK — selected in place of the generic paragraph, never appended after
-  // it. The falsifier this holds: a block that ADDED a "you may work directly" override would leave
-  // the generic "substantial product implementation goes to a lane" sentence standing beside it,
-  // and a session reading both would follow the first one it hit.
+  // The specialist profile replaces the common MAIN card, never appends another role after it.
   const GM_HEAD = "\n\nYOU ARE THE LEAD GAME DEVELOPER";
   const gmRoleOf = (prompt: string): string => {
     const from = prompt.indexOf(GM_HEAD);
@@ -5868,17 +5863,18 @@ export async function run(ctx: Ctx): Promise<void> {
   // deleting or changing any required word still fails, while moving the same sentence across an
   // 80-column boundary does not become a product regression.
   const gmRoleWords = gmRole.replace(/\s+/g, " ");
-  check("game-maker rail: the standard shapes keep the generic role paragraph and carry no profile block",
-    rail.includes(GENERIC_ROLE_SENTENCE) && rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
-      && railShapes.every(([, prompt]) => !prompt.includes(GM_HEAD)),
-    `generic=${rail.includes(GENERIC_ROLE_SENTENCE)} carriers=[${railShapes.filter(([, p]) => p.includes(GM_HEAD)).map(([n]) => n).join(",")}]`);
-  check("game-maker rail: the profile block REPLACES the generic paragraph — it appears once and the contradictory sentence is gone",
+  check("game-maker rail: Standard shapes carry one MAIN card and no profile block",
+    MAIN_ROLE_CARD.length > 0 && railShapes.every(([, prompt]) => mainCardCount(prompt) === 1
+      && !prompt.includes(GM_HEAD) && !prompt.includes(GENERIC_ROLE_SENTENCE)),
+    `cardCounts=[${railShapes.map(([name, prompt]) => `${name}:${mainCardCount(prompt)}`).join(",")}] carriers=[${railShapes.filter(([, p]) => p.includes(GM_HEAD)).map(([n]) => n).join(",")}]`);
+  check("game-maker rail: the profile block replaces the MAIN card and appears once",
     gmRole.length > 0 && gmPrompt.split(GM_HEAD).length === 2
+      && mainCardCount(gmPrompt) === 0
       && !gmPrompt.includes(GENERIC_ROLE_SENTENCE)
       && !gmPrompt.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
       && gmPrompt.indexOf(GM_HEAD) > gmPrompt.indexOf("YOUR LIFECYCLE PROJECTION")
       && gmPrompt.indexOf(GM_HEAD) < gmPrompt.indexOf("\n\nTHE LOOP, once per bounded act:"),
-    `len=${gmRole.length} occurrences=${gmPrompt.split(GM_HEAD).length - 1} generic=${gmPrompt.includes(GENERIC_ROLE_SENTENCE)}`);
+    `len=${gmRole.length} occurrences=${gmPrompt.split(GM_HEAD).length - 1} mainCard=${mainCardCount(gmPrompt)} generic=${gmPrompt.includes(GENERIC_ROLE_SENTENCE)}`);
   // WHAT THE BLOCK MUST SAY, as the sentences that answer each measured failure. Text, because text
   // is the deliverable: the mechanisms behind every claim have their own checks elsewhere.
   const gmSentences: [string, string][] = [
@@ -6396,13 +6392,13 @@ export async function run(ctx: Ctx): Promise<void> {
     raceClearRetry.ok && raceFlip.status === 409 && raceFlipText.includes("in flight")
       && raceProfileDuring === undefined,
     `clear=${raceClearRetry.status} grant=${raceFlip.status} ${raceFlipText}`);
-  check("profile race: the founding that passed the Standard machine check is delivered a Standard brief, and the receipt covers those bytes",
+  check("profile race: the Standard founding carries one MAIN card and its receipt covers those bytes",
     raceResponse.ok && racePrompt.length > 0 && !racePrompt.includes(GM_HEAD)
-      && racePrompt.includes(GENERIC_ROLE_SENTENCE)
+      && mainCardCount(racePrompt) === 1 && !racePrompt.includes(GENERIC_ROLE_SENTENCE)
       && !!raceReceipt && (await contextReceipts()).total === raceReceiptsBefore + 1
       && raceReceipt.briefHash === briefHashOf(racePrompt)
       && raceReceipt.deliveredBytes === new TextEncoder().encode(racePrompt).byteLength,
-    `gmBlock=${racePrompt.includes(GM_HEAD)} generic=${racePrompt.includes(GENERIC_ROLE_SENTENCE)}`);
+    `gmBlock=${racePrompt.includes(GM_HEAD)} mainCard=${mainCardCount(racePrompt)} generic=${racePrompt.includes(GENERIC_ROLE_SENTENCE)}`);
   // …and the in-flight refusal is about the MOMENT, never about the program. Once the founding has
   // ANSWERED the same write is refused by a DIFFERENT gate with a different sentence (the binding
   // it just created is live), and once that binding is gone the write lands. Three states, three

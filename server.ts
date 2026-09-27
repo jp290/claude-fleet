@@ -16109,7 +16109,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // that span as the notes/source/studio/anchor region, and a pointer there moved all of their
     // bytes (preview b546fb2cccdb, 7 red). Clarify gets none, like the notes and the footer.
     const memoryBlock = clarify ? "" : `\n\n${memoryPointer("lane")}`;
-    const deliveredBrief = `${brief}\n\n${LANE_ROLE_CARD}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness, selfPosition(free).receiver)}${memoryBlock}`;
+    const deliveredBrief = `${brief}${clarify ? "" : `\n\n${LANE_ROLE_CARD}`}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness, selfPosition(free).receiver)}${memoryBlock}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     await sendText(free, deliveredBrief, true, { path: "brief" });
@@ -32743,10 +32743,10 @@ const studioBlockFor = (program: Program, audience: StudioBriefAudience): string
   return lines.join("\n");
 };
 
-// The one selector, read by both builders. A Program with no profile gets the exact legacy bytes,
-// and a Program with no studio binding gets exactly those same bytes plus nothing.
+// The one selector, read by both builders. Standard Programs receive the common MAIN card;
+// Game-Maker Programs receive their specialist role block instead.
 const railBlockFor = (program: Program): string =>
-  (isGameMaker(program) ? GAME_MAKER_RAIL_BLOCK : PROGRAM_MAIN_RAIL_BLOCK)
+  (isGameMaker(program) ? GAME_MAKER_RAIL_BLOCK : `\n\n${MAIN_ROLE_CARD}${PROGRAM_MAIN_RAIL_BLOCK}`)
   + studioBlockFor(program, "main");
 
 
@@ -32776,7 +32776,7 @@ function buildProgramMainBrief(program: Program, frame: ProgramMainFrame, anchor
   ];
   // ONE concatenation seam per builder, and the rail block sits between the Program payload and the
   // anchors: a second seam is how one of the four variants would end up without it.
-  return body.join("\n") + `\n\n${MAIN_ROLE_CARD}` + railBlockFor(program) + anchorBlock;
+  return body.join("\n") + railBlockFor(program) + anchorBlock;
 }
 
 // THE GAME-MAKER SUCCESSION ORDER OF OPERATIONS, and every line of it is a thing the successor
@@ -33052,7 +33052,7 @@ function buildProgramMainSuccessionBrief(program: Program, carry: string | null,
     "Owner-confirmed Program content (verbatim JSON):",
     JSON.stringify(programContent(program), null, 2),
   ];
-  return body.join("\n") + `\n\n${MAIN_ROLE_CARD}` + railBlockFor(program) + anchorBlock;
+  return body.join("\n") + railBlockFor(program) + anchorBlock;
 }
 
 // Supervisor v0 is deliberately MINIMAL: the founding text states the role, the three read/propose

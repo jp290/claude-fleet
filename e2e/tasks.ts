@@ -89,6 +89,11 @@ const CLAUDE_COMPOSER_SCREEN = [
 ].join("\n");
 
 export async function run(ctx: Ctx): Promise<void> {
+  const LANE_ROLE_CARD = /const LANE_ROLE_CARD = `([^`]*)`;/
+    .exec(readFileSync(resolve(ROOT, "server.ts"), "utf8"))?.[1] ?? "";
+  const laneRolePrefix = LANE_ROLE_CARD === "" ? "" : `\n\n${LANE_ROLE_CARD}`;
+  const laneCardCount = (prompt: string): number =>
+    LANE_ROLE_CARD === "" ? 0 : prompt.split(LANE_ROLE_CARD).length - 1;
   const repo2VerifyCommand = (() => {
     if (!REPO2) return "";
     try {
@@ -3059,10 +3064,11 @@ export async function run(ctx: Ctx): Promise<void> {
     // anchor check as well, or the failure stops naming which of the two broke.
     const lifecycleAt = deliveredPrompt.indexOf(LANE_EXIT_MARK);
     const lifecycleFooter = lifecycleAt >= 0 ? deliveredPrompt.slice(lifecycleAt) : "";
-    const anchorRegion = deliveredPrompt.slice(DBRIEF.length,
+    const anchorRegion = deliveredPrompt.slice(DBRIEF.length + laneRolePrefix.length,
       lifecycleAt >= 0 ? lifecycleAt : deliveredPrompt.length);
-    check("a dispatch into a FOREIGN tree delivers the STORED brief alone — no anchor block at all",
-      deliveredPrompt.startsWith(DBRIEF) && anchorRegion === ""
+    check("a dispatch into a FOREIGN tree delivers the stored brief and one Lane card, with no anchor block",
+      LANE_ROLE_CARD.length > 0 && deliveredPrompt.startsWith(DBRIEF + laneRolePrefix)
+      && laneCardCount(deliveredPrompt) === 1 && anchorRegion === ""
       && !deliveredPrompt.includes("ContextPlan v2 anchors")
       && !deliveredPrompt.includes("dispatch-gate-probe"),
       JSON.stringify(autoRows.slice(0, 3)).slice(0, 300));
@@ -5607,7 +5613,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const ctl = await dispatchAndRead(ctlId, HUB_BRIEF);
     await closeLane(ctl.slot);
     check("(d5-live-control) a dispatch with no candidate note carries no block and receipts notes:[]",
-      ctl.prompt.startsWith(`${HUB_BRIEF}\n\nContextPlan v2 anchors`)
+      LANE_ROLE_CARD.length > 0 && ctl.prompt.startsWith(`${HUB_BRIEF}${laneRolePrefix}\n\nContextPlan v2 anchors`)
+      && laneCardCount(ctl.prompt) === 1
       && !ctl.prompt.includes("Notizen auf deiner Flaeche")
       && Array.isArray(ctl.receipt?.notes) && ctl.receipt.notes.length === 0
       && !("executionClass" in (ctl.receipt ?? {})),
@@ -5652,7 +5659,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const RANK_BRIEF = "N1-RANK-FIXTURE — seven candidates, five lines";
     const rankId = await mkTask("Auftrag: server.ts, continuity.ts, lane-signals.ts, slotstats.ts und trailstats.ts.", "auftrag");
     const rank = await dispatchAndRead(rankId, RANK_BRIEF);
-    const rankBlock = rank.prompt.slice(RANK_BRIEF.length,
+    const rankBlock = rank.prompt.slice(RANK_BRIEF.length + laneRolePrefix.length,
       rank.prompt.indexOf("\n\nContextPlan v2 anchors") >= 0
         ? rank.prompt.indexOf("\n\nContextPlan v2 anchors") : undefined);
     const rankLines = rankBlock.split("\n").filter((l) => l.startsWith("- notiz "));
@@ -5779,7 +5786,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // Mutation that breaks it: any comparator term (nA>nB count, nB>nC age, nD>nE cluster), the
     // cap (nF/nG would appear), or moving the block after the anchors (the slice would be empty).
     check("(d5-live-a) seven candidates deliver exactly five lines, ranked cluster → count → age",
-      rankLines.length === 5
+      laneCardCount(rank.prompt) === 1 && rankLines.length === 5
       && rankLines.map((l) => l.split(" ")[2]).join(",") === [nA, nB, nC, nD, nE].join(",")
       && rankBlock.startsWith("\n\nNotizen auf deiner Flaeche (5, Deckel 5):\n")
       && !rankBlock.includes(nF) && !rankBlock.includes(nG) && !rankBlock.includes(nHub),
@@ -6190,7 +6197,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const okBrief = "DISPATCH-MANIFEST FIXTURE — a foreign tree that declares its own pack";
     const ok = await dispatchInto(okBrief, "dispatch-manifest-valid");
     check("a dispatch into a tree with a tracked valid manifest delivers the repo-declared pack in the block and on the receipt",
-      validCommit === 0 && ok.prompt.startsWith(`${okBrief}\n\nContextPlan v2 anchors`)
+      validCommit === 0 && ok.prompt.startsWith(`${okBrief}${laneRolePrefix}\n\nContextPlan v2 anchors`)
+      && laneCardCount(ok.prompt) === 1
       && ok.prompt.includes("dispatch-declared") && ok.prompt.includes("AGENTS.md | ## Repo contract")
       && ok.receipt?.selected.length === 1 && ok.receipt.selected[0]?.id === "dispatch-declared"
       // the Fleet seeds keep their honest verdict in a foreign tree — the manifest row is added,
@@ -6206,10 +6214,11 @@ export async function run(ctx: Ctx): Promise<void> {
     // nothing there rather than drop the omission silently), so the lifecycle footer is measured
     // out of the way instead of being allowed to read as an appended block.
     const badFooterAt = bad.prompt.indexOf(LANE_EXIT_MARK);
-    const badAnchorRegion = bad.prompt.slice(badBrief.length,
+    const badAnchorRegion = bad.prompt.slice(badBrief.length + laneRolePrefix.length,
       badFooterAt >= 0 ? badFooterAt : bad.prompt.length);
     check("an invalid manifest at the dispatch seam is the named @manifest omission, never a silent drop",
-      brokenCommit === 0 && bad.prompt.startsWith(badBrief) && badAnchorRegion === ""
+      brokenCommit === 0 && bad.prompt.startsWith(badBrief + laneRolePrefix)
+      && laneCardCount(bad.prompt) === 1 && badAnchorRegion === ""
       && !bad.prompt.includes("ContextPlan v2 anchors")
       && bad.receipt?.selected.length === 0 && bad.receipt.omitted.length === CONTEXT_PACKS.length + 1
       && JSON.stringify(bad.receipt.omitted.at(-1)) === JSON.stringify({ id: "@manifest", why: "manifest-invalid" }),
@@ -7119,6 +7128,7 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(iSent?.text ?? null).slice(0, 300));
     check("(i-footer) a clarify brief carries NO exit footer — it must stop for the owner, not finish and report",
       !!iSent && !(iSent.text ?? "").includes(LANE_EXIT_MARK)
+      && laneCardCount(iSent.text ?? "") === 0
       && !(iSent.text ?? "").includes("/api/self/fleet-report"),
       JSON.stringify((iSent?.text ?? "").slice(-300)));
     // …and the receipt says so in one word. Booking a clarify lane as "raw" would be the costly

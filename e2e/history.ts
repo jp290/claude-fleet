@@ -606,6 +606,15 @@ function runLinks(): void {
   check("hover: exactly one card style and a touch pointerdown path",
     (index.match(/\.entcard \{/g) ?? []).length === 1
       && readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/entcard.ts`, "utf8").includes('e.pointerType !== "touch"'));
+  // T2/T4/T5 of the 2026-09-26 walk-through, the phone terminal: a long press copies through
+  // copyText, ^C leads the key row (never behind a sideways swipe), and the portrait corner group
+  // sits in a strip above the terminal instead of on its text.
+  const keyRow = /<div id="keys">([\s\S]*?)<\/div>/.exec(index)?.[1] ?? "";
+  check("terminal (phone): long press copies the line through copyText, ^C leads the key row, the corner group sits above the text",
+    client.includes("copyText(this.pressText)") && client.includes("this.term.selectLines(start, end)")
+      && /^\s*<button data-k="cc">/.test(keyRow)
+      && /\.paneterm \{ top: 48px; \}\s*\.pane:not\(\.chat\) \.panetools \{ flex-direction: row-reverse;/.test(index),
+    `key row starts ${JSON.stringify(keyRow.trim().slice(0, 30))}`);
   const opener = /function openTermLink\([\s\S]*?\n\}/.exec(client)?.[0] ?? "";
   check("terminal: a link opens only as http(s), in a new tab, without an opener",
     /proto !== "http:" && proto !== "https:"/.test(opener) && opener.includes(`window.open(uri, "_blank", "noopener,noreferrer")`),

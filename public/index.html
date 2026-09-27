@@ -638,6 +638,10 @@
     border: 1px solid var(--chat-edge); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
   .panedown .downnow:hover { color: var(--chat-ink); }
   .pane.down:not(.chat) .jump { bottom: 44px; }
+  /* long-press copy (Pane#selectLineAt): one button above the finger, shown inline by the script */
+  .termcopy { display: none; position: absolute; z-index: 6; width: 96px; height: 40px; border-radius: var(--r1);
+    border: 1px solid var(--chat-mute); background: var(--chat-raised); color: var(--chat-ink);
+    font: 500 14px var(--chat-sans); cursor: pointer; }
 
   #bar { flex: none; background: #000; border-top: 1px solid transparent;
     padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -3182,8 +3186,17 @@
     .paneterm { user-select: none; -webkit-user-select: none; }
     .jump { width: 44px; height: 44px; font-size: 16px; }
 
-    #keys { display: flex; gap: 5px; }
-    #keys button { flex: 1 0 44px; height: 34px; border-radius: 8px; font-size: 13px; color: #aaa; }
+    /* ALL NINE KEYS IN ONE ROW at 390 px (T4 of docs/messungen/2026-09-26-rundlauf-einstellungen-terminal.md:
+       44-px minimums made 436 px of content in a 374-px row and cut ^C off behind a sideways swipe).
+       40 px is the floor (G0.7) and the gap gives way to it; ^C leads the row, so on a phone narrower
+       than the nine it is the last key a swipe is ever needed for. */
+    #keys { display: flex; gap: 1px; }
+    #keys button { flex: 1 1 0; min-width: 40px; padding: 0; height: 34px; border-radius: 8px; font-size: 13px; color: #aaa; }
+    /* THE CORNER GROUP ABOVE THE TERMINAL, not on it (T5: four 40-px buttons covered columns 36–55
+       of 55 in rows 0–6). The terminal starts under a 48-px strip and the group lies in it as one
+       row, ↻ left of ⚙ 💬 ℹ so ℹ keeps the corner. The conversation view keeps its own layout. */
+    .paneterm { top: 48px; }
+    .pane:not(.chat) .panetools { flex-direction: row-reverse; align-items: center; top: 4px; right: 6px; }
 
     .chip { padding: 9px 14px; }
     #livein { flex: 1; min-width: 0; height: 44px; padding: 0 12px; border-radius: 10px;
@@ -3215,7 +3228,7 @@
     body.keyboard-open #bar { padding: 2px 6px 4px; gap: 2px; }
     body.keyboard-open.keyboard-options #menu,
     body.keyboard-open.keyboard-options #mset { width: 40px; height: 40px; }
-    body.keyboard-open #keys { gap: 3px; }
+    body.keyboard-open #keys { gap: 1px; }
     body.keyboard-open #keys button { height: 40px; min-width: 40px; }
     body.keyboard-open #comp { max-width: 100%; gap: 2px; }
     body.keyboard-open #comp.bar #compsurface,
@@ -3289,6 +3302,9 @@
     #mhead, #keys, #chips, #comp { display: none; }
     #panes { padding: 0; gap: 0; }
     #panes > .pane { border: 0; }
+    /* the reading mode keeps its glass corner group over the text, edge to edge (owner's pick) */
+    .paneterm { top: 4px; }
+    .pane:not(.chat) .panetools { flex-direction: column; align-items: flex-end; top: 8px; right: 10px; }
     #bar { padding: 0; border-top: 0; gap: 0; }
     .jump { bottom: 8px; right: 102px; }
     .pane:not(.past) .panetools .panegear { display: flex !important; }
@@ -3438,6 +3454,7 @@
     <div id="panes" class="l1"></div>
     <div id="bar">
       <div id="keys">
+        <button data-k="cc">^C</button>
         <button data-k="esc">esc</button>
         <button data-k="tab">tab</button>
         <button data-k="stab">⇧tab</button>
@@ -3446,7 +3463,6 @@
         <button data-k="left">←</button>
         <button data-k="right">→</button>
         <button data-k="enter">⏎</button>
-        <button data-k="cc">^C</button>
       </div>
       <div id="chips"></div>
       <div id="livebar">

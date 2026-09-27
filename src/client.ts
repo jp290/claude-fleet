@@ -858,6 +858,10 @@ function seedFramePlan(socketGeneration: number, currentGeneration: number, firs
   return { reset: firstFrame, pin: firstFrame };
 }
 
+// long-press copy in the terminal (Pane#selectLineAt): how long a finger stays, how far it may drift
+const PRESS_MS = 450;
+const PRESS_SLOP_PX = 10;
+
 class Pane {
   slot = 0; // 0 = unassigned
   private gen = 0; // bump to suppress a stale socket's reconnect loop
@@ -925,6 +929,13 @@ class Pane {
   private downTimer: ReturnType<typeof setInterval> | undefined;
   private retryAt = 0;
   private dropped = 0;
+  // LONG PRESS COPIES (T2 of the same walk-through): on a phone the terminal refuses text selection
+  // (.paneterm user-select:none, so a drag scrolls the scrollback) and nothing could be copied out.
+  private readonly copyPop: HTMLButtonElement;
+  private pressTimer: ReturnType<typeof setTimeout> | undefined;
+  private pressAt: { x: number; y: number } | null = null;
+  private pressFired = false;
+  private pressText = "";
 
   constructor(readonly index: number) {
     this.hoverOn = prefJSON<{ hovers?: boolean[] }>("fleet.view").hovers?.[index] ?? false;
@@ -1032,7 +1043,14 @@ class Pane {
     downNow.title = "Nicht auf den nächsten Versuch warten — sofort neu verbinden";
     downNow.onclick = (e) => { e.stopPropagation(); this.reconnect(); };
     this.downBar.append(this.downMsg, downNow);
-    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.downBar, this.toolsBox);
+    this.copyPop = el("button", "termcopy", "Kopieren") as HTMLButtonElement;
+    this.copyPop.onclick = (e) => {
+      e.stopPropagation();
+      copyText(this.pressText);
+      this.copyPop.textContent = "Kopiert";
+      setTimeout(() => this.hideCopy(), 700);
+    };
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.downBar, this.copyPop, this.toolsBox);
     this.sizeObserver = new ResizeObserver(() => {
       clearTimeout(this.observedRefit);
       this.observedRefit = setTimeout(() => {
@@ -1073,6 +1091,21 @@ class Pane {
     this.term.loadAddon(this.fit);
     this.term.loadAddon(new WebLinksAddon(openTermLink));
     this.term.open(termEl);
+    // a finger held still for PRESS_MS selects the logical line under it (wrapped rows joined) and
+    // offers "Kopieren" above it, through copyText like every other copy button. Moving first is a
+    // scroll and cancels; the release after a press must not also be a tap (a tap on a URL opens it).
+    termEl.addEventListener("touchstart", (e) => this.pressStart(e), { passive: true });
+    termEl.addEventListener("touchmove", (e) => {
+      const t = e.touches[0];
+      if (this.pressAt && t && Math.hypot(t.clientX - this.pressAt.x, t.clientY - this.pressAt.y) > PRESS_SLOP_PX)
+        clearTimeout(this.pressTimer);
+    }, { passive: true });
+    termEl.addEventListener("touchend", (e) => {
+      clearTimeout(this.pressTimer);
+      if (this.pressFired && e.cancelable) e.preventDefault();
+    });
+    termEl.addEventListener("touchcancel", () => clearTimeout(this.pressTimer), { passive: true });
+    termEl.addEventListener("contextmenu", (e) => { if (this.pressFired) e.preventDefault(); });
     this.syncEntityLinks();
     this.loadRenderer();
     // on touch devices all input goes through the compose bar + key row; inputMode=none
@@ -1715,6 +1748,7 @@ class Pane {
     this.ws?.close();
     this.dropped = 0; // keystrokes lost to the previous slot are not this one's to report
     this.hideDown();
+    this.hideCopy();
     this.term.reset();
     this.resetChat();
     this.boardBtn.style.display = slot ? "flex" : "none";
@@ -1768,6 +1802,46 @@ class Pane {
     this.pinPending = true;
     this.loadRenderer();
     this.connect(true);
+  }
+
+  private pressStart(e: TouchEvent) {
+    clearTimeout(this.pressTimer);
+    this.hideCopy();
+    const t = e.touches[0];
+    if (e.touches.length !== 1 || !t) { this.pressAt = null; return; }
+    const at = { x: t.clientX, y: t.clientY };
+    this.pressAt = at;
+    this.pressTimer = setTimeout(() => this.selectLineAt(at.x, at.y), PRESS_MS);
+  }
+
+  private selectLineAt(x: number, y: number) {
+    const screen = this.term.element?.querySelector(".xterm-screen");
+    if (!screen) return;
+    const r = screen.getBoundingClientRect();
+    const row = Math.floor((y - r.top) / (r.height / this.term.rows));
+    if (row < 0 || row >= this.term.rows) return;
+    const b = this.term.buffer.active;
+    let start = b.viewportY + row, end = start;
+    while (start > 0 && b.getLine(start)?.isWrapped) start--;
+    while (b.getLine(end + 1)?.isWrapped) end++;
+    this.term.selectLines(start, end);
+    const text = this.term.getSelection().trimEnd();
+    if (!text) { this.term.clearSelection(); return; }
+    this.pressText = text;
+    this.pressFired = true;
+    const box = this.root.getBoundingClientRect();
+    const w = 96;
+    this.copyPop.textContent = "Kopieren";
+    this.copyPop.style.left = `${Math.max(4, Math.min(box.width - w - 4, x - box.left - w / 2))}px`;
+    this.copyPop.style.top = `${Math.max(4, y - box.top - 56)}px`;
+    this.copyPop.style.display = "block";
+  }
+
+  private hideCopy() {
+    this.pressFired = false;
+    if (this.copyPop.style.display !== "block") return;
+    this.copyPop.style.display = "none";
+    this.term.clearSelection();
   }
 
   private showDown(wait: number) {

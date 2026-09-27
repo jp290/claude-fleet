@@ -625,6 +625,19 @@
     color: #ddd; font-size: 14px; align-items: center; justify-content: center;
     cursor: pointer; }
   .jump:hover { background: rgba(30, 30, 30, 1); }
+  /* THE DROPPED SOCKET (Pane#showDown): a strip at the pane's foot while its socket is closed — the
+     past bar's material, amber text, the ▼ pill steps up over it. Terminal view only: the socket is
+     the terminal's, the conversation view reads over HTTP. */
+  .panedown { display: none; }
+  .pane.down:not(.chat) .panedown { position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; display: flex;
+    align-items: center; gap: 10px; padding: 6px 12px; background: var(--chat-raised);
+    border-top: 1px solid var(--chat-edge); font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
+    color: var(--amber); }
+  .panedown .downmsg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .panedown .downnow { flex: none; font: inherit; color: var(--chat-prose); background: var(--chat-surface);
+    border: 1px solid var(--chat-edge); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+  .panedown .downnow:hover { color: var(--chat-ink); }
+  .pane.down:not(.chat) .jump { bottom: 44px; }
 
   #bar { flex: none; background: #000; border-top: 1px solid transparent;
     padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }

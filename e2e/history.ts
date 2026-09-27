@@ -578,6 +578,24 @@ function runLinks(): void {
     reconnect.includes("this.loadRenderer();")
       && client.includes('this.reloadBtn.classList.toggle("degraded", this.renderer !== "webgl")')
       && client.includes("private loadRenderer(): void"));
+  // T1 of the 2026-09-26 walk-through: the seed pin ran INSIDE the wheel smoothing and parked the
+  // viewport a line above the tail (18 of 24 runs). The glide stays on for the user; the one door for
+  // programmatic tail jumps zeroes it around its two calls, and no bare scrollToBottom remains.
+  const snap = /  snapToBottom\(nudge = false\) \{[\s\S]*?\n  \}/.exec(client)?.[0] ?? "";
+  const pin = /  private pinToBottom\(\) \{[\s\S]*?\n  \}/.exec(client)?.[0] ?? "";
+  check("terminal: pinToBottom reaches the tail past the wheel smoothing, which stays on for the user",
+    /o\.smoothScrollDuration = 0;[\s\S]*?scrollToBottom\(\);\s*o\.smoothScrollDuration = glide;/.test(snap)
+      && pin.includes("this.snapToBottom(") && /smoothScrollDuration: [1-9]\d*,/.test(client)
+      && !/\.term\.scrollToBottom\(\);|\.term\.scrollLines\(/.test(client.replace(snap, "")),
+    `snap ${snap.length} chars, pin ${pin.length} chars`);
+  // T3 of the same walk-through: a dropped socket was a 6-px dot and sendRaw threw keystrokes away
+  // without a trace. The drop is said in the pane, and a refused keystroke is counted, not silent.
+  const sendRaw = /  sendRaw\(s: string\) \{[\s\S]*?\n  \}/.exec(client)?.[0] ?? "";
+  check("terminal: a closed socket shows in the pane and counts the keystrokes it could not send",
+    /readyState !== WebSocket\.OPEN\) \{[\s\S]*?this\.dropped \+=[\s\S]*?this\.paintDown\(\)/.test(sendRaw)
+      && /const wait = reconnectDelay\(this\.retries\+\+\);\s*this\.showDown\(wait\);/.test(client)
+      && /setConn\(true\);\s*this\.hideDown\(\);/.test(client) && client.includes("this.reconnect(); };\n    this.downBar.append("),
+    `sendRaw ${sendRaw.length} chars`);
   check("terminal: every socket gates stale frames and resets before its first seed write",
     client.includes("seedFramePlan(g, this.gen, firstFrame)")
       && /if \(action\.reset\) \{[\s\S]*?this\.term\.reset\(\)/.test(client));

@@ -916,6 +916,15 @@ class Pane {
   pastN: number | null = null;
   private viewBeforePast: "term" | "chat" = "term";
   private readonly pastBar: HTMLElement;
+  // THE DROPPED SOCKET, said in the pane (T3 of the 2026-09-26 walk-through): until this pane's
+  // socket is open again a strip at its foot counts down to the next try, offers "jetzt verbinden",
+  // and counts the keystrokes it could not send — before, the 6-px dot was the only sign and
+  // sendRaw dropped them without a trace.
+  private readonly downBar: HTMLElement;
+  private readonly downMsg: HTMLElement;
+  private downTimer: ReturnType<typeof setInterval> | undefined;
+  private retryAt = 0;
+  private dropped = 0;
 
   constructor(readonly index: number) {
     this.hoverOn = prefJSON<{ hovers?: boolean[] }>("fleet.view").hovers?.[index] ?? false;
@@ -1017,7 +1026,13 @@ class Pane {
     this.toolsBox = el("div", "panetools");
     this.toolsBox.append(toolsTop, toolsView);
     this.pastBar = el("div", "pastbar");
-    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.toolsBox);
+    this.downBar = el("div", "panedown");
+    this.downMsg = el("span", "downmsg");
+    const downNow = el("button", "downnow", "jetzt verbinden") as HTMLButtonElement;
+    downNow.title = "Nicht auf den nächsten Versuch warten — sofort neu verbinden";
+    downNow.onclick = (e) => { e.stopPropagation(); this.reconnect(); };
+    this.downBar.append(this.downMsg, downNow);
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.downBar, this.toolsBox);
     this.sizeObserver = new ResizeObserver(() => {
       clearTimeout(this.observedRefit);
       this.observedRefit = setTimeout(() => {
@@ -1085,7 +1100,7 @@ class Pane {
     // touch momentum scroll drives the native viewport directly and doesn't emit
     // xterm's onScroll — listen to the DOM scroll so the jump pill stays in sync
     termEl.querySelector(".xterm-viewport")?.addEventListener("scroll", updateJump, { passive: true });
-    this.jump.onclick = () => { this.term.scrollToBottom(); this.focus(); };
+    this.jump.onclick = () => { this.snapToBottom(); this.focus(); };
     this.root.addEventListener("mousedown", () => focusPane(this.index));
     this.root.addEventListener("animationend", () => this.root.classList.remove("flash"));
   }
@@ -1612,7 +1627,13 @@ class Pane {
   }
 
   sendRaw(s: string) {
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      // not replayed after the reconnect: a keystroke delivered seconds late lands in whatever
+      // the session shows by then (an Enter that meets a permission prompt approves it) — a
+      // visible loss is the safer of the two. Counted in characters, as the owner typed them.
+      if (this.slot) { this.dropped += [...s].length; this.paintDown(); }
+      return;
+    }
     const bytes = new TextEncoder().encode(s);
     // splitting mid-codepoint is safe: tmux relays raw bytes to the pty, which
     // reassembles UTF-8 the same way it would from fast individual keystrokes
@@ -1644,6 +1665,7 @@ class Pane {
       if (g !== this.gen) { ws.close(); return; }
       openedAt = Date.now();
       if (focused === this.index) setConn(true);
+      this.hideDown();
       this.sendResize(true);
     };
     ws.onmessage = (e) => {
@@ -1672,6 +1694,7 @@ class Pane {
       // earns the fast first retry back (see src/backoff.ts)
       if (openedAt && Date.now() - openedAt >= RECONNECT_SETTLED_MS) this.retries = 0;
       const wait = reconnectDelay(this.retries++);
+      this.showDown(wait);
       setTimeout(() => {
         if (g === this.gen && fleet[this.slot - 1]?.cwd) this.connect();
       }, wait);
@@ -1690,6 +1713,8 @@ class Pane {
     this.retries = 0; // a different pane: the old one's backoff says nothing about this one
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
     this.ws?.close();
+    this.dropped = 0; // keystrokes lost to the previous slot are not this one's to report
+    this.hideDown();
     this.term.reset();
     this.resetChat();
     this.boardBtn.style.display = slot ? "flex" : "none";
@@ -1714,7 +1739,7 @@ class Pane {
 
   scrollToEnd() {
     this.chatPinUntil = Date.now() + 1000;
-    this.term.scrollToBottom();
+    this.snapToBottom();
     this.pinToBottom();
     requestAnimationFrame(() => {
       this.chatEl.scrollTop = this.chatEl.scrollHeight;
@@ -1736,11 +1761,36 @@ class Pane {
     this.retries = 0; // an explicit ask: honour it now, don't serve it out of the backoff
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
     this.ws?.close();
+    this.retryAt = 0; // a strip already up now reads "verbinde…" until this socket opens or drops
+    this.paintDown();
     this.term.reset();
     this.fit.fit();
     this.pinPending = true;
     this.loadRenderer();
     this.connect(true);
+  }
+
+  private showDown(wait: number) {
+    this.retryAt = Date.now() + wait;
+    this.root.classList.add("down");
+    this.paintDown();
+    clearInterval(this.downTimer);
+    this.downTimer = setInterval(() => this.paintDown(), 1000);
+  }
+
+  private paintDown() {
+    if (!this.root.classList.contains("down")) return;
+    const s = Math.ceil((this.retryAt - Date.now()) / 1000);
+    const lost = this.dropped ? ` · ${this.dropped} Zeichen nicht gesendet` : "";
+    this.downMsg.textContent = `${s > 0 ? `getrennt — neuer Versuch in ${s} s` : "getrennt — verbinde…"}${lost}`;
+  }
+
+  private hideDown() {
+    clearInterval(this.downTimer);
+    if (this.dropped && this.root.classList.contains("down"))
+      toast(`Slot ${this.slot}: ${this.dropped} Zeichen während der Trennung nicht gesendet`);
+    this.dropped = 0;
+    this.root.classList.remove("down");
   }
 
   // called from the seed's write callback (see connect()). The buffer is already at
@@ -1752,10 +1802,26 @@ class Pane {
     requestAnimationFrame(() => {
       const b = this.term.buffer.active;
       if (b.baseY === 0) return; // single screen, nothing above to be stuck on
-      if (b.viewportY !== b.baseY) { this.term.scrollToBottom(); return; }
-      this.term.scrollLines(-1);
-      this.term.scrollToBottom();
+      this.snapToBottom(b.viewportY === b.baseY);
     });
+  }
+
+  // every programmatic jump to the tail goes through here, past the wheel smoothing (74486e20).
+  // With smoothScrollDuration > 0, xterm's scrollLines only STARTS an animation of the DOM
+  // scrollTop, and ydisp catches up one scroll event later — so the nudge's scrollToBottom(),
+  // issued in the same frame, still read ybase-ydisp = 0, did nothing, and the animation parked
+  // the viewport one line above the tail, where xterm stops following output (T1, 18 of 24 runs:
+  // docs/messungen/2026-09-26-rundlauf-einstellungen-terminal.md). At 0 both calls move ydisp
+  // synchronously; the duration is restored before anything else runs, so wheel and trackpad
+  // keep their glide. A smoothed programmatic jump left anywhere else would also still be
+  // animating when this snap lands and pull the viewport back up — hence one door for all.
+  snapToBottom(nudge = false) {
+    const o = this.term.options;
+    const glide = o.smoothScrollDuration;
+    o.smoothScrollDuration = 0;
+    if (nudge) this.term.scrollLines(-1);
+    this.term.scrollToBottom();
+    o.smoothScrollDuration = glide;
   }
 
   refit() {
@@ -1793,6 +1859,7 @@ class Pane {
   dispose() {
     this.gen++;
     this.ws?.close();
+    clearInterval(this.downTimer);
     this.linkProvider?.dispose();
     clearTimeout(this.resizeTimer);
     clearTimeout(this.observedRefit);
@@ -9316,7 +9383,7 @@ async function doSend() {
     growComposer();
     cyc = null;
     updateChips();
-    pane.term.scrollToBottom();
+    pane.snapToBottom();
   } finally {
     send.disabled = false;
   }

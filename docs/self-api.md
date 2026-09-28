@@ -44,6 +44,9 @@ den wartenden Slot; beim Debt den betroffenen Slot selbst. Der Blick ist eine ak
 Momentaufnahme, keine historische Vollständigkeitszusage. Der mutierende Lane-Brief rendert
 denselben Empfänger im Footer als `Empfaenger: <Rolle> Slot <n>`; ohne Empfänger steht dort
 `Empfaenger: unbekannt`.
+Gelandete, unbeurteilte Program-Reports mit Status `needs-main` oder `complete` und beendeter
+Lane erscheinen mit `kind:"fleet-report-landed-unjudged"`; andere offene Reports tragen
+`kind:"fleet-report"`. Der Land-Nachweis kommt aus `lane-outcomes.jsonl` ab `reportedAt`.
 
 ## gate — `GET /api/self/gate`
 
@@ -2793,7 +2796,7 @@ Byte-Gleichheit beider Sichten).
 
 **`GET /api/self/fleet-report`** liefert die Zeilen, in denen der Aufrufer Worker oder
 Occupant-Empfänger ist, plus alle `basis:"program"`-Zeilen des Programs, dessen aktuelle MAIN der
-Aufrufer laut `boundProgramForMain` ist. **Retention: `FLEET_REPORT_KEEP = 20`** terminale Zeilen,
+Aufrufer laut `boundProgramForMain` ist. `?open=1` filtert auf unbeurteilte Zeilen. **Retention: `FLEET_REPORT_KEEP = 20`** terminale Zeilen,
 älteste zuerst verworfen. Bei `basis:"program"` heißt terminal: `decision` ist vorhanden; eine
 unbeurteilte Program-Zeile altert nie allein aus der offenen Schuld. Sonst heißt terminal wie zuvor:
 das zugehörige Event steht auf
@@ -2803,6 +2806,14 @@ Eine Zeile mit noch offenem Event wird nie gepruned. Ein Report ist also kein Ar
 Commit.
 
 ### Annahme — `POST /api/self/fleet-report/:id/accept`, `POST /api/self/fleet-report/:id/reject`
+
+Die gebundene Program-MAIN kann gelandete, unbeurteilte `needs-main`- und `complete`-Zeilen
+beendeter Lanes in einem Aufruf beurteilen: `POST /api/self/fleet-report/batch` mit
+`{"decisions":[{"id":"<report-id>","disposition":"accepted","reason":"ERFUELLT: ja — …"}]}`.
+Jeder Eintrag durchläuft die bestehende MAIN-Urteilstür und erhält ein normales Occupant-Urteil
+mit Ledger und Zustellung. Vor dem ersten Urteil prüft die Sammel-Tür alle IDs, Program-Bindungen,
+Status, Lane-Enden, Land-Nachweise und Gründe; 1 bis 100 unterschiedliche IDs sind zulässig.
+Sie verleiht der Orchestratorin oder einer Lane kein Urteilsrecht.
 
 **Der ACK ist ein Transport-Empfang, keine Beurteilung.** `POST /api/self/events/:id/ack` sagt
 per Vertrag „ich habe Bytes bekommen" — bis zu diesem Schnitt persistierte nichts, ob die
@@ -2820,8 +2831,8 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   wird auf seiner EIGENEN Uhr gepruned (`pruneFleetEvents`, je Empfänger); der Report ist das
   BEURTEILTE Objekt mit eigener Retention. Ein Urteil auf dem Event verschwände, während die Zeile,
   die es beurteilt, noch da ist — und es überlüde ein Wort (`acknowledged`) mit zwei Bedeutungen.
-- **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId}|"owner"|{rule:"accepted-by-land"},
-  reason, fulfilled, mainAfter?}` — `mainAfter` steht GENAU auf einem Regelurteil (Abschnitt „Regelentscheide" unten). `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
+- **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId}|"owner"|{rule:"accepted-by-land"|"landed"|"superseded"},
+  reason, fulfilled, mainAfter?}` — `mainAfter` steht auf `accepted-by-land` und `landed` (Abschnitt „Regelentscheide" unten). `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
   `accepted` · `rejected`. Fehlt der Schlüssel oder ist er `null`, ist die Zeile UNBEURTEILT — eine
   vor dieser Tür persistierte Zeile bleibt beobachtbar unbeurteilt und wird nie zu einem Urteil
   repariert, das niemand gefällt hat. `reason` ist optionale Prosa ≤ 500 Zeichen oder `null`.
@@ -2846,7 +2857,8 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   `disposition` und `fulfilled` sind ZWEI Fakten. Eine MAIN, die eine Scheibe annimmt, obwohl das
   Done nur zur Hälfte erfüllt ist, sagt genau das (`accepted` + `teilweise`); das eine aus dem
   anderen abzuleiten wäre der Verlust, den dieses Feld schliesst. Ein REGELURTEIL schreibt immer
-  `null`: `accepted-by-land` liest einen Land und einen Post-Land-Audit, `superseded` eine spätere
+  `null`: `accepted-by-land` liest einen Land und einen Post-Land-Audit, `landed` einen Land nach
+  einem handoff ohne Arbeitsbehauptung, `superseded` eine spätere
   Zeile derselben Lane-Branch — keines davon ist ein Urteil über ein Kriterium. FEHLT der Schlüssel
   ganz, wurde die Zeile vor diesem Schnitt gestempelt; das wird nie zu `null` repariert. Das Feld
   steht auch auf der DECISION-Zeile in `fleet-reports.jsonl` — die Live-Liste ist ein begrenzter
@@ -2903,6 +2915,10 @@ plus deine `reason` wörtlich. Wer auf einen `needs-main`-Report antwortet, schr
 also in `reason` (≤ 500 Zeichen) — eine zweite Nachrichtenklasse gibt es nicht, und die
 Clarification-Tür bleibt für Fragen VOR dem terminalen Bericht. Das Ergebnis steht als
 `decisionDelivery: {state, at, reason}` an der Report-Zeile:
+Der Zustelltext nennt den Entscheider aus `decision.by` (MAIN, Owner, ReportDelegate oder Regel).
+Ein abgelehntes `needs-main` ist eine Antwort auf die Frage und fordert nicht pauschal zum
+Reparieren und erneuten Filen auf. Abgelehnte Urteile werden sofort zugestellt; angenommene
+bleiben bündelbar, jeweils unter den bestehenden Zustell-Gates.
 
 - `delivered` — getippt, tmux hat angenommen.
 - **`pending` — die Pane der Lane war beim Urteil BESCHÄFTIGT (seit b5dc4dc2).** Nichts wurde
@@ -3086,6 +3102,7 @@ Signatur. Drei Klassen entscheidet seither eine Regel, jede mit benannter Ablehn
 
 | Klasse | Entscheider | Regel |
 |---|---|---|
+| Program-`handoff` + Branch nach Report gelandet + Lane beendet | Regel `landed` | kein Urteil über Arbeit; Land schließt nur die Übergabezeile mit `mainAfter` |
 | Report `complete` + Lane gelandet + grüner/unknown Audit | **niemand** | Land ist die Annahme; Report schließt als `accepted-by-land` mit `mainAfter` |
 | Report `complete` + gelandet + rotem Audit, Urteil `flake`/`stale-test`/`unknowable` | **niemand** | jemand HAT hingesehen; die Regel liest das Urteil (seit 2026-09-15) |
 | Report `complete` + gelandet + rotem Audit, danach voller GRÜNER Audit auf einem Nachfahren | **niemand** | der spätere Lauf hat diesen Baum und mehr gemessen (seit 2026-09-15) |
@@ -3099,6 +3116,13 @@ Signatur. Drei Klassen entscheidet seither eine Regel, jede mit benannter Ablehn
 | Attention bei Succession des Fragestellers | niemand | **umhängen auf die Nachfolgerin statt `refused`** (§inbox oben) |
 | Rot-Audit, einzige Check-Signatur in ≤ 14 d schon Owner-`flake` | niemand | Adjudikation `flake` mit `by:{rule:„[Zitat entfernt]“, from:{auditAt, at}}` |
 | Rot-Audit, neue Signatur | MAIN (Program des Lands) / Owner | wie heute |
+
+**`landed`** schließt nur einen unbeurteilten Program-`handoff`, nachdem seine Lane-Occupation
+beendet wurde und `lane-outcomes.jsonl` für denselben Branch einen Land mit `ts ≥ reportedAt`,
+`repo` und `mainAfter` enthält. Ein Audit wird dafür nicht verlangt: der `handoff` behauptet
+keinen Arbeitsabschluss. Das Urteil ist `accepted`, `by:{rule:"landed"}`, `fulfilled:null` und
+trägt den gelesenen `mainAfter`. Audit `fleet_report_rule_decision` und die Ledger-Zeile
+`decision` belegen den Schluss. `needs-main`, `complete` und `failed` werden so nie beurteilt.
 
 **`accepted-by-land`** (`server.ts#acceptByLandReading`, Tick `FLEET_ACCEPT_BY_LAND_MS`, Default
 60 000, `0` schaltet den Timer ab; zusätzlich einmal beim Boot über den Bestand und nach jeder
@@ -3274,8 +3298,8 @@ behält, was der Prune löscht.
 
 - `open` wird geschrieben, wenn `POST /api/self/fleet-report` die Zeile anlegt (Program- wie
   Occupant-/Owner-Inbox-Pfad). `text` ist ungekürzt, `at` ist `reportedAt`.
-- `decision` wird an jedem Stempel geschrieben: Self-Tür, Owner-Tür und die Regel
-  `accepted-by-land`. `by` ist exakt `decision.by` (Occupant-Tripel, `"owner"` oder
+- `decision` wird an jedem Stempel geschrieben: Self-Tür, Owner-Tür und die Regeln
+  `accepted-by-land`, `landed` und `superseded`. `by` ist exakt `decision.by` (Occupant-Tripel, `"owner"` oder
   `{rule}`), `mainAfter` ist nur bei der Regel gesetzt, sonst `null`. Weil die erste Entscheidung
   gewinnt, gibt es je `id` höchstens eine `decision`-Zeile.
 - Eine Zeile, die vor 2026-09-14 gefilet wurde, hat keine `open`-Zeile. Fehlt eine Zeile, heißt das

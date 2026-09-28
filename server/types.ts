@@ -516,12 +516,14 @@ type FleetReportFulfilled = typeof FLEET_REPORT_FULFILLED[number];
 // could no longer take it, and a row that recorded it as the MAIN's would claim a judgement by a
 // session that had already ended.
 //
-// THE THIRD PRINCIPAL is a RULE, and exactly two exist:
+// THE THIRD PRINCIPAL is a RULE:
 //   · `accepted-by-land` (owner 2026-09-13, note docs/messungen/2026-09-13-task-aggregation-
 //     a-e-fable.md §D). A `complete` report whose lane landed and whose audit on that land is green
 //     or unknown is closed by the land itself — the MAIN that landed it already took the work.
 //     `mainAfter` is present EXACTLY on this verdict: it is the evidence the rule read, and a rule
 //     verdict without its evidence would be a judgement nobody can re-derive.
+//   · `landed` closes only a `handoff` whose lane ended after its branch landed. A handoff
+//     makes no claim about completed work; `mainAfter` names the land the rule read.
 //   · `superseded` (owner 2026-09-22, the 47-inbox measurement). A lane that files a NEW report
 //     has spoken again, and its older UNDECIDED owner-inbox rows on the same branch are closed as
 //     moot — the newest row is the live one. `supersededBy` is present EXACTLY on this verdict:
@@ -533,7 +535,7 @@ type FleetReportFulfilled = typeof FLEET_REPORT_FULFILLED[number];
 // deliberately NOT the bare occupant shape — every reader that reads `by.slot` as "the receiving MAIN
 // judged this" (the auto-close, the review park, the outcome join) must be made to meet it as its
 // own case, and a nested key is what the compiler forces them to.
-type FleetReportRuleName = "accepted-by-land" | "superseded";
+type FleetReportRuleName = "accepted-by-land" | "landed" | "superseded";
 type FleetReportDecider = { slot: number; openedAt: number; sessionId: string | null };
 interface FleetReportDecision {
   disposition: FleetReportDisposition;
@@ -1164,7 +1166,7 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     // that replaced this row (supersededBy).
     if (rule) {
       const by = d.by as { rule?: unknown };
-      if (by.rule === "accepted-by-land") {
+      if (by.rule === "accepted-by-land" || by.rule === "landed") {
         if (Object.keys(by).length !== 1 || d.disposition !== "accepted"
           || typeof d.mainAfter !== "string" || !/^[0-9a-f]{7,64}$/.test(d.mainAfter)
           || d.supersededBy !== undefined) return null;

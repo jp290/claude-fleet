@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { AUTOS_TICK_MS, BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen, until, UntilTimeout } from "./harness";
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
-import { DONE_LOOKING_RULES, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
+import { DONE_LOOKING_RULES, fleetReportDecisionMessage, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
 import { CONTEXT_PACKS } from "../context-packs";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
@@ -4797,6 +4797,113 @@ export async function run(ctx: Ctx): Promise<void> {
         && r.detail?.includes(orphanIds[1] ?? "missing")).length === 1,
     JSON.stringify({ ledger: orphanLedger.filter((r) => r.id === orphanIds[1]),
       audit: orphanAudit.filter((r) => r.detail?.includes(orphanIds[1] ?? "missing")) }));
+
+  const b4Names = ["handoff", "needs", "complete", "failed", "live-handoff", "no-land"] as const;
+  const b4Ids = Object.fromEntries(b4Names.map((name, i) => [name, (0xb400 + i).toString(16).padStart(24, "0")])) as Record<typeof b4Names[number], string>;
+  const b4At = Date.now() - 60_000;
+  const b4Sha = "a".repeat(40);
+  const b4Branch = (name: string) => `fleet/b4-${name}`;
+  const b4DeadSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 1;
+  await stopSrv();
+  const b4State = readState();
+  const b4DeadWorker = { slot: b4DeadSlot, openedAt: 1, sessionId: null,
+    cwd: "/tmp/b4-ended-lane", branch: "" };
+  b4State.fleetReports = [...(b4State.fleetReports ?? []), ...b4Names.map((name) => ({
+    id: b4Ids[name], reportedAt: b4At,
+    status: name === "live-handoff" || name === "no-land" ? "handoff" : name === "needs" ? "needs-main" : name,
+    text: `B4 ${name}: only this row's status states what the lane claimed`,
+    worker: name === "live-handoff"
+      ? { slot: dlgLane.slot, openedAt: orphanLaneRow?.openedAt, sessionId: orphanLaneRow?.sessionId ?? null,
+        cwd: orphanLaneRow?.cwd, branch: b4Branch(name) }
+      : { ...b4DeadWorker, branch: b4Branch(name) },
+    provenance: { taskId: null, originId: null, programId: orphanProgram.id, instance: null },
+    receiver: null, basis: "program", eventId: null,
+  }))];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(b4State, null, 2), { mode: 0o600 });
+  const b4OutcomeFile = `${ROOT}/lane-outcomes.jsonl`;
+  for (const name of b4Names.filter((name) => name !== "no-land"))
+    appendFileSync(b4OutcomeFile, `${JSON.stringify({ ts: b4At + 30_000, branch: b4Branch(name),
+      disposition: "landed", repo: REPO, mainAfter: b4Sha, programId: orphanProgram.id })}\n`);
+  await restartSrv();
+  type B4Report = { id: string; decision?: { disposition?: string; by?: { rule?: string; slot?: number };
+    mainAfter?: string; fulfilled?: string | null } | null };
+  const b4Reports = async (): Promise<B4Report[]> => ((await (await get("/api/fleet-report")).json()) as
+    { reports?: B4Report[] }).reports ?? [];
+  let b4Rows = await b4Reports();
+  for (let i = 0; i < 50 && !b4Rows.find((r) => r.id === b4Ids.handoff)?.decision; i++) {
+    await Bun.sleep(100);
+    b4Rows = await b4Reports();
+  }
+  const b4Row = (name: typeof b4Names[number]) => b4Rows.find((r) => r.id === b4Ids[name]);
+  const b4Ledger = readFileSync(`${ROOT}/fleet-reports.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { kind?: string; id?: string; by?: { rule?: string }; mainAfter?: string });
+  const b4Audit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { event?: string; detail?: string });
+  check("B4 landed handoff: only the ended landed handoff closes by rule, with audit and decision ledger; no work claim is inferred",
+    b4Names.every((name) => b4Row(name) !== undefined)
+      && b4Row("handoff")?.decision?.disposition === "accepted"
+      && b4Row("handoff")?.decision?.by?.rule === "landed"
+      && b4Row("handoff")?.decision?.mainAfter === b4Sha
+      && b4Row("handoff")?.decision?.fulfilled === null
+      && ["needs", "complete", "failed", "live-handoff", "no-land"].every((name) => !b4Row(name as typeof b4Names[number])?.decision)
+      && b4Ledger.filter((r) => r.id === b4Ids.handoff && r.kind === "decision"
+        && r.by?.rule === "landed" && r.mainAfter === b4Sha).length === 1
+      && b4Audit.filter((r) => r.event === "fleet_report_rule_decision"
+        && r.detail?.includes(`${b4Ids.handoff} landed`)).length === 1,
+    JSON.stringify({ rows: b4Rows.filter((r) => Object.values(b4Ids).includes(r.id)),
+      ledger: b4Ledger.filter((r) => r.id === b4Ids.handoff),
+      audit: b4Audit.filter((r) => r.detail?.includes(b4Ids.handoff)) }).slice(0, 900));
+  const b4Self = async (path: string, method = "GET", body?: unknown) => fetch(`${BASE}${path}`, {
+    method, headers: { "x-fleet-self-token": dlgOutsiderTok, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const b4Position = (await (await b4Self("/api/self")).json()) as { position?: { waitingOnMe?: { kind: string; id: string }[] } };
+  const b4Open = (await (await b4Self("/api/self/fleet-report?open=1")).json()) as { reports?: B4Report[] };
+  const b4BatchBad = await b4Self("/api/self/fleet-report/batch", "POST", { decisions: [
+    { id: b4Ids.needs, disposition: "accepted", reason: "ERFUELLT: ja — read" },
+    { id: b4Ids.failed, disposition: "accepted", reason: "invalid batch member" },
+  ] });
+  b4Rows = await b4Reports();
+  check("B4 MAIN view: landed needs-main and complete have their own waiting class, open=1 excludes the rule decision, and an invalid batch changes nothing",
+    [b4Ids.needs, b4Ids.complete].every((id) => b4Position.position?.waitingOnMe?.some((w) => w.id === id && w.kind === "fleet-report-landed-unjudged") === true)
+      && b4Open.reports?.some((r) => r.id === b4Ids.needs) === true
+      && b4Open.reports?.some((r) => r.id === b4Ids.complete) === true
+      && !b4Open.reports?.some((r) => r.id === b4Ids.handoff)
+      && b4BatchBad.status === 409 && !b4Rows.find((r) => r.id === b4Ids.needs)?.decision,
+    JSON.stringify({ waiting: b4Position.position?.waitingOnMe?.filter((w) => Object.values(b4Ids).includes(w.id)),
+      open: b4Open.reports?.filter((r) => Object.values(b4Ids).includes(r.id)).map((r) => r.id), bad: b4BatchBad.status }));
+  const b4Batch = await b4Self("/api/self/fleet-report/batch", "POST", { decisions: [
+    { id: b4Ids.needs, disposition: "accepted", reason: "ERFUELLT: ja — MAIN answered the question" },
+    { id: b4Ids.complete, disposition: "rejected", reason: "ERFUELLT: nein — MAIN read the work" },
+  ] });
+  b4Rows = await b4Reports();
+  check("B4 batch: one MAIN call gives each landed row its own ordinary occupant verdict, while failed stays unjudged",
+    b4Batch.ok && b4Rows.find((r) => r.id === b4Ids.needs)?.decision?.by?.slot === dlgOutsiderSlot
+      && b4Rows.find((r) => r.id === b4Ids.needs)?.decision?.disposition === "accepted"
+      && b4Rows.find((r) => r.id === b4Ids.complete)?.decision?.by?.slot === dlgOutsiderSlot
+      && b4Rows.find((r) => r.id === b4Ids.complete)?.decision?.disposition === "rejected"
+      && !b4Rows.find((r) => r.id === b4Ids.failed)?.decision,
+    JSON.stringify({ status: b4Batch.status, rows: b4Rows.filter((r) => Object.values(b4Ids).includes(r.id)) }).slice(0, 800));
+  const b4NeedsText = fleetReportDecisionMessage(b4Ids.needs, "rejected", null,
+    { slot: dlgOutsiderSlot }, "needs-main");
+  check("B4 decision text: MAIN, Owner, Delegate and rule are attributed, and needs-main rejection carries no repair order",
+    b4NeedsText.includes(`MAIN in slot ${dlgOutsiderSlot}`) && !b4NeedsText.includes("Repair and file again")
+      && fleetReportDecisionMessage(b4Ids.needs, "accepted", null, "owner").includes("Owner")
+      && fleetReportDecisionMessage(b4Ids.needs, "accepted", null, { delegate: { slot: 4 } }).includes("ReportDelegate in slot 4")
+      && fleetReportDecisionMessage(b4Ids.handoff, "accepted", null, { rule: "landed" }).includes("rule landed"),
+    b4NeedsText);
+  await restartSrv();
+  const b4Reloaded = await b4Reports();
+  check("B4 landed verdict survives hydration after restart with its exact rule and mainAfter",
+    b4Reloaded.find((r) => r.id === b4Ids.handoff)?.decision?.by?.rule === "landed"
+      && b4Reloaded.find((r) => r.id === b4Ids.handoff)?.decision?.mainAfter === b4Sha,
+    JSON.stringify(b4Reloaded.find((r) => r.id === b4Ids.handoff) ?? null).slice(0, 400));
+  await stopSrv();
+  const b4Clean = readState();
+  b4Clean.fleetReports = (b4Clean.fleetReports ?? []).filter((r) => !Object.values(b4Ids).includes(r.id ?? ""));
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(b4Clean, null, 2), { mode: 0o600 });
+  writeFileSync(b4OutcomeFile, readFileSync(b4OutcomeFile, "utf8").split("\n")
+    .filter((line) => !line.includes('"branch":"fleet/b4-')).join("\n"), { mode: 0o600 });
+  await restartSrv();
   const orphanCompleteResult = await programPost(orphanProgram.id, "complete");
   const orphanWithoutOrchestrator = await (await get("/api/sessions")).json() as { reportsAwaitingOwner?: number };
   check("Program orphan without Orchestrator: the undecided rows remain in reportsAwaitingOwner",
@@ -10762,6 +10869,11 @@ export async function run(ctx: Ctx): Promise<void> {
     };
     const rejectPaste = slFirstReport.id === null ? "" : await waitVerdictPaste(slFirstReport.id);
     const rejectRow = slFirstReport.id === null ? undefined : await reportRow(slFirstReport.id);
+    const decisionSendClass = (id: string | null): string | null => id === null ? null
+      : readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as { event?: string; path?: string; reportId?: string; deliveryClass?: string })
+        .find((row) => row.event === "send" && row.path === "report-decision" && row.reportId === id)
+        ?.deliveryClass ?? null;
     // Mutation: delete the `await deliverFleetReportDecision(report);` line from decideFleetReport
     // and this check is red — the verdict is recorded and nothing reaches the lane, which is exactly
     // the measured state before this cut.
@@ -10774,6 +10886,9 @@ export async function run(ctx: Ctx): Promise<void> {
         && rejectRow?.decisionDelivery?.reason === null
         && typeof rejectRow?.decisionDelivery?.at === "number",
       JSON.stringify({ paste: rejectPaste.slice(0, 200), delivery: rejectRow?.decisionDelivery ?? null }));
+    check("fleet-report delivery: a rejected verdict goes out as sofort and names the judging MAIN",
+      decisionSendClass(slFirstReport.id) === "sofort" && rejectPaste.includes("receiving MAIN in slot"),
+      JSON.stringify({ klass: decisionSendClass(slFirstReport.id), paste: rejectPaste.slice(0, 220) }));
     // EXACTLY ONE CARRY PER DECISION. The second call is refused by the already-decided branch, and
     // the property this asserts is that the carry sits BELOW it: nothing is pasted a second time and
     // the stored delivery record is not re-stamped.
@@ -10948,6 +11063,9 @@ export async function run(ctx: Ctx): Promise<void> {
       slSecondReport.ok && slSecondReport.id !== null && slSecondReport.id !== slFirstReport.id
         && slAcceptRes?.ok === true,
       JSON.stringify({ filed: slSecondReport, decided: slAcceptRes }));
+    check("fleet-report delivery: an accepted verdict stays buendelbar and names the judging MAIN",
+      decisionSendClass(slSecondReport.id) === "buendelbar" && idlePaste.includes("receiving MAIN in slot"),
+      JSON.stringify({ klass: decisionSendClass(slSecondReport.id), paste: idlePaste.slice(0, 220) }));
 
     // …AND THE LANE MUST BE DONE-LOOKING AGAIN BEFORE THE LAND, which is a REAL coupling this
     // fixture did not have before 2026-09-12 and not a papered-over flake: the accept above is now

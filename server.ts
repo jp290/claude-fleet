@@ -8668,7 +8668,7 @@ type SendPath =
   | "rate-limit-resume";
 type DeliveryClass = "sofort" | "buendelbar";
 function deliveryClass(path: SendPath): DeliveryClass {
-  return path === "bundle" || path === "report-decision" || path === "inbox-nudge" || path === "backlog-nudge"
+  return path === "bundle" || path === "inbox-nudge" || path === "backlog-nudge"
     || path === "migrate-nudge" || path === "auto" ? "buendelbar" : "sofort";
 }
 function deliveryCacheState(s: Slot, now = Date.now()): DeliveryCacheFact & { cache: "warm" | "kalt"; edgeAt: number | null } {
@@ -12516,7 +12516,8 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
       `${report.id} ${decision.disposition} gate=${deliverable.gate}`);
     return;
   }
-  const text = fleetReportDecisionMessage(report.id, decision.disposition, decision.reason);
+  const text = fleetReportDecisionMessage(report.id, decision.disposition, decision.reason,
+    decision.by, report.status);
   stamp("pending", "held for the delivery window; no paste attempted");
   await saveStateNow();
   queuedReportDecisions.add(report.id);
@@ -12525,6 +12526,8 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
     try {
       await sendText(worker, text, true, { path: "report-decision",
         bundleGate: { harness: false, idleMs: REPORT_DECISION_IDLE_MS },
+        deliveryClass: decision.disposition === "rejected" ? "sofort" : "buendelbar",
+        reportId: report.id,
         beforeSend: async (current) => {
           if (report.decision !== decision) throw new DeliveryCancelled(`report ${report.id} decision changed`);
           recipient = current;
@@ -12657,6 +12660,59 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   // route writes, and the carry's own outcome, which no row of this response shows.
   await saveStateNow();
   return json({ ok: true, report });
+}
+
+async function decideFleetReportsBatch(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  if (!body || Object.keys(body).some((key) => key !== "decisions")
+    || !Array.isArray(body.decisions) || body.decisions.length < 1 || body.decisions.length > 100)
+    return json({ error: "decisions must be an array of 1 to 100 verdicts" }, 400);
+  const entries: { id: string; disposition: FleetReportDisposition; reason: string | null }[] = [];
+  const seen = new Set<string>();
+  for (const value of body.decisions) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return json({ error: "each decision must be an object" }, 400);
+    const row = value as Record<string, unknown>;
+    if (Object.keys(row).some((key) => !["id", "disposition", "reason"].includes(key))
+      || typeof row.id !== "string" || !/^[0-9a-f]{24}$/.test(row.id)
+      || (row.disposition !== "accepted" && row.disposition !== "rejected")
+      || (row.reason !== undefined && typeof row.reason !== "string"))
+      return json({ error: "each decision needs id, accepted|rejected disposition and optional reason" }, 400);
+    if (seen.has(row.id)) return json({ error: `duplicate report ${row.id}` }, 400);
+    seen.add(row.id);
+    const reason = typeof row.reason === "string" ? row.reason.trim() || null : null;
+    if (typeof row.reason === "string" && row.reason.length > MAX_FLEET_REPORT_DECISION_REASON)
+      return json({ error: `reason must be at most ${MAX_FLEET_REPORT_DECISION_REASON} chars` }, 400);
+    const fulfilled = fulfilledFromReason(reason);
+    if (!fulfilled.ok) return json({ error: fulfilled.error }, 400);
+    entries.push({ id: row.id, disposition: row.disposition, reason });
+  }
+  const { rows: outcomes } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+  for (const entry of entries) {
+    const report = fleetReports.find((r) => r.id === entry.id);
+    if (!report) return json({ error: `unknown fleet report ${entry.id}` }, 404);
+    if (report.basis !== "program" || report.provenance.programId !== bound.program.id)
+      return json({ error: `fleet report ${entry.id} belongs to another Program` }, 409);
+    if (report.decision) return json({ error: `fleet report ${entry.id} was already ${report.decision.disposition}` }, 409);
+    const worker = slotFrom(report.worker.slot);
+    if ((report.status !== "needs-main" && report.status !== "complete")
+      || (worker?.cwd && worker.openedAt === report.worker.openedAt)
+      || !outcomes.some((o) => o.disposition === "landed" && o.branch === report.worker.branch
+        && typeof o.ts === "number" && o.ts >= report.reportedAt
+        && typeof o.repo === "string" && typeof o.mainAfter === "string"))
+      return json({ error: `fleet report ${entry.id} is not a landed, ended needs-main or complete row` }, 409);
+  }
+  const reports: FleetReport[] = [];
+  for (const entry of entries) {
+    const judge = decideFleetReport;
+    const response = await judge(s, entry.id, entry.disposition, { reason: entry.reason ?? "" });
+    if (!response.ok) return json({ error: `batch stopped at ${entry.id}`, decided: reports.map((r) => r.id),
+      refusal: await response.json() }, response.status);
+    const result = await response.json() as { report: FleetReport };
+    reports.push(result.report);
+  }
+  return json({ ok: true, reports });
 }
 
 // THE OWNER DOOR FOR A REPORT NO SESSION CAN JUDGE ANY MORE, and it exists because the door above
@@ -12887,15 +12943,22 @@ async function descendantGreenAudit(repo: string, mainAfter: string, after: numb
   return null;
 }
 type AcceptByLandReading =
-  | { accept: true; mainAfter: string; audit: "green" | "unknown"; auditAt: number; via?: string }
+  | { accept: true; rule: "landed"; mainAfter: string }
+  | { accept: true; rule: "accepted-by-land"; mainAfter: string; audit: "green" | "unknown"; auditAt: number; via?: string }
   | { accept: false; why: string };
 async function acceptByLandReading(report: FleetReport, outcomeRows: Record<string, unknown>[],
   auditRows: PostLandAuditRow[], judged: Map<number, AuditAdjudication>): Promise<AcceptByLandReading> {
   if (report.decision) return { accept: false, why: `already ${report.decision.disposition}` };
-  if (report.status !== "complete")
-    return { accept: false, why: `status ${report.status} — only a complete report is closed by its land` };
-  const task = report.provenance.taskId ? tasks.find((t) => t.id === report.provenance.taskId) : undefined;
-  if (task?.status === "sent") return { accept: false, why: `task ${task.id} is still sent — the lane is running` };
+  if (report.status !== "complete" && !(report.basis === "program" && report.status === "handoff"))
+    return { accept: false, why: `status ${report.status} has no land rule` };
+  if (report.status === "handoff") {
+    const worker = slotFrom(report.worker.slot);
+    if (worker?.cwd && worker.openedAt === report.worker.openedAt)
+      return { accept: false, why: `worker slot ${report.worker.slot} is still occupied by this lane` };
+  } else {
+    const task = report.provenance.taskId ? tasks.find((t) => t.id === report.provenance.taskId) : undefined;
+    if (task?.status === "sent") return { accept: false, why: `task ${task.id} is still sent — the lane is running` };
+  }
   let land: Record<string, unknown> | null = null;
   for (const o of outcomeRows) {
     if (o.disposition !== "landed" || o.branch !== report.worker.branch
@@ -12906,6 +12969,8 @@ async function acceptByLandReading(report: FleetReport, outcomeRows: Record<stri
   if (typeof land.mainAfter !== "string" || !land.mainAfter || typeof land.repo !== "string" || !land.repo)
     return { accept: false, why: "the landed outcome carries no repo/mainAfter to join an audit to" };
   const mainAfter = land.mainAfter;
+  if (report.status === "handoff") return { accept: true, rule: "landed", mainAfter };
+  if (report.status !== "complete") return { accept: false, why: `status ${report.status}` };
   const repo = repoCanon(land.repo);
   const covering = auditRows.filter((row) => auditRowMatches(row, repo, mainAfter));
   const reds = covering.filter((row) => row.result === "red");
@@ -12937,13 +13002,14 @@ async function acceptByLandReading(report: FleetReport, outcomeRows: Record<stri
     : later ? `the land's tip was re-audited GREEN at ${later.at}`
       : cleared ? `the covering RED at ${cleared.at} was adjudicated ${judged.get(cleared.at)?.verdict}`
         : undefined;
-  return { accept: true, mainAfter, audit: newest.result === "green" ? "green" : "unknown", auditAt: newest.at,
+  return { accept: true, rule: "accepted-by-land", mainAfter, audit: newest.result === "green" ? "green" : "unknown", auditAt: newest.at,
     ...(via ? { via } : {}) };
 }
 
 let acceptByLandBusy = false;
 async function tickAcceptByLand(origin: "boot" | "tick" | "audit"): Promise<number> {
-  if (acceptByLandBusy || !fleetReports.some((r) => !r.decision && r.status === "complete")) return 0;
+  if (acceptByLandBusy || !fleetReports.some((r) => !r.decision && (r.status === "complete"
+    || (r.basis === "program" && r.status === "handoff")))) return 0;
   acceptByLandBusy = true;
   try {
     // the adjudication rail is read with the other two ledgers and for the same reason: a red whose
@@ -12961,17 +13027,20 @@ async function tickAcceptByLand(origin: "boot" | "tick" | "audit"): Promise<numb
       // say about a criterion: it read a land and a post-land audit, neither of which is anybody's
       // judgement of whether the row's Done was met. An absent key would read as "stamped before
       // the field existed", which of this verdict is false.
-      report.decision = { disposition: "accepted", at: Date.now(), by: { rule: "accepted-by-land" },
-        reason: `accepted-by-land: landed as ${reading.mainAfter.slice(0, 12)}, post-land audit ${reading.audit}`
-          + (reading.via ? ` — ${reading.via}` : ""),
+      report.decision = { disposition: "accepted", at: Date.now(), by: { rule: reading.rule },
+        reason: reading.rule === "landed"
+          ? `landed: handoff on ${report.worker.branch} was followed by land ${reading.mainAfter.slice(0, 12)}; no work claim was judged`
+          : `accepted-by-land: landed as ${reading.mainAfter.slice(0, 12)}, post-land audit ${reading.audit}`
+            + (reading.via ? ` — ${reading.via}` : ""),
         fulfilled: null, mainAfter: reading.mainAfter };
       const ledgered = ledgerReportDecision(report, report.decision);
       // the transport half exactly as both doors settle it: a decided report must not be re-pasted
       const event = report.eventId === null ? undefined : fleetEvents.find((e) => e.id === report.eventId);
       if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
       audit("fleet_report_rule_decision", report.worker.slot,
-        `${report.id} accepted-by-land mainAfter=${reading.mainAfter.slice(0, 12)} audit=${reading.audit}@${reading.auditAt} via=${origin}`
-        + (reading.via ? ` on=${reading.via}` : ""));
+        `${report.id} ${reading.rule} mainAfter=${reading.mainAfter.slice(0, 12)}`
+        + (reading.rule === "landed" ? ` via=${origin}`
+          : ` audit=${reading.audit}@${reading.auditAt} via=${origin}` + (reading.via ? ` on=${reading.via}` : "")));
       await ledgered;
       await deliverFleetReportDecision(report);
       closed++;
@@ -16010,7 +16079,7 @@ function positionRole(s: Slot, bound = boundProgramForMain(s)): "supervisor" | "
     : s.worktree ? "lane"
     : isOrchestratorLabel(s.label) ? "orchestrator" : "generic";
 }
-function selfPosition(s: Slot) {
+function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
   const bound = boundProgramForMain(s);
   const role = positionRole(s, bound);
   let receiver: { role: string; slot: number; openedAt: number } | null = null;
@@ -16042,7 +16111,16 @@ function selfPosition(s: Slot) {
       && !(r.worker.slot === s.id && r.worker.openedAt === s.openedAt)
       && ((r.receiver?.slot === s.id && r.receiver.openedAt === s.openedAt)
         || (r.basis === "program" && bound.ok && r.provenance.programId === bound.program.id)))
-      .map((r) => ({ kind: "fleet-report", id: r.id, slot: r.worker.slot })),
+      .map((r) => {
+        const worker = slotFrom(r.worker.slot);
+        const ended = !worker?.cwd || worker.openedAt !== r.worker.openedAt;
+        const landed = r.basis === "program" && bound.ok && ended
+          && (r.status === "needs-main" || r.status === "complete")
+          && outcomes.some((o) => o.disposition === "landed" && o.branch === r.worker.branch
+            && typeof o.ts === "number" && o.ts >= r.reportedAt
+            && typeof o.repo === "string" && typeof o.mainAfter === "string");
+        return { kind: landed ? "fleet-report-landed-unjudged" : "fleet-report", id: r.id, slot: r.worker.slot };
+      }),
     ...successionDebts.filter((d) => d.slot === s.id && d.successorOpenedAt === s.openedAt)
       .map((d) => ({ kind: "succession-debt", id: d.id, slot: s.id })),
   ];
@@ -39656,9 +39734,11 @@ Bun.serve<WSData>({
       const p = resolvePrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      const outcomes = boundProgramForMain(s).ok
+        ? (await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE)).rows : [];
       return json({
         slot: s.id,
-        position: selfPosition(s),
+        position: selfPosition(s, outcomes),
         label: s.label,
         cwd: s.cwd,
         mission: s.mission,
@@ -40005,10 +40085,19 @@ Bun.serve<WSData>({
       const p = resolvePrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
-      if (req.method === "GET") return json({ reports: fleetReportsFor(s) });
+      if (req.method === "GET") return json({ reports: fleetReportsFor(s).filter((r) => url.searchParams.get("open") !== "1" || !r.decision) });
       if (!s.worktree || s.label === STEWARD_LABEL)
         return json({ error: "not a worker lane — MAIN and the steward cannot file a fleet report" }, 409);
       return openFleetReport(s, await readJson(req));
+    }
+
+    if (url.pathname === "/api/self/fleet-report/batch" && req.method === "POST") {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not judge a fleet report" }, 409);
+      return decideFleetReportsBatch(s, await readJson(req));
     }
 
     // a lane's Claude Code hook reporting a dialog only a human could answer (openHarnessBlock). Lane-

@@ -644,14 +644,21 @@ export function fleetReportDecisionMessage(
   reportId: string,
   disposition: "accepted" | "rejected",
   reason: string | null,
+  by?: "owner" | { slot: number } | { delegate: { slot: number } } | { rule: string },
+  status?: "complete" | "needs-main" | "failed" | "handoff",
 ): string {
   const head = `[fleet] YOUR REPORT WAS ${disposition.toUpperCase()} [fleet-report ${reportId}]`;
+  const actor = by === "owner" ? "Owner"
+    : by && "delegate" in by ? `ReportDelegate in slot ${by.delegate.slot}`
+      : by && "rule" in by ? `rule ${by.rule}`
+        : by && "slot" in by ? `receiving MAIN in slot ${by.slot}` : "report decider";
   if (disposition === "accepted")
-    return `${head}${reason ? `\n${reason}` : ""}\nThe receiving MAIN took the work. Nothing is `
+    return `${head}${reason ? `\n${reason}` : ""}\nThe ${actor} recorded this decision. Nothing is `
       + `landed or deployed by this message.`;
-  return `${head}\n${reason ?? "The MAIN gave no reason."}\nThis is the verdict of the MAIN that `
-    + `received your report, not a server predicate. Repair and file again with `
-    + `POST /api/self/fleet-report; a new report is a new row and is judged on its own.`;
+  const next = status === "needs-main"
+    ? "This answers your request to the MAIN; read the reason before taking the next step."
+    : "Repair and file again with POST /api/self/fleet-report; a new report is judged on its own.";
+  return `${head}\n${reason ?? `The ${actor} gave no reason.`}\nThe ${actor} recorded this decision. ${next}`;
 }
 
 // The owner-facing twin of the message above, and it names the request id for the same reason: the

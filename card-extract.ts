@@ -261,6 +261,20 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   // named refusing gap; the parser itself stays a non-guessing reader.
   for (const line of list(raw.strayHeaderLines))
     gaps.push(`format: header line "${line.slice(0, 80)}" stands after the header block — its key is not filed (a field above it ran over more than one line)`);
+  // A LIST FIELD THAT ARRIVED AS SOMETHING ELSE. `list` reads a non-array as [] — right for a field
+  // that is absent, silent loss for one that was given: `verboten: "kein Deploy"` stored VERBOTEN
+  // empty and a lane started without its constraints (measured 2026-09-28, lane 0fcf9226). Absent
+  // (undefined or null) stays the empty list; any other non-array value is a named, refusing gap.
+  const rawSurfaceIn = raw.surface;
+  const surfaceGiven = rawSurfaceIn !== undefined && rawSurfaceIn !== null;
+  if (surfaceGiven && (typeof rawSurfaceIn !== "object" || Array.isArray(rawSurfaceIn)))
+    gaps.push(`surface.files: surface arrived as ${Array.isArray(rawSurfaceIn) ? "an array" : `a ${typeof rawSurfaceIn}`}, not an object {files, symbols, creates} — nothing in it was read`);
+  const surfaceIn = surfaceGiven && typeof rawSurfaceIn === "object" && !Array.isArray(rawSurfaceIn)
+    ? rawSurfaceIn as Record<string, unknown> : {};
+  for (const [name, value] of [["verboten", raw.verboten], ["after", raw.after], ["surface.files", surfaceIn.files],
+    ["surface.symbols", surfaceIn.symbols], ["surface.creates", surfaceIn.creates]] as const)
+    if (value !== undefined && value !== null && !Array.isArray(value))
+      gaps.push(`${name}: arrived as a ${typeof value}, not a list — a list field is an array of strings, and nothing in it was read`);
 
   const rawRole = (raw.rolle && typeof raw.rolle === "object" ? raw.rolle : {}) as Record<string, unknown>;
   const roleText = (key: "harness" | "model" | "effort"): string => typeof rawRole[key] === "string" ? (rawRole[key] as string).trim() : "";

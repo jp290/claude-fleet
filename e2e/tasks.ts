@@ -9434,6 +9434,30 @@ export async function run(ctx: Ctx): Promise<void> {
       noGraph.body.surface.symbols.join(" ") === "server.ts#taskView"
       && noGraph.body.surface.files.join(" ") === "server.ts" && noGraph.body.surface.ranges === null,
       JSON.stringify(noGraph.body.surface));
+    // (j2-list) A LIST FIELD GIVEN AS A NON-ARRAY IS A NAMED GAP, NEVER A SILENT []. Measured
+    // 2026-09-28: `verboten: "..."` filed at POST /api/tasks stored VERBOTEN empty, and lane 0fcf9226
+    // started without its constraints. Each of the five list fields, as a string, must refuse the
+    // card with a gap that names the field; absent (and null) stays the empty list, no gap.
+    // Named mutation probe: deleting the list-shape loop in validateCard turns this check red —
+    // every string then reads as [] and `valid` stays true for verboten.
+    const listBase = { ziel: "etwas aendern", done: "der Check ist gruen", verify: "bun e2e/pins.ts",
+      rolle: { harness: "claude", model: "claude-opus-5", effort: "high" } };
+    const listShapes = ([
+      ["verboten", { verboten: "kein Deploy" }],
+      ["after", { after: "aaaa1111" }],
+      ["surface.files", { surface: { files: "server.ts", symbols: [] } }],
+      ["surface.symbols", { surface: { files: [], symbols: "server.ts#taskView" } }],
+      ["surface.creates", { surface: { files: [], symbols: [], creates: "neu.ts" } }],
+      ["surface.files", { surface: "server.ts" }],
+    ] as const).map(([name, over]) => {
+      const r = validateCard({ ...listBase, ...over }, cardCtx);
+      return { name, valid: r.valid, named: r.gaps.some((g) => g.startsWith(`${name}: `) && /not (a list|an object)/.test(g)), gaps: r.gaps };
+    });
+    const listAbsent = validateCard({ ...listBase, verboten: null, after: undefined, surface: { files: null } }, cardCtx);
+    check("(j2-list) a list field given as a non-array refuses the card with a gap naming the field; absent or null stays []",
+      listShapes.every((r) => !r.valid && r.named)
+      && listAbsent.valid && listAbsent.gaps.length === 0 && listAbsent.body.verboten.length === 0,
+      JSON.stringify({ shapes: listShapes, absent: listAbsent.gaps }));
     // THE SYMBOL HALF WITH AND WITHOUT AN INDEX (queue row 56522568). The author path appends the
     // author's own FLAECHE line to the source (server.ts#authorCardFrom), so the quote rule passes
     // by construction and the index is the ONLY symbol check left. The invented name is the one
@@ -11810,6 +11834,20 @@ export async function run(ctx: Ctx): Promise<void> {
         && longDelivered.split("\n").filter((part) => part === line).length === 1)
       && !longDelivered.includes("ROLLE: alt") && longDelivered.includes("Auftragstext"),
       JSON.stringify({ fullFields: longLines.map((line) => longDelivered.split("\n").includes(line)) }));
+    // (j2-verboten-prose) AN EMPTY RENDERED VERBOTEN KEEPS THE PROSE'S OWN VERBOTEN LINE. The card
+    // head says "VERBOTEN: —"; the row text's constraint is then the only place it still stands, and
+    // stripping it with the other header lines is how lane 0fcf9226 started without its constraints.
+    // Named mutation probe: dropping `preserve.add("VERBOTEN")` from withCardHead turns this red.
+    const emptyVerbotenCard = { ...cardBody, verboten: [] };
+    const verbotenProse = "[VERBOTEN-PROBE]\nZIEL: etwas\nVERBOTEN: kein Land, kein Deploy\n  und nie fleet.json\nROLLE: alt\n\nAuftragstext";
+    const verbotenDelivered = withCardHead(emptyVerbotenCard, verbotenProse);
+    const verbotenKept = withCardHead(cardBody, verbotenProse);
+    check("(j2-verboten-prose) a card with an empty VERBOTEN keeps the prose's VERBOTEN line and its continuation; a card with one still strips it",
+      verbotenDelivered.split("\n").includes("VERBOTEN: kein Land, kein Deploy")
+      && verbotenDelivered.split("\n").includes("  und nie fleet.json")
+      && !verbotenDelivered.includes("ROLLE: alt") && verbotenDelivered.includes("Auftragstext")
+      && !verbotenKept.includes("kein Land, kein Deploy") && verbotenKept.includes("VERBOTEN: kein Auto-Dispatch"),
+      JSON.stringify({ empty: verbotenDelivered.slice(-300), carried: verbotenKept.slice(-200) }));
     const longWave = renderWaveBrief({ rows: [
       { id: "long1111", text: "Auftragstext", brief: null, criterion: null, card: longCard },
       { id: "short2222", text: "Zweiter Auftrag", brief: null, criterion: null, card: null },
@@ -12601,6 +12639,17 @@ export async function run(ctx: Ctx): Promise<void> {
         && rcUnnamedRes.status === 400 && rcUnnamedError.includes(`after: "${rcPred}" is not named in the request`)
         && rcMainBadRes.status === 400 && rcMainBadError.includes('after: "badbadbe" is not a queue row'),
       `owner=${rcBadRes.status}:${rcBadError} unnamed=${rcUnnamedRes.status}:${rcUnnamedError} main=${rcMainBadRes.status}:${rcMainBadError}`);
+    // (rc4-list) A STRING WHERE A LIST BELONGS IS A 400 NAMING THE FIELD at the author door, and
+    // nothing is filed — before the fix it filed with VERBOTEN silently empty (lane 0fcf9226).
+    const rcListRes = await post("/api/tasks", { text: "acp23 rc verboten string", queue: false,
+      programId: mMainProgram, repo: REPO, card: { ...rcCard, verboten: "kein Deploy" } });
+    const rcListError = ((await rcListRes.json()) as { error?: string }).error ?? "";
+    const rcListFiled = ((await (await get("/api/tasks")).json()) as { tasks: { text?: string }[] }).tasks
+      .some((t) => t.text === "acp23 rc verboten string");
+    check("(rc4-list) an author card whose verboten is a string is refused 400 naming the field, and no row is filed",
+      rcListRes.status === 400 && rcListError.includes("card rejected, nothing filed")
+        && rcListError.includes("verboten: arrived as a string, not a list") && !rcListFiled,
+      `${rcListRes.status}:${rcListError} filed=${rcListFiled}`);
     // (rc2b) THE MAIN DOOR TAKES THE SAME CARD WITH after — and the RELEASE proves the stored id:
     // releaseCardRefusal would 409 naming rcPred if the door had not written what the card carries.
     const rcMainCarry = await rcFile({ text: `acp23 rc main-filed with after, NACH ${rcPred}`,

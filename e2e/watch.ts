@@ -7324,15 +7324,17 @@ export async function run(): Promise<void> {
     // migrate-nudge header ended "Grenze: deine Lane", the bound and the unbound MAIN's included.
     // The pane is the only place the typed header exists — the prompt journal records the body.
     // BREAKS IF: deliveryMeaning stops reading the receiver's role, or the lane loses its own sentence.
+    // Compared with all whitespace removed: the stand-in shell redraws a long line as HARD rows, which
+    // -J cannot join, and the capture trims a space at a row end (measured locally 2026-09-28).
     const migrateSentence = async (slot: number): Promise<string | null> => {
-      const pane = (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `s${slot}`)).out;
-      return new RegExp(`path=migrate-nudge · Slot ${slot} · ([^\\]]*)\\]`).exec(pane)?.[1] ?? null;
+      const pane = (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `s${slot}`)).out.replace(/\s+/g, "");
+      return new RegExp(`path=migrate-nudge·Slot${slot}·([^\\]]*)\\]`).exec(pane)?.[1] ?? null;
     };
     const sentences = { bound: await migrateSentence(boundId), lane: await migrateSentence(lane.slot),
       main: await migrateSentence(mainId) };
     check("migrate-nudge header: the bound MAIN gets a MAIN sentence without 'deine Lane', the lane the lane sentence",
       !!sentences.bound && !sentences.bound.includes("Lane") && sentences.bound.includes("Program")
-        && sentences.lane === "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane"
+        && sentences.lane === "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane".replace(/\s+/g, "")
         && !!sentences.main && !sentences.main.includes("Lane")
         && sentences.bound !== sentences.main,
       JSON.stringify(sentences));

@@ -20,9 +20,19 @@ const MEANING = {
   bundle: "naechster Schritt: bearbeite die enthaltenen Zustellungen · Grenze: nur innerhalb deiner bestehenden Rolle",
   "fleet-event": "naechster Schritt: lies das Ereignis und handle in deiner Rolle · Grenze: keine neue Befugnis",
 } as const;
-// the whole scrollback, rows joined: a header is wider than the pane and a bundle is many lines
+// the whole scrollback: a header is wider than the pane and a bundle is many lines
 const paneText = async (pane: string): Promise<string> =>
   (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", pane)).out;
+// …compared with ALL whitespace removed. -J joins only soft wraps; the shell in these stand-in panes
+// redraws a long line as hard rows (measured locally: a row began "ehenden Rolle] [fleet-buendel"),
+// and a space at a row end is trimmed by the capture. What is compared is the words and their order.
+const squash = (text: string): string => text.replace(/\s+/g, "");
+const inPane = (pane: string, expected: string): boolean => squash(pane).includes(squash(expected));
+const around = (pane: string, needle: string): string | null => {
+  const flat = squash(pane);
+  const at = flat.indexOf(squash(needle));
+  return at < 0 ? null : flat.slice(Math.max(0, at - 160), at + squash(needle).length + 20);
+};
 const currentSelfToken = (slot: number): string => {
   const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
     { slots?: Record<string, { selfToken?: string }> };
@@ -76,9 +86,9 @@ export async function run(): Promise<void> {
     // BREAKS IF: bundleText drops the per-entry sentence or the outer send stops being path=bundle.
     const twoPane = await paneText("s2");
     check("a two-entry bundle is headed path=bundle and each mark carries its own path's sentence",
-      twoPane.includes(`path=bundle · Slot 2 · ${MEANING.bundle}] [fleet-buendel 1/2 · path=owner · ${MEANING.owner}]`)
-        && twoPane.includes(`[fleet-buendel 2/2 · path=auto · ${MEANING.auto}]`),
-      twoPane.split("\n").filter((l) => l.includes("fleet-buendel")).map((l) => l.slice(0, 200)).join(" / "));
+      inPane(twoPane, `path=bundle · Slot 2 · ${MEANING.bundle}] [fleet-buendel 1/2 · path=owner · ${MEANING.owner}]`)
+        && inPane(twoPane, `[fleet-buendel 2/2 · path=auto · ${MEANING.auto}]`),
+      JSON.stringify([around(twoPane, "[fleet-buendel 1/2"), around(twoPane, "[fleet-buendel 2/2")]));
 
     const timedAuto = `${marker}: kalter Auto-Termin`;
     const timedAutoAuditBefore = auditRows().length;
@@ -110,9 +120,9 @@ export async function run(): Promise<void> {
     check("a single bundled auto is typed with its own header — path=auto and its sentence — and counted count=1",
       timedAutoSends.length === 1 && timedAutoBundled.length === 1 && timedAutoBundled[0]?.count === 1
         && timedAutoBundled[0]?.paths === "auto"
-        && timedAutoPane.includes(`[fleet-zustellung · geplanter Check-in · path=auto · Slot 2 · ${MEANING.auto}] ${timedAuto}`),
+        && inPane(timedAutoPane, `[fleet-zustellung · geplanter Check-in · path=auto · Slot 2 · ${MEANING.auto}] ${timedAuto}`),
       JSON.stringify({ sends: timedAutoSends.map((r) => r.path), bundled: timedAutoBundled.map((r) => [r.count, r.paths]),
-        line: timedAutoPane.split("\n").find((l) => l.includes(timedAuto))?.slice(0, 240) ?? null }));
+        line: around(timedAutoPane, timedAuto) }));
 
     // (1) …and an IMMEDIATE delivery into a bundle that holds nothing any more: the queued auto is
     // deleted inside its window, so the owner /send flushes a bundle whose only entry is itself.
@@ -136,11 +146,11 @@ export async function run(): Promise<void> {
         && loneBundled?.paths === "owner" && loneBundled.count === 1 && loneBundled.deliveryClass === "sofort"
         && auditRows().slice(loneAuditBefore).some((r) => r.event === "delivery_bundle_dropped" && r.path === "auto")
         && loneSends.length === 1 && loneSends[0]?.path === "owner"
-        && lonePane.includes(`path=owner · Slot 2 · ${MEANING.owner}] ${loneText}`),
+        && inPane(lonePane, `path=owner · Slot 2 · ${MEANING.owner}] ${loneText}`),
       JSON.stringify({ status: [loneScheduled.status, loneDeleted.status, loneSent.status],
         bundled: loneBundled ? [loneBundled.count, loneBundled.paths, loneBundled.deliveryClass] : null,
         sends: loneSends.map((r) => r.path),
-        line: lonePane.split("\n").find((l) => l.includes(loneText))?.slice(0, 240) ?? null }));
+        line: around(lonePane, loneText) }));
 
     await stopSrv();
     const coldState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {

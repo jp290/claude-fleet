@@ -1691,11 +1691,13 @@ export async function run(lc: LaneCtx): Promise<void> {
     // a verdict for landed=NO, and each one asks for a step — so its sentence names that step, never
     // "nur zur Information". The typed header exists only in the pane.
     // BREAKS IF: DELIVERY_MEANING["merge-verdict"] falls back to an information-only sentence.
-    const paneR = (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `s${lnR.slot}`)).out;
-    const verdictSentence = new RegExp(`path=merge-verdict · Slot ${lnR.slot} · ([^\\]]*)\\]`).exec(paneR)?.[1] ?? null;
+    // Compared with all whitespace removed: the stand-in shell redraws a long line as HARD rows, which
+    // -J cannot join, and the capture trims a space at a row end (measured locally 2026-09-28).
+    const paneR = (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `s${lnR.slot}`)).out.replace(/\s+/g, "");
+    const verdictSentence = new RegExp(`path=merge-verdict·Slot${lnR.slot}·([^\\]]*)\\]`).exec(paneR)?.[1] ?? null;
     check("land verdict: the header in front of a red verdict names a next step, not 'nur zur Information'",
-      !!verdictSentence && /^naechster Schritt: .+ · Grenze: .+$/.test(verdictSentence)
-        && !verdictSentence.includes("nur zur Information"),
+      !!verdictSentence && /^naechsterSchritt:.+·Grenze:.+$/.test(verdictSentence)
+        && !verdictSentence.includes("nurzurInformation"),
       JSON.stringify(verdictSentence));
     // …and it is the SERVER speaking, in the same fixed envelope every other injected prompt
     // carries. A verdict that could read as the owner talking is a different kind of message.

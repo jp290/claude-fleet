@@ -304,8 +304,13 @@ export async function run(): Promise<void> {
     }, { timeoutMs: 9_000, what: "three green events flush after the warm window" });
     const warmSends = auditRows().filter((r) => r.event === "send" && r.slot === warmSlot)
       .slice(warmSendsBefore);
+    // Which PATH that one send carries is not fixed: deliverFleetEventBundle already joins events that
+    // are ready in the same tick into ONE fleet-event entry, and a bundle of one entry is typed under
+    // its own path (Buendel 5a). So the flush's own row decides — one entry: fleet-event, more: bundle.
+    const warmFlush = auditRows().filter((r) => r.event === "delivery_bundle_sent" && r.slot === warmSlot).at(-1);
     check("three green events to one idle warm recipient flush as one send after the window",
-      warmDone.length === 3 && warmSends.length === 1 && warmSends[0]?.path === "bundle"
+      warmDone.length === 3 && warmSends.length === 1 && !!warmFlush
+        && warmSends[0]?.path === (warmFlush.count === 1 ? "fleet-event" : "bundle")
         && warmSends[0]?.deliveryClass === "buendelbar"
         && warmQueued.dueAt !== undefined && (warmSends[0]?.ts ?? 0) >= warmQueued.dueAt - 100,
       `events=${warmDone.length} sends=${warmSends.length} due=${warmQueued.dueAt} sent=${warmSends[0]?.ts}`);

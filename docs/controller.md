@@ -49,6 +49,17 @@ bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN no
 - `GET /api/self/inbox` ist der dauerhafte Program-Rückkanal, aber Retention, fehlender Producer
   oder ein unauflösbarer Zeiger bleiben ausdrücklich `unknown`. Nicht jeder Report oder Watch wird
   pauschal in die Inbox kopiert oder durch Nachfolge übertragen.
+- `POST /api/self/attention` ist die Rückfrage-Kette (Verfassung §5, Owner-Regel 2026-09-25:
+  Worker → MAIN → Orchestratorin → Owner). Gibt es beim Anlegen **genau eine** lebende
+  Orchestratorin (`server.ts#deliveryRecipient` mit `{kind:"orchestrator"}`), entsteht die Zeile mit
+  `stage:"orchestrator"`, zählt in `/api/sessions` als `attentionAtOrchestrator` statt
+  `attentionOpen`, und die Orchestratorin bekommt genau einen Hinweis (SendPath
+  `attention-orchestrator`). Keine oder zwei Orchestratorinnen: sofort `stage:"owner"`. Sie
+  beantwortet über `POST /api/attention/:id/answer` wie bisher oder reicht mit
+  `POST /api/attention/:id/escalate` `{"reason":…}` an den Owner weiter; den Push an den Owner
+  schickt sie selbst mit ihrem Harness-Werkzeug. Beide Türen stehen hinter dem Owner-Bearer, und
+  `answer.by` bleibt `"owner"`, bis Zeile 923f771e die handelnde Session im Ledger unterscheidbar macht.
+  Vertrag: `docs/self-api.md` §attention stage.
 
 **Supervisor**
 

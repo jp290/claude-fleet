@@ -336,6 +336,8 @@ type AuditEvent =
   // `attention_refused` is a RECEIPT that the owner saw it and declined — the silent closure this
   // channel exists to make impossible.
   | "attention_open" | "attention_answered" | "attention_refused" | "attention_prune"
+  // the Orchestratorin handed a MAIN's question on to the owner, with its mandatory reason
+  | "attention_escalated"
   // an open row of an active Program handed to the MAIN that succeeded its requester (never an owner kill)
   | "attention_rebound"
   // the one criterion row of a task rewritten by a re-proposal (server.ts#openCriterionAttention)

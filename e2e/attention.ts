@@ -19,6 +19,7 @@ interface AttentionRow {
   provenance?: { taskId: string | null; originId: string | null; programId: string | null;
     branch: string | null; candidateSha: string | null };
   status: "open" | "send-uncertain" | "answered" | "refused";
+  stage?: "orchestrator" | "owner"; escalation?: { reason: string; at: number };
   answer: { text: string; at: number; by: "owner" } | null;
   refusedReason: string | null; closedAt: number | null;
   delivery?: {
@@ -58,6 +59,10 @@ const ownerRows = async (): Promise<AttentionRow[]> =>
   ((await (await get("/api/attention")).json()) as { requests?: AttentionRow[] }).requests ?? [];
 const attentionOpenCount = async (): Promise<number | undefined> =>
   ((await (await get("/api/sessions")).json()) as { attentionOpen?: number }).attentionOpen;
+const attentionCounts = async (): Promise<{ owner: number | undefined; orchestrator: number | undefined }> => {
+  const poll = (await (await get("/api/sessions")).json()) as { attentionOpen?: number; attentionAtOrchestrator?: number };
+  return { owner: poll.attentionOpen, orchestrator: poll.attentionAtOrchestrator };
+};
 const sessions = async (): Promise<{ slots: { id: number; cwd: string | null; label: string | null; openedAt?: number }[] }> =>
   (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null; openedAt?: number }[] };
 const selfInbox = async (tok: string): Promise<{ response: Response; view: InboxView | null }> => {
@@ -744,6 +749,156 @@ export async function run(): Promise<void> {
     if (dSlot) await post(`/api/slots/${dSlot}/kill`, {});
   }
 
+  // --- 13. the Rückfrage-Kette: a MAIN's question waits on the Orchestratorin first (Verfassung §5) ---
+  // Owner rule 2026-09-25: worker → MAIN → Orchestratorin → owner. The stage is chosen at raise time
+  // through deliveryRecipient({kind:"orchestrator"}): exactly one live 🎛 slot → "orchestrator",
+  // none or two → "owner". The Orchestratorin answers through the same door, or escalates with a
+  // reason. Fixture: one bound MAIN and two slots whose labels are planted as the role while the
+  // server is down, so no role card founding is part of the measurement.
+  // BREAKS IF: openAttention stops choosing the stage (every row "owner"), attentionOpen counts
+  // orchestrator rows, the hint is not sent or sent twice, escalate accepts no reason or moves an
+  // owner row, the answer door treats the two stages differently, or the loader rejects a row
+  // without `stage` instead of reading it as the owner's.
+  {
+    const orchLabel = "🎛 Orchestratorin (attention e2e)";
+    const eSlot = await freeSlot();
+    const eOpen = eSlot ? await post(`/api/slots/${eSlot}/open`, { cwd: REPO, label: "attention-chain-main" }) : null;
+    const o1 = await freeSlot();
+    const o1Open = o1 ? await post(`/api/slots/${o1}/open`, { cwd: REPO, label: "attention-chain-o1" }) : null;
+    const o2 = await freeSlot();
+    const o2Open = o2 ? await post(`/api/slots/${o2}/open`, { cwd: REPO, label: "attention-chain-o2" }) : null;
+    const eTok = eSlot ? await paneEnv(`s${eSlot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const foreignOrch = (await sessions()).slots.filter((x) => x.cwd
+      && (x.label?.includes("🎛") || /(^|[^\p{L}])orchestrator/iu.test(x.label ?? ""))).map((x) => x.id);
+    await stopSrv();
+    const eImage = JSON.parse(readFileSync(statePath, "utf8")) as
+      { slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[] };
+    const eRow = eImage.slots[String(eSlot)] ?? {};
+    const programE = "e1".repeat(12);
+    const eAt = Date.now() - 5000;
+    eImage.programs = [...(eImage.programs ?? []), {
+      id: programE, title: "Attention chain fixture E", intent: "Ask the Orchestratorin first",
+      successCriterion: "stage orchestrator, escalate to owner", nonGoals: [], decisions: [], evidence: [],
+      openQuestions: [], status: "active", createdAt: eAt - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: eAt - 900, activatedAt: eAt - 800,
+      main: { slot: eSlot, openedAt: eRow.openedAt, sessionId: eRow.sessionId ?? null, boundAt: eAt - 700 },
+    }];
+    for (const o of [o1, o2]) if (eImage.slots[String(o)]) eImage.slots[String(o)]!.label = orchLabel;
+    writeFileSync(statePath, JSON.stringify(eImage, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const liveOrch = async (): Promise<number[]> => (await sessions()).slots
+      .filter((x) => x.cwd && x.label === orchLabel).map((x) => x.id);
+    const orchBefore = await liveOrch();
+    check("attention chain fixture: a bound MAIN with a credential, two planted 🎛 slots, and no other Orchestratorin in the instance",
+      !!eOpen?.ok && !!o1Open?.ok && !!o2Open?.ok && /^[0-9a-f]{32}$/.test(eTok)
+        && new Set([eSlot, o1, o2]).size === 3 && orchBefore.length === 2
+        && orchBefore.includes(o1) && orchBefore.includes(o2) && foreignOrch.length === 0,
+      JSON.stringify({ eSlot, o1, o2, open: [eOpen?.status, o1Open?.status, o2Open?.status], orchBefore, foreignOrch }));
+    const hintSends = () => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { event?: string; path?: string; slot?: number; bytes?: number })
+      .filter((row) => row.event === "send" && row.path === "attention-orchestrator");
+    const hintsFor = async (slot: number, id: string | undefined): Promise<number> => {
+      const history = ((await (await get(`/api/slots/${slot}/history`)).json()) as { history?: { text: string }[] }).history ?? [];
+      return history.filter((h) => h.text.includes(id ?? "\u0000")).length;
+    };
+
+    // (3b) TWO Orchestratorin slots: no unique receiver, so straight to the owner, and no hint at all
+    const twoCounts = await attentionCounts();
+    const twoRow = await raised(await selfRaise(eTok, { kind: "decision", text: "Chain: two Orchestratorinnen, who answers?" }));
+    const twoAfter = await attentionCounts();
+    check("attention chain (3): with TWO live 🎛 slots the row is born stage \"owner\" and counts in attentionOpen",
+      twoRow?.stage === "owner" && readRow(twoRow?.id)?.stage === "owner"
+        && twoAfter.owner === (twoCounts.owner ?? 0) + 1 && twoAfter.orchestrator === undefined,
+      JSON.stringify({ stage: twoRow?.stage, before: twoCounts, after: twoAfter }));
+
+    // (1) exactly ONE: the row waits on her, the owner's number does not move, and she gets one hint
+    if (o2) await post(`/api/slots/${o2}/kill`, {});
+    const sendsBefore = hintSends().length;
+    const oneCounts = await attentionCounts();
+    const chainText = "Chain: ship the migration tonight or after the audit?";
+    const chainRow = await raised(await selfRaise(eTok, { kind: "decision", text: chainText }));
+    const chainAfter = await attentionCounts();
+    let chainSends = hintSends().slice(sendsBefore);
+    for (let i = 0; i < 120 && chainSends.length < 1; i++) {
+      await Bun.sleep(250);
+      chainSends = hintSends().slice(sendsBefore);
+    }
+    const reraise = await selfRaise(eTok, { kind: "decision", text: chainText });
+    const reraiseBody = await reraise.json() as { existing?: boolean; request?: AttentionRow };
+    await Bun.sleep(1500);
+    const chainSendsSettled = hintSends().slice(sendsBefore);
+    const chainHints = await hintsFor(o1, chainRow?.id);
+    check("attention chain (1): with exactly one live 🎛 slot a bound MAIN's row is born stage \"orchestrator\" — attentionOpen unchanged, attentionAtOrchestrator 1",
+      (await liveOrch()).length === 1 && chainRow?.stage === "orchestrator" && readRow(chainRow?.id)?.stage === "orchestrator"
+        && chainAfter.owner === oneCounts.owner && chainAfter.orchestrator === 1,
+      JSON.stringify({ stage: chainRow?.stage, before: oneCounts, after: chainAfter, live: await liveOrch() }));
+    check("attention chain (1): the Orchestratorin slot receives exactly ONE hint (send audit row path attention-orchestrator) naming the row, and an idempotent re-raise sends none",
+      chainSendsSettled.length === 1 && chainSendsSettled[0]?.slot === o1 && (chainSendsSettled[0]?.bytes ?? 0) > 0
+        && chainHints === 1 && reraise.ok && reraiseBody.existing === true && reraiseBody.request?.id === chainRow?.id,
+      JSON.stringify({ sends: chainSendsSettled, history: chainHints, reraise: [reraise.status, reraiseBody.existing] }));
+
+    // (2) escalate: reason is mandatory, the row climbs to the owner, and it never climbs twice
+    const noReason = await post(`/api/attention/${chainRow?.id}/escalate`, {});
+    const blankReason = await post(`/api/attention/${chainRow?.id}/escalate`, { reason: "   " });
+    const stillOrch = readRow(chainRow?.id)?.stage;
+    const escalateReason = "Deploy timing is the owner's call, not mine.";
+    const escalated = await post(`/api/attention/${chainRow?.id}/escalate`, { reason: escalateReason });
+    const escalatedBody = await escalated.json() as { request?: AttentionRow };
+    const escAfter = await attentionCounts();
+    const escAgain = await post(`/api/attention/${chainRow?.id}/escalate`, { reason: escalateReason });
+    const escOther = await post(`/api/attention/${chainRow?.id}/escalate`, { reason: "a second, different reason" });
+    const escOwnerRow = await post(`/api/attention/${twoRow?.id}/escalate`, { reason: "already the owner's" });
+    const escUnknown = await post(`/api/attention/${"0".repeat(24)}/escalate`, { reason: "nobody" });
+    check("attention chain (2): escalate without a reason is 400 and moves nothing; with one the row is stage \"owner\", counts in attentionOpen, and carries the reason",
+      noReason.status === 400 && blankReason.status === 400 && stillOrch === "orchestrator"
+        && escalated.ok && escalatedBody.request?.stage === "owner"
+        && readRow(chainRow?.id)?.stage === "owner" && readRow(chainRow?.id)?.escalation?.reason === escalateReason
+        && readRow(chainRow?.id)?.status === "open"
+        && escAfter.owner === (chainAfter.owner ?? 0) + 1 && escAfter.orchestrator === undefined,
+      JSON.stringify({ noReason: noReason.status, blank: blankReason.status, escalated: escalated.status,
+        row: readRow(chainRow?.id), counts: escAfter }));
+    check("attention chain (2): escalate is one step up only — the identical retry is existing, a different reason or an owner-born row is 409, an unknown id 404",
+      escAgain.ok && ((await escAgain.json()) as { existing?: boolean }).existing === true
+        && escOther.status === 409 && escOwnerRow.status === 409 && escUnknown.status === 404,
+      `${escAgain.status} ${escOther.status} ${escOwnerRow.status} ${escUnknown.status}`);
+
+    // (4) the answer door is today's door in BOTH stages: one Program inbox pointer each
+    const orchRow = await raised(await selfRaise(eTok, { kind: "blocked", text: "Chain: answered by the Orchestratorin herself." }));
+    const orchAnswer = await post(`/api/attention/${orchRow?.id}/answer`, { text: "Unblocked: use the helper." });
+    const orchAnswerBody = await orchAnswer.json() as { request?: AttentionRow; inbox?: string };
+    const ownerAnswer = await post(`/api/attention/${chainRow?.id}/answer`, { text: "After the audit." });
+    const ownerAnswerBody = await ownerAnswer.json() as { request?: AttentionRow; inbox?: string };
+    const eInbox = await selfInbox(eTok);
+    const entryFor = (id: string | undefined) => eInbox.view?.entries.filter((e) => e.kind === "attention-answer" && e.ref === id) ?? [];
+    check("attention chain (4): answer works in both stages as today — an orchestrator-stage and an escalated row each become exactly one attention-answer inbox entry",
+      orchRow?.stage === "orchestrator" && orchAnswer.ok && orchAnswerBody.request?.status === "answered"
+        && orchAnswerBody.request.answer?.by === "owner" && ownerAnswer.ok && ownerAnswerBody.request?.status === "answered"
+        && entryFor(orchRow?.id).length === 1 && entryFor(orchRow?.id)[0]?.id === orchAnswerBody.inbox
+        && entryFor(chainRow?.id).length === 1 && entryFor(chainRow?.id)[0]?.id === ownerAnswerBody.inbox,
+      JSON.stringify({ orch: [orchRow?.stage, orchAnswer.status, orchAnswerBody.inbox], owner: [ownerAnswer.status, ownerAnswerBody.inbox],
+        entries: [entryFor(orchRow?.id).length, entryFor(chainRow?.id).length] }));
+
+    // (3a) NO Orchestratorin: born "owner" — and a row still parked at a gone one climbs at read time
+    const parked = await raised(await selfRaise(eTok, { kind: "review-ready", text: "Chain: parked when she leaves." }));
+    const parkedCounts = await attentionCounts();
+    if (o1) await post(`/api/slots/${o1}/kill`, {});
+    const goneCounts = await attentionCounts();
+    const noneRow = await raised(await selfRaise(eTok, { kind: "decision", text: "Chain: nobody in between." }));
+    const noneAfter = await attentionCounts();
+    check("attention chain (3): with NO live 🎛 slot the row is born stage \"owner\"; a row parked at a now-gone Orchestratorin counts for the owner at read time and keeps its stored stage",
+      (await liveOrch()).length === 0 && noneRow?.stage === "owner" && readRow(noneRow?.id)?.stage === "owner"
+        && parked?.stage === "orchestrator" && parkedCounts.orchestrator === 1
+        && goneCounts.orchestrator === undefined && goneCounts.owner === (parkedCounts.owner ?? 0) + 1
+        && readRow(parked?.id)?.stage === "orchestrator" && noneAfter.owner === (goneCounts.owner ?? 0) + 1,
+      JSON.stringify({ none: noneRow?.stage, parked: parked?.stage, parkedCounts, goneCounts, noneAfter }));
+
+    for (const [id, why] of [[twoRow?.id, "13 fixture: two Orchestratorinnen"], [parked?.id, "13 fixture: parked"],
+      [noneRow?.id, "13 fixture: no Orchestratorin"]] as const)
+      await post(`/api/attention/${id}/refuse`, { reason: why });
+    await post(`/api/programs/${programE}/complete`, {});
+    if (eSlot) await post(`/api/slots/${eSlot}/kill`, {});
+  }
+
   // Pre-provenance rows are a distinct historical shape: absence means UNKNOWN and must stay
   // absent on both disk and the owner route. Normalizing it to a five-null object would invent an
   // observation about fields the old server never knew existed.
@@ -765,6 +920,11 @@ export async function run(): Promise<void> {
     !!legacyDisk && !("provenance" in legacyDisk)
       && !!legacyOwner && !("provenance" in legacyOwner),
     JSON.stringify({ disk: legacyDisk, owner: legacyOwner }));
+  // …and it predates the Rückfrage-Kette too: a persisted row without `stage` was always the owner's.
+  // BREAKS IF: attentionFrom rejects the absent key (the row would vanish) or defaults it to anything else.
+  check("attention legacy stage: a persisted row without `stage` loads as \"owner\"",
+    !!legacyDisk && legacyOwner?.stage === "owner",
+    JSON.stringify({ disk: legacyDisk?.stage ?? "absent", owner: legacyOwner?.stage }));
 
   // The zero case is ABSENT, not 0 — the field is omitted when nothing waits (server.ts: the 12 KiB
   // poll budget), and the client reads absent as zero. Asserted last, once every row above has

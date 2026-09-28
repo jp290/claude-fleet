@@ -656,6 +656,10 @@ interface FleetReport {
 // into the requester's pane over the same transport, so it inherits the same crash boundary.
 type AttentionKind = "decision" | "blocked" | "review-ready";
 type AttentionStatus = "open" | "send-uncertain" | "answered" | "refused";
+// WHO THE QUESTION WAITS ON (Verfassung §5, owner rule 2026-09-25: worker → MAIN → Orchestratorin →
+// owner). Chosen once at raise time: the unique live Orchestratorin first, else the owner. Only
+// escalate moves it, and only upward. A persisted row without the key loads as "owner".
+type AttentionStage = "orchestrator" | "owner";
 interface AttentionRequest {
   id: string;
   raisedAt: number;
@@ -668,6 +672,9 @@ interface AttentionRequest {
   provenance?: { taskId: string | null; originId: string | null; programId: string | null;
     branch: string | null; candidateSha: string | null };
   status: AttentionStatus;
+  stage: AttentionStage;
+  // present once POST /api/attention/:id/escalate handed the row from the Orchestratorin to the owner
+  escalation?: { reason: string; at: number };
   answer: { text: string; at: number; by: "owner" } | null;
   refusedReason: string | null;
   closedAt: number | null;
@@ -1263,6 +1270,13 @@ function attentionFrom(raw: unknown): AttentionRequest | null {
     if (!answerShaped() || a.refusedReason !== null || a.closedAt !== null) return null;
   } else if (answer !== null) return null;
   if (a.status === "refused" && (!(a.refusedReason ?? "").trim() || a.closedAt === null)) return null;
+  if (a.stage !== undefined && a.stage !== "orchestrator" && a.stage !== "owner") return null;
+  const escalation = a.escalation as Record<string, unknown> | undefined;
+  if (escalation !== undefined && (!escalation || typeof escalation.reason !== "string" || !escalation.reason.trim()
+    || escalation.reason.length > MAX_ATTENTION_ANSWER || typeof escalation.at !== "number"
+    || !Number.isFinite(escalation.at) || escalation.at <= 0 || a.stage !== "owner")) return null;
+  // a row persisted before the Rückfrage-Kette was always the owner's: absent stage loads as „[Zitat entfernt]“
+  if (a.stage === undefined) (raw as AttentionRequest).stage = "owner";
   return raw as AttentionRequest;
 }
 
@@ -3491,7 +3505,7 @@ export type {
   HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportFulfilled, FleetReportDecision, FleetReportBasis,
-  FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
+  FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, LaneReviewCandidate, LaneResume, LanePreview, LanePreviewState, CandidateReview, CandidateReviewFinding, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,

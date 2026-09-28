@@ -687,6 +687,39 @@ sich nicht; `briefHash`/`deliveredBytes` beschreiben die ausgelieferten Bytes un
 Block mit — genau das ist ihr Vertrag. Rückweg: die Konstante wieder aus den beiden Buildern
 nehmen.
 
+## attention stage — die Rückfrage-Kette (`stage`, `POST /api/attention/:id/escalate`)
+
+Seit 2026-09-28 wartet die Frage einer gebundenen MAIN zuerst auf die Orchestratorin, nicht auf
+den Owner (Verfassung §5; Owner-Regel 2026-09-25: Worker → MAIN → Orchestratorin → Owner; die
+Rollenkarten in `docs/rollenkarten.md` sagen es für beide Seiten). Mechanik (`server.ts#openAttention`,
+`#escalateAttention`, `#attentionWaitsOn`, `server/types.ts#AttentionRequest`):
+
+- **Die Stufe wird beim Anlegen gewählt, einmal.** `POST /api/self/attention` fragt
+  `server.ts#deliveryRecipient` mit `{kind:"orchestrator"}`: genau ein lebender Slot mit
+  Orchestrator-Label (`isOrchestratorLabel`: `🎛`, „Orchestrator…") → `stage:"orchestrator"`; keiner
+  oder zwei → `stage:"owner"` (die nächsthöhere Stufe). Ist die fragende MAIN selbst diese eine
+  Orchestratorin, geht die Frage an den Owner. Die serverseitig erhobenen Zeilen (Nachfolge-Warnung,
+  Kriteriums-Bitte, Stall-Sensor) sind immer `stage:"owner"`.
+- **Genau ein Hinweis** an die Orchestratorin, nach dem State-Cut und außerhalb der Antwort: eine
+  Zeile mit Id, Kind, Program, gekürzter Frage und den beiden Türen, gebucht als Audit-`send` mit
+  `path:"attention-orchestrator"`. Ein idempotenter Re-Raise derselben Frage sendet nichts. Ein
+  gescheiterter Hinweis ändert die Zeile nicht; `GET /api/attention` zeigt sie weiter.
+- **Zählung auf dem 2-s-Poll:** `attentionOpen` zählt nur, was auf den Owner wartet;
+  `attentionAtOrchestrator` zählt, was bei der Orchestratorin liegt, beide entfallen bei null. Gibt es
+  keine eindeutige lebende Orchestratorin mehr, zählt eine dort geparkte Zeile zur Lesezeit wieder
+  beim Owner. Gespeichert bleibt `stage:„[Zitat entfernt]“`: eine Orchestratorin, die zurückkommt,
+  findet die Zeile dort, wo sie lag. `GET /api/attention` sortiert Owner-offen, dann
+  Orchestratorin-offen, dann geschlossen.
+- **`POST /api/attention/:id/escalate`** mit `{"reason":"…"}` (Pflicht, bis 4000 Zeichen; leer =
+  400) setzt `stage:"owner"` und `escalation:{reason, at}`, Audit `attention_escalated`. Nur eine
+  Stufe aufwärts: eine Zeile, die schon beim Owner liegt, ist 409, außer derselbe Grund wird
+  wiederholt (`existing:true`). Eine geschlossene Zeile ist 409, eine unbekannte Id 404.
+- **Beantworten** geht in beiden Stufen durch `POST /api/attention/:id/answer`, unverändert: ein
+  `attention-answer`-Zeiger in der Program-Inbox, `answer.by:"owner"`. Beide Türen liegen hinter
+  dem Owner-Bearer. Nach Zeile 923f771e ist die handelnde Session in der Audit-Zeile erkennbar; bis dahin
+  kann der Server die Orchestratorin nicht vom Owner unterscheiden und behauptet es auch nicht.
+- **Altbestand:** eine persistierte Zeile ohne `stage` lädt als `"owner"`.
+
 ## attention withdraw — `POST /api/self/attention/:id/withdraw`
 
 Die ZwillingsTür zu `POST /api/self/attention`: eine gebundene MAIN zieht eine eigene noch offene

@@ -142,7 +142,7 @@ import {
   type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type SuccessionDebtFleetEvent, type MessageFleetEvent, type SuccessionDebt,
   type LaneReviewFleetEvent, type TaskReviewMode,
   type FleetReportDeliveryState,
-  type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type TaskKindChange, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
+  type AttentionRequest, type AttentionStage, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type TaskKindChange, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
@@ -8661,6 +8661,7 @@ type SendPath =
   | "audit-ping"        // a post-land audit red offered to an eligible main session
   | "inbox-nudge"       // "your program's inbox has unread entries"
   | "report-orphan"     // an undecided Program report lost its MAIN
+  | "attention-orchestrator" // a bound MAIN's question waits first on the unique Orchestratorin
   | "backlog-nudge"     // the open-backlog reminder
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
   | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
@@ -8710,6 +8711,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "audit-ping": "Post-Land-Audit-Hinweis",
   "inbox-nudge": "Inbox-Hinweis",
   "report-orphan": "Hinweis auf verwaisten Program-Report",
+  "attention-orchestrator": "Rueckfrage einer MAIN an die Orchestratorin",
   "backlog-nudge": "Backlog-Erinnerung",
   "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
   "api-stall-resume": "Fortsetzen nach API-Fehler",
@@ -8732,6 +8734,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
   "inbox-nudge": "naechster Schritt: lies die ungelesenen Program-Eintraege · Grenze: dein Program",
   "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
+  "attention-orchestrator": "naechster Schritt: beantworte die Rueckfrage oder reiche sie mit Grund an den Owner · Grenze: nur die benannten Tueren",
   "backlog-nudge": "naechster Schritt: pruefe den offenen Backlog · Grenze: dein bestaetigtes Program",
   "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane",
   "api-stall-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
@@ -10860,7 +10863,8 @@ async function raiseSuccessionAttention(s: Slot, kind: AttentionKind, text: stri
     programId: s.programId,
     provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId,
       branch: s.worktree?.branch ?? null, candidateSha: null },
-    status: "open", answer: null, refusedReason: null, closedAt: null,
+    // server-raised, not the MAIN's question: the Rückfrage-Kette starts at openAttention only
+    status: "open", stage: "owner", answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
   audit("attention_open", s.id, `${request.id} kind=${kind} program=${s.programId} (succession ${kind === "blocked" ? "cap" : "warning"})`);
@@ -15107,17 +15111,94 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   if (open.length >= ATTENTION_MAX_OPEN_PER_REQUESTER)
     return json({ error: `max ${ATTENTION_MAX_OPEN_PER_REQUESTER} open attention requests per session — an unanswered pile is an attention failure, not a queue` }, 409);
 
+  // THE RÜCKFRAGE-KETTE (Verfassung §5; owner rule 2026-09-25: worker → MAIN → Orchestratorin →
+  // owner). The MAIN's role card says „[Zitat entfernt]“
+  // ; before this the row counted on the owner's board the instant it was raised. The stage
+  // is chosen HERE, once, by the same resolver every other orchestrator-addressed delivery uses: the
+  // unique live Orchestratorin first, otherwise the next stage up — the owner. A requester that is
+  // itself that Orchestratorin asks the owner. Only escalateAttention moves it afterwards.
+  const orchestrator = deliveryRecipient({ kind: "orchestrator" });
+  const viaOrchestrator = orchestrator !== null && orchestrator !== s;
   const request: AttentionRequest = {
     id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind, text,
     requester: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
     programId: program.id,
     provenance: { taskId, originId, programId: program.id, branch, candidateSha },
-    status: "open", answer: null, refusedReason: null, closedAt: null,
+    status: "open", stage: viaOrchestrator ? "orchestrator" : "owner",
+    answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
-  audit("attention_open", s.id, `${request.id} kind=${kind} program=${program.id}`);
+  audit("attention_open", s.id, `${request.id} kind=${kind} program=${program.id} stage=${request.stage}`);
   await saveStateNow();
+  // after the durable cut and off the response path: the hint is a courtesy to the row, never its
+  // precondition — a hint that fails leaves the row where GET /api/attention already shows it
+  if (viaOrchestrator) void hintAttentionOrchestrator(request, orchestrator);
   return json({ ok: true, existing: false, id: request.id, request: attentionReceipt(request), sessionIdMatch });
+}
+
+// ONE HINT PER ROW, to the Orchestratorin the stage was chosen for — the report-orphan pattern
+// (tickOrphanReports): one line, the id and the doors, re-checked before the paste. It is sent once,
+// at raise; an idempotent re-raise returns the existing row and sends nothing. What the
+// Orchestratorin does next happens through the existing doors: answer (as the owner route does
+// today) or escalate with a reason; the owner push stays her own harness tool, outside the server.
+async function hintAttentionOrchestrator(a: AttentionRequest, receiver: Slot): Promise<void> {
+  const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+  const question = a.text.replace(/\s+/g, " ").slice(0, 300);
+  const message = `[fleet attention] Rückfrage ${a.id} (${a.kind}) der MAIN Slot ${a.requester.slot}, Program ${a.programId}, `
+    + `wartet zuerst auf dich: „${question}${a.text.length > 300 ? " …" : ""}". Volltext GET /api/attention; `
+    + `beantworten POST /api/attention/${a.id}/answer {"text":…}; an den Owner weiterreichen POST /api/attention/${a.id}/escalate {"reason":…}.`;
+  try {
+    const { acceptance } = await sendText(receiver, message, true, { path: "attention-orchestrator",
+      deliveryClass: "sofort", rollbackOwnPayload: true,
+      beforeSend: async (current) => {
+        if (deliveryRecipient({ kind: "orchestrator" }) !== current
+          || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+          || a.stage !== "orchestrator" || (a.status !== "open" && a.status !== "send-uncertain"))
+          throw new DeliveryCancelled(`attention ${a.id} changed before paste`);
+      } });
+    const at = Date.now();
+    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    saveHistory(receiver);
+    logPrompt(receiver, message, "auto", at, undefined, acceptance);
+  } catch (e) {
+    if (!(e instanceof DeliveryCancelled)) logError("hintAttentionOrchestrator", e);
+  }
+}
+
+// THE ORCHESTRATORIN'S HAND-ON — "den Rest bringst du dem Owner". The row moves orchestrator →
+// owner with a mandatory reason, and never back: an owner-stage row is a 409 (an identical reason
+// on the row it already moved is the idempotent retry). The reason is the receipt of why the
+// question climbed, just as refusedReason is the receipt of a decline. Behind the owner gate like
+// the answer door beside it; until row 923f771e lands the ledger cannot tell the Orchestratorin's bearer from
+// the owner's, and says nothing it cannot know.
+async function escalateAttention(id: string, body: Record<string, unknown> | null): Promise<Response> {
+  const a = attentionRequests.find((x) => x.id === id);
+  if (!a) return json({ error: "unknown attention request" }, 404);
+  const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+  if (!reason)
+    return json({ error: "reason is required — say why this question is the owner's and not yours" }, 400);
+  if (reason.length > MAX_ATTENTION_ANSWER)
+    return json({ error: `reason must be at most ${MAX_ATTENTION_ANSWER} chars` }, 400);
+  if (a.status === "answered" || a.status === "refused")
+    return json({ error: `attention is already ${a.status} — there is no open question to hand on` }, 409);
+  if (a.stage === "owner") {
+    if (a.escalation?.reason === reason) return json({ ok: true, existing: true, request: attentionReceipt(a) });
+    return json({ error: "attention already waits on the owner — escalate moves a row from the Orchestratorin up, never further" }, 409);
+  }
+  a.stage = "owner";
+  a.escalation = { reason, at: Date.now() };
+  audit("attention_escalated", a.requester.slot, `${a.id} kind=${a.kind} program=${a.programId} orchestrator→owner: ${reason.slice(0, 200)}`);
+  await saveStateNow();
+  return json({ ok: true, existing: false, request: attentionReceipt(a) });
+}
+
+// WHICH STAGE AN OPEN ROW WAITS ON RIGHT NOW. The stored stage, except that a row parked at the
+// Orchestratorin while no unique live one exists climbs to the owner at read time (§5, next stage
+// up) — a killed or doubled Orchestratorin must never make a question vanish from the owner's count.
+// Nothing is written: a returning Orchestratorin finds the row where she left it.
+function attentionWaitsOn(a: AttentionRequest, orchestratorLive = deliveryRecipient({ kind: "orchestrator" }) !== null): AttentionStage | null {
+  if (a.status !== "open" && a.status !== "send-uncertain") return null;
+  return a.stage === "orchestrator" && orchestratorLive ? "orchestrator" : "owner";
 }
 
 // THE WITHDRAWAL TWIN of openAttention: a bound MAIN takes its own still-open question back. The
@@ -15261,8 +15342,12 @@ function reconcileAttention(teardownSlotId?: number, why?: SlotEnding): boolean 
 // denormalizing it would freeze a title the owner may since have corrected, and the join failing is
 // itself worth seeing, so a missing program renders as an explicit null rather than a guess.
 function attentionOwnerView(): (AttentionRequest & { programTitle: string | null; delivery: AttentionDelivery | null })[] {
-  const rank = (a: AttentionRequest): number =>
-    a.status === "open" || a.status === "send-uncertain" ? 0 : 1;
+  // the owner's own open rows first, then those still at the Orchestratorin, then the closed ones
+  const live = deliveryRecipient({ kind: "orchestrator" }) !== null;
+  const rank = (a: AttentionRequest): number => {
+    const waits = attentionWaitsOn(a, live);
+    return waits === "owner" ? 0 : waits === "orchestrator" ? 1 : 2;
+  };
   return [...attentionRequests]
     .sort((x, y) => rank(x) - rank(y) || y.raisedAt - x.raisedAt)
     .map((a) => ({ ...a, programTitle: programs.find((p) => p.id === a.programId)?.title ?? null,
@@ -15396,7 +15481,8 @@ function openCriterionAttention(s: Slot, t: Task): { id: string; existing: boole
     id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind: "decision", text, requester,
     programId: program.id,
     provenance: { taskId: t.id, originId: t.originId ?? null, programId: program.id, branch, candidateSha: null },
-    status: "open", answer: null, refusedReason: null, closedAt: null,
+    // the criterion confirm is the owner's own act — this row goes to the owner, never via the chain
+    status: "open", stage: "owner", answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
   audit("attention_open", s.id, `${request.id} kind=decision program=${program.id} via=criterion`);
@@ -17661,7 +17747,8 @@ function raiseStallAttention(r: StallReading, clock: StallSensorState["repos"][s
     requester: { slot: occupant.id, openedAt: occupant.openedAt, sessionId: occupant.sessionId },
     programId: program.id,
     provenance: { taskId: r.waits[0]?.id ?? null, originId: null, programId: program.id, branch: null, candidateSha: null },
-    status: "open", answer: null, refusedReason: null, closedAt: null,
+    // server-raised sensor row: owner stage, like raiseSuccessionAttention's
+    status: "open", stage: "owner", answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
   clock.attentionId = request.id;
@@ -41214,9 +41301,17 @@ Bun.serve<WSData>({
         // rows that still want the owner; the bodies are behind GET /api/attention. OMITTED AT ZERO like
         // harness/effort: this payload is measured against a 12 KiB budget (e2e/tasks.ts, docs/data-saver.md
         // §1) that an unconditional field crossed by four bytes. Absent reads as zero.
-        ...(attentionRequests.some((a) => a.status === "open" || a.status === "send-uncertain")
-          ? { attentionOpen: attentionRequests.filter((a) => a.status === "open" || a.status === "send-uncertain").length }
-          : {}),
+        // Since the Rückfrage-Kette a row waiting on the Orchestratorin is NOT the owner's yet: it counts
+        // in attentionAtOrchestrator (omitted at zero, same reason) until escalate — or until no unique
+        // live Orchestratorin is left, when attentionWaitsOn hands it to the owner's number at read time.
+        ...(() => {
+          const live = deliveryRecipient({ kind: "orchestrator" }) !== null;
+          const waits = attentionRequests.map((a) => attentionWaitsOn(a, live));
+          const owner = waits.filter((w) => w === "owner").length;
+          const orchestrator = waits.filter((w) => w === "orchestrator").length;
+          return { ...(owner > 0 ? { attentionOpen: owner } : {}),
+            ...(orchestrator > 0 ? { attentionAtOrchestrator: orchestrator } : {}) };
+        })(),
         ...(() => {
           const stale = programs.filter((p) => p.status === "active"
             && programOccupancy(p) === "stale").length;
@@ -43187,6 +43282,10 @@ Bun.serve<WSData>({
     const attentionRefuse = /^\/api\/attention\/([0-9a-f]{24})\/refuse$/.exec(url.pathname);
     if (attentionRefuse && req.method === "POST")
       return refuseAttentionRequest(attentionRefuse[1], await readJson(req));
+    // the Rückfrage-Kette's one step up: a row waiting on the Orchestratorin moves to the owner
+    const attentionEscalate = /^\/api\/attention\/([0-9a-f]{24})\/escalate$/.exec(url.pathname);
+    if (attentionEscalate && req.method === "POST")
+      return escalateAttention(attentionEscalate[1], await readJson(req));
     // --- the report rail's OWNER half. GET carries the full rows with their derived `liveness`
     // (the 2 s poll carries only the count, docs/data-saver.md); the two POSTs are the exit that was
     // missing for a report whose bound MAIN is gone. They refuse while that MAIN is alive — there

@@ -1,4 +1,4 @@
-import { $, el, MOBILE_MQ, TaskInfo, TaskRefineFull, agentHarnesses, api, baseName, briefCompilerOn, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, intakeOn, labelled, loadHarnesses, post, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
+import { $, el, MOBILE_MQ, TaskInfo, TaskRefineFull, agentHarnesses, api, autosOnSrv, baseName, briefCompilerOn, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, intakeOn, labelled, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
 import { prefSet, prefText } from "./prefs";
 import { Shell, ShellRow, openShell } from "./shell";
 import { askRisk } from "./dialog";
@@ -499,7 +499,9 @@ export interface ProgramInfo extends ProgramDigest {
   // surface, not a proof about one. `programDispatchState` below turns "present but unreadable"
   // into its own displayed state — never into absence, which here means "the global switch decides
   // this program alone" and is a thing an owner would act on.
-  dispatch?: { v?: number; on?: boolean; maxLanes?: number; confirmedAt?: number } | null;
+  dispatch?: { v?: number; on?: boolean; bypassMaster?: boolean; maxLanes?: number; confirmedAt?: number } | null;
+  // THE OWNER'S RELEASE POLICY (server/types.ts#ProgramRelease) — same wire caution as above.
+  release?: { v?: number; policy?: string; confirmedAt?: number } | null;
   // V1b — THE RETURN PATH INTO THIS PROGRAM'S MAIN, derived by the server per request and stored
   // nowhere. Same reason every field above is optional: this is an ASSERTION about a foreign
   // surface, not a proof about one, and an older server simply does not send it. `state` is read
@@ -800,62 +802,126 @@ export function promotionRequestState(p: ProgramInfo): {
       + " plus a MAIN-confirmed agent-resolved conflict, which the server re-verifies fresh." };
 }
 
-// --- THE OWNER'S PROGRAM-SCOPED DISPATCH PERMISSION, read for display ---
-// FOUR states, and `unreadable` is the fourth for exactly the reason promotionState has one: this
-// row arrives over the wire, and a shape this build cannot read as a v1 record is NOT absence.
-// Absence has a meaning here — the global dispatch switch decides this program alone, i.e. today's
-// behaviour — so painting an unreadable record as absence would tell the owner the fleet queue is
-// in sole charge while something they cannot see sits on the row.
+// --- THE OWNER'S PROGRAM-SCOPED DISPATCH RECORD, read for display ---
+// Since the server half of Sinnprüfung C8 (410e7029) the record answers TWO questions with two
+// fields: `maxLanes` — how many of this program's lanes may run at once — and the start right,
+// which the board shows as ONE three-way switch "darf starten":
+//   an         = v2 {on:true,  bypassMaster:true}  (or v1 {on:true}): starts even with the Master off
+//   wie Master = v2 {on:true,  bypassMaster:false} (or v1 {on:false}): follows the fleet switch
+//   aus        = v2 {on:false}: never started by the tick, even with the Master on
+// A v1 `on:false` is NOT "aus": the server reads v1 `on` as the old bypass only
+// (server.ts#programDispatchStopped requires v2), so it follows the Master — and its maxLanes caps.
 //
-// `off` IS ITS OWN STATE, not a shade of absence: absent is "the owner never said„[Zitat entfernt]“the
-// owner said no„[Zitat entfernt]“
-// 
+// FIVE states. `unreadable` for the reason promotionState has one: this row arrives over the wire,
+// and a shape this build cannot read is NOT absence. Absence has a meaning — the Master and the
+// machine's per-program number decide this program — so painting an unreadable record as absence
+// would tell the owner that while something they cannot see sits on the row.
 //
-// READABILITY IS THE SERVER'S OWN RULE, restated: v must be 1, `on` must be a boolean, `maxLanes`
-// must be a whole number in 1..PROGRAM_DISPATCH_MAX_LANES_MAX (server/types.ts, 16 today), and
-// confirmedAt must be a positive finite number. A record failing any clause is one the RUNNING
-// SERVER already treats as absent.
+// READABILITY IS THE SERVER'S OWN RULE, restated (server/types.ts#loadProgramDispatch): v 1 or 2,
+// `on` boolean, v2 also `bypassMaster` boolean, `maxLanes` a whole number in
+// 1..PROGRAM_DISPATCH_MAX_LANES_MAX, confirmedAt a positive finite number.
 //
 // PURE AND TOP-LEVEL ON PURPOSE, like promotionState and profileState: no globals, no DOM, no
-// clock, so e2e/programs.ts can cut it out, transpile it and RUN it over all four states.
-export type ProgramDispatchStateName = "absent" | "on" | "off" | "unreadable";
+// clock, so a check can cut it out, transpile it and RUN it.
+export type ProgramDispatchStateName = "absent" | "on" | "master" | "off" | "unreadable";
+export type ProgramDispatchStart = "on" | "master" | "off";
 export const PROGRAM_DISPATCH_MAX_LANES_UI = 16; // mirrors server/types.ts#PROGRAM_DISPATCH_MAX_LANES_MAX
+export const PD_START_WORD: Record<ProgramDispatchStart, string> = { on: "an", master: "wie Master", off: "aus" };
 export function programDispatchState(p: ProgramInfo): {
   state: ProgramDispatchStateName; label: string; tone: "ok" | "dim" | "warn";
   sentence: string; stamped: string | null;
+  // what the two controls show as CURRENT; null = no readable record (absent/unreadable)
+  start: ProgramDispatchStart | null; maxLanes: number | null;
 } {
-  const rec = p.dispatch;
+  const rec = p.dispatch as { v?: number; on?: boolean; bypassMaster?: boolean; maxLanes?: number; confirmedAt?: number } | null | undefined;
   if (rec === undefined || rec === null)
-    return { state: "absent", label: "program dispatch: never granted", tone: "dim", stamped: null,
-      sentence: "No owner record at all — nothing was ever granted or refused here. This program's"
-        + " released rows are started by the fleet dispatcher exactly as every other program's are:"
-        + " when the global switch is stopped, nothing of this program starts either." };
-  if (typeof rec !== "object" || Array.isArray(rec) || rec.v !== 1
-    || typeof rec.on !== "boolean"
+    return { state: "absent", label: "darf starten: wie Master · Standard", tone: "dim", stamped: null, start: null, maxLanes: null,
+      sentence: "Nichts eingestellt: dieses Program folgt dem Master-Schalter der Fleet, und wie viele"
+        + " seiner Lanes gleichzeitig laufen, bestimmt der Deckel der Maschine." };
+  if (typeof rec !== "object" || Array.isArray(rec) || (rec.v !== 1 && rec.v !== 2)
+    || typeof rec.on !== "boolean" || (rec.v === 2 && typeof rec.bypassMaster !== "boolean")
     || typeof rec.maxLanes !== "number" || !Number.isInteger(rec.maxLanes)
     || rec.maxLanes < 1 || rec.maxLanes > PROGRAM_DISPATCH_MAX_LANES_UI
     || typeof rec.confirmedAt !== "number" || !Number.isFinite(rec.confirmedAt) || rec.confirmedAt <= 0)
-    return { state: "unreadable", label: "program dispatch: unreadable record", tone: "warn", stamped: null,
-      sentence: "A dispatch record IS stored on this program, but it is not a shape this build can"
-        + " read as a v1 grant — so nothing here says what was granted, and no time is shown because"
-        + " an unreadable stamp is not a date. This is not the never-granted case: something is"
-        + " stored. The server's own loader refuses the same shape, so its tick is treating this"
-        + " program as ungranted; granting below overwrites the record outright." };
+    return { state: "unreadable", label: "Program dispatch: unlesbar", tone: "warn", stamped: null, start: null, maxLanes: null,
+      sentence: "Hier IST eine Einstellung gespeichert, aber in einer Form, die dieser Build nicht lesen"
+        + " kann — also steht hier weder, was gilt, noch ein Datum. Der Server liest sie genauso nicht"
+        + " und behandelt das Program wie ohne Einstellung; Apply unten überschreibt sie." };
   const stamped = fmtTs(rec.confirmedAt);
-  if (!rec.on)
-    return { state: "off", label: "program dispatch: off", tone: "dim", stamped,
-      sentence: "The record exists and grants nothing — this is you having said NO, not you having"
-        + " never said. The tick refuses this program's rows under a stopped fleet exactly as it"
-        + " would without a record, but the fact is a different one: it was decided, and it is dated." };
-  return { state: "on", label: `program dispatch: on · ${rec.maxLanes} lane${rec.maxLanes === 1 ? "" : "s"}`,
-    tone: "ok", stamped,
-    sentence: `The tick may start THIS program's released rows while the global dispatcher is`
-      + ` stopped, up to ${rec.maxLanes} of its lanes at once — and that number can only LOWER the`
-      + " machine-wide per-program budget, never raise it. Nothing else is waived: the autos"
-      + " kill-switch, the repo lane cap, the per-program lane cap, the harness"
-      + " automation bolt and the free-slot requirement all still hold. Quiet hours are stepped"
-      + " around for this program's MACHINE-released rows only; an owner-released row still waits." };
+  const start: ProgramDispatchStart = rec.v === 1 ? (rec.on ? "on" : "master")
+    : !rec.on ? "off" : rec.bypassMaster ? "on" : "master";
+  const lanes = `${rec.maxLanes} Lane${rec.maxLanes === 1 ? "" : "s"}`;
+  const label = `darf starten: ${PD_START_WORD[start]} · ${lanes}`;
+  const cap = ` Höchstens ${lanes} dieses Programs laufen gleichzeitig; über dem Deckel der Maschine wirkt die Zahl nicht.`;
+  if (start === "off")
+    return { state: "off", label, tone: "warn", stamped, start, maxLanes: rec.maxLanes,
+      sentence: "Aus: die Fleet startet keine Aufgabe dieses Programs von selbst, auch wenn der Master an"
+        + " ist. Von Hand starten bleibt möglich." };
+  if (start === "master")
+    return { state: "master", label, tone: "dim", stamped, start, maxLanes: rec.maxLanes,
+      sentence: "Wie Master: dieses Program startet, wenn der Master-Schalter der Fleet an ist, und"
+        + ` wartet, wenn er aus ist.${cap}` };
+  return { state: "on", label, tone: "ok", stamped, start, maxLanes: rec.maxLanes,
+    sentence: "An: die Fleet startet freigegebene Aufgaben dieses Programs auch bei Master aus."
+      + `${cap} Not-Aus für Automatik und Repo-Deckel halten weiter; die Ruhezeit gilt nur für`
+      + " Aufgaben, die du selbst freigegeben hast." };
 }
+
+// --- THE OWNER'S RELEASE POLICY, read for display (server/types.ts#loadProgramRelease) ---
+// Which pending rows the tick may start without a per-row release. ABSENT behaves exactly like
+// `manual` and says nobody decided; an unreadable record loads as absent on the server too.
+export type ProgramReleaseWord = "manual" | "card-valid" | "all";
+export const PROGRAM_RELEASE_WORDS: ProgramReleaseWord[] = ["manual", "card-valid", "all"];
+export function programReleaseState(p: ProgramInfo): {
+  policy: ProgramReleaseWord | null; readable: boolean; stamped: string | null; sentence: string;
+} {
+  const rec = p.release;
+  if (rec === undefined || rec === null)
+    return { policy: null, readable: true, stamped: null,
+      sentence: "Nichts eingestellt — wirkt wie manual: jede Aufgabe wartet auf deine Freigabe." };
+  if (typeof rec !== "object" || rec.v !== 1 || !PROGRAM_RELEASE_WORDS.includes(rec.policy as ProgramReleaseWord)
+    || typeof rec.confirmedAt !== "number" || !Number.isFinite(rec.confirmedAt) || rec.confirmedAt <= 0)
+    return { policy: null, readable: false, stamped: null,
+      sentence: "Hier ist eine Freigabe-Politik gespeichert, die dieser Build nicht lesen kann; der Server"
+        + " behandelt sie wie manual. Apply unten überschreibt sie." };
+  const policy = rec.policy as ProgramReleaseWord;
+  return { policy, readable: true, stamped: fmtTs(rec.confirmedAt),
+    sentence: policy === "manual" ? "manual: jede Aufgabe wartet auf deine Freigabe."
+      : policy === "card-valid" ? "card-valid: Aufgaben mit gültiger Karte (DONE, VERIFY, Dateien im Baum),"
+        + " vom Owner oder der MAIN gefilt, gelten ohne Einzelfreigabe als freigegeben."
+      : "all: jede wartende Aufgabe dieses Programs gilt als freigegeben." };
+}
+
+// --- THE QUEUE FOOT: which gate holds the dispatcher right now ---
+// Until 2026-09-28 the foot said "Dispatcher ON — runs released tasks" while the autos Not-Aus
+// kept the tick silent (Sinnprüfung C8). It now names EVERY fleet-wide gate that holds, in the
+// words of the settings window: Master aus, Not-Aus für Automatik (canDeliver's kill-switch),
+// Ruhezeit (the server's own `quiet`, never this browser's clock), Repo-Deckel voll with its
+// value. Per-program switches are not fleet-wide and stay in the Program detail. Pure: a check can
+// cut it out and run it.
+export function queueFootState(d: { on: boolean; maxLanes: number; repo: string; lanes?: number; quiet?: boolean },
+  autosOn: boolean | null, quiet: { start: number; end: number } | null): { text: string; tip: string; gates: string[] } {
+  const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
+  const repo = baseName(d.repo);
+  const gates: string[] = [];
+  const tips: string[] = [];
+  if (!d.on) { gates.push("Master aus"); tips.push("Master aus: freigegebene Aufgaben warten auf dich — außer in Programs mit „darf starten: an“."); }
+  if (autosOn === false) { gates.push("Not-Aus für Automatik"); tips.push("Not-Aus für Automatik: keine geplanten Prompts und keine Lane-Starts, bis du die Automatik wieder einschaltest."); }
+  if (d.quiet) {
+    gates.push(quiet ? `Ruhezeit bis ${hh(quiet.end)}` : "Ruhezeit");
+    tips.push("Ruhezeit: keine Lane-Starts bis zum Ende des Fensters (Uhr des Servers); Programs mit „darf starten: an“ starten nur, was die Fleet selbst freigegeben hat.");
+  }
+  if (typeof d.lanes === "number" && d.maxLanes > 0 && d.lanes >= d.maxLanes) {
+    gates.push(`Repo-Deckel voll — ${d.lanes}/${d.maxLanes} Lanes in ${repo}`);
+    tips.push("Repo-Deckel voll: erst wenn eine Lane landet oder schließt, startet die nächste.");
+  }
+  if (gates.length)
+    return { gates, text: `Hält: ${gates.join(" · ")}. `, tip: `${tips.join(" ")} intern: tickDispatch, canDeliver` };
+  return { gates, text: `Dispatcher an — startet freigegebene Aufgaben ohne dich, bis zu ${d.maxLanes} Lanes in ${repo}${typeof d.lanes === "number" ? ` (${d.lanes} laufen)` : ""}. Eigene wählt er nie. `,
+    tip: "Kein Tor der Fleet hält gerade; einzelne Programs können eigene Einstellungen haben (Program dispatch)." };
+}
+// the open foot's painter, called from renderQueue on every poll; null while the queue is closed
+let qFootPaint: (() => void) | null = null;
 
 // --- THE OWNER'S EXECUTION PROFILE, read for display ---
 // THREE states, and `unreadable` is the third for exactly the reason promotionState has one: this
@@ -1116,8 +1182,12 @@ export let qPrSeq = 0;
 export let qPdFor: string | null = null;
 export let qPdErr: string | null = null;  // the server's own sentence, kept verbatim across repaints
 export let qPdBusy = false;
-export let qPdAct: string | null = null;
 export let qPdSeq = 0;
+// the STAGED values of the section's three rows (G4.4: vorgemerkt until Apply); null = unchanged.
+// Module state, not DOM state, so a poll repaint of the detail keeps what the owner picked.
+export let qPdStart: ProgramDispatchStart | null = null;
+export let qPdLanes: string | null = null;
+export let qPdRelease: ProgramReleaseWord | null = null;
 
 // the composer's program picker, same once-per-open lifecycle as qRepoIn
 export let qProgSel: HTMLSelectElement | null = null;
@@ -2156,58 +2226,62 @@ export function renderProgramDetail(shell: Shell, id: string): void {
 
   // THE PERMISSION TO BE STARTED, beside the permission to LAND — and they are two doors because
   // they are two questions. `promotion` answers "may this MAIN move the integration branch"; this
-  // answers "may the fleet's tick spawn this program's released rows while the global queue is
-  // stopped". Until this record existed the answer was one fleet-wide switch, and a Program-MAIN
-  // that could file and release its own rows still needed a foreign hand to start them — the whole
-  // reason it is here. It sits ABOVE the stale/unknown early return for the promotion door's
+  // section answers "how many of this program's lanes, may the tick start them at all, and which
+  // rows count as released" — three rows, ONE NUMBER PER QUESTION (Sinnprüfung C8): until 2026-09-28
+  // the cap and the start right were one button ("grant · 2 lanes") and the release policy had no
+  // board surface. Two routes behind it: /dispatch for the first two rows, /release for the third.
+  // It sits ABOVE the stale/unknown early return for the promotion door's
   // reason: a program whose MAIN died is exactly a program whose standing grant an owner may want
   // to take back, and that return would hide the only door that can.
   {
     if (qPdFor !== p.id) {
       qPdFor = p.id;
       qPdSeq++; // a DIFFERENT program; anything still in flight for the old one is orphaned
-      qPdErr = null; qPdBusy = false; qPdAct = null;
+      qPdErr = null; qPdBusy = false;
+      qPdStart = null; qPdLanes = null; qPdRelease = null;
     }
     const forPdId = p.id;
     const pdSt = programDispatchState(p);
-    // THE FOUR BODIES, WRITTEN OUT as data rather than assembled from the button that was clicked —
-    // the promotion door's construction, for its reason: a body built by concatenation is a body a
-    // later edit can widen without anyone reading this pane again. The server reads a CLOSED set,
-    // so every shape here is exactly {v, on, maxLanes} or null.
-    // `maxLanes` on the OFF body is required by the door and inert by definition: an ungranted
-    // record caps nothing. It is written as 1 so the stored row can never read as a budget.
-    type PdAct = "on-1" | "on-2" | "off" | "revoke";
-    const PD_BODY: Record<PdAct, { dispatch: { v: 1; on: boolean; maxLanes: number } | null }> = {
-      "on-1": { dispatch: { v: 1, on: true, maxLanes: 1 } },
-      "on-2": { dispatch: { v: 1, on: true, maxLanes: 2 } },
-      off: { dispatch: { v: 1, on: false, maxLanes: 1 } },
-      revoke: { dispatch: null },
+    const rlSt = programReleaseState(p);
+    // THE BODIES, WRITTEN OUT from the three staged values and nothing else — the server reads a
+    // CLOSED set, so the dispatch body is exactly {v:2, on, bypassMaster, maxLanes} and the release
+    // body exactly {v:1, policy}. A row the owner did not touch keeps the stored value; an empty
+    // lane field sends 16, the server's own ceiling, which the Math.min in
+    // server.ts#programDispatchCap turns into the machine's number — "Standard" for this row.
+    const START_BODY: Record<ProgramDispatchStart, { on: boolean; bypassMaster: boolean }> = {
+      on: { on: true, bypassMaster: true }, master: { on: true, bypassMaster: false }, off: { on: false, bypassMaster: false },
     };
-    const pdNoAnswer = (act: PdAct) =>
-      `${act} did not reach the server — no answer came back, so whether this permission changed is unknown`;
-    const pdRun = async (act: PdAct): Promise<void> => {
+    const pdStaged = () => qPdStart !== null || qPdLanes !== null;
+    const pdBody = () => {
+      const start = qPdStart ?? pdSt.start ?? "master";
+      const typed = qPdLanes?.trim();
+      const maxLanes = typed === undefined ? pdSt.maxLanes ?? PROGRAM_DISPATCH_MAX_LANES_UI
+        : typed === "" ? PROGRAM_DISPATCH_MAX_LANES_UI : Number(typed);
+      return { dispatch: { v: 2 as const, ...START_BODY[start], maxLanes } };
+    };
+    // moved-UNKNOWN, exactly as the doors above count it: an unanswered request may well have been
+    // applied, so the facts are re-read instead of the old state being repainted over a record
+    // that has in truth already changed. Each route's refusal is the server's own sentence.
+    const pdRun = async (writes: { what: string; path: string; body: unknown }[]): Promise<void> => {
       const seq = ++qPdSeq;
       const mine = () => seq === qPdSeq && qPdFor === forPdId;
-      qPdBusy = true; qPdErr = null; qPdAct = act;
+      qPdBusy = true; qPdErr = null;
       qDetailKey = ""; renderQueueDetail();
-      let err: string | null = null;
-      // moved-UNKNOWN, exactly as the three doors above count it: an unanswered request may well
-      // have been applied, so the facts are re-read instead of the old state being repainted over a
-      // permission that has in truth already changed.
+      const errs: string[] = [];
       let moved = false;
       try {
-        const r = await post(`/api/programs/${forPdId}/dispatch`, PD_BODY[act]).catch(() => null);
-        if (!r) { err = pdNoAnswer(act); moved = true; }
-        else if (r.ok) moved = true;
-        else {
+        for (const w of writes) {
+          const r = await post(w.path, w.body).catch(() => null);
+          if (!r) { errs.push(`${w.what}: keine Antwort vom Server — ob es gesetzt wurde, ist unbekannt`); moved = true; continue; }
+          if (r.ok) { moved = true; continue; }
           const j = (await r.json().catch(() => null)) as { error?: string } | null;
-          err = j?.error ? `${act} failed — ${r.status}: ${j.error}`
-            : `${act} failed — the server answered ${r.status} with no readable reason`;
+          errs.push(`${w.what} — ${r.status}: ${j?.error ?? "no readable reason"}`);
         }
       } finally {
         if (mine()) {
-          qPdBusy = false; qPdAct = null;
-          qPdErr = err;
+          qPdBusy = false;
+          qPdErr = errs.length ? errs.join(" · ") : null;
+          if (!errs.length) { qPdStart = null; qPdLanes = null; qPdRelease = null; }
           if (moved) await loadPrograms(true);
           qKey = ""; qDetailKey = "";
           renderQueue(); renderQueueDetail();
@@ -2217,49 +2291,123 @@ export function renderProgramDetail(shell: Shell, id: string): void {
       }
     };
 
+    // Grammatik G6.2 + G5.3 + G4.4: rows with the label left, the control right, the stored value in
+    // mono, a one-sentence hint under the label; a changed row is only VORGEMERKT (ink edge), and the
+    // one primary Apply at the end of the section writes it. The same row form as the settings
+    // window's Fleet section (src/client.ts#fleetSection) — one grammar for a server setting.
     const pd = qDetailSection(shell.detail, "Program dispatch");
     const pdFacts = el("div", "ocfacts");
     pdFacts.appendChild(chip(pdSt.label, pdSt.tone, pdSt.sentence));
     pdFacts.appendChild(chip(
-      pdSt.stamped ? `decided ${pdSt.stamped}`
-        : pdSt.state === "unreadable" ? "no readable dispatch stamp" : "never decided", "dim",
-      pdSt.stamped ? "the server's own confirmedAt on this record — it stamps the act, no client clock is involved"
-        : pdSt.state === "unreadable"
-          ? "a record IS stored, but this build cannot read its stamp — an unreadable stamp is not a date"
-          : "no record is stored at all, so there is no date to show"));
+      pdSt.stamped ? `entschieden ${pdSt.stamped}` : pdSt.state === "unreadable" ? "kein lesbares Datum" : "nie entschieden", "dim",
+      pdSt.stamped ? "confirmedAt des Servers — das Datum deiner Einstellung, keine Browser-Uhr"
+        : "keine lesbare Einstellung gespeichert, also kein Datum"));
     pd.appendChild(pdFacts);
     pd.appendChild(el("div", "hint shellhint", pdSt.sentence));
-    pd.appendChild(el("div", "hint shellhint",
-      `POST /api/programs/${p.id}/dispatch — the owner-only door, and the only writer of this record.`
-      + " It reaches ONE thing: whether the fleet tick may start this program's released rows while"
-      + " the global dispatcher is stopped, and how many of its lanes may run at once. It does not"
-      + " touch the autos kill-switch, and it can only lower the machine-wide per-program lane"
-      + " budget. Each act below is sent on its own click, nothing is preselected, and every refusal"
-      + " is the server's own sentence, word for word."));
     if (programsRead !== "ok") pd.appendChild(el("div", "pkdwarn",
-      "the last GET /api/programs did not answer — the state above is CACHED context, not current"
-      + " truth. The four acts below still reach the server and are safe to repeat."));
+      "Das letzte GET /api/programs kam nicht an — der Stand oben ist zwischengespeichert, nicht aktuell."
+      + " Apply erreicht den Server trotzdem und darf wiederholt werden."));
+    const pdRow = (label: string, hint: string, tip: string, staged: boolean, value: string) => {
+      const row = el("div", `setrow fleetrow${staged ? " staged" : ""}`);
+      row.title = tip;
+      const main = el("div", "setmain");
+      main.append(el("div", "setlabel", label), el("div", "hint setnote", hint));
+      const val = el("span", "setval", value);
+      val.title = "Wert, wie ihn der Server zuletzt gemeldet hat";
+      const ctl = el("div", "setctl");
+      row.append(main, val, ctl);
+      pd.appendChild(row);
+      return { row, ctl };
+    };
+    const choice = <T extends string>(ctl: HTMLElement, words: [T, string, string][], cur: T | null, staged: T | null,
+      pick: (v: T | null) => void) => {
+      const box = el("div", "setchoice");
+      for (const [v, word, tip] of words) {
+        const b = el("button", "cmdlevel", word) as HTMLButtonElement;
+        b.type = "button";
+        b.title = tip;
+        b.disabled = qPdBusy;
+        b.classList.toggle("cur", v === cur);
+        b.classList.toggle("staged", v === staged);
+        b.setAttribute("aria-pressed", (staged ?? cur) === v ? "true" : "false");
+        // picking the stored value again un-stages the row
+        b.onclick = () => { pick(v === cur ? null : v); qDetailKey = ""; renderQueueDetail(); };
+        box.appendChild(b);
+      }
+      ctl.appendChild(box);
+    };
+
+    // 1 · Lanes gleichzeitig — the program cap, independent of the start right (410e7029)
+    const lanesRow = pdRow("Lanes gleichzeitig",
+      "So viele Lanes dieses Programs laufen höchstens gleichzeitig; leer heißt Deckel der Maschine.",
+      `Setzt den Program-Deckel (1 bis ${PROGRAM_DISPATCH_MAX_LANES_UI}); er kann den Deckel der Maschine nur senken, nie heben. intern: maxLanes`,
+      qPdLanes !== null, pdSt.maxLanes !== null ? String(pdSt.maxLanes) : "Standard");
+    const n = el("input", `setin setnum${qPdLanes !== null ? " staged" : ""}`) as HTMLInputElement;
+    n.type = "number"; n.min = "1"; n.max = String(PROGRAM_DISPATCH_MAX_LANES_UI); n.step = "1"; n.inputMode = "numeric";
+    n.placeholder = "Standard";
+    n.setAttribute("aria-label", "Lanes gleichzeitig");
+    n.value = qPdLanes ?? (pdSt.maxLanes !== null ? String(pdSt.maxLanes) : "");
+    n.disabled = qPdBusy;
+    const storedLanes = pdSt.maxLanes !== null ? String(pdSt.maxLanes) : "";
+    // typing re-stages in place — a full repaint per keystroke would take the focus away
+    n.oninput = () => {
+      qPdLanes = n.value.trim() === storedLanes ? null : n.value;
+      n.classList.toggle("staged", qPdLanes !== null);
+      lanesRow.row.classList.toggle("staged", qPdLanes !== null);
+      apply.disabled = qPdBusy || !(pdStaged() || qPdRelease !== null);
+    };
+    lanesRow.ctl.appendChild(n);
+
+    // 2 · darf starten — an / aus / wie Master (the v2 record's on + bypassMaster)
+    const startRow = pdRow("darf starten",
+      "an: startet auch bei Master aus · wie Master: folgt dem Master · aus: startet nie von selbst.",
+      "Ob die Fleet freigegebene Aufgaben dieses Programs ohne dich startet. intern: on, bypassMaster",
+      qPdStart !== null, PD_START_WORD[pdSt.start ?? "master"]);
+    choice(startRow.ctl, [
+      ["on", "an", "Startet freigegebene Aufgaben dieses Programs auch, wenn der Master aus ist."],
+      ["off", "aus", "Die Fleet startet keine Aufgabe dieses Programs von selbst, auch bei Master an; von Hand bleibt möglich."],
+      ["master", "wie Master", "Dieses Program startet genau dann, wenn der Master-Schalter der Fleet an ist."],
+    ], pdSt.start ?? (pdSt.state === "absent" ? "master" : null), qPdStart, (v) => { qPdStart = v; });
+
+    // 3 · Freigabe — the release policy, its own route (POST /api/programs/:id/release)
+    const releaseRow = pdRow("Freigabe",
+      rlSt.sentence,
+      "Welche wartenden Aufgaben dieses Programs ohne Einzelfreigabe als freigegeben gelten. intern: release policy",
+      qPdRelease !== null, rlSt.policy ?? (rlSt.readable ? "Standard" : "unlesbar"));
+    choice(releaseRow.ctl, [
+      ["manual", "manual", "Jede Aufgabe wartet auf deine Freigabe."],
+      ["card-valid", "card-valid", "Aufgaben mit gültiger Karte gelten ohne Einzelfreigabe als freigegeben."],
+      ["all", "all", "Jede wartende Aufgabe dieses Programs gilt als freigegeben."],
+    ], rlSt.policy ?? (rlSt.readable ? "manual" : null), qPdRelease, (v) => { qPdRelease = v; });
+
     if (qPdErr) pd.appendChild(el("div", "pkdwarn", qPdErr));
-    const pdActs = el("div", "pkdacts");
-    pdActs.style.marginTop = "10px";
-    const pdButtons: [PdAct, string, string, string][] = [
-      ["on-2", "grant · 2 lanes", "shrbtn primary",
-        "the tick starts this program's released rows under a stopped fleet, at most two of its lanes at once"],
-      ["on-1", "grant · 1 lane", "shrbtn",
-        "the same grant, serialized to a single lane of this program — the cautious rung"],
-      ["off", "set off", "shrbtn",
-        "stores an explicit NO — refused like an absent record, but dated and readable as a decision"],
-      ["revoke", "revoke", "shrbtn danger",
-        "removes the record entirely, back to never-granted; revoking twice is an ordinary success"],
-    ];
-    for (const [act, label, cls, tip] of pdButtons) {
-      const b = el("button", cls, qPdBusy && qPdAct === act ? `${label}…` : label) as HTMLButtonElement;
-      b.disabled = qPdBusy;
-      b.title = tip;
-      b.onclick = () => { void pdRun(act); };
-      pdActs.appendChild(b);
-    }
-    pd.appendChild(pdActs);
+    const foot = el("div", "setfoot");
+    foot.appendChild(el("div", "hint setnote",
+      pdSt.stamped || rlSt.stamped ? `Freigabe ${rlSt.stamped ? `entschieden ${rlSt.stamped}` : "nie entschieden"}` : ""));
+    const reset = el("button", "setreset", "Standard") as HTMLButtonElement;
+    reset.type = "button";
+    reset.title = "Löscht beide Einstellungen dieses Programs: es folgt wieder dem Master, dem Deckel der Maschine und wartet auf deine Freigabe.";
+    reset.disabled = qPdBusy || (pdSt.state === "absent" && rlSt.policy === null && rlSt.readable);
+    reset.onclick = () => {
+      qPdStart = null; qPdLanes = null; qPdRelease = null;
+      void pdRun([
+        { what: "Program dispatch", path: `/api/programs/${forPdId}/dispatch`, body: { dispatch: null } },
+        { what: "Freigabe", path: `/api/programs/${forPdId}/release`, body: { release: null } },
+      ]);
+    };
+    const apply = el("button", "cmdapply", qPdBusy ? "Apply…" : "Apply") as HTMLButtonElement;
+    apply.type = "button";
+    apply.title = "Schreibt die vorgemerkten Zeilen an den Server; jede Ablehnung steht danach wörtlich hier.";
+    apply.disabled = qPdBusy || !(pdStaged() || qPdRelease !== null);
+    apply.onclick = () => {
+      const writes: { what: string; path: string; body: unknown }[] = [];
+      if (pdStaged()) writes.push({ what: "Program dispatch", path: `/api/programs/${forPdId}/dispatch`, body: pdBody() });
+      if (qPdRelease !== null)
+        writes.push({ what: "Freigabe", path: `/api/programs/${forPdId}/release`, body: { release: { v: 1, policy: qPdRelease } } });
+      if (writes.length) void pdRun(writes);
+    };
+    foot.append(reset, apply);
+    pd.appendChild(foot);
   }
 
   if (mark === "founding") {
@@ -4018,6 +4166,7 @@ export function qPaintNotesOverview(parent: HTMLElement, agg: QNotesAgg, jump: (
 export function renderQueue() {
   const shell = qShell;
   if (!shell || !shell.isOpen()) return;
+  qFootPaint?.();
   void loadTaskTexts(); // no-op unless the visible task set changed
   void loadPrograms();  // no-op unless the poll's digest moved or the floor elapsed
   if (qView === "waves") void loadBundles(); // no-op unless a task fact the proposal reads moved
@@ -4543,19 +4692,20 @@ export function openQueue() {
   shell.tools.appendChild(layoutBtn);
 
   const drow = el("div", "qdisp");
+  qFootPaint = null;
   if (dispatch.available) {
     // the strip lives OUTSIDE the poll-guarded list rebuild, so it repaints itself from `dispatch`
-    // after a toggle rather than waiting for a rebuild that may never come
+    // after a toggle and on every poll (renderQueue calls qFootPaint) rather than waiting for a
+    // rebuild that may never come
     const label = el("span", "");
     const toggle = el("button", "shrbtn", "") as HTMLButtonElement;
-    // it says what it RUNS, not merely that it is on. The single most important fact about this
-    // switch is the one it never used to state: it takes released tasks and nothing else — it
-    // does not pick work out of the backlog, which is exactly what its predecessor did.
     const paint = () => {
-      label.textContent = dispatch.on
-        ? `Dispatcher ON — runs released tasks unattended, up to ${dispatch.maxLanes} lanes in ${baseName(dispatch.repo)}. It never picks its own. `
-        : `Dispatcher off — released tasks wait for you to start them by hand (${baseName(dispatch.repo)}). `;
+      const f = queueFootState(dispatch, autosOnSrv, quietHoursSrv);
+      label.textContent = f.text;
+      label.title = f.tip;
       toggle.textContent = dispatch.on ? "turn off" : "turn on";
+      toggle.title = dispatch.on ? "Master aus: freigegebene Aufgaben warten, bis du sie startest."
+        : "Master an: die Fleet startet freigegebene Aufgaben ohne dich.";
     };
     toggle.onclick = async () => {
       const r = await post("/api/dispatch", { on: !dispatch.on });
@@ -4566,6 +4716,7 @@ export function openQueue() {
       paint();
     };
     paint();
+    qFootPaint = paint;
     drow.append(label, toggle);
   } else {
     drow.textContent = "Dispatcher unavailable (set FLEET_DISPATCH_REPO to auto-run queued tasks)."

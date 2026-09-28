@@ -137,6 +137,7 @@ export async function run(ctx: Ctx): Promise<void> {
   let taskClientSource = "";
   let taskPageSource = "";
   let taskServerSource = "";
+  let taskTypesSource = "";
   let taskClientReadError = "";
   try {
     const checkout = resolve(realpathSync(`${ROOT}/node_modules`), "..");
@@ -145,6 +146,7 @@ export async function run(ctx: Ctx): Promise<void> {
       .join("\n");
     taskPageSource = readFileSync(`${checkout}/public/index.html`, "utf8");
     taskServerSource = readFileSync(`${checkout}/server.ts`, "utf8");
+    taskTypesSource = readFileSync(`${checkout}/server/types.ts`, "utf8");
   } catch (e) { taskClientReadError = e instanceof Error ? e.message : String(e); }
   check("task workbench precondition: client source, server source and page CSS are readable",
     taskClientSource.length > 0 && taskServerSource.length > 0 && taskPageSource.length > 0, taskClientReadError);
@@ -466,16 +468,21 @@ export async function run(ctx: Ctx): Promise<void> {
       "FLEET_DISPATCH_MAX_LANES", "FLEET_VERIFY_TIMEOUT_MS", "FLEET_VERIFY_WAIT_MS",
       "FLEET_MIGRATE_PCT", "FLEET_LANE_MIGRATE_PCT", "FLEET_MODEL", "FLEET_STALLED_IDLE_MS",
       "FLEET_CARD_MS", "FLEET_BRIEF_MS", "FLEET_LAND_FF_RETRY_ROUNDS",
-      "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS",
+      "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS", "FLEET_MAX_SESSIONS",
     ];
     const listAt = taskServerSource.indexOf("const MACHINE_SETTINGS = [");
     const listEnd = taskServerSource.indexOf("] as const;", listAt);
     const listSrc = listAt >= 0 && listEnd > listAt ? taskServerSource.slice(listAt, listEnd) : "";
     const names = [...listSrc.matchAll(/name: "(FLEET_[A-Z_]+)"/g)].map((m) => m[1]);
-    check("settings This machine: the literal allowlist is the twelve reviewed names and every name has an effective server read",
-      names.length <= 12 && JSON.stringify(names) === JSON.stringify(expected)
-        && names.every((name) => taskServerSource.includes(`process.env.${name}`)),
-      JSON.stringify({ names, unread: names.filter((name) => !taskServerSource.includes(`process.env.${name}`)) }));
+    // each name's env read lives in EXACTLY ONE of server.ts and server/types.ts (FLEET_MAX_SESSIONS
+    // is read and clamped in types.ts, sizing MAX_SLOTS): a second read would be a second, drifting
+    // validation of the same value. `\b` keeps FLEET_DISPATCH_MAX_LANES from matching its _PER_PROGRAM.
+    const envReads = (name: string) => [taskServerSource, taskTypesSource]
+      .filter((src) => new RegExp(`process\\.env\\.${name}\\b`).test(src)).length;
+    check("settings This machine: the literal allowlist is the thirteen reviewed names and every name has exactly one effective server read",
+      names.length <= 13 && JSON.stringify(names) === JSON.stringify(expected)
+        && names.every((name) => envReads(name) === 1),
+      JSON.stringify({ names, reads: names.filter((name) => envReads(name) !== 1).map((name) => [name, envReads(name)]) }));
 
     const routeAt = taskServerSource.indexOf('if (url.pathname === "/api/machine-settings")');
     const routeEnd = taskServerSource.indexOf("// the session's own row", routeAt);

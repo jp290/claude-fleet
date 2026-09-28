@@ -85,6 +85,14 @@ export async function run(): Promise<void> {
     check("a restart adopts the seventeenth session on its lane place",
       !!seventeenthBody.slot && adopted25.slots.find((s) => s.id === seventeenthBody.slot)?.cwd === seventeenthBody.cwd,
       JSON.stringify(adopted25.slots.filter((s) => s.cwd).map((s) => s.id)));
+    // the settings window's "This machine" row reads the EFFECTIVE ceiling this server started
+    // with (25 here, not the default 16) — server.ts#MACHINE_SETTINGS over GET /api/machine-settings
+    const machine = (await (await get("/api/machine-settings")).json()) as
+      { settings?: { name: string; value: unknown; default: unknown; how: unknown }[] };
+    const maxRow = machine.settings?.find((r) => r.name === "FLEET_MAX_SESSIONS");
+    check("GET /api/machine-settings carries FLEET_MAX_SESSIONS with the running server's value",
+      maxRow?.value === 25 && maxRow.default === 16 && maxRow.how === ".env + Neustart",
+      JSON.stringify(maxRow ?? null));
   } finally {
     for (const lane of separateLanes) {
       await post(`/api/slots/${lane.slot}/kill`, {});

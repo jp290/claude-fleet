@@ -827,7 +827,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     "FLEET_DISPATCH_MAX_LANES", "FLEET_VERIFY_TIMEOUT_MS", "FLEET_VERIFY_WAIT_MS",
     "FLEET_MIGRATE_PCT", "FLEET_LANE_MIGRATE_PCT", "FLEET_MODEL", "FLEET_STALLED_IDLE_MS",
     "FLEET_CARD_MS", "FLEET_BRIEF_MS", "FLEET_LAND_FF_RETRY_ROUNDS",
-    "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS",
+    "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS", "FLEET_MAX_SESSIONS",
   ];
   const [machineOwner, machineSelf, machineShare] = await Promise.all([
     fetch(BASE + "/api/machine-settings", { headers: H }),
@@ -838,8 +838,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     { settings?: { name?: unknown; value?: unknown; default?: unknown; how?: unknown }[] } | null;
   const machineRows = Array.isArray(machineBody?.settings) ? machineBody.settings : [];
   const machineNames = machineRows.map((r) => r.name).filter((name): name is string => typeof name === "string");
-  check("§2 machine settings: the owner reads only the reviewed allowlist, at most twelve complete rows",
-    machineOwner.status === 200 && machineRows.length === machineNames.length && machineNames.length <= 12
+  check("§2 machine settings: the owner reads only the reviewed allowlist, at most thirteen complete rows",
+    machineOwner.status === 200 && machineRows.length === machineNames.length && machineNames.length <= 13
       && new Set(machineNames).size === machineNames.length
       && machineNames.every((name) => MACHINE_SETTING_NAMES.includes(name))
       && machineRows.every((r) => (typeof r.value === "string" || typeof r.value === "number")

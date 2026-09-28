@@ -22656,6 +22656,8 @@ const MACHINE_SETTINGS = [
   { name: "FLEET_LAND_FF_RETRY_ROUNDS", value: LAND_FF_RETRY_ROUNDS, default: 2, how: ".env + Neustart" },
   { name: "FLEET_MERGE_REPAIR_ROUNDS", value: MERGE_REPAIR_ROUNDS, default: 2, how: ".env + Neustart" },
   { name: "FLEET_AUTO_REVIEW_MS", value: AUTO_REVIEW_MS, default: 15_000, how: "watchdog.sh + kickstart" },
+  // read in server/types.ts (it sizes MAX_SLOTS there); binding only with FLEET_SEPARATE_LANE_SLOTS=1
+  { name: "FLEET_MAX_SESSIONS", value: FLEET_MAX_SESSIONS, default: 16, how: ".env + Neustart" },
 ] as const;
 const VERIFY_OUT_CAP = 2048; // verify.out is a byte-capped RETENTION of stdout+stderr (~2KB) — see retainRunOutput
 // --- the SKIP contract, and the decision behind it -------------------------------------------
@@ -41107,8 +41109,12 @@ Bun.serve<WSData>({
         // `maxLanes` is the EFFECTIVE cap for the dispatch repo, not the env constant: the board
         // renders it as "up to N lanes in <repo>", and after a per-repo entry the env number is no
         // longer what the tick counts against — a UI that keeps printing it states a budget nothing uses.
+        // `lanes` and `quiet` let the queue foot NAME the gate that holds (repo cap full, quiet
+        // hours) from the server's own count and clock — a phone in another time zone must not
+        // decide whether the machine's quiet window is open.
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: repoLaneCap(DISPATCH_REPO).max, repo: DISPATCH_REPO,
-          waveBudget: LAND_WAVE_BUDGET },
+          waveBudget: LAND_WAVE_BUDGET, lanes: DISPATCH_REPO ? slots.filter((s) => inRepo(s, DISPATCH_REPO)).length : 0,
+          quiet: inQuietHours(Date.now()) },
         // The brief compiler's mode as a global runtime fact, never inferred per row from a stored
         // brief. It sat beside an `analysis: { on }` sibling until 2026-09-10; that fact is gone
         // with the analyst, and a client reading it must not silently degrade to "on".

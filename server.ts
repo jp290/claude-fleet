@@ -11349,7 +11349,7 @@ function refuseClarification(c: ClarificationRequest, reason: string, at = Date.
   if (worker?.cwd && worker.openedAt === c.worker.openedAt && worker.sessionId === c.worker.sessionId) {
     worker.awaiting = null;
     const line = `[fleet] clarification ${c.id} was refused: ${reason}. No reply will come from this request.`;
-    void sendText(worker, line, true, { path: "clarification-reply" }).then(() => {
+    void sendText(worker, line, true, { path: "clarification-reply", requireAgent: true }).then(() => {
       worker.history = [...worker.history, { text: line, ts: Date.now() }].slice(-MAX_HISTORY);
       saveHistory(worker);
     }).catch((e: unknown) => logError("clarificationRefusalDelivery", e));
@@ -21980,6 +21980,9 @@ async function tickWatches(): Promise<void> {
     for (const event of fleetEvents) {
       if (event.status !== "pending") continue;
       if (queuedFleetEvents.has(event.id)) continue;
+      const holding = event.receiverSlot === null ? undefined : standardSuccessionHolding(event.receiverSlot);
+      if (holding && event.receiverOpenedAt === holding.main?.openedAt
+        && fleetEventDeliveryClass(event) === "sofort") continue;
       const s = pendingFleetEventReceiver(event);
       if (!s) {
         if (event.receiverAddress?.kind === "slot") continue;

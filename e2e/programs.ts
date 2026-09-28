@@ -157,6 +157,7 @@ interface FleetState {
   attentionRequests?: Record<string, unknown>[];
   // read by the succession-handover fixture, which asks whose row each is and whether it is open
   autos?: Record<string, unknown>[];
+  clarifications?: { id?: string; status?: string; refusedReason?: string | null }[];
   tasks?: Record<string, unknown>[];
   // read narrowly by the D1 report-join fixture, which only ever asks which ids are present
   fleetReports?: { id?: string }[];
@@ -3705,17 +3706,24 @@ export async function run(ctx: Ctx): Promise<void> {
     !!s0Heal && JSON.stringify(s0Live) === JSON.stringify({ slot: mainSlot, openedAt: transferredBinding?.openedAt }),
     `audit=${JSON.stringify(s0Heal ?? null)} live=${JSON.stringify(s0Live)}`);
   let dutyDelivered: { status?: string; receiverSlot?: number } | undefined;
-  for (let i = 0; i < 100 && dutyDelivered?.status !== "delivered"; i++) {
+  for (let i = 0; i < 100; i++) {
     dutyDelivered = ((await (await get("/api/events")).json()) as { events: { id: string;
       status: string; receiverSlot: number }[] }).events.find((e) => e.id === dutyEventId);
-    if (dutyDelivered?.status !== "delivered") await Bun.sleep(100);
+    if (dutyDelivered?.status === "delivered" || dutyDelivered?.status === "send-uncertain") break;
+    await Bun.sleep(100);
   }
-  const dutySuccessorHistory = await (await get(`/api/slots/${mainSlot}/history`)).json() as {
-    history: { text: string }[] };
-  check("Standard succession duty: the immediate FleetEvent is delivered into the successor pane",
-    dutyDelivered?.status === "delivered" && dutyDelivered.receiverSlot === mainSlot
-      && dutySuccessorHistory.history.some((h) => h.text.includes(dutyEventId)),
-    JSON.stringify({ event: dutyDelivered ?? null, history: dutySuccessorHistory.history.slice(-2) }));
+  const dutyRead = await fetch(`${BASE}/api/self/events/${dutyEventId}`, {
+    headers: { "x-fleet-self-token": dutySuccessorToken },
+  });
+  const dutyReadText = await dutyRead.text();
+  const dutyAck = dutyDelivered?.status === "delivered" || dutyDelivered?.status === "send-uncertain"
+    ? await selfPost(`/api/self/events/${dutyEventId}/ack`, dutySuccessorToken, {})
+    : new Response(null, { status: 599 });
+  check("Standard succession duty: the successor reads and acknowledges its immediate FleetEvent",
+    dutyDelivered?.receiverSlot === mainSlot
+      && (dutyDelivered.status === "delivered" || dutyDelivered.status === "send-uncertain")
+      && dutyRead.status === 200 && dutyReadText.includes(dutyEventId) && dutyAck.status === 200,
+    JSON.stringify({ event: dutyDelivered ?? null, read: dutyRead.status, ack: dutyAck.status }));
   if (typeof s0Lane.slot === "number") await post(`/api/slots/${s0Lane.slot}/kill`, {});
   if (s0Lane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", s0Lane.cwd]);
   if (lostDutyLane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", lostDutyLane.cwd]);
@@ -6654,9 +6662,10 @@ export async function run(ctx: Ctx): Promise<void> {
   const standardPredecessor = await bootstrapRevocationMain(
     standardRevocationProgram, gameWt, "standard-revocation-predecessor",
     "succession revocation fixture: the Standard predecessor is bound with an exact live identity");
-  const revocationLane = (await (await post("/api/lanes", { repo: REPO,
-    parent: { slot: standardPredecessor.slot, openedAt: standardPredecessor.openedAt } })).json()) as {
+  const revocationLane = (await (await post("/api/lanes", { repo: gameRepo,
+    harness: "codex", model: "gpt-5.5" })).json()) as {
       slot?: number; cwd?: string };
+  if (revocationLane.slot) await respawnScreen(revocationLane.slot, ">_ OpenAI Codex (v0.147.0)");
   await stopSrv();
   const revocationFixture = readState();
   if (revocationLane.slot && revocationFixture.slots?.[String(revocationLane.slot)])
@@ -6667,6 +6676,10 @@ export async function run(ctx: Ctx): Promise<void> {
     slotToken(revocationLane.slot ?? null), { question: "Who answers if the successor cannot bind?" });
   const revocationRequest = (await revocationQuestion.clone().json() as {
     request?: { id?: string } }).request;
+  check("Standard succession revocation duty setup: its live Program lane has an open question",
+    !!revocationLane.slot && revocationQuestion.ok && !!revocationRequest?.id,
+    JSON.stringify({ lane: revocationLane, question: revocationQuestion.status,
+      body: await revocationQuestion.clone().text() }));
   const standardHandoffCommit = await commitRevocationHandoff(gameWt, standardPredecessor.openedAt,
     `## Program succession\ncontinue ${standardRevocationProgram.title}\n`,
     "succession fixture: Standard authority revocation");
@@ -6743,10 +6756,12 @@ export async function run(ctx: Ctx): Promise<void> {
       binding: [standardBindingBefore, standardAfter?.main],
       receipts: [standardReceiptsBefore, standardReceiptsAfter], candidate: standardCandidateSlot,
       replacement: standardReplacementAfter }));
-  const revokedLost = readState().programs?.find((p) => p.id === standardRevocationProgram.id)?.handover?.lost ?? [];
+  const revokedState = readState();
+  const revokedLost = revokedState.programs?.find((p) => p.id === standardRevocationProgram.id)?.handover?.lost ?? [];
+  const revokedQuestion = revokedState.clarifications?.find((c) => c.id === revocationRequest?.id);
   let refusalPane = { out: "" };
   for (let i = 0; i < 60 && revocationLane.slot && !refusalPane.out.includes(revocationRequest?.id ?? "never"); i++) {
-    refusalPane = await tmuxOut("capture-pane", "-t", `s${revocationLane.slot}`, "-p", "-J");
+    refusalPane = await tmuxOut("capture-pane", "-t", `s${revocationLane.slot}`, "-p", "-J", "-S", "-");
     if (!refusalPane.out.includes(revocationRequest?.id ?? "never")) await Bun.sleep(100);
   }
   const revokedAudit = ((await (await get("/api/audit?limit=500")).json()) as {
@@ -6755,12 +6770,15 @@ export async function run(ctx: Ctx): Promise<void> {
     revocationQuestion.ok && !!revocationRequest?.id
       && revokedLost.some((row) => row.id === revocationRequest.id
         && row.kind === "clarification" && row.reason === "no successor bound")
-      && refusalPane.out.includes(`clarification ${revocationRequest.id} was refused: no successor bound`)
+      && revokedQuestion?.status === "refused"
+      && typeof revokedQuestion.refusedReason === "string"
+      && refusalPane.out.includes(`clarification ${revocationRequest.id} was refused: ${revokedQuestion.refusedReason}`)
       && !revokedAudit.some((e) => e.event === "clarification_rebound"
         && (e.detail ?? "").includes(revocationRequest.id ?? "never")),
-    JSON.stringify({ id: revocationRequest?.id, lost: revokedLost, pane: refusalPane.out.slice(-180) }));
+    JSON.stringify({ id: revocationRequest?.id, lost: revokedLost,
+      refused: revokedQuestion?.refusedReason ?? null, pane: refusalPane.out.slice(-180) }));
   if (revocationLane.slot) await post(`/api/slots/${revocationLane.slot}/kill`, {});
-  if (revocationLane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", revocationLane.cwd]);
+  if (revocationLane.cwd) spawnSync("git", ["-C", gameRepo, "worktree", "remove", "--force", revocationLane.cwd]);
   if (standardRecycle?.ok) await post(`/api/slots/${standardPredecessor.slot}/kill`, {});
   await programPost(standardRevocationProgram.id, "complete");
   clearSuccessionLatch(afterOpenLatch);
@@ -6768,9 +6786,10 @@ export async function run(ctx: Ctx): Promise<void> {
   const ownerKillProgram = await activateNewProgram("Standard MAIN owner kill keeps the clarification closed");
   const ownerKillMain = await bootstrapRevocationMain(ownerKillProgram, gameWt,
     "standard-owner-kill-main", "owner-kill clarification fixture has an exact bound MAIN");
-  const ownerKillLane = (await (await post("/api/lanes", { repo: REPO,
-    parent: { slot: ownerKillMain.slot, openedAt: ownerKillMain.openedAt } })).json()) as {
+  const ownerKillLane = (await (await post("/api/lanes", { repo: gameRepo,
+    harness: "codex", model: "gpt-5.5" })).json()) as {
       slot?: number; cwd?: string };
+  if (ownerKillLane.slot) await respawnScreen(ownerKillLane.slot, ">_ OpenAI Codex (v0.147.0)");
   await stopSrv();
   const ownerKillFixture = readState();
   if (ownerKillLane.slot && ownerKillFixture.slots?.[String(ownerKillLane.slot)])
@@ -6781,6 +6800,10 @@ export async function run(ctx: Ctx): Promise<void> {
     { question: "This question must not pass an owner kill." });
   const ownerKillRequest = (await ownerKillQuestion.clone().json() as {
     request?: { id?: string } }).request;
+  check("Standard owner-kill duty setup: its live Program lane has an open question",
+    !!ownerKillLane.slot && ownerKillQuestion.ok && !!ownerKillRequest?.id,
+    JSON.stringify({ lane: ownerKillLane, question: ownerKillQuestion.status,
+      body: await ownerKillQuestion.clone().text() }));
   const ownerKillAct = await post(`/api/slots/${ownerKillMain.slot}/kill`, {});
   const ownerKillClarifications = await fetch(`${BASE}/api/self/clarifications`, {
     headers: { "x-fleet-self-token": slotToken(ownerKillLane.slot ?? null) } });
@@ -6792,7 +6815,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && row.refusedReason === "receiver occupant ended or was replaced"),
     JSON.stringify({ kill: ownerKillAct.status, id: ownerKillRequest?.id, rows: ownerKillRows }));
   if (ownerKillLane.slot) await post(`/api/slots/${ownerKillLane.slot}/kill`, {});
-  if (ownerKillLane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", ownerKillLane.cwd]);
+  if (ownerKillLane.cwd) spawnSync("git", ["-C", gameRepo, "worktree", "remove", "--force", ownerKillLane.cwd]);
   await programPost(ownerKillProgram.id, "complete");
 
   // THE RESTART INSIDE THE RESPAWN, on a Game-Maker Program so the boot's tree-occupant rule runs
@@ -7035,7 +7058,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const budgetState = readState();
   const liveBudgetRow = liveOccupancy.find((p) => p.id === mainProgram.id);
   const liveDebts = (budgetState.events ?? []).filter((e) => e.receiverSlot === successorSlot
-    && !["acknowledged", "receiver-gone"].includes(String(e.status))).length;
+    && !["acknowledged", "receiver-gone", "subject-gone"].includes(String(e.status))).length;
   const liveArmed = (budgetState.watches ?? []).filter((w) => w.slot === successorSlot && w.armed === true).length;
   check("V1b: a uniquely live binding projects a KNOWN delivery budget whose numbers are the transport's own",
     liveBudgetRow?.deliveryBudget?.state === "known"

@@ -117,15 +117,22 @@ export async function run(): Promise<void> {
     await fetch(`${i.base}/api/slots/3/open`, { method: "POST", headers: OH, body: JSON.stringify({ cwd: plain, label: "konzept-plain" }) });
     const wt = await fetch(`${i.base}/api/slots/${LANE}/open-worktree`, { method: "POST", headers: OH, body: JSON.stringify({ repo, branch: BRANCH }) });
     const wtBody = await wt.text();
+    // THREE setup rows, not one: a preview hands back only the NAMES of failed checks, so each conjunct
+    // gets its own name. The wait is 30 s because the slot rows reach fleet.json through the pane spawn
+    // and the coalesced save, and a helper running the whole suite is far busier than a lane's machine.
+    const credentialed = (x: SlotRow) => /^[0-9a-f]{32}$/.test(x.selfToken ?? "") && typeof x.openedAt === "number";
     let rows: SlotRow[] = [];
-    for (let n = 0; n < 80; n++) {
+    for (let n = 0; n < 300; n++) {
       rows = [1, LANE, 3].map((k) => readState().slots[String(k)] ?? {});
-      if (rows.every((x) => /^[0-9a-f]{32}$/.test(x.selfToken ?? "") && typeof x.openedAt === "number")) break;
+      if (rows.every(credentialed) && rows[1]?.worktree?.branch === BRANCH) break;
       await Bun.sleep(100);
     }
-    const opened = wt.ok && rows.every((x) => /^[0-9a-f]{32}$/.test(x.selfToken ?? "")) && rows[1]?.worktree?.branch === BRANCH;
-    check("konzepte fixture: a MAIN-to-be, a lane and a plain session each hold their own credential", opened,
-      `open-worktree=${wt.status} ${wtBody.slice(0, 200)} rows=${JSON.stringify(rows.map((x) => ({ cwd: x.cwd, wt: x.worktree })))}`);
+    const seen = JSON.stringify(rows.map((x) => ({ cwd: x.cwd, token: credentialed(x), wt: x.worktree ?? null })));
+    check("konzepte fixture: open-worktree opens the lane on a place above the bands", wt.ok, `${wt.status} ${wtBody.slice(0, 300)}`);
+    check("konzepte fixture: the MAIN-to-be, the lane and the plain session each persist their own credential within 30 s",
+      rows.every(credentialed), seen);
+    check("konzepte fixture: the lane's persisted row carries its worktree branch", rows[1]?.worktree?.branch === BRANCH, seen);
+    const opened = wt.ok && rows.every(credentialed) && rows[1]?.worktree?.branch === BRANCH;
     // a red SETUP row leaves everything below unmeasured, not violated — stop here rather than print it
     if (!opened) return;
 

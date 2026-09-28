@@ -67,7 +67,7 @@ import { DraftBook } from "../src/drafts";
 import { runningEffort, runningModel } from "../src/running";
 import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness } from "../model-register";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
-import { modelWindow } from "../src/modelname";
+import { modelLabel, modelWindow } from "../src/modelname";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
 // the deploy-gap's path classifier is IMPORTED and RUN over this very tree: the whole finding it
@@ -10920,6 +10920,20 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && modelWindow("gpt-6-sol") === 272_000 && modelWindow("gpt-6-astra") === 272_000
       && modelWindow("gpt-6-unlisted") === null,
     JSON.stringify([MODEL_ALIASES.opus, modelWindow("gpt-6-sol"), modelWindow("gpt-6-unlisted")]));
+  pin("model register: Sonnet 5.5 is current, Sonnet 5 is superseded by it, the summary role and the short forms point at 5.5",
+    modelEntry("claude", "claude-sonnet-5-5[1m]")?.status === "current"
+      && modelEntry("claude", "claude-sonnet-5-5")?.status === "current"
+      && ["claude-sonnet-5[1m]", "claude-sonnet-5"].every((id) => {
+        const e = modelEntry("claude", id);
+        return e?.status === "superseded" && e.supersededBy === "claude-sonnet-5-5[1m]";
+      })
+      && MODEL_DEFAULTS.summary.id === "claude-sonnet-5-5[1m]" && MODEL_DEFAULTS.summary.effort === "medium"
+      && ["sonnet", "sonnet 5.5", "claude sonnet 5.5"].every((k) => MODEL_ALIASES[k] === "claude-sonnet-5-5")
+      && MODEL_ALIASES["sonnet 5"] === "claude-sonnet-5"
+      && modelLabel("claude-sonnet-5-5[1m]") === "Sonnet 5.5 · 1M" && modelLabel("claude-sonnet-5-5") === "Sonnet 5.5 · 1M"
+      && modelLabel("claude-sonnet-5") === "Sonnet 5 · 1M",
+    JSON.stringify([modelEntry("claude", "claude-sonnet-5-5[1m]"), modelEntry("claude", "claude-sonnet-5"), MODEL_DEFAULTS.summary,
+      MODEL_ALIASES.sonnet, MODEL_ALIASES["sonnet 5.5"], modelLabel("claude-sonnet-5-5[1m]")]));
   pin("model register: Codex availability distinguishes listed, absent, and missing or malformed cache",
     codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-sol") === "available"
       && codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-astra") === "unavailable"

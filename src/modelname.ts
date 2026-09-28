@@ -10,6 +10,8 @@ import { MODEL_REGISTER } from "../model-register";
 // of its family, and only where a source names it. Twelfth cut: the claude rows come from Claude
 // Code's OWN model registry in the installed 2.1.278 binary, which carries per model
 //   claude-opus-5 · claude-sonnet-5 · claude-fable-5-1   context:{window:1e6,native_1m:!0,…}
+// (2.1.284 adds claude-sonnet-5-5, display_name "Sonnet 5.5", the same window:1e6 — the version
+// rule below already reads its id as "Sonnet 5.5"; e2e/pins.ts pins the label.)
 //   claude-haiku-4-5-20251001                            context:{window:200000,…}
 // and its resolver (EF) returns 1e6 for a native_1m model on the first-party API WITHOUT any [1m]
 // suffix. It falls back to 200000 only when the account's longContext1mCreditsBlocked latch is set

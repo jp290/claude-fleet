@@ -231,6 +231,14 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
 - Modell-Tiers: `DEFAULT_MODEL` (`server.ts`, override `FLEET_MODEL`) = Sessions/Lanes ohne eigenen Pin;
   `SUMMARY_MODEL` (override `FLEET_SUMMARY_MODEL`) = alle Wegwerf-Worker (summarize, Commit-Msg, enhance,
   Merge-Resolver, ② review, digest). Beide werden gegen `MODEL_RE` validiert.
+- Modellregister (`model-register.ts#MODEL_REGISTER`): Sonnet 5.5 (`claude-sonnet-5-5[1m]`, `claude-sonnet-5-5`)
+  ist `current`, Sonnet 5 `superseded` mit Nachfolger `claude-sonnet-5-5[1m]`; die Kurzformen `sonnet`,
+  `sonnet 5.5` und `claude sonnet 5.5` loesen auf `claude-sonnet-5-5` auf, `sonnet 5` bleibt lesbar und
+  loest auf die abgeloeste Id auf. `MODEL_DEFAULTS.summary` (Fallback von `SUMMARY_MODEL`, wenn
+  `FLEET_SUMMARY_MODEL` fehlt) ist `claude-sonnet-5-5[1m]`. Der Live-Wert bleibt Opus 5.5: dasselbe
+  `FLEET_SUMMARY_MODEL` treibt `server.ts#runMerge` und `server.ts#runRepair` (Land-Pfad), und ein
+  Wechsel dort waere eine eigene Entscheidung; `FLEET_CARD_MODEL` und `FLEET_REFINE_MODEL` stehen seit
+  2026-09-28 in `.env` auf `claude-sonnet-5-5[1m]`.
 - Ein lebender Slot wechselt sein Modell/Effort im DATENSATZ über `POST /api/slots/:id/model` (Owner,
   kein Respawn; `docs/self-api.md` §model) — Heal, `↻ restart` und Nachfolge spawnen danach damit. Die
   Nachfolge (`POST /api/self/succeed`) nimmt dasselbe Paar optional als Override. Beides wird nach der

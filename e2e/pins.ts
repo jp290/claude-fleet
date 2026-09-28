@@ -7138,8 +7138,16 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     "Hashes identifizieren nur die versiegelten Bytes",
     "Blindheit und Zustellung bestätigt der Operator, sonst bleiben sie `unknown`",
   ] as const;
+  // AGENTS.md keeps the binding sentence and points at the studio doc for the receipt, Direct Slice
+  // and hash rules (Ableitung C, docs/verfassung.md §8: what a role does not run is a pointer). The
+  // pointer is pinned, so the portable contract cannot drop the obligation or lose the path to it.
+  const agentsTruthMarkers = [
+    "BINDING ROLE OBLIGATION, NOT A SERVER GATE",
+    "EXISTING DOORS DO NOT AUTHORIZE A BYPASS",
+    "`docs/product-studio-working-circle.md` §The Game-Maker profile",
+  ] as const;
   const docTruthSurfaces = [
-    ["AGENTS.md", agents, preflightTruthMarkers],
+    ["AGENTS.md", agents, agentsTruthMarkers],
     ["docs/self-api.md", selfApiDoc, selfApiTruthMarkers],
     ["docs/product-studio-working-circle.md", studioDoc, preflightTruthMarkers],
   ] as const;

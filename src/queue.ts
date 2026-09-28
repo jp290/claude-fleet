@@ -917,7 +917,7 @@ export function queueFootState(d: { on: boolean; maxLanes: number; repo: string;
   }
   if (gates.length)
     return { gates, text: `Hält: ${gates.join(" · ")}. `, tip: `${tips.join(" ")} intern: tickDispatch, canDeliver` };
-  return { gates, text: `Dispatcher an — startet freigegebene Aufgaben ohne dich, bis zu ${d.maxLanes} Lanes in ${repo}${typeof d.lanes === "number" ? ` (${d.lanes} laufen)` : ""}. Eigene wählt er nie. `,
+  return { gates, text: `Dispatcher an — startet freigegebene Aufgaben ohne dich, bis zu ${d.maxLanes} Lanes in ${repo}${typeof d.lanes === "number" ? ` (${d.lanes} ${d.lanes === 1 ? "läuft" : "laufen"})` : ""}. Eigene wählt er nie. `,
     tip: "Kein Tor der Fleet hält gerade; einzelne Programs können eigene Einstellungen haben (Program dispatch)." };
 }
 // the open foot's painter, called from renderQueue on every poll; null while the queue is closed
@@ -2319,21 +2319,33 @@ export function renderProgramDetail(shell: Shell, id: string): void {
       pd.appendChild(row);
       return { row, ctl };
     };
-    const choice = <T extends string>(ctl: HTMLElement, words: [T, string, string][], cur: T | null, staged: T | null,
-      pick: (v: T | null) => void) => {
+    // Apply is enabled exactly while something is staged; every control re-stages IN PLACE — a
+    // full detail repaint per pick would throw the pane's scroll position back to the top
+    const syncApply = () => { apply.disabled = qPdBusy || !(pdStaged() || qPdRelease !== null); };
+    const choice = <T extends string>(row: HTMLElement, ctl: HTMLElement, words: [T, string, string][], cur: T | null,
+      staged: () => T | null, pick: (v: T | null) => void) => {
       const box = el("div", "setchoice");
+      const btns: [T, HTMLButtonElement][] = [];
+      const sync = () => {
+        const st = staged();
+        for (const [v, b] of btns) {
+          b.classList.toggle("cur", v === cur);
+          b.classList.toggle("staged", v === st);
+          b.setAttribute("aria-pressed", (st ?? cur) === v ? "true" : "false");
+        }
+        row.classList.toggle("staged", st !== null);
+      };
       for (const [v, word, tip] of words) {
         const b = el("button", "cmdlevel", word) as HTMLButtonElement;
         b.type = "button";
         b.title = tip;
         b.disabled = qPdBusy;
-        b.classList.toggle("cur", v === cur);
-        b.classList.toggle("staged", v === staged);
-        b.setAttribute("aria-pressed", (staged ?? cur) === v ? "true" : "false");
         // picking the stored value again un-stages the row
-        b.onclick = () => { pick(v === cur ? null : v); qDetailKey = ""; renderQueueDetail(); };
+        b.onclick = () => { pick(v === cur ? null : v); sync(); syncApply(); };
+        btns.push([v, b]);
         box.appendChild(b);
       }
+      sync();
       ctl.appendChild(box);
     };
 
@@ -2354,7 +2366,7 @@ export function renderProgramDetail(shell: Shell, id: string): void {
       qPdLanes = n.value.trim() === storedLanes ? null : n.value;
       n.classList.toggle("staged", qPdLanes !== null);
       lanesRow.row.classList.toggle("staged", qPdLanes !== null);
-      apply.disabled = qPdBusy || !(pdStaged() || qPdRelease !== null);
+      syncApply();
     };
     lanesRow.ctl.appendChild(n);
 
@@ -2363,22 +2375,22 @@ export function renderProgramDetail(shell: Shell, id: string): void {
       "an: startet auch bei Master aus · wie Master: folgt dem Master · aus: startet nie von selbst.",
       "Ob die Fleet freigegebene Aufgaben dieses Programs ohne dich startet. intern: on, bypassMaster",
       qPdStart !== null, PD_START_WORD[pdSt.start ?? "master"]);
-    choice(startRow.ctl, [
+    choice(startRow.row, startRow.ctl, [
       ["on", "an", "Startet freigegebene Aufgaben dieses Programs auch, wenn der Master aus ist."],
       ["off", "aus", "Die Fleet startet keine Aufgabe dieses Programs von selbst, auch bei Master an; von Hand bleibt möglich."],
       ["master", "wie Master", "Dieses Program startet genau dann, wenn der Master-Schalter der Fleet an ist."],
-    ], pdSt.start ?? (pdSt.state === "absent" ? "master" : null), qPdStart, (v) => { qPdStart = v; });
+    ], pdSt.start ?? (pdSt.state === "absent" ? "master" : null), () => qPdStart, (v) => { qPdStart = v; });
 
     // 3 · Freigabe — the release policy, its own route (POST /api/programs/:id/release)
     const releaseRow = pdRow("Freigabe",
       rlSt.sentence,
       "Welche wartenden Aufgaben dieses Programs ohne Einzelfreigabe als freigegeben gelten. intern: release policy",
       qPdRelease !== null, rlSt.policy ?? (rlSt.readable ? "Standard" : "unlesbar"));
-    choice(releaseRow.ctl, [
+    choice(releaseRow.row, releaseRow.ctl, [
       ["manual", "manual", "Jede Aufgabe wartet auf deine Freigabe."],
       ["card-valid", "card-valid", "Aufgaben mit gültiger Karte gelten ohne Einzelfreigabe als freigegeben."],
       ["all", "all", "Jede wartende Aufgabe dieses Programs gilt als freigegeben."],
-    ], rlSt.policy ?? (rlSt.readable ? "manual" : null), qPdRelease, (v) => { qPdRelease = v; });
+    ], rlSt.policy ?? (rlSt.readable ? "manual" : null), () => qPdRelease, (v) => { qPdRelease = v; });
 
     if (qPdErr) pd.appendChild(el("div", "pkdwarn", qPdErr));
     const foot = el("div", "setfoot");
@@ -2398,7 +2410,7 @@ export function renderProgramDetail(shell: Shell, id: string): void {
     const apply = el("button", "cmdapply", qPdBusy ? "Apply…" : "Apply") as HTMLButtonElement;
     apply.type = "button";
     apply.title = "Schreibt die vorgemerkten Zeilen an den Server; jede Ablehnung steht danach wörtlich hier.";
-    apply.disabled = qPdBusy || !(pdStaged() || qPdRelease !== null);
+    syncApply();
     apply.onclick = () => {
       const writes: { what: string; path: string; body: unknown }[] = [];
       if (pdStaged()) writes.push({ what: "Program dispatch", path: `/api/programs/${forPdId}/dispatch`, body: pdBody() });

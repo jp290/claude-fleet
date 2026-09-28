@@ -1599,6 +1599,7 @@
   #shell-queue .qage, #shell-queue .qtabn, #shell-queue .shellsecn { font-variant-numeric: tabular-nums; }
   #shell-queue .qbundlebtn.on { color: var(--chat-ink); background: var(--c-hover); border-color: var(--c-edge-hi); }
   #shell-queue .qdisp { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-queue .qdisp .shrbtn { flex: none; white-space: nowrap; } /* the Master toggle never breaks mid-word at 390 px */
   #shell-queue .qmore > summary, #shell-queue .qfold, #shell-queue .qcardmore > summary {
     font-size: var(--chat-ui-fs); color: var(--chat-mute); }
   #shell-queue .qmore > summary:hover, #shell-queue .qfold:hover { color: var(--chat-ink); }
@@ -3398,7 +3399,7 @@
     #shell-settings .settabs { display: flex; gap: 4px; padding: 2px 0 10px; }
     #shell-settings .setsec { display: none; }
     #shell-settings .setsec.on { display: block; }
-    .settoggle, .settab, .setreset, .setin, .setfoot .cmdapply { min-height: 40px; } /* finger targets, G0.7 */
+    .settoggle, .settab, .setreset, .setin, .setfoot .cmdapply, .setchoice .cmdlevel { min-height: 40px; } /* finger targets, G0.7 */
     .setin { font-size: 16px; } /* no iOS zoom, G0.7 */
     .fleetrow .setmain { flex-basis: 100%; }
     .fleetrow .setval { flex: 1; max-width: none; }

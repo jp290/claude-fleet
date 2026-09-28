@@ -176,6 +176,12 @@ const PRE_AUTH_ROUTES = [
   // beyond the row is the transport half — settleFleetEventAcknowledged on the report's own event,
   // through the ack route's single writer, and an already-terminal event is left exactly as it is.
   String.raw`~ /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/(accept|reject)$/`,
+  // The batch sibling is the same MAIN verdict repeated under one request. resolvePrincipal
+  // requires the self token (otherwise 401); a lane other than the steward is 409, and the handler
+  // requires a live bound MAIN of the report's own Program. It prechecks every landed, ended
+  // needs-main/complete row before calling decideFleetReport for each ordinary verdict; no body
+  // field grants a foreign Program, Owner, Delegate, land, deploy or Task.status authority.
+  '= /api/self/fleet-report/batch',
   // THE REPORT DELEGATE's pair (2026-09-24, server.ts#delegateDecideFleetReport): non-lane-only, and
   // then refused (409 not-delegate) unless the owner named THIS exact occupant and line through the
   // owner-gated PATCH /api/slots/:id/report-delegate — no label, model or role grants it. It reaches

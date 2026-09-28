@@ -8722,34 +8722,62 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "owner": "naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher",
   "brief": "naechster Schritt: fuehre die zugewiesene Karte aus · Grenze: ihr Write-Set und Stop-Punkt",
   "founding": "naechster Schritt: uebernimm die gebundene Rolle · Grenze: ihr bestaetigter Auftrag",
-  "succession": "naechster Schritt: setze die Lane-Arbeit fort · Grenze: derselbe Auftrag und Worktree",
+  "succession": "naechster Schritt: setze die uebergebene Arbeit fort · Grenze: derselbe Auftrag und dieselbe Rolle",
   "auto": "naechster Schritt: beantworte den Check-in im laufenden Auftrag · Grenze: keine neue Befugnis",
   "steward": "naechster Schritt: pruefe den Steward-Hinweis · Grenze: deine bestehende Rolle",
   "fleet-event": "naechster Schritt: lies das Ereignis und handle in deiner Rolle · Grenze: keine neue Befugnis",
   "clarification-reply": "naechster Schritt: setze die Arbeit mit der Antwort fort · Grenze: deine Karte",
   "report-decision": "naechster Schritt: beachte die Entscheidung zum Report · Grenze: kein Land durch die Lane",
   "merge-author": "naechster Schritt: loese den benannten Konflikt · Grenze: dein Branch und Auftrag",
-  "merge-verdict": "nur zur Information",
+  "merge-verdict": "naechster Schritt: fuehre aus, was das Urteil nennt (Rebase, Reparatur, Warten) · Grenze: der benannte Branch",
   "supervisor-nudge": "naechster Schritt: pruefe den benannten Stillstand · Grenze: dein Program",
   "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
   "inbox-nudge": "naechster Schritt: lies die ungelesenen Program-Eintraege · Grenze: dein Program",
   "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
   "attention-orchestrator": "naechster Schritt: beantworte die Rueckfrage oder reiche sie mit Grund an den Owner · Grenze: nur die benannten Tueren",
   "backlog-nudge": "naechster Schritt: pruefe den offenen Backlog · Grenze: dein bestaetigtes Program",
-  "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane",
+  "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine bestehende Rolle",
   "api-stall-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
   "rate-limit-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
 };
+// THE SENTENCE HAS A RECEIVER. Two paths reach more than lanes, and their one sentence told every
+// receiver it was one: tickMigrate nudges non-lane MAINs ("Grenze: deine Lane"), handleSelfSucceed
+// founds Orchestratorin and MAIN successors ("setze die Lane-Arbeit fort"). The role is read the way
+// deliveryAddress reads it — a bound MAIN first, then a worktree, then an Orchestratorin label on a
+// session without one; every other receiver keeps the DELIVERY_MEANING sentence.
+type DeliveryRole = "lane" | "main" | "orchestrator";
+const DELIVERY_MEANING_BY_ROLE: Partial<Record<Exclude<SendPath, "model-push">, Record<DeliveryRole, string>>> = {
+  "succession": {
+    "lane": "naechster Schritt: setze die Lane-Arbeit fort · Grenze: derselbe Auftrag und Worktree",
+    "main": "naechster Schritt: uebernimm das gebundene Program und seine offenen Pflichten · Grenze: sein Auftrag",
+    "orchestrator": "naechster Schritt: setze die Orchestrierung aus der Uebergabe fort · Grenze: die Orchestratorinnen-Rolle",
+  },
+  "migrate-nudge": {
+    "lane": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane",
+    "main": "naechster Schritt: pruefe die Kontextgrenze und sichere dein Program · Grenze: deine MAIN-Rolle",
+    "orchestrator": "naechster Schritt: pruefe die Kontextgrenze und sichere die Orchestrierung · Grenze: deine Rolle",
+  },
+};
+function deliveryRole(s: Slot): DeliveryRole | null {
+  return boundProgramForMain(s).ok ? "main" : s.worktree ? "lane"
+    : isOrchestratorLabel(s.label) ? "orchestrator" : null;
+}
+function deliveryMeaning(path: Exclude<SendPath, "model-push">, s: Slot): string {
+  const role = deliveryRole(s);
+  return (role ? DELIVERY_MEANING_BY_ROLE[path]?.[role] : undefined) ?? DELIVERY_MEANING[path];
+}
+// the one condition under which Fleet types its own words beside a body: the header, and the
+// sentence in a bundle mark (a mark is a body line, so a codex/pi receiver keeps it unchanged)
+const headsDelivery = (form: Harness): boolean => form === CLAUDE_HARNESS && !DECLARED_HARNESS;
 // Only the default adapter gets it, and not when the operator declared a foreign FLEET_CMD for it:
 // codex, pi and every declared harness keep the paste byte for byte (no measurement says what their
 // TUI does with a typed prefix). An undeclared stand-in (`true`) takes it, which is what lets the
 // suites see the form.
-function deliveryHeader(form: Harness, path: SendPath, slot: number, text: string): string | null {
+function deliveryHeader(form: Harness, path: SendPath, slot: number, text: string, s: Slot): string | null {
   const source = DELIVERY_SOURCE[path];
-  const meaning = path === "model-push" ? null : DELIVERY_MEANING[path];
-  if (!source || form !== CLAUDE_HARNESS || DECLARED_HARNESS
+  if (!source || path === "model-push" || !headsDelivery(form)
     || (path === "owner" && text.trimStart().startsWith("/"))) return null;
-  return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${meaning}] `;
+  return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${deliveryMeaning(path, s)}] `;
 }
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
 // boot — the opposite choice from stewardRecentSends one region up, and for the reason that
@@ -9106,10 +9134,16 @@ function refreshDeliveryBundles(): void {
     scheduleDeliveryBundle(key, bundle);
   }
 }
-function bundleText(entries: QueuedDelivery[]): string {
+// One entry is no bundle: it is typed as itself, under its own path's header (flushDeliveryBundle).
+// Two or more share the `bundle` header, so each mark carries its entry's own sentence.
+function bundleText(entries: QueuedDelivery[], s: Slot): string {
   if (entries.length === 1) return entries[0]!.text;
-  return entries.map((entry, i) => `[fleet-buendel ${i + 1}/${entries.length} · path=${entry.options.path}]\n${entry.text}`)
-    .join("\n\n");
+  const headed = headsDelivery(harnessOf(s.harness));
+  return entries.map((entry, i) => {
+    const path = entry.options.path;
+    const meaning = headed && path !== "model-push" ? ` · ${deliveryMeaning(path, s)}` : "";
+    return `[fleet-buendel ${i + 1}/${entries.length} · path=${path}${meaning}]\n${entry.text}`;
+  }).join("\n\n");
 }
 function bundleNotice(entries: QueuedDelivery[]): string {
   const classes = entries.map((entry) =>
@@ -9212,9 +9246,12 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
         submit: immediate.submit, options: immediate.options,
         origin: { slot: immediate.slot.id, openedAt: immediate.slot.openedAt }, queuedAt: Date.now(),
         resolve: () => {}, reject: () => {} }, ...entries] : entries;
-      const payload = bundleText(ordered);
+      const payload = bundleText(ordered, s);
+      // a single entry keeps its own path: the header then carries its own sentence, and the send
+      // row names the channel it came through rather than a bundle of one
       const { acceptance } = await sendText(s, payload, true,
-        { path: "bundle", rollbackOwnPayload: true, requireAgent: true,
+        { path: "bundle", ...(ordered.length === 1 ? { path: ordered[0]!.options.path } : {}),
+          rollbackOwnPayload: true, requireAgent: true,
           deliveryClass: immediate ? "sofort" : "buendelbar", bypassQueue: true,
           paneInboxNotice: bundleNotice(ordered) });
       audit("delivery_bundle_sent", s.id, `${key} count=${entries.length}`,
@@ -9307,7 +9344,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   const composer = form.composer ?? null;
   const comms = commsFor(s);
   // what the composer holds once this send has typed: the delivery header, then the pasted body
-  const header = deliveryHeader(form, options.path, occupant.slot, text);
+  const header = deliveryHeader(form, options.path, occupant.slot, text, s);
   const composed = header ? header + text : text;
   const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS;
   // THE LEDGER'S TWO NUMBERS, taken here and set below rather than at the call sites: `payloadBytes`

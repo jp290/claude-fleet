@@ -7320,6 +7320,22 @@ export async function run(): Promise<void> {
         && boundNudge.indexOf("offene Pflichten") < boundNudge.indexOf("POST /api/self/succeed")
         && boundNudge.includes("carry") && !boundNudge.includes("Linien-Record") && nudge.includes("Linien-Record"),
       `${boundNudges.length}: ${boundNudge}`);
+    // THE HEADER'S SENTENCE FOLLOWS THE SAME ROLE (Sinnpruefung Buendel 5a). Until then every
+    // migrate-nudge header ended "Grenze: deine Lane", the bound and the unbound MAIN's included.
+    // The pane is the only place the typed header exists — the prompt journal records the body.
+    // BREAKS IF: deliveryMeaning stops reading the receiver's role, or the lane loses its own sentence.
+    const migrateSentence = async (slot: number): Promise<string | null> => {
+      const pane = (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `s${slot}`)).out;
+      return new RegExp(`path=migrate-nudge · Slot ${slot} · ([^\\]]*)\\]`).exec(pane)?.[1] ?? null;
+    };
+    const sentences = { bound: await migrateSentence(boundId), lane: await migrateSentence(lane.slot),
+      main: await migrateSentence(mainId) };
+    check("migrate-nudge header: the bound MAIN gets a MAIN sentence without 'deine Lane', the lane the lane sentence",
+      !!sentences.bound && !sentences.bound.includes("Lane") && sentences.bound.includes("Program")
+        && sentences.lane === "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane"
+        && !!sentences.main && !sentences.main.includes("Lane")
+        && sentences.bound !== sentences.main,
+      JSON.stringify(sentences));
     check("tickMigrate never nudges the ⚙ steward or a ctx:null slot",
       (await migratePrompts(stewardId)).length === 0
         && (await migratePrompts(unknownId)).length === 0,

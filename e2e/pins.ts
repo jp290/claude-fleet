@@ -1379,6 +1379,29 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   }).map(([path]) => path);
   pin("Every DELIVERY_MEANING is a position sentence of at most 120 characters",
     !!meaningBody && malformed.length === 0, `malformed=[${malformed}]`);
+  // THE SENTENCE HAS A RECEIVER (Sinnpruefung Buendel 5a): succession and migrate-nudge reach lanes,
+  // bound MAINs and the Orchestratorin, and one sentence per path told all three they were a lane.
+  // Each role gets its own well-formed sentence, none equal to another's or to the general one, and
+  // only the lane's may speak of a lane.
+  // BREAKS IF: a role row is dropped, two roles share a sentence, or a MAIN/Orchestratorin sentence
+  // falls back to "deine Lane" / "Lane-Arbeit".
+  const byRoleBody = /const DELIVERY_MEANING_BY_ROLE:[^\n]+ = \{([\s\S]*?)\n\};/.exec(server)?.[1] ?? "";
+  const roleProblems = ["succession", "migrate-nudge"].flatMap((path) => {
+    const block = new RegExp(`\\n  "${path}": \\{([\\s\\S]*?)\\n  \\},`).exec(byRoleBody)?.[1] ?? "";
+    const roles = new Map([...block.matchAll(/^\s*"([a-z]+)":\s*"([^"]*)",\s*$/gm)].map((m) => [m[1]!, m[2]!]));
+    const general = meanings.get(path)?.slice(1, -1) ?? "";
+    const sentences = ["lane", "main", "orchestrator"].map((role) => roles.get(role) ?? "");
+    return [
+      ...["lane", "main", "orchestrator"].filter((role, i) => {
+        const value = sentences[i]!;
+        return value.length > 120 || !/^naechster Schritt: .+ · Grenze: .+$/.test(value)
+          || value === general || (role !== "lane" && /Lane/.test(value));
+      }).map((role) => `${path}/${role}`),
+      ...(new Set(sentences).size === 3 ? [] : [`${path}/shared`]),
+    ];
+  });
+  pin("succession and migrate-nudge carry one own sentence each for lane, main and orchestrator",
+    !!byRoleBody && roleProblems.length === 0, `problems=[${roleProblems}]`);
 
   // The FOREIGN-REPO half of the filing template. A lane outside claude-fleet gets no Fleet rulebook
   // at all (createWorktree copies the ignored scaffolding out of ITS repo), so every obligation this

@@ -1221,8 +1221,13 @@ export async function run(ctx: Ctx): Promise<void> {
     qPlant(qFree, { status: "queued", releasedBy: "machine", note: "planted free note" });
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(qState, null, 2), { mode: 0o600 });
     await restartSrv();
-    const qBefore = await qRows();
     const qOf = (rows: QRow[], id: string): QRow | undefined => rows.find((t) => t.id === id);
+    await until(async () => {
+      const rows = await qRows();
+      return qOf(rows, qHeld)?.note === "waiting: dispatcher stopped"
+        && qOf(rows, qFree)?.note === "waiting: dispatcher stopped";
+    }, { timeoutMs: 10_000, what: "queued guard fixtures to carry the stopped dispatcher's note" });
+    const qBefore = await qRows();
     const qDispatchOn = ((await (await get("/api/sessions")).json()) as { dispatch: { on: boolean } }).dispatch.on;
     check("queue guard fixture: done, held-queued and unheld-queued rows are planted, and the dispatcher is off",
       qOf(qBefore, qDone)?.status === "done" && qOf(qBefore, qPending)?.status === "pending"
@@ -1244,11 +1249,13 @@ export async function run(ctx: Ctx): Promise<void> {
       `${qPendingRes.status} row=${JSON.stringify(qOf(qAfter, qPending))}`);
     check("queue guard: a HELD queued row gets its hold lifted and nothing else — still queued, releasedBy and note kept",
       qHeldRes.status === 200 && qOf(qAfter, qHeld)?.status === "queued" && !qOf(qAfter, qHeld)?.hold
-        && qOf(qAfter, qHeld)?.releasedBy === "machine" && qOf(qAfter, qHeld)?.note === "planted held note",
+        && qOf(qAfter, qHeld)?.releasedBy === "machine"
+        && qOf(qAfter, qHeld)?.note === qOf(qBefore, qHeld)?.note,
       `${qHeldRes.status} row=${JSON.stringify(qOf(qAfter, qHeld))}`);
     check("queue guard: an UNHELD queued row answers 200 and writes nothing — releasedBy and note kept",
       qFreeRes.status === 200 && qOf(qAfter, qFree)?.status === "queued"
-        && qOf(qAfter, qFree)?.releasedBy === "machine" && qOf(qAfter, qFree)?.note === "planted free note",
+        && qOf(qAfter, qFree)?.releasedBy === "machine"
+        && qOf(qAfter, qFree)?.note === qOf(qBefore, qFree)?.note,
       `${qFreeRes.status} row=${JSON.stringify(qOf(qAfter, qFree))}`);
     for (const id of [qPending, qDone, qHeld, qFree]) await post(`/api/tasks/${id}/delete`, {});
   }
@@ -1611,6 +1618,8 @@ export async function run(ctx: Ctx): Promise<void> {
       text: "spawn replacement queued fixture", queue: true,
       harness: "claude", model: "claude-opus-5", effort: "high",
     })).json()) as { task: SpawnRow }).task;
+    await until(async () => (await row(queued.id))?.note === "waiting: dispatcher stopped",
+      { timeoutMs: 10_000, what: "spawn fixture has the settled dispatcher stop note" });
     const before = await row(queued.id);
     const auditFrom = auditRows().length;
     const changed = await set(queued.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
@@ -2050,7 +2059,12 @@ export async function run(ctx: Ctx): Promise<void> {
         ((await (await get("/api/tasks")).json()) as { tasks: FullTask[] }).tasks;
       const expected = new Map<string, string>();
       const remember = async (id: string): Promise<void> => {
-        const row = (await fullTasks()).find((t) => t.id === id);
+        let row = (await fullTasks()).find((t) => t.id === id);
+        if (row?.status === "queued") {
+          await until(async () => (await fullTasks()).find((t) => t.id === id)?.note === "waiting: dispatcher stopped",
+            { timeoutMs: 10_000, what: `the stopped dispatcher's note on backlog row ${id}` });
+          row = (await fullTasks()).find((t) => t.id === id);
+        }
         if (row) expected.set(id, JSON.stringify(row));
       };
       if (noteId) await remember(noteId);
@@ -6435,9 +6449,16 @@ export async function run(ctx: Ctx): Promise<void> {
     const xRequeued = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
       .map((l) => { try { return JSON.parse(l) as { event?: string; taskId?: string; reason?: string }; } catch { return {}; } })
       .filter((a) => a.event === "dispatch_requeued" && a.taskId === xT.task.id);
+    const xStoppedRequeue = xRequeued[0]?.reason
+      ? await until(async () => {
+        const note = (await f2Row(xT.task.id))?.note;
+        return note === `waiting: dispatcher stopped — ${xRequeued[0].reason}` ? note : null;
+      }, { timeoutMs: 10_000, what: "the stopped tick to retain the requeue audit reason" })
+      : null;
     check("a requeue writes exactly one dispatch_requeued audit event with the task id and its reason",
-      xRequeued.length === 1 && !!xRequeued[0].reason && (xReq?.note ?? "").startsWith(xRequeued[0].reason),
-      JSON.stringify({ rows: xRequeued, note: xReq?.note }));
+      xRequeued.length === 1 && !!xRequeued[0].reason
+        && xStoppedRequeue === `waiting: dispatcher stopped — ${xRequeued[0].reason}`,
+      JSON.stringify({ rows: xRequeued, note: xStoppedRequeue }));
     check("a post-spawn dispatch that never sends writes no context receipt",
       (await contextReceipts()).total === failedReceiptCount);
     await post(`/api/tasks/${xT.task.id}/delete`, {});
@@ -6608,6 +6629,15 @@ export async function run(ctx: Ctx): Promise<void> {
       check("a codex pane that never shows the ready marker requeues on the BOUNDED budget, reason named",
         muteRow?.status === "queued" && !muteRow.slot && /never showed its ready marker within 3s/.test(muteRow.note ?? ""),
         JSON.stringify(muteRow));
+      const stoppedMute = await until(async () => {
+        const row = await rowAfter(mute.id, (r) => r?.status === "queued");
+        return row?.note?.includes("waiting: dispatcher stopped")
+          && row.note.includes("never showed its ready marker within 3s") ? row.note : null;
+      }, { timeoutMs: 10_000, what: "the stopped tick to retain the codex requeue reason" });
+      await Bun.sleep(afterTick(0, DISPATCH_TICK_MS));
+      const stableMute = await rowAfter(mute.id, (r) => r?.status === "queued");
+      check("a stopped dispatcher's requeue note keeps both reasons and stays byte-identical on the next tick",
+        stableMute?.note === stoppedMute, JSON.stringify({ first: stoppedMute, next: stableMute?.note ?? null }));
       await post(`/api/tasks/${mute.id}/delete`, {});
       // the accept marker: the header box that is on every ready frame and on NEITHER block screen.
       // The fixture pane's pty just buffers the pasted brief — nothing executes or spends.

@@ -876,23 +876,28 @@ export async function run(): Promise<void> {
       `exit ${disp.code} ${JSON.stringify(dj).slice(0, 220)}`);
     const laneSlot = dj?.response?.slot ?? 0;
 
-    // …and now one row IS `sent`, so a cap of 1 must stop the second row before any POST is made.
-    const overCap = await ctl(["dispatch", capRow, "--json"], { FLEET_DISPATCH_MAX_LANES: "1" });
+    // The server, not this CLI's env, owns the cap. Set a repo entry for this fixture and restore it.
+    const capBefore = ((await (await get("/api/repo-lane-caps")).json()) as { caps: Record<string, number> }).caps[realpathSync(REPO)] ?? null;
+    const capSet = await post("/api/repo-lane-cap", { repo: REPO, maxLanes: 1 });
+    const overCap = await ctl(["dispatch", capRow, "--json"], { FLEET_DISPATCH_MAX_LANES: "16" });
     const oj = overCap.json as { ok?: boolean; refused?: string; openLanes?: number; cap?: number } | null;
     // the DECIDING fields by name, not the whole object: the trail caps a detail at 2000 chars and
     // the row's own `task` payload ate the budget on the first red — the answer was truncated away
     // exactly where it was needed (helper + local run, 2026-09-07).
-    check("ctl dispatch: over FLEET_DISPATCH_MAX_LANES it refuses before the POST, with the count and the cap",
-      overCap.code === 1 && oj?.refused === "lane cap" && oj.cap === 1 && (oj.openLanes ?? 0) >= 1,
+    const capRowAfter = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; status: string }[] }).tasks.find((t) => t.id === capRow);
+    check("ctl dispatch: the server's repo cap refuses before POST despite a higher client env number, naming source, count and cap",
+      capSet.ok && overCap.code === 1 && oj?.refused === "repo cap" && oj.cap === 1
+        && (oj.openLanes ?? 0) >= 1 && capRowAfter?.status === "pending",
       `exit=${overCap.code} refused=${oj?.refused} cap=${oj?.cap} openLanes=${oj?.openLanes} ok=${oj?.ok}`);
     // `--json` prints the machine form and NOTHING else, so the human sentence is a second call —
     // and it has to be asked for, not assumed: a refusal that does not name the way out is a
     // refusal a session cannot act on. Safe to repeat: the cap is checked before any POST.
-    const overCapText = await ctl(["dispatch", capRow], { FLEET_DISPATCH_MAX_LANES: "1" });
+    const overCapText = await ctl(["dispatch", capRow], { FLEET_DISPATCH_MAX_LANES: "16" });
     check("ctl dispatch: the plain refusal names the cap, the count and --force",
-      overCapText.code === 1 && overCapText.out.includes("REFUSED")
-        && overCapText.out.includes("FLEET_DISPATCH_MAX_LANES") && overCapText.out.includes("--force"),
+      overCapText.code === 1 && overCapText.out.includes("REFUSED: 1/1 lanes open (repo cap)")
+        && overCapText.out.includes("--force"),
       overCapText.out.slice(0, 240));
+    await post("/api/repo-lane-cap", { repo: REPO, maxLanes: capBefore ?? 0 });
 
     if (laneSlot) {
       // receiver evidence for the report: a watch on that exact lane occupant (server.ts,

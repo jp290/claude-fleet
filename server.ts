@@ -17418,8 +17418,9 @@ const programDispatchStopped = (t: Pick<Task, "programId">): boolean => {
   return pd?.v === 2 && !pd.on;
 };
 const dispatchStoppedNote = (reason: string, previous: string | null | undefined): string => {
-  const held = previous?.match(/dispatch held \([^\n]*?\) — requeued/)?.[0];
-  return `waiting: ${reason}${held ? ` — ${held}` : ""}`;
+  const prior = previous?.replace(/^waiting: (?:dispatcher stopped|program dispatch off) — /, "");
+  const requeued = prior && / — requeued(?:; lane kept.*)?$/.test(prior) ? prior : null;
+  return `waiting: ${reason}${requeued ? ` — ${requeued}` : ""}`;
 };
 const programDispatchOn = (t: Task): ProgramDispatch | undefined => {
   const p = t.programId ? programs.find((x) => x.id === t.programId) : undefined;

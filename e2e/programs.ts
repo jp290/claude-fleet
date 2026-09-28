@@ -7952,6 +7952,8 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ ids: rvIds, hold: rvHoldRes.status, queue: rvQueueRes.status }));
 
   // (1) THE PREVIEW: each verdict with its hard reasons and soft hints, hold and scout shown, queued apart
+  await until(async () => ((await taskRow(rvQueued)) as (TaskRow & { note?: string | null }) | undefined)?.note === "waiting: dispatcher stopped",
+    { timeoutMs: 10_000, what: "the stopped dispatcher's note on the queued release-valid fixture" });
   const rvRowsBefore = JSON.stringify((await allTasks()).filter((t) => rvIds.includes(t.id)));
   const rvAuditFrom = auditLines();
   const pv = await rvPreview(mainProgram.id);
@@ -8356,21 +8358,34 @@ export async function run(ctx: Ctx): Promise<void> {
   const pdControl = await activateNewProgram("program-dispatch control bracket");
   const [pdBadKey, pdBadV, pdBadOn, pdBadLanes, pdBadStamp] = await Promise.all([
     pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 1 }, policy: { v: 1 } }),
-    pdDispatchDoor(mainProgram.id, { dispatch: { v: 2, on: true, maxLanes: 1 } }),
+    pdDispatchDoor(mainProgram.id, { dispatch: { v: 3, on: true, maxLanes: 1 } }),
     pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: "yes", maxLanes: 1 } }),
     pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 0 } }),
     pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 1, confirmedAt: 1 } }),
   ]);
   const pdBadTexts = await Promise.all([pdBadKey, pdBadV, pdBadOn, pdBadLanes, pdBadStamp].map((r) => r.text()));
-  check("program-dispatch door: a closed body, v1 only, a boolean `on`, a bounded maxLanes and no caller-supplied stamp — and no record is written",
+  check("program-dispatch door: a closed body, v1/v2 only, a boolean `on`, a bounded maxLanes and no caller-supplied stamp — and no record is written",
     [pdBadKey, pdBadV, pdBadOn, pdBadLanes, pdBadStamp].every((r) => r.status === 400)
       && pdBadTexts[0].includes("this door reads dispatch only")
-      && pdBadTexts[1].includes("v must be 1")
+      && pdBadTexts[1].includes("v must be 1 or 2")
       && pdBadTexts[2].includes("on must be true or false")
       && pdBadTexts[3].includes("maxLanes must be a whole number")
       && pdBadTexts[4].includes("confirmedAt is stamped here")
       && (await pdProgramRecord(mainProgram.id)) === "absent",
     pdBadTexts.join(" | "));
+  const pdMissingBypass = await pdDispatchDoor(mainProgram.id, { dispatch: { v: 2, on: true, maxLanes: 1 } });
+  const pdMissingBypassText = await pdMissingBypass.text();
+  const pdRecordAfterMissing = await pdProgramRecord(mainProgram.id);
+  const pdV2 = await pdDispatchDoor(mainProgram.id, { dispatch: { v: 2, on: true, bypassMaster: false, maxLanes: 1 } });
+  const pdV2Record = await pdProgramRecord(mainProgram.id);
+  check("program-dispatch door: v2 requires a boolean bypassMaster and accepts the complete v2 setting",
+    pdMissingBypass.status === 400 && pdMissingBypassText.includes("bypassMaster must be true or false")
+      && pdRecordAfterMissing === "absent"
+      && pdV2.status === 200 && pdV2Record !== "absent" && pdV2Record?.v === 2
+      && pdV2Record?.on === true && pdV2Record?.maxLanes === 1
+      && (pdV2Record as { bypassMaster?: boolean }).bypassMaster === false,
+    `${pdMissingBypass.status}:${pdMissingBypassText} ${pdV2.status}:${JSON.stringify(pdV2Record)}`);
+  await pdDispatchDoor(mainProgram.id, { dispatch: null });
 
   // (1) MASTER STOP ON, NO GRANT ANYWHERE — the byte-for-byte legacy case. Three released rows sit
   // through a full tick window: one bracketed by a program with no record, one bracketed by

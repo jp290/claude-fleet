@@ -51,7 +51,7 @@ import {
   harnessBlockMessage, laneReviewMessage,
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
-import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
+import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName } from "../server/types";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
 import { LIVE_TMUX_SOCK, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
@@ -4869,7 +4869,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     cxTernary > 0 && cxAppend > cxTernary && (cxCode.match(/CODEX_TEXT_LANE_MCP/g) ?? []).length === 1,
     `ternary@${cxTernary} append@${cxAppend}`);
   pin("ensureSlot resolves the profile for LANES only — a slot without a worktree keeps its ambient MCPs",
-    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context, rulebookRole \}\)/.test(server), "browserMcp: !s.worktree || occupant.browser");
+    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context, rulebookRole[,\s}]/.test(server), "browserMcp: !s.worktree || occupant.browser");
   // the context ceiling is the measured catalog maximum as a literal, never an env knob
   // (docs/messungen/2026-09-15-codex-kontextfenster-profile.md §2)
   pin("CODEX_CONTEXT_WINDOW_MAX is the literal 872_000 and no env read names it",
@@ -4892,6 +4892,67 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
   pin("Fleet writes no global plugin settings: enabledPlugins is never named in code",
     !codeLines.some((l) => /enabledPlugins/.test(l)), "");
+}
+
+{
+  // REMOTE CONTROL (Slot.remote, 2026-09-28): the owner reaches a Fleet session from the Claude app.
+  // Two promises, both string concatenation on a shell line and so invisible to tsc: the name is
+  // SINGLE-QUOTED and cannot break out of its quotes, and ONLY the claude adapter ever puts the flag
+  // on a line — a foreign binary dies on it at spawn. The rule is a function over the source so the
+  // mutation probe below can run the very same rule against broken copies of it.
+  const remoteRule = (src: string): string[] => {
+    const bad: string[] = [];
+    const at = src.indexOf("function agentCmd(");
+    const code = (at < 0 ? "" : src.slice(at, src.indexOf("\n}\n", at)))
+      .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+    const branch = code.slice(Math.max(0, code.indexOf("if (claude) {")), Math.max(0, code.indexOf("else if (HARNESS_MODEL_FLAG")));
+    if (branch.length < 100) bad.push("agentCmd's claude branch not found");
+    if ((code.match(/--remote-control/g) ?? []).length !== 1) bad.push("agentCmd names --remote-control other than exactly once");
+    if (!/if \(remoteName\) cmd \+= ` --remote-control '\$\{remoteName\}'`;/.test(branch))
+      bad.push("the append is not `--remote-control '${remoteName}'` on the claude branch");
+    // the one reader: CLAUDE_HARNESS.spawnCmd, and nothing else in the file reads the resolved name
+    const readers = src.split("\n").filter((l) => !l.trim().startsWith("//") && /\bo\.remoteName\b/.test(l));
+    if (readers.length !== 1 || !/^  spawnCmd: \(o\) => slotCmd\([^\n]*o\.remoteName\),$/.test(readers[0] ?? ""))
+      bad.push(`o.remoteName read outside CLAUDE_HARNESS.spawnCmd (${readers.length} readers)`);
+    // the one resolver: ensureSlot names a Remote Control only for the claude adapter
+    const resolvers = [...src.matchAll(/remoteName: ([^\n]*)\n\s*([^\n]*)/g)].map((m) => `${m[1]} ${m[2]}`)
+      .filter((r) => /remoteControlName\(/.test(r));
+    if (resolvers.length !== 1 || !/^h\.id === "claude" && occupant\.remote\s/.test(resolvers[0] ?? ""))
+      bad.push(`the spawn-time name is not gated on h.id === "claude" (${resolvers.length} resolvers)`);
+    return bad;
+  };
+  const found = remoteRule(server);
+  pin("Remote Control: agentCmd appends --remote-control single-quoted, once, on the claude branch; only the claude adapter resolves and reads the name",
+    found.length === 0, found.join(" | "));
+  // THE MUTATION PROBE. Each mutant breaks one half of the promise, and the rule must name it. A
+  // mutation that no longer applies (its anchor moved) fails as ITSELF, never as a vacuous pass.
+  const mutants: [string, string, string][] = [
+    ["unquoted name", "` --remote-control '${remoteName}'`", "` --remote-control ${remoteName}`"],
+    ["append moved off the claude branch", "    if (remoteName) cmd += ` --remote-control '${remoteName}'`;\n", ""],
+    ["claude gate dropped at spawn", `remoteName: h.id === "claude" && occupant.remote`, "remoteName: occupant.remote"],
+    ["container adapter reads the name", "agentCmd(o.sessionId, o.resume, o.model, null)}", "agentCmd(o.sessionId, o.resume, o.model, null, true, null, o.remoteName)}"],
+  ];
+  const probe = mutants.map(([what, from, to]) => {
+    if (!server.includes(from)) return `${what}: anchor gone`;
+    let mutant = server.replace(from, to);
+    if (what === "append moved off the claude branch")
+      mutant = mutant.replace("  return cmd;\n}", "  if (remoteName) cmd += ` --remote-control '${remoteName}'`;\n  return cmd;\n}");
+    return remoteRule(mutant).length > 0 ? "" : `${what}: not caught`;
+  }).filter(Boolean);
+  pin("Remote Control mutation probe: every mutant of quoting and claude-only is caught by the rule above",
+    probe.length === 0, probe.join(" | "));
+  // ...and the reason the quotes are sufficient: whatever label the owner types, the name holds only
+  // [A-Za-z0-9 ._-], starts with `fleet ` (never with `-`, which claude would read as the next flag)
+  // and stays under its cap. Hostile inputs on purpose: a quote, a substitution, a glob, a flag.
+  const hostile: [string | null, string | null][] = [
+    ["it's", null], ["$(touch /tmp/x)", null], ["*", null], ["--resume x", null], ["Übergabe ✨", null],
+    ["", "/Users/x/claude-fleet"], [null, "/"], [null, null], ["a".repeat(200), null],
+  ];
+  const names = hostile.map(([label, cwd]) => remoteControlName(label, cwd, 7));
+  const leaks = names.filter((n) => !/^fleet [A-Za-z0-9 ._-]+$/.test(n) || n.length > REMOTE_NAME_MAX);
+  pin("remoteControlName keeps every name inside `fleet [A-Za-z0-9 ._-]+` and its cap — the charset the single quotes rest on",
+    leaks.length === 0 && names[5] === "fleet claude-fleet" && names[7] === "fleet slot 7",
+    leaks.length ? leaks.map((n) => JSON.stringify(n)).join(" ") : names.map((n) => JSON.stringify(n)).join(" "));
 }
 
 {

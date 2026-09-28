@@ -537,6 +537,26 @@ Netzwerkkosten werden nicht als null behauptet.
     Budget NICHT weiter, der Nachfolger startet ohne; Supervisor-/Program-MAIN-Bootstrap und
     `POST /api/slots/:n/model` lesen das Feld nicht. `src/protocol.ts#contextWindowFor` bleibt unberührt:
     Codex liest seinen Nenner aus der Rollout-Datei (`windowFromFile`).
+  - **Remote Control je Slot: `remote: true` (2026-09-28).** Der Owner erreicht GENAU diese Fleet-Session
+    aus der Claude-App; sie bleibt ein Slot, statt neben dem Fleet per `claude remote-control` zu
+    entstehen. Setzen: `POST /api/slots/:n/open` (Body `remote`) oder für einen lebenden Slot
+    `POST /api/slots/:n/remote {remote: boolean}` (Owner-only; Antwort `effective: "next spawn"` samt
+    `name`). Wirksam ab dem nächsten Spawn (↻ Restart, Heal, `succeedLane` trägt es weiter) — das Flag
+    steht auf der Kommandozeile; live schaltet `/remote-control` in der Session selbst. Am Slot
+    persistiert (`Slot.remote`), in `GET /api/sessions` sichtbar (fehlt, wenn aus), bei open/kill
+    gelöscht. Nur **claude**: `server.ts#ensureSlot` löst den Namen nur für `h.id === "claude"` auf, nur
+    `CLAUDE_HARNESS.spawnCmd` liest ihn, und `server.ts#agentCmd` hängt auf dem claude-Zweig
+    `--remote-control '<name>'` an; jeder andere Adapter (container eingeschlossen) antwortet **400**.
+    Name: `server/types.ts#remoteControlName` = `fleet <Label | cwd-Basename | slot N>`, auf
+    `[A-Za-z0-9 ._-]` reduziert, max. 60 Zeichen — der Zeichensatz trägt die einfachen Anführungszeichen,
+    das Präfix hält den Wert von `-` fern. Pin samt Mutationsprobe in `e2e/pins.ts`. **Gemessen
+    2026-09-28, claude 2.1.283, eigener tmux-Socket:** neben `--session-id`, `--model`, `--effort`,
+    `--prompt-suggestions false` malt die Pane `/remote-control is active · Continue here, on your phone,
+    or at <url>` und im Footer `/rc`; send-keys/capture-pane liefern den Turn unverändert (Transcript
+    geschrieben); `--resume <id>` mit dem Flag verbindet wieder, und das Transcript trägt vorher wie
+    nachher dieselbe `bridgeSessionId` (Record `bridge-session`); `tmux kill-session` beendet den Prozess
+    ohne weiteren Transcript-Record. Was die App danach listet, ist aus der Pane nicht messbar.
+    Grenze: Fleet startet nie `claude remote-control` (Server-/Spawn-Modus) als Arbeitsweg.
   - **`composer` — Annahme wird BEOBACHTET, nicht geechot (ACP-25, 2026-08-22).** Ein Adapter darf
     deklarieren, wo seine TUI den Composer malt (`{kind:"glyph", re}` = letzte Zeile mit diesem Glyph;
     `{kind:"rules"}` = Region zwischen den letzten zwei Vollbreiten-Linien). `sendText` liest den

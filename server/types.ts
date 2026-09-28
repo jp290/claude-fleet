@@ -161,6 +161,20 @@ function helperCmdCheck(raw: unknown): HelperCmdCheck {
   if (!argv) return { ok: false, error: `cmd is not on the helper allowlist — it is one of [${Object.keys(HELPER_CMD_ALLOW).join(" | ")}]` };
   return { ok: true, cmd, argv: [...argv] };
 }
+// THE REMOTE CONTROL NAME (Slot.remote): what the owner's Claude app lists this session as. It is
+// baked single-quoted into the pane's shell line (server.ts#agentCmd), so the charset is the
+// boundary: [A-Za-z0-9 ._-] holds no `'`, no glob and no `$`, and every other run of characters
+// becomes one space rather than vanishing — `Übergabe` stays readable as ` bergabe`, not glued to
+// its neighbour. The `fleet ` prefix does two jobs: it marks the session as Fleet-owned in a list
+// that also carries the owner's hand-started ones, and it keeps the value from ever starting with
+// `-`, which claude's optional-argument parser would read as the next flag. Pinned in e2e/pins.ts.
+const REMOTE_NAME_MAX = 60;
+function remoteControlName(label: string | null, cwd: string | null, slot: number): string {
+  const reduce = (v: string | null): string =>
+    (v ?? "").replace(/[^A-Za-z0-9 ._-]+/g, " ").replace(/\s+/g, " ").trim();
+  const base = reduce(label) || reduce(cwd?.split("/").filter(Boolean).pop() ?? null) || `slot ${slot}`;
+  return `fleet ${base}`.slice(0, REMOTE_NAME_MAX).trimEnd();
+}
 // The artefact GLOBS a job asks for, and the artefact ROWS a helper reports back. Both sides live
 // here so the request shape and the receipt shape cannot drift apart: the second is what the first
 // is allowed to produce. A path is relative and may not climb — `..` anywhere, an absolute path or
@@ -2002,6 +2016,12 @@ interface Slot {
   // with a worktree — a MAIN or plain session keeps its ambient MCPs whatever this says (ensureSlot).
   // Measured cost it removes: docs/messungen/2026-09-14-ram-optimierung-astra.md §F4. Same lifetime
   // as `effort`: chosen at spawn, persisted so a heal/restart/resume keeps the profile, cleared on open/kill.
+  remote: boolean; // Remote Control: true = the claude pane starts with `--remote-control 'fleet <name>'`
+  // (remoteControlName), so the owner reaches THIS session from the Claude app — the session stays a
+  // Fleet slot, never one started beside it by `claude remote-control`. Read ONLY by the claude
+  // adapter; every other harness spawns without it. Set at open (body `remote`) or on a live slot by
+  // the owner (POST /api/slots/:id/remote), effective from the pane's next spawn — the flag is on
+  // the command line, like the label-keyed exports. Persisted; cleared on open/kill.
   context: SlotContext | null; // the pane's context window and auto-compaction threshold, in tokens, for
   // an adapter that takes them (Codex: three `-c` overrides on the fresh AND resume line). null = no
   // flag, today's spawn line byte for byte. Validated 0 < compactAt < window <= the client's catalog
@@ -3506,7 +3526,7 @@ export {
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, TASK_HOLD_GRUND_MAX, loadTaskKindChanges, loadStallSensor,
   REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview, loadCandidateReview,
   TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX, loadTaskDisposition,
-  HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck,
+  HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,
   helperArtifactGlobsFrom, helperArtifactsFrom,
 };

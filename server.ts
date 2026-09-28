@@ -157,7 +157,7 @@ import {
   type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn, type SlotContext,
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
-  loadReportDelegate, type ReportDelegate, type FleetReportDecider,
+  loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog,
@@ -279,14 +279,16 @@ if (RULEBOOK_AB_VALUE !== undefined && !RULEBOOK_AB_ENABLED
 // adapter's spawnCmd (HARNESSES calls this function rather than restating it).
 // Why the session id is pinned: docs/sanierung-2026-09/server-narrativ-archiv.md#slotcmd
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
-  effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole)}; exec ${SHELL}`;
+  effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
+  remoteName: string | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, remoteName)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
 // `browserMcp` false = a text lane (Slot.browser): claude starts with NO ambient MCP server.
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
-  effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null): string {
+  effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
+  remoteName: string | null = null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
@@ -301,6 +303,13 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // admits only effortLevels). Both halves pinned in e2e/pins.ts. Narrativ: server-narrativ-archiv.md#agentcmd
     if (effort) cmd += ` --effort '${effort}'`;
     cmd += " --prompt-suggestions false";
+    // REMOTE CONTROL (Slot.remote): the owner reaches this very session from the Claude app. Only
+    // here, on the claude branch — the flag is claude's spelling and a foreign binary would die on
+    // it. Single-quoted like the model; the value is remoteControlName's, whose charset holds no `'`.
+    // Measured 2026-09-28 on claude 2.1.283 (scratch tmux socket): beside --session-id and --resume,
+    // --model, --effort the pane paints `/remote-control is active · Continue here, on your phone,
+    // or at <url>`, and --resume re-attaches the SAME bridge session. Both halves pinned in e2e/pins.ts.
+    if (remoteName) cmd += ` --remote-control '${remoteName}'`;
     // A TEXT LANE. `--strict-mcp-config` with no --mcp-config loads zero MCP servers — the same flag
     // TEXT_ONLY_TOOLS gives the worker tier. Measured 2026-09-14 on claude 2.1.270 (scratch tmux
     // socket, idle pane after 45 s): ambient = 2 Playwright children, with the flag = 0. Claude has no
@@ -441,9 +450,13 @@ interface Harness {
   // `browserMcp` is the lane's MCP profile, already resolved by ensureSlot: false only for a lane that
   // did not ask for a browser (Slot.browser). An adapter whose `browserProfile` is not "apply" ignores it.
   // `context` is Slot.context, validated at set time by contextOf — only an adapter that takes it reads it.
+  // `remoteName` is Slot.remote resolved to its Remote Control name (remoteControlName), or null.
+  // ensureSlot resolves it for the claude adapter ONLY, and only CLAUDE_HARNESS reads it: the flag is
+  // claude's, and a foreign harness never receives a name it could put on its line.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
     container: string; containerContext: string; cwd: string; browserMcp: boolean;
-    context: SlotContext | null; rulebookRole: "main" | "orchestrator" | null }): string;
+    context: SlotContext | null; rulebookRole: "main" | "orchestrator" | null;
+    remoteName: string | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -680,7 +693,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.remoteName),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -1756,6 +1769,19 @@ function browserOf(body: Record<string, unknown> | null, h: Harness):
   return { ok: true, browser: true };
 }
 
+// Remote Control (Slot.remote). Absent/false/null = off, the default; `true` only for the claude
+// adapter — refused, not dropped, for every other harness, because `--remote-control` is claude's
+// flag and a silently ignored `true` would leave the owner looking in the app for a session that
+// was never offered there.
+function remoteOf(body: Record<string, unknown> | null, h: Harness):
+  { ok: true; remote: boolean } | { ok: false; error: string } {
+  const r = body?.remote;
+  if (r === undefined || r === null || r === false) return { ok: true, remote: false };
+  if (r !== true) return { ok: false, error: "remote must be a boolean" };
+  if (h.id !== "claude") return { ok: false, error: `harness ${h.id} has no Remote Control — only claude does` };
+  return { ok: true, remote: true };
+}
+
 // The SET-time validator for a queue row's persisted agent choice (Task.spawn): the same three
 // validators the attended ▸ start route runs, in the same order — harness first, because it is
 // what model and effort are judged by. All-absent answers `undefined`, never an all-null object:
@@ -2110,6 +2136,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   containerContext: null,
   effort: null,
   browser: false,
+  remote: false,
   context: null,
   taskId: null,
   originId: null,
@@ -5337,7 +5364,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -7642,6 +7669,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   harness: string | null;
   effort: string | null;
   browser: boolean;
+  remote: boolean;
   context: SlotContext | null;
   container: string | null;
   containerContext: string | null;
@@ -7650,11 +7678,12 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
 const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
-  browser: s.browser, context: s.context, container: s.container, containerContext: s.containerContext,
+  browser: s.browser, remote: s.remote, context: s.context, container: s.container, containerContext: s.containerContext,
 } : null;
 
 // label is a captured spawn input, not occupant identity: the owner may relabel a live session
 // without recycling it, and that documented change only affects the pane on its next respawn.
+// `remote` is the same kind of input (POST /api/slots/:id/remote), so it is not compared either.
 const sameSlotSpawnOccupant = (s: Slot, expected: SlotSpawnOccupant): boolean =>
   s.id === expected.slot && s.cwd === expected.cwd && s.openedAt === expected.openedAt
   && s.selfToken === expected.selfToken && s.sessionId === expected.sessionId && s.model === expected.model
@@ -7797,7 +7826,10 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
-          browserMcp: !s.worktree || occupant.browser, context: occupant.context, rulebookRole })}`);
+          browserMcp: !s.worktree || occupant.browser, context: occupant.context, rulebookRole,
+          // claude-only by construction: no other adapter is ever handed a name for its line
+          remoteName: h.id === "claude" && occupant.remote
+            ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -7911,7 +7943,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false, context: SlotContext | null = null): Promise<void> {
+  browser = false, context: SlotContext | null = null, remote = false): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   await waitForSlotTeardown(s.id);
@@ -7995,6 +8027,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.harness = harness; // ...and this one decides WHICH BINARY the pane runs, so inheriting it
   s.effort = effort;   // would silently spawn the previous occupant's agent for a new session
   s.browser = browser; // ...and a text lane must not inherit a browser lane's MCP profile, or back
+  s.remote = remote; // ...nor a session the previous occupant's Remote Control
   s.context = context; // ...nor a pane the previous occupant's context budget
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
   s.containerContext = box.containerContext; // which is the same rule one step further out
@@ -8195,6 +8228,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.harness = null;
   s.effort = null;
   s.browser = false;
+  s.remote = false;
   s.context = null;
   s.taskId = null;
   s.originId = null;
@@ -10922,6 +10956,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const harness = s.harness;
   const box: BoxPin = { container: s.container, containerContext: s.containerContext };
   const browser = s.browser; // the successor runs the same MCP profile as the lane it continues
+  const remote = s.remote; // ...and stays reachable from the Claude app if the predecessor was
   const successions = s.laneSuccessions + 1;
   const priorOpenedAt = s.openedAt; // the predecessor occupation, read before openSlot rotates it
   // WHICH CONVERSATION LEAVES, read before openSlot clears sessionId — never guessed afterwards
@@ -10932,7 +10967,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   laneSpawn.add(s.id);
   try {
     try {
-      await openSlot(s, cwd, ref, spawn.model, label, harness, spawn.effort, box, null, browser);
+      await openSlot(s, cwd, ref, spawn.model, label, harness, spawn.effort, box, null, browser, null, remote);
     } catch (e) {
       // The predecessor's pane is already gone at this point and its rows went back to the queue
       // with detachSlotTasks' reason, which is the recoverable state: the worktree and its commits
@@ -36124,6 +36159,8 @@ if (existsSync(STATE_FILE)) {
         if (typeof pe === "string" && hOf.supports.effort && hOf.effortLevels.includes(pe)) s.effort = pe;
         // the lane profile survives a restart (resume keeps it); only `true` on an adapter it applies to
         if ((v as { browser?: unknown }).browser === true && hOf.browserProfile === "apply") s.browser = true;
+        // ...and Remote Control, only `true` and only on the adapter that reads it
+        if ((v as { remote?: unknown }).remote === true && hOf.id === "claude") s.remote = true;
         // ...and the context budget, re-judged by the same shape check as the doors: a broken or
         // hand-edited value loads as absent (today's spawn line), the slot itself stays
         if (takesContext(hOf)) s.context = slotContextFrom((v as { context?: unknown }).context);
@@ -40990,6 +41027,8 @@ Bun.serve<WSData>({
             ...(parked ? { parkedSend: parked } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
+            // started with Remote Control (Slot.remote) — the next spawn's truth; omitted when off
+            ...(s.remote ? { remote: true } : {}),
             // the pane's context budget (Slot.context); omitted when none was chosen
             ...(s.context ? { context: s.context } : {}),
             // asleep on purpose (sleepSlot): omitted while awake, the common case on this 2 s poll
@@ -43749,7 +43788,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|model|share|unshare|land|shelve|restart|sleep|wake)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|remote|model|share|unshare|land|shelve|restart|sleep|wake)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -43848,6 +43887,21 @@ Bun.serve<WSData>({
         saveState();
         return json({ ok: true, mission: s.mission });
       }
+      // Remote Control on a LIVE slot (Slot.remote), owner-only like mission. The flag lives on the
+      // pane's command line, so this changes the NEXT spawn (restart, heal, lane succession) and
+      // never the running pane — `/remote-control` inside the session is the live toggle, and the
+      // answer says which of the two this was. Refused for a non-claude harness, as at open.
+      if (slotMatch[2] === "remote") {
+        if (!s.cwd) return json({ error: "slot not active" }, 400);
+        const body = await readJson(req);
+        if (!body || typeof body.remote !== "boolean") return json({ error: "expected { remote: boolean }" }, 400);
+        const ro = remoteOf(body, harnessOf(s.harness));
+        if (!ro.ok) return json({ error: ro.error }, 400);
+        s.remote = ro.remote;
+        saveState();
+        return json({ ok: true, remote: s.remote, effective: "next spawn",
+          ...(s.remote ? { name: remoteControlName(s.label, s.cwd, s.id) } : {}) });
+      }
       if (slotMatch[2] === "open") {
         const body = await readJson(req);
         if (!body) return json({ error: "expected application/json" }, 400);
@@ -43865,6 +43919,8 @@ Bun.serve<WSData>({
         if (!co.ok) return json({ error: co.error }, 400);
         const po = packsOf(body);
         if (!po.ok) return json({ error: po.error }, 400);
+        const ro = remoteOf(body, hh);
+        if (!ro.ok) return json({ error: ro.error }, 400);
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
@@ -43889,7 +43945,7 @@ Bun.serve<WSData>({
         }
         try {
           await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
-            null, false, co.context);
+            null, false, co.context, ro.remote);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}) },
@@ -43903,7 +43959,7 @@ Bun.serve<WSData>({
         // open returns the same bytes it always did.
         const roleCard = isOrchestratorLabel(s.label) ? await deliverOrchestratorSpawnCard(s) : null;
         if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
-        return json({ ok: true, cwd: s.cwd, label: s.label, ...(roleCard ? { roleCard } : {}),
+        return json({ ok: true, cwd: s.cwd, label: s.label, ...(s.remote ? { remote: true } : {}), ...(roleCard ? { roleCard } : {}),
           ...(packsResult ? packsResult : {}),
           ...(adopted ? { successionDebt: { id: adopted.id, adopted: true,
             resend: `POST /api/succession-debts/${adopted.id}/resend` } } : {}) });

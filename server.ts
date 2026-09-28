@@ -139,7 +139,7 @@ import {
   type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
   type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportFulfilled, type FleetReportDecision,
   type AttentionKind,
-  type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type SuccessionDebtFleetEvent, type SuccessionDebt,
+  type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type SuccessionDebtFleetEvent, type MessageFleetEvent, type SuccessionDebt,
   type LaneReviewFleetEvent, type TaskReviewMode,
   type FleetReportDeliveryState,
   type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type TaskKindChange, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
@@ -11658,7 +11658,13 @@ async function openClarification(s: Slot, body: Record<string, unknown> | null):
     && c.worker.openedAt === s.openedAt && c.worker.sessionId === s.sessionId);
   if (existing) return json({ ok: true, existing: true, request: existing });
 
-  const resolved = clarificationReceiverFor(s);
+  const programAddress = s.programId ? resolveMessageAddress({ kind: "program", id: s.programId }) : null;
+  const orchestrator = programAddress?.ok && programAddress.escalatedTo === "orchestrator"
+    ? programAddress.holder : null;
+  const resolved: ClarificationReceiver | { error: string } = orchestrator
+    ? { receiver: { slot: orchestrator.id, openedAt: orchestrator.openedAt,
+      sessionId: orchestrator.sessionId }, basis: "orchestrator" }
+    : clarificationReceiverFor(s);
   if ("error" in resolved) return json({ error: resolved.error }, 409);
   if (slotDeliveryBudget(resolved.receiver.slot).free === 0)
     return json({ error: "clarification receiver has no FleetEvent delivery budget" }, 409);
@@ -12082,7 +12088,8 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   //  · clarifications are untouched. An inbox cannot answer, so `/api/self/clarifications` keeps
   //    this exact 409 — a worker routed there would wait on a receiver that cannot speak.
   const resolved = clarificationReceiverFor(s);
-  const bound = "error" in resolved ? null : resolved;
+  const bound = "error" in resolved ? null
+    : resolved as ClarificationReceiver & { basis: Exclude<ClarificationBasis, "orchestrator"> };
   if (!bound) {
     const reason = (resolved as { error: string }).error;
     if (reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId)
@@ -13488,6 +13495,8 @@ function messageSenderFor(s: Slot): MessageSender {
     return { ok: false, response: json({ error: `ambiguous sender: this session is the bound Supervisor AND the bound MAIN of program ${bound.program.id} — the owner must separate the two before it addresses anyone` }, 409) };
   if (sup) return { ok: true, from: { kind: "role", role: "supervisor" } };
   if (bound.ok) return { ok: true, from: { kind: "program", id: bound.program.id } };
+  if (deliveryRecipient({ kind: "orchestrator" }) === s)
+    return { ok: true, from: { kind: "role", role: "orchestrator" } };
   return { ok: false, response: json({ error: bound.error }, 409) };
 }
 
@@ -13501,6 +13510,8 @@ function messageAddressesFor(s: Slot): MessageAddress[] {
   if (isBoundSupervisor(s)) out.push({ kind: "role", role: "supervisor" });
   const bound = boundProgramForMain(s);
   if (bound.ok) out.push({ kind: "program", id: bound.program.id });
+  if (!bound.ok && deliveryRecipient({ kind: "orchestrator" }) === s)
+    out.push({ kind: "role", role: "orchestrator" });
   return out;
 }
 
@@ -13513,8 +13524,14 @@ function messageAddressesFor(s: Slot): MessageAddress[] {
 //     exactly the window in which an address is momentarily unheld.
 //   · A REAL ADDRESS WITH A LIVE HOLDER → stored, holder named.
 type AddressResolution =
-  | { ok: true; holder: Slot | null; note: string | null }
+  | { ok: true; holder: Slot | null; note: string | null; escalatedTo: "orchestrator" | "owner" | null }
   | { ok: false; error: string };
+function escalateMessage(note: string): AddressResolution {
+  const holder = deliveryRecipient({ kind: "orchestrator" });
+  return holder
+    ? { ok: true, holder, note, escalatedTo: "orchestrator" }
+    : { ok: true, holder: null, note, escalatedTo: "owner" };
+}
 function resolveMessageAddress(a: MessageAddress): AddressResolution {
   if (a.kind === "role") {
     // The one named-but-unresolvable member. It documents the dead end instead of hiding it, and a
@@ -13522,30 +13539,37 @@ function resolveMessageAddress(a: MessageAddress): AddressResolution {
     // change, never a record migration, because the address shape already carries it.
     if (a.role === "controller")
       return { ok: false, error: 'role "controller" is named but not addressable: the Controller is Scope and holds no binding — address the Program it is MAIN of as {kind:"program",id}' };
+    if (a.role === "orchestrator") {
+      const holder = deliveryRecipient({ kind: "orchestrator" });
+      return holder ? { ok: true, holder, note: null, escalatedTo: null }
+        : { ok: true, holder: null, note: "no unique live Orchestrator", escalatedTo: "owner" };
+    }
     if (!supervisor)
-      return { ok: true, holder: null,
-        note: "no Supervisor is bound right now — the message is stored, and the next bound Supervisor reads it" };
+      return escalateMessage("no Supervisor is bound right now — the message is stored, and the next bound Supervisor reads it");
     const live = slotFrom(supervisor.slot);
     const held = !!(live?.cwd && live.openedAt === supervisor.openedAt);
-    return { ok: true, holder: held ? live! : null,
-      note: held ? null : "the bound Supervisor occupant is gone or was replaced — the message is stored, and the next bound Supervisor reads it" };
+    return held ? { ok: true, holder: live!, note: null, escalatedTo: null }
+      : escalateMessage("the bound Supervisor occupant is gone or was replaced — the message is stored, and the next bound Supervisor reads it");
   }
   const program = programs.find((p) => p.id === a.id);
   if (!program) return { ok: false, error: `unknown program ${a.id}` };
   if (program.status !== "active")
-    return { ok: true, holder: null,
-      note: `program ${a.id} is ${program.status} — the message is stored, but no MAIN is executing that program` };
+    return escalateMessage(`program ${a.id} is ${program.status} — the message is stored, but no MAIN is executing that program`);
   const main = program.main;
   if (!main)
-    return { ok: true, holder: null,
-      note: `program ${a.id} has no bound MAIN right now — the message is stored, and the next bound MAIN reads it` };
+    return escalateMessage(`program ${a.id} has no bound MAIN right now — the message is stored, and the next bound MAIN reads it`);
   const live = slotFrom(main.slot);
   const held = !!(live?.cwd && live.openedAt === main.openedAt);
-  return { ok: true, holder: held ? live! : null,
-    note: held ? null : `the bound MAIN of program ${a.id} is gone or was replaced — the message is stored, and the next bound MAIN reads it` };
+  return held ? { ok: true, holder: live!, note: null, escalatedTo: null }
+    : escalateMessage(`the bound MAIN of program ${a.id} is gone or was replaced — the message is stored, and the next bound MAIN reads it`);
 }
 
-const NO_MESSAGE_ADDRESS = "not a principal with an address — this rail answers a bound Program-MAIN or the bound Supervisor";
+const NO_MESSAGE_ADDRESS = "not a principal with an address — this rail answers a bound Program-MAIN, the bound Supervisor, or the unique live Orchestrator";
+function messageInboundFor(s: Slot, m: Message, mine = messageAddressesFor(s)): boolean {
+  if (mine.some((a) => sameAddress(a, m.to))) return true;
+  const reached = resolveMessageAddress(m.to);
+  return reached.ok && reached.escalatedTo === "orchestrator" && reached.holder === s;
+}
 
 // GET /api/self/messages — the pull half. Pure projection, stamps nothing, newest first.
 function messageViewFor(s: Slot): Response {
@@ -13562,7 +13586,7 @@ function messageViewFor(s: Slot): Response {
   // resolve — the predecessor's question would be exactly as lost as it is on every rail this one
   // replaces. Still ADDRESS-keyed on both sides, so a recycled occupant resolves to neither.
   const entries = messages.entries
-    .filter((m) => mine.some((a) => sameAddress(a, m.to) || sameAddress(a, m.from)))
+    .filter((m) => messageInboundFor(s, m, mine) || mine.some((a) => sameAddress(a, m.from)))
     .sort((a, b) => b.at - a.at);
   // NAMED `droppedFleetWide` rather than `dropped`: the cap is on the whole rail, so this number is
   // not "how many of YOUR messages fell off" and must not read like it.
@@ -13571,7 +13595,7 @@ function messageViewFor(s: Slot): Response {
   // `unread` counts only what was addressed TO the caller: a message it sent itself is not news,
   // and counting it would make an idle MAIN look like it owes an answer to its own question.
   return json({ addresses: mine,
-    unread: entries.filter((m) => m.readBy === null && mine.some((a) => sameAddress(a, m.to))).length,
+    unread: entries.filter((m) => m.readBy === null && messageInboundFor(s, m, mine)).length,
     droppedFleetWide: messages.dropped, entries, unknown });
 }
 
@@ -13613,6 +13637,8 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
 
   const resolved = resolveMessageAddress(to);
   if (!resolved.ok) return json({ error: resolved.error }, 409);
+  if (resolved.escalatedTo === "owner" && ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX)
+    return json({ error: "owner operations inbox has no FleetEvent delivery budget" }, 409);
 
   // REPLY AUTHORISATION, with ONE sentence for "no such message" and for "not addressed to you".
   // Deliberately UNLIKE readProgramInboxEntry, which separates 409-foreign from 404-unknown: there
@@ -13622,17 +13648,34 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   if (replyTo !== null) {
     const mine = messageAddressesFor(s);
     const parent = messages.entries.find((m) => m.id === replyTo);
-    if (!parent || !mine.some((a) => sameAddress(a, parent.to)))
+    if (!parent || !messageInboundFor(s, parent, mine))
       return json({ error: "replyTo names no message addressed to this sender" }, 409);
   }
 
   const entry = appendMessage(sender.from, to, payload, key, replyTo);
+  if (resolved.escalatedTo === "owner") {
+    const event: MessageFleetEvent = {
+      id: randomBytes(12).toString("hex"), watchId: null,
+      receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, receiverIdleSec: 0,
+      subjectSlot: s.id, kind: "message", payload: { messageId: entry.id, to },
+      createdAt: entry.at, status: "inbox", delivery: "inbox", attempts: 0,
+      deliveredAt: null, acknowledgedAt: null,
+    };
+    fleetEvents = [...fleetEvents, event];
+  }
   await saveStateNow();
+  if (resolved.holder) {
+    const holder = resolved.holder;
+    const text = `[fleet message] ${addressLabel(to)}: ${entry.id} — GET /api/self/messages, dann POST /api/self/messages/${entry.id}/read.`;
+    void sendText(holder, text, true, { path: "inbox-nudge", deliveryClass: "sofort",
+      rollbackOwnPayload: true })
+      .catch((error: unknown) => logError("messageNudgeSend", error));
+  }
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
   return json({ ok: true, existing: false, message: entry,
     holder: resolved.holder ? { slot: resolved.holder.id, openedAt: resolved.holder.openedAt } : null,
-    note: resolved.note });
+    note: resolved.note, escalatedTo: resolved.escalatedTo });
 }
 
 // POST /api/self/messages/:id/read — the RECEIPT, and like the inbox's it is not a lock: a second
@@ -13640,7 +13683,7 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
 async function readMessageFor(s: Slot, id: string): Promise<Response> {
   const mine = messageAddressesFor(s);
   if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS }, 409);
-  const entry = messages.entries.find((m) => m.id === id && mine.some((a) => sameAddress(a, m.to)));
+  const entry = messages.entries.find((m) => m.id === id && messageInboundFor(s, m, mine));
   if (!entry) {
     // A RECEIPT IS THE ADDRESSEE'S. The caller's own OUTBOUND row is visible to it in the view
     // above, so naming this case discloses nothing it cannot already see — and it is a different
@@ -21740,6 +21783,8 @@ function fleetEventMessage(event: FleetEvent): string {
     : event.kind === "succession-debt"
     ? `[fleet] succession debt ${event.payload.debtId} on slot ${event.subjectSlot} (${event.payload.rail}): `
       + `${event.payload.respawned ? "the successor stands without its founding brief" : "no successor opened"} — ${event.payload.reason}`
+    : event.kind === "message"
+    ? `[fleet] message ${event.payload.messageId} to ${addressLabel(event.payload.to)} escalated to owner — original address remains stored`
     : laneWatchMessage(event.subjectSlot, event.subjectBranch, event, laneSelfWord(event));
   return text;
 }
@@ -40816,7 +40861,7 @@ Bun.serve<WSData>({
         // 182 857 B on the live fleet (2026-09-13) of which the board rendered none, and it made the
         // 14 KiB budget in e2e/tasks.ts a wager on fleet activity. Every row, including events whose
         // receiver has gone and that cannot appear in any current /api/self row: GET /api/events.
-        events: fleetEvents.filter(opsPollVisible).map(opsPollRow),
+        events: fleetEvents.filter((e) => e.kind !== "message").filter(opsPollVisible).map(opsPollRow),
         // ONE NUMBER, on purpose: the attention inbox rides the app's most expensive path as the count of
         // rows that still want the owner; the bodies are behind GET /api/attention. OMITTED AT ZERO like
         // harness/effort: this payload is measured against a 12 KiB budget (e2e/tasks.ts, docs/data-saver.md

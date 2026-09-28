@@ -1108,6 +1108,8 @@ export async function run(): Promise<void> {
     `exit ${unknownProgram.code} ${unknownProgram.err.slice(0, 200)}`);
 
   const sendPosts: { body: { slot?: number; text?: string; openedAt?: number }; auth: string | null }[] = [];
+  const selfPosts: { body: { to?: { kind?: string; role?: string }; payload?: { kind?: string; text?: string }; idempotencyKey?: string };
+    token: string | null; auth: string | null }[] = [];
   const bound = (id: string, slot: number | null, openedAt: number, occupancy: string) =>
     ({ id, title: id, main: slot === null ? null : { slot, openedAt, sessionId: null, boundAt: 1 }, health: { occupancy } });
   const stub = Bun.serve({
@@ -1130,6 +1132,13 @@ export async function run(): Promise<void> {
         sendPosts.push({ body, auth: req.headers.get("authorization") });
         return Response.json({ ok: true, receipt: { sendId: "stub", at: 1, submitRequested: true, acceptance: "accepted",
           receiver: { slot: body.slot, openedAt: 1000, sessionId: null } } });
+      }
+      if (path === "/api/self/messages" && req.method === "POST") {
+        const body = (await req.json()) as typeof selfPosts[number]["body"];
+        selfPosts.push({ body, token: req.headers.get("x-fleet-self-token"),
+          auth: req.headers.get("authorization") });
+        return Response.json({ ok: true, message: { id: "a".repeat(24) }, holder: { slot: 4, openedAt: 1000 },
+          escalatedTo: null });
       }
       return new Response("not found", { status: 404 });
     },
@@ -1168,6 +1177,15 @@ export async function run(): Promise<void> {
       && sendPosts[0]?.body.text === "ctl send probe text\n"
       && sendPosts[0]?.auth === `Bearer ${TOKEN}`,
     `exit ${sendOk.code} posts=${JSON.stringify(sendPosts.map((p) => p.body))} ${sendOk.err.slice(0, 160)}`);
+  const sendOrchestrator = await ctl(["send", "--orchestrator", msgFile, "--json"], stubEnv);
+  check("ctl send --orchestrator: the file goes to the addressed self message door with this session's self token",
+    sendOrchestrator.code === 0 && selfPosts.length === 1
+      && selfPosts[0]?.body.to?.kind === "role" && selfPosts[0]?.body.to?.role === "orchestrator"
+      && selfPosts[0]?.body.payload?.kind === "text"
+      && selfPosts[0]?.body.payload?.text === "ctl send probe text\n"
+      && !!selfPosts[0]?.body.idempotencyKey && selfPosts[0]?.token === selfTok
+      && selfPosts[0]?.auth === null,
+    `exit=${sendOrchestrator.code} posts=${selfPosts.length} address=${JSON.stringify(selfPosts[0]?.body.to)}`);
   stub.stop(true);
 
   // === commit-main ==============================================================================

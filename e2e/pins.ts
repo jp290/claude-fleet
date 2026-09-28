@@ -604,14 +604,14 @@ const server = serverU.text;
   const mint = mintSpan?.text ?? "";
   const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"\n'
     + '    || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review"\n'
-    + '    || e.kind === "succession-debt";';
+    + '    || e.kind === "succession-debt" || e.kind === "message";';
   const watchlessEquivalence = parser.includes(watchlessKinds)
     && parser.includes('    || (watchless !== (e.watchId === null))\n'
       + "    || !(ownerReceiver || (Number.isInteger(e.receiverSlot)");
   const nullMints = (mint.match(/watchId: null/g) ?? []).length;
   const missingAnchor = [parserSpan === null ? "fleetEventFrom" : "", mintSpan === null ? "openClarification" : ""]
     .filter(Boolean);
-  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report, lane-suite, harness-block, lane-review and succession-debt, and a string for every Watch event",
+  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report, lane-suite, harness-block, lane-review, succession-debt and message, and a string for every Watch event",
     missingAnchor.length === 0
       && /watchId: string \| null/.test(server)
       && watchlessEquivalence
@@ -627,6 +627,8 @@ const server = serverU.text;
         .match(/watchId: null/g) ?? []).length === 1
       // …and the fifth in fileLaneReview, the verdict a task row asked for (Task.review)
       && (serverU.span("async function fileLaneReview(", "// --- THE AUTOMATIC LANE CLOSE")?.text
+        .match(/watchId: null/g) ?? []).length === 1
+      && (serverU.span("async function sendMessageFor(", "// POST /api/self/messages/:id/read")?.text
         .match(/watchId: null/g) ?? []).length === 1
       && (server.match(/watchId: w\.id/g) ?? []).length >= 4,
     missingAnchor.length > 0
@@ -6094,7 +6096,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_KINDS = "the FleetEvent kind set is closed";
   const expected = ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit",
     "deploy-terminal", "command-job", "lane-suite", "clarification-request", "fleet-report",
-    "supervisor-transition", "harness-block", "lane-review", "succession-debt"].sort();
+    "supervisor-transition", "harness-block", "lane-review", "succession-debt", "message"].sort();
   const signals = read("lane-signals.ts");
   const laneKinds = (signals.match(/export type LaneWatchEventKind =([^;\n]+)/)?.[1] ?? "")
     .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
@@ -6107,7 +6109,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const union = (server.match(/type FleetEvent =([\s\S]*?);/)?.[1] ?? "")
     .split("|").map((w) => w.trim()).filter(Boolean);
   const got = [...found].sort();
-  pin(`${RULE_KINDS} — the interfaces yield exactly the thirteen known kinds`,
+  pin(`${RULE_KINDS} — the interfaces yield exactly the fourteen known kinds`,
     JSON.stringify(got) === JSON.stringify(expected), `[${got.join(",")}]`);
   pin(`${RULE_KINDS} — every union member is one of those interfaces (no kind enters off-list)`,
     union.length > 0 && union.every((m) => new RegExp(`interface ${m} extends FleetEventBase \\{`).test(server)),
@@ -6381,7 +6383,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // the lane), and both are read off ONE `ownerAddressable` list so a kind can never be admitted
   // to the membership test without also being admitted to the transport equivalence.
   const ownerEquivalences = [
-    'const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block"\n    || e.kind === "lane-review" || e.kind === "succession-debt";',
+    'const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block"\n    || e.kind === "lane-review" || e.kind === "succession-debt" || e.kind === "message";',
+    'if (e.kind === "message") {\n    if (!ownerReceiver',
     '|| (ownerReceiver && !ownerAddressable)',
     '|| (ownerAddressable && (e.delivery === "inbox") !== ownerReceiver)',
     '|| ((p.basis === "owner-inbox") !== ownerReceiver)) return null;',

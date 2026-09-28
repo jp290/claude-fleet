@@ -51,6 +51,8 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
   wait change [--tasks a,b,c] [--json]   block until fleet state moves, then print what moved
   send --main <programId> <textfile> [--json]
                                    resolve the Program's bound MAIN slot NOW, refuse a lane/dead/recycled one, then /send
+  send --orchestrator <textfile> [--json]
+                                   address the Orchestrator through /api/self/messages with the self token
   commit main -m <msgfile> [--budget <sec>] [--json]      (also typed commit-main)
                                    wait (bounded) for `merges` exit 0, git commit the staged index in the main
                                    checkout, then push it ff-only to FLEET_HUB_REMOTE if one is set
@@ -1218,11 +1220,32 @@ send)
     case "$1" in
       --json) CTL_JSON=1 ;;
       --main) mode=main; shift; program=${1:-} ;;
+      --orchestrator) mode=orchestrator ;;
       --*) printf 'send: unknown flag %s\n' "$1" >&2; exit 2 ;;
       *) textfile=$1 ;;
     esac
     shift
   done
+  if [ "$mode" = "orchestrator" ]; then
+    [ -n "$textfile" ] && [ -s "$textfile" ] || { printf 'send --orchestrator: give a nonempty text file\n' >&2; exit 2; }
+    need_self send
+    export CTL_TEXTFILE="$textfile"
+    js_head
+    cat >> "$CTL_TMP" <<'EOF'
+const text = fs.readFileSync(process.env.CTL_TEXTFILE, "utf8");
+const key = "ctl-orchestrator-" + require("node:crypto").randomBytes(12).toString("hex");
+const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
+  body: JSON.stringify({ to: { kind: "role", role: "orchestrator" },
+    payload: { kind: "text", text }, idempotencyKey: key }) });
+out({ ok: r.ok, sent: r.ok, status: r.status, message: r.body?.message ?? null,
+  holder: r.body?.holder ?? null, escalatedTo: r.body?.escalatedTo ?? null,
+  error: r.ok ? null : (r.body?.error ?? null) },
+  [`send --orchestrator: ${r.status} ${r.ok ? `message ${r.body?.message?.id ?? "?"}` : (r.body?.error ?? "refused")}`]);
+process.exit(r.ok ? 0 : 1);
+EOF
+    js_run
+    exit $?
+  fi
   if [ "$mode" != "main" ]; then
     printf 'send: only `send --main <programId> <textfile>` — a slot number typed by hand is the recycled-slot hazard this verb removes\n' >&2
     exit 2

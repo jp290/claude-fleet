@@ -457,9 +457,15 @@ interface SuccessionDebtFleetEvent extends FleetEventBase {
   kind: "succession-debt";
   payload: SuccessionDebtEventPayload;
 }
+interface MessageFleetEvent extends FleetEventBase {
+  subjectSlot: number;
+  kind: "message";
+  payload: { messageId: string; to: MessageAddress };
+}
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
   | CommandJobFleetEvent | LaneSuiteFleetEvent | ClarificationFleetEvent | FleetReportFleetEvent
-  | SupervisorTransitionFleetEvent | HarnessBlockFleetEvent | LaneReviewFleetEvent | SuccessionDebtFleetEvent;
+  | SupervisorTransitionFleetEvent | HarnessBlockFleetEvent | LaneReviewFleetEvent | SuccessionDebtFleetEvent
+  | MessageFleetEvent;
 
 // `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
 // persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
@@ -720,11 +726,11 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   // probe that caught it on the first run that could.
   const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"
     || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review"
-    || e.kind === "succession-debt";
+    || e.kind === "succession-debt" || e.kind === "message";
   // …and the kinds that may name the OWNER instead of a session. Same list on both sides of the
   // equivalence below, so a kind can never be admitted to one half and not the other.
   const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block"
-    || e.kind === "lane-review" || e.kind === "succession-debt";
+    || e.kind === "lane-review" || e.kind === "succession-debt" || e.kind === "message";
   // The owner-principal receiver, all three fields or none: a half-null triple is malformed, not a
   // transport choice — exactly as an unknown `delivery` is.
   const ownerReceiver = e.receiverSlot === null && e.receiverOpenedAt === null
@@ -990,6 +996,15 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       || typeof p.reason !== "string" || p.reason.length > SUCCESSION_DEBT_REASON_MAX) return null;
     return { ...base, subjectSlot: Number(e.subjectSlot), kind: e.kind,
       payload: { debtId: p.debtId, rail: p.rail, respawned: p.respawned, reason: p.reason } };
+  }
+  if (e.kind === "message") {
+    if (!ownerReceiver || !Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0) return null;
+    const p = e.payload as Partial<MessageFleetEvent["payload"]> | undefined;
+    const to = loadMessageAddress(p?.to, "message event to");
+    if (!p || typeof p.messageId !== "string" || !/^[0-9a-f]{24}$/.test(p.messageId)
+      || typeof to === "string") return null;
+    return { ...base, subjectSlot: Number(e.subjectSlot), kind: e.kind,
+      payload: { messageId: p.messageId, to } };
   }
   if (e.kind === "lane-review") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
@@ -2761,13 +2776,13 @@ const loadProgramInbox = (value: unknown): ProgramInboxRead => {
 // the same message under the same id. The READ RECEIPT is decided by the OCCUPANT TRIPLE — so the
 // record still says exactly who read it, and a later occupant never overwrites that. Two different
 // questions; a slot-keyed record answers both with one wrong answer.
-type MessageRole = "supervisor" | "controller";
+type MessageRole = "supervisor" | "orchestrator" | "controller";
 // `controller` is carried DELIBERATELY as a well-formed but unresolvable address. The Controller is
 // Scope and holds no binding (docs/controller.md), so naming it here is how the dead end is
 // DOCUMENTED rather than invented: the loader accepts the address, the resolver refuses it by name,
 // and a later owner-promoted binding is a resolver change instead of a record migration. A MAIN
 // that wants to reach the Controller today addresses the Program the Controller is MAIN of.
-const MESSAGE_ROLES: MessageRole[] = ["supervisor", "controller"];
+const MESSAGE_ROLES: MessageRole[] = ["supervisor", "orchestrator", "controller"];
 type MessageAddress = { kind: "program"; id: string } | { kind: "role"; role: MessageRole };
 // CLOSED BY KIND, with exactly one member today. An unknown kind is a named refusal rather than a
 // tolerated extra — but the honest limit of what that buys: it keeps TODAY's text records stably
@@ -3451,7 +3466,7 @@ export type {
   DeployWatch, TransitionWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
-  HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
+  HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportFulfilled, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,

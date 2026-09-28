@@ -3987,6 +3987,93 @@ export async function run(ctx: Ctx): Promise<void> {
     `unreadKept=${(msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "unread-oldest")} readGone=${!(msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "read-newer")} dropped=${msgOrder?.dropped}`);
   await msgPlant(undefined, undefined);
 
+  const orchFree = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const orchOpen = await post(`/api/slots/${orchFree}/open`, { cwd: REPO, label: "🎛 message receiver" });
+  const msgOrchToken = slotToken(orchFree);
+  const orchAddress = { kind: "role", role: "orchestrator" };
+  check("message escalation fixture: exactly one live Orchestrator label has its own self credential",
+    orchOpen.ok && orchFree > 0 && /^[0-9a-f]{32}$/.test(msgOrchToken),
+    `open=${orchOpen.status} slot=${orchFree} tokenLength=${msgOrchToken.length}`);
+  const sendAuditRows = (): { event?: string; slot?: number; detail?: string }[] => {
+    try { return readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string }); }
+    catch { return []; }
+  };
+  const nudgeCount = (): number => sendAuditRows().filter((row) => row.event === "send"
+    && row.slot === orchFree && row.detail?.startsWith("inbox-nudge ")).length;
+  const beforeNudge = nudgeCount();
+  const directOrch = await selfSend(slotToken(successorSlot), { to: orchAddress,
+    payload: { kind: "text", text: "direct orchestrator address" }, idempotencyKey: "escalate-direct" });
+  const directBody = await directOrch.json() as { holder?: { slot?: number }; escalatedTo?: string | null;
+    message?: { id?: string } };
+  const directView = await selfMessages(msgOrchToken);
+  try { await until(() => nudgeCount() >= beforeNudge + 1, { timeoutMs: 20_000, stepMs: 100,
+    what: "one inbox-nudge send audit for direct orchestrator message" }); } catch { /* asserted below */ }
+  check("message escalation: MAIN addresses the unique Orchestrator, whose own view holds the message and whose slot gets one inbox-nudge send",
+    directOrch.ok && directBody.holder?.slot === orchFree && directBody.escalatedTo === null
+      && directView.view?.entries.some((m) => m.id === directBody.message?.id) === true
+      && nudgeCount() === beforeNudge + 1,
+    `status=${directOrch.status} holder=${directBody.holder?.slot} view=${directView.view?.entries.some((m) => m.id === directBody.message?.id)} nudges=${nudgeCount() - beforeNudge}`);
+
+  const supervisorEscalated = await selfSend(slotToken(successorSlot), { to: { kind: "role", role: "supervisor" },
+    payload: { kind: "text", text: "Supervisor has no live binding" }, idempotencyKey: "escalate-supervisor" });
+  const supervisorBody = await supervisorEscalated.json() as { escalatedTo?: string; message?: { id?: string } };
+  const programEscalated = await selfSend(slotToken(successorSlot), { to: { kind: "program", id: msgUnheldProgram.id },
+    payload: { kind: "text", text: "Program has no live MAIN" }, idempotencyKey: "escalate-program" });
+  const programBody = await programEscalated.json() as { escalatedTo?: string; message?: { id?: string } };
+  const escalatedView = await selfMessages(msgOrchToken);
+  check("message escalation: unbound Supervisor and Program keep their original addresses and become visible to the Orchestrator",
+    supervisorEscalated.ok && programEscalated.ok
+      && supervisorBody.escalatedTo === "orchestrator" && programBody.escalatedTo === "orchestrator"
+      && escalatedView.view?.entries.some((m) => m.id === supervisorBody.message?.id && m.to.role === "supervisor") === true
+      && escalatedView.view?.entries.some((m) => m.id === programBody.message?.id && m.to.id === msgUnheldProgram.id) === true,
+    `supervisor=${supervisorEscalated.status}/${supervisorBody.escalatedTo} program=${programEscalated.status}/${programBody.escalatedTo}`);
+
+  const clarificationLaneOpen = await post("/api/lanes", { repo: REPO });
+  const clarificationLaneSlot = (await clarificationLaneOpen.json() as { slot?: number }).slot ?? 0;
+  await stopSrv();
+  const clarificationImage = readState();
+  const clarificationLane = clarificationImage.slots?.[String(clarificationLaneSlot)];
+  if (clarificationLane) clarificationLane.programId = msgUnheldProgram.id;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(clarificationImage, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const askOrch = await selfPost("/api/self/clarifications", slotToken(clarificationLaneSlot),
+    { question: "Who answers while this Program has no MAIN?" });
+  const askBody = await askOrch.json() as { request?: { id?: string; basis?: string; receiver?: { slot?: number } } };
+  const orchClarifications = await fetch(`${BASE}/api/self/clarifications`,
+    { headers: { "x-fleet-self-token": slotToken(orchFree) } });
+  const orchClarificationBody = await orchClarifications.json() as { requests?: { id?: string }[] };
+  const orchReply = await selfPost(`/api/self/clarifications/${askBody.request?.id ?? ""}/reply`, slotToken(orchFree),
+    { text: "I can answer this question." });
+  check("clarification escalation: a Program lane without a MAIN asks the Orchestrator and its exact receiver can reply",
+    askOrch.ok && askBody.request?.basis === "orchestrator" && askBody.request.receiver?.slot === orchFree
+      && orchClarificationBody.requests?.some((r) => r.id === askBody.request?.id) === true && orchReply.ok,
+    `ask=${askOrch.status}/${askBody.request?.basis} receiver=${askBody.request?.receiver?.slot} reply=${orchReply.status}`);
+  await post(`/api/slots/${clarificationLaneSlot}/kill`, {});
+
+  const secondOrch = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const secondOpen = await post(`/api/slots/${secondOrch}/open`, { cwd: REPO, label: "🎛 second receiver" });
+  const twoOrch = await selfSend(slotToken(successorSlot), { to: orchAddress,
+    payload: { kind: "text", text: "Ambiguous Orchestrator occupancy" }, idempotencyKey: "escalate-two" });
+  const twoBody = await twoOrch.json() as { escalatedTo?: string; holder?: unknown; message?: { id?: string } };
+  const twoOwnerRow = (readState().events ?? []).find((e) => e.kind === "message"
+    && (e.payload as { messageId?: string })?.messageId === twoBody.message?.id);
+  check("message escalation: two Orchestrator slots send the original address to the Owner inbox",
+    secondOpen.ok && twoOrch.ok && twoBody.escalatedTo === "owner" && twoBody.holder === null
+      && twoOwnerRow?.status === "inbox" && twoOwnerRow.receiverSlot === null,
+    `open=${secondOpen.status} send=${twoOrch.status}/${twoBody.escalatedTo} event=${twoOwnerRow?.status}`);
+  await post(`/api/slots/${secondOrch}/kill`, {});
+  await post(`/api/slots/${orchFree}/kill`, {});
+  const noOrch = await selfSend(slotToken(successorSlot), { to: orchAddress,
+    payload: { kind: "text", text: "No Orchestrator occupancy" }, idempotencyKey: "escalate-none" });
+  const noBody = await noOrch.json() as { escalatedTo?: string; holder?: unknown; message?: { id?: string } };
+  const noOwnerRow = (readState().events ?? []).find((e) => e.kind === "message"
+    && (e.payload as { messageId?: string })?.messageId === noBody.message?.id);
+  check("message escalation: no Orchestrator slot sends the original address to the Owner inbox",
+    noOrch.ok && noBody.escalatedTo === "owner" && noBody.holder === null
+      && noOwnerRow?.status === "inbox" && noOwnerRow.receiverSlot === null,
+    `send=${noOrch.status}/${noBody.escalatedTo} event=${noOwnerRow?.status}`);
+
   // --- D1 · A DECIDED REPORT IS VISIBLE TO THE SUCCESSOR, WHICH NEVER RECEIVED IT. -----------
   // A worker's typed report is filed to ONE MAIN occupant, and the only door that occupant had was
   // the event ACK — a transport receipt by contract. So the session reading this Program next could

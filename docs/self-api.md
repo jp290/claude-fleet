@@ -1951,7 +1951,11 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 
 ## clarifications — `GET /api/self/clarifications`, `POST /api/self/clarifications/:id/reply`
 
-Die **Frage eines blockierten Workers an SEINE MAIN** und deren Antwort. Sie ist die Gegenrichtung
+Die **Frage eines blockierten Workers an SEINE MAIN** und deren Antwort. Ist die MAIN eines Programs
+nicht lebendig gebunden, erreicht die Rückfrage die einzige lebende Orchestratorin mit
+`basis:"orchestrator"`; deren exakter Occupant kann antworten. Ohne sie bleibt die Rückfrage 409.
+Fleet-Reports behalten ihre eigene B4-Regel und eskalieren hier nicht.
+Sie ist die Gegenrichtung
 zu `attention` (MAIN → Owner) und folgt derselben Regel „[Zitat entfernt]“: eine Lane fragt nie
 den Owner, eine MAIN fragt nie eine fremde Lane. Transport ist der bestehende `FleetEvent`-Rail,
 kein eigener Kanal.
@@ -2015,8 +2019,10 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 - **Scope: Prinzipal-gebunden, Nicht-Lane.** Absender ist, wer die Session IST — aus der Bindung
   abgeleitet, nie aus dem Body. Eine gebundene Program-MAIN sendet als `{kind:"program",id}`, der
   exakt gebundene Supervisor (`isBoundSupervisor`) als `{kind:"role",role:"supervisor"}`.
+  Die einzige lebende Session mit Orchestratorin-Label sendet als
+  `{kind:"role",role:"orchestrator"}`; das Label gewährt keine weiteren Rechte.
 - **Adress-Union, geschlossen:** `{kind:"program", id}` | `{kind:"role", role}` mit
-  `role ∈ {supervisor, controller}`.
+  `role ∈ {supervisor, orchestrator, controller}`.
 - **`role:"controller"` ist BENANNT, aber nicht auflösbar** — 409, und **nichts wird gespeichert**.
   Der Controller ist Scope und hält keine Bindung (`docs/controller.md`). Wer ihn heute erreichen
   will, adressiert **das Program, dessen MAIN er ist**, als `{kind:"program",id}`. Die Rolle steht
@@ -2045,8 +2051,13 @@ DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, 
 | Fall | Antwort | Gespeichert? |
 |---|---|---|
 | Unbekannte Program-Id · `role:"controller"` | 409, benannt | **nein** |
-| Gültige Adresse, **niemand hält sie gerade** (kein gebundener MAIN, tote Occupation, kein Supervisor gebunden; auch ein `completed`/`abandoned` Program) | 200 mit `note`, `holder:null` | **ja** — der nächste Halter liest sie |
+| Gültige Adresse ohne lebenden Halter (Program oder Supervisor) | 200 mit `note`, `escalatedTo:"orchestrator"`, `holder` = Orchestratorin; ohne genau eine lebende Orchestratorin `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse — der nächste Halter liest sie weiter |
+| `role:"orchestrator"` ohne genau eine lebende Orchestratorin | 200 mit `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse |
 | Gültige Adresse mit lebendem Halter | 200, `holder:{slot,openedAt}` | ja |
+
+Ein lebender Halter bekommt genau einen Hinweis über den bestehenden SendPath `inbox-nudge`.
+`ctl.sh send --orchestrator <textfile>` sendet über `POST /api/self/messages` mit
+`FLEET_SELF_TOKEN`; die Owner-Credential wird dafür nicht gelesen.
 
 Der mittlere Fall ist der Zweck der Übung, nicht ein Randfall: **eine Succession ist genau das
 Fenster, in dem eine Adresse kurz unbesetzt ist.**

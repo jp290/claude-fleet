@@ -371,7 +371,7 @@ export interface LaneReviewEventView {
   subjectName?: string;
 }
 
-export type ClarificationBasis = "program-main" | "lane-watch" | "program-main+lane-watch";
+export type ClarificationBasis = "program-main" | "lane-watch" | "program-main+lane-watch" | "orchestrator";
 // Closed server-stamped provenance only. The question is the one caller field admitted by the
 // request route; no receiver, command, or arbitrary detail can hitch a ride through persistence.
 export interface ClarificationEventPayload {

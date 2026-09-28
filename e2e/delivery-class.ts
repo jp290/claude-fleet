@@ -23,15 +23,27 @@ const MEANING = {
 // the whole scrollback: a header is wider than the pane and a bundle is many lines
 const paneText = async (pane: string): Promise<string> =>
   (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", pane)).out;
-// …compared with ALL whitespace removed. -J joins only soft wraps; the shell in these stand-in panes
-// redraws a long line as hard rows (measured locally: a row began "ehenden Rolle] [fleet-buendel"),
-// and a space at a row end is trimmed by the capture. What is compared is the words and their order.
+// …compared with ALL whitespace removed: the capture trims a space that falls at a row end. What is
+// compared is the words and their order.
 const squash = (text: string): string => text.replace(/\s+/g, "");
 const inPane = (pane: string, expected: string): boolean => squash(pane).includes(squash(expected));
 const around = (pane: string, needle: string): string | null => {
   const flat = squash(pane);
   const at = flat.indexOf(squash(needle));
   return at < 0 ? null : flat.slice(Math.max(0, at - 160), at + squash(needle).length + 20);
+};
+// A plain `cat` in the pane for the deliveries a check reads back off the screen: the tty echoes what
+// was typed as it arrived, where the shell's line editor redraws a long multibyte line and overwrote
+// the header's start locally ("~%ehenden Rolle]", 2026-09-28). C-c first: a shell left at a quote>
+// continuation would read `cat` as more quoted text.
+const catPane = async (pane: string): Promise<boolean> => {
+  await tmuxOut("send-keys", "-t", pane, "C-c");
+  await tmuxOut("send-keys", "-t", pane, "cat", "Enter");
+  for (let i = 0; i < 50; i++) {
+    if ((await tmuxOut("display-message", "-p", "-t", pane, "#{pane_current_command}")).out.trim() === "cat") return true;
+    await Bun.sleep(100);
+  }
+  return false;
 };
 const currentSelfToken = (slot: number): string => {
   const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
@@ -50,6 +62,7 @@ export async function run(): Promise<void> {
       { slots: { id: number; cwd: string | null }[] };
     check("delivery-class fixture: slot 2 remains open after the isolated restart",
       session.slots.some((s) => s.id === 2 && !!s.cwd));
+    check("delivery-class fixture: slot 2 runs a plain cat for the header read-backs", await catPane("s2"));
     const before = (await plogRead()).length;
     const sendsBefore = auditRows().filter((r) => r.event === "send" && r.slot === 2).length;
     const scheduled = await post("/api/slots/2/autos", { text: autoText, inSec: 1, idleSec: 0 });
@@ -99,10 +112,9 @@ export async function run(): Promise<void> {
       r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto" && r.cache === "kalt") ?? null,
     { timeoutMs: 8_000, what: "second cold auto enters its own window" });
     await Bun.sleep(3_000);
-    // (1) ONE ENTRY IS NO BUNDLE: it is typed under its own path, so the send row says auto and the
-    // header carries the auto's sentence; the bundle row still counts the one entry it flushed.
+    // the WHEN of the flush, whatever path it carries — which path is check (1)'s question below
     const timedAutoSends = auditRows().slice(timedAutoAuditBefore).filter((r) =>
-      r.event === "send" && r.slot === 2 && r.path === "auto");
+      r.event === "send" && r.slot === 2);
     const timedAutoPrompts = (await plogRead()).slice(timedAutoPlBefore).filter((p) =>
       p.slot === 2 && p.text === timedAuto);
     const timedAutoFlushed = timedAutoQueued.deliveryClass === "buendelbar"
@@ -115,10 +127,13 @@ export async function run(): Promise<void> {
     const timedAutoBundled = auditRows().slice(timedAutoAuditBefore).filter((r) =>
       r.event === "delivery_bundle_sent" && r.slot === 2);
     const timedAutoPane = await paneText("s2");
+    // (1) ONE ENTRY IS NO BUNDLE: it is typed under its own path, so the send row says auto and the
+    // header carries the auto's sentence; the bundle row still counts the one entry it flushed.
     // BREAKS IF: flushDeliveryBundle sends a single entry with path "bundle" again (the pre-5a state:
     // 0 of 70 live sends in audit.jsonl carried their own path).
     check("a single bundled auto is typed with its own header — path=auto and its sentence — and counted count=1",
-      timedAutoSends.length === 1 && timedAutoBundled.length === 1 && timedAutoBundled[0]?.count === 1
+      timedAutoSends.length === 1 && timedAutoSends[0]?.path === "auto"
+        && timedAutoBundled.length === 1 && timedAutoBundled[0]?.count === 1
         && timedAutoBundled[0]?.paths === "auto"
         && inPane(timedAutoPane, `[fleet-zustellung · geplanter Check-in · path=auto · Slot 2 · ${MEANING.auto}] ${timedAuto}`),
       JSON.stringify({ sends: timedAutoSends.map((r) => r.path), bundled: timedAutoBundled.map((r) => [r.count, r.paths]),
@@ -152,6 +167,7 @@ export async function run(): Promise<void> {
         sends: loneSends.map((r) => r.path),
         line: around(lonePane, loneText) }));
 
+    await tmuxOut("send-keys", "-t", "s2", "C-c"); // the header read-backs are done: hand s2 back to its shell
     await stopSrv();
     const coldState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
       slots: Record<string, { openedAt: number; sessionId: string | null }>;

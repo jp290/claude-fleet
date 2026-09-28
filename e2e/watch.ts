@@ -29,6 +29,20 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 import { FLEET_EVENT_TERMINAL } from "../server/types";
 import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv as restartSrvRaw, results, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 
+// A plain `cat` in the pane for the deliveries a check reads back off the screen: the tty echoes what
+// was typed as it arrived, where the shell's line editor redraws a long multibyte line and overwrote
+// the header's start locally ("~%ehenden Rolle]", 2026-09-28). C-c first: a shell left at a quote>
+// continuation would read `cat` as more quoted text.
+const catPane = async (pane: string): Promise<boolean> => {
+  await tmuxOut("send-keys", "-t", pane, "C-c");
+  await tmuxOut("send-keys", "-t", pane, "cat", "Enter");
+  for (let i = 0; i < 50; i++) {
+    if ((await tmuxOut("display-message", "-p", "-t", pane, "#{pane_current_command}")).out.trim() === "cat") return true;
+    await Bun.sleep(100);
+  }
+  return false;
+};
+
 // === THE RESTART GATE — A DELIVERY LINE MUST NOT DIE INSIDE A RESTART (S3a) =====================
 // `server.ts#tickWatches` persists the crash marker (`send-uncertain`, `attempts++`) BEFORE it
 // touches tmux (its FACT 2), and only a `pending` row is ever replayed — "send-uncertain is
@@ -7176,6 +7190,10 @@ export async function run(): Promise<void> {
       mainId > 0 && lane.slot > 0 && stewardId > 0 && unknownId > 0 && boundId > 0 && piId > 0 && !!piOpen?.ok,
       JSON.stringify({ mainId, lane: lane.slot, stewardId, unknownId, boundId, piId, piStatus: piOpen?.status }));
 
+    // the three panes whose migrate-nudge header is read back below (catPane: why not the shell)
+    const catReady = await Promise.all([mainId, lane.slot, boundId].map((id) => catPane(`s${id}`)));
+    check("migration tick setup: main, lane and bound-main panes run a plain cat for the header read-back",
+      catReady.every(Boolean), JSON.stringify(catReady));
     // Stop before editing fleet.json: a live saveState chain is allowed to replace the file, so an
     // edit made while srv runs would be a probe racing its subject. restartSrv starts it again with
     // the same FLEET_* env after the identities and usage files are in place.
@@ -7324,8 +7342,7 @@ export async function run(): Promise<void> {
     // migrate-nudge header ended "Grenze: deine Lane", the bound and the unbound MAIN's included.
     // The pane is the only place the typed header exists — the prompt journal records the body.
     // BREAKS IF: deliveryMeaning stops reading the receiver's role, or the lane loses its own sentence.
-    // Compared with all whitespace removed: the stand-in shell redraws a long line as HARD rows, which
-    // -J cannot join, and the capture trims a space at a row end (measured locally 2026-09-28).
+    // Compared with all whitespace removed: the capture trims a space that falls at a row end.
     const migrateSentence = async (slot: number): Promise<string | null> => {
       const pane = (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `s${slot}`)).out.replace(/\s+/g, "");
       return new RegExp(`path=migrate-nudge·Slot${slot}·([^\\]]*)\\]`).exec(pane)?.[1] ?? null;
@@ -7338,6 +7355,7 @@ export async function run(): Promise<void> {
         && !!sentences.main && !sentences.main.includes("Lane")
         && sentences.bound !== sentences.main,
       JSON.stringify(sentences));
+    for (const id of [mainId, lane.slot, boundId]) await tmuxOut("send-keys", "-t", `s${id}`, "C-c");
     check("tickMigrate never nudges the ⚙ steward or a ctx:null slot",
       (await migratePrompts(stewardId)).length === 0
         && (await migratePrompts(unknownId)).length === 0,

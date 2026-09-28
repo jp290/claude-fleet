@@ -8652,15 +8652,37 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "api-stall-resume": "Fortsetzen nach API-Fehler",
   "rate-limit-resume": "Fortsetzen nach Nutzungslimit",
 };
+const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
+  "bundle": "naechster Schritt: bearbeite die enthaltenen Zustellungen · Grenze: nur innerhalb deiner bestehenden Rolle",
+  "owner": "naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher",
+  "brief": "naechster Schritt: fuehre die zugewiesene Karte aus · Grenze: ihr Write-Set und Stop-Punkt",
+  "founding": "naechster Schritt: uebernimm die gebundene Rolle · Grenze: ihr bestaetigter Auftrag",
+  "succession": "naechster Schritt: setze die Lane-Arbeit fort · Grenze: derselbe Auftrag und Worktree",
+  "auto": "naechster Schritt: beantworte den Check-in im laufenden Auftrag · Grenze: keine neue Befugnis",
+  "steward": "naechster Schritt: pruefe den Steward-Hinweis · Grenze: deine bestehende Rolle",
+  "fleet-event": "naechster Schritt: lies das Ereignis und handle in deiner Rolle · Grenze: keine neue Befugnis",
+  "clarification-reply": "naechster Schritt: setze die Arbeit mit der Antwort fort · Grenze: deine Karte",
+  "report-decision": "naechster Schritt: beachte die Entscheidung zum Report · Grenze: kein Land durch die Lane",
+  "merge-author": "naechster Schritt: loese den benannten Konflikt · Grenze: dein Branch und Auftrag",
+  "merge-verdict": "nur zur Information",
+  "supervisor-nudge": "naechster Schritt: pruefe den benannten Stillstand · Grenze: dein Program",
+  "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
+  "inbox-nudge": "naechster Schritt: lies die ungelesenen Program-Eintraege · Grenze: dein Program",
+  "backlog-nudge": "naechster Schritt: pruefe den offenen Backlog · Grenze: dein bestaetigtes Program",
+  "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane",
+  "api-stall-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
+  "rate-limit-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
+};
 // Only the default adapter gets it, and not when the operator declared a foreign FLEET_CMD for it:
 // codex, pi and every declared harness keep the paste byte for byte (no measurement says what their
 // TUI does with a typed prefix). An undeclared stand-in (`true`) takes it, which is what lets the
 // suites see the form.
 function deliveryHeader(form: Harness, path: SendPath, slot: number, text: string): string | null {
   const source = DELIVERY_SOURCE[path];
+  const meaning = path === "model-push" ? null : DELIVERY_MEANING[path];
   if (!source || form !== CLAUDE_HARNESS || DECLARED_HARNESS
     || (path === "owner" && text.trimStart().startsWith("/"))) return null;
-  return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot}] `;
+  return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${meaning}] `;
 }
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
 // boot — the opposite choice from stewardRecentSends one region up, and for the reason that

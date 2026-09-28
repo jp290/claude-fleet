@@ -206,7 +206,7 @@ if (silentAlive && silentInWindow) {
   check("a claude stand-in that renders no composer answers acceptance:unobservable, never observed or `submitted`",
     silentReceipt?.receipt?.submitRequested === true && silentReceipt?.receipt?.acceptance === "unobservable"
     && !("submitted" in (silentReceipt?.receipt ?? {})), JSON.stringify(silentReceipt?.receipt));
-  const silentCap = await tmuxOut("capture-pane", "-t", "s9", "-p");
+  const silentCap = await tmuxOut("capture-pane", "-t", "s9", "-p", "-J");
   check("the no-settle send reaches the already-alive silent pane",
     silentCap.out.includes(silentMarker), silentCap.out.slice(-160));
 }

@@ -1357,6 +1357,27 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       prefix === null ? "no DELIVERY_HEADER_PREFIX in server.ts" : `prefix=${JSON.stringify(prefix)} in-contract=${defined}`);
   }
 
+  const sourceBody = /const DELIVERY_SOURCE:[^\n]+ = \{([\s\S]*?)\n\};/.exec(server)?.[1] ?? "";
+  const meaningBody = /const DELIVERY_MEANING:[^\n]+ = \{([\s\S]*?)\n\};/.exec(server)?.[1] ?? "";
+  const entries = (body: string): Map<string, string> => new Map(
+    [...body.matchAll(/^\s*"([^"]+)":\s*("[^"]*"|null),\s*$/gm)].map((m) => [m[1]!, m[2]!])
+  );
+  const sources = entries(sourceBody);
+  const meanings = entries(meaningBody);
+  const headed = [...sources].filter(([, value]) => value !== "null").map(([path]) => path);
+  const missing = headed.filter((path) => !meanings.has(path));
+  const extra = [...meanings.keys()].filter((path) => !headed.includes(path));
+  pin("Every headed DELIVERY_SOURCE path has one DELIVERY_MEANING and no unheaded path has one",
+    !!sourceBody && !!meaningBody && missing.length === 0 && extra.length === 0,
+    `missing=[${missing}] extra=[${extra}]`);
+  const malformed = [...meanings].filter(([, quoted]) => {
+    const value = quoted.slice(1, -1);
+    return quoted === "null" || value.length > 120
+      || (value !== "nur zur Information" && !/^naechster Schritt: .+ · Grenze: .+$/.test(value));
+  }).map(([path]) => path);
+  pin("Every DELIVERY_MEANING is a position sentence of at most 120 characters",
+    !!meaningBody && malformed.length === 0, `malformed=[${malformed}]`);
+
   // The FOREIGN-REPO half of the filing template. A lane outside claude-fleet gets no Fleet rulebook
   // at all (createWorktree copies the ignored scaffolding out of ITS repo), so every obligation this
   // file drops has to stand in the row — and the measured price of dropping them is row 2fd387de

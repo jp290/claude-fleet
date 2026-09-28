@@ -1,3 +1,5 @@
+Du bist Lane <name> im Program <titel>; dein Empfaenger ist die MAIN in Slot <n>; fertig meldest du per POST /api/self/fleet-report.
+
 # Lane brief template  (operative — fill in and deliver at LAUNCH)
 
 *The Phase-2 artifact. A brief is delivered in the lane's initial prompt /

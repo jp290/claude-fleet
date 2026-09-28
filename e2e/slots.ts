@@ -2900,7 +2900,7 @@ export async function run(): Promise<void> {
   // BREAKS IF: sendText pastes without typing the header, names another path/slot, or types it after the body.
   const cap2j = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
   check("delivery header: a /send into the default (claude) adapter types the provenance line directly before the body",
-    cap2j.out.includes("[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 2] compose-box-to-slot-two"),
+    cap2j.out.includes("[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 2 · naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher] compose-box-to-slot-two"),
     JSON.stringify({ reader: (await tmuxOut("display-message", "-p", "-t", "s2", "#{pane_current_command} #{pane_width}")).out.trim(),
       rows: cap2j.out.trimEnd().split("\n").slice(-3).map((l) => l.slice(0, 160)) }));
   check("no cross-talk (s1 text absent from s2)", !cap2.out.includes("hello-fleet-typing"));
@@ -2968,7 +2968,7 @@ export async function run(): Promise<void> {
       const slashCapture = await tmuxOut("capture-pane", "-t", composerPane, "-p", "-J");
       const slashLine = slashCapture.out.split("\n").find((line) => line.includes("/effort high"));
       check("delivery header: owner /send heads hallo but keeps /effort high first in the claude composer",
-        helloSend.ok && !!helloLine?.includes(`[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot ${composerSlot}]`)
+        helloSend.ok && !!helloLine?.includes(`[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot ${composerSlot} · naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher]`)
           && slashSend.ok && slashLine?.trim() === "/effort high",
         JSON.stringify({ hello: helloLine?.slice(0, 160) ?? null, slash: slashLine?.slice(0, 160) ?? null }));
     } finally {

@@ -486,7 +486,7 @@ export function startPlanWaitNote(next: Exclude<StartPlanNext, "now">): string {
 
 // --- CLI: the same projector over a state file. A lane has no fleet.json; the MAIN runs it in the
 // main checkout and compares it with GET /api/start-plan:
-//   bun start-plan.ts --state fleet.json [--default-repo REPO] [--budget N]
+//   bun start-plan.ts --state fleet.json [--default-repo REPO] [--budget N] [--server-url URL]
 const argAfter = (name: string): string | null => {
   const at = process.argv.indexOf(name);
   const value = at >= 0 ? process.argv[at + 1] : undefined;
@@ -504,7 +504,7 @@ interface StateSlot { cwd?: unknown; worktree?: { repo?: unknown; base?: unknown
 
 async function cli(): Promise<void> {
   const statePath = argAfter("--state");
-  if (!statePath) throw new Error("usage: bun start-plan.ts --state FILE [--default-repo REPO] [--budget N]");
+  if (!statePath) throw new Error("usage: bun start-plan.ts --state FILE [--default-repo REPO] [--budget N] [--server-url URL]");
   const defaultRepo = argAfter("--default-repo") ?? process.env.FLEET_DISPATCH_REPO ?? null;
   const budgetEnv = Number(process.env.FLEET_LAND_WAVE_BUDGET);
   const budget = argAfter("--budget")
@@ -521,7 +521,7 @@ async function cli(): Promise<void> {
     tasks?: Record<string, { files?: string[]; ranges?: TaskWaveRange[] | null }>;
   };
   const state = await Bun.file(statePath).json() as {
-    tasks?: unknown; slots?: unknown; repoLaneCaps?: unknown; programs?: unknown; repoBases?: unknown;
+    token?: unknown; tasks?: unknown; slots?: unknown; programs?: unknown; repoBases?: unknown;
   };
   const tasks = Array.isArray(state.tasks) ? state.tasks as StateTask[] : [];
   const strings = (v: unknown): string[] => Array.isArray(v) ? v.filter((e): e is string => typeof e === "string") : [];
@@ -677,22 +677,33 @@ async function cli(): Promise<void> {
   }
   lanes.sort((a, b) => a.slot - b.slot);
 
-  // the caps as server.ts#repoLaneCap and #programDispatchCap compute them, from this state and env
-  const machineMax = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
-  const perProgram = process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM
-    ? Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM) | 0) : null;
-  const repoCaps = state.repoLaneCaps && typeof state.repoLaneCaps === "object" ? state.repoLaneCaps as Record<string, unknown> : {};
-  const grants = new Map<string, number>();
-  for (const p of Array.isArray(state.programs) ? state.programs as { id?: unknown; status?: unknown; dispatch?: { on?: unknown; maxLanes?: unknown } }[] : [])
-    if (typeof p.id === "string" && p.status === "active" && p.dispatch?.on === true && typeof p.dispatch.maxLanes === "number")
-      grants.set(p.id, p.dispatch.maxLanes);
+  const serverUrl = argAfter("--server-url") ?? process.env.FLEET_CTL_URL
+    ?? `http://${process.env.FLEET_HOST ?? "127.0.0.1"}:${process.env.FLEET_PORT ?? "8790"}`;
+  const token = process.env.FLEET_CTL_TOKEN ?? process.env.FLEET_TOKEN ?? state.token;
+  if (typeof token !== "string" || !token) throw new Error("server cap read needs the state owner token");
+  const capResponse = await fetch(`${serverUrl}/api/repo-lane-caps`, {
+    headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000),
+  });
+  if (!capResponse.ok) throw new Error(`server cap read failed: HTTP ${capResponse.status}`);
+  const capData = await capResponse.json() as {
+    default?: unknown; programDefault?: unknown; caps?: unknown;
+  };
+  if (typeof capData.default !== "number" || !Number.isInteger(capData.default)
+    || (capData.programDefault !== null && (typeof capData.programDefault !== "number" || !Number.isInteger(capData.programDefault)))
+    || !capData.caps || typeof capData.caps !== "object" || Array.isArray(capData.caps))
+    throw new Error("server cap read returned an invalid shape");
+  const repoCaps = capData.caps as Record<string, unknown>;
+  const programCaps = new Map<string, number>();
+  for (const p of Array.isArray(state.programs) ? state.programs as { id?: unknown; status?: unknown; dispatch?: { maxLanes?: unknown } }[] : [])
+    if (typeof p.id === "string" && p.status === "active" && typeof p.dispatch?.maxLanes === "number")
+      programCaps.set(p.id, p.dispatch.maxLanes);
   const programIds = [...new Set(rows.map((r) => r.programId).filter((p): p is string => !!p))].sort();
   const caps: Record<string, StartPlanRepoCaps> = {};
   for (const { repo } of projection.repos) {
     const entry = repoCaps[canon(repo)];
-    const cap: StartPlanCap = typeof entry === "number" ? { max: entry, source: "repo" } : { max: machineMax, source: "default" };
-    const machine = perProgram ?? cap.max;
-    caps[repo] = { ...cap, programs: Object.fromEntries(programIds.map((id) => [id, Math.min(grants.get(id) ?? machine, machine)])) };
+    const cap: StartPlanCap = typeof entry === "number" ? { max: entry, source: "repo" } : { max: capData.default, source: "default" };
+    const machine = capData.programDefault ?? cap.max;
+    caps[repo] = { ...cap, programs: Object.fromEntries(programIds.map((id) => [id, Math.min(programCaps.get(id) ?? machine, machine)])) };
   }
 
   process.stdout.write(`${JSON.stringify(projectStartPlan({ projection, rows, statuses, lanes, caps }))}\n`);

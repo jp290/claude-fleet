@@ -8388,11 +8388,11 @@ export async function run(ctx: Ctx): Promise<void> {
   await pdSettle();
   const [pdForeignA, pdLooseA, pdMachineA] = await Promise.all([spawnRowOf(pdForeignId), spawnRowOf(pdLooseId), spawnRowOf(pdMachine1)]);
   const pdAfterStop = await fleetSwitches();
-  check("program-dispatch (1): with the global dispatcher stopped and no program granted, a full tick window moves nothing and writes no note",
+  check("program-dispatch (1): with the global dispatcher stopped and no program granted, a full tick window moves nothing and names the stop",
     pdForeignRelease.status === 200 && pdLooseRelease.status === 200 && pdMachine1Release.status === 200
-      && pdForeignA?.status === "queued" && (pdForeignA?.note ?? null) === null
-      && pdLooseA?.status === "queued" && (pdLooseA?.note ?? null) === null
-      && pdMachineA?.status === "queued" && (pdMachineA?.note ?? null) === null
+      && pdForeignA?.status === "queued" && pdForeignA?.note === "waiting: dispatcher stopped"
+      && pdLooseA?.status === "queued" && pdLooseA?.note === "waiting: dispatcher stopped"
+      && pdMachineA?.status === "queued" && pdMachineA?.note === "waiting: dispatcher stopped"
       && pdMachineA?.releasedBy === "machine" && pdForeignA?.releasedBy === "owner"
       && pdAfterStop.lanes === pdBeforeStop.lanes && pdAfterStop.occupied === pdBeforeStop.occupied
       && pdAfterStop.dispatchOn === false && pdAfterStop.autosOn === true,
@@ -8417,8 +8417,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && pdMachine1B?.status === "sent" && typeof pdMachine1B?.slot === "number"
       && pdMachine2B?.status === "queued"
       && (pdMachine2B?.note ?? "").includes('1/1 lanes busy in program "')
-      && pdForeignB?.status === "queued" && (pdForeignB?.note ?? null) === null
-      && pdLooseB?.status === "queued" && (pdLooseB?.note ?? null) === null,
+      && pdForeignB?.status === "queued" && pdForeignB?.note === "waiting: dispatcher stopped"
+      && pdLooseB?.status === "queued" && pdLooseB?.note === "waiting: dispatcher stopped",
     `grant=${pdGrant.status}:${JSON.stringify(pdGrantRecord)} m1=${JSON.stringify(pdMachine1B ?? null)} m2=${JSON.stringify(pdMachine2B ?? null)} foreign=${JSON.stringify(pdForeignB ?? null)} loose=${JSON.stringify(pdLooseB ?? null)}`);
 
   // (3) `on:false` IS NOT ABSENCE. The record stays, dated and readable; the tick refuses exactly as
@@ -8482,7 +8482,7 @@ export async function run(ctx: Ctx): Promise<void> {
   await pdKillLanes();
 
   // (6) AN UNREADABLE RECORD LOADS AS ABSENT — never as a weaker grant, and never as a grant at all.
-  // Planted as a v2 shape, which is the dangerous direction: a loader that read it as "its nearest
+  // Planted as a v3 shape, which is the dangerous direction: a loader that read it as "its nearest
   // v1 meaning" would hand a future schema today's permission. Proved twice, because the display
   // half and the behaviour half fail differently: the route stops sending the key, and the tick
   // refuses the granted program's machine-released row exactly as in (1).
@@ -8497,11 +8497,11 @@ export async function run(ctx: Ctx): Promise<void> {
   await stopSrv();
   const pdPlantState = readState();
   pdPlantState.programs = (pdPlantState.programs ?? []).map((x) => x.id === mainProgram.id
-    ? { ...x, dispatch: { v: 2, on: true, maxLanes: 2, confirmedAt: Date.now() } } : x);
+    ? { ...x, dispatch: { v: 3, on: true, maxLanes: 2, confirmedAt: Date.now() } } : x);
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(pdPlantState, null, 2), { mode: 0o600 });
   const pdPlanted = (readState().programs ?? []).find((x) => x.id === mainProgram.id)?.dispatch;
-  check("program-dispatch (6) setup: the v2 record is on disk before the server is started on it",
-    (pdPlanted as { v?: number } | undefined)?.v === 2, JSON.stringify(pdPlanted ?? null));
+  check("program-dispatch (6) setup: the future v3 record is on disk before the server is started on it",
+    (pdPlanted as { v?: number } | undefined)?.v === 3, JSON.stringify(pdPlanted ?? null));
   await restartSrv();
   await post("/api/dispatch", { on: false }); // a restart reloads the persisted switches
   await post("/api/autos/switch", { on: true });
@@ -8510,10 +8510,10 @@ export async function run(ctx: Ctx): Promise<void> {
   const pdUnreadableRelease = await selfRelease(successorToken, pdUnreadableId);
   await pdSettle();
   const pdUnreadableRow = await spawnRowOf(pdUnreadableId);
-  check("program-dispatch (6): a v2 dispatch record loads as ABSENT — the route stops sending it, and the tick refuses the program's machine-released row under the stopped fleet",
+  check("program-dispatch (6): a future v3 dispatch record loads as ABSENT — the route stops sending it, and the stopped tick names its reason",
     pdUnreadableRecord === "absent"
       && pdUnreadableRelease.status === 200
-      && pdUnreadableRow?.status === "queued" && (pdUnreadableRow?.note ?? null) === null,
+      && pdUnreadableRow?.status === "queued" && pdUnreadableRow?.note === "waiting: dispatcher stopped",
     `record=${JSON.stringify(pdUnreadableRecord)} release=${pdUnreadableRelease.status} row=${JSON.stringify(pdUnreadableRow ?? null)}`);
 
   // (7) REVOKE IS IDEMPOTENT, and revoking what is already absent is the state the caller asked for.

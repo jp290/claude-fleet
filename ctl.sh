@@ -1045,40 +1045,56 @@ EOF
 # ================================================================================================
 dispatch)
 # ------------------------------------------------------------------------------------------------
-# The hand-start door, POST /api/tasks/:id/dispatch. The server's own cap is counted PER REPO on the
-# unattended tick; this door does not pass through it, which is why the button can open a lane the
-# tick would have held back. So the count happens HERE, fleet-wide over rows in `sent`, against
-# FLEET_DISPATCH_MAX_LANES. Deliberately COARSER than the server's per-repo count and said so: it
-# can refuse a start the server would have allowed, and `--force` is the one word that skips it.
+# The hand-start door remains independent of the tick. This CLI reads the server's current caps
+# and counts occupied lanes in the target repo before offering its optional attended refusal.
   task=""; force=0
   for a in "$@"; do case "$a" in --json) CTL_JSON=1 ;; --force) force=1 ;; --*) printf 'dispatch: unknown flag %s\n' "$a" >&2; exit 2 ;; *) task=$a ;; esac; done
   [ -n "$task" ] || { printf 'dispatch: give a task id\n' >&2; exit 2; }
   need_owner dispatch
   export CTL_TASK="$task" CTL_FORCE="$force"
-  export CTL_MAX_LANES="${FLEET_DISPATCH_MAX_LANES:-3}"
   js_head
   cat >> "$CTL_TMP" <<'EOF'
 const want = process.env.CTL_TASK;
-const cap = Math.max(1, Number(process.env.CTL_MAX_LANES || 3) | 0);
 const t = await api("/api/tasks", { headers: ownerH() });
 if (!t.ok) { console.error(`dispatch: /api/tasks ${t.status}`); process.exit(2); }
 const tasks = t.body.tasks ?? [];
 const row = tasks.find((x) => x.id === want);
 if (!row) { console.error(`dispatch: no task ${want} on this fleet`); process.exit(1); }
-const open = tasks.filter((x) => x.status === "sent");
-const lines = [`task ${want}  kind=${row.kind}  status=${row.status}  repo=${row.repo ?? "(dispatch default)"}`];
+const [sessions, caps, programs] = await Promise.all([
+  api("/api/sessions", { headers: ownerH() }),
+  api("/api/repo-lane-caps", { headers: ownerH() }),
+  api("/api/programs", { headers: ownerH() }),
+]);
+if (!sessions.ok || !caps.ok || !programs.ok) {
+  console.error(`dispatch: cap read failed sessions=${sessions.status} caps=${caps.status} programs=${programs.status}`);
+  process.exit(2);
+}
+const canon = (path) => { try { return fs.realpathSync(path); } catch { return path; } };
+const repo = row.repo ?? sessions.body.dispatch?.repo;
+if (!repo) { console.error("dispatch: no target repo"); process.exit(2); }
+const key = canon(repo);
+const stored = caps.body.caps?.[key];
+const repoCap = typeof stored === "number" ? stored : caps.body.default;
+const open = (sessions.body.slots ?? []).filter((s) => s.cwd && s.worktree?.repo && canon(s.worktree.repo) === key).length;
+const program = (programs.body.programs ?? []).find((p) => p.id === row.programId && p.status === "active");
+const machineProgramCap = caps.body.programDefault ?? repoCap;
+const programCap = Math.min(program?.dispatch?.maxLanes ?? machineProgramCap, machineProgramCap);
+const programOpen = (sessions.body.slots ?? []).filter((s) => s.cwd && s.programId === row.programId).length;
+const held = open >= repoCap ? { source: typeof stored === "number" ? "repo cap" : "machine default", count: open, cap: repoCap }
+  : row.programId && programOpen >= programCap ? { source: `program cap (${row.programId})`, count: programOpen, cap: programCap } : null;
+const lines = [`task ${want}  kind=${row.kind}  status=${row.status}  repo=${repo}`];
 // Two plain-language notes the route itself will not give: an advisory row has no motor at all, and
 // a row whose harness the automation policy declines can ONLY be started through this door.
 if (row.kind !== "auftrag") lines.push(`  NOTE: a ${row.kind} is advisory — the dispatcher never runs this, and this door will refuse it too`);
 if (row.spawn?.harness) lines.push(`  NOTE: the row names harness ${row.spawn.harness} — if FLEET_HARNESS_AUTOMATION declines it, the unattended tick never starts this row and this door is its only start path`);
-if (open.length >= cap && process.env.CTL_FORCE !== "1") {
-  lines.push(`  REFUSED: ${open.length}/${cap} task lanes are already open (FLEET_DISPATCH_MAX_LANES; fleet-wide, coarser than the server's per-repo cap) — land or close one, or pass --force`);
-  out({ ok: false, task: row, openLanes: open.length, cap, refused: "lane cap" }, lines);
+if (held && process.env.CTL_FORCE !== "1") {
+  lines.push(`  REFUSED: ${held.count}/${held.cap} lanes open (${held.source}) — land or close one, or pass --force`);
+  out({ ok: false, task: row, openLanes: held.count, cap: held.cap, refused: held.source }, lines);
   process.exit(1);
 }
 const d = await api(`/api/tasks/${want}/dispatch`, { method: "POST", headers: ownerH(), body: "{}" });
 lines.push(`  dispatch ${d.status} ${JSON.stringify(d.body).slice(0, 300)}`);
-out({ ok: d.ok, task: row, openLanes: open.length, cap, response: d.body, status: d.status }, lines);
+out({ ok: d.ok, task: row, openLanes: open, cap: repoCap, response: d.body, status: d.status }, lines);
 process.exit(d.ok ? 0 : 1);
 EOF
   js_run

@@ -2331,13 +2331,9 @@ const loadProgramRelease = (value: unknown): ProgramRelease | undefined => {
 };
 
 // === THE PROGRAM-SCOPED DISPATCH RECORD ====================================================
-// loadPromotion's four properties, one record over: CLOSED, VERSIONED, DEFAULT-ABSENT, and
-// `confirmedAt` stamped server-side so a caller can never date the owner's act. It is a PERMISSION,
-// so its degradation direction is the whole design: anything that is not exactly a well-formed v1
-// record — unknown key, wrong version, non-boolean `on`, an absurd `maxLanes`, a missing stamp —
-// loads as ABSENT, i.e. as "this program has no dispatch permission" and therefore as the byte-for-
-// byte legacy behaviour under the global switch. There is no field-wise repair, for loadPromotion's
-// reason: half a permission is not a weaker permission, it is a different one.
+// Closed, versioned records with a server-stamped date. v1 `on` is the legacy master bypass;
+// v2 `on` controls this program and `bypassMaster` is the separate bypass. An invalid record loads
+// as absent, never as a partial setting.
 //
 // `maxLanes` IS A CEILING THE OWNER LOWERS, NEVER RAISES. The tick reads it through a Math.min
 // against FLEET_DISPATCH_MAX_LANES_PER_PROGRAM (server.ts#programDispatchCap), so a number typed
@@ -2345,17 +2341,25 @@ const loadProgramRelease = (value: unknown): ProgramRelease | undefined => {
 // and not itself a safety property: the safety property is the min, and a number above the env cap
 // is legal, stored and simply inert.
 const PROGRAM_DISPATCH_MAX_LANES_MAX = 16;
-interface ProgramDispatch { v: 1; on: boolean; maxLanes: number; confirmedAt: number }
+type ProgramDispatch =
+  | { v: 1; on: boolean; maxLanes: number; confirmedAt: number }
+  | { v: 2; on: boolean; bypassMaster: boolean; maxLanes: number; confirmedAt: number };
 const loadProgramDispatch = (value: unknown): ProgramDispatch | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !["v", "on", "maxLanes", "confirmedAt"].includes(k))) return undefined;
-  if (r.v !== 1) return undefined;
+  if (r.v === 1) {
+    if (Object.keys(r).some((k) => !["v", "on", "maxLanes", "confirmedAt"].includes(k))) return undefined;
+  } else if (r.v === 2) {
+    if (Object.keys(r).some((k) => !["v", "on", "bypassMaster", "maxLanes", "confirmedAt"].includes(k))) return undefined;
+    if (typeof r.bypassMaster !== "boolean") return undefined;
+  } else return undefined;
   if (typeof r.on !== "boolean") return undefined;
   if (typeof r.maxLanes !== "number" || !Number.isInteger(r.maxLanes)
     || r.maxLanes < 1 || r.maxLanes > PROGRAM_DISPATCH_MAX_LANES_MAX) return undefined;
   if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
-  return { v: 1, on: r.on, maxLanes: r.maxLanes, confirmedAt: r.confirmedAt };
+  return r.v === 1
+    ? { v: 1, on: r.on, maxLanes: r.maxLanes, confirmedAt: r.confirmedAt }
+    : { v: 2, on: r.on, bypassMaster: r.bypassMaster as boolean, maxLanes: r.maxLanes, confirmedAt: r.confirmedAt };
 };
 
 // === THE STUDIO RECORD — the WORKFLOW as data, beside the machine environment, never inside it ===

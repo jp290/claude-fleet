@@ -3062,13 +3062,12 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // permanently. That is how 746513d1 came to sit at `waiting: 2/2 lanes busy in claude-fleet` for
   // hours while nothing about the cap was its reason (2026-09-07 04:47-05:14).
   //
-  // The MASTER STOP stays above it and that is deliberate, not an oversight: a row the fleet queue
-  // never looks at must keep its note byte-identical, or one program's grant would start painting
-  // sentences onto every unrelated queued row in the fleet.
+  // The per-row dispatch stop stays above it: a stopped row states that stop rather than a cap.
   const harnessGateIdx = tBody.indexOf("if (!harnessAutomatableFor(rowH)) {");
-  const masterStopIdx = tBody.indexOf("if (!dispatchOn && !pd) continue;");
+  const masterStopIdx = tBody.indexOf("if (stopReason) {");
   pin("the harness-automation gate runs BEFORE both lane caps and AFTER the per-row master stop — a permanent reason outranks a temporary one",
-    masterStopIdx > 0 && harnessGateIdx > masterStopIdx
+    /const stopReason = programDispatchStopped\(next\) \? "program dispatch off" : !dispatchOn && !pd \? "dispatcher stopped" : null;/.test(tBody)
+      && masterStopIdx > 0 && harnessGateIdx > masterStopIdx
       && tBody.indexOf("if (lanes >= repoCap.max)") > harnessGateIdx
       && tBody.indexOf("if (next.programId) {") > harnessGateIdx
       && tBody.indexOf("if (!free) {") > harnessGateIdx,
@@ -3145,7 +3144,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // record and a narrowing one produce the same board.
   const progCapFn = server.match(/const programDispatchCap = [\s\S]*?\n\};/)?.[0] ?? "";
   pin("the per-program cap number can only be LOWERED by an owner record — programDispatchCap is a min against the machine number",
-    /const programCap = programDispatchCap\(pd, repoCap\.max\);/.test(tBody)
+    /const programCap = programDispatchCap\(programDispatchSetting\(next\), repoCap\.max\);/.test(tBody)
     && /const machine = DISPATCH_MAX_LANES_PER_PROGRAM \?\? repoMax;/.test(progCapFn)
     && /Math\.min\(pd\?\.maxLanes \?\? machine, machine\)/.test(progCapFn)
     && !/DISPATCH_MAX_LANES_PER_PROGRAM/.test(tBody.slice(progGuardIdx, progCapIdx + 60)),
@@ -4650,21 +4649,23 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // reading of `p.dispatch` inside tickDispatch is how the ACTIVE-program clause silently stops
   // applying to one of them.
   const progDispReads = [...tBody.matchAll(/\.dispatch\b/g)];
-  pin("tickDispatch reads Program.dispatch through programDispatchOn/programDispatchCap only — never a second inline read",
+  pin("tickDispatch reads Program.dispatch through programDispatchOn/programDispatchStopped/programDispatchSetting only — never a second inline read",
     progDispReads.length === 0
     && /const pd = programDispatchOn\(next\);/.test(tBody)
-    && /if \(!dispatchOn && !pd\) continue;/.test(tBody),
+    && /programDispatchStopped\(next\)/.test(tBody)
+    && /programDispatchCap\(programDispatchSetting\(next\), repoCap\.max\)/.test(tBody),
     `${progDispReads.length} inline read(s) in tickDispatch`);
   // ...and the ACTIVE clause itself: a complete program's leftover queued rows must not keep
   // spawning lanes on a permission granted while it was still running. Both readers carry it —
   // the per-row predicate and the tick's own entry guard, which is the one that decides whether
   // the loop runs at all under a stopped fleet.
-  const progDispGrantFn = server.match(/const programDispatchGrant = [^;]+;/)?.[0] ?? "";
+  const progDispGrantFn = server.match(/const programDispatchGrant = [\s\S]*?\n\};/)?.[0] ?? "";
   pin("a program-scoped dispatch grant is spent only while the program is ACTIVE — and that clause is written exactly once",
-    /p\.status === "active" && p\.dispatch\?\.on \? p\.dispatch : undefined/.test(progDispGrantFn)
-    && (server.match(/p\.status === "active" && p\.dispatch\?\.on/g) ?? []).length === 1
+    /const activeProgramDispatch = \(p: Program\): ProgramDispatch \| undefined =>\n  p\.status === "active" \? p\.dispatch : undefined;/.test(server)
+    && (server.match(/p\.status === "active" \? p\.dispatch : undefined/g) ?? []).length === 1
+    && /const pd = activeProgramDispatch\(p\);/.test(progDispGrantFn)
     && /return p \? programDispatchGrant\(p\) : undefined;/.test(server)
-    && /if \(!dispatchOn && !programs\.some\(programDispatchGrant\)\) return;/.test(tBody),
+    && /const pd = programDispatchOn\(next\);/.test(tBody),
     progDispGrantFn || "programDispatchGrant missing");
   // ...and the QUIET-HOURS WAIVER is that one named pair and nothing looser: an ACTIVE grant AND a
   // row the MACHINE released. Widening it to "any row of a granted program" would hand an owner's

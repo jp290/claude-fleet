@@ -2624,7 +2624,9 @@ function nextActionFor(phase: Phase, t: Task, promotion: PromotionPolicy | undef
   if (phase === "READY")
     return t.status === "pending"
       ? `release → POST /api/self/tasks/${t.id}/release`
-      : "queued — the dispatch tick starts it; no door belongs to this row";
+      : programDispatchStopped(t) ? "queued — program dispatch off; hand start remains available to the owner"
+      : !dispatchOn && !programDispatchOn(t) ? "queued — dispatcher stopped; hand start remains available to the owner"
+      : "queued — the dispatch tick may start it when its gates clear; no door belongs to this row";
   if (phase === "REVIEWABLE")
     // THE ONE LINE THE AUTHORITY SLICE ADDS, and it is the whole point of naming the door at all:
     // with a promotion the land is the MAIN's own act, without one it is still the owner's. The
@@ -4801,7 +4803,7 @@ const DISPATCH_MAX_LANES_PER_PROGRAM: number | null =
 // THE PRODUCT: a release needs a LIVE bound Program-MAIN, i.e. an occupied slot, so at most
 // MAX_SLOTS (16) programs can be releasing at any moment → 16 × 5 = 80 rows. Why that does not
 // blow anything up, stated rather than assumed: released rows are ROWS, not lanes. What bounds
-// unattended EXECUTION is untouched and lane-shaped — DISPATCH_MAX_LANES per repo (live 2),
+// unattended EXECUTION is untouched and lane-shaped — DISPATCH_MAX_LANES per repo,
 // narrowed by DISPATCH_MAX_LANES_PER_PROGRAM — and the tick starts one lane per tick regardless of
 // how deep the queue is. 80 is below MAX_TASKS (200), so this door alone cannot outgrow the list
 // it lives in. The cap bounds QUEUE DEPTH, and it is honest about bounding nothing else.
@@ -5114,7 +5116,7 @@ let stewardToken: string | null = null;
 const STEWARD_SENDS_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_SENDS_PER_HOUR ?? 10) | 0);
 // max OPEN steward-filed pending tasks — a looping pulse must not flood the STEWARD's own shelf of
 // unread proposals. NOT the fleet's autonomy limit, and this comment used to imply it was: what
-// bounds how much work runs unattended is DISPATCH_MAX_LANES (live 2), a number about lanes. This
+// bounds how much work runs unattended is DISPATCH_MAX_LANES, a number about lanes. This
 // one is about rows nobody has read yet, filed through one door by one principal.
 const STEWARD_MAX_PENDING = Math.max(1, Number(process.env.FLEET_STEWARD_MAX_PENDING ?? 10) | 0);
 // the shape a steward `ref` / register `key` must have: derived from the THING, not the phrasing
@@ -14131,7 +14133,7 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   const capFull = programReleasePolicy(t) === "manual" && openReleased + groupVariants >= PROGRAM_MAX_RELEASED;
   const wavePartners = capFull ? releasedWavePartnersOf(t) : [];
   if (capFull && !wavePartners.length)
-    return json({ error: `program release cap reached (${openReleased + groupVariants}/${PROGRAM_MAX_RELEASED} released rows not yet started${groupVariants ? ` — ${groupVariants} of them are the pending variants of group ${t.id}` : ""}) — let the tick start one first` }, 409);
+    return json({ error: `program release cap reached (${openReleased + groupVariants}/${PROGRAM_MAX_RELEASED} released rows not yet started${groupVariants ? ` — ${groupVariants} of them are the pending variants of group ${t.id}` : ""}) — ${programDispatchStopped(t) ? "program dispatch off" : !dispatchOn && !programDispatchOn(t) ? "dispatcher stopped" : "let the tick start one first"}` }, 409);
   // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
   // and a machine release that recorded nothing would be indistinguishable from the attended lands
   // already on the trail.
@@ -15665,7 +15667,7 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
     const cap = repoLaneCap(repo);
     caps[repo] = { ...cap, programs: Object.fromEntries(programIds.map((id) => {
       const p = programs.find((x) => x.id === id);
-      return [id, programDispatchCap(p ? programDispatchGrant(p) : undefined, cap.max)];
+      return [id, programDispatchCap(p ? activeProgramDispatch(p) : undefined, cap.max)];
     })) };
   }
   const plan = projectStartPlan({ projection, rows, statuses, lanes, caps });
@@ -17399,29 +17401,35 @@ function normBriefReview(r: TaskBriefReview | undefined): TaskBriefReview | unde
 // It runs `queued` and nothing else. That is the answer to "may the machine choose its own work":
 // no. It may work unattended, on what you released, which is a different question and the one the
 // owner actually wanted answered yes.
-// THE OWNER'S PROGRAM-SCOPED DISPATCH PERMISSION, resolved for ONE queue row — and the single
-// reader of `Program.dispatch`, so the tick's four uses of it (the entry guard, the per-row master
-// stop, the per-program cap and the quiet-hours branch) cannot drift apart.
-//
-// THREE CONDITIONS, each a different sentence. The row must NAME a program; that program must still
-// be ACTIVE; and its record must say `on`. The lifecycle check lives HERE and not at the owner door
-// on purpose: a status moves after the act, and a complete program's leftover queued rows must not
-// keep spawning lanes on a permission granted while it was still running. `on:false` and ABSENT
-// refuse identically here and are two different facts everywhere else — the promotion ladder's rule.
-// ...and the ACTIVE-and-ON clause itself is written ONCE, here, because both readers below need it
-// and two copies is how one of them silently stops applying.
-const programDispatchGrant = (p: Program): ProgramDispatch | undefined =>
-  p.status === "active" && p.dispatch?.on ? p.dispatch : undefined;
+// A program setting is active only while its program is. v1 `on` granted master bypass; v2
+// separates the run switch, the bypass, and the cap. All readers share this lifecycle predicate.
+const activeProgramDispatch = (p: Program): ProgramDispatch | undefined =>
+  p.status === "active" ? p.dispatch : undefined;
+const programDispatchGrant = (p: Program): ProgramDispatch | undefined => {
+  const pd = activeProgramDispatch(p);
+  return pd && (pd.v === 1 ? pd.on : pd.on && pd.bypassMaster) ? pd : undefined;
+};
+const programDispatchSetting = (t: Pick<Task, "programId">): ProgramDispatch | undefined => {
+  const p = t.programId ? programs.find((x) => x.id === t.programId) : undefined;
+  return p ? activeProgramDispatch(p) : undefined;
+};
+const programDispatchStopped = (t: Pick<Task, "programId">): boolean => {
+  const pd = programDispatchSetting(t);
+  return pd?.v === 2 && !pd.on;
+};
+const dispatchStoppedNote = (reason: string, previous: string | null | undefined): string => {
+  const held = previous?.match(/dispatch held \([^\n]*?\) — requeued/)?.[0];
+  return `waiting: ${reason}${held ? ` — ${held}` : ""}`;
+};
 const programDispatchOn = (t: Task): ProgramDispatch | undefined => {
-  if (!t.programId) return undefined;
-  const p = programs.find((x) => x.id === t.programId);
+  const p = t.programId ? programs.find((x) => x.id === t.programId) : undefined;
   return p ? programDispatchGrant(p) : undefined;
 };
 // ...and the CEILING that record may LOWER, never raise. The machine's number is
 // FLEET_DISPATCH_MAX_LANES_PER_PROGRAM where the operator set one and the ROW'S OWN repo cap where
 // nobody did (see the constant: unconfigured must stay inert, and after per-repo caps only the repo
 // number can do that), and this Math.min is the whole safety property: a `maxLanes` above the
-// machine number is legal, stored and inert. A row whose program carries no active grant gets the
+// machine number is legal, stored and inert. A row whose program carries no active setting gets the
 // machine number exactly — byte for byte what this line computed before the record existed.
 const programDispatchCap = (pd: ProgramDispatch | undefined, repoMax: number): number => {
   const machine = DISPATCH_MAX_LANES_PER_PROGRAM ?? repoMax;
@@ -17545,7 +17553,8 @@ function closeStallAttention(id: string | null, why: string): void {
   audit("attention_answered", a.requester.slot, `${a.id} kind=blocked inbox=${entry.id} via=stall-sensor`);
 }
 function tickStallSensor(on: boolean): void {
-  const released = on && tasks.some((t) => t.kind === "auftrag" && !t.variants && tickOwnsRow(t));
+  const released = tasks.some((t) => t.kind === "auftrag" && !t.variants && tickOwnsRow(t)
+    && !programDispatchStopped(t) && (on || !!programDispatchOn(t)));
   if (!released && !Object.keys(stallSensor.repos).length) return;
   const now = Date.now();
   if (now - stallReadAt < STALL_READ_MS) return;
@@ -17555,7 +17564,11 @@ function tickStallSensor(on: boolean): void {
     .map((t) => taskRepoOf(t)).filter((repo): repo is string => !!repo).map(repoCanon));
   stallSentSeen = new Set(sent.map((t) => t.id));
   const view = released ? startPlanNow() : null;
-  const readings = (view ? stallReadings(view, view.waits) : [])
+  const eligibleWaits = view?.waits.filter((w) => {
+    const t = tasks.find((x) => x.id === w.id);
+    return t && !programDispatchStopped(t) && (on || !!programDispatchOn(t));
+  }) ?? [];
+  const readings = (view ? stallReadings(view, eligibleWaits) : [])
     .map((r) => startedIn.has(repoCanon(r.repo)) ? { ...r, stuck: false } : r);
   let dirty = false;
   for (const r of readings) {
@@ -17568,7 +17581,7 @@ function tickStallSensor(on: boolean): void {
   }
   for (const [repo, clock] of Object.entries(stallSensor.repos)) {
     if (readings.some((r) => r.repo === repo && r.stuck)) continue;
-    const why = !on ? "der Dispatcher ist gestoppt" : readings.some((r) => r.repo === repo)
+    const why = !on && !programs.some(programDispatchGrant) ? "der Dispatcher ist gestoppt" : readings.some((r) => r.repo === repo)
       ? "eine Welle startet oder keine freigegebene Arbeit wartet mehr auf jemanden" : "keine freigegebene Arbeit mehr in diesem Repo";
     closeStallAttention(clock.attentionId, why);
     if (clock.counted) stallSensor.msTotal += now - clock.since;
@@ -17779,7 +17792,7 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
       return hold(`waiting: variant group needs ${n} lanes — ${lanes}/${repoCap.max} busy in ${basename(repo)} (${repoCap.source === "repo" ? "repo cap" : "machine default"})`,
         n <= repoCap.max ? { n, scope: { kind: "repo", repo: repoCanon(repo) } } : null);
     if (group.programId) {
-      const programCap = programDispatchCap(programDispatchOn(rows[0]), repoCap.max);
+      const programCap = programDispatchCap(programDispatchSetting(rows[0]), repoCap.max);
       const programLanes = slots.filter((s) => s.cwd && s.programId === group.programId).length;
       const title = programs.find((p) => p.id === group.programId)?.title ?? group.programId;
       // the claim's scope is the PROGRAM, not the repo: a lane landing in a foreign program frees
@@ -18118,13 +18131,7 @@ async function tickVariantCompare(): Promise<void> {
 async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !DISPATCH_REPO) return;
   tickStallSensor(dispatchOn);
-  // THE GLOBAL MASTER STOP IS NO LONGER THIS TICK'S OWN GATE — it became a per-ROW gate at the top
-  // of the loop below, because the owner may now grant ONE program the right to have its released
-  // rows started while the fleet queue is stopped. This line keeps the cheap early return for the
-  // case that is still the overwhelming majority: stopped fleet, no program holding a grant, no
-  // work to do. It reads the same `on` predicate programDispatchOn does, one program at a time, so
-  // an entry taken here is always an entry some row could survive.
-  if (!dispatchOn && !programs.some(programDispatchGrant)) return;
+  // The master and program switches are checked per row so a stopped row can state its reason.
   dispatchBusy = true;
   try {
     // THE START PLAN'S ORDER, NOT THE OLDEST ROW (Schnitt 2 of
@@ -18160,16 +18167,18 @@ async function tickDispatch(): Promise<void> {
       // the master stop, the program cap and the grant are the same question for every row of it,
       // and one lane runs one agent: the head's, as the attended wave door decides it too.
       const next = rows[0];
-      // THE MASTER STOP, READ PER ROW — and read FIRST, above every `waiting` note below, which is
-      // not a stylistic choice: under a stopped fleet this tick used to return before the loop, so
-      // no row ever received a note. If this check sat lower, a single program's grant would start
-      // painting wait-notes onto every UNRELATED queued row in the fleet — a visible state change
-      // on rows the owner's grant said nothing about. Skipping here keeps them byte-identical.
-      // It SKIPS rather than returns for the reason the caps below do: whether a row may run under
-      // a stopped fleet is a property of THAT ROW's bracket, and one unbracketed row at the head of
-      // an oldest-first queue must not hide the program row behind it.
+      // The stop reason precedes every capacity reason and only changes a note on change.
       const pd = programDispatchOn(next);
-      if (!dispatchOn && !pd) continue;
+      const stopReason = programDispatchStopped(next) ? "program dispatch off" : !dispatchOn && !pd ? "dispatcher stopped" : null;
+      if (stopReason) {
+        let changed = false;
+        for (const row of rows) if (tickOwnsRow(row) && row.note !== dispatchStoppedNote(stopReason, row.note)) {
+          row.note = dispatchStoppedNote(stopReason, row.note);
+          changed = true;
+        }
+        if (changed) saveState();
+        continue;
+      }
       // E4: a variant starts only with its whole group — startVariantGroup asks every gate below of all n
       if (next.variantOf) {
         const g = await startVariantGroup(next, false);
@@ -18278,11 +18287,11 @@ async function tickDispatch(): Promise<void> {
       // would let a single full program hold every unrelated row in the queue behind it — a
       // per-program cap that caps the whole fleet.
       // ...and the number it caps against is now the owner's, where the owner set one: an active
-      // grant's `maxLanes` through programDispatchCap, which can only narrow the env value. The
+      // setting's `maxLanes` through programDispatchCap, which can only narrow the env value. The
       // note prints the number that actually held, so the board never names a budget the tick did
       // not use.
       if (next.programId) {
-        const programCap = programDispatchCap(pd, repoCap.max);
+        const programCap = programDispatchCap(programDispatchSetting(next), repoCap.max);
         const programLanes = slots.filter((s) => s.cwd && s.programId === next.programId).length;
         if (programLanes >= programCap) {
           const title = programs.find((p) => p.id === next.programId)?.title ?? next.programId;
@@ -35141,16 +35150,8 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   // and revoking is the same request shape so an owner never reaches for a different tool to take a
   // permission back.
   //
-  // WHAT IT GRANTS, said exactly: the fleet's dispatch tick may start THIS program's released rows
-  // while the GLOBAL dispatcher is stopped. It grants nothing else. The autos kill-switch, the repo
-  // lane cap, the per-program lane cap, the harness
-  // automation bolt and the free-slot requirement all still hold — a permission that lifted those
-  // would not be a program-scoped switch, it would be the hand button with a record attached.
-  //
-  // `on:false` IS NOT ABSENCE, for the promotion ladder's reason: absent is "the owner never said",
-  // off is "the owner said no", and a ledger that could not tell them apart would make a revocation
-  // look like a program nobody ever reached. Both refuse identically at the tick; only the trail and
-  // this pane can tell you which one you are looking at.
+  // v2 separates the program run switch, master bypass, and lane ceiling. v1 remains readable with
+  // its original `on` meaning: master bypass only. The tick reads the record against current status.
   //
   // NO STATUS GATE, and no in-flight gate. This record is read fresh on every tick against the
   // program's CURRENT status (tickDispatch requires `active`), so gating the write would be a
@@ -35168,7 +35169,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     if (extra.length)
       return json({ error: `this door reads dispatch only — [${extra.join(", ")}] is not read` }, 400);
     if (!("dispatch" in body))
-      return json({ error: 'dispatch is required — send {"dispatch": {"v":1,"on":true,"maxLanes":2}} to grant, {"dispatch": null} to revoke' }, 400);
+      return json({ error: 'dispatch is required — send {"dispatch": {"v":2,"on":true,"bypassMaster":false,"maxLanes":2}} to set, {"dispatch": null} to revoke' }, 400);
     if (body.dispatch === null) {
       // idempotent by construction, and audited only where something was actually taken back — the
       // promotion door's rule: "the owner revoked„[Zitat entfernt]“the owner revoked nothing"
@@ -35185,17 +35186,22 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     const fields = raw as Record<string, unknown>;
     // A CLOSED SET, refused rather than ignored: a key silently dropped is a key the owner believes
     // was honoured, and `maxLanes` is precisely the key where that belief is expensive.
-    const unknown = Object.keys(fields).filter((k) => k !== "v" && k !== "on" && k !== "maxLanes");
+    const unknown = Object.keys(fields).filter((k) => !["v", "on", "maxLanes", ...(fields.v === 2 ? ["bypassMaster"] : [])].includes(k));
     if (unknown.length)
-      return json({ error: `unknown dispatch key(s): ${unknown.join(", ")} — v1 is exactly {v, on, maxLanes}; confirmedAt is stamped here` }, 400);
-    if (fields.v !== 1) return json({ error: "v must be 1 — this server knows no other program-dispatch schema" }, 400);
+      return json({ error: `unknown dispatch key(s): ${unknown.join(", ")} — v1 is {v, on, maxLanes}; v2 adds bypassMaster; confirmedAt is stamped here` }, 400);
+    if (fields.v !== 1 && fields.v !== 2) return json({ error: "v must be 1 or 2" }, 400);
     if (typeof fields.on !== "boolean")
       return json({ error: "on must be true or false — a permission that arrives by coercion is one nobody granted" }, 400);
+    if (fields.v === 2 && typeof fields.bypassMaster !== "boolean")
+      return json({ error: "bypassMaster must be true or false" }, 400);
     if (typeof fields.maxLanes !== "number" || !Number.isInteger(fields.maxLanes)
       || fields.maxLanes < 1 || fields.maxLanes > PROGRAM_DISPATCH_MAX_LANES_MAX)
       return json({ error: `maxLanes must be a whole number between 1 and ${PROGRAM_DISPATCH_MAX_LANES_MAX} — it can only ever LOWER the machine-wide per-program budget, never raise it` }, 400);
-    program.dispatch = { v: 1, on: fields.on, maxLanes: fields.maxLanes, confirmedAt: Date.now() };
-    audit("program_dispatch", undefined, `${program.id} on=${program.dispatch.on} maxLanes=${program.dispatch.maxLanes}`);
+    program.dispatch = fields.v === 1
+      ? { v: 1, on: fields.on, maxLanes: fields.maxLanes, confirmedAt: Date.now() }
+      : { v: 2, on: fields.on, bypassMaster: fields.bypassMaster as boolean,
+        maxLanes: fields.maxLanes, confirmedAt: Date.now() };
+    audit("program_dispatch", undefined, `${program.id} v=${program.dispatch.v} on=${program.dispatch.on} bypassMaster=${program.dispatch.v === 2 ? program.dispatch.bypassMaster : program.dispatch.on} maxLanes=${program.dispatch.maxLanes}`);
     await saveStateNow();
     return json({ ok: true, id: program.id, dispatch: program.dispatch ?? null });
   }
@@ -42252,7 +42258,8 @@ Bun.serve<WSData>({
     // the stored integration branch per repo (repoBases, same canonical keys) — the settings
     // window's branch row reads it here, so a once-written value is visible without a write first.
     if (url.pathname === "/api/repo-lane-caps" && req.method === "GET")
-      return json({ default: DISPATCH_MAX_LANES, max: REPO_MAX_LANES_MAX, caps: repoLaneCaps, bases: repoBases });
+      return json({ default: DISPATCH_MAX_LANES, programDefault: DISPATCH_MAX_LANES_PER_PROGRAM,
+        max: REPO_MAX_LANES_MAX, caps: repoLaneCaps, bases: repoBases });
     // The repo sheet (server.ts#repoSheetView): one owner reading per canonical repo, its layers
     // ON DEMAND. Owner-only by position like its neighbours — the sheet joins queue rows, lands,
     // audits and adjudications, which is owner reading. GET by construction: the handler opens
@@ -43835,6 +43842,11 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       if (!DISPATCH_REPO) return json({ error: "dispatcher unavailable — set FLEET_DISPATCH_REPO" }, 400);
       dispatchOn = body?.on === true;
+      if (!dispatchOn) for (const t of tasks) {
+        if (t.kind !== "auftrag" || !tickOwnsRow(t) || programDispatchOn(t)) continue;
+        const reason = programDispatchStopped(t) ? "program dispatch off" : "dispatcher stopped";
+        t.note = dispatchStoppedNote(reason, t.note);
+      }
       saveState(); // same rule as the autos kill-switch below: a stop must survive an immediate restart
       audit("dispatch_switch", undefined, dispatchOn ? "on" : "off");
       return json({ ok: true, on: dispatchOn });

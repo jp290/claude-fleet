@@ -4751,6 +4751,12 @@ export async function run(ctx: Ctx): Promise<void> {
       gThirdRow?.status === "queued"
       && (gThirdRow?.note ?? "") === `waiting: 2/2 lanes busy in ${basename(REPO2)} (repo cap) — land or close one`,
       JSON.stringify({ status: gThirdRow?.status, note: gThirdRow?.note ?? null }));
+    const gCtl = spawnSync("bash", [`${ROOT}/ctl.sh`, "dispatch", gThird.task.id], {
+      encoding: "utf8", env: { ...process.env, FLEET_CTL_HOME: ROOT, FLEET_CTL_URL: BASE },
+    });
+    check("(e5) ctl.sh dispatch reads the test server's raised repo cap and counts only that repo's open lanes",
+      gCtl.status === 1 && gCtl.stdout.includes("REFUSED: 2/2 lanes open (repo cap)"),
+      JSON.stringify({ exit: gCtl.status, stdout: gCtl.stdout.trim(), stderr: gCtl.stderr.trim() }));
 
     // cleanup — dispatcher OFF first, then the entry, the lanes and the rows.
     await post("/api/dispatch", { on: false });
@@ -4760,7 +4766,58 @@ export async function run(ctx: Ctx): Promise<void> {
       await post(`/api/tasks/${id}/done`, {});
       await post(`/api/tasks/${id}/delete`, {});
     }
+    await slotsEmptied((await gSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot).map((x) => x.id));
+    await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 2 });
+    await post("/api/dispatch", { on: true });
+    const gOff = await post(`/api/programs/${provenanceProgramId}/dispatch`,
+      { dispatch: { v: 2, on: false, bypassMaster: false, maxLanes: 1 } });
+    const gStopped = (await (await post("/api/tasks", {
+      text: "program v2 off must hold under the running master", queue: true, repo: REPO2,
+      programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
+    const gStoppedRow = await gTill(gStopped.task.id, (r) => r?.note === "waiting: program dispatch off");
+    check("(e5-v2) program off holds its queued row with the master running, and names the program switch",
+      gOff.ok && gStoppedRow?.status === "queued" && gStoppedRow.note === "waiting: program dispatch off"
+      && gLanesOf(provenanceProgramId) === 0,
+      JSON.stringify({ set: gOff.status, row: gStoppedRow ?? null, lanes: gLanesOf(provenanceProgramId) }));
+    const gOn = await post(`/api/programs/${provenanceProgramId}/dispatch`,
+      { dispatch: { v: 2, on: true, bypassMaster: false, maxLanes: 1 } });
+    const gStarted = await gTill(gStopped.task.id, (r) => r?.status === "sent");
+    const gWaiting = (await (await post("/api/tasks", {
+      text: "program v2 cap remains active without master bypass", queue: true, repo: REPO2,
+      programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
+    const gCapRow = await gTill(gWaiting.task.id, (r) => (r?.note ?? "").includes('1/1 lanes busy in program "'));
+    await post("/api/dispatch", { on: false });
+    const gStopRow = await gTill(gWaiting.task.id, (r) => r?.note === "waiting: dispatcher stopped");
+    check("(e5-v2) the program cap applies without a master bypass, and master stop replaces the stale cap reason once",
+      gOn.ok && gStarted?.status === "sent" && gCapRow?.status === "queued"
+      && (gCapRow.note ?? "").includes('1/1 lanes busy in program "')
+      && gStopRow?.status === "queued" && gStopRow.note === "waiting: dispatcher stopped",
+      JSON.stringify({ set: gOn.status, started: gStarted ?? null, cap: gCapRow ?? null, stopped: gStopRow ?? null }));
+    const gBypass = await post(`/api/programs/${provenanceProgramId}/dispatch`,
+      { dispatch: { v: 2, on: true, bypassMaster: true, maxLanes: 2 } });
+    const gBypassedRow = await gTill(gWaiting.task.id, (r) => r?.status === "sent");
+    check("(e5-v2) a separate master bypass starts the second row under master stop within both caps",
+      gBypass.ok && gBypassedRow?.status === "sent" && gLanesOf(provenanceProgramId) === 2,
+      JSON.stringify({ set: gBypass.status, row: gBypassedRow ?? null, lanes: gLanesOf(provenanceProgramId) }));
+    const gV1 = await post(`/api/programs/${provenanceProgramId}/dispatch`,
+      { dispatch: { v: 1, on: false, maxLanes: 2 } });
+    for (const x of (await gSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    for (const id of [gStopped.task.id, gWaiting.task.id]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 0 });
     await restartSrv();
+    const gReloaded = ((await (await get("/api/programs")).json()) as {
+      programs: { id: string; dispatch?: { v: number; on: boolean; maxLanes: number; confirmedAt: number } }[];
+    }).programs.find((p) => p.id === provenanceProgramId)?.dispatch;
+    check("(e5-v1) a persisted v1 dispatch setting reloads with its cap and legacy grant bit intact",
+      gV1.ok && gReloaded?.v === 1 && gReloaded.on === false && gReloaded.maxLanes === 2
+      && typeof gReloaded.confirmedAt === "number",
+      JSON.stringify({ set: gV1.status, reloaded: gReloaded ?? null }));
+    await post(`/api/programs/${provenanceProgramId}/dispatch`, { dispatch: null });
   }
 
   // --- (e6) A ROW WHOSE HARNESS NO UNATTENDED PATH MAY DRIVE MUST SAY SO, NOT REPORT BACKPRESSURE

@@ -4776,20 +4776,27 @@ export async function run(ctx: Ctx): Promise<void> {
   const orphanRows = await orphanOwnerRows();
   const orphanDecision = orphanRows.find((r) => r.id === orphanIds[1])?.decision;
   const orphanLedger = readFileSync(`${ROOT}/fleet-reports.jsonl`, "utf8").split("\n").filter(Boolean)
-    .map((line) => JSON.parse(line) as { kind?: string; id?: string; by?: { rule?: string }; supersededBy?: string });
+    .map((line) => JSON.parse(line) as { kind?: string; id?: string; by?: { rule?: string }; reason?: string });
   const orphanAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
     .map((line) => JSON.parse(line) as { event?: string; detail?: string });
-  check("Program handoff: a later filing on the same branch accepts only the handoff by superseded, records ledger and audit, and leaves needs-main and complete undecided",
+  check("Program handoff: a later filing on the same branch accepts the handoff by superseded with a pointer and no fulfilment",
     [orphanNeeds, orphanHandoff, orphanComplete].every((x) => x.response.ok && x.body.report?.basis === "program")
       && orphanIds.every((id) => typeof id === "string")
       && orphanDecision?.disposition === "accepted" && orphanDecision.by?.rule === "superseded"
-      && orphanDecision.supersededBy === orphanIds[2] && orphanDecision.fulfilled === null
-      && !orphanRows.find((r) => r.id === orphanIds[0])?.decision
-      && !orphanRows.find((r) => r.id === orphanIds[2])?.decision
-      && orphanLedger.some((r) => r.kind === "decision" && r.id === orphanIds[1]
-        && r.by?.rule === "superseded" && r.supersededBy === orphanIds[2])
-      && orphanAudit.some((r) => r.event === "fleet_report_rule_decision" && r.detail?.includes(orphanIds[1] ?? "missing")),
+      && orphanDecision.supersededBy === orphanIds[2] && orphanDecision.fulfilled === null,
     JSON.stringify({ ids: orphanIds, decision: orphanDecision ?? null }));
+  check("Program handoff: needs-main and complete on the same branch stay undecided",
+    !orphanRows.find((r) => r.id === orphanIds[0])?.decision
+      && !orphanRows.find((r) => r.id === orphanIds[2])?.decision,
+    JSON.stringify({ needs: orphanRows.find((r) => r.id === orphanIds[0])?.decision ?? null,
+      complete: orphanRows.find((r) => r.id === orphanIds[2])?.decision ?? null }));
+  check("Program handoff: supersession writes one decision ledger row and one rule-decision audit row",
+    orphanLedger.filter((r) => r.kind === "decision" && r.id === orphanIds[1]
+      && r.by?.rule === "superseded" && r.reason?.includes(orphanIds[2] ?? "missing")).length === 1
+      && orphanAudit.filter((r) => r.event === "fleet_report_rule_decision"
+        && r.detail?.includes(orphanIds[1] ?? "missing")).length === 1,
+    JSON.stringify({ ledger: orphanLedger.filter((r) => r.id === orphanIds[1]),
+      audit: orphanAudit.filter((r) => r.detail?.includes(orphanIds[1] ?? "missing")) }));
   const orphanCompleteResult = await programPost(orphanProgram.id, "complete");
   const orphanWithoutOrchestrator = await (await get("/api/sessions")).json() as { reportsAwaitingOwner?: number };
   check("Program orphan without Orchestrator: the undecided rows remain in reportsAwaitingOwner",

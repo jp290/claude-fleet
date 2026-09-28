@@ -28,7 +28,7 @@ import { join, resolve } from "node:path";
 import {
   FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_AUDIENCES, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
   RULEBOOK_BACKREF_HEADING,
-  FRAGMENT_TITLES, fragmentFileName, renderRulebook, renderBackref, rulebookBody, type RulebookFragment,
+  FRAGMENT_TITLES, fragmentFileName, renderRulebook, renderBackref, renderRolePointers, rulebookBody, type RulebookFragment,
 } from "../rulebook";
 import {
   SYSTEM_CAPABILITIES, SELF_GET_ADAPTER_PROBE, QUESTION_ROUTES,
@@ -4869,7 +4869,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     cxTernary > 0 && cxAppend > cxTernary && (cxCode.match(/CODEX_TEXT_LANE_MCP/g) ?? []).length === 1,
     `ternary@${cxTernary} append@${cxAppend}`);
   pin("ensureSlot resolves the profile for LANES only — a slot without a worktree keeps its ambient MCPs",
-    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context \}\)/.test(server), "browserMcp: !s.worktree || occupant.browser");
+    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context, rulebookRole \}\)/.test(server), "browserMcp: !s.worktree || occupant.browser");
   // the context ceiling is the measured catalog maximum as a literal, never an env knob
   // (docs/messungen/2026-09-15-codex-kontextfenster-profile.md §2)
   pin("CODEX_CONTEXT_WINDOW_MAX is the literal 872_000 and no env read names it",
@@ -5242,7 +5242,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 
     // both classes non-empty, or the two rules below are measuring nothing and saying "fine". For
     // a FULL rendering — the main checkout's CLAUDE.md, which RULE_RENDER holds byte-identical to
-    // renderRulebook("main") and which therefore carries no back-reference block at all — that is
+    // renderRulebook("voll") and which therefore carries no back-reference block at all — that is
     // unchanged: a rulebook with no errand in it is a rule with no subject. For a partial one the
     // errand half is not demanded, and RULE_GREPS then says NEVER MEASURED under its own name
     // instead of passing over an empty set, which is the same vacuum-green this pin exists to stop.
@@ -5295,16 +5295,18 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 //     the pin green. The count is printed instead, so a drop is visible without being fatal.
 {
   const PROBE = "docs/attic/regelbuch-bedeutungsprobe-2026-08-18.md";
-  const RULE_RENDER = 'CLAUDE.md is renderRulebook("main", rulebook/) byte for byte';
+  const RULE_RENDER = 'CLAUDE.md is renderRulebook("voll", rulebook/) byte for byte';
   const RULE_PLACED = "every rule of the meaning probe stands in the fragment its Fragment column names";
   const RULE_COLUMN = "the Fragment column is the id prefix, and every departure is named as a cut-C move";
-  const RULE_SELECT = "FRAGMENTS_FOR keeps all seven for main and a duplicate-free subset for a lane";
+  const RULE_SELECT = "FRAGMENTS_FOR assigns the registered subsets and keeps all seven for voll";
   const RULE_HOLE = "renderRulebook refuses to assemble a rulebook with a fragment missing";
 
   // --- the module's own arithmetic. Needs no checkout: it is data in a tracked file.
   {
-    const mainOk = FRAGMENTS_FOR.main.length === RULEBOOK_FRAGMENTS.length
-      && RULEBOOK_FRAGMENTS.every((f, i) => FRAGMENTS_FOR.main[i] === f);
+    const fullOk = FRAGMENTS_FOR.voll.length === RULEBOOK_FRAGMENTS.length
+      && RULEBOOK_FRAGMENTS.every((f, i) => FRAGMENTS_FOR.voll[i] === f);
+    const mainOk = FRAGMENTS_FOR.main.join(",") === "loader,einstieg,lane-discipline,self-scheduling";
+    const orchestratorOk = FRAGMENTS_FOR.orchestrator.join(",") === "loader,einstieg,supervisor,self-scheduling,deploy";
     const lane = FRAGMENTS_FOR.lane;
     const laneOk = lane.length > 0 && lane.length < RULEBOOK_FRAGMENTS.length
       && new Set(lane).size === lane.length
@@ -5313,13 +5315,34 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     const mapped = Object.values(FRAGMENT_BY_RULE_PREFIX);
     const mapOk = new Set(mapped).size === RULEBOOK_FRAGMENTS.length
       && RULEBOOK_FRAGMENTS.every((f) => mapped.includes(f));
-    pin(RULE_SELECT, mainOk && laneOk && mapOk,
-      `main=${FRAGMENTS_FOR.main.length}/${RULEBOOK_FRAGMENTS.length}, lane=${lane.length}, prefixes=${Object.keys(FRAGMENT_BY_RULE_PREFIX).length}`);
+    pin(RULE_SELECT, fullOk && mainOk && orchestratorOk && laneOk && mapOk,
+      `voll=${FRAGMENTS_FOR.voll.length}, main=${FRAGMENTS_FOR.main.length}, orchestrator=${FRAGMENTS_FOR.orchestrator.length}, lane=${lane.length}`);
   }
   {
     let threw = false;
-    try { renderRulebook("main", new Map()); } catch { threw = true; }
+    try { renderRulebook("voll", new Map()); } catch { threw = true; }
     pin(RULE_HOLE, threw);
+  }
+  {
+    const orch = renderRolePointers("orchestrator", "/fixture/repo");
+    const main = renderRolePointers("main", "/fixture/repo");
+    pin("M4 role pointers give one trigger and source path for every omitted fragment",
+      orch.includes("bevor du selbst eine Suite faehrst") && orch.includes("/fixture/repo/rulebook/lane-discipline.md")
+        && orch.includes("vor graphify query/update") && !orch.includes("/fixture/repo/rulebook/deploy.md")
+        && main.includes("bevor du Modell/Effort") && main.includes("/fixture/repo/rulebook/supervisor.md")
+        && main.includes("vor POST /api/deploy") && main.includes("/fixture/repo/rulebook/deploy.md")
+        && main.includes("/fixture/repo/rulebook/graphify.md"),
+      `orchestrator=${Buffer.byteLength(orch)} B, main=${Buffer.byteLength(main)} B`);
+    const agent = server.slice(server.indexOf("function agentCmd("), server.indexOf("\n}\n", server.indexOf("function agentCmd(")));
+    pin("M4 default-off command changes only inside the enabled role branch, shared by new and resume",
+      server.includes('const RULEBOOK_AB_ENABLED = ["1", "true", "on", "yes"].includes(RULEBOOK_AB_VALUE ?? "");')
+        && server.includes('["0", "off", "false", "no"].includes(RULEBOOK_AB_VALUE)')
+        && agent.indexOf('if (RULEBOOK_AB_ENABLED && sessionId && rulebookRole && RULEBOOK_AB_RENDERS)') > agent.indexOf('resume ? "--resume" : "--session-id"')
+        && agent.includes('CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1')
+        && agent.includes('claudeMdExcludes: [root]') && agent.includes('--add-dir')
+        && server.includes('rulebookRole: "main" | "orchestrator" | null')
+        && server.includes('rolle: rulebookRole, arm, renderHash'),
+      "one conditional after the shared new/resume command");
   }
 
   // --- the probe table. Rows wrap: a cell may run over several physical lines (P7's does), and a
@@ -5370,7 +5393,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     skip(RULE_RENDER, why);
     skip(RULE_PLACED, why);
   } else {
-    const rendered = renderRulebook("main", fragments);
+    const rendered = renderRulebook("voll", fragments);
     const monolith = ((): string | null => {
       try { return readFileSync(`${SOURCE_DIR}/CLAUDE.md`, "utf8"); } catch { return null; }
     })();

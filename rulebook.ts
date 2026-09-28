@@ -2,7 +2,7 @@
 // edit to CLAUDE.md is lost at the next render and reds e2e/pins.ts section 6b in the meantime, so
 // the recipe belongs next to the module the failing rule names. From the main checkout root:
 //
-//   bun -e 'import{RULEBOOK_FRAGMENTS as F,RULEBOOK_DIR as d,fragmentFileName as n,renderRulebook as r}from"./rulebook";import{readFileSync as R,writeFileSync as W}from"node:fs";W("CLAUDE.md",r("main",new Map(F.map(f=>[f,R(`${d}/${n(f)}`,"utf8")]))))'
+//   bun -e 'import{RULEBOOK_FRAGMENTS as F,RULEBOOK_DIR as d,fragmentFileName as n,renderRulebook as r}from"./rulebook";import{readFileSync as R,writeFileSync as W}from"node:fs";W("CLAUDE.md",r("voll",new Map(F.map(f=>[f,R(`${d}/${n(f)}`,"utf8")]))))'
 //
 // It is idempotent: run against an untouched rulebook/ it rewrites the same bytes.
 //
@@ -11,12 +11,12 @@
 // NOTHING. Contents are handed in, the way context-plan.ts and verify-proportion.ts are built,
 // because the caller is the only side that knows which checkout it is allowed to read.
 //
-// The assembly is byte-exact by construction: `renderRulebook("main", …)` of the seven fragments
+// The assembly is byte-exact by construction: `renderRulebook("voll", …)` of the seven fragments
 // reproduces CLAUDE.md, so a split that lost or reordered a rule cannot pass. That equality is the
 // whole reason the fragments may be believed at all, and e2e/pins.ts fastens it.
 
 /** Who a rendered rulebook is FOR. A lane is briefed for one slice of work; a MAIN session steers. */
-export const RULEBOOK_AUDIENCES = ["lane", "main"] as const;
+export const RULEBOOK_AUDIENCES = ["lane", "main", "orchestrator", "voll"] as const;
 export type RulebookAudience = (typeof RULEBOOK_AUDIENCES)[number];
 
 /** The seven fragments, in the order they are assembled. The order IS the contract. */
@@ -38,7 +38,9 @@ export type RulebookFragment = (typeof RULEBOOK_FRAGMENTS)[number];
  */
 export const FRAGMENTS_FOR: Record<RulebookAudience, readonly RulebookFragment[]> = {
   lane: ["loader", "lane-discipline", "self-scheduling"],
-  main: [...RULEBOOK_FRAGMENTS],
+  main: ["loader", "einstieg", "lane-discipline", "self-scheduling"],
+  orchestrator: ["loader", "einstieg", "supervisor", "self-scheduling", "deploy"],
+  voll: [...RULEBOOK_FRAGMENTS],
 };
 
 /** The id prefix of the meaning probe IS the fragment — no per-rule judgement is involved. */
@@ -91,6 +93,21 @@ export const FRAGMENT_TITLES: Record<RulebookFragment, string> = {
   deploy: "Deploy",
   graphify: "graphify",
 };
+
+const ROLE_POINTER_TRIGGERS: Partial<Record<RulebookFragment, string>> = {
+  "lane-discipline": "bevor du selbst eine Suite faehrst, eine Lane-Tuer rufst oder einen roten Check beurteilst",
+  supervisor: "bevor du Modell/Effort eines lebenden Slots setzt oder einen fremden Composer leerst",
+  deploy: "vor POST /api/deploy, kill-session -t srv, launchctl, einem Audit-Urteil oder einer Harness-/Modellnamen-Aenderung",
+  graphify: "vor graphify query/update",
+};
+
+export function renderRolePointers(audience: "main" | "orchestrator", repoRoot: string): string {
+  const missing = RULEBOOK_FRAGMENTS.filter((f) => !FRAGMENTS_FOR[audience].includes(f));
+  return ["", RULEBOOK_BACKREF_HEADING, "",
+    `Diese Fassung traegt ${FRAGMENTS_FOR[audience].length} von ${RULEBOOK_FRAGMENTS.length} Teilen. Die anderen liegen untracked im Quell-Checkout:`,
+    "", ...missing.map((f) => `- ${FRAGMENT_TITLES[f]} — ${ROLE_POINTER_TRIGGERS[f]}: \`cat ${repoRoot}/${RULEBOOK_DIR}/${fragmentFileName(f)}\``),
+    ""].join("\n");
+}
 
 /**
  * The heading that separates the rendered rules from the back-reference block. It is the SPLIT

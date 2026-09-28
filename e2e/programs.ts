@@ -8508,6 +8508,11 @@ export async function run(ctx: Ctx): Promise<void> {
   const pdMachine1Release = await selfRelease(successorToken, pdMachine1);
   const pdBeforeStop = await fleetSwitches();
   await pdSettle();
+  // The window above is what "moves nothing" is measured over; the note is a positive event and
+  // arrives with the next tick that is not busy, so it is awaited rather than assumed inside the
+  // window (fixed 1.6 s read it as null under load: audit 316c931c shard 1, and 1 of 3 local runs).
+  await pdUntil(async () => (await Promise.all([spawnRowOf(pdForeignId), spawnRowOf(pdLooseId), spawnRowOf(pdMachine1)]))
+    .every((row) => row?.note === "waiting: dispatcher stopped"));
   const [pdForeignA, pdLooseA, pdMachineA] = await Promise.all([spawnRowOf(pdForeignId), spawnRowOf(pdLooseId), spawnRowOf(pdMachine1)]);
   const pdAfterStop = await fleetSwitches();
   check("program-dispatch (1): with the global dispatcher stopped and no program granted, a full tick window moves nothing and names the stop",

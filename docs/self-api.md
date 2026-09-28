@@ -4267,6 +4267,11 @@ dem Paste laesst den Inhalt im Buendel. Ein bereits als `send-uncertain` persist
 bleibt an seinen `openedAt`-Occupant gebunden und wird nicht umgeleitet. `send` im Audit nennt
 `deliveryClass`, `ttlSec`, `ttlQuelle` (`1h`, `5m`, `codex`, `unknown`) und `cache` (`warm` oder
 `kalt`); `delivery_bundle_*` trennt Queue, Send, Abweisung, Umleitung und Drop.
+Der Flush prueft die Gates fuer den aktuellen Empfaenger erneut, mit der strengsten Policy aller
+enthaltenen Eintraege, und verlangt bei etablierter Pane einen frischen Agenten-Nachweis vor dem
+Paste. Busy, Kill-Switch und Quiet Hours halten das Buendel fuer einen spaeteren Versuch.
+No-Agent, No-Pane und Blockschirm verwerfen es vor dem Paste; `delivery_bundle_dropped` nennt
+das Gate und die Aufrufer erhalten den bestehenden Reject.
 
 ## send whenFree — `POST /send` (OWNER-Route, nicht `/api/self/*`)
 

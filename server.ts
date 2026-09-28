@@ -8591,6 +8591,7 @@ class SendComposerOccupied extends SendRefused {
 class SendAgentNotAlive extends SendRefused {
   constructor(readonly agent: AgentState) { super(`no agent alive in the pane (agent=${agent}) — nothing typed`); }
 }
+class DeliveryGateDropped extends SendRefused {}
 // The result of the one conservative ACP-26 action. "cleared" is still an uncertain SUBMIT — it
 // proves only that Fleet's own payload was removed after acceptance was not observed. Every kept
 // result means no erase key was sent. "residue" means the exact-count erase was attempted but a
@@ -9016,7 +9017,8 @@ async function submitFleetResidue(s: Slot, bound: BoundSlotPane): Promise<string
 type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true;
   deliveryClass?: DeliveryClass; subscribedWatch?: true; beforeSend?: (receiver: Slot) => Promise<void>;
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
-  eventIds?: readonly string[]; paneInboxNotice?: string };
+  eventIds?: readonly string[]; paneInboxNotice?: string;
+  bundleGate?: { harness?: false; quietHours?: false; idleMs?: number } };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
 type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
   origin: { slot: number; openedAt: number }; queuedAt: number;
@@ -9178,13 +9180,26 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       if (immediate) await immediate.options.beforeSend?.(s);
       if (!entries.length && !immediate) { deliveryBundles.delete(key); return; }
+      const gate = entries.length ? await canDeliver(s, { now: Date.now(),
+        harness: entries.every((entry) => entry.options.bundleGate?.harness === false) ? false : true,
+        quietHours: entries.every((entry) => entry.options.bundleGate?.quietHours === false) ? false : true,
+        idleMs: Math.max(0, ...entries.map((entry) => entry.options.bundleGate?.idleMs ?? 0)) }) : { ok: true } as const;
+      if (!gate.ok) {
+        const reason = `gate=${gate.gate}${gate.detail ? `: ${gate.detail}` : ""} — nothing typed`;
+        if (gate.gate === "not-alive") {
+          const agent = await paneAgentAt(sess(s.id), commsFor(s));
+          throw new DeliveryGateDropped(`gate=${agent === "no-pane" ? "no-pane" : "no-agent"} — nothing typed`);
+        }
+        if (gate.gate === "blocked-screen" || gate.gate === "harness") throw new DeliveryGateDropped(reason);
+        throw new SendRefused(reason);
+      }
       const ordered = immediate ? [{ text: immediate.text,
         submit: immediate.submit, options: immediate.options,
         origin: { slot: immediate.slot.id, openedAt: immediate.slot.openedAt }, queuedAt: Date.now(),
         resolve: () => {}, reject: () => {} }, ...entries] : entries;
       const payload = bundleText(ordered);
       const { acceptance } = await sendText(s, payload, true,
-        { path: "bundle", rollbackOwnPayload: true,
+        { path: "bundle", rollbackOwnPayload: true, requireAgent: true,
           deliveryClass: immediate ? "sofort" : "buendelbar", bypassQueue: true,
           paneInboxNotice: bundleNotice(ordered) });
       audit("delivery_bundle_sent", s.id, `${key} count=${entries.length}`,
@@ -9195,7 +9210,18 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       for (const entry of entries) entry.resolve({ acceptance });
       if (immediate) return { acceptance };
     } catch (error) {
-      if (error instanceof SendRefused) {
+      if (error instanceof DeliveryGateDropped || error instanceof SendAgentNotAlive) {
+        const reason = error instanceof SendAgentNotAlive ? `gate=${error.agent} — nothing typed` : error.message;
+        for (const entry of entries) {
+          try { await entry.options.onRefused?.(s); }
+          catch (rollbackError) { logError("bundleDropRollback", rollbackError); }
+          entry.reject(error);
+        }
+        if (immediate) await immediate.options.onRefused?.(s);
+        audit("delivery_bundle_dropped", s.id, `${key} ${reason}`,
+          { count: entries.length, reason, deliveryClass: immediate ? "sofort" : "buendelbar",
+            ...deliveryAuditCache(s) });
+      } else if (error instanceof SendRefused) {
         bundle.entries.unshift(...entries);
         bundle.retryAt = Date.now() + 5000;
         for (const entry of entries) {
@@ -12411,6 +12437,7 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
     let recipient = worker;
     try {
       await sendText(worker, text, true, { path: "report-decision",
+        bundleGate: { harness: false, idleMs: REPORT_DECISION_IDLE_MS },
         beforeSend: async (current) => {
           if (report.decision !== decision) throw new DeliveryCancelled(`report ${report.id} decision changed`);
           recipient = current;
@@ -15346,7 +15373,9 @@ async function tickAutos(): Promise<void> {
       void (async () => {
         let recipient = s;
         try {
-          await sendText(s, a.text, true, { path: "auto", beforeSend: async (current) => {
+          await sendText(s, a.text, true, { path: "auto",
+            bundleGate: { quietHours: a.everySec === null ? false : undefined,
+              idleMs: a.idleSec * 1000 }, beforeSend: async (current) => {
             if (!a.enabled || !autos.includes(a)) throw new DeliveryCancelled(`auto ${a.id} was cancelled before paste`);
             recipient = current;
           } });
@@ -20854,6 +20883,7 @@ async function tickInboxNudge(): Promise<void> {
         let recipient = s;
         try {
           const { acceptance } = await sendText(s, text, true, { path: "inbox-nudge", rollbackOwnPayload: true,
+            bundleGate: { idleMs: BACKLOG_IDLE_MS },
             beforeSend: async (current) => {
               if (program.status !== "active" || nudgeableUnread(program).join(",") !== unreadIds.join(","))
                 throw new DeliveryCancelled(`inbox ${program.id} changed before paste`);
@@ -20941,6 +20971,7 @@ async function tickBacklogNudge(): Promise<void> {
           let recipient = s;
           try {
             const { acceptance } = await sendText(s, text, true, { path: "backlog-nudge", rollbackOwnPayload: true,
+              bundleGate: { idleMs: BACKLOG_IDLE_MS },
               beforeSend: async (current) => {
                 if (mine.some((task) => !tasks.includes(task)) || (await repoKeyOf(current)) !== repo)
                   throw new DeliveryCancelled(`backlog ${repo} changed before paste`);
@@ -21295,6 +21326,7 @@ async function tickMigrate(): Promise<void> {
       void (async () => {
         try {
           const { acceptance } = await sendText(s, text, true, { path: "migrate-nudge", rollbackOwnPayload: true,
+            bundleGate: { idleMs: MIGRATE_IDLE_MS },
             beforeSend: async (current) => {
               if (current !== s || s.sessionId !== attempt.sessionId)
                 throw new DeliveryCancelled(`migration target ${pendingKey} changed before paste`);
@@ -21657,6 +21689,8 @@ async function deliverFleetEventBundle(s: Slot, events: FleetEvent[]): Promise<v
     && events.every((event) => JSON.stringify(event.receiverAddress) === JSON.stringify(address));
   try {
     ({ acceptance } = await sendText(s, text, true, { path: "fleet-event", rollbackOwnPayload: true,
+      bundleGate: { harness: false, quietHours: false,
+        idleMs: Math.max(0, ...events.map((event) => event.receiverIdleSec * 1000)) },
       deliveryClass: sameAddress ? klass : "sofort", ...(sameAddress ? { address } : {}),
       eventIds: events.map((event) => event.id),
       ...(events.every((event) => event.watchId !== null) ? { subscribedWatch: true as const } : {}),

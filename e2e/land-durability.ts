@@ -1078,6 +1078,86 @@ export async function run(): Promise<void> {
       `landed=${String(five.last?.landed)} reason=${String(five.last?.errorReason)} ffRounds=${String(five.last?.ffRounds)} local=${local5.slice(0, 8)} direct=${direct5.slice(0, 8)} hub=${hub5Main.slice(0, 8)} before=${five.before.slice(0, 8)} detail=${detail5.slice(0, 300)}`);
     rmSync(hub5, { recursive: true, force: true });
     for (const f of [armed5, fired5]) rmSync(f, { force: true });
+    // G6: a direct commit AFTER the gate but BEFORE the push must be retried without
+    // publishing the stale lane tip. The same fixture then runs a docs-only retry.
+    const hub6 = `${REPO}.hubpush6.git`;
+    const latch6 = `${ROOT}/hubpush6.latch`;
+    const lock6 = `${ROOT}/hubpush6.lock`;
+    for (const f of [hub6, latch6, `${latch6}.reached`, `${latch6}.release`, lock6])
+      rmSync(f, { recursive: true, force: true });
+    g(repo, "remote", "remove", "hub");
+    const seed6 = spawnSync("git", ["init", "-q", "--bare", "-b", "main", hub6]).status === 0
+      && g(repo, "remote", "add", "hub", hub6).code === 0
+      && g(repo, "push", "-q", "hub", "main").code === 0;
+    check("(setup G6) the fixture hub starts at the local main after the earlier hub-only case",
+      seed6 && g(hub6, "rev-parse", "main").out === g(repo, "rev-parse", "main").out,
+      `seed=${seed6} hub=${g(hub6, "rev-parse", "main").out.slice(0, 8)}`);
+    await restartSrv({ FLEET_HUB_REMOTE: "hub", FLEET_TEST_LAND_FF_LATCH: latch6,
+      FLEET_SUITE_LOCK: lock6, FLEET_SUITE_LOCK_HELD_BY: "" });
+    const race6 = async (file: string): Promise<{ before: string; direct: string; after: string;
+      gone: boolean; last: MergeVerdict | null; note: Record<string, unknown> | null }> => {
+      const before = g(repo, "rev-parse", "main").out;
+      const lane = (await (await post("/api/lanes", { repo })).json()) as
+        { slot?: number; cwd?: string };
+      if (!lane.slot || !lane.cwd) return { before, direct: before, after: before, gone: false, last: null, note: null };
+      mkdirSync(dirname(`${lane.cwd}/${file}`), { recursive: true });
+      writeFileSync(`${lane.cwd}/${file}`, `${file}\n`);
+      const laneCommit = commitAll(lane.cwd, `race ${file}`);
+      check(`(setup G6) ${file} lane committed`, laneCommit.code === 0, laneCommit.err);
+      for (const f of [`${latch6}.reached`, `${latch6}.release`]) rmSync(f, { force: true });
+      writeFileSync(latch6, "armed\n", { mode: 0o600 });
+      await settleForMerge(lane.slot);
+      await post(`/api/slots/${lane.slot}/merge`, {});
+      let parked = false;
+      for (let i = 0; i < 600; i++) {
+        if (existsSync(`${latch6}.reached`)) { parked = true; break; }
+        await Bun.sleep(100);
+      }
+      check(`(setup G6) ${file} gate finished before the direct commit`, parked,
+        parked ? "latch reached" : "latch never reached");
+      writeFileSync(`${repo}/direct-${file.replaceAll("/", "-")}`, `direct ${file}\n`);
+      const directCommit = commitAll(repo, `direct before push ${file}`);
+      const direct = g(repo, "rev-parse", "main").out;
+      check(`(setup G6) ${file} direct commit moved main`, directCommit.code === 0 && direct !== before,
+        `commit=${directCommit.code} before=${before.slice(0, 8)} direct=${direct.slice(0, 8)}`);
+      writeFileSync(`${latch6}.release`, "go\n", { mode: 0o600 });
+      const settled = await waitMerge(lane.slot);
+      const after = g(repo, "rev-parse", "main").out;
+      const raw = g(repo, "notes", "--ref=fleet/land", "show", after);
+      let note: Record<string, unknown> | null = null;
+      try { note = JSON.parse(raw.out) as Record<string, unknown>; } catch { /* reported below */ }
+      return { before, direct, after, gone: settled.gone, last: settled.last, note };
+    };
+    const six = await race6("hub-six.txt");
+    const sixHub = g(hub6, "rev-parse", "main").out;
+    check("G6: main moving after the gate causes a fresh rebase and gate, then one matching hub and local tip without hub-only",
+      six.gone && six.note?.mainBefore === six.direct && six.note?.ffRounds === 1
+        && (six.note?.verify as { mainSha?: string } | undefined)?.mainSha === six.direct
+        && six.after === sixHub && g(repo, "merge-base", "--is-ancestor", six.direct, six.after).code === 0
+        && existsSync(`${repo}/hub-six.txt`) && hubPushOf(six.note)?.sha === six.after,
+      `gone=${six.gone} reason=${String(six.last?.errorReason)} main=${six.after.slice(0, 8)} hub=${sixHub.slice(0, 8)} note=${JSON.stringify(six.note)}`);
+
+    writeFileSync(`${repo}/fleet-e2e.ts`, "// fixture sentinel\n");
+    mkdirSync(`${repo}/e2e`, { recursive: true });
+    writeFileSync(`${repo}/e2e/pins.ts`, 'console.log("ALL PASS");\n');
+    writeFileSync(`${repo}/package.json`, '{"name":"hub-race-fixture","version":"1.0.0"}\n');
+    const install6 = spawnSync("bun", ["install"], { cwd: repo, encoding: "utf8" });
+    const fixtureCommit = install6.status === 0 ? commitAll(repo, "fixture for docs-only land") : { code: 1 };
+    const fixturePush = fixtureCommit.code === 0 ? g(repo, "push", "-q", "hub", "main") : { code: 1 };
+    check("(setup G7) the fixture repo has a runnable docs-only short chain and matching hub",
+      install6.status === 0 && fixtureCommit.code === 0 && fixturePush.code === 0,
+      `install=${install6.status} commit=${fixtureCommit.code} push=${fixturePush.code}`);
+    const seven = await race6("docs/hub-seven.md");
+    const sevenHub = g(hub6, "rev-parse", "main").out;
+    const sevenVerify = seven.note?.verify as { proportional?: boolean; mainSha?: string; out?: string } | undefined;
+    check("G7: docs-only retry re-gates on moved main and never takes the suite mutex",
+      seven.gone && seven.note?.ffRounds === 1 && sevenVerify?.proportional === true
+        && sevenVerify.mainSha === seven.direct && sevenVerify.out?.includes("suite mutex: NOT TAKEN") === true
+        && seven.after === sevenHub && existsSync(`${repo}/docs/hub-seven.md`)
+        && hubPushOf(seven.note)?.sha === seven.after,
+      `gone=${seven.gone} rounds=${String(seven.note?.ffRounds)} main=${seven.after.slice(0, 8)} hub=${sevenHub.slice(0, 8)} verify=${JSON.stringify(sevenVerify)}`);
+    for (const f of [hub6, latch6, `${latch6}.reached`, `${latch6}.release`, lock6])
+      rmSync(f, { recursive: true, force: true });
     // back to the env every later section was written against: G4/G5 left FLEET_HUB_REMOTE set,
     // and §H lands in REPO, which has no remote by that name — its verdicts must not depend on G4.
     await restartSrv();

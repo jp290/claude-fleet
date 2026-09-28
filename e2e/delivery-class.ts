@@ -1,4 +1,5 @@
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 
 interface SendAudit { event?: string; slot?: number; path?: string; detail?: string; file?: string;
@@ -337,6 +338,69 @@ export async function run(): Promise<void> {
 
     const vacant = (await (await get("/api/sessions")).json() as
       { slots: { id: number; cwd: string | null }[] }).slots.find((s) => !s.cwd)?.id ?? 0;
+    const gateOpen = vacant ? await post(`/api/slots/${vacant}/open`, { cwd: REPO, harness: "pi" }) : null;
+    check("bundle gate fixture opens a separate Pi slot", !!gateOpen?.ok, `${gateOpen?.status}`);
+    const fakeDir = mkdtempSync(`${tmpdir()}/fleet-bundle-gate-`);
+    const sleeper = Bun.which("sleep");
+    if (!sleeper) throw new Error("bundle gate fixture needs sleep");
+    symlinkSync(sleeper, `${fakeDir}/pi`);
+    try {
+      const live = await tmuxOut("respawn-pane", "-k", "-t", `s${vacant}`, `exec '${fakeDir}/pi' 100000`);
+      check("bundle gate fixture replaces Pi with a live named stand-in", live.code === 0, `${live.code}`);
+      const gateToken = currentSelfToken(vacant);
+      const queueWatch = async (suffix: number): Promise<{ id: string; auditAt: number }> => {
+        const deployId = ((Date.now() + suffix) >>> 0).toString(16).padStart(8, "0");
+        appendFileSync(`${ROOT}/deploys.jsonl`, `${JSON.stringify({ at: Date.now(), id: deployId,
+          by: "owner", stage: "boot", ok: true, target: "1".repeat(40), bootHead: "1".repeat(40),
+          head: "1".repeat(40), hitTarget: true, bundleStale: false })}\n`);
+        const auditAt = auditRows().length;
+        const response = await fetch(`${BASE}/api/self/watch`, { method: "POST",
+          headers: { "content-type": "application/json", "x-fleet-self-token": gateToken },
+          body: JSON.stringify({ kind: "deploy", deployId, idleSec: 0 }) });
+        const body = await response.json() as { watch?: { id: string } };
+        check("bundle gate fixture subscribes to its green event", response.ok && !!body.watch?.id,
+          `${response.status}`);
+        const event = await until(async () => (await eventRows()).find((row) =>
+          row.watchId === body.watch?.id && row.status === "pending"
+          && auditRows().slice(auditAt).some((audit) => audit.event === "delivery_bundle_queued"
+            && audit.slot === vacant)) ?? null,
+        { timeoutMs: 8_000, what: "gate fixture event enters the bundle window" });
+        return { id: event.id, auditAt };
+      };
+      const held = await queueWatch(10);
+      check("bundle gate fixture turns automation off after enqueue",
+        (await post("/api/autos/switch", { on: false })).ok);
+      await until(() => auditRows().slice(held.auditAt).find((row) =>
+        row.event === "delivery_bundle_refused" && row.detail?.includes("gate=kill-switch")) ?? null,
+      { timeoutMs: 8_000, what: "queued bundle reaches the paused gate" });
+      const heldPane = (await tmuxOut("capture-pane", "-p", "-J", "-t", `s${vacant}`)).out;
+      check("kill-switch after enqueue types nothing and leaves the event pending",
+        !heldPane.includes(held.id) && (await eventRows()).find((row) => row.id === held.id)?.status === "pending");
+      check("bundle gate fixture turns automation on again",
+        (await post("/api/autos/switch", { on: true })).ok);
+      const released = await until(() => auditRows().slice(held.auditAt).find((row) =>
+        row.event === "delivery_bundle_sent" && row.slot === vacant) ?? null,
+      { timeoutMs: 12_000, what: "held bundle is typed after kill-switch release" });
+      check("normal bundle paste resumes after release",
+        released.detail === `slot:${vacant} count=1`
+          && (await tmuxOut("capture-pane", "-p", "-J", "-t", `s${vacant}`)).out.includes(held.id));
+
+      const dead = await queueWatch(20);
+      const shell = await tmuxOut("respawn-pane", "-k", "-t", `s${vacant}`, "exec sh");
+      check("bundle gate fixture ends the named agent but retains a shell pane", shell.code === 0,
+        `${shell.code}`);
+      const dropped = await until(() => auditRows().slice(dead.auditAt).find((row) =>
+        row.event === "delivery_bundle_dropped" && row.detail?.includes("gate=no-agent")) ?? null,
+      { timeoutMs: 8_000, what: "dead agent is caught by the flush gate" }).catch(() => null);
+      const deadPane = (await tmuxOut("capture-pane", "-p", "-J", "-t", `s${vacant}`)).out;
+      check("dead agent bundle is dropped before any paste into its shell",
+        dropped?.detail?.includes("nothing typed") === true && !deadPane.includes(dead.id),
+        `drop=${dropped?.detail ?? "missing"} pasted=${deadPane.includes(dead.id)}`);
+    } finally {
+      await post("/api/autos/switch", { on: true });
+      await post(`/api/slots/${vacant}/kill`, {});
+      rmSync(fakeDir, { recursive: true, force: true });
+    }
     const opened = vacant ? await post(`/api/slots/${vacant}/open`, { cwd: REPO, harness: "pi" }) : null;
     const token = opened?.ok ? await paneEnv(`s${vacant}`, "FLEET_SELF_TOKEN") : null;
     check("watch reroute fixture: a separate slot opens with a self token",

@@ -9308,7 +9308,11 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   const address = options.address ?? deliveryAddress(s);
   const key = deliveryAddressKey(address);
   if ((options.deliveryClass ?? deliveryClass(options.path)) === "sofort" || DELIVERY_BUNDLE_SEC === 0 || !submit) {
-    if (submit && deliveryBundles.has(key)) {
+    // An owner /-command never rides a waiting bundle: inside one it is prose under a header, never a
+    // command (Slot 9, 2026-09-28: „[Zitat entfernt]“ typed after a path=bundle header ran as a prompt).
+    // It goes alone and first, headerless (deliveryHeader); the bundle keeps its own window.
+    const ownerCommand = options.path === "owner" && given.trimStart().startsWith("/");
+    if (submit && !ownerCommand && deliveryBundles.has(key)) {
       const sent = await flushDeliveryBundle(key, { slot: s, text: given, submit, options });
       if (sent) return sent;
     }

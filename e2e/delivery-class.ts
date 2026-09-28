@@ -167,6 +167,32 @@ export async function run(): Promise<void> {
         sends: loneSends.map((r) => r.path),
         line: around(lonePane, loneText) }));
 
+    // AN OWNER /-COMMAND NEVER RIDES A BUNDLE (Slot 9, 2026-09-28: „[Zitat entfernt]“ arrived as
+    // „[Zitat entfernt]“ and ran as a prompt). With an auto waiting in the window, the
+    // command is typed alone and first, with no header in front of it; the auto flushes on its own.
+    // BREAKS IF: sendText merges an owner /-command into the waiting bundle again.
+    const slashText = `/fleet-probe-${marker}`;
+    const slashAutoText = `${marker}: Check-in neben einem Befehl`;
+    const slashAuditBefore = auditRows().length;
+    const slashScheduled = await post("/api/slots/2/autos", { text: slashAutoText, inSec: 1, idleSec: 0 });
+    await until(() => auditRows().slice(slashAuditBefore).find((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto") ?? null,
+    { timeoutMs: 8_000, what: "an auto waits in the window beside the coming command" });
+    const slashSent = await post("/send", { slot: 2, text: slashText });
+    const slashAutoFlush = await until(() => auditRows().slice(slashAuditBefore).find((r) =>
+      r.event === "delivery_bundle_sent" && r.slot === 2) ?? null,
+    { timeoutMs: 8_000, what: "the waiting auto flushes after the command" }).catch(() => null);
+    const slashSends = auditRows().slice(slashAuditBefore).filter((r) => r.event === "send" && r.slot === 2);
+    const slashRows = (await paneText("s2")).split("\n").filter((row) => row.includes(slashText));
+    check("an owner /-command beside a waiting bundle is typed alone, first and headerless; the auto flushes on its own",
+      slashScheduled.ok && slashSent.ok
+        && slashSends.length === 2 && slashSends[0]?.path === "owner" && slashSends[1]?.path === "auto"
+        && slashAutoFlush?.count === 1 && slashAutoFlush.paths === "auto"
+        && slashRows.length > 0 && slashRows.every((row) => row.trim() === slashText),
+      JSON.stringify({ status: [slashScheduled.status, slashSent.status], sends: slashSends.map((r) => r.path),
+        flush: slashAutoFlush ? [slashAutoFlush.count, slashAutoFlush.paths] : null,
+        rows: slashRows.map((row) => row.slice(0, 200)) }));
+
     await tmuxOut("send-keys", "-t", "s2", "C-c"); // the header read-backs are done: hand s2 back to its shell
     await stopSrv();
     const coldState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {

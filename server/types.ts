@@ -126,15 +126,22 @@ interface WatchBase {
 //      refusal as the bare name.
 //
 //      AND HERE IS WHAT THIS RULE DOES NOT SAY, because the earlier wording said it and was too
-//      strong: THIS BINDS THE COMMAND STRING, NOT THE PROCESS TREE IT STARTS. Three of the six
+//      strong: THIS BINDS THE COMMAND STRING, NOT THE PROCESS TREE IT STARTS. Three of the eight
 //      allowlist entries (`bun run build`, `bun test`, `bun run verify`) run a `package.json`
 //      script OUT OF THE SUBMITTED BUNDLE, and that file's contents are the caller's — e2e's own
 //      fixture writes itself a `build` script and runs `bun run build` through it
-//      (e2e/helper-daemon.ts, the `cmdjob` lane). So the refusal is a statement about what may be
+//      (e2e/helper-daemon.ts, the `cmdjob` lane) — and the four `./e2e-*.sh` entries are wrapper
+//      scripts out of that same bundle. So the refusal is a statement about what may be
 //      NAMED here, and it is not, and cannot be, a statement about what the named script goes on
 //      to execute on the other machine. NO REGRESSION IS IMPLIED: the portal path has always run
 //      submitted repo code through `suiteCmd`, and this check does exactly the right thing at its
 //      own place. What changed is only the size of the promise written around it.
+//      `./e2e-claude-gate.sh` IS THE CASE THAT SENTENCE IS FOR: its phase 1 runs the fleet with
+//      FLEET_CMD=claude, and the `claude` it starts is a C stand-in the wrapper compiles into its own
+//      scratch dir and puts FIRST on the server's PATH (e2e-claude-gate.sh, `FAKEBIN`; it needs a C
+//      compiler on whichever machine runs it). The COMMAND STRING names no harness —
+//      `e2e-claude-gate.sh` is one token, not `claude` — so rule 1 passes it by its own definition,
+//      unchanged, and still refuses `./claude` beside it.
 //   2. THE COMMAND MUST BE AN EXACT ALLOWLIST KEY, and the value is the ARGV it runs as. Argv, not
 //      a string: the helper never hands this to `sh -c`, so there is no quoting, no glob, no `&&`
 //      and no substitution anywhere on the path — which is also why the allowlist can be an exact
@@ -147,6 +154,10 @@ const HELPER_CMD_ALLOW: Readonly<Record<string, readonly string[]>> = {
   "./e2e-isolated.sh": ["./e2e-isolated.sh"],
   "./e2e-security.sh": ["./e2e-security.sh"],
   "bun e2e/pins.ts": ["bun", "e2e/pins.ts"],
+  // the two land-gate suites a lane's gate recommends beside the security one (localProof.steps
+  // `claude-gate`, `clean-review`); until 2026-09-28 neither could be handed to a helper at all
+  "./e2e-claude-gate.sh": ["./e2e-claude-gate.sh"],
+  "./e2e-clean-review.sh": ["./e2e-clean-review.sh"],
 };
 const HELPER_CMD_FORBIDDEN: readonly string[] = ["claude", "codex", "pi"];
 type HelperCmdCheck = { ok: true; cmd: string; argv: string[] } | { ok: false; error: string };

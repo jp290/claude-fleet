@@ -31,6 +31,7 @@ import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt, buildBriefReviewPrompt } from "./refine-prompt";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor,
   type LocalProof, type LocalProofStep } from "./verify-proportion";
+import { moduleListFrom } from "./suite-modules";
 import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRolePointers, rulebookBody,
   type RulebookFragment,
@@ -24747,6 +24748,16 @@ const AUDIT_SHARDS = parseAuditShards(process.env.FLEET_AUDIT_SHARDS);
 // older tree loses the feature on its next beat. A commit-ancestry floor like the command kind's
 // (daemonKnowsCommandKind) was not an option: a lane cannot know the sha its own commit lands under.
 const AUDIT_SHARD_FEATURE = "audit-shard";
+// …AND THE SAME GUARD FOR A NARROWED PREVIEW. A lane-suite job that carries `modules` asks for
+// `FLEET_E2E_MODULES=<modules> ./e2e-isolated.sh`; a daemon without the `modulesEnv` fork runs
+// `cfg.suiteCmd` bare, i.e. the FULL suite, and its verdict would then be filed as the answer to the
+// narrowed question — right by accident on a green, and on a red about modules the lane never named.
+// So a job with modules is listed, claimed and woken for ONLY on a device whose last heartbeat
+// declared this feature (helper-daemon/daemon.ts#DAEMON_FEATURES), exactly as the shard is; a job
+// WITHOUT modules is today's job and every device still takes it.
+const LANE_SUITE_MODULES_FEATURE = "lane-suite-modules";
+const helperTakesModules = (deviceId: string | undefined): boolean =>
+  !!(deviceId && helperDevices.get(deviceId)?.features?.includes(LANE_SUITE_MODULES_FEATURE));
 interface AuditShardClaim { deviceId: string; name: string; claimedAt: number; expiresAt: number }
 interface AuditShardResult {
   deviceId: string; name: string; claimedAt: number; reportedAt: number;
@@ -25021,18 +25032,30 @@ const HELPER_SATURATION_SLACK_MS = 2 * HELPER_SWEEP_MS;
 // something. This is deliberately NOT helperClaimCandidateExists: that one is the audit grace's
 // stricter reading (owner's wish AND the device's mode AND a tighter clock), and a lane asking
 // „[Zitat entfernt]“ wants the presence fact plus the mode, not a verdict it cannot inspect.
+//
+// `takesModules` IS THE ONE FIELD THAT IS NOT ABOUT THE FRESHEST ROW, and it cannot be: the lane's
+// question is "would a NARROWED offer (`modules`) be taken by anybody?", and the answer is yes iff
+// SOME device inside the same window declared LANE_SUITE_MODULES_FEATURE on its last beat — which
+// need not be the freshest one. Same clock as `online`, so `takesModules` implies `online`. The
+// offer door refuses to mint a narrowed offer when it is false, for the reason it refuses an offer
+// into an empty fleet: a job only an older daemon could see waits out the budget for nothing.
 interface HelperPresence {
   online: boolean;
   name: string | null;          // …of the freshest device, or null when none has ever registered
   mode: DeviceMode | null;      // its own last reading of itself; null = it never said
   lastSeenAgeMs: number | null; // null ONLY when there is no device at all — never "we did not look"
+  takesModules: boolean;        // some device inside the window declared LANE_SUITE_MODULES_FEATURE
 }
 function helperPresence(now = Date.now()): HelperPresence {
   let freshest: HelperDevice | null = null;
-  for (const d of helperDevices.values()) if (!freshest || d.lastSeen > freshest.lastSeen) freshest = d;
-  if (!freshest) return { online: false, name: null, mode: null, lastSeenAgeMs: null };
+  let takesModules = false;
+  for (const d of helperDevices.values()) {
+    if (!freshest || d.lastSeen > freshest.lastSeen) freshest = d;
+    if (now - d.lastSeen < DEVICE_ONLINE_MS && helperTakesModules(d.id)) takesModules = true;
+  }
+  if (!freshest) return { online: false, name: null, mode: null, lastSeenAgeMs: null, takesModules: false };
   const age = Math.max(0, now - freshest.lastSeen);
-  return { online: age < DEVICE_ONLINE_MS, name: freshest.name, mode: freshest.mode ?? null, lastSeenAgeMs: age };
+  return { online: age < DEVICE_ONLINE_MS, name: freshest.name, mode: freshest.mode ?? null, lastSeenAgeMs: age, takesModules };
 }
 
 // --- THE SECOND JOB KIND: a LANE's preview suite -----------------------------------------------
@@ -25112,6 +25135,12 @@ interface LaneSuiteJob {
   // program's live MAIN, else the closed "lane gone" row). Null on a program-less lane and on
   // every job offered before the field existed; absent means the same null there.
   programId?: string | null;
+  // THE NARROWED PREVIEW: the check modules the lane asked for, validated at the offer door
+  // (suite-modules.ts#moduleListFrom — known names only, deduplicated, in the runner's order) and
+  // handed to the daemon as FLEET_E2E_MODULES. ABSENT is the full `./e2e-isolated.sh`, byte for byte
+  // the job this kind always was; a present list is never empty. Only a device that declared
+  // LANE_SUITE_MODULES_FEATURE is ever shown or given a job that carries it.
+  modules?: string[];
   offeredAt: number;
   state: LaneSuiteState;
   // filled at CLAIM time, out of the bundle build itself — one moment, no second resolution
@@ -26469,6 +26498,9 @@ function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
     // an EXPIRED claim reads as lapsed here and not as "claimed", without waiting for the sweep —
     // the same split as helperClaimOf: the clock decides, the sweep only books
     id: j.id, state: j.state === "claimed" && !c ? "lapsed" : j.state, branch: j.branch, offeredAt: j.offeredAt,
+    // present on a NARROWED offer only — a full offer keeps its closed key set (e2e/lane-suite.ts
+    // OFFER_WIRE_KEYS), and the verdict beside a list is a verdict about those modules alone
+    ...(j.modules ? { modules: j.modules } : {}),
     commitSha: j.commitSha, treeSha: j.treeSha, untracked: j.untracked,
     claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
     result: j.result && art
@@ -26660,6 +26692,9 @@ interface HelperJobView {
   // `k/n` on a SHARDED audit job and on nothing else — the exact string the daemon hands the suite as
   // FLEET_E2E_SHARD. Listed only to a device that declared AUDIT_SHARD_FEATURE.
   shard?: string;
+  // the check modules of a NARROWED lane-suite job — what the daemon hands the suite as
+  // FLEET_E2E_MODULES. Listed only to a device that declared LANE_SUITE_MODULES_FEATURE.
+  modules?: string[];
 }
 // `forDevice` is the asking device's id, when it gave one: a daemon-update is offered to the ONE
 // device it is addressed to and appears in nobody else's list — a browser on the portal page, or
@@ -26709,8 +26744,13 @@ function helperJobsView(forDevice?: string): {
       localRunning: auditRunningRepo === repo || runningPostLandAudit?.repo === repo,
     });
   }
+  // THE MODULES HANDSHAKE, the shard's twin one kind over: a NARROWED preview appears only in the
+  // list of a device whose last heartbeat declared the feature. A browser (no deviceId) and every
+  // older daemon never see it — they would run the full suite and file it as the narrowed answer.
+  const modulesCapable = helperTakesModules(forDevice);
   for (const j of laneSuiteJobs.values()) {
     if (j.state !== "open" && j.state !== "claimed") continue;
+    if (j.modules && !modulesCapable) continue;
     const c = laneSuiteClaimOf(j);
     if (!c && j.state === "claimed") continue; // lapsed but not yet swept — not offerable
     jobs.push({
@@ -26721,6 +26761,7 @@ function helperJobsView(forDevice?: string): {
       // here would be a claim about a machine state nothing measures.
       localRunning: false,
       ...(j.untracked !== null ? { untracked: j.untracked } : {}),
+      ...(j.modules ? { modules: j.modules } : {}),
     });
   }
   // THE S1 HANDSHAKE, and it is a CAPABILITY reading rather than a version comparison: a daemon that
@@ -26923,7 +26964,9 @@ function helperWorkAwaitingClaim(deviceId: string): boolean {
     if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo) continue;
     return true;
   }
-  for (const j of laneSuiteJobs.values()) if (j.state === "open") return true;
+  // a narrowed preview wakes only a machine that would be SHOWN it (helperJobsView's same guard)
+  for (const j of laneSuiteJobs.values())
+    if (j.state === "open" && (!j.modules || helperTakesModules(deviceId))) return true;
   for (const j of commandJobs.values()) if (j.state === "open") return true;
   return helperUpdates.get(deviceId)?.state === "open";
 }
@@ -26971,6 +27014,12 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
   if (j.state === "lapsed") return json({ error: "this preview offer lapsed and was not renewed" }, 404);
   const held = laneSuiteClaimOf(j);
   if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
+  // the same door rule as helperJobsView's, on the door and not only on the list: a device may POST
+  // a jobId it learned any other way, and an older daemon holding this job would run the full suite
+  if (j.modules && !helperTakesModules(deviceId))
+    return json({ error: `this preview is narrowed to modules [${j.modules.join(" ")}], and this device's last heartbeat`
+      + ` did not declare "${LANE_SUITE_MODULES_FEATURE}" — a daemon that cannot set FLEET_E2E_MODULES would run`
+      + " the full suite and file it as this answer" }, 409);
   const live = slots.find((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
   if (!live) {
     // reaped in the same turn it is refused: an offer whose lane is gone must not be offered again
@@ -27007,6 +27056,7 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
   audit("helper_claim", j.slot,
     `${j.claim.name} claimed the preview suite of ${basename(j.repo)} ${j.branch}`
     + `@${built.commitSha.slice(0, 8)} tree ${built.treeSha.slice(0, 8)}`
+    + `${j.modules ? ` narrowed to [${j.modules.join(" ")}]` : ""}`
     + `${built.untracked ? ` (${built.untracked} untracked file(s) NOT included)` : ""}`);
   await saveStateNow();
   return json({ job: { id: j.id, kind: "lane-suite", repo: basename(j.repo), main: j.branch,
@@ -27015,6 +27065,9 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
     // all and says nothing about why (M6), so it is served rather than reconstructed on the page.
     branch: laneSuiteBranch(j.id),
     branches: [j.branch], covers: 0,
+    // the ONLY thing the daemon may turn into the suite's env beyond its own lock and scratch:
+    // validated module names, which it joins into FLEET_E2E_MODULES and nothing else
+    ...(j.modules ? { modules: j.modules } : {}),
     claimedAt: now, expiresAt: j.claim.expiresAt, name: j.claim.name } });
 }
 // THE VINTAGE MEASUREMENT, and the reason the presence of `daemonSha` was never the whole guard.
@@ -35902,6 +35955,14 @@ if (existsSync(STATE_FILE)) {
           const readable = !!res && !!res.remote && typeof res.remote.reportedAt === "number"
             && typeof res.remote.name === "string";
           if (res && !readable) console.error(`lane-suite job ${j.id}: result restored without a readable remote block — dropped`);
+          // …and a NARROWED row passes the offer door's own validator again, the rule the command
+          // register below states for its `cmd`: a module list the table no longer admits (a module
+          // renamed while the row sat on disk) must not reach a daemon's env through the back door.
+          // The ROW is dropped, never widened into a full run the lane did not ask for.
+          if (j.modules !== undefined) {
+            const m = moduleListFrom(j.modules);
+            if (!m.ok) { console.error(`lane-suite job ${j.id}: restored modules refused (${m.error.slice(0, 120)}) — row dropped`); continue; }
+          }
           laneSuiteJobs.set(j.id, readable ? j : { ...j, result: null });
         }
 
@@ -40751,8 +40812,9 @@ Bun.serve<WSData>({
 
     // THE OFFER DOOR — a lane hands its OWN preview suite to another machine. Lane-only: the answer is
     // only defined for a lane's tree, and it couples the lane to a machine holding no slot, never to
-    // another lane. THE BODY IS CLOSED: repo, branch, cwd and slot come from the token's row, the
-    // command is fixed. AND IT STARTS NOTHING — but it BINDS the lane: while its offer is open or
+    // another lane. THE BODY IS CLOSED BUT FOR ONE LIST: repo, branch, cwd and slot come from the
+    // token's row, the command is fixed, and the optional `modules` is a list of known check-module
+    // names (never env, never argv). AND IT STARTS NOTHING — but it BINDS the lane: while its offer is open or
     // claimed it must not run the suite locally; withdraw is where that permission comes back. Narrativ: server-narrativ-archiv.md#fetch-apiselfsuite-offer
     if (url.pathname === "/api/self/suite-offer" && (req.method === "GET" || req.method === "POST")) {
       const p = resolvePrincipal(req);
@@ -40776,9 +40838,23 @@ Bun.serve<WSData>({
           helper: helperPresence(), // …and WHO could take it, same reading as /api/self/gate's
         });
       }
+      // THE ONE BODY FIELD: `modules`, the narrowed preview (`FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`
+      // — what /api/self/gate's localProof.modules recommends). Validated FIRST, before the existing
+      // branch and before a row can exist, through the runner's own decision
+      // (suite-modules.ts#moduleListFrom): known module names only, so nothing but a list of words
+      // from that table can ever reach the helper's env. Absent — including a POST with no JSON body
+      // at all, which is every caller from before this field — is the full run, unchanged.
+      const offerBody = await readJson(req);
+      let modules: string[] | undefined;
+      if (offerBody?.modules !== undefined) {
+        const m = moduleListFrom(offerBody.modules);
+        if (!m.ok) return json({ error: m.error }, 400);
+        modules = m.modules;
+      }
       // ONE OPEN OFFER PER SLOT. A second POST returns the first with `existing: true` rather than
       // minting a rival — the same idempotent shape createWatchForSlot uses, and for the same
-      // reason: a caller that retries must not end up holding two of anything.
+      // reason: a caller that retries must not end up holding two of anything. It is returned AS IT
+      // IS, modules or none: the lane reads `offer.modules` to see which run it is waiting on.
       // `waitPolicy` rides on BOTH minting answers too: "how long is this offer worth waiting for" is
       // decided in the same instant the offer is, and the saturated reason is what a lane would
       // otherwise only learn by polling GET — which is the loop the report rail exists to end.
@@ -40800,14 +40876,22 @@ Bun.serve<WSData>({
       if (!presence.online)
         return json({ offer: null, reason: "no helper online", helper: presence,
           waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
+      // …and the same refusal, one question narrower: a NARROWED offer is only ever shown to a device
+      // that declared LANE_SUITE_MODULES_FEATURE, so with none of those beating it would wait out the
+      // budget for a claim that cannot come. Same 200, same shape, its own reason — the lane runs the
+      // narrowed preview locally now, or offers the full run instead.
+      if (modules && !presence.takesModules)
+        return json({ offer: null, reason: "no helper online takes a narrowed preview", helper: presence,
+          waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
       const job: LaneSuiteJob = {
         id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
         repo: s.worktree.repo, cwd: s.cwd!, branch: s.worktree.branch,
-        programId: s.programId, offeredAt: Date.now(),
+        programId: s.programId, ...(modules ? { modules } : {}), offeredAt: Date.now(),
         state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
       };
       laneSuiteJobs.set(job.id, job);
-      audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`);
+      audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`
+        + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}`);
       await saveStateNow();
       return json({ offer: laneSuiteView(job), existing: false, helper: presence,
         waitPolicy: suiteOfferWait(job.offeredAt) });

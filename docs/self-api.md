@@ -67,6 +67,10 @@ Geräts, `null` wenn nie eines registriert war) · `mode` (dessen eigene letzte 
 DANEBEN statt eingerechnet: ein Gerät, das schlägt und `quiet` sagt, ist da und nimmt nichts —
 und das ist ein anderer Fall als „niemand da", weil nur im ersten Warten etwas bringt. Das ist
 absichtlich NICHT `helperClaimCandidateExists` (die strengere Lesung der Audit-Gnadenfrist).
+`takesModules` (seit 2026-09-28) beantwortet die engere Frage „nimmt irgendwer eine EINGEENGTE
+Vorschau?": `true` genau dann, wenn IRGENDEIN Gerät im selben Fenster in seinem letzten Heartbeat das
+Feature `lane-suite-modules` gemeldet hat (`server.ts#helperTakesModules`) — nicht nur das
+zuletzt gehörte. Es folgt also aus `online`, nie umgekehrt.
 
 ## autos — `POST /api/self/autos`
 
@@ -2313,6 +2317,14 @@ curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   http://<fleet-host>:<port>/api/self/jobs/<jobId>        # Zustand + Quittung
 ```
 
+**Eine MAIN gibt ihre Vorschau über diese Tür an den Helfer** — `suite-offer` ist lane-only, also
+`{"cmd":"./e2e-isolated.sh","timeoutMs":2700000}` und danach eine `job`-Watch statt Polling
+(§watch). Der Default von 15 min würgte einen vollen Lauf ab (gemessen 2 120 s,
+`suite-modules.ts`); mehr als 2 700 000 kauft nichts, weil der Claim nach
+`server.ts#HELPER_CLAIM_TIMEOUT_MS` (45 min) verfällt und ein späteres Verdikt dann abgelehnt wird.
+Ein Gate-Suite-Lauf geht genauso: `{"cmd":"./e2e-claude-gate.sh"}` oder
+`{"cmd":"./e2e-clean-review.sh"}`.
+
 **Nicht lane-only, und das ist eine Entscheidung, kein Versehen.** Die lane-only Routen sind es,
 weil ihre Antwort außerhalb einer Lane undefiniert ist (`drift`, `gate`, `criterion`,
 `verify-intent`, `suite-offer`, `wave/split`, `clarifications`, `notes` + `notes/:id/verdict`,
@@ -2330,8 +2342,12 @@ der Token-Zeile und können vom Aufrufer nie benannt werden.
 
 - `cmd` (Pflicht) muss ein **exakter Schlüssel der Allowlist** sein (`server/types.ts`
   `HELPER_CMD_ALLOW`): `bun run build` · `bun test` · `bun run verify` · `./e2e-isolated.sh` ·
-  `./e2e-security.sh` · `bun e2e/pins.ts`. Der Wert des Eintrags ist die **argv** — der Helfer
-  exec't sie direkt, es gibt auf dem Weg **kein `sh -c`**, kein Quoting, kein Glob, kein `&&`.
+  `./e2e-security.sh` · `bun e2e/pins.ts` · `./e2e-claude-gate.sh` · `./e2e-clean-review.sh`. Der
+  Wert des Eintrags ist die **argv** — der Helfer exec't sie direkt, es gibt auf dem Weg **kein
+  `sh -c`**, kein Quoting, kein Glob, kein `&&`. Jede Suite, die `localProof.steps` empfehlen kann,
+  ist ein Schlüssel (`e2e/pins.ts` §S10c hält das gegen `watchdog.sh#VERIFY_CMD`);
+  `./e2e-claude-gate.sh` baut auf der anderen Maschine seinen `claude`-Stellvertreter selbst und
+  braucht dort einen C-Compiler.
 - **Ein `cmd`, das `claude`, `codex` oder `pi` als Token enthält, wird IMMER mit 400 abgewiesen** —
   vor der Allowlist und unabhängig von ihrem Inhalt (`./claude`, `/usr/bin/codex`, `bun claude`
   zählen alle). Ein Fleet, das eine Agenten-Harness an ein Helfer-Gerät posten kann, hätte
@@ -2366,15 +2382,42 @@ einen Suite-Mutex dieser Maschine dafür zu halten. Anlass und Messungen:
 ```
 curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   http://<fleet-host>:<port>/api/self/suite-offer
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"modules":["lane-suite","security"]}' \
+  http://<fleet-host>:<port>/api/self/suite-offer          # eingeengte Vorschau
 curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   http://<fleet-host>:<port>/api/self/suite-offer          # Zustand + Verdikt
 curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
   -d '{}' http://<fleet-host>:<port>/api/self/suite-offer/withdraw
 ```
 
-**Der Body des Angebots ist geschlossen** — dieselbe Bauart wie `POST /api/self/tasks/:id/release`:
-Repo, Branch, cwd und Slot kommen aus der Token-Zeile, das Kommando ist `./e2e-isolated.sh` fest.
-Kein Feld kann nominieren, WELCHER Baum gebündelt wird. `withdraw` liest genau ein Feld, `abandon`.
+**Der Body des Angebots ist geschlossen bis auf eine Liste** — dieselbe Bauart wie
+`POST /api/self/tasks/:id/release`: Repo, Branch, cwd und Slot kommen aus der Token-Zeile, das
+Kommando ist `./e2e-isolated.sh` fest. Kein Feld kann nominieren, WELCHER Baum gebündelt wird.
+`withdraw` liest genau ein Feld, `abandon`.
+
+**`modules` (optional, seit 2026-09-28) — die EINGEENGTE Vorschau.** Genau das, was
+`/api/self/gate` als `localProof.modules` empfiehlt: `FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`,
+jetzt auch auf dem Helfer. Ein Array bekannter Check-Modulnamen aus `suite-modules.ts`; die Tür
+prüft es mit derselben Entscheidung, die der Runner drüben fährt (`suite-modules.ts#moduleListFrom`
+→ `#selectModules`), VOR dem `existing`-Zweig und bevor eine Zeile entsteht. Ein Nicht-Array, eine
+leere Liste oder ein unbekannter Name → **400** mit Feldname und Modulname, keine Zeile. Das Angebot
+trägt die Liste dedupliziert in Runner-Reihenfolge. Ohne `modules` — auch ein POST ganz ohne
+JSON-Body — ist es der volle Lauf wie bisher.
+
+- **Nur ein Daemon, der es kann, sieht den Job.** Ein eingeengter Job wird ausschließlich einem
+  Gerät gelistet, gegeben und geweckt, dessen letzter Heartbeat `features:["lane-suite-modules"]`
+  trug (`helper-daemon/daemon.ts#DAEMON_FEATURES`, aus dem Daemon-CODE, keine Config-Zeile) — die
+  Bauart des `audit-shard`-Guards. Ein älterer Daemon führe `cfg.suiteCmd` blank, also die VOLLE
+  Suite, und legte sie als Antwort auf die eingeengte Frage ab; er bekommt den Job nie (Liste) und
+  der Claim per id ist **409** mit Begründung. Der Daemon setzt aus dem Job genau
+  `FLEET_E2E_MODULES` (`#modulesEnv`) und sonst nichts.
+- **Kein eingeengtes Angebot ohne Abnehmer.** Ist ein Helfer online, aber keiner mit dem Feature
+  (`helper.takesModules === false`), antwortet der POST **200** mit `{"offer": null, "reason":
+  "no helper online takes a narrowed preview"}` — dieselbe Form wie „no helper online". Dann die
+  Vorschau lokal fahren oder den vollen Lauf anbieten.
+- Ein `existing`-Angebot kommt zurück, WIE ES IST: `offer.modules` zeigt, auf welchen Lauf die Lane
+  wartet.
 
 **Ein offenes Angebot pro Slot.** Ein zweites POST gibt das bestehende zurück (`existing: true`),
 das Muster von `createWatchForSlot`.
@@ -2405,8 +2448,10 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
 
 - `offer` — `null`, wenn diese Lane noch nie eines gemacht hat, sonst:
   `id` · `state` (`open|claimed|reported|withdrawn|abandoned|lapsed|reaped`) · `branch` ·
-  `offeredAt` · `commitSha` · `treeSha` · `untracked` · `claim{name,claimedAt,expiresAt}` ·
-  `result`. Ein abgelaufener Claim liest sich sofort als `lapsed`, ohne auf den Sweep zu warten;
+  `offeredAt` · `modules` (NUR auf einem eingeengten Angebot; ein volles behält seinen
+  geschlossenen Schlüsselsatz) · `commitSha` · `treeSha` · `untracked` ·
+  `claim{name,claimedAt,expiresAt}` · `result` (auf einem eingeengten Angebot ein Verdikt über
+  GENAU diese Module). Ein abgelaufener Claim liest sich sofort als `lapsed`, ohne auf den Sweep zu warten;
   hat der Sweep ihn schon gebucht, trägt das `lapsed`-Angebot auch schon sein Verdikt (s.u.).
 - `result` (bei `state:"reported"`, und seit dem 2026-09-19 auch bei `state:"lapsed"`) —
   `exitCode` · `result` (`green|red|unknown`) · `reason` (nur bei `unknown`) · `tail` (4096 B gedeckelt) ·
@@ -2456,7 +2501,7 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
   Helfer ist voll (`server.ts#helperSaturation`) — dann bis zum frühesten bekannten Claim-Ende plus
   Puffer ab `offeredAt`, nie unter `freeMs`, nie über `FLEET_VERIFY_WAIT_MS`; `saturatedUntil`
   (epoch ms) und `reason` („helper saturated until ~HH:MM") stehen dann daneben, sonst `null`.
-- `helper{online,name,mode,lastSeenAgeMs}` — dieselbe Präsenz-Lesung wie in `/api/self/gate`, und
+- `helper{online,name,mode,lastSeenAgeMs,takesModules}` — dieselbe Präsenz-Lesung wie in `/api/self/gate`, und
   sie reist an JEDER Antwort dieser Tür mit (GET, `existing`, frisch gemintet, abgelehnt), damit
   eine Lane nicht in derselben Sekunde hier „online" lesen und dort abgelehnt werden kann.
 - `suiteLock` — dieselbe Sicht wie in `/api/self/gate`: `null` frei, sonst `state`

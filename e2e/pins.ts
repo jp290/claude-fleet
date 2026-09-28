@@ -41,7 +41,7 @@ import { SHARD_UNITS, shardPlan } from "./ctx";
 // the module filter's map is IMPORTED and RUN, never re-spelled: a pin holding a second copy of
 // the edges would pin the copy. What cannot be imported is the modules' own sources — those are
 // re-derived below and compared against the map.
-import { FIXTURES, MODULE_FIXTURES, modulePlanFor, modulesForPaths, selectModules } from "../suite-modules";
+import { FIXTURES, MODULE_FIXTURES, moduleListFrom, modulePlanFor, modulesForPaths, selectModules } from "../suite-modules";
 // the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
@@ -52,6 +52,7 @@ import {
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName } from "../server/types";
+import { modulesEnv } from "../helper-daemon/daemon";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
 import { LIVE_TMUX_SOCK, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
@@ -8581,7 +8582,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         && /if \(!helperDevices\.get\(deviceId\)\?\.features\?\.includes\(AUDIT_SHARD_FEATURE\)\)/.test(shardClaimFn!)
         && /const AUDIT_SHARD_FEATURE = "audit-shard";/.test(server)
         && /reported\.features = Array\.isArray\(body\?\.features\)[\s\S]*?: undefined;/.test(heartbeat!)
-        && /export const DAEMON_FEATURES: readonly string\[\] = \["audit-shard"\];/.test(daemonSrc)
+        // the exact list, not "contains": a feature the daemon declares is a promise about its code, and
+        // the second entry (`lane-suite-modules`) has its own handshake pin in §S10c below
+        && /export const DAEMON_FEATURES: readonly string\[\] = \["audit-shard", "lane-suite-modules"\];/.test(daemonSrc)
         && /features: DAEMON_FEATURES,/.test(daemonSrc),
       `view=${/shardCapable/.test(shardViewFn!)} claim=${/AUDIT_SHARD_FEATURE/.test(shardClaimFn!)} daemon=${/DAEMON_FEATURES/.test(daemonSrc)}`);
     pin(`${RULE_SHARDS} (c) the merge is green only with all n green, and red outranks unknown`,
@@ -8673,8 +8676,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     pin(`${RULE_PAR} (b) a run above cap 1 gets its own FLEET_SUITE_LOCK, and at cap 1 the shared one is left alone`,
       /cfg\.maxParallelSuites > 1\s*\n?\s*\? \{ FLEET_SUITE_LOCK: `\$\{runDir\}\/e2e\.lock` \} : \{\}/.test(workFn)
         // C1 (2026-09-13): the scratch rides at EVERY cap, the lock only above 1 — both in the one env
-        // …and a shard job's FLEET_E2E_SHARD beside them (the sharded audit, shardEnv) — spread LAST of the three
-        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.shardVars \};/.test(workFn)
+        // …and a shard job's FLEET_E2E_SHARD beside them (the sharded audit, shardEnv), then a narrowed
+        // preview's FLEET_E2E_MODULES (modulesEnv, §S10c) — the two cuts spread after the lock
+        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.shardVars, \.\.\.modulesVars \};/.test(workFn)
         && /const scratch = `\$\{runDir\}\/tmp`;/.test(workFn)
         // the trailing `ctl.signal` is the withdrawal switch (7e601e57) — the lock still travels with the run
         && /runArgv\(j\.argv!, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal)?\)/.test(workFn)
@@ -8739,6 +8743,100 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     /process\.env\.FLEET_HELPER_WAKE_ADDR/.test(addrLine) && /\|\| null;/.test(addrLine)
       && !/["'`]/.test(addrLine.replace(/^[^=]*=/, "")),
     addrLine.trim() || "HELPER_WAKE_ADDR not found");
+}
+
+// ================================================================================================
+// SECTION S10c — EVERY PREVIEW A LANE'S GATE RECOMMENDS CAN GO TO THE HELPER (2026-09-28, Befund
+// 3d3816fb: 29/29 offers claimed within a minute, and still six runs queued locally, because none of
+// them was offerable). Two must-agree pairs with no compiler between their halves, plus the doors:
+//   (a) THE LAND-GATE SUITES AND THE HELPER ALLOWLIST. localProof.steps recommends exactly the
+//       suites watchdog.sh's VERIFY_CMD runs (RULE_VERIFY holds that), so a gate suite that is no
+//       allowlist key is a recommended run only this box can do — ./e2e-claude-gate.sh was one.
+//   (b) THE CAPABILITY STRING. The server guards a NARROWED preview with LANE_SUITE_MODULES_FEATURE
+//       and the daemon's code declares DAEMON_FEATURES; one typo on either side and no daemon is ever
+//       shown a narrowed job again — fail-closed, but silent: every such offer would be refused as
+//       "no helper online takes a narrowed preview" while the helper beats away.
+//   (c) EACH DOOR ASKS, in the shape §S10's shard pin holds for audit-shard: the list, the claim
+//       (before a bundle is built), the wake rail, the offer door (validation before any row, mint
+//       refusal behind the online one), the restore — and the daemon's own fork.
+// ================================================================================================
+{
+  const RULE_GATE_SUITES = "every land-gate suite a lane's gate can recommend, and the isolated preview, is a helper allowlist key";
+  const offerable = [...gateSuites.map((s) => `./${s}`), "./e2e-isolated.sh"];
+  const notAllowed = offerable.filter((c) => !HELPER_CMD_ALLOW[c] || !helperCmdCheck(c).ok);
+  pin(RULE_GATE_SUITES, gateSuites.length >= 3 && notAllowed.length === 0,
+    `gate=[${gateSuites}] notOnAllowlist=[${notAllowed}]`);
+  // …and the widening is not a hole in the ban beside it: the ban is checked on TOKENS, and
+  // `e2e-claude-gate.sh` is one token — a harness named next to it is still refused
+  const banHeld = ["./claude", "./e2e-claude-gate.sh && claude", "./e2e-clean-review.sh codex", "pi ./e2e-claude-gate.sh"]
+    .filter((c) => helperCmdCheck(c).ok);
+  pin(`${RULE_GATE_SUITES} — and an agent harness named beside the new keys is refused as before`,
+    banHeld.length === 0 && HELPER_CMD_FORBIDDEN.join(",") === "claude,codex,pi", `passed=[${banHeld}]`);
+
+  const RULE_MOD = "a narrowed lane preview is listed, claimed and woken only for a daemon declaring lane-suite-modules, and the daemon makes it FLEET_E2E_MODULES alone";
+  const daemonSrc = exists("helper-daemon/daemon.ts") ? read("helper-daemon/daemon.ts") : "";
+  const feature = /const LANE_SUITE_MODULES_FEATURE = "([a-z-]+)";/.exec(server)?.[1] ?? null;
+  const declared = [...(/export const DAEMON_FEATURES: readonly string\[\] = \[([^\]]*)\];/.exec(daemonSrc)?.[1] ?? "")
+    .matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  pin(`${RULE_MOD} — (b) the server's feature string is one the daemon's code declares`,
+    feature !== null && declared.includes(feature), `server=${feature} daemon=[${declared}]`);
+  const takes = serverU.span("const helperTakesModules = ", ";\n")?.text ?? null;
+  const listFn = serverU.span("function helperJobsView(", "// --- THE OWNER'S HALF OF THE REGISTER")?.text ?? null;
+  const claimLs = serverU.span("async function claimLaneSuite(", "\n}")?.text ?? null;
+  const wakeFn = serverU.span("function helperWorkAwaitingClaim(", "\n}")?.text ?? null;
+  const doors: [string, string | null][] = [["takes", takes], ["list", listFn], ["claim", claimLs], ["wake", wakeFn]];
+  if (doors.some(([, t]) => t === null)) pin(`${RULE_MOD} — (c) the doors`, false, doors.map(([n, t]) => `${n}=${t !== null}`).join(" "));
+  else pin(`${RULE_MOD} — (c) the list, the claim (before its bundle) and the wake rail each ask the device's own features`,
+    /features\?\.includes\(LANE_SUITE_MODULES_FEATURE\)/.test(takes!)
+      && /const modulesCapable = helperTakesModules\(forDevice\);/.test(listFn!)
+      && /if \(j\.modules && !modulesCapable\) continue;/.test(listFn!)
+      && /if \(j\.modules && !helperTakesModules\(deviceId\)\)/.test(claimLs!)
+      && claimLs!.indexOf("helperTakesModules(deviceId)") < claimLs!.indexOf("buildLaneSuiteBundle(")
+      && /j\.state === "open" && \(!j\.modules \|\| helperTakesModules\(deviceId\)\)/.test(wakeFn!),
+    `list=${/modulesCapable/.test(listFn!)} claim@${claimLs!.indexOf("helperTakesModules(deviceId)")}<bundle@${claimLs!.indexOf("buildLaneSuiteBundle(")}`
+    + ` wake=${/helperTakesModules\(deviceId\)/.test(wakeFn!)}`);
+  const offerDoor = serverU.span('/api/self/suite-offer" && (req.method === "GET"', "laneSuiteJobs.set(job.id, job)")?.text ?? null;
+  const restore = serverU.span("persisted as { laneSuiteJobs?: unknown }).laneSuiteJobs", "persisted as { commandJobs?: unknown }")?.text ?? null;
+  pin(`${RULE_MOD} — (c) the offer door validates with the runner's own decision before any row, and refuses to mint what nobody takes`,
+    offerDoor !== null && /const m = moduleListFrom\(offerBody\.modules\);/.test(offerDoor)
+      && /if \(!m\.ok\) return json\(\{ error: m\.error \}, 400\);/.test(offerDoor)
+      && offerDoor.indexOf("moduleListFrom(") < offerDoor.indexOf("existing: true")
+      && /if \(modules && !presence\.takesModules\)/.test(offerDoor)
+      && offerDoor.indexOf('reason: "no helper online"') < offerDoor.indexOf("presence.takesModules")
+      && restore !== null && /moduleListFrom\(j\.modules\)/.test(restore),
+    offerDoor === null ? "the suite-offer door was not found"
+      : `validate@${offerDoor.indexOf("moduleListFrom(")} existing@${offerDoor.indexOf("existing: true")}`
+        + ` mintRefusal=${/presence\.takesModules/.test(offerDoor)} restore=${restore !== null && /moduleListFrom/.test(restore)}`);
+  const workFn = /async function work\(cfg: HelperConfig, job: JobView\)[\s\S]*?\n\}/.exec(daemonSrc)?.[0] ?? "";
+  pin(`${RULE_MOD} — the daemon reads modules only through modulesEnv, and reports an unrunnable list 127 before downloading`,
+    /const modulesVars = modulesEnv\(j\.kind, j\.modules\);/.test(workFn)
+      && /if \(modulesVars === null\) \{\s*await report\(cfg, j, 127,/.test(workFn)
+      && workFn.indexOf("modulesEnv(") >= 0 && workFn.indexOf("modulesEnv(") < workFn.indexOf("downloadBundle(")
+      // three reads and no fourth: the log line's guard and count, and modulesEnv's argument — a
+      // fourth would be a second path from the claim into the run
+      && (workFn.match(/j\.modules/g) ?? []).length === 3,
+    `modulesEnv@${workFn.indexOf("modulesEnv(")} download@${workFn.indexOf("downloadBundle(")} reads=${(workFn.match(/j\.modules/g) ?? []).length}`);
+
+  // THE VALIDATOR ITSELF, run. Every refusal here is a list that would otherwise have reached a
+  // daemon's env or died on the other machine as a runner refusal wearing a red.
+  const mod = (raw: unknown): string => { const r = moduleListFrom(raw); return r.ok ? `ok:${r.modules.join(",")}` : `no:${r.error}`; };
+  const cases: [string, boolean][] = [
+    ["a non-array is refused and the message names the field", mod("security").startsWith("no:modules")],
+    ["an empty list is refused, never a selection of nothing", mod([]).startsWith("no:modules is empty")],
+    ["a non-string entry is refused", mod(["security", 3]).startsWith("no:modules")],
+    ["an unknown name is refused BY NAME", mod(["security", "nope"]).includes('"nope"')],
+    ["a comma cannot smuggle a second word", mod(["security,lane-suite"]).startsWith("no:") && mod(["security,lane-suite"]).includes("security,lane-suite")],
+    ["known names come back deduplicated in the runner's order", mod(["security", "lane-suite", "security"]) === "ok:lane-suite,security"],
+  ];
+  pin(`${RULE_MOD} — suite-modules.ts#moduleListFrom refuses every malformed list and returns the runner's order`,
+    cases.every(([, ok]) => ok), cases.filter(([, ok]) => !ok).map(([n]) => n).join(" · "));
+  // …AND THE DAEMON'S CHARSET ADMITS EVERY NAME THE TABLE HAS. The two halves are written apart: the
+  // table says which modules exist, the daemon only which characters a name may carry. A module named
+  // with a character the daemon refuses would pass the offer door and then come back from the helper
+  // as "cannot run that job" every time — a narrowed preview nobody could ever get, and no red here.
+  const charsetMiss = MODULE_FIXTURES.map((m) => m.module).filter((m) => modulesEnv("lane-suite", [m]) === null);
+  pin(`${RULE_MOD} — every module in suite-modules.ts passes the daemon's own name check`,
+    MODULE_FIXTURES.length > 30 && charsetMiss.length === 0, `refused=[${charsetMiss}]`);
 }
 
 // ================================================================================================

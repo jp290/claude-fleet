@@ -31,6 +31,7 @@ import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt, buildBriefReviewPrompt } from "./refine-prompt";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor,
   type LocalProof, type LocalProofStep } from "./verify-proportion";
+import { moduleListFrom } from "./suite-modules";
 import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRolePointers, rulebookBody,
   type RulebookFragment,
@@ -157,7 +158,7 @@ import {
   type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn, type SlotContext,
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
-  loadReportDelegate, type ReportDelegate, type FleetReportDecider,
+  loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog,
@@ -280,14 +281,16 @@ if (RULEBOOK_AB_VALUE !== undefined && !RULEBOOK_AB_ENABLED
 // adapter's spawnCmd (HARNESSES calls this function rather than restating it).
 // Why the session id is pinned: docs/sanierung-2026-09/server-narrativ-archiv.md#slotcmd
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
-  effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole)}; exec ${SHELL}`;
+  effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
+  remoteName: string | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, remoteName)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
 // `browserMcp` false = a text lane (Slot.browser): claude starts with NO ambient MCP server.
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
-  effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null): string {
+  effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
+  remoteName: string | null = null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
@@ -302,6 +305,13 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // admits only effortLevels). Both halves pinned in e2e/pins.ts. Narrativ: server-narrativ-archiv.md#agentcmd
     if (effort) cmd += ` --effort '${effort}'`;
     cmd += " --prompt-suggestions false";
+    // REMOTE CONTROL (Slot.remote): the owner reaches this very session from the Claude app. Only
+    // here, on the claude branch — the flag is claude's spelling and a foreign binary would die on
+    // it. Single-quoted like the model; the value is remoteControlName's, whose charset holds no `'`.
+    // Measured 2026-09-28 on claude 2.1.283 (scratch tmux socket): beside --session-id and --resume,
+    // --model, --effort the pane paints `/remote-control is active · Continue here, on your phone,
+    // or at <url>`, and --resume re-attaches the SAME bridge session. Both halves pinned in e2e/pins.ts.
+    if (remoteName) cmd += ` --remote-control '${remoteName}'`;
     // A TEXT LANE. `--strict-mcp-config` with no --mcp-config loads zero MCP servers — the same flag
     // TEXT_ONLY_TOOLS gives the worker tier. Measured 2026-09-14 on claude 2.1.270 (scratch tmux
     // socket, idle pane after 45 s): ambient = 2 Playwright children, with the flag = 0. Claude has no
@@ -442,9 +452,13 @@ interface Harness {
   // `browserMcp` is the lane's MCP profile, already resolved by ensureSlot: false only for a lane that
   // did not ask for a browser (Slot.browser). An adapter whose `browserProfile` is not "apply" ignores it.
   // `context` is Slot.context, validated at set time by contextOf — only an adapter that takes it reads it.
+  // `remoteName` is Slot.remote resolved to its Remote Control name (remoteControlName), or null.
+  // ensureSlot resolves it for the claude adapter ONLY, and only CLAUDE_HARNESS reads it: the flag is
+  // claude's, and a foreign harness never receives a name it could put on its line.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
     container: string; containerContext: string; cwd: string; browserMcp: boolean;
-    context: SlotContext | null; rulebookRole: "main" | "orchestrator" | null }): string;
+    context: SlotContext | null; rulebookRole: "main" | "orchestrator" | null;
+    remoteName: string | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -681,7 +695,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.remoteName),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -1757,6 +1771,19 @@ function browserOf(body: Record<string, unknown> | null, h: Harness):
   return { ok: true, browser: true };
 }
 
+// Remote Control (Slot.remote). Absent/false/null = off, the default; `true` only for the claude
+// adapter — refused, not dropped, for every other harness, because `--remote-control` is claude's
+// flag and a silently ignored `true` would leave the owner looking in the app for a session that
+// was never offered there.
+function remoteOf(body: Record<string, unknown> | null, h: Harness):
+  { ok: true; remote: boolean } | { ok: false; error: string } {
+  const r = body?.remote;
+  if (r === undefined || r === null || r === false) return { ok: true, remote: false };
+  if (r !== true) return { ok: false, error: "remote must be a boolean" };
+  if (h.id !== "claude") return { ok: false, error: `harness ${h.id} has no Remote Control — only claude does` };
+  return { ok: true, remote: true };
+}
+
 // The SET-time validator for a queue row's persisted agent choice (Task.spawn): the same three
 // validators the attended ▸ start route runs, in the same order — harness first, because it is
 // what model and effort are judged by. All-absent answers `undefined`, never an all-null object:
@@ -2111,6 +2138,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   containerContext: null,
   effort: null,
   browser: false,
+  remote: false,
   context: null,
   taskId: null,
   originId: null,
@@ -5345,7 +5373,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -7650,6 +7678,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   harness: string | null;
   effort: string | null;
   browser: boolean;
+  remote: boolean;
   context: SlotContext | null;
   container: string | null;
   containerContext: string | null;
@@ -7658,11 +7687,12 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
 const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
-  browser: s.browser, context: s.context, container: s.container, containerContext: s.containerContext,
+  browser: s.browser, remote: s.remote, context: s.context, container: s.container, containerContext: s.containerContext,
 } : null;
 
 // label is a captured spawn input, not occupant identity: the owner may relabel a live session
 // without recycling it, and that documented change only affects the pane on its next respawn.
+// `remote` is the same kind of input (POST /api/slots/:id/remote), so it is not compared either.
 const sameSlotSpawnOccupant = (s: Slot, expected: SlotSpawnOccupant): boolean =>
   s.id === expected.slot && s.cwd === expected.cwd && s.openedAt === expected.openedAt
   && s.selfToken === expected.selfToken && s.sessionId === expected.sessionId && s.model === expected.model
@@ -7805,7 +7835,10 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
-          browserMcp: !s.worktree || occupant.browser, context: occupant.context, rulebookRole })}`);
+          browserMcp: !s.worktree || occupant.browser, context: occupant.context, rulebookRole,
+          // claude-only by construction: no other adapter is ever handed a name for its line
+          remoteName: h.id === "claude" && occupant.remote
+            ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -7919,7 +7952,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false, context: SlotContext | null = null): Promise<void> {
+  browser = false, context: SlotContext | null = null, remote = false): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   await waitForSlotTeardown(s.id);
@@ -8003,6 +8036,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.harness = harness; // ...and this one decides WHICH BINARY the pane runs, so inheriting it
   s.effort = effort;   // would silently spawn the previous occupant's agent for a new session
   s.browser = browser; // ...and a text lane must not inherit a browser lane's MCP profile, or back
+  s.remote = remote; // ...nor a session the previous occupant's Remote Control
   s.context = context; // ...nor a pane the previous occupant's context budget
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
   s.containerContext = box.containerContext; // which is the same rule one step further out
@@ -8203,6 +8237,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.harness = null;
   s.effort = null;
   s.browser = false;
+  s.remote = false;
   s.context = null;
   s.taskId = null;
   s.originId = null;
@@ -10979,6 +11014,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const harness = s.harness;
   const box: BoxPin = { container: s.container, containerContext: s.containerContext };
   const browser = s.browser; // the successor runs the same MCP profile as the lane it continues
+  const remote = s.remote; // ...and stays reachable from the Claude app if the predecessor was
   const successions = s.laneSuccessions + 1;
   const priorOpenedAt = s.openedAt; // the predecessor occupation, read before openSlot rotates it
   // WHICH CONVERSATION LEAVES, read before openSlot clears sessionId — never guessed afterwards
@@ -10989,7 +11025,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   laneSpawn.add(s.id);
   try {
     try {
-      await openSlot(s, cwd, ref, spawn.model, label, harness, spawn.effort, box, null, browser);
+      await openSlot(s, cwd, ref, spawn.model, label, harness, spawn.effort, box, null, browser, null, remote);
     } catch (e) {
       // The predecessor's pane is already gone at this point and its rows went back to the queue
       // with detachSlotTasks' reason, which is the recoverable state: the worktree and its commits
@@ -24712,6 +24748,16 @@ const AUDIT_SHARDS = parseAuditShards(process.env.FLEET_AUDIT_SHARDS);
 // older tree loses the feature on its next beat. A commit-ancestry floor like the command kind's
 // (daemonKnowsCommandKind) was not an option: a lane cannot know the sha its own commit lands under.
 const AUDIT_SHARD_FEATURE = "audit-shard";
+// …AND THE SAME GUARD FOR A NARROWED PREVIEW. A lane-suite job that carries `modules` asks for
+// `FLEET_E2E_MODULES=<modules> ./e2e-isolated.sh`; a daemon without the `modulesEnv` fork runs
+// `cfg.suiteCmd` bare, i.e. the FULL suite, and its verdict would then be filed as the answer to the
+// narrowed question — right by accident on a green, and on a red about modules the lane never named.
+// So a job with modules is listed, claimed and woken for ONLY on a device whose last heartbeat
+// declared this feature (helper-daemon/daemon.ts#DAEMON_FEATURES), exactly as the shard is; a job
+// WITHOUT modules is today's job and every device still takes it.
+const LANE_SUITE_MODULES_FEATURE = "lane-suite-modules";
+const helperTakesModules = (deviceId: string | undefined): boolean =>
+  !!(deviceId && helperDevices.get(deviceId)?.features?.includes(LANE_SUITE_MODULES_FEATURE));
 interface AuditShardClaim { deviceId: string; name: string; claimedAt: number; expiresAt: number }
 interface AuditShardResult {
   deviceId: string; name: string; claimedAt: number; reportedAt: number;
@@ -24986,18 +25032,30 @@ const HELPER_SATURATION_SLACK_MS = 2 * HELPER_SWEEP_MS;
 // something. This is deliberately NOT helperClaimCandidateExists: that one is the audit grace's
 // stricter reading (owner's wish AND the device's mode AND a tighter clock), and a lane asking
 // „[Zitat entfernt]“ wants the presence fact plus the mode, not a verdict it cannot inspect.
+//
+// `takesModules` IS THE ONE FIELD THAT IS NOT ABOUT THE FRESHEST ROW, and it cannot be: the lane's
+// question is "would a NARROWED offer (`modules`) be taken by anybody?", and the answer is yes iff
+// SOME device inside the same window declared LANE_SUITE_MODULES_FEATURE on its last beat — which
+// need not be the freshest one. Same clock as `online`, so `takesModules` implies `online`. The
+// offer door refuses to mint a narrowed offer when it is false, for the reason it refuses an offer
+// into an empty fleet: a job only an older daemon could see waits out the budget for nothing.
 interface HelperPresence {
   online: boolean;
   name: string | null;          // …of the freshest device, or null when none has ever registered
   mode: DeviceMode | null;      // its own last reading of itself; null = it never said
   lastSeenAgeMs: number | null; // null ONLY when there is no device at all — never "we did not look"
+  takesModules: boolean;        // some device inside the window declared LANE_SUITE_MODULES_FEATURE
 }
 function helperPresence(now = Date.now()): HelperPresence {
   let freshest: HelperDevice | null = null;
-  for (const d of helperDevices.values()) if (!freshest || d.lastSeen > freshest.lastSeen) freshest = d;
-  if (!freshest) return { online: false, name: null, mode: null, lastSeenAgeMs: null };
+  let takesModules = false;
+  for (const d of helperDevices.values()) {
+    if (!freshest || d.lastSeen > freshest.lastSeen) freshest = d;
+    if (now - d.lastSeen < DEVICE_ONLINE_MS && helperTakesModules(d.id)) takesModules = true;
+  }
+  if (!freshest) return { online: false, name: null, mode: null, lastSeenAgeMs: null, takesModules: false };
   const age = Math.max(0, now - freshest.lastSeen);
-  return { online: age < DEVICE_ONLINE_MS, name: freshest.name, mode: freshest.mode ?? null, lastSeenAgeMs: age };
+  return { online: age < DEVICE_ONLINE_MS, name: freshest.name, mode: freshest.mode ?? null, lastSeenAgeMs: age, takesModules };
 }
 
 // --- THE SECOND JOB KIND: a LANE's preview suite -----------------------------------------------
@@ -25077,6 +25135,12 @@ interface LaneSuiteJob {
   // program's live MAIN, else the closed "lane gone" row). Null on a program-less lane and on
   // every job offered before the field existed; absent means the same null there.
   programId?: string | null;
+  // THE NARROWED PREVIEW: the check modules the lane asked for, validated at the offer door
+  // (suite-modules.ts#moduleListFrom — known names only, deduplicated, in the runner's order) and
+  // handed to the daemon as FLEET_E2E_MODULES. ABSENT is the full `./e2e-isolated.sh`, byte for byte
+  // the job this kind always was; a present list is never empty. Only a device that declared
+  // LANE_SUITE_MODULES_FEATURE is ever shown or given a job that carries it.
+  modules?: string[];
   offeredAt: number;
   state: LaneSuiteState;
   // filled at CLAIM time, out of the bundle build itself — one moment, no second resolution
@@ -26434,6 +26498,9 @@ function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
     // an EXPIRED claim reads as lapsed here and not as "claimed", without waiting for the sweep —
     // the same split as helperClaimOf: the clock decides, the sweep only books
     id: j.id, state: j.state === "claimed" && !c ? "lapsed" : j.state, branch: j.branch, offeredAt: j.offeredAt,
+    // present on a NARROWED offer only — a full offer keeps its closed key set (e2e/lane-suite.ts
+    // OFFER_WIRE_KEYS), and the verdict beside a list is a verdict about those modules alone
+    ...(j.modules ? { modules: j.modules } : {}),
     commitSha: j.commitSha, treeSha: j.treeSha, untracked: j.untracked,
     claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
     result: j.result && art
@@ -26625,6 +26692,9 @@ interface HelperJobView {
   // `k/n` on a SHARDED audit job and on nothing else — the exact string the daemon hands the suite as
   // FLEET_E2E_SHARD. Listed only to a device that declared AUDIT_SHARD_FEATURE.
   shard?: string;
+  // the check modules of a NARROWED lane-suite job — what the daemon hands the suite as
+  // FLEET_E2E_MODULES. Listed only to a device that declared LANE_SUITE_MODULES_FEATURE.
+  modules?: string[];
 }
 // `forDevice` is the asking device's id, when it gave one: a daemon-update is offered to the ONE
 // device it is addressed to and appears in nobody else's list — a browser on the portal page, or
@@ -26674,8 +26744,13 @@ function helperJobsView(forDevice?: string): {
       localRunning: auditRunningRepo === repo || runningPostLandAudit?.repo === repo,
     });
   }
+  // THE MODULES HANDSHAKE, the shard's twin one kind over: a NARROWED preview appears only in the
+  // list of a device whose last heartbeat declared the feature. A browser (no deviceId) and every
+  // older daemon never see it — they would run the full suite and file it as the narrowed answer.
+  const modulesCapable = helperTakesModules(forDevice);
   for (const j of laneSuiteJobs.values()) {
     if (j.state !== "open" && j.state !== "claimed") continue;
+    if (j.modules && !modulesCapable) continue;
     const c = laneSuiteClaimOf(j);
     if (!c && j.state === "claimed") continue; // lapsed but not yet swept — not offerable
     jobs.push({
@@ -26686,6 +26761,7 @@ function helperJobsView(forDevice?: string): {
       // here would be a claim about a machine state nothing measures.
       localRunning: false,
       ...(j.untracked !== null ? { untracked: j.untracked } : {}),
+      ...(j.modules ? { modules: j.modules } : {}),
     });
   }
   // THE S1 HANDSHAKE, and it is a CAPABILITY reading rather than a version comparison: a daemon that
@@ -26888,7 +26964,9 @@ function helperWorkAwaitingClaim(deviceId: string): boolean {
     if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo) continue;
     return true;
   }
-  for (const j of laneSuiteJobs.values()) if (j.state === "open") return true;
+  // a narrowed preview wakes only a machine that would be SHOWN it (helperJobsView's same guard)
+  for (const j of laneSuiteJobs.values())
+    if (j.state === "open" && (!j.modules || helperTakesModules(deviceId))) return true;
   for (const j of commandJobs.values()) if (j.state === "open") return true;
   return helperUpdates.get(deviceId)?.state === "open";
 }
@@ -26936,6 +27014,12 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
   if (j.state === "lapsed") return json({ error: "this preview offer lapsed and was not renewed" }, 404);
   const held = laneSuiteClaimOf(j);
   if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
+  // the same door rule as helperJobsView's, on the door and not only on the list: a device may POST
+  // a jobId it learned any other way, and an older daemon holding this job would run the full suite
+  if (j.modules && !helperTakesModules(deviceId))
+    return json({ error: `this preview is narrowed to modules [${j.modules.join(" ")}], and this device's last heartbeat`
+      + ` did not declare "${LANE_SUITE_MODULES_FEATURE}" — a daemon that cannot set FLEET_E2E_MODULES would run`
+      + " the full suite and file it as this answer" }, 409);
   const live = slots.find((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
   if (!live) {
     // reaped in the same turn it is refused: an offer whose lane is gone must not be offered again
@@ -26972,6 +27056,7 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
   audit("helper_claim", j.slot,
     `${j.claim.name} claimed the preview suite of ${basename(j.repo)} ${j.branch}`
     + `@${built.commitSha.slice(0, 8)} tree ${built.treeSha.slice(0, 8)}`
+    + `${j.modules ? ` narrowed to [${j.modules.join(" ")}]` : ""}`
     + `${built.untracked ? ` (${built.untracked} untracked file(s) NOT included)` : ""}`);
   await saveStateNow();
   return json({ job: { id: j.id, kind: "lane-suite", repo: basename(j.repo), main: j.branch,
@@ -26980,6 +27065,9 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
     // all and says nothing about why (M6), so it is served rather than reconstructed on the page.
     branch: laneSuiteBranch(j.id),
     branches: [j.branch], covers: 0,
+    // the ONLY thing the daemon may turn into the suite's env beyond its own lock and scratch:
+    // validated module names, which it joins into FLEET_E2E_MODULES and nothing else
+    ...(j.modules ? { modules: j.modules } : {}),
     claimedAt: now, expiresAt: j.claim.expiresAt, name: j.claim.name } });
 }
 // THE VINTAGE MEASUREMENT, and the reason the presence of `daemonSha` was never the whole guard.
@@ -35867,6 +35955,14 @@ if (existsSync(STATE_FILE)) {
           const readable = !!res && !!res.remote && typeof res.remote.reportedAt === "number"
             && typeof res.remote.name === "string";
           if (res && !readable) console.error(`lane-suite job ${j.id}: result restored without a readable remote block — dropped`);
+          // …and a NARROWED row passes the offer door's own validator again, the rule the command
+          // register below states for its `cmd`: a module list the table no longer admits (a module
+          // renamed while the row sat on disk) must not reach a daemon's env through the back door.
+          // The ROW is dropped, never widened into a full run the lane did not ask for.
+          if (j.modules !== undefined) {
+            const m = moduleListFrom(j.modules);
+            if (!m.ok) { console.error(`lane-suite job ${j.id}: restored modules refused (${m.error.slice(0, 120)}) — row dropped`); continue; }
+          }
           laneSuiteJobs.set(j.id, readable ? j : { ...j, result: null });
         }
 
@@ -36563,6 +36659,8 @@ if (existsSync(STATE_FILE)) {
         if (typeof pe === "string" && hOf.supports.effort && hOf.effortLevels.includes(pe)) s.effort = pe;
         // the lane profile survives a restart (resume keeps it); only `true` on an adapter it applies to
         if ((v as { browser?: unknown }).browser === true && hOf.browserProfile === "apply") s.browser = true;
+        // ...and Remote Control, only `true` and only on the adapter that reads it
+        if ((v as { remote?: unknown }).remote === true && hOf.id === "claude") s.remote = true;
         // ...and the context budget, re-judged by the same shape check as the doors: a broken or
         // hand-edited value loads as absent (today's spawn line), the slot itself stays
         if (takesContext(hOf)) s.context = slotContextFrom((v as { context?: unknown }).context);
@@ -40714,8 +40812,9 @@ Bun.serve<WSData>({
 
     // THE OFFER DOOR — a lane hands its OWN preview suite to another machine. Lane-only: the answer is
     // only defined for a lane's tree, and it couples the lane to a machine holding no slot, never to
-    // another lane. THE BODY IS CLOSED: repo, branch, cwd and slot come from the token's row, the
-    // command is fixed. AND IT STARTS NOTHING — but it BINDS the lane: while its offer is open or
+    // another lane. THE BODY IS CLOSED BUT FOR ONE LIST: repo, branch, cwd and slot come from the
+    // token's row, the command is fixed, and the optional `modules` is a list of known check-module
+    // names (never env, never argv). AND IT STARTS NOTHING — but it BINDS the lane: while its offer is open or
     // claimed it must not run the suite locally; withdraw is where that permission comes back. Narrativ: server-narrativ-archiv.md#fetch-apiselfsuite-offer
     if (url.pathname === "/api/self/suite-offer" && (req.method === "GET" || req.method === "POST")) {
       const p = resolvePrincipal(req);
@@ -40739,9 +40838,23 @@ Bun.serve<WSData>({
           helper: helperPresence(), // …and WHO could take it, same reading as /api/self/gate's
         });
       }
+      // THE ONE BODY FIELD: `modules`, the narrowed preview (`FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`
+      // — what /api/self/gate's localProof.modules recommends). Validated FIRST, before the existing
+      // branch and before a row can exist, through the runner's own decision
+      // (suite-modules.ts#moduleListFrom): known module names only, so nothing but a list of words
+      // from that table can ever reach the helper's env. Absent — including a POST with no JSON body
+      // at all, which is every caller from before this field — is the full run, unchanged.
+      const offerBody = await readJson(req);
+      let modules: string[] | undefined;
+      if (offerBody?.modules !== undefined) {
+        const m = moduleListFrom(offerBody.modules);
+        if (!m.ok) return json({ error: m.error }, 400);
+        modules = m.modules;
+      }
       // ONE OPEN OFFER PER SLOT. A second POST returns the first with `existing: true` rather than
       // minting a rival — the same idempotent shape createWatchForSlot uses, and for the same
-      // reason: a caller that retries must not end up holding two of anything.
+      // reason: a caller that retries must not end up holding two of anything. It is returned AS IT
+      // IS, modules or none: the lane reads `offer.modules` to see which run it is waiting on.
       // `waitPolicy` rides on BOTH minting answers too: "how long is this offer worth waiting for" is
       // decided in the same instant the offer is, and the saturated reason is what a lane would
       // otherwise only learn by polling GET — which is the loop the report rail exists to end.
@@ -40763,14 +40876,22 @@ Bun.serve<WSData>({
       if (!presence.online)
         return json({ offer: null, reason: "no helper online", helper: presence,
           waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
+      // …and the same refusal, one question narrower: a NARROWED offer is only ever shown to a device
+      // that declared LANE_SUITE_MODULES_FEATURE, so with none of those beating it would wait out the
+      // budget for a claim that cannot come. Same 200, same shape, its own reason — the lane runs the
+      // narrowed preview locally now, or offers the full run instead.
+      if (modules && !presence.takesModules)
+        return json({ offer: null, reason: "no helper online takes a narrowed preview", helper: presence,
+          waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
       const job: LaneSuiteJob = {
         id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
         repo: s.worktree.repo, cwd: s.cwd!, branch: s.worktree.branch,
-        programId: s.programId, offeredAt: Date.now(),
+        programId: s.programId, ...(modules ? { modules } : {}), offeredAt: Date.now(),
         state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
       };
       laneSuiteJobs.set(job.id, job);
-      audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`);
+      audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`
+        + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}`);
       await saveStateNow();
       return json({ offer: laneSuiteView(job), existing: false, helper: presence,
         waitPolicy: suiteOfferWait(job.offeredAt) });
@@ -41476,6 +41597,8 @@ Bun.serve<WSData>({
             ...(parked ? { parkedSend: parked } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
+            // started with Remote Control (Slot.remote) — the next spawn's truth; omitted when off
+            ...(s.remote ? { remote: true } : {}),
             // the pane's context budget (Slot.context); omitted when none was chosen
             ...(s.context ? { context: s.context } : {}),
             // asleep on purpose (sleepSlot): omitted while awake, the common case on this 2 s poll
@@ -44260,7 +44383,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|model|share|unshare|land|shelve|restart|sleep|wake)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|remote|model|share|unshare|land|shelve|restart|sleep|wake)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -44359,6 +44482,21 @@ Bun.serve<WSData>({
         saveState();
         return json({ ok: true, mission: s.mission });
       }
+      // Remote Control on a LIVE slot (Slot.remote), owner-only like mission. The flag lives on the
+      // pane's command line, so this changes the NEXT spawn (restart, heal, lane succession) and
+      // never the running pane — `/remote-control` inside the session is the live toggle, and the
+      // answer says which of the two this was. Refused for a non-claude harness, as at open.
+      if (slotMatch[2] === "remote") {
+        if (!s.cwd) return json({ error: "slot not active" }, 400);
+        const body = await readJson(req);
+        if (!body || typeof body.remote !== "boolean") return json({ error: "expected { remote: boolean }" }, 400);
+        const ro = remoteOf(body, harnessOf(s.harness));
+        if (!ro.ok) return json({ error: ro.error }, 400);
+        s.remote = ro.remote;
+        saveState();
+        return json({ ok: true, remote: s.remote, effective: "next spawn",
+          ...(s.remote ? { name: remoteControlName(s.label, s.cwd, s.id) } : {}) });
+      }
       if (slotMatch[2] === "open") {
         const body = await readJson(req);
         if (!body) return json({ error: "expected application/json" }, 400);
@@ -44376,6 +44514,8 @@ Bun.serve<WSData>({
         if (!co.ok) return json({ error: co.error }, 400);
         const po = packsOf(body);
         if (!po.ok) return json({ error: po.error }, 400);
+        const ro = remoteOf(body, hh);
+        if (!ro.ok) return json({ error: ro.error }, 400);
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
@@ -44400,7 +44540,7 @@ Bun.serve<WSData>({
         }
         try {
           await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
-            null, false, co.context);
+            null, false, co.context, ro.remote);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}) },
@@ -44414,7 +44554,7 @@ Bun.serve<WSData>({
         // open returns the same bytes it always did.
         const roleCard = isOrchestratorLabel(s.label) ? await deliverOrchestratorSpawnCard(s) : null;
         if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
-        return json({ ok: true, cwd: s.cwd, label: s.label, ...(roleCard ? { roleCard } : {}),
+        return json({ ok: true, cwd: s.cwd, label: s.label, ...(s.remote ? { remote: true } : {}), ...(roleCard ? { roleCard } : {}),
           ...(packsResult ? packsResult : {}),
           ...(adopted ? { successionDebt: { id: adopted.id, adopted: true,
             resend: `POST /api/succession-debts/${adopted.id}/resend` } } : {}) });

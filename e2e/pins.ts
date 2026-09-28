@@ -41,7 +41,7 @@ import { SHARD_UNITS, shardPlan } from "./ctx";
 // the module filter's map is IMPORTED and RUN, never re-spelled: a pin holding a second copy of
 // the edges would pin the copy. What cannot be imported is the modules' own sources — those are
 // re-derived below and compared against the map.
-import { FIXTURES, MODULE_FIXTURES, modulePlanFor, modulesForPaths, selectModules } from "../suite-modules";
+import { FIXTURES, MODULE_FIXTURES, moduleListFrom, modulePlanFor, modulesForPaths, selectModules } from "../suite-modules";
 // the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
@@ -51,7 +51,8 @@ import {
   harnessBlockMessage, laneReviewMessage,
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
-import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck } from "../server/types";
+import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName } from "../server/types";
+import { modulesEnv } from "../helper-daemon/daemon";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
 import { LIVE_TMUX_SOCK, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
@@ -67,7 +68,7 @@ import { DraftBook } from "../src/drafts";
 import { runningEffort, runningModel } from "../src/running";
 import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness } from "../model-register";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
-import { modelWindow } from "../src/modelname";
+import { modelLabel, modelWindow } from "../src/modelname";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
 // the deploy-gap's path classifier is IMPORTED and RUN over this very tree: the whole finding it
@@ -4895,7 +4896,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     cxTernary > 0 && cxAppend > cxTernary && (cxCode.match(/CODEX_TEXT_LANE_MCP/g) ?? []).length === 1,
     `ternary@${cxTernary} append@${cxAppend}`);
   pin("ensureSlot resolves the profile for LANES only — a slot without a worktree keeps its ambient MCPs",
-    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context, rulebookRole \}\)/.test(server), "browserMcp: !s.worktree || occupant.browser");
+    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context, rulebookRole[,\s}]/.test(server), "browserMcp: !s.worktree || occupant.browser");
   // the context ceiling is the measured catalog maximum as a literal, never an env knob
   // (docs/messungen/2026-09-15-codex-kontextfenster-profile.md §2)
   pin("CODEX_CONTEXT_WINDOW_MAX is the literal 872_000 and no env read names it",
@@ -4918,6 +4919,67 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
   pin("Fleet writes no global plugin settings: enabledPlugins is never named in code",
     !codeLines.some((l) => /enabledPlugins/.test(l)), "");
+}
+
+{
+  // REMOTE CONTROL (Slot.remote, 2026-09-28): the owner reaches a Fleet session from the Claude app.
+  // Two promises, both string concatenation on a shell line and so invisible to tsc: the name is
+  // SINGLE-QUOTED and cannot break out of its quotes, and ONLY the claude adapter ever puts the flag
+  // on a line — a foreign binary dies on it at spawn. The rule is a function over the source so the
+  // mutation probe below can run the very same rule against broken copies of it.
+  const remoteRule = (src: string): string[] => {
+    const bad: string[] = [];
+    const at = src.indexOf("function agentCmd(");
+    const code = (at < 0 ? "" : src.slice(at, src.indexOf("\n}\n", at)))
+      .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+    const branch = code.slice(Math.max(0, code.indexOf("if (claude) {")), Math.max(0, code.indexOf("else if (HARNESS_MODEL_FLAG")));
+    if (branch.length < 100) bad.push("agentCmd's claude branch not found");
+    if ((code.match(/--remote-control/g) ?? []).length !== 1) bad.push("agentCmd names --remote-control other than exactly once");
+    if (!/if \(remoteName\) cmd \+= ` --remote-control '\$\{remoteName\}'`;/.test(branch))
+      bad.push("the append is not `--remote-control '${remoteName}'` on the claude branch");
+    // the one reader: CLAUDE_HARNESS.spawnCmd, and nothing else in the file reads the resolved name
+    const readers = src.split("\n").filter((l) => !l.trim().startsWith("//") && /\bo\.remoteName\b/.test(l));
+    if (readers.length !== 1 || !/^  spawnCmd: \(o\) => slotCmd\([^\n]*o\.remoteName\),$/.test(readers[0] ?? ""))
+      bad.push(`o.remoteName read outside CLAUDE_HARNESS.spawnCmd (${readers.length} readers)`);
+    // the one resolver: ensureSlot names a Remote Control only for the claude adapter
+    const resolvers = [...src.matchAll(/remoteName: ([^\n]*)\n\s*([^\n]*)/g)].map((m) => `${m[1]} ${m[2]}`)
+      .filter((r) => /remoteControlName\(/.test(r));
+    if (resolvers.length !== 1 || !/^h\.id === "claude" && occupant\.remote\s/.test(resolvers[0] ?? ""))
+      bad.push(`the spawn-time name is not gated on h.id === "claude" (${resolvers.length} resolvers)`);
+    return bad;
+  };
+  const found = remoteRule(server);
+  pin("Remote Control: agentCmd appends --remote-control single-quoted, once, on the claude branch; only the claude adapter resolves and reads the name",
+    found.length === 0, found.join(" | "));
+  // THE MUTATION PROBE. Each mutant breaks one half of the promise, and the rule must name it. A
+  // mutation that no longer applies (its anchor moved) fails as ITSELF, never as a vacuous pass.
+  const mutants: [string, string, string][] = [
+    ["unquoted name", "` --remote-control '${remoteName}'`", "` --remote-control ${remoteName}`"],
+    ["append moved off the claude branch", "    if (remoteName) cmd += ` --remote-control '${remoteName}'`;\n", ""],
+    ["claude gate dropped at spawn", `remoteName: h.id === "claude" && occupant.remote`, "remoteName: occupant.remote"],
+    ["container adapter reads the name", "agentCmd(o.sessionId, o.resume, o.model, null)}", "agentCmd(o.sessionId, o.resume, o.model, null, true, null, o.remoteName)}"],
+  ];
+  const probe = mutants.map(([what, from, to]) => {
+    if (!server.includes(from)) return `${what}: anchor gone`;
+    let mutant = server.replace(from, to);
+    if (what === "append moved off the claude branch")
+      mutant = mutant.replace("  return cmd;\n}", "  if (remoteName) cmd += ` --remote-control '${remoteName}'`;\n  return cmd;\n}");
+    return remoteRule(mutant).length > 0 ? "" : `${what}: not caught`;
+  }).filter(Boolean);
+  pin("Remote Control mutation probe: every mutant of quoting and claude-only is caught by the rule above",
+    probe.length === 0, probe.join(" | "));
+  // ...and the reason the quotes are sufficient: whatever label the owner types, the name holds only
+  // [A-Za-z0-9 ._-], starts with `fleet ` (never with `-`, which claude would read as the next flag)
+  // and stays under its cap. Hostile inputs on purpose: a quote, a substitution, a glob, a flag.
+  const hostile: [string | null, string | null][] = [
+    ["it's", null], ["$(touch /tmp/x)", null], ["*", null], ["--resume x", null], ["Übergabe ✨", null],
+    ["", "/Users/x/claude-fleet"], [null, "/"], [null, null], ["a".repeat(200), null],
+  ];
+  const names = hostile.map(([label, cwd]) => remoteControlName(label, cwd, 7));
+  const leaks = names.filter((n) => !/^fleet [A-Za-z0-9 ._-]+$/.test(n) || n.length > REMOTE_NAME_MAX);
+  pin("remoteControlName keeps every name inside `fleet [A-Za-z0-9 ._-]+` and its cap — the charset the single quotes rest on",
+    leaks.length === 0 && names[5] === "fleet claude-fleet" && names[7] === "fleet slot 7",
+    leaks.length ? leaks.map((n) => JSON.stringify(n)).join(" ") : names.map((n) => JSON.stringify(n)).join(" "));
 }
 
 {
@@ -8520,7 +8582,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         && /if \(!helperDevices\.get\(deviceId\)\?\.features\?\.includes\(AUDIT_SHARD_FEATURE\)\)/.test(shardClaimFn!)
         && /const AUDIT_SHARD_FEATURE = "audit-shard";/.test(server)
         && /reported\.features = Array\.isArray\(body\?\.features\)[\s\S]*?: undefined;/.test(heartbeat!)
-        && /export const DAEMON_FEATURES: readonly string\[\] = \["audit-shard"\];/.test(daemonSrc)
+        // the exact list, not "contains": a feature the daemon declares is a promise about its code, and
+        // the second entry (`lane-suite-modules`) has its own handshake pin in §S10c below
+        && /export const DAEMON_FEATURES: readonly string\[\] = \["audit-shard", "lane-suite-modules"\];/.test(daemonSrc)
         && /features: DAEMON_FEATURES,/.test(daemonSrc),
       `view=${/shardCapable/.test(shardViewFn!)} claim=${/AUDIT_SHARD_FEATURE/.test(shardClaimFn!)} daemon=${/DAEMON_FEATURES/.test(daemonSrc)}`);
     pin(`${RULE_SHARDS} (c) the merge is green only with all n green, and red outranks unknown`,
@@ -8612,8 +8676,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     pin(`${RULE_PAR} (b) a run above cap 1 gets its own FLEET_SUITE_LOCK, and at cap 1 the shared one is left alone`,
       /cfg\.maxParallelSuites > 1\s*\n?\s*\? \{ FLEET_SUITE_LOCK: `\$\{runDir\}\/e2e\.lock` \} : \{\}/.test(workFn)
         // C1 (2026-09-13): the scratch rides at EVERY cap, the lock only above 1 — both in the one env
-        // …and a shard job's FLEET_E2E_SHARD beside them (the sharded audit, shardEnv) — spread LAST of the three
-        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.shardVars \};/.test(workFn)
+        // …and a shard job's FLEET_E2E_SHARD beside them (the sharded audit, shardEnv), then a narrowed
+        // preview's FLEET_E2E_MODULES (modulesEnv, §S10c) — the two cuts spread after the lock
+        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.shardVars, \.\.\.modulesVars \};/.test(workFn)
         && /const scratch = `\$\{runDir\}\/tmp`;/.test(workFn)
         // the trailing `ctl.signal` is the withdrawal switch (7e601e57) — the lock still travels with the run
         && /runArgv\(j\.argv!, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal)?\)/.test(workFn)
@@ -8678,6 +8743,100 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     /process\.env\.FLEET_HELPER_WAKE_ADDR/.test(addrLine) && /\|\| null;/.test(addrLine)
       && !/["'`]/.test(addrLine.replace(/^[^=]*=/, "")),
     addrLine.trim() || "HELPER_WAKE_ADDR not found");
+}
+
+// ================================================================================================
+// SECTION S10c — EVERY PREVIEW A LANE'S GATE RECOMMENDS CAN GO TO THE HELPER (2026-09-28, Befund
+// 3d3816fb: 29/29 offers claimed within a minute, and still six runs queued locally, because none of
+// them was offerable). Two must-agree pairs with no compiler between their halves, plus the doors:
+//   (a) THE LAND-GATE SUITES AND THE HELPER ALLOWLIST. localProof.steps recommends exactly the
+//       suites watchdog.sh's VERIFY_CMD runs (RULE_VERIFY holds that), so a gate suite that is no
+//       allowlist key is a recommended run only this box can do — ./e2e-claude-gate.sh was one.
+//   (b) THE CAPABILITY STRING. The server guards a NARROWED preview with LANE_SUITE_MODULES_FEATURE
+//       and the daemon's code declares DAEMON_FEATURES; one typo on either side and no daemon is ever
+//       shown a narrowed job again — fail-closed, but silent: every such offer would be refused as
+//       "no helper online takes a narrowed preview" while the helper beats away.
+//   (c) EACH DOOR ASKS, in the shape §S10's shard pin holds for audit-shard: the list, the claim
+//       (before a bundle is built), the wake rail, the offer door (validation before any row, mint
+//       refusal behind the online one), the restore — and the daemon's own fork.
+// ================================================================================================
+{
+  const RULE_GATE_SUITES = "every land-gate suite a lane's gate can recommend, and the isolated preview, is a helper allowlist key";
+  const offerable = [...gateSuites.map((s) => `./${s}`), "./e2e-isolated.sh"];
+  const notAllowed = offerable.filter((c) => !HELPER_CMD_ALLOW[c] || !helperCmdCheck(c).ok);
+  pin(RULE_GATE_SUITES, gateSuites.length >= 3 && notAllowed.length === 0,
+    `gate=[${gateSuites}] notOnAllowlist=[${notAllowed}]`);
+  // …and the widening is not a hole in the ban beside it: the ban is checked on TOKENS, and
+  // `e2e-claude-gate.sh` is one token — a harness named next to it is still refused
+  const banHeld = ["./claude", "./e2e-claude-gate.sh && claude", "./e2e-clean-review.sh codex", "pi ./e2e-claude-gate.sh"]
+    .filter((c) => helperCmdCheck(c).ok);
+  pin(`${RULE_GATE_SUITES} — and an agent harness named beside the new keys is refused as before`,
+    banHeld.length === 0 && HELPER_CMD_FORBIDDEN.join(",") === "claude,codex,pi", `passed=[${banHeld}]`);
+
+  const RULE_MOD = "a narrowed lane preview is listed, claimed and woken only for a daemon declaring lane-suite-modules, and the daemon makes it FLEET_E2E_MODULES alone";
+  const daemonSrc = exists("helper-daemon/daemon.ts") ? read("helper-daemon/daemon.ts") : "";
+  const feature = /const LANE_SUITE_MODULES_FEATURE = "([a-z-]+)";/.exec(server)?.[1] ?? null;
+  const declared = [...(/export const DAEMON_FEATURES: readonly string\[\] = \[([^\]]*)\];/.exec(daemonSrc)?.[1] ?? "")
+    .matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  pin(`${RULE_MOD} — (b) the server's feature string is one the daemon's code declares`,
+    feature !== null && declared.includes(feature), `server=${feature} daemon=[${declared}]`);
+  const takes = serverU.span("const helperTakesModules = ", ";\n")?.text ?? null;
+  const listFn = serverU.span("function helperJobsView(", "// --- THE OWNER'S HALF OF THE REGISTER")?.text ?? null;
+  const claimLs = serverU.span("async function claimLaneSuite(", "\n}")?.text ?? null;
+  const wakeFn = serverU.span("function helperWorkAwaitingClaim(", "\n}")?.text ?? null;
+  const doors: [string, string | null][] = [["takes", takes], ["list", listFn], ["claim", claimLs], ["wake", wakeFn]];
+  if (doors.some(([, t]) => t === null)) pin(`${RULE_MOD} — (c) the doors`, false, doors.map(([n, t]) => `${n}=${t !== null}`).join(" "));
+  else pin(`${RULE_MOD} — (c) the list, the claim (before its bundle) and the wake rail each ask the device's own features`,
+    /features\?\.includes\(LANE_SUITE_MODULES_FEATURE\)/.test(takes!)
+      && /const modulesCapable = helperTakesModules\(forDevice\);/.test(listFn!)
+      && /if \(j\.modules && !modulesCapable\) continue;/.test(listFn!)
+      && /if \(j\.modules && !helperTakesModules\(deviceId\)\)/.test(claimLs!)
+      && claimLs!.indexOf("helperTakesModules(deviceId)") < claimLs!.indexOf("buildLaneSuiteBundle(")
+      && /j\.state === "open" && \(!j\.modules \|\| helperTakesModules\(deviceId\)\)/.test(wakeFn!),
+    `list=${/modulesCapable/.test(listFn!)} claim@${claimLs!.indexOf("helperTakesModules(deviceId)")}<bundle@${claimLs!.indexOf("buildLaneSuiteBundle(")}`
+    + ` wake=${/helperTakesModules\(deviceId\)/.test(wakeFn!)}`);
+  const offerDoor = serverU.span('/api/self/suite-offer" && (req.method === "GET"', "laneSuiteJobs.set(job.id, job)")?.text ?? null;
+  const restore = serverU.span("persisted as { laneSuiteJobs?: unknown }).laneSuiteJobs", "persisted as { commandJobs?: unknown }")?.text ?? null;
+  pin(`${RULE_MOD} — (c) the offer door validates with the runner's own decision before any row, and refuses to mint what nobody takes`,
+    offerDoor !== null && /const m = moduleListFrom\(offerBody\.modules\);/.test(offerDoor)
+      && /if \(!m\.ok\) return json\(\{ error: m\.error \}, 400\);/.test(offerDoor)
+      && offerDoor.indexOf("moduleListFrom(") < offerDoor.indexOf("existing: true")
+      && /if \(modules && !presence\.takesModules\)/.test(offerDoor)
+      && offerDoor.indexOf('reason: "no helper online"') < offerDoor.indexOf("presence.takesModules")
+      && restore !== null && /moduleListFrom\(j\.modules\)/.test(restore),
+    offerDoor === null ? "the suite-offer door was not found"
+      : `validate@${offerDoor.indexOf("moduleListFrom(")} existing@${offerDoor.indexOf("existing: true")}`
+        + ` mintRefusal=${/presence\.takesModules/.test(offerDoor)} restore=${restore !== null && /moduleListFrom/.test(restore)}`);
+  const workFn = /async function work\(cfg: HelperConfig, job: JobView\)[\s\S]*?\n\}/.exec(daemonSrc)?.[0] ?? "";
+  pin(`${RULE_MOD} — the daemon reads modules only through modulesEnv, and reports an unrunnable list 127 before downloading`,
+    /const modulesVars = modulesEnv\(j\.kind, j\.modules\);/.test(workFn)
+      && /if \(modulesVars === null\) \{\s*await report\(cfg, j, 127,/.test(workFn)
+      && workFn.indexOf("modulesEnv(") >= 0 && workFn.indexOf("modulesEnv(") < workFn.indexOf("downloadBundle(")
+      // three reads and no fourth: the log line's guard and count, and modulesEnv's argument — a
+      // fourth would be a second path from the claim into the run
+      && (workFn.match(/j\.modules/g) ?? []).length === 3,
+    `modulesEnv@${workFn.indexOf("modulesEnv(")} download@${workFn.indexOf("downloadBundle(")} reads=${(workFn.match(/j\.modules/g) ?? []).length}`);
+
+  // THE VALIDATOR ITSELF, run. Every refusal here is a list that would otherwise have reached a
+  // daemon's env or died on the other machine as a runner refusal wearing a red.
+  const mod = (raw: unknown): string => { const r = moduleListFrom(raw); return r.ok ? `ok:${r.modules.join(",")}` : `no:${r.error}`; };
+  const cases: [string, boolean][] = [
+    ["a non-array is refused and the message names the field", mod("security").startsWith("no:modules")],
+    ["an empty list is refused, never a selection of nothing", mod([]).startsWith("no:modules is empty")],
+    ["a non-string entry is refused", mod(["security", 3]).startsWith("no:modules")],
+    ["an unknown name is refused BY NAME", mod(["security", "nope"]).includes('"nope"')],
+    ["a comma cannot smuggle a second word", mod(["security,lane-suite"]).startsWith("no:") && mod(["security,lane-suite"]).includes("security,lane-suite")],
+    ["known names come back deduplicated in the runner's order", mod(["security", "lane-suite", "security"]) === "ok:lane-suite,security"],
+  ];
+  pin(`${RULE_MOD} — suite-modules.ts#moduleListFrom refuses every malformed list and returns the runner's order`,
+    cases.every(([, ok]) => ok), cases.filter(([, ok]) => !ok).map(([n]) => n).join(" · "));
+  // …AND THE DAEMON'S CHARSET ADMITS EVERY NAME THE TABLE HAS. The two halves are written apart: the
+  // table says which modules exist, the daemon only which characters a name may carry. A module named
+  // with a character the daemon refuses would pass the offer door and then come back from the helper
+  // as "cannot run that job" every time — a narrowed preview nobody could ever get, and no red here.
+  const charsetMiss = MODULE_FIXTURES.map((m) => m.module).filter((m) => modulesEnv("lane-suite", [m]) === null);
+  pin(`${RULE_MOD} — every module in suite-modules.ts passes the daemon's own name check`,
+    MODULE_FIXTURES.length > 30 && charsetMiss.length === 0, `refused=[${charsetMiss}]`);
 }
 
 // ================================================================================================
@@ -10859,6 +11018,20 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && modelWindow("gpt-6-sol") === 272_000 && modelWindow("gpt-6-astra") === 272_000
       && modelWindow("gpt-6-unlisted") === null,
     JSON.stringify([MODEL_ALIASES.opus, modelWindow("gpt-6-sol"), modelWindow("gpt-6-unlisted")]));
+  pin("model register: Sonnet 5.5 is current, Sonnet 5 is superseded by it, the summary role and the short forms point at 5.5",
+    modelEntry("claude", "claude-sonnet-5-5[1m]")?.status === "current"
+      && modelEntry("claude", "claude-sonnet-5-5")?.status === "current"
+      && ["claude-sonnet-5[1m]", "claude-sonnet-5"].every((id) => {
+        const e = modelEntry("claude", id);
+        return e?.status === "superseded" && e.supersededBy === "claude-sonnet-5-5[1m]";
+      })
+      && MODEL_DEFAULTS.summary.id === "claude-sonnet-5-5[1m]" && MODEL_DEFAULTS.summary.effort === "medium"
+      && ["sonnet", "sonnet 5.5", "claude sonnet 5.5"].every((k) => MODEL_ALIASES[k] === "claude-sonnet-5-5")
+      && MODEL_ALIASES["sonnet 5"] === "claude-sonnet-5"
+      && modelLabel("claude-sonnet-5-5[1m]") === "Sonnet 5.5 · 1M" && modelLabel("claude-sonnet-5-5") === "Sonnet 5.5 · 1M"
+      && modelLabel("claude-sonnet-5") === "Sonnet 5 · 1M",
+    JSON.stringify([modelEntry("claude", "claude-sonnet-5-5[1m]"), modelEntry("claude", "claude-sonnet-5"), MODEL_DEFAULTS.summary,
+      MODEL_ALIASES.sonnet, MODEL_ALIASES["sonnet 5.5"], modelLabel("claude-sonnet-5-5[1m]")]));
   pin("model register: Codex availability distinguishes listed, absent, and missing or malformed cache",
     codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-sol") === "available"
       && codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-astra") === "unavailable"

@@ -350,12 +350,17 @@ const PRE_AUTH_ROUTES = [
   // boundary — and what bounds it is that OFFERING IS NOT RUNNING: no suite is spawned, no queue is
   // filled, the land gate is untouched, and a remote verdict gates nothing (tier 2 gates nothing).
   // Lane-only in the drift/gate/criterion direction: the answer is about the caller's OWN working
-  // tree. It reads NO body on the offer door (the repo, branch, cwd and slot all come from the
-  // token's own row, so nothing can nominate WHICH tree is bundled), the withdraw door reads the
-  // single boolean `abandon`, one open offer per slot, it writes into no pane and reaches no
-  // foreign slot. What it exposes to the helper principal is one git bundle of the caller's own
-  // worktree — through the EXISTING /api/helper/bundle route, which is why the helper perimeter
-  // below is unchanged by this feature.
+  // tree. The repo, branch, cwd and slot all come from the token's own row, so nothing can nominate
+  // WHICH tree is bundled, and the command stays `./e2e-isolated.sh`. The offer door reads ONE
+  // optional field since 2026-09-28, `modules` — the narrowed preview — and it is a list of WORDS
+  // FROM A CLOSED TABLE, never env and never argv: suite-modules.ts#moduleListFrom refuses anything
+  // but an array of known check-module names (400, no row) before the idempotent branch, the daemon
+  // re-checks the charset and joins them into FLEET_E2E_MODULES alone (modulesEnv), and a narrowed
+  // job is shown and given only to a device declaring `lane-suite-modules` (e2e/pins.ts §S10c,
+  // e2e/lane-suite.ts LS.mod). The withdraw door reads the single boolean `abandon`, one open offer
+  // per slot, it writes into no pane and reaches no foreign slot. What it exposes to the helper
+  // principal is one git bundle of the caller's own worktree — through the EXISTING
+  // /api/helper/bundle route, which is why the helper perimeter below is unchanged by this feature.
   '= /api/self/suite-offer',
   '= /api/self/suite-offer/withdraw',
   // W3, 2026-09-07 · THE SELF-SPLIT of a land wave. Lane-only, in the drift/gate/criterion
@@ -402,9 +407,14 @@ const PRE_AUTH_ROUTES = [
   //     of the claim: the refusal binds what may be NAMED, not what the named thing runs — three
   //     allowlist entries (`bun run build`, `bun test`, `bun run verify`) execute a `package.json`
   //     script out of the SUBMITTED bundle, which is the caller's own file (e2e/helper-daemon.ts's
-  //     `cmdjob` lane writes exactly such a script and runs it through). Submitted repo code has
+  //     `cmdjob` lane writes exactly such a script and runs it through), and the four `./e2e-*.sh`
+  //     entries are wrappers out of the same bundle. Submitted repo code has
   //     always been what `suiteCmd` executes on the portal path; nothing here narrows or widens
-  //     that, only the sentence written about it;
+  //     that, only the sentence written about it. 2026-09-28 added the two land-gate suites
+  //     (`./e2e-claude-gate.sh`, `./e2e-clean-review.sh`) as keys — eight in all — and left the ban
+  //     untouched: `e2e-claude-gate.sh` is one token, and `./e2e-claude-gate.sh && claude` is still
+  //     refused on its `claude` (e2e/pins.ts §S10c; the `claude` that suite starts is its own
+  //     compiled stand-in, first on its server's PATH);
   //   · a refusal leaves NO ROW — the 400 and the absence of anything claimable are one fact;
   //   · the tree, repo, branch, cwd and slot all come from the token's own row: nothing in the
   //     body can nominate WHICH tree is bundled, exactly as on the suite-offer door above;

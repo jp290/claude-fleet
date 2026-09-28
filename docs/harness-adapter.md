@@ -231,6 +231,14 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
 - Modell-Tiers: `DEFAULT_MODEL` (`server.ts`, override `FLEET_MODEL`) = Sessions/Lanes ohne eigenen Pin;
   `SUMMARY_MODEL` (override `FLEET_SUMMARY_MODEL`) = alle Wegwerf-Worker (summarize, Commit-Msg, enhance,
   Merge-Resolver, ② review, digest). Beide werden gegen `MODEL_RE` validiert.
+- Modellregister (`model-register.ts#MODEL_REGISTER`): Sonnet 5.5 (`claude-sonnet-5-5[1m]`, `claude-sonnet-5-5`)
+  ist `current`, Sonnet 5 `superseded` mit Nachfolger `claude-sonnet-5-5[1m]`; die Kurzformen `sonnet`,
+  `sonnet 5.5` und `claude sonnet 5.5` loesen auf `claude-sonnet-5-5` auf, `sonnet 5` bleibt lesbar und
+  loest auf die abgeloeste Id auf. `MODEL_DEFAULTS.summary` (Fallback von `SUMMARY_MODEL`, wenn
+  `FLEET_SUMMARY_MODEL` fehlt) ist `claude-sonnet-5-5[1m]`. Der Live-Wert bleibt Opus 5.5: dasselbe
+  `FLEET_SUMMARY_MODEL` treibt `server.ts#runMerge` und `server.ts#runRepair` (Land-Pfad), und ein
+  Wechsel dort waere eine eigene Entscheidung; `FLEET_CARD_MODEL` und `FLEET_REFINE_MODEL` stehen seit
+  2026-09-28 in `.env` auf `claude-sonnet-5-5[1m]`.
 - Ein lebender Slot wechselt sein Modell/Effort im DATENSATZ über `POST /api/slots/:id/model` (Owner,
   kein Respawn; `docs/self-api.md` §model) — Heal, `↻ restart` und Nachfolge spawnen danach damit. Die
   Nachfolge (`POST /api/self/succeed`) nimmt dasselbe Paar optional als Override. Beides wird nach der
@@ -537,6 +545,26 @@ Netzwerkkosten werden nicht als null behauptet.
     Budget NICHT weiter, der Nachfolger startet ohne; Supervisor-/Program-MAIN-Bootstrap und
     `POST /api/slots/:n/model` lesen das Feld nicht. `src/protocol.ts#contextWindowFor` bleibt unberührt:
     Codex liest seinen Nenner aus der Rollout-Datei (`windowFromFile`).
+  - **Remote Control je Slot: `remote: true` (2026-09-28).** Der Owner erreicht GENAU diese Fleet-Session
+    aus der Claude-App; sie bleibt ein Slot, statt neben dem Fleet per `claude remote-control` zu
+    entstehen. Setzen: `POST /api/slots/:n/open` (Body `remote`) oder für einen lebenden Slot
+    `POST /api/slots/:n/remote {remote: boolean}` (Owner-only; Antwort `effective: "next spawn"` samt
+    `name`). Wirksam ab dem nächsten Spawn (↻ Restart, Heal, `succeedLane` trägt es weiter) — das Flag
+    steht auf der Kommandozeile; live schaltet `/remote-control` in der Session selbst. Am Slot
+    persistiert (`Slot.remote`), in `GET /api/sessions` sichtbar (fehlt, wenn aus), bei open/kill
+    gelöscht. Nur **claude**: `server.ts#ensureSlot` löst den Namen nur für `h.id === "claude"` auf, nur
+    `CLAUDE_HARNESS.spawnCmd` liest ihn, und `server.ts#agentCmd` hängt auf dem claude-Zweig
+    `--remote-control '<name>'` an; jeder andere Adapter (container eingeschlossen) antwortet **400**.
+    Name: `server/types.ts#remoteControlName` = `fleet <Label | cwd-Basename | slot N>`, auf
+    `[A-Za-z0-9 ._-]` reduziert, max. 60 Zeichen — der Zeichensatz trägt die einfachen Anführungszeichen,
+    das Präfix hält den Wert von `-` fern. Pin samt Mutationsprobe in `e2e/pins.ts`. **Gemessen
+    2026-09-28, claude 2.1.283, eigener tmux-Socket:** neben `--session-id`, `--model`, `--effort`,
+    `--prompt-suggestions false` malt die Pane `/remote-control is active · Continue here, on your phone,
+    or at <url>` und im Footer `/rc`; send-keys/capture-pane liefern den Turn unverändert (Transcript
+    geschrieben); `--resume <id>` mit dem Flag verbindet wieder, und das Transcript trägt vorher wie
+    nachher dieselbe `bridgeSessionId` (Record `bridge-session`); `tmux kill-session` beendet den Prozess
+    ohne weiteren Transcript-Record. Was die App danach listet, ist aus der Pane nicht messbar.
+    Grenze: Fleet startet nie `claude remote-control` (Server-/Spawn-Modus) als Arbeitsweg.
   - **`composer` — Annahme wird BEOBACHTET, nicht geechot (ACP-25, 2026-08-22).** Ein Adapter darf
     deklarieren, wo seine TUI den Composer malt (`{kind:"glyph", re}` = letzte Zeile mit diesem Glyph;
     `{kind:"rules"}` = Region zwischen den letzten zwei Vollbreiten-Linien). `sendText` liest den

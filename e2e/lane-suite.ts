@@ -23,19 +23,21 @@ import { BASE, REPO, ROOT, UntilTimeout, until, check, get, post, restartSrv, st
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
 import { suiteMeter, laneTail, meterKind, meterLine, type MeterInput } from "../src/suitemeter";
+import { DAEMON_FEATURES, modulesEnv } from "../helper-daemon/daemon";
 
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
   oldestAt: number; claim: { name: string; claimedAt: number; expiresAt: number } | null;
-  localRunning: boolean; untracked?: number;
+  localRunning: boolean; untracked?: number; modules?: string[];
 }
 interface HelperJobs { claimTimeoutMs: number; configured: boolean; jobs: HelperJob[] }
 interface ClaimedJob {
   id: string; kind?: string; repo: string; main: string; mainSha: string; treeSha?: string;
   branch?: string; untracked?: number; claimedAt: number; expiresAt: number; name: string;
+  modules?: string[];
 }
 interface OfferView {
-  id: string; state: string; branch: string; offeredAt: number;
+  id: string; state: string; branch: string; offeredAt: number; modules?: string[];
   commitSha: string | null; treeSha: string | null; untracked: number | null;
   claim: { name: string; claimedAt: number; expiresAt: number } | null;
   // `remote` and `treeSha` are OPTIONAL here on purpose, and it is the same rule
@@ -56,6 +58,7 @@ interface OfferView {
 }
 interface HelperPresenceView {
   online: boolean; name: string | null; mode: string | null; lastSeenAgeMs: number | null;
+  takesModules?: boolean;
 }
 interface OfferPayload {
   offer: OfferView | null; existing?: boolean; mayRunLocally?: boolean; error?: string;
@@ -85,7 +88,7 @@ interface RedPreviewRow {
   job?: { slot?: number; state?: string; helper?: string | null; treeSha?: string | null } | null;
 }
 interface PersistedLaneSuiteJob {
-  id: string; state: string; offeredAt: number; claim: unknown;
+  id: string; state: string; offeredAt: number; claim: unknown; modules?: string[];
   claimWas?: { deviceId: string; name: string; claimedAt: number; expiresAt: number };
   endedAt?: number;
   // the VERDICT as it sits on disk — unknown, because (LS.6c) is about a row whose shape the
@@ -1080,6 +1083,164 @@ export async function run(): Promise<void> {
     await post(`/api/slots/${freeSlot}/kill`, {});
     await post(`/api/tasks/${pileTask.task.id}/delete`, {});
     await post(`/api/programs/${pileProgram}/complete`, {});
+  }
+
+  // ===== (LS.mod) THE NARROWED PREVIEW — `modules` at the door, FLEET_E2E_MODULES on the daemon ====
+  // MEASURED 2026-09-28 (Befund 3d3816fb): the helper claimed 29 of 29 offers within a minute, and six
+  // runs still queued on this box. Three were narrowed previews (`FLEET_E2E_MODULES=<m>
+  // ./e2e-isolated.sh`, what /api/self/gate's localProof.modules recommends) the offer door could not
+  // carry, and one an ./e2e-claude-gate.sh no allowlist named. Three claims, each with its refusal:
+  //   (1) the door takes `modules` only as known check-module names; a refused body leaves no row;
+  //   (2) a narrowed job is shown and claimed only by a device declaring lane-suite-modules — an
+  //       older daemon would run the FULL suite and file it as the narrowed answer — and the daemon's
+  //       fork turns the claim into FLEET_E2E_MODULES and nothing else;
+  //   (3) the jobs door takes the two land-gate suites, and the harness ban beside them is unchanged.
+  // The stand-in device plays BOTH daemon generations, one heartbeat apart: `features` is not sticky
+  // (every beat replaces it), which is the same property that takes the job away from a daemon rolled
+  // back to an older tree. It beats with the daemon's OWN DAEMON_FEATURES, never a spelled copy — so
+  // a daemon whose list stopped naming the server's string fails here, not on the work-horse.
+  {
+    const MOD_FEATURE = "lane-suite-modules";
+    const beatAsDaemon = (): Promise<Response> =>
+      hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, features: [...DAEMON_FEATURES] });
+    const offerRows = (): number => {
+      try { return ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { laneSuiteJobs?: unknown[] }).laneSuiteJobs ?? []).length; }
+      catch { return -1; }
+    };
+
+    // --- (1) THE DOOR ------------------------------------------------------------------------------
+    await beatAsDaemon(); // a taker is beating, so a refusal below can only be the BODY's
+    const rowsBefore = offerRows();
+    const shapes: [string, unknown, string][] = [
+      ["a bare string", "security", "must be an array"],
+      ["an empty list", [], "is empty"],
+      ["an unknown name, named back", ["security", "nope-module"], "nope-module"],
+      ["a comma smuggling a second word", ["security,lane-suite"], "security,lane-suite"],
+      ["an env assignment", ["FLEET_TOKEN=x"], "FLEET_TOKEN=x"],
+    ];
+    const notRefused: string[] = [];
+    for (const [what, modules, needle] of shapes) {
+      const r = await selfPost("/api/self/suite-offer", laneTok, { modules });
+      const e = (await bodyOf<OfferPayload>(r)).error ?? "";
+      if (r.status !== 400 || !e.includes("modules") || !e.includes(needle)) notRefused.push(`${what}: ${r.status} ${e.slice(0, 100)}`);
+    }
+    check("(LS.mod 1) the offer door refuses every malformed `modules` with 400, naming the field and the offending name",
+      notRefused.length === 0, notRefused.join(" · "));
+    const afterRefusals = await offerOf(laneTok);
+    check("(LS.mod 1) …and a refused body minted NOTHING: no row on disk, no open offer on the lane",
+      offerRows() === rowsBefore && afterRefusals.offer?.state !== "open",
+      `rows ${rowsBefore}→${offerRows()} state=${afterRefusals.offer?.state}`);
+
+    // --- THE MINT REFUSAL: somebody is beating, but nobody who takes a narrowed preview ---------------
+    await beat(); // the older daemon: its heartbeat names no features at all
+    const gateOld = await gateOf(laneTok);
+    const noTaker = await selfPost("/api/self/suite-offer", laneTok, { modules: ["lane-suite", "security"] });
+    const noTakerBody = await bodyOf<OfferPayload>(noTaker);
+    check("(LS.mod 2) with only an older daemon beating, a NARROWED offer is refused with its own reason — 200, offer:null",
+      noTaker.status === 200 && noTakerBody.offer === null
+        && noTakerBody.reason === "no helper online takes a narrowed preview"
+        && noTakerBody.helper?.online === true && noTakerBody.helper.takesModules === false
+        && gateOld.helper?.online === true && gateOld.helper.takesModules === false,
+      `${noTaker.status} ${JSON.stringify(noTakerBody).slice(0, 240)} gate=${JSON.stringify(gateOld.helper)}`);
+    await beatAsDaemon();
+    const gateNew = await gateOf(laneTok);
+    check("(LS.mod 2) the daemon code's own feature list is what flips the gate's takesModules — no config line involved",
+      DAEMON_FEATURES.includes(MOD_FEATURE) && gateNew.helper?.online === true && gateNew.helper.takesModules === true,
+      `features=[${DAEMON_FEATURES}] helper=${JSON.stringify(gateNew.helper)}`);
+
+    const modRes = await selfPost("/api/self/suite-offer", laneTok, { modules: ["security", "lane-suite", "security"] });
+    const modOffer = await bodyOf<OfferPayload>(modRes);
+    const modJob = modOffer.offer?.id ?? "";
+    check("(LS.mod 1) a narrowed offer is minted and carries its modules deduplicated, in the runner's order",
+      modRes.ok && modOffer.existing === false && /^[0-9a-f]{12}$/.test(modJob)
+        && JSON.stringify(modOffer.offer?.modules) === '["lane-suite","security"]',
+      `${modRes.status} ${JSON.stringify(modOffer.offer).slice(0, 240)}`);
+    // the full offer's keys are held byte for byte in (LS.6); the narrowed one is exactly those plus one
+    check("(LS.mod 1) …its view is the closed full-offer key set plus `modules`, and the row on disk carries the same list",
+      keysOf(modOffer.offer) === "id,state,branch,offeredAt,modules,commitSha,treeSha,untracked,claim,result"
+        && JSON.stringify(persistedLaneSuiteJob(modJob)?.modules) === '["lane-suite","security"]',
+      `keys=${keysOf(modOffer.offer)} disk=${JSON.stringify(persistedLaneSuiteJob(modJob)?.modules)}`);
+
+    // --- (2) THE HANDSHAKE, on both doors, with the same device one heartbeat apart --------------------
+    await beat(); // rolled back to an older tree: the feature is gone on this very beat
+    const oldList = await jobs();
+    const oldClaim = await hpost("/api/helper/claim", { jobId: modJob, deviceId: DEVICE });
+    const oldClaimErr = (await bodyOf(oldClaim)).error ?? "";
+    check("(LS.mod 2) an older daemon is NOT SHOWN the narrowed job",
+      !oldList.some((j) => j.id === modJob), JSON.stringify(oldList.map((j) => `${j.kind}:${j.id}`)));
+    check("(LS.mod 2) …and its claim by id is refused 409 ON THAT GROUND — the job stays open for a daemon that can run it",
+      oldClaim.status === 409 && oldClaimErr.includes(MOD_FEATURE) && (await offerOf(laneTok)).offer?.state === "open",
+      `${oldClaim.status} ${JSON.stringify(oldClaimErr)}`);
+    await beatAsDaemon();
+    const newListed = (await jobs()).find((j) => j.id === modJob);
+    check("(LS.mod 2) a daemon declaring the feature is shown the job, WITH the modules it is about to run",
+      newListed?.kind === "lane-suite" && JSON.stringify(newListed.modules) === '["lane-suite","security"]',
+      JSON.stringify(newListed));
+    const modClaim = await hpost("/api/helper/claim", { jobId: modJob, deviceId: DEVICE });
+    const modClaimed = await bodyOf<{ job?: ClaimedJob }>(modClaim);
+    check("(LS.mod 2) …and its claim carries the list — the one thing the daemon may turn into the suite's env",
+      modClaim.ok && modClaimed.job?.kind === "lane-suite"
+        && JSON.stringify(modClaimed.job.modules) === '["lane-suite","security"]',
+      `${modClaim.status} ${JSON.stringify(modClaimed).slice(0, 240)}`);
+    // THE DAEMON'S FORK, run on exactly what the claim carried, and on every shape it must refuse
+    const env = modulesEnv(modClaimed.job?.kind, modClaimed.job?.modules);
+    const forks: [string, boolean][] = [
+      ["the claim becomes FLEET_E2E_MODULES and nothing else", JSON.stringify(env) === '{"FLEET_E2E_MODULES":"lane-suite,security"}'],
+      ["a job without modules adds nothing", JSON.stringify(modulesEnv("lane-suite", undefined)) === "{}"],
+      ["an audit with modules is refused — tier 2 is never filtered",
+        modulesEnv("audit", ["security"]) === null && modulesEnv(undefined, ["security"]) === null],
+      ["a command job with modules is refused", modulesEnv("command", ["security"]) === null],
+      ["an empty list, a non-array and a comma word are refused", modulesEnv("lane-suite", []) === null
+        && modulesEnv("lane-suite", "security") === null && modulesEnv("lane-suite", ["security,auth"]) === null],
+    ];
+    check("(LS.mod 2) helper-daemon/daemon.ts#modulesEnv makes a narrowed claim FLEET_E2E_MODULES alone and refuses every other shape",
+      forks.every(([, ok]) => ok), forks.filter(([, ok]) => !ok).map(([n]) => n).join(" · ") || JSON.stringify(env));
+    const modResult = await hpost("/api/helper/result", { jobId: modJob, exitCode: 0, tail: "PASS  a narrowed check\nALL PASS" });
+    const modRead = await offerOf(laneTok);
+    check("(LS.mod 1) the lane reads its verdict with the modules it is about beside it",
+      modResult.ok && modRead.offer?.id === modJob && modRead.offer.state === "reported"
+        && modRead.offer.result?.result === "green" && JSON.stringify(modRead.offer.modules) === '["lane-suite","security"]',
+      JSON.stringify({ status: modResult.status, state: modRead.offer?.state, modules: modRead.offer?.modules, r: modRead.offer?.result?.result }));
+
+    // --- THE RESTORE: a narrowed row the table no longer admits is DROPPED at boot, never widened -----
+    // Planted as THIS lane's own OPEN offer (its slot and openedAt), so that a restore which kept it
+    // would hand it straight back from the offer door — a row on another slot would be reaped by the
+    // sweep and look absent either way, which would be a check that measures nothing.
+    const bad = "eeeeeeeeeeee";
+    await stopSrv();
+    const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { laneSuiteJobs?: Record<string, unknown>[]; slots?: Record<string, { openedAt?: number }> };
+    const lnOpenedAt = st.slots?.[String(ln.slot)]?.openedAt ?? 0;
+    (st.laneSuiteJobs ??= []).push({ id: bad, slot: ln.slot, slotOpenedAt: lnOpenedAt, repo: REPO, cwd: ln.cwd,
+      branch: ln.branch, modules: ["a-module-that-was-renamed"], offeredAt: Date.now(), state: "open",
+      commitSha: null, treeSha: null, untracked: null, claim: null, result: null });
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const afterBoot = await offerOf(laneTok);
+    check("(LS.mod 1) a persisted narrowed row whose modules no longer validate is DROPPED at boot — not re-offered, not widened",
+      lnOpenedAt > 0 && afterBoot.offer?.id === modJob && afterBoot.offer.state === "reported",
+      JSON.stringify({ openedAt: lnOpenedAt, offer: afterBoot.offer?.id, state: afterBoot.offer?.state, modules: afterBoot.offer?.modules }));
+
+    // --- (3) THE JOBS DOOR takes the two land-gate suites; the ban beside them is unchanged ------------
+    // Two open command jobs are left on this lane on purpose: nothing claims them (the stand-in names
+    // no daemonSha), and the sweep reaps them with the lane in (LS.10), as e2e/watch.ts's are.
+    const notTaken: string[] = [];
+    for (const cmd of ["./e2e-claude-gate.sh", "./e2e-clean-review.sh"]) {
+      const r = await selfPost("/api/self/jobs", laneTok, { cmd });
+      const b = await bodyOf<{ jobId?: string; job?: { cmd?: string; argv?: string[]; state?: string } }>(r);
+      if (!r.ok || b.job?.cmd !== cmd || JSON.stringify(b.job.argv) !== JSON.stringify([cmd]) || b.job.state !== "open")
+        notTaken.push(`${cmd}: ${r.status} ${JSON.stringify(b).slice(0, 120)}`);
+    }
+    check("(LS.mod 3) the jobs door takes ./e2e-claude-gate.sh and ./e2e-clean-review.sh, each as its own one-word argv",
+      notTaken.length === 0, notTaken.join(" · "));
+    const notBanned: string[] = [];
+    for (const cmd of ["./claude", "./e2e-claude-gate.sh && claude", "codex ./e2e-clean-review.sh"]) {
+      const r = await selfPost("/api/self/jobs", laneTok, { cmd });
+      const e = (await bodyOf(r)).error ?? "";
+      if (r.status !== 400 || !e.includes("agent harness")) notBanned.push(`${cmd}: ${r.status} ${e.slice(0, 100)}`);
+    }
+    check("(LS.mod 3) …and an agent harness named beside them is still refused 400 by the ban, before the allowlist",
+      notBanned.length === 0, notBanned.join(" · "));
   }
 
   // ===== (LS.10) THE OWNER ROW CLOSES ITSELF WHEN THE LANE IS GONE ===============================

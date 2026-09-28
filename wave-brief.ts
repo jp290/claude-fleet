@@ -153,7 +153,7 @@ function laneProse(prose: string, renderedCard: boolean, preserveFields: Readonl
     const field = lines[at]!.match(CARD_PROSE_FIELD);
     if (field) {
       fields++;
-      preserveContinuation = preserveFields.has(field[0]!.trim().slice(0, -1).toUpperCase());
+      preserveContinuation = preserveFields.has(field[0]!.replace(/\s*:$/, "").trim().toUpperCase());
       if (preserveContinuation) preserved.push(lines[at]!);
       at++;
       continue;
@@ -188,7 +188,12 @@ export function withCardHead(card: TaskCardBody | null, prose: string,
     `VERIFY: ${card.verify}`,
     `VERBOTEN: ${card.verboten.length ? card.verboten.join(" · ") : "—"}`,
   ].filter((line) => !head.split("\n").includes(line)) : [];
-  const body = laneProse(prose, !!card, new Set(fullFields.map((line) => line.slice(0, line.indexOf(":")))));
+  // AN EMPTY RENDERED VERBOTEN NEVER COSTS THE PROSE ITS OWN: the card head says "VERBOTEN: —", and
+  // a prose VERBOTEN line the card did not carry (a string `verboten` read as [] before validateCard
+  // refused it — lane 0fcf9226, 2026-09-28) is then the only place the constraint still stands.
+  const preserve = new Set(fullFields.map((line) => line.slice(0, line.indexOf(":"))));
+  if (card && !card.verboten.length) preserve.add("VERBOTEN");
+  const body = laneProse(prose, !!card, preserve);
   const missing = fullFields.filter((line) => !body.split("\n").includes(line));
   const content = [missing.join("\n"), body].filter(Boolean).join("\n\n");
   return `${card ? `${head}${content ? "\n\n" : ""}` : ""}${content}${renderRowComments(comments)}${renderBriefReviewBlock(review)}`;

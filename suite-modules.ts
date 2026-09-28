@@ -342,3 +342,32 @@ export const selectModules = (opts: { raw: string | undefined; shardGiven: boole
   }
   return { plan, refusal: null };
 };
+
+/**
+ * THE SAME SELECTION, ARRIVING OVER THE WIRE — `modules` on POST /api/self/suite-offer, which a
+ * helper daemon turns into FLEET_E2E_MODULES for the lane's `./e2e-isolated.sh`. It refuses exactly
+ * what the runner would refuse and adds the two refusals only a JSON body can need:
+ *   · a value that is not an array of strings (the comma-string form stays the env's own);
+ *   · a name that is no module of this table — refused BY NAME before anything is joined, so a
+ *     string carrying a comma, a space or an `=` can never reach the variable as more than one word.
+ * Then it asks `selectModules` itself, with `repoSet: true` because `./e2e-isolated.sh` always
+ * exports FLEET_E2E_REPO: a selection this door admits is one the runner on the other machine
+ * resolves to the same plan, and one it refuses would have died there as a refusal wearing a red.
+ * `modules` comes back deduplicated and in the runner's own order — the exact list the job carries.
+ */
+export const moduleListFrom = (raw: unknown):
+  { ok: true; modules: string[] } | { ok: false; error: string } => {
+  if (!Array.isArray(raw) || raw.some((m) => typeof m !== "string"))
+    return { ok: false, error: "modules must be an array of check module names (strings) — omit the field for the full run" };
+  if (raw.length === 0)
+    return { ok: false, error: "modules is empty — a selection of nothing is refused, never run; omit the field for the full run" };
+  if (raw.length > MODULE_FIXTURES.length)
+    return { ok: false, error: `modules names ${raw.length} entries, but this suite has only ${MODULE_FIXTURES.length} modules` };
+  const unknown = [...new Set(raw as string[])].filter((m) => !byModule.has(m));
+  if (unknown.length)
+    return { ok: false, error: `modules names no check module of this suite: ${unknown.slice(0, 5).map((m) => JSON.stringify(m.slice(0, 40))).join(", ")}`
+      + ` — known: ${MODULE_FIXTURES.map((m) => m.module).join(" ")}` };
+  const { plan, refusal } = selectModules({ raw: (raw as string[]).join(","), shardGiven: false, repoSet: true });
+  if (refusal || !plan) return { ok: false, error: `modules: ${refusal ?? "no plan"}` };
+  return { ok: true, modules: plan.named };
+};

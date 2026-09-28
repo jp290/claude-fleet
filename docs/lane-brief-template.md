@@ -45,6 +45,14 @@ that already exists goes under FLAECHE, never under NEU (a tracked NEU path is a
 that is not a queue row is a card gap; a valid one keeps the row out of every land wave before its
 target's (`task-land-waves.ts#wavesFor`).
 
+**A card filed as JSON** (`card` on `POST /api/tasks` or the MAIN's self-filing) carries its list
+fields as arrays of strings: `verboten`, `after`, `surface.files`, `surface.symbols`,
+`surface.creates`. A string there is refused with a 400 naming the field, and nothing is filed
+(`card-extract.ts#validateCard`); before 2026-09-28 it was read as an empty list, and a lane started
+without its VERBOTEN. An absent or `null` list field is the empty list. Delivery has the matching
+guard: when a card's VERBOTEN is empty, a `VERBOTEN:` line in the row's prose stays in the lane
+brief instead of being stripped with the other header lines (`wave-brief.ts#withCardHead`).
+
 ---
 
 ```text

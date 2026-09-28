@@ -6,12 +6,17 @@
 // hide a send that never arrived.
 const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
 const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
-const withoutDeliveryHeader = (entry: string): string => {
-  if (!entry.startsWith(DELIVERY_HEADER_PREFIX)) return entry;
+// Head and body of a typed Fleet delivery. `header` is what stands between the prefix and the closing
+// bracket: the short owner form „[Zitat entfernt]“, or the long form of every other path
+// („[Zitat entfernt]“). Text with no head, or a head that never closes,
+// has header null and is its own body.
+export function splitDeliveryHeader(entry: string): { header: string | null; body: string } {
+  if (!entry.startsWith(DELIVERY_HEADER_PREFIX)) return { header: null, body: entry };
   const end = entry.indexOf("] ", DELIVERY_HEADER_PREFIX.length);
-  return end < 0 ? entry : entry.slice(end + 2);
-};
+  if (end < 0) return { header: null, body: entry };
+  return { header: entry.slice(DELIVERY_HEADER_PREFIX.length, end), body: entry.slice(end + 2) };
+}
 export function pendingSettledBy(pending: string, entry: string): boolean {
   const p = norm(pending);
-  return p !== "" && p === norm(withoutDeliveryHeader(entry));
+  return p !== "" && p === norm(splitDeliveryHeader(entry).body);
 }

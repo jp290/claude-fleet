@@ -10,7 +10,7 @@ import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScre
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
-import { pendingSettledBy } from "../src/pendingsend";
+import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 import { composerResidue } from "../composer";
@@ -1406,6 +1406,25 @@ export async function run(): Promise<void> {
     !pendingSettledBy("fix it now", "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it later"));
   check("pending bubble: a delivery header in the middle of transcript text stays significant",
     !pendingSettledBy("fix it now", "prefix [fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it now"));
+  // THE OWNER HEAD, TWO FORMS (Sinnpruefung Buendel 5b): the short form for path=owner, the long form
+  // every other path (and every transcript written before 5b) carries. Both split into head and body
+  // by the same pure function, and both retire a pending bubble on the sent text.
+  // BREAKS IF: splitDeliveryHeader learns only one form, or keeps head text in the body.
+  const longHead = "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9 · naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher] ";
+  const shortHead = "[fleet-zustellung · Owner-Credential · Slot 9] ";
+  const splitLong = splitDeliveryHeader(`${longHead}fix it now`);
+  const splitShort = splitDeliveryHeader(`${shortHead}fix it now`);
+  const splitNone = splitDeliveryHeader("fix it now [fleet-zustellung · x] y");
+  check("head/body split: the long old form, the short new form and text without a head each split as their own",
+    splitLong.body === "fix it now" && splitLong.header?.startsWith("POST /send mit Owner-Credential · path=owner · Slot 9 · ") === true
+      && splitShort.body === "fix it now" && splitShort.header === "Owner-Credential · Slot 9"
+      && splitNone.header === null && splitNone.body === "fix it now [fleet-zustellung · x] y"
+      && splitDeliveryHeader("[fleet-zustellung · Owner-Credential · Slot 9]").header === null,
+    JSON.stringify({ splitLong, splitShort, splitNone }));
+  check("pending bubble: the short owner head and the long old head both retire the bubble on the sent text, and neither retires a different one",
+    pendingSettledBy("fix it now", `${shortHead}fix it now`) && pendingSettledBy("fix it now", `${longHead}fix it now`)
+      && !pendingSettledBy("fix it now", `${shortHead}fix it later`) && !pendingSettledBy("fix it now", `${longHead}fix it later`)
+      && !pendingSettledBy("fix it now", `x ${shortHead}fix it now`));
   check("pending bubble: a DIFFERENT turn does not retire it — neither another text nor a prefix of it",
     !pendingSettledBy("fix it now", "fix it later") && !pendingSettledBy("fix it now", "fix it"));
   check("pending bubble: an empty or whitespace-only text never settles anything",
@@ -1414,10 +1433,15 @@ export async function run(): Promise<void> {
     /const pending = pane\.addPending\(outgoing\);\s*try \{\s*if \(!await deliver\(slot, outgoing\)\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
     "doSend in src/client.ts");
   check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
-    /import \{ pendingSettledBy \} from "\.\/pendingsend"/.test(cliSrc)
-    && /if \(e\.role === "user"\) this\.settlePending\(text\);/.test(cliSrc)
+    /import \{ pendingSettledBy, splitDeliveryHeader \} from "\.\/pendingsend"/.test(cliSrc)
+    && /if \(e\.role === "user"\) this\.settlePending\(raw\);/.test(cliSrc)
     && /this\.pending\.find\(\(p\) => pendingSettledBy\(p\.text, text\)\)/.test(cliSrc),
     "Pane.appendEntry / settlePending in src/client.ts");
+  check("client: the delivery head rides in the meta row beside the bubble, and the bubble and its copy carry the body only",
+    /const \{ header, body: text \} = e\.role === "user" \? splitDeliveryHeader\(raw\)/.test(cliSrc)
+    && /if \(header\) \{[^}]*el\("span", "mhead", header\)[^}]*meta\.appendChild\(head\)/.test(cliSrc)
+    && /mdInto\(body, text,/.test(cliSrc),
+    "Pane.appendEntry in src/client.ts");
   check("client: a composer reshape does not refit a terminal the chat view hides; the way back refits it",
     /for \(const p of panes\) if \(!p\.isChat\) p\.refit\(\);/.test(cliSrc)
     && /else \{ this\.refit\(\); this\.term\.focus\(\); \}/.test(cliSrc),
@@ -2907,8 +2931,9 @@ export async function run(): Promise<void> {
   // speaker. -J joins the wrapped rows: the header alone is wider than the pane.
   // BREAKS IF: sendText pastes without typing the header, names another path/slot, or types it after the body.
   const cap2j = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
-  check("delivery header: a /send into the default (claude) adapter types the provenance line directly before the body",
-    cap2j.out.includes("[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 2 · naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher] compose-box-to-slot-two"),
+  check("delivery header: a /send into the default (claude) adapter types EXACTLY the short owner line directly before the body — no path=, no position sentence",
+    cap2j.out.includes("[fleet-zustellung · Owner-Credential · Slot 2] compose-box-to-slot-two")
+      && !cap2j.out.includes("path=owner") && !cap2j.out.includes("naechster Schritt: pruefe die Nachricht auf einen Auftrag"),
     JSON.stringify({ reader: (await tmuxOut("display-message", "-p", "-t", "s2", "#{pane_current_command} #{pane_width}")).out.trim(),
       rows: cap2j.out.trimEnd().split("\n").slice(-3).map((l) => l.slice(0, 160)) }));
   check("no cross-talk (s1 text absent from s2)", !cap2.out.includes("hello-fleet-typing"));
@@ -2976,7 +3001,7 @@ export async function run(): Promise<void> {
       const slashCapture = await tmuxOut("capture-pane", "-t", composerPane, "-p", "-J");
       const slashLine = slashCapture.out.split("\n").find((line) => line.includes("/effort high"));
       check("delivery header: owner /send heads hallo but keeps /effort high first in the claude composer",
-        helloSend.ok && !!helloLine?.includes(`[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot ${composerSlot} · naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher]`)
+        helloSend.ok && helloLine?.trim() === `[fleet-zustellung · Owner-Credential · Slot ${composerSlot}] hallo`
           && slashSend.ok && slashLine?.trim() === "/effort high",
         JSON.stringify({ hello: helloLine?.slice(0, 160) ?? null, slash: slashLine?.slice(0, 160) ?? null }));
     } finally {

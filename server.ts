@@ -8730,7 +8730,7 @@ function deliveryAuditCache(s: Slot | null): { ttlSec: number; ttlQuelle: Delive
 const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
 const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "bundle": "gebuendelte Fleet-Zustellungen",
-  "owner": "POST /send mit Owner-Credential",
+  "owner": "Owner-Credential",
   "brief": "Gruendungs-Brief einer Lane",
   "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Supervisor, Orchestratorin)",
   "succession": "Nachfolge-Brief (POST /api/self/succeed)",
@@ -8812,6 +8812,12 @@ function deliveryHeader(form: Harness, path: SendPath, slot: number, text: strin
   const source = DELIVERY_SOURCE[path];
   if (!source || path === "model-push" || !headsDelivery(form)
     || (path === "owner" && text.trimStart().startsWith("/"))) return null;
+  // owner is the ONE source with no position sentence and no path: `ctl.sh send`, the Orchestratorin
+  // and the MAINs ride the same route with the same credential, so the head names the credential and
+  // the slot, never a speaker or an errand (Sinnpruefung Buendel 5b; the prefix stays for
+  // sendText's residue check, src/pendingsend.ts and the pins). Its DELIVERY_MEANING sentence now
+  // lives only in a bundle mark, where an owner send shares a paste with waiting deliveries.
+  if (path === "owner") return `${DELIVERY_HEADER_PREFIX}${source} · Slot ${slot}] `;
   return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${deliveryMeaning(path, s)}] `;
 }
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
@@ -44095,7 +44101,7 @@ Bun.serve<WSData>({
       const lane = t.status === "sent" && t.slot !== null ? slotFrom(t.slot) : null;
       if (!lane?.cwd || !lane.worktree || !tasks.some((x) => x.id === t.id && x.slot === lane.id && x.status === "sent"))
         return json({ ok: true, comment: c, delivery: "no-live-lane" });
-      const message = `[fleet] OWNER COMMENT on task ${t.id} (comment ${c.id}):\n\n${text}`;
+      const message = `[fleet] Kommentar mit Owner-Credential zu Task ${t.id} (comment ${c.id}):\n\n${text}`;
       const sendId = randomBytes(12).toString("hex");
       const receiver = { slot: lane.id, openedAt: lane.openedAt, sessionId: lane.sessionId };
       try {

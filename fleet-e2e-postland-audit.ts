@@ -1595,7 +1595,9 @@ await setAuditMode("green");
 const isAncestor = (sha: string, tip: string): boolean =>
   spawnSync("git", ["-C", REPO, "merge-base", "--is-ancestor", sha, tip]).status === 0;
 const coversHeld = (r: AuditRow): boolean => r.covers.length > 0 && r.covers.every((c) => isAncestor(c.mainAfter, r.mainSha));
-await setAuditMode("long"); // 12s: a run in flight while BOTH later lands arrive
+const RELEASE_FILE = `${import.meta.dir}/auditrelease`;
+try { unlinkSync(RELEASE_FILE); } catch { /* not there */ }
+await setAuditMode("hold"); // a run that stays in flight until released, while BOTH later lands arrive
 spawnSync("git", ["-C", REPO, "branch", "-f", "overhaul", "main"]);
 const rX = await makeLane("rx");
 const rO = await makeLane("ro");
@@ -1609,6 +1611,7 @@ const roLanded = await landLane(rO);            // overhaul → waits in the que
 const overhaulAfterR = headOf("overhaul");
 const rmLanded = await landLane(rM);            // main again → the land that used to drag overhaul's cover onto main
 const mainAfterR = headOf("main");
+writeFileSync(RELEASE_FILE, "go\n"); // every run may finish now, the two queued behind the first included
 check("(R) setup: the three lands reached their own branches (main, overhaul, main)",
   rxLanded.gone && roLanded.gone && rmLanded.gone && overhaulAfterR !== mainAfterR
     && isAncestor(overhaulAfterR, "overhaul") && !isAncestor(overhaulAfterR, "main"),
@@ -1633,6 +1636,7 @@ check("(R) the main row audited the main tip and names ONLY the main land — ne
 check("(R) the ledger invariant: every cover of every new row is an ancestor of that row's mainSha",
   rRows.length > 0 && rFresh.every(coversHeld),
   JSON.stringify(rFresh.map((r) => ({ main: r.main, sha: r.mainSha.slice(0, 8), covers: r.covers.map((c) => `${c.branch}@${c.mainAfter.slice(0, 8)}`) }))));
+try { unlinkSync(RELEASE_FILE); } catch { /* already gone */ }
 check("(R) the queue file is gone once the rows exist", (await readQueueFile()) === null, JSON.stringify(await readQueueFile()));
 
 // (R.2) A QUEUE FILE WRITTEN BY AN OLDER SERVER — one entry, `main` = the last land's branch, covers
@@ -1640,6 +1644,7 @@ check("(R) the queue file is gone once the rows exist", (await readQueueFile()) 
 // tip contains is named in the log and dropped (an orphan commit: no audit could ever cover it), and
 // one whose probe cannot run at all (a sha git does not have) is NOT dropped on that evidence —
 // it reaches the run, and the run writes it as an explicit `unknown` row instead of a covered one.
+const rowsBeforeLegacy = (await auditRows()).length; // asked of the LIVE server, before it is killed
 await killSrv();
 const emptyTree = spawnSync("git", ["-C", REPO, "hash-object", "-w", "-t", "tree", "/dev/null"]).stdout.toString().trim();
 const gitId = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
@@ -1653,7 +1658,6 @@ const legacyQueue = { [rowM.repo]: { main: "main", covers: [
   { branch: "legacy/ghost-land", mainAfter: ghostSha, at: legacyAt + 3 },
 ] } };
 writeFileSync(QUEUE_FILE, JSON.stringify(legacyQueue, null, 2));
-const rowsBeforeLegacy = (await auditRows()).length;
 await setAuditMode("green");
 check("(R.2) the server came back up on a legacy queue file", await startSrv({ audit: true }));
 const legacyRows = await waitRows(rowsBeforeLegacy + 3, 90_000);

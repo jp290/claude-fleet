@@ -73,6 +73,9 @@ chmod +x "$DIR/fakemerge"
 #          lands that already paid their idle gate); the in-flight case has to fit a full second
 #          land — settle, merge, land — inside the window and then still be running when it is read,
 #          so it gets its own, roomier mode rather than stretching `slow` and moving (D)'s floor.
+#   hold — blocks until the test writes $DIR/auditrelease (at most 9s, under the server's 10s work
+#          floor; the test removes the file), so a run stays demonstrably IN FLIGHT while the test lands on two branches behind
+#          it — the (R) section, where slow's fixed 6s left the ordering to the machine's speed.
 #   exit143 — an instant exit 143. Stands for the run somebody KILLED (measured 2026-08-06: a lane's
 #          `pkill -f e2e-isolated.sh` took the server's own audit down 16s in, zero checks run). It
 #          is a red by exit code and a non-measurement in fact, and the server's runtime
@@ -115,6 +118,7 @@ case "$mode" in
   notrunnable) rm -f "$d/auditbusy"; exec "$d/no-such-audit-binary" ;;
   exit143)     rm -f "$d/auditbusy"; echo "terminated"; exit 143 ;;
   slow)        sleep 6 ;;
+  hold)        n=0; while [ ! -f "$d/auditrelease" ] && [ "$n" -lt 45 ]; do sleep 0.2; n=$((n+1)); done ;;
   long)        sleep 12 ;;
   hang)        sleep 30 ;;
   nokill)

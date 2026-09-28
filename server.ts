@@ -57,7 +57,7 @@ import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { scanTitleOnly } from "./titlebytes";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
-import { buildTrace, type TraceLiveLane } from "./trace-index";
+import { buildTrace, type TraceLiveLane, type TraceRefs } from "./trace-index";
 import {
   clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
   resolveSurfaceRanges, symbolGraphStamp, surfaceSha,
@@ -176,7 +176,8 @@ import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, F
 import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, setPrincipalState, commentStrike, authFails, failStrike,
-  shareGate, closeShareClients, guard } from "./server/auth";
+  shareGate, closeShareClients, guard, type Principal } from "./server/auth";
+import { konzeptOpOf, konzeptRequest } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { readCodexRollout, readPiSession, type ConversationRead, type TBlock, type TEntry } from "./server/conversation-read";
 
@@ -4771,6 +4772,10 @@ function taskDigest(t: Task): TaskDigest {
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
+// the PRIVATE konzept store (konzept-ledger.ts): versions and anmerkungen live under this root, never in
+// fleet.json or the tree. Unset = the konzept doors answer 503 by name; the pack resolver (f38eb1c8)
+// is meant to share the same root later.
+const KONZEPT_ROOT = process.env.FLEET_KONZEPT_ROOT?.trim() || null;
 const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
 // A SECOND cap, per Program, and it can only ever NARROW: the repo cap above is checked first and
 // unconditionally, this one after it. It does NOT replace it (owner decision 2026-08-22). Replacing
@@ -13344,6 +13349,24 @@ setPrincipalState({
     return role === "program-main" ? "main" : role === "lane" ? "lane" : "generic";
   },
 });
+
+// THE KONTEXT OF A KONZEPT ENTRY (konzept-ledger.ts): a trace-index.ts#TraceRefs, built from the
+// credential (slot + openedAt, and `session` once the server has learned the conversation id) and from
+// the binding — a lane's branch, task and Program, a bound MAIN's Program. Nothing of it is read from a
+// body. Every other session is refused here: the door is Lane AND MAIN, by the owner's word
+// („[Zitat entfernt]“, Entwurf 2026-09-26) and the orchestrator's decision.
+type KonzeptKontext = { ok: true; refs: TraceRefs } | { ok: false; error: string };
+function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>): KonzeptKontext {
+  const base: TraceRefs = { slot: s.id, openedAt: p.openedAt, ...(s.sessionId ? { session: s.sessionId } : {}) };
+  if (p.role === "lane" && s.worktree)
+    return { ok: true, refs: { ...base, branch: s.worktree.branch, ...(s.taskId ? { task: s.taskId } : {}),
+      ...(s.programId ? { program: s.programId } : {}) } };
+  if (p.role === "main") {
+    const bound = boundProgramForMain(s);
+    return bound.ok ? { ok: true, refs: { ...base, program: bound.program.id } } : { ok: false, error: bound.error };
+  }
+  return { ok: false, error: `a konzept is read and written by a lane or by the bound MAIN of an active Program — this session is neither (role ${p.role})` };
+}
 
 // THE SCOPE OF BOTH INBOX DOORS, in one place because they answer the SAME two questions in the
 // same words. A lane is refused FIRST and by its own sentence: it has no program inbox at all, and
@@ -39697,6 +39720,29 @@ Bun.serve<WSData>({
       return answer;
     }
 
+    // THE KONZEPT DOOR (docs/self-api.md §konzepte, konzept-ledger.ts): versions and anmerkungen of a
+    // konzept, read and appended by a lane OR a bound MAIN. `actor` is the Principal resolved here and
+    // `kontext` the TraceRefs konzeptKontextFor builds — a body naming either is a 400 in the ledger
+    // module. The occupant is re-checked after the body read, before anything is appended, so a slot
+    // recycled mid-request writes nothing under the old credential.
+    const selfKonzept = /^\/api\/self\/konzepte\/([^/]+)\/(.+)$/.exec(url.pathname);
+    if (selfKonzept) {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      const op = konzeptOpOf(req.method, selfKonzept[2]!);
+      if (!op) return json({ error: "not found" }, 404);
+      const kontext = konzeptKontextFor(s, p);
+      if (!kontext.ok) return json({ error: kontext.error }, 409);
+      const body = req.method === "POST" ? await readJson(req) : null;
+      const still = resolvePrincipal(req);
+      if (s.openedAt !== p.openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== p.openedAt)
+        return json({ error: "the slot changed occupant while this request ran — nothing is written on the old credential" }, 409);
+      const answer = await konzeptRequest({ root: KONZEPT_ROOT, konzept: selfKonzept[1]!, op, body,
+        writer: { actor: p, kontext: kontext.refs } });
+      return json(answer.body, answer.status);
+    }
+
     // PROGRAM-SCOPED CONTEXT POINTERS (docs/self-api.md §program-context-packs). One writer: the bound
     // MAIN of an active Program. The list is validated at WRITE against that MAIN's integration HEAD,
     // so an unresolvable anchor is a named refusal here and never a surprise at dispatch.
@@ -41527,6 +41573,21 @@ Bun.serve<WSData>({
         liveRow: t ? { id, from: "live", created: t.created, status: t.status, kind: t.kind, programId: t.programId ?? null } : null,
       });
       return json(trace, trace.result === "unknown-task" ? 404 : 200);
+    }
+    // THE KONZEPT OWNER DOOR (docs/self-api.md §konzepte): the same ledger as /api/self/konzepte, with
+    // the owner as actor and an empty kontext — the owner credential proves no binding. A request that
+    // ALSO carries a self token resolves to that session and is sent to its own door.
+    const ownerKonzept = /^\/api\/konzepte\/([^/]+)\/(.+)$/.exec(url.pathname);
+    if (ownerKonzept) {
+      const op = konzeptOpOf(req.method, ownerKonzept[2]!);
+      if (!op) return json({ error: "not found" }, 404);
+      const p = resolvePrincipal(req);
+      if (p?.kind !== "owner")
+        return json({ error: "this is the owner's konzept door — a session reads and writes through /api/self/konzepte/:id/…" }, 409);
+      const body = req.method === "POST" ? await readJson(req) : null;
+      const answer = await konzeptRequest({ root: KONZEPT_ROOT, konzept: ownerKonzept[1]!, op, body,
+        writer: { actor: p, kontext: {} } });
+      return json(answer.body, answer.status);
     }
     // THE DOSSIER (see the dossier region): six sources joined by branch into one lane's story, plus the
     // fleet/land note. Owner-only by POSITION, read-only by construction. Branch names carry slashes, so

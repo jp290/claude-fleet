@@ -5194,7 +5194,7 @@ wirklich LIEFEN, eine Zeile geschrieben haben.
 
 Reihenfolge = Laufreihenfolge des Runners (gepinnt). `·L` = Modul des Worktree-Lane-Blocks, braucht
 `FLEET_E2E_REPO`; eine Auswahl, die eines davon zieht, wird ohne dieses Env verweigert statt still
-übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 30 der 46 Module sind nach
+übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 31 der 47 Module sind nach
 DIESER KARTE allein vorschaubar, die längste Kette ist acht (`steward-outcomes`).
 
 **Spalte 4 ist eine Ableitung, kein Laufbeweis.** Gefahren wurde EINE Auswahl (`slots,tasks`, §16d).
@@ -5247,6 +5247,7 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `host-hygiene` | — | — | allein |
 | `state-snapshot` | — | — | allein |
 | `trace` | — | — | allein |
+| `konzepte` | — | — | allein |
 | `steward-core` | `ctx.gapRepo` `ctx.auditPath` `ctx.plantedTranscript` `ctx.plantedTranscriptBytes` `ctx.plantedModel` `server:srv-env-after-restart` | `sc.token` `sc.stewGet` `sc.stewPost` `sc.slot` `sc.cwd` `sc.settleForSteward` | 7: slots autos share self-token intake restart steward-core |
 | `steward-outcomes` | `sc.stewGet` `sc.stewPost` `sc.slot` `sc.settleForSteward` | — | 8: slots autos share self-token intake restart steward-core steward-outcomes |
 | `security` | `ctx.shICookie` `ctx.auditPath` `sc.token` `sc.stewGet` | — | 8: slots autos share self-token intake restart steward-core security |

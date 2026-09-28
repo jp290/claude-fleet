@@ -921,6 +921,135 @@ gefallenen, ein Archivrecord hinter > 1 MiB Nichttreffern, kaputte Zeile, Rotati
 unbekannte Herkunft, geborgter Cursor), `e2e/programs.ts` (Rail-Pointer ≤ 512 B, Nachfolgebrief ohne
 Zählzeile).
 
+## konzepte — Versionen und Anmerkungen eines Konzepts (seit 2026-09-28, Program 31aa88ea)
+
+Das Konzeptgedaechtnis haelt je Konzept zwei append-only Ledger: `versionen.jsonl` (eine Zeile je
+veroeffentlichter Fassung) und `anmerkungen.jsonl` (eine Zeile je Anmerkung oder Statuswechsel). Beide
+liegen PRIVAT unter der Wurzel `FLEET_KONZEPT_ROOT` (`<wurzel>/<konzept>/…`), nie in `fleet.json` und nie
+im Baum; die Fassung selbst ist `<wurzel>/<konzept>/v<N>.md`, abgelegt von ihrem Schreiber. Code:
+`konzept-ledger.ts#konzeptRequest` (ein Handler fuer beide Tueren), Kontext-Ableitung
+`server.ts#konzeptKontextFor`, Entwurf `docs/messungen/2026-09-26-s4-entwurf-konzept-versionen-anmerkungen.md`.
+
+**Provenienz ist Server-Sache.** `actor` ist woertlich der `server/auth.ts#Principal` der Anfrage —
+`{kind:"session", slot, openedAt, role:"lane"|"main"}` an der Self-Tuer, `{kind:"owner", via}` an der
+Owner-Tuer. `kontext` ist ein `trace-index.ts#TraceRefs`: `slot` + `openedAt` aus dem Token, `session`
+sobald der Server die Konversations-id kennt, dazu die BINDUNG — eine Lane traegt `branch`, `task` und
+`program`, eine gebundene MAIN ihr `program`, der Owner `{}` (sein Token beweist keine Bindung). Ein Body,
+der `actor` oder `kontext` nennt, ist **400** — nicht still ignoriert. `detailRef` (optional, Form
+`TraceDetailRef{source, locator, fp?}`) zeigt auf die Zeile, in der der Anlass stand (Send-Receipt,
+Report, Attention-Antwort); ihn nennt der Schreiber.
+
+**Wer:** die Self-Tuer ist offen fuer eine **Lane** und fuer die **gebundene MAIN eines aktiven
+Programs** (`boundProgramForMain`); jede andere Session bekommt **409** `a konzept is read and written by a
+lane or by the bound MAIN of an active Program — this session is neither (role <role>)` — auch
+Supervisor und Orchestratorin (Rolle `generic` im Principal). Ohne erkannte Credential 401 nach 400 ms.
+Nach dem Body-Lesen wird der Occupant erneut geprueft; ein recycelter Slot bekommt 409 und nichts wird
+geschrieben.
+
+**Status wird gefaltet, nicht doppelt geschrieben.** Eine Anmerkung ist `"offen"`, bis ein spaeteres
+Ereignis etwas anderes sagt: eine Version, deren `arbeitetEin` sie nennt (`{eingearbeitet: N}`), oder eine
+`verworfen`-Zeile (`{verworfen: grund, actor}`). Das juengste Ereignis gilt; bei gleicher Millisekunde
+gewinnt das Verwerfen. Eine Version ist damit EIN Anhaengen, nie ein zweiter Schreibakt in die andere
+Datei, den ein Absturz dazwischen zerreissen koennte.
+
+**Serialisiert je Konzept.** Letzte-N-lesen, pruefen und anhaengen laufen in einem Glied einer Kette je
+Konzept: gleichzeitige POSTs verlieren keine Zeile und vergeben kein N doppelt (`e2e/konzepte.ts`
+§concurrency, Mutationsprobe: ohne Kette bekamen acht POSTs alle N=4).
+
+**Reihenfolge der Pruefungen** (Teil des Vertrags): Konzept-id (400) → Body (400) → Wurzel (503) → unter
+der Sperre der Zustand (404/409). Ein kaputter Body erfaehrt nie, ob ein Speicher existiert.
+
+Ablehnungen, die alle Tueren teilen:
+
+- **400** `konzept id must match ^k-[a-z0-9-]{1,64}$` — die id ist das einzige Pfadsegment unter der Wurzel.
+- **400** `actor is set by the server from your credential and its binding — a body cannot name it`
+  (ebenso `kontext`, oder beide).
+- **400** `this door reads only … — [<feld>] is not read` — jeder Body ist geschlossen.
+- **400** `the body must be a JSON object (content-type: application/json)`.
+- **503** `FLEET_KONZEPT_ROOT is not set — the konzept store has no root on this server` bzw.
+  `FLEET_KONZEPT_ROOT does not name an existing directory — the konzept store is unavailable`. Die
+  Wurzel wird je Anfrage geprueft und nie angelegt.
+- **404** `not found` fuer einen anderen Pfad oder ein anderes Verb unter `/konzepte/:id/`.
+
+### Versionen — `GET|POST /api/self/konzepte/:id/versionen`
+
+```
+curl -s http://<fleet-host>:<port>/api/self/konzepte/<konzept>/versionen \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+
+curl -s -X POST http://<fleet-host>:<port>/api/self/konzepte/<konzept>/versionen \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"sha256":"<sha256 von v<N>.md>","anlass":"<warum, ≤500>","geltung":"<wofuer, ≤200>",
+       "ebene":"projekt","arbeitetEin":["<anmerkung-id>"],"quellen":{"neu":[]}}'
+```
+
+Der Schreiber legt zuerst `<wurzel>/<konzept>/v<N>.md` ab, N = `letzte + 1` aus dem GET (`letzte:null` =
+noch keine Version, dann N = 1). Die Route vergibt N selbst, prueft, dass die Datei existiert und auf
+`sha256` hasht, und schreibt `{konzept, version:N, vorgaenger:N-1|null, sha256, at, actor, kontext,
+anlass, detailRef?, arbeitetEin[], quellen{korpus?, neu[]}, ebene, geltung}`. GET antwortet
+`{konzept, versionen[], letzte, malformed}` — eine kaputte oder fremde Zeile zaehlt in `malformed`, nie
+still verworfen.
+
+- `ebene` ist eine geschlossene Liste `arbeit|strang|projekt|portfolio|owner`, fehlt sie, gilt
+  `projekt` (Owner-Richtung b04fd193, Notiz d7edfbea: EIN Eintragsmodell mit Ebene als Feld; `team` kommt
+  spaeter nur ins Modell). Keine Aufstiegslogik — nur das Feld.
+- `geltung` ist Pflicht: Freitext 1–200 Zeichen, wofuer der Eintrag gilt.
+
+Ablehnungen: **400** `sha256 must be the 64 lowercase hex of v<N>.md` · **400** `anlass must be a string of
+1–500 chars` · **400** `geltung must be a string of 1–200 chars` · **400** `ebene must be one of
+arbeit|strang|projekt|portfolio|owner (absent = projekt)` · **400** `arbeitetEin must be an array of at most
+100 anmerkung ids (16 hex)` · **400** `quellen must be {korpus?: <64 hex>, neu: [...]}` · **400**
+`detailRef must be {source, locator, fp?}` · **409** `<konzept>/v<N>.md does not exist — the next version
+is <N>; place the file under the root first` · **409** `<konzept>/v<N>.md hashes to <x>, the body names <y>`
+· **409** `arbeitetEin names anmerkungen <konzept> does not have: <ids>` · **404** (GET) `unknown konzept`.
+
+### Anmerkungen — `GET|POST /api/self/konzepte/:id/anmerkungen`
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/self/konzepte/<konzept>/anmerkungen \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"version":<N>,"text":"<≤4000>","anker":{"abschnitt":"<≤200>"}}'
+```
+
+Eine Anmerkung haengt an genau einer veroeffentlichten Version: `{id, konzept, version, anker?{abschnitt,
+satzSha?}, text, at, actor, kontext, detailRef?, status}`; `id` vergibt der Server (16 Hex). GET antwortet
+`{konzept, anmerkungen[], malformed}` mit dem gefalteten `status`.
+
+Ablehnungen: **400** `version must be an integer ≥ 1` · **400** `text must be a string of 1–4000 chars` ·
+**400** `anker must be {abschnitt, satzSha?}` / `anker.satzSha must be 64 lowercase hex` · **409**
+`<konzept> has no version <N> — an anmerkung hangs on a published version (latest: <M|none>)`.
+
+### Verwerfen — `POST /api/self/konzepte/:id/anmerkungen/:aid/verwerfen`
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/self/konzepte/<konzept>/anmerkungen/<aid>/verwerfen \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"grund":"<≤500>"}'
+```
+
+Haengt `{art:"verworfen", anmerkung, grund, at, actor, kontext}` an; der Status wird
+`{verworfen: grund, actor}` mit dem Principal des Verwerfenden. Ablehnungen: **400** `grund must be a
+string of 1–500 chars` · **400** `anmerkung id must match ^[0-9a-f]{16}$` · **404** `<konzept> has no
+anmerkung <aid>` · **409** `anmerkung <aid> is already verworfen`.
+
+### Die OWNER-Tuer — `/api/konzepte/:id/versionen` · `/anmerkungen` · `/anmerkungen/:aid/verwerfen`
+
+Dieselben drei Pfade ohne `self/`, hinter dem Token-Gate, mit demselben Handler: `actor` =
+`{kind:"owner", via:"bearer"|"cookie"|"query"}`, `kontext` = `{}`. Ohne Owner-Token 401; eine Anfrage,
+die ZUSAETZLICH ein Self-Token traegt, loest zu dieser Session auf und bekommt **409** `this is the
+owner's konzept door — a session reads and writes through /api/self/konzepte/:id/…`.
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/konzepte/<konzept>/anmerkungen \
+  -H "authorization: Bearer $FLEET_TOKEN" -H 'content-type: application/json' \
+  -d '{"version":<N>,"text":"<≤4000>"}'
+```
+
+**Grenzen dieses Schnitts:** keine Board-Oberflaeche (Karte 2), kein Pack-Anschluss (Karte 3, der
+Pack-Aufloeser f38eb1c8 teilt sich spaeter `FLEET_KONZEPT_ROOT`), keine `unknown`-Variante im Principal
+(jede Tuer verlangt eine erkannte Credential, D2a 5b71d60c bleibt unberuehrt). Beweis: `e2e/konzepte.ts`
+(eigene Scratch-Instanz, `FLEET_E2E_MODULES=konzepte`).
+
 ## tasks — `POST /api/self/tasks`, `GET /api/self/program-execution`
 
 Zwei Türen desselben Brackets: die eine LEGT eine Zeile an, die andere SIEHT, wo die Zeilen des

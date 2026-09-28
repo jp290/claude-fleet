@@ -80,6 +80,14 @@ const PRE_AUTH_ROUTES = [
   // It stores tracked path/anchor pointers only, validated against the caller's own integration HEAD,
   // and starts, dispatches and writes into no pane.
   '= /api/self/program-context-packs',
+  // The konzept door (Program Konzeptgedaechtnis 31aa88ea, Karte 1). Reads and APPENDS to a private
+  // ledger under FLEET_KONZEPT_ROOT, open to a lane and to the bound MAIN of an active Program; every
+  // other session 409s. What bounds it: the konzept id is ^k-[a-z0-9-]{1,64}$ (no path segment reaches
+  // outside the root), `actor` is the resolved Principal and `kontext` is built from the credential and
+  // its binding — a body naming either is a 400 — and the only file it READS beyond its two ledgers is
+  // the `v<N>.md` the writer placed under that konzept, to hash it. It sends into no pane, starts,
+  // releases, lands and deploys nothing.
+  String.raw`~ /^\/api\/self\/konzepte\/([^/]+)\/(.+)$/`,
   // The Supervisor's two Cut-2 channels, on this list for the same reason as their neighbours (the
   // self principal IS the boundary) and narrower than any of them: both answer 409 to every session
   // but the one the OWNER bound as Supervisor. The view is read-only and mutates nothing (pinned as
@@ -607,6 +615,10 @@ const dangerous = (slot: number): Probe[] => [
   // side-effect-free named 400 (no id), which is what lets it carry the positive control.
   { path: "/api/studios", method: "POST", body: {}, owner: 400 },
   { path: "/api/studios", method: "GET", owner: 200 },
+  // the konzept ledger's owner door writes the OWNER as actor, so a scoped credential reaching it would
+  // forge the one provenance the ledger exists to prove. An empty body is a side-effect-free named 400
+  // (validated before the root is looked at), which carries the positive control.
+  { path: "/api/konzepte/k-authprobe/anmerkungen", method: "POST", body: {}, owner: 400 },
   { path: "/api/dispatch", method: "POST", body: {} },
   // the board editor's pair (§F5). The WRITE route is the only one on this server that puts bytes
   // into a file the caller named, so an auth regression here is not a leak — it is arbitrary code

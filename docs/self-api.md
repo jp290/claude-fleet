@@ -44,6 +44,9 @@ den wartenden Slot; beim Debt den betroffenen Slot selbst. Der Blick ist eine ak
 Momentaufnahme, keine historische Vollständigkeitszusage. Der mutierende Lane-Brief rendert
 denselben Empfänger im Footer als `Empfaenger: <Rolle> Slot <n>`; ohne Empfänger steht dort
 `Empfaenger: unbekannt`.
+Gelandete, unbeurteilte Program-Reports mit Status `needs-main` oder `complete` und beendeter
+Lane erscheinen mit `kind:"fleet-report-landed-unjudged"`; andere offene Reports tragen
+`kind:"fleet-report"`. Der Land-Nachweis kommt aus `lane-outcomes.jsonl` ab `reportedAt`.
 
 ## gate — `GET /api/self/gate`
 
@@ -684,6 +687,39 @@ sich nicht; `briefHash`/`deliveredBytes` beschreiben die ausgelieferten Bytes un
 Block mit — genau das ist ihr Vertrag. Rückweg: die Konstante wieder aus den beiden Buildern
 nehmen.
 
+## attention stage — die Rückfrage-Kette (`stage`, `POST /api/attention/:id/escalate`)
+
+Seit 2026-09-28 wartet die Frage einer gebundenen MAIN zuerst auf die Orchestratorin, nicht auf
+den Owner (Verfassung §5; Owner-Regel 2026-09-25: Worker → MAIN → Orchestratorin → Owner; die
+Rollenkarten in `docs/rollenkarten.md` sagen es für beide Seiten). Mechanik (`server.ts#openAttention`,
+`#escalateAttention`, `#attentionWaitsOn`, `server/types.ts#AttentionRequest`):
+
+- **Die Stufe wird beim Anlegen gewählt, einmal.** `POST /api/self/attention` fragt
+  `server.ts#deliveryRecipient` mit `{kind:"orchestrator"}`: genau ein lebender Slot mit
+  Orchestrator-Label (`isOrchestratorLabel`: `🎛`, „Orchestrator…") → `stage:"orchestrator"`; keiner
+  oder zwei → `stage:"owner"` (die nächsthöhere Stufe). Ist die fragende MAIN selbst diese eine
+  Orchestratorin, geht die Frage an den Owner. Die serverseitig erhobenen Zeilen (Nachfolge-Warnung,
+  Kriteriums-Bitte, Stall-Sensor) sind immer `stage:"owner"`.
+- **Genau ein Hinweis** an die Orchestratorin, nach dem State-Cut und außerhalb der Antwort: eine
+  Zeile mit Id, Kind, Program, gekürzter Frage und den beiden Türen, gebucht als Audit-`send` mit
+  `path:"attention-orchestrator"`. Ein idempotenter Re-Raise derselben Frage sendet nichts. Ein
+  gescheiterter Hinweis ändert die Zeile nicht; `GET /api/attention` zeigt sie weiter.
+- **Zählung auf dem 2-s-Poll:** `attentionOpen` zählt nur, was auf den Owner wartet;
+  `attentionAtOrchestrator` zählt, was bei der Orchestratorin liegt, beide entfallen bei null. Gibt es
+  keine eindeutige lebende Orchestratorin mehr, zählt eine dort geparkte Zeile zur Lesezeit wieder
+  beim Owner. Gespeichert bleibt `stage:„[Zitat entfernt]“`: eine Orchestratorin, die zurückkommt,
+  findet die Zeile dort, wo sie lag. `GET /api/attention` sortiert Owner-offen, dann
+  Orchestratorin-offen, dann geschlossen.
+- **`POST /api/attention/:id/escalate`** mit `{"reason":"…"}` (Pflicht, bis 4000 Zeichen; leer =
+  400) setzt `stage:"owner"` und `escalation:{reason, at}`, Audit `attention_escalated`. Nur eine
+  Stufe aufwärts: eine Zeile, die schon beim Owner liegt, ist 409, außer derselbe Grund wird
+  wiederholt (`existing:true`). Eine geschlossene Zeile ist 409, eine unbekannte Id 404.
+- **Beantworten** geht in beiden Stufen durch `POST /api/attention/:id/answer`, unverändert: ein
+  `attention-answer`-Zeiger in der Program-Inbox, `answer.by:"owner"`. Beide Türen liegen hinter
+  dem Owner-Bearer. Nach Zeile 923f771e ist die handelnde Session in der Audit-Zeile erkennbar; bis dahin
+  kann der Server die Orchestratorin nicht vom Owner unterscheiden und behauptet es auch nicht.
+- **Altbestand:** eine persistierte Zeile ohne `stage` lädt als `"owner"`.
+
 ## attention withdraw — `POST /api/self/attention/:id/withdraw`
 
 Die ZwillingsTür zu `POST /api/self/attention`: eine gebundene MAIN zieht eine eigene noch offene
@@ -921,6 +957,135 @@ gefallenen, ein Archivrecord hinter > 1 MiB Nichttreffern, kaputte Zeile, Rotati
 unbekannte Herkunft, geborgter Cursor), `e2e/programs.ts` (Rail-Pointer ≤ 512 B, Nachfolgebrief ohne
 Zählzeile).
 
+## konzepte — Versionen und Anmerkungen eines Konzepts (seit 2026-09-28, Program 31aa88ea)
+
+Das Konzeptgedaechtnis haelt je Konzept zwei append-only Ledger: `versionen.jsonl` (eine Zeile je
+veroeffentlichter Fassung) und `anmerkungen.jsonl` (eine Zeile je Anmerkung oder Statuswechsel). Beide
+liegen PRIVAT unter der Wurzel `FLEET_KONZEPT_ROOT` (`<wurzel>/<konzept>/…`), nie in `fleet.json` und nie
+im Baum; die Fassung selbst ist `<wurzel>/<konzept>/v<N>.md`, abgelegt von ihrem Schreiber. Code:
+`konzept-ledger.ts#konzeptRequest` (ein Handler fuer beide Tueren), Kontext-Ableitung
+`server.ts#konzeptKontextFor`, Entwurf `docs/messungen/2026-09-26-s4-entwurf-konzept-versionen-anmerkungen.md`.
+
+**Provenienz ist Server-Sache.** `actor` ist woertlich der `server/auth.ts#Principal` der Anfrage —
+`{kind:"session", slot, openedAt, role:"lane"|"main"}` an der Self-Tuer, `{kind:"owner", via}` an der
+Owner-Tuer. `kontext` ist ein `trace-index.ts#TraceRefs`: `slot` + `openedAt` aus dem Token, `session`
+sobald der Server die Konversations-id kennt, dazu die BINDUNG — eine Lane traegt `branch`, `task` und
+`program`, eine gebundene MAIN ihr `program`, der Owner `{}` (sein Token beweist keine Bindung). Ein Body,
+der `actor` oder `kontext` nennt, ist **400** — nicht still ignoriert. `detailRef` (optional, Form
+`TraceDetailRef{source, locator, fp?}`) zeigt auf die Zeile, in der der Anlass stand (Send-Receipt,
+Report, Attention-Antwort); ihn nennt der Schreiber.
+
+**Wer:** die Self-Tuer ist offen fuer eine **Lane** und fuer die **gebundene MAIN eines aktiven
+Programs** (`boundProgramForMain`); jede andere Session bekommt **409** `a konzept is read and written by a
+lane or by the bound MAIN of an active Program — this session is neither (role <role>)` — auch
+Supervisor und Orchestratorin (Rolle `generic` im Principal). Ohne erkannte Credential 401 nach 400 ms.
+Nach dem Body-Lesen wird der Occupant erneut geprueft; ein recycelter Slot bekommt 409 und nichts wird
+geschrieben.
+
+**Status wird gefaltet, nicht doppelt geschrieben.** Eine Anmerkung ist `"offen"`, bis ein spaeteres
+Ereignis etwas anderes sagt: eine Version, deren `arbeitetEin` sie nennt (`{eingearbeitet: N}`), oder eine
+`verworfen`-Zeile (`{verworfen: grund, actor}`). Das juengste Ereignis gilt; bei gleicher Millisekunde
+gewinnt das Verwerfen. Eine Version ist damit EIN Anhaengen, nie ein zweiter Schreibakt in die andere
+Datei, den ein Absturz dazwischen zerreissen koennte.
+
+**Serialisiert je Konzept.** Letzte-N-lesen, pruefen und anhaengen laufen in einem Glied einer Kette je
+Konzept: gleichzeitige POSTs verlieren keine Zeile und vergeben kein N doppelt (`e2e/konzepte.ts`
+§concurrency, Mutationsprobe: ohne Kette bekamen acht POSTs alle N=4).
+
+**Reihenfolge der Pruefungen** (Teil des Vertrags): Konzept-id (400) → Body (400) → Wurzel (503) → unter
+der Sperre der Zustand (404/409). Ein kaputter Body erfaehrt nie, ob ein Speicher existiert.
+
+Ablehnungen, die alle Tueren teilen:
+
+- **400** `konzept id must match ^k-[a-z0-9-]{1,64}$` — die id ist das einzige Pfadsegment unter der Wurzel.
+- **400** `actor is set by the server from your credential and its binding — a body cannot name it`
+  (ebenso `kontext`, oder beide).
+- **400** `this door reads only … — [<feld>] is not read` — jeder Body ist geschlossen.
+- **400** `the body must be a JSON object (content-type: application/json)`.
+- **503** `FLEET_KONZEPT_ROOT is not set — the konzept store has no root on this server` bzw.
+  `FLEET_KONZEPT_ROOT does not name an existing directory — the konzept store is unavailable`. Die
+  Wurzel wird je Anfrage geprueft und nie angelegt.
+- **404** `not found` fuer einen anderen Pfad oder ein anderes Verb unter `/konzepte/:id/`.
+
+### Versionen — `GET|POST /api/self/konzepte/:id/versionen`
+
+```
+curl -s http://<fleet-host>:<port>/api/self/konzepte/<konzept>/versionen \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+
+curl -s -X POST http://<fleet-host>:<port>/api/self/konzepte/<konzept>/versionen \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"sha256":"<sha256 von v<N>.md>","anlass":"<warum, ≤500>","geltung":"<wofuer, ≤200>",
+       "ebene":"projekt","arbeitetEin":["<anmerkung-id>"],"quellen":{"neu":[]}}'
+```
+
+Der Schreiber legt zuerst `<wurzel>/<konzept>/v<N>.md` ab, N = `letzte + 1` aus dem GET (`letzte:null` =
+noch keine Version, dann N = 1). Die Route vergibt N selbst, prueft, dass die Datei existiert und auf
+`sha256` hasht, und schreibt `{konzept, version:N, vorgaenger:N-1|null, sha256, at, actor, kontext,
+anlass, detailRef?, arbeitetEin[], quellen{korpus?, neu[]}, ebene, geltung}`. GET antwortet
+`{konzept, versionen[], letzte, malformed}` — eine kaputte oder fremde Zeile zaehlt in `malformed`, nie
+still verworfen.
+
+- `ebene` ist eine geschlossene Liste `arbeit|strang|projekt|portfolio|owner`, fehlt sie, gilt
+  `projekt` (Owner-Richtung b04fd193, Notiz d7edfbea: EIN Eintragsmodell mit Ebene als Feld; `team` kommt
+  spaeter nur ins Modell). Keine Aufstiegslogik — nur das Feld.
+- `geltung` ist Pflicht: Freitext 1–200 Zeichen, wofuer der Eintrag gilt.
+
+Ablehnungen: **400** `sha256 must be the 64 lowercase hex of v<N>.md` · **400** `anlass must be a string of
+1–500 chars` · **400** `geltung must be a string of 1–200 chars` · **400** `ebene must be one of
+arbeit|strang|projekt|portfolio|owner (absent = projekt)` · **400** `arbeitetEin must be an array of at most
+100 anmerkung ids (16 hex)` · **400** `quellen must be {korpus?: <64 hex>, neu: [...]}` · **400**
+`detailRef must be {source, locator, fp?}` · **409** `<konzept>/v<N>.md does not exist — the next version
+is <N>; place the file under the root first` · **409** `<konzept>/v<N>.md hashes to <x>, the body names <y>`
+· **409** `arbeitetEin names anmerkungen <konzept> does not have: <ids>` · **404** (GET) `unknown konzept`.
+
+### Anmerkungen — `GET|POST /api/self/konzepte/:id/anmerkungen`
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/self/konzepte/<konzept>/anmerkungen \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"version":<N>,"text":"<≤4000>","anker":{"abschnitt":"<≤200>"}}'
+```
+
+Eine Anmerkung haengt an genau einer veroeffentlichten Version: `{id, konzept, version, anker?{abschnitt,
+satzSha?}, text, at, actor, kontext, detailRef?, status}`; `id` vergibt der Server (16 Hex). GET antwortet
+`{konzept, anmerkungen[], malformed}` mit dem gefalteten `status`.
+
+Ablehnungen: **400** `version must be an integer ≥ 1` · **400** `text must be a string of 1–4000 chars` ·
+**400** `anker must be {abschnitt, satzSha?}` / `anker.satzSha must be 64 lowercase hex` · **409**
+`<konzept> has no version <N> — an anmerkung hangs on a published version (latest: <M|none>)`.
+
+### Verwerfen — `POST /api/self/konzepte/:id/anmerkungen/:aid/verwerfen`
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/self/konzepte/<konzept>/anmerkungen/<aid>/verwerfen \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"grund":"<≤500>"}'
+```
+
+Haengt `{art:"verworfen", anmerkung, grund, at, actor, kontext}` an; der Status wird
+`{verworfen: grund, actor}` mit dem Principal des Verwerfenden. Ablehnungen: **400** `grund must be a
+string of 1–500 chars` · **400** `anmerkung id must match ^[0-9a-f]{16}$` · **404** `<konzept> has no
+anmerkung <aid>` · **409** `anmerkung <aid> is already verworfen`.
+
+### Die OWNER-Tuer — `/api/konzepte/:id/versionen` · `/anmerkungen` · `/anmerkungen/:aid/verwerfen`
+
+Dieselben drei Pfade ohne `self/`, hinter dem Token-Gate, mit demselben Handler: `actor` =
+`{kind:"owner", via:"bearer"|"cookie"|"query"}`, `kontext` = `{}`. Ohne Owner-Token 401; eine Anfrage,
+die ZUSAETZLICH ein Self-Token traegt, loest zu dieser Session auf und bekommt **409** `this is the
+owner's konzept door — a session reads and writes through /api/self/konzepte/:id/…`.
+
+```
+curl -s -X POST http://<fleet-host>:<port>/api/konzepte/<konzept>/anmerkungen \
+  -H "authorization: Bearer $FLEET_TOKEN" -H 'content-type: application/json' \
+  -d '{"version":<N>,"text":"<≤4000>"}'
+```
+
+**Grenzen dieses Schnitts:** keine Board-Oberflaeche (Karte 2), kein Pack-Anschluss (Karte 3, der
+Pack-Aufloeser f38eb1c8 teilt sich spaeter `FLEET_KONZEPT_ROOT`), keine `unknown`-Variante im Principal
+(jede Tuer verlangt eine erkannte Credential, D2a 5b71d60c bleibt unberuehrt). Beweis: `e2e/konzepte.ts`
+(eigene Scratch-Instanz, `FLEET_E2E_MODULES=konzepte`).
+
 ## tasks — `POST /api/self/tasks`, `GET /api/self/program-execution`
 
 Zwei Türen desselben Brackets: die eine LEGT eine Zeile an, die andere SIEHT, wo die Zeilen des
@@ -1044,7 +1209,7 @@ MAIN-Bindung hat; bei null ist das Feld wegen des Poll-Budgets abwesend.
 ### Der Übergabe-Record `handover` (`GET /api/self/program-execution`)
 
 Jede Program-Zeile trägt `handover`: `null`, solange keine Standard-Nachfolge stattfand, sonst
-`{at, from, to, obligations, settled, dropped}` — der persistierte Record
+`{at, from, to, obligations, settled, lost, dropped}` — der persistierte Record
 (`server.ts#captureProgramHandover`, Form `server/types.ts#ProgramHandover`). Er armiert nichts neu
 und löscht nichts; Neu-Registrieren bleibt der eigene Akt der Nachfolgerin über die normalen Türen.
 
@@ -1061,7 +1226,8 @@ und löscht nichts; Neu-Registrieren bleibt der eigene Akt der Nachfolgerin übe
   `auto-row-gone` (keine Auto-Zeile dieser id mehr). Eine Audit-Watch ohne deckende Audit-Zeile
   bleibt offen, auch wenn ihre Watch-Zeile weg ist. Historische `attention`-Zeilen haben keinen
   solchen Test und werden weiter getragen.
-- Ein Record von vor 2026-09-23 hat kein `settled` und lädt als `settled: []`.
+- **`lost` = nicht übertragbare Zeilen** mit `id`, `kind` (`clarification` oder `fleet-event`) und `reason` (etwa `lane gone`, `program not active`, `no successor bound`). Die Program-Sicht zeigt die Liste unverändert; `dropped` behält seine bisherige Bedeutung.
+- Alte Records ohne `settled` oder `lost` laden mit leeren Listen.
 
 ### Die abgeleitete `phase` (`GET /api/self/program-execution`)
 
@@ -1951,7 +2117,11 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 
 ## clarifications — `GET /api/self/clarifications`, `POST /api/self/clarifications/:id/reply`
 
-Die **Frage eines blockierten Workers an SEINE MAIN** und deren Antwort. Sie ist die Gegenrichtung
+Die **Frage eines blockierten Workers an SEINE MAIN** und deren Antwort. Ist die MAIN eines Programs
+nicht lebendig gebunden, erreicht die Rückfrage die einzige lebende Orchestratorin mit
+`basis:"orchestrator"`; deren exakter Occupant kann antworten. Ohne sie bleibt die Rückfrage 409.
+Fleet-Reports behalten ihre eigene B4-Regel und eskalieren hier nicht.
+Sie ist die Gegenrichtung
 zu `attention` (MAIN → Owner) und folgt derselben Regel „[Zitat entfernt]“: eine Lane fragt nie
 den Owner, eine MAIN fragt nie eine fremde Lane. Transport ist der bestehende `FleetEvent`-Rail,
 kein eigener Kanal.
@@ -1974,6 +2144,7 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   Wiederholung mit **identischem** Text ist erlaubt, mit abweichendem Text ist sie 409 — der
   ausstehende Text kann schon in der Pane stehen, und zwei verschiedene Antworten wären die zweite
   Hälfte eines Widerspruchs, den niemand sieht.
+- **Standard-Program-MAIN-Nachfolge:** Offene Fragen einer lebenden Program-Lane gehen beim Bindungsschnitt an die Nachfolgerin über. Ihr GET listet die Frage, ihr Reply bleibt derselbe Antwortpfad; der Audit nennt `clarification_rebound`. Eine nicht übertragbare Frage wird mit ID und Grund in `program.handover.lost` festgehalten und der Lane in ihrer Pane abgelehnt. Owner-Kill überträgt keine Frage.
 - **Refusals, die kein Fehler deiner Seite sind:** 404 `unknown clarification request` · 409
   `clarification belongs to another or replaced MAIN session` (recycelter Occupant) · 409
   `worker occupant ended or was replaced` (die Zeile wird dabei refused) · 409
@@ -2015,8 +2186,10 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 - **Scope: Prinzipal-gebunden, Nicht-Lane.** Absender ist, wer die Session IST — aus der Bindung
   abgeleitet, nie aus dem Body. Eine gebundene Program-MAIN sendet als `{kind:"program",id}`, der
   exakt gebundene Supervisor (`isBoundSupervisor`) als `{kind:"role",role:"supervisor"}`.
+  Die einzige lebende Session mit Orchestratorin-Label sendet als
+  `{kind:"role",role:"orchestrator"}`; das Label gewährt keine weiteren Rechte.
 - **Adress-Union, geschlossen:** `{kind:"program", id}` | `{kind:"role", role}` mit
-  `role ∈ {supervisor, controller}`.
+  `role ∈ {supervisor, orchestrator, controller}`.
 - **`role:"controller"` ist BENANNT, aber nicht auflösbar** — 409, und **nichts wird gespeichert**.
   Der Controller ist Scope und hält keine Bindung (`docs/controller.md`). Wer ihn heute erreichen
   will, adressiert **das Program, dessen MAIN er ist**, als `{kind:"program",id}`. Die Rolle steht
@@ -2045,8 +2218,13 @@ DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, 
 | Fall | Antwort | Gespeichert? |
 |---|---|---|
 | Unbekannte Program-Id · `role:"controller"` | 409, benannt | **nein** |
-| Gültige Adresse, **niemand hält sie gerade** (kein gebundener MAIN, tote Occupation, kein Supervisor gebunden; auch ein `completed`/`abandoned` Program) | 200 mit `note`, `holder:null` | **ja** — der nächste Halter liest sie |
+| Gültige Adresse ohne lebenden Halter (Program oder Supervisor) | 200 mit `note`, `escalatedTo:"orchestrator"`, `holder` = Orchestratorin; ohne genau eine lebende Orchestratorin `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse — der nächste Halter liest sie weiter |
+| `role:"orchestrator"` ohne genau eine lebende Orchestratorin | 200 mit `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse |
 | Gültige Adresse mit lebendem Halter | 200, `holder:{slot,openedAt}` | ja |
+
+Ein lebender Halter bekommt genau einen Hinweis über den bestehenden SendPath `inbox-nudge`.
+`ctl.sh send --orchestrator <textfile>` sendet über `POST /api/self/messages` mit
+`FLEET_SELF_TOKEN`; die Owner-Credential wird dafür nicht gelesen.
 
 Der mittlere Fall ist der Zweck der Übung, nicht ein Randfall: **eine Succession ist genau das
 Fenster, in dem eine Adresse kurz unbesetzt ist.**
@@ -2545,13 +2723,15 @@ Fehlt beides, geht der Report daher in die **bestehende Owner-Operations-Inbox (
 - **Eine Lane, die WIEDER filet, schließt ihre älteren offenen Zeilen selbst**
   (`server.ts#closeSupersededReports`, gemessen 2026-09-22: 27 Owner-Inbox-Reports EINER Lane, 26
   davon durch spätere Runden derselben Lane überholt und von Hand akzeptiert). Eine neue Filung
-  schließt alle älteren UNENTSCHIEDENEN Reports derselben Branch mit `basis:"owner-inbox"` als
+  schließt alle älteren UNENTSCHIEDENEN Reports derselben Branch mit `basis:"owner-inbox"` sowie
+  Program-Reports mit `status:"handoff"` als
   UEBERHOLT: `decision.disposition:"accepted"`, `by:{rule:"superseded"}`, `supersededBy` = die Id
   des neuen Reports, Grund mit Verweis — der neueste bleibt offen, und der AKTE ist die Filung
   selbst, kein Urteil über den Inhalt. Der Dritte-Principal-Regel `accepted-by-land` zur Seite
-  gestellt: eine RULE entscheidet, nie der Owner, nie eine Session. Nur Owner-Inbox-Zeilen: eine
-  Program-Zeile gehört ihrem lebenden MAIN (keine Regel nimmt dem MAIN das Urteil ab), eine
-  gebundene Zeile ihrem Empfänger. Der Join ist die BRANCH, nicht die Belegung — die gemessenen
+  gestellt: eine RULE entscheidet, nie der Owner, nie eine Session. Der Program-handoff ist ein
+  Übergabedokument ohne Arbeitsbehauptung; spätere Filung derselben Branch ersetzt es. Program-
+  Zeilen mit `needs-main`, `complete` oder `failed` bleiben unbeurteilt bei ihrer MAIN, ebenso
+  gebundene Zeilen bei ihrem Empfänger. Der Join ist die BRANCH, nicht die Belegung — die gemessenen
   Runden waren Nachfolgerinnen und Respawnes, Slot-Nummern recyceln, die Branch benennt die
   Arbeit. Das Urteil wird NICHT zur Lane getragen: die Lane, die den Nachfolger filte, hat die
   Zeile selbst überholt und ist der eine Prinzipal, den niemand mehr sagen muss.
@@ -2649,7 +2829,7 @@ Byte-Gleichheit beider Sichten).
 
 **`GET /api/self/fleet-report`** liefert die Zeilen, in denen der Aufrufer Worker oder
 Occupant-Empfänger ist, plus alle `basis:"program"`-Zeilen des Programs, dessen aktuelle MAIN der
-Aufrufer laut `boundProgramForMain` ist. **Retention: `FLEET_REPORT_KEEP = 20`** terminale Zeilen,
+Aufrufer laut `boundProgramForMain` ist. `?open=1` filtert auf unbeurteilte Zeilen. **Retention: `FLEET_REPORT_KEEP = 20`** terminale Zeilen,
 älteste zuerst verworfen. Bei `basis:"program"` heißt terminal: `decision` ist vorhanden; eine
 unbeurteilte Program-Zeile altert nie allein aus der offenen Schuld. Sonst heißt terminal wie zuvor:
 das zugehörige Event steht auf
@@ -2659,6 +2839,14 @@ Eine Zeile mit noch offenem Event wird nie gepruned. Ein Report ist also kein Ar
 Commit.
 
 ### Annahme — `POST /api/self/fleet-report/:id/accept`, `POST /api/self/fleet-report/:id/reject`
+
+Die gebundene Program-MAIN kann gelandete, unbeurteilte `needs-main`- und `complete`-Zeilen
+beendeter Lanes in einem Aufruf beurteilen: `POST /api/self/fleet-report/batch` mit
+`{"decisions":[{"id":"<report-id>","disposition":"accepted","reason":"ERFUELLT: ja — …"}]}`.
+Jeder Eintrag durchläuft die bestehende MAIN-Urteilstür und erhält ein normales Occupant-Urteil
+mit Ledger und Zustellung. Vor dem ersten Urteil prüft die Sammel-Tür alle IDs, Program-Bindungen,
+Status, Lane-Enden, Land-Nachweise und Gründe; 1 bis 100 unterschiedliche IDs sind zulässig.
+Sie verleiht der Orchestratorin oder einer Lane kein Urteilsrecht.
 
 **Der ACK ist ein Transport-Empfang, keine Beurteilung.** `POST /api/self/events/:id/ack` sagt
 per Vertrag „ich habe Bytes bekommen" — bis zu diesem Schnitt persistierte nichts, ob die
@@ -2676,8 +2864,8 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   wird auf seiner EIGENEN Uhr gepruned (`pruneFleetEvents`, je Empfänger); der Report ist das
   BEURTEILTE Objekt mit eigener Retention. Ein Urteil auf dem Event verschwände, während die Zeile,
   die es beurteilt, noch da ist — und es überlüde ein Wort (`acknowledged`) mit zwei Bedeutungen.
-- **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId}|"owner"|{rule:"accepted-by-land"},
-  reason, fulfilled, mainAfter?}` — `mainAfter` steht GENAU auf einem Regelurteil (Abschnitt „Regelentscheide" unten). `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
+- **`decision` ist EIN Objekt oder es ist nicht da**: `{disposition, at, by:{slot,openedAt,sessionId}|"owner"|{rule:"accepted-by-land"|"landed"|"superseded"},
+  reason, fulfilled, mainAfter?}` — `mainAfter` steht auf `accepted-by-land` und `landed` (Abschnitt „Regelentscheide" unten). `disposition` ist genau einer von zwei (`FLEET_REPORT_DISPOSITIONS` in `server/types.ts`):
   `accepted` · `rejected`. Fehlt der Schlüssel oder ist er `null`, ist die Zeile UNBEURTEILT — eine
   vor dieser Tür persistierte Zeile bleibt beobachtbar unbeurteilt und wird nie zu einem Urteil
   repariert, das niemand gefällt hat. `reason` ist optionale Prosa ≤ 500 Zeichen oder `null`.
@@ -2702,7 +2890,8 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   `disposition` und `fulfilled` sind ZWEI Fakten. Eine MAIN, die eine Scheibe annimmt, obwohl das
   Done nur zur Hälfte erfüllt ist, sagt genau das (`accepted` + `teilweise`); das eine aus dem
   anderen abzuleiten wäre der Verlust, den dieses Feld schliesst. Ein REGELURTEIL schreibt immer
-  `null`: `accepted-by-land` liest einen Land und einen Post-Land-Audit, `superseded` eine spätere
+  `null`: `accepted-by-land` liest einen Land und einen Post-Land-Audit, `landed` einen Land nach
+  einem handoff ohne Arbeitsbehauptung, `superseded` eine spätere
   Zeile derselben Lane-Branch — keines davon ist ein Urteil über ein Kriterium. FEHLT der Schlüssel
   ganz, wurde die Zeile vor diesem Schnitt gestempelt; das wird nie zu `null` repariert. Das Feld
   steht auch auf der DECISION-Zeile in `fleet-reports.jsonl` — die Live-Liste ist ein begrenzter
@@ -2759,6 +2948,10 @@ plus deine `reason` wörtlich. Wer auf einen `needs-main`-Report antwortet, schr
 also in `reason` (≤ 500 Zeichen) — eine zweite Nachrichtenklasse gibt es nicht, und die
 Clarification-Tür bleibt für Fragen VOR dem terminalen Bericht. Das Ergebnis steht als
 `decisionDelivery: {state, at, reason}` an der Report-Zeile:
+Der Zustelltext nennt den Entscheider aus `decision.by` (MAIN, Owner, ReportDelegate oder Regel).
+Ein abgelehntes `needs-main` ist eine Antwort auf die Frage und fordert nicht pauschal zum
+Reparieren und erneuten Filen auf. Abgelehnte Urteile werden sofort zugestellt; angenommene
+bleiben bündelbar, jeweils unter den bestehenden Zustell-Gates.
 
 - `delivered` — getippt, tmux hat angenommen.
 - **`pending` — die Pane der Lane war beim Urteil BESCHÄFTIGT (seit b5dc4dc2).** Nichts wurde
@@ -2851,6 +3044,12 @@ exakt wie „niemand hat hingesehen". Darum:
 - **`reportsAwaitingOwner`** reitet auf `/api/sessions` als EINE Zahl (bei 0 weggelassen, wie
   `attentionOpen`, `docs/data-saver.md`) und lässt das 📥 im Board erscheinen; die Zeilen holt das
   Panel beim Öffnen und wenn die Zahl SICH BEWEGT.
+- **Eine verwaiste, unbeurteilte Program-Zeile erreicht die lebende Orchestratorin einmal als
+  Hinweis.** Die Zustellung löst `{kind:"orchestrator"}` über `server.ts#deliveryRecipient` auf,
+  nennt die Report-id und die bereits offene Tür. Die `send`-Audit-Zeile trägt die Report-id;
+  sie verhindert eine Wiederholung beim nächsten Tick und nach einem Neustart. Ohne eindeutig
+  lebende Orchestratorin bleibt die Zeile in `reportsAwaitingOwner`. Der Hinweis erteilt kein
+  Urteilsrecht: ohne `ReportDelegate` steht der Orchestratorin keine Self-Entscheidungstür offen.
 - **Die Retention hält eine wartende Zeile fest.** `pruneFleetReports` schneidet den terminalen
   Schwanz auf `FLEET_REPORT_KEEP`, und das Event einer verwaisten Zeile wurde genau in dem Moment
   terminal, in dem der Owner zuständig wurde — sie wegzupruen hätte das einzige Objekt gelöscht, auf
@@ -2936,6 +3135,7 @@ Signatur. Drei Klassen entscheidet seither eine Regel, jede mit benannter Ablehn
 
 | Klasse | Entscheider | Regel |
 |---|---|---|
+| Program-`handoff` + Branch nach Report gelandet + Lane beendet | Regel `landed` | kein Urteil über Arbeit; Land schließt nur die Übergabezeile mit `mainAfter` |
 | Report `complete` + Lane gelandet + grüner/unknown Audit | **niemand** | Land ist die Annahme; Report schließt als `accepted-by-land` mit `mainAfter` |
 | Report `complete` + gelandet + rotem Audit, Urteil `flake`/`stale-test`/`unknowable` | **niemand** | jemand HAT hingesehen; die Regel liest das Urteil (seit 2026-09-15) |
 | Report `complete` + gelandet + rotem Audit, danach voller GRÜNER Audit auf einem Nachfahren | **niemand** | der spätere Lauf hat diesen Baum und mehr gemessen (seit 2026-09-15) |
@@ -2949,6 +3149,13 @@ Signatur. Drei Klassen entscheidet seither eine Regel, jede mit benannter Ablehn
 | Attention bei Succession des Fragestellers | niemand | **umhängen auf die Nachfolgerin statt `refused`** (§inbox oben) |
 | Rot-Audit, einzige Check-Signatur in ≤ 14 d schon Owner-`flake` | niemand | Adjudikation `flake` mit `by:{rule:„[Zitat entfernt]“, from:{auditAt, at}}` |
 | Rot-Audit, neue Signatur | MAIN (Program des Lands) / Owner | wie heute |
+
+**`landed`** schließt nur einen unbeurteilten Program-`handoff`, nachdem seine Lane-Occupation
+beendet wurde und `lane-outcomes.jsonl` für denselben Branch einen Land mit `ts ≥ reportedAt`,
+`repo` und `mainAfter` enthält. Ein Audit wird dafür nicht verlangt: der `handoff` behauptet
+keinen Arbeitsabschluss. Das Urteil ist `accepted`, `by:{rule:"landed"}`, `fulfilled:null` und
+trägt den gelesenen `mainAfter`. Audit `fleet_report_rule_decision` und die Ledger-Zeile
+`decision` belegen den Schluss. `needs-main`, `complete` und `failed` werden so nie beurteilt.
 
 **`accepted-by-land`** (`server.ts#acceptByLandReading`, Tick `FLEET_ACCEPT_BY_LAND_MS`, Default
 60 000, `0` schaltet den Timer ab; zusätzlich einmal beim Boot über den Bestand und nach jeder
@@ -3124,8 +3331,8 @@ behält, was der Prune löscht.
 
 - `open` wird geschrieben, wenn `POST /api/self/fleet-report` die Zeile anlegt (Program- wie
   Occupant-/Owner-Inbox-Pfad). `text` ist ungekürzt, `at` ist `reportedAt`.
-- `decision` wird an jedem Stempel geschrieben: Self-Tür, Owner-Tür und die Regel
-  `accepted-by-land`. `by` ist exakt `decision.by` (Occupant-Tripel, `"owner"` oder
+- `decision` wird an jedem Stempel geschrieben: Self-Tür, Owner-Tür und die Regeln
+  `accepted-by-land`, `landed` und `superseded`. `by` ist exakt `decision.by` (Occupant-Tripel, `"owner"` oder
   `{rule}`), `mainAfter` ist nur bei der Regel gesetzt, sonst `null`. Weil die erste Entscheidung
   gewinnt, gibt es je `id` höchstens eine `decision`-Zeile.
 - Eine Zeile, die vor 2026-09-14 gefilet wurde, hat keine `open`-Zeile. Fehlt eine Zeile, heißt das

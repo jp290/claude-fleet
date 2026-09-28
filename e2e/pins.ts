@@ -604,14 +604,14 @@ const server = serverU.text;
   const mint = mintSpan?.text ?? "";
   const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"\n'
     + '    || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review"\n'
-    + '    || e.kind === "succession-debt";';
+    + '    || e.kind === "succession-debt" || e.kind === "message";';
   const watchlessEquivalence = parser.includes(watchlessKinds)
     && parser.includes('    || (watchless !== (e.watchId === null))\n'
       + "    || !(ownerReceiver || (Number.isInteger(e.receiverSlot)");
   const nullMints = (mint.match(/watchId: null/g) ?? []).length;
   const missingAnchor = [parserSpan === null ? "fleetEventFrom" : "", mintSpan === null ? "openClarification" : ""]
     .filter(Boolean);
-  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report, lane-suite, harness-block, lane-review and succession-debt, and a string for every Watch event",
+  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report, lane-suite, harness-block, lane-review, succession-debt and message, and a string for every Watch event",
     missingAnchor.length === 0
       && /watchId: string \| null/.test(server)
       && watchlessEquivalence
@@ -627,6 +627,8 @@ const server = serverU.text;
         .match(/watchId: null/g) ?? []).length === 1
       // …and the fifth in fileLaneReview, the verdict a task row asked for (Task.review)
       && (serverU.span("async function fileLaneReview(", "// --- THE AUTOMATIC LANE CLOSE")?.text
+        .match(/watchId: null/g) ?? []).length === 1
+      && (serverU.span("async function sendMessageFor(", "// POST /api/self/messages/:id/read")?.text
         .match(/watchId: null/g) ?? []).length === 1
       && (server.match(/watchId: w\.id/g) ?? []).length >= 4,
     missingAnchor.length > 0
@@ -1377,6 +1379,29 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   }).map(([path]) => path);
   pin("Every DELIVERY_MEANING is a position sentence of at most 120 characters",
     !!meaningBody && malformed.length === 0, `malformed=[${malformed}]`);
+  // THE SENTENCE HAS A RECEIVER (Sinnpruefung Buendel 5a): succession and migrate-nudge reach lanes,
+  // bound MAINs and the Orchestratorin, and one sentence per path told all three they were a lane.
+  // Each role gets its own well-formed sentence, none equal to another's or to the general one, and
+  // only the lane's may speak of a lane.
+  // BREAKS IF: a role row is dropped, two roles share a sentence, or a MAIN/Orchestratorin sentence
+  // falls back to "deine Lane" / "Lane-Arbeit".
+  const byRoleBody = /const DELIVERY_MEANING_BY_ROLE:[^\n]+ = \{([\s\S]*?)\n\};/.exec(server)?.[1] ?? "";
+  const roleProblems = ["succession", "migrate-nudge"].flatMap((path) => {
+    const block = new RegExp(`\\n  "${path}": \\{([\\s\\S]*?)\\n  \\},`).exec(byRoleBody)?.[1] ?? "";
+    const roles = new Map([...block.matchAll(/^\s*"([a-z]+)":\s*"([^"]*)",\s*$/gm)].map((m) => [m[1]!, m[2]!]));
+    const general = meanings.get(path)?.slice(1, -1) ?? "";
+    const sentences = ["lane", "main", "orchestrator"].map((role) => roles.get(role) ?? "");
+    return [
+      ...["lane", "main", "orchestrator"].filter((role, i) => {
+        const value = sentences[i]!;
+        return value.length > 120 || !/^naechster Schritt: .+ · Grenze: .+$/.test(value)
+          || value === general || (role !== "lane" && /Lane/.test(value));
+      }).map((role) => `${path}/${role}`),
+      ...(new Set(sentences).size === 3 ? [] : [`${path}/shared`]),
+    ];
+  });
+  pin("succession and migrate-nudge carry one own sentence each for lane, main and orchestrator",
+    !!byRoleBody && roleProblems.length === 0, `problems=[${roleProblems}]`);
 
   // The FOREIGN-REPO half of the filing template. A lane outside claude-fleet gets no Fleet rulebook
   // at all (createWorktree copies the ignored scaffolding out of ITS repo), so every obligation this
@@ -3060,13 +3085,12 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // permanently. That is how 746513d1 came to sit at `waiting: 2/2 lanes busy in claude-fleet` for
   // hours while nothing about the cap was its reason (2026-09-07 04:47-05:14).
   //
-  // The MASTER STOP stays above it and that is deliberate, not an oversight: a row the fleet queue
-  // never looks at must keep its note byte-identical, or one program's grant would start painting
-  // sentences onto every unrelated queued row in the fleet.
+  // The per-row dispatch stop stays above it: a stopped row states that stop rather than a cap.
   const harnessGateIdx = tBody.indexOf("if (!harnessAutomatableFor(rowH)) {");
-  const masterStopIdx = tBody.indexOf("if (!dispatchOn && !pd) continue;");
+  const masterStopIdx = tBody.indexOf("if (stopReason) {");
   pin("the harness-automation gate runs BEFORE both lane caps and AFTER the per-row master stop — a permanent reason outranks a temporary one",
-    masterStopIdx > 0 && harnessGateIdx > masterStopIdx
+    /const stopReason = programDispatchStopped\(next\) \? "program dispatch off" : !dispatchOn && !pd \? "dispatcher stopped" : null;/.test(tBody)
+      && masterStopIdx > 0 && harnessGateIdx > masterStopIdx
       && tBody.indexOf("if (lanes >= repoCap.max)") > harnessGateIdx
       && tBody.indexOf("if (next.programId) {") > harnessGateIdx
       && tBody.indexOf("if (!free) {") > harnessGateIdx,
@@ -3143,7 +3167,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // record and a narrowing one produce the same board.
   const progCapFn = server.match(/const programDispatchCap = [\s\S]*?\n\};/)?.[0] ?? "";
   pin("the per-program cap number can only be LOWERED by an owner record — programDispatchCap is a min against the machine number",
-    /const programCap = programDispatchCap\(pd, repoCap\.max\);/.test(tBody)
+    /const programCap = programDispatchCap\(programDispatchSetting\(next\), repoCap\.max\);/.test(tBody)
     && /const machine = DISPATCH_MAX_LANES_PER_PROGRAM \?\? repoMax;/.test(progCapFn)
     && /Math\.min\(pd\?\.maxLanes \?\? machine, machine\)/.test(progCapFn)
     && !/DISPATCH_MAX_LANES_PER_PROGRAM/.test(tBody.slice(progGuardIdx, progCapIdx + 60)),
@@ -4648,21 +4672,23 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // reading of `p.dispatch` inside tickDispatch is how the ACTIVE-program clause silently stops
   // applying to one of them.
   const progDispReads = [...tBody.matchAll(/\.dispatch\b/g)];
-  pin("tickDispatch reads Program.dispatch through programDispatchOn/programDispatchCap only — never a second inline read",
+  pin("tickDispatch reads Program.dispatch through programDispatchOn/programDispatchStopped/programDispatchSetting only — never a second inline read",
     progDispReads.length === 0
     && /const pd = programDispatchOn\(next\);/.test(tBody)
-    && /if \(!dispatchOn && !pd\) continue;/.test(tBody),
+    && /programDispatchStopped\(next\)/.test(tBody)
+    && /programDispatchCap\(programDispatchSetting\(next\), repoCap\.max\)/.test(tBody),
     `${progDispReads.length} inline read(s) in tickDispatch`);
   // ...and the ACTIVE clause itself: a complete program's leftover queued rows must not keep
   // spawning lanes on a permission granted while it was still running. Both readers carry it —
   // the per-row predicate and the tick's own entry guard, which is the one that decides whether
   // the loop runs at all under a stopped fleet.
-  const progDispGrantFn = server.match(/const programDispatchGrant = [^;]+;/)?.[0] ?? "";
+  const progDispGrantFn = server.match(/const programDispatchGrant = [\s\S]*?\n\};/)?.[0] ?? "";
   pin("a program-scoped dispatch grant is spent only while the program is ACTIVE — and that clause is written exactly once",
-    /p\.status === "active" && p\.dispatch\?\.on \? p\.dispatch : undefined/.test(progDispGrantFn)
-    && (server.match(/p\.status === "active" && p\.dispatch\?\.on/g) ?? []).length === 1
+    /const activeProgramDispatch = \(p: Program\): ProgramDispatch \| undefined =>\n  p\.status === "active" \? p\.dispatch : undefined;/.test(server)
+    && (server.match(/p\.status === "active" \? p\.dispatch : undefined/g) ?? []).length === 1
+    && /const pd = activeProgramDispatch\(p\);/.test(progDispGrantFn)
     && /return p \? programDispatchGrant\(p\) : undefined;/.test(server)
-    && /if \(!dispatchOn && !programs\.some\(programDispatchGrant\)\) return;/.test(tBody),
+    && /const pd = programDispatchOn\(next\);/.test(tBody),
     progDispGrantFn || "programDispatchGrant missing");
   // ...and the QUIET-HOURS WAIVER is that one named pair and nothing looser: an ACTIVE grant AND a
   // row the MACHINE released. Widening it to "any row of a granted program" would hand an owner's
@@ -6155,7 +6181,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_KINDS = "the FleetEvent kind set is closed";
   const expected = ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit",
     "deploy-terminal", "command-job", "lane-suite", "clarification-request", "fleet-report",
-    "supervisor-transition", "harness-block", "lane-review", "succession-debt"].sort();
+    "supervisor-transition", "harness-block", "lane-review", "succession-debt", "message"].sort();
   const signals = read("lane-signals.ts");
   const laneKinds = (signals.match(/export type LaneWatchEventKind =([^;\n]+)/)?.[1] ?? "")
     .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
@@ -6168,7 +6194,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const union = (server.match(/type FleetEvent =([\s\S]*?);/)?.[1] ?? "")
     .split("|").map((w) => w.trim()).filter(Boolean);
   const got = [...found].sort();
-  pin(`${RULE_KINDS} — the interfaces yield exactly the thirteen known kinds`,
+  pin(`${RULE_KINDS} — the interfaces yield exactly the fourteen known kinds`,
     JSON.stringify(got) === JSON.stringify(expected), `[${got.join(",")}]`);
   pin(`${RULE_KINDS} — every union member is one of those interfaces (no kind enters off-list)`,
     union.length > 0 && union.every((m) => new RegExp(`interface ${m} extends FleetEventBase \\{`).test(server)),
@@ -6442,7 +6468,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // the lane), and both are read off ONE `ownerAddressable` list so a kind can never be admitted
   // to the membership test without also being admitted to the transport equivalence.
   const ownerEquivalences = [
-    'const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block"\n    || e.kind === "lane-review" || e.kind === "succession-debt";',
+    'const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block"\n    || e.kind === "lane-review" || e.kind === "succession-debt" || e.kind === "message";',
+    'if (e.kind === "message") {\n    if (!ownerReceiver',
     '|| (ownerReceiver && !ownerAddressable)',
     '|| (ownerAddressable && (e.delivery === "inbox") !== ownerReceiver)',
     '|| ((p.basis === "owner-inbox") !== ownerReceiver)) return null;',

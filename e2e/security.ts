@@ -80,6 +80,14 @@ const PRE_AUTH_ROUTES = [
   // It stores tracked path/anchor pointers only, validated against the caller's own integration HEAD,
   // and starts, dispatches and writes into no pane.
   '= /api/self/program-context-packs',
+  // The konzept door (Program Konzeptgedaechtnis 31aa88ea, Karte 1). Reads and APPENDS to a private
+  // ledger under FLEET_KONZEPT_ROOT, open to a lane and to the bound MAIN of an active Program; every
+  // other session 409s. What bounds it: the konzept id is ^k-[a-z0-9-]{1,64}$ (no path segment reaches
+  // outside the root), `actor` is the resolved Principal and `kontext` is built from the credential and
+  // its binding — a body naming either is a 400 — and the only file it READS beyond its two ledgers is
+  // the `v<N>.md` the writer placed under that konzept, to hash it. It sends into no pane, starts,
+  // releases, lands and deploys nothing.
+  String.raw`~ /^\/api\/self\/konzepte\/([^/]+)\/(.+)$/`,
   // The Supervisor's two Cut-2 channels, on this list for the same reason as their neighbours (the
   // self principal IS the boundary) and narrower than any of them: both answer 409 to every session
   // but the one the OWNER bound as Supervisor. The view is read-only and mutates nothing (pinned as
@@ -168,6 +176,12 @@ const PRE_AUTH_ROUTES = [
   // beyond the row is the transport half — settleFleetEventAcknowledged on the report's own event,
   // through the ack route's single writer, and an already-terminal event is left exactly as it is.
   String.raw`~ /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/(accept|reject)$/`,
+  // The batch sibling is the same MAIN verdict repeated under one request. resolvePrincipal
+  // requires the self token (otherwise 401); a lane other than the steward is 409, and the handler
+  // requires a live bound MAIN of the report's own Program. It prechecks every landed, ended
+  // needs-main/complete row before calling decideFleetReport for each ordinary verdict; no body
+  // field grants a foreign Program, Owner, Delegate, land, deploy or Task.status authority.
+  '= /api/self/fleet-report/batch',
   // THE REPORT DELEGATE's pair (2026-09-24, server.ts#delegateDecideFleetReport): non-lane-only, and
   // then refused (409 not-delegate) unless the owner named THIS exact occupant and line through the
   // owner-gated PATCH /api/slots/:id/report-delegate — no label, model or role grants it. It reaches
@@ -607,6 +621,10 @@ const dangerous = (slot: number): Probe[] => [
   // side-effect-free named 400 (no id), which is what lets it carry the positive control.
   { path: "/api/studios", method: "POST", body: {}, owner: 400 },
   { path: "/api/studios", method: "GET", owner: 200 },
+  // the konzept ledger's owner door writes the OWNER as actor, so a scoped credential reaching it would
+  // forge the one provenance the ledger exists to prove. An empty body is a side-effect-free named 400
+  // (validated before the root is looked at), which carries the positive control.
+  { path: "/api/konzepte/k-authprobe/anmerkungen", method: "POST", body: {}, owner: 400 },
   { path: "/api/dispatch", method: "POST", body: {} },
   // the board editor's pair (§F5). The WRITE route is the only one on this server that puts bytes
   // into a file the caller named, so an auth regression here is not a leak — it is arbitrary code
@@ -815,7 +833,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     "FLEET_DISPATCH_MAX_LANES", "FLEET_VERIFY_TIMEOUT_MS", "FLEET_VERIFY_WAIT_MS",
     "FLEET_MIGRATE_PCT", "FLEET_LANE_MIGRATE_PCT", "FLEET_MODEL", "FLEET_STALLED_IDLE_MS",
     "FLEET_CARD_MS", "FLEET_BRIEF_MS", "FLEET_LAND_FF_RETRY_ROUNDS",
-    "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS",
+    "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS", "FLEET_MAX_SESSIONS",
   ];
   const [machineOwner, machineSelf, machineShare] = await Promise.all([
     fetch(BASE + "/api/machine-settings", { headers: H }),
@@ -826,8 +844,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     { settings?: { name?: unknown; value?: unknown; default?: unknown; how?: unknown }[] } | null;
   const machineRows = Array.isArray(machineBody?.settings) ? machineBody.settings : [];
   const machineNames = machineRows.map((r) => r.name).filter((name): name is string => typeof name === "string");
-  check("§2 machine settings: the owner reads only the reviewed allowlist, at most twelve complete rows",
-    machineOwner.status === 200 && machineRows.length === machineNames.length && machineNames.length <= 12
+  check("§2 machine settings: the owner reads only the reviewed allowlist, at most thirteen complete rows",
+    machineOwner.status === 200 && machineRows.length === machineNames.length && machineNames.length <= 13
       && new Set(machineNames).size === machineNames.length
       && machineNames.every((name) => MACHINE_SETTING_NAMES.includes(name))
       && machineRows.every((r) => (typeof r.value === "string" || typeof r.value === "number")

@@ -4,9 +4,9 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rena
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen, until, UntilTimeout } from "./harness";
+import { AUTOS_TICK_MS, BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen, until, UntilTimeout } from "./harness";
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
-import { DONE_LOOKING_RULES, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
+import { DONE_LOOKING_RULES, fleetReportDecisionMessage, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
 import { CONTEXT_PACKS } from "../context-packs";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
@@ -70,6 +70,7 @@ interface ProgramHandover {
   obligations: ProgramHandoverObligation[];
   // carried rows a later succession measured settled — `how` names the capture's own test
   settled: (ProgramHandoverObligation & { settled: { at: number; how: string } })[];
+  lost: { id: string; kind: "clarification" | "fleet-event"; reason: string }[];
   dropped: number;
 }
 interface Program extends ProgramContent {
@@ -156,6 +157,7 @@ interface FleetState {
   attentionRequests?: Record<string, unknown>[];
   // read by the succession-handover fixture, which asks whose row each is and whether it is open
   autos?: Record<string, unknown>[];
+  clarifications?: { id?: string; status?: string; refusedReason?: string | null }[];
   tasks?: Record<string, unknown>[];
   // read narrowly by the D1 report-join fixture, which only ever asks which ids are present
   fleetReports?: { id?: string }[];
@@ -1104,7 +1106,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const fleetLineRecords = ((readState() as { lineageHandovers?: { from?: { slot?: number; openedAt?: number } }[] }).lineageHandovers ?? [])
     .filter((r) => r.from?.slot === fleetSlot && r.from.openedAt === fleetAOpenedAt);
   check("Program-MAIN Fleet succession: the Program record keeps its exact shape and no role-lineage record or line id is written",
-    !!fleetRetained && JSON.stringify(Object.keys(fleetRetained).sort()) === JSON.stringify(["at", "dropped", "from", "obligations", "settled", "to", "v"])
+    !!fleetRetained && JSON.stringify(Object.keys(fleetRetained).sort()) === JSON.stringify(["at", "dropped", "from", "lost", "obligations", "settled", "to", "v"])
       && Array.isArray(fleetRetained.settled) && fleetRetained.settled.length === 0
       && JSON.stringify(Object.keys(fleetRetained.from).sort()) === JSON.stringify(["openedAt", "sessionId", "slot"])
       && JSON.stringify(Object.keys(fleetRetained.to).sort()) === JSON.stringify(["openedAt", "slot"])
@@ -3528,6 +3530,48 @@ export async function run(ctx: Ctx): Promise<void> {
   check("S0 setup: a lane of the Program-MAIN's checkout is born under the predecessor's exact occupation",
     typeof s0Lane.slot === "number" && JSON.stringify(s0Anchor()) === JSON.stringify({ slot: mainSlot, openedAt: s0PredecessorOpenedAt }),
     `${JSON.stringify(s0Lane)} anchor=${JSON.stringify(s0Anchor())}`);
+  const lostDutyLane = (await (await post("/api/lanes", { repo: REPO,
+    parent: { slot: mainSlot, openedAt: s0PredecessorOpenedAt } })).json()) as {
+      slot?: number; cwd?: string };
+  // An exact Program lane asks before the predecessor leaves. Its question and an independent
+  // immediate FleetEvent must follow the new occupant of the same MAIN slot.
+  await stopSrv();
+  const dutyFixture = readState();
+  if (s0Lane.slot && dutyFixture.slots?.[String(s0Lane.slot)])
+    dutyFixture.slots[String(s0Lane.slot)]!.programId = mainProgram.id;
+  if (lostDutyLane.slot && dutyFixture.slots?.[String(lostDutyLane.slot)])
+    dutyFixture.slots[String(lostDutyLane.slot)]!.programId = mainProgram.id;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(dutyFixture, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const dutyLaneToken = slotToken(s0Lane.slot ?? null);
+  const dutyQuestion = await selfPost("/api/self/clarifications", dutyLaneToken,
+    { question: "Which bounded Program task should this lane finish?" });
+  const dutyRequest = (await dutyQuestion.clone().json() as { request?: { id?: string; eventId?: string; basis?: string } }).request;
+  const lostDutyQuestion = await selfPost("/api/self/clarifications",
+    slotToken(lostDutyLane.slot ?? null), { question: "This lane will end before the succession." });
+  const lostDutyRequest = (await lostDutyQuestion.clone().json() as {
+    request?: { id?: string; eventId?: string } }).request;
+  if (lostDutyLane.slot) await post(`/api/slots/${lostDutyLane.slot}/kill`, {});
+  const dutyBlock = await selfPost("/api/self/harness-block", dutyLaneToken,
+    { signal: "waiting", tool: "fixture", detail: "successor must receive this immediate event" });
+  const dutyEventId = (await dutyBlock.clone().json() as { event?: string }).event ?? "";
+  await stopSrv();
+  const dutyPendingState = readState();
+  const dutyEvent = dutyPendingState.events?.find((e) => e.id === dutyEventId);
+  if (dutyEvent) {
+    dutyEvent.status = "pending";
+    dutyEvent.receiverIdleSec = 3600;
+    dutyEvent.attempts = 0;
+    dutyEvent.deliveredAt = null;
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(dutyPendingState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  check("Standard succession duty setup: a Program lane has one open question and one pending immediate FleetEvent for the predecessor",
+    dutyQuestion.ok && dutyRequest?.basis === "program-main" && dutyBlock.ok && !!dutyEventId
+      && dutyEvent?.kind === "harness-block" && dutyEvent.status === "pending"
+      && dutyEvent.receiverSlot === mainSlot && dutyEvent.receiverOpenedAt === s0PredecessorOpenedAt,
+    JSON.stringify({ question: dutyQuestion.status, block: dutyBlock.status, request: dutyRequest,
+      event: dutyEventId, status: dutyEvent?.status }));
   const capacityFilled: number[] = [];
   for (const slot of (await sessions()).slots.filter((s) => !s.cwd)) {
     const opened = await post(`/api/slots/${slot.id}/open`, { cwd: REPO, label: "succession-capacity-fixture" });
@@ -3573,6 +3617,47 @@ export async function run(ctx: Ctx): Promise<void> {
       && transferredBinding.sessionId === null && successorState?.sessionId === null
       && typeof transferredBinding.boundAt === "number" && transferredBinding.boundAt > (bound?.boundAt ?? 0),
     `response=${JSON.stringify(successionBody)} binding=${JSON.stringify(transferredBinding)}`);
+  const dutySuccessorToken = slotToken(successorSlot);
+  const dutyListed = await fetch(`${BASE}/api/self/clarifications`, {
+    headers: { "x-fleet-self-token": dutySuccessorToken },
+  });
+  const dutyListedBody = await dutyListed.json() as { requests?: { id: string; status: string;
+    receiver: { slot: number; openedAt: number } }[] };
+  const dutyListedRequest = dutyListedBody.requests?.find((c) => c.id === dutyRequest?.id);
+  const dutyReboundEvent = ((await (await get("/api/events")).json()) as { events: {
+    id: string; status: string; receiverSlot: number; receiverOpenedAt: number }[] }).events
+    .find((e) => e.id === dutyEventId);
+  check("Standard succession duty: the successor lists the predecessor's open lane question on its exact occupation",
+    dutyListed.ok && dutyListedRequest?.status === "open"
+      && dutyListedRequest.receiver.slot === successorSlot
+      && dutyListedRequest.receiver.openedAt === successorState?.openedAt,
+    JSON.stringify({ status: dutyListed.status, request: dutyListedRequest ?? null }));
+  const dutyHandover = (readState().programs ?? []).find((p) => p.id === mainProgram.id)?.handover;
+  const dutyExecution = (await selfExecution(dutySuccessorToken)).view?.programs
+    .find((p) => p.program.id === mainProgram.id)?.handover;
+  check("Standard succession duty: a gone lane's question is named as lost in the record and Program execution view",
+    lostDutyQuestion.ok && !!lostDutyRequest?.id
+      && dutyHandover?.lost.some((row) => row.id === lostDutyRequest.id
+        && row.kind === "clarification" && row.reason === "lane gone") === true
+      && dutyExecution?.lost.some((row) => row.id === lostDutyRequest.id
+        && row.kind === "clarification" && row.reason === "lane gone") === true,
+    JSON.stringify({ id: lostDutyRequest?.id, disk: dutyHandover?.lost ?? null,
+      view: dutyExecution?.lost ?? null }));
+  check("Standard succession duty: a pending immediate FleetEvent moves to the successor instead of receiver-gone",
+    dutyReboundEvent?.status === "pending" && dutyReboundEvent.receiverSlot === successorSlot
+      && dutyReboundEvent.receiverOpenedAt === successorState?.openedAt,
+    JSON.stringify(dutyReboundEvent ?? null));
+  const dutyReply = dutyRequest?.id
+    ? await selfPost(`/api/self/clarifications/${dutyRequest.id}/reply`, dutySuccessorToken,
+      { text: "Finish the bounded task already assigned." })
+    : new Response(null, { status: 599 });
+  const dutyAudit = ((await (await get("/api/audit?limit=500")).json()) as {
+    events: { event: string; detail?: string }[] }).events;
+  check("Standard succession duty: successor reply is 200 and audit names the rebound question",
+    dutyReply.status === 200 && dutyAudit.some((e) => e.event === "clarification_rebound"
+      && (e.detail ?? "").includes(dutyRequest?.id ?? "never")),
+    `${dutyReply.status} rebound=${dutyAudit.some((e) => e.event === "clarification_rebound"
+      && (e.detail ?? "").includes(dutyRequest?.id ?? "never"))}`);
   // the lineage survived the restart above (it is persisted, not recomputed) and the succession
   // wrote both halves of the move in the bind's own save: the predecessor's entry closed by
   // `succeed` at the successor's boundAt, the successor appended via `succeed` — and its sessionId
@@ -3603,6 +3688,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const s0Row = s0State.slots?.[String(s0Lane.slot)];
   if (s0Row?.worktree && typeof s0PredecessorOpenedAt === "number")
     s0Row.worktree.anchor = { slot: mainSlot!, openedAt: s0PredecessorOpenedAt };
+  const dutyReadyEvent = s0State.events?.find((e) => e.id === dutyEventId);
+  if (dutyReadyEvent) dutyReadyEvent.receiverIdleSec = 0;
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(s0State, null, 2), { mode: 0o600 });
   await restartSrv();
   let s0Heal: { slot?: number; detail?: string } | undefined;
@@ -3618,8 +3705,28 @@ export async function run(ctx: Ctx): Promise<void> {
   check("S0 load heal: an anchor naming the Program's previous MAIN on the same slot is re-anchored on the live occupant at boot, with an audit row naming the lineage",
     !!s0Heal && JSON.stringify(s0Live) === JSON.stringify({ slot: mainSlot, openedAt: transferredBinding?.openedAt }),
     `audit=${JSON.stringify(s0Heal ?? null)} live=${JSON.stringify(s0Live)}`);
+  let dutyDelivered: { status?: string; receiverSlot?: number } | undefined;
+  for (let i = 0; i < 100; i++) {
+    dutyDelivered = ((await (await get("/api/events")).json()) as { events: { id: string;
+      status: string; receiverSlot: number }[] }).events.find((e) => e.id === dutyEventId);
+    if (dutyDelivered?.status === "delivered" || dutyDelivered?.status === "send-uncertain") break;
+    await Bun.sleep(100);
+  }
+  const dutyRead = await fetch(`${BASE}/api/self/events/${dutyEventId}`, {
+    headers: { "x-fleet-self-token": dutySuccessorToken },
+  });
+  const dutyReadText = await dutyRead.text();
+  const dutyAck = dutyDelivered?.status === "delivered" || dutyDelivered?.status === "send-uncertain"
+    ? await selfPost(`/api/self/events/${dutyEventId}/ack`, dutySuccessorToken, {})
+    : new Response(null, { status: 599 });
+  check("Standard succession duty: the successor reads and acknowledges its immediate FleetEvent",
+    dutyDelivered?.receiverSlot === mainSlot
+      && (dutyDelivered.status === "delivered" || dutyDelivered.status === "send-uncertain")
+      && dutyRead.status === 200 && dutyReadText.includes(dutyEventId) && dutyAck.status === 200,
+    JSON.stringify({ event: dutyDelivered ?? null, read: dutyRead.status, ack: dutyAck.status }));
   if (typeof s0Lane.slot === "number") await post(`/api/slots/${s0Lane.slot}/kill`, {});
   if (s0Lane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", s0Lane.cwd]);
+  if (lostDutyLane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", lostDutyLane.cwd]);
   check("Program-MAIN target succession: delivered history keeps the target contract without repeating Fleet founding",
     successionPrompt.startsWith("[fleet Program-MAIN succession]")
       && targetContractPresent(successionPrompt, mainProgram.title) && targetContractClean(successionPrompt)
@@ -3986,6 +4093,93 @@ export async function run(ctx: Ctx): Promise<void> {
       && (msgOrder?.dropped ?? -1) === 5,
     `unreadKept=${(msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "unread-oldest")} readGone=${!(msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "read-newer")} dropped=${msgOrder?.dropped}`);
   await msgPlant(undefined, undefined);
+
+  const orchFree = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const orchOpen = await post(`/api/slots/${orchFree}/open`, { cwd: REPO, label: "🎛 message receiver" });
+  const msgOrchToken = slotToken(orchFree);
+  const orchAddress = { kind: "role", role: "orchestrator" };
+  check("message escalation fixture: exactly one live Orchestrator label has its own self credential",
+    orchOpen.ok && orchFree > 0 && /^[0-9a-f]{32}$/.test(msgOrchToken),
+    `open=${orchOpen.status} slot=${orchFree} tokenLength=${msgOrchToken.length}`);
+  const sendAuditRows = (): { event?: string; slot?: number; detail?: string }[] => {
+    try { return readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string }); }
+    catch { return []; }
+  };
+  const nudgeCount = (): number => sendAuditRows().filter((row) => row.event === "send"
+    && row.slot === orchFree && row.detail?.startsWith("inbox-nudge ")).length;
+  const beforeNudge = nudgeCount();
+  const directOrch = await selfSend(slotToken(successorSlot), { to: orchAddress,
+    payload: { kind: "text", text: "direct orchestrator address" }, idempotencyKey: "escalate-direct" });
+  const directBody = await directOrch.json() as { holder?: { slot?: number }; escalatedTo?: string | null;
+    message?: { id?: string } };
+  const directView = await selfMessages(msgOrchToken);
+  try { await until(() => nudgeCount() >= beforeNudge + 1, { timeoutMs: 20_000, stepMs: 100,
+    what: "one inbox-nudge send audit for direct orchestrator message" }); } catch { /* asserted below */ }
+  check("message escalation: MAIN addresses the unique Orchestrator, whose own view holds the message and whose slot gets one inbox-nudge send",
+    directOrch.ok && directBody.holder?.slot === orchFree && directBody.escalatedTo === null
+      && directView.view?.entries.some((m) => m.id === directBody.message?.id) === true
+      && nudgeCount() === beforeNudge + 1,
+    `status=${directOrch.status} holder=${directBody.holder?.slot} view=${directView.view?.entries.some((m) => m.id === directBody.message?.id)} nudges=${nudgeCount() - beforeNudge}`);
+
+  const supervisorEscalated = await selfSend(slotToken(successorSlot), { to: { kind: "role", role: "supervisor" },
+    payload: { kind: "text", text: "Supervisor has no live binding" }, idempotencyKey: "escalate-supervisor" });
+  const supervisorBody = await supervisorEscalated.json() as { escalatedTo?: string; message?: { id?: string } };
+  const programEscalated = await selfSend(slotToken(successorSlot), { to: { kind: "program", id: msgUnheldProgram.id },
+    payload: { kind: "text", text: "Program has no live MAIN" }, idempotencyKey: "escalate-program" });
+  const programBody = await programEscalated.json() as { escalatedTo?: string; message?: { id?: string } };
+  const escalatedView = await selfMessages(msgOrchToken);
+  check("message escalation: unbound Supervisor and Program keep their original addresses and become visible to the Orchestrator",
+    supervisorEscalated.ok && programEscalated.ok
+      && supervisorBody.escalatedTo === "orchestrator" && programBody.escalatedTo === "orchestrator"
+      && escalatedView.view?.entries.some((m) => m.id === supervisorBody.message?.id && m.to.role === "supervisor") === true
+      && escalatedView.view?.entries.some((m) => m.id === programBody.message?.id && m.to.id === msgUnheldProgram.id) === true,
+    `supervisor=${supervisorEscalated.status}/${supervisorBody.escalatedTo} program=${programEscalated.status}/${programBody.escalatedTo}`);
+
+  const clarificationLaneOpen = await post("/api/lanes", { repo: REPO });
+  const clarificationLaneSlot = (await clarificationLaneOpen.json() as { slot?: number }).slot ?? 0;
+  await stopSrv();
+  const clarificationImage = readState();
+  const clarificationLane = clarificationImage.slots?.[String(clarificationLaneSlot)];
+  if (clarificationLane) clarificationLane.programId = msgUnheldProgram.id;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(clarificationImage, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const askOrch = await selfPost("/api/self/clarifications", slotToken(clarificationLaneSlot),
+    { question: "Who answers while this Program has no MAIN?" });
+  const askBody = await askOrch.json() as { request?: { id?: string; basis?: string; receiver?: { slot?: number } } };
+  const orchClarifications = await fetch(`${BASE}/api/self/clarifications`,
+    { headers: { "x-fleet-self-token": slotToken(orchFree) } });
+  const orchClarificationBody = await orchClarifications.json() as { requests?: { id?: string }[] };
+  const orchReply = await selfPost(`/api/self/clarifications/${askBody.request?.id ?? ""}/reply`, slotToken(orchFree),
+    { text: "I can answer this question." });
+  check("clarification escalation: a Program lane without a MAIN asks the Orchestrator and its exact receiver can reply",
+    askOrch.ok && askBody.request?.basis === "orchestrator" && askBody.request.receiver?.slot === orchFree
+      && orchClarificationBody.requests?.some((r) => r.id === askBody.request?.id) === true && orchReply.ok,
+    `ask=${askOrch.status}/${askBody.request?.basis} receiver=${askBody.request?.receiver?.slot} reply=${orchReply.status}`);
+  await post(`/api/slots/${clarificationLaneSlot}/kill`, {});
+
+  const secondOrch = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const secondOpen = await post(`/api/slots/${secondOrch}/open`, { cwd: REPO, label: "🎛 second receiver" });
+  const twoOrch = await selfSend(slotToken(successorSlot), { to: orchAddress,
+    payload: { kind: "text", text: "Ambiguous Orchestrator occupancy" }, idempotencyKey: "escalate-two" });
+  const twoBody = await twoOrch.json() as { escalatedTo?: string; holder?: unknown; message?: { id?: string } };
+  const twoOwnerRow = (readState().events ?? []).find((e) => e.kind === "message"
+    && (e.payload as { messageId?: string })?.messageId === twoBody.message?.id);
+  check("message escalation: two Orchestrator slots send the original address to the Owner inbox",
+    secondOpen.ok && twoOrch.ok && twoBody.escalatedTo === "owner" && twoBody.holder === null
+      && twoOwnerRow?.status === "inbox" && twoOwnerRow.receiverSlot === null,
+    `open=${secondOpen.status} send=${twoOrch.status}/${twoBody.escalatedTo} event=${twoOwnerRow?.status}`);
+  await post(`/api/slots/${secondOrch}/kill`, {});
+  await post(`/api/slots/${orchFree}/kill`, {});
+  const noOrch = await selfSend(slotToken(successorSlot), { to: orchAddress,
+    payload: { kind: "text", text: "No Orchestrator occupancy" }, idempotencyKey: "escalate-none" });
+  const noBody = await noOrch.json() as { escalatedTo?: string; holder?: unknown; message?: { id?: string } };
+  const noOwnerRow = (readState().events ?? []).find((e) => e.kind === "message"
+    && (e.payload as { messageId?: string })?.messageId === noBody.message?.id);
+  check("message escalation: no Orchestrator slot sends the original address to the Owner inbox",
+    noOrch.ok && noBody.escalatedTo === "owner" && noBody.holder === null
+      && noOwnerRow?.status === "inbox" && noOwnerRow.receiverSlot === null,
+    `send=${noOrch.status}/${noBody.escalatedTo} event=${noOwnerRow?.status}`);
 
   // --- D1 · A DECIDED REPORT IS VISIBLE TO THE SUCCESSOR, WHICH NEVER RECEIVED IT. -----------
   // A worker's typed report is filed to ONE MAIN occupant, and the only door that occupant had was
@@ -4549,6 +4743,173 @@ export async function run(ctx: Ctx): Promise<void> {
       && dlgBase.rows.every((r) => !("escalation" in r)) && dlgView0.delegate === null && dlgView0.holder === null,
     JSON.stringify({ owner: dlgBase.owner, delegate: dlgBase.delegate, pending: dlgPending(dlgBase.rows).length, view: dlgView0 }));
 
+  const orphanProgram = await activateNewProgram("Handoff supersession and orphan notice");
+  await stopSrv();
+  const orphanPlant = readState();
+  const orphanProgramRow = orphanPlant.programs?.find((p) => p.id === orphanProgram.id);
+  const orphanLaneRow = orphanPlant.slots?.[String(dlgLane.slot)];
+  const orphanMainRow = orphanPlant.slots?.[String(dlgOutsiderSlot)];
+  if (orphanProgramRow && orphanMainRow?.openedAt && orphanLaneRow) {
+    orphanProgramRow.main = { slot: dlgOutsiderSlot, openedAt: orphanMainRow.openedAt,
+      sessionId: orphanMainRow.sessionId ?? null, boundAt: Date.now() };
+    orphanLaneRow.programId = orphanProgram.id;
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(orphanPlant, null, 2), { mode: 0o600 });
+  await restartSrv();
+  check("handoff fixture: a live MAIN and one Program lane are bound before filing",
+    !!orphanProgramRow && !!orphanMainRow?.openedAt && !!orphanLaneRow
+      && orphanLaneRow.programId === orphanProgram.id,
+    JSON.stringify({ program: orphanProgram.id, main: dlgOutsiderSlot, lane: dlgLane.slot }));
+  const orphanFile = async (status: "needs-main" | "handoff" | "complete") => {
+    const response = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+      headers: { "x-fleet-self-token": dlgLaneTok, "content-type": "application/json" },
+      body: JSON.stringify({ status, text: `handoff fixture ${status}` }) });
+    return { response, body: await response.json() as { report?: { id?: string; basis?: string } } };
+  };
+  const orphanNeeds = await orphanFile("needs-main");
+  const orphanHandoff = await orphanFile("handoff");
+  const orphanComplete = await orphanFile("complete");
+  const orphanIds = [orphanNeeds.body.report?.id, orphanHandoff.body.report?.id, orphanComplete.body.report?.id];
+  const orphanOwnerRows = async () => ((await (await get("/api/fleet-report")).json()) as {
+    reports?: { id: string; decision?: { disposition?: string; by?: { rule?: string }; supersededBy?: string;
+      fulfilled?: string | null } | null; liveness?: string }[] }).reports ?? [];
+  const orphanRows = await orphanOwnerRows();
+  const orphanDecision = orphanRows.find((r) => r.id === orphanIds[1])?.decision;
+  const orphanLedger = readFileSync(`${ROOT}/fleet-reports.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { kind?: string; id?: string; by?: { rule?: string }; reason?: string });
+  const orphanAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { event?: string; detail?: string });
+  check("Program handoff: a later filing on the same branch accepts the handoff by superseded with a pointer and no fulfilment",
+    [orphanNeeds, orphanHandoff, orphanComplete].every((x) => x.response.ok && x.body.report?.basis === "program")
+      && orphanIds.every((id) => typeof id === "string")
+      && orphanDecision?.disposition === "accepted" && orphanDecision.by?.rule === "superseded"
+      && orphanDecision.supersededBy === orphanIds[2] && orphanDecision.fulfilled === null,
+    JSON.stringify({ ids: orphanIds, decision: orphanDecision ?? null }));
+  check("Program handoff: needs-main and complete on the same branch stay undecided",
+    !orphanRows.find((r) => r.id === orphanIds[0])?.decision
+      && !orphanRows.find((r) => r.id === orphanIds[2])?.decision,
+    JSON.stringify({ needs: orphanRows.find((r) => r.id === orphanIds[0])?.decision ?? null,
+      complete: orphanRows.find((r) => r.id === orphanIds[2])?.decision ?? null }));
+  check("Program handoff: supersession writes one decision ledger row and one rule-decision audit row",
+    orphanLedger.filter((r) => r.kind === "decision" && r.id === orphanIds[1]
+      && r.by?.rule === "superseded" && r.reason?.includes(orphanIds[2] ?? "missing")).length === 1
+      && orphanAudit.filter((r) => r.event === "fleet_report_rule_decision"
+        && r.detail?.includes(orphanIds[1] ?? "missing")).length === 1,
+    JSON.stringify({ ledger: orphanLedger.filter((r) => r.id === orphanIds[1]),
+      audit: orphanAudit.filter((r) => r.detail?.includes(orphanIds[1] ?? "missing")) }));
+
+  const b4Names = ["handoff", "needs", "complete", "failed", "live-handoff", "no-land"] as const;
+  const b4Ids = Object.fromEntries(b4Names.map((name, i) => [name, (0xb400 + i).toString(16).padStart(24, "0")])) as Record<typeof b4Names[number], string>;
+  const b4At = Date.now() - 60_000;
+  const b4Sha = "a".repeat(40);
+  const b4Branch = (name: string) => `fleet/b4-${name}`;
+  const b4DeadSlot = (await sessions()).slots.find((slot) => !slot.cwd)?.id ?? 1;
+  await stopSrv();
+  const b4State = readState();
+  const b4DeadWorker = { slot: b4DeadSlot, openedAt: 1, sessionId: null,
+    cwd: "/tmp/b4-ended-lane", branch: "" };
+  b4State.fleetReports = [...(b4State.fleetReports ?? []), ...b4Names.map((name) => ({
+    id: b4Ids[name], reportedAt: b4At,
+    status: name === "live-handoff" || name === "no-land" ? "handoff" : name === "needs" ? "needs-main" : name,
+    text: `B4 ${name}: only this row's status states what the lane claimed`,
+    worker: name === "live-handoff"
+      ? { slot: dlgLane.slot, openedAt: orphanLaneRow?.openedAt, sessionId: orphanLaneRow?.sessionId ?? null,
+        cwd: orphanLaneRow?.cwd, branch: b4Branch(name) }
+      : { ...b4DeadWorker, branch: b4Branch(name) },
+    provenance: { taskId: null, originId: null, programId: orphanProgram.id, instance: null },
+    receiver: null, basis: "program", eventId: null,
+  }))];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(b4State, null, 2), { mode: 0o600 });
+  const b4OutcomeFile = `${ROOT}/lane-outcomes.jsonl`;
+  for (const name of b4Names.filter((name) => name !== "no-land"))
+    appendFileSync(b4OutcomeFile, `${JSON.stringify({ ts: b4At + 30_000, branch: b4Branch(name),
+      disposition: "landed", repo: REPO, mainAfter: b4Sha, programId: orphanProgram.id })}\n`);
+  await restartSrv();
+  type B4Report = { id: string; decision?: { disposition?: string; by?: { rule?: string; slot?: number };
+    mainAfter?: string; fulfilled?: string | null } | null };
+  const b4Reports = async (): Promise<B4Report[]> => ((await (await get("/api/fleet-report")).json()) as
+    { reports?: B4Report[] }).reports ?? [];
+  let b4Rows = await b4Reports();
+  for (let i = 0; i < 50 && !b4Rows.find((r) => r.id === b4Ids.handoff)?.decision; i++) {
+    await Bun.sleep(100);
+    b4Rows = await b4Reports();
+  }
+  const b4Row = (name: typeof b4Names[number]) => b4Rows.find((r) => r.id === b4Ids[name]);
+  const b4Ledger = readFileSync(`${ROOT}/fleet-reports.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { kind?: string; id?: string; by?: { rule?: string }; mainAfter?: string });
+  const b4Audit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { event?: string; detail?: string });
+  check("B4 landed handoff: only the ended landed handoff closes by rule, with audit and decision ledger; no work claim is inferred",
+    b4Names.every((name) => b4Row(name) !== undefined)
+      && b4Row("handoff")?.decision?.disposition === "accepted"
+      && b4Row("handoff")?.decision?.by?.rule === "landed"
+      && b4Row("handoff")?.decision?.mainAfter === b4Sha
+      && b4Row("handoff")?.decision?.fulfilled === null
+      && ["needs", "complete", "failed", "live-handoff", "no-land"].every((name) => !b4Row(name as typeof b4Names[number])?.decision)
+      && b4Ledger.filter((r) => r.id === b4Ids.handoff && r.kind === "decision"
+        && r.by?.rule === "landed" && r.mainAfter === b4Sha).length === 1
+      && b4Audit.filter((r) => r.event === "fleet_report_rule_decision"
+        && r.detail?.includes(`${b4Ids.handoff} landed`)).length === 1,
+    JSON.stringify({ rows: b4Rows.filter((r) => Object.values(b4Ids).includes(r.id)),
+      ledger: b4Ledger.filter((r) => r.id === b4Ids.handoff),
+      audit: b4Audit.filter((r) => r.detail?.includes(b4Ids.handoff)) }).slice(0, 900));
+  const b4Self = async (path: string, method = "GET", body?: unknown) => fetch(`${BASE}${path}`, {
+    method, headers: { "x-fleet-self-token": dlgOutsiderTok, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const b4Position = (await (await b4Self("/api/self")).json()) as { position?: { waitingOnMe?: { kind: string; id: string }[] } };
+  const b4Open = (await (await b4Self("/api/self/fleet-report?open=1")).json()) as { reports?: B4Report[] };
+  const b4BatchBad = await b4Self("/api/self/fleet-report/batch", "POST", { decisions: [
+    { id: b4Ids.needs, disposition: "accepted", reason: "ERFUELLT: ja — read" },
+    { id: b4Ids.failed, disposition: "accepted", reason: "invalid batch member" },
+  ] });
+  b4Rows = await b4Reports();
+  check("B4 MAIN view: landed needs-main and complete have their own waiting class, open=1 excludes the rule decision, and an invalid batch changes nothing",
+    [b4Ids.needs, b4Ids.complete].every((id) => b4Position.position?.waitingOnMe?.some((w) => w.id === id && w.kind === "fleet-report-landed-unjudged") === true)
+      && b4Open.reports?.some((r) => r.id === b4Ids.needs) === true
+      && b4Open.reports?.some((r) => r.id === b4Ids.complete) === true
+      && !b4Open.reports?.some((r) => r.id === b4Ids.handoff)
+      && b4BatchBad.status === 409 && !b4Rows.find((r) => r.id === b4Ids.needs)?.decision,
+    JSON.stringify({ waiting: b4Position.position?.waitingOnMe?.filter((w) => Object.values(b4Ids).includes(w.id)),
+      open: b4Open.reports?.filter((r) => Object.values(b4Ids).includes(r.id)).map((r) => r.id), bad: b4BatchBad.status }));
+  const b4Batch = await b4Self("/api/self/fleet-report/batch", "POST", { decisions: [
+    { id: b4Ids.needs, disposition: "accepted", reason: "ERFUELLT: ja — MAIN answered the question" },
+    { id: b4Ids.complete, disposition: "rejected", reason: "ERFUELLT: nein — MAIN read the work" },
+  ] });
+  b4Rows = await b4Reports();
+  check("B4 batch: one MAIN call gives each landed row its own ordinary occupant verdict, while failed stays unjudged",
+    b4Batch.ok && b4Rows.find((r) => r.id === b4Ids.needs)?.decision?.by?.slot === dlgOutsiderSlot
+      && b4Rows.find((r) => r.id === b4Ids.needs)?.decision?.disposition === "accepted"
+      && b4Rows.find((r) => r.id === b4Ids.complete)?.decision?.by?.slot === dlgOutsiderSlot
+      && b4Rows.find((r) => r.id === b4Ids.complete)?.decision?.disposition === "rejected"
+      && !b4Rows.find((r) => r.id === b4Ids.failed)?.decision,
+    JSON.stringify({ status: b4Batch.status, rows: b4Rows.filter((r) => Object.values(b4Ids).includes(r.id)) }).slice(0, 800));
+  const b4NeedsText = fleetReportDecisionMessage(b4Ids.needs, "rejected", null,
+    { slot: dlgOutsiderSlot }, "needs-main");
+  check("B4 decision text: MAIN, Owner, Delegate and rule are attributed, and needs-main rejection carries no repair order",
+    b4NeedsText.includes(`MAIN in slot ${dlgOutsiderSlot}`) && !b4NeedsText.includes("Repair and file again")
+      && fleetReportDecisionMessage(b4Ids.needs, "accepted", null, "owner").includes("Owner")
+      && fleetReportDecisionMessage(b4Ids.needs, "accepted", null, { delegate: { slot: 4 } }).includes("ReportDelegate in slot 4")
+      && fleetReportDecisionMessage(b4Ids.handoff, "accepted", null, { rule: "landed" }).includes("rule landed"),
+    b4NeedsText);
+  await restartSrv();
+  const b4Reloaded = await b4Reports();
+  check("B4 landed verdict survives hydration after restart with its exact rule and mainAfter",
+    b4Reloaded.find((r) => r.id === b4Ids.handoff)?.decision?.by?.rule === "landed"
+      && b4Reloaded.find((r) => r.id === b4Ids.handoff)?.decision?.mainAfter === b4Sha,
+    JSON.stringify(b4Reloaded.find((r) => r.id === b4Ids.handoff) ?? null).slice(0, 400));
+  await stopSrv();
+  const b4Clean = readState();
+  b4Clean.fleetReports = (b4Clean.fleetReports ?? []).filter((r) => !Object.values(b4Ids).includes(r.id ?? ""));
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(b4Clean, null, 2), { mode: 0o600 });
+  writeFileSync(b4OutcomeFile, readFileSync(b4OutcomeFile, "utf8").split("\n")
+    .filter((line) => !line.includes('"branch":"fleet/b4-')).join("\n"), { mode: 0o600 });
+  await restartSrv();
+  const orphanCompleteResult = await programPost(orphanProgram.id, "complete");
+  const orphanWithoutOrchestrator = await (await get("/api/sessions")).json() as { reportsAwaitingOwner?: number };
+  check("Program orphan without Orchestrator: the undecided rows remain in reportsAwaitingOwner",
+    orphanCompleteResult.ok && (orphanWithoutOrchestrator.reportsAwaitingOwner ?? 0) >= 2,
+    JSON.stringify({ complete: orphanCompleteResult.status, owner: orphanWithoutOrchestrator.reportsAwaitingOwner ?? 0 }));
+
   const orchLabel = "🎛 Orchestrator (e2e)";
   const orchSlot = (await sessions()).slots.find((s) => !s.cwd)?.id ?? 0;
   // The door is `slots/<id>/open`, so the SLOT is known before the pane is — waitForLabel, which
@@ -4586,6 +4947,31 @@ export async function run(ctx: Ctx): Promise<void> {
       && orchReceipt.briefHash === briefHashOf(orchPrompt)
       && orchReceipt.deliveredBytes === new TextEncoder().encode(orchPrompt).byteLength,
     JSON.stringify(orchReceipt ?? null));
+  const orphanSends = () => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { event?: string; path?: string; reportId?: string; slot?: number;
+      bytes?: number; acceptance?: string })
+    .filter((row) => row.event === "send" && row.path === "report-orphan"
+      && row.reportId === orphanIds[2] && row.bytes && row.bytes > 0);
+  for (let i = 0; i < 120 && orphanSends().length < 1; i++) await Bun.sleep(250);
+  const orphanFirstSend = orphanSends();
+  await Bun.sleep(AUTOS_TICK_MS * 2 + 500);
+  const orphanSecondTick = orphanSends();
+  const orphanNoticeHistory = ((await (await get(`/api/slots/${orchSlot}/history`)).json()) as
+    { history: { text: string }[] }).history.filter((h) => h.text.includes(orphanIds[2] ?? "missing"));
+  check("Program orphan: the unique Orchestrator receives one report-id hint with its existing door, while the report remains undecided",
+    orphanFirstSend.length === 1 && orphanSecondTick.length === 1
+      && orphanSecondTick[0]?.slot === orchSlot
+      && orphanNoticeHistory.length === 1
+      && orphanNoticeHistory[0]?.text.includes("ohne ReportDelegate nur Owner-Tuer")
+      && !(await orphanOwnerRows()).find((r) => r.id === orphanIds[2])?.decision,
+    JSON.stringify({ sends: orphanSecondTick, history: orphanNoticeHistory.map((h) => h.text.slice(0, 200)) }));
+  await stopSrv();
+  const orphanCleanup = readState();
+  orphanCleanup.fleetReports = (orphanCleanup.fleetReports ?? []).filter((r) => !orphanIds.includes(r.id));
+  orphanCleanup.programs = (orphanCleanup.programs ?? []).filter((p) => p.id !== orphanProgram.id);
+  if (orphanCleanup.slots?.[String(dlgLane.slot)]) orphanCleanup.slots[String(dlgLane.slot)]!.programId = null;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(orphanCleanup, null, 2), { mode: 0o600 });
+  await restartSrv();
 
   // THE SUCCESSION HALF. The successor inherits the label verbatim, so it inherits the ROLE — and
   // the card arrives beside the line record, which stays the one handover channel: `intent` is the
@@ -6468,6 +6854,24 @@ export async function run(ctx: Ctx): Promise<void> {
   const standardPredecessor = await bootstrapRevocationMain(
     standardRevocationProgram, gameWt, "standard-revocation-predecessor",
     "succession revocation fixture: the Standard predecessor is bound with an exact live identity");
+  const revocationLane = (await (await post("/api/lanes", { repo: gameRepo,
+    harness: "codex", model: "gpt-5.5" })).json()) as {
+      slot?: number; cwd?: string };
+  if (revocationLane.slot) await respawnScreen(revocationLane.slot, ">_ OpenAI Codex (v0.147.0)");
+  await stopSrv();
+  const revocationFixture = readState();
+  if (revocationLane.slot && revocationFixture.slots?.[String(revocationLane.slot)])
+    revocationFixture.slots[String(revocationLane.slot)]!.programId = standardRevocationProgram.id;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(revocationFixture, null, 2), { mode: 0o600 });
+  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_OPEN_LATCH: afterOpenLatch });
+  const revocationQuestion = await selfPost("/api/self/clarifications",
+    slotToken(revocationLane.slot ?? null), { question: "Who answers if the successor cannot bind?" });
+  const revocationRequest = (await revocationQuestion.clone().json() as {
+    request?: { id?: string } }).request;
+  check("Standard succession revocation duty setup: its live Program lane has an open question",
+    !!revocationLane.slot && revocationQuestion.ok && !!revocationRequest?.id,
+    JSON.stringify({ lane: revocationLane, question: revocationQuestion.status,
+      body: await revocationQuestion.clone().text() }));
   const standardHandoffCommit = await commitRevocationHandoff(gameWt, standardPredecessor.openedAt,
     `## Program succession\ncontinue ${standardRevocationProgram.title}\n`,
     "succession fixture: Standard authority revocation");
@@ -6544,9 +6948,67 @@ export async function run(ctx: Ctx): Promise<void> {
       binding: [standardBindingBefore, standardAfter?.main],
       receipts: [standardReceiptsBefore, standardReceiptsAfter], candidate: standardCandidateSlot,
       replacement: standardReplacementAfter }));
+  const revokedState = readState();
+  const revokedLost = revokedState.programs?.find((p) => p.id === standardRevocationProgram.id)?.handover?.lost ?? [];
+  const revokedQuestion = revokedState.clarifications?.find((c) => c.id === revocationRequest?.id);
+  let refusalPane = { out: "" };
+  for (let i = 0; i < 60 && revocationLane.slot && !refusalPane.out.includes(revocationRequest?.id ?? "never"); i++) {
+    refusalPane = await tmuxOut("capture-pane", "-t", `s${revocationLane.slot}`, "-p", "-J", "-S", "-");
+    if (!refusalPane.out.includes(revocationRequest?.id ?? "never")) await Bun.sleep(100);
+  }
+  const revokedAudit = ((await (await get("/api/audit?limit=500")).json()) as {
+    events: { event: string; detail?: string }[] }).events;
+  check("Standard succession duty: owner kill before bind leaves no rebound, records the lost question and tells its living lane why",
+    revocationQuestion.ok && !!revocationRequest?.id
+      && revokedLost.some((row) => row.id === revocationRequest.id
+        && row.kind === "clarification" && row.reason === "no successor bound")
+      && revokedQuestion?.status === "refused"
+      && typeof revokedQuestion.refusedReason === "string"
+      && refusalPane.out.includes(`clarification ${revocationRequest.id} was refused: ${revokedQuestion.refusedReason}`)
+      && !revokedAudit.some((e) => e.event === "clarification_rebound"
+        && (e.detail ?? "").includes(revocationRequest.id ?? "never")),
+    JSON.stringify({ id: revocationRequest?.id, lost: revokedLost,
+      refused: revokedQuestion?.refusedReason ?? null, pane: refusalPane.out.slice(-180) }));
+  if (revocationLane.slot) await post(`/api/slots/${revocationLane.slot}/kill`, {});
+  if (revocationLane.cwd) spawnSync("git", ["-C", gameRepo, "worktree", "remove", "--force", revocationLane.cwd]);
   if (standardRecycle?.ok) await post(`/api/slots/${standardPredecessor.slot}/kill`, {});
   await programPost(standardRevocationProgram.id, "complete");
   clearSuccessionLatch(afterOpenLatch);
+
+  const ownerKillProgram = await activateNewProgram("Standard MAIN owner kill keeps the clarification closed");
+  const ownerKillMain = await bootstrapRevocationMain(ownerKillProgram, gameWt,
+    "standard-owner-kill-main", "owner-kill clarification fixture has an exact bound MAIN");
+  const ownerKillLane = (await (await post("/api/lanes", { repo: gameRepo,
+    harness: "codex", model: "gpt-5.5" })).json()) as {
+      slot?: number; cwd?: string };
+  if (ownerKillLane.slot) await respawnScreen(ownerKillLane.slot, ">_ OpenAI Codex (v0.147.0)");
+  await stopSrv();
+  const ownerKillFixture = readState();
+  if (ownerKillLane.slot && ownerKillFixture.slots?.[String(ownerKillLane.slot)])
+    ownerKillFixture.slots[String(ownerKillLane.slot)]!.programId = ownerKillProgram.id;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(ownerKillFixture, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const ownerKillQuestion = await selfPost("/api/self/clarifications", slotToken(ownerKillLane.slot ?? null),
+    { question: "This question must not pass an owner kill." });
+  const ownerKillRequest = (await ownerKillQuestion.clone().json() as {
+    request?: { id?: string } }).request;
+  check("Standard owner-kill duty setup: its live Program lane has an open question",
+    !!ownerKillLane.slot && ownerKillQuestion.ok && !!ownerKillRequest?.id,
+    JSON.stringify({ lane: ownerKillLane, question: ownerKillQuestion.status,
+      body: await ownerKillQuestion.clone().text() }));
+  const ownerKillAct = await post(`/api/slots/${ownerKillMain.slot}/kill`, {});
+  const ownerKillClarifications = await fetch(`${BASE}/api/self/clarifications`, {
+    headers: { "x-fleet-self-token": slotToken(ownerKillLane.slot ?? null) } });
+  const ownerKillRows = (await ownerKillClarifications.json() as {
+    requests?: { id: string; status: string; refusedReason: string | null }[] }).requests ?? [];
+  check("Standard MAIN owner kill: an open clarification is refused and never rebound to a recycled slot",
+    ownerKillQuestion.ok && ownerKillAct.ok && !!ownerKillRequest?.id
+      && ownerKillRows.some((row) => row.id === ownerKillRequest.id && row.status === "refused"
+        && row.refusedReason === "receiver occupant ended or was replaced"),
+    JSON.stringify({ kill: ownerKillAct.status, id: ownerKillRequest?.id, rows: ownerKillRows }));
+  if (ownerKillLane.slot) await post(`/api/slots/${ownerKillLane.slot}/kill`, {});
+  if (ownerKillLane.cwd) spawnSync("git", ["-C", gameRepo, "worktree", "remove", "--force", ownerKillLane.cwd]);
+  await programPost(ownerKillProgram.id, "complete");
 
   // THE RESTART INSIDE THE RESPAWN, on a Game-Maker Program so the boot's tree-occupant rule runs
   // too. The predecessor is already gone when the server dies, so the boot can only do one honest
@@ -6788,7 +7250,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const budgetState = readState();
   const liveBudgetRow = liveOccupancy.find((p) => p.id === mainProgram.id);
   const liveDebts = (budgetState.events ?? []).filter((e) => e.receiverSlot === successorSlot
-    && !["acknowledged", "receiver-gone"].includes(String(e.status))).length;
+    && !["acknowledged", "receiver-gone", "subject-gone"].includes(String(e.status))).length;
   const liveArmed = (budgetState.watches ?? []).filter((w) => w.slot === successorSlot && w.armed === true).length;
   check("V1b: a uniquely live binding projects a KNOWN delivery budget whose numbers are the transport's own",
     liveBudgetRow?.deliveryBudget?.state === "known"
@@ -7597,6 +8059,8 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ ids: rvIds, hold: rvHoldRes.status, queue: rvQueueRes.status }));
 
   // (1) THE PREVIEW: each verdict with its hard reasons and soft hints, hold and scout shown, queued apart
+  await until(async () => ((await taskRow(rvQueued)) as (TaskRow & { note?: string | null }) | undefined)?.note === "waiting: dispatcher stopped",
+    { timeoutMs: 10_000, what: "the stopped dispatcher's note on the queued release-valid fixture" });
   const rvRowsBefore = JSON.stringify((await allTasks()).filter((t) => rvIds.includes(t.id)));
   const rvAuditFrom = auditLines();
   const pv = await rvPreview(mainProgram.id);
@@ -8001,21 +8465,34 @@ export async function run(ctx: Ctx): Promise<void> {
   const pdControl = await activateNewProgram("program-dispatch control bracket");
   const [pdBadKey, pdBadV, pdBadOn, pdBadLanes, pdBadStamp] = await Promise.all([
     pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 1 }, policy: { v: 1 } }),
-    pdDispatchDoor(mainProgram.id, { dispatch: { v: 2, on: true, maxLanes: 1 } }),
+    pdDispatchDoor(mainProgram.id, { dispatch: { v: 3, on: true, maxLanes: 1 } }),
     pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: "yes", maxLanes: 1 } }),
     pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 0 } }),
     pdDispatchDoor(mainProgram.id, { dispatch: { v: 1, on: true, maxLanes: 1, confirmedAt: 1 } }),
   ]);
   const pdBadTexts = await Promise.all([pdBadKey, pdBadV, pdBadOn, pdBadLanes, pdBadStamp].map((r) => r.text()));
-  check("program-dispatch door: a closed body, v1 only, a boolean `on`, a bounded maxLanes and no caller-supplied stamp — and no record is written",
+  check("program-dispatch door: a closed body, v1/v2 only, a boolean `on`, a bounded maxLanes and no caller-supplied stamp — and no record is written",
     [pdBadKey, pdBadV, pdBadOn, pdBadLanes, pdBadStamp].every((r) => r.status === 400)
       && pdBadTexts[0].includes("this door reads dispatch only")
-      && pdBadTexts[1].includes("v must be 1")
+      && pdBadTexts[1].includes("v must be 1 or 2")
       && pdBadTexts[2].includes("on must be true or false")
       && pdBadTexts[3].includes("maxLanes must be a whole number")
       && pdBadTexts[4].includes("confirmedAt is stamped here")
       && (await pdProgramRecord(mainProgram.id)) === "absent",
     pdBadTexts.join(" | "));
+  const pdMissingBypass = await pdDispatchDoor(mainProgram.id, { dispatch: { v: 2, on: true, maxLanes: 1 } });
+  const pdMissingBypassText = await pdMissingBypass.text();
+  const pdRecordAfterMissing = await pdProgramRecord(mainProgram.id);
+  const pdV2 = await pdDispatchDoor(mainProgram.id, { dispatch: { v: 2, on: true, bypassMaster: false, maxLanes: 1 } });
+  const pdV2Record = await pdProgramRecord(mainProgram.id);
+  check("program-dispatch door: v2 requires a boolean bypassMaster and accepts the complete v2 setting",
+    pdMissingBypass.status === 400 && pdMissingBypassText.includes("bypassMaster must be true or false")
+      && pdRecordAfterMissing === "absent"
+      && pdV2.status === 200 && pdV2Record !== "absent" && pdV2Record?.v === 2
+      && pdV2Record?.on === true && pdV2Record?.maxLanes === 1
+      && (pdV2Record as { bypassMaster?: boolean }).bypassMaster === false,
+    `${pdMissingBypass.status}:${pdMissingBypassText} ${pdV2.status}:${JSON.stringify(pdV2Record)}`);
+  await pdDispatchDoor(mainProgram.id, { dispatch: null });
 
   // (1) MASTER STOP ON, NO GRANT ANYWHERE — the byte-for-byte legacy case. Three released rows sit
   // through a full tick window: one bracketed by a program with no record, one bracketed by
@@ -8033,11 +8510,11 @@ export async function run(ctx: Ctx): Promise<void> {
   await pdSettle();
   const [pdForeignA, pdLooseA, pdMachineA] = await Promise.all([spawnRowOf(pdForeignId), spawnRowOf(pdLooseId), spawnRowOf(pdMachine1)]);
   const pdAfterStop = await fleetSwitches();
-  check("program-dispatch (1): with the global dispatcher stopped and no program granted, a full tick window moves nothing and writes no note",
+  check("program-dispatch (1): with the global dispatcher stopped and no program granted, a full tick window moves nothing and names the stop",
     pdForeignRelease.status === 200 && pdLooseRelease.status === 200 && pdMachine1Release.status === 200
-      && pdForeignA?.status === "queued" && (pdForeignA?.note ?? null) === null
-      && pdLooseA?.status === "queued" && (pdLooseA?.note ?? null) === null
-      && pdMachineA?.status === "queued" && (pdMachineA?.note ?? null) === null
+      && pdForeignA?.status === "queued" && pdForeignA?.note === "waiting: dispatcher stopped"
+      && pdLooseA?.status === "queued" && pdLooseA?.note === "waiting: dispatcher stopped"
+      && pdMachineA?.status === "queued" && pdMachineA?.note === "waiting: dispatcher stopped"
       && pdMachineA?.releasedBy === "machine" && pdForeignA?.releasedBy === "owner"
       && pdAfterStop.lanes === pdBeforeStop.lanes && pdAfterStop.occupied === pdBeforeStop.occupied
       && pdAfterStop.dispatchOn === false && pdAfterStop.autosOn === true,
@@ -8062,8 +8539,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && pdMachine1B?.status === "sent" && typeof pdMachine1B?.slot === "number"
       && pdMachine2B?.status === "queued"
       && (pdMachine2B?.note ?? "").includes('1/1 lanes busy in program "')
-      && pdForeignB?.status === "queued" && (pdForeignB?.note ?? null) === null
-      && pdLooseB?.status === "queued" && (pdLooseB?.note ?? null) === null,
+      && pdForeignB?.status === "queued" && pdForeignB?.note === "waiting: dispatcher stopped"
+      && pdLooseB?.status === "queued" && pdLooseB?.note === "waiting: dispatcher stopped",
     `grant=${pdGrant.status}:${JSON.stringify(pdGrantRecord)} m1=${JSON.stringify(pdMachine1B ?? null)} m2=${JSON.stringify(pdMachine2B ?? null)} foreign=${JSON.stringify(pdForeignB ?? null)} loose=${JSON.stringify(pdLooseB ?? null)}`);
 
   // (3) `on:false` IS NOT ABSENCE. The record stays, dated and readable; the tick refuses exactly as
@@ -8127,7 +8604,7 @@ export async function run(ctx: Ctx): Promise<void> {
   await pdKillLanes();
 
   // (6) AN UNREADABLE RECORD LOADS AS ABSENT — never as a weaker grant, and never as a grant at all.
-  // Planted as a v2 shape, which is the dangerous direction: a loader that read it as "its nearest
+  // Planted as a v3 shape, which is the dangerous direction: a loader that read it as "its nearest
   // v1 meaning" would hand a future schema today's permission. Proved twice, because the display
   // half and the behaviour half fail differently: the route stops sending the key, and the tick
   // refuses the granted program's machine-released row exactly as in (1).
@@ -8142,11 +8619,11 @@ export async function run(ctx: Ctx): Promise<void> {
   await stopSrv();
   const pdPlantState = readState();
   pdPlantState.programs = (pdPlantState.programs ?? []).map((x) => x.id === mainProgram.id
-    ? { ...x, dispatch: { v: 2, on: true, maxLanes: 2, confirmedAt: Date.now() } } : x);
+    ? { ...x, dispatch: { v: 3, on: true, maxLanes: 2, confirmedAt: Date.now() } } : x);
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(pdPlantState, null, 2), { mode: 0o600 });
   const pdPlanted = (readState().programs ?? []).find((x) => x.id === mainProgram.id)?.dispatch;
-  check("program-dispatch (6) setup: the v2 record is on disk before the server is started on it",
-    (pdPlanted as { v?: number } | undefined)?.v === 2, JSON.stringify(pdPlanted ?? null));
+  check("program-dispatch (6) setup: the future v3 record is on disk before the server is started on it",
+    (pdPlanted as { v?: number } | undefined)?.v === 3, JSON.stringify(pdPlanted ?? null));
   await restartSrv();
   await post("/api/dispatch", { on: false }); // a restart reloads the persisted switches
   await post("/api/autos/switch", { on: true });
@@ -8155,10 +8632,10 @@ export async function run(ctx: Ctx): Promise<void> {
   const pdUnreadableRelease = await selfRelease(successorToken, pdUnreadableId);
   await pdSettle();
   const pdUnreadableRow = await spawnRowOf(pdUnreadableId);
-  check("program-dispatch (6): a v2 dispatch record loads as ABSENT — the route stops sending it, and the tick refuses the program's machine-released row under the stopped fleet",
+  check("program-dispatch (6): a future v3 dispatch record loads as ABSENT — the route stops sending it, and the stopped tick names its reason",
     pdUnreadableRecord === "absent"
       && pdUnreadableRelease.status === 200
-      && pdUnreadableRow?.status === "queued" && (pdUnreadableRow?.note ?? null) === null,
+      && pdUnreadableRow?.status === "queued" && pdUnreadableRow?.note === "waiting: dispatcher stopped",
     `record=${JSON.stringify(pdUnreadableRecord)} release=${pdUnreadableRelease.status} row=${JSON.stringify(pdUnreadableRow ?? null)}`);
 
   // (7) REVOKE IS IDEMPOTENT, and revoking what is already absent is the state the caller asked for.
@@ -10392,6 +10869,11 @@ export async function run(ctx: Ctx): Promise<void> {
     };
     const rejectPaste = slFirstReport.id === null ? "" : await waitVerdictPaste(slFirstReport.id);
     const rejectRow = slFirstReport.id === null ? undefined : await reportRow(slFirstReport.id);
+    const decisionSendClass = (id: string | null): string | null => id === null ? null
+      : readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as { event?: string; path?: string; reportId?: string; deliveryClass?: string })
+        .find((row) => row.event === "send" && row.path === "report-decision" && row.reportId === id)
+        ?.deliveryClass ?? null;
     // Mutation: delete the `await deliverFleetReportDecision(report);` line from decideFleetReport
     // and this check is red — the verdict is recorded and nothing reaches the lane, which is exactly
     // the measured state before this cut.
@@ -10404,6 +10886,9 @@ export async function run(ctx: Ctx): Promise<void> {
         && rejectRow?.decisionDelivery?.reason === null
         && typeof rejectRow?.decisionDelivery?.at === "number",
       JSON.stringify({ paste: rejectPaste.slice(0, 200), delivery: rejectRow?.decisionDelivery ?? null }));
+    check("fleet-report delivery: a rejected verdict goes out as sofort and names the judging MAIN",
+      decisionSendClass(slFirstReport.id) === "sofort" && rejectPaste.includes("receiving MAIN in slot"),
+      JSON.stringify({ klass: decisionSendClass(slFirstReport.id), paste: rejectPaste.slice(0, 220) }));
     // EXACTLY ONE CARRY PER DECISION. The second call is refused by the already-decided branch, and
     // the property this asserts is that the carry sits BELOW it: nothing is pasted a second time and
     // the stored delivery record is not re-stamped.
@@ -10578,6 +11063,9 @@ export async function run(ctx: Ctx): Promise<void> {
       slSecondReport.ok && slSecondReport.id !== null && slSecondReport.id !== slFirstReport.id
         && slAcceptRes?.ok === true,
       JSON.stringify({ filed: slSecondReport, decided: slAcceptRes }));
+    check("fleet-report delivery: an accepted verdict stays buendelbar and names the judging MAIN",
+      decisionSendClass(slSecondReport.id) === "buendelbar" && idlePaste.includes("receiving MAIN in slot"),
+      JSON.stringify({ klass: decisionSendClass(slSecondReport.id), paste: idlePaste.slice(0, 220) }));
 
     // …AND THE LANE MUST BE DONE-LOOKING AGAIN BEFORE THE LAND, which is a REAL coupling this
     // fixture did not have before 2026-09-12 and not a papered-over flake: the accept above is now

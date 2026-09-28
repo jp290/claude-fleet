@@ -471,9 +471,15 @@ interface SuccessionDebtFleetEvent extends FleetEventBase {
   kind: "succession-debt";
   payload: SuccessionDebtEventPayload;
 }
+interface MessageFleetEvent extends FleetEventBase {
+  subjectSlot: number;
+  kind: "message";
+  payload: { messageId: string; to: MessageAddress };
+}
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
   | CommandJobFleetEvent | LaneSuiteFleetEvent | ClarificationFleetEvent | FleetReportFleetEvent
-  | SupervisorTransitionFleetEvent | HarnessBlockFleetEvent | LaneReviewFleetEvent | SuccessionDebtFleetEvent;
+  | SupervisorTransitionFleetEvent | HarnessBlockFleetEvent | LaneReviewFleetEvent | SuccessionDebtFleetEvent
+  | MessageFleetEvent;
 
 // `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
 // persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
@@ -524,12 +530,14 @@ type FleetReportFulfilled = typeof FLEET_REPORT_FULFILLED[number];
 // could no longer take it, and a row that recorded it as the MAIN's would claim a judgement by a
 // session that had already ended.
 //
-// THE THIRD PRINCIPAL is a RULE, and exactly two exist:
+// THE THIRD PRINCIPAL is a RULE:
 //   · `accepted-by-land` (owner 2026-09-13, note docs/messungen/2026-09-13-task-aggregation-
 //     a-e-fable.md §D). A `complete` report whose lane landed and whose audit on that land is green
 //     or unknown is closed by the land itself — the MAIN that landed it already took the work.
 //     `mainAfter` is present EXACTLY on this verdict: it is the evidence the rule read, and a rule
 //     verdict without its evidence would be a judgement nobody can re-derive.
+//   · `landed` closes only a `handoff` whose lane ended after its branch landed. A handoff
+//     makes no claim about completed work; `mainAfter` names the land the rule read.
 //   · `superseded` (owner 2026-09-22, the 47-inbox measurement). A lane that files a NEW report
 //     has spoken again, and its older UNDECIDED owner-inbox rows on the same branch are closed as
 //     moot — the newest row is the live one. `supersededBy` is present EXACTLY on this verdict:
@@ -541,7 +549,7 @@ type FleetReportFulfilled = typeof FLEET_REPORT_FULFILLED[number];
 // deliberately NOT the bare occupant shape — every reader that reads `by.slot` as "the receiving MAIN
 // judged this" (the auto-close, the review park, the outcome join) must be made to meet it as its
 // own case, and a nested key is what the compiler forces them to.
-type FleetReportRuleName = "accepted-by-land" | "superseded";
+type FleetReportRuleName = "accepted-by-land" | "landed" | "superseded";
 type FleetReportDecider = { slot: number; openedAt: number; sessionId: string | null };
 interface FleetReportDecision {
   disposition: FleetReportDisposition;
@@ -662,6 +670,10 @@ interface FleetReport {
 // into the requester's pane over the same transport, so it inherits the same crash boundary.
 type AttentionKind = "decision" | "blocked" | "review-ready";
 type AttentionStatus = "open" | "send-uncertain" | "answered" | "refused";
+// WHO THE QUESTION WAITS ON (Verfassung §5, owner rule 2026-09-25: worker → MAIN → Orchestratorin →
+// owner). Chosen once at raise time: the unique live Orchestratorin first, else the owner. Only
+// escalate moves it, and only upward. A persisted row without the key loads as "owner".
+type AttentionStage = "orchestrator" | "owner";
 interface AttentionRequest {
   id: string;
   raisedAt: number;
@@ -674,6 +686,9 @@ interface AttentionRequest {
   provenance?: { taskId: string | null; originId: string | null; programId: string | null;
     branch: string | null; candidateSha: string | null };
   status: AttentionStatus;
+  stage: AttentionStage;
+  // present once POST /api/attention/:id/escalate handed the row from the Orchestratorin to the owner
+  escalation?: { reason: string; at: number };
   answer: { text: string; at: number; by: "owner" } | null;
   refusedReason: string | null;
   closedAt: number | null;
@@ -734,11 +749,11 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   // probe that caught it on the first run that could.
   const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"
     || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review"
-    || e.kind === "succession-debt";
+    || e.kind === "succession-debt" || e.kind === "message";
   // …and the kinds that may name the OWNER instead of a session. Same list on both sides of the
   // equivalence below, so a kind can never be admitted to one half and not the other.
   const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block"
-    || e.kind === "lane-review" || e.kind === "succession-debt";
+    || e.kind === "lane-review" || e.kind === "succession-debt" || e.kind === "message";
   // The owner-principal receiver, all three fields or none: a half-null triple is malformed, not a
   // transport choice — exactly as an unknown `delivery` is.
   const ownerReceiver = e.receiverSlot === null && e.receiverOpenedAt === null
@@ -1005,6 +1020,15 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     return { ...base, subjectSlot: Number(e.subjectSlot), kind: e.kind,
       payload: { debtId: p.debtId, rail: p.rail, respawned: p.respawned, reason: p.reason } };
   }
+  if (e.kind === "message") {
+    if (!ownerReceiver || !Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0) return null;
+    const p = e.payload as Partial<MessageFleetEvent["payload"]> | undefined;
+    const to = loadMessageAddress(p?.to, "message event to");
+    if (!p || typeof p.messageId !== "string" || !/^[0-9a-f]{24}$/.test(p.messageId)
+      || typeof to === "string") return null;
+    return { ...base, subjectSlot: Number(e.subjectSlot), kind: e.kind,
+      payload: { messageId: p.messageId, to } };
+  }
   if (e.kind === "lane-review") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
       || typeof e.subjectBranch !== "string" || !e.subjectBranch
@@ -1163,7 +1187,7 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     // that replaced this row (supersededBy).
     if (rule) {
       const by = d.by as { rule?: unknown };
-      if (by.rule === "accepted-by-land") {
+      if (by.rule === "accepted-by-land" || by.rule === "landed") {
         if (Object.keys(by).length !== 1 || d.disposition !== "accepted"
           || typeof d.mainAfter !== "string" || !/^[0-9a-f]{7,64}$/.test(d.mainAfter)
           || d.supersededBy !== undefined) return null;
@@ -1260,6 +1284,13 @@ function attentionFrom(raw: unknown): AttentionRequest | null {
     if (!answerShaped() || a.refusedReason !== null || a.closedAt !== null) return null;
   } else if (answer !== null) return null;
   if (a.status === "refused" && (!(a.refusedReason ?? "").trim() || a.closedAt === null)) return null;
+  if (a.stage !== undefined && a.stage !== "orchestrator" && a.stage !== "owner") return null;
+  const escalation = a.escalation as Record<string, unknown> | undefined;
+  if (escalation !== undefined && (!escalation || typeof escalation.reason !== "string" || !escalation.reason.trim()
+    || escalation.reason.length > MAX_ATTENTION_ANSWER || typeof escalation.at !== "number"
+    || !Number.isFinite(escalation.at) || escalation.at <= 0 || a.stage !== "owner")) return null;
+  // a row persisted before the Rückfrage-Kette was always the owner's: absent stage loads as „[Zitat entfernt]“
+  if (a.stage === undefined) (raw as AttentionRequest).stage = "owner";
   return raw as AttentionRequest;
 }
 
@@ -2336,13 +2367,9 @@ const loadProgramRelease = (value: unknown): ProgramRelease | undefined => {
 };
 
 // === THE PROGRAM-SCOPED DISPATCH RECORD ====================================================
-// loadPromotion's four properties, one record over: CLOSED, VERSIONED, DEFAULT-ABSENT, and
-// `confirmedAt` stamped server-side so a caller can never date the owner's act. It is a PERMISSION,
-// so its degradation direction is the whole design: anything that is not exactly a well-formed v1
-// record — unknown key, wrong version, non-boolean `on`, an absurd `maxLanes`, a missing stamp —
-// loads as ABSENT, i.e. as "this program has no dispatch permission" and therefore as the byte-for-
-// byte legacy behaviour under the global switch. There is no field-wise repair, for loadPromotion's
-// reason: half a permission is not a weaker permission, it is a different one.
+// Closed, versioned records with a server-stamped date. v1 `on` is the legacy master bypass;
+// v2 `on` controls this program and `bypassMaster` is the separate bypass. An invalid record loads
+// as absent, never as a partial setting.
 //
 // `maxLanes` IS A CEILING THE OWNER LOWERS, NEVER RAISES. The tick reads it through a Math.min
 // against FLEET_DISPATCH_MAX_LANES_PER_PROGRAM (server.ts#programDispatchCap), so a number typed
@@ -2350,17 +2377,25 @@ const loadProgramRelease = (value: unknown): ProgramRelease | undefined => {
 // and not itself a safety property: the safety property is the min, and a number above the env cap
 // is legal, stored and simply inert.
 const PROGRAM_DISPATCH_MAX_LANES_MAX = 16;
-interface ProgramDispatch { v: 1; on: boolean; maxLanes: number; confirmedAt: number }
+type ProgramDispatch =
+  | { v: 1; on: boolean; maxLanes: number; confirmedAt: number }
+  | { v: 2; on: boolean; bypassMaster: boolean; maxLanes: number; confirmedAt: number };
 const loadProgramDispatch = (value: unknown): ProgramDispatch | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !["v", "on", "maxLanes", "confirmedAt"].includes(k))) return undefined;
-  if (r.v !== 1) return undefined;
+  if (r.v === 1) {
+    if (Object.keys(r).some((k) => !["v", "on", "maxLanes", "confirmedAt"].includes(k))) return undefined;
+  } else if (r.v === 2) {
+    if (Object.keys(r).some((k) => !["v", "on", "bypassMaster", "maxLanes", "confirmedAt"].includes(k))) return undefined;
+    if (typeof r.bypassMaster !== "boolean") return undefined;
+  } else return undefined;
   if (typeof r.on !== "boolean") return undefined;
   if (typeof r.maxLanes !== "number" || !Number.isInteger(r.maxLanes)
     || r.maxLanes < 1 || r.maxLanes > PROGRAM_DISPATCH_MAX_LANES_MAX) return undefined;
   if (typeof r.confirmedAt !== "number" || !Number.isFinite(r.confirmedAt) || r.confirmedAt <= 0) return undefined;
-  return { v: 1, on: r.on, maxLanes: r.maxLanes, confirmedAt: r.confirmedAt };
+  return r.v === 1
+    ? { v: 1, on: r.on, maxLanes: r.maxLanes, confirmedAt: r.confirmedAt }
+    : { v: 2, on: r.on, bypassMaster: r.bypassMaster as boolean, maxLanes: r.maxLanes, confirmedAt: r.confirmedAt };
 };
 
 // === THE STUDIO RECORD — the WORKFLOW as data, beside the machine environment, never inside it ===
@@ -2781,13 +2816,13 @@ const loadProgramInbox = (value: unknown): ProgramInboxRead => {
 // the same message under the same id. The READ RECEIPT is decided by the OCCUPANT TRIPLE — so the
 // record still says exactly who read it, and a later occupant never overwrites that. Two different
 // questions; a slot-keyed record answers both with one wrong answer.
-type MessageRole = "supervisor" | "controller";
+type MessageRole = "supervisor" | "orchestrator" | "controller";
 // `controller` is carried DELIBERATELY as a well-formed but unresolvable address. The Controller is
 // Scope and holds no binding (docs/controller.md), so naming it here is how the dead end is
 // DOCUMENTED rather than invented: the loader accepts the address, the resolver refuses it by name,
 // and a later owner-promoted binding is a resolver change instead of a record migration. A MAIN
 // that wants to reach the Controller today addresses the Program the Controller is MAIN of.
-const MESSAGE_ROLES: MessageRole[] = ["supervisor", "controller"];
+const MESSAGE_ROLES: MessageRole[] = ["supervisor", "orchestrator", "controller"];
 type MessageAddress = { kind: "program"; id: string } | { kind: "role"; role: MessageRole };
 // CLOSED BY KIND, with exactly one member today. An unknown kind is a named refusal rather than a
 // tolerated extra — but the honest limit of what that buys: it keeps TODAY's text records stably
@@ -2984,6 +3019,7 @@ interface ProgramHandoverObligation {
   detail: ProgramHandoverDetail;
 }
 type ProgramHandoverSettled = ProgramHandoverObligation & { settled: { at: number; how: ProgramHandoverSettledHow } };
+interface ProgramHandoverLost { id: string; kind: "clarification" | "fleet-event"; reason: string }
 interface ProgramHandover {
   v: 1;
   at: number;
@@ -2993,11 +3029,12 @@ interface ProgramHandover {
   // oldest first, at most PROGRAM_HANDOVER_MAX. A record written before 2026-09-23 has no key and
   // loads as [] — no row of it was ever measured settled.
   settled: ProgramHandoverSettled[];
+  lost: ProgramHandoverLost[];
   dropped: number;
 }
 type ProgramHandoverRead = { ok: true; handover: ProgramHandover } | { ok: false; error: string };
-const PROGRAM_HANDOVER_KEYS = ["v", "at", "from", "to", "obligations", "settled", "dropped"];
-const PROGRAM_HANDOVER_LEGACY_KEYS = PROGRAM_HANDOVER_KEYS.filter((k) => k !== "settled");
+const PROGRAM_HANDOVER_KEYS = ["v", "at", "from", "to", "obligations", "settled", "lost", "dropped"];
+const PROGRAM_HANDOVER_LEGACY_KEYS = PROGRAM_HANDOVER_KEYS.filter((k) => k !== "settled" && k !== "lost");
 const PROGRAM_HANDOVER_OBLIGATION_KEYS = ["kind", "id", "at", "text", "detail"];
 const loadProgramHandoverDetail = (value: unknown, index: number): ProgramHandoverDetail | string => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return `obligation ${index} detail must be an object`;
@@ -3050,7 +3087,8 @@ const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
   const r = value as Record<string, unknown>;
   const legacy = !Object.prototype.hasOwnProperty.call(r, "settled");
-  const want = legacy ? PROGRAM_HANDOVER_LEGACY_KEYS : PROGRAM_HANDOVER_KEYS;
+  const hasLost = Object.prototype.hasOwnProperty.call(r, "lost");
+  const want = legacy ? PROGRAM_HANDOVER_LEGACY_KEYS : hasLost ? PROGRAM_HANDOVER_KEYS : PROGRAM_HANDOVER_KEYS.filter((k) => k !== "lost");
   if (Object.keys(r).some((k) => !want.includes(k)) || Object.keys(r).length !== want.length)
     return { ok: false, error: `must contain exactly ${PROGRAM_HANDOVER_KEYS.join(", ")}` };
   if (r.v !== 1) return { ok: false, error: "v must be 1" };
@@ -3110,12 +3148,25 @@ const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
       settled.push({ ...row, settled: { at: m.at, how: m.how as ProgramHandoverSettledHow } });
     }
   }
+  const lost: ProgramHandoverLost[] = [];
+  if (hasLost) {
+    if (!Array.isArray(r.lost)) return { ok: false, error: "lost must be an array" };
+    for (const [index, raw] of r.lost.entries()) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: `lost ${index} must be an object` };
+      const row = raw as Record<string, unknown>;
+      if (Object.keys(row).length !== 3 || typeof row.id !== "string" || !/^[0-9a-zA-Z_-]{1,64}$/.test(row.id)
+        || (row.kind !== "clarification" && row.kind !== "fleet-event")
+        || typeof row.reason !== "string" || !row.reason || row.reason.length > 300)
+        return { ok: false, error: `lost ${index} must be exactly {id, kind, reason}` };
+      lost.push({ id: row.id, kind: row.kind, reason: row.reason });
+    }
+  }
   const from = r.from as { slot: number; openedAt: number; sessionId: string | null };
   const to = r.to as { slot: number; openedAt: number };
   return { ok: true, handover: { v: 1, at: r.at,
     from: { slot: from.slot, openedAt: from.openedAt, sessionId: from.sessionId },
     to: { slot: to.slot, openedAt: to.openedAt },
-    obligations, settled, dropped: r.dropped as number } };
+    obligations, settled, lost, dropped: r.dropped as number } };
 };
 
 // --- THE ROLE-LINEAGE HANDOVER (e3e5084a) ------------------------------------------------------
@@ -3471,10 +3522,10 @@ export type {
   DeployWatch, TransitionWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
-  HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
+  HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
   SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportFulfilled, FleetReportDecision, FleetReportBasis,
-  FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionRequest,
+  FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
   RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, LaneReviewCandidate, LaneResume, LanePreview, LanePreviewState, CandidateReview, CandidateReviewFinding, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
@@ -3484,7 +3535,7 @@ export type {
   ProgramInboxKind, ProgramInboxEntry, ProgramInbox, ProgramInboxRead,
   MessageRole, MessageAddress, MessagePayload, Message, Messages, MessagesRead,
   ProgramHandoverKind, ProgramHandoverDetail, ProgramHandoverObligation, ProgramHandover,
-  ProgramHandoverSettledHow, ProgramHandoverSettled,
+  ProgramHandoverSettledHow, ProgramHandoverSettled, ProgramHandoverLost,
   ProgramHandoverRead, ProgramRecordLoss, ProgramRecordLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,

@@ -420,7 +420,10 @@ export interface TaskRefineFull { at: number; model: string;
     findings: { code: string; severity: "error" | "unknown"; child: number; detail: string }[] } }
 // `waveBudget` is the server's live FLEET_LAND_WAVE_BUDGET: the board's land fold must cut with the
 // number the wave door checks, or it offers waves the door refuses. Absent on an older server.
-interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string; waveBudget?: number }
+// `lanes` (busy lanes in the dispatch repo) and `quiet` (the machine's quiet window is open NOW, by
+// the server's clock) let the queue foot name the gate that holds; absent on an older server.
+interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string; waveBudget?: number;
+  lanes?: number; quiet?: boolean }
 export let fleet: SlotInfo[] = [];
 // the harness catalogue, fetched ONCE (it is a server constant) the first time the picker opens.
 // Empty until then, and every reader treats empty as "only the default exists" — so a failed or
@@ -534,8 +537,8 @@ export let briefCompilerOn: boolean | undefined;
 export let intakeOn = false;
 // the automation kill-switch and quiet hours, as the owner poll carries them. Read by the settings
 // window's "Fleet" rows only; null until the first poll (and on a server that predates the fields).
-let autosOnSrv: boolean | null = null;
-let quietHoursSrv: { start: number; end: number } | null = null;
+export let autosOnSrv: boolean | null = null;
+export let quietHoursSrv: { start: number; end: number } | null = null;
 // Whether THIS fleet writes the integration branch (server.ts, FLEET_LANDS). A follower instance
 // fast-forwards main from the canonical host and refuses both land doors with a 409; offering ⏏
 // there would be a button whose only possible outcome is an alert. Defaults to TRUE and is set from
@@ -2249,8 +2252,8 @@ function fleetSection(sec: HTMLElement): void {
   // 2 · automatic prompts (the kill-switch)
   {
     const s = shell("Automatic prompts",
-      "Aus hält jeden geplanten Prompt in jeder Session an, bis du sie wieder einschaltest; einmalige Handlungen von dir bleiben möglich.",
-      "Not-Aus für alle geplanten Prompts der Fleet.");
+      "Aus hält jeden geplanten Prompt in jeder Session an und startet auch keine Lane mehr, bis du sie wieder einschaltest; einmalige Handlungen von dir bleiben möglich.",
+      "Not-Aus für alle geplanten Prompts und Lane-Starts der Fleet — auch Programs mit „darf starten: an“ halten.");
     let want: boolean | null = null;
     const b = toggle();
     b.onclick = () => { const cur = want ?? autosOnSrv ?? true; want = !cur === autosOnSrv ? null : !cur; sync(); };
@@ -2273,8 +2276,8 @@ function fleetSection(sec: HTMLElement): void {
   // 3 · quiet hours
   {
     const s = shell("Quiet hours",
-      "In diesem Fenster (Uhrzeit dieses Rechners) schickt die Fleet keiner Session wiederkehrende Prompts; einmalige bleiben.",
-      "Setzt das Ruhefenster für wiederkehrende Prompts aller Sessions.");
+      "In diesem Fenster (Uhrzeit dieses Rechners) schickt die Fleet keiner Session wiederkehrende Prompts und startet keine Lane; einmalige Prompts bleiben.",
+      "Setzt das Ruhefenster für wiederkehrende Prompts und Lane-Starts aller Sessions; ein Program mit „darf starten: an“ startet darin nur, was die Fleet selbst freigegeben hat.");
     const from = el("select", "setin") as HTMLSelectElement;
     const to = el("select", "setin") as HTMLSelectElement;
     const off = el("option", "", "off") as HTMLOptionElement;

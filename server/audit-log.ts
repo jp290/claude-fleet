@@ -301,7 +301,7 @@ type AuditEvent =
   // FleetEvent rows below record transport, acknowledgement and terminal receiver loss separately.
   | "watch_fire" | "watch_skip" | "watch_superseded"
   | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_held" | "fleet_event_ack" | "fleet_event_owner_ack"
-  | "fleet_event_receiver_gone" | "fleet_event_subject_gone" | "fleet_event_prune"
+  | "fleet_event_receiver_gone" | "fleet_event_rebound" | "fleet_event_subject_gone" | "fleet_event_prune"
   // the preview rail (server.ts#mintLaneSuiteEvents). `_skipped` is its own word and not a
   // `fleet_event_*` one deliberately: nothing was minted, so a reader counting minted rows must
   // not find it among them — and a red that could NOT be filed is the loudest line this rail has.
@@ -313,7 +313,7 @@ type AuditEvent =
   // a ③ verdict for a row that asked for one (server.ts#fileLaneReview): minted, deduplicated or
   // skipped alike — one line each, so "the reviewer ran and nobody heard" is readable off the trail
   | "lane_review"
-  | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
+  | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune" | "clarification_rebound"
   | "clarification_reply_send_uncertain"
   | "fleet_report_open" | "fleet_report_prune"
   // the OWNER half of the report rail. Its self twin writes no trail line on purpose (the row it
@@ -336,6 +336,8 @@ type AuditEvent =
   // `attention_refused` is a RECEIPT that the owner saw it and declined — the silent closure this
   // channel exists to make impossible.
   | "attention_open" | "attention_answered" | "attention_refused" | "attention_prune"
+  // the Orchestratorin handed a MAIN's question on to the owner, with its mandatory reason
+  | "attention_escalated"
   // an open row of an active Program handed to the MAIN that succeeded its requester (never an owner kill)
   | "attention_rebound"
   // the one criterion row of a task rewritten by a re-proposal (server.ts#openCriterionAttention)

@@ -4,7 +4,7 @@ import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stop
 
 interface SendAudit { event?: string; slot?: number; path?: string; detail?: string; file?: string;
   ts?: number; dueAt?: number; deliveryClass?: string; ttlSec?: number; ttlQuelle?: string;
-  cache?: string; eventId?: string; acceptance?: string }
+  cache?: string; eventId?: string; acceptance?: string; count?: number; paths?: string }
 interface DeliveryEvent { id: string; watchId: string | null; status: string; kind: string;
   receiverSlot: number; receiverOpenedAt: number; payload?: { result?: string } }
 const auditRows = (): SendAudit[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
@@ -13,6 +13,38 @@ const auditRows = (): SendAudit[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8")
   });
 const eventRows = async (): Promise<DeliveryEvent[]> =>
   (await (await get("/api/events")).json() as { events: DeliveryEvent[] }).events;
+// THE SENTENCES A RECEIVER READS (server.ts#DELIVERY_MEANING), quoted where the pane must show them
+const MEANING = {
+  auto: "naechster Schritt: beantworte den Check-in im laufenden Auftrag · Grenze: keine neue Befugnis",
+  owner: "naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher",
+  bundle: "naechster Schritt: bearbeite die enthaltenen Zustellungen · Grenze: nur innerhalb deiner bestehenden Rolle",
+  "fleet-event": "naechster Schritt: lies das Ereignis und handle in deiner Rolle · Grenze: keine neue Befugnis",
+} as const;
+// the whole scrollback: a header is wider than the pane and a bundle is many lines
+const paneText = async (pane: string): Promise<string> =>
+  (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", pane)).out;
+// …compared with ALL whitespace removed: the capture trims a space that falls at a row end. What is
+// compared is the words and their order.
+const squash = (text: string): string => text.replace(/\s+/g, "");
+const inPane = (pane: string, expected: string): boolean => squash(pane).includes(squash(expected));
+const around = (pane: string, needle: string): string | null => {
+  const flat = squash(pane);
+  const at = flat.indexOf(squash(needle));
+  return at < 0 ? null : flat.slice(Math.max(0, at - 160), at + squash(needle).length + 20);
+};
+// A plain `cat` in the pane for the deliveries a check reads back off the screen: the tty echoes what
+// was typed as it arrived, where the shell's line editor redraws a long multibyte line and overwrote
+// the header's start locally ("~%ehenden Rolle]", 2026-09-28). C-c first: a shell left at a quote>
+// continuation would read `cat` as more quoted text.
+const catPane = async (pane: string): Promise<boolean> => {
+  await tmuxOut("send-keys", "-t", pane, "C-c");
+  await tmuxOut("send-keys", "-t", pane, "cat", "Enter");
+  for (let i = 0; i < 50; i++) {
+    if ((await tmuxOut("display-message", "-p", "-t", pane, "#{pane_current_command}")).out.trim() === "cat") return true;
+    await Bun.sleep(100);
+  }
+  return false;
+};
 const currentSelfToken = (slot: number): string => {
   const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
     { slots?: Record<string, { selfToken?: string }> };
@@ -30,6 +62,7 @@ export async function run(): Promise<void> {
       { slots: { id: number; cwd: string | null }[] };
     check("delivery-class fixture: slot 2 remains open after the isolated restart",
       session.slots.some((s) => s.id === 2 && !!s.cwd));
+    check("delivery-class fixture: slot 2 runs a plain cat for the header read-backs", await catPane("s2"));
     const before = (await plogRead()).length;
     const sendsBefore = auditRows().filter((r) => r.event === "send" && r.slot === 2).length;
     const scheduled = await post("/api/slots/2/autos", { text: autoText, inSec: 1, idleSec: 0 });
@@ -61,6 +94,14 @@ export async function run(): Promise<void> {
         && bundled.at(-1)?.detail === "slot:2 count=1",
       JSON.stringify({ texts: typed.map((p) => p.text), sends: sends.length - sendsBefore,
         path: sends.at(-1)?.path, bundle: bundled.at(-1)?.detail }));
+    // (2) A REAL BUNDLE: the outer header says path=bundle, and each mark carries its own entry's
+    // sentence — before 5a a mark named only the path, so the auto's sentence never reached the pane.
+    // BREAKS IF: bundleText drops the per-entry sentence or the outer send stops being path=bundle.
+    const twoPane = await paneText("s2");
+    check("a two-entry bundle is headed path=bundle and each mark carries its own path's sentence",
+      inPane(twoPane, `path=bundle · Slot 2 · ${MEANING.bundle}] [fleet-buendel 1/2 · path=owner · ${MEANING.owner}]`)
+        && inPane(twoPane, `[fleet-buendel 2/2 · path=auto · ${MEANING.auto}]`),
+      JSON.stringify([around(twoPane, "[fleet-buendel 1/2"), around(twoPane, "[fleet-buendel 2/2")]));
 
     const timedAuto = `${marker}: kalter Auto-Termin`;
     const timedAutoAuditBefore = auditRows().length;
@@ -71,8 +112,9 @@ export async function run(): Promise<void> {
       r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto" && r.cache === "kalt") ?? null,
     { timeoutMs: 8_000, what: "second cold auto enters its own window" });
     await Bun.sleep(3_000);
+    // the WHEN of the flush, whatever path it carries — which path is check (1)'s question below
     const timedAutoSends = auditRows().slice(timedAutoAuditBefore).filter((r) =>
-      r.event === "send" && r.slot === 2 && r.path === "bundle");
+      r.event === "send" && r.slot === 2);
     const timedAutoPrompts = (await plogRead()).slice(timedAutoPlBefore).filter((p) =>
       p.slot === 2 && p.text === timedAuto);
     const timedAutoFlushed = timedAutoQueued.deliveryClass === "buendelbar"
@@ -82,7 +124,76 @@ export async function run(): Promise<void> {
     check("a cold auto arrives after its bundle window without another wakeup", timedAutoFlushed,
       `due=${timedAutoQueued.dueAt} sends=${timedAutoSends.length} prompts=${timedAutoPrompts.length}`);
     if (!timedAutoFlushed) return;
+    const timedAutoBundled = auditRows().slice(timedAutoAuditBefore).filter((r) =>
+      r.event === "delivery_bundle_sent" && r.slot === 2);
+    const timedAutoPane = await paneText("s2");
+    // (1) ONE ENTRY IS NO BUNDLE: it is typed under its own path, so the send row says auto and the
+    // header carries the auto's sentence; the bundle row still counts the one entry it flushed.
+    // BREAKS IF: flushDeliveryBundle sends a single entry with path "bundle" again (the pre-5a state:
+    // 0 of 70 live sends in audit.jsonl carried their own path).
+    check("a single bundled auto is typed with its own header — path=auto and its sentence — and counted count=1",
+      timedAutoSends.length === 1 && timedAutoSends[0]?.path === "auto"
+        && timedAutoBundled.length === 1 && timedAutoBundled[0]?.count === 1
+        && timedAutoBundled[0]?.paths === "auto"
+        && inPane(timedAutoPane, `[fleet-zustellung · geplanter Check-in · path=auto · Slot 2 · ${MEANING.auto}] ${timedAuto}`),
+      JSON.stringify({ sends: timedAutoSends.map((r) => r.path), bundled: timedAutoBundled.map((r) => [r.count, r.paths]),
+        line: around(timedAutoPane, timedAuto) }));
 
+    // (1) …and an IMMEDIATE delivery into a bundle that holds nothing any more: the queued auto is
+    // deleted inside its window, so the owner /send flushes a bundle whose only entry is itself.
+    const loneText = `${marker}: allein im leeren Buendel`;
+    const loneAuditBefore = auditRows().length;
+    const loneScheduled = await post("/api/slots/2/autos", { text: `${marker}: geloeschter Check-in`,
+      inSec: 1, idleSec: 0 });
+    const loneAutoId = ((await loneScheduled.json()) as { auto?: { id: string } }).auto?.id ?? "";
+    await until(() => auditRows().slice(loneAuditBefore).find((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto") ?? null,
+    { timeoutMs: 8_000, what: "the auto that will be deleted enters its window" });
+    const loneDeleted = await post(`/api/autos/${loneAutoId}/delete`, {});
+    const loneSent = await post("/send", { slot: 2, text: loneText });
+    const loneBundled = await until(() => auditRows().slice(loneAuditBefore).find((r) =>
+      r.event === "delivery_bundle_sent" && r.slot === 2) ?? null,
+    { timeoutMs: 5_000, what: "the immediate delivery flushes the emptied bundle" }).catch(() => null);
+    const loneSends = auditRows().slice(loneAuditBefore).filter((r) => r.event === "send" && r.slot === 2);
+    const lonePane = await paneText("s2");
+    check("a single immediate delivery into an emptied bundle keeps its own path — path=owner, its own header",
+      loneScheduled.ok && loneDeleted.ok && loneSent.ok
+        && loneBundled?.paths === "owner" && loneBundled.count === 1 && loneBundled.deliveryClass === "sofort"
+        && auditRows().slice(loneAuditBefore).some((r) => r.event === "delivery_bundle_dropped" && r.path === "auto")
+        && loneSends.length === 1 && loneSends[0]?.path === "owner"
+        && inPane(lonePane, `path=owner · Slot 2 · ${MEANING.owner}] ${loneText}`),
+      JSON.stringify({ status: [loneScheduled.status, loneDeleted.status, loneSent.status],
+        bundled: loneBundled ? [loneBundled.count, loneBundled.paths, loneBundled.deliveryClass] : null,
+        sends: loneSends.map((r) => r.path),
+        line: around(lonePane, loneText) }));
+
+    // AN OWNER /-COMMAND NEVER RIDES A BUNDLE (Slot 9, 2026-09-28: „[Zitat entfernt]“ arrived as
+    // „[Zitat entfernt]“ and ran as a prompt). With an auto waiting in the window, the
+    // command is typed alone and first, with no header in front of it; the auto flushes on its own.
+    // BREAKS IF: sendText merges an owner /-command into the waiting bundle again.
+    const slashText = `/fleet-probe-${marker}`;
+    const slashAutoText = `${marker}: Check-in neben einem Befehl`;
+    const slashAuditBefore = auditRows().length;
+    const slashScheduled = await post("/api/slots/2/autos", { text: slashAutoText, inSec: 1, idleSec: 0 });
+    await until(() => auditRows().slice(slashAuditBefore).find((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto") ?? null,
+    { timeoutMs: 8_000, what: "an auto waits in the window beside the coming command" });
+    const slashSent = await post("/send", { slot: 2, text: slashText });
+    const slashAutoFlush = await until(() => auditRows().slice(slashAuditBefore).find((r) =>
+      r.event === "delivery_bundle_sent" && r.slot === 2) ?? null,
+    { timeoutMs: 8_000, what: "the waiting auto flushes after the command" }).catch(() => null);
+    const slashSends = auditRows().slice(slashAuditBefore).filter((r) => r.event === "send" && r.slot === 2);
+    const slashRows = (await paneText("s2")).split("\n").filter((row) => row.includes(slashText));
+    check("an owner /-command beside a waiting bundle is typed alone, first and headerless; the auto flushes on its own",
+      slashScheduled.ok && slashSent.ok
+        && slashSends.length === 2 && slashSends[0]?.path === "owner" && slashSends[1]?.path === "auto"
+        && slashAutoFlush?.count === 1 && slashAutoFlush.paths === "auto"
+        && slashRows.length > 0 && slashRows.every((row) => row.trim() === slashText),
+      JSON.stringify({ status: [slashScheduled.status, slashSent.status], sends: slashSends.map((r) => r.path),
+        flush: slashAutoFlush ? [slashAutoFlush.count, slashAutoFlush.paths] : null,
+        rows: slashRows.map((row) => row.slice(0, 200)) }));
+
+    await tmuxOut("send-keys", "-t", "s2", "C-c"); // the header read-backs are done: hand s2 back to its shell
     await stopSrv();
     const coldState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
       slots: Record<string, { openedAt: number; sessionId: string | null }>;
@@ -167,8 +278,8 @@ export async function run(): Promise<void> {
     const largeRows = auditRows().slice(largeFrom).filter((r) => r.slot === 2);
     const stored = largeRows.filter((r) => r.event === "pane_inbox_stored");
     const physical = largeRows.filter((r) => r.event === "send");
-    const expected = `[fleet-buendel 1/2 · path=owner]\n${largeOwner}\n\n`
-      + `[fleet-buendel 2/2 · path=fleet-event]\n${eventBody.text}`;
+    const expected = `[fleet-buendel 1/2 · path=owner · ${MEANING.owner}]\n${largeOwner}\n\n`
+      + `[fleet-buendel 2/2 · path=fleet-event · ${MEANING["fleet-event"]}]\n${eventBody.text}`;
     const disk = stored[0]?.file ? readFileSync(stored[0].file) : null;
     check("a bundle above 32 KiB writes one byte-complete file, with the immediate original first",
       largeSent.ok && Buffer.byteLength(expected, "utf8") > 32 * 1024
@@ -245,8 +356,13 @@ export async function run(): Promise<void> {
     }, { timeoutMs: 9_000, what: "three green events flush after the warm window" });
     const warmSends = auditRows().filter((r) => r.event === "send" && r.slot === warmSlot)
       .slice(warmSendsBefore);
+    // Which PATH that one send carries is not fixed: deliverFleetEventBundle already joins events that
+    // are ready in the same tick into ONE fleet-event entry, and a bundle of one entry is typed under
+    // its own path (Buendel 5a). So the flush's own row decides — one entry: fleet-event, more: bundle.
+    const warmFlush = auditRows().filter((r) => r.event === "delivery_bundle_sent" && r.slot === warmSlot).at(-1);
     check("three green events to one idle warm recipient flush as one send after the window",
-      warmDone.length === 3 && warmSends.length === 1 && warmSends[0]?.path === "bundle"
+      warmDone.length === 3 && warmSends.length === 1 && !!warmFlush
+        && warmSends[0]?.path === (warmFlush.count === 1 ? "fleet-event" : "bundle")
         && warmSends[0]?.deliveryClass === "buendelbar"
         && warmQueued.dueAt !== undefined && (warmSends[0]?.ts ?? 0) >= warmQueued.dueAt - 100,
       `events=${warmDone.length} sends=${warmSends.length} due=${warmQueued.dueAt} sent=${warmSends[0]?.ts}`);
@@ -277,7 +393,7 @@ export async function run(): Promise<void> {
       const edgeSends = auditRows().slice(edgeBefore).filter((r) => r.event === "send" && r.slot === warmSlot);
       check(`${tier} edge delivers the green event before the full ten-second bundle window`,
         edgeEvent.kind === "deploy-terminal" && edgeSends.length === 1
-          && edgeSends[0]?.path === "bundle"
+          && edgeSends[0]?.path === "fleet-event"
           && (edgeSends[0]?.ts ?? Infinity) < (edgeQueued.ts ?? 0) + 10_000
           && (edgeSends[0]?.ts ?? Infinity) <= edgeAt + 1000,
         `sends=${edgeSends.length} queued=${edgeQueued.ts} sent=${edgeSends[0]?.ts} edge=${edgeAt}`);
@@ -320,7 +436,7 @@ export async function run(): Promise<void> {
     { timeoutMs: 8_000, what: "cold program inbox nudge enters its window" });
     await Bun.sleep(2_700);
     const inboxSends = auditRows().slice(inboxAuditBefore).filter((r) =>
-      r.event === "send" && r.slot === warmSlot && r.path === "bundle");
+      r.event === "send" && r.slot === warmSlot && r.path === "inbox-nudge");
     const inboxPrompts = (await plogRead()).slice(inboxPlBefore).filter((p) =>
       p.slot === warmSlot && p.text.startsWith(`[fleet inbox] 1 ungelesene Eintraege in der Inbox deines Programs ${inboxProgramId}`));
     check("a cold inbox nudge reaches its MAIN after the bundle window without another wakeup",
@@ -553,7 +669,7 @@ export async function run(): Promise<void> {
       !!roleSuccessor?.ok && roleNext !== vacant,
       `${roleSuccessor?.status} slot=${roleNext}`);
     const roleSend = await until(() => auditRows().slice(roleBefore).find((r) =>
-      r.event === "send" && r.slot === roleNext && r.path === "bundle") ?? null,
+      r.event === "send" && r.slot === roleNext && r.path === "fleet-event") ?? null,
     { timeoutMs: 12_000, what: "role bundle is typed in the successor's session" });
     const roleOutcome = await until(async () => {
       const state = (await eventRows()).find((e) => e.id === roleEvent.id)?.status;

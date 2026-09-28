@@ -57,7 +57,7 @@ import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { scanTitleOnly } from "./titlebytes";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
-import { buildTrace, type TraceLiveLane } from "./trace-index";
+import { buildTrace, type TraceLiveLane, type TraceRefs } from "./trace-index";
 import {
   clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
   resolveSurfaceRanges, symbolGraphStamp, surfaceSha,
@@ -116,7 +116,7 @@ import {
   PROGRAM_RECORD_LOSS_ERROR_MAX,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, loadProgramHandover,
   type ProgramHandover, type ProgramHandoverObligation, type ProgramHandoverDetail,
-  type ProgramHandoverSettled, type ProgramHandoverSettledHow,
+  type ProgramHandoverSettled, type ProgramHandoverSettledHow, type ProgramHandoverLost,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE, type LaneSeat,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
@@ -139,10 +139,10 @@ import {
   type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
   type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportFulfilled, type FleetReportDecision,
   type AttentionKind,
-  type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type SuccessionDebtFleetEvent, type SuccessionDebt,
+  type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type SuccessionDebtFleetEvent, type MessageFleetEvent, type SuccessionDebt,
   type LaneReviewFleetEvent, type TaskReviewMode,
   type FleetReportDeliveryState,
-  type AttentionRequest, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type TaskKindChange, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
+  type AttentionRequest, type AttentionStage, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type TaskKindChange, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskCard, type TaskCriterion, type TaskFilesProposal,
@@ -176,7 +176,8 @@ import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, F
 import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, setPrincipalState, commentStrike, authFails, failStrike,
-  shareGate, closeShareClients, guard } from "./server/auth";
+  shareGate, closeShareClients, guard, type Principal } from "./server/auth";
+import { konzeptOpOf, konzeptRequest } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { readCodexRollout, readPiSession, type ConversationRead, type TBlock, type TEntry } from "./server/conversation-read";
 
@@ -2651,7 +2652,9 @@ function nextActionFor(phase: Phase, t: Task, promotion: PromotionPolicy | undef
   if (phase === "READY")
     return t.status === "pending"
       ? `release → POST /api/self/tasks/${t.id}/release`
-      : "queued — the dispatch tick starts it; no door belongs to this row";
+      : programDispatchStopped(t) ? "queued — program dispatch off; hand start remains available to the owner"
+      : !dispatchOn && !programDispatchOn(t) ? "queued — dispatcher stopped; hand start remains available to the owner"
+      : "queued — the dispatch tick may start it when its gates clear; no door belongs to this row";
   if (phase === "REVIEWABLE")
     // THE ONE LINE THE AUTHORITY SLICE ADDS, and it is the whole point of naming the door at all:
     // with a promotion the land is the MAIN's own act, without one it is still the owner's. The
@@ -2798,7 +2801,8 @@ async function programExecutionView(s: Slot): Promise<Response> {
       // `obligations` is what is still OPEN; `settled` is what a later succession measured settled
       // (settled{at, how}), oldest first, the oldest falling past PROGRAM_HANDOVER_MAX.
       handover: p.handover ? { at: p.handover.at, from: p.handover.from, to: p.handover.to,
-        obligations: p.handover.obligations, settled: p.handover.settled, dropped: p.handover.dropped } : null,
+        obligations: p.handover.obligations, settled: p.handover.settled, lost: p.handover.lost,
+        dropped: p.handover.dropped } : null,
       tasks: {
         rows: programTasks.map((t) => {
           // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
@@ -4795,6 +4799,10 @@ function taskDigest(t: Task): TaskDigest {
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
+// the PRIVATE konzept store (konzept-ledger.ts): versions and anmerkungen live under this root, never in
+// fleet.json or the tree. Unset = the konzept doors answer 503 by name; the pack resolver (f38eb1c8)
+// is meant to share the same root later.
+const KONZEPT_ROOT = process.env.FLEET_KONZEPT_ROOT?.trim() || null;
 const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
 // A SECOND cap, per Program, and it can only ever NARROW: the repo cap above is checked first and
 // unconditionally, this one after it. It does NOT replace it (owner decision 2026-08-22). Replacing
@@ -4827,7 +4835,7 @@ const DISPATCH_MAX_LANES_PER_PROGRAM: number | null =
 // THE PRODUCT: a release needs a LIVE bound Program-MAIN, i.e. an occupied slot, so at most
 // MAX_SLOTS (16) programs can be releasing at any moment → 16 × 5 = 80 rows. Why that does not
 // blow anything up, stated rather than assumed: released rows are ROWS, not lanes. What bounds
-// unattended EXECUTION is untouched and lane-shaped — DISPATCH_MAX_LANES per repo (live 2),
+// unattended EXECUTION is untouched and lane-shaped — DISPATCH_MAX_LANES per repo,
 // narrowed by DISPATCH_MAX_LANES_PER_PROGRAM — and the tick starts one lane per tick regardless of
 // how deep the queue is. 80 is below MAX_TASKS (200), so this door alone cannot outgrow the list
 // it lives in. The cap bounds QUEUE DEPTH, and it is honest about bounding nothing else.
@@ -5140,7 +5148,7 @@ let stewardToken: string | null = null;
 const STEWARD_SENDS_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_SENDS_PER_HOUR ?? 10) | 0);
 // max OPEN steward-filed pending tasks — a looping pulse must not flood the STEWARD's own shelf of
 // unread proposals. NOT the fleet's autonomy limit, and this comment used to imply it was: what
-// bounds how much work runs unattended is DISPATCH_MAX_LANES (live 2), a number about lanes. This
+// bounds how much work runs unattended is DISPATCH_MAX_LANES, a number about lanes. This
 // one is about rows nobody has read yet, filed through one door by one principal.
 const STEWARD_MAX_PENDING = Math.max(1, Number(process.env.FLEET_STEWARD_MAX_PENDING ?? 10) | 0);
 // the shape a steward `ref` / register `key` must have: derived from the THING, not the phrasing
@@ -8686,6 +8694,8 @@ type SendPath =
   | "supervisor-nudge"  // the Supervisor nudging a bound Program-MAIN
   | "audit-ping"        // a post-land audit red offered to an eligible main session
   | "inbox-nudge"       // "your program's inbox has unread entries"
+  | "report-orphan"     // an undecided Program report lost its MAIN
+  | "attention-orchestrator" // a bound MAIN's question waits first on the unique Orchestratorin
   | "backlog-nudge"     // the open-backlog reminder
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
   | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
@@ -8693,7 +8703,7 @@ type SendPath =
   | "rate-limit-resume";
 type DeliveryClass = "sofort" | "buendelbar";
 function deliveryClass(path: SendPath): DeliveryClass {
-  return path === "bundle" || path === "report-decision" || path === "inbox-nudge" || path === "backlog-nudge"
+  return path === "bundle" || path === "inbox-nudge" || path === "backlog-nudge"
     || path === "migrate-nudge" || path === "auto" ? "buendelbar" : "sofort";
 }
 function deliveryCacheState(s: Slot, now = Date.now()): DeliveryCacheFact & { cache: "warm" | "kalt"; edgeAt: number | null } {
@@ -8734,6 +8744,8 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "supervisor-nudge": "Supervisor-Hinweis",
   "audit-ping": "Post-Land-Audit-Hinweis",
   "inbox-nudge": "Inbox-Hinweis",
+  "report-orphan": "Hinweis auf verwaisten Program-Report",
+  "attention-orchestrator": "Rueckfrage einer MAIN an die Orchestratorin",
   "backlog-nudge": "Backlog-Erinnerung",
   "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
   "api-stall-resume": "Fortsetzen nach API-Fehler",
@@ -8744,32 +8756,62 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "owner": "naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher",
   "brief": "naechster Schritt: fuehre die zugewiesene Karte aus · Grenze: ihr Write-Set und Stop-Punkt",
   "founding": "naechster Schritt: uebernimm die gebundene Rolle · Grenze: ihr bestaetigter Auftrag",
-  "succession": "naechster Schritt: setze die Lane-Arbeit fort · Grenze: derselbe Auftrag und Worktree",
+  "succession": "naechster Schritt: setze die uebergebene Arbeit fort · Grenze: derselbe Auftrag und dieselbe Rolle",
   "auto": "naechster Schritt: beantworte den Check-in im laufenden Auftrag · Grenze: keine neue Befugnis",
   "steward": "naechster Schritt: pruefe den Steward-Hinweis · Grenze: deine bestehende Rolle",
   "fleet-event": "naechster Schritt: lies das Ereignis und handle in deiner Rolle · Grenze: keine neue Befugnis",
   "clarification-reply": "naechster Schritt: setze die Arbeit mit der Antwort fort · Grenze: deine Karte",
   "report-decision": "naechster Schritt: beachte die Entscheidung zum Report · Grenze: kein Land durch die Lane",
   "merge-author": "naechster Schritt: loese den benannten Konflikt · Grenze: dein Branch und Auftrag",
-  "merge-verdict": "nur zur Information",
+  "merge-verdict": "naechster Schritt: fuehre aus, was das Urteil nennt (Rebase, Reparatur, Warten) · Grenze: der benannte Branch",
   "supervisor-nudge": "naechster Schritt: pruefe den benannten Stillstand · Grenze: dein Program",
   "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
   "inbox-nudge": "naechster Schritt: lies die ungelesenen Program-Eintraege · Grenze: dein Program",
+  "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
+  "attention-orchestrator": "naechster Schritt: beantworte die Rueckfrage oder reiche sie mit Grund an den Owner · Grenze: nur die benannten Tueren",
   "backlog-nudge": "naechster Schritt: pruefe den offenen Backlog · Grenze: dein bestaetigtes Program",
-  "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane",
+  "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine bestehende Rolle",
   "api-stall-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
   "rate-limit-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
 };
+// THE SENTENCE HAS A RECEIVER. Two paths reach more than lanes, and their one sentence told every
+// receiver it was one: tickMigrate nudges non-lane MAINs ("Grenze: deine Lane"), handleSelfSucceed
+// founds Orchestratorin and MAIN successors ("setze die Lane-Arbeit fort"). The role is read the way
+// deliveryAddress reads it — a bound MAIN first, then a worktree, then an Orchestratorin label on a
+// session without one; every other receiver keeps the DELIVERY_MEANING sentence.
+type DeliveryRole = "lane" | "main" | "orchestrator";
+const DELIVERY_MEANING_BY_ROLE: Partial<Record<Exclude<SendPath, "model-push">, Record<DeliveryRole, string>>> = {
+  "succession": {
+    "lane": "naechster Schritt: setze die Lane-Arbeit fort · Grenze: derselbe Auftrag und Worktree",
+    "main": "naechster Schritt: uebernimm das gebundene Program und seine offenen Pflichten · Grenze: sein Auftrag",
+    "orchestrator": "naechster Schritt: setze die Orchestrierung aus der Uebergabe fort · Grenze: die Orchestratorinnen-Rolle",
+  },
+  "migrate-nudge": {
+    "lane": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane",
+    "main": "naechster Schritt: pruefe die Kontextgrenze und sichere dein Program · Grenze: deine MAIN-Rolle",
+    "orchestrator": "naechster Schritt: pruefe die Kontextgrenze und sichere die Orchestrierung · Grenze: deine Rolle",
+  },
+};
+function deliveryRole(s: Slot): DeliveryRole | null {
+  return boundProgramForMain(s).ok ? "main" : s.worktree ? "lane"
+    : isOrchestratorLabel(s.label) ? "orchestrator" : null;
+}
+function deliveryMeaning(path: Exclude<SendPath, "model-push">, s: Slot): string {
+  const role = deliveryRole(s);
+  return (role ? DELIVERY_MEANING_BY_ROLE[path]?.[role] : undefined) ?? DELIVERY_MEANING[path];
+}
+// the one condition under which Fleet types its own words beside a body: the header, and the
+// sentence in a bundle mark (a mark is a body line, so a codex/pi receiver keeps it unchanged)
+const headsDelivery = (form: Harness): boolean => form === CLAUDE_HARNESS && !DECLARED_HARNESS;
 // Only the default adapter gets it, and not when the operator declared a foreign FLEET_CMD for it:
 // codex, pi and every declared harness keep the paste byte for byte (no measurement says what their
 // TUI does with a typed prefix). An undeclared stand-in (`true`) takes it, which is what lets the
 // suites see the form.
-function deliveryHeader(form: Harness, path: SendPath, slot: number, text: string): string | null {
+function deliveryHeader(form: Harness, path: SendPath, slot: number, text: string, s: Slot): string | null {
   const source = DELIVERY_SOURCE[path];
-  const meaning = path === "model-push" ? null : DELIVERY_MEANING[path];
-  if (!source || form !== CLAUDE_HARNESS || DECLARED_HARNESS
+  if (!source || path === "model-push" || !headsDelivery(form)
     || (path === "owner" && text.trimStart().startsWith("/"))) return null;
-  return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${meaning}] `;
+  return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${deliveryMeaning(path, s)}] `;
 }
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
 // boot — the opposite choice from stewardRecentSends one region up, and for the reason that
@@ -8819,12 +8861,13 @@ async function seedInbound(): Promise<void> {
 // exception and would fail loudly in their temporal dead zone (the hazard commsFor documents one
 // region above); no boot path reaches sendText today, checked at both of the boot awaits.
 function auditSend(s: Slot, path: SendPath, bytes: number,
-  acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>, klass = deliveryClass(path)): void {
+  acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>, klass = deliveryClass(path), reportId?: string): void {
   const fill = contextFill(s);
   const cache = deliveryCacheState(s);
-  audit("send", s.id, `${path} ${bytes}B ${acceptance}`,
+  audit("send", s.id, `${path} ${bytes}B ${acceptance}${reportId ? ` report=${reportId}` : ""}`,
     { path, bytes, acceptance, deliveryClass: klass, ttlSec: cache.ttlSec,
-      ttlQuelle: cache.ttlQuelle, cache: cache.cache, ...(fill ? { ctxPct: fill.pct } : {}) });
+      ttlQuelle: cache.ttlQuelle, cache: cache.cache, ...(fill ? { ctxPct: fill.pct } : {}),
+      ...(reportId ? { reportId } : {}) });
   bumpInbound(s.id, Date.now(), bytes);
 }
 
@@ -9051,7 +9094,7 @@ async function submitFleetResidue(s: Slot, bound: BoundSlotPane): Promise<string
 type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true;
   deliveryClass?: DeliveryClass; subscribedWatch?: true; beforeSend?: (receiver: Slot) => Promise<void>;
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
-  eventIds?: readonly string[]; paneInboxNotice?: string;
+  eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string;
   bundleGate?: { harness?: false; quietHours?: false; idleMs?: number } };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
 type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
@@ -9125,10 +9168,16 @@ function refreshDeliveryBundles(): void {
     scheduleDeliveryBundle(key, bundle);
   }
 }
-function bundleText(entries: QueuedDelivery[]): string {
+// One entry is no bundle: it is typed as itself, under its own path's header (flushDeliveryBundle).
+// Two or more share the `bundle` header, so each mark carries its entry's own sentence.
+function bundleText(entries: QueuedDelivery[], s: Slot): string {
   if (entries.length === 1) return entries[0]!.text;
-  return entries.map((entry, i) => `[fleet-buendel ${i + 1}/${entries.length} · path=${entry.options.path}]\n${entry.text}`)
-    .join("\n\n");
+  const headed = headsDelivery(harnessOf(s.harness));
+  return entries.map((entry, i) => {
+    const path = entry.options.path;
+    const meaning = headed && path !== "model-push" ? ` · ${deliveryMeaning(path, s)}` : "";
+    return `[fleet-buendel ${i + 1}/${entries.length} · path=${path}${meaning}]\n${entry.text}`;
+  }).join("\n\n");
 }
 function bundleNotice(entries: QueuedDelivery[]): string {
   const classes = entries.map((entry) =>
@@ -9231,9 +9280,12 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
         submit: immediate.submit, options: immediate.options,
         origin: { slot: immediate.slot.id, openedAt: immediate.slot.openedAt }, queuedAt: Date.now(),
         resolve: () => {}, reject: () => {} }, ...entries] : entries;
-      const payload = bundleText(ordered);
+      const payload = bundleText(ordered, s);
+      // a single entry keeps its own path: the header then carries its own sentence, and the send
+      // row names the channel it came through rather than a bundle of one
       const { acceptance } = await sendText(s, payload, true,
-        { path: "bundle", rollbackOwnPayload: true, requireAgent: true,
+        { path: "bundle", ...(ordered.length === 1 ? { path: ordered[0]!.options.path } : {}),
+          rollbackOwnPayload: true, requireAgent: true,
           deliveryClass: immediate ? "sofort" : "buendelbar", bypassQueue: true,
           paneInboxNotice: bundleNotice(ordered) });
       audit("delivery_bundle_sent", s.id, `${key} count=${entries.length}`,
@@ -9290,7 +9342,11 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   const address = options.address ?? deliveryAddress(s);
   const key = deliveryAddressKey(address);
   if ((options.deliveryClass ?? deliveryClass(options.path)) === "sofort" || DELIVERY_BUNDLE_SEC === 0 || !submit) {
-    if (submit && deliveryBundles.has(key)) {
+    // An owner /-command never rides a waiting bundle: inside one it is prose under a header, never a
+    // command (Slot 9, 2026-09-28: „[Zitat entfernt]“ typed after a path=bundle header ran as a prompt).
+    // It goes alone and first, headerless (deliveryHeader); the bundle keeps its own window.
+    const ownerCommand = options.path === "owner" && given.trimStart().startsWith("/");
+    if (submit && !ownerCommand && deliveryBundles.has(key)) {
       const sent = await flushDeliveryBundle(key, { slot: s, text: given, submit, options });
       if (sent) return sent;
     }
@@ -9326,7 +9382,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   const composer = form.composer ?? null;
   const comms = commsFor(s);
   // what the composer holds once this send has typed: the delivery header, then the pasted body
-  const header = deliveryHeader(form, options.path, occupant.slot, text);
+  const header = deliveryHeader(form, options.path, occupant.slot, text, s);
   const composed = header ? header + text : text;
   const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS;
   // THE LEDGER'S TWO NUMBERS, taken here and set below rather than at the call sites: `payloadBytes`
@@ -9486,10 +9542,10 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // neighbours, so it can neither delay nor fail the send it records.
   try {
     const result = await task;
-    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass);
+    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass, options.reportId);
     return result;
   } catch (e) {
-    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass);
+    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass, options.reportId);
     if (e instanceof SendRefused) await options.onRefused?.(s);
     throw e;
   }
@@ -10882,7 +10938,8 @@ async function raiseSuccessionAttention(s: Slot, kind: AttentionKind, text: stri
     programId: s.programId,
     provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId,
       branch: s.worktree?.branch ?? null, candidateSha: null },
-    status: "open", answer: null, refusedReason: null, closedAt: null,
+    // server-raised, not the MAIN's question: the Rückfrage-Kette starts at openAttention only
+    status: "open", stage: "owner", answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
   audit("attention_open", s.id, `${request.id} kind=${kind} program=${s.programId} (succession ${kind === "blocked" ? "cap" : "warning"})`);
@@ -11390,6 +11447,13 @@ function clarificationReceiverFor(lane: Slot): ClarificationReceiver | { error: 
   return { error: NO_RECEIVER_EVIDENCE };
 }
 
+function standardSuccessionHolding(slotId: number): Program | undefined {
+  return programs.find((p) => p.status === "active" && !isGameMaker(p)
+    && p.main?.slot === slotId && p.founding?.mode === "succession"
+    && p.founding.predecessor?.slot === slotId
+    && p.founding.predecessor.openedAt === p.main.openedAt);
+}
+
 function refuseClarification(c: ClarificationRequest, reason: string, at = Date.now()): void {
   // send-uncertain is refusable for the same reason it is not terminal: once the worker occupant is
   // gone there is nobody left to retry the send for, and an unrefusable row would never be pruned.
@@ -11399,8 +11463,14 @@ function refuseClarification(c: ClarificationRequest, reason: string, at = Date.
   c.refusedReason = reason;
   c.closedAt = at;
   const worker = slotFrom(c.worker.slot);
-  if (worker?.cwd && worker.openedAt === c.worker.openedAt && worker.sessionId === c.worker.sessionId)
+  if (worker?.cwd && worker.openedAt === c.worker.openedAt && worker.sessionId === c.worker.sessionId) {
     worker.awaiting = null;
+    const line = `[fleet] clarification ${c.id} was refused: ${reason}. No reply will come from this request.`;
+    void sendText(worker, line, true, { path: "clarification-reply", requireAgent: true }).then(() => {
+      worker.history = [...worker.history, { text: line, ts: Date.now() }].slice(-MAX_HISTORY);
+      saveHistory(worker);
+    }).catch((e: unknown) => logError("clarificationRefusalDelivery", e));
+  }
   audit("clarification_refused", c.worker.slot, `${c.id} ${reason}`);
 }
 
@@ -11415,6 +11485,10 @@ function reconcileClarifications(teardownSlotId?: number): boolean {
     const receiverGone = teardownSlotId === c.receiver.slot || !receiver?.cwd
       || receiver.openedAt !== c.receiver.openedAt || receiver.sessionId !== c.receiver.sessionId;
     if (!workerGone && !receiverGone) continue;
+    const holding = standardSuccessionHolding(c.receiver.slot);
+    if (!workerGone && receiverGone && holding && c.status === "open"
+      && c.basis === "program-main" && c.provenance.programId === holding.id
+      && c.receiver.openedAt === holding.main?.openedAt) continue;
     refuseClarification(c, workerGone
       ? "worker occupant ended or was replaced"
       : "receiver occupant ended or was replaced");
@@ -11588,6 +11662,11 @@ function markFleetEventReceiverGone(slotId: number): boolean {
   let dirty = false;
   for (const e of fleetEvents) {
     if (e.receiverSlot !== slotId || FLEET_EVENT_TERMINAL.includes(e.status)) continue;
+    const holding = standardSuccessionHolding(slotId);
+    if (holding && e.receiverOpenedAt === holding.main?.openedAt
+      && ((e.status === "pending" && fleetEventDeliveryClass(e) === "sofort")
+        || clarifications.some((c) => c.eventId === e.id && c.status === "open"
+          && c.basis === "program-main" && c.provenance.programId === holding.id))) continue;
     if (DELIVERY_BUNDLE_SEC > 0 && e.status === "pending" && e.receiverAddress
       && fleetEventDeliveryClass(e) === "buendelbar") continue;
     if (e.kind === "fleet-report" && e.status === "send-uncertain"
@@ -11719,7 +11798,13 @@ async function openClarification(s: Slot, body: Record<string, unknown> | null):
     && c.worker.openedAt === s.openedAt && c.worker.sessionId === s.sessionId);
   if (existing) return json({ ok: true, existing: true, request: existing });
 
-  const resolved = clarificationReceiverFor(s);
+  const programAddress = s.programId ? resolveMessageAddress({ kind: "program", id: s.programId }) : null;
+  const orchestrator = programAddress?.ok && programAddress.escalatedTo === "orchestrator"
+    ? programAddress.holder : null;
+  const resolved: ClarificationReceiver | { error: string } = orchestrator
+    ? { receiver: { slot: orchestrator.id, openedAt: orchestrator.openedAt,
+      sessionId: orchestrator.sessionId }, basis: "orchestrator" }
+    : clarificationReceiverFor(s);
   if ("error" in resolved) return json({ error: resolved.error }, 409);
   if (slotDeliveryBudget(resolved.receiver.slot).free === 0)
     return json({ error: "clarification receiver has no FleetEvent delivery budget" }, 409);
@@ -11806,6 +11891,51 @@ function reportReceiverLiveness(report: FleetReport): ReportReceiverLiveness {
 // A row that is UNDECIDED and has no living receiver is the owner's to judge and nobody else's.
 const reportAwaitsOwner = (report: FleetReport): boolean =>
   !report.decision && reportReceiverLiveness(report) !== "live";
+
+const orphanReportNotified = new Set<string>();
+let orphanReportSeeded = false;
+let orphanReportTickBusy = false;
+async function tickOrphanReports(): Promise<void> {
+  if (orphanReportTickBusy) return;
+  orphanReportTickBusy = true;
+  try {
+    if (!orphanReportSeeded) {
+      const { rows } = await readEventLog(AUDIT_FILE);
+      for (const row of rows)
+        if (row.event === "send" && row.path === "report-orphan"
+          && typeof row.reportId === "string" && typeof row.bytes === "number" && row.bytes > 0)
+          orphanReportNotified.add(row.reportId);
+      orphanReportSeeded = true;
+    }
+    const report = fleetReports.find((r) => r.basis === "program" && reportAwaitsOwner(r)
+      && !orphanReportNotified.has(r.id));
+    if (!report) return;
+    const receiver = deliveryRecipient({ kind: "orchestrator" });
+    if (!receiver) return;
+    const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+    const delegated = reportDelegateHolder() === receiver;
+    const door = delegated
+      ? `GET /api/self/fleet-report/delegated; POST /api/self/fleet-report/${report.id}/delegate/accept|reject|escalate`
+      : `ohne ReportDelegate nur Owner-Tuer POST /api/fleet-report/${report.id}/accept|reject`;
+    const message = `[fleet report orphan] Program-Report ${report.id} ist unbeurteilt; Program ${report.provenance.programId} hat keine lebende MAIN. ${door}. Der Hinweis erteilt kein Urteilsrecht.`;
+    const { acceptance } = await sendText(receiver, message, true, { path: "report-orphan",
+      deliveryClass: "sofort", rollbackOwnPayload: true, reportId: report.id,
+      beforeSend: async (current) => {
+        if (deliveryRecipient({ kind: "orchestrator" }) !== current
+          || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+          || !reportAwaitsOwner(report)) throw new DeliveryCancelled(`orphan ${report.id} changed before paste`);
+      } });
+    orphanReportNotified.add(report.id);
+    const at = Date.now();
+    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    saveHistory(receiver);
+    logPrompt(receiver, message, "auto", at, undefined, acceptance);
+  } catch (e) {
+    if (!(e instanceof DeliveryCancelled)) logError("tickOrphanReports", e);
+  } finally {
+    orphanReportTickBusy = false;
+  }
+}
 
 // THE ACCEPTANCE PRECONDITION AT THE LAND — a precondition, never a judgement. This function
 // decides nothing about any work: it reads a verdict a receiving MAIN already wrote and answers
@@ -12021,19 +12151,20 @@ function disarmLaneWatchesForReport(s: Slot,
 // no longer open questions — they are bookkeeping. The rule closes them exactly as the owner did
 // (accepted, with the pointer to the newer row) under the SAME principal accepted-by-land uses:
 // a RULE, never the owner and never a session. The row being filed is the newest and stays open.
-//   · OWNER-INBOX rows only (basis owner-inbox, which is receiver null's transport half): a
-//     program row's receiver-in-fact is its bound MAIN and no rule takes a MAIN's judgement; a
-//     bound row is its receiver's. (3) of the same measurement: a living receiver is untouched.
+//   · OWNER-INBOX rows and Program HANDOFF rows only. A handoff is a baton, not a claim about work;
+//     a later filing on the same branch replaces it without taking the MAIN's judgement. Program
+//     needs-main, complete and failed rows, and every bound row, remain the receiver's to judge.
 //   · THE BRANCH is the join, not the occupation: the measured rounds were successions and
 //     respawns — slot numbers recycle, the branch names the work.
 //   · NO CARRY of the verdict to the lane: the lane that filed the successor made this row moot
 //     itself and is the one principal that needs no telling; accepted-by-land delivers because a
 //     waiting lane may still be blocked on the verdict, and that is not this shape.
 function closeSupersededReports(report: FleetReport): Promise<void>[] {
-  return fleetReports.filter((r) => r.id !== report.id
-    && !r.decision && r.basis === "owner-inbox" && r.receiver === null
-    && r.worker.branch === report.worker.branch
-    && r.reportedAt < report.reportedAt).map((r) => {
+  const filedAt = fleetReports.indexOf(report);
+  return fleetReports.filter((r, index) => index < filedAt
+    && !r.decision && ((r.basis === "owner-inbox" && r.receiver === null)
+      || (r.basis === "program" && r.status === "handoff"))
+    && r.worker.branch === report.worker.branch).map((r) => {
     r.decision = { disposition: "accepted", at: Date.now(), by: { rule: "superseded" },
       supersededBy: report.id, fulfilled: null,
       reason: `superseded by later report ${report.id} from the same lane branch` };
@@ -12143,7 +12274,8 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   //  · clarifications are untouched. An inbox cannot answer, so `/api/self/clarifications` keeps
   //    this exact 409 — a worker routed there would wait on a receiver that cannot speak.
   const resolved = clarificationReceiverFor(s);
-  const bound = "error" in resolved ? null : resolved;
+  const bound = "error" in resolved ? null
+    : resolved as ClarificationReceiver & { basis: Exclude<ClarificationBasis, "orchestrator"> };
   if (!bound) {
     const reason = (resolved as { error: string }).error;
     if (reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId)
@@ -12464,7 +12596,8 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
       `${report.id} ${decision.disposition} gate=${deliverable.gate}`);
     return;
   }
-  const text = fleetReportDecisionMessage(report.id, decision.disposition, decision.reason);
+  const text = fleetReportDecisionMessage(report.id, decision.disposition, decision.reason,
+    decision.by, report.status);
   stamp("pending", "held for the delivery window; no paste attempted");
   await saveStateNow();
   queuedReportDecisions.add(report.id);
@@ -12473,6 +12606,8 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
     try {
       await sendText(worker, text, true, { path: "report-decision",
         bundleGate: { harness: false, idleMs: REPORT_DECISION_IDLE_MS },
+        deliveryClass: decision.disposition === "rejected" ? "sofort" : "buendelbar",
+        reportId: report.id,
         beforeSend: async (current) => {
           if (report.decision !== decision) throw new DeliveryCancelled(`report ${report.id} decision changed`);
           recipient = current;
@@ -12605,6 +12740,59 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   // route writes, and the carry's own outcome, which no row of this response shows.
   await saveStateNow();
   return json({ ok: true, report });
+}
+
+async function decideFleetReportsBatch(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  if (!body || Object.keys(body).some((key) => key !== "decisions")
+    || !Array.isArray(body.decisions) || body.decisions.length < 1 || body.decisions.length > 100)
+    return json({ error: "decisions must be an array of 1 to 100 verdicts" }, 400);
+  const entries: { id: string; disposition: FleetReportDisposition; reason: string | null }[] = [];
+  const seen = new Set<string>();
+  for (const value of body.decisions) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return json({ error: "each decision must be an object" }, 400);
+    const row = value as Record<string, unknown>;
+    if (Object.keys(row).some((key) => !["id", "disposition", "reason"].includes(key))
+      || typeof row.id !== "string" || !/^[0-9a-f]{24}$/.test(row.id)
+      || (row.disposition !== "accepted" && row.disposition !== "rejected")
+      || (row.reason !== undefined && typeof row.reason !== "string"))
+      return json({ error: "each decision needs id, accepted|rejected disposition and optional reason" }, 400);
+    if (seen.has(row.id)) return json({ error: `duplicate report ${row.id}` }, 400);
+    seen.add(row.id);
+    const reason = typeof row.reason === "string" ? row.reason.trim() || null : null;
+    if (typeof row.reason === "string" && row.reason.length > MAX_FLEET_REPORT_DECISION_REASON)
+      return json({ error: `reason must be at most ${MAX_FLEET_REPORT_DECISION_REASON} chars` }, 400);
+    const fulfilled = fulfilledFromReason(reason);
+    if (!fulfilled.ok) return json({ error: fulfilled.error }, 400);
+    entries.push({ id: row.id, disposition: row.disposition, reason });
+  }
+  const { rows: outcomes } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+  for (const entry of entries) {
+    const report = fleetReports.find((r) => r.id === entry.id);
+    if (!report) return json({ error: `unknown fleet report ${entry.id}` }, 404);
+    if (report.basis !== "program" || report.provenance.programId !== bound.program.id)
+      return json({ error: `fleet report ${entry.id} belongs to another Program` }, 409);
+    if (report.decision) return json({ error: `fleet report ${entry.id} was already ${report.decision.disposition}` }, 409);
+    const worker = slotFrom(report.worker.slot);
+    if ((report.status !== "needs-main" && report.status !== "complete")
+      || (worker?.cwd && worker.openedAt === report.worker.openedAt)
+      || !outcomes.some((o) => o.disposition === "landed" && o.branch === report.worker.branch
+        && typeof o.ts === "number" && o.ts >= report.reportedAt
+        && typeof o.repo === "string" && typeof o.mainAfter === "string"))
+      return json({ error: `fleet report ${entry.id} is not a landed, ended needs-main or complete row` }, 409);
+  }
+  const reports: FleetReport[] = [];
+  for (const entry of entries) {
+    const judge = decideFleetReport;
+    const response = await judge(s, entry.id, entry.disposition, { reason: entry.reason ?? "" });
+    if (!response.ok) return json({ error: `batch stopped at ${entry.id}`, decided: reports.map((r) => r.id),
+      refusal: await response.json() }, response.status);
+    const result = await response.json() as { report: FleetReport };
+    reports.push(result.report);
+  }
+  return json({ ok: true, reports });
 }
 
 // THE OWNER DOOR FOR A REPORT NO SESSION CAN JUDGE ANY MORE, and it exists because the door above
@@ -12835,15 +13023,22 @@ async function descendantGreenAudit(repo: string, mainAfter: string, after: numb
   return null;
 }
 type AcceptByLandReading =
-  | { accept: true; mainAfter: string; audit: "green" | "unknown"; auditAt: number; via?: string }
+  | { accept: true; rule: "landed"; mainAfter: string }
+  | { accept: true; rule: "accepted-by-land"; mainAfter: string; audit: "green" | "unknown"; auditAt: number; via?: string }
   | { accept: false; why: string };
 async function acceptByLandReading(report: FleetReport, outcomeRows: Record<string, unknown>[],
   auditRows: PostLandAuditRow[], judged: Map<number, AuditAdjudication>): Promise<AcceptByLandReading> {
   if (report.decision) return { accept: false, why: `already ${report.decision.disposition}` };
-  if (report.status !== "complete")
-    return { accept: false, why: `status ${report.status} — only a complete report is closed by its land` };
-  const task = report.provenance.taskId ? tasks.find((t) => t.id === report.provenance.taskId) : undefined;
-  if (task?.status === "sent") return { accept: false, why: `task ${task.id} is still sent — the lane is running` };
+  if (report.status !== "complete" && !(report.basis === "program" && report.status === "handoff"))
+    return { accept: false, why: `status ${report.status} has no land rule` };
+  if (report.status === "handoff") {
+    const worker = slotFrom(report.worker.slot);
+    if (worker?.cwd && worker.openedAt === report.worker.openedAt)
+      return { accept: false, why: `worker slot ${report.worker.slot} is still occupied by this lane` };
+  } else {
+    const task = report.provenance.taskId ? tasks.find((t) => t.id === report.provenance.taskId) : undefined;
+    if (task?.status === "sent") return { accept: false, why: `task ${task.id} is still sent — the lane is running` };
+  }
   let land: Record<string, unknown> | null = null;
   for (const o of outcomeRows) {
     if (o.disposition !== "landed" || o.branch !== report.worker.branch
@@ -12854,6 +13049,8 @@ async function acceptByLandReading(report: FleetReport, outcomeRows: Record<stri
   if (typeof land.mainAfter !== "string" || !land.mainAfter || typeof land.repo !== "string" || !land.repo)
     return { accept: false, why: "the landed outcome carries no repo/mainAfter to join an audit to" };
   const mainAfter = land.mainAfter;
+  if (report.status === "handoff") return { accept: true, rule: "landed", mainAfter };
+  if (report.status !== "complete") return { accept: false, why: `status ${report.status}` };
   const repo = repoCanon(land.repo);
   const covering = auditRows.filter((row) => auditRowMatches(row, repo, mainAfter));
   const reds = covering.filter((row) => row.result === "red");
@@ -12885,13 +13082,14 @@ async function acceptByLandReading(report: FleetReport, outcomeRows: Record<stri
     : later ? `the land's tip was re-audited GREEN at ${later.at}`
       : cleared ? `the covering RED at ${cleared.at} was adjudicated ${judged.get(cleared.at)?.verdict}`
         : undefined;
-  return { accept: true, mainAfter, audit: newest.result === "green" ? "green" : "unknown", auditAt: newest.at,
+  return { accept: true, rule: "accepted-by-land", mainAfter, audit: newest.result === "green" ? "green" : "unknown", auditAt: newest.at,
     ...(via ? { via } : {}) };
 }
 
 let acceptByLandBusy = false;
 async function tickAcceptByLand(origin: "boot" | "tick" | "audit"): Promise<number> {
-  if (acceptByLandBusy || !fleetReports.some((r) => !r.decision && r.status === "complete")) return 0;
+  if (acceptByLandBusy || !fleetReports.some((r) => !r.decision && (r.status === "complete"
+    || (r.basis === "program" && r.status === "handoff")))) return 0;
   acceptByLandBusy = true;
   try {
     // the adjudication rail is read with the other two ledgers and for the same reason: a red whose
@@ -12909,17 +13107,20 @@ async function tickAcceptByLand(origin: "boot" | "tick" | "audit"): Promise<numb
       // say about a criterion: it read a land and a post-land audit, neither of which is anybody's
       // judgement of whether the row's Done was met. An absent key would read as "stamped before
       // the field existed", which of this verdict is false.
-      report.decision = { disposition: "accepted", at: Date.now(), by: { rule: "accepted-by-land" },
-        reason: `accepted-by-land: landed as ${reading.mainAfter.slice(0, 12)}, post-land audit ${reading.audit}`
-          + (reading.via ? ` — ${reading.via}` : ""),
+      report.decision = { disposition: "accepted", at: Date.now(), by: { rule: reading.rule },
+        reason: reading.rule === "landed"
+          ? `landed: handoff on ${report.worker.branch} was followed by land ${reading.mainAfter.slice(0, 12)}; no work claim was judged`
+          : `accepted-by-land: landed as ${reading.mainAfter.slice(0, 12)}, post-land audit ${reading.audit}`
+            + (reading.via ? ` — ${reading.via}` : ""),
         fulfilled: null, mainAfter: reading.mainAfter };
       const ledgered = ledgerReportDecision(report, report.decision);
       // the transport half exactly as both doors settle it: a decided report must not be re-pasted
       const event = report.eventId === null ? undefined : fleetEvents.find((e) => e.id === report.eventId);
       if (event && !FLEET_EVENT_TERMINAL.includes(event.status)) settleFleetEventAcknowledged(event);
       audit("fleet_report_rule_decision", report.worker.slot,
-        `${report.id} accepted-by-land mainAfter=${reading.mainAfter.slice(0, 12)} audit=${reading.audit}@${reading.auditAt} via=${origin}`
-        + (reading.via ? ` on=${reading.via}` : ""));
+        `${report.id} ${reading.rule} mainAfter=${reading.mainAfter.slice(0, 12)}`
+        + (reading.rule === "landed" ? ` via=${origin}`
+          : ` audit=${reading.audit}@${reading.auditAt} via=${origin}` + (reading.via ? ` on=${reading.via}` : "")));
       await ledgered;
       await deliverFleetReportDecision(report);
       closed++;
@@ -13325,6 +13526,24 @@ setPrincipalState({
   },
 });
 
+// THE KONTEXT OF A KONZEPT ENTRY (konzept-ledger.ts): a trace-index.ts#TraceRefs, built from the
+// credential (slot + openedAt, and `session` once the server has learned the conversation id) and from
+// the binding — a lane's branch, task and Program, a bound MAIN's Program. Nothing of it is read from a
+// body. Every other session is refused here: the door is Lane AND MAIN, by the owner's word
+// („[Zitat entfernt]“, Entwurf 2026-09-26) and the orchestrator's decision.
+type KonzeptKontext = { ok: true; refs: TraceRefs } | { ok: false; error: string };
+function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>): KonzeptKontext {
+  const base: TraceRefs = { slot: s.id, openedAt: p.openedAt, ...(s.sessionId ? { session: s.sessionId } : {}) };
+  if (p.role === "lane" && s.worktree)
+    return { ok: true, refs: { ...base, branch: s.worktree.branch, ...(s.taskId ? { task: s.taskId } : {}),
+      ...(s.programId ? { program: s.programId } : {}) } };
+  if (p.role === "main") {
+    const bound = boundProgramForMain(s);
+    return bound.ok ? { ok: true, refs: { ...base, program: bound.program.id } } : { ok: false, error: bound.error };
+  }
+  return { ok: false, error: `a konzept is read and written by a lane or by the bound MAIN of an active Program — this session is neither (role ${p.role})` };
+}
+
 // THE SCOPE OF BOTH INBOX DOORS, in one place because they answer the SAME two questions in the
 // same words. A lane is refused FIRST and by its own sentence: it has no program inbox at all, and
 // letting it fall through to the binding refusal would tell it to go bind itself as a MAIN. Past
@@ -13550,6 +13769,8 @@ function messageSenderFor(s: Slot): MessageSender {
     return { ok: false, response: json({ error: `ambiguous sender: this session is the bound Supervisor AND the bound MAIN of program ${bound.program.id} — the owner must separate the two before it addresses anyone` }, 409) };
   if (sup) return { ok: true, from: { kind: "role", role: "supervisor" } };
   if (bound.ok) return { ok: true, from: { kind: "program", id: bound.program.id } };
+  if (deliveryRecipient({ kind: "orchestrator" }) === s)
+    return { ok: true, from: { kind: "role", role: "orchestrator" } };
   return { ok: false, response: json({ error: bound.error }, 409) };
 }
 
@@ -13563,6 +13784,8 @@ function messageAddressesFor(s: Slot): MessageAddress[] {
   if (isBoundSupervisor(s)) out.push({ kind: "role", role: "supervisor" });
   const bound = boundProgramForMain(s);
   if (bound.ok) out.push({ kind: "program", id: bound.program.id });
+  if (!bound.ok && deliveryRecipient({ kind: "orchestrator" }) === s)
+    out.push({ kind: "role", role: "orchestrator" });
   return out;
 }
 
@@ -13575,8 +13798,14 @@ function messageAddressesFor(s: Slot): MessageAddress[] {
 //     exactly the window in which an address is momentarily unheld.
 //   · A REAL ADDRESS WITH A LIVE HOLDER → stored, holder named.
 type AddressResolution =
-  | { ok: true; holder: Slot | null; note: string | null }
+  | { ok: true; holder: Slot | null; note: string | null; escalatedTo: "orchestrator" | "owner" | null }
   | { ok: false; error: string };
+function escalateMessage(note: string): AddressResolution {
+  const holder = deliveryRecipient({ kind: "orchestrator" });
+  return holder
+    ? { ok: true, holder, note, escalatedTo: "orchestrator" }
+    : { ok: true, holder: null, note, escalatedTo: "owner" };
+}
 function resolveMessageAddress(a: MessageAddress): AddressResolution {
   if (a.kind === "role") {
     // The one named-but-unresolvable member. It documents the dead end instead of hiding it, and a
@@ -13584,30 +13813,37 @@ function resolveMessageAddress(a: MessageAddress): AddressResolution {
     // change, never a record migration, because the address shape already carries it.
     if (a.role === "controller")
       return { ok: false, error: 'role "controller" is named but not addressable: the Controller is Scope and holds no binding — address the Program it is MAIN of as {kind:"program",id}' };
+    if (a.role === "orchestrator") {
+      const holder = deliveryRecipient({ kind: "orchestrator" });
+      return holder ? { ok: true, holder, note: null, escalatedTo: null }
+        : { ok: true, holder: null, note: "no unique live Orchestrator", escalatedTo: "owner" };
+    }
     if (!supervisor)
-      return { ok: true, holder: null,
-        note: "no Supervisor is bound right now — the message is stored, and the next bound Supervisor reads it" };
+      return escalateMessage("no Supervisor is bound right now — the message is stored, and the next bound Supervisor reads it");
     const live = slotFrom(supervisor.slot);
     const held = !!(live?.cwd && live.openedAt === supervisor.openedAt);
-    return { ok: true, holder: held ? live! : null,
-      note: held ? null : "the bound Supervisor occupant is gone or was replaced — the message is stored, and the next bound Supervisor reads it" };
+    return held ? { ok: true, holder: live!, note: null, escalatedTo: null }
+      : escalateMessage("the bound Supervisor occupant is gone or was replaced — the message is stored, and the next bound Supervisor reads it");
   }
   const program = programs.find((p) => p.id === a.id);
   if (!program) return { ok: false, error: `unknown program ${a.id}` };
   if (program.status !== "active")
-    return { ok: true, holder: null,
-      note: `program ${a.id} is ${program.status} — the message is stored, but no MAIN is executing that program` };
+    return escalateMessage(`program ${a.id} is ${program.status} — the message is stored, but no MAIN is executing that program`);
   const main = program.main;
   if (!main)
-    return { ok: true, holder: null,
-      note: `program ${a.id} has no bound MAIN right now — the message is stored, and the next bound MAIN reads it` };
+    return escalateMessage(`program ${a.id} has no bound MAIN right now — the message is stored, and the next bound MAIN reads it`);
   const live = slotFrom(main.slot);
   const held = !!(live?.cwd && live.openedAt === main.openedAt);
-  return { ok: true, holder: held ? live! : null,
-    note: held ? null : `the bound MAIN of program ${a.id} is gone or was replaced — the message is stored, and the next bound MAIN reads it` };
+  return held ? { ok: true, holder: live!, note: null, escalatedTo: null }
+    : escalateMessage(`the bound MAIN of program ${a.id} is gone or was replaced — the message is stored, and the next bound MAIN reads it`);
 }
 
-const NO_MESSAGE_ADDRESS = "not a principal with an address — this rail answers a bound Program-MAIN or the bound Supervisor";
+const NO_MESSAGE_ADDRESS = "not a principal with an address — this rail answers a bound Program-MAIN, the bound Supervisor, or the unique live Orchestrator";
+function messageInboundFor(s: Slot, m: Message, mine = messageAddressesFor(s)): boolean {
+  if (mine.some((a) => sameAddress(a, m.to))) return true;
+  const reached = resolveMessageAddress(m.to);
+  return reached.ok && reached.escalatedTo === "orchestrator" && reached.holder === s;
+}
 
 // GET /api/self/messages — the pull half. Pure projection, stamps nothing, newest first.
 function messageViewFor(s: Slot): Response {
@@ -13624,7 +13860,7 @@ function messageViewFor(s: Slot): Response {
   // resolve — the predecessor's question would be exactly as lost as it is on every rail this one
   // replaces. Still ADDRESS-keyed on both sides, so a recycled occupant resolves to neither.
   const entries = messages.entries
-    .filter((m) => mine.some((a) => sameAddress(a, m.to) || sameAddress(a, m.from)))
+    .filter((m) => messageInboundFor(s, m, mine) || mine.some((a) => sameAddress(a, m.from)))
     .sort((a, b) => b.at - a.at);
   // NAMED `droppedFleetWide` rather than `dropped`: the cap is on the whole rail, so this number is
   // not "how many of YOUR messages fell off" and must not read like it.
@@ -13633,7 +13869,7 @@ function messageViewFor(s: Slot): Response {
   // `unread` counts only what was addressed TO the caller: a message it sent itself is not news,
   // and counting it would make an idle MAIN look like it owes an answer to its own question.
   return json({ addresses: mine,
-    unread: entries.filter((m) => m.readBy === null && mine.some((a) => sameAddress(a, m.to))).length,
+    unread: entries.filter((m) => m.readBy === null && messageInboundFor(s, m, mine)).length,
     droppedFleetWide: messages.dropped, entries, unknown });
 }
 
@@ -13675,6 +13911,8 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
 
   const resolved = resolveMessageAddress(to);
   if (!resolved.ok) return json({ error: resolved.error }, 409);
+  if (resolved.escalatedTo === "owner" && ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX)
+    return json({ error: "owner operations inbox has no FleetEvent delivery budget" }, 409);
 
   // REPLY AUTHORISATION, with ONE sentence for "no such message" and for "not addressed to you".
   // Deliberately UNLIKE readProgramInboxEntry, which separates 409-foreign from 404-unknown: there
@@ -13684,17 +13922,34 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   if (replyTo !== null) {
     const mine = messageAddressesFor(s);
     const parent = messages.entries.find((m) => m.id === replyTo);
-    if (!parent || !mine.some((a) => sameAddress(a, parent.to)))
+    if (!parent || !messageInboundFor(s, parent, mine))
       return json({ error: "replyTo names no message addressed to this sender" }, 409);
   }
 
   const entry = appendMessage(sender.from, to, payload, key, replyTo);
+  if (resolved.escalatedTo === "owner") {
+    const event: MessageFleetEvent = {
+      id: randomBytes(12).toString("hex"), watchId: null,
+      receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, receiverIdleSec: 0,
+      subjectSlot: s.id, kind: "message", payload: { messageId: entry.id, to },
+      createdAt: entry.at, status: "inbox", delivery: "inbox", attempts: 0,
+      deliveredAt: null, acknowledgedAt: null,
+    };
+    fleetEvents = [...fleetEvents, event];
+  }
   await saveStateNow();
+  if (resolved.holder) {
+    const holder = resolved.holder;
+    const text = `[fleet message] ${addressLabel(to)}: ${entry.id} — GET /api/self/messages, dann POST /api/self/messages/${entry.id}/read.`;
+    void sendText(holder, text, true, { path: "inbox-nudge", deliveryClass: "sofort",
+      rollbackOwnPayload: true })
+      .catch((error: unknown) => logError("messageNudgeSend", error));
+  }
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
   return json({ ok: true, existing: false, message: entry,
     holder: resolved.holder ? { slot: resolved.holder.id, openedAt: resolved.holder.openedAt } : null,
-    note: resolved.note });
+    note: resolved.note, escalatedTo: resolved.escalatedTo });
 }
 
 // POST /api/self/messages/:id/read — the RECEIPT, and like the inbox's it is not a lock: a second
@@ -13702,7 +13957,7 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
 async function readMessageFor(s: Slot, id: string): Promise<Response> {
   const mine = messageAddressesFor(s);
   if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS }, 409);
-  const entry = messages.entries.find((m) => m.id === id && mine.some((a) => sameAddress(a, m.to)));
+  const entry = messages.entries.find((m) => m.id === id && messageInboundFor(s, m, mine));
   if (!entry) {
     // A RECEIPT IS THE ADDRESSEE'S. The caller's own OUTBOUND row is visible to it in the view
     // above, so naming this case discloses nothing it cannot already see — and it is a different
@@ -14077,7 +14332,7 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   const capFull = programReleasePolicy(t) === "manual" && openReleased + groupVariants >= PROGRAM_MAX_RELEASED;
   const wavePartners = capFull ? releasedWavePartnersOf(t) : [];
   if (capFull && !wavePartners.length)
-    return json({ error: `program release cap reached (${openReleased + groupVariants}/${PROGRAM_MAX_RELEASED} released rows not yet started${groupVariants ? ` — ${groupVariants} of them are the pending variants of group ${t.id}` : ""}) — let the tick start one first` }, 409);
+    return json({ error: `program release cap reached (${openReleased + groupVariants}/${PROGRAM_MAX_RELEASED} released rows not yet started${groupVariants ? ` — ${groupVariants} of them are the pending variants of group ${t.id}` : ""}) — ${programDispatchStopped(t) ? "program dispatch off" : !dispatchOn && !programDispatchOn(t) ? "dispatcher stopped" : "let the tick start one first"}` }, 409);
   // (5) THROUGH THE HELPER, never a bare assignment: releaseTask is where `by` cannot be forgotten,
   // and a machine release that recorded nothing would be indistinguishable from the attended lands
   // already on the trail.
@@ -14932,17 +15187,94 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   if (open.length >= ATTENTION_MAX_OPEN_PER_REQUESTER)
     return json({ error: `max ${ATTENTION_MAX_OPEN_PER_REQUESTER} open attention requests per session — an unanswered pile is an attention failure, not a queue` }, 409);
 
+  // THE RÜCKFRAGE-KETTE (Verfassung §5; owner rule 2026-09-25: worker → MAIN → Orchestratorin →
+  // owner). The MAIN's role card says „[Zitat entfernt]“
+  // ; before this the row counted on the owner's board the instant it was raised. The stage
+  // is chosen HERE, once, by the same resolver every other orchestrator-addressed delivery uses: the
+  // unique live Orchestratorin first, otherwise the next stage up — the owner. A requester that is
+  // itself that Orchestratorin asks the owner. Only escalateAttention moves it afterwards.
+  const orchestrator = deliveryRecipient({ kind: "orchestrator" });
+  const viaOrchestrator = orchestrator !== null && orchestrator !== s;
   const request: AttentionRequest = {
     id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind, text,
     requester: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
     programId: program.id,
     provenance: { taskId, originId, programId: program.id, branch, candidateSha },
-    status: "open", answer: null, refusedReason: null, closedAt: null,
+    status: "open", stage: viaOrchestrator ? "orchestrator" : "owner",
+    answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
-  audit("attention_open", s.id, `${request.id} kind=${kind} program=${program.id}`);
+  audit("attention_open", s.id, `${request.id} kind=${kind} program=${program.id} stage=${request.stage}`);
   await saveStateNow();
+  // after the durable cut and off the response path: the hint is a courtesy to the row, never its
+  // precondition — a hint that fails leaves the row where GET /api/attention already shows it
+  if (viaOrchestrator) void hintAttentionOrchestrator(request, orchestrator);
   return json({ ok: true, existing: false, id: request.id, request: attentionReceipt(request), sessionIdMatch });
+}
+
+// ONE HINT PER ROW, to the Orchestratorin the stage was chosen for — the report-orphan pattern
+// (tickOrphanReports): one line, the id and the doors, re-checked before the paste. It is sent once,
+// at raise; an idempotent re-raise returns the existing row and sends nothing. What the
+// Orchestratorin does next happens through the existing doors: answer (as the owner route does
+// today) or escalate with a reason; the owner push stays her own harness tool, outside the server.
+async function hintAttentionOrchestrator(a: AttentionRequest, receiver: Slot): Promise<void> {
+  const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+  const question = a.text.replace(/\s+/g, " ").slice(0, 300);
+  const message = `[fleet attention] Rückfrage ${a.id} (${a.kind}) der MAIN Slot ${a.requester.slot}, Program ${a.programId}, `
+    + `wartet zuerst auf dich: „${question}${a.text.length > 300 ? " …" : ""}". Volltext GET /api/attention; `
+    + `beantworten POST /api/attention/${a.id}/answer {"text":…}; an den Owner weiterreichen POST /api/attention/${a.id}/escalate {"reason":…}.`;
+  try {
+    const { acceptance } = await sendText(receiver, message, true, { path: "attention-orchestrator",
+      deliveryClass: "sofort", rollbackOwnPayload: true,
+      beforeSend: async (current) => {
+        if (deliveryRecipient({ kind: "orchestrator" }) !== current
+          || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+          || a.stage !== "orchestrator" || (a.status !== "open" && a.status !== "send-uncertain"))
+          throw new DeliveryCancelled(`attention ${a.id} changed before paste`);
+      } });
+    const at = Date.now();
+    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    saveHistory(receiver);
+    logPrompt(receiver, message, "auto", at, undefined, acceptance);
+  } catch (e) {
+    if (!(e instanceof DeliveryCancelled)) logError("hintAttentionOrchestrator", e);
+  }
+}
+
+// THE ORCHESTRATORIN'S HAND-ON — "den Rest bringst du dem Owner". The row moves orchestrator →
+// owner with a mandatory reason, and never back: an owner-stage row is a 409 (an identical reason
+// on the row it already moved is the idempotent retry). The reason is the receipt of why the
+// question climbed, just as refusedReason is the receipt of a decline. Behind the owner gate like
+// the answer door beside it; until row 923f771e lands the ledger cannot tell the Orchestratorin's bearer from
+// the owner's, and says nothing it cannot know.
+async function escalateAttention(id: string, body: Record<string, unknown> | null): Promise<Response> {
+  const a = attentionRequests.find((x) => x.id === id);
+  if (!a) return json({ error: "unknown attention request" }, 404);
+  const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+  if (!reason)
+    return json({ error: "reason is required — say why this question is the owner's and not yours" }, 400);
+  if (reason.length > MAX_ATTENTION_ANSWER)
+    return json({ error: `reason must be at most ${MAX_ATTENTION_ANSWER} chars` }, 400);
+  if (a.status === "answered" || a.status === "refused")
+    return json({ error: `attention is already ${a.status} — there is no open question to hand on` }, 409);
+  if (a.stage === "owner") {
+    if (a.escalation?.reason === reason) return json({ ok: true, existing: true, request: attentionReceipt(a) });
+    return json({ error: "attention already waits on the owner — escalate moves a row from the Orchestratorin up, never further" }, 409);
+  }
+  a.stage = "owner";
+  a.escalation = { reason, at: Date.now() };
+  audit("attention_escalated", a.requester.slot, `${a.id} kind=${a.kind} program=${a.programId} orchestrator→owner: ${reason.slice(0, 200)}`);
+  await saveStateNow();
+  return json({ ok: true, existing: false, request: attentionReceipt(a) });
+}
+
+// WHICH STAGE AN OPEN ROW WAITS ON RIGHT NOW. The stored stage, except that a row parked at the
+// Orchestratorin while no unique live one exists climbs to the owner at read time (§5, next stage
+// up) — a killed or doubled Orchestratorin must never make a question vanish from the owner's count.
+// Nothing is written: a returning Orchestratorin finds the row where she left it.
+function attentionWaitsOn(a: AttentionRequest, orchestratorLive = deliveryRecipient({ kind: "orchestrator" }) !== null): AttentionStage | null {
+  if (a.status !== "open" && a.status !== "send-uncertain") return null;
+  return a.stage === "orchestrator" && orchestratorLive ? "orchestrator" : "owner";
 }
 
 // THE WITHDRAWAL TWIN of openAttention: a bound MAIN takes its own still-open question back. The
@@ -15086,8 +15418,12 @@ function reconcileAttention(teardownSlotId?: number, why?: SlotEnding): boolean 
 // denormalizing it would freeze a title the owner may since have corrected, and the join failing is
 // itself worth seeing, so a missing program renders as an explicit null rather than a guess.
 function attentionOwnerView(): (AttentionRequest & { programTitle: string | null; delivery: AttentionDelivery | null })[] {
-  const rank = (a: AttentionRequest): number =>
-    a.status === "open" || a.status === "send-uncertain" ? 0 : 1;
+  // the owner's own open rows first, then those still at the Orchestratorin, then the closed ones
+  const live = deliveryRecipient({ kind: "orchestrator" }) !== null;
+  const rank = (a: AttentionRequest): number => {
+    const waits = attentionWaitsOn(a, live);
+    return waits === "owner" ? 0 : waits === "orchestrator" ? 1 : 2;
+  };
   return [...attentionRequests]
     .sort((x, y) => rank(x) - rank(y) || y.raisedAt - x.raisedAt)
     .map((a) => ({ ...a, programTitle: programs.find((p) => p.id === a.programId)?.title ?? null,
@@ -15221,7 +15557,8 @@ function openCriterionAttention(s: Slot, t: Task): { id: string; existing: boole
     id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind: "decision", text, requester,
     programId: program.id,
     provenance: { taskId: t.id, originId: t.originId ?? null, programId: program.id, branch, candidateSha: null },
-    status: "open", answer: null, refusedReason: null, closedAt: null,
+    // the criterion confirm is the owner's own act — this row goes to the owner, never via the chain
+    status: "open", stage: "owner", answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
   audit("attention_open", s.id, `${request.id} kind=decision program=${program.id} via=criterion`);
@@ -15613,7 +15950,7 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
     const cap = repoLaneCap(repo);
     caps[repo] = { ...cap, programs: Object.fromEntries(programIds.map((id) => {
       const p = programs.find((x) => x.id === id);
-      return [id, programDispatchCap(p ? programDispatchGrant(p) : undefined, cap.max)];
+      return [id, programDispatchCap(p ? activeProgramDispatch(p) : undefined, cap.max)];
     })) };
   }
   const plan = projectStartPlan({ projection, rows, statuses, lanes, caps });
@@ -15904,7 +16241,7 @@ function positionRole(s: Slot, bound = boundProgramForMain(s)): "supervisor" | "
     : s.worktree ? "lane"
     : isOrchestratorLabel(s.label) ? "orchestrator" : "generic";
 }
-function selfPosition(s: Slot) {
+function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
   const bound = boundProgramForMain(s);
   const role = positionRole(s, bound);
   let receiver: { role: string; slot: number; openedAt: number } | null = null;
@@ -15936,7 +16273,16 @@ function selfPosition(s: Slot) {
       && !(r.worker.slot === s.id && r.worker.openedAt === s.openedAt)
       && ((r.receiver?.slot === s.id && r.receiver.openedAt === s.openedAt)
         || (r.basis === "program" && bound.ok && r.provenance.programId === bound.program.id)))
-      .map((r) => ({ kind: "fleet-report", id: r.id, slot: r.worker.slot })),
+      .map((r) => {
+        const worker = slotFrom(r.worker.slot);
+        const ended = !worker?.cwd || worker.openedAt !== r.worker.openedAt;
+        const landed = r.basis === "program" && bound.ok && ended
+          && (r.status === "needs-main" || r.status === "complete")
+          && outcomes.some((o) => o.disposition === "landed" && o.branch === r.worker.branch
+            && typeof o.ts === "number" && o.ts >= r.reportedAt
+            && typeof o.repo === "string" && typeof o.mainAfter === "string");
+        return { kind: landed ? "fleet-report-landed-unjudged" : "fleet-report", id: r.id, slot: r.worker.slot };
+      }),
     ...successionDebts.filter((d) => d.slot === s.id && d.successorOpenedAt === s.openedAt)
       .map((d) => ({ kind: "succession-debt", id: d.id, slot: s.id })),
   ];
@@ -17347,29 +17693,36 @@ function normBriefReview(r: TaskBriefReview | undefined): TaskBriefReview | unde
 // It runs `queued` and nothing else. That is the answer to "may the machine choose its own work":
 // no. It may work unattended, on what you released, which is a different question and the one the
 // owner actually wanted answered yes.
-// THE OWNER'S PROGRAM-SCOPED DISPATCH PERMISSION, resolved for ONE queue row — and the single
-// reader of `Program.dispatch`, so the tick's four uses of it (the entry guard, the per-row master
-// stop, the per-program cap and the quiet-hours branch) cannot drift apart.
-//
-// THREE CONDITIONS, each a different sentence. The row must NAME a program; that program must still
-// be ACTIVE; and its record must say `on`. The lifecycle check lives HERE and not at the owner door
-// on purpose: a status moves after the act, and a complete program's leftover queued rows must not
-// keep spawning lanes on a permission granted while it was still running. `on:false` and ABSENT
-// refuse identically here and are two different facts everywhere else — the promotion ladder's rule.
-// ...and the ACTIVE-and-ON clause itself is written ONCE, here, because both readers below need it
-// and two copies is how one of them silently stops applying.
-const programDispatchGrant = (p: Program): ProgramDispatch | undefined =>
-  p.status === "active" && p.dispatch?.on ? p.dispatch : undefined;
+// A program setting is active only while its program is. v1 `on` granted master bypass; v2
+// separates the run switch, the bypass, and the cap. All readers share this lifecycle predicate.
+const activeProgramDispatch = (p: Program): ProgramDispatch | undefined =>
+  p.status === "active" ? p.dispatch : undefined;
+const programDispatchGrant = (p: Program): ProgramDispatch | undefined => {
+  const pd = activeProgramDispatch(p);
+  return pd && (pd.v === 1 ? pd.on : pd.on && pd.bypassMaster) ? pd : undefined;
+};
+const programDispatchSetting = (t: Pick<Task, "programId">): ProgramDispatch | undefined => {
+  const p = t.programId ? programs.find((x) => x.id === t.programId) : undefined;
+  return p ? activeProgramDispatch(p) : undefined;
+};
+const programDispatchStopped = (t: Pick<Task, "programId">): boolean => {
+  const pd = programDispatchSetting(t);
+  return pd?.v === 2 && !pd.on;
+};
+const dispatchStoppedNote = (reason: string, previous: string | null | undefined): string => {
+  const prior = previous?.replace(/^waiting: (?:dispatcher stopped|program dispatch off) — /, "");
+  const requeued = prior && / — requeued(?:; lane kept.*)?$/.test(prior) ? prior : null;
+  return `waiting: ${reason}${requeued ? ` — ${requeued}` : ""}`;
+};
 const programDispatchOn = (t: Task): ProgramDispatch | undefined => {
-  if (!t.programId) return undefined;
-  const p = programs.find((x) => x.id === t.programId);
+  const p = t.programId ? programs.find((x) => x.id === t.programId) : undefined;
   return p ? programDispatchGrant(p) : undefined;
 };
 // ...and the CEILING that record may LOWER, never raise. The machine's number is
 // FLEET_DISPATCH_MAX_LANES_PER_PROGRAM where the operator set one and the ROW'S OWN repo cap where
 // nobody did (see the constant: unconfigured must stay inert, and after per-repo caps only the repo
 // number can do that), and this Math.min is the whole safety property: a `maxLanes` above the
-// machine number is legal, stored and inert. A row whose program carries no active grant gets the
+// machine number is legal, stored and inert. A row whose program carries no active setting gets the
 // machine number exactly — byte for byte what this line computed before the record existed.
 const programDispatchCap = (pd: ProgramDispatch | undefined, repoMax: number): number => {
   const machine = DISPATCH_MAX_LANES_PER_PROGRAM ?? repoMax;
@@ -17470,7 +17823,8 @@ function raiseStallAttention(r: StallReading, clock: StallSensorState["repos"][s
     requester: { slot: occupant.id, openedAt: occupant.openedAt, sessionId: occupant.sessionId },
     programId: program.id,
     provenance: { taskId: r.waits[0]?.id ?? null, originId: null, programId: program.id, branch: null, candidateSha: null },
-    status: "open", answer: null, refusedReason: null, closedAt: null,
+    // server-raised sensor row: owner stage, like raiseSuccessionAttention's
+    status: "open", stage: "owner", answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
   clock.attentionId = request.id;
@@ -17493,7 +17847,8 @@ function closeStallAttention(id: string | null, why: string): void {
   audit("attention_answered", a.requester.slot, `${a.id} kind=blocked inbox=${entry.id} via=stall-sensor`);
 }
 function tickStallSensor(on: boolean): void {
-  const released = on && tasks.some((t) => t.kind === "auftrag" && !t.variants && tickOwnsRow(t));
+  const released = tasks.some((t) => t.kind === "auftrag" && !t.variants && tickOwnsRow(t)
+    && !programDispatchStopped(t) && (on || !!programDispatchOn(t)));
   if (!released && !Object.keys(stallSensor.repos).length) return;
   const now = Date.now();
   if (now - stallReadAt < STALL_READ_MS) return;
@@ -17503,7 +17858,11 @@ function tickStallSensor(on: boolean): void {
     .map((t) => taskRepoOf(t)).filter((repo): repo is string => !!repo).map(repoCanon));
   stallSentSeen = new Set(sent.map((t) => t.id));
   const view = released ? startPlanNow() : null;
-  const readings = (view ? stallReadings(view, view.waits) : [])
+  const eligibleWaits = view?.waits.filter((w) => {
+    const t = tasks.find((x) => x.id === w.id);
+    return t && !programDispatchStopped(t) && (on || !!programDispatchOn(t));
+  }) ?? [];
+  const readings = (view ? stallReadings(view, eligibleWaits) : [])
     .map((r) => startedIn.has(repoCanon(r.repo)) ? { ...r, stuck: false } : r);
   let dirty = false;
   for (const r of readings) {
@@ -17516,7 +17875,7 @@ function tickStallSensor(on: boolean): void {
   }
   for (const [repo, clock] of Object.entries(stallSensor.repos)) {
     if (readings.some((r) => r.repo === repo && r.stuck)) continue;
-    const why = !on ? "der Dispatcher ist gestoppt" : readings.some((r) => r.repo === repo)
+    const why = !on && !programs.some(programDispatchGrant) ? "der Dispatcher ist gestoppt" : readings.some((r) => r.repo === repo)
       ? "eine Welle startet oder keine freigegebene Arbeit wartet mehr auf jemanden" : "keine freigegebene Arbeit mehr in diesem Repo";
     closeStallAttention(clock.attentionId, why);
     if (clock.counted) stallSensor.msTotal += now - clock.since;
@@ -17727,7 +18086,7 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
       return hold(`waiting: variant group needs ${n} lanes — ${lanes}/${repoCap.max} busy in ${basename(repo)} (${repoCap.source === "repo" ? "repo cap" : "machine default"})`,
         n <= repoCap.max ? { n, scope: { kind: "repo", repo: repoCanon(repo) } } : null);
     if (group.programId) {
-      const programCap = programDispatchCap(programDispatchOn(rows[0]), repoCap.max);
+      const programCap = programDispatchCap(programDispatchSetting(rows[0]), repoCap.max);
       const programLanes = slots.filter((s) => s.cwd && s.programId === group.programId).length;
       const title = programs.find((p) => p.id === group.programId)?.title ?? group.programId;
       // the claim's scope is the PROGRAM, not the repo: a lane landing in a foreign program frees
@@ -18066,13 +18425,7 @@ async function tickVariantCompare(): Promise<void> {
 async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !DISPATCH_REPO) return;
   tickStallSensor(dispatchOn);
-  // THE GLOBAL MASTER STOP IS NO LONGER THIS TICK'S OWN GATE — it became a per-ROW gate at the top
-  // of the loop below, because the owner may now grant ONE program the right to have its released
-  // rows started while the fleet queue is stopped. This line keeps the cheap early return for the
-  // case that is still the overwhelming majority: stopped fleet, no program holding a grant, no
-  // work to do. It reads the same `on` predicate programDispatchOn does, one program at a time, so
-  // an entry taken here is always an entry some row could survive.
-  if (!dispatchOn && !programs.some(programDispatchGrant)) return;
+  // The master and program switches are checked per row so a stopped row can state its reason.
   dispatchBusy = true;
   try {
     // THE START PLAN'S ORDER, NOT THE OLDEST ROW (Schnitt 2 of
@@ -18108,16 +18461,18 @@ async function tickDispatch(): Promise<void> {
       // the master stop, the program cap and the grant are the same question for every row of it,
       // and one lane runs one agent: the head's, as the attended wave door decides it too.
       const next = rows[0];
-      // THE MASTER STOP, READ PER ROW — and read FIRST, above every `waiting` note below, which is
-      // not a stylistic choice: under a stopped fleet this tick used to return before the loop, so
-      // no row ever received a note. If this check sat lower, a single program's grant would start
-      // painting wait-notes onto every UNRELATED queued row in the fleet — a visible state change
-      // on rows the owner's grant said nothing about. Skipping here keeps them byte-identical.
-      // It SKIPS rather than returns for the reason the caps below do: whether a row may run under
-      // a stopped fleet is a property of THAT ROW's bracket, and one unbracketed row at the head of
-      // an oldest-first queue must not hide the program row behind it.
+      // The stop reason precedes every capacity reason and only changes a note on change.
       const pd = programDispatchOn(next);
-      if (!dispatchOn && !pd) continue;
+      const stopReason = programDispatchStopped(next) ? "program dispatch off" : !dispatchOn && !pd ? "dispatcher stopped" : null;
+      if (stopReason) {
+        let changed = false;
+        for (const row of rows) if (tickOwnsRow(row) && row.note !== dispatchStoppedNote(stopReason, row.note)) {
+          row.note = dispatchStoppedNote(stopReason, row.note);
+          changed = true;
+        }
+        if (changed) saveState();
+        continue;
+      }
       // E4: a variant starts only with its whole group — startVariantGroup asks every gate below of all n
       if (next.variantOf) {
         const g = await startVariantGroup(next, false);
@@ -18226,11 +18581,11 @@ async function tickDispatch(): Promise<void> {
       // would let a single full program hold every unrelated row in the queue behind it — a
       // per-program cap that caps the whole fleet.
       // ...and the number it caps against is now the owner's, where the owner set one: an active
-      // grant's `maxLanes` through programDispatchCap, which can only narrow the env value. The
+      // setting's `maxLanes` through programDispatchCap, which can only narrow the env value. The
       // note prints the number that actually held, so the board never names a budget the tick did
       // not use.
       if (next.programId) {
-        const programCap = programDispatchCap(pd, repoCap.max);
+        const programCap = programDispatchCap(programDispatchSetting(next), repoCap.max);
         const programLanes = slots.filter((s) => s.cwd && s.programId === next.programId).length;
         if (programLanes >= programCap) {
           const title = programs.find((p) => p.id === next.programId)?.title ?? next.programId;
@@ -21809,6 +22164,8 @@ function fleetEventMessage(event: FleetEvent): string {
     : event.kind === "succession-debt"
     ? `[fleet] succession debt ${event.payload.debtId} on slot ${event.subjectSlot} (${event.payload.rail}): `
       + `${event.payload.respawned ? "the successor stands without its founding brief" : "no successor opened"} — ${event.payload.reason}`
+    : event.kind === "message"
+    ? `[fleet] message ${event.payload.messageId} to ${addressLabel(event.payload.to)} escalated to owner — original address remains stored`
     : laneWatchMessage(event.subjectSlot, event.subjectBranch, event, laneSelfWord(event));
   return text;
 }
@@ -21981,6 +22338,9 @@ async function tickWatches(): Promise<void> {
     for (const event of fleetEvents) {
       if (event.status !== "pending") continue;
       if (queuedFleetEvents.has(event.id)) continue;
+      const holding = event.receiverSlot === null ? undefined : standardSuccessionHolding(event.receiverSlot);
+      if (holding && event.receiverOpenedAt === holding.main?.openedAt
+        && fleetEventDeliveryClass(event) === "sofort") continue;
       const s = pendingFleetEventReceiver(event);
       if (!s) {
         if (event.receiverAddress?.kind === "slot") continue;
@@ -22571,6 +22931,8 @@ const MACHINE_SETTINGS = [
   { name: "FLEET_LAND_FF_RETRY_ROUNDS", value: LAND_FF_RETRY_ROUNDS, default: 2, how: ".env + Neustart" },
   { name: "FLEET_MERGE_REPAIR_ROUNDS", value: MERGE_REPAIR_ROUNDS, default: 2, how: ".env + Neustart" },
   { name: "FLEET_AUTO_REVIEW_MS", value: AUTO_REVIEW_MS, default: 15_000, how: "watchdog.sh + kickstart" },
+  // read in server/types.ts (it sizes MAX_SLOTS there); binding only with FLEET_SEPARATE_LANE_SLOTS=1
+  { name: "FLEET_MAX_SESSIONS", value: FLEET_MAX_SESSIONS, default: 16, how: ".env + Neustart" },
 ] as const;
 const VERIFY_OUT_CAP = 2048; // verify.out is a byte-capped RETENTION of stdout+stderr (~2KB) — see retainRunOutput
 // --- the SKIP contract, and the decision behind it -------------------------------------------
@@ -33108,7 +33470,75 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
   return { v: 1, at,
     from: { slot: predecessor.slot, openedAt: predecessor.openedAt, sessionId: null },
     to: { slot: successor.slot, openedAt: successor.openedAt },
-    obligations: [...fresh, ...stillOpen], settled, dropped: 0 };
+    obligations: [...fresh, ...stillOpen], settled, lost: [...(program.handover?.lost ?? [])], dropped: 0 };
+}
+
+function settleProgramSuccessionDuties(program: Program, predecessor: SuccessionPredecessorIdentity,
+  successor: Slot | null, handover: ProgramHandover): void {
+  const from = (slot: number | null, openedAt: number | null): boolean =>
+    slot === predecessor.slot && openedAt === predecessor.openedAt;
+  const liveSuccessor = successor?.cwd && program.status === "active"
+    && program.main?.slot === successor.id && program.main.openedAt === successor.openedAt ? successor : null;
+  const baseReason = program.status !== "active" ? "program not active" : "no successor bound";
+  const subjectGone = (e: FleetEvent): boolean => {
+    if (laneEventSubject(e) === "gone") return true;
+    if (!("subjectBranch" in e)) return false;
+    const lane = slotFrom(e.subjectSlot);
+    return !lane?.cwd || lane.worktree?.branch !== e.subjectBranch
+      || ("subjectOpenedAt" in e && e.subjectOpenedAt !== undefined
+        && lane.openedAt !== e.subjectOpenedAt);
+  };
+  const lost = (id: string, kind: ProgramHandoverLost["kind"], reason: string): void => {
+    if (!handover.lost.some((row) => row.id === id && row.kind === kind))
+      handover.lost.push({ id, kind, reason });
+  };
+  for (const c of clarifications) {
+    if (c.basis !== "program-main" || c.provenance.programId !== program.id
+      || !from(c.receiver.slot, c.receiver.openedAt)
+      || c.status === "answered") continue;
+    const worker = slotFrom(c.worker.slot);
+    const workerLive = !!worker?.cwd && worker.openedAt === c.worker.openedAt
+      && worker.sessionId === c.worker.sessionId;
+    const reason = !workerLive ? "lane gone" : !liveSuccessor ? baseReason
+      : c.status !== "open" ? "clarification already refused or send uncertain" : null;
+    if (reason) {
+      lost(c.id, "clarification", reason);
+      if (c.status !== "refused") refuseClarification(c, reason);
+      continue;
+    }
+    if (!liveSuccessor) continue;
+    c.receiver = { slot: liveSuccessor.id, openedAt: liveSuccessor.openedAt,
+      sessionId: liveSuccessor.sessionId };
+    audit("clarification_rebound", liveSuccessor.id,
+      `${c.id} program=${program.id} from slot ${predecessor.slot} openedAt ${predecessor.openedAt}`);
+  }
+  for (const e of fleetEvents) {
+    if (!from(e.receiverSlot, e.receiverOpenedAt)) continue;
+    if (e.status === "subject-gone") {
+      lost(e.id, "fleet-event", "lane gone");
+      continue;
+    }
+    if (FLEET_EVENT_TERMINAL.includes(e.status)) continue;
+    const clarification = clarifications.find((c) => c.eventId === e.id);
+    if (e.status !== "pending" && !(clarification && e.status === "delivered")) continue;
+    if (!clarification && fleetEventDeliveryClass(e) !== "sofort") continue;
+    const reason = clarification?.status === "refused" ? clarification.refusedReason ?? "clarification refused"
+      : subjectGone(e) ? "lane gone" : !liveSuccessor ? baseReason : null;
+    if (reason) {
+      e.status = subjectGone(e) ? "subject-gone" : "receiver-gone";
+      lost(e.id, "fleet-event", reason);
+      audit("fleet_event_receiver_gone", predecessor.slot, `${e.id} ${reason}`);
+      continue;
+    }
+    if (!liveSuccessor) continue;
+    e.receiverSlot = liveSuccessor.id;
+    e.receiverOpenedAt = liveSuccessor.openedAt;
+    e.receiverSessionId = liveSuccessor.sessionId;
+    audit("fleet_event_rebound", liveSuccessor.id,
+      `${e.id} program=${program.id} from slot ${predecessor.slot} openedAt ${predecessor.openedAt}`);
+  }
+  pruneClarifications();
+  pruneFleetEvents(predecessor.slot);
 }
 
 // THE LOSSLESS EXCEPTION PATH, and it is a refusal. If the record this succession would persist is
@@ -34435,6 +34865,11 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         async (e) => {
           await rollbackProgramFounding(program, founding,
             e instanceof TmuxNewSessionUnavailable ? "tmux-new-session-unavailable" : "successor-open-failed");
+          if (retained) {
+            settleProgramSuccessionDuties(program, predecessor, null, retained);
+            program.handover = retained;
+            await saveStateNow();
+          }
         },
         // refused before the kill: the predecessor stands and stays bound, only the marker falls
         async () => { await rollbackProgramFounding(program, founding, "predecessor-revoked-before-open"); });
@@ -34461,6 +34896,10 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
           if (program.main?.slot === predecessor.slot && program.main.openedAt === predecessor.openedAt)
             closeProgramLineage(program, "retire", Date.now());
         }
+        if (retained) {
+          settleProgramSuccessionDuties(program, predecessor, null, retained);
+          program.handover = retained;
+        }
         await saveStateNow().catch((e: unknown) => logError("programSuccessionUnbound", e));
         const error = candidateOk
           ? `Program-MAIN successor stands on slot ${s.id} but was not bound: the Program's authority changed during the respawn`
@@ -34475,8 +34914,11 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       // one before it still owed, because captureProgramHandover read the record this line is
       // about to replace and carried its rows forward. `sessionId` is the leaving conversation's,
       // read before the kill.
-      if (retained) program.handover = { ...retained,
-        from: { ...retained.from, sessionId: predecessorSessionId } };
+      if (retained) {
+        program.handover = { ...retained,
+          from: { ...retained.from, sessionId: predecessorSessionId } };
+        settleProgramSuccessionDuties(program, predecessor, s, program.handover);
+      }
       // the same save moves the authority and records the move: predecessor closed by `succeed`,
       // successor appended via `succeed`
       appendProgramLineage(program, lineageEntryFromMain(program.main, "succeed"),
@@ -35022,16 +35464,8 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   // and revoking is the same request shape so an owner never reaches for a different tool to take a
   // permission back.
   //
-  // WHAT IT GRANTS, said exactly: the fleet's dispatch tick may start THIS program's released rows
-  // while the GLOBAL dispatcher is stopped. It grants nothing else. The autos kill-switch, the repo
-  // lane cap, the per-program lane cap, the harness
-  // automation bolt and the free-slot requirement all still hold — a permission that lifted those
-  // would not be a program-scoped switch, it would be the hand button with a record attached.
-  //
-  // `on:false` IS NOT ABSENCE, for the promotion ladder's reason: absent is "the owner never said",
-  // off is "the owner said no", and a ledger that could not tell them apart would make a revocation
-  // look like a program nobody ever reached. Both refuse identically at the tick; only the trail and
-  // this pane can tell you which one you are looking at.
+  // v2 separates the program run switch, master bypass, and lane ceiling. v1 remains readable with
+  // its original `on` meaning: master bypass only. The tick reads the record against current status.
   //
   // NO STATUS GATE, and no in-flight gate. This record is read fresh on every tick against the
   // program's CURRENT status (tickDispatch requires `active`), so gating the write would be a
@@ -35049,7 +35483,7 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     if (extra.length)
       return json({ error: `this door reads dispatch only — [${extra.join(", ")}] is not read` }, 400);
     if (!("dispatch" in body))
-      return json({ error: 'dispatch is required — send {"dispatch": {"v":1,"on":true,"maxLanes":2}} to grant, {"dispatch": null} to revoke' }, 400);
+      return json({ error: 'dispatch is required — send {"dispatch": {"v":2,"on":true,"bypassMaster":false,"maxLanes":2}} to set, {"dispatch": null} to revoke' }, 400);
     if (body.dispatch === null) {
       // idempotent by construction, and audited only where something was actually taken back — the
       // promotion door's rule: "the owner revoked„[Zitat entfernt]“the owner revoked nothing"
@@ -35066,17 +35500,22 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     const fields = raw as Record<string, unknown>;
     // A CLOSED SET, refused rather than ignored: a key silently dropped is a key the owner believes
     // was honoured, and `maxLanes` is precisely the key where that belief is expensive.
-    const unknown = Object.keys(fields).filter((k) => k !== "v" && k !== "on" && k !== "maxLanes");
+    const unknown = Object.keys(fields).filter((k) => !["v", "on", "maxLanes", ...(fields.v === 2 ? ["bypassMaster"] : [])].includes(k));
     if (unknown.length)
-      return json({ error: `unknown dispatch key(s): ${unknown.join(", ")} — v1 is exactly {v, on, maxLanes}; confirmedAt is stamped here` }, 400);
-    if (fields.v !== 1) return json({ error: "v must be 1 — this server knows no other program-dispatch schema" }, 400);
+      return json({ error: `unknown dispatch key(s): ${unknown.join(", ")} — v1 is {v, on, maxLanes}; v2 adds bypassMaster; confirmedAt is stamped here` }, 400);
+    if (fields.v !== 1 && fields.v !== 2) return json({ error: "v must be 1 or 2" }, 400);
     if (typeof fields.on !== "boolean")
       return json({ error: "on must be true or false — a permission that arrives by coercion is one nobody granted" }, 400);
+    if (fields.v === 2 && typeof fields.bypassMaster !== "boolean")
+      return json({ error: "bypassMaster must be true or false" }, 400);
     if (typeof fields.maxLanes !== "number" || !Number.isInteger(fields.maxLanes)
       || fields.maxLanes < 1 || fields.maxLanes > PROGRAM_DISPATCH_MAX_LANES_MAX)
       return json({ error: `maxLanes must be a whole number between 1 and ${PROGRAM_DISPATCH_MAX_LANES_MAX} — it can only ever LOWER the machine-wide per-program budget, never raise it` }, 400);
-    program.dispatch = { v: 1, on: fields.on, maxLanes: fields.maxLanes, confirmedAt: Date.now() };
-    audit("program_dispatch", undefined, `${program.id} on=${program.dispatch.on} maxLanes=${program.dispatch.maxLanes}`);
+    program.dispatch = fields.v === 1
+      ? { v: 1, on: fields.on, maxLanes: fields.maxLanes, confirmedAt: Date.now() }
+      : { v: 2, on: fields.on, bypassMaster: fields.bypassMaster as boolean,
+        maxLanes: fields.maxLanes, confirmedAt: Date.now() };
+    audit("program_dispatch", undefined, `${program.id} v=${program.dispatch.v} on=${program.dispatch.on} bypassMaster=${program.dispatch.v === 2 ? program.dispatch.bypassMaster : program.dispatch.on} maxLanes=${program.dispatch.maxLanes}`);
     await saveStateNow();
     return json({ ok: true, id: program.id, dispatch: program.dispatch ?? null });
   }
@@ -36765,6 +37204,7 @@ setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
 setInterval(() => void tickWatches().catch((e: unknown) => logError("tickWatches", e)), AUTOS_TICK_MS);
+setInterval(() => void tickOrphanReports().catch((e: unknown) => logError("tickOrphanReports", e)), AUTOS_TICK_MS);
 // the owner's own parked /send (THE PARKED SEND): owner-initiated, so no automation switch holds it
 setInterval(() => void tickParkedSends().catch((e: unknown) => logError("tickParkedSends", e)), AUTOS_TICK_MS);
 setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), GIT_TICK_MS);
@@ -39459,9 +39899,11 @@ Bun.serve<WSData>({
       const p = resolvePrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      const outcomes = boundProgramForMain(s).ok
+        ? (await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE)).rows : [];
       return json({
         slot: s.id,
-        position: selfPosition(s),
+        position: selfPosition(s, outcomes),
         label: s.label,
         cwd: s.cwd,
         mission: s.mission,
@@ -39570,6 +40012,29 @@ Bun.serve<WSData>({
       if (s.openedAt !== openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== openedAt)
         return json({ refusal: "occupant-changed", error: "the slot changed occupant while this read ran — nothing of the new occupant's is served on the old credential" }, 409);
       return answer;
+    }
+
+    // THE KONZEPT DOOR (docs/self-api.md §konzepte, konzept-ledger.ts): versions and anmerkungen of a
+    // konzept, read and appended by a lane OR a bound MAIN. `actor` is the Principal resolved here and
+    // `kontext` the TraceRefs konzeptKontextFor builds — a body naming either is a 400 in the ledger
+    // module. The occupant is re-checked after the body read, before anything is appended, so a slot
+    // recycled mid-request writes nothing under the old credential.
+    const selfKonzept = /^\/api\/self\/konzepte\/([^/]+)\/(.+)$/.exec(url.pathname);
+    if (selfKonzept) {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      const op = konzeptOpOf(req.method, selfKonzept[2]!);
+      if (!op) return json({ error: "not found" }, 404);
+      const kontext = konzeptKontextFor(s, p);
+      if (!kontext.ok) return json({ error: kontext.error }, 409);
+      const body = req.method === "POST" ? await readJson(req) : null;
+      const still = resolvePrincipal(req);
+      if (s.openedAt !== p.openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== p.openedAt)
+        return json({ error: "the slot changed occupant while this request ran — nothing is written on the old credential" }, 409);
+      const answer = await konzeptRequest({ root: KONZEPT_ROOT, konzept: selfKonzept[1]!, op, body,
+        writer: { actor: p, kontext: kontext.refs } });
+      return json(answer.body, answer.status);
     }
 
     // PROGRAM-SCOPED CONTEXT POINTERS (docs/self-api.md §program-context-packs). One writer: the bound
@@ -39785,10 +40250,19 @@ Bun.serve<WSData>({
       const p = resolvePrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
-      if (req.method === "GET") return json({ reports: fleetReportsFor(s) });
+      if (req.method === "GET") return json({ reports: fleetReportsFor(s).filter((r) => url.searchParams.get("open") !== "1" || !r.decision) });
       if (!s.worktree || s.label === STEWARD_LABEL)
         return json({ error: "not a worker lane — MAIN and the steward cannot file a fleet report" }, 409);
       return openFleetReport(s, await readJson(req));
+    }
+
+    if (url.pathname === "/api/self/fleet-report/batch" && req.method === "POST") {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not judge a fleet report" }, 409);
+      return decideFleetReportsBatch(s, await readJson(req));
     }
 
     // a lane's Claude Code hook reporting a dialog only a human could answer (openHarnessBlock). Lane-
@@ -40900,14 +41374,22 @@ Bun.serve<WSData>({
         // 182 857 B on the live fleet (2026-09-13) of which the board rendered none, and it made the
         // 14 KiB budget in e2e/tasks.ts a wager on fleet activity. Every row, including events whose
         // receiver has gone and that cannot appear in any current /api/self row: GET /api/events.
-        events: fleetEvents.filter(opsPollVisible).map(opsPollRow),
+        events: fleetEvents.filter((e) => e.kind !== "message").filter(opsPollVisible).map(opsPollRow),
         // ONE NUMBER, on purpose: the attention inbox rides the app's most expensive path as the count of
         // rows that still want the owner; the bodies are behind GET /api/attention. OMITTED AT ZERO like
         // harness/effort: this payload is measured against a 12 KiB budget (e2e/tasks.ts, docs/data-saver.md
         // §1) that an unconditional field crossed by four bytes. Absent reads as zero.
-        ...(attentionRequests.some((a) => a.status === "open" || a.status === "send-uncertain")
-          ? { attentionOpen: attentionRequests.filter((a) => a.status === "open" || a.status === "send-uncertain").length }
-          : {}),
+        // Since the Rückfrage-Kette a row waiting on the Orchestratorin is NOT the owner's yet: it counts
+        // in attentionAtOrchestrator (omitted at zero, same reason) until escalate — or until no unique
+        // live Orchestratorin is left, when attentionWaitsOn hands it to the owner's number at read time.
+        ...(() => {
+          const live = deliveryRecipient({ kind: "orchestrator" }) !== null;
+          const waits = attentionRequests.map((a) => attentionWaitsOn(a, live));
+          const owner = waits.filter((w) => w === "owner").length;
+          const orchestrator = waits.filter((w) => w === "orchestrator").length;
+          return { ...(owner > 0 ? { attentionOpen: owner } : {}),
+            ...(orchestrator > 0 ? { attentionAtOrchestrator: orchestrator } : {}) };
+        })(),
         ...(() => {
           const stale = programs.filter((p) => p.status === "active"
             && programOccupancy(p) === "stale").length;
@@ -40936,8 +41418,12 @@ Bun.serve<WSData>({
         // `maxLanes` is the EFFECTIVE cap for the dispatch repo, not the env constant: the board
         // renders it as "up to N lanes in <repo>", and after a per-repo entry the env number is no
         // longer what the tick counts against — a UI that keeps printing it states a budget nothing uses.
+        // `lanes` and `quiet` let the queue foot NAME the gate that holds (repo cap full, quiet
+        // hours) from the server's own count and clock — a phone in another time zone must not
+        // decide whether the machine's quiet window is open.
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: repoLaneCap(DISPATCH_REPO).max, repo: DISPATCH_REPO,
-          waveBudget: LAND_WAVE_BUDGET },
+          waveBudget: LAND_WAVE_BUDGET, lanes: DISPATCH_REPO ? slots.filter((s) => inRepo(s, DISPATCH_REPO)).length : 0,
+          quiet: inQuietHours(Date.now()) },
         // The brief compiler's mode as a global runtime fact, never inferred per row from a stored
         // brief. It sat beside an `analysis: { on }` sibling until 2026-09-10; that fact is gone
         // with the analyst, and a client reading it must not silently degrade to "on".
@@ -41404,6 +41890,21 @@ Bun.serve<WSData>({
         liveRow: t ? { id, from: "live", created: t.created, status: t.status, kind: t.kind, programId: t.programId ?? null } : null,
       });
       return json(trace, trace.result === "unknown-task" ? 404 : 200);
+    }
+    // THE KONZEPT OWNER DOOR (docs/self-api.md §konzepte): the same ledger as /api/self/konzepte, with
+    // the owner as actor and an empty kontext — the owner credential proves no binding. A request that
+    // ALSO carries a self token resolves to that session and is sent to its own door.
+    const ownerKonzept = /^\/api\/konzepte\/([^/]+)\/(.+)$/.exec(url.pathname);
+    if (ownerKonzept) {
+      const op = konzeptOpOf(req.method, ownerKonzept[2]!);
+      if (!op) return json({ error: "not found" }, 404);
+      const p = resolvePrincipal(req);
+      if (p?.kind !== "owner")
+        return json({ error: "this is the owner's konzept door — a session reads and writes through /api/self/konzepte/:id/…" }, 409);
+      const body = req.method === "POST" ? await readJson(req) : null;
+      const answer = await konzeptRequest({ root: KONZEPT_ROOT, konzept: ownerKonzept[1]!, op, body,
+        writer: { actor: p, kontext: {} } });
+      return json(answer.body, answer.status);
     }
     // THE DOSSIER (see the dossier region): six sources joined by branch into one lane's story, plus the
     // fleet/land note. Owner-only by POSITION, read-only by construction. Branch names carry slashes, so
@@ -42136,7 +42637,8 @@ Bun.serve<WSData>({
     // the stored integration branch per repo (repoBases, same canonical keys) — the settings
     // window's branch row reads it here, so a once-written value is visible without a write first.
     if (url.pathname === "/api/repo-lane-caps" && req.method === "GET")
-      return json({ default: DISPATCH_MAX_LANES, max: REPO_MAX_LANES_MAX, caps: repoLaneCaps, bases: repoBases });
+      return json({ default: DISPATCH_MAX_LANES, programDefault: DISPATCH_MAX_LANES_PER_PROGRAM,
+        max: REPO_MAX_LANES_MAX, caps: repoLaneCaps, bases: repoBases });
     // The repo sheet (server.ts#repoSheetView): one owner reading per canonical repo, its layers
     // ON DEMAND. Owner-only by position like its neighbours — the sheet joins queue rows, lands,
     // audits and adjudications, which is owner reading. GET by construction: the handler opens
@@ -42860,6 +43362,10 @@ Bun.serve<WSData>({
     const attentionRefuse = /^\/api\/attention\/([0-9a-f]{24})\/refuse$/.exec(url.pathname);
     if (attentionRefuse && req.method === "POST")
       return refuseAttentionRequest(attentionRefuse[1], await readJson(req));
+    // the Rückfrage-Kette's one step up: a row waiting on the Orchestratorin moves to the owner
+    const attentionEscalate = /^\/api\/attention\/([0-9a-f]{24})\/escalate$/.exec(url.pathname);
+    if (attentionEscalate && req.method === "POST")
+      return escalateAttention(attentionEscalate[1], await readJson(req));
     // --- the report rail's OWNER half. GET carries the full rows with their derived `liveness`
     // (the 2 s poll carries only the count, docs/data-saver.md); the two POSTs are the exit that was
     // missing for a report whose bound MAIN is gone. They refuse while that MAIN is alive — there
@@ -43719,6 +44225,11 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       if (!DISPATCH_REPO) return json({ error: "dispatcher unavailable — set FLEET_DISPATCH_REPO" }, 400);
       dispatchOn = body?.on === true;
+      if (!dispatchOn) for (const t of tasks) {
+        if (t.kind !== "auftrag" || !tickOwnsRow(t) || programDispatchOn(t)) continue;
+        const reason = programDispatchStopped(t) ? "program dispatch off" : "dispatcher stopped";
+        t.note = dispatchStoppedNote(reason, t.note);
+      }
       saveState(); // same rule as the autos kill-switch below: a stop must survive an immediate restart
       audit("dispatch_switch", undefined, dispatchOn ? "on" : "off");
       return json({ ok: true, on: dispatchOn });

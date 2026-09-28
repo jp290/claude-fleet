@@ -137,6 +137,7 @@ export async function run(ctx: Ctx): Promise<void> {
   let taskClientSource = "";
   let taskPageSource = "";
   let taskServerSource = "";
+  let taskTypesSource = "";
   let taskClientReadError = "";
   try {
     const checkout = resolve(realpathSync(`${ROOT}/node_modules`), "..");
@@ -145,6 +146,7 @@ export async function run(ctx: Ctx): Promise<void> {
       .join("\n");
     taskPageSource = readFileSync(`${checkout}/public/index.html`, "utf8");
     taskServerSource = readFileSync(`${checkout}/server.ts`, "utf8");
+    taskTypesSource = readFileSync(`${checkout}/server/types.ts`, "utf8");
   } catch (e) { taskClientReadError = e instanceof Error ? e.message : String(e); }
   check("task workbench precondition: client source, server source and page CSS are readable",
     taskClientSource.length > 0 && taskServerSource.length > 0 && taskPageSource.length > 0, taskClientReadError);
@@ -466,16 +468,21 @@ export async function run(ctx: Ctx): Promise<void> {
       "FLEET_DISPATCH_MAX_LANES", "FLEET_VERIFY_TIMEOUT_MS", "FLEET_VERIFY_WAIT_MS",
       "FLEET_MIGRATE_PCT", "FLEET_LANE_MIGRATE_PCT", "FLEET_MODEL", "FLEET_STALLED_IDLE_MS",
       "FLEET_CARD_MS", "FLEET_BRIEF_MS", "FLEET_LAND_FF_RETRY_ROUNDS",
-      "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS",
+      "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS", "FLEET_MAX_SESSIONS",
     ];
     const listAt = taskServerSource.indexOf("const MACHINE_SETTINGS = [");
     const listEnd = taskServerSource.indexOf("] as const;", listAt);
     const listSrc = listAt >= 0 && listEnd > listAt ? taskServerSource.slice(listAt, listEnd) : "";
     const names = [...listSrc.matchAll(/name: "(FLEET_[A-Z_]+)"/g)].map((m) => m[1]);
-    check("settings This machine: the literal allowlist is the twelve reviewed names and every name has an effective server read",
-      names.length <= 12 && JSON.stringify(names) === JSON.stringify(expected)
-        && names.every((name) => taskServerSource.includes(`process.env.${name}`)),
-      JSON.stringify({ names, unread: names.filter((name) => !taskServerSource.includes(`process.env.${name}`)) }));
+    // each name's env read lives in EXACTLY ONE of server.ts and server/types.ts (FLEET_MAX_SESSIONS
+    // is read and clamped in types.ts, sizing MAX_SLOTS): a second read would be a second, drifting
+    // validation of the same value. `\b` keeps FLEET_DISPATCH_MAX_LANES from matching its _PER_PROGRAM.
+    const envReads = (name: string) => [taskServerSource, taskTypesSource]
+      .filter((src) => new RegExp(`process\\.env\\.${name}\\b`).test(src)).length;
+    check("settings This machine: the literal allowlist is the thirteen reviewed names and every name has exactly one effective server read",
+      names.length <= 13 && JSON.stringify(names) === JSON.stringify(expected)
+        && names.every((name) => envReads(name) === 1),
+      JSON.stringify({ names, reads: names.filter((name) => envReads(name) !== 1).map((name) => [name, envReads(name)]) }));
 
     const routeAt = taskServerSource.indexOf('if (url.pathname === "/api/machine-settings")');
     const routeEnd = taskServerSource.indexOf("// the session's own row", routeAt);
@@ -1221,8 +1228,13 @@ export async function run(ctx: Ctx): Promise<void> {
     qPlant(qFree, { status: "queued", releasedBy: "machine", note: "planted free note" });
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(qState, null, 2), { mode: 0o600 });
     await restartSrv();
-    const qBefore = await qRows();
     const qOf = (rows: QRow[], id: string): QRow | undefined => rows.find((t) => t.id === id);
+    await until(async () => {
+      const rows = await qRows();
+      return qOf(rows, qHeld)?.note === "waiting: dispatcher stopped"
+        && qOf(rows, qFree)?.note === "waiting: dispatcher stopped";
+    }, { timeoutMs: 10_000, what: "queued guard fixtures to carry the stopped dispatcher's note" });
+    const qBefore = await qRows();
     const qDispatchOn = ((await (await get("/api/sessions")).json()) as { dispatch: { on: boolean } }).dispatch.on;
     check("queue guard fixture: done, held-queued and unheld-queued rows are planted, and the dispatcher is off",
       qOf(qBefore, qDone)?.status === "done" && qOf(qBefore, qPending)?.status === "pending"
@@ -1244,11 +1256,13 @@ export async function run(ctx: Ctx): Promise<void> {
       `${qPendingRes.status} row=${JSON.stringify(qOf(qAfter, qPending))}`);
     check("queue guard: a HELD queued row gets its hold lifted and nothing else — still queued, releasedBy and note kept",
       qHeldRes.status === 200 && qOf(qAfter, qHeld)?.status === "queued" && !qOf(qAfter, qHeld)?.hold
-        && qOf(qAfter, qHeld)?.releasedBy === "machine" && qOf(qAfter, qHeld)?.note === "planted held note",
+        && qOf(qAfter, qHeld)?.releasedBy === "machine"
+        && qOf(qAfter, qHeld)?.note === qOf(qBefore, qHeld)?.note,
       `${qHeldRes.status} row=${JSON.stringify(qOf(qAfter, qHeld))}`);
     check("queue guard: an UNHELD queued row answers 200 and writes nothing — releasedBy and note kept",
       qFreeRes.status === 200 && qOf(qAfter, qFree)?.status === "queued"
-        && qOf(qAfter, qFree)?.releasedBy === "machine" && qOf(qAfter, qFree)?.note === "planted free note",
+        && qOf(qAfter, qFree)?.releasedBy === "machine"
+        && qOf(qAfter, qFree)?.note === qOf(qBefore, qFree)?.note,
       `${qFreeRes.status} row=${JSON.stringify(qOf(qAfter, qFree))}`);
     for (const id of [qPending, qDone, qHeld, qFree]) await post(`/api/tasks/${id}/delete`, {});
   }
@@ -1611,6 +1625,8 @@ export async function run(ctx: Ctx): Promise<void> {
       text: "spawn replacement queued fixture", queue: true,
       harness: "claude", model: "claude-opus-5", effort: "high",
     })).json()) as { task: SpawnRow }).task;
+    await until(async () => (await row(queued.id))?.note === "waiting: dispatcher stopped",
+      { timeoutMs: 10_000, what: "spawn fixture has the settled dispatcher stop note" });
     const before = await row(queued.id);
     const auditFrom = auditRows().length;
     const changed = await set(queued.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
@@ -2050,7 +2066,12 @@ export async function run(ctx: Ctx): Promise<void> {
         ((await (await get("/api/tasks")).json()) as { tasks: FullTask[] }).tasks;
       const expected = new Map<string, string>();
       const remember = async (id: string): Promise<void> => {
-        const row = (await fullTasks()).find((t) => t.id === id);
+        let row = (await fullTasks()).find((t) => t.id === id);
+        if (row?.status === "queued") {
+          await until(async () => (await fullTasks()).find((t) => t.id === id)?.note === "waiting: dispatcher stopped",
+            { timeoutMs: 10_000, what: `the stopped dispatcher's note on backlog row ${id}` });
+          row = (await fullTasks()).find((t) => t.id === id);
+        }
         if (row) expected.set(id, JSON.stringify(row));
       };
       if (noteId) await remember(noteId);
@@ -4751,6 +4772,12 @@ export async function run(ctx: Ctx): Promise<void> {
       gThirdRow?.status === "queued"
       && (gThirdRow?.note ?? "") === `waiting: 2/2 lanes busy in ${basename(REPO2)} (repo cap) — land or close one`,
       JSON.stringify({ status: gThirdRow?.status, note: gThirdRow?.note ?? null }));
+    const gCtl = spawnSync("bash", [`${ROOT}/ctl.sh`, "dispatch", gThird.task.id], {
+      encoding: "utf8", env: { ...process.env, FLEET_CTL_HOME: ROOT, FLEET_CTL_URL: BASE },
+    });
+    check("(e5) ctl.sh dispatch reads the test server's raised repo cap and counts only that repo's open lanes",
+      gCtl.status === 1 && gCtl.stdout.includes("REFUSED: 2/2 lanes open (repo cap)"),
+      JSON.stringify({ exit: gCtl.status, stdout: gCtl.stdout.trim(), stderr: gCtl.stderr.trim() }));
 
     // cleanup — dispatcher OFF first, then the entry, the lanes and the rows.
     await post("/api/dispatch", { on: false });
@@ -4760,7 +4787,58 @@ export async function run(ctx: Ctx): Promise<void> {
       await post(`/api/tasks/${id}/done`, {});
       await post(`/api/tasks/${id}/delete`, {});
     }
+    await slotsEmptied((await gSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot).map((x) => x.id));
+    await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 2 });
+    await post("/api/dispatch", { on: true });
+    const gOff = await post(`/api/programs/${provenanceProgramId}/dispatch`,
+      { dispatch: { v: 2, on: false, bypassMaster: false, maxLanes: 1 } });
+    const gStopped = (await (await post("/api/tasks", {
+      text: "program v2 off must hold under the running master", queue: true, repo: REPO2,
+      programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
+    const gStoppedRow = await gTill(gStopped.task.id, (r) => r?.note === "waiting: program dispatch off");
+    check("(e5-v2) program off holds its queued row with the master running, and names the program switch",
+      gOff.ok && gStoppedRow?.status === "queued" && gStoppedRow.note === "waiting: program dispatch off"
+      && gLanesOf(provenanceProgramId) === 0,
+      JSON.stringify({ set: gOff.status, row: gStoppedRow ?? null, lanes: gLanesOf(provenanceProgramId) }));
+    const gOn = await post(`/api/programs/${provenanceProgramId}/dispatch`,
+      { dispatch: { v: 2, on: true, bypassMaster: false, maxLanes: 1 } });
+    const gStarted = await gTill(gStopped.task.id, (r) => r?.status === "sent");
+    const gWaiting = (await (await post("/api/tasks", {
+      text: "program v2 cap remains active without master bypass", queue: true, repo: REPO2,
+      programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
+    const gCapRow = await gTill(gWaiting.task.id, (r) => (r?.note ?? "").includes('1/1 lanes busy in program "'));
+    await post("/api/dispatch", { on: false });
+    const gStopRow = await gTill(gWaiting.task.id, (r) => r?.note === "waiting: dispatcher stopped");
+    check("(e5-v2) the program cap applies without a master bypass, and master stop replaces the stale cap reason once",
+      gOn.ok && gStarted?.status === "sent" && gCapRow?.status === "queued"
+      && (gCapRow.note ?? "").includes('1/1 lanes busy in program "')
+      && gStopRow?.status === "queued" && gStopRow.note === "waiting: dispatcher stopped",
+      JSON.stringify({ set: gOn.status, started: gStarted ?? null, cap: gCapRow ?? null, stopped: gStopRow ?? null }));
+    const gBypass = await post(`/api/programs/${provenanceProgramId}/dispatch`,
+      { dispatch: { v: 2, on: true, bypassMaster: true, maxLanes: 2 } });
+    const gBypassedRow = await gTill(gWaiting.task.id, (r) => r?.status === "sent");
+    check("(e5-v2) a separate master bypass starts the second row under master stop within both caps",
+      gBypass.ok && gBypassedRow?.status === "sent" && gLanesOf(provenanceProgramId) === 2,
+      JSON.stringify({ set: gBypass.status, row: gBypassedRow ?? null, lanes: gLanesOf(provenanceProgramId) }));
+    const gV1 = await post(`/api/programs/${provenanceProgramId}/dispatch`,
+      { dispatch: { v: 1, on: false, maxLanes: 2 } });
+    for (const x of (await gSess()).slots) if (x.worktree && x.id !== ctx.restartSelfSlot) await post(`/api/slots/${x.id}/kill`, {});
+    for (const id of [gStopped.task.id, gWaiting.task.id]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    await post("/api/repo-lane-cap", { repo: REPO2, maxLanes: 0 });
     await restartSrv();
+    const gReloaded = ((await (await get("/api/programs")).json()) as {
+      programs: { id: string; dispatch?: { v: number; on: boolean; maxLanes: number; confirmedAt: number } }[];
+    }).programs.find((p) => p.id === provenanceProgramId)?.dispatch;
+    check("(e5-v1) a persisted v1 dispatch setting reloads with its cap and legacy grant bit intact",
+      gV1.ok && gReloaded?.v === 1 && gReloaded.on === false && gReloaded.maxLanes === 2
+      && typeof gReloaded.confirmedAt === "number",
+      JSON.stringify({ set: gV1.status, reloaded: gReloaded ?? null }));
+    await post(`/api/programs/${provenanceProgramId}/dispatch`, { dispatch: null });
   }
 
   // --- (e6) A ROW WHOSE HARNESS NO UNATTENDED PATH MAY DRIVE MUST SAY SO, NOT REPORT BACKPRESSURE
@@ -6378,9 +6456,16 @@ export async function run(ctx: Ctx): Promise<void> {
     const xRequeued = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
       .map((l) => { try { return JSON.parse(l) as { event?: string; taskId?: string; reason?: string }; } catch { return {}; } })
       .filter((a) => a.event === "dispatch_requeued" && a.taskId === xT.task.id);
+    const xStoppedRequeue = xRequeued[0]?.reason
+      ? await until(async () => {
+        const note = (await f2Row(xT.task.id))?.note;
+        return note === `waiting: dispatcher stopped — ${xRequeued[0].reason}` ? note : null;
+      }, { timeoutMs: 10_000, what: "the stopped tick to retain the requeue audit reason" })
+      : null;
     check("a requeue writes exactly one dispatch_requeued audit event with the task id and its reason",
-      xRequeued.length === 1 && !!xRequeued[0].reason && (xReq?.note ?? "").startsWith(xRequeued[0].reason),
-      JSON.stringify({ rows: xRequeued, note: xReq?.note }));
+      xRequeued.length === 1 && !!xRequeued[0].reason
+        && xStoppedRequeue === `waiting: dispatcher stopped — ${xRequeued[0].reason}`,
+      JSON.stringify({ rows: xRequeued, note: xStoppedRequeue }));
     check("a post-spawn dispatch that never sends writes no context receipt",
       (await contextReceipts()).total === failedReceiptCount);
     await post(`/api/tasks/${xT.task.id}/delete`, {});
@@ -6551,6 +6636,15 @@ export async function run(ctx: Ctx): Promise<void> {
       check("a codex pane that never shows the ready marker requeues on the BOUNDED budget, reason named",
         muteRow?.status === "queued" && !muteRow.slot && /never showed its ready marker within 3s/.test(muteRow.note ?? ""),
         JSON.stringify(muteRow));
+      const stoppedMute = await until(async () => {
+        const row = await rowAfter(mute.id, (r) => r?.status === "queued");
+        return row?.note?.includes("waiting: dispatcher stopped")
+          && row.note.includes("never showed its ready marker within 3s") ? row.note : null;
+      }, { timeoutMs: 10_000, what: "the stopped tick to retain the codex requeue reason" });
+      await Bun.sleep(afterTick(0, DISPATCH_TICK_MS));
+      const stableMute = await rowAfter(mute.id, (r) => r?.status === "queued");
+      check("a stopped dispatcher's requeue note keeps both reasons and stays byte-identical on the next tick",
+        stableMute?.note === stoppedMute, JSON.stringify({ first: stoppedMute, next: stableMute?.note ?? null }));
       await post(`/api/tasks/${mute.id}/delete`, {});
       // the accept marker: the header box that is on every ready frame and on NEITHER block screen.
       // The fixture pane's pty just buffers the pasted brief — nothing executes or spends.

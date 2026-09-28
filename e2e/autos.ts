@@ -19,9 +19,11 @@ export async function run(ctx: Ctx): Promise<void> {
   const aBusyJ = (await aBusy.json()) as { auto: { id: string } };
   check("create idle-gated auto", aBusy.ok && !!aBusyJ.auto?.id);
   await Bun.sleep(afterTick(2000, AUTOS_TICK_MS)); // inSec:2 past due + one tickAutos
-  const cap2a = await tmuxOut("capture-pane", "-t", "s2", "-p");
+  // -J: the headed delivery (~160 chars since faa25640) wraps at 80 columns, and where the marker
+  // breaks depends on the host's shell prompt — unjoined, both reads are host-dependent
+  const cap2a = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
   check("due auto fired into its pane", cap2a.out.includes("auto-fire-check"));
-  const cap1a = await tmuxOut("capture-pane", "-t", "s1", "-p");
+  const cap1a = await tmuxOut("capture-pane", "-t", "s1", "-p", "-J");
   check("idle-gated auto held back while busy", !cap1a.out.includes("auto-must-wait"));
   const sess1 = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; lastResult: string | null; runsLeft: number }[] };
   const fired = sess1.autos.find((a) => a.id === aFireJ.auto.id);

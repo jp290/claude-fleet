@@ -860,7 +860,7 @@ export async function run(ctx: Ctx): Promise<void> {
       RULEBOOK_FRAGMENTS.map((f) => [f, `## ${f}\n\nrule text of ${f}\n`]),
     );
     for (const [f, body] of frag) writeFileSync(`${rbRepo}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, body);
-    writeFileSync(`${rbRepo}/CLAUDE.md`, renderRulebook("main", frag));
+    writeFileSync(`${rbRepo}/CLAUDE.md`, renderRulebook("voll", frag));
 
     const rbLane = (await (await post("/api/lanes", { repo: rbRepo })).json()) as
       { ok?: boolean; slot?: number; cwd?: string; error?: string };
@@ -875,10 +875,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // is a fixed ~1 KB and outweighs a synthetic monolith, which says nothing about the real one.
     check("rulebook split: the lane is WRITTEN the lane rendering, not handed the monolith",
       written !== null && rulebookBody(written) === expectBody
-        && Buffer.byteLength(expectBody) < Buffer.byteLength(renderRulebook("main", frag))
+        && Buffer.byteLength(expectBody) < Buffer.byteLength(renderRulebook("voll", frag))
         && omitted.every((f) => !rulebookBody(written).includes(`rule text of ${f}`))
         && FRAGMENTS_FOR.lane.every((f) => rulebookBody(written).includes(`rule text of ${f}`)),
-      `written=${written === null ? "absent" : Buffer.byteLength(written)} B (body ${written === null ? "-" : Buffer.byteLength(rulebookBody(written))} B), lane body=${Buffer.byteLength(expectBody)} B, main=${Buffer.byteLength(renderRulebook("main", frag))} B`);
+      `written=${written === null ? "absent" : Buffer.byteLength(written)} B (body ${written === null ? "-" : Buffer.byteLength(rulebookBody(written))} B), lane body=${Buffer.byteLength(expectBody)} B, main=${Buffer.byteLength(renderRulebook("voll", frag))} B`);
     check("rulebook split: its back-reference block names every omitted fragment and an absolute path into the SOURCE checkout",
       written !== null && written.includes(RULEBOOK_BACKREF_HEADING)
         && omitted.every((f) => written.includes(FRAGMENT_TITLES[f]))

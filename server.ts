@@ -31876,6 +31876,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             // `gateHoldBy` covers the other inheritance too: a hold a wrapper is keeping for us is
             // just as much "we already have the machine" as one we took.
             let ffHeld = gateHoldBy !== null;
+            // The short docs gate needs no suite hold, including after a lost fast-forward.
+            if (gateProportional) ffHeld = true;
             let ffLockDenied = false; // we wanted it, the machine never gave it to us
             let landMain = mainSha;   // the main THIS round is rebased onto and verified against
             // W5d · which of the two races the CURRENT round lost, and it is per round rather than
@@ -31933,7 +31935,13 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               // which is what keeps a single-host fleet byte-for-byte unchanged. A repo with no
               // remote under that name is the same null (5857e934, `hubRemoteMissing`).
               const laneTip = (await git(root, "rev-parse", branch)).out;
-              const arb = await pushLandToHub(root, main, laneTip);
+              const mainAtPush = await git(root, "rev-parse", main);
+              if (mainAtPush.code !== 0 || !/^[0-9a-f]{40,64}$/.test(mainAtPush.out)) throw new Error(`cannot read ${main} before hub push`);
+              const arb = await (async () => {
+                if (mainAtPush.out !== mainBefore) return null;
+                const arb = await pushLandToHub(root, main, laneTip);
+                return arb;
+              })();
               if (arb && !arb.ok && arb.kind === "unreachable") {
                 // NOTHING WAS ARBITRATED. Not a fact about this tree and not a fact about the
                 // other host either — going round would re-roll the same unreachable hub and
@@ -31978,7 +31986,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 }
                 hubLost = true; // the terminal verdict below is about the HUB, not about a local race
               }
-              const adv = await advanceIntegration(root, main, branch);
+              const adv = await (async () => {
+                if (mainAtPush.out !== mainBefore)
+                  return { error: `${main} moved from ${mainBefore} to ${mainAtPush.out} before the hub push` };
+                const adv = await advanceIntegration(root, main, branch);
+                return adv;
+              })();
               if (adv) {
                 clearLandIntent(root); // main never moved — the declaration is void, not pending
                 // --- 9e587653 · THE HUB SAID YES AND THIS HOST THEN COULD NOT FOLLOW -------------

@@ -70,6 +70,7 @@ interface ProgramHandover {
   obligations: ProgramHandoverObligation[];
   // carried rows a later succession measured settled — `how` names the capture's own test
   settled: (ProgramHandoverObligation & { settled: { at: number; how: string } })[];
+  lost: { id: string; kind: "clarification" | "fleet-event"; reason: string }[];
   dropped: number;
 }
 interface Program extends ProgramContent {
@@ -1104,7 +1105,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const fleetLineRecords = ((readState() as { lineageHandovers?: { from?: { slot?: number; openedAt?: number } }[] }).lineageHandovers ?? [])
     .filter((r) => r.from?.slot === fleetSlot && r.from.openedAt === fleetAOpenedAt);
   check("Program-MAIN Fleet succession: the Program record keeps its exact shape and no role-lineage record or line id is written",
-    !!fleetRetained && JSON.stringify(Object.keys(fleetRetained).sort()) === JSON.stringify(["at", "dropped", "from", "obligations", "settled", "to", "v"])
+    !!fleetRetained && JSON.stringify(Object.keys(fleetRetained).sort()) === JSON.stringify(["at", "dropped", "from", "lost", "obligations", "settled", "to", "v"])
       && Array.isArray(fleetRetained.settled) && fleetRetained.settled.length === 0
       && JSON.stringify(Object.keys(fleetRetained.from).sort()) === JSON.stringify(["openedAt", "sessionId", "slot"])
       && JSON.stringify(Object.keys(fleetRetained.to).sort()) === JSON.stringify(["openedAt", "slot"])
@@ -3528,6 +3529,48 @@ export async function run(ctx: Ctx): Promise<void> {
   check("S0 setup: a lane of the Program-MAIN's checkout is born under the predecessor's exact occupation",
     typeof s0Lane.slot === "number" && JSON.stringify(s0Anchor()) === JSON.stringify({ slot: mainSlot, openedAt: s0PredecessorOpenedAt }),
     `${JSON.stringify(s0Lane)} anchor=${JSON.stringify(s0Anchor())}`);
+  const lostDutyLane = (await (await post("/api/lanes", { repo: REPO,
+    parent: { slot: mainSlot, openedAt: s0PredecessorOpenedAt } })).json()) as {
+      slot?: number; cwd?: string };
+  // An exact Program lane asks before the predecessor leaves. Its question and an independent
+  // immediate FleetEvent must follow the new occupant of the same MAIN slot.
+  await stopSrv();
+  const dutyFixture = readState();
+  if (s0Lane.slot && dutyFixture.slots?.[String(s0Lane.slot)])
+    dutyFixture.slots[String(s0Lane.slot)]!.programId = mainProgram.id;
+  if (lostDutyLane.slot && dutyFixture.slots?.[String(lostDutyLane.slot)])
+    dutyFixture.slots[String(lostDutyLane.slot)]!.programId = mainProgram.id;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(dutyFixture, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const dutyLaneToken = slotToken(s0Lane.slot ?? null);
+  const dutyQuestion = await selfPost("/api/self/clarifications", dutyLaneToken,
+    { question: "Which bounded Program task should this lane finish?" });
+  const dutyRequest = (await dutyQuestion.clone().json() as { request?: { id?: string; eventId?: string; basis?: string } }).request;
+  const lostDutyQuestion = await selfPost("/api/self/clarifications",
+    slotToken(lostDutyLane.slot ?? null), { question: "This lane will end before the succession." });
+  const lostDutyRequest = (await lostDutyQuestion.clone().json() as {
+    request?: { id?: string; eventId?: string } }).request;
+  if (lostDutyLane.slot) await post(`/api/slots/${lostDutyLane.slot}/kill`, {});
+  const dutyBlock = await selfPost("/api/self/harness-block", dutyLaneToken,
+    { signal: "waiting", tool: "fixture", detail: "successor must receive this immediate event" });
+  const dutyEventId = (await dutyBlock.clone().json() as { event?: string }).event ?? "";
+  await stopSrv();
+  const dutyPendingState = readState();
+  const dutyEvent = dutyPendingState.events?.find((e) => e.id === dutyEventId);
+  if (dutyEvent) {
+    dutyEvent.status = "pending";
+    dutyEvent.receiverIdleSec = 3600;
+    dutyEvent.attempts = 0;
+    dutyEvent.deliveredAt = null;
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(dutyPendingState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  check("Standard succession duty setup: a Program lane has one open question and one pending immediate FleetEvent for the predecessor",
+    dutyQuestion.ok && dutyRequest?.basis === "program-main" && dutyBlock.ok && !!dutyEventId
+      && dutyEvent?.kind === "harness-block" && dutyEvent.status === "pending"
+      && dutyEvent.receiverSlot === mainSlot && dutyEvent.receiverOpenedAt === s0PredecessorOpenedAt,
+    JSON.stringify({ question: dutyQuestion.status, block: dutyBlock.status, request: dutyRequest,
+      event: dutyEventId, status: dutyEvent?.status }));
   const capacityFilled: number[] = [];
   for (const slot of (await sessions()).slots.filter((s) => !s.cwd)) {
     const opened = await post(`/api/slots/${slot.id}/open`, { cwd: REPO, label: "succession-capacity-fixture" });
@@ -3573,6 +3616,47 @@ export async function run(ctx: Ctx): Promise<void> {
       && transferredBinding.sessionId === null && successorState?.sessionId === null
       && typeof transferredBinding.boundAt === "number" && transferredBinding.boundAt > (bound?.boundAt ?? 0),
     `response=${JSON.stringify(successionBody)} binding=${JSON.stringify(transferredBinding)}`);
+  const dutySuccessorToken = slotToken(successorSlot);
+  const dutyListed = await fetch(`${BASE}/api/self/clarifications`, {
+    headers: { "x-fleet-self-token": dutySuccessorToken },
+  });
+  const dutyListedBody = await dutyListed.json() as { requests?: { id: string; status: string;
+    receiver: { slot: number; openedAt: number } }[] };
+  const dutyListedRequest = dutyListedBody.requests?.find((c) => c.id === dutyRequest?.id);
+  const dutyReboundEvent = ((await (await get("/api/events")).json()) as { events: {
+    id: string; status: string; receiverSlot: number; receiverOpenedAt: number }[] }).events
+    .find((e) => e.id === dutyEventId);
+  check("Standard succession duty: the successor lists the predecessor's open lane question on its exact occupation",
+    dutyListed.ok && dutyListedRequest?.status === "open"
+      && dutyListedRequest.receiver.slot === successorSlot
+      && dutyListedRequest.receiver.openedAt === successorState?.openedAt,
+    JSON.stringify({ status: dutyListed.status, request: dutyListedRequest ?? null }));
+  const dutyHandover = (readState().programs ?? []).find((p) => p.id === mainProgram.id)?.handover;
+  const dutyExecution = (await selfExecution(dutySuccessorToken)).view?.programs
+    .find((p) => p.program.id === mainProgram.id)?.handover;
+  check("Standard succession duty: a gone lane's question is named as lost in the record and Program execution view",
+    lostDutyQuestion.ok && !!lostDutyRequest?.id
+      && dutyHandover?.lost.some((row) => row.id === lostDutyRequest.id
+        && row.kind === "clarification" && row.reason === "lane gone") === true
+      && dutyExecution?.lost.some((row) => row.id === lostDutyRequest.id
+        && row.kind === "clarification" && row.reason === "lane gone") === true,
+    JSON.stringify({ id: lostDutyRequest?.id, disk: dutyHandover?.lost ?? null,
+      view: dutyExecution?.lost ?? null }));
+  check("Standard succession duty: a pending immediate FleetEvent moves to the successor instead of receiver-gone",
+    dutyReboundEvent?.status === "pending" && dutyReboundEvent.receiverSlot === successorSlot
+      && dutyReboundEvent.receiverOpenedAt === successorState?.openedAt,
+    JSON.stringify(dutyReboundEvent ?? null));
+  const dutyReply = dutyRequest?.id
+    ? await selfPost(`/api/self/clarifications/${dutyRequest.id}/reply`, dutySuccessorToken,
+      { text: "Finish the bounded task already assigned." })
+    : new Response(null, { status: 599 });
+  const dutyAudit = ((await (await get("/api/audit?limit=500")).json()) as {
+    events: { event: string; detail?: string }[] }).events;
+  check("Standard succession duty: successor reply is 200 and audit names the rebound question",
+    dutyReply.status === 200 && dutyAudit.some((e) => e.event === "clarification_rebound"
+      && (e.detail ?? "").includes(dutyRequest?.id ?? "never")),
+    `${dutyReply.status} rebound=${dutyAudit.some((e) => e.event === "clarification_rebound"
+      && (e.detail ?? "").includes(dutyRequest?.id ?? "never"))}`);
   // the lineage survived the restart above (it is persisted, not recomputed) and the succession
   // wrote both halves of the move in the bind's own save: the predecessor's entry closed by
   // `succeed` at the successor's boundAt, the successor appended via `succeed` — and its sessionId
@@ -3603,6 +3687,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const s0Row = s0State.slots?.[String(s0Lane.slot)];
   if (s0Row?.worktree && typeof s0PredecessorOpenedAt === "number")
     s0Row.worktree.anchor = { slot: mainSlot!, openedAt: s0PredecessorOpenedAt };
+  const dutyReadyEvent = s0State.events?.find((e) => e.id === dutyEventId);
+  if (dutyReadyEvent) dutyReadyEvent.receiverIdleSec = 0;
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(s0State, null, 2), { mode: 0o600 });
   await restartSrv();
   let s0Heal: { slot?: number; detail?: string } | undefined;
@@ -3618,8 +3704,21 @@ export async function run(ctx: Ctx): Promise<void> {
   check("S0 load heal: an anchor naming the Program's previous MAIN on the same slot is re-anchored on the live occupant at boot, with an audit row naming the lineage",
     !!s0Heal && JSON.stringify(s0Live) === JSON.stringify({ slot: mainSlot, openedAt: transferredBinding?.openedAt }),
     `audit=${JSON.stringify(s0Heal ?? null)} live=${JSON.stringify(s0Live)}`);
+  let dutyDelivered: { status?: string; receiverSlot?: number } | undefined;
+  for (let i = 0; i < 100 && dutyDelivered?.status !== "delivered"; i++) {
+    dutyDelivered = ((await (await get("/api/events")).json()) as { events: { id: string;
+      status: string; receiverSlot: number }[] }).events.find((e) => e.id === dutyEventId);
+    if (dutyDelivered?.status !== "delivered") await Bun.sleep(100);
+  }
+  const dutySuccessorHistory = await (await get(`/api/slots/${mainSlot}/history`)).json() as {
+    history: { text: string }[] };
+  check("Standard succession duty: the immediate FleetEvent is delivered into the successor pane",
+    dutyDelivered?.status === "delivered" && dutyDelivered.receiverSlot === mainSlot
+      && dutySuccessorHistory.history.some((h) => h.text.includes(dutyEventId)),
+    JSON.stringify({ event: dutyDelivered ?? null, history: dutySuccessorHistory.history.slice(-2) }));
   if (typeof s0Lane.slot === "number") await post(`/api/slots/${s0Lane.slot}/kill`, {});
   if (s0Lane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", s0Lane.cwd]);
+  if (lostDutyLane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", lostDutyLane.cwd]);
   check("Program-MAIN target succession: delivered history keeps the target contract without repeating Fleet founding",
     successionPrompt.startsWith("[fleet Program-MAIN succession]")
       && targetContractPresent(successionPrompt, mainProgram.title) && targetContractClean(successionPrompt)
@@ -6555,6 +6654,19 @@ export async function run(ctx: Ctx): Promise<void> {
   const standardPredecessor = await bootstrapRevocationMain(
     standardRevocationProgram, gameWt, "standard-revocation-predecessor",
     "succession revocation fixture: the Standard predecessor is bound with an exact live identity");
+  const revocationLane = (await (await post("/api/lanes", { repo: REPO,
+    parent: { slot: standardPredecessor.slot, openedAt: standardPredecessor.openedAt } })).json()) as {
+      slot?: number; cwd?: string };
+  await stopSrv();
+  const revocationFixture = readState();
+  if (revocationLane.slot && revocationFixture.slots?.[String(revocationLane.slot)])
+    revocationFixture.slots[String(revocationLane.slot)]!.programId = standardRevocationProgram.id;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(revocationFixture, null, 2), { mode: 0o600 });
+  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_OPEN_LATCH: afterOpenLatch });
+  const revocationQuestion = await selfPost("/api/self/clarifications",
+    slotToken(revocationLane.slot ?? null), { question: "Who answers if the successor cannot bind?" });
+  const revocationRequest = (await revocationQuestion.clone().json() as {
+    request?: { id?: string } }).request;
   const standardHandoffCommit = await commitRevocationHandoff(gameWt, standardPredecessor.openedAt,
     `## Program succession\ncontinue ${standardRevocationProgram.title}\n`,
     "succession fixture: Standard authority revocation");
@@ -6631,9 +6743,57 @@ export async function run(ctx: Ctx): Promise<void> {
       binding: [standardBindingBefore, standardAfter?.main],
       receipts: [standardReceiptsBefore, standardReceiptsAfter], candidate: standardCandidateSlot,
       replacement: standardReplacementAfter }));
+  const revokedLost = readState().programs?.find((p) => p.id === standardRevocationProgram.id)?.handover?.lost ?? [];
+  let refusalPane = { out: "" };
+  for (let i = 0; i < 60 && revocationLane.slot && !refusalPane.out.includes(revocationRequest?.id ?? "never"); i++) {
+    refusalPane = await tmuxOut("capture-pane", "-t", `s${revocationLane.slot}`, "-p", "-J");
+    if (!refusalPane.out.includes(revocationRequest?.id ?? "never")) await Bun.sleep(100);
+  }
+  const revokedAudit = ((await (await get("/api/audit?limit=500")).json()) as {
+    events: { event: string; detail?: string }[] }).events;
+  check("Standard succession duty: owner kill before bind leaves no rebound, records the lost question and tells its living lane why",
+    revocationQuestion.ok && !!revocationRequest?.id
+      && revokedLost.some((row) => row.id === revocationRequest.id
+        && row.kind === "clarification" && row.reason === "no successor bound")
+      && refusalPane.out.includes(`clarification ${revocationRequest.id} was refused: no successor bound`)
+      && !revokedAudit.some((e) => e.event === "clarification_rebound"
+        && (e.detail ?? "").includes(revocationRequest.id ?? "never")),
+    JSON.stringify({ id: revocationRequest?.id, lost: revokedLost, pane: refusalPane.out.slice(-180) }));
+  if (revocationLane.slot) await post(`/api/slots/${revocationLane.slot}/kill`, {});
+  if (revocationLane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", revocationLane.cwd]);
   if (standardRecycle?.ok) await post(`/api/slots/${standardPredecessor.slot}/kill`, {});
   await programPost(standardRevocationProgram.id, "complete");
   clearSuccessionLatch(afterOpenLatch);
+
+  const ownerKillProgram = await activateNewProgram("Standard MAIN owner kill keeps the clarification closed");
+  const ownerKillMain = await bootstrapRevocationMain(ownerKillProgram, gameWt,
+    "standard-owner-kill-main", "owner-kill clarification fixture has an exact bound MAIN");
+  const ownerKillLane = (await (await post("/api/lanes", { repo: REPO,
+    parent: { slot: ownerKillMain.slot, openedAt: ownerKillMain.openedAt } })).json()) as {
+      slot?: number; cwd?: string };
+  await stopSrv();
+  const ownerKillFixture = readState();
+  if (ownerKillLane.slot && ownerKillFixture.slots?.[String(ownerKillLane.slot)])
+    ownerKillFixture.slots[String(ownerKillLane.slot)]!.programId = ownerKillProgram.id;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(ownerKillFixture, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const ownerKillQuestion = await selfPost("/api/self/clarifications", slotToken(ownerKillLane.slot ?? null),
+    { question: "This question must not pass an owner kill." });
+  const ownerKillRequest = (await ownerKillQuestion.clone().json() as {
+    request?: { id?: string } }).request;
+  const ownerKillAct = await post(`/api/slots/${ownerKillMain.slot}/kill`, {});
+  const ownerKillClarifications = await fetch(`${BASE}/api/self/clarifications`, {
+    headers: { "x-fleet-self-token": slotToken(ownerKillLane.slot ?? null) } });
+  const ownerKillRows = (await ownerKillClarifications.json() as {
+    requests?: { id: string; status: string; refusedReason: string | null }[] }).requests ?? [];
+  check("Standard MAIN owner kill: an open clarification is refused and never rebound to a recycled slot",
+    ownerKillQuestion.ok && ownerKillAct.ok && !!ownerKillRequest?.id
+      && ownerKillRows.some((row) => row.id === ownerKillRequest.id && row.status === "refused"
+        && row.refusedReason === "receiver occupant ended or was replaced"),
+    JSON.stringify({ kill: ownerKillAct.status, id: ownerKillRequest?.id, rows: ownerKillRows }));
+  if (ownerKillLane.slot) await post(`/api/slots/${ownerKillLane.slot}/kill`, {});
+  if (ownerKillLane.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", ownerKillLane.cwd]);
+  await programPost(ownerKillProgram.id, "complete");
 
   // THE RESTART INSIDE THE RESPAWN, on a Game-Maker Program so the boot's tree-occupant rule runs
   // too. The predecessor is already gone when the server dies, so the boot can only do one honest

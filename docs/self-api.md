@@ -1044,7 +1044,7 @@ MAIN-Bindung hat; bei null ist das Feld wegen des Poll-Budgets abwesend.
 ### Der Übergabe-Record `handover` (`GET /api/self/program-execution`)
 
 Jede Program-Zeile trägt `handover`: `null`, solange keine Standard-Nachfolge stattfand, sonst
-`{at, from, to, obligations, settled, dropped}` — der persistierte Record
+`{at, from, to, obligations, settled, lost, dropped}` — der persistierte Record
 (`server.ts#captureProgramHandover`, Form `server/types.ts#ProgramHandover`). Er armiert nichts neu
 und löscht nichts; Neu-Registrieren bleibt der eigene Akt der Nachfolgerin über die normalen Türen.
 
@@ -1061,7 +1061,8 @@ und löscht nichts; Neu-Registrieren bleibt der eigene Akt der Nachfolgerin übe
   `auto-row-gone` (keine Auto-Zeile dieser id mehr). Eine Audit-Watch ohne deckende Audit-Zeile
   bleibt offen, auch wenn ihre Watch-Zeile weg ist. Historische `attention`-Zeilen haben keinen
   solchen Test und werden weiter getragen.
-- Ein Record von vor 2026-09-23 hat kein `settled` und lädt als `settled: []`.
+- **`lost` = nicht übertragbare Zeilen** mit `id`, `kind` (`clarification` oder `fleet-event`) und `reason` (etwa `lane gone`, `program not active`, `no successor bound`). Die Program-Sicht zeigt die Liste unverändert; `dropped` behält seine bisherige Bedeutung.
+- Alte Records ohne `settled` oder `lost` laden mit leeren Listen.
 
 ### Die abgeleitete `phase` (`GET /api/self/program-execution`)
 
@@ -1978,6 +1979,7 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   Wiederholung mit **identischem** Text ist erlaubt, mit abweichendem Text ist sie 409 — der
   ausstehende Text kann schon in der Pane stehen, und zwei verschiedene Antworten wären die zweite
   Hälfte eines Widerspruchs, den niemand sieht.
+- **Standard-Program-MAIN-Nachfolge:** Offene Fragen einer lebenden Program-Lane gehen beim Bindungsschnitt an die Nachfolgerin über. Ihr GET listet die Frage, ihr Reply bleibt derselbe Antwortpfad; der Audit nennt `clarification_rebound`. Eine nicht übertragbare Frage wird mit ID und Grund in `program.handover.lost` festgehalten und der Lane in ihrer Pane abgelehnt. Owner-Kill überträgt keine Frage.
 - **Refusals, die kein Fehler deiner Seite sind:** 404 `unknown clarification request` · 409
   `clarification belongs to another or replaced MAIN session` (recycelter Occupant) · 409
   `worker occupant ended or was replaced` (die Zeile wird dabei refused) · 409

@@ -116,7 +116,7 @@ import {
   PROGRAM_RECORD_LOSS_ERROR_MAX,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, loadProgramHandover,
   type ProgramHandover, type ProgramHandoverObligation, type ProgramHandoverDetail,
-  type ProgramHandoverSettled, type ProgramHandoverSettledHow,
+  type ProgramHandoverSettled, type ProgramHandoverSettledHow, type ProgramHandoverLost,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE, type LaneSeat,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
@@ -2771,7 +2771,8 @@ async function programExecutionView(s: Slot): Promise<Response> {
       // `obligations` is what is still OPEN; `settled` is what a later succession measured settled
       // (settled{at, how}), oldest first, the oldest falling past PROGRAM_HANDOVER_MAX.
       handover: p.handover ? { at: p.handover.at, from: p.handover.from, to: p.handover.to,
-        obligations: p.handover.obligations, settled: p.handover.settled, dropped: p.handover.dropped } : null,
+        obligations: p.handover.obligations, settled: p.handover.settled, lost: p.handover.lost,
+        dropped: p.handover.dropped } : null,
       tasks: {
         rows: programTasks.map((t) => {
           // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
@@ -11329,6 +11330,13 @@ function clarificationReceiverFor(lane: Slot): ClarificationReceiver | { error: 
   return { error: NO_RECEIVER_EVIDENCE };
 }
 
+function standardSuccessionHolding(slotId: number): Program | undefined {
+  return programs.find((p) => p.status === "active" && !isGameMaker(p)
+    && p.main?.slot === slotId && p.founding?.mode === "succession"
+    && p.founding.predecessor?.slot === slotId
+    && p.founding.predecessor.openedAt === p.main.openedAt);
+}
+
 function refuseClarification(c: ClarificationRequest, reason: string, at = Date.now()): void {
   // send-uncertain is refusable for the same reason it is not terminal: once the worker occupant is
   // gone there is nobody left to retry the send for, and an unrefusable row would never be pruned.
@@ -11338,8 +11346,14 @@ function refuseClarification(c: ClarificationRequest, reason: string, at = Date.
   c.refusedReason = reason;
   c.closedAt = at;
   const worker = slotFrom(c.worker.slot);
-  if (worker?.cwd && worker.openedAt === c.worker.openedAt && worker.sessionId === c.worker.sessionId)
+  if (worker?.cwd && worker.openedAt === c.worker.openedAt && worker.sessionId === c.worker.sessionId) {
     worker.awaiting = null;
+    const line = `[fleet] clarification ${c.id} was refused: ${reason}. No reply will come from this request.`;
+    void sendText(worker, line, true, { path: "clarification-reply" }).then(() => {
+      worker.history = [...worker.history, { text: line, ts: Date.now() }].slice(-MAX_HISTORY);
+      saveHistory(worker);
+    }).catch((e: unknown) => logError("clarificationRefusalDelivery", e));
+  }
   audit("clarification_refused", c.worker.slot, `${c.id} ${reason}`);
 }
 
@@ -11354,6 +11368,10 @@ function reconcileClarifications(teardownSlotId?: number): boolean {
     const receiverGone = teardownSlotId === c.receiver.slot || !receiver?.cwd
       || receiver.openedAt !== c.receiver.openedAt || receiver.sessionId !== c.receiver.sessionId;
     if (!workerGone && !receiverGone) continue;
+    const holding = standardSuccessionHolding(c.receiver.slot);
+    if (!workerGone && receiverGone && holding && c.status === "open"
+      && c.basis === "program-main" && c.provenance.programId === holding.id
+      && c.receiver.openedAt === holding.main?.openedAt) continue;
     refuseClarification(c, workerGone
       ? "worker occupant ended or was replaced"
       : "receiver occupant ended or was replaced");
@@ -11527,6 +11545,11 @@ function markFleetEventReceiverGone(slotId: number): boolean {
   let dirty = false;
   for (const e of fleetEvents) {
     if (e.receiverSlot !== slotId || FLEET_EVENT_TERMINAL.includes(e.status)) continue;
+    const holding = standardSuccessionHolding(slotId);
+    if (holding && e.receiverOpenedAt === holding.main?.openedAt
+      && ((e.status === "pending" && fleetEventDeliveryClass(e) === "sofort")
+        || clarifications.some((c) => c.eventId === e.id && c.status === "open"
+          && c.basis === "program-main" && c.provenance.programId === holding.id))) continue;
     if (DELIVERY_BUNDLE_SEC > 0 && e.status === "pending" && e.receiverAddress
       && fleetEventDeliveryClass(e) === "buendelbar") continue;
     if (e.kind === "fleet-report" && e.status === "send-uncertain"
@@ -33071,7 +33094,75 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
   return { v: 1, at,
     from: { slot: predecessor.slot, openedAt: predecessor.openedAt, sessionId: null },
     to: { slot: successor.slot, openedAt: successor.openedAt },
-    obligations: [...fresh, ...stillOpen], settled, dropped: 0 };
+    obligations: [...fresh, ...stillOpen], settled, lost: [...(program.handover?.lost ?? [])], dropped: 0 };
+}
+
+function settleProgramSuccessionDuties(program: Program, predecessor: SuccessionPredecessorIdentity,
+  successor: Slot | null, handover: ProgramHandover): void {
+  const from = (slot: number | null, openedAt: number | null): boolean =>
+    slot === predecessor.slot && openedAt === predecessor.openedAt;
+  const liveSuccessor = successor?.cwd && program.status === "active"
+    && program.main?.slot === successor.id && program.main.openedAt === successor.openedAt ? successor : null;
+  const baseReason = program.status !== "active" ? "program not active" : "no successor bound";
+  const subjectGone = (e: FleetEvent): boolean => {
+    if (laneEventSubject(e) === "gone") return true;
+    if (!("subjectBranch" in e)) return false;
+    const lane = slotFrom(e.subjectSlot);
+    return !lane?.cwd || lane.worktree?.branch !== e.subjectBranch
+      || ("subjectOpenedAt" in e && e.subjectOpenedAt !== undefined
+        && lane.openedAt !== e.subjectOpenedAt);
+  };
+  const lost = (id: string, kind: ProgramHandoverLost["kind"], reason: string): void => {
+    if (!handover.lost.some((row) => row.id === id && row.kind === kind))
+      handover.lost.push({ id, kind, reason });
+  };
+  for (const c of clarifications) {
+    if (c.basis !== "program-main" || c.provenance.programId !== program.id
+      || !from(c.receiver.slot, c.receiver.openedAt)
+      || c.status === "answered") continue;
+    const worker = slotFrom(c.worker.slot);
+    const workerLive = !!worker?.cwd && worker.openedAt === c.worker.openedAt
+      && worker.sessionId === c.worker.sessionId;
+    const reason = !workerLive ? "lane gone" : !liveSuccessor ? baseReason
+      : c.status !== "open" ? "clarification already refused or send uncertain" : null;
+    if (reason) {
+      lost(c.id, "clarification", reason);
+      if (c.status !== "refused") refuseClarification(c, reason);
+      continue;
+    }
+    if (!liveSuccessor) continue;
+    c.receiver = { slot: liveSuccessor.id, openedAt: liveSuccessor.openedAt,
+      sessionId: liveSuccessor.sessionId };
+    audit("clarification_rebound", liveSuccessor.id,
+      `${c.id} program=${program.id} from slot ${predecessor.slot} openedAt ${predecessor.openedAt}`);
+  }
+  for (const e of fleetEvents) {
+    if (!from(e.receiverSlot, e.receiverOpenedAt)) continue;
+    if (e.status === "subject-gone") {
+      lost(e.id, "fleet-event", "lane gone");
+      continue;
+    }
+    if (FLEET_EVENT_TERMINAL.includes(e.status)) continue;
+    const clarification = clarifications.find((c) => c.eventId === e.id);
+    if (e.status !== "pending" && !(clarification && e.status === "delivered")) continue;
+    if (!clarification && fleetEventDeliveryClass(e) !== "sofort") continue;
+    const reason = clarification?.status === "refused" ? clarification.refusedReason ?? "clarification refused"
+      : subjectGone(e) ? "lane gone" : !liveSuccessor ? baseReason : null;
+    if (reason) {
+      e.status = subjectGone(e) ? "subject-gone" : "receiver-gone";
+      lost(e.id, "fleet-event", reason);
+      audit("fleet_event_receiver_gone", predecessor.slot, `${e.id} ${reason}`);
+      continue;
+    }
+    if (!liveSuccessor) continue;
+    e.receiverSlot = liveSuccessor.id;
+    e.receiverOpenedAt = liveSuccessor.openedAt;
+    e.receiverSessionId = liveSuccessor.sessionId;
+    audit("fleet_event_rebound", liveSuccessor.id,
+      `${e.id} program=${program.id} from slot ${predecessor.slot} openedAt ${predecessor.openedAt}`);
+  }
+  pruneClarifications();
+  pruneFleetEvents(predecessor.slot);
 }
 
 // THE LOSSLESS EXCEPTION PATH, and it is a refusal. If the record this succession would persist is
@@ -34398,6 +34489,11 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         async (e) => {
           await rollbackProgramFounding(program, founding,
             e instanceof TmuxNewSessionUnavailable ? "tmux-new-session-unavailable" : "successor-open-failed");
+          if (retained) {
+            settleProgramSuccessionDuties(program, predecessor, null, retained);
+            program.handover = retained;
+            await saveStateNow();
+          }
         },
         // refused before the kill: the predecessor stands and stays bound, only the marker falls
         async () => { await rollbackProgramFounding(program, founding, "predecessor-revoked-before-open"); });
@@ -34424,6 +34520,10 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
           if (program.main?.slot === predecessor.slot && program.main.openedAt === predecessor.openedAt)
             closeProgramLineage(program, "retire", Date.now());
         }
+        if (retained) {
+          settleProgramSuccessionDuties(program, predecessor, null, retained);
+          program.handover = retained;
+        }
         await saveStateNow().catch((e: unknown) => logError("programSuccessionUnbound", e));
         const error = candidateOk
           ? `Program-MAIN successor stands on slot ${s.id} but was not bound: the Program's authority changed during the respawn`
@@ -34438,8 +34538,11 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       // one before it still owed, because captureProgramHandover read the record this line is
       // about to replace and carried its rows forward. `sessionId` is the leaving conversation's,
       // read before the kill.
-      if (retained) program.handover = { ...retained,
-        from: { ...retained.from, sessionId: predecessorSessionId } };
+      if (retained) {
+        program.handover = { ...retained,
+          from: { ...retained.from, sessionId: predecessorSessionId } };
+        settleProgramSuccessionDuties(program, predecessor, s, program.handover);
+      }
       // the same save moves the authority and records the move: predecessor closed by `succeed`,
       // successor appended via `succeed`
       appendProgramLineage(program, lineageEntryFromMain(program.main, "succeed"),

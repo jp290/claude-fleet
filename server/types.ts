@@ -2979,6 +2979,7 @@ interface ProgramHandoverObligation {
   detail: ProgramHandoverDetail;
 }
 type ProgramHandoverSettled = ProgramHandoverObligation & { settled: { at: number; how: ProgramHandoverSettledHow } };
+interface ProgramHandoverLost { id: string; kind: "clarification" | "fleet-event"; reason: string }
 interface ProgramHandover {
   v: 1;
   at: number;
@@ -2988,11 +2989,12 @@ interface ProgramHandover {
   // oldest first, at most PROGRAM_HANDOVER_MAX. A record written before 2026-09-23 has no key and
   // loads as [] — no row of it was ever measured settled.
   settled: ProgramHandoverSettled[];
+  lost: ProgramHandoverLost[];
   dropped: number;
 }
 type ProgramHandoverRead = { ok: true; handover: ProgramHandover } | { ok: false; error: string };
-const PROGRAM_HANDOVER_KEYS = ["v", "at", "from", "to", "obligations", "settled", "dropped"];
-const PROGRAM_HANDOVER_LEGACY_KEYS = PROGRAM_HANDOVER_KEYS.filter((k) => k !== "settled");
+const PROGRAM_HANDOVER_KEYS = ["v", "at", "from", "to", "obligations", "settled", "lost", "dropped"];
+const PROGRAM_HANDOVER_LEGACY_KEYS = PROGRAM_HANDOVER_KEYS.filter((k) => k !== "settled" && k !== "lost");
 const PROGRAM_HANDOVER_OBLIGATION_KEYS = ["kind", "id", "at", "text", "detail"];
 const loadProgramHandoverDetail = (value: unknown, index: number): ProgramHandoverDetail | string => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return `obligation ${index} detail must be an object`;
@@ -3045,7 +3047,8 @@ const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
   const r = value as Record<string, unknown>;
   const legacy = !Object.prototype.hasOwnProperty.call(r, "settled");
-  const want = legacy ? PROGRAM_HANDOVER_LEGACY_KEYS : PROGRAM_HANDOVER_KEYS;
+  const hasLost = Object.prototype.hasOwnProperty.call(r, "lost");
+  const want = legacy ? PROGRAM_HANDOVER_LEGACY_KEYS : hasLost ? PROGRAM_HANDOVER_KEYS : PROGRAM_HANDOVER_KEYS.filter((k) => k !== "lost");
   if (Object.keys(r).some((k) => !want.includes(k)) || Object.keys(r).length !== want.length)
     return { ok: false, error: `must contain exactly ${PROGRAM_HANDOVER_KEYS.join(", ")}` };
   if (r.v !== 1) return { ok: false, error: "v must be 1" };
@@ -3105,12 +3108,25 @@ const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
       settled.push({ ...row, settled: { at: m.at, how: m.how as ProgramHandoverSettledHow } });
     }
   }
+  const lost: ProgramHandoverLost[] = [];
+  if (hasLost) {
+    if (!Array.isArray(r.lost)) return { ok: false, error: "lost must be an array" };
+    for (const [index, raw] of r.lost.entries()) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: `lost ${index} must be an object` };
+      const row = raw as Record<string, unknown>;
+      if (Object.keys(row).length !== 3 || typeof row.id !== "string" || !/^[0-9a-zA-Z_-]{1,64}$/.test(row.id)
+        || (row.kind !== "clarification" && row.kind !== "fleet-event")
+        || typeof row.reason !== "string" || !row.reason || row.reason.length > 300)
+        return { ok: false, error: `lost ${index} must be exactly {id, kind, reason}` };
+      lost.push({ id: row.id, kind: row.kind, reason: row.reason });
+    }
+  }
   const from = r.from as { slot: number; openedAt: number; sessionId: string | null };
   const to = r.to as { slot: number; openedAt: number };
   return { ok: true, handover: { v: 1, at: r.at,
     from: { slot: from.slot, openedAt: from.openedAt, sessionId: from.sessionId },
     to: { slot: to.slot, openedAt: to.openedAt },
-    obligations, settled, dropped: r.dropped as number } };
+    obligations, settled, lost, dropped: r.dropped as number } };
 };
 
 // --- THE ROLE-LINEAGE HANDOVER (e3e5084a) ------------------------------------------------------
@@ -3479,7 +3495,7 @@ export type {
   ProgramInboxKind, ProgramInboxEntry, ProgramInbox, ProgramInboxRead,
   MessageRole, MessageAddress, MessagePayload, Message, Messages, MessagesRead,
   ProgramHandoverKind, ProgramHandoverDetail, ProgramHandoverObligation, ProgramHandover,
-  ProgramHandoverSettledHow, ProgramHandoverSettled,
+  ProgramHandoverSettledHow, ProgramHandoverSettled, ProgramHandoverLost,
   ProgramHandoverRead, ProgramRecordLoss, ProgramRecordLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,

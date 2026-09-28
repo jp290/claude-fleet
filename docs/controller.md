@@ -147,7 +147,8 @@ Wo ein Verb `<slot>` nimmt (`ctx`, `watch lane|merge`, `land`, `wait merge`), da
 
 - **Standard, exakt gebundene aktive Program-MAIN:** kein neuer `HANDOFF.md`-Commit als Gate. Fleet
   verschiebt die Bindung, persistiert Watch-/Auto-Pflichten und historische Attention-Zeilen im
-  `handover`; der Brief zeigt nur Vorschauen. Die Nachfolgerin liest Program-/Task-/Report-/Inbox-/
+  `handover`; offene Lane-Rückfragen und sofort fällige FleetEvents gehen an die Nachfolgerin.
+  Nicht übertragbare Zeilen stehen mit ID und Grund in `handover.lost`; der Brief zeigt nur Vorschauen. Die Nachfolgerin liest Program-/Task-/Report-/Inbox-/
   Handover-Fakten und optional HANDOFF-Rest. Nichts wird neu armiert; Lücken bleiben `unknown`.
 - **Ungebundene Legacy-Session, damit auch ein ungebundener Controller:** kein `HANDOFF.md`-Commit mehr
   als Gate (seit e3e5084a). Die Nachfolge schreibt einen Linien-Record (`docs/self-api.md` §Linien-Record):

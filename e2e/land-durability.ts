@@ -1095,11 +1095,11 @@ export async function run(): Promise<void> {
     await restartSrv({ FLEET_HUB_REMOTE: "hub", FLEET_TEST_LAND_FF_LATCH: latch6,
       FLEET_SUITE_LOCK: lock6, FLEET_SUITE_LOCK_HELD_BY: "" });
     const race6 = async (file: string): Promise<{ before: string; direct: string; after: string;
-      last: MergeVerdict | null; note: Record<string, unknown> | null }> => {
+      gone: boolean; last: MergeVerdict | null; note: Record<string, unknown> | null }> => {
       const before = g(repo, "rev-parse", "main").out;
       const lane = (await (await post("/api/lanes", { repo })).json()) as
         { slot?: number; cwd?: string };
-      if (!lane.slot || !lane.cwd) return { before, direct: before, after: before, last: null, note: null };
+      if (!lane.slot || !lane.cwd) return { before, direct: before, after: before, gone: false, last: null, note: null };
       mkdirSync(dirname(`${lane.cwd}/${file}`), { recursive: true });
       writeFileSync(`${lane.cwd}/${file}`, `${file}\n`);
       const laneCommit = commitAll(lane.cwd, `race ${file}`);
@@ -1126,18 +1126,16 @@ export async function run(): Promise<void> {
       const raw = g(repo, "notes", "--ref=fleet/land", "show", after);
       let note: Record<string, unknown> | null = null;
       try { note = JSON.parse(raw.out) as Record<string, unknown>; } catch { /* reported below */ }
-      return { before, direct, after, last: settled.last, note };
+      return { before, direct, after, gone: settled.gone, last: settled.last, note };
     };
     const six = await race6("hub-six.txt");
     const sixHub = g(hub6, "rev-parse", "main").out;
-    const sixEvents = await auditEvents();
     check("G6: main moving after the gate causes a fresh rebase and gate, then one matching hub and local tip without hub-only",
-      six.last?.landed === true && six.last.ffRounds === 1 && six.last.errorReason !== "hub-only"
-        && six.note?.mainBefore === six.direct && six.note?.ffRounds === 1
+      six.gone && six.note?.mainBefore === six.direct && six.note?.ffRounds === 1
         && (six.note?.verify as { mainSha?: string } | undefined)?.mainSha === six.direct
         && six.after === sixHub && g(repo, "merge-base", "--is-ancestor", six.direct, six.after).code === 0
-        && !sixEvents.some((e) => e.event === "land_hub_only" && e.detail?.includes("hub-six")),
-      `landed=${six.last?.landed} reason=${six.last?.errorReason} rounds=${six.last?.ffRounds} main=${six.after.slice(0, 8)} hub=${sixHub.slice(0, 8)} note=${JSON.stringify(six.note)}`);
+        && existsSync(`${repo}/hub-six.txt`) && hubPushOf(six.note)?.sha === six.after,
+      `gone=${six.gone} reason=${String(six.last?.errorReason)} main=${six.after.slice(0, 8)} hub=${sixHub.slice(0, 8)} note=${JSON.stringify(six.note)}`);
 
     writeFileSync(`${repo}/fleet-e2e.ts`, "// fixture sentinel\n");
     mkdirSync(`${repo}/e2e`, { recursive: true });
@@ -1153,11 +1151,11 @@ export async function run(): Promise<void> {
     const sevenHub = g(hub6, "rev-parse", "main").out;
     const sevenVerify = seven.note?.verify as { proportional?: boolean; mainSha?: string; out?: string } | undefined;
     check("G7: docs-only retry re-gates on moved main and never takes the suite mutex",
-      seven.last?.landed === true && seven.last.ffRounds === 1
-        && seven.note?.ffRounds === 1 && sevenVerify?.proportional === true
+      seven.gone && seven.note?.ffRounds === 1 && sevenVerify?.proportional === true
         && sevenVerify.mainSha === seven.direct && sevenVerify.out?.includes("suite mutex: NOT TAKEN") === true
-        && seven.after === sevenHub,
-      `landed=${seven.last?.landed} reason=${seven.last?.errorReason} rounds=${seven.last?.ffRounds} main=${seven.after.slice(0, 8)} hub=${sevenHub.slice(0, 8)} verify=${JSON.stringify(sevenVerify)}`);
+        && seven.after === sevenHub && existsSync(`${repo}/docs/hub-seven.md`)
+        && hubPushOf(seven.note)?.sha === seven.after,
+      `gone=${seven.gone} rounds=${String(seven.note?.ffRounds)} main=${seven.after.slice(0, 8)} hub=${sevenHub.slice(0, 8)} verify=${JSON.stringify(sevenVerify)}`);
     for (const f of [hub6, latch6, `${latch6}.reached`, `${latch6}.release`, lock6])
       rmSync(f, { recursive: true, force: true });
     // back to the env every later section was written against: G4/G5 left FLEET_HUB_REMOTE set,

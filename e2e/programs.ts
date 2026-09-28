@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rena
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen, until, UntilTimeout } from "./harness";
+import { AUTOS_TICK_MS, BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen, until, UntilTimeout } from "./harness";
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
@@ -4743,6 +4743,59 @@ export async function run(ctx: Ctx): Promise<void> {
       && dlgBase.rows.every((r) => !("escalation" in r)) && dlgView0.delegate === null && dlgView0.holder === null,
     JSON.stringify({ owner: dlgBase.owner, delegate: dlgBase.delegate, pending: dlgPending(dlgBase.rows).length, view: dlgView0 }));
 
+  const orphanProgram = await activateNewProgram("Handoff supersession and orphan notice");
+  await stopSrv();
+  const orphanPlant = readState();
+  const orphanProgramRow = orphanPlant.programs?.find((p) => p.id === orphanProgram.id);
+  const orphanLaneRow = orphanPlant.slots?.[String(dlgLane.slot)];
+  const orphanMainRow = orphanPlant.slots?.[String(dlgOutsiderSlot)];
+  if (orphanProgramRow && orphanMainRow?.openedAt && orphanLaneRow) {
+    orphanProgramRow.main = { slot: dlgOutsiderSlot, openedAt: orphanMainRow.openedAt,
+      sessionId: orphanMainRow.sessionId ?? null, boundAt: Date.now() };
+    orphanLaneRow.programId = orphanProgram.id;
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(orphanPlant, null, 2), { mode: 0o600 });
+  await restartSrv();
+  check("handoff fixture: a live MAIN and one Program lane are bound before filing",
+    !!orphanProgramRow && !!orphanMainRow?.openedAt && !!orphanLaneRow
+      && orphanLaneRow.programId === orphanProgram.id,
+    JSON.stringify({ program: orphanProgram.id, main: dlgOutsiderSlot, lane: dlgLane.slot }));
+  const orphanFile = async (status: "needs-main" | "handoff" | "complete") => {
+    const response = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+      headers: { "x-fleet-self-token": dlgLaneTok, "content-type": "application/json" },
+      body: JSON.stringify({ status, text: `handoff fixture ${status}` }) });
+    return { response, body: await response.json() as { report?: { id?: string; basis?: string } } };
+  };
+  const orphanNeeds = await orphanFile("needs-main");
+  const orphanHandoff = await orphanFile("handoff");
+  const orphanComplete = await orphanFile("complete");
+  const orphanIds = [orphanNeeds.body.report?.id, orphanHandoff.body.report?.id, orphanComplete.body.report?.id];
+  const orphanOwnerRows = async () => ((await (await get("/api/fleet-report")).json()) as {
+    reports?: { id: string; decision?: { disposition?: string; by?: { rule?: string }; supersededBy?: string;
+      fulfilled?: string | null } | null; liveness?: string }[] }).reports ?? [];
+  const orphanRows = await orphanOwnerRows();
+  const orphanDecision = orphanRows.find((r) => r.id === orphanIds[1])?.decision;
+  const orphanLedger = readFileSync(`${ROOT}/fleet-reports.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { kind?: string; id?: string; by?: { rule?: string }; supersededBy?: string });
+  const orphanAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { event?: string; detail?: string });
+  check("Program handoff: a later filing on the same branch accepts only the handoff by superseded, records ledger and audit, and leaves needs-main and complete undecided",
+    [orphanNeeds, orphanHandoff, orphanComplete].every((x) => x.response.ok && x.body.report?.basis === "program")
+      && orphanIds.every((id) => typeof id === "string")
+      && orphanDecision?.disposition === "accepted" && orphanDecision.by?.rule === "superseded"
+      && orphanDecision.supersededBy === orphanIds[2] && orphanDecision.fulfilled === null
+      && !orphanRows.find((r) => r.id === orphanIds[0])?.decision
+      && !orphanRows.find((r) => r.id === orphanIds[2])?.decision
+      && orphanLedger.some((r) => r.kind === "decision" && r.id === orphanIds[1]
+        && r.by?.rule === "superseded" && r.supersededBy === orphanIds[2])
+      && orphanAudit.some((r) => r.event === "fleet_report_rule_decision" && r.detail?.includes(orphanIds[1] ?? "missing")),
+    JSON.stringify({ ids: orphanIds, decision: orphanDecision ?? null }));
+  const orphanCompleteResult = await programPost(orphanProgram.id, "complete");
+  const orphanWithoutOrchestrator = await (await get("/api/sessions")).json() as { reportsAwaitingOwner?: number };
+  check("Program orphan without Orchestrator: the undecided rows remain in reportsAwaitingOwner",
+    orphanCompleteResult.ok && (orphanWithoutOrchestrator.reportsAwaitingOwner ?? 0) >= 2,
+    JSON.stringify({ complete: orphanCompleteResult.status, owner: orphanWithoutOrchestrator.reportsAwaitingOwner ?? 0 }));
+
   const orchLabel = "🎛 Orchestrator (e2e)";
   const orchSlot = (await sessions()).slots.find((s) => !s.cwd)?.id ?? 0;
   // The door is `slots/<id>/open`, so the SLOT is known before the pane is — waitForLabel, which
@@ -4780,6 +4833,31 @@ export async function run(ctx: Ctx): Promise<void> {
       && orchReceipt.briefHash === briefHashOf(orchPrompt)
       && orchReceipt.deliveredBytes === new TextEncoder().encode(orchPrompt).byteLength,
     JSON.stringify(orchReceipt ?? null));
+  const orphanSends = () => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as { event?: string; path?: string; reportId?: string; slot?: number;
+      bytes?: number; acceptance?: string })
+    .filter((row) => row.event === "send" && row.path === "report-orphan"
+      && row.reportId === orphanIds[2] && row.bytes && row.bytes > 0);
+  for (let i = 0; i < 120 && orphanSends().length < 1; i++) await Bun.sleep(250);
+  const orphanFirstSend = orphanSends();
+  await Bun.sleep(AUTOS_TICK_MS * 2 + 500);
+  const orphanSecondTick = orphanSends();
+  const orphanNoticeHistory = ((await (await get(`/api/slots/${orchSlot}/history`)).json()) as
+    { history: { text: string }[] }).history.filter((h) => h.text.includes(orphanIds[2] ?? "missing"));
+  check("Program orphan: the unique Orchestrator receives one report-id hint with its existing door, while the report remains undecided",
+    orphanFirstSend.length === 1 && orphanSecondTick.length === 1
+      && orphanSecondTick[0]?.slot === orchSlot
+      && orphanNoticeHistory.length === 1
+      && orphanNoticeHistory[0]?.text.includes("ohne ReportDelegate nur Owner-Tuer")
+      && !(await orphanOwnerRows()).find((r) => r.id === orphanIds[2])?.decision,
+    JSON.stringify({ sends: orphanSecondTick, history: orphanNoticeHistory.map((h) => h.text.slice(0, 200)) }));
+  await stopSrv();
+  const orphanCleanup = readState();
+  orphanCleanup.fleetReports = (orphanCleanup.fleetReports ?? []).filter((r) => !orphanIds.includes(r.id));
+  orphanCleanup.programs = (orphanCleanup.programs ?? []).filter((p) => p.id !== orphanProgram.id);
+  if (orphanCleanup.slots?.[String(dlgLane.slot)]) orphanCleanup.slots[String(dlgLane.slot)]!.programId = null;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(orphanCleanup, null, 2), { mode: 0o600 });
+  await restartSrv();
 
   // THE SUCCESSION HALF. The successor inherits the label verbatim, so it inherits the ROLE — and
   // the card arrives beside the line record, which stays the one handover channel: `intent` is the

@@ -2558,13 +2558,15 @@ Fehlt beides, geht der Report daher in die **bestehende Owner-Operations-Inbox (
 - **Eine Lane, die WIEDER filet, schließt ihre älteren offenen Zeilen selbst**
   (`server.ts#closeSupersededReports`, gemessen 2026-09-22: 27 Owner-Inbox-Reports EINER Lane, 26
   davon durch spätere Runden derselben Lane überholt und von Hand akzeptiert). Eine neue Filung
-  schließt alle älteren UNENTSCHIEDENEN Reports derselben Branch mit `basis:"owner-inbox"` als
+  schließt alle älteren UNENTSCHIEDENEN Reports derselben Branch mit `basis:"owner-inbox"` sowie
+  Program-Reports mit `status:"handoff"` als
   UEBERHOLT: `decision.disposition:"accepted"`, `by:{rule:"superseded"}`, `supersededBy` = die Id
   des neuen Reports, Grund mit Verweis — der neueste bleibt offen, und der AKTE ist die Filung
   selbst, kein Urteil über den Inhalt. Der Dritte-Principal-Regel `accepted-by-land` zur Seite
-  gestellt: eine RULE entscheidet, nie der Owner, nie eine Session. Nur Owner-Inbox-Zeilen: eine
-  Program-Zeile gehört ihrem lebenden MAIN (keine Regel nimmt dem MAIN das Urteil ab), eine
-  gebundene Zeile ihrem Empfänger. Der Join ist die BRANCH, nicht die Belegung — die gemessenen
+  gestellt: eine RULE entscheidet, nie der Owner, nie eine Session. Der Program-handoff ist ein
+  Übergabedokument ohne Arbeitsbehauptung; spätere Filung derselben Branch ersetzt es. Program-
+  Zeilen mit `needs-main`, `complete` oder `failed` bleiben unbeurteilt bei ihrer MAIN, ebenso
+  gebundene Zeilen bei ihrem Empfänger. Der Join ist die BRANCH, nicht die Belegung — die gemessenen
   Runden waren Nachfolgerinnen und Respawnes, Slot-Nummern recyceln, die Branch benennt die
   Arbeit. Das Urteil wird NICHT zur Lane getragen: die Lane, die den Nachfolger filte, hat die
   Zeile selbst überholt und ist der eine Prinzipal, den niemand mehr sagen muss.
@@ -2864,6 +2866,12 @@ exakt wie „niemand hat hingesehen". Darum:
 - **`reportsAwaitingOwner`** reitet auf `/api/sessions` als EINE Zahl (bei 0 weggelassen, wie
   `attentionOpen`, `docs/data-saver.md`) und lässt das 📥 im Board erscheinen; die Zeilen holt das
   Panel beim Öffnen und wenn die Zahl SICH BEWEGT.
+- **Eine verwaiste, unbeurteilte Program-Zeile erreicht die lebende Orchestratorin einmal als
+  Hinweis.** Die Zustellung löst `{kind:"orchestrator"}` über `server.ts#deliveryRecipient` auf,
+  nennt die Report-id und die bereits offene Tür. Die `send`-Audit-Zeile trägt die Report-id;
+  sie verhindert eine Wiederholung beim nächsten Tick und nach einem Neustart. Ohne eindeutig
+  lebende Orchestratorin bleibt die Zeile in `reportsAwaitingOwner`. Der Hinweis erteilt kein
+  Urteilsrecht: ohne `ReportDelegate` steht der Orchestratorin keine Self-Entscheidungstür offen.
 - **Die Retention hält eine wartende Zeile fest.** `pruneFleetReports` schneidet den terminalen
   Schwanz auf `FLEET_REPORT_KEEP`, und das Event einer verwaisten Zeile wurde genau in dem Moment
   terminal, in dem der Owner zuständig wurde — sie wegzupruen hätte das einzige Objekt gelöscht, auf

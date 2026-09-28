@@ -8652,6 +8652,7 @@ type SendPath =
   | "supervisor-nudge"  // the Supervisor nudging a bound Program-MAIN
   | "audit-ping"        // a post-land audit red offered to an eligible main session
   | "inbox-nudge"       // "your program's inbox has unread entries"
+  | "report-orphan"     // an undecided Program report lost its MAIN
   | "backlog-nudge"     // the open-backlog reminder
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
   | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
@@ -8700,6 +8701,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "supervisor-nudge": "Supervisor-Hinweis",
   "audit-ping": "Post-Land-Audit-Hinweis",
   "inbox-nudge": "Inbox-Hinweis",
+  "report-orphan": "Hinweis auf verwaisten Program-Report",
   "backlog-nudge": "Backlog-Erinnerung",
   "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
   "api-stall-resume": "Fortsetzen nach API-Fehler",
@@ -8721,6 +8723,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "supervisor-nudge": "naechster Schritt: pruefe den benannten Stillstand · Grenze: dein Program",
   "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
   "inbox-nudge": "naechster Schritt: lies die ungelesenen Program-Eintraege · Grenze: dein Program",
+  "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
   "backlog-nudge": "naechster Schritt: pruefe den offenen Backlog · Grenze: dein bestaetigtes Program",
   "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane",
   "api-stall-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
@@ -8785,12 +8788,13 @@ async function seedInbound(): Promise<void> {
 // exception and would fail loudly in their temporal dead zone (the hazard commsFor documents one
 // region above); no boot path reaches sendText today, checked at both of the boot awaits.
 function auditSend(s: Slot, path: SendPath, bytes: number,
-  acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>, klass = deliveryClass(path)): void {
+  acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>, klass = deliveryClass(path), reportId?: string): void {
   const fill = contextFill(s);
   const cache = deliveryCacheState(s);
-  audit("send", s.id, `${path} ${bytes}B ${acceptance}`,
+  audit("send", s.id, `${path} ${bytes}B ${acceptance}${reportId ? ` report=${reportId}` : ""}`,
     { path, bytes, acceptance, deliveryClass: klass, ttlSec: cache.ttlSec,
-      ttlQuelle: cache.ttlQuelle, cache: cache.cache, ...(fill ? { ctxPct: fill.pct } : {}) });
+      ttlQuelle: cache.ttlQuelle, cache: cache.cache, ...(fill ? { ctxPct: fill.pct } : {}),
+      ...(reportId ? { reportId } : {}) });
   bumpInbound(s.id, Date.now(), bytes);
 }
 
@@ -9017,7 +9021,7 @@ async function submitFleetResidue(s: Slot, bound: BoundSlotPane): Promise<string
 type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true;
   deliveryClass?: DeliveryClass; subscribedWatch?: true; beforeSend?: (receiver: Slot) => Promise<void>;
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
-  eventIds?: readonly string[]; paneInboxNotice?: string };
+  eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
 type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
   origin: { slot: number; openedAt: number }; queuedAt: number;
@@ -9427,10 +9431,10 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // neighbours, so it can neither delay nor fail the send it records.
   try {
     const result = await task;
-    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass);
+    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass, options.reportId);
     return result;
   } catch (e) {
-    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass);
+    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass, options.reportId);
     if (e instanceof SendRefused) await options.onRefused?.(s);
     throw e;
   }
@@ -11775,6 +11779,51 @@ function reportReceiverLiveness(report: FleetReport): ReportReceiverLiveness {
 const reportAwaitsOwner = (report: FleetReport): boolean =>
   !report.decision && reportReceiverLiveness(report) !== "live";
 
+const orphanReportNotified = new Set<string>();
+let orphanReportSeeded = false;
+let orphanReportTickBusy = false;
+async function tickOrphanReports(): Promise<void> {
+  if (orphanReportTickBusy) return;
+  orphanReportTickBusy = true;
+  try {
+    if (!orphanReportSeeded) {
+      const { rows } = await readEventLog(AUDIT_FILE);
+      for (const row of rows)
+        if (row.event === "send" && row.path === "report-orphan"
+          && typeof row.reportId === "string" && typeof row.bytes === "number" && row.bytes > 0)
+          orphanReportNotified.add(row.reportId);
+      orphanReportSeeded = true;
+    }
+    const report = fleetReports.find((r) => r.basis === "program" && reportAwaitsOwner(r)
+      && !orphanReportNotified.has(r.id));
+    if (!report) return;
+    const receiver = deliveryRecipient({ kind: "orchestrator" });
+    if (!receiver) return;
+    const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+    const delegated = reportDelegateHolder() === receiver;
+    const door = delegated
+      ? `GET /api/self/fleet-report/delegated; POST /api/self/fleet-report/${report.id}/delegate/accept|reject|escalate`
+      : `ohne ReportDelegate nur Owner-Tuer POST /api/fleet-report/${report.id}/accept|reject`;
+    const message = `[fleet report orphan] Program-Report ${report.id} ist unbeurteilt; Program ${report.provenance.programId} hat keine lebende MAIN. ${door}. Der Hinweis erteilt kein Urteilsrecht.`;
+    const { acceptance } = await sendText(receiver, message, true, { path: "report-orphan",
+      deliveryClass: "sofort", rollbackOwnPayload: true, reportId: report.id,
+      beforeSend: async (current) => {
+        if (deliveryRecipient({ kind: "orchestrator" }) !== current
+          || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+          || !reportAwaitsOwner(report)) throw new DeliveryCancelled(`orphan ${report.id} changed before paste`);
+      } });
+    orphanReportNotified.add(report.id);
+    const at = Date.now();
+    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    saveHistory(receiver);
+    logPrompt(receiver, message, "auto", at, undefined, acceptance);
+  } catch (e) {
+    if (!(e instanceof DeliveryCancelled)) logError("tickOrphanReports", e);
+  } finally {
+    orphanReportTickBusy = false;
+  }
+}
+
 // THE ACCEPTANCE PRECONDITION AT THE LAND — a precondition, never a judgement. This function
 // decides nothing about any work: it reads a verdict a receiving MAIN already wrote and answers
 // whether the land door may open at all. Nothing about it runs on a tick, and no automation can
@@ -11989,19 +12038,20 @@ function disarmLaneWatchesForReport(s: Slot,
 // no longer open questions — they are bookkeeping. The rule closes them exactly as the owner did
 // (accepted, with the pointer to the newer row) under the SAME principal accepted-by-land uses:
 // a RULE, never the owner and never a session. The row being filed is the newest and stays open.
-//   · OWNER-INBOX rows only (basis owner-inbox, which is receiver null's transport half): a
-//     program row's receiver-in-fact is its bound MAIN and no rule takes a MAIN's judgement; a
-//     bound row is its receiver's. (3) of the same measurement: a living receiver is untouched.
+//   · OWNER-INBOX rows and Program HANDOFF rows only. A handoff is a baton, not a claim about work;
+//     a later filing on the same branch replaces it without taking the MAIN's judgement. Program
+//     needs-main, complete and failed rows, and every bound row, remain the receiver's to judge.
 //   · THE BRANCH is the join, not the occupation: the measured rounds were successions and
 //     respawns — slot numbers recycle, the branch names the work.
 //   · NO CARRY of the verdict to the lane: the lane that filed the successor made this row moot
 //     itself and is the one principal that needs no telling; accepted-by-land delivers because a
 //     waiting lane may still be blocked on the verdict, and that is not this shape.
 function closeSupersededReports(report: FleetReport): Promise<void>[] {
-  return fleetReports.filter((r) => r.id !== report.id
-    && !r.decision && r.basis === "owner-inbox" && r.receiver === null
-    && r.worker.branch === report.worker.branch
-    && r.reportedAt < report.reportedAt).map((r) => {
+  const filedAt = fleetReports.indexOf(report);
+  return fleetReports.filter((r, index) => index < filedAt
+    && !r.decision && ((r.basis === "owner-inbox" && r.receiver === null)
+      || (r.basis === "program" && r.status === "handoff"))
+    && r.worker.branch === report.worker.branch).map((r) => {
     r.decision = { disposition: "accepted", at: Date.now(), by: { rule: "superseded" },
       supersededBy: report.id, fulfilled: null,
       reason: `superseded by later report ${report.id} from the same lane branch` };
@@ -36832,6 +36882,7 @@ setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
 setInterval(() => void tickWatches().catch((e: unknown) => logError("tickWatches", e)), AUTOS_TICK_MS);
+setInterval(() => void tickOrphanReports().catch((e: unknown) => logError("tickOrphanReports", e)), AUTOS_TICK_MS);
 // the owner's own parked /send (THE PARKED SEND): owner-initiated, so no automation switch holds it
 setInterval(() => void tickParkedSends().catch((e: unknown) => logError("tickParkedSends", e)), AUTOS_TICK_MS);
 setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), GIT_TICK_MS);

@@ -106,6 +106,23 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   Claims, läuft die Gnadenfrist bis zum frühesten Claim-`expiresAt` plus zwei Sweep-Intervalle,
   gedeckelt bei `FLEET_VERIFY_WAIT_MS`; dieselbe Lesung liefert einer Lane `waitPolicy.unclaimedMs`
   am Suite-Offer. Jeder lokale Lauf nennt seinen Grund in `server.log` (`post-land audit LOCAL: …`).
+  **Seit 2026-09-28 ist die Warteschlange je Repo UND Integrationszweig getrennt**: ein Audit misst einen
+  BAUM, und ein Baum ist der Tip EINES Zweigs. Der Queue-Eintrag eines Repos trägt seinen Kopf-Zweig
+  (`main` + `covers`) und in `behind` je einen weiteren Zweig mit eigener Coverliste
+  (`server.ts#enqueueAuditCover`, `#settleAuditEntry`, `#auditQueueGroups`) — ein overhaul-Land und ein
+  main-Land in derselben Wartezeit ergeben zwei Läufe auf zwei Tips, mehrere Lands desselben Zweigs bleiben
+  EIN Lauf. Nach jedem Lauf rückt der nächste Zweig nach, auch wenn der Kopf inzwischen neue Covers hat
+  (Rotation, sonst verhungerte ein Zweig hinter einem schnell landenden). Davor überschrieb jedes Land
+  `q.main`: ein main-Land nach einem overhaul-Land zog beide auf den main-Tip, und die grüne Zeile nannte
+  einen Land, den der geprüfte Baum nie enthielt (zwei Fälle, `post-land-audits.jsonl`, 2026-09-28; die
+  Alt-Zeilen bleiben unverändert stehen). **Jeder `covers`-Eintrag wird vor dem Lauf gegen den gemessenen Tip
+  geprüft** (`git merge-base --is-ancestor <mainAfter> <mainSha>`, `server.ts#splitAuditCovers`): nur ein
+  eindeutiges Ja steht in der Zeile; ein Nein geht in die Queue des Zweigs zurück, der den Land enthält;
+  enthält ihn kein bekannter Tip (oder lässt sich die Probe nicht fahren), schreibt der Lauf eine explizite
+  `unknown`-Zeile für ihn — nie still verworfen, nie als abgedeckt. Eine alte
+  `post-land-audit-queue.json` (ein Eintrag je Repo, ein `main`) wird beim Laden je Cover dem Zweig
+  zugeordnet, der es enthält; ein Cover, das kein bekannter Tip enthält, wird mit Logzeile
+  (`post-land audit queue: dropped …`) benannt verworfen (`e2e`: `fleet-e2e-postland-audit.ts` Sektion R).
   **`FLEET_AUDIT_SHARDS=n` (2..8) teilt einen Helfer-Audit in n parallele Jobs** (`server.ts#AuditShardRun`):
   ein offerierbarer Eintrag erscheint als n Audit-Jobs mit `shard:"k/n"`, jeder läuft auf dem Daemon mit
   `FLEET_E2E_SHARD=k/n` (`helper-daemon/daemon.ts#shardEnv`) und belegt dort einen Suite-Slot. Der ERSTE

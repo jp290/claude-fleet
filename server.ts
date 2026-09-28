@@ -2995,7 +2995,7 @@ function memoryAuditState(land: Record<string, unknown> | null, auditRows: reado
   if (r && sameRepo(r.repo) && r.covers.some(names)) return { state: "running", startedAt: r.startedAt, basis: "volatile (process memory)" };
   for (const [qRepo, q] of auditQueue) {
     if (!sameRepo(qRepo)) continue;
-    const c = q.covers.find(names);
+    const c = auditQueueGroups(q).flatMap((g) => g.covers).find(names);
     if (c) return auditDraining && !r ? { state: "starting", basis: "volatile (process memory)" }
       : { state: "queued", queuedAt: c.at, basis: "persisted audit queue" };
   }
@@ -3687,7 +3687,7 @@ async function memoryPortfolioView(s: Slot, scope: Extract<PortfolioScope, { ok:
       const held = rows.filter((t) => t.hold);
       const lanes = slots.filter((x) => x.cwd && x.worktree && projectKeyOf(x.worktree.repo) === pk);
       const sameRepo = (r: string): boolean => repoCanon(r) === repo;
-      const queued = [...auditQueue].filter(([r]) => sameRepo(r)).reduce((n, [, q]) => n + q.covers.length, 0);
+      const queued = [...auditQueue].filter(([r]) => sameRepo(r)).reduce((n, [, q]) => n + auditQueueGroups(q).reduce((m, g) => m + g.covers.length, 0), 0);
       const running = !!runningPostLandAudit && sameRepo(runningPostLandAudit.repo);
       const lastAudit = [...auditLedger.rows].reverse().find((r) => typeof r.repo === "string" && sameRepo(r.repo));
       const lands = outcomeLedger.rows.filter((r) => typeof r.repo === "string" && sameRepo(r.repo) && r.disposition === "landed");
@@ -9847,7 +9847,7 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     if (repo !== repoCanon(repoInput)) return json({ error: "repo must name the git toplevel" }, 400);
     const row = await newestAuditFor(repo, mainAfter);
     const queued = [...auditQueue.entries()].some(([r, q]) => repoCanon(r) === repo
-      && q.covers.some((c) => c.mainAfter === mainAfter));
+      && auditQueueGroups(q).some((g) => g.covers.some((c) => c.mainAfter === mainAfter)));
     const running = runningPostLandAudit !== null && repoCanon(runningPostLandAudit.repo) === repo
       && runningPostLandAudit.covers.some((c) => c.mainAfter === mainAfter);
     if (!row && !queued && !running)
@@ -24549,7 +24549,47 @@ let lastPostLandAudit: PostLandAuditRow | null = null;
 // pending work, per repo. `auditDraining` is the ONE-AT-A-TIME lock: a second land while a suite
 // runs never spawns a second suite — it appends to this queue and the drain loop picks it up when
 // the current run finishes.
-const auditQueue = new Map<string, { main: string; covers: AuditCover[] }>();
+//
+// ONE ENTRY PER REPO, ONE BRANCH PER GROUP. The entry's head (`main` + `covers`) is the group every
+// consumer below (helper claims, shards, the drain) already treats as "this repo's job"; a land on a
+// DIFFERENT integration branch waits in `behind`, in its own group, until the head has been audited.
+// The suite measures a TREE, and a tree is a branch's tip — so covers of two branches must never
+// share a run. Before this split (measured 2026-09-28, two rows in post-land-audits.jsonl) the entry
+// carried ONE `main` that every land overwrote: a main land arriving after an overhaul land pulled
+// both onto the main tip, and the green row named an overhaul land the audited tree never contained.
+// Lands on the SAME branch still coalesce into one group and one run.
+interface AuditQueueGroup { main: string; covers: AuditCover[] }
+interface AuditQueueEntry extends AuditQueueGroup { behind?: AuditQueueGroup[] }
+const auditQueue = new Map<string, AuditQueueEntry>();
+// every group of an entry, head first — the one way a reader that must see ALL pending covers (a
+// land's audit state, the live view's `waiting`, the board's count) walks the queue
+function auditQueueGroups(q: AuditQueueEntry): AuditQueueGroup[] {
+  return [q, ...(q.behind ?? [])];
+}
+// the land path's one write: the cover joins the group of ITS integration branch, never another's
+function enqueueAuditCover(repo: string, main: string, cover: AuditCover): void {
+  const q = auditQueue.get(repo);
+  if (!q) { auditQueue.set(repo, { main, covers: [cover] }); return; }
+  if (q.main === main) { q.covers.push(cover); return; }
+  const group = q.behind?.find((g) => g.main === main);
+  if (group) { group.covers.push(cover); return; }
+  (q.behind ??= []).push({ main, covers: [cover] });
+}
+// after a run consumed its covers from the head: retire an empty head (the next group takes its
+// place, or the entry goes), and when the head still holds covers that landed DURING the run while
+// another branch waits, ROTATE — otherwise a branch that lands faster than its suite runs would
+// starve every other branch behind it. Mutates the entry in place: the drain and the claim paths
+// hold the entry object, and the cover objects keep their identity (the live view masks by it).
+function settleAuditEntry(repo: string): void {
+  const q = auditQueue.get(repo);
+  if (!q) return;
+  const next = q.behind?.shift();
+  if (q.behind && !q.behind.length) delete q.behind;
+  if (!next) { if (!q.covers.length) auditQueue.delete(repo); return; }
+  if (q.covers.length) (q.behind ??= []).push({ main: q.main, covers: q.covers });
+  q.main = next.main;
+  q.covers = next.covers;
+}
 let auditDraining = false;
 // THE RUN IN FLIGHT, which until now existed nowhere but in `ps`. The state was already implied —
 // `auditQueue` deliberately carries its entry THROUGH the run (see the drain's own comment: the
@@ -25642,13 +25682,10 @@ async function schedulePostLandAudit(repo: string, main: string, branch: string,
     lastPostLandAudit = row;
     return;
   }
-  const q = auditQueue.get(repo) ?? { main, covers: [] };
-  q.main = main;
   // the flag is written ONLY when the gate proved it, never as `proportional: false` — absence is
   // the state an old queue file and a gateless land already have, and one spelling for "not proven"
   // is what keeps entryRunsShortChain from having to distinguish two kinds of no.
-  q.covers.push({ branch, mainAfter, at: Date.now(), ...(proportional ? { proportional: true as const } : {}) });
-  auditQueue.set(repo, q);
+  enqueueAuditCover(repo, main, { branch, mainAfter, at: Date.now(), ...(proportional ? { proportional: true as const } : {}) });
   savePostLandAuditQueue(); // durable BEFORE the land path returns — see the file's comment
   if (auditDraining) return; // the loop below will pick this up — never a second concurrent suite
   auditDraining = true;
@@ -25797,7 +25834,7 @@ async function drainPostLandAudits(): Promise<void> {
       // Wrapped HERE rather than inside runPostLandAudit for the same reason `runningPostLandAudit`
       // is cleared here: the drain's frame is the one that certainly outlives the run, on every
       // exit including a throw. Sight only; deleting this wrapper restores today's behaviour.
-      await reportServerRun("audit",
+      const refused = await reportServerRun("audit",
         { slot: null, label: basename(repo), branch: q.main, suite: "post-land audit", cwd: null, repo },
         // The proportion is decided HERE, on the frozen slice, in the same turn as the selection —
         // not inside the run, which would re-read a `q.covers` a concurrent land may already have
@@ -25811,7 +25848,11 @@ async function drainPostLandAudits(): Promise<void> {
       // it re-audits the same tip once more after boot — one extra row, never a missing one. The
       // direction is chosen: a duplicate row is visible and cheap, a silent miss is the bug.
       q.covers.splice(0, covers.length);
-      if (!q.covers.length) auditQueue.delete(repo);
+      // covers the run REFUSED to claim (their land is not in the tree it measured) go back to the
+      // queue of the branch that does contain them — here, in the turn that consumes the rest, so
+      // the entry can never be seen without them
+      for (const r of refused) enqueueAuditCover(repo, r.main, r.cover);
+      settleAuditEntry(repo);
       // …and whatever REMAINS — a land that arrived while this suite ran — starts its grace here,
       // not at its own `at`. No helper could have claimed it while this machine held the tree
       // (helperJobsView reports `localRunning`, helperClaim answers 409), so those minutes were
@@ -26005,14 +26046,68 @@ function postLandAuditChecks(text: string, exitCode: number, fails?: string[], c
   return { ran, failed, ...(!completeOutput && trailCount === null ? { ranIsLowerBound: true as const } : {}) };
 }
 
+// A COVER IS A CLAIM THAT THE AUDITED TREE CONTAINS THE LAND — and the row is where that claim is
+// written, so it is checked there rather than trusted from the queue's bookkeeping. `git merge-base
+// --is-ancestor <mainAfter> <tip>`: exit 0 = contained, exit 1 = not, anything else = the probe
+// itself failed (null). Only a definite yes counts as covered; a definite no is the ledger's
+// 2026-09-28 defect (a green row naming a land its tree never held).
+async function auditCoverInTip(repo: string, sha: string, tip: string): Promise<boolean | null> {
+  const r = await git(repo, "merge-base", "--is-ancestor", sha, tip);
+  return r.code === 0 ? true : r.code === 1 ? false : null;
+}
+// The integration branches this repo is known to audit: the ones the queue holds a group for plus
+// every `main` its ledger rows ever named, `exclude` left out. There is no registry of integration
+// branches in this server (a lane's base is per-lane), so "known" is what the queue and the trail
+// have seen — which is exactly the set a misplaced cover can have come from.
+async function auditKnownMains(repo: string, exclude: string): Promise<string[]> {
+  const seen = new Set<string>();
+  const q = auditQueue.get(repo);
+  if (q) for (const g of auditQueueGroups(q)) seen.add(g.main);
+  const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
+  for (const r of rows.slice(-300))
+    if (r.repo === repo && typeof r.main === "string" && r.main) seen.add(r.main);
+  seen.delete(exclude);
+  return [...seen];
+}
+async function auditCoverHome(repo: string, cover: AuditCover, candidates: string[]): Promise<string | null> {
+  for (const m of candidates) if ((await auditCoverInTip(repo, cover.mainAfter, m)) === true) return m;
+  return null;
+}
+// Splits a run's frozen covers by the tip it is about to measure. `refused` covers name the known
+// branch that DOES contain them (the drain puts them back in that branch's queue); `homeless` ones
+// are contained by no known tip at all and get an explicit `unknown` row from the caller — never
+// silently dropped, and never requeued onto a tip that has already said no (that loop would re-run
+// the suite forever).
+async function splitAuditCovers(repo: string, main: string, mainSha: string, covers: AuditCover[]): Promise<{
+  counted: AuditCover[]; refused: { main: string; cover: AuditCover }[]; homeless: AuditCover[] }> {
+  const counted: AuditCover[] = [];
+  const strays: AuditCover[] = [];
+  for (const c of covers) ((await auditCoverInTip(repo, c.mainAfter, mainSha)) === true ? counted : strays).push(c);
+  const refused: { main: string; cover: AuditCover }[] = [];
+  const homeless: AuditCover[] = [];
+  if (strays.length) {
+    const known = await auditKnownMains(repo, main);
+    for (const c of strays) {
+      const home = await auditCoverHome(repo, c, known);
+      if (home) refused.push({ main: home, cover: c }); else homeless.push(c);
+    }
+    console.log(`post-land audit: ${strays.length} cover(s) of ${basename(repo)} are not in ${main}@${mainSha.slice(0, 8)}`
+      + ` and are NOT claimed by its row — ${refused.length} requeued to their own branch`
+      + `${refused.length ? ` (${[...new Set(refused.map((r) => r.main))].join(", ")})` : ""}`
+      + `, ${homeless.length} in no known tip: ${strays.map((c) => `${c.branch}@${c.mainAfter.slice(0, 8)}`).join(", ").slice(0, 200)}`);
+  }
+  return { counted, refused, homeless };
+}
+// Returns the covers the run REFUSED to claim, each with the branch to requeue it on; the drain
+// puts them back in the same turn it consumes the rest.
 async function runPostLandAudit(repo: string, main: string, covers: AuditCover[],
-  proportional: boolean): Promise<void> {
+  proportional: boolean): Promise<{ main: string; cover: AuditCover }[]> {
   // Asked even on the short-chain path, and deliberately: an entry whose repo has no audit command
   // any more is PARKED, and a parked entry must stay unmeasured rather than quietly acquire a
   // fleet-shaped chain nobody configured. The short chain REPLACES a configured command; it never
   // arms tier 2 where the owner switched it off.
   const chosen = auditCmdFor(repo);
-  if (!chosen) return;
+  if (!chosen) return [];
   const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : chosen.cmd;
   const cmdSource: AuditCmdSource = proportional ? "proportional" : chosen.source;
   const startedAt = Date.now();
@@ -26036,6 +26131,9 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   // the work clock, closed once at the settle below. null until a child has actually been spawned,
   // which is what makes its absence on the row the honest "no work clock exists for this run".
   let workMs: number | null = null;
+  // what the row may CLAIM: the frozen covers whose land the measured tip contains (split below)
+  let counted = covers;
+  let refused: { main: string; cover: AuditCover }[] = [];
   try {
     // the CURRENT tip, not the triggering land's mainAfter: coalescing means this run stands for
     // every land folded into it, and the row must name the tree it actually measured.
@@ -26047,6 +26145,20 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     if (!mainSha) {
       reason = `could not resolve ${main} — nothing to audit`;
     } else {
+      // BEFORE the snapshot, so a run with nothing this tip contains costs no suite at all
+      const split = await splitAuditCovers(repo, main, mainSha, covers);
+      counted = split.counted;
+      refused = split.refused;
+      if (split.homeless.length) {
+        const at = Date.now();
+        const lost: PostLandAuditRow = { at, startedAt, ms: at - startedAt, repo, main, mainSha, result: "unknown",
+          reason: `the land is contained by no known integration tip (not by ${main}@${mainSha.slice(0, 8)}) — it was never audited`,
+          cmd, cmdSource, exitCode: null, out: "", checks: null, covers: split.homeless };
+        await appendEvent(POSTLAND_AUDIT_FILE, lost as unknown as Record<string, unknown>);
+        await mintAuditEvents(lost);
+        await writeAuditInboxEntries(lost);
+      }
+      if (!counted.length) return refused;
       // `proportional` IS the "does the command run in this tree itself" question here: the short
       // chain runs `bun e2e/pins.ts` in the snapshot, the configured full chain stages a copy.
       const snapErr = await snapshotIntegrationTree(repo, mainSha, dir, proportional);
@@ -26246,7 +26358,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     // the machine and did nothing with it", which is what a wait-clock kill looks like), and the
     // absence is the different statement "no child ever ran, so no work clock exists".
     ...(workMs !== null ? { workMs } : {}),
-    covers,
+    covers: counted,
     ...(proportional ? { proportional: true as const, steps: [...VERIFY_PROPORTIONAL_STEPS] } : {}),
   };
   lastPostLandAudit = row;
@@ -26262,7 +26374,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   await mintAuditEvents(row);
   await writeAuditInboxEntries(row); // a red addresses the Program whose land it covers — see the writer
   void tickAcceptByLand("audit").catch((e: unknown) => logError("tickAcceptByLand", e));
-  const named = covers.map((c) => c.branch).join(", ").slice(0, 120);
+  const named = counted.map((c) => c.branch).join(", ").slice(0, 120);
   audit("postland_audit", undefined,
     `${result}${proportional ? " proportional" : ""} ${basename(repo)} ${main}@${mainSha.slice(0, 8)}`
     + ` after ${named}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
@@ -26272,6 +26384,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   if (result !== "green")
     console.log(`POST-LAND AUDIT ${result.toUpperCase()}: ${main}@${mainSha.slice(0, 8)} in ${basename(repo)} after landing ${named}`
       + `${reason ? ` (${reason})` : ""} — this audit gates nothing; ↩ undo-land is the rollback.`);
+  return refused;
 }
 // the compact projection the board polls (the full row, minus the byte-heavy suite output — that
 // lives on the trail at /api/post-land-audits)
@@ -26312,11 +26425,12 @@ function postLandAuditLiveView(): PostLandAuditLiveInfo | null {
   const inflight = new Set<AuditCover>(r?.covers ?? []);
   const waiting: PostLandAuditLiveInfo["waiting"] = [];
   for (const [repo, q] of auditQueue)
-    for (const c of q.covers)
-      // a PARKED entry (its repo has no audit command) is not waiting for a run — nothing is
-      // configured to run it. Masked here, where "waiting" is the claim; the queue keeps it.
-      if (!inflight.has(c) && auditCmdFor(repo))
-        waiting.push({ repo: basename(repo), main: q.main, branch: c.branch, mainAfter: c.mainAfter, at: c.at });
+    for (const g of auditQueueGroups(q))
+      for (const c of g.covers)
+        // a PARKED entry (its repo has no audit command) is not waiting for a run — nothing is
+        // configured to run it. Masked here, where "waiting" is the claim; the queue keeps it.
+        if (!inflight.has(c) && auditCmdFor(repo))
+          waiting.push({ repo: basename(repo), main: g.main, branch: c.branch, mainAfter: c.mainAfter, at: c.at });
   const running: PostLandAuditLiveInfo["running"] = r
     ? { phase: "running", repo: basename(r.repo), main: r.main, mainSha: r.mainSha,
         startedAt: r.startedAt, covers: r.covers.map((c) => c.branch) }
@@ -27532,7 +27646,7 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     const rest = q.covers.filter((c) => !frozen.has(coverKey(c)));
     q.covers.length = 0;
     q.covers.push(...rest);
-    if (!q.covers.length) auditQueue.delete(repo);
+    settleAuditEntry(repo);
     savePostLandAuditQueue();
   }
   helperClaims.delete(repo);
@@ -27910,7 +28024,7 @@ async function writeShardedAuditRow(run: AuditShardRun, jobId?: string): Promise
     const rest = q.covers.filter((c) => !frozen.has(coverKey(c)));
     q.covers.length = 0;
     q.covers.push(...rest);
-    if (!q.covers.length) auditQueue.delete(run.repo);
+    settleAuditEntry(run.repo);
     savePostLandAuditQueue();
   }
   auditShardRuns.delete(run.repo);
@@ -37174,24 +37288,58 @@ void tickAcceptByLand("boot").catch((e: unknown) => logError("tickAcceptByLand",
 if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
   try {
     const parsed: unknown = JSON.parse(await Bun.file(POSTLAND_AUDIT_QUEUE_FILE).text());
-    const resumed: [string, { main: string; covers: AuditCover[] }][] = [];
+    const resumed: [string, AuditQueueEntry][] = [];
+    // one cover, narrowed. NARROWED, not passed through: `proportional` decides whether a tree gets
+    // the short chain, so the only value this loader may believe is a literal `true`. Anything else —
+    // absent (every file an older server wrote), a string, a 1 — is "not proven" and buys the full
+    // suite, which is the same conservative reading the enqueue side writes.
+    const coverOf = (raw: unknown): AuditCover[] => (Array.isArray(raw) ? raw : []).filter((c): c is AuditCover =>
+      !!c && typeof c === "object" && typeof (c as AuditCover).branch === "string"
+      && typeof (c as AuditCover).mainAfter === "string" && typeof (c as AuditCover).at === "number")
+      .map((c): AuditCover => ({ branch: c.branch, mainAfter: c.mainAfter, at: c.at,
+        ...(c.proportional === true ? { proportional: true as const } : {}) }));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       for (const [repo, v] of Object.entries(parsed as Record<string, unknown>)) {
-        const e = v as { main?: unknown; covers?: unknown };
+        const e = v as { main?: unknown; covers?: unknown; behind?: unknown };
         if (typeof e.main !== "string" || !Array.isArray(e.covers)) continue;
-        const covers = e.covers.filter((c): c is AuditCover =>
-          !!c && typeof c === "object" && typeof (c as AuditCover).branch === "string"
-          && typeof (c as AuditCover).mainAfter === "string" && typeof (c as AuditCover).at === "number")
-          // NARROWED, not passed through: `proportional` decides whether a tree gets the short
-          // chain, so the only value this loader may believe is a literal `true`. Anything else —
-          // absent (every file an older server wrote), a string, a 1 — is "not proven" and buys
-          // the full suite, which is the same conservative reading the enqueue side writes.
-          .map((c): AuditCover => ({ branch: c.branch, mainAfter: c.mainAfter, at: c.at,
-            ...(c.proportional === true ? { proportional: true as const } : {}) }));
-        if (covers.length) resumed.push([repo, { main: e.main, covers }]);
+        // THE FILE'S ENTRY IS ONE `main` PLUS EVERY COVER, and until 2026-09-28 that `main` was the
+        // LAST land's branch whatever the covers' own branches were — so a file written by an older
+        // server may hold covers whose land its `main` does not contain. Each cover is checked
+        // against the group it sits in and, when that tip definitely lacks it, moved to the known
+        // branch that has it; one no known tip has is NAMED here and dropped (its land is not
+        // reachable, so no audit could ever cover it). A probe that could not run (null) is not a
+        // no: the cover stays where the file put it.
+        const groups: AuditQueueGroup[] = [{ main: e.main, covers: coverOf(e.covers) }];
+        if (Array.isArray(e.behind))
+          for (const b of e.behind as { main?: unknown; covers?: unknown }[])
+            if (b && typeof b.main === "string") groups.push({ main: b.main, covers: coverOf(b.covers) });
+        const placed = new Map<string, AuditCover[]>(groups.map((g) => [g.main, []]));
+        const known = groups.map((g) => g.main);
+        let moved = 0;
+        for (const g of groups) {
+          for (const c of g.covers) {
+            let home: string | null = g.main;
+            if ((await auditCoverInTip(repo, c.mainAfter, g.main)) === false) {
+              home = await auditCoverHome(repo, c, (await auditKnownMains(repo, g.main)).concat(known.filter((m) => m !== g.main)));
+              if (home) moved++;
+              else console.log(`post-land audit queue: dropped ${c.branch}@${c.mainAfter.slice(0, 8)} of ${basename(repo)} —`
+                + ` its land is contained by no known integration tip, so no audit could ever cover it`);
+            }
+            if (!home) continue;
+            const list = placed.get(home) ?? [];
+            list.push(c);
+            placed.set(home, list);
+          }
+        }
+        if (moved) console.log(`post-land audit queue: ${moved} cover(s) of ${basename(repo)} moved to the integration branch that contains them`);
+        // head = the file's own `main` if it kept covers, else the first group that did
+        const kept = [...placed].filter(([, cs]) => cs.length).map(([main, covers]): AuditQueueGroup => ({ main, covers }));
+        const [head, ...behind] = [...kept.filter((g) => g.main === e.main), ...kept.filter((g) => g.main !== e.main)];
+        if (head) resumed.push([repo, { main: head.main, covers: head.covers, ...(behind.length ? { behind } : {}) }]);
       }
     }
-    const pending = resumed.reduce((n, [, q]) => n + q.covers.length, 0);
+    const countOf = (q: AuditQueueEntry): number => auditQueueGroups(q).reduce((n, g) => n + g.covers.length, 0);
+    const pending = resumed.reduce((n, [, q]) => n + countOf(q), 0);
     // PER REPO, not per deployment: an entry is resumed when ITS repo has a command (env default or
     // repo-worker), and PARKED otherwise. Parked entries are loaded into the queue as well — the
     // queue file is rewritten whole on every save, so an entry left out of memory would be lost the
@@ -37209,10 +37357,10 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
         + " no audit command is configured for any of them — left on disk, unaudited (unconfigured is not skipped).");
     } else if (pending) {
       if (parked.length)
-        console.log(`post-land audit queue: ${parked.map(([repo, q]) => `${basename(repo)} (${q.covers.length})`).join(", ")}`
+        console.log(`post-land audit queue: ${parked.map(([repo, q]) => `${basename(repo)} (${countOf(q)})`).join(", ")}`
           + " have no audit command — parked on disk, unaudited, until one is configured.");
       console.log(`post-land audit queue: resuming ${pending} pending land(s) after restart — `
-        + resumed.map(([repo, q]) => `${basename(repo)}: ${q.covers.map((c) => c.branch).join(", ")}`).join(" | ").slice(0, 300));
+        + resumed.map(([repo, q]) => `${basename(repo)}: ${auditQueueGroups(q).flatMap((g) => g.covers).map((c) => c.branch).join(", ")}`).join(" | ").slice(0, 300));
       auditDraining = true; // nothing can be draining yet — this is boot
       void drainPostLandAudits();
     }

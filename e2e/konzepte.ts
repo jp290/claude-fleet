@@ -3,7 +3,7 @@
 // TraceRefs `kontext` the server builds from the credential and its binding.
 //
 // ITS OWN SCRATCH INSTANCE, the pattern of e2e/self-token.ts#memoryDoor: three slots are opened on it
-// (a MAIN-to-be, a lane through open-worktree, a plain session), the instance is stopped, an active
+// (a MAIN-to-be, a slot on a real git worktree, a plain session), the instance is stopped, an active
 // Program bound to slot 1 and the lane's task/Program binding are planted as server facts, and it boots
 // again with a konzept root this module owns. Nothing here touches the suite's srv.
 //
@@ -36,7 +36,7 @@ const K = "k-e2e-konzept";
 const PROGRAM = "c0ffee".repeat(4);
 const TASK = "k0nz3pt7a5k0";
 const BRANCH = "e2e-konzept-lane";
-const LANE = 17; // a lane needs a place above bands 1..16
+const LANE = 2; // opened as a plain session on the worktree (open is band-only), made a lane by the plant
 
 interface Instance { dir: string; base: string; sock: string; root: string; proc: ReturnType<typeof Bun.spawn> | null; log: string }
 interface SlotRow { selfToken?: string; openedAt?: number; sessionId?: string | null; cwd?: string | null;
@@ -109,13 +109,18 @@ export async function run(): Promise<void> {
     ({ sha256, anlass: "e2e fassung", geltung: "fuer den e2e-Beweis", ...extra });
 
   try {
-    // ---- fixture: slot 1 (MAIN-to-be) and 3 (plain) on a plain cwd, slot LANE a lane via open-worktree
+    // ---- fixture: slot 1 (MAIN-to-be) and 3 (plain) on a plain cwd, slot LANE on a real git worktree whose
+    // lane row is PLANTED below with the Program binding. Not via open-worktree: that door's refusals read
+    // the runner's inherited env (model, harness, box, context), and on the helper it refused where it
+    // passes here (previews f689da8d05aa, 8ebe0c95abcb). This module proves the ledger, not lane creation.
+    const laneDir = `${FIX}/repo.worktrees/${BRANCH}`;
+    const addWt = spawnSync("git", ["-C", repo, "worktree", "add", "-q", "-b", BRANCH, laneDir], { encoding: "utf8" });
     let up = await boot(i);
     check("konzepte fixture: the scratch instance boots on its own port and socket", up, i.log.slice(-300));
     if (!up) return;
     await fetch(`${i.base}/api/slots/1/open`, { method: "POST", headers: OH, body: JSON.stringify({ cwd: plain, label: "konzept-main" }) });
     await fetch(`${i.base}/api/slots/3/open`, { method: "POST", headers: OH, body: JSON.stringify({ cwd: plain, label: "konzept-plain" }) });
-    const wt = await fetch(`${i.base}/api/slots/${LANE}/open-worktree`, { method: "POST", headers: OH, body: JSON.stringify({ repo, branch: BRANCH }) });
+    const wt = await fetch(`${i.base}/api/slots/${LANE}/open`, { method: "POST", headers: OH, body: JSON.stringify({ cwd: laneDir, label: "konzept-lane" }) });
     const wtBody = await wt.text();
     // THREE setup rows, not one: a preview hands back only the NAMES of failed checks, so each conjunct
     // gets its own name. The wait is 30 s because the slot rows reach fleet.json through the pane spawn
@@ -124,15 +129,15 @@ export async function run(): Promise<void> {
     let rows: SlotRow[] = [];
     for (let n = 0; n < 300; n++) {
       rows = [1, LANE, 3].map((k) => readState().slots[String(k)] ?? {});
-      if (rows.every(credentialed) && rows[1]?.worktree?.branch === BRANCH) break;
+      if (rows.every(credentialed)) break;
       await Bun.sleep(100);
     }
     const seen = JSON.stringify(rows.map((x) => ({ cwd: x.cwd, token: credentialed(x), wt: x.worktree ?? null })));
-    check("konzepte fixture: open-worktree opens the lane on a place above the bands", wt.ok, `${wt.status} ${wtBody.slice(0, 300)}`);
+    check("konzepte fixture: the lane's slot opens on a real git worktree", addWt.status === 0 && wt.ok,
+      `worktree=${addWt.status} ${addWt.stderr.slice(0, 200)} open=${wt.status} ${wtBody.slice(0, 300)}`);
     check("konzepte fixture: the MAIN-to-be, the lane and the plain session each persist their own credential within 30 s",
       rows.every(credentialed), seen);
-    check("konzepte fixture: the lane's persisted row carries its worktree branch", rows[1]?.worktree?.branch === BRANCH, seen);
-    const opened = wt.ok && rows.every(credentialed) && rows[1]?.worktree?.branch === BRANCH;
+    const opened = addWt.status === 0 && wt.ok && rows.every(credentialed);
     // a red SETUP row leaves everything below unmeasured, not violated — stop here rather than print it
     if (!opened) return;
 
@@ -147,7 +152,8 @@ export async function run(): Promise<void> {
       main: { slot: 1, openedAt: rows[0]!.openedAt, sessionId: rows[0]!.sessionId ?? null, boundAt: now - 700 } }];
     planted.tasks = [{ id: TASK, text: "konzept lane task", source: "owner", from: null, kind: "auftrag", repo,
       status: "sent", created: now - 600, slot: LANE, note: null, programId: PROGRAM }];
-    planted.slots[String(LANE)] = { ...planted.slots[String(LANE)], taskId: TASK, programId: PROGRAM };
+    planted.slots[String(LANE)] = { ...planted.slots[String(LANE)], taskId: TASK, programId: PROGRAM,
+      worktree: { repo, branch: BRANCH } };
     writeFileSync(`${i.dir}/fleet.json`, JSON.stringify(planted, null, 2), { mode: 0o600 });
     up = await boot(i);
     check("konzepte fixture: the instance boots again over the planted Program binding", up, i.log.slice(-300));

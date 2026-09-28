@@ -1439,7 +1439,7 @@ export async function run(): Promise<void> {
     "Pane.appendEntry / settlePending in src/client.ts");
   check("client: the delivery head rides in the meta row beside the bubble, and the bubble and its copy carry the body only",
     /const \{ header, body: text \} = e\.role === "user" \? splitDeliveryHeader\(raw\)/.test(cliSrc)
-    && /if \(header\) \{[^}]*el\("span", "mhead", header\)[^}]*meta\.appendChild\(head\)/.test(cliSrc)
+    && /if \(header\) \{[\s\S]*?el\("span", "mhead", header\)[\s\S]*?meta\.appendChild\(head\)/.test(cliSrc)
     && /mdInto\(body, text,/.test(cliSrc),
     "Pane.appendEntry in src/client.ts");
   check("client: a composer reshape does not refit a terminal the chat view hides; the way back refits it",

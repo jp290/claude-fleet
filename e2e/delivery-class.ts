@@ -156,12 +156,12 @@ export async function run(): Promise<void> {
     { timeoutMs: 5_000, what: "the immediate delivery flushes the emptied bundle" }).catch(() => null);
     const loneSends = auditRows().slice(loneAuditBefore).filter((r) => r.event === "send" && r.slot === 2);
     const lonePane = await paneText("s2");
-    check("a single immediate delivery into an emptied bundle keeps its own path — path=owner, its own header",
+    check("a single immediate delivery into an emptied bundle keeps its own path — path=owner, its own (short) header",
       loneScheduled.ok && loneDeleted.ok && loneSent.ok
         && loneBundled?.paths === "owner" && loneBundled.count === 1 && loneBundled.deliveryClass === "sofort"
         && auditRows().slice(loneAuditBefore).some((r) => r.event === "delivery_bundle_dropped" && r.path === "auto")
         && loneSends.length === 1 && loneSends[0]?.path === "owner"
-        && inPane(lonePane, `path=owner · Slot 2 · ${MEANING.owner}] ${loneText}`),
+        && inPane(lonePane, `[fleet-zustellung · Owner-Credential · Slot 2] ${loneText}`),
       JSON.stringify({ status: [loneScheduled.status, loneDeleted.status, loneSent.status],
         bundled: loneBundled ? [loneBundled.count, loneBundled.paths, loneBundled.deliveryClass] : null,
         sends: loneSends.map((r) => r.path),

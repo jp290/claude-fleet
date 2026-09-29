@@ -12087,10 +12087,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && baseView?.files?.join(" ") === baseFile,
       JSON.stringify({ status: onBase.status, body: onBaseBody, row: baseRow, view: baseView }));
     const noBase = await post("/api/tasks", { text: baseFile, queue: false, repo: REPO, card: baseCard });
-    const noBaseText = await noBase.text();
+    const noBaseError = ((await noBase.json()) as { error?: string }).error ?? "";
     check("(s6-base) the same file without base is refused as not tracked",
-      noBase.status === 400 && noBaseText.includes(`\"${baseFile}\" is not tracked`),
-      `${noBase.status} ${noBaseText}`);
+      noBase.status === 400 && noBaseError.includes(`\"${baseFile}\" is not tracked`),
+      `${noBase.status} ${noBaseError}`);
     if (worktreeAdded.status === 0) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", baseWorktree], { encoding: "utf8" });
     spawnSync("git", ["-C", REPO, "branch", "-D", baseBranch], { encoding: "utf8" });
     const missingBase = await post("/api/tasks", { text: baseFile, queue: false, repo: REPO,

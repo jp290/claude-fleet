@@ -554,6 +554,7 @@ export async function run(): Promise<void> {
         && r.detail?.includes("composer occupied")) ?? null,
       { timeoutMs: 12_000, what: "report decision remains bundled after composer refusal" });
       await post(`/api/slots/${reportSlot}/kill`, {});
+      await post(`/api/tasks/${reportTask}/delete`, {});
       const successorFiled = await post("/api/tasks", { text: `${marker} successor dispatch brief`,
         repo: REPO2, queue: false });
       successorTask = ((await successorFiled.json()) as { task: { id: string } }).task.id;

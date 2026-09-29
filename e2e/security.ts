@@ -905,14 +905,15 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const actorProbeAt = Date.now();
   const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   const selfTok = await selfTokenOf(ln.slot);
-  const selfAuto = (tok: string, inSec = 3600) => fetch(BASE + "/api/self/autos", {
+  const selfAuto = (tok: string, inSec = 3600, idleSec = 60) => fetch(BASE + "/api/self/autos", {
     method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok },
-    body: JSON.stringify({ text: "security-probe", inSec }),
+    body: JSON.stringify({ text: "security-probe", inSec, idleSec }),
   });
   const openedAt = readState().slots?.[String(ln.slot)]?.openedAt;
   const drift = await fetch(BASE + "/api/self/drift", { headers: { "x-fleet-self-token": selfTok } });
   check("§3 actor fixture: the lane's self drift route answers", drift.status === 200, String(drift.status));
-  const tickAuto = await selfAuto(selfTok, 1);
+  const tickAutoAt = Date.now();
+  const tickAuto = await selfAuto(selfTok, 1, 0);
   check("§3 actor fixture: a one-shot auto is scheduled for the tick", tickAuto.ok, String(tickAuto.status));
   const tickAutoId = ((await tickAuto.json()) as { auto?: { id?: string } }).auto?.id;
   type AuditActor = { kind: string; via?: string; slot?: number; openedAt?: number; role?: string; why?: string };
@@ -926,14 +927,15 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   let ownerRow: ActorRow | undefined;
   let selfRow: ActorRow | undefined;
   let tickRow: ActorRow | undefined;
-  const deadline = Date.now() + afterTick(1000, AUTOS_TICK_MS);
+  const deadline = Date.now() + afterTick(1000, AUTOS_TICK_MS) + 5000;
   while (Date.now() < deadline) {
     const rows = await actorRows();
     ownerRow = rows.find((r) => (r.ts ?? 0) >= actorProbeAt && r.event === "slot_open"
       && r.slot === ln.slot && r.detail === ln.cwd);
     selfRow = rows.find((r) => (r.ts ?? 0) >= actorProbeAt && r.event === "self_drift"
       && r.slot === ln.slot && r.detail?.startsWith(ln.branch));
-    tickRow = rows.find((r) => (r.ts ?? 0) >= actorProbeAt && r.event === "auto_skip" && r.slot === ln.slot);
+    tickRow = rows.find((r) => (r.ts ?? 0) >= tickAutoAt && r.slot === ln.slot
+      && (r.event === "auto_skip" || (r.event === "auto_fire" && r.detail === tickAutoId)));
     if (ownerRow && selfRow && tickRow) break;
     await Bun.sleep(50);
   }

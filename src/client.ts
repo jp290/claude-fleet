@@ -1449,6 +1449,13 @@ class Pane {
     return w;
   })();
   private workTimer: ReturnType<typeof setTimeout> | undefined;
+  // every new node of the chat goes in ABOVE the work line: appending below it made updateWork move
+  // the line back to the end on every poll that brought something (a remove + re-add each time,
+  // restarting its dot's animation — measured 2026-09-29, 40× in 120 s)
+  private chatAdd(node: Node): void {
+    this.chatEl.insertBefore(node, this.workEl.parentNode === this.chatEl ? this.workEl : null);
+  }
+
   private updateWork(): void {
     clearTimeout(this.workTimer);
     const slot = this.slot;
@@ -1482,7 +1489,7 @@ class Pane {
     const sum = document.createElement("summary");
     const body = el("div", "tgbody");
     det.append(sum, body);
-    this.chatEl.appendChild(det);
+    this.chatAdd(det);
     this.toolGroup = { det, sum, body, count: 0, lastStep: null };
     return this.toolGroup;
   }
@@ -1541,7 +1548,7 @@ class Pane {
       const sum = document.createElement("summary");
       const body = el("div", "ngbody");
       det.append(sum, body);
-      this.chatEl.appendChild(det);
+      this.chatAdd(det);
       this.notifGroup = { sum, body, count: 0 };
     }
     const g = this.notifGroup;
@@ -1630,7 +1637,7 @@ class Pane {
         }
         meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
         msg.append(body, meta);
-        this.chatEl.appendChild(msg);
+        this.chatAdd(msg);
       } else {
         this.addStep(b);
       }
@@ -1651,7 +1658,7 @@ class Pane {
     const meta = el("div", "mmeta");
     meta.appendChild(el("span", "mwho", "you · wird gesendet…"));
     msg.append(body, meta);
-    this.chatEl.appendChild(msg);
+    this.chatAdd(msg);
     this.pending = [...this.pending, { text, el: msg }];
     this.chatEl.scrollTop = this.chatEl.scrollHeight;
     return msg;
@@ -1756,7 +1763,8 @@ class Pane {
           if (at > this.lastTurnAt) this.lastTurnAt = at;
         }
         // what has not arrived yet stays below what has
-        for (const p of this.pending) this.chatEl.appendChild(p.el);
+        // (a pending bubble already right above the work line stays put — no remove + re-add)
+        for (const p of this.pending) if (p.el.nextSibling !== (this.workEl.parentNode ? this.workEl : null)) this.chatAdd(p.el);
         tickCacheAge();
         if (pinned) this.chatEl.scrollTop = this.chatEl.scrollHeight;
       }

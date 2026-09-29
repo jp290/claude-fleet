@@ -277,7 +277,10 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
   }
 
   if (ready && planted.status === 0) {
-    const env = { ...process.env, FLEET_TI_DIR: snapDir, FLEET_TI_PORT: String(tiPort),
+    // the same rsync shim §e8 stages: a helper host (Linux, no rsync) otherwise dies at the staging
+    // copy with exit 127 before the snapshot is ever read (helper job bb9cc4f9a026, 2026-09-29)
+    const env = { ...process.env, PATH: `${FIXROOT}/bin:${process.env.PATH ?? ""}`,
+      FLEET_TI_DIR: snapDir, FLEET_TI_PORT: String(tiPort),
       FLEET_TI_SOCK: `fleettisnap${process.pid}`, FLEET_TI_SNAPSHOT_SRC: snapSource,
       FLEET_TI_TOKEN: snapToken };
     const up = spawnSync(tiScript, ["up", "snapshot", "--ttl", "5"],

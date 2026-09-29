@@ -495,6 +495,13 @@
      fit path reads the new box and tmux gets the new column count; no second resize path */
   .pane.tcolim .paneterm { left: 0; right: 0; width: min(var(--chat-col), 100%); margin-inline: auto; }
   .msg { margin: 0 0 20px; }
+  /* a long chat lays out only what is near the viewport: taking a slot's chat back off the shelf
+     re-attached ~800 nodes and forced a 447 ms layout (measured 2026-09-29, 120 000 px fixture) —
+     with this, ~55 ms. ONLY where the browser has scroll anchoring: a message that renders late
+     above the view changes height, and without anchoring (Safari) the view would jump by it */
+  @supports (overflow-anchor: auto) {
+    .panechat > * { content-visibility: auto; contain-intrinsic-size: auto 150px; }
+  }
   .msg pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: var(--chat-mono); }
   /* YOUR messages are the anchors this view exists for (↑/↓, the outline): a right-hand bubble */
   .msg.user { display: flex; flex-direction: column; align-items: flex-end; margin: 30px 0 20px; }

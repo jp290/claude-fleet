@@ -1934,7 +1934,11 @@ class Pane {
 
   focus() {
     focusPane(this.index);
-    if (!isMobile()) this.term.focus(); // focusing would be pointless without a hardware keyboard
+    if (isMobile()) return; // focusing would be pointless without a hardware keyboard
+    // the chat view's input is the composer: the terminal sits visibility:hidden under it and takes
+    // no focus, so a switch left the keyboard on <body> (measured 2026-09-29, every frame of A->B->A)
+    if (this.view === "chat" && this.pastN === null) ta.focus();
+    else this.term.focus();
   }
 
   scrollToEnd(chat = true) {

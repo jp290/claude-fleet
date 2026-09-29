@@ -1470,12 +1470,36 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       !liftError && same(aTop, aBack) && same(bPaneTop, bPaneAfter) && bPaneTop?.kid === bPaneAfter?.kid,
       `pane 2 ${bPaneTop?.kid.text}@${bPaneTop?.off} -> ${bPaneAfter?.kid.text}@${bPaneAfter?.off}`);
   }
+  // (7) after a switch the keyboard lands on the input of the view on screen: in the chat view that
+  // is the composer (the terminal under it is visibility:hidden and refuses focus — measured: every
+  // frame of A -> B -> A had the focus on <body>), in the terminal view the terminal
+  {
+    const focusSrc = /\n  focus\(\) \{[\s\S]*?\n  \}/.exec(cliSrc)?.[0] ?? "";
+    const got: string[] = [];
+    let focusErr = "";
+    try {
+      const Lifted = new Function("focusPane", "isMobile", "ta", new Bun.Transpiler({ loader: "ts" })
+        .transformSync(`class F {${focusSrc}}\nexport default F;`).replace(/export default F;?/, "return F;"))(
+        () => {}, () => false, { focus: () => got.push("composer") }) as new () => { focus(): void };
+      for (const view of ["chat", "term"]) {
+        const p = Object.assign(new Lifted(), { index: 0, view, pastN: null, term: { focus: () => got.push("terminal") } });
+        p.focus();
+      }
+    } catch (e) { focusErr = e instanceof Error ? e.message : String(e); }
+    check("chat position: a switch puts the keyboard on the composer in the chat view and on the terminal in the terminal view",
+      !focusErr && got.join(",") === "composer,terminal", focusErr || got.join(","));
+  }
   // (5) the way back to the top: a corner-row button beside the prompt jumps that scrolls to 0
   check("chat position: a \"zum Anfang\" button in the chat corner row scrolls to the first message",
     /navTop = el\("button", "promptnav top"\)/.test(cliSrc)
       && /navTop\.onclick = [^\n]*this\.chatEl\.scrollTo\(\{ top: 0/.test(cliSrc)
       && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navTop, navUp, navDn, this.sizeBtn)"),
     "Pane navTop");
+  // the switch back must not lay out a whole long chat at once — and the rule that prevents it is
+  // gated on scroll anchoring, without which a late-rendering message above the view moves it
+  check("chat position: offscreen chat messages skip layout only where the browser anchors the scroll",
+    /@supports \(overflow-anchor: auto\) \{\s*\.panechat > \* \{ content-visibility: auto; contain-intrinsic-size: auto \d+px; \}/.test(indexSrc),
+    "index.html @supports (overflow-anchor: auto)");
   check("B2: every pane observes its own size, debounces refit, and disconnects at disposal",
     /this\.sizeObserver = new ResizeObserver\(/.test(cliSrc)
       && /this\.sizeObserver\.observe\(this\.root\)/.test(cliSrc)

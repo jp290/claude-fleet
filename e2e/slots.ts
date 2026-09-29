@@ -1778,7 +1778,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     "doSend in src/client.ts");
   check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
     /import \{ pendingSettledBy, splitDeliveryHeader \} from "\.\/pendingsend"/.test(cliSrc)
-    && /if \(e\.role === "user"\) this\.settlePending\(raw\);/.test(cliSrc)
+    // (Tranche 2: the retirement also says whether the entry is the same send — "durch")
+    && /const arrived = e\.role === "user" && this\.settlePending\(raw\);/.test(cliSrc)
     && /this\.pending\.find\(\(p\) => pendingSettledBy\(p\.text, text\)\)/.test(cliSrc),
     "Pane.appendEntry / settlePending in src/client.ts");
   check("client: the delivery head rides in the meta row beside the bubble, and the bubble and its copy carry the body only",

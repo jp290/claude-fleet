@@ -12650,6 +12650,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(mRoleRow.card.rolle) === JSON.stringify(mRole)
       && JSON.stringify(mRoleRow.spawn) === JSON.stringify(mRole),
       `${mRoleRes.status} ${JSON.stringify({ card: mRoleRow?.card, spawn: mRoleRow?.spawn })}`);
+    // A pending MAIN auftrag spends PROGRAM_MAX_PENDING (5): left standing, this row fills the cap
+    // one filing early and (rc2b)'s MAIN filing is refused 409.
+    if (mRoleId) await post(`/api/tasks/${mRoleId}/delete`, {});
 
     // (1) THE ACT ITSELF: one pending row, the program from the BINDING, the repo from the
     // CHECKOUT, no releasedBy, and one greppable trail line naming both ids.

@@ -21806,7 +21806,12 @@ async function tickBacklogNudge(): Promise<void> {
   // The normal case is deliberately process-only: no open executable row means no liveness probe,
   // no tmux and no ps. Advisory categories never enter this set, whatever their status.
   const open = tasks.filter((t) => t.kind === "auftrag" && (t.status === "pending" || t.status === "queued"));
-  if (!open.length) return;
+  if (!open.length) {
+    for (const [repo, marker] of pendingBacklogNudges) {
+      if (!marker.sending) pendingBacklogNudges.delete(repo);
+    }
+    return;
+  }
   if (backlogNudgeBusy) return;
   backlogNudgeBusy = true;
   try {

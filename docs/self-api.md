@@ -209,6 +209,12 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   identisch gebunden ist, bleibt dagegen `pending` und wird zugestellt, sobald dein Composer frei
   ist. Ein Halt am belegten Composer zählt dabei NICHT als Zustellversuch (`attempts` bleibt stehen;
   gezählt werden Holds als `fleet_event_held` im Audit-Trail).
+- Wird ein sofortiges Event mit `receiverAddress:{kind:"program"}` wegen einer fehlenden MAIN
+  `receiver-gone`, erhält die eindeutig lebende Orchestratorin einmal einen Hinweis mit Event-ID
+  und Program-ID. Er nennt die bestehende Ereignis-Sicht und erteilt kein Recht. Fehlt eine
+  eindeutige Orchestratorin, nennt `fleet_event_receiver_gone` im Audit `escalation none`.
+  Grüne bündelbare Events, Program-Reports sowie Nachrichten und Rückfragen bleiben auf ihren
+  eigenen Wegen; die Standard-Nachfolge bindet offene sofortige Events weiterhin um.
 - **Ein belegter Composer wird nicht jeden Tick neu angetippt — der Hold-Backoff (K1, seit
   2026-09-11).** Eine Vor-Paste-Verweigerung sagt etwas über eine PANE, und die ändert sich zwischen
   zwei Ticks nicht. Nach der ersten Verweigerung wartet der Server deshalb **2 Ticks**, dann 4, 8,
@@ -3902,6 +3908,14 @@ Seit `server.ts#deliverMergeVerdict` den `actor` des Laufs kennt, folgt der Empf
 - **Unverändert:** Text und Art des Verdikts, der Deckel von zwei Versuchen, und die Gate-Liste —
   auch die MAIN-Pane hat Liveness-, blocked-screen- und Idle-Gate. Prosa in eine Pane ohne Agent
   dahinter ist ein Shell-Kommando.
+
+Ist ein nicht gelandetes Merge-Verdict wegen einer fehlenden MAIN eines aktiven oder gerade
+abgeschlossenen Programs `receiver-gone`, nennt `merge_verdict_undeliverable` die Eskalation.
+Eine eindeutig lebende, per Label erkannte Orchestratorin erhält einmal einen sofortigen Hinweis
+mit Branch, Verdict-Art, Lane-Slot und Program-ID. Der Hinweis zeigt auf den lesbaren Merge-Status
+und erteilt kein Recht; er ist weder ein Lane-Fallback noch ein neues Land-Urteil. Ohne eindeutige
+Orchestratorin steht `escalation none` in der Audit-Zeile. Weitere Verdict-Versuche wiederholen
+einen zugestellten Hinweis nicht.
 
 ### Die Identität ist sichtbar, bevor die Tür sie prüft (V1a)
 

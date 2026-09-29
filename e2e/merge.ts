@@ -2121,6 +2121,102 @@ export async function run(lc: LaneCtx): Promise<void> {
           && trail.length === 1 && (trail[0]?.detail ?? "").includes("is no longer bound to the occupant that asked"),
         JSON.stringify({ mark, sends: sends.length, rows: rows.map((e) => e.slot), trail: trail.slice(-1) }));
     }
+    const lnOrphan = await markerLane("verdict-program-orphan", "lane work with a VERIFYBAD marker\n");
+    const lnNoOrch = await markerLane("verdict-program-no-orch", "lane work with a VERIFYBAD marker\n");
+    for (const ln of [lnOrphan, lnNoOrch]) {
+      await settleForMerge(ln.slot);
+      await post(`/api/slots/${ln.slot}/merge`, {});
+      await waitMerge(ln.slot);
+      await awaitMark(ln.slot, (d) => d.sent);
+    }
+    const mainSlot = await freeSlot();
+    const mainOpen = mainSlot ? await post(`/api/slots/${mainSlot}/open`, { cwd: REPO, label: "orphan-verdict-main" }) : null;
+    const orchSlot = await freeSlot();
+    const orchOpen = orchSlot ? await post(`/api/slots/${orchSlot}/open`, { cwd: REPO, label: "🎛 Orchestrator" }) : null;
+    const orchCat = orchSlot ? await catPane(`s${orchSlot}`) : false;
+    const orphanProgram = ((await (await post("/api/programs", {
+      title: "orphan verdict fixture", intent: "a MAIN killed before its red verdict returns",
+      successCriterion: "the unique Orchestratorin sees the loss once", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    })).json()) as { program?: { id: string } }).program?.id ?? "";
+    const noOrchProgram = ((await (await post("/api/programs", {
+      title: "orphan verdict without receiver", intent: "a MAIN killed without a unique Orchestratorin",
+      successCriterion: "the audit names escalation none", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    })).json()) as { program?: { id: string } }).program?.id ?? "";
+    check("program verdict orphan setup: MAIN and labelled Orchestratorin are distinct live occupants",
+      !!mainOpen?.ok && !!orchOpen?.ok && orchCat && !!orphanProgram && !!noOrchProgram,
+      JSON.stringify({ mainSlot, orchSlot, mainOpen: mainOpen?.status, orchOpen: orchOpen?.status,
+        orchCat, orphanProgram, noOrchProgram }));
+    await stopSrv();
+    const orphanState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+      merges?: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+      slots?: Record<string, { openedAt?: number; sessionId?: string | null }> };
+    const mainOcc = orphanState.slots?.[String(mainSlot)];
+    const orphanBinding = { slot: mainSlot, openedAt: mainOcc?.openedAt ?? 0,
+      sessionId: mainOcc?.sessionId ?? null, boundAt: Date.now() - 1000 };
+    for (const id of [orphanProgram, noOrchProgram]) {
+      const program = orphanState.programs?.find((p) => (p as { id?: string }).id === id);
+      if (program) Object.assign(program, { status: "active", confirmedAt: Date.now() - 2000,
+        activatedAt: Date.now() - 1000, main: orphanBinding });
+    }
+    const orphanRow = orphanState.merges?.[String(lnOrphan.slot)];
+    if (orphanRow) {
+      orphanRow.verdictDelivery = { ...replant, attempts: 0 };
+      orphanRow.verdictTo = { slot: mainSlot, program: orphanProgram, task: "0".repeat(24),
+        occupant: { openedAt: orphanBinding.openedAt, sessionId: orphanBinding.sessionId } };
+    }
+    check("program verdict orphan setup: persisted red verdict and active Program bind the MAIN before owner kill",
+      !!orphanRow && orphanBinding.openedAt > 0 && orphanState.programs?.some((p) =>
+        (p as { id?: string }).id === orphanProgram && p.status === "active") === true,
+      JSON.stringify({ row: !!orphanRow, main: orphanBinding }));
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(orphanState, null, 2));
+    await restartSrv({ FLEET_AUTOS_TICK_MS: "6000" });
+    await post(`/api/slots/${mainSlot}/kill`, {});
+    const orphanMark = await awaitMark(lnOrphan.slot, (d) => d.attempts >= 2);
+    const orphanVerdict = ((await (await get(`/api/slots/${lnOrphan.slot}/merge`)).json()) as
+      { last: { landed?: boolean } | null }).last;
+    const orphanMessages = async () => ((await (await get(`/api/slots/${orchSlot}/history`)).json()) as
+      { history: { text: string }[] }).history.filter((h) => h.text.includes(lnOrphan.branch));
+    let notices = await orphanMessages();
+    for (let i = 0; i < 120 && notices.length === 0; i++) {
+      await Bun.sleep(100);
+      notices = await orphanMessages();
+    }
+    const orphanAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { event?: string; path?: string; programEventId?: string; detail?: string });
+    const orphanKey = orphanAudit.filter((r) => r.event === "send" && r.path === "program-event-orphan"
+      && r.programEventId?.includes(lnOrphan.branch));
+    check("program verdict orphan: owner-killed MAIN sends exactly one labelled Orchestratorin hint across two retries",
+      orphanVerdict?.landed === false && orphanMark?.sent === false
+        && orphanMark.gate === "receiver-gone" && orphanMark.attempts === 2
+        && notices.length === 1 && orphanKey.length === 1 && notices[0]!.text.includes(orphanProgram)
+        && notices[0]!.text.includes("review") && notices[0]!.text.includes(`Lane-Slot ${lnOrphan.slot}`)
+        && notices[0]!.text.includes("der Hinweis erteilt kein Recht")
+        && orphanAudit.some((r) => r.event === "merge_verdict_undeliverable"
+          && r.detail?.startsWith(`${lnOrphan.branch}:`) && r.detail.includes("escalation orchestrator")),
+      JSON.stringify({ mark: orphanMark, notices, sends: orphanKey.length }));
+    await post(`/api/slots/${orchSlot}/kill`, {});
+    await stopSrv();
+    const noOrchState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { merges?: Record<string, Record<string, unknown>> };
+    const noOrchRow = noOrchState.merges?.[String(lnNoOrch.slot)];
+    if (noOrchRow) {
+      noOrchRow.verdictDelivery = { ...replant };
+      noOrchRow.verdictTo = { slot: mainSlot, program: noOrchProgram, task: "0".repeat(24),
+        occupant: { openedAt: orphanBinding.openedAt, sessionId: orphanBinding.sessionId } };
+    }
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(noOrchState, null, 2));
+    await restartSrv({ FLEET_AUTOS_TICK_MS: "6000" });
+    const noOrchMark = await awaitMark(lnNoOrch.slot, (d) => d.attempts >= 2);
+    const noOrchAudit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { event?: string; path?: string; programEventId?: string; detail?: string });
+    check("program verdict orphan: no unique living Orchestratorin sends nothing and audits escalation none",
+      noOrchMark?.gate === "receiver-gone" && noOrchAudit.some((r) =>
+        r.event === "merge_verdict_undeliverable" && r.detail?.startsWith(`${lnNoOrch.branch}:`)
+          && r.detail.includes("escalation none"))
+        && !noOrchAudit.some((r) => r.event === "send" && r.path === "program-event-orphan"
+          && r.programEventId?.includes(lnNoOrch.branch)),
+      JSON.stringify({ mark: noOrchMark, audit: noOrchAudit.filter((r) => r.detail?.includes(lnNoOrch.branch)).slice(-2) }));
+    for (const ln of [lnOrphan, lnNoOrch]) await dropLane(ln);
     for (const ln of [...plantedTo, lnHeir]) await dropLane(ln);
     await restartSrv(); // back to the suite's own cadence for everything after this block
   }

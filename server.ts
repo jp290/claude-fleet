@@ -8708,6 +8708,7 @@ type SendPath =
   | "audit-ping"        // a post-land audit red offered to an eligible main session
   | "inbox-nudge"       // "your program's inbox has unread entries"
   | "report-orphan"     // an undecided Program report lost its MAIN
+  | "program-event-orphan" // a terminal Program event or merge verdict lost its MAIN
   | "attention-orchestrator" // a bound MAIN's question waits first on the unique Orchestratorin
   | "backlog-nudge"     // the open-backlog reminder
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
@@ -8758,6 +8759,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "audit-ping": "Post-Land-Audit-Hinweis",
   "inbox-nudge": "Inbox-Hinweis",
   "report-orphan": "Hinweis auf verwaisten Program-Report",
+  "program-event-orphan": "Hinweis auf unzustellbares Program-Ereignis",
   "attention-orchestrator": "Rueckfrage einer MAIN an die Orchestratorin",
   "backlog-nudge": "Backlog-Erinnerung",
   "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
@@ -8781,6 +8783,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
   "inbox-nudge": "naechster Schritt: lies die ungelesenen Program-Eintraege · Grenze: dein Program",
   "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
+  "program-event-orphan": "naechster Schritt: pruefe das benannte Ereignis · Grenze: nur bestehende Tueren",
   "attention-orchestrator": "naechster Schritt: beantworte die Rueckfrage oder reiche sie mit Grund an den Owner · Grenze: nur die benannten Tueren",
   "backlog-nudge": "naechster Schritt: pruefe den offenen Backlog · Grenze: dein bestaetigtes Program",
   "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine bestehende Rolle",
@@ -8881,13 +8884,14 @@ async function seedInbound(): Promise<void> {
 // region above); no boot path reaches sendText today, checked at both of the boot awaits.
 function auditSend(s: Slot, path: SendPath, bytes: number,
   acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>, klass = deliveryClass(path), reportId?: string,
-  inboxId?: string): void {
+  inboxId?: string, programEventId?: string): void {
   const fill = contextFill(s);
   const cache = deliveryCacheState(s);
   audit("send", s.id, `${path} ${bytes}B ${acceptance}${reportId ? ` report=${reportId}` : ""}${inboxId ? ` inbox=${inboxId}` : ""}`,
     { path, bytes, acceptance, deliveryClass: klass, ttlSec: cache.ttlSec,
       ttlQuelle: cache.ttlQuelle, cache: cache.cache, ...(fill ? { ctxPct: fill.pct } : {}),
-      ...(reportId ? { reportId } : {}), ...(inboxId ? { inboxId } : {}) });
+      ...(reportId ? { reportId } : {}), ...(inboxId ? { inboxId } : {}),
+      ...(programEventId ? { programEventId } : {}) });
   bumpInbound(s.id, Date.now(), bytes);
 }
 
@@ -9115,6 +9119,7 @@ type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent
   deliveryClass?: DeliveryClass; subscribedWatch?: true; beforeSend?: (receiver: Slot) => Promise<void>;
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
   eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string; inboxId?: string;
+  programEventId?: string;
   bundleGate?: { harness?: false; quietHours?: false; idleMs?: number } };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
 type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
@@ -9597,10 +9602,12 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // neighbours, so it can neither delay nor fail the send it records.
   try {
     const result = await task;
-    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass, options.reportId, options.inboxId);
+    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass, options.reportId,
+      options.inboxId, options.programEventId);
     return result;
   } catch (e) {
-    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass, options.reportId, options.inboxId);
+    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass, options.reportId,
+      options.inboxId, options.programEventId);
     if (e instanceof SendRefused) await options.onRefused?.(s);
     throw e;
   }
@@ -11713,6 +11720,78 @@ function markFleetEventsSubjectGone(): boolean {
   return touched.size > 0;
 }
 
+function programWithoutMain(id: string, endingSlot?: number): boolean {
+  const program = programs.find((p) => p.id === id && (p.status === "active" || p.status === "complete"));
+  if (!program) return false;
+  const main = program.main;
+  const live = main && main.slot !== endingSlot ? slotFrom(main.slot) : null;
+  return !live?.cwd || live.openedAt !== main?.openedAt || live.sessionId !== main?.sessionId;
+}
+
+const programEventNotified = new Set<string>();
+const programEventNotifying = new Set<string>();
+let programEventNotifiedSeeded = false;
+async function notifyOrchestratorOfProgramLoss(key: string, programId: string, message: string,
+  receiver: Slot, ending?: { slot: number; openedAt: number | null; notAlive?: true }): Promise<void> {
+  if (programEventNotifying.has(key)) return;
+  programEventNotifying.add(key);
+  try {
+    if (!programEventNotifiedSeeded) {
+      for (const row of (await readEventLog(AUDIT_FILE)).rows)
+        if (row.event === "send" && row.path === "program-event-orphan"
+          && typeof row.programEventId === "string" && typeof row.bytes === "number" && row.bytes > 0)
+          programEventNotified.add(row.programEventId);
+      programEventNotifiedSeeded = true;
+    }
+    if (programEventNotified.has(key)) return;
+    const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+    const { acceptance } = await sendText(receiver, message, true, {
+      path: "program-event-orphan", deliveryClass: "sofort", rollbackOwnPayload: true,
+      programEventId: key,
+      address: { kind: "orchestrator" },
+      beforeSend: async (current) => {
+        const main = programs.find((p) => p.id === programId)?.main;
+        const deadPane = ending?.notAlive && main?.slot === ending.slot
+          && main.openedAt === ending.openedAt ? slotFrom(ending.slot) : null;
+        const stillGone = programWithoutMain(programId)
+          || (ending && main?.slot === ending.slot && main.openedAt === ending.openedAt
+            && (slotTeardownInflight.has(ending.slot) && programWithoutMain(programId, ending.slot)
+              || deadPane?.cwd && !(await claudeAlive(deadPane))));
+        if (deliveryRecipient({ kind: "orchestrator" }) !== current
+          || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+          || !stillGone)
+          throw new DeliveryCancelled(`program event ${key} changed before paste`);
+      },
+    });
+    programEventNotified.add(key);
+    const at = Date.now();
+    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    saveHistory(receiver);
+    logPrompt(receiver, message, "auto", at, undefined, acceptance);
+  } catch (e) {
+    if (!(e instanceof DeliveryCancelled)) logError("notifyOrchestratorOfProgramLoss", e);
+  } finally {
+    programEventNotifying.delete(key);
+  }
+}
+
+function lostProgramEventNotice(event: FleetEvent, endingSlot?: number):
+  { programId: string; receiver: Slot | null } | null {
+  const address = event.receiverAddress;
+  if (fleetEventDeliveryClass(event) !== "sofort"
+    || event.kind === "fleet-report" || event.kind === "message" || event.kind === "clarification-request") return null;
+  // The legacy lane-ready loader preserves the exact receiver occupant but drops receiverAddress.
+  // An exact, unique Program binding recovers only that lost address, never a guessed Program.
+  const legacy = !address && (event.kind === "lane-ready" || event.kind === "host-commit-ready")
+    ? programs.filter((p) => (p.status === "active" || p.status === "complete")
+      && p.main?.slot === event.receiverSlot && p.main.openedAt === event.receiverOpenedAt)
+    : [];
+  const programId = address?.kind === "program" ? address.id
+    : legacy.length === 1 ? legacy[0]!.id : null;
+  if (!programId || !programWithoutMain(programId, endingSlot)) return null;
+  return { programId, receiver: deliveryRecipient({ kind: "orchestrator" }) };
+}
+
 function markFleetEventReceiverGone(slotId: number): boolean {
   let dirty = false;
   for (const e of fleetEvents) {
@@ -11732,7 +11811,12 @@ function markFleetEventReceiverGone(slotId: number): boolean {
       continue;
     }
     e.status = "receiver-gone";
-    audit("fleet_event_receiver_gone", slotId, e.id);
+    const notice = lostProgramEventNotice(e, slotId);
+    audit("fleet_event_receiver_gone", slotId,
+      `${e.id}${notice ? ` escalation ${notice.receiver ? "orchestrator" : "none"}` : ""}`);
+    if (notice?.receiver) void notifyOrchestratorOfProgramLoss(`event:${e.id}`, notice.programId,
+      `[fleet program event orphan] Event ${e.id} (${e.kind}) fuer Program ${notice.programId} ist receiver-gone; die MAIN ist nicht lebend. Pruefe das Ereignis; der Hinweis erteilt kein Recht.`,
+      notice.receiver, { slot: slotId, openedAt: e.receiverOpenedAt });
     dirty = true;
   }
   if (dirty) pruneFleetEvents(slotId);
@@ -22602,8 +22686,12 @@ async function tickWatches(): Promise<void> {
       const s = pendingFleetEventReceiver(event);
       if (!s) {
         event.status = "receiver-gone";
+        const notice = lostProgramEventNotice(event);
         audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined,
-          `${event.id} no current role occupant`);
+          `${event.id} no current role occupant${notice ? ` escalation ${notice.receiver ? "orchestrator" : "none"}` : ""}`);
+        if (notice?.receiver) await notifyOrchestratorOfProgramLoss(`event:${event.id}`, notice.programId,
+          `[fleet program event orphan] Event ${event.id} (${event.kind}) fuer Program ${notice.programId} ist receiver-gone; die MAIN ist nicht lebend. Pruefe das Ereignis; der Hinweis erteilt kein Recht.`,
+          notice.receiver);
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -22611,8 +22699,12 @@ async function tickWatches(): Promise<void> {
       if (event.receiverAddress?.kind === "slot"
         && (event.receiverSlot !== s.id || event.receiverOpenedAt !== s.openedAt)) {
         event.status = "receiver-gone";
+        const notice = lostProgramEventNotice(event);
         audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined,
-          `${event.id} receiver occupant ended before delivery`);
+          `${event.id} receiver occupant ended before delivery${notice ? ` escalation ${notice.receiver ? "orchestrator" : "none"}` : ""}`);
+        if (notice?.receiver) await notifyOrchestratorOfProgramLoss(`event:${event.id}`, notice.programId,
+          `[fleet program event orphan] Event ${event.id} (${event.kind}) fuer Program ${notice.programId} ist receiver-gone; die MAIN ist nicht lebend. Pruefe das Ereignis; der Hinweis erteilt kein Recht.`,
+          notice.receiver);
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -22644,7 +22736,12 @@ async function tickWatches(): Promise<void> {
         // busy/kill-switch keep the event pending. Only a dead endpoint is terminal.
         if (verdict.gate !== "not-alive") continue;
         event.status = "receiver-gone";
-        audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined, `${event.id} no agent running in pane`);
+        const notice = lostProgramEventNotice(event, event.receiverSlot ?? undefined);
+        audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined,
+          `${event.id} no agent running in pane${notice ? ` escalation ${notice.receiver ? "orchestrator" : "none"}` : ""}`);
+        if (notice?.receiver) await notifyOrchestratorOfProgramLoss(`event:${event.id}`, notice.programId,
+          `[fleet program event orphan] Event ${event.id} (${event.kind}) fuer Program ${notice.programId} ist receiver-gone; die MAIN ist nicht lebend. Pruefe das Ereignis; der Hinweis erteilt kein Recht.`,
+          notice.receiver, { slot: event.receiverSlot!, openedAt: event.receiverOpenedAt, notAlive: true });
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -31977,8 +32074,15 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
     const recv = mainVerdictReceiver(to);
     if (!recv.ok) {
       await mark(false, "receiver-gone");
+      const orphaned = programWithoutMain(to.program);
+      const orchestrator = orphaned ? deliveryRecipient({ kind: "orchestrator" }) : null;
       audit("merge_verdict_undeliverable", to.slot,
-        `${branch}: ${kind} — ${recv.why} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS}, lane slot=${s.id})`);
+        `${branch}: ${kind} — ${recv.why} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS}, lane slot=${s.id})`
+        + (orphaned ? ` escalation ${orchestrator ? "orchestrator" : "none"}` : ""));
+      if (orchestrator) await notifyOrchestratorOfProgramLoss(
+        `merge:${to.program}:${s.id}:${branch}:${outcome.at}`, to.program,
+        `[fleet program verdict orphan] Branch ${branch}: ${kind}, Lane-Slot ${s.id}, Program ${to.program}; das Merge-Verdict ist receiver-gone. Pruefe den Merge-Status; der Hinweis erteilt kein Recht.`,
+        orchestrator);
       return;
     }
     target = recv.slot;
@@ -32002,6 +32106,19 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
   const gate = await canDeliver(target, { now: Date.now(), killSwitch: false, harness: false,
     quietHours: false, idleMs: MERGE_IDLE_MS });
   if (!gate.ok) {
+    if (to && gate.gate === "not-alive") {
+      await mark(false, "receiver-gone");
+      const orphaned = programWithoutMain(to.program, target.id);
+      const orchestrator = orphaned ? deliveryRecipient({ kind: "orchestrator" }) : null;
+      audit("merge_verdict_undeliverable", target.id,
+        `${branch}: ${kind} — no agent running in MAIN pane (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS}, lane slot=${s.id})`
+        + (orphaned ? ` escalation ${orchestrator ? "orchestrator" : "none"}` : ""));
+      if (orchestrator) await notifyOrchestratorOfProgramLoss(
+        `merge:${to.program}:${s.id}:${branch}:${outcome.at}`, to.program,
+        `[fleet program verdict orphan] Branch ${branch}: ${kind}, Lane-Slot ${s.id}, Program ${to.program}; das Merge-Verdict ist receiver-gone. Pruefe den Merge-Status; der Hinweis erteilt kein Recht.`,
+        orchestrator, { slot: target.id, openedAt: target.openedAt, notAlive: true });
+      return;
+    }
     await mark(false, gate.gate);
     audit("merge_verdict_skip", target.id, `${branch}: ${kind} — ${gate.gate} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS})${suffix}`);
     return;

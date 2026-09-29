@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
 // How many folder names one listing serves. The number is unchanged; what is new is that the
@@ -122,6 +123,44 @@ export const TREE_CAP = 4000;
 // integrity, which is not text a textarea should be able to touch. Matched against the path
 // RELATIVE to the working directory, so it cannot be sidestepped by depth.
 export const FILE_WRITE_DENY = /(^|\/)(\.env(\.[^/]*)?|fleet\.json|\.git)(\/|$)/;
+
+export function fileWritePath(cwd: string, path: string, allowMissing = false):
+  { root: string; target: string; rel: string } | { error: string; status: number } {
+  let root: string;
+  try { root = realpathSync(cwd); }
+  catch { return { error: "this session's directory is gone", status: 400 }; }
+  if (!existsSync(`${root}/.git`))
+    return { error: "this session is not in a git working tree", status: 400 };
+  const requested = resolve(root, path);
+  let target: string;
+  try { target = realpathSync(requested); }
+  catch {
+    if (!allowMissing)
+      return { error: "no such file — this editor changes files that exist, it does not create them", status: 404 };
+    let parent = requested;
+    for (;;) {
+      try {
+        lstatSync(parent);
+        target = resolve(realpathSync(parent), requested.slice(parent.length + 1));
+        break;
+      } catch (e) {
+        if (!(e instanceof Error) || !("code" in e) || e.code !== "ENOENT")
+          return { error: "this path could not be resolved", status: 400 };
+        // A dangling symlink is an existing path, never a place to create a new file.
+        try { lstatSync(parent); return { error: "this path could not be resolved", status: 400 }; }
+        catch { /* missing ancestor */ }
+        const next = dirname(parent);
+        if (next === parent) return { error: "this path could not be resolved", status: 400 };
+        parent = next;
+      }
+    }
+  }
+  if (!target.startsWith(`${root}/`)) return { error: "outside this session's directory", status: 400 };
+  const rel = target.slice(root.length + 1);
+  if (FILE_WRITE_DENY.test(rel) || FILE_WRITE_DENY.test(requested.slice(root.length + 1)))
+    return { error: "this file is not editable here", status: 400 };
+  return { root, target, rel };
+}
 
 // What the folder CONTAINS — the question "which of these two checkouts is it" is answered by the
 // files, not by the branch name. Returns null rather than an empty list when the directory cannot be

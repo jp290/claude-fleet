@@ -19,7 +19,7 @@
 //     is extractable, it evaluates) is its OWN check, so a probe that could not be set up fails
 //     as itself rather than as the thing it was supposed to measure.
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { BASE, REPO, ROOT, check, get, post } from "./harness";
 import { gitUnquote, porcelainPath } from "../src/gitpath";
@@ -167,6 +167,59 @@ export async function run(): Promise<void> {
   const foreignContents = await get("/api/contents?slot=99999&q=marker");
   check("Contents rejects a foreign slot by name: the error names slot 99999",
     foreignContents.status === 400 && /slot 99999/.test(await foreignContents.text()), String(foreignContents.status));
+  const createdPath = "x3 nested/empty 'file.txt";
+  const createRes = await post("/api/file/create", { slot: ln.slot, path: createdPath });
+  const created = await createRes.json() as { ok?: boolean; ran?: string; afterwards?: string; sessionActive?: boolean };
+  const createdStatus = spawnSync("git", ["-C", ln.cwd, "status", "--porcelain", "--", createdPath]).stdout.toString();
+  check("Explorer create: empty file with intermediate directories, without git add, and an activity hint",
+    createRes.status === 200 && created.ok === true && created.ran === "no git command (create empty file without git add)"
+    && created.afterwards === `empty file at ${createdPath}; not added to git`
+    && typeof created.sessionActive === "boolean" && readFileSync(`${ln.cwd}/${createdPath}`).length === 0
+    && createdStatus.startsWith("?? "), `${createRes.status} ${JSON.stringify(created)} ${createdStatus}`);
+  writeFileSync(`${ln.cwd}/${createdPath}`, "keep existing bytes");
+  const existsRes = await post("/api/file/create", { slot: ln.slot, path: createdPath });
+  check("Explorer create refuses an existing path, preserving its bytes",
+    existsRes.status === 409 && readFileSync(`${ln.cwd}/${createdPath}`, "utf8") === "keep existing bytes",
+    `${existsRes.status} ${await existsRes.text()}`);
+  const untrackedDelete = await post("/api/file/delete", { slot: ln.slot, path: createdPath });
+  check("Explorer delete refuses an untracked file with a reason and keeps its bytes",
+    untrackedDelete.status === 409 && /untracked.*no recovery/.test(await untrackedDelete.text())
+    && readFileSync(`${ln.cwd}/${createdPath}`, "utf8") === "keep existing bytes", String(untrackedDelete.status));
+  spawnSync("git", ["-C", ln.cwd, "add", "--", createdPath]);
+  spawnSync("git", ["-C", ln.cwd, "commit", "-qm", "explorer: tracked write fixture"]);
+  const conflictMove = await post("/api/file/move", { slot: ln.slot, path: createdPath, to: "explorer-lane.txt" });
+  check("Explorer move refuses an occupied destination without changing either file",
+    conflictMove.status === 409 && readFileSync(`${ln.cwd}/${createdPath}`, "utf8") === "keep existing bytes"
+    && readFileSync(`${ln.cwd}/explorer-lane.txt`, "utf8").includes(contentMarker), String(conflictMove.status));
+  const movedPath = "moved 'file.txt";
+  const moveRes = await post("/api/file/move", { slot: ln.slot, path: createdPath, to: movedPath });
+  const moved = await moveRes.json() as typeof created;
+  const stagedMove = spawnSync("git", ["-C", ln.cwd, "diff", "--cached", "--name-status"]).stdout.toString();
+  check("Explorer move: git mv stages a rename, preserves bytes and names the exact command and aftermath",
+    moveRes.status === 200 && moved.ok === true
+    && moved.ran === `git '-C' '${realpathSync(ln.cwd)}' '--literal-pathspecs' 'mv' '--' 'x3 nested/empty '\\''file.txt' 'moved '\\''file.txt'`
+    && moved.afterwards === `${createdPath} moved to ${movedPath}; rename staged in git`
+    && typeof moved.sessionActive === "boolean" && !existsSync(`${ln.cwd}/${createdPath}`)
+    && readFileSync(`${ln.cwd}/${movedPath}`, "utf8") === "keep existing bytes" && stagedMove.startsWith("R100\t"),
+    `${moveRes.status} ${JSON.stringify(moved)} ${stagedMove}`);
+  spawnSync("git", ["-C", ln.cwd, "commit", "-qm", "explorer: moved write fixture"]);
+  const deleteRes = await post("/api/file/delete", { slot: ln.slot, path: movedPath });
+  const deleted = await deleteRes.json() as typeof created;
+  check("Explorer delete: git rm removes only the tracked file and stages its deletion",
+    deleteRes.status === 200 && deleted.ok === true
+    && deleted.ran === `git '-C' '${realpathSync(ln.cwd)}' '--literal-pathspecs' 'rm' '--' 'moved '\\''file.txt'`
+    && deleted.afterwards === `${movedPath} removed from the worktree; deletion staged in git`
+    && typeof deleted.sessionActive === "boolean" && !existsSync(`${ln.cwd}/${movedPath}`)
+    && spawnSync("git", ["-C", ln.cwd, "diff", "--cached", "--name-status"]).stdout.toString() === `D\t${movedPath}\n`,
+    `${deleteRes.status} ${JSON.stringify(deleted)}`);
+  spawnSync("git", ["-C", ln.cwd, "commit", "-qm", "explorer: deleted write fixture"]);
+  const writeAudit = await (await get("/api/audit?limit=1000")).json() as
+    { events: { event: string; slot: number; detail: string }[] };
+  for (const detail of [`create · ${createdPath}`, `move · ${createdPath} → ${movedPath}`, `delete · ${movedPath}`]) {
+    check(`Explorer writes audit exactly one successful act: ${detail}`,
+      writeAudit.events.filter((e) => e.event === "file_write" && e.slot === ln.slot && e.detail === detail).length === 1);
+  }
+
   // A DETACHED HEAD keeps the card: `brief.branch` is the STRING "HEAD" there, not null, so the
   // `if (brief.branch)` gate the card sits behind stays truthy. Measured, because the comment at
   // that gate says a detached HEAD loses the card — and the tree route serves it either way.

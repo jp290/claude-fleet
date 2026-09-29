@@ -18,7 +18,7 @@
 // Plus the invariants whose only statement today is a code comment: credentials are revoked when
 // a slot dies or is recycled (`server.ts` ~1147), and no secret reaches the audit log or any
 // non-owner-readable payload.
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { afterTick, AUTOS_TICK_MS, BASE, H, REPO, ROOT, TOKEN, check, get, post, readText, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
@@ -671,6 +671,9 @@ const dangerous = (slot: number): Probe[] => [
   // is what lets them carry the positive control; the containment guards themselves (realpath
   // prefix, the .env/fleet.json refusal, the hash conflict) are proved in fleet-e2e-security.ts §10.
   { path: "/api/file/write", method: "POST", body: {}, owner: 400 },
+  { path: "/api/file/create", method: "POST", body: {}, owner: 400 },
+  { path: "/api/file/move", method: "POST", body: {}, owner: 400 },
+  { path: "/api/file/delete", method: "POST", body: {}, owner: 400 },
   // the second write route: the owner's drop lands as a FILE inside a session's working directory,
   // so an auth regression here is the same class of thing. An empty JSON body names no active slot,
   // so the owner's own call is a side-effect-free 400 and carries the positive control.
@@ -2204,4 +2207,54 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     // executable command token says the recycled pane actually inherited that harness.
     && !/(^|[; ])codex(?: |$)/.test(rcmd.replaceAll("\\", "")), rcmd.slice(-160));
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  const explorerLane = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string };
+  const outsideName = `x3-outside-${explorerLane.slot}`;
+  const outsideDir = `${explorerLane.cwd}/../${outsideName}`;
+  mkdirSync(outsideDir, { recursive: true });
+  const canary = `${outsideDir}/canary.txt`;
+  writeFileSync(canary, "outside bytes must survive");
+  writeFileSync(`${explorerLane.cwd}/x3-source.txt`, "tracked source must survive");
+  spawnSync("git", ["-C", explorerLane.cwd, "add", "--", "x3-source.txt"]);
+  symlinkSync(outsideDir, `${explorerLane.cwd}/x3-link`);
+  const beforeIndex = spawnSync("git", ["-C", explorerLane.cwd, "ls-files", "--stage", "-z"]).stdout;
+  for (const route of ["create", "move", "delete"]) {
+    for (const escape of [`../${outsideName}`, "x3-link"]) {
+      const path = `${escape}/${route === "create" ? "new.txt" : "canary.txt"}`;
+      const res = await post(`/api/file/${route}`, { slot: explorerLane.slot, path, to: "x3-moved.txt" });
+      check(`Explorer security should-reject ${route}: ${escape} source escape`,
+        res.status === 400 && /outside this session/.test(await res.text())
+        && readFileSync(canary, "utf8") === "outside bytes must survive"
+        && !existsSync(`${outsideDir}/new.txt`) && !existsSync(`${explorerLane.cwd}/x3-moved.txt`),
+        String(res.status));
+      if (route === "move") {
+        const toRes = await post("/api/file/move", { slot: explorerLane.slot, path: "x3-source.txt", to: `${escape}/new.txt` });
+        check(`Explorer security should-reject move: ${escape} destination escape`,
+          toRes.status === 400 && /outside this session/.test(await toRes.text())
+          && readFileSync(`${explorerLane.cwd}/x3-source.txt`, "utf8") === "tracked source must survive"
+          && !existsSync(`${outsideDir}/new.txt`), String(toRes.status));
+      }
+    }
+    for (const denied of [".env", "nested/.env.local", "fleet.json", ".git"]) {
+      const path = `${explorerLane.cwd}/${denied}`;
+      if (denied !== ".git") {
+        mkdirSync(`${explorerLane.cwd}/nested`, { recursive: true });
+        writeFileSync(path, "protected bytes");
+      }
+      const res = await post(`/api/file/${route}`, { slot: explorerLane.slot, path: denied, to: "x3-moved.txt" });
+      check(`Explorer security should-reject ${route}: denied source ${denied}`,
+        res.status === 400 && /not editable here/.test(await res.text())
+        && (denied === ".git" || readFileSync(path, "utf8") === "protected bytes"), String(res.status));
+      if (route === "move") {
+        const destRes = await post("/api/file/move", { slot: explorerLane.slot, path: "x3-source.txt", to: denied });
+        check(`Explorer security should-reject move: denied destination ${denied}`,
+          destRes.status === 400 && /not editable here/.test(await destRes.text())
+          && readFileSync(`${explorerLane.cwd}/x3-source.txt`, "utf8") === "tracked source must survive", String(destRes.status));
+      }
+    }
+  }
+  check("Explorer security: every rejected write leaves the git index unchanged",
+    beforeIndex.equals(spawnSync("git", ["-C", explorerLane.cwd, "ls-files", "--stage", "-z"]).stdout));
+  await post(`/api/slots/${explorerLane.slot}/kill`, {});
+  rmSync(outsideDir, { recursive: true, force: true });
+
 }

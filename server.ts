@@ -174,7 +174,7 @@ import { parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile } from "./server/
 import { STATIC, bundleV, staticResponse, finishHttp, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
-  TREE_CAP, FILE_WRITE_DENY, dirEntries, type DirEntry } from "./server/dir-explorer";
+  TREE_CAP, fileWritePath, dirEntries, type DirEntry } from "./server/dir-explorer";
 import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, setPrincipalState, commentStrike, authFails, failStrike,
@@ -44194,21 +44194,9 @@ Bun.serve<WSData>({
         return json({ error: "no base hash — reopen the file and try the edit again" }, 400);
       if (b.text.length > FILE_CAP) return json({ error: "larger than this editor writes" }, 400);
       if (b.text.includes("\0")) return json({ error: "refusing to write a NUL byte through a text editor" }, 400);
-      let root: string;
-      try { root = realpathSync(s.cwd); } catch { return json({ error: "this session's directory is gone" }, 400); }
-      // Only inside a git working tree, deliberately: it keeps the route's reach equal to the surface that
-      // offers it (the explorer is `git ls-files`), and every edit is visible in `git status` and
-      // revertible. Without it a session opened on ~ would make the containment "the home directory".
-      if (!existsSync(`${root}/.git`)) return json({ error: "this session is not in a git working tree" }, 400);
-      let target: string;
-      // resolve() lets an ABSOLUTE path through unchanged, which is what the viewer sends — the
-      // containment below is what makes that safe, and it is the only thing that does.
-      try { target = realpathSync(resolve(root, b.path)); } catch {
-        return json({ error: "no such file — this editor changes files that exist, it does not create them" }, 404);
-      }
-      if (!target.startsWith(`${root}/`)) return json({ error: "outside this session's directory" }, 400);
-      const rel = target.slice(root.length + 1);
-      if (FILE_WRITE_DENY.test(rel)) return json({ error: "this file is not editable here" }, 400);
+      const contained = fileWritePath(s.cwd, b.path);
+      if ("error" in contained) return json({ error: contained.error }, contained.status);
+      const { target, rel } = contained;
       let st;
       try { st = statSync(target); } catch { return json({ error: "no such file" }, 404); }
       if (!st.isFile()) return json({ error: "that is not a regular file" }, 400);
@@ -44220,6 +44208,80 @@ Bun.serve<WSData>({
       writeFileSync(target, next);
       audit("file_write", s.id, `${rel} · ${next.length}b`);
       return json({ ok: true, path: target, hash: createHash("sha256").update(next).digest("hex"), size: next.length });
+    }
+    if ((url.pathname === "/api/file/create" || url.pathname === "/api/file/move"
+      || url.pathname === "/api/file/delete") && req.method === "POST") {
+      const b = await readJson(req);
+      const s = slotFrom(b?.slot);
+      if (!s?.cwd) return json({ error: "slot not active" }, 400);
+      if (typeof b?.path !== "string" || !b.path.trim() || b.path.includes("\0"))
+        return json({ error: "no valid path" }, 400);
+      const create = url.pathname === "/api/file/create";
+      const move = url.pathname === "/api/file/move";
+      const source = fileWritePath(s.cwd, b.path, create);
+      if ("error" in source) return json({ error: source.error }, source.status);
+      const cwd = s.cwd;
+      const openedAt = s.openedAt;
+      const { root, target, rel } = source;
+      const sessionActive = Date.now() - s.lastOutput < 5000;
+      const quote = (arg: string) => "'" + arg.replaceAll("'", "'\\''") + "'";
+      if (create) {
+        try {
+          try { lstatSync(target); return json({ error: "this path already exists" }, 409); }
+          catch (e) { if (!(e instanceof Error) || !("code" in e) || e.code !== "ENOENT") throw e; }
+          const inTree = await gitRead(root, "rev-parse", "--is-inside-work-tree");
+          if (s.cwd !== cwd || s.openedAt !== openedAt) return json({ error: "slot changed during this request" }, 409);
+          if (inTree.code !== 0 || inTree.out !== "true")
+            return json({ error: "this session is not in a git working tree" }, 400);
+          const fresh = fileWritePath(cwd, b.path, true);
+          if ("error" in fresh) return json({ error: fresh.error }, fresh.status);
+          if (fresh.target !== target) return json({ error: "path changed during this request" }, 409);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, "", { flag: "wx" });
+          audit("file_write", s.id, `create · ${rel}`);
+          return json({ ok: true, ran: "no git command (create empty file without git add)",
+            afterwards: `empty file at ${rel}; not added to git`, sessionActive });
+        } catch { return json({ error: "could not create this file — nothing was overwritten" }, 409); }
+      }
+      if (!statSync(target).isFile()) return json({ error: "that is not a regular file" }, 400);
+      let destination: ReturnType<typeof fileWritePath> | undefined;
+      const toPath = typeof b.to === "string" ? b.to : "";
+      if (move) {
+        if (!toPath.trim() || toPath.includes("\0"))
+          return json({ error: "no valid to path" }, 400);
+        destination = fileWritePath(cwd, toPath, true);
+        if ("error" in destination) return json({ error: destination.error }, destination.status);
+        try { lstatSync(destination.target); return json({ error: "destination already exists" }, 409); }
+        catch (e) {
+          if (!(e instanceof Error) || !("code" in e) || e.code !== "ENOENT")
+            return json({ error: "destination could not be inspected" }, 400);
+        }
+      }
+      const tracked = await gitRead(root, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", rel);
+      if (s.cwd !== cwd || s.openedAt !== openedAt) return json({ error: "slot changed during this request" }, 409);
+      if (tracked.code !== 0) return json({ error: move ? "git mv requires a tracked file"
+        : "refusing to delete an untracked file — git has no recovery path for it" }, 409);
+      const fresh = fileWritePath(cwd, b.path);
+      if ("error" in fresh) return json({ error: fresh.error }, fresh.status);
+      if (fresh.target !== target) return json({ error: "path changed during this request" }, 409);
+      if (destination && !("error" in destination)) {
+        const freshTo = fileWritePath(cwd, toPath, true);
+        if ("error" in freshTo) return json({ error: freshTo.error }, freshTo.status);
+        if (freshTo.target !== destination.target) return json({ error: "path changed during this request" }, 409);
+        try { lstatSync(destination.target); return json({ error: "destination already exists" }, 409); }
+        catch (e) {
+          if (!(e instanceof Error) || !("code" in e) || e.code !== "ENOENT")
+            return json({ error: "destination could not be inspected" }, 400);
+        }
+      }
+      const to = destination && !("error" in destination) ? destination.rel : null;
+      const args = ["--literal-pathspecs", move ? "mv" : "rm", "--", rel, ...(to ? [to] : [])];
+      const result = await gitOut(root, ...args);
+      if (result.code !== 0) return json({ error: `git ${move ? "mv" : "rm"} refused: ${result.err}` }, 409);
+      audit("file_write", s.id, to ? `move · ${rel} → ${to}` : `delete · ${rel}`);
+      return json({ ok: true, ran: `git ${["-C", root, ...args].map(quote).join(" ")}`,
+        afterwards: to ? `${rel} moved to ${to}; rename staged in git`
+          : `${rel} removed from the worktree; deletion staged in git`, sessionActive });
     }
     // --- the OTHER write: a file the OWNER hands to a session (drag&drop, paste, 📎). Same containment
     // shape as /api/file/write; the owner never names a path (DROP_DIR) and the filename is rebuilt

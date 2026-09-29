@@ -4262,10 +4262,12 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     const ownRecoveryLog = await bootWith(JSON.stringify({ ...recoveryState, sock: SOCK }, null, 2));
     const ownRecoveryTask = ((await (await get("/api/sessions")).json()) as
       { tasks: { id: string; status: string; note?: string }[] }).tasks.find((t) => t.id === recoveryTask.id);
-    check("the SAME socket still recovers the pending land and requeues its stranded sent task",
-      ownRecoveryLog.includes("land recovery:") && gitAt("notes", "--ref=fleet/land", "show", laneTip).length > 0
-        && ownRecoveryTask?.status === "queued" && ownRecoveryTask.note === "requeued after restart",
-      JSON.stringify({ recovered: ownRecoveryLog.includes("land recovery:"), task: ownRecoveryTask }));
+    check("the SAME socket still recovers the pending land",
+      ownRecoveryLog.includes("land recovery:") && gitAt("notes", "--ref=fleet/land", "show", laneTip).length > 0,
+      `recovered=${ownRecoveryLog.includes("land recovery:")}`);
+    check("the SAME socket still requeues its stranded sent task",
+      ownRecoveryTask?.status === "queued" && ownRecoveryTask.note === "requeued after restart",
+      JSON.stringify(ownRecoveryTask));
 
     await bootWith(originalBytes);
     const sameRows = await projection();

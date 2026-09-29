@@ -1196,6 +1196,7 @@ export async function run(): Promise<void> {
         await Bun.write(`${worker}.recycle-orig`, originalWorker);
         spawnSync("chmod", ["+x", `${worker}.recycle-orig`]);
         a = (await (await post("/api/lanes", { repo: oRepo, branch: "recycle-review-old" })).json()) as Lane;
+        await Bun.write(`${a.cwd}/seed.txt`, "seed\nreview A\n");
         oldClick = post(`/api/slots/${a.slot}/review`, {});
         for (let i = 0; i < 100 && countRuns(a.cwd) === 0; i++) await Bun.sleep(50);
         check("recycled review fixture: A's review is running behind the latch", countRuns(a.cwd) === 1, `runs=${countRuns(a.cwd)}`);
@@ -1203,6 +1204,7 @@ export async function run(): Promise<void> {
         b = (await (await post("/api/lanes", { repo: oRepo, branch: "recycle-review-new" })).json()) as Lane;
         check("recycled review fixture: B occupies A's torn-down slot", kill.ok && b.slot === a.slot,
           `kill=${kill.status} A=${a.slot} B=${b.slot}`);
+        await Bun.write(`${b.cwd}/seed.txt`, "seed\nreview B\n");
         newClick = post(`/api/slots/${b.slot}/review`, {});
         for (let i = 0; i < 100 && countRuns(b.cwd) === 0; i++) await Bun.sleep(50);
         check("recycled review: B's first ③ starts its OWN review before A finishes", countRuns(b.cwd) === 1,

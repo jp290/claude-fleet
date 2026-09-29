@@ -2809,9 +2809,11 @@ Benachrichtigung des entschärften Lane-Watches; der Report bleibt allein ein In
 erzeugt kein FleetEvent. `clarificationReceiverFor` bleibt für Fragen unverändert, weil eine
 Frage einen lebenden Antwortenden braucht.
 
-Nur wenn das genannte Program nicht aktiv ist oder die Lane kein Program trägt, gilt die bisherige
-Empfänger-Ableitung aus Watch-Evidenz beziehungsweise der Owner-Inbox-Rückfall. Dort bleiben die
-Ablehnungen exakt wie sie waren:
+Ist das genannte Program `complete`, geht der Report einer noch laufenden Lane direkt in die
+Owner-Operations-Inbox: `basis:„[Zitat entfernt]“`, `receiver:null`; `provenance.programId` bleibt die
+ursprüngliche Program-ID. Das gilt auch bei einem noch armierten Lane-Watch der früheren MAIN.
+Eine Program-lose Lane nutzt weiterhin Watch-Evidenz beziehungsweise den Owner-Inbox-Rückfall.
+Dort bleiben die Ablehnungen exakt wie sie waren:
 
 - `lane-watch evidence names multiple receiver occupants` — zwei verschiedene Watch-Occupants sind
   kein Empfänger, sondern ein Münzwurf. Bleibt wortgleich (`e2e/pins.ts`, B2).
@@ -3154,7 +3156,7 @@ curl -s -X POST http://<fleet-host>:<port>/api/fleet-report/<report-id>/accept \
 2026-09-09 an Report `4e330915`.** Während die Vorgängerin nach `succeed` noch in der Grace lebte,
 war ihre Zeile für die Nachfolgerin wegen des alten Empfänger-Tripels und für den Owner wegen des
 noch lebenden Slots zugleich 409; erst der Reap öffnete die Owner-Tür. Das bleibt richtig für
-`basis:"owner-inbox"` und für jede Lane, deren Program nicht aktiv ist: ihre Zeile bleibt an den
+`basis:"owner-inbox"` und für eine Lane ohne Program-Bindung: ihre Zeile bleibt an den
 damals abgeleiteten Principal beziehungsweise Occupant gebunden. Für `basis:"program"` ist dagegen
 `boundProgramForMain` der Empfänger: die neue MAIN liest und beurteilt dieselbe Program-Zeile sofort,
 auch solange der Vorgänger-Slot noch lebt. **Succession verliert ihre Beurteilbarkeit nicht mehr.**
@@ -4437,6 +4439,22 @@ antwortet vor allen Sperren 200 und schreibt nichts.
 der Owner die Produktarbeit bewusst beendet oder stillgelegt hat; ein laufendes `founding` bleibt
 409. Completion beendet eine vorhandene MAIN-Pane nicht automatisch — Pane-Retirement und
 Program-Lifecycle bleiben getrennte Owner-Entscheidungen.
+
+### Program abschließen — `POST /api/programs/:id/complete`
+
+Ohne Body oder mit `{}` schließt die Owner-Tür ein aktives Program nur, wenn keine offenen
+Pflichten mehr vorliegen. Sonst antwortet sie 409 mit `obligations`: `lanes` (laufende Slot-IDs
+mit dieser `programId`), `clarifications` (offen oder `send-uncertain`), `attention` (offen oder
+`send-uncertain`), `reports` (unbeurteilte Program-Reports) und `watches` (armiert von der exakt
+gebundenen MAIN-Belegung). Jede Liste enthält die IDs der betreffenden Zeilen; ungelesene
+Program-Inbox-Einträge zählen nicht als Sperre. Das Program bleibt `active`.
+
+`{"force":true}` schließt trotz dieser Pflichten. Die 200-Antwort trägt dieselbe
+`obligations`-Liste; eine Audit-Zeile `program_complete_forced` hält Program-ID und Liste fest.
+Weitere Body-Felder oder ein anderer `force`-Wert sind 400. Ein bereits abgeschlossenes Program
+antwortet weiterhin idempotent 200. Nach einem erzwungenen Abschluss kann eine noch laufende
+Lane ihren Report an die Owner-Inbox filen; ihre `provenance.programId` bleibt erhalten. Der
+Rückfrage-Weg wird dadurch nicht geändert.
 
 **Die Nachfolge hat ein zweites Gate.** Das generische bleibt unverändert (HANDOFF.md existiert, ist
 sauber, jünger als die Session). Für `game-maker` wird zusätzlich die COMMITTETE HEAD-Fassung

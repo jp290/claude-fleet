@@ -12406,21 +12406,21 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   // armed only to manufacture receiver evidence, which b6956c9 now correctly refuses.
   //
   // WHAT THIS DOES NOT WIDEN, on purpose:
-  //  · a lane WITH a programId keeps its binding and its 409 — its result belongs to the MAIN
-  //    that dispatched it, and a closed return path there is a program fact the owner already
-  //    sees on `programReturnPath`, not a reason to route around the coordinator.
+  //  · an ACTIVE Program still owns its lane's report. A completed Program cannot receive it,
+  //    so the owner inbox receives the terminal fact with its original programId provenance.
   //  · a lane with contradictory or legacy-only watch evidence keeps its loud refusal. Absent
   //    evidence and ambiguous evidence are opposite facts.
-  //  · a lane with no task at all keeps its 409: nothing dispatched it, so nothing is owed a
-  //    terminal result, and there would be no taskId for the owner to join the row against.
+  //  · a programless lane with no task keeps its 409: nothing dispatched it, so nothing is owed a
+  //    terminal result. A completed Program's own binding is sufficient provenance.
   //  · clarifications are untouched. An inbox cannot answer, so `/api/self/clarifications` keeps
   //    this exact 409 — a worker routed there would wait on a receiver that cannot speak.
-  const resolved = clarificationReceiverFor(s);
-  const bound = "error" in resolved ? null
+  const completedProgram = program?.status === "complete";
+  const resolved = completedProgram ? null : clarificationReceiverFor(s);
+  const bound = !resolved || "error" in resolved ? null
     : resolved as ClarificationReceiver & { basis: Exclude<ClarificationBasis, "orchestrator"> };
   if (!bound) {
-    const reason = (resolved as { error: string }).error;
-    if (reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId)
+    const reason = resolved ? (resolved as { error: string }).error : NO_RECEIVER_EVIDENCE;
+    if (!completedProgram && (reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId))
       return json({ error: reason }, 409);
     if (ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX)
       return json({ error: "owner operations inbox has no FleetEvent delivery budget" }, 409);
@@ -36252,10 +36252,30 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       && successionInflight.has(mainOccupant.selfToken);
     if (programBootstrapInflight.has(program.id) || program.founding || successionBusy)
       return json({ error: "cannot complete while a Program-MAIN founding is in flight — wait for its durable binding or rollback" }, 409);
+    const body = await readJson(req);
+    if (body && (Array.isArray(body) || Object.keys(body).some((key) => key !== "force")
+      || ("force" in body && body.force !== true)))
+      return json({ error: "complete reads only {force:true} or an empty body" }, 400);
+    const obligations = {
+      lanes: slots.filter((s) => s.cwd && s.programId === program.id).map((s) => s.id),
+      clarifications: clarifications.filter((c) => c.provenance.programId === program.id
+        && (c.status === "open" || c.status === "send-uncertain")).map((c) => c.id),
+      attention: attentionRequests.filter((a) => a.programId === program.id
+        && (a.status === "open" || a.status === "send-uncertain")).map((a) => a.id),
+      reports: fleetReports.filter((r) => r.provenance.programId === program.id
+        && r.basis === "program" && !r.decision).map((r) => r.id),
+      watches: watches.filter((w) => w.armed && w.slot === program.main?.slot
+        && w.slotOpenedAt === program.main.openedAt).map((w) => w.id),
+    };
+    if (Object.values(obligations).some((ids) => ids.length > 0) && body?.force !== true)
+      return json({ error: "program has open obligations — complete requires {force:true}", obligations }, 409);
     program.status = "complete";
     program.completedAt = Date.now();
+    if (body?.force === true)
+      audit("program_complete_forced" as Parameters<typeof audit>[0], undefined,
+        `${program.id} ${JSON.stringify(obligations)}`);
     await saveStateNow();
-    return json({ ok: true, id: program.id, status: program.status });
+    return json({ ok: true, id: program.id, status: program.status, obligations });
   }
   if (program.status !== "proposed")
     return json({ error: `illegal transition: cannot discard a ${program.status} program` }, 409);

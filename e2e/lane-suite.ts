@@ -1082,7 +1082,7 @@ export async function run(): Promise<void> {
     await post(`/api/slots/${pileSlot}/kill`, {});
     await post(`/api/slots/${freeSlot}/kill`, {});
     await post(`/api/tasks/${pileTask.task.id}/delete`, {});
-    await post(`/api/programs/${pileProgram}/complete`, {});
+    await post(`/api/programs/${pileProgram}/complete`, { force: true });
   }
 
   // ===== (LS.mod) THE NARROWED PREVIEW — `modules` at the door, FLEET_E2E_MODULES on the daemon ====

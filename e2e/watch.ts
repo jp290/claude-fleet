@@ -4414,8 +4414,9 @@ export async function run(): Promise<void> {
     const inactiveReport = await selfFleetReport(terminalTok,
       { status: "complete", text: "A complete Program does not own this new row." });
     const inactiveText = await inactiveReport.text();
-    check("fleet-report inactive program: a lane whose Program is complete falls back to exact receiver evidence or the named 409",
-      inactiveReport.status === 409 && inactiveText.includes("no exact clarification receiver evidence"),
+    check("fleet-report inactive program: a lane whose Program is complete reaches the owner inbox with its Program provenance",
+      inactiveReport.status === 200 && (JSON.parse(inactiveText) as { report?: FleetReportRow }).report?.basis === "owner-inbox"
+        && (JSON.parse(inactiveText) as { report?: FleetReportRow }).report?.provenance.programId === d1ProgramId,
       `${inactiveReport.status} ${inactiveText}`);
 
     for (const slot of [acceptLane.slot, rejectLane.slot, terminalLane.slot, inboxLane.slot,
@@ -4430,6 +4431,106 @@ export async function run(): Promise<void> {
     d1Cleaned.fleetReports = [];
     d1Cleaned.programs = (d1Cleaned.programs ?? []).filter((p) => p.id !== d1ProgramId);
     writeFileSync(d1Path, JSON.stringify(d1Cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
+  // === PROGRAM COMPLETE · AN OPEN RESULT MUST HAVE A RETURN PATH =============================
+  {
+    const main = await freeSlot();
+    const mainOpen = main ? await post(`/api/slots/${main}/open`, { cwd: REPO, label: "complete-guard-main" }) : null;
+    const lane = async () => (await (await post("/api/lanes", { repo: REPO })).json()) as
+      { slot: number; cwd: string; branch: string };
+    const reporting = await lane();
+    const waiting = await lane();
+    const mainToken = await paneEnv(`s${main}`, "FLEET_SELF_TOKEN") ?? "";
+    const reportingToken = await paneEnv(`s${reporting.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const waitingToken = await paneEnv(`s${waiting.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    check("complete guard fixture: bound MAIN and two live Program lanes carry distinct credentials",
+      !!mainOpen?.ok && new Set([main, reporting.slot, waiting.slot]).size === 3
+        && [mainToken, reportingToken, waitingToken].every((t) => /^[0-9a-f]{32}$/.test(t)));
+    const path = `${ROOT}/fleet.json`;
+    const programId = "b".repeat(24);
+    const cleanId = "a".repeat(24);
+    await stopSrv();
+    const planted = JSON.parse(readFileSync(path, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+    };
+    const now = Date.now();
+    planted.programs = [...(planted.programs ?? []), ...[programId, cleanId].map((id) => ({
+      id, title: "Complete guard fixture", intent: "Preserve the return path",
+      successCriterion: "Open obligations have named ids", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: now - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: now - 900, activatedAt: now - 800,
+      ...(id === programId ? { main: { slot: main, openedAt: planted.slots[String(main)].openedAt,
+        sessionId: planted.slots[String(main)].sessionId, boundAt: now - 700 } } : {}),
+    }))];
+    for (const l of [reporting, waiting]) planted.slots[String(l.slot)].programId = programId;
+    planted.slots[String(reporting.slot)].taskId = "complete-guard-report";
+    planted.slots[String(waiting.slot)].taskId = "complete-guard-question";
+    writeFileSync(path, JSON.stringify(planted, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    const watchRes = await post(`/api/slots/${main}/watch`, { target: waiting.slot, idleSec: 3600 });
+    const watchId = (await watchRes.json() as { watch?: { id: string } }).watch?.id;
+    const clarificationRes = await selfClarify(waitingToken, { question: "Who answers before complete?" });
+    const clarificationId = (await clarificationRes.json() as { request?: { id: string } }).request?.id;
+    const attentionRes = await fetch(`${BASE}/api/self/attention`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": mainToken },
+      body: JSON.stringify({ kind: "blocked", text: "Owner decision remains open." }) });
+    const attentionId = (await attentionRes.json() as { request?: { id: string } }).request?.id;
+    const reportRes = await selfFleetReport(reportingToken,
+      { status: "needs-main", text: "This Program report needs a decision." });
+    const reportId = (await reportRes.json() as { report?: { id: string } }).report?.id;
+    check("complete guard fixture: all four obligation producers accepted their rows",
+      watchRes.ok && !!watchId && clarificationRes.ok && !!clarificationId
+        && attentionRes.ok && !!attentionId && reportRes.ok && !!reportId,
+      JSON.stringify({ watch: watchRes.status, clarification: clarificationRes.status,
+        attention: attentionRes.status, report: reportRes.status }));
+    const expected = { lanes: [reporting.slot, waiting.slot], clarifications: [clarificationId],
+      attention: [attentionId], reports: [reportId], watches: [watchId] };
+    const refusal = await post(`/api/programs/${programId}/complete`, {});
+    const refusalBody = await refusal.json() as { obligations?: unknown };
+    const statusAfterRefusal = (((await (await get("/api/programs")).json()) as
+      { programs: { id: string; status: string }[] }).programs.find((p) => p.id === programId))?.status;
+    check("complete guard: ordinary complete refuses 409 with every open id and leaves Program active",
+      refusal.status === 409 && JSON.stringify(refusalBody.obligations) === JSON.stringify(expected)
+        && statusAfterRefusal === "active",
+      JSON.stringify({ status: refusal.status, obligations: refusalBody.obligations, program: statusAfterRefusal }));
+    const clean = await post(`/api/programs/${cleanId}/complete`, {});
+    check("complete guard: a Program with no open obligations completes without force", clean.status === 200,
+      String(clean.status));
+    const forced = await post(`/api/programs/${programId}/complete`, { force: true });
+    const forcedBody = await forced.json() as { obligations?: unknown; status?: string };
+    const auditLine = auditRows().filter((row) => row.event === "program_complete_forced"
+      && row.detail?.startsWith(`${programId} `));
+    check("complete guard: force closes and audits the same named obligations",
+      forced.status === 200 && forcedBody.status === "complete"
+        && JSON.stringify(forcedBody.obligations) === JSON.stringify(expected)
+        && auditLine.length === 1 && auditLine[0]?.detail === `${programId} ${JSON.stringify(expected)}`,
+      JSON.stringify({ status: forced.status, obligations: forcedBody.obligations, audit: auditLine.map((r) => r.detail) }));
+    const after = await selfFleetReport(waitingToken,
+      { status: "complete", text: "The still-running lane can file after force." });
+    const afterBody = await after.json() as { report?: FleetReportRow };
+    check("complete guard: a running lane files to owner inbox after force with Program provenance",
+      after.status === 200 && afterBody.report?.basis === "owner-inbox"
+        && afterBody.report.provenance.programId === programId,
+      JSON.stringify({ status: after.status, report: afterBody.report }));
+    const repeated = await post(`/api/programs/${programId}/complete`, {});
+    check("complete guard: complete on a completed Program remains idempotent", repeated.status === 200,
+      String(repeated.status));
+    for (const slot of [reporting.slot, waiting.slot, main]) await post(`/api/slots/${slot}/kill`, {});
+    await stopSrv();
+    const cleaned = JSON.parse(readFileSync(path, "utf8")) as {
+      programs?: { id: string }[]; fleetReports?: { id: string }[];
+      clarifications?: { id: string }[]; attentionRequests?: { id: string }[];
+      events?: { kind?: string }[];
+    };
+    cleaned.programs = (cleaned.programs ?? []).filter((p) => p.id !== programId && p.id !== cleanId);
+    cleaned.fleetReports = (cleaned.fleetReports ?? []).filter((r) => r.id !== reportId && r.id !== afterBody.report?.id);
+    cleaned.clarifications = (cleaned.clarifications ?? []).filter((r) => r.id !== clarificationId);
+    cleaned.attentionRequests = (cleaned.attentionRequests ?? []).filter((r) => r.id !== attentionId);
+    cleaned.events = (cleaned.events ?? []).filter((e) => e.kind !== "fleet-report" && e.kind !== "clarification-request");
+    writeFileSync(path, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
     await restartSrv();
   }
 

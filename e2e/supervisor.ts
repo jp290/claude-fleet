@@ -267,7 +267,7 @@ export async function run(): Promise<void> {
       && JSON.stringify(afterAmbiguous.programs.find((p) => p.id === ambiguousId)) === JSON.stringify(loadedAmbiguous)
       && (await occupied()) === occupiedBeforeAmbiguous,
     `${ambiguous.status} ${ambiguousText}`);
-  const cleared = await post(`/api/programs/${ambiguousId}/complete`, {});
+  const cleared = await post(`/api/programs/${ambiguousId}/complete`, { force: true });
   check("supervisor ambiguity cleanup: completing the fixture Program removes the second authority",
     cleared.ok && (await ownerRead()).programs.find((p) => p.id === ambiguousId)?.status === "complete",
     String(cleared.status));
@@ -1076,7 +1076,7 @@ export async function run(): Promise<void> {
   await post(`/api/slots/${ctlId}/kill`, {});
 
   // --- freshness: a second read is a fresh derivation, not a cached one. ---
-  const completed = await post(`/api/programs/${activeId}/complete`, {});
+  const completed = await post(`/api/programs/${activeId}/complete`, { force: true });
   const refreshed = await (await selfGet("/api/self/supervisor-view", svToken)).json() as {
     portfolio?: { program: { id: string; status: string; completedAt: number | null } }[] };
   const refreshedRow = refreshed.portfolio?.find((p) => p.program.id === activeId);

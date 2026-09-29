@@ -117,7 +117,7 @@ export async function run(): Promise<void> {
     try {
       const opened = await post(`/api/slots/${deadSlot}/open`, { cwd: REPO });
       check("tmux enumeration setup: the dead-pane fixture opened", opened.ok, `${opened.status}`);
-      const retained = await tmuxOut("set-option", "-t", `=s${deadSlot}`, "remain-on-exit", "on");
+      const retained = await tmuxOut("set", "-w", "-t", `s${deadSlot}`, "remain-on-exit", "on");
       const exited = await tmuxOut("respawn-pane", "-k", "-t", `s${deadSlot}`, "exit 0");
       check("tmux enumeration setup: remain-on-exit and the immediate-exit pane command succeeded",
         retained.code === 0 && exited.code === 0, JSON.stringify({ retained, exited }));

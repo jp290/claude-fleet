@@ -90,6 +90,12 @@ Rechnung. Er ist kein Urteil: ob der Lauf geschuldet ist, sagt `isolatedPreview`
 (auch in jedem Fremdrepo, `steps: []`) und mit `localProof: null`. Ein eingeengter Body braucht
 `helper.takesModules`, sonst antwortet die Tür `offer: null` (§suite-offer).
 
+## autos delete — `DELETE /api/self/autos/:id`
+
+Die Session löscht ausschließlich ein Auto ihres eigenen Slots; der Slot wird aus dem lebendigen
+Self-Token abgeleitet. Dies gilt auch für Lanes, wie bei `POST /api/self/autos`. Eigener Eintrag:
+200 `{ok:true}`; fremder Slot: 409 ohne Mutation; unbekannte Id: 404. Kein Body erforderlich.
+
 ## autos — `POST /api/self/autos`
 
 Use them to schedule a future check-in on yourself, e.g. right before you'd otherwise go idle waiting on
@@ -1652,6 +1658,35 @@ Quelle steht im Receipt und ist über `GET /api/self/notes` im Volltext erreichb
 werden im Brief als blanke Ids genannt.
 
 
+
+## task full text — `GET /api/self/tasks/:id`
+
+Die lebendig gebundene MAIN liest eine eigene Program-Zeile als `{ok, sessionIdMatch, task}`.
+`task` enthält den vollständigen `text`, die Karte (`card`), Brief und Kommentare; die
+200-Zeichen-Vorschau von `program-execution` bleibt eine Vorschau. Program und Ziel-Repo kommen
+aus Bindung und Checkout. Fremde oder ungebundene Zeile bzw. anderes Repo: 409; unbekannte Id: 404.
+Eine Lane erhält 409 `a lane may not …`.
+
+## task comment — `POST /api/self/tasks/:id/comment`
+
+Body: `{"text":"<Kommentar>"}`. Dieselbe MAIN-/Program-/Repo-Klammer wie die Brief-Tür,
+aber in jedem Zeilenstatus zulässig. Die gemeinsame Kommentarlogik begrenzt Text auf
+`MAX_COMMENT_TEXT` (2000 Zeichen), trimmt ihn und weist leeren Text mit 400 ab. Andere Body-Felder
+sind 400. Der gespeicherte Kommentar trägt `by:"main"` und `slot` aus der Session, nie aus dem Body;
+er überlebt einen Restart mit dieser Herkunft. Der gemeinsame Kommentar-Deckel bleibt wirksam.
+Die Antwort enthält `{ok, sessionIdMatch, comment}`. Diese Tür fügt einen Kommentar hinzu;
+sie liefert ihn nicht in eine Lane-Pane aus. Fremde Zeile/Repo oder Lane: 409; unbekannte Id: 404.
+
+## task withdraw — `POST /api/self/tasks/:id/withdraw`
+
+Body: `{"grund":"<Pflicht-Grund>","beleg":"<optionaler Beleg>"}`. Die gebundene MAIN archiviert
+nur eine eigene **pending** Zeile im eigenen Repo. `queued`, `sent` und terminale Zeilen: 409;
+Lane oder fremde Zeile/Repo: 409; unbekannte Id: 404. Eine noch als Quelle angeheftete Notiz ist
+409, bis sie abgehängt wurde. Fehlender/leerer Grund oder ungültiger Beleg: 400, ebenso fremde
+Body-Felder. `taskDispositionFromBody` prüft die bestehenden Grenzen (Grund 500, Beleg 2000 Zeichen).
+Die gemeinsame Archivlogik speichert die Disposition mit `by:"main"`, `slot` und Server-Zeit;
+diese Herkunft bleibt nach Restart auch im Archiv erhalten. Owner-Dispositionen bleiben
+`by:"owner"` ohne Slot. Antwort: `{ok, sessionIdMatch, task}` mit `status:"archived"`.
 
 ## brief — `POST /api/self/tasks/:id/brief`
 

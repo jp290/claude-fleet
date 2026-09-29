@@ -64,6 +64,8 @@ const PRE_AUTH_ROUTES = [
   // lane-only questions keep their non-lane 409s, and §2 below re-runs the whole dangerous owner
   // surface against a plain session's token.
   '= /api/self',          // same credential, read-only: the session's own row (slot-bound, no lane needed)
+  // DELETE derives the owning slot from the same live self principal; foreign autos stay 409.
+  String.raw`~ /^\/api\/self\/autos\/([a-z0-9]+)$/`,
   '= /api/self/autos',    // the scoped per-slot credential — no lane check, and never had one
   // A Program is a planning bracket above lanes, so this self route runs in the opposite scope:
   // a non-lane session may propose and read only rows carrying its exact session triple. It never
@@ -227,6 +229,10 @@ const PRE_AUTH_ROUTES = [
   // pending notiz/richtung/betrieb rows awaiting owner disposition, so neither kind can close the
   // other's filing door. It writes into no pane, starts nothing and reaches no foreign slot.
   '= /api/self/tasks',
+  // Bound MAIN only: own Program + checkout; comment appends, withdraw requires pending + reason.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)$/`,
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/comment$/`,
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/withdraw$/`,
   // REVIEW PARK (2026-09-25, server.ts#reviewParkTaskForMain): the exact bound Program-MAIN may
   // retire one live lane of its own Program into a review candidate. The task comes from the path,
   // note/hours are the closed body, and mintReviewCandidate keeps the owner's admission rules.
@@ -848,6 +854,22 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // self token, whoever holds it); a real LANE's token is exercised against the self routes it CAN
   // reach in §3 below and throughout e2e/self-token.ts.
   const plainSelf = await selfTokenOf(2);
+  const mainDoorProbes = [
+    { path: "/api/self/tasks/deadbeef", method: "GET" },
+    { path: "/api/self/tasks/deadbeef/comment", method: "POST", body: { text: "probe" } },
+    { path: "/api/self/tasks/deadbeef/withdraw", method: "POST", body: { grund: "probe" } },
+    { path: "/api/self/autos/deadbeef", method: "DELETE" },
+  ];
+  for (const probe of mainDoorProbes) {
+    const options = { method: probe.method, ...(probe.body ? { body: JSON.stringify(probe.body) } : {}) };
+    const denied = await fetch(BASE + probe.path, options);
+    const scoped = await fetch(BASE + probe.path, { ...options,
+      headers: { "content-type": "application/json", "x-fleet-self-token": plainSelf } });
+    check(`§2 MAIN doors: ${probe.method} ${probe.path} requires a live self credential`,
+      denied.status === 401 && scoped.status === (probe.method === "DELETE" ? 404 : 409),
+      `unauth=${denied.status} scoped=${scoped.status}`);
+  }
+
   check("§2 fixtures: a PLAIN session's selfToken and a real guest cookie are available as principals",
     /^[0-9a-f]{32}$/.test(plainSelf) && /^share_[0-9a-f]+=/.test(ctx.shICookie),
     `plain=${plainSelf.slice(0, 8)}… cookie=${ctx.shICookie.slice(0, 16)}…`);

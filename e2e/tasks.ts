@@ -13367,7 +13367,9 @@ export async function run(ctx: Ctx): Promise<void> {
     interface NSlot { id: number; cwd: string | null; worktree?: unknown }
     interface NBrief { text: string; at: number; model: string; edited: boolean; by?: string }
     interface NRow { id: string; text: string; kind: string; status: string;
-      programId?: string; repo?: string | null; brief?: NBrief }
+      programId?: string; repo?: string | null; brief?: NBrief; card?: unknown;
+      comments?: { id: string; text: string; by?: string; slot?: number }[];
+      disposition?: { grund: string; beleg?: string; by: string; slot?: number } }
     interface NState {
       slots?: Record<string, { openedAt?: number; sessionId?: string | null; selfToken?: string }>;
       programs?: { id: string; status?: string; main?: unknown }[];
@@ -13475,6 +13477,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const nOwnerAfter = await nRow(nOwnerId);
     check("ACP-25 (3): a brief the OWNER wrote is refused 409 in its own words and stays byte-for-byte as it was",
       nOverOwner.status === 409 && nOverOwnerText.includes("written by the owner")
+        && nOverOwnerText.includes("POST /api/self/tasks/:id/comment")
         && nOwnerAfter?.brief?.text === "the owner's own bytes" && nOwnerAfter.brief.by === "owner",
       `${nOverOwner.status}:${nOverOwnerText} row=${JSON.stringify(nOwnerAfter?.brief)}`);
 
@@ -13533,6 +13536,93 @@ export async function run(ctx: Ctx): Promise<void> {
       `by=${nBodyBy.status}:${nBodyByText} byMain=${nBodyMain.status} model=${nBodyModel.status}:${nBodyModelText}`
         + ` missing=${nNoText.status} blank=${nBlank.status}`);
 
+    const doorCall = (path: string, method: string, body?: unknown, token = nToken): Promise<Response> =>
+      fetch(BASE + path, { method, headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const doors = [
+      { suffix: "", method: "GET", body: undefined },
+      { suffix: "/comment", method: "POST", body: { text: "foreign attempt" } },
+      { suffix: "/withdraw", method: "POST", body: { grund: "foreign attempt" } },
+    ];
+    for (const door of doors) {
+      const before = JSON.stringify(await nRow(nForeignId));
+      const foreign = await doorCall(`/api/self/tasks/${nForeignId}${door.suffix}`, door.method, door.body);
+      check(`MAIN doors foreign: ${door.method} ${door.suffix || "full text"} refuses another Program without mutation`,
+        foreign.status === 409 && JSON.stringify(await nRow(nForeignId)) === before,
+        `${foreign.status}:${await foreign.text()}`);
+      const loose = await doorCall(`/api/self/tasks/${nLooseId}${door.suffix}`, door.method, door.body);
+      check(`MAIN doors unbracketed: ${door.method} ${door.suffix || "full text"} refuses a row without Program`,
+        loose.status === 409, String(loose.status));
+      const lane = await doorCall(`/api/self/tasks/${nOkId}${door.suffix}`, door.method, door.body, nLaneToken);
+      check(`MAIN doors lane: ${door.method} ${door.suffix || "full text"} refuses with the lane reason`,
+        lane.status === 409 && (await lane.text()).includes("a lane may not"), String(lane.status));
+    }
+    const fullText = "acp25 full task text " + "beyond the preview. ".repeat(30);
+    const fullId = await nMake(fullText, nBoundProgram);
+    const full = await doorCall(`/api/self/tasks/${fullId}`, "GET");
+    const fullBody = await full.json() as { task?: NRow };
+    const storedFull = await nRow(fullId);
+    check("MAIN doors own: GET returns the exact full text and stored card", full.ok
+      && fullBody.task?.text === fullText && fullText.length > 200 && !!storedFull?.card
+      && JSON.stringify(fullBody.task.card) === JSON.stringify(storedFull.card),
+      `${full.status} text=${fullBody.task?.text.length} card=${JSON.stringify(fullBody.task?.card)}`);
+    const comment = await doorCall(`/api/self/tasks/${nOwnerId}/comment`, "POST", { text: "  MAIN sharpening remark  " });
+    const commentBody = await comment.json() as { comment?: { id: string; text: string; by?: string; slot?: number } };
+    check("MAIN doors own: comment stores by main and the caller slot on an owner-pinned row", comment.ok
+      && commentBody.comment?.text === "MAIN sharpening remark" && commentBody.comment.by === "main"
+      && commentBody.comment.slot === nSlot
+      && !!(await nRow(nOwnerId))?.comments?.some((c) => c.id === commentBody.comment?.id),
+      `${comment.status}:${JSON.stringify(commentBody)}`);
+    for (const text of [undefined, " "]) {
+      const blank = await doorCall(`/api/self/tasks/${nOwnerId}/comment`, "POST", { text });
+      check(`MAIN doors comment: ${text === undefined ? "missing" : "blank"} text is 400`, blank.status === 400, String(blank.status));
+    }
+    const capped = await doorCall(`/api/self/tasks/${nOwnerId}/comment`, "POST", { text: "x".repeat(2001) });
+    const cappedBody = await capped.json() as { comment?: { text: string } };
+    check("MAIN doors comment: MAX_COMMENT_TEXT caps stored text at exactly 2000", capped.ok
+      && cappedBody.comment?.text === "x".repeat(2000), `${capped.status} length=${cappedBody.comment?.text.length}`);
+    for (const body of [{}, { grund: " " }, { grund: "x".repeat(501) }, { grund: "ok", beleg: " " }]) {
+      const bad = await doorCall(`/api/self/tasks/${fullId}/withdraw`, "POST", body);
+      check(`MAIN doors withdraw: invalid reason/beleg is 400 (${JSON.stringify(body).slice(0, 40)})`,
+        bad.status === 400 && (await nRow(fullId))?.status === "pending", String(bad.status));
+    }
+    const withdrawn = await doorCall(`/api/self/tasks/${fullId}/withdraw`, "POST", { grund: "  replaced  ", beleg: "evidence" });
+    const withdrawnRow = await nRow(fullId);
+    check("MAIN doors own: withdraw archives pending with a trimmed MAIN disposition", withdrawn.ok
+      && withdrawnRow?.status === "archived" && withdrawnRow.disposition?.grund === "replaced"
+      && withdrawnRow.disposition.by === "main" && withdrawnRow.disposition.slot === nSlot,
+      `${withdrawn.status}:${JSON.stringify(withdrawnRow?.disposition)}`);
+    const ownerArchiveId = await nMake("acp25 owner disposition", nBoundProgram);
+    const ownerArchive = await post(`/api/tasks/${ownerArchiveId}/archive`, { grund: "owner reason" });
+    check("MAIN doors owner compatibility: archive still records by owner without slot", ownerArchive.ok
+      && (await nRow(ownerArchiveId))?.disposition?.by === "owner"
+      && (await nRow(ownerArchiveId))?.disposition?.slot === undefined, String(ownerArchive.status));
+    const queuedId = await nMake("acp25 queued withdraw refusal", nBoundProgram);
+    await post(`/api/tasks/${queuedId}/queue`, {});
+    const queuedWithdraw = await doorCall(`/api/self/tasks/${queuedId}/withdraw`, "POST", { grund: "refused" });
+    check("MAIN doors withdraw: queued is 409 and remains queued", queuedWithdraw.status === 409
+      && (await nRow(queuedId))?.status === "queued", String(queuedWithdraw.status));
+    await post(`/api/tasks/${queuedId}/unqueue`, {});
+    const makeAuto = async (token: string): Promise<string> => {
+      const response = await doorCall("/api/self/autos", "POST", { text: "MAIN auto deletion", inSec: 3600 }, token);
+      const body = await response.json() as { auto?: { id: string } };
+      check("MAIN doors autos fixture: self scheduling succeeds", response.ok && !!body.auto?.id, String(response.status));
+      return body.auto?.id ?? "";
+    };
+    const ownAuto = await makeAuto(nToken);
+    const foreignAuto = await makeAuto(nLaneToken);
+    const foreignAutoDelete = await doorCall(`/api/self/autos/${foreignAuto}`, "DELETE");
+    const ownAutoDelete = await doorCall(`/api/self/autos/${ownAuto}`, "DELETE");
+    const laneSelf = await doorCall("/api/self", "GET", undefined, nLaneToken);
+    const laneSelfBody = await laneSelf.json() as { autos?: { id: string }[] };
+    check("MAIN doors autos foreign: DELETE is 409 and retains the foreign auto", foreignAutoDelete.status === 409
+      && !!laneSelfBody.autos?.some((a) => a.id === foreignAuto), String(foreignAutoDelete.status));
+    const ownGone = await doorCall(`/api/self/autos/${ownAuto}`, "DELETE");
+    check("MAIN doors autos own: DELETE is 200 and the auto is gone", ownAutoDelete.status === 200
+      && ownGone.status === 404, `${ownAutoDelete.status}/${ownGone.status}`);
+    const laneAutoDelete = await doorCall(`/api/self/autos/${foreignAuto}`, "DELETE", undefined, nLaneToken);
+    check("MAIN doors autos lane: a lane deletes its own auto", laneAutoDelete.status === 200, String(laneAutoDelete.status));
+
     const nLegacyId = await nMake("acp25 row carrying a pre-field brief", nBoundProgram);
     // (7) THE ALT-ZEILEN-GEGENPROBE — the counter-probe the whole constraint rests on. A brief that
     // was PINNED BEFORE this field existed is planted into the state file exactly as it stood then
@@ -13551,6 +13641,19 @@ export async function run(ctx: Ctx): Promise<void> {
     if (nGarbageRow) nGarbageRow.brief = { text: "a brief with a forged author", at: 1_700_000_000_000, model: "owner", edited: true, by: "the owner themselves" };
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(nLegacyPlant, null, 2), { mode: 0o600 });
     await restartSrv();
+    const commentBack = (await nRow(nOwnerId))?.comments?.find((c) => c.id === commentBody.comment?.id);
+    const withdrawBack = await nRow(fullId);
+    const archiveLines = readFileSync(`${ROOT}/tasks-archive.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { task?: NRow });
+    const archiveBack = archiveLines.findLast((line) => line.task?.id === fullId)?.task;
+    check("MAIN doors restart: comment keeps by main plus slot", commentBack?.by === "main"
+      && commentBack.slot === nSlot && commentBack.text === "MAIN sharpening remark", JSON.stringify(commentBack));
+    check("MAIN doors restart: withdrawn disposition keeps by main plus slot in live state AND archive ledger",
+      withdrawBack?.disposition?.by === "main" && withdrawBack.disposition.slot === nSlot
+      && archiveBack?.disposition?.by === "main" && archiveBack.disposition.slot === nSlot,
+      JSON.stringify({ live: withdrawBack?.disposition, archive: archiveBack?.disposition }));
+    check("MAIN doors restart: owner disposition stays owner without slot", (await nRow(ownerArchiveId))?.disposition?.by === "owner"
+      && (await nRow(ownerArchiveId))?.disposition?.slot === undefined);
     const nLegacyBack = await nRow(nLegacyId);
     const nGarbageBack = await nRow(nForeignId);
     const nOkBack = await nRow(nOkId);
@@ -13597,6 +13700,9 @@ export async function run(ctx: Ctx): Promise<void> {
         && nRevOk.status === 200 && nRevRow?.review === "advisory" && nRevRow.brief?.by === "main",
       `bad=${nRevBad.status}:${nRevBadText} ok=${nRevOk.status} row=${JSON.stringify(nRevRow?.review)}`);
     const nRevSlot = ((await (await post(`/api/tasks/${nRevId}/dispatch`, {})).json()) as { slot?: number }).slot;
+    const sentWithdraw = await doorCall(`/api/self/tasks/${nRevId}/withdraw`, "POST", { grund: "refused" });
+    check("MAIN doors withdraw: sent is 409 and remains sent", sentWithdraw.status === 409
+      && (await nRow(nRevId))?.status === "sent", String(sentWithdraw.status));
     let nRevCwd = "";
     for (let i = 0; i < 60 && typeof nRevSlot === "number" && !nRevCwd; i++) {
       nRevCwd = (await nSess()).find((x) => x.id === nRevSlot)?.cwd ?? "";
@@ -13631,7 +13737,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // Leave the board as this section found it: every row it minted is deleted, the planted MAIN's
     // slot is closed, and both Programs are completed rather than left active for the modules after
     // this one to inherit.
-    for (const id of [nOkId, nOwnerId, nForeignId, nLooseId, nLaneTarget, nClosedId, nLegacyId, nRevId])
+    for (const id of [nOkId, nOwnerId, nForeignId, nLooseId, nLaneTarget, nClosedId, nLegacyId, nRevId, fullId, ownerArchiveId, queuedId])
       await post(`/api/tasks/${id}/delete`, {});
     await post(`/api/slots/${nSlot}/kill`, {});
     await post(`/api/programs/${nBoundProgram}/complete`, {});

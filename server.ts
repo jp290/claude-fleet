@@ -1960,7 +1960,8 @@ async function decideVariantGroup(group: Task, winnerId: unknown,
 // Task.disposition at the archive door. A body that names neither field asks for no reason and gets
 // none (`undefined`); once either is named, `grund` must be a non-empty string and `beleg`, if
 // present, one too. `by` and `at` are the server's, never the body's.
-function taskDispositionFromBody(body: Record<string, unknown> | null):
+function taskDispositionFromBody(body: Record<string, unknown> | null,
+  author: { by: "owner" } | { by: "main"; slot: number } = { by: "owner" }):
   { ok: true; disposition: TaskDisposition | undefined } | { ok: false; error: string } {
   if (!body || (body.grund === undefined && body.beleg === undefined)) return { ok: true, disposition: undefined };
   const { grund, beleg } = body;
@@ -1973,7 +1974,12 @@ function taskDispositionFromBody(body: Record<string, unknown> | null):
   if (typeof beleg === "string" && beleg.length > TASK_DISPOSITION_BELEG_MAX)
     return { ok: false, error: `beleg is limited to ${TASK_DISPOSITION_BELEG_MAX} characters` };
   return { ok: true, disposition: { grund: grund.trim(), ...(typeof beleg === "string" ? { beleg: beleg.trim() } : {}),
-    by: "owner", at: Date.now() } };
+    ...author, at: Date.now() } };
+}
+
+function archiveTask(t: Task, disposition?: TaskDisposition): void {
+  t.status = "archived";
+  if (disposition) t.disposition = disposition;
 }
 
 // Task.review at a door. `undefined` = the body did not name it (nothing changes); `null` = clear the
@@ -2073,6 +2079,35 @@ const loadTaskVariantDecision = (value: unknown): TaskVariantDecision | undefine
 };
 
 const MAX_COMMENTS_PER_TASK = 50;
+function loadTaskComments(value: unknown): TaskComment[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const comments: TaskComment[] = [];
+  for (const raw of value as unknown[]) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+    const c = raw as Record<string, unknown>;
+    if (typeof c.id !== "string" || typeof c.text !== "string" || !c.text) continue;
+    if (c.by === "main" && (typeof c.slot !== "number" || !Number.isInteger(c.slot) || c.slot < 1)) continue;
+    comments.push({ id: c.id, ts: Number(c.ts) || 0, text: c.text.slice(0, MAX_COMMENT_TEXT),
+      ...(typeof c.from === "string" && c.from ? { from: c.from.slice(0, 200) } : {}),
+      ...(isTaskVerdict(c.verdict) ? { verdict: c.verdict } : {}),
+      ...(c.by === "main" ? { by: "main" as const, slot: c.slot as number }
+        : c.by === "owner" ? { by: "owner" as const } : {}) });
+  }
+  return cappedTaskComments(comments);
+}
+
+function appendTaskComment(t: Task, body: Record<string, unknown> | null,
+  author?: { by: "main"; slot: number }):
+  { ok: true; comment: TaskComment } | { ok: false; error: string; status: number } {
+  const text = typeof body?.text === "string" ? body.text.slice(0, MAX_COMMENT_TEXT).trim() : "";
+  if (!text) return { ok: false, error: "bad text", status: 400 };
+  if ((t.comments ?? []).length >= MAX_COMMENTS_PER_TASK && !(t.comments ?? []).some((x) => x.from))
+    return { ok: false, error: `comment cap ${MAX_COMMENTS_PER_TASK} holds only owner comments`, status: 409 };
+  const comment: TaskComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), text, ...author };
+  t.comments = cappedTaskComments([...(t.comments ?? []), comment]);
+  return { ok: true, comment };
+}
+
 function cappedTaskComments(comments: TaskComment[]): TaskComment[] {
   const kept = [...comments];
   while (kept.length > MAX_COMMENTS_PER_TASK) {
@@ -4608,7 +4643,7 @@ async function youngestArchivedTask(id: string): Promise<Task | null> {
     const r = t as Task;
     if (r.id !== id || typeof r.text !== "string"
       || !["owner", "intake", "steward", "main"].includes(r.source) || !isTaskKind(r.kind)) continue;
-    return r;
+    return { ...r, disposition: loadTaskDisposition(r.disposition), comments: loadTaskComments(r.comments) };
   }
   return null;
 }
@@ -14232,6 +14267,43 @@ async function assignNoteForMain(s: Slot, id: string, body: Record<string, unkno
     task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId } });
 }
 
+async function taskDoorForMain(s: Slot, id: string, action: "read" | "comment" | "withdraw",
+  body: Record<string, unknown> | null = null): Promise<Response> {
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return json({ error: "unknown task" }, 404);
+  if (t.programId !== program.id)
+    return json({ error: `task belongs to no program of this MAIN — this door reads or changes only rows of program ${program.id}` }, 409);
+  const mainRepo = await repoKeyOf(s);
+  if (!mainRepo) return json({ error: "this session's checkout is not a git repository" }, 409);
+  const target = t.repo ?? DISPATCH_REPO;
+  if (!target || repoCanon(target) !== mainRepo)
+    return json({ error: "a MAIN task door never reaches across repositories" }, 409);
+  if (action === "read") return json({ ok: true, sessionIdMatch, task: t });
+  if (action === "comment") {
+    const extra = Object.keys(body ?? {}).filter((k) => k !== "text");
+    if (extra.length) return json({ error: "this door reads text only — authorship comes from this session" }, 400);
+    const made = appendTaskComment(t, body, { by: "main", slot: s.id });
+    if (!made.ok) return json({ error: made.error }, made.status);
+    await saveStateNow();
+    return json({ ok: true, sessionIdMatch, comment: made.comment });
+  }
+  if (t.status !== "pending")
+    return json({ error: `task is ${t.status} — a MAIN withdraws only a pending row` }, 409);
+  const holders = sourceHolders(t.id);
+  if (holders.length) return json({ error: `this note is an assigned SOURCE of ${holders.join(", ")} — detach it there first` }, 409);
+  const extra = Object.keys(body ?? {}).filter((k) => k !== "grund" && k !== "beleg");
+  if (extra.length) return json({ error: "this door reads grund and beleg only" }, 400);
+  const parsed = taskDispositionFromBody(body, { by: "main", slot: s.id });
+  if (!parsed.ok) return json({ error: parsed.error }, 400);
+  if (!parsed.disposition) return json({ error: "withdraw requires a non-empty grund" }, 400);
+  archiveTask(t, parsed.disposition);
+  await saveStateNow();
+  return json({ ok: true, sessionIdMatch, task: t });
+}
+
 // THE BRIEF-SHARPENING DOOR — a bound Program-MAIN rewrites the exact bytes a lane of its OWN
 // Program will be founded on, and the record says it was the MAIN.
 //
@@ -14269,9 +14341,9 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
   // demonstrably wrote is theirs to change, and a brief nobody's name is on cannot be told apart
   // from one.
   if (t.brief?.edited && t.brief.by === "owner")
-    return json({ error: "the brief on this row was written by the owner — a MAIN does not overwrite it; put the sharpening on the row as a comment instead" }, 409);
+    return json({ error: "the brief on this row was written by the owner — a MAIN does not overwrite it; put the sharpening on the row via POST /api/self/tasks/:id/comment instead" }, 409);
   if (t.brief?.edited && t.brief.by === undefined)
-    return json({ error: "the brief on this row is a pinned hand edit with NO recorded author — written before briefs recorded one, so it cannot be told apart from the owner's own; only the owner's door may replace it" }, 409);
+    return json({ error: "the brief on this row is a pinned hand edit with NO recorded author — written before briefs recorded one, so it cannot be told apart from the owner's own; only the owner's door may replace it; put the sharpening on the row via POST /api/self/tasks/:id/comment instead" }, 409);
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the brief's target repo cannot be derived" }, 409);
@@ -36956,17 +37028,7 @@ if (existsSync(STATE_FILE)) {
           briefReview: normBriefReview(t.briefReview),
           // comments carry no authority, so a malformed entry is dropped. Capped on the way back
           // IN: a hand-edit must not widen a field past what the route would have accepted.
-          comments: Array.isArray(t.comments)
-            ? cappedTaskComments(t.comments.filter((c): c is TaskComment => typeof c === "object" && c !== null
-              && typeof c.id === "string" && typeof c.text === "string" && !!c.text)
-              // the two lane fields degrade INDEPENDENTLY and both toward the owner shape: a
-              // malformed verdict leaves a plain remark rather than a fourth verdict value, and a
-              // branch nobody can read leaves an unsigned one. Neither may be repaired into the
-              // other — an invented `from` would let a hand-edited state file close a note.
-              .map((c) => ({ id: c.id, ts: Number(c.ts) || 0, text: c.text.slice(0, MAX_COMMENT_TEXT),
-                ...(typeof c.from === "string" && c.from ? { from: c.from.slice(0, 200) } : {}),
-                ...(isTaskVerdict(c.verdict) ? { verdict: c.verdict } : {}) })))
-            : undefined,
+          comments: loadTaskComments(t.comments),
           // N3 · THE PINS. A malformed entry is DROPPED, never repaired: an invented `by` would let
           // a hand-edited state file claim the owner assigned a source, and an unreadable noteId is
           // a pointer to nothing. Re-capped on the way in, like every other list here.
@@ -40784,6 +40846,19 @@ Bun.serve<WSData>({
       return createAutoForSlot(s, await readJson(req));
     }
 
+    const selfAutoDelete = /^\/api\/self\/autos\/([a-z0-9]+)$/.exec(url.pathname);
+    if (selfAutoDelete && req.method === "DELETE") {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const a = autos.find((x) => x.id === selfAutoDelete[1]);
+      if (!a) return json({ error: "unknown schedule" }, 404);
+      if (a.slot !== s.id) return json({ error: "this auto belongs to another slot" }, 409);
+      autos = autos.filter((x) => x.id !== a.id);
+      await saveStateNow();
+      return json({ ok: true });
+    }
+
     // A Program is the durable planning bracket ABOVE future lanes, never a queue row. A scoped
     // session credential may therefore propose/read only from a non-lane planning session. The
     // authenticated session triple is copied from the slot, never accepted from the body.
@@ -41385,6 +41460,36 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not sharpen a brief — the brief is the work order a lane was founded on, and the producer does not rewrite what it is measured against" }, 409);
       return sharpenBriefForMain(s, selfTaskBrief[1]!, await readJson(req));
+    }
+
+    const selfTaskRead = /^\/api\/self\/tasks\/([a-z0-9]+)$/.exec(url.pathname);
+    if (selfTaskRead && req.method === "GET") {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not read a MAIN task row — use the lane's own task context" }, 409);
+      return taskDoorForMain(s, selfTaskRead[1]!, "read");
+    }
+
+    const selfTaskComment = /^\/api\/self\/tasks\/([a-z0-9]+)\/comment$/.exec(url.pathname);
+    if (selfTaskComment && req.method === "POST") {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not comment a MAIN task row — this act belongs to its bound MAIN" }, 409);
+      return taskDoorForMain(s, selfTaskComment[1]!, "comment", await readJson(req));
+    }
+
+    const selfTaskWithdraw = /^\/api\/self\/tasks\/([a-z0-9]+)\/withdraw$/.exec(url.pathname);
+    if (selfTaskWithdraw && req.method === "POST") {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not withdraw a MAIN task row — this act belongs to its bound MAIN" }, 409);
+      return taskDoorForMain(s, selfTaskWithdraw[1]!, "withdraw", await readJson(req));
     }
 
     // S5 · Program-MAIN card-surface confirmation (confirmCardsForMain). Non-lane only for the family's
@@ -44868,12 +44973,10 @@ Bun.serve<WSData>({
       const t = tasks.find((x) => x.id === taskComment[1]);
       if (!t) return json({ error: "unknown task" }, 404);
       const body = await readJson(req);
-      const text = typeof body?.text === "string" ? body.text.slice(0, MAX_COMMENT_TEXT).trim() : "";
-      if (!text) return json({ error: "bad text" }, 400);
-      if ((t.comments ?? []).length >= MAX_COMMENTS_PER_TASK && !(t.comments ?? []).some((x) => x.from))
-        return json({ error: `comment cap ${MAX_COMMENTS_PER_TASK} holds only owner comments` }, 409);
-      const c: TaskComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), text };
-      t.comments = cappedTaskComments([...(t.comments ?? []), c]);
+      const made = appendTaskComment(t, body);
+      if (!made.ok) return json({ error: made.error }, made.status);
+      const c = made.comment;
+      const text = c.text;
       saveState();
       const lane = t.status === "sent" && t.slot !== null ? slotFrom(t.slot) : null;
       if (!lane?.cwd || !lane.worktree || !tasks.some((x) => x.id === t.id && x.slot === lane.id && x.status === "sent"))
@@ -45068,10 +45171,7 @@ Bun.serve<WSData>({
         if (t.variants) for (const v of variantsOfGroup(t)) if (v.status === "queued") v.status = "pending";
       }
       else if (taskAct[2] === "archive") {
-        t.status = "archived";
-        // a re-archive without a body keeps the reason already given; saveState's archive pass
-        // writes the row again whenever the reason changes
-        if (disposition) t.disposition = disposition;
+        archiveTask(t, disposition);
       }
       else if (taskAct[2] === "unarchive") t.status = "pending"; // back to owner review, never straight to queued
       else t.status = "done";

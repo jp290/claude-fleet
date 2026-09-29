@@ -1578,7 +1578,7 @@ interface TaskCard extends TaskCardBody {
 // means nobody said why, never an empty reason: an archive without a body mints none. `beleg` is the
 // evidence pointer and is absent unless given. The row itself may later be evicted by capTasks; the
 // reason survives with it in tasks-archive.jsonl, which is where register.sh --archived reads it.
-interface TaskDisposition { grund: string; beleg?: string; by: "owner"; at: number }
+interface TaskDisposition { grund: string; beleg?: string; by: "owner" | "main"; slot?: number; at: number }
 const TASK_DISPOSITION_GRUND_MAX = 500;
 const TASK_DISPOSITION_BELEG_MAX = 2000;
 // read back whole or not at all: a reason without its `grund` is not a shorter reason
@@ -1587,9 +1587,11 @@ const loadTaskDisposition = (value: unknown): TaskDisposition | undefined => {
   const r = value as Record<string, unknown>;
   if (typeof r.grund !== "string" || !r.grund.trim() || typeof r.at !== "number" || !Number.isFinite(r.at))
     return undefined;
+  if (r.by === "main" && (typeof r.slot !== "number" || !Number.isInteger(r.slot) || r.slot < 1))
+    return undefined;
   return { grund: r.grund.slice(0, TASK_DISPOSITION_GRUND_MAX),
     ...(typeof r.beleg === "string" && r.beleg.trim() ? { beleg: r.beleg.slice(0, TASK_DISPOSITION_BELEG_MAX) } : {}),
-    by: "owner", at: r.at };
+    ...(r.by === "main" ? { by: "main" as const, slot: r.slot as number } : { by: "owner" as const }), at: r.at };
 };
 // one kind change (Task.kindChanges). Both writers — POST /api/tasks/:id/kind and the `adopt` alias —
 // sit past the owner token gate, so `by` has one value today.
@@ -1659,7 +1661,7 @@ const isTaskVerdict = (value: unknown): value is TaskVerdict =>
 // How many lands a note remembers. Five like the note block's own cap and for the same reason: the
 // answer to "has this moved lately" does not improve with the sixth entry.
 const TASK_TOUCHED_MAX = 5;
-interface TaskComment { id: string; ts: number; text: string; from?: string; verdict?: TaskVerdict }
+interface TaskComment { id: string; ts: number; text: string; from?: string; verdict?: TaskVerdict; by?: "owner" | "main"; slot?: number }
 
 // --- THE EXPLICIT TASK→NOTIZ ASSIGNMENT (N3) ---------------------------------------------------
 // Until N3 a note reached a lane by FILE-SURFACE INTERSECTION alone (task-notes.ts). That join is a

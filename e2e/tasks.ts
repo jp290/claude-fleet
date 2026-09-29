@@ -583,9 +583,20 @@ export async function run(ctx: Ctx): Promise<void> {
   check("task workbench source: zero open tasks has a named Work empty state, never a Closed work group",
     taskClientSource.includes("Work is clear — no open tasks")
       && !/Q_GROUPS[\s\S]{0,700}?head: "Closed"/.test(taskClientSource), "renderQueue/Q_GROUPS");
+  // THE ONE COMMENT THREAD (4465117e): the task thread's draft box and its text blocks live in
+  // commentThread, generalized over a target; the task detail hands itself in as one. A property of
+  // "the task thread" is therefore proven in two halves — the component, cut out by its column-0
+  // boundary, and the task call site that feeds it.
+  const cmThreadStart = taskClientSource.indexOf("function commentThread(parent: HTMLElement, target: CommentTarget,");
+  const cmThreadSource = cmThreadStart >= 0
+    ? taskClientSource.slice(cmThreadStart, taskClientSource.indexOf("\n}\n", cmThreadStart)) : "";
+  const cmTaskCall = /commentThread\(discussion, \{ kind: "task", id: t\.id \}, "comments", cms\.map\(\(c\) => \(\{\s*id: c\.id, ts: c\.ts, text: c\.text, label: c\.from \?\? "comment",/;
   check("task workbench source: refresh-safe draft nodes and focused caret restoration remain wired",
     /if \(!qCompose\)/.test(taskClientSource)
-      && /if \(!qCmBox \|\| qCmFor !== t\.id\)/.test(taskClientSource)
+      && /const tkey = commentTargetKey\(target\);/.test(cmThreadSource)
+      && /if \(!qCmBox \|\| qCmFor !== tkey\) \{[^}]*qCmFor = tkey;/.test(cmThreadSource)
+      && /const commentTargetKey = \(t: CommentTarget\): string =>\s*t\.kind === "task" \? `task:\$\{t\.id\}`/.test(taskClientSource)
+      && cmTaskCall.test(taskClientSource)
       && /function qTextDraft/.test(taskClientSource)
       && /focused\.focus\(\)/.test(taskClientSource), "queue draft lifecycle in src/client.ts");
   check("task workbench source: opening the queue establishes a visible keyboard focus target",
@@ -768,7 +779,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // being an unnamed box nobody can take with them, and a confirmation painted in a raw green.
     check("queue style: the pane's read-only texts are labelled blocks with a copy, and the receipt uses the copied token",
       /function qTextBlock\(parent: HTMLElement, label: string, text: string\)/.test(taskClientSource)
-        && ["qTextBlock(discussion, row.noteId, row.text)", 'qTextBlock(discussion, c.from ?? "comment", c.text)',
+        && cmThreadSource.includes("qTextBlock(parent, c.label, c.text);") && cmTaskCall.test(taskClientSource)
+        && ["qTextBlock(discussion, row.noteId, row.text)",
           'qTextBlock(refinement!, "brief", brief.text)', 'qTextBlock(refinement!, "done-criterion", crit.text ?? "")',
           'qTextBlock(request, brief ? "your draft" : "request", body)'].every((call) => taskClientSource.includes(call))
         && /copy\.classList\.add\("ok"\)/.test(taskClientSource)

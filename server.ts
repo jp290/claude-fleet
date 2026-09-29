@@ -15995,6 +15995,55 @@ const cardSpawnOf = (t: Task): DispatchSpawn | undefined => {
 // with a valid ROLLE on their card) without rewriting a stored row.
 const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? cardSpawnOf(t) ?? DEFAULT_SPAWN;
 
+async function setTaskSpawn(id: string, req: Request, actor?: { slot: number; openedAt: number }): Promise<Response> {
+  let sessionIdMatch: "exact" | "divergent" | "unknown" | undefined;
+  let programId: string | undefined;
+  if (actor) {
+    const s = slotFrom(actor.slot);
+    if (!s?.cwd || s.openedAt !== actor.openedAt) return json({ error: "session occupant changed" }, 409);
+    const bound = boundProgramForMain(s);
+    if (!bound.ok) return json({ error: bound.error }, 409);
+    sessionIdMatch = bound.sessionIdMatch;
+    programId = bound.program.id;
+  }
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return json({ error: "unknown task" }, 404);
+  if (programId && t.programId !== programId)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN changes workers only for rows of program ${programId}` }, 409);
+  if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — only an auftrag has a worker` }, 409);
+  if (t.variants?.length || t.variantOf !== undefined)
+    return json({ error: "a variant group's workers are fixed in its variants" }, 409);
+  if (t.status !== "pending" && t.status !== "queued")
+    return json({ error: `task is ${t.status} — only a pending or queued row can change its worker` }, 409);
+  if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
+  const body = await readJson(req);
+  if (!body || Array.isArray(body)) return json({ error: "invalid json" }, 400);
+  const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort");
+  if (extra.length) return json({ error: `this door reads harness, model and effort only — [${extra.join(", ")}] is not read` }, 400);
+  const choice = taskSpawnFromBody(body);
+  if (!choice.ok) return json({ error: choice.error }, 400);
+  if (!tasks.includes(t) || t.kind !== "auftrag" || t.variants?.length || t.variantOf !== undefined
+    || (t.status !== "pending" && t.status !== "queued") || dispatchingTasks.has(t.id))
+    return json({ error: "task changed while its worker was being set" }, 409);
+  if (actor) {
+    const current = slotFrom(actor.slot);
+    if (!current?.cwd || current.openedAt !== actor.openedAt || current.worktree) return json({ error: "session occupant changed" }, 409);
+    const bound = boundProgramForMain(current);
+    if (!bound.ok || bound.program.id !== programId || t.programId !== programId)
+      return json({ error: "Program-MAIN binding changed while its worker was being set" }, 409);
+  }
+  const before = t.spawn;
+  const result = { ok: true, task: t, ...(sessionIdMatch ? { sessionIdMatch } : {}) };
+  if (JSON.stringify(before) === JSON.stringify(choice.spawn)) return json({ ...result, unchanged: true });
+  if (choice.spawn) t.spawn = choice.spawn;
+  else delete t.spawn;
+  saveState();
+  audit("task_spawn", actor?.slot,
+    `${t.id} ${JSON.stringify(before ?? null)}->${JSON.stringify(choice.spawn ?? null)}`
+      + (actor ? ` program=${programId} Slot ${actor.slot} openedAt=${actor.openedAt}` : ""));
+  return json(result);
+}
+
 // THE LAND-WAVE SENSOR, SERVER-SIDE, over exactly the facts the board projects: taskView's surface
 // (the owner-confirmed one where there is one, derived otherwise), the row's programId, and the
 // dispatch default for a row that names no repo of its own. ONE classifier for the board line, for
@@ -41058,6 +41107,17 @@ Bun.serve<WSData>({
       return reviewParkTaskForMain(s, selfTaskReviewPark[1]!, body);
     }
 
+    const selfTaskSpawn = /^\/api\/self\/tasks\/([a-z0-9]+)\/spawn$/.exec(url.pathname);
+    if (selfTaskSpawn && req.method === "POST") {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not change a queue row's worker" }, 409);
+      const actor = { slot: s.id, openedAt: s.openedAt };
+      return setTaskSpawn(selfTaskSpawn[1]!, req, actor);
+    }
+
     // ACP-23 · Program-MAIN filing. Non-lane only, for the same "one edge per role" reason as its
     // two neighbours: a lane EXECUTES the row it was founded on — it does not fill the queue its
     // own MAIN releases from. Placed ABOVE the release route on purpose: that route's pin holds
@@ -44112,31 +44172,7 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/start-plan" && req.method === "GET") return json(startPlanNow());
     const taskSpawn = /^\/api\/tasks\/([a-z0-9]+)\/spawn$/.exec(url.pathname);
     if (req.method === "POST" && taskSpawn) {
-      const t = tasks.find((x) => x.id === taskSpawn[1]);
-      if (!t) return json({ error: "unknown task" }, 404);
-      if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — only an auftrag has a worker` }, 409);
-      if (t.variants?.length || t.variantOf !== undefined)
-        return json({ error: "a variant group's workers are fixed in its variants" }, 409);
-      if (t.status !== "pending" && t.status !== "queued")
-        return json({ error: `task is ${t.status} — only a pending or queued row can change its worker` }, 409);
-      if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
-      const body = await readJson(req);
-      if (!body || Array.isArray(body)) return json({ error: "invalid json" }, 400);
-      const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort");
-      if (extra.length) return json({ error: `this door reads harness, model and effort only — [${extra.join(", ")}] is not read` }, 400);
-      const choice = taskSpawnFromBody(body);
-      if (!choice.ok) return json({ error: choice.error }, 400);
-      if (!tasks.includes(t) || t.kind !== "auftrag" || t.variants?.length || t.variantOf !== undefined
-        || (t.status !== "pending" && t.status !== "queued") || dispatchingTasks.has(t.id))
-        return json({ error: "task changed while its worker was being set" }, 409);
-      const before = t.spawn;
-      if (JSON.stringify(before) === JSON.stringify(choice.spawn)) return json({ ok: true, task: t, unchanged: true });
-      if (choice.spawn) t.spawn = choice.spawn;
-      else delete t.spawn;
-      saveState();
-      audit("task_spawn", undefined,
-        `${t.id} ${JSON.stringify(before ?? null)}->${JSON.stringify(choice.spawn ?? null)}`);
-      return json({ ok: true, task: t });
+      return setTaskSpawn(taskSpawn[1]!, req);
     }
     // The reversible category route. `adopt` predates the four-value model and remains below as a
     // compatibility alias for notiz→auftrag; this route is the complete owner surface, including

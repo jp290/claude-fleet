@@ -1492,8 +1492,26 @@ Owner-Token, **keine** Self-Route; Entwurf B aus `docs/messungen/2026-09-15-frei
   Worker-Wahl eines `pending`- oder `queued`-Auftrags neu (`server.ts#taskSpawnFromBody`). Ein leerer Body
   oder drei `null`-Werte entfernen `Task.spawn` und stellen den Default bei Dispatch wieder her. Die
   Route lässt Status, Hold, Karte, Program und Kommentare stehen; `sent` und Variantengruppen sind 409.
-  Jede tatsächliche Änderung schreibt `task_spawn` mit alter und neuer Wahl ins Audit. Es gibt keine
-  `/api/self/*`-Route dafür.
+  Jede tatsächliche Änderung schreibt `task_spawn` mit alter und neuer Wahl ins Audit.
+
+## spawn — `POST /api/self/tasks/:id/spawn`
+
+Die exakt gebundene MAIN eines aktiven Programs kann die Worker-Wahl einer eigenen `pending`- oder
+`queued`-Zeile mit `{"harness"?,"model"?,"effort"?}` ändern. Dieselbe Funktion wie bei der
+Owner-Route validiert das Tripel; ein leerer Body oder drei `null`-Werte entfernen `Task.spawn`.
+Die Antwort enthält `{ok:true,task,sessionIdMatch}`; bei unveränderter Wahl zusätzlich
+`unchanged:true`. Eine tatsächliche Änderung schreibt `task_spawn` mit Slot und `openedAt` ins
+Audit. Die Route startet keine Lane und ändert weder Status noch Hold, Karte oder Program.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/spawn \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"harness":"codex"}'
+```
+
+Eine Lane, eine fremde Program-Zeile, eine gestartete oder abgeschlossene Zeile und eine
+Variantengruppe erhalten 409. Ein ungültiges Modell oder fremdes Body-Feld erhält 400. Die
+Bindung wird nach dem Lesen des Bodys erneut gegen Slot und `openedAt` geprüft.
 
 ## hold — `POST /api/self/tasks/:id/hold`
 

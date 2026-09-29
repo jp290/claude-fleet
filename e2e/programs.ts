@@ -7671,6 +7671,7 @@ export async function run(ctx: Ctx): Promise<void> {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   type TaskRow = { id: string; kind: string; status: string; releasedBy?: string | null;
+    spawn?: { harness: string | null; model: string | null; effort: string | null };
     programId?: string; repo?: string | null; slot?: number | null };
   const allTasks = async (): Promise<TaskRow[]> =>
     ((await (await get("/api/tasks")).json()) as { tasks: TaskRow[] }).tasks;
@@ -7803,6 +7804,52 @@ export async function run(ctx: Ctx): Promise<void> {
   // caller's to release — and the refusal must leave the row byte-identical, not half-touched.
   const foreignProgram = await activateNewProgram("ACP-16 foreign bracket");
   const foreignId = await makeTask({ text: "acp16 foreign auftrag", programId: foreignProgram.id });
+  const selfSpawn = (token: string, id: string, body: unknown): Promise<Response> =>
+    fetch(`${BASE}/api/self/tasks/${id}/spawn`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": token }, body: JSON.stringify(body) });
+  const spawnPending = await makeTask({ text: "main spawn pending", programId: mainProgram.id });
+  const spawnQueued = ownId;
+  const spawnBefore = auditLines();
+  const pendingChoice = await selfSpawn(successorToken, spawnPending, { harness: "codex" });
+  const queuedChoice = await selfSpawn(successorToken, spawnQueued, { harness: "codex" });
+  const spawnTrail = auditSince(spawnBefore).filter((r) => r.event === "task_spawn");
+  check("MAIN spawn: its own pending and queued rows retain the new worker choice and audit the exact occupant",
+    pendingChoice.status === 200 && queuedChoice.status === 200
+      && (await taskRow(spawnPending))?.spawn?.harness === "codex"
+      && (await taskRow(spawnQueued))?.spawn?.harness === "codex"
+      && spawnTrail.length === 2 && spawnTrail.every((r) => r.slot === successorSlot
+        && r.detail?.includes(`Slot ${successorSlot} openedAt=${releaseBinding?.openedAt}`)),
+    JSON.stringify({ pending: pendingChoice.status, queued: queuedChoice.status, trail: spawnTrail }));
+  const restoredQueuedSpawn = await selfSpawn(successorToken, spawnQueued, {});
+  check("MAIN spawn cleanup: the queued row returns to its original worker choice",
+    restoredQueuedSpawn.status === 200 && (await taskRow(spawnQueued))?.spawn === undefined,
+    String(restoredQueuedSpawn.status));
+  const foreignSpawnBefore = JSON.stringify(await taskRow(foreignId));
+  const foreignSpawn = await selfSpawn(successorToken, foreignId, { harness: "codex" });
+  check("MAIN spawn: a foreign Program row is 409 and unchanged",
+    foreignSpawn.status === 409 && JSON.stringify(await taskRow(foreignId)) === foreignSpawnBefore,
+    `${foreignSpawn.status} ${await foreignSpawn.text()}`);
+  const invalidSpawnBefore = JSON.stringify(await taskRow(spawnPending));
+  const invalidSpawn = await selfSpawn(successorToken, spawnPending, { harness: "codex", model: "not a model!" });
+  check("MAIN spawn: the shared validator rejects an invalid model with 400 and no write",
+    invalidSpawn.status === 400 && JSON.stringify(await taskRow(spawnPending)) === invalidSpawnBefore,
+    `${invalidSpawn.status} ${await invalidSpawn.text()}`);
+  const sentDispatch = await post(`/api/tasks/${spawnPending}/dispatch`, {});
+  const sentSlot = ((await sentDispatch.json()) as { slot?: number }).slot;
+  const sentToken = sentSlot === undefined ? "" : readState().slots?.[String(sentSlot)]?.selfToken ?? "";
+  check("MAIN spawn fixture: owner dispatch starts a row and gives its lane a scoped token",
+    sentDispatch.ok && sentSlot !== undefined && /^[0-9a-f]{32}$/.test(sentToken)
+      && (await taskRow(spawnPending))?.status === "sent", `dispatch=${sentDispatch.status} slot=${sentSlot}`);
+  const startedBefore = JSON.stringify(await taskRow(spawnPending));
+  const startedSpawn = await selfSpawn(successorToken, spawnPending, {});
+  const laneSpawn = await selfSpawn(sentToken, spawnQueued, { harness: "codex" });
+  check("MAIN spawn: a started row receives 409 and keeps its worker choice",
+    startedSpawn.status === 409 && JSON.stringify(await taskRow(spawnPending)) === startedBefore,
+    `started=${startedSpawn.status}:${await startedSpawn.text()}`);
+  check("MAIN spawn: a lane caller receives 409 and leaves the queued row unchanged",
+    laneSpawn.status === 409 && (await taskRow(spawnQueued))?.spawn === undefined,
+    `lane=${laneSpawn.status}:${await laneSpawn.text()}`);
+  if (sentSlot !== undefined) await post(`/api/slots/${sentSlot}/kill`, {});
   const foreignBefore = JSON.stringify(await taskRow(foreignId));
   const foreignRes = await selfRelease(successorToken, foreignId);
   const foreignText = await foreignRes.text();

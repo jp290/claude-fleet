@@ -1221,15 +1221,15 @@ export async function run(): Promise<void> {
       lnOpenedAt > 0 && afterBoot.offer?.id === modJob && afterBoot.offer.state === "reported",
       JSON.stringify({ openedAt: lnOpenedAt, offer: afterBoot.offer?.id, state: afterBoot.offer?.state, modules: afterBoot.offer?.modules }));
 
-    // --- (3) THE JOBS DOOR takes the two land-gate suites; the ban beside them is unchanged ------------
-    // Two open command jobs are left on this lane on purpose: nothing claims them (the stand-in names
-    // no daemonSha), and the sweep reaps them with the lane in (LS.10), as e2e/watch.ts's are.
+    // --- (3) THE JOBS DOOR takes the land-gate suites and lets the offering session reclaim them ---
     const notTaken: string[] = [];
+    const commandIds: string[] = [];
     for (const cmd of ["./e2e-claude-gate.sh", "./e2e-clean-review.sh"]) {
       const r = await selfPost("/api/self/jobs", laneTok, { cmd });
       const b = await bodyOf<{ jobId?: string; job?: { cmd?: string; argv?: string[]; state?: string } }>(r);
       if (!r.ok || b.job?.cmd !== cmd || JSON.stringify(b.job.argv) !== JSON.stringify([cmd]) || b.job.state !== "open")
         notTaken.push(`${cmd}: ${r.status} ${JSON.stringify(b).slice(0, 120)}`);
+      if (b.jobId) commandIds.push(b.jobId);
     }
     check("(LS.mod 3) the jobs door takes ./e2e-claude-gate.sh and ./e2e-clean-review.sh, each as its own one-word argv",
       notTaken.length === 0, notTaken.join(" · "));
@@ -1241,6 +1241,73 @@ export async function run(): Promise<void> {
     }
     check("(LS.mod 3) …and an agent harness named beside them is still refused 400 by the ban, before the allowlist",
       notBanned.length === 0, notBanned.join(" · "));
+
+    const [freeId, heldId] = commandIds;
+    const unknown = await selfPost(`/api/self/jobs/${"f".repeat(12)}/withdraw`, laneTok);
+    const unknownBody = await bodyOf(unknown);
+    check("(LS.cmd) an unknown command-job id answers 404 with its own reason",
+      unknown.status === 404 && unknownBody.error === "no such command job",
+      `${unknown.status} ${JSON.stringify(unknownBody)}`);
+    const foreignSlot = freeSlot;
+    await post(`/api/slots/${foreignSlot}/open`, { cwd: ROOT });
+    const foreignTok = await selfTokenOf(foreignSlot);
+    const foreign = await selfPost(`/api/self/jobs/${freeId}/withdraw`, foreignTok);
+    const foreignBody = await bodyOf(foreign);
+    check("(LS.cmd) a different live session cannot withdraw the lane's job: 409 with a session reason",
+      foreign.status === 409 && (foreignBody.error ?? "").includes("another session"),
+      `${foreign.status} ${JSON.stringify(foreignBody)}`);
+
+    const freeWithdraw = await selfPost(`/api/self/jobs/${freeId}/withdraw`, laneTok);
+    const freeBody = await bodyOf<{ ok?: boolean; mayRunLocally?: boolean; job?: { state?: string } }>(freeWithdraw);
+    const freeRead = await bodyOf<{ job?: { state?: string } }>(await selfGet(`/api/self/jobs/${freeId}`, laneTok));
+    check("(LS.cmd) the offering lane withdraws its OPEN command: 200, durable withdrawn and local permission",
+      freeWithdraw.status === 200 && freeBody.ok === true && freeBody.mayRunLocally === true
+        && freeBody.job?.state === "withdrawn" && freeRead.job?.state === "withdrawn",
+      `${freeWithdraw.status} ${JSON.stringify({ freeBody, freeRead })}`);
+    const daemonSha = git(ROOT, "rev-parse", "HEAD");
+    const capableBeat = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, daemonSha });
+    check("(LS.cmd) a withdrawn command is no longer in helperJobsView or claimable",
+      capableBeat.ok && !(await jobs()).some((j) => j.id === freeId)
+        && (await hpost("/api/helper/claim", { jobId: freeId, deviceId: DEVICE })).status === 404,
+      `job=${freeId}`);
+
+    const heldClaim = await hpost("/api/helper/claim", { jobId: heldId, deviceId: DEVICE });
+    check("(LS.cmd) setup: a command-capable helper claims the second job",
+      heldClaim.ok && (await bodyOf<{ job?: { kind?: string } }>(heldClaim)).job?.kind === "command",
+      `${capableBeat.status} ${heldClaim.status}`);
+    const refused = await selfPost(`/api/self/jobs/${heldId}/withdraw`, laneTok);
+    const refusedBody = await bodyOf(refused);
+    check("(LS.cmd) a claimed command refuses withdrawal with 409 and names its helper",
+      refused.status === 409 && (refusedBody.error ?? "").includes(DEVICE_NAME),
+      `${refused.status} ${JSON.stringify(refusedBody)}`);
+    const abandoned = await selfPost(`/api/self/jobs/${heldId}/withdraw`, laneTok, { abandon: true });
+    const abandonedBody = await bodyOf<{ ok?: boolean; mayRunLocally?: boolean; job?: { state?: string } }>(abandoned);
+    check("(LS.cmd) explicit abandon settles the claimed command and grants local permission",
+      abandoned.status === 200 && abandonedBody.ok === true && abandonedBody.mayRunLocally === true
+        && abandonedBody.job?.state === "abandoned" && !(await jobs()).some((j) => j.id === heldId)
+        && (await hpost("/api/helper/claim", { jobId: heldId, deviceId: DEVICE })).status === 404,
+      `${abandoned.status} ${JSON.stringify(abandonedBody)}`);
+    const savedCommands = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { commandJobs?: { id: string; state: string; claim: unknown; previousClaim?: { deviceId: string;
+        name: string; claimedAt: number; expiresAt: number }; settledAt?: number }[] }).commandJobs ?? [];
+    const savedFree = savedCommands.find((j) => j.id === freeId);
+    const savedHeld = savedCommands.find((j) => j.id === heldId);
+    check("(LS.cmd) both withdrawals persist; only abandonment retains the former helper claim",
+      savedFree?.state === "withdrawn" && savedFree.claim === null && savedFree.previousClaim === undefined
+        && typeof savedFree.settledAt === "number" && savedHeld?.state === "abandoned"
+        && savedHeld.claim === null && savedHeld.previousClaim?.deviceId === DEVICE
+        && savedHeld.previousClaim.name === DEVICE_NAME && typeof savedHeld.settledAt === "number",
+      JSON.stringify({ free: savedFree, held: savedHeld }));
+
+    const mainOffer = await bodyOf<{ jobId?: string }>(await selfPost("/api/self/jobs", foreignTok,
+      { cmd: "./e2e-security.sh" }));
+    const mainWithdraw = await selfPost(`/api/self/jobs/${mainOffer.jobId}/withdraw`, foreignTok);
+    const mainBody = await bodyOf<{ mayRunLocally?: boolean; job?: { state?: string } }>(mainWithdraw);
+    check("(LS.cmd) the same withdraw door accepts the offering MAIN session",
+      /^[0-9a-f]{12}$/.test(mainOffer.jobId ?? "") && mainWithdraw.status === 200
+        && mainBody.job?.state === "withdrawn" && mainBody.mayRunLocally === true,
+      `${mainWithdraw.status} ${JSON.stringify(mainBody)}`);
+    await post(`/api/slots/${foreignSlot}/kill`, {});
   }
 
   // ===== (LS.10) THE OWNER ROW CLOSES ITSELF WHEN THE LANE IS GONE ===============================

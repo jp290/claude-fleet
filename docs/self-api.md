@@ -2340,7 +2340,7 @@ exakt wie einer, an den nie jemand geschrieben hat. Die erste Narbe gewinnt: ein
 sieht keine kaputten Bytes mehr, und `at` nach vorn zu schieben würde den Verlust auf Nachrichten
 umdatieren, die längst weg waren.
 
-## jobs — `POST /api/self/jobs`, `GET /api/self/jobs/:id`
+## jobs — `POST /api/self/jobs`, `GET /api/self/jobs/:id`, `POST /api/self/jobs/:id/withdraw`
 
 Arbeit von hier nach dort auslagern, mit Quittung. Eine Session übergibt ihren **eigenen Baum** und
 eine **erlaubte Kommandozeile** an ein Helfer-Gerät; zurück kommt ein Exit-Code, ein Log-Tail und ein
@@ -2354,6 +2354,8 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 # -> {"jobId":"<12 hex>","job":{...}}
 curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   http://<fleet-host>:<port>/api/self/jobs/<jobId>        # Zustand + Quittung
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{}' http://<fleet-host>:<port>/api/self/jobs/<jobId>/withdraw
 ```
 
 **Eine MAIN gibt ihre Vorschau über diese Tür an den Helfer** — `suite-offer` ist lane-only, also
@@ -2409,6 +2411,12 @@ ab (die Job-Liste allein ist kein Tor).
 
 Deckel: **3 offene Command-Jobs pro Session** (409), 20 settled Zeilen im Register.
 `GET /api/self/jobs/:id` antwortet nur der anbietenden Session (sonst 404, nie fremde Arbeit).
+`POST /api/self/jobs/:id/withdraw` gilt für die anbietende Session (Slot und `openedAt`), Lane
+oder MAIN. Ein offener Job wird `withdrawn`: 200 mit `{ok:true,job:{...},mayRunLocally:true}`;
+er verschwindet aus der Helper-Liste und kann nicht mehr geclaimt werden. Ein geclaimter Job
+antwortet 409 mit dem Namen des Helfers; nur `{"abandon":true}` beendet ihn als `abandoned`
+mit derselben lokalen Erlaubnis. Eine fremde Session erhält 409 mit eigenem Grund, eine unbekannte
+Id 404. Erst der 200 erlaubt einen lokalen Lauf desselben Kommandos.
 
 ## suite-offer — `POST/GET /api/self/suite-offer`, `POST /api/self/suite-offer/withdraw`
 

@@ -218,6 +218,8 @@ exact `server/types.ts#HELPER_CMD_ALLOW` key: `{"cmd":"./e2e-clean-review.sh"}`,
 job and reads `GET /api/self/jobs/<jobId>`. A MAIN has no suite-offer (it is lane-only): it posts
 `{"cmd":"./e2e-isolated.sh","timeoutMs":2700000}` and arms a `{"kind":"job","target":"<jobId>"}`
 watch (`docs/self-api.md` §jobs).
+Before running a gate suite locally, withdraw its own open command job with
+`POST /api/self/jobs/<jobId>/withdraw`; only the 200 with `mayRunLocally: true` permits the local run.
 
 **Running locally.** Output goes to a file in your scratch directory, never into the tree or your
 context; once the run has exited, read its tail:

@@ -25434,7 +25434,7 @@ const laneSuiteBranch = (id: string): string => laneSuiteRef(id).replace(/^refs\
 // And, like the lane-suite it is modelled on, its verdict lands in the JOB and touches no ledger:
 // `post-land-audits.jsonl` joins over `mainSha`/`covers[].mainAfter`, which a command job has not
 // got, and a row without them answers those joins WRONG rather than failing them.
-type CommandJobState = "open" | "claimed" | "reported" | "lapsed" | "reaped";
+type CommandJobState = "open" | "claimed" | "reported" | "lapsed" | "reaped" | "withdrawn" | "abandoned";
 interface CommandJobResult {
   exitCode: number | null;
   result: "green" | "red" | "unknown";
@@ -25468,6 +25468,8 @@ interface CommandJob {
   treeSha: string | null;
   untracked: number | null;
   claim: { deviceId: string; name: string; claimedAt: number; expiresAt: number; bundle: string } | null;
+  previousClaim?: { deviceId: string; name: string; claimedAt: number; expiresAt: number };
+  settledAt?: number;
   result: CommandJobResult | null;
 }
 const commandJobs = new Map<string, CommandJob>();
@@ -27435,6 +27437,8 @@ async function daemonKnowsCommandKind(sha: string): Promise<boolean> {
 // jobs list, and this is the second lock on the same door (a device may POST a jobId it learned any
 // other way).
 async function claimCommandJob(j: CommandJob, deviceId: string): Promise<Response> {
+  if (j.state === "withdrawn" || j.state === "abandoned")
+    return json({ error: "the offering session withdrew this command job — it may run the command locally" }, 404);
   if (j.state === "reaped") return json({ error: "the session that offered this command job is gone — nothing to run it for" }, 404);
   if (j.state === "reported") return json({ error: "this command job was already reported" }, 404);
   if (j.state === "lapsed") return json({ error: "this command job lapsed and was not renewed" }, 404);
@@ -41320,6 +41324,42 @@ Bun.serve<WSData>({
         if (!job || job.slot !== s.id || job.slotOpenedAt !== s.openedAt)
           return json({ error: "no such command job on this session" }, 404);
         return json({ job: commandJobView(job) });
+      }
+    }
+
+    // The offering session can reclaim its command before a helper takes it. A claimed run needs
+    // an explicit abandon so a local run never starts beside a helper by accident.
+    {
+      const m = /^\/api\/self\/jobs\/([0-9a-f]{12})\/withdraw$/.exec(url.pathname);
+      if (m && req.method === "POST") {
+        const p = resolvePrincipal(req);
+        const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+        if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+        const body = await readJson(req);
+        expireHelperClaims();
+        const job = commandJobs.get(m[1]!);
+        if (!job) return json({ error: "no such command job" }, 404);
+        if (job.slot !== s.id || job.slotOpenedAt !== s.openedAt)
+          return json({ error: "this command job belongs to another session — only its offering session may withdraw it" }, 409);
+        if (job.state !== "open" && job.state !== "claimed")
+          return json({ error: "this command job is no longer open for withdrawal" }, 404);
+        const held = commandJobClaimOf(job);
+        if (held && body?.abandon !== true)
+          return json({ error: `${held.name} is running this command — it expires ${new Date(held.expiresAt).toISOString()}.`
+            + ` Do NOT run it locally as well; re-send with {"abandon":true} to give the run up deliberately.` }, 409);
+        if (held) {
+          try { rmSync(held.bundle, { force: true }); } catch { /* the helper has its copy */ }
+          job.previousClaim = { deviceId: held.deviceId, name: held.name,
+            claimedAt: held.claimedAt, expiresAt: held.expiresAt };
+        }
+        job.settledAt = Date.now();
+        job.claim = null;
+        job.state = held ? "abandoned" : "withdrawn";
+        audit("helper_result", s.id,
+          `${held ? "abandoned" : "withdrew"} the command job ${job.cmd} on ${basename(job.repo)} ${job.branch}`
+          + `${held ? ` while ${held.name} held it` : ""}`);
+        await saveStateNow();
+        return json({ ok: true, job: commandJobView(job), mayRunLocally: true });
       }
     }
 

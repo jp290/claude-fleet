@@ -2819,10 +2819,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const capEnd = taskServerSource.indexOf("const MAX_CRITERION =", capStart);
     const routeStart = taskServerSource.indexOf("    const taskComment =", capEnd);
     const routeEnd = taskServerSource.indexOf("    // deleting one is by id", routeStart);
+    const appendStart = taskServerSource.indexOf("function appendTaskComment(");
+    const appendSource = appendStart >= 0 && capStart > appendStart ? taskServerSource.slice(appendStart, capStart) : "";
     const capSource = capStart >= 0 && capEnd > capStart ? taskServerSource.slice(capStart, capEnd) : "";
     const routeSource = routeStart >= 0 && routeEnd > routeStart ? taskServerSource.slice(routeStart, routeEnd) : "";
     check("comment mutation fixture: the production cap helper and POST route are readable",
-      !!capSource && !!routeSource, `cap=${capStart}:${capEnd} route=${routeStart}:${routeEnd}`);
+      !!appendSource && !!capSource && !!routeSource, `append=${appendStart}:${capStart} cap=${capStart}:${capEnd} route=${routeStart}:${routeEnd}`);
     type FixtureComment = { id: string; text: string; from?: string };
     const compileCap = (source: string): (comments: FixtureComment[]) => FixtureComment[] =>
       new Function("MAX_COMMENTS_PER_TASK", `${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}\nreturn cappedTaskComments;`)(50) as
@@ -2847,7 +2849,7 @@ export async function run(ctx: Ctx): Promise<void> {
       };
       const bindings = Object.keys(deps).map((name) => `const ${name} = d[${JSON.stringify(name)}];`).join("\n");
       const route = new Function("d", `${bindings}\n${new Bun.Transpiler({ loader: "ts" })
-        .transformSync(`async function route() {\n${source}\n}`)}\nreturn route;`)(deps) as
+        .transformSync(`async function route() {\n${appendSource}\n${source}\n}`)}\nreturn route;`)(deps) as
         () => Promise<{ body: { delivery?: string; comment?: { id: string } }; code: number }>;
       const response = await route();
       return { response, sent, comments: task.comments };

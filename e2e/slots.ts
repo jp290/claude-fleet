@@ -1884,88 +1884,112 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && indexSrc.includes("Live-Mitschreiben") && indexSrc.includes("Prompt-Verlauf")
     && indexSrc.includes("Geplante Prompts für diese Session"),
     "tray titles in client.ts + public/index.html");
-  // --- THE FOUNDING WINDOW (Gruendungsfenster B1) at the empty slot: the click opens the comic
-  // page, the tree stays behind "Anderer Ordner". Anchors are the visible words themselves, the
-  // K9 way: role names and the German say-lines PRESENT, the old tree entry ABSENT from the
-  // empty row, the honest context sentence, the B3 facts on the card, and the F4 rename.
-  const gfSrc = cliSrc.slice(cliSrc.indexOf("THE FOUNDING WINDOW (Gruendungsfenster B1"),
-    cliSrc.indexOf("function openTreePicker(slotId: number) {"));
-  check("founding window: the empty slot opens the roles page, the tree only behind Anderer Ordner",
-    /row\.onclick = \(\) => openPicker\(s\.id\)/.test(cliSrc)
-    && gfSrc.includes('type GfRole = "orch" | "wt-new" | "wt-old" | "plain" | "steward"')
-    && ["Orchestrator", "auf neuem Worktree", "auf vorhandenem Worktree", "in einem Ordner", "Steward"]
-      .every((w) => gfSrc.includes(w))
-    && gfSrc.includes("Anderer Ordner …") && gfSrc.includes("closeFounding();\n    openTreePicker(slot);"),
-    "GF_ROLES + the tree handoff in src/client.ts");
-  check("founding window: the context column tells the truth about a founding by hand, no pack switches",
-    gfSrc.includes("Rollenkarte mit Ankern — beim Start stellt der Server der Orchestrator ihre Karte mit Kontext-Ankern zu.")
-    && gfSrc.includes("Keine Packs — eine Gründung von Hand bekommt keinen Brief zugestellt.")
-    // B2b made the pointer a real choice: the packs are chosen in step 3, after the repo — the
-    // sentence stays true because the default founding (no switch on) still delivers no brief
-    && gfSrc.includes("Packs wählst du in Schritt 3, nach der Repo-Wahl.")
-    // falsifiable, not vacuous: the context COLUMN renders no button at all, and the mockup's
-    // open "+ Pack zusammenstecken … (Form: Frage an dich)" row is B2, not this slice
-    && !gfSrc.slice(gfSrc.indexOf('"Kontext"'), gfSrc.indexOf("two.append(ctx);")).includes('el("button"')
-    && !gfSrc.includes("zusammenstecken"),
-    "the context column in src/client.ts");
-  check("founding window: the repo card carries the B3 facts, and the B2b switches replaced the read-only packs line",
-    // the read-only line is GONE, not joined: a broken manifest still speaks — as an omitted
-    // entry with its reason in the founding plan, which is what the switches render
-    !gfSrc.includes("Context-Packs des Repos") && !gfSrc.includes("info.packs.error")
-    && gfSrc.includes("info.orphans ?? []")
-    && gfSrc.includes('/api/lanes", { repo: gfRepo, attach: gfOrphan, slot, ...spawnBody() }')
-    && gfSrc.includes("Kontext-Packs — je Pack an/aus"),
-    "gfStep3 in src/client.ts");
-
-  // --- Gruendungsfenster B2b: the founding packs become switches. The plan hangs off the repo
-  // (foundingPlanOf reads one), the repo is only chosen in step 3 (F5), so the card's read-only
-  // line became the choice (F3, owner: je Pack an/aus bei der Gründung). One check per part of
-  // the act, source as the evidence — this suite has no DOM; the two should-rejects make the
-  // silent failures loud: an omitted pack that toggles, a body carrying a packs field nobody
-  // switched on.
-  check("founding B2b: choosing a repo loads its plan for the chosen profile, latest-wins, and a profile change refetches",
-    gfSrc.includes("gfPlan = null;\n  gfPlanErr = null;\n  void gfLoadDir();\n  void gfLoadPlan();")
-    && gfSrc.includes("if (seq !== gfPlanSeq || !gfWin || gfRepo !== path) return; // latest-wins, like gfLoadDir")
-    && gfSrc.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`")
-    && gfSrc.includes("if (gfRepo && gfPlanFor !== gfPlanKey()) void gfLoadPlan();"),
-    "gfChooseRepo/gfLoadPlan/gfStep3 in src/client.ts");
-  const omitSrc = gfSrc.slice(gfSrc.indexOf("for (const o of gfPlan.omitted)"),
-    gfSrc.indexOf("g(\"Kontext-Packs — je Pack an/aus\", pv);"));
-  check("founding B2b: each selected pack is a switch with bytes and source, default off — should-reject: an omitted pack shows its reason and is not switchable",
-    gfSrc.includes("el(\"span\", \"gfpn\", p.id), el(\"span\", \"gfpb\", kb(p.bytes)),")
-    && gfSrc.includes('b.setAttribute("aria-pressed", String(on));')
-    && gfSrc.includes("gfPacks = new Set();     // a fresh plan is a fresh choice — old switches never ride across")
-    && omitSrc.includes('el("div", "gfpack omit");') && omitSrc.includes("o.reason")
-    && !omitSrc.includes("onclick") && !omitSrc.includes("gfPacks"),
-    "gfStep3 pack rows in src/client.ts");
-  const spawnSrc = cliSrc.slice(cliSrc.indexOf("function spawnBody()"), cliSrc.indexOf("function renderDirDetail("));
-  // the count is a claim about CODE, so whole-line comments are stripped first (the §7 rule):
-  // a commented-out send would otherwise satisfy the anchor and the probe would prove nothing
+  // --- THE FOUNDING WINDOW (Neuentwurf 2026-09-29, src/founding.ts). The owner rejected the
+  // three-step comic page of 2026-09-22 as a whole; these checks hold the replacement to the card:
+  // its own module (client.ts keeps the import and the call), one shell window of ONE size with a
+  // dimmed backdrop, tabs instead of role art, the folder choice inside the window, the bar's slot
+  // names, no "default" word, omission reasons in owner words — and the founding contract the
+  // B2b checks held before (packs only as an explicit choice, latest-wins plan, SKEW_NOTE on a
+  // 404, attach without packs, packsDelivered:false never closed over). Source is the evidence —
+  // this suite has no DOM; the rendered window was checked by screenshot and video (the commit).
+  let foundSrc = "", clientOnly = "", planSrc = "", foundSrcError = "";
+  try {
+    foundSrc = readFileSync(`${sourceRoot}/src/founding.ts`, "utf8");
+    clientOnly = readFileSync(`${sourceRoot}/src/client.ts`, "utf8");
+    planSrc = readFileSync(`${sourceRoot}/context-plan.ts`, "utf8");
+  } catch (e) { foundSrcError = e instanceof Error ? e.message : String(e); }
+  check("founding window — PROBE: src/founding.ts, src/client.ts and context-plan.ts are readable",
+    !!foundSrc && !!clientOnly && !!planSrc, foundSrcError);
+  // whole-line comments stripped first: a claim about CODE must not be satisfied by prose
+  const foundCode = foundSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  check("founding window: the free slot opens src/founding.ts — client.ts keeps only the import and the call",
+    clientOnly.includes('import { closeFounding, openPicker } from "./founding";')
+    && /row\.onclick = \(\) => openPicker\(s\.id\)/.test(clientOnly)
+    && foundCode.includes("export function openPicker(slotId: number)")
+    && foundCode.includes("export function closeFounding()")
+    // should-reject: nothing of the rejected surface stays behind in client.ts
+    && !/function openPicker\(|\bgfStep\b|\bGF_ROLES\b|\brenderGf\b|"gf-(orch|plain|steward|wt-new|wt-old)"/.test(clientOnly),
+    "client.ts import + emptyRow, founding.ts exports");
+  const foundCss = (() => {
+    const at = indexSrc.indexOf("THE FOUNDING WINDOW (src/founding.ts");
+    const end = indexSrc.indexOf("/* the folder's own children", at);
+    return at < 0 || end < 0 ? "" : indexSrc.slice(at, end).replace(/\/\*[\s\S]*?\*\//g, "");
+  })();
+  check("founding window: ONE shell window of one size over a dimmed backdrop — no per-state size, no anchored float",
+    foundCode.includes("openShell({") && foundCode.includes('id: "found",')
+    && foundCss.includes("#shell-found .shellwin { width: min(880px, calc(100vw - 32px)); height: min(600px, calc(100vh - 32px));")
+    && foundCss.includes("#shell-found { background: color-mix(in srgb, var(--chat-void) 72%, transparent);")
+    // should-reject: the old window set its width per step and positioned itself beside the row
+    && !/\.style\.(width|height|left|top)\s*=/.test(foundCode) && !foundCode.includes("gfwin"),
+    foundCss.slice(0, 120) || "no #shell-found block in public/index.html");
+  check("founding window: its CSS is --chat-* tokens only — no hex or rgb literal, and no .gf rule is left anywhere",
+    foundCss.length > 0 && !/#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(foundCss.replace(/#shell-found/g, ""))
+    && !/\.gf[a-z]/.test(indexSrc),
+    (foundCss.replace(/#shell-found/g, "").match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) ?? []).join(" ") || "clean");
+  check("founding window: the five roles are tabs with one sentence each — no role art, no role grid",
+    ["\"Session\"", "\"Lane\"", "\"Lane fortsetzen\"", "\"Orchestrator\"", "\"Steward\""].every((w) => foundCode.includes(`name: ${w}`))
+    && foundCode.includes('b.setAttribute("aria-pressed", String(on));') && foundCss.includes(".fdtab.on {")
+    && !/pkIcon\(|gfart|comic/.test(foundCode) && !/"gf-/.test(clientOnly),
+    "ROLES + renderTools in src/founding.ts");
+  check("founding window: another folder is chosen IN the window over /api/dirs — the tree window is never opened from it",
+    foundCode.includes("Anderer Ordner …") && foundCode.includes("`/api/dirs?path=${encodeURIComponent(path)}`")
+    && foundCode.includes("&find=${encodeURIComponent(q)}") && foundCode.includes("matchTree(")
+    && !foundCode.includes("openTreePicker"),
+    "renderList/loadDir/scheduleFind in src/founding.ts");
+  check("founding window: sessions carry their bar names (2A/2B), and no value is shown as the word default",
+    foundCode.includes("laneBandNames(stacksOf())") && foundCode.includes("barName(names, x)")
+    && !/["'`]default["'`]/.test(foundCode) && !foundCode.includes('"–"') && !foundCode.includes("Profil auf Standard"),
+    "barNames/renderDetail/renderFoot in src/founding.ts");
+  const reasons = [...(/CONTEXT_PLAN_OMISSION_REASONS = \[([\s\S]*?)\] as const/.exec(planSrc)?.[1] ?? "")
+    .matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  const omitSay = /const OMIT_SAY[\s\S]*?\n};/.exec(foundCode)?.[0] ?? "";
+  check("founding window: every omission reason of the plan is said in owner words, the raw one only behind intern:",
+    reasons.length >= 8 && reasons.every((r) => omitSay.includes(`"${r}":`))
+    && foundCode.includes("row.title = `intern: ${o.reason}`;"),
+    `reasons=${reasons.join(",")} missing=${reasons.filter((r) => !omitSay.includes(`"${r}":`)).join(",")}`);
+  const bodySrc = foundCode.slice(foundCode.indexOf("function foundingBody()"), foundCode.indexOf("function blocker()"));
+  const spawnSrc = clientOnly.slice(clientOnly.indexOf("function spawnBody()"), clientOnly.indexOf("function renderDirDetail("));
   const spawnCode = spawnSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
-  const closeSrc = gfSrc.slice(gfSrc.indexOf("function closeFounding()"), gfSrc.indexOf("// the repos of the running fleet"));
-  check("founding B2b — should-reject: with no switch on, the founding body stays byte-identical — exactly one packs key, and only inside the conditional",
-    (spawnCode.match(/packs:/g) ?? []).length === 1
-    && spawnCode.includes("...(gfPacks.size ? { packs: [...gfPacks] } : {})")
-    && closeSrc.includes("gfPacks = new Set();")
-    && closeSrc.includes("the pack choice dies with the window it was made in"),
-    "spawnBody + closeFounding in src/client.ts");
-  const ssSrc = cliSrc.slice(cliSrc.indexOf("async function startSession("), cliSrc.indexOf("async function startWorktree("));
-  const swSrc = cliSrc.slice(cliSrc.indexOf("async function startWorktree("), cliSrc.indexOf("// --- THE FOUNDING WINDOW (Gruendungsfenster B1"));
-  check("founding B2b: a founding with packs waits visibly, and packsDelivered:false is said where the click was, never closed over as success",
-    gfSrc.includes('"Packs werden zugestellt …"')
-    && gfSrc.includes('go.disabled = gfBusy || !gfRepo || (gfRole === "wt-old" && !gfOrphan);')
+  check("founding window — should-reject: with no switch on the body carries no packs — one packs key, only in the conditional, and the tree's spawnBody has none",
+    (bodySrc.match(/packs:/g) ?? []).length === 1 && bodySrc.includes("...(s.packs.size ? { packs: [...s.packs] } : {}),")
+    && !/packs:/.test(spawnCode) && spawnCode.length > 0,
+    "foundingBody in src/founding.ts + spawnBody in src/client.ts");
+  check("founding window: the plan is read for (place, harness, mode), latest-wins, and re-read when any of the three moves",
+    foundCode.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`")
+    && foundCode.includes("if (S !== s || seq !== s.planSeq || s.place !== path) return; // latest-wins")
+    && foundCode.includes("if (s.planFor !== planKey()) void loadPlan();")
+    && foundCode.includes("s.packs = new Set(); // a fresh plan is a fresh choice"),
+    "loadPlan/renderDetail in src/founding.ts");
+  const omitCode = foundCode.slice(foundCode.indexOf("if (s.omitOpen) for (const o of om)"), foundCode.indexOf('if (info.recent?.length)'));
+  check("founding window: a deliverable pack is a switch, default off — should-reject: an omitted pack shows its reason and is not switchable",
+    foundCode.includes('b.setAttribute("role", "switch");') && foundCode.includes('b.setAttribute("aria-checked", String(on));')
+    && foundCode.includes("packs: new Set(),")
+    && omitCode.includes('el("div", "fdomit")') && omitCode.includes("OMIT_SAY[o.reason]")
+    && !omitCode.includes("onclick") && !omitCode.includes("s.packs"),
+    "renderDetail pack rows in src/founding.ts");
+  check("founding window: a 404 of the plan or dirinfo route reads as SKEW_NOTE, never as a repo without packs",
+    (foundCode.match(/if \(res\.status === 404\) \{ s\.(planErr|infoErr) = SKEW_NOTE; renderDetail\(\); return; \}/g) ?? []).length === 2,
+    "loadPlan/loadInfo in src/founding.ts");
+  check("founding window: Lane fortsetzen locks the switches and the attach body never carries packs",
+    foundCode.includes('const locked = s.role === "wt-old";') && foundCode.includes("b.disabled = locked;")
+    && foundCode.includes("const { packs: _packs, ...attach } = body;")
+    && foundCode.includes('post("/api/lanes", { repo: s.place, attach: s.orphan, slot: s.slot, ...attach })'),
+    "renderDetail + start in src/founding.ts");
+  const ssSrc = clientOnly.slice(clientOnly.indexOf("export async function startSession("), clientOnly.indexOf("export async function startWorktree("));
+  const swSrc = clientOnly.slice(clientOnly.indexOf("export async function startWorktree("), clientOnly.indexOf("// the directory tree window."));
+  check("founding window: a founding with packs waits visibly, and packsDelivered:false is said next to the button, never closed over as success",
+    foundCode.includes('"Packs werden zugestellt …"') && foundCode.includes("go.disabled = s.busy || blocker() !== null;")
     && ssSrc.includes("if (j.packsDelivered === false)") && swSrc.includes("if (j.packsDelivered === false)")
     && ssSrc.indexOf("packsDelivered === false") < ssSrc.indexOf("closeFounding();")
-    && swSrc.indexOf("packsDelivered === false") < swSrc.indexOf("closeFounding();"),
-    "gfStart + the step-3 foot + startSession/startWorktree in src/client.ts");
-  check("founding B2b: a 404 of the plan route reads as SKEW_NOTE, never as a repo without packs",
-    gfSrc.includes("if (res.status === 404) { gfPlanErr = SKEW_NOTE; renderGf(); return; }"),
-    "gfLoadPlan in src/client.ts");
-  check("founding B2b: wt-old locks the switches, with the door's own refusal as the reason",
-    gfSrc.includes('if (gfRole === "wt-old") b.disabled = true;')
-    && gfSrc.includes('if (gfRole === "wt-old" && gfPlan && gfPlan.selected.length)')
-    && gfSrc.includes("attach seats a worktree that predates this founding — packs delivers only at a fresh founding\"));"),
-    "gfStep3 in src/client.ts");
+    && swSrc.indexOf("packsDelivered === false") < swSrc.indexOf("closeFounding();")
+    && ssSrc.includes("...(via?.body ?? spawnBody())") && swSrc.includes("const body = via?.body ?? spawnBody();"),
+    "start in src/founding.ts + startSession/startWorktree in src/client.ts");
+  check("founding window: the keyboard — Enter on the chosen place starts, every control keeps its own Enter, a popover owns Esc before the window",
+    foundCode.includes("const open = () => { void start(); };") && foundCode.includes('b.dataset.ownEnter = "1";')
+    && foundCode.includes('window.addEventListener("keydown", onKey, true);')
+    && foundCode.includes('if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closePop(true); return; }')
+    && foundCss.includes(":where(#shell-found button)"),
+    "btn/renderList/openPicker in src/founding.ts");
 
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the

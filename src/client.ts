@@ -51,6 +51,7 @@ import {
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
+import { closeFounding, openPicker } from "./founding";
 import { runningEffort, runningModel } from "./running";
 
 export const $ = (id: string) => document.getElementById(id)!;
@@ -434,7 +435,7 @@ let harnessesLoaded = false;
 // this fleet's box defaults, from the same fetch — shown as the container fields' placeholders so
 // the owner sees what leaving them empty gets. Never hardcoded here: they are server constants
 // (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and a second copy would drift silently.
-let containerDefaults: { container: string; containerContext: string } | null = null;
+export let containerDefaults: { container: string; containerContext: string } | null = null;
 // what a null model launches on the DEFAULT adapter, from the same fetch. Shown as the model
 // field's placeholder so "leave it empty" is a visible choice rather than a guess. Claude-only by
 // construction (the server says so): a foreign adapter keeps its own implicit default, and the
@@ -3918,7 +3919,7 @@ let pkCrumb: HTMLElement;
 let pkHideBtn: HTMLButtonElement;
 let pkDotBtn: HTMLButtonElement;
 
-function closePicker() { pkShell?.close(); }
+export function closePicker() { pkShell?.close(); }
 
 // a row is out when the worktree toggle hides it (pkwt) OR the text filter excludes it (pkhide)
 function pkVisible(): PkRow[] {
@@ -4011,41 +4012,6 @@ const PK_ICONS: Record<string, string> = {
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v4.7l3 1.8"/></svg>',
   up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 3l2.6 5.8 6.4.6-4.8 4.2 1.4 6.2L12 17l-5.6 2.8 1.4-6.2L3 9.4l6.4-.6z"/></svg>',
-  // the founding window's role art (gfStep1): same class of static literal, same one renderer
-  "gf-orch": `<svg class="gfart" viewBox="0 0 260 368" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <g stroke-width="1" opacity=".35"><path d="M130 158 L56 76"/><path d="M130 158 L206 70"/><path d="M130 158 L40 170"/><path d="M130 158 L222 176"/><path d="M130 158 L78 248"/><path d="M130 158 L188 252"/></g>
-      <g stroke-width="1.2" opacity=".55"><rect x="44" y="62" width="24" height="18" rx="4"/><rect x="194" y="56" width="24" height="18" rx="4"/><rect x="28" y="162" width="24" height="18" rx="4"/><rect x="210" y="168" width="24" height="18" rx="4"/><rect x="66" y="240" width="24" height="18" rx="4"/><rect x="176" y="244" width="24" height="18" rx="4"/><path d="M206 74 v18 q0 8 8 8 h10"/><circle cx="228" cy="100" r="3"/><path d="M40 180 v16 q0 8 -8 8 h-6"/><circle cx="22" cy="204" r="3"/></g>
-      <g stroke-width="1.6"><circle cx="130" cy="158" r="20" opacity=".9"/><circle cx="130" cy="158" r="5" fill="currentColor" opacity=".8"/><circle cx="130" cy="158" r="36" opacity=".28" stroke-dasharray="2 5"/><circle cx="130" cy="158" r="54" opacity=".14" stroke-dasharray="2 7"/></g>
-    </svg>`,
-  "gf-wt-new": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M18 128 H232" stroke-width="1.6" opacity=".45"/>
-      <g opacity=".45" fill="currentColor" stroke="none"><circle cx="46" cy="128" r="3.5"/><circle cx="86" cy="128" r="3.5"/><circle cx="126" cy="128" r="3.5"/><circle cx="196" cy="128" r="3.5"/></g>
-      <path d="M126 128 C 146 128 150 84 176 80 L 196 78" stroke-width="1.8" opacity=".9"/>
-      <circle cx="206" cy="78" r="9" stroke-width="1.8" opacity=".95"/>
-      <path d="M206 73 v10 M201 78 h10" stroke-width="1.6"/>
-      <g stroke-width="1.2" opacity=".55"><path d="M222 60 l6 -6"/><path d="M226 74 h9"/><path d="M218 94 l6 6"/></g>
-    </svg>`,
-  "gf-wt-old": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M18 132 H232" stroke-width="1.6" opacity=".45"/>
-      <g opacity=".45" fill="currentColor" stroke="none"><circle cx="40" cy="132" r="3.5"/><circle cx="80" cy="132" r="3.5"/><circle cx="210" cy="132" r="3.5"/></g>
-      <path d="M80 132 C 100 132 104 90 126 88 H 190" stroke-width="1.8" opacity=".75"/>
-      <g fill="currentColor" stroke="none" opacity=".75"><circle cx="140" cy="88" r="3.5"/><circle cx="162" cy="88" r="3.5"/><circle cx="184" cy="88" r="3.5"/></g>
-      <g stroke-width="1.7" opacity=".95"><circle cx="203" cy="50" r="6"/><path d="M203 57 v14 M203 71 l-7 12 M203 71 l7 12 M195 63 l8 -3 8 3"/></g>
-      <path d="M186 60 q-8 14 -2 24" stroke-width="1.3" stroke-dasharray="2 4" opacity=".7"/>
-    </svg>`,
-  "gf-plain": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M45 62 h56 l14 14 h90 a8 8 0 0 1 8 8 v40 a8 8 0 0 1 -8 8 H45 a8 8 0 0 1 -8 -8 V70 a8 8 0 0 1 8 -8 z" stroke-width="1.8" opacity=".85"/>
-      <circle cx="125" cy="101" r="9" stroke-width="1.8" opacity=".95"/>
-      <circle cx="125" cy="101" r="2.5" fill="currentColor" stroke="none" opacity=".8"/>
-      <g stroke-width="1.2" opacity=".4"><path d="M186 84 h18"/><path d="M186 118 h18"/></g>
-    </svg>`,
-  "gf-steward": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M25 128 H225" stroke-width="1.6" opacity=".45"/>
-      <path d="M55 78 Q125 34 195 78 Q125 118 55 78 z" stroke-width="1.8" opacity=".9"/>
-      <circle cx="125" cy="77" r="13" stroke-width="1.8" opacity=".95"/>
-      <circle cx="125" cy="77" r="4" fill="currentColor" stroke="none" opacity=".8"/>
-      <g stroke-width="1.2" opacity=".5"><path d="M125 128 v-24"/><path d="M87 128 q4 -14 18 -20"/><path d="M163 128 q-4 -14 -18 -20"/></g>
-    </svg>`,
 };
 function pkIcon(kind: string): HTMLElement {
   const s = el("span", "pkicon");
@@ -4487,7 +4453,7 @@ function paintPicker() {
 // The old picker could say "this is a git repo" and nothing more, so telling two similarly-named
 // checkouts apart meant opening a session in one to find out.
 interface DirCommit { hash: string; ts: number; subject: string }
-interface DirInfoResp {
+export interface DirInfoResp {
   path: string; exists: boolean; git: boolean; worktree?: boolean; branch?: string | null;
   dirty?: number; ahead?: number | null; behind?: number | null;
   last?: DirCommit | null; recent?: DirCommit[];
@@ -4507,7 +4473,7 @@ let pkInfoSeq = 0; // latest-wins: arrow-keying down a list outruns the fetches 
 // public/app.js off disk), while new server ROUTES only exist after srv restarts. So a freshly built
 // dashboard talks to a pre-change server until someone kills the srv session — and every call to a
 // route added in the same change 404s. That is exactly what an indefinite "reading…" was.
-const SKEW_NOTE = "this page is newer than the server it is talking to — that route does not exist"
+export const SKEW_NOTE = "this page is newer than the server it is talking to — that route does not exist"
   + " there yet. Restart Fleet's srv session to pick up the new routes (the sessions survive it).";
 
 // what the detail pane is currently able to say. A pane that can only render "loading" and "loaded"
@@ -4664,19 +4630,16 @@ export function labelled(text: string, control: HTMLElement): HTMLElement {
 }
 
 // the options every spawn from this pane carries. Absent fields mean "the default", which is
-// exactly what the server reads them as.
-function spawnBody(): { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[] } {
+// exactly what the server reads them as. `packs` is the founding window's alone (src/founding.ts
+// builds its own body); the tree never sends one.
+export interface SpawnBody { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[] }
+function spawnBody(): SpawnBody {
   return {
     ...(spawnHarness ? { harness: spawnHarness } : {}),
     ...(spawnModel ? { model: spawnModel } : {}),
     ...(spawnEffort ? { effort: spawnEffort } : {}),
     ...(spawnContainer ? { container: spawnContainer } : {}),
     ...(spawnContainerContext ? { containerContext: spawnContainerContext } : {}),
-    // the founding packs (B2b), only ever as an explicit choice: with no switch on the body is
-    // byte-identical to the founding this window made before the packs existed — absent is the
-    // door's "today's founding", and the switches live only in an open founding window
-    // (closeFounding clears them), so the tree picker's spawn can never inherit a choice
-    ...(gfPacks.size ? { packs: [...gfPacks] } : {}),
   };
 }
 
@@ -5171,7 +5134,7 @@ async function togglePin(path: string) {
   if (keepFilter) { pkFilter.value = keepFilter; applyPkFilter(); scheduleFind(); }
 }
 
-async function revealStartedSlot(slot: number): Promise<boolean> {
+export async function revealStartedSlot(slot: number): Promise<boolean> {
   const deadline = Date.now() + 4500;
   do {
     await refresh();
@@ -5181,12 +5144,15 @@ async function revealStartedSlot(slot: number): Promise<boolean> {
   return false;
 }
 
-async function startSession(path: string, label?: string, onError?: (msg: string) => void) {
-  if (!pickerSlot) return;
-  const slot = pickerSlot;
+// `via` is the founding window (src/founding.ts): it names its own slot and sends its own body;
+// the tree picker passes nothing and founds on pickerSlot with spawnBody(), as before
+export interface SpawnVia { slot: number; body: SpawnBody }
+export async function startSession(path: string, label?: string, onError?: (msg: string) => void, via?: SpawnVia) {
+  const slot = via?.slot ?? pickerSlot;
+  if (!slot) return;
   // the label is the ROLE at founding time: the server keys its one role card and the steward
   // token export off exactly this string, so the founding window sends it here and nowhere else
-  const res = await post(`/api/slots/${slot}/open`, { cwd: path, ...(label ? { label } : {}), ...spawnBody() });
+  const res = await post(`/api/slots/${slot}/open`, { cwd: path, ...(label ? { label } : {}), ...(via?.body ?? spawnBody()) });
   const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
   if (!res.ok) {
     // the options row can now make this fail for a reason the path field cannot express (an
@@ -5200,7 +5166,7 @@ async function startSession(path: string, label?: string, onError?: (msg: string
     return;
   }
   if (j.packsDelivered === false) {
-    // B2b: the founding stands, the packs did not cross — said where the click was (gfError),
+    // B2b: the founding stands, the packs did not cross — said where the click was (the founding window's foot),
     // and the window stays open: closing it would read the delivery as having succeeded
     if (onError) onError(j.reason ?? "the packs were not delivered");
     else alert(`Session opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
@@ -5215,10 +5181,11 @@ async function startSession(path: string, label?: string, onError?: (msg: string
   closePicker();
 }
 
-async function startWorktree(repo: string, onError?: (msg: string) => void) {
-  if (!pickerSlot) return;
-  const slot = pickerSlot;
-  const chosen = harnesses.find((h) => h.id === spawnHarness)
+export async function startWorktree(repo: string, onError?: (msg: string) => void, via?: SpawnVia) {
+  const slot = via?.slot ?? pickerSlot;
+  if (!slot) return;
+  const body = via?.body ?? spawnBody();
+  const chosen = harnesses.find((h) => h.id === body.harness)
     ?? harnesses.find((h) => h.default);
   if (chosen?.allowsLanes === false) {
     const msg = `${chosen.id} is main-session only — choose “Start session here”, not a lane.`;
@@ -5227,7 +5194,7 @@ async function startWorktree(repo: string, onError?: (msg: string) => void) {
   }
   // branch names are plumbing, not something to type: the server auto-names the lane
   // (fleet/<stamp>-<rand>) and the slot label is what you actually rename
-  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "", ...spawnBody() });
+  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "", ...body });
   const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
   if (!res.ok) {
     pkPathIn?.classList.add("bad");
@@ -5237,7 +5204,7 @@ async function startWorktree(repo: string, onError?: (msg: string) => void) {
     return;
   }
   if (j.packsDelivered === false) {
-    // B2b: the lane stands, the packs did not cross — said where the click was (gfError),
+    // B2b: the lane stands, the packs did not cross — said where the click was (the founding window's foot),
     // and the window stays open: closing it would read the delivery as having succeeded
     if (onError) onError(j.reason ?? "the packs were not delivered");
     else alert(`Lane opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
@@ -5252,717 +5219,10 @@ async function startWorktree(repo: string, onError?: (msg: string) => void) {
   closePicker();
 }
 
-// --- THE FOUNDING WINDOW (Gruendungsfenster B1 · Stufen 1–3, only client) -----------------------
-//
-// WHAT A CLICK ON A FREE PLACE OPENS. The old tree answered "where"; the owner asked for
-// „[Zitat entfernt]“ in that order (2026-09-21, Program 0d51b4d4): a comic page of roles, then
-// profile and context, then the repo — and the tree stays one step behind "Anderer Ordner",
-// because a repo with no running session exists nowhere else. Design:
-// docs/messungen/2026-09-22-gruendungsfenster-entwurf.md §4 "erster Schnitt"; the mockup's shapes
-// (docs/design/gruendungsfenster/gf.js) are the reference, the grammar the material — G4.1 window,
-// G4.4 selection, G3.1 segments, G4.3 model switch, G0.5 owner language, G0.7 mobile fullscreen.
-// W6, decided in the design: the window hangs NEXT TO THE CLICKED ROW (the owner's own words),
-// not centred like a shell window — his sentence sets the place, the grammar sets the material.
-// The context column is READ-ONLY and says the truth about the founding it stands over: a role
-// card with anchors for an Orchestrator, nothing for a founding by hand (pack toggles are B2 and
-// are forbidden here). The two facts B3 added to dirinfo — a repo's packs and its seatless
-// worktrees — are exactly what makes step 3's card and the "vorhandener Worktree" role honest.
-type GfRole = "orch" | "wt-new" | "wt-old" | "plain" | "steward";
-
-// label the server keys the role off: isOrchestratorLabel (word boundary) and STEWARD_LABEL.
-const gfRoleLabel = (r: GfRole): string | undefined =>
-  r === "orch" ? "Orchestrator" : r === "steward" ? "⚙ steward" : undefined;
-
-let gfWin: HTMLElement | null = null;
-let gfStep: 1 | 2 | 3 = 1;
-let gfRole: GfRole | null = null;
-let gfRepo: string | null = null;       // the repo the card currently describes
-let gfDir: DirInfoResp | null = null;   // dirinfo of gfRepo — late arrivals lose to gfSeq
-let gfDirErr: string | null = null;
-let gfSeq = 0;
-let gfOrphan: string | null = null;     // the seatless worktree "wt-old" will seat
-let gfError: string | null = null;      // a refused founding, said where the click was
-let gfRepos: GfRepo[] = [];             // step 3's list, taken when Confirm opens the step
-let gfMoreOpen = false;                 // the "Mehr" reiter (G3.2), closed by default
-let gfRestoreFocus: HTMLElement | null | undefined;
-let gfTeardown: (() => void) | null = null;
-
-// THE FOUNDING PLAN (Gruendungsfenster B2b): GET /api/founding-plan for the repo, harness and
-// mode this founding would have. It hangs off the REPO (the server plan reads one), the repo is
-// only chosen in step 3 (F5), so the plan loads there — latest-wins like gfLoadDir, its own
-// counter because the two loads race different routes.
-interface GfPlanPack { id: string; bytes: number; source: string; useWhen?: string }
-interface GfPlan { selected: GfPlanPack[]; omitted: { id: string; reason: string }[] }
-let gfPlan: GfPlan | null = null;     // the plan of (repo, harness, mode) — null while reading
-let gfPlanErr: string | null = null;  // a plan that could not be read — SKEW_NOTE for a 404
-let gfPlanFor: string | null = null;  // the key the last attempt was for — a mismatch refetches
-let gfPlanSeq = 0;
-let gfPacks = new Set<string>();      // the switched-on ids — default off IS today's founding
-let gfBusy = false;                   // a founding with packs answers only after the boot grace
-
-interface GfRepo { repo: string; name: string; mains: SlotInfo[]; lanes: SlotInfo[] }
-
-// the roles of step 1. The three the owner named first carry the mockup's art; „[Zitat entfernt]“ and
-// "Steward" are his F1 answer ("die einfache Session in einem Ordner + Steward kommen auf die
-// Rollen-Seite") and get art in the same stroke language. Texts explain in German (G0.5).
-const GF_ROLES: { id: GfRole; name: string; sub: string; say: string }[] = [
-  { id: "orch", name: "Orchestrator", sub: "hält die Fleet zusammen",
-    say: "Hält das Portfolio, schärft Aufträge und verteilt Arbeit — sie landet nicht selbst. Beim Start bekommt sie ihre Rollenkarte." },
-  { id: "wt-new", name: "Worker", sub: "auf neuem Worktree",
-    say: "Eine eigene Lane auf frischem Branch: arbeitet, beweist, wird gelandet." },
-  { id: "wt-old", name: "Worker", sub: "auf vorhandenem Worktree",
-    say: "Setzt einen liegengebliebenen Worktree wieder in einen Platz — die Arbeit darauf bleibt." },
-  { id: "plain", name: "Session", sub: "in einem Ordner",
-    say: "Ein Agent, ein Ordner — keine Rolle und keine Lane, das heutige Standard-Gründen." },
-  { id: "steward", name: "Steward", sub: "hält den Betrieb im Blick",
-    say: "Beobachtet die Fleet, meldet Stillstand und Widerspruch — nie eine zweite Owner-Stimme." },
-];
-
-const GF_STEPS: [number, string][] = [[1, "Rolle"], [2, "Profil & Kontext"], [3, "Repo"]];
-
-function closeFounding() {
-  const win = gfWin;
-  if (!win) return;
-  gfWin = null;
-  gfTeardown?.();
-  gfTeardown = null;
-  win.remove();
-  pickerSlot = 0;
-  gfMoreOpen = false;
-  gfError = null;
-  // the pack choice dies with the window it was made in: "Anderer Ordner" founds through the tree
-  // with the SAME slot, and that founding must stay byte-identical when no switch was flipped —
-  // a choice for the founding repo must never ride along to a different one
-  gfPlan = null;
-  gfPlanErr = null;
-  gfPacks = new Set();
-  gfBusy = false;
-  // G4.1: the focus goes back to the trigger — best effort. The bar's rows are not in the tab
-  // order, so focus() on one is a no-op until a card gives the bar a tab order; named, not hidden.
-  gfRestoreFocus?.focus?.();
-  gfRestoreFocus = undefined;
-}
-
-// the repos of the running fleet, busiest first — the list the mockup draws and step 3 shows.
-// Grouped by the canonical toplevel (SlotInfo.repo), so a MAIN living in a subdir and its lanes
-// land on the same card. A repo with no session is NOT here: that is what "Anderer Ordner" is for.
-function gfRepoList(): GfRepo[] {
-  const by = new Map<string, GfRepo>();
-  for (const s of fleet) {
-    if (!s.cwd) continue;
-    const repo = s.repo ?? s.cwd; // a pending git tick is not a reason to hide the session
-    const r = by.get(repo) ?? { repo, name: baseName(repo), mains: [], lanes: [] };
-    (s.worktree ? r.lanes : r.mains).push(s);
-    by.set(repo, r);
-  }
-  return [...by.values()].sort((a, b) =>
-    (b.mains.length + b.lanes.length) - (a.mains.length + a.lanes.length) || a.name.localeCompare(b.name));
-}
-
-// the window sits RECHTS NEBEN the clicked row, its notch pointing at it, and only climbs as far
-// up as its own height demands (gf.js#anchor). Mobile is fullscreen — there is nothing to anchor to.
-function gfPlace() {
-  const win = gfWin;
-  if (!win || isMobile()) return;
-  const side = document.getElementById("side");
-  const row = document.querySelector<HTMLElement>(`#slots [data-slot="${pickerSlot}"]`);
-  const left = (side?.getBoundingClientRect().right ?? 0) + 14;
-  const h = win.offsetHeight;
-  const mid = row ? row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2 : innerHeight / 2;
-  const top = Math.max(12, Math.min(innerHeight - h - 12, mid - h * 0.42));
-  win.style.left = `${left}px`;
-  win.style.top = `${top}px`;
-  const notch = win.querySelector<HTMLElement>(".gfnotch");
-  if (notch && row) notch.style.top = `${Math.max(10, Math.min(h - 18, mid - top - 6))}px`;
-}
-
-function gfBtn(label: string, primary: boolean, onclick: () => void): HTMLButtonElement {
-  const b = el("button", "gfbtn" + (primary ? " primary" : ""), label) as HTMLButtonElement;
-  b.onclick = onclick;
-  return b;
-}
-
-// the carry line under the head: what the earlier steps chose, each earlier step one "ändern" away
-function gfCarry(body: HTMLElement, parts: [string, boolean][], backTo: string, go: () => void) {
-  const c = el("div", "gfcarry");
-  c.append("Gewählt:");
-  for (const [txt, mono] of parts) c.append(el("span", "gfchip" + (mono ? " m" : ""), txt));
-  const b = el("button", "gfback", `ändern (${backTo})`) as HTMLButtonElement;
-  b.onclick = go;
-  c.append(b);
-  body.append(c);
-}
-
-const gfRoleText = (r: (typeof GF_ROLES)[number]): string =>
-  r.name === "Worker" ? `Worker · ${r.sub}` : `${r.name}${r.sub ? ` · ${r.sub}` : ""}`;
-
-function gfChooseRepo(repo: string) {
-  gfRepo = repo;
-  gfOrphan = null;
-  gfDir = null;
-  gfDirErr = null;
-  gfPlan = null;
-  gfPlanErr = null;
-  void gfLoadDir();
-  void gfLoadPlan();
-}
-
-async function gfLoadDir() {
-  const seq = ++gfSeq;
-  const path = gfRepo;
-  if (!path) return;
-  const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`);
-  if (seq !== gfSeq || !gfWin || gfRepo !== path) return; // latest-wins, like every dir pane
-  if (res.status === 404) { gfDirErr = SKEW_NOTE; renderGf(); return; }
-  if (!res.ok) { gfDirErr = `the server answered ${res.status} for this folder`; renderGf(); return; }
-  const info = (await res.json().catch(() => null)) as DirInfoResp | null;
-  if (seq !== gfSeq || !gfWin || gfRepo !== path) return;
-  if (!info) { gfDirErr = "the server's answer was not readable JSON"; renderGf(); return; }
-  gfDir = info;
-  renderGf();
-}
-
-// the plan of THIS founding, for the repo just chosen, the profile chosen in step 2 and the mode
-// the role spells (wt-new/wt-old are lane foundings, the rest are mains). 404 reads as SKEW_NOTE:
-// a page newer than its server must say so, never pose as a repo without packs.
-function gfPlanKey(): string {
-  const harness = spawnHarness ?? harnesses.find((h) => h.default)?.id ?? "";
-  const mode = gfRole === "wt-new" || gfRole === "wt-old" ? "lane" : "main";
-  return `${gfRepo ?? ""}|${harness}|${mode}`;
-}
-
-async function gfLoadPlan() {
-  const seq = ++gfPlanSeq;
-  const path = gfRepo;
-  if (!path) return;
-  gfPlanFor = gfPlanKey(); // the attempt is the memory — a failed plan is not refetched on every render
-  gfPlan = null;
-  gfPacks = new Set();     // a fresh plan is a fresh choice — old switches never ride across
-  const harness = spawnHarness ?? harnesses.find((h) => h.default)?.id ?? "";
-  const mode = gfRole === "wt-new" || gfRole === "wt-old" ? "lane" : "main";
-  const res = await api(`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`);
-  if (seq !== gfPlanSeq || !gfWin || gfRepo !== path) return; // latest-wins, like gfLoadDir
-  if (res.status === 404) { gfPlanErr = SKEW_NOTE; renderGf(); return; }
-  if (!res.ok) { gfPlanErr = `the server answered ${res.status} for this founding plan`; renderGf(); return; }
-  const j = (await res.json().catch(() => null)) as GfPlan | null;
-  if (seq !== gfPlanSeq || !gfWin || gfRepo !== path) return;
-  if (!j || !Array.isArray(j.selected) || !Array.isArray(j.omitted)) {
-    gfPlanErr = "the server's answer was not readable JSON"; renderGf(); return;
-  }
-  gfPlanErr = null;
-  gfPlan = j;
-  renderGf();
-}
-
-async function gfStart() {
-  const onError = (msg: string) => { gfError = msg; renderGf(); };
-  // a founding WITH packs answers only after the door's boot grace plus readiness — the button
-  // says so instead of sitting silent, and a packsDelivered:false lands here as gfError, the
-  // same place a refused founding speaks, never as a success
-  const sending = gfPacks.size > 0 && gfRole !== "wt-old";
-  if (sending) { gfBusy = true; renderGf(); }
-  try {
-    if (gfRole === "wt-new") {
-      if (gfRepo) await startWorktree(gfRepo, onError);
-    } else if (gfRole === "wt-old") {
-      if (gfRepo && gfOrphan) {
-        // THE CLICKED PLACE (B3): the lane is seated exactly here or refused naming who sits there
-        const slot = pickerSlot;
-        const res = await post("/api/lanes", { repo: gfRepo, attach: gfOrphan, slot, ...spawnBody() });
-        if (!res.ok) {
-          const err = (await res.json().catch(() => ({}))) as { error?: string };
-          onError(err.error ?? `the server answered ${res.status}`);
-          return;
-        }
-        const j = (await res.json().catch(() => ({}))) as { slot?: number };
-        const shown = j.slot ?? slot;
-        if (!await revealStartedSlot(shown)) {
-          onError(`Lane attached, but slot ${shown} did not appear within 5 seconds.`);
-          return;
-        }
-        closeFounding();
-      }
-    } else if (gfRole && gfRepo) {
-      await startSession(gfRepo, gfRoleLabel(gfRole), onError);
-    }
-  } finally {
-    if (sending) { gfBusy = false; renderGf(); }
-  }
-}
-
-function renderGf() {
-  const win = gfWin;
-  if (!win) return;
-  win.replaceChildren();
-  win.style.width = isMobile() ? "" : gfStep === 1 ? "640px" : gfStep === 2 ? "800px" : "840px";
-  const hd = el("div", "gfhead");
-  const ttl = el("div", "gfttl");
-  ttl.append("Neue Session ", el("span", "mono", `· Slot ${pickerSlot}`));
-  const steps = el("div", "gfsteps");
-  GF_STEPS.forEach(([n, name], i) => {
-    if (i) steps.append(el("i", "gfsep"));
-    steps.append(el("span", `gfs${n === gfStep ? " on" : n < gfStep ? " done" : ""}`, `${n} ${name}`));
-  });
-  const x = el("button", "gfx", "✕") as HTMLButtonElement;
-  x.title = "Schließen — der Platz bleibt frei (Esc)";
-  x.onclick = () => closeFounding();
-  hd.append(ttl, steps, x);
-  win.append(el("i", "gfnotch"), hd);
-  const body = el("div", "gfbody");
-  if (gfError) body.append(el("div", "gferror", gfError));
-  if (gfStep === 1) gfStep1(win, body);
-  else if (gfStep === 2) gfStep2(win, body);
-  else gfStep3(win, body);
-  gfPlace();
-}
-
-function gfStep1(win: HTMLElement, body: HTMLElement) {
-  const comic = el("div", "gfcomic");
-  GF_ROLES.forEach((r, i) => {
-    const p = el("button", `gfpanel gf-${r.id}`) as HTMLButtonElement;
-    if (r.id === gfRole) p.classList.add("pick");
-    p.title = r.say;
-    // the role art rides the one reviewed static-icon path (fleet-e2e-security.ts §7): it lives in
-    // PK_ICONS, and the wrapper is display:contents so .gfpanel stays the art's containing block
-    const art = pkIcon(`gf-${r.id}`);
-    art.className = "gfartwrap";
-    p.append(art);
-    const cap = el("div", "gfcap", r.name);
-    cap.append(el("small", "", r.sub));
-    const say = el("div", "gfsay");
-    say.append(el("span", "", r.say));
-    p.append(cap, el("span", "gfnum", String(i + 1)), say);
-    p.onclick = () => {
-      gfRole = r.id;
-      gfError = null;
-      // a role is a different founding shape — the pack choice (B2b) dies with it, so a leftover
-      // switch from wt-new can never ride into an attach, whose door refuses packs by name
-      gfPacks.clear();
-      for (const other of gfWin?.querySelectorAll(".gfpanel") ?? []) other.classList.toggle("pick", other === p);
-      const next = gfWin?.querySelector<HTMLButtonElement>(".gffoot .gfbtn.primary");
-      if (next) next.disabled = false;
-    };
-    // the mockup's fast path: the second click is the first two decisions at once
-    p.ondblclick = () => { p.click(); gfStep = 2; renderGf(); };
-    comic.append(p);
-  });
-  body.append(comic);
-  const foot = el("div", "gffoot");
-  foot.append(el("span", "gfhint", "Klick merkt vor · Doppelklick geht gleich weiter · Pfeiltasten bewegen"));
-  foot.append(gfBtn("Cancel", false, () => closeFounding()));
-  const next = gfBtn("Next ▸", true, () => { if (gfRole) { gfStep = 2; renderGf(); } });
-  next.disabled = !gfRole;
-  foot.append(next);
-  win.append(body, foot);
-}
-
-function gfStep2(win: HTMLElement, body: HTMLElement) {
-  const role = gfRole ? GF_ROLES.find((r) => r.id === gfRole)! : null;
-  if (role) gfCarry(body, [[gfRoleText(role), false]], "Rolle", () => { gfStep = 1; renderGf(); });
-  const two = el("div", "gftwo");
-
-  const prof = el("div", "gfcol");
-  prof.append(el("h3", "", "Profil"), el("div", "gfsub", "Wie der Agent läuft."));
-  const agents = agentHarnesses();
-  const chosen = harnesses.find((h) => h.id === spawnHarness)
-    ?? agents.find((h) => h.default) ?? null;
-  // the harness as a segment (G3.1) — the tree's <select>, redrawn in the window's own material
-  if (agents.length >= 2) {
-    const fld = el("div", "gffld");
-    fld.append(el("div", "gfk", "Harness"));
-    const seg = el("div", "gfseg");
-    for (const a of agents) {
-      const on = (spawnHarness ?? agents.find((x) => x.default)?.id) === a.id;
-      const b = el("button", "gfsegbtn" + (on ? " on" : ""), a.id) as HTMLButtonElement;
-      b.setAttribute("aria-pressed", String(on));
-      b.onclick = () => {
-        spawnHarness = a.default ? null : a.id;
-        // a level from the harness being left behind must not ride along — the same three rules
-        // the tree's options row applies, because both write the same founding decision
-        if (!a.supports.effort || !a.effortLevels.includes(spawnEffort)) spawnEffort = "";
-        if (!a.supports.model) spawnModel = "";
-        if (!a.supports.container) { spawnContainer = ""; spawnContainerContext = ""; }
-        gfMoreOpen = false;
-        renderGf();
-      };
-      seg.append(b);
-    }
-    if (chosen) {
-      const facts = [
-        chosen.allowsLanes === false ? "keine Lanes — nur die Haupt-Session" : "Lanes erlaubt",
-        chosen.supports.container ? "läuft in einem Container" : "kein Container",
-      ];
-      fld.append(seg, el("div", "gfhint2", facts.join(" · ")));
-    } else fld.append(seg);
-    prof.append(fld);
-  }
-  // the model as an options switch (G4.3): value + chevron, the popover opens ABOVE, "default"
-  // and the catalogue's models as rows, an own value typed at the bottom
-  if (chosen?.supports.model) {
-    const fld = el("div", "gffld");
-    fld.append(el("div", "gfk", "Modell"));
-    const wrap = el("div", "gfswrap");
-    const sw = el("button", "gfsw") as HTMLButtonElement;
-    sw.append(el("span", "", spawnModel ? `${spawnModel}${modelNotice(chosen.id, spawnModel) ? ` · ${modelNotice(chosen.id, spawnModel)}` : ""}` : "default"), icon("chevron"));
-    sw.title = "Klick öffnet die Modellwahl — „default“ lässt den Adapter seinen nehmen";
-    const pop = el("div", "gfpop");
-    pop.style.maxHeight = "65vh";
-    pop.style.overflowY = "auto";
-    const pick = (v: string) => { spawnModel = v; renderGf(); };
-    const row = (label: string, v: string) => {
-      const r = el("button", "gfpoprow" + (spawnModel === v ? " on" : ""), label) as HTMLButtonElement;
-      if (modelNotice(chosen.id, v)) { r.style.whiteSpace = "normal"; r.style.overflowWrap = "anywhere"; }
-      r.onclick = () => pick(v);
-      return r;
-    };
-    pop.append(row("default", ""));
-    for (const m of chosen.models ?? []) if (m) {
-      const notice = modelNotice(chosen.id, m);
-      pop.append(row(`${m}${notice ? ` · ${notice}` : ""}`, m));
-    }
-    const inWrap = el("label", "gfpopin");
-    inWrap.append(el("span", "", "eigener Wert"));
-    const min = el("input", "") as HTMLInputElement;
-    min.type = "text";
-    min.spellcheck = false;
-    min.autocomplete = "off";
-    min.value = spawnModel;
-    min.placeholder = "genau so, wie der Adapter ihn liest";
-    min.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); pick(min.value.trim()); } };
-    inWrap.append(min);
-    pop.append(inWrap);
-    sw.onclick = () => {
-      const open = pop.classList.toggle("open");
-      if (open && !isMobile()) {
-        const rect = sw.getBoundingClientRect();
-        pop.style.position = "fixed";
-        pop.style.left = `${rect.left}px`;
-        pop.style.right = "auto";
-        pop.style.width = `${rect.width}px`;
-        pop.style.bottom = "auto";
-        pop.style.top = `${rect.bottom + 6}px`;
-      }
-    };
-    wrap.append(sw, pop);
-    fld.append(wrap);
-    prof.append(fld);
-  }
-  // effort exists only where the harness has the concept — the field simply is not offered otherwise
-  if (chosen?.supports.effort && chosen.effortLevels.length) {
-    const fld = el("div", "gffld");
-    fld.append(el("div", "gfk", "Effort"));
-    const seg = el("div", "gfseg");
-    for (const lv of ["", ...chosen.effortLevels]) {
-      const on = spawnEffort === lv;
-      const b = el("button", "gfsegbtn" + (on ? " on" : ""), lv || "default") as HTMLButtonElement;
-      b.setAttribute("aria-pressed", String(on));
-      b.onclick = () => { spawnEffort = lv; renderGf(); };
-      seg.append(b);
-    }
-    fld.append(seg);
-    prof.append(fld);
-  }
-  // the reiter (G3.2) for what only some harnesses carry: the box and its daemon. The codex
-  // context window would belong here too, but the client cannot tell which harnesses take it
-  // (the catalogue has no field), so offering it would 400 on every other harness — left out.
-  if (chosen?.supports.container) {
-    const more = el("div", "gfmore");
-    const head = el("button", "gfmorehead") as HTMLButtonElement;
-    head.append(el("span", "", "Mehr: Container"), icon("chevron"));
-    head.setAttribute("aria-expanded", String(gfMoreOpen));
-    head.title = "Container und Docker-Daemon dieser Session — leer heißt Fleet-Standard";
-    head.onclick = () => { gfMoreOpen = !gfMoreOpen; renderGf(); };
-    more.append(head);
-    if (gfMoreOpen) {
-      const box = el("div", "gfmorebox");
-      const cIn = el("input", "") as HTMLInputElement;
-      cIn.type = "text";
-      cIn.spellcheck = false;
-      cIn.autocomplete = "off";
-      cIn.placeholder = containerDefaults?.container ?? "container";
-      cIn.value = spawnContainer;
-      cIn.oninput = () => { spawnContainer = cIn.value.trim(); };
-      const xIn = el("input", "") as HTMLInputElement;
-      xIn.type = "text";
-      xIn.spellcheck = false;
-      xIn.autocomplete = "off";
-      xIn.placeholder = containerDefaults?.containerContext ?? "docker context";
-      xIn.value = spawnContainerContext;
-      xIn.title = "Auf welchem Docker-Daemon der Container läuft — ein Image lebt in genau einem, deshalb der Context, in dem es gebaut wurde (intern: docker context).";
-      xIn.oninput = () => { spawnContainerContext = xIn.value.trim(); };
-      box.append(labelled("container", cIn), labelled("docker context", xIn));
-      more.append(box);
-    }
-    prof.append(more);
-  }
-  two.append(prof);
-
-  // the context column — READ-ONLY (pack toggles are B2 and forbidden here), so it says what the
-  // founding it stands over will actually receive, never a switch that would do nothing
-  const ctx = el("div", "gfcol");
-  ctx.append(el("h3", "", "Kontext"),
-    el("div", "gfsub", "Context-Packs sind Zeiger auf Stellen im Repo, kein kopierter Text."));
-  if (gfRole === "orch") {
-    ctx.append(el("div", "gfnote",
-      "Rollenkarte mit Ankern — beim Start stellt der Server der Orchestrator ihre Karte mit Kontext-Ankern zu."));
-  } else {
-    ctx.append(el("div", "gfnote", "Keine Packs — eine Gründung von Hand bekommt keinen Brief zugestellt."),
-      el("div", "gfhint2", "Packs wählst du in Schritt 3, nach der Repo-Wahl."));
-  }
-  two.append(ctx);
-  body.append(two);
-  const foot = el("div", "gffoot");
-  foot.append(el("span", "gfhint", "Bestätigen übernimmt beides; die Repo-Wahl kommt danach."));
-  foot.append(gfBtn("Back", false, () => { gfStep = 1; renderGf(); }));
-  foot.append(gfBtn("Confirm", true, () => {
-    gfRepos = gfRepoList();
-    gfStep = 3;
-    if (gfRepos.length === 1) gfChooseRepo(gfRepos[0]!.repo);
-    renderGf();
-  }));
-  win.append(body, foot);
-}
-
-function gfStep3(win: HTMLElement, body: HTMLElement) {
-  const role = gfRole ? GF_ROLES.find((r) => r.id === gfRole)! : null;
-  if (role) {
-    const model = [spawnHarness || "default harness", spawnModel || "default model", spawnEffort || "default effort"]
-      .filter((x) => !x.startsWith("default")) as string[];
-    gfCarry(body, [[gfRoleText(role), false],
-      [model.length ? model.join(" · ") : "Profil auf Standard", model.length > 0]],
-      "Profil & Kontext", () => { gfStep = 2; renderGf(); });
-  }
-  if (!gfRepos.length) {
-    body.append(el("div", "gfnote",
-      "Kein Repo der Fleet hat gerade eine Session — „Anderer Ordner …“ öffnet den Verzeichnisbaum."));
-  }
-  // a profile or role changed since the plan was attempted — refetch. gfLoadPlan clears the stale
-  // plan synchronously, so no switch of the outdated plan is clickable while it runs.
-  if (gfRepo && gfPlanFor !== gfPlanKey()) void gfLoadPlan();
-  const split = el("div", "gfsplit");
-  const list = el("div", "gfrl");
-  for (const r of gfRepos) {
-    const row = el("button", "gfr" + (gfRepo === r.repo ? " on" : "")) as HTMLButtonElement;
-    row.style.setProperty("--h", String(projectHue(r.repo)));
-    row.append(el("i", "gfdt"), el("span", "", r.name),
-      el("span", "gfc", String(r.mains.length + r.lanes.length)));
-    row.title = `${r.mains.length} Session${r.mains.length === 1 ? "" : "s"}`
-      + (r.lanes.length ? ` · ${r.lanes.length} Lane${r.lanes.length === 1 ? "" : "s"}` : "");
-    row.onclick = () => { gfChooseRepo(r.repo); renderGf(); };
-    list.append(row);
-  }
-  const other = el("button", "gfr other", "Anderer Ordner …") as HTMLButtonElement;
-  other.title = "der heutige Verzeichnisbaum — jedes Repo, auch eines ohne laufende Session";
-  other.onclick = () => {
-    const slot = pickerSlot;
-    closeFounding();
-    openTreePicker(slot);
-  };
-  list.append(other);
-  split.append(list);
-
-  const card = el("div", "gfcard");
-  const sel = gfRepos.find((r) => r.repo === gfRepo);
-  // the head stands over every card state — reading, refused, loaded — so the reader never
-  // loses which repo the pane below it is about
-  const cardHead = () => {
-    const head = el("div", "gfhead");
-    const nm = el("div", "");
-    nm.append(el("div", "gfnm", sel!.name), el("div", "gfpth", sel!.repo.replace(/^\/Users\/[^/]+/, "~")));
-    head.append(nm);
-    return head;
-  };
-  if (!sel) {
-    card.append(el("div", "gfhint2", "Wähle links ein Repo — die Karte zeigt, wer dort arbeitet und was es einem Agenten mitgibt."));
-  } else if (gfDirErr) {
-    card.append(cardHead(), el("div", "gferror", gfDirErr));
-  } else if (!gfDir) {
-    card.append(cardHead(), el("div", "gfhint2", "liest …"));
-  } else {
-    const info = gfDir;
-    card.append(cardHead());
-    const facts = el("div", "gffacts");
-    facts.append(el("span", "gfchip m", info.branch ?? "detached HEAD"));
-    facts.append(info.dirty ? el("span", "gfchip warn", `${info.dirty} uncommitted`) : el("span", "gfchip ok", "sauber"));
-    // ABSENT is not zero: no upstream, nothing to be ahead of — the tree's detail already speaks this
-    if (typeof info.ahead === "number" && typeof info.behind === "number")
-      facts.append(el("span", "gfchip m", `↑${info.ahead} ↓${info.behind}`));
-    else facts.append(el("span", "gfchip", "kein Upstream"));
-    card.append(facts);
-
-    const who = el("div", "gfsec");
-    who.append(el("div", "gfsh", "Wer hier arbeitet"));
-    for (const s of [...sel.mains, ...sel.lanes].slice(0, 7)) {
-      const a = el("div", "gfag");
-      a.append(el("span", "gfid mono", String(s.id)), el("span", "", s.label || baseName(s.cwd || sel.repo)),
-        el("span", "gfhm", `${s.harness ?? "default"} · ${s.model || "—"}${s.modelSuperseded ? " · ⚠ superseded" : ""}`));
-      who.append(a);
-    }
-    const rest = sel.mains.length + sel.lanes.length - 7;
-    if (rest > 0) who.append(el("div", "gfhint2", `+ ${rest} weitere`));
-    if (!sel.mains.length && !sel.lanes.length) who.append(el("div", "gfhint2", "niemand — die Zahl links war die der Sessions, als sich das Fenster öffnete"));
-    card.append(who);
-
-    const gives = el("div", "gfsec");
-    gives.append(el("div", "gfsh", "Was es einem Agenten mitgibt"));
-    const gv = el("div", "gfgv");
-    const g = (k: string, v: HTMLElement | string, warn = false) => {
-      gv.append(el("span", "", k), typeof v === "string" ? el("span", "gv" + (warn ? " miss" : ""), v) : v);
-    };
-    const has = (name: string) => info.entries?.some((e) => !e.dir && e.name === name);
-    // THE TWO FACTS B3 ADDED. A broken manifest is an error, never an empty list — the value
-    // keeps the distinction the server drew.
-    g("AGENTS.md — der portable Vertrag", has("AGENTS.md") ? "liegt da" : "fehlt", !has("AGENTS.md"));
-    g("CLAUDE.md — das Regelbuch", has("CLAUDE.md") ? "liegt da" : "fehlt", !has("CLAUDE.md"));
-    // THE FOUNDING PACKS (Gruendungsfenster B2b), in the place of the read-only line the card had:
-    // the plan hangs off the repo, the repo is only chosen here (F5), so this is where the choice
-    // lives (F3) — each selected pack a switch, DEFAULT OFF (today's founding), each omitted pack
-    // visible with its reason and not switchable. wt-old seats a worktree that predates this
-    // founding — the door refuses a packs list by name, so here the switches stand locked.
-    const pv = el("div", "gfpv");
-    if (gfPlanErr) {
-      pv.append(el("span", "gv miss", gfPlanErr));
-    } else if (!gfPlan) {
-      pv.append(el("span", "gv", "liest …"));
-    } else {
-      const kb = (n: number): string =>
-        `${n >= 10000 ? String(Math.round(n / 1000)) : (n / 1000).toFixed(1).replace(".", ",")} KB`;
-      const srcOf = (s: string): string =>
-        s === "fleet-seed" ? "Fleet-Samen" : s === "repo-manifest" ? "Repo-Manifest" : s;
-      for (const p of gfPlan.selected) {
-        const on = gfPacks.has(p.id);
-        const b = el("button", "gfpack" + (on ? " on" : "")) as HTMLButtonElement;
-        if (gfRole === "wt-old") b.disabled = true;
-        b.setAttribute("aria-pressed", String(on));
-        b.title = `${p.useWhen ? `${p.useWhen} — ` : ""}${srcOf(p.source)}`;
-        b.append(el("span", "gfpn", p.id), el("span", "gfpb", kb(p.bytes)),
-          el("span", "gfpt" + (on ? " on" : ""), on ? "an" : "aus"));
-        b.onclick = () => { if (gfPacks.has(p.id)) gfPacks.delete(p.id); else gfPacks.add(p.id); renderGf(); };
-        pv.append(b);
-      }
-      for (const o of gfPlan.omitted) {
-        const d = el("div", "gfpack omit");
-        d.title = o.reason;
-        d.append(el("span", "gfpn", o.id), el("span", "gfpr", o.reason));
-        pv.append(d);
-      }
-      if (!gfPlan.selected.length && !gfPlan.omitted.length) pv.append(el("span", "gv", "keine"));
-    }
-    g("Kontext-Packs — je Pack an/aus", pv);
-    g("Worktrees auf der Platte", String(info.lanes ?? 0));
-    const orphans = info.orphans ?? [];
-    if (gfRole === "wt-old") {
-      const ov = el("span", "gvgv");
-      if (orphans.length) {
-        for (const o of orphans) {
-          const ob = el("button", "gforph" + (gfOrphan === o.path ? " pick" : "")) as HTMLButtonElement;
-          ob.append(el("span", "", baseName(o.path)), el("span", "gforphb", o.branch || "detached"));
-          ob.title = `diesen Worktree auf Platz ${pickerSlot} setzen — der Klick merkt vor, „Attach lane“ übernimmt`;
-          ob.onclick = () => { gfOrphan = gfOrphan === o.path ? null : o.path; renderGf(); };
-          ov.append(ob);
-        }
-      } else ov.append(el("span", "gv", "keine"));
-      g("davon ohne Platz — zum Setzen auf diesen Slot", ov);
-    } else {
-      g("davon ohne Platz", String(orphans.length));
-    }
-    gives.append(gv);
-    if (gfRole === "wt-old" && gfPlan && gfPlan.selected.length)
-      gives.append(el("div", "gfhint2",
-        "attach seats a worktree that predates this founding — packs delivers only at a fresh founding"));
-    card.append(gives);
-
-    if (info.recent?.length) {
-      const last = el("div", "gfsec");
-      last.append(el("div", "gfsh", "Zuletzt"));
-      for (const c of info.recent) {
-        const cm = el("div", "gfcm");
-        cm.append(el("span", "sha", c.hash), el("span", "s", c.subject), el("span", "ago", fmtTs(c.ts)));
-        last.append(cm);
-      }
-      card.append(last);
-    }
-  }
-  split.append(card);
-  body.append(split);
-  const foot = el("div", "gffoot");
-  foot.append(el("span", "gfhint", gfRole === "wt-old"
-    ? "Den Worktree in der Karte vormerken, dann übernimmt der Knopf — der Platz ist dieser hier."
-    : "Das Repo trägt dieselben Fakten, nach denen man einen Worker wählt: wer dort arbeitet, was er mitbekommt."));
-  foot.append(gfBtn("Back", false, () => { gfStep = 2; renderGf(); }));
-  const go = gfBtn(gfBusy ? "Packs werden zugestellt …"
-    : gfRole === "wt-new" ? "Start lane ▸" : gfRole === "wt-old" ? "Attach lane ▸" : "Start session",
-    true, () => void gfStart());
-  go.disabled = gfBusy || !gfRepo || (gfRole === "wt-old" && !gfOrphan);
-  foot.append(go);
-  win.append(body, foot);
-}
-
-function openPicker(slotId: number) {
-  setDrawer(false);
-  closeFounding();
-  pkShell?.close();
-  pickerSlot = slotId;
-  // a fresh picker is a fresh decision: the previous session's harness/model/effort must not be
-  // inherited by whatever this slot becomes next (the server clears the same three on recycle).
-  spawnHarness = null; spawnModel = ""; spawnEffort = ""; spawnContainer = ""; spawnContainerContext = "";
-  gfStep = 1; gfRole = null; gfRepo = null; gfDir = null; gfDirErr = null; gfOrphan = null; gfError = null;
-  gfPlan = null; gfPlanErr = null; gfPlanFor = null; gfPacks = new Set(); gfBusy = false;
-  gfRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const win = el("div", "gfwin");
-  win.id = "gf";
-  win.setAttribute("role", "dialog");
-  win.setAttribute("aria-label", `Neue Session auf Slot ${slotId}`);
-  // G4.1: Esc and an outside click close. Both listeners leave with the window, and neither sees
-  // the OPENING click: mousedown runs before the click that called this.
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key !== "Escape" || !gfWin) return;
-    e.preventDefault();
-    closeFounding();
-  };
-  const onDown = (e: MouseEvent) => {
-    if (gfWin && e.target instanceof Node && !gfWin.contains(e.target)) closeFounding();
-  };
-  document.addEventListener("keydown", onKey, true);
-  document.addEventListener("mousedown", onDown, true);
-  // step 1's arrows (G4.1): walk the five panels, Enter takes the preselected one into step 2.
-  // Riding on the window root, so it exists exactly while the window does; inputs in steps 2–3
-  // are untouched because the handler reads gfStep first.
-  win.addEventListener("keydown", (e) => {
-    if (gfStep !== 1 || !gfWin) return;
-    const panels = [...gfWin.querySelectorAll<HTMLButtonElement>(".gfpanel")];
-    if (!panels.length) return;
-    const cur = panels.findIndex((p) => p.classList.contains("pick"));
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-      e.preventDefault();
-      panels[(cur + 1 + panels.length) % panels.length]!.click();
-      panels[(cur + 1 + panels.length) % panels.length]!.focus();
-    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-      e.preventDefault();
-      panels[(cur - 1 + panels.length) % panels.length]!.click();
-      panels[(cur - 1 + panels.length) % panels.length]!.focus();
-    } else if (e.key === "Enter" && cur >= 0) {
-      e.preventDefault();
-      gfStep = 2;
-      renderGf();
-    }
-  });
-  document.body.appendChild(win);
-  gfWin = win;
-  gfTeardown = () => {
-    document.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("mousedown", onDown, true);
-  };
-  // fetch-once, and only from here: the catalogue is needed exactly when a spawn is being
-  // composed, so it never costs anything on a board that is only being watched.
-  void loadHarnesses().then(() => { if (gfWin && gfStep === 2) renderGf(); });
-  renderGf();
-}
-
-// the tree, one step behind "Anderer Ordner". Everything it could do before, it still does — its
-// two buttons carry their own meaning ("Start session here", "⎇ New lane here"), and the profile
-// chosen in the founding window's step 2 rides along in spawnBody; only the ROLE does not follow
-// it in (a label the owner never saw on a button he clicked would be a silent surprise).
+// the directory tree window. Its two buttons carry their own meaning ("Start session here",
+// "⎇ New lane here") and its own options row writes spawnBody. Since the founding window's rebuild
+// (src/founding.ts, 2026-09-29) chooses any folder inside itself, the free slot no longer opens
+// this window; it stays as it was (card: the old window is not rebuilt).
 function openTreePicker(slotId: number) {
   setDrawer(false);
   pkShell?.close();

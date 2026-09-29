@@ -3,7 +3,7 @@
 // regression).
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
@@ -142,7 +142,7 @@ export async function run(): Promise<void> {
       const stillDead = await tmuxOut("display-message", "-p", "-t", `s${deadSlot}`,
         "#{pane_dead}\t#{pane_current_path}");
       check("tmux enumeration: the unknown dead slot stays occupied and its pane is never recycled",
-        occupied.slots.find((s) => s.id === deadSlot)?.cwd === REPO
+        resolve(occupied.slots.find((s) => s.id === deadSlot)?.cwd ?? "") === resolve(REPO)
           && stillDead.code === 0 && stillDead.out.trimEnd() === "1",
         JSON.stringify({ slot: occupied.slots.find((s) => s.id === deadSlot), pane: stillDead }));
     } finally {

@@ -12,6 +12,7 @@ import qrcode from "qrcode-generator";
 import { entityMatches, mdInto, type MdEntityKind } from "./md";
 import { selectionMarkdown } from "./mdcopy";
 import { Flakes } from "./flakes";
+import { MarkStage, markFacts, placeMarks, projectHue, type MarkItem } from "./marks";
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
 import type { ModelEntry, ModelAvailability } from "../model-register";
@@ -5979,16 +5980,8 @@ function projectOf(s: SlotInfo): string | null {
 // but not the same colour tell you nothing while looking like they mean something. So: quantize.
 // Distinct projects are now 45° apart minimum and unmistakable; two projects CAN share a colour,
 // which reads as "same project" and is the failure §F2 already accepted. The wheel positions skip
-// the muddy yellow-brown band that turns grey against #141414.
-const PROJECT_HUES = [8, 45, 88, 135, 175, 205, 260, 315];
-function projectHue(path: string): number {
-  let h = 0x811c9dc5; // FNV-1a
-  for (let i = 0; i < path.length; i++) {
-    h ^= path.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return PROJECT_HUES[(h >>> 0) % PROJECT_HUES.length];
-}
+// the muddy yellow-brown band that turns grey against #141414. The function itself lives in
+// src/marks.ts#projectHue since the session mark's species IS this hue's index — one identity.
 function tintProject(node: HTMLElement, key: string | null) {
   if (!key) return;
   node.style.setProperty("--proj-h", String(projectHue(key)));
@@ -6537,6 +6530,12 @@ function openCodexDlg(slot: number) {
   void loadCodexCandidates(slot);
 }
 
+// the bar's one mark canvas and the boxes it draws into, re-measured when the list changes size
+// (collapsed rail, a wrapped phone row) — the rows themselves only change in renderSlots
+const marks = new MarkStage();
+let markItems: MarkItem[] = [];
+new ResizeObserver(() => placeMarks(marks, slotsEl, markItems)).observe(slotsEl);
+
 function renderSlots() {
   updateTitle();
   // harness-dependent pane affordances follow the POLL, not just pane assignment: a session
@@ -6551,6 +6550,7 @@ function renderSlots() {
   const bandFocus = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("bandview")
     ? document.activeElement.closest<HTMLElement>(".slot")?.dataset.slot ?? null : null;
   slotsEl.replaceChildren();
+  markItems = [];
   // Every slot still gets a row and empty slots still hold their place — but a lane whose project
   // has a home in this list now renders under it instead of at its own number. The "slots are fixed
   // places" principle is bent HERE and only here, deliberately (§F3 edge 3): four sessions plus
@@ -6580,6 +6580,7 @@ function renderSlots() {
     slotsEl.appendChild(slotRow(s, undefined, refs)); // plain session, including another main with no lanes
   }
   if (bandFocus) slotsEl.querySelector<HTMLElement>(`.slot[data-slot="${bandFocus}"] .bandview`)?.focus();
+  placeMarks(marks, slotsEl, markItems);
 }
 
 // A FREE PLACE IS STILL A PLACE (owner: „[Zitat entfernt]“
@@ -6590,7 +6591,9 @@ function emptyRow(s: SlotInfo): HTMLElement {
   const row = el("div", "slot empty");
   row.dataset.slot = String(s.id);
   const r1 = el("div", "r1");
-  r1.append(el("span", "mark"), el("span", "n", String(s.id)), el("span", "lbl dim", "free · start a session"));
+  const mk = el("span", "mark");
+  markItems.push({ el: mk, facts: null }); // bare soil: the place holds the column's axis
+  r1.append(mk, el("span", "n", String(s.id)), el("span", "lbl dim", "free · start a session"));
   row.appendChild(r1);
   row.onclick = () => openPicker(s.id);
   // The ⎇+ quick-lane chip used to hang here, on EVERY empty row — twelve identical chips the
@@ -6685,11 +6688,11 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   {
       const displayLabel = s.label ?? baseName(s.cwd);
       const lbl = el("span", "lbl", displayLabel);
-      // THE PLACE FOR THE SESSION MARK — reserved, sized, and deliberately EMPTY. It is build 2 of
-      // this card and waits on the owner's choice between the drawn variants
-      // (docs/messungen/2026-09-20-session-marke-runde-2.md §7). It draws nothing, so it is not a
-      // sixth thing on the row; it is the geometry the mark will land in.
-      r1.appendChild(el("span", "mark"));
+      // THE SESSION MARK — Fassung B "Zweig", the owner's choice (src/marks.ts). The span only
+      // reserves the geometry; the bar's one canvas draws into it (placeMarks, end of renderSlots),
+      // from facts registered below once the row's state glyph is known.
+      const mk = el("span", "mark");
+      r1.appendChild(mk);
       // WHAT THE ROW NO LONGER SAYS, the label says on hover: which checkout, a lane's branch and
       // git state (the lifecycle dot's three words), today's inbound bytes, a parked send. These
       // were line 2 and two chips; the board says all of them again, with actions.
@@ -6768,6 +6771,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       const hidHot = !!stack && !open && stack.lanes.some(
         (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
       const state = slotState(s, serverNow, visible || hidHot);
+      markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", state) });
       const live = el("span", `act ${state}`);
       live.title = STATE_WORD[state]
         + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")
@@ -7184,7 +7188,10 @@ export async function refresh() {
         s.inbound ? inboundChipLabel(s.inbound) : null,
         s.parkedSend?.count, s.parkedSend?.draftChars,
         // the band: a new session on the line adds a cell (bandify)
-        s.succession?.session])]);
+        s.succession?.session,
+        // the session mark's facts beyond the ones above (src/marks.ts#markFacts): role reads the
+        // model (astra), the waiting frame reads awaiting, the bud reads the harness
+        s.harness, s.model, s.awaiting])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();

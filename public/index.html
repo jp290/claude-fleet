@@ -197,7 +197,11 @@
   /* The bar's own side padding and the row's used to sit on top of each other: 8 + 10 on each side,
      36px of a 249px column spent before a single character. 5 + 8 keeps the rows off the edge and
      off the scrollbar and gives the 10px back to the one element that is flex:1 — the label. */
-  #slots { flex: 1; overflow-y: auto; padding: 4px 5px 8px 2px; display: flex; flex-direction: column; gap: 2px; }
+  #slots { position: relative; flex: 1; overflow-y: auto; padding: 4px 5px 8px 2px; display: flex; flex-direction: column; gap: 2px; }
+  /* THE BAR'S ONE MARK CANVAS (src/marks.ts): absolutely placed inside the scrolling list, so it
+     scrolls with the rows and takes no place in the flex column; above the rows so a row's tint
+     cannot cover a mark, and never a click target. Only as wide and tall as the marks' column. */
+  #slots > .markstage { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 1; }
   /* A ROW IS TWO LINES now. Line 1 (.r1) is address · label · state and everything that asks for a
      decision; line 2 (.r2) carries the two facts the row used to say only in colour and brightness
      — which checkout, and how long since it last spoke. `flex: none` stays: a row that can be
@@ -231,11 +235,10 @@
   .slot .r2 .repo { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .slot .r2 .when { flex: none; margin-left: auto; font-family: var(--chat-mono);
     font-variant-numeric: tabular-nums; }
-  /* THE PLACE FOR THE SESSION MARK — reserved, sized, and EMPTY. The mark is build 2 of this card
-     and waits on the owner's choice between the drawn variants; the size is the one variant A2 is
-     drawn at (docs/messungen/2026-09-20-session-marke-runde-2.md §7, marken-a2.html: 26px on a
-     session row, 21px on a lane). Reserved now so the row's geometry is already the one the mark
-     lands in — and empty on purpose: a placeholder that draws something is not a placeholder. */
+  /* THE PLACE FOR THE SESSION MARK — the owner chose Fassung B "Zweig" (2026-09-29); the size is
+     still the one reserved for it, first drawn at (docs/messungen/2026-09-20-session-marke-runde-2.md §7, marken-a2.html: 26px on a
+     session row, 21px on a lane). The box stays EMPTY in the DOM: the bar's one canvas
+     (.markstage) draws Fassung B into it, so the row's geometry does not move when a mark does. */
   .slot .mark { flex: none; width: var(--mark-size, 26px); height: var(--mark-size, 26px); }
   .slot.lane { --mark-size: 21px; }
   /* THE ADDRESS IS A CHIP, and it is the same object the chat view sets an id or a code span in

@@ -10,6 +10,7 @@ import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScre
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
+import { MarkStage, markFacts, markShape, paintMark, type MarkEnv, type MarkFacts } from "../src/marks";
 import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
@@ -1149,6 +1150,7 @@ export async function run(): Promise<void> {
   check("reconnect backoff caps and stays capped", reconnectDelay(4) === RECONNECT_MAX_MS && reconnectDelay(50) === RECONNECT_MAX_MS,
     `${reconnectDelay(4)},${reconnectDelay(50)}`);
   check("reconnect backoff never returns 0 or a negative wait", reconnectDelay(-3) === 1500 && RECONNECT_MAX_MS > 1500);
+  sessionMarkChecks();
   // --- data-saver seed budget: ?seed=N caps the scrollback the server hands a reconnecting
   // client. Measured on the live fleet, the full 3000-line seed is 6.8–173 KB PER reconnect
   // and mobile reconnects a lot, so this is the switch's largest single item. Contract: a
@@ -4259,4 +4261,119 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     await post(`/api/slots/${F}/kill`, {});
     await tmuxOut("kill-session", "-t", `=${anchor}`);
   }
+}
+
+// --- THE SESSION MARK (src/marks.ts, Fassung B "Zweig"). Derived, never stored: the same facts must
+// draw the same commands after a restart (a fresh derivation, a fresh stage) and after re-slotting
+// (the row placed elsewhere in the bar, beside other rows); reduced motion must stop every movement.
+// The canvas is a recorder — each drawing call and each style write becomes one line — and the
+// stage's world (reduced motion, hidden tab, rAF) is handed in, so no browser is needed. ---
+function sessionMarkChecks(): void {
+  const recorder = () => {
+    const log: string[] = [];
+    const pen = new Proxy({}, {
+      get: (_t, k) => (...a: unknown[]) => { log.push(`${String(k)}(${a.join(",")})`); },
+      set: (_t, k, v) => { log.push(`${String(k)}=${String(v)}`); return true; },
+    }) as unknown as CanvasRenderingContext2D;
+    const canvas = { className: "", width: 0, height: 0, style: {}, dataset: {} as Record<string, string>,
+      setAttribute: () => {}, getContext: () => pen } as unknown as HTMLCanvasElement;
+    return { log, pen, canvas };
+  };
+  const draw = (f: MarkFacts, size = 26, t = 0): string[] => {
+    const r = recorder();
+    paintMark(r.pen, markShape(f, size), t);
+    return r.log;
+  };
+  const A: MarkFacts = { repo: "/Users/o/claude-fleet", harness: "claude", role: "main", slot: 3, openedAt: 1789767300000, state: "rest" };
+  const same = (a: string[], b: string[]) => a.length > 0 && a.join("\n") === b.join("\n");
+
+  const first = draw(A), again = draw({ ...A });
+  check("session mark: the same facts draw the same commands after a restart (fresh derivation)",
+    first.length > 20 && same(first, again), `${first.length} vs ${again.length} commands`);
+  // …and the facts are what draws it: every fact changes the drawing, so the pin above is not vacuous
+  const changed = {
+    repo: draw({ ...A, repo: "/Users/o/example-b" }), slot: draw({ ...A, slot: 4 }), openedAt: draw({ ...A, openedAt: A.openedAt + 1 }),
+    role: draw({ ...A, role: "orch" }), harness: draw({ ...A, harness: "pi-zai" }), state: draw({ ...A, state: "sleep" }),
+  };
+  const unchanged = Object.entries(changed).filter(([, l]) => same(l, first)).map(([k]) => k);
+  check("session mark: repo, slot, openedAt, role, harness and state each change the drawing", !unchanged.length,
+    `draws the same despite: ${unchanged.join(",")}`);
+  // a derived mark carries no context fill: markFacts has no field for it, whatever the row says
+  const derived = markFacts({ id: 3, label: "Orchestrator", harness: "codex", openedAt: 5, awaiting: "owner",
+    ctx: { usedTokens: 1, windowTokens: 2, pct: 50 } } as Parameters<typeof markFacts>[0], "/r", "work");
+  check("session mark: derived from the row's facts (role from the label, waiting from awaiting), no context fill",
+    JSON.stringify(derived) === JSON.stringify({ repo: "/r", harness: "codex", role: "orch", slot: 3, openedAt: 5, state: "need" }),
+    JSON.stringify(derived));
+
+  // the stage: a fake world whose rAF only records, driven by hand
+  const world = (reduce: boolean, hidden = false) => {
+    const w = { reduce, hidden, rafs: 0, cafs: [] as number[], next: null as ((t: number) => void) | null, wake: () => {} };
+    const env: MarkEnv = {
+      reduce: () => w.reduce, hidden: () => w.hidden, now: () => 1000,
+      raf: (cb) => { w.rafs++; w.next = cb; return w.rafs; },
+      caf: (id) => { w.cafs.push(id); w.next = null; },
+      listen: (wake) => { w.wake = wake; },
+    };
+    return { w, env };
+  };
+  // the commands one cell drew: from its translate to its restore
+  const cellLog = (log: string[], x: number, y: number): string[] => {
+    const at = log.lastIndexOf(`translate(${x},${y})`);
+    const end = log.indexOf("restore()", at);
+    return at < 0 || end < 0 ? [] : log.slice(at + 1, end);
+  };
+  {
+    const r1 = recorder(), s1 = new MarkStage(r1.canvas, world(false).env);
+    s1.setRows([{ x: 3, y: 4, size: 26, facts: A }, { x: 3, y: 40, size: 26, facts: { ...A, slot: 4 } }], 40, 80);
+    const r2 = recorder(), s2 = new MarkStage(r2.canvas, world(false).env);
+    s2.setRows([{ x: 3, y: 4, size: 21, facts: { ...A, role: "lane", slot: 20 } }, { x: 1, y: 212, size: 26, facts: A }], 40, 260);
+    const inPlace = cellLog(r1.log, 3, 4), moved = cellLog(r2.log, 1, 212);
+    check("session mark: re-slotting (another place in the bar, other neighbours, a new stage) draws the same commands",
+      same(inPlace, moved) && same(inPlace, first), `${inPlace.length} / ${moved.length} / ${first.length}`);
+    s1.dispose(); s2.dispose();
+  }
+
+  // prefers-reduced-motion: 16 moving marks, and nothing moves
+  const sixteen = Array.from({ length: 16 }, (_, i) => ({ x: 3, y: 4 + i * 34, size: 26,
+    facts: { ...A, slot: i + 1, state: (i % 4 === 3 ? "need" : i % 8 === 5 ? "bad" : "work") as MarkFacts["state"] } }));
+  {
+    const { w, env } = world(true), rec = recorder(), st = new MarkStage(rec.canvas, env);
+    st.setRows(sixteen, 40, 560);
+    const still = rec.log.length;
+    w.wake(); // a visibility or preference event re-syncs: still no loop
+    check("session mark: under prefers-reduced-motion 16 working marks paint one still frame and ask for no frame",
+      w.rafs === 0 && st.moving === 0 && rec.canvas.dataset.moving === "0" && still > 16 * 20
+        && same(cellLog(rec.log, 3, 4), draw(sixteen[0]!.facts, 26, 0)),
+      `rafs=${w.rafs} moving=${st.moving} commands=${still}`);
+    // the same 16 without the preference DO move — the pin above is about the preference, not a dead stage
+    w.reduce = false; w.wake();
+    const before = cellLog(rec.log, 3, 4);
+    w.next?.(1016);
+    const after = cellLog(rec.log, 3, 4);
+    check("session mark: without the preference the same 16 marks run on ONE rAF and the drawing moves",
+      w.rafs === 2 && st.moving === 16 && rec.canvas.dataset.moving === "16" && before.length > 0 && !same(before, after),
+      `rafs=${w.rafs} moving=${st.moving}`);
+    // switching the preference on mid-run cancels the pending frame and stops for good
+    const rafs = w.rafs;
+    w.reduce = true; w.wake();
+    check("session mark: turning reduced motion on mid-run cancels the loop and asks for no further frame",
+      w.rafs === rafs && w.cafs.includes(rafs) && w.next === null && st.moving === 0, `rafs=${w.rafs} cafs=${w.cafs.join(",")}`);
+    st.dispose();
+  }
+  {
+    const { w, env } = world(false, true), rec = recorder(), st = new MarkStage(rec.canvas, env);
+    st.setRows(sixteen, 40, 560);
+    check("session mark: a hidden tab paints the still frame and runs no loop", w.rafs === 0 && rec.log.length > 0, `rafs=${w.rafs}`);
+    st.dispose();
+  }
+
+  // the forbidden means, read from the code (comments stripped): no Math.random/sin/cos, and the
+  // bar keeps ONE project identity — client.ts imports projectHue instead of carrying a second one
+  const code = readFileSync(new URL("../src/marks.ts", import.meta.url), "utf8").split("\n")
+    .map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  const client = readFileSync(new URL("../src/client.ts", import.meta.url), "utf8");
+  check("session mark: src/marks.ts uses no Math.random, Math.sin or Math.cos",
+    !/Math\.(random|sin|cos)\b/.test(code), (code.match(/Math\.(random|sin|cos)\b/g) ?? []).join(","));
+  check("session mark: one project identity — client.ts takes projectHue from src/marks.ts and defines none",
+    /import \{[^}]*\bprojectHue\b[^}]*\} from "\.\/marks"/.test(client) && !/function projectHue\b|PROJECT_HUES\s*=/.test(client));
 }

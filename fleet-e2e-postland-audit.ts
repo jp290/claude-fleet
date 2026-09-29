@@ -1584,6 +1584,104 @@ check("(Q.7) the phantom alarm fires on a run that QUEUED for 40 minutes and the
   JSON.stringify(qPhantom.split("\n").filter((l) => l.includes("^") || l.includes("newest audit"))));
 await setAuditMode("green");
 
+// ===== (R) ONE ROW, ONE TREE — lands on two integration branches never share a run ===============
+// The defect (post-land-audits.jsonl, 2026-09-28, two rows): the queue entry carried ONE `main` that
+// every land overwrote, so an overhaul land and a main land queued in the same wait were audited
+// together on whichever branch landed LAST — and the green row's `covers` named a land the audited
+// tree never contained (`git merge-base --is-ancestor <mainAfter> <mainSha>` exit 1). The asserted
+// property is the ledger's own invariant, not the queue's shape: EVERY cover a row names is an
+// ancestor of that row's `mainSha`. Lands on the SAME branch must still coalesce into one run.
+// Relative counts only — (K) below adds rows of its own.
+const isAncestor = (sha: string, tip: string): boolean =>
+  spawnSync("git", ["-C", REPO, "merge-base", "--is-ancestor", sha, tip]).status === 0;
+const coversHeld = (r: AuditRow): boolean => r.covers.length > 0 && r.covers.every((c) => isAncestor(c.mainAfter, r.mainSha));
+const RELEASE_FILE = `${import.meta.dir}/auditrelease`;
+try { unlinkSync(RELEASE_FILE); } catch { /* not there */ }
+await setAuditMode("hold"); // a run that stays in flight until released, while BOTH later lands arrive
+spawnSync("git", ["-C", REPO, "branch", "-f", "overhaul", "main"]);
+const rX = await makeLane("rx");
+const rO = await makeLane("ro");
+const rM = await makeLane("rm");
+const rRetarget = await post(`/api/slots/${rO.slot}/base`, { base: "overhaul" });
+check("(R) setup: one lane is retargeted onto the overhaul integration branch", rRetarget.ok, `${rRetarget.status}`);
+for (const ln of [rX, rO, rM]) await settleForMerge(ln.slot);
+const rowsBeforeR = (await auditRows()).length;
+const rxLanded = await landLane(rX);            // main → a run starts and stays in flight for 12s
+const roLanded = await landLane(rO);            // overhaul → waits in the queue
+const overhaulAfterR = headOf("overhaul");
+const rmLanded = await landLane(rM);            // main again → the land that used to drag overhaul's cover onto main
+const mainAfterR = headOf("main");
+writeFileSync(RELEASE_FILE, "go\n"); // every run may finish now, the two queued behind the first included
+check("(R) setup: the three lands reached their own branches (main, overhaul, main)",
+  rxLanded.gone && roLanded.gone && rmLanded.gone && overhaulAfterR !== mainAfterR
+    && isAncestor(overhaulAfterR, "overhaul") && !isAncestor(overhaulAfterR, "main"),
+  JSON.stringify({ rxLanded, roLanded, rmLanded, overhaulAfterR, mainAfterR }));
+const rRows = await waitRows(rowsBeforeR + 3, 90_000);
+await Bun.sleep(1500); // a (wrong) fourth run, or a merged second one, has time to show itself
+const rFresh = (await auditRows()).slice(0, (await auditRows()).length - rowsBeforeR);
+const rowO = rFresh.find((r) => r.covers.some((c) => c.branch === rO.branch)) ?? NO_ROW;
+const rowM = rFresh.find((r) => r.covers.some((c) => c.branch === rM.branch)) ?? NO_ROW;
+check("(R) the overhaul land and the main land each get their OWN row — three rows, not two",
+  rFresh.length === 3 && rowO !== rowM && rowO.result === "green" && rowM.result === "green",
+  JSON.stringify(rFresh.map((r) => ({ main: r.main, sha: r.mainSha.slice(0, 8), covers: r.covers.map((c) => c.branch) }))));
+check("(R) the overhaul row audited the overhaul tip and names ONLY its own branch's land",
+  rowO.main === "overhaul" && rowO.mainSha === overhaulAfterR
+    && rowO.covers.length === 1 && rowO.covers[0].mainAfter === overhaulAfterR,
+  JSON.stringify({ main: rowO.main, sha: rowO.mainSha, covers: rowO.covers }));
+check("(R) the main row audited the main tip and names ONLY the main land — never the overhaul land",
+  rowM.main === "main" && rowM.mainSha === mainAfterR
+    && rowM.covers.length === 1 && rowM.covers[0].mainAfter === mainAfterR
+    && !rowM.covers.some((c) => c.branch === rO.branch),
+  JSON.stringify({ main: rowM.main, sha: rowM.mainSha, covers: rowM.covers }));
+check("(R) the ledger invariant: every cover of every new row is an ancestor of that row's mainSha",
+  rRows.length > 0 && rFresh.every(coversHeld),
+  JSON.stringify(rFresh.map((r) => ({ main: r.main, sha: r.mainSha.slice(0, 8), covers: r.covers.map((c) => `${c.branch}@${c.mainAfter.slice(0, 8)}`) }))));
+try { unlinkSync(RELEASE_FILE); } catch { /* already gone */ }
+check("(R) the queue file is gone once the rows exist", (await readQueueFile()) === null, JSON.stringify(await readQueueFile()));
+
+// (R.2) A QUEUE FILE WRITTEN BY AN OLDER SERVER — one entry, `main` = the last land's branch, covers
+// from BOTH branches. Each cover is assigned to the branch whose tip contains it; a cover no known
+// tip contains is named in the log and dropped (an orphan commit: no audit could ever cover it), and
+// one whose probe cannot run at all (a sha git does not have) is NOT dropped on that evidence —
+// it reaches the run, and the run writes it as an explicit `unknown` row instead of a covered one.
+const rowsBeforeLegacy = (await auditRows()).length; // asked of the LIVE server, before it is killed
+await killSrv();
+const emptyTree = spawnSync("git", ["-C", REPO, "hash-object", "-w", "-t", "tree", "/dev/null"]).stdout.toString().trim();
+const gitId = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+const orphanSha = spawnSync("git", ["-C", REPO, "commit-tree", emptyTree, "-m", "orphan"], { env: gitId }).stdout.toString().trim();
+const ghostSha = "0123456789abcdef0123456789abcdef01234567";
+const legacyAt = Date.now();
+const legacyQueue = { [rowM.repo]: { main: "main", covers: [
+  { branch: "legacy/main-land", mainAfter: mainAfterR, at: legacyAt },
+  { branch: "legacy/overhaul-land", mainAfter: overhaulAfterR, at: legacyAt + 1 },
+  { branch: "legacy/orphan-land", mainAfter: orphanSha, at: legacyAt + 2 },
+  { branch: "legacy/ghost-land", mainAfter: ghostSha, at: legacyAt + 3 },
+] } };
+writeFileSync(QUEUE_FILE, JSON.stringify(legacyQueue, null, 2));
+await setAuditMode("green");
+check("(R.2) the server came back up on a legacy queue file", await startSrv({ audit: true }));
+const legacyRows = await waitRows(rowsBeforeLegacy + 3, 90_000);
+await Bun.sleep(1500);
+const legacyFresh = (await auditRows()).slice(0, (await auditRows()).length - rowsBeforeLegacy);
+const lMain = legacyFresh.find((r) => r.covers.some((c) => c.branch === "legacy/main-land")) ?? NO_ROW;
+const lOver = legacyFresh.find((r) => r.covers.some((c) => c.branch === "legacy/overhaul-land")) ?? NO_ROW;
+const lGhost = legacyFresh.find((r) => r.covers.some((c) => c.branch === "legacy/ghost-land")) ?? NO_ROW;
+check("(R.2) each legacy cover is assigned to the branch that contains it — one green row per branch",
+  legacyRows.length > 0 && lMain.main === "main" && lMain.result === "green" && lMain.covers.length === 1
+    && lOver.main === "overhaul" && lOver.result === "green" && lOver.covers.length === 1 && lMain !== lOver,
+  JSON.stringify(legacyFresh.map((r) => ({ main: r.main, result: r.result, covers: r.covers.map((c) => c.branch) }))));
+check("(R.2) a legacy cover whose probe cannot run is written as an explicit `unknown` row, never as covered by a green tree",
+  lGhost.result === "unknown" && lGhost.covers.length === 1 && !legacyFresh.some((r) => r.result === "green"
+    && r.covers.some((c) => c.branch === "legacy/ghost-land")),
+  JSON.stringify(lGhost).slice(0, 300));
+check("(R.2) an orphan cover no known tip contains is named in the log and reaches no row",
+  readFileSync(`${import.meta.dir}/server.log`, "utf8").includes("dropped legacy/orphan-land")
+    && !legacyFresh.some((r) => r.covers.some((c) => c.branch === "legacy/orphan-land")),
+  legacyFresh.map((r) => r.covers.map((c) => c.branch)).join(" | "));
+check("(R.2) every cover of every migrated row is an ancestor of its row's mainSha, except the one written as unknown",
+  legacyFresh.filter((r) => r !== lGhost).every(coversHeld), JSON.stringify(legacyFresh.map((r) => r.mainSha.slice(0, 8))));
+await setAuditMode("green");
+
 // ===== (K) THE REMOTE HELPER PORTAL =============================================================
 // Runs LAST, and that placement is load-bearing rather than tidy: this section seeds a second repo
 // and adds audit rows for it, and every section above counts rows by absolute number (waitRows(3),

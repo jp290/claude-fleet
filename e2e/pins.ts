@@ -3088,11 +3088,29 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     tickCalls.length === 1 && tickCalls[0] === "next, free, false, false, taskSpawnOf(next), handover",
     tickCalls.join(" | ") || "no dispatchTask call");
   // ...and the accessor itself stays the one bridge from a row to a choice: the row's own field,
-  // DEFAULT_SPAWN on absence. A second derivation, or a fallback to anything but DEFAULT_SPAWN,
-  // is how "which agent would this row run" grows two answers.
-  pin("taskSpawnOf is the row field or DEFAULT_SPAWN — nothing else can answer for a row's agent choice",
-    /const taskSpawnOf = \(t: Task\): DispatchSpawn => t\.spawn \?\? DEFAULT_SPAWN;/.test(server),
-    server.match(/const taskSpawnOf[^\n]*/)?.[0] ?? "taskSpawnOf missing");
+  // on its absence the VALID card's role, DEFAULT_SPAWN when neither answers (2026-09-29, the card
+  // row "KARTEN-ROLLE ERREICHT DEN SPAWN"). The card half is ONE validation, cardRoleSpawn — the
+  // same taskSpawnFromBody a body triple passes — read by both the set-time adoption and this
+  // fallback. A second derivation (a validator copied into either reader), or a fallback to anything
+  // but the card's validated role and DEFAULT_SPAWN, is how "which agent would this row run" grows
+  // two answers.
+  const bodyAfter = (head: string): string => {
+    const at = server.indexOf(head);
+    return at < 0 ? "" : server.slice(at, server.indexOf("\n};\n", at) < 0 ? at : server.indexOf("\n};\n", at));
+  };
+  const roleFnAt = server.indexOf("function cardRoleSpawn(t: Task)");
+  const roleFn = roleFnAt < 0 ? "" : server.slice(roleFnAt, server.indexOf("\n}\n", roleFnAt));
+  const cardSpawnFn = bodyAfter("const cardSpawnOf = (t: Task)");
+  const adoptFn = bodyAfter("const adoptSpawnFromCard = (t: Task)");
+  pin("taskSpawnOf is the row field, else the valid card's role, else DEFAULT_SPAWN — nothing else can answer for a row's agent choice",
+    /const taskSpawnOf = \(t: Task\): DispatchSpawn => t\.spawn \?\? cardSpawnOf\(t\) \?\? DEFAULT_SPAWN;/.test(server)
+      && /t\.card\?\.valid \? t\.card\.rolle : undefined/.test(roleFn)
+      && /taskSpawnFromBody\(\{ harness: role\.harness, model: role\.model, effort: role\.effort \}\)/.test(roleFn)
+      && /cardRoleSpawn\(t\)/.test(cardSpawnFn) && !/taskSpawnFromBody/.test(cardSpawnFn)
+      && /if \(role\.ok\) return role\.spawn;/.test(cardSpawnFn) && /console\.log\(/.test(cardSpawnFn)
+      && /cardRoleSpawn\(t\)/.test(adoptFn) && !/taskSpawnFromBody/.test(adoptFn),
+    JSON.stringify({ accessor: server.match(/const taskSpawnOf[^\n]*/)?.[0] ?? "taskSpawnOf missing",
+      roleFn: roleFn.length, cardSpawnFn: cardSpawnFn.length, adoptFn: adoptFn.length }));
   // ...and the tick's own row gate asks the SAME automatability predicate before reserving a slot,
   // writing the refusal on the row: a stored non-automatable choice must wait loudly, never fall
   // back to the default adapter and never sit silent.
@@ -8862,6 +8880,65 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const charsetMiss = MODULE_FIXTURES.map((m) => m.module).filter((m) => modulesEnv("lane-suite", [m]) === null);
   pin(`${RULE_MOD} — every module in suite-modules.ts passes the daemon's own name check`,
     MODULE_FIXTURES.length > 30 && charsetMiss.length === 0, `refused=[${charsetMiss}]`);
+}
+
+// ================================================================================================
+// SECTION S10d — THE SUITE WAY IS WRITTEN WHERE EVERY HARNESS READS (2026-09-29, owner: „[Zitat entfernt]“
+// ). Codex and Pi
+// load AGENTS.md and nothing else of this repo's rules; §S10c made every recommended run offerable,
+// and AGENTS.md §Verify still knew neither `modules`, nor the wait numbers' field, nor the jobs door —
+// the host rules lived only in the git-ignored overlay. Three pairs with no compiler between halves:
+//   (a) the doors and fields §Verify names exist under those names: the offer door, the served
+//       `waitPolicy` fields it quotes (server.ts#SuiteOfferWait) and `localProof.offerBody`, which
+//       server.ts#laneLocalProof must actually serve, from `modules`, only while a preview can be owed;
+//   (b) every `"cmd":"…"` §Verify teaches for the jobs door is a HELPER_CMD_ALLOW key — a body the
+//       door refuses with 400 is a copyable command that cannot work;
+//   (c) every land-gate suite, and the MAIN's full preview, is among them, so a suite added to the
+//       gate is a line added here too.
+// ================================================================================================
+{
+  const RULE_SUITE_WAY = "AGENTS.md §Verify carries the suite way every harness reads: offer with modules, waitPolicy, the jobs door";
+  const verifySec = /\n## Verify\n([\s\S]*?)(?=\n## |$)/.exec(read("AGENTS.md"))?.[1] ?? null;
+  if (verifySec === null) pin(`${RULE_SUITE_WAY} — PROBE: AGENTS.md has a '## Verify' section`, false, "not found");
+  else {
+    const flat = verifySec.replace(/\s+/g, " ");
+    const waitFields = [...flat.matchAll(/`waitPolicy\.([a-zA-Z]+)`/g)].map((m) => m[1]);
+    const iface = /interface SuiteOfferWait \{([^}]*)\}/.exec(server)?.[1] ?? "";
+    const served = [...iface.matchAll(/([a-zA-Z]+):/g)].map((m) => m[1]);
+    const phantom = waitFields.filter((f) => !served.includes(f));
+    const names: [string, boolean][] = [
+      ["offer door", flat.includes("`POST /api/self/suite-offer`")],
+      ["copyable offer curl", /curl -s -X POST -H "x-fleet-self-token: \$FLEET_SELF_TOKEN"[^\n]*\n[^\n]*"\$FLEET_SELF_URL\/api\/self\/suite-offer"/.test(verifySec)],
+      ["localProof.modules", flat.includes("`localProof.modules`")],
+      ["localProof.offerBody", flat.includes("`localProof.offerBody`")],
+      ["withdraw", flat.includes("`POST /api/self/suite-offer/withdraw`")],
+      ["waitPolicy unclaimed+held", waitFields.includes("unclaimedMs") && waitFields.includes("heldMs") && phantom.length === 0],
+      ["jobs door", flat.includes("`POST /api/self/jobs`")],
+      ["lock-pid ban", flat.includes("`/tmp/fleet-e2e.lock/pid`") && flat.includes("`suiteLock.pid`")],
+      ["runner + socket", flat.includes("`pgrep -P <pid>`") && flat.includes("`tmux -L <SOCK><pid> kill-server`")],
+    ];
+    const absent = names.filter(([, ok]) => !ok).map(([n]) => n);
+    pin(`${RULE_SUITE_WAY} — (a) the doors, fields and abort steps are named`, absent.length === 0,
+      `missing=[${absent}] waitPolicy cited=[${waitFields}] served=[${served}]`);
+
+    const proofFn = serverU.span("function withOfferBody(", "\n}")?.text ?? null;
+    const laneFn = serverU.span("async function laneLocalProof(", "\n}")?.text ?? null;
+    pin(`${RULE_SUITE_WAY} — (a) server.ts#laneLocalProof serves offerBody, built from modules, absent when no preview can be owed`,
+      proofFn !== null && laneFn !== null
+        && /if \(p\.isolatedPreview === false\) return p;/.test(proofFn)
+        && /offerBody: p\.modules \? \{ modules: p\.modules \} : \{\}/.test(proofFn)
+        && /return withOfferBody\(localProofFor\(/.test(laneFn),
+      proofFn === null || laneFn === null ? `withOfferBody=${proofFn !== null} laneLocalProof=${laneFn !== null}`
+        : `gated=${/isolatedPreview === false/.test(proofFn)} fromModules=${/p\.modules \?/.test(proofFn)} wired=${/withOfferBody\(localProofFor/.test(laneFn)}`);
+
+    const cmds = [...flat.matchAll(/"cmd":"([^"]+)"/g)].map((m) => m[1]);
+    const refused = cmds.filter((c) => !HELPER_CMD_ALLOW[c] || !helperCmdCheck(c).ok);
+    pin(`${RULE_SUITE_WAY} — (b) every jobs-door cmd it teaches is a HELPER_CMD_ALLOW key`,
+      cmds.length > 0 && refused.length === 0, `taught=[${cmds}] refused=[${refused}]`);
+    const untaught = [...gateSuites.map((g) => `./${g}`), "./e2e-isolated.sh"].filter((c) => !cmds.includes(c));
+    pin(`${RULE_SUITE_WAY} — (c) every land-gate suite and the MAIN's full preview is taught as a jobs-door cmd`,
+      gateSuites.length >= 3 && untaught.length === 0, `gate=[${gateSuites}] untaught=[${untaught}]`);
+  }
 }
 
 // ================================================================================================

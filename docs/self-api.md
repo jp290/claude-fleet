@@ -72,6 +72,15 @@ Vorschau?": `true` genau dann, wenn IRGENDEIN Gerät im selben Fenster in seinem
 Feature `lane-suite-modules` gemeldet hat (`server.ts#helperTakesModules`) — nicht nur das
 zuletzt gehörte. Es folgt also aus `online`, nie umgekehrt.
 
+**`localProof.offerBody` — der fertige Body für `POST /api/self/suite-offer`** (seit 2026-09-29).
+`server.ts#laneLocalProof` legt ihn neben `localProof`s übrige Felder, solange eine Vorschau
+geschuldet sein KANN (`isolatedPreview` ist `true` oder `"self-assess"`): `{}` ist der volle Lauf,
+`{"modules":[…]}` der eingeengte — dieselbe Liste wie `localProof.modules`, nie eine zweite
+Rechnung. Er ist kein Urteil: ob der Lauf geschuldet ist, sagt `isolatedPreview` samt der Regel in
+`AGENTS.md` §Verify; der Body erspart nur das Zusammensetzen. Er fehlt bei `isolatedPreview: false`
+(auch in jedem Fremdrepo, `steps: []`) und mit `localProof: null`. Ein eingeengter Body braucht
+`helper.takesModules`, sonst antwortet die Tür `offer: null` (§suite-offer).
+
 ## autos — `POST /api/self/autos`
 
 Use them to schedule a future check-in on yourself, e.g. right before you'd otherwise go idle waiting on
@@ -1419,7 +1428,8 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     tatsächlich landen würde, und das ist die EIGENE persistierte Spawn-Wahl des Rows:
     `releaseTaskForMain` fragt `harnessAutomatableFor(harnessOf(taskSpawnOf(t).harness))` — genau
     den Adapter, den `tickDispatch` dieser Zeile mitgäbe. Eine Zeile ohne eigene Wahl fällt auf
-    `DEFAULT_SPAWN` zurück, und dort lehnt diese Prüfung nie ab; eine Zeile mit gespeicherter
+    die Rolle ihrer gültigen Karte zurück (`server.ts#cardRoleSpawn`, dieselben Validatoren), sonst
+    auf `DEFAULT_SPAWN`, und dort lehnt diese Prüfung nie ab; eine Zeile mit gespeicherter
     fremder Wahl wird HIER abgelehnt, statt freigegeben ewig zu warten (real gesehen an einer
     pi-zai-Zeile).
   - **Deckel** (409): `program release cap reached (N/M released rows not yet started) — let the
@@ -2432,7 +2442,8 @@ prüft es mit derselben Entscheidung, die der Runner drüben fährt (`suite-modu
 → `#selectModules`), VOR dem `existing`-Zweig und bevor eine Zeile entsteht. Ein Nicht-Array, eine
 leere Liste oder ein unbekannter Name → **400** mit Feldname und Modulname, keine Zeile. Das Angebot
 trägt die Liste dedupliziert in Runner-Reihenfolge. Ohne `modules` — auch ein POST ganz ohne
-JSON-Body — ist es der volle Lauf wie bisher.
+JSON-Body — ist es der volle Lauf wie bisher. Den passenden Body serviert `/api/self/gate` fertig
+als `localProof.offerBody` (§gate).
 
 - **Nur ein Daemon, der es kann, sieht den Job.** Ein eingeengter Job wird ausschließlich einem
   Gerät gelistet, gegeben und geweckt, dessen letzter Heartbeat `features:["lane-suite-modules"]`
@@ -4176,8 +4187,11 @@ persistiert. Owner-Route hinter `tokenGate`; der `▸ start lane`- und der `▸ 
 der Task-Workbench sind ihre beiden Aufrufer (`src/client.ts#qDispatchBody`).
 
 **Per-Feld-Vorrang, serverseitig** (`server.ts`, Route `taskDispatch`): ein im Body genanntes Feld
-gewinnt; ein fehlendes Feld (abwesend, `null` oder `""`) fällt auf die **eigene persistierte Wahl
-der Zeile** (`taskSpawnOf(t)`, `Task.spawn`); fehlt beides, läuft der Default-Adapter. Die
+gewinnt; ein fehlendes Feld (abwesend, `null` oder `""`) fällt auf die **eigene Wahl der Zeile**
+(`taskSpawnOf(t)`: `Task.spawn`, fehlt es, die validierte Rolle ihrer gültigen Karte); fehlt beides,
+läuft der Default-Adapter. Die Antwort nennt den effektiven Spawn samt Herkunft je Feld
+(`spawn{harness, model, effort, from}`, `from` je Feld `body`/`row`/`card`/`default`), und
+`ctl.sh dispatch` druckt ihn (`docs/queue-analyst.md` §3c). Die
 kombinierte Wahl wird als GANZES gegen die effektive Harness geprüft — Harness zuerst, dann Modell
 und Effort gegen genau diesen Adapter — und zwar VOR der Suche nach einem freien Slot: eine
 ungültige Kombination bekommt ihre 400 und keine 409 über Kapazität, und es wird nichts gespawnt.

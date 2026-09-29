@@ -190,16 +190,49 @@ apply the existing merge-/land-path self-assessment in the rule below.
 `./e2e-isolated.sh` is the slow tier and is NOT part of the above. It is owed only if you touched
 the `e2e/` lifecycle, a suite wrapper, the merge/land path, or a statement some check asserts
 (`supports.*`, `effortLevels`, a contract default) — a brief line demanding it does not widen this
-rule, and a docs-only lane never owes it. When it is owed and a helper is online (`GET
-/api/self/gate` carries `helper`), OFFER it first (`POST /api/self/suite-offer`) and go idle: the
-verdict is delivered into your pane. Run it locally only after the offer's wait budget expires (or
-when the run proves a repair to the suites themselves), in the foreground with a timeout — never in
-a `sleep` loop over a log. Suites take a shared mutex, so a run may wait a long time before it
-starts — that is normal, not a hang.
+rule, and a docs-only lane never owes it.
 
-Never kill a suite run by name pattern. The server runs the same script for its post-land audit, and
-a pattern kill takes that down too, which records a red audit that measured nothing. Kill your own
-run by the PID you noted, or not at all.
+**Offer before you run.** When the preview is owed and the gate's `helper.online` is `true`, a lane
+offers it (`POST /api/self/suite-offer`) instead of taking this machine's suite mutex. The body is
+served ready as `localProof.offerBody` (present unless `isolatedPreview` is `false`): `{}` is the
+full run, `{"modules":[…]}` the narrowed run of `localProof.modules`, which needs
+`helper.takesModules`.
+
+```bash
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '<localProof.offerBody>' "$FLEET_SELF_URL/api/self/suite-offer"
+```
+
+`offer: null` plus a `reason` minted nothing: run it locally. Otherwise go idle — the terminal
+verdict (green, red, or `unknown` when a claim lapses) is delivered into your pane; do not poll.
+Nothing arrives when an UNCLAIMED offer's budget runs out, so arm one return path for that (a
+one-shot `POST /api/self/autos`): the answer's `waitPolicy.unclaimedMs` while `suiteLock` is
+`null`, `waitPolicy.heldMs` while the mutex is held. If `GET /api/self/suite-offer` still reads
+`open` then, withdraw it (`POST /api/self/suite-offer/withdraw`): that 200 is the only permission
+to run locally; a claimed offer answers 409 unless `{"abandon":true}`. The only other local run is
+one that proves a repair to the suites themselves.
+
+**Gate suites, and a MAIN's preview, go through the jobs door.** `POST /api/self/jobs` takes an
+exact `server/types.ts#HELPER_CMD_ALLOW` key: `{"cmd":"./e2e-clean-review.sh"}`,
+`{"cmd":"./e2e-security.sh"}`, `{"cmd":"./e2e-claude-gate.sh"}`. A lane may not subscribe to the
+job and reads `GET /api/self/jobs/<jobId>`. A MAIN has no suite-offer (it is lane-only): it posts
+`{"cmd":"./e2e-isolated.sh","timeoutMs":2700000}` and arms a `{"kind":"job","target":"<jobId>"}`
+watch (`docs/self-api.md` §jobs).
+
+**Running locally.** Output goes to a file in your scratch directory, never into the tree or your
+context; once the run has exited, read its tail:
+`./e2e-isolated.sh > <scratch>/suite.log 2>&1; tail -n 40 <scratch>/suite.log`. Run it in the
+foreground with a timeout, or in the background (note `$!`) and wait for its completion event —
+never a `sleep` loop over the log, which is block-buffered. Suites take a shared mutex, so a run
+may wait a long time before it starts — that is normal, not a hang.
+
+**Stopping a run.** Never by name pattern: the server runs the same scripts for its post-land
+audit, and a pattern kill records a red audit that measured nothing. Only by the PID you noted —
+and the wrapper alone is not enough: its `bun fleet-e2e*.ts` runner survives it and respawns its
+tmux server. Take the runner first (`pgrep -P <pid>`), kill both, then
+`tmux -L <SOCK><pid> kill-server` (the prefix is the wrapper's `SOCK=` line, e.g. `fleettest`),
+and check lock and socket. Never kill a PID read from `/tmp/fleet-e2e.lock/pid` or from
+`suiteLock.pid`: the lock holder can be the live server itself.
 
 ## Landing
 

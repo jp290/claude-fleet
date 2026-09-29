@@ -1094,6 +1094,10 @@ if (held && process.env.CTL_FORCE !== "1") {
 }
 const d = await api(`/api/tasks/${want}/dispatch`, { method: "POST", headers: ownerH(), body: "{}" });
 lines.push(`  dispatch ${d.status} ${JSON.stringify(d.body).slice(0, 300)}`);
+// WHICH AGENT the start handed the lane, as the server resolved it: this door sends `{}`, so every
+// field is the row's stored choice, its card's ROLLE, or the default — each named by its origin.
+const sp = d.body?.spawn;
+if (d.ok && sp) lines.push(`  spawn harness=${sp.harness} (${sp.from?.harness}) model=${sp.model ?? "ambient"} (${sp.from?.model}) effort=${sp.effort ?? "none"} (${sp.from?.effort})`);
 out({ ok: d.ok, task: row, openLanes: open, cap: repoCap, response: d.body, status: d.status }, lines);
 process.exit(d.ok ? 0 : 1);
 EOF

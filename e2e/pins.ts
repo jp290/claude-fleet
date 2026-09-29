@@ -8649,11 +8649,12 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     jobsView === null ? "helperJobsView not found"
       : `view=${/daemonSha/.test(jobsView)} claim=${claimFn !== null && /daemonSha/.test(claimFn)}`);
 
+  const priorityCode = jobsView?.replace(/^\s*\/\/.*$/gm, "") ?? null;
   pin("helper jobs keep daemon-update first, command before audit before lane-suite, oldest first within each kind",
-    jobsView !== null
-      && /"daemon-update": 0, command: 1, audit: 2, "lane-suite": 3/.test(jobsView)
-      && /jobs\.sort\(\(a, b\) => kindOrder\[a\.kind\] - kindOrder\[b\.kind\] \|\| a\.oldestAt - b\.oldestAt\)/.test(jobsView),
-    jobsView === null ? "helperJobsView not found" : "kind priority and oldestAt tie-break");
+    priorityCode !== null
+      && /"daemon-update": 0, command: 1, audit: 2, "lane-suite": 3/.test(priorityCode)
+      && /jobs\.sort\(\(a, b\) => kindOrder\[a\.kind\] - kindOrder\[b\.kind\] \|\| a\.oldestAt - b\.oldestAt\)/.test(priorityCode),
+    priorityCode === null ? "helperJobsView not found" : "kind priority and oldestAt tie-break");
 
   // --- …AND THE SHA IS READ, NOT COUNTED. Presence proves the daemon measured its own tree; it does
   // not prove that tree knows `kind`. A daemon between `79acd2e` and `1748417` reports a sha and

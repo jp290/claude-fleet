@@ -3379,7 +3379,20 @@
      .shelldetail display:none above, which exists for the list→detail push. */
   .shell.solo .shelllist, .shell.solo .shelltools, .shell.solo .shellfoot { display: none; }
   .shell.solo .shelldetail { display: block; }
-  .shell.solo .shellwin { width: min(520px, calc(100vw - 32px)); height: auto; max-height: min(78vh, 620px); }
+  @media not all and (max-width: 700px) {
+    @media not all and ((pointer: coarse) and (max-height: 500px)) {
+      .shell.solo .shellwin { width: min(520px, calc(100vw - 32px)); height: auto; max-height: min(78vh, 620px); }
+    }
+  }
+  .setdiscard { padding: 12px; margin-bottom: 12px; border: 1px solid var(--chat-edge);
+    border-radius: var(--r2); background: var(--chat-surface); color: var(--chat-ink);
+    font: 400 var(--chat-ui-fs) var(--chat-sans); }
+  .setdiscard .riskbtns { margin-top: 8px; }
+  #autobtn.autos-stopped { color: var(--q-wait); border-color: var(--q-wait); }
+  #autobtn.autos-stopped .tricon::after { content: ""; display: inline-block; width: 6px; height: 6px;
+    margin-left: 2px; border-radius: var(--r1); background: currentColor; }
+  .autostatusline { margin: 8px 0; color: var(--chat-mute); font: 400 var(--chat-ui-fs) var(--chat-sans); }
+  .autostatusline .shrbtn { margin-top: 8px; }
 
   /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8): three sections —
      "Dieses Gerät" (the src/prefs.ts registry rows, G5.1), "Schrift" (the size panel's one home,

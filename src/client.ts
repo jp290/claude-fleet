@@ -2334,8 +2334,11 @@ const SET_VALUE: Record<string, () => string> = {
   "fleet.plaudit.ack": () => { const at = prefNumber(PLA_ACK_KEY); return at ? fmtTs(at) : "keine"; },
 };
 
-function openSettings(trigger?: HTMLElement | null, at?: "schrift"): void {
-  if (settingsShell?.isOpen()) { settingsShell.close(); return; }
+function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): void {
+  if (settingsShell?.isOpen()) {
+    settingsShell.root.querySelector<HTMLButtonElement>(at ? `[data-settings-tab="${at}"]` : ".shellclose")?.click();
+    return;
+  }
   settingsTab = at ?? "device";
   const shell = openShell({
     id: "settings", title: "Einstellungen",
@@ -2347,6 +2350,7 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift"): void {
   const tabs = el("div", "settabs");
   const tabBtns = SET_TABS.map(([id, word]) => {
     const b = el("button", "settab", word) as HTMLButtonElement;
+    b.dataset.settingsTab = id;
     b.onclick = () => { settingsTab = id; syncTabs(); };
     tabs.appendChild(b);
     return b;
@@ -2363,12 +2367,38 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift"): void {
   schrift.appendChild(sizePanel()); // the ONE panel moves in here (G5.3, kein zweites Zuhause)
   const fleetsec = el("section", "setsec");
   fleetsec.appendChild(el("h3", "", "Fleet"));
-  fleetSection(fleetsec);
+  const stagedCount = fleetSection(fleetsec);
   const machine = el("section", "setsec");
   machine.appendChild(el("h3", "", "This machine"));
   machineSection(machine);
 
   shell.detail.append(tabs, device, schrift, fleetsec, machine);
+  let discard: HTMLElement | null = null;
+  let discardFocus: HTMLElement | null = null;
+  shell.setCloseGuard(() => {
+    const n = stagedCount();
+    if (!n) { discard?.remove(); discard = null; return false; }
+    if (!discard) {
+      discardFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      discard = el("div", "setdiscard");
+      discard.setAttribute("role", "alertdialog");
+      discard.setAttribute("aria-labelledby", "settings-discard-question");
+      const question = el("div", "", `${n} Änderungen verwerfen?`);
+      question.id = "settings-discard-question";
+      const buttons = el("div", "riskbtns");
+      const keep = el("button", "riskbtn", "Weiter bearbeiten") as HTMLButtonElement;
+      keep.onclick = () => { discard?.remove(); discard = null; discardFocus?.focus(); };
+      const drop = el("button", "riskbtn danger", "Verwerfen") as HTMLButtonElement;
+      drop.onclick = () => { shell.setCloseGuard(null); shell.close(); };
+      buttons.append(keep, drop);
+      discard.append(question, buttons);
+      shell.detail.prepend(discard);
+      keep.focus();
+    }
+    discard.querySelector("#settings-discard-question")!.textContent = `${n} Änderungen verwerfen?`;
+    shell.detail.scrollTop = 0;
+    return true;
+  });
   syncTabs();
 
   function syncTabs() {
@@ -2380,6 +2410,10 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift"): void {
     schrift.classList.toggle("on", settingsTab === "schrift");
     fleetsec.classList.toggle("on", settingsTab === "fleet");
     machine.classList.toggle("on", settingsTab === "machine");
+    const section = settingsTab === "schrift" ? schrift : settingsTab === "fleet" ? fleetsec
+      : settingsTab === "machine" ? machine : device;
+    shell.detail.scrollTop = MOBILE_MQ.matches ? 0
+      : shell.detail.scrollTop + section.getBoundingClientRect().top - shell.detail.getBoundingClientRect().top - 2;
   }
 }
 
@@ -2488,7 +2522,7 @@ interface FleetSetRow {
   row: HTMLElement; val: HTMLElement; err: HTMLElement;
   staged(): boolean; write(): Promise<Response>; paint(): void; done(answer: unknown): void;
 }
-function fleetSection(sec: HTMLElement): void {
+function fleetSection(sec: HTMLElement): () => number {
   let caps: Record<string, number> = {};
   let capDefault: number | null = null;
   let capMax = 99;
@@ -2733,6 +2767,7 @@ function fleetSection(sec: HTMLElement): void {
   };
   for (const r of rows) r.paint();
   void readCaps().then(() => { for (const r of rows) r.paint(); });
+  return () => rows.filter((r) => r.staged()).length;
 }
 
 // --- the file explorer (§F5) --------------------------------------------------------------
@@ -7101,6 +7136,7 @@ export async function refresh() {
     intakeOn = data.intake ?? false;
     autosOnSrv = typeof data.autosOn === "boolean" ? data.autosOn : null;
     quietHoursSrv = data.quietHours ?? null;
+    renderAutoStatus();
     // tier 2's only reader. Rendered on every poll rather than behind the render-key diff below:
     // that key is about the slot tiles, and an alarm must not wait on an unrelated change to appear.
     setPostLandAudit(data.postLandAudit ?? null);
@@ -9527,11 +9563,43 @@ function autoDesc(a: AutoInfo): string {
   return a.enabled ? `once, in ~${dueIn}m` : "once";
 }
 
+function renderAutoStatus() {
+  const stopped = autosOnSrv === false;
+  const button = $("autobtn");
+  button.classList.toggle("autos-stopped", stopped);
+  button.title = stopped ? "Geplante Prompts für diese Session — automatische Prompts sind aus"
+    : "Geplante Prompts für diese Session";
+  const label = button.querySelector(".trlabel");
+  if (label) label.textContent = stopped ? "Schedule · aus" : "Schedule";
+  const status = document.getElementById("auto-status");
+  if (!status) return;
+  const state = `${autosOnSrv}:${quietHoursSrv?.start ?? ""}:${quietHoursSrv?.end ?? ""}`;
+  if (status.dataset.state === state) return;
+  status.dataset.state = state;
+  status.replaceChildren();
+  if (stopped) {
+    const warning = el("div", "autostatusline");
+    warning.appendChild(el("div", "", "Automatische Prompts sind aus — geplante Prompts werden nicht gesendet"));
+    const settings = el("button", "shrbtn", "Fleet-Einstellungen") as HTMLButtonElement;
+    settings.onclick = () => { closeAutoDlg(); openSettings(button, "fleet"); };
+    warning.appendChild(settings);
+    status.appendChild(warning);
+  }
+  if (quietHoursSrv) {
+    const hh = (h: number) => String(h).padStart(2, "0");
+    status.appendChild(el("div", "autostatusline", `Ruhezeit ${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}: wiederkehrende Prompts pausieren`));
+  }
+}
+
 function renderAutoDlg() {
   const s = fleet[autoSlot - 1];
   if (!s?.cwd) { closeAutoDlg(); return; }
   autopanel.replaceChildren();
   autopanel.appendChild(el("h2", "", `Scheduled prompts — ${s.label ?? baseName(s.cwd)}`));
+  const status = el("div", "autostatus");
+  status.id = "auto-status";
+  autopanel.appendChild(status);
+  renderAutoStatus();
   const mine = autosList.filter((a) => a.slot === autoSlot);
   if (!mine.length) autopanel.appendChild(el("div", "hint shrhint", "No schedules for this session."));
   for (const a of mine) {

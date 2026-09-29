@@ -12071,6 +12071,189 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const id of [aId, aCtl, aSymId]) await post(`/api/tasks/${id}/delete`, {});
   }
 
+  // --- KARTEN-ROLLE ERREICHT DEN SPAWN (2026-09-29, live 5a1a8b1b and 6d623b66): an author card's
+  // valid ROLLE never reached Task.spawn — the sweep's adoption (bef073c0, (j2)) never reads a row
+  // that was born WITH its card — so a hand start ran the default model with codex/gpt-6-sol/high on
+  // the card. Two halves, each with its own counter-probe:
+  //   (k1) SET time: the create door adopts the role into Task.spawn (server.ts#adoptSpawnFromCard
+  //        at the door). COUNTER-PROBE: removing that call leaves the k1 rows spawn-less — red.
+  //   (k2)-(k5) READ time: a row whose spawn is ABSENT beside a valid role (the shape the live rows
+  //        still have; made here by clearing the adopted spawn through the owner's spawn door) runs
+  //        the role through server.ts#taskSpawnOf — hand start and tick alike, a body field still
+  //        wins per field, a refused role runs DEFAULT_SPAWN and says so once in the log, and a
+  //        foreign harness from a card is held by the tick's harness gate exactly like a stored one.
+  //        COUNTER-PROBE: `taskSpawnOf = t.spawn ?? DEFAULT_SPAWN` turns k2, k3 and k5 red (the
+  //        slots carry null model/effort, and the codex row starts on the default adapter).
+  {
+    type KSpawn = { harness: string | null; model: string | null; effort: string | null };
+    interface KRow { id: string; status: string; note?: string | null; slot?: number | null; spawn?: KSpawn;
+      card?: { valid: boolean; rolle: KSpawn } }
+    interface KStart { ok?: boolean; slot?: number; error?: string;
+      spawn?: KSpawn & { from: Record<"harness" | "model" | "effort", string> } }
+    const kFull = async (id: string): Promise<KRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: KRow[] }).tasks.find((t) => t.id === id);
+    const kSessions = async (): Promise<{ slots: { id: number; cwd: string | null; worktree: unknown | null }[];
+      dispatch: { on: boolean }; autosOn: boolean }> => (await get("/api/sessions")).json();
+    // the lane's persisted spawn fields — saveState is debounced, so poll until the slot row is there
+    const kSlot = async (slot: number | null | undefined): Promise<{ model: string | null; effort: string | null; harness: string | null } | null> => {
+      if (typeof slot !== "number") return null;
+      let row: { cwd?: string | null; model?: string | null; effort?: string | null; harness?: string | null } | undefined;
+      for (let i = 0; i < 40 && !row?.cwd; i++) {
+        try {
+          row = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+            { slots?: Record<string, typeof row> }).slots?.[String(slot)];
+        } catch { row = undefined; /* state file mid-write — the next round reads it */ }
+        if (!row?.cwd) await Bun.sleep(250);
+      }
+      return row?.cwd ? { model: row.model ?? null, effort: row.effort ?? null, harness: row.harness ?? null } : null;
+    };
+    const kCard = (file: string, rolle: KSpawn) => ({ ziel: `${file} bekommt eine Zeile`, rolle,
+      surface: { files: [file], symbols: [] }, done: `die Zeile steht in ${file}`, verify: "bun e2e/pins.ts", verboten: [] });
+    const SONNET: KSpawn = { harness: "claude", model: "claude-sonnet-5-5[1m]", effort: "high" };
+    const LIVE: KSpawn = { harness: "codex", model: "gpt-6-sol", effort: "high" };
+    const kMade: string[] = [];
+    const kMk = async (text: string, card: ReturnType<typeof kCard>, extra: Record<string, unknown> = {}): Promise<KRow | undefined> => {
+      const res = await post("/api/tasks", { text, queue: false, repo: REPO, card, ...extra });
+      const id = ((await res.json()) as { task?: { id: string } }).task?.id;
+      if (id) kMade.push(id);
+      return id ? kFull(id) : undefined;
+    };
+    // a row in the live rows' shape: valid role on the card, NO spawn — the owner's spawn door with
+    // an empty body deletes the adopted field and leaves the card untouched
+    const kLegacy = async (text: string, file: string, rolle: KSpawn): Promise<KRow | undefined> => {
+      const row = await kMk(text, kCard(file, rolle));
+      if (row) await post(`/api/tasks/${row.id}/spawn`, {});
+      return row ? kFull(row.id) : undefined;
+    };
+    const kStart = async (id: string, body: Record<string, unknown>): Promise<{ status: number; j: KStart }> => {
+      const res = await post(`/api/tasks/${id}/dispatch`, body);
+      return { status: res.status, j: (await res.json()) as KStart };
+    };
+    // kill THEN delete at once: the dying brief tail may requeue the row, and a requeued leftover
+    // would be a released row the tick fixture in (k5) did not put there
+    const kClose = async (slot: number | null | undefined, id: string | undefined): Promise<void> => {
+      if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {});
+      if (id) await post(`/api/tasks/${id}/delete`, {});
+      if (typeof slot === "number") await slotsEmptied([slot]);
+    };
+    const kBefore = await kSessions();
+    await post("/api/dispatch", { on: false });
+    // the refused-role line in (k4) is counted over the WHOLE section, so an earlier reader of the
+    // accessor cannot hide a second line before the count starts
+    const kLogAt = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
+
+    // (k1) SET time, at the create door: the card's role IS the row's spawn (a bare "claude" collapses
+    // to null, the one representation of the default harness); the live row's codex triple likewise;
+    // a body triple is the choice and the card fills nothing; a role the validators refuse (claude has
+    // no "ultra" — codex does, so the card validator knows the word) adopts nothing at all.
+    const k1 = await kMk("KARTEN-ROLLE k1: code.txt bekommt eine Zeile.", kCard("code.txt", SONNET));
+    const k1Live = await kMk("KARTEN-ROLLE k1 live: code.txt bekommt eine Zeile.", kCard("code.txt", LIVE));
+    const k1Body = await kMk("KARTEN-ROLLE k1 body: code.txt bekommt eine Zeile.", kCard("code.txt", SONNET), { model: "k-body-model" });
+    const k1Bad = await kMk("KARTEN-ROLLE k1 bad: code.txt bekommt eine Zeile.",
+      kCard("code.txt", { harness: "claude", model: "claude-sonnet-5-5[1m]", effort: "ultra" }));
+    check("(k1) POST /api/tasks with an author card: Task.spawn carries the card's harness/model/effort at birth (the live codex triple too)",
+      k1?.card?.valid === true && JSON.stringify(k1.spawn) === JSON.stringify({ harness: null, model: SONNET.model, effort: SONNET.effort })
+      && k1Live?.card?.valid === true && JSON.stringify(k1Live.spawn) === JSON.stringify(LIVE),
+      JSON.stringify({ k1: { card: k1?.card?.rolle, spawn: k1?.spawn }, live: { card: k1Live?.card?.rolle, spawn: k1Live?.spawn } }));
+    check("(k1) a body triple beside the card is the choice, and a role the validators refuse adopts nothing — the card stays valid, spawn absent",
+      JSON.stringify(k1Body?.spawn) === JSON.stringify({ harness: null, model: "k-body-model", effort: null })
+      && k1Bad?.card?.valid === true && k1Bad.card.rolle.effort === "ultra" && !!k1Bad && !("spawn" in k1Bad),
+      JSON.stringify({ body: k1Body?.spawn ?? null, bad: { card: k1Bad?.card ?? null, spawn: k1Bad?.spawn ?? null } }));
+
+    // (k2) READ time, hand start through `ctl.sh dispatch` — the live path, which sends `{}`: the row
+    // has no spawn, the lane runs the card's model and effort, and the verb PRINTS what it started
+    // with, each field named by its origin. --force: this door's cap refusal is not the question here.
+    const k2 = await kLegacy("KARTEN-ROLLE k2: code.txt bekommt eine Zeile.", "code.txt", SONNET);
+    check("(k2) setup: the row carries a valid role and NO spawn — the shape of the live rows",
+      k2?.card?.valid === true && !("spawn" in k2), JSON.stringify(k2 ?? null));
+    const k2Ctl = spawnSync("bash", [`${ROOT}/ctl.sh`, "dispatch", k2?.id ?? "-", "--force"], {
+      encoding: "utf8", env: { ...process.env, FLEET_CTL_HOME: ROOT, FLEET_CTL_URL: BASE },
+    });
+    const k2SlotId = Number(/"slot":(\d+)/.exec(k2Ctl.stdout)?.[1] ?? NaN);
+    const k2Slot = await kSlot(Number.isFinite(k2SlotId) ? k2SlotId : null);
+    check("(k2) a hand start without spawn fields runs the CARD's model and effort",
+      k2Ctl.status === 0 && k2Slot?.model === SONNET.model && k2Slot.effort === SONNET.effort && k2Slot.harness === null,
+      JSON.stringify({ exit: k2Ctl.status, slot: k2Slot, stdout: k2Ctl.stdout.trim().slice(0, 600), stderr: k2Ctl.stderr.trim() }));
+    check("(k2) ctl.sh dispatch prints the harness/model/effort the lane started with, and where each came from",
+      k2Ctl.stdout.includes(`  spawn harness=claude (default) model=${SONNET.model} (card) effort=${SONNET.effort} (card)`),
+      k2Ctl.stdout.trim().slice(0, 600));
+    await kClose(k2SlotId, k2?.id);
+
+    // (k3) …and an explicit body field still wins PER FIELD over the card's role.
+    const k3 = await kLegacy("KARTEN-ROLLE k3: code.txt bekommt eine Zeile.", "code.txt", SONNET);
+    const k3Start = k3 ? await kStart(k3.id, { effort: "low" }) : { status: 0, j: {} as KStart };
+    const k3Slot = await kSlot(k3Start.j.slot);
+    check("(k3) a body effort beside a card role: the body's effort wins, the card's model stays",
+      !!k3 && !("spawn" in k3) && k3Start.status === 200 && k3Slot?.model === SONNET.model && k3Slot.effort === "low"
+      && k3Start.j.spawn?.from.model === "card" && k3Start.j.spawn.from.effort === "body",
+      JSON.stringify({ status: k3Start.status, answer: k3Start.j, slot: k3Slot }));
+    await kClose(k3Start.j.slot, k3?.id);
+
+    // (k4) a refused role: DEFAULT_SPAWN, never a guessed or repaired role, and one log line naming
+    // the row and the validator's refusal.
+    const k4Start = k1Bad ? await kStart(k1Bad.id, {}) : { status: 0, j: {} as KStart };
+    const k4Slot = await kSlot(k4Start.j.slot);
+    const k4Needle = `task spawn: ${k1Bad?.id ?? "-"} card role`;
+    let k4Log = "";
+    try {
+      await until(() => {
+        k4Log = readFileSync(`${ROOT}/server.log`, "utf8").slice(kLogAt);
+        return k4Log.includes(k4Needle);
+      }, { timeoutMs: 5_000, stepMs: 100, what: "the refused-role log line" });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+    const k4Lines = k4Log.split("\n").filter((l) => l.includes(k4Needle));
+    check("(k4) a card role the validators refuse runs DEFAULT_SPAWN — null slot fields, origin default — and the log says so once",
+      k4Start.status === 200 && k4Slot !== null && k4Slot.model === null && k4Slot.effort === null && k4Slot.harness === null
+      && k4Start.j.spawn?.from.model === "default" && k4Start.j.spawn.from.effort === "default"
+      && k4Lines.length === 1 && k4Lines[0].includes("bad effort") && k4Lines[0].includes("DEFAULT_SPAWN"),
+      JSON.stringify({ status: k4Start.status, answer: k4Start.j, slot: k4Slot, log: k4Lines }));
+    await kClose(k4Start.j.slot, k1Bad?.id);
+
+    // (k5) THE TICK reads the same accessor: a released claude-role row starts with the card's
+    // model/effort, and a released codex-role row — no stored spawn, the role only on its card —
+    // waits LOUDLY at the harness gate (FLEET_HARNESS_AUTOMATION=0 here) instead of starting on the
+    // default adapter. Distinct files, so the land fold cannot bundle the two into one wave.
+    const kLanes = (await kSessions()).slots.filter((s) => s.worktree && s.id !== ctx.restartSelfSlot).map((s) => s.id);
+    for (const id of kLanes) await post(`/api/slots/${id}/kill`, {});
+    await slotsEmptied(kLanes);
+    const k5 = await kLegacy("KARTEN-ROLLE k5 tick: ctx-mod.txt bekommt eine Zeile.", "ctx-mod.txt", SONNET);
+    const k5Codex = await kLegacy("KARTEN-ROLLE k5 codex: code.txt bekommt eine Zeile.", "code.txt", LIVE);
+    const k5Board = await kSessions();
+    const k5Queued = ((await (await get("/api/tasks")).json()) as { tasks: KRow[] }).tasks
+      .filter((t) => t.status === "queued").map((t) => t.id);
+    check("(k5) setup: two role rows without spawn, free slots, no other released row (non-tautology guard)",
+      !!k5 && !("spawn" in k5) && !!k5Codex && !("spawn" in k5Codex)
+      && k5Board.slots.filter((s) => !s.cwd).length >= 2 && k5Board.slots.filter((s) => s.worktree).length <= 1
+      && k5Queued.length === 0,
+      JSON.stringify({ free: k5Board.slots.filter((s) => !s.cwd).length, queued: k5Queued }));
+    for (const row of [k5, k5Codex]) if (row) await post(`/api/tasks/${row.id}/queue`, {});
+    await post("/api/autos/quiet", { start: null });
+    await post("/api/autos/switch", { on: true });
+    await post("/api/dispatch", { on: true });
+    let k5After: KRow | undefined, k5CodexAfter: KRow | undefined;
+    for (let i = 0; i < 60; i++) {
+      k5After = k5 ? await kFull(k5.id) : undefined;
+      k5CodexAfter = k5Codex ? await kFull(k5Codex.id) : undefined;
+      if (k5After?.status === "sent" && (k5CodexAfter?.note ?? "").includes("not automatable")) break;
+      await Bun.sleep(250);
+    }
+    await post("/api/dispatch", { on: false });
+    const k5Slot = await kSlot(k5After?.slot);
+    check("(k5) the TICK starts a card-role row with the card's model and effort",
+      k5After?.status === "sent" && k5Slot?.model === SONNET.model && k5Slot.effort === SONNET.effort && k5Slot.harness === null,
+      JSON.stringify({ row: { status: k5After?.status, note: k5After?.note }, slot: k5Slot }));
+    check("(k5) a codex role on the card alone is held by the harness gate — still queued, the adapter named, never the default adapter",
+      k5CodexAfter?.status === "queued" && (k5CodexAfter.note ?? "").includes("harness codex is not automatable"),
+      JSON.stringify({ status: k5CodexAfter?.status, note: k5CodexAfter?.note }));
+    await kClose(k5After?.slot, k5?.id);
+
+    // cleanup — dispatcher off above; every probe row goes, and both switches return to what this
+    // section found (quiet hours stay cleared, the suite default)
+    for (const id of kMade) await post(`/api/tasks/${id}/delete`, {});
+    await post("/api/autos/switch", { on: kBefore.autosOn });
+    await post("/api/dispatch", { on: kBefore.dispatch.on });
+  }
+
   // --- OUTSIDE SURFACE (server.ts#laneOutsideSurface): a fleet-report carries the lane's committed
   // paths its card does not name as write surface, measured at filing. Program-bound rows, so every
   // report takes the program basis and no delivery budget can refuse one of the fixture's reports.

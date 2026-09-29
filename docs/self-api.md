@@ -1406,7 +1406,8 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     tatsächlich landen würde, und das ist die EIGENE persistierte Spawn-Wahl des Rows:
     `releaseTaskForMain` fragt `harnessAutomatableFor(harnessOf(taskSpawnOf(t).harness))` — genau
     den Adapter, den `tickDispatch` dieser Zeile mitgäbe. Eine Zeile ohne eigene Wahl fällt auf
-    `DEFAULT_SPAWN` zurück, und dort lehnt diese Prüfung nie ab; eine Zeile mit gespeicherter
+    die Rolle ihrer gültigen Karte zurück (`server.ts#cardRoleSpawn`, dieselben Validatoren), sonst
+    auf `DEFAULT_SPAWN`, und dort lehnt diese Prüfung nie ab; eine Zeile mit gespeicherter
     fremder Wahl wird HIER abgelehnt, statt freigegeben ewig zu warten (real gesehen an einer
     pi-zai-Zeile).
   - **Deckel** (409): `program release cap reached (N/M released rows not yet started) — let the
@@ -4155,8 +4156,11 @@ persistiert. Owner-Route hinter `tokenGate`; der `▸ start lane`- und der `▸ 
 der Task-Workbench sind ihre beiden Aufrufer (`src/client.ts#qDispatchBody`).
 
 **Per-Feld-Vorrang, serverseitig** (`server.ts`, Route `taskDispatch`): ein im Body genanntes Feld
-gewinnt; ein fehlendes Feld (abwesend, `null` oder `""`) fällt auf die **eigene persistierte Wahl
-der Zeile** (`taskSpawnOf(t)`, `Task.spawn`); fehlt beides, läuft der Default-Adapter. Die
+gewinnt; ein fehlendes Feld (abwesend, `null` oder `""`) fällt auf die **eigene Wahl der Zeile**
+(`taskSpawnOf(t)`: `Task.spawn`, fehlt es, die validierte Rolle ihrer gültigen Karte); fehlt beides,
+läuft der Default-Adapter. Die Antwort nennt den effektiven Spawn samt Herkunft je Feld
+(`spawn{harness, model, effort, from}`, `from` je Feld `body`/`row`/`card`/`default`), und
+`ctl.sh dispatch` druckt ihn (`docs/queue-analyst.md` §3c). Die
 kombinierte Wahl wird als GANZES gegen die effektive Harness geprüft — Harness zuerst, dann Modell
 und Effort gegen genau diesen Adapter — und zwar VOR der Suche nach einem freien Slot: eine
 ungültige Kombination bekommt ihre 400 und keine 409 über Kapazität, und es wird nichts gespawnt.

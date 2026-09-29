@@ -3063,11 +3063,29 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     tickCalls.length === 1 && tickCalls[0] === "next, free, false, false, taskSpawnOf(next), handover",
     tickCalls.join(" | ") || "no dispatchTask call");
   // ...and the accessor itself stays the one bridge from a row to a choice: the row's own field,
-  // DEFAULT_SPAWN on absence. A second derivation, or a fallback to anything but DEFAULT_SPAWN,
-  // is how "which agent would this row run" grows two answers.
-  pin("taskSpawnOf is the row field or DEFAULT_SPAWN — nothing else can answer for a row's agent choice",
-    /const taskSpawnOf = \(t: Task\): DispatchSpawn => t\.spawn \?\? DEFAULT_SPAWN;/.test(server),
-    server.match(/const taskSpawnOf[^\n]*/)?.[0] ?? "taskSpawnOf missing");
+  // on its absence the VALID card's role, DEFAULT_SPAWN when neither answers (2026-09-29, the card
+  // row "KARTEN-ROLLE ERREICHT DEN SPAWN"). The card half is ONE validation, cardRoleSpawn — the
+  // same taskSpawnFromBody a body triple passes — read by both the set-time adoption and this
+  // fallback. A second derivation (a validator copied into either reader), or a fallback to anything
+  // but the card's validated role and DEFAULT_SPAWN, is how "which agent would this row run" grows
+  // two answers.
+  const bodyAfter = (head: string): string => {
+    const at = server.indexOf(head);
+    return at < 0 ? "" : server.slice(at, server.indexOf("\n};\n", at) < 0 ? at : server.indexOf("\n};\n", at));
+  };
+  const roleFnAt = server.indexOf("function cardRoleSpawn(t: Task)");
+  const roleFn = roleFnAt < 0 ? "" : server.slice(roleFnAt, server.indexOf("\n}\n", roleFnAt));
+  const cardSpawnFn = bodyAfter("const cardSpawnOf = (t: Task)");
+  const adoptFn = bodyAfter("const adoptSpawnFromCard = (t: Task)");
+  pin("taskSpawnOf is the row field, else the valid card's role, else DEFAULT_SPAWN — nothing else can answer for a row's agent choice",
+    /const taskSpawnOf = \(t: Task\): DispatchSpawn => t\.spawn \?\? cardSpawnOf\(t\) \?\? DEFAULT_SPAWN;/.test(server)
+      && /t\.card\?\.valid \? t\.card\.rolle : undefined/.test(roleFn)
+      && /taskSpawnFromBody\(\{ harness: role\.harness, model: role\.model, effort: role\.effort \}\)/.test(roleFn)
+      && /cardRoleSpawn\(t\)/.test(cardSpawnFn) && !/taskSpawnFromBody/.test(cardSpawnFn)
+      && /if \(role\.ok\) return role\.spawn;/.test(cardSpawnFn) && /console\.log\(/.test(cardSpawnFn)
+      && /cardRoleSpawn\(t\)/.test(adoptFn) && !/taskSpawnFromBody/.test(adoptFn),
+    JSON.stringify({ accessor: server.match(/const taskSpawnOf[^\n]*/)?.[0] ?? "taskSpawnOf missing",
+      roleFn: roleFn.length, cardSpawnFn: cardSpawnFn.length, adoptFn: adoptFn.length }));
   // ...and the tick's own row gate asks the SAME automatability predicate before reserving a slot,
   // writing the refusal on the row: a stored non-automatable choice must wait loudly, never fall
   // back to the default adapter and never sit silent.

@@ -129,9 +129,11 @@ export interface CardValidationContext {
 export interface CardValidation { body: TaskCardBody; valid: boolean; surfaceValid: boolean; gaps: string[] }
 export const cardSurfaceValid = (gaps: readonly string[]): boolean => !gaps.some((g) => g.startsWith("surface."));
 // A `rolle.*` gap is ADVISORY: a `rolle.*` gap never refuses a card whose done, verify and surface
-// stand — and the card stays only a reading: Task.spawn adopts from it once, at set time, when the
-// row filed with no triple of its own (server.ts#adoptSpawnFromCard); every dispatch reads the
-// spawn, never the card. Measured 2026-09-14, 3 to 5 of 21 invalid cards failed on the role alone.
+// stand — and the role stays only a reading until the adapter validators accept it: Task.spawn
+// adopts from it where the card is born when the row filed with no triple of its own
+// (server.ts#adoptSpawnFromCard), and server.ts#taskSpawnOf falls back to it, through the same
+// check (server.ts#cardRoleSpawn), for a row whose spawn is still absent. Measured 2026-09-14, 3 to
+// 5 of 21 invalid cards failed on the role alone.
 // It stays a gap, so the
 // reading is still honest about what it could not establish. The loader derives `valid` from here too.
 export const cardAdvisoryGap = (gap: string): boolean => gap.startsWith("rolle.");

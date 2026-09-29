@@ -15122,6 +15122,9 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
     status: "pending", created: Date.now(), slot: null, note: null,
     ...(variantChoice.variants ? { variants: variantChoice.variants } : {}),
   };
+  // the author card's ROLLE fills an absent spawn here, at its birth (adoptSpawnFromCard) — a body
+  // triple above already won, and a variant group keeps its `variants`
+  adoptSpawnFromCard(t);
   const variantRows = variantChoice.variants ? variantRowsFor(t, variantChoice.variants) : [];
   tasks = capTasks([...tasks, t, ...variantRows]);
   // saveStateNow, not the debounced saveState the steward's filing uses. This row is the INPUT to
@@ -15816,10 +15819,44 @@ interface WaveDispatch {
   units: number;
 }
 interface LaneForkBase { ref: string; sha: string }
+// THE CARD'S ROLE AS A SPAWN CHOICE — the one validation of it (bef073c0's, lifted out of
+// adoptSpawnFromCard so its two readers ask the same question): a VALID card's `rolle` through the
+// SAME three validators a body triple passes (taskSpawnFromBody, harness first). `null` = the card
+// names no role, or none that differs from the default (a bare "claude" collapses to absence); a
+// refusal carries the validator's own words. A variant's choice is its group's `variants`, never a
+// card, so a variant row or group answers `null` whatever its card says.
+function cardRoleSpawn(t: Task): { ok: true; spawn: DispatchSpawn } | { ok: false; error: string } | null {
+  if (t.variants?.length || t.variantOf !== undefined) return null;
+  const role = t.card?.valid ? t.card.rolle : undefined;
+  if (!role || (!role.harness && !role.model && !role.effort)) return null;
+  const checked = taskSpawnFromBody({ harness: role.harness, model: role.model, effort: role.effort });
+  if (!checked.ok) return checked;
+  return checked.spawn ? { ok: true, spawn: checked.spawn } : null;
+}
+// The card's role at READ time, for a row whose spawn is still absent: a role that validates is the
+// row's choice; a refused one is said ONCE per row and role (this accessor is read by every tick, the
+// start plan and the release doors) and the row runs DEFAULT_SPAWN — never a repaired or guessed
+// role, and never a silent foreign spawn.
+const cardRoleRefusalSaid = new Set<string>();
+const cardSpawnOf = (t: Task): DispatchSpawn | undefined => {
+  const role = cardRoleSpawn(t);
+  if (!role) return undefined;
+  if (role.ok) return role.spawn;
+  const key = `${t.id} ${JSON.stringify(t.card?.rolle ?? null)}`;
+  if (!cardRoleRefusalSaid.has(key)) {
+    cardRoleRefusalSaid.add(key);
+    console.log(`task spawn: ${t.id} card role ${JSON.stringify(t.card?.rolle ?? null)} refused (${role.error}) — the row runs DEFAULT_SPAWN`);
+  }
+  return undefined;
+};
 // THE ONE BRIDGE from a queue row to a spawn choice: the row's own persisted, SET-time-validated
-// field, DEFAULT_SPAWN on absence. Every unattended reader goes through this accessor — never a
-// request value, never an env default (pinned in e2e/pins.ts).
-const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? DEFAULT_SPAWN;
+// field; on its absence the VALID card's role (cardSpawnOf — the same validators); DEFAULT_SPAWN
+// when neither answers. Every reader — the tick, the release doors, the attended ▸ start's per-field
+// fallback — goes through this accessor, never a request value, never an env default (pinned in
+// e2e/pins.ts). The card fallback is what reaches a row whose card was born where no adoption ran
+// (until 2026-09-29 server.ts#authorCardFrom: live 5a1a8b1b, 6d623b66 started on the default model
+// with a valid ROLLE on their card) without rewriting a stored row.
+const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? cardSpawnOf(t) ?? DEFAULT_SPAWN;
 
 // THE LAND-WAVE SENSOR, SERVER-SIDE, over exactly the facts the board projects: taskView's surface
 // (the owner-confirmed one where there is one, derived otherwise), the row's programId, and the
@@ -17176,27 +17213,33 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
 // card rules — advisory there (`rolle.*` gaps never invalidate a card) — while `Task.spawn` stayed
 // the only persisted choice, so a row that NAMED a role in its text but filed without a body triple
 // spawned on the default adapter with nothing anywhere saying so (measured on live rows
-// 75c28778/fe2bf284/8bd19aac, 2026-09-20). This is the one adoption, called at the one place a card
-// is born (the sweep's `t.card = card`): a row whose spawn is still ABSENT takes it from the valid
-// card just attached, through the SAME three validators a body triple passes (taskSpawnFromBody,
-// harness first) — a role that does not survive them sets nothing, and the row stays exactly as it
-// was. The precedence never flips: a body triple is written at mint, and this helper refuses a row
-// that already carries one, so the card can only fill an absence, never overwrite a choice. The
-// status and dispatch guards repeat cardDue's own exclusions so the rule stays one rule wherever a
-// future attach point calls it: a sent row's lane already runs, a mid-dispatch row keeps the choice
-// the dispatcher read, and a variant's choice is its group's `variants`, never a card. All-absent or
+// 75c28778/fe2bf284/8bd19aac, 2026-09-20). This is the one adoption, called wherever a card is born
+// (the sweep's `t.card = card`, and the second birth below): a row whose spawn is still ABSENT takes
+// it from the valid card just attached, through the SAME three validators a body triple passes
+// (cardRoleSpawn → taskSpawnFromBody, harness first) — a role that does not survive them sets
+// nothing, and the row stays exactly as it was. The precedence never flips: a body triple is
+// written at mint, and this helper refuses a row that already carries one, so the card can only
+// fill an absence, never overwrite a choice. The status and dispatch guards repeat cardDue's own
+// exclusions so the rule stays one rule wherever a future attach point calls it: a sent row's lane
+// already runs, a mid-dispatch row keeps the choice the dispatcher read, and a variant's choice is
+// its group's `variants`, never a card (cardRoleSpawn answers null for one). All-absent or
 // unresolvable answers false and leaves the row untouched — absence stays the honest legacy shape,
 // never an all-null object.
-// COUNTER-PROBE (e2e/tasks.ts, (j2) sweep family, 2026-09-20): removing the adoption call at
-// `t.card = card` leaves the probe row spawn-less and turns its check red.
+// THE SECOND BIRTH (2026-09-29): a card also arrives WITH its row — the author's card at both create
+// doors (server.ts#authorCardFrom, `POST /api/tasks` and `POST /api/self/tasks`), which the sweep
+// never reads again (cardDue: a card exists). No adoption ran there, so an author card's valid ROLLE
+// never reached Task.spawn (live 5a1a8b1b, 6d623b66: codex/gpt-6-sol/high on the card, the lane on
+// the default model). Both doors now call this helper on the minted row; the validation is the one
+// in cardRoleSpawn, shared with taskSpawnOf's read-time fallback.
+// COUNTER-PROBES (e2e/tasks.ts): removing the adoption call at `t.card = card` leaves the (j2) probe
+// row spawn-less, and removing it at the owner create door leaves the (k1) author-card row spawn-less
+// — each turns its own check red.
 const adoptSpawnFromCard = (t: Task): boolean => {
-  if (t.spawn || t.variants?.length || t.variantOf !== undefined) return false;
+  if (t.spawn) return false;
   if (t.status !== "pending" && t.status !== "queued" || dispatchingTasks.has(t.id)) return false;
-  const role = t.card?.valid ? t.card.rolle : undefined;
-  if (!role || (!role.harness && !role.model && !role.effort)) return false;
-  const checked = taskSpawnFromBody({ harness: role.harness, model: role.model, effort: role.effort });
-  if (!checked.ok || !checked.spawn) return false;
-  t.spawn = checked.spawn;
+  const role = cardRoleSpawn(t);
+  if (!role?.ok) return false;
+  t.spawn = role.spawn;
   return true;
 };
 
@@ -43708,6 +43751,9 @@ Bun.serve<WSData>({
         ...(body.queue === true ? { releasedBy: "owner" as const } : {}),
         ...(variantChoice.variants ? { variants: variantChoice.variants } : {}),
       };
+      // the author card's ROLLE fills an absent spawn here, at its birth (adoptSpawnFromCard) — a
+      // body triple above already won, and a variant group keeps its `variants`
+      adoptSpawnFromCard(t);
       const variantRows = variantChoice.variants ? variantRowsFor(t, variantChoice.variants) : [];
       tasks = capTasks([...tasks, t, ...variantRows]);
       saveState();
@@ -44004,6 +44050,11 @@ Bun.serve<WSData>({
         const v = dBody?.[k]; return v !== undefined && v !== null && v !== "";
       };
       const dRowSpawn = taskSpawnOf(t);
+      // WHERE the row half came from, for the answer below: the stored field, the card's role
+      // (taskSpawnOf's fallback), or neither — taskSpawnOf hands back DEFAULT_SPAWN itself then.
+      const dRowFrom: "row" | "card" | "default" = t.spawn ? "row" : dRowSpawn === DEFAULT_SPAWN ? "default" : "card";
+      const dFrom = (k: "harness" | "model" | "effort"): "body" | "row" | "card" | "default" =>
+        dNames(k) ? "body" : dRowSpawn[k] ? dRowFrom : "default";
       const dHarnessId = dNames("harness") ? dh.harness : dRowSpawn.harness;
       const dHarness = harnessOf(dHarnessId);
       const dModel = modelOf(dNames("model") ? dBody : { model: dRowSpawn.model }, dHarness);
@@ -44035,7 +44086,12 @@ Bun.serve<WSData>({
       // owner started a task" line stays greppable, and a default start keeps producing its exact old line.
       audit("task_dispatch", r.slot,
         [t.id, clarify ? "clarify" : "", rawAck ? "raw-acknowledged" : "", dHarnessId ? `harness=${dHarnessId}` : ""].filter(Boolean).join(" "));
-      return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck });
+      // WHICH AGENT this start handed the lane, per field with its origin, so a hand start says what
+      // it ran instead of leaving the footer to tell (ctl.sh dispatch prints it). An absent model is
+      // resolved the way the slot's own records resolve it (resolvedModel: the harness's default).
+      const dSpawn = { harness: dHarness.id, model: dModel.model ?? harnessDefaultModel(dHarness), effort: dEffort.effort,
+        from: { harness: dFrom("harness"), model: dFrom("model"), effort: dFrom("effort") } };
+      return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck, spawn: dSpawn });
     }
     // POST /api/tasks/:id/reanalyse stood here until 2026-09-10: the owner's only way to force the
     // queue analyst to read a row again, which it did by DELETING the stored verdict and any

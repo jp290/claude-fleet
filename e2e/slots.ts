@@ -4369,9 +4369,12 @@ function sessionMarkChecks(): void {
 
   // the forbidden means, read from the code (comments stripped): no Math.random/sin/cos, and the
   // bar keeps ONE project identity — client.ts imports projectHue instead of carrying a second one
-  const code = readFileSync(new URL("../src/marks.ts", import.meta.url), "utf8").split("\n")
+  // read from the SOURCE checkout (node_modules links there): the staged instance copies only the
+  // import closure, and src/client.ts is not in it (e2e/history.ts reads it the same way)
+  const src = dirname(realpathSync(`${ROOT}/node_modules`));
+  const code = readFileSync(`${src}/src/marks.ts`, "utf8").split("\n")
     .map((l) => l.replace(/\/\/.*$/, "")).join("\n");
-  const client = readFileSync(new URL("../src/client.ts", import.meta.url), "utf8");
+  const client = readFileSync(`${src}/src/client.ts`, "utf8");
   check("session mark: src/marks.ts uses no Math.random, Math.sin or Math.cos",
     !/Math\.(random|sin|cos)\b/.test(code), (code.match(/Math\.(random|sin|cos)\b/g) ?? []).join(","));
   check("session mark: one project identity — client.ts takes projectHue from src/marks.ts and defines none",

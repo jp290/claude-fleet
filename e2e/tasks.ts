@@ -13558,7 +13558,13 @@ export async function run(ctx: Ctx): Promise<void> {
         lane.status === 409 && (await lane.text()).includes("a lane may not"), String(lane.status));
     }
     const fullText = ("acp25 full task text " + "beyond the preview. ".repeat(30)).trim();
-    const fullId = await nMake(fullText, nBoundProgram);
+    const fullSurface = spawnSync("git", ["-C", REPO, "ls-files"], { encoding: "utf8" }).stdout.trim().split("\n")[0] ?? "";
+    const fullCreated = await post("/api/tasks", { text: fullText, kind: "auftrag", repo: REPO, programId: nBoundProgram,
+      card: { ziel: "MAIN full-text card probe", surface: { files: [fullSurface], symbols: [] },
+        done: "the MAIN reads the exact full text and card", verify: "bun install", verboten: ["no dispatch"] } });
+    const fullId = ((await fullCreated.json()) as { task?: { id: string } }).task?.id ?? "";
+    check("MAIN doors full-text fixture: a row with an explicit valid author card is filed",
+      fullCreated.ok && !!fullId && !!fullSurface, `${fullCreated.status} surface=${fullSurface}`);
     const full = await doorCall(`/api/self/tasks/${fullId}`, "GET");
     const fullBody = await full.json() as { task?: NRow };
     const storedFull = await nRow(fullId);

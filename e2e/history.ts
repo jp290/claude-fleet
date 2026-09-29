@@ -79,10 +79,76 @@ export async function runFreshPinnedTranscriptIsolation(slot: number): Promise<v
   }
 }
 
+export async function runHistoryProvenance(root = ROOT, clientRoot = dirname(realpathSync(`${ROOT}/node_modules`))): Promise<void> {
+  const server = readFileSync(`${root}/server.ts`, "utf8").replace(/^\s*\/\/.*$/gm, "");
+  const writes = [...server.matchAll(/(\w+)\.history = \[\.\.\.\1\.history, (\{[^\n]+\})\]\.slice\(-MAX_HISTORY\);/g)];
+  const count = [...server.matchAll(/\.history\s*=\s*\[\s*\.\.\./g)].length;
+  const errors: string[] = [];
+  for (const [index, write] of writes.entries()) {
+    const entryCode = new Bun.Transpiler({ loader: "ts" }).transformSync(`const entry = ${write[2]};`);
+    const make = new Function("fixture", `with (fixture) { ${entryCode} return entry; }`) as
+      (fixture: Record<string, unknown>) => { text: string; ts: number; source?: string };
+    for (const text of ["owner input", "[fleet-zustellung · test] routed text"]) {
+      const entry = make({ text, t: text, p: { text }, body: { text }, debt: { brief: text }, a: { text },
+        brief: text, line: text, message: text, prompt: text, deliveredBrief: text, delivered: text,
+        rendered: { text }, ts: 1, sentAt: 1, at: 1, now: 1, deliveredAt: 1, Date: { now: () => 1 } });
+      const ownerInput = /text: (t|p\.text|body\.text),/.test(write[2]);
+      const expected = ownerInput && !text.startsWith("[fleet") ? "owner" : "fleet";
+      if (entry.source !== expected) errors.push(`write ${index + 1}: ${entry.source ?? "missing"} != ${expected}`);
+    }
+  }
+  check("history provenance: every append assigns owner/fleet by text origin, including routed /send",
+    count > 0 && writes.length === count && errors.length === 0,
+    `${writes.length}/${count} writers; ${errors.join("; ") || "all origins match"}`);
+
+  const client = readFileSync(`${clientRoot}/src/client.ts`, "utf8");
+  const drafts = readFileSync(`${clientRoot}/src/drafts.ts`, "utf8");
+  const cycle = /async function cycleHist\(dir: number\) \{[\s\S]*?\n\}/.exec(client)?.[0];
+  const row = /function histRow\([^\n]*\)[:\w ]* \{[\s\S]*?\n\}/.exec(client)?.[0];
+  const source = /export function historySource\([^\n]*\)[:"\w |]* \{[\s\S]*?\n\}/.exec(drafts)?.[0];
+  const box = { value: "", selectionStart: 0, selectionEnd: 0, focus() {} };
+  type Node = { textContent: string; title: string; children: Node[]; onclick?: () => void;
+    append(...nodes: Node[]): void; appendChild(node: Node): void };
+  const el = (_tag: string, _cls: string, text = ""): Node => ({ textContent: text, title: "", children: [],
+    append(...nodes) { this.children.push(...nodes); }, appendChild(node) { this.children.push(node); } });
+  const entries = [{ text: "first owner", ts: 1, source: "owner" }, { text: "fleet body", ts: 2, source: "fleet" },
+    { text: "unattributed legacy", ts: 3 }, { text: "[fleet] old delivery", ts: 4 },
+    { text: "latest owner", ts: 5, source: "owner" }];
+  let issue = "", recalled: string[] = [], protectedRows = false, legacy = false;
+  try {
+    if (!cycle || !row) throw new Error("cycleHist/histRow source missing");
+    const code = new Bun.Transpiler({ loader: "ts" }).transformSync(
+      `${source?.replace("export ", "") ?? ""}\nlet focused=0; const panes=[{slot:2}]; let cyc=null;\n${cycle}\n${row}`);
+    const f = new Function("ta", "fetchHistory", "el", "updateChips", "closeHist", "copyText",
+      `${code}\nreturn { cycleHist, histRow, origin: typeof historySource === 'function' ? historySource : null };`)(
+      box, async () => entries, el, () => {}, () => {}, () => {}) as {
+        cycleHist(dir: number): Promise<void>; histRow(text: string, meta: string, source?: string): Node;
+        origin: ((entry: { text: string; source?: string }) => string) | null };
+    for (const dir of [-1, -1, -1, 1, 1]) { await f.cycleHist(dir); recalled.push(box.value); }
+    box.value = "saved draft";
+    protectedRows = true;
+    for (const entry of entries.slice(1, 4)) {
+      const row = f.histRow(entry.text, "timestamp", entry.source);
+      row.onclick?.();
+      protectedRows &&= box.value === "saved draft" && row.children[1].textContent.includes(
+        entry.text === "unattributed legacy" ? "unknown" : "fleet");
+    }
+    f.histRow("clicked owner", "timestamp", "owner").onclick?.();
+    protectedRows &&= box.value === "clicked owner";
+    legacy = f.origin?.({ text: "old owner-like text" }) === "unknown"
+      && f.origin?.({ text: "[fleet] old delivery" }) === "fleet";
+  } catch (e) { issue = e instanceof Error ? e.message : String(e); }
+  check("history recall: ArrowUp and list load owner only; fleet/unknown stay labelled and out of composer",
+    recalled.join("|") === "latest owner|first owner|first owner|latest owner|" && protectedRows && legacy,
+    issue || `recall=${JSON.stringify(recalled)} protectedRows=${protectedRows} legacy=${legacy}`);
+}
+
 export async function run(): Promise<void> {
+  await runHistoryProvenance();
   // --- prompt history: composed sends recorded, raw WS typing deliberately not ---
-  const h2 = (await (await get("/api/slots/2/history")).json()) as { history: { text: string; ts: number }[] };
+  const h2 = (await (await get("/api/slots/2/history")).json()) as { history: { text: string; ts: number; source?: string }[] };
   check("history records composed send", h2.history.length === 1 && h2.history[0].text === "compose-box-to-slot-two", JSON.stringify(h2.history));
+  check("history API identifies a composed owner send", h2.history[0]?.source === "owner", JSON.stringify(h2.history));
   check("history entry has timestamp", typeof h2.history[0]?.ts === "number" && h2.history[0].ts > 0);
   const h1 = (await (await get("/api/slots/1/history")).json()) as { history: unknown[] };
   check("raw typed input not recorded in history", h1.history.length === 0, `${h1.history.length} entries`);

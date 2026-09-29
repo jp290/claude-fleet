@@ -1080,11 +1080,51 @@ export async function run(): Promise<void> {
     spawnSync("git", ["-C", oc8.cwd, "commit", "-aqm", "oc8 lane work"]);
     await Bun.write(`${oRepo}/seed.txt`, "seed\noc8-main\n"); // same line on main → conflict → agent resolves
     spawnSync("git", ["-C", oRepo, "commit", "-aqm", "oc8 main work"]);
-    await settleForMerge(oc8.slot);
-    await post(`/api/slots/${oc8.slot}/merge`, {});
-    const v8 = await waitMerge(oc8.slot);
-    check("outcome: stale-verdict setup — resolved lane kept for review with verify.ok:true on record",
-      !v8.gone && v8.last?.status === "resolved" && v8.last?.verify?.ok === true, JSON.stringify(v8.last));
+    const cardMarks = ["recycled-slot-OLD-done-card", "recycled-slot-CURRENT-sent-card"];
+    const cardRows: { id: string }[] = [];
+    for (const text of cardMarks) {
+      const filed = (await (await post("/api/tasks", { text, repo: oRepo })).json()) as { task: { id: string } };
+      cardRows.push(filed.task);
+    }
+    await stopSrv();
+    const cardStatePath = `${ROOT}/fleet.json`;
+    const cardState = JSON.parse(readFileSync(cardStatePath, "utf8")) as
+      { tasks: { id: string; slot: number | null; status: string }[]; slots: Record<string, { taskId?: string }> };
+    for (const [i, row] of cardRows.entries()) {
+      const task = cardState.tasks.find((t) => t.id === row.id)!;
+      task.slot = oc8.slot;
+      task.status = i === 0 ? "done" : "sent";
+    }
+    cardState.slots[String(oc8.slot)].taskId = cardRows[1].id;
+    writeFileSync(cardStatePath, JSON.stringify(cardState));
+    await restartSrv();
+    const cardCtl = REPO.replace(/\/[^/]+$/, "");
+    const cardWorkers = ["fakesum", "fakemerge"];
+    const cardWorkerBytes = await Promise.all(cardWorkers.map((name) => Bun.file(`${cardCtl}/${name}`).text()));
+    try {
+      for (const [i, name] of cardWorkers.entries()) {
+        await Bun.write(`${cardCtl}/${name}.card-orig`, cardWorkerBytes[i]);
+        spawnSync("chmod", ["+x", `${cardCtl}/${name}.card-orig`]);
+        await Bun.write(`${cardCtl}/${name}`, ["#!/bin/sh",
+          `tee "$(dirname "$0")/${name}.card-prompt" | "$(dirname "$0")/${name}.card-orig"`, ""].join("\n"));
+      }
+      const summaryClick = await post(`/api/slots/${oc8.slot}/summary`, {});
+      const summaryPrompt = await Bun.file(`${cardCtl}/fakesum.card-prompt`).text();
+      check("recycled slot: summary quotes the CURRENT sent card, never the older done card",
+        summaryClick.ok && summaryPrompt.includes(cardMarks[1]) && !summaryPrompt.includes(cardMarks[0]),
+        `status=${summaryClick.status} current=${summaryPrompt.includes(cardMarks[1])} old=${summaryPrompt.includes(cardMarks[0])}`);
+      await settleForMerge(oc8.slot);
+      await post(`/api/slots/${oc8.slot}/merge`, {});
+      const v8 = await waitMerge(oc8.slot);
+      check("outcome: stale-verdict setup — resolved lane kept for review with verify.ok:true on record",
+        !v8.gone && v8.last?.status === "resolved" && v8.last?.verify?.ok === true, JSON.stringify(v8.last));
+      const conflictPrompt = await Bun.file(`${cardCtl}/fakemerge.card-prompt`).text();
+      check("recycled slot: conflict handoff quotes the CURRENT sent card, never the older done card",
+        v8.last?.status === "resolved" && conflictPrompt.includes(cardMarks[1]) && !conflictPrompt.includes(cardMarks[0]),
+        `verdict=${v8.last?.status} current=${conflictPrompt.includes(cardMarks[1])} old=${conflictPrompt.includes(cardMarks[0])}`);
+    } finally {
+      for (const [i, name] of cardWorkers.entries()) await Bun.write(`${cardCtl}/${name}`, cardWorkerBytes[i]);
+    }
     spawnSync("git", ["-C", oc8.cwd, "remote", "add", "origin", oBare]);
     spawnSync("git", ["-C", oc8.cwd, "push", "-q", "origin", oc8.branch]); // pushed → ⏏ may tear it down
     const land8 = await post(`/api/slots/${oc8.slot}/land`, {});
@@ -1093,6 +1133,7 @@ export async function run(): Promise<void> {
     check("outcome: a land that ran NO verify records verified:null even with a stale green verdict on the slot",
       rec8?.disposition === "landed" && rec8?.verified === null,
       JSON.stringify({ verified: rec8?.verified, confirmed: rec8?.confirmedByHuman }));
+    for (const row of cardRows) await post(`/api/tasks/${row.id}/delete`, {});
     await setMergeMode("blocked"); // restore the suite default
 
     // (9) THE STALENESS RULE (docs/perception-layer.md §5): a persisted review must carry whether
@@ -1125,6 +1166,67 @@ export async function run(): Promise<void> {
     check("outcome: a review computed for an EARLIER git state is recorded as superseded, not as coverage",
       recSup?.review?.state === "superseded" && (recSup?.review?.findings?.length ?? 0) === 2,
       JSON.stringify(recSup?.review ?? null).slice(0, 200));
+
+    await restartSrv();
+    // t | event | exclusive owner
+    // 0 | A review enters the external latch | A job
+    // 1 | A is torn down, B reuses the slot and clicks ③ | B job
+    // 2 | A is released and finishes | B cache remains B's
+    {
+      const ctl = REPO.replace(/\/[^/]+$/, "");
+      const worker = `${ctl}/fakereview`;
+      const originalWorker = await Bun.file(worker).text();
+      const release = `${ctl}/recycle-review-release`;
+      const runs = `${ctl}/recycle-review-runs`;
+      const countRuns = (cwd: string): number => {
+        try { return readFileSync(runs, "utf8").split("\n").filter((line) => line === cwd).length; }
+        catch { return 0; }
+      };
+      type Lane = { slot: number; cwd: string; branch: string };
+      let a: Lane | null = null, b: Lane | null = null;
+      let oldClick: Promise<Response> | null = null, newClick: Promise<Response> | null = null;
+      try {
+        await Bun.write(worker, ["#!/bin/sh", 'case "$PWD" in',
+          '  *recycle-review-old*) cat >/dev/null; echo "$PWD" >> "$(dirname "$0")/recycle-review-runs";',
+          '    n=0; while [ ! -f "$(dirname "$0")/recycle-review-release" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n+1)); done;',
+          `    printf '{"findings": [], "notes": "OLD occupant"}'; exit 0 ;;`,
+          '  *recycle-review-new*) cat >/dev/null; echo "$PWD" >> "$(dirname "$0")/recycle-review-runs";',
+          `    printf '{"findings": [], "notes": "NEW occupant"}'; exit 0 ;;`,
+          'esac', 'exec "$(dirname "$0")/fakereview.recycle-orig"', ""].join("\n"));
+        await Bun.write(`${worker}.recycle-orig`, originalWorker);
+        spawnSync("chmod", ["+x", `${worker}.recycle-orig`]);
+        a = (await (await post("/api/lanes", { repo: oRepo, branch: "recycle-review-old" })).json()) as Lane;
+        await Bun.write(`${a.cwd}/seed.txt`, "seed\nreview A\n");
+        oldClick = post(`/api/slots/${a.slot}/review`, {});
+        for (let i = 0; i < 100 && countRuns(a.cwd) === 0; i++) await Bun.sleep(50);
+        check("recycled review fixture: A's review is running behind the latch", countRuns(a.cwd) === 1, `runs=${countRuns(a.cwd)}`);
+        const kill = await post(`/api/slots/${a.slot}/kill`, {});
+        b = (await (await post("/api/lanes", { repo: oRepo, branch: "recycle-review-new" })).json()) as Lane;
+        check("recycled review fixture: B occupies A's torn-down slot", kill.ok && b.slot === a.slot,
+          `kill=${kill.status} A=${a.slot} B=${b.slot}`);
+        await Bun.write(`${b.cwd}/seed.txt`, "seed\nreview B\n");
+        newClick = post(`/api/slots/${b.slot}/review`, {});
+        for (let i = 0; i < 100 && countRuns(b.cwd) === 0; i++) await Bun.sleep(50);
+        check("recycled review: B's first ③ starts its OWN review before A finishes", countRuns(b.cwd) === 1,
+          `A=${countRuns(a.cwd)} B=${countRuns(b.cwd)}`);
+        await Bun.write(release, "release\n");
+        await oldClick;
+        const response = await newClick;
+        const clicked = await response.json() as { notes?: string };
+        const cached = await (await get(`/api/slots/${b.slot}/review`)).json() as
+          { cached?: boolean; stale?: boolean; notes?: string };
+        check("recycled review: B's first ③ result is cached for B after A finishes",
+          response.ok && clicked.notes === "NEW occupant" && cached.cached === true
+            && cached.stale === false && cached.notes === "NEW occupant",
+          JSON.stringify({ clicked, cached }));
+      } finally {
+        await Bun.write(release, "release\n");
+        await Promise.all([oldClick, newClick]);
+        if (b) await post(`/api/slots/${b.slot}/kill`, {});
+        else if (a) await post(`/api/slots/${a.slot}/kill`, {});
+        await Bun.write(worker, originalWorker);
+      }
+    }
 
     // (9b) F5 — an OFF-CONTRACT reviewer answer must not reach the ledger as a clean review.
     // `runReview` fails soft: prose, an error or a refusal keeps `raw: true` and puts the model's

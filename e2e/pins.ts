@@ -8708,6 +8708,13 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     jobsView === null ? "helperJobsView not found"
       : `view=${/daemonSha/.test(jobsView)} claim=${claimFn !== null && /daemonSha/.test(claimFn)}`);
 
+  const priorityCode = jobsView?.replace(/^\s*\/\/.*$/gm, "") ?? null;
+  pin("helper jobs keep daemon-update first, command before audit before lane-suite, oldest first within each kind",
+    priorityCode !== null
+      && /"daemon-update": 0, command: 1, audit: 2, "lane-suite": 3/.test(priorityCode)
+      && /jobs\.sort\(\(a, b\) => kindOrder\[a\.kind\] - kindOrder\[b\.kind\] \|\| a\.oldestAt - b\.oldestAt\)/.test(priorityCode),
+    priorityCode === null ? "helperJobsView not found" : "kind priority and oldestAt tie-break");
+
   // --- …AND THE SHA IS READ, NOT COUNTED. Presence proves the daemon measured its own tree; it does
   // not prove that tree knows `kind`. A daemon between `79acd2e` and `1748417` reports a sha and
   // still falls through to `cfg.suiteCmd` — the receipt of a suite run for a command nobody ran. So
@@ -11168,7 +11175,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin("model register: role defaults are current entries and the interactive protocol uses main",
     defaults.every(({ harness, id }) => modelEntry(harness, id)?.status === "current")
       && FLEET_DEFAULT_MODEL === MODEL_DEFAULTS.main.id
-      && MODEL_DEFAULTS.worker.id === "gpt-6-sol" && MODEL_DEFAULTS.denk.id === "gpt-6-astra",
+      && MODEL_DEFAULTS.worker.harness === "codex" && MODEL_DEFAULTS.worker.id === "gpt-6.1-sol"
+      && MODEL_DEFAULTS.worker.effort === "high" && MODEL_DEFAULTS.denk.id === "gpt-6-astra",
     JSON.stringify(defaults));
   pin("model register: every stated successor is current and superseded ids remain in adapter menus",
     MODEL_REGISTER.filter((entry) => entry.status === "superseded").every((entry) =>
@@ -11179,9 +11187,21 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     JSON.stringify(MODEL_REGISTER.filter((entry) => entry.status === "superseded")));
   pin("model register: the current alias and displayed GPT-6 windows come from registered ids",
     MODEL_ALIASES.opus === MODEL_DEFAULTS.main.id && MODEL_ALIASES.astra === MODEL_DEFAULTS.denk.id
+      && MODEL_ALIASES.sol === MODEL_DEFAULTS.worker.id
+      && MODEL_ALIASES["sol 6.1"] === "gpt-6.1-sol" && MODEL_ALIASES["gpt-6.1 sol"] === "gpt-6.1-sol"
+      && modelWindow("gpt-6.1-sol") === 258_400
       && modelWindow("gpt-6-sol") === 272_000 && modelWindow("gpt-6-astra") === 272_000
       && modelWindow("gpt-6-unlisted") === null,
-    JSON.stringify([MODEL_ALIASES.opus, modelWindow("gpt-6-sol"), modelWindow("gpt-6-unlisted")]));
+    JSON.stringify({ sol: MODEL_ALIASES.sol, sol61: MODEL_ALIASES["sol 6.1"], gpt61Sol: MODEL_ALIASES["gpt-6.1 sol"],
+      window: modelWindow("gpt-6.1-sol"), unlisted: modelWindow("gpt-6-unlisted") }));
+  pin("model register: Sol 6.1 is current and both superseded Sol generations point at it",
+    modelEntry("codex", "gpt-6.1-sol")?.status === "current"
+      && modelEntry("codex", "gpt-6-sol")?.status === "superseded"
+      && modelEntry("codex", "gpt-6-sol")?.supersededBy === "gpt-6.1-sol"
+      && modelEntry("codex", "gpt-5.6-sol")?.status === "superseded"
+      && modelEntry("codex", "gpt-5.6-sol")?.supersededBy === "gpt-6.1-sol",
+    JSON.stringify({ current: modelEntry("codex", "gpt-6.1-sol"), previous: modelEntry("codex", "gpt-6-sol"),
+      older: modelEntry("codex", "gpt-5.6-sol") }));
   pin("model register: Sonnet 5.5 is current, Sonnet 5 is superseded by it, the summary role and the short forms point at 5.5",
     modelEntry("claude", "claude-sonnet-5-5[1m]")?.status === "current"
       && modelEntry("claude", "claude-sonnet-5-5")?.status === "current"

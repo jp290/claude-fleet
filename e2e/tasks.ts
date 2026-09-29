@@ -1318,13 +1318,16 @@ export async function run(ctx: Ctx): Promise<void> {
         modelRegistry?: { harness: string; id: string; status: string; supersededBy?: string; availability: string }[];
       };
       const oldSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-5.6-sol");
-      const newSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6-sol");
+      const previousSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6-sol");
+      const newSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6.1-sol");
       check("model catalogue serves the role default and warns on superseded Sol without removing it",
-        modelCat.modelDefaults?.worker?.id === "gpt-6-sol"
-          && oldSol?.status === "superseded" && oldSol.supersededBy === "gpt-6-sol"
+        modelCat.modelDefaults?.worker?.harness === "codex" && modelCat.modelDefaults.worker.id === "gpt-6.1-sol"
+          && modelCat.modelDefaults.worker.effort === "high"
+          && oldSol?.status === "superseded" && oldSol.supersededBy === "gpt-6.1-sol"
+          && previousSol?.status === "superseded" && previousSol.supersededBy === "gpt-6.1-sol"
           && newSol?.status === "current"
           && ["available", "unavailable", "unknown"].includes(newSol?.availability ?? ""),
-        JSON.stringify({ oldSol, newSol, worker: modelCat.modelDefaults?.worker }));
+        JSON.stringify({ oldSol, previousSol, newSol, worker: modelCat.modelDefaults?.worker }));
       const dflt = cat.find((h) => h.default);
       const codex = cat.find((h) => h.id === "codex");
       const noEffort = cat.find((h) => (h.role ?? "agent") === "agent" && !h.supports.effort);
@@ -1684,12 +1687,18 @@ export async function run(ctx: Ctx): Promise<void> {
       ((await (await get("/api/sessions")).json()) as { tasks: { id: string; modelSuperseded?: { id: string; supersededBy?: string } }[] })
         .tasks.find((task) => task.id === policyRow.id);
     const oldPolicy = await policyDigest();
-    check("queue row: gpt-5.6-sol is marked superseded with gpt-6-sol as its successor",
-      oldPolicy?.modelSuperseded?.id === "gpt-5.6-sol" && oldPolicy.modelSuperseded.supersededBy === "gpt-6-sol",
+    check("queue row: gpt-5.6-sol is marked superseded with gpt-6.1-sol as its successor",
+      oldPolicy?.modelSuperseded?.id === "gpt-5.6-sol" && oldPolicy.modelSuperseded.supersededBy === "gpt-6.1-sol",
       JSON.stringify(oldPolicy));
-    const currentPolicySet = await set(policyRow.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    const previousPolicySet = await set(policyRow.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    const previousPolicy = await policyDigest();
+    check("same queue row: gpt-6-sol is accepted and marked superseded with gpt-6.1-sol as its successor",
+      previousPolicySet.status === 200 && previousPolicy?.modelSuperseded?.id === "gpt-6-sol"
+        && previousPolicy.modelSuperseded.supersededBy === "gpt-6.1-sol",
+      JSON.stringify({ status: previousPolicySet.status, previousPolicy }));
+    const currentPolicySet = await set(policyRow.id, { harness: "codex", model: "gpt-6.1-sol", effort: "high" });
     const currentPolicy = await policyDigest();
-    check("same queue row: gpt-6-sol clears the superseded marker without refusing the choice",
+    check("same queue row: gpt-6.1-sol clears the superseded marker without refusing the choice",
       currentPolicySet.status === 200 && currentPolicy !== undefined && currentPolicy.modelSuperseded === undefined,
       JSON.stringify({ status: currentPolicySet.status, currentPolicy }));
     await post(`/api/tasks/${policyRow.id}/delete`, {});
@@ -8190,6 +8199,23 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(machinery));
   }
 
+  // --- (lw-base) Integration bases are compared without defaults or normalization.
+  {
+    const bases = [undefined, "main", "overhaul", " main"];
+    const failures: unknown[] = [];
+    for (const a of bases) for (const b of bases) {
+      const rows: ProjectLandWavesInput["tasks"] = [a, b].map((base, i) => ({
+        id: `base-${i}`, created: i, kind: "auftrag", status: "queued", repo: "/repo/base",
+        programId: "base-program", files: ["server.ts"], filesOrigin: "confirmed", base,
+      }));
+      const waves = projectLandWaves({ tasks: rows, costs: LAND_WAVE_COSTS_2026_09 }).repos[0]?.waves;
+      const expected = a === b ? [["base-0", "base-1"]] : [["base-0"], ["base-1"]];
+      if (JSON.stringify(waves?.map((w) => w.ids)) !== JSON.stringify(expected)) failures.push({ a, b, waves });
+    }
+    check("(lw-base) land waves use strict base equality, including undefined and unnormalized strings",
+      failures.length === 0, JSON.stringify(failures));
+  }
+
   // --- W2 · the file surface of an EXISTING row: PROPOSE (self) / CONFIRM (owner). The pair that
   // finally gives the land fold above something to fold. Until 2026-09-07 `filesOrigin:"confirmed"`
   // had exactly ONE writer — the refine promote, which can only stamp rows it is itself creating —
@@ -11432,6 +11458,57 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const id of spIds) await post(`/api/tasks/${id}/delete`, {});
   }
 
+  // --- (sp-wave-base) The live start plan receives each row's integration base.
+  {
+    await post("/api/dispatch", { on: false });
+    const createdBranches: string[] = [];
+    const branchErrors: string[] = [];
+    for (const base of ["main", "overhaul"]) {
+      if (spawnSync("git", ["-C", REPO2, "show-ref", "--verify", "--quiet", `refs/heads/${base}`]).status === 0) continue;
+      const made = spawnSync("git", ["-C", REPO2, "branch", base, "HEAD"], { encoding: "utf8" });
+      if (made.status === 0) createdBranches.push(base);
+      else branchErrors.push(`${base}: ${made.stderr}`);
+    }
+    const programRes = await post("/api/programs", { title: "start-plan wave bases",
+      intent: "Separate overlapping queued work by its integration base.",
+      successCriterion: "Same bases bundle; main and overhaul stay in separate waves.",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+    const programId = ((await programRes.json()) as { program?: { id: string } }).program?.id ?? "";
+    const confirmed = await post(`/api/programs/${programId}/confirm`, {});
+    const ids: string[] = [];
+    const setup: { base: string; status: number; id: string; files: number; error?: string }[] = [];
+    for (const base of ["main", "main", "overhaul"]) {
+      await Bun.sleep(15);
+      const filed = await post("/api/tasks", { text: `SP-WAVE-BASE repair code.txt on ${base}`,
+        repo: REPO2, programId, base, queue: true });
+      const body = (await filed.json()) as { task?: { id: string }; error?: string };
+      const id = body.task?.id ?? "";
+      if (id) ids.push(id);
+      const files = id ? (await post(`/api/tasks/${id}/files`, { files: ["code.txt"] })).status : 0;
+      setup.push({ base, status: filed.status, id, files, ...(body.error ? { error: body.error } : {}) });
+    }
+    const rows = ((await (await get("/api/tasks")).json()) as
+      { tasks: { id: string; base?: string; status: string; files?: string[]; filesOrigin?: string }[] }).tasks;
+    const ready = branchErrors.length === 0 && programRes.ok && confirmed.ok && setup.length === 3
+      && setup.every((r) => r.status === 200 && r.files === 200 && rows.some((t) =>
+        t.id === r.id && t.status === "queued" && t.base === r.base
+        && t.filesOrigin === "confirmed" && t.files?.join(" ") === "code.txt"));
+    check("(sp-wave-base) PROBE: three queued rows of one program have confirmed code.txt surfaces and bases main/main/overhaul",
+      ready, JSON.stringify({ setup, branchErrors, program: programRes.status, confirm: confirmed.status }));
+    const plan = (await (await get("/api/start-plan")).json()) as StartPlan;
+    const waves = plan.repos.find((r) => r.repo === REPO2)?.waves ?? [];
+    const waveOf = (id: string): string[] => waves.find((w) => w.ids.includes(id))?.ids ?? [];
+    check("(sp-wave-base) GET /api/start-plan separates overlapping queued main and overhaul rows into two waves",
+      ready && waveOf(ids[0]).length === 2 && waveOf(ids[2]).join(" ") === ids[2]
+      && !waveOf(ids[0]).includes(ids[2]), JSON.stringify({ main: waveOf(ids[0]), overhaul: waveOf(ids[2]) }));
+    check("(sp-wave-base) GET /api/start-plan keeps overlapping queued rows with the same main base in one wave",
+      ready && JSON.stringify([...waveOf(ids[0])].sort()) === JSON.stringify([ids[0], ids[1]].sort()),
+      JSON.stringify({ expected: [ids[0], ids[1]], actual: waveOf(ids[0]) }));
+    for (const id of ids) await post(`/api/tasks/${id}/delete`, {});
+    await post(`/api/programs/${programId}/complete`, { force: true });
+    for (const base of createdBranches) spawnSync("git", ["-C", REPO2, "branch", "-d", base]);
+  }
+
   // --- (sp-tick) THE TICK STARTS BY THE PLAN (Schnitt 2, server.ts#tickDispatch). Three facts on one
   // live instance, all in REPO2 with confirmed surfaces that exist nowhere else in this run:
   //   (1) two released rows of ONE program sharing a confirmed file start as ONE lane — both rows on
@@ -12065,6 +12142,44 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(s6) an untracked path in the card is a 400 naming the path verbatim, and nothing is filed",
       aBad.status === 400 && aBadText.includes("gibt-es-nicht.ts") && aBadText.includes("not tracked")
       && aAfter === aBefore, `${aBad.status} ${aBadText} rows ${aBefore}->${aAfter}`);
+    const baseBranch = `card-base-${randomBytes(4).toString("hex")}`;
+    const baseWorktree = `${ROOT}/${baseBranch}`;
+    const baseFile = "branch-only/only.ts";
+    const baseCard = { ...aCard, ziel: `${baseFile} wird bearbeitet`,
+      surface: { files: [baseFile], symbols: [], creates: ["branch-only/new.ts"] },
+      done: `${baseFile} ist bearbeitet` };
+    const worktreeAdded = spawnSync("git", ["-C", REPO, "worktree", "add", "-q", "-b", baseBranch, baseWorktree], { encoding: "utf8" });
+    if (worktreeAdded.status === 0) {
+      mkdirSync(`${baseWorktree}/branch-only`, { recursive: true });
+      writeFileSync(`${baseWorktree}/${baseFile}`, "export const only = true;\n");
+      spawnSync("git", ["-C", baseWorktree, "add", baseFile], { encoding: "utf8" });
+      spawnSync("git", ["-C", baseWorktree, "-c", "user.name=e2e", "-c", "user.email=e2e@localhost", "commit", "-qm", "branch-only file"], { encoding: "utf8" });
+    }
+    const onBase = await post("/api/tasks", { text: `${baseFile} und branch-only/new.ts`, queue: false,
+      repo: REPO, base: baseBranch, card: baseCard });
+    const onBaseBody = (await onBase.json()) as { task?: { id: string }; error?: string };
+    const baseRow = onBaseBody.task?.id ? await aFull(onBaseBody.task.id) : undefined;
+    const baseView = onBaseBody.task?.id ? await aDigest(onBaseBody.task.id) : undefined;
+    check("(s6-base) a branch-only file validates in FLAECHE and its directory validates NEU on that row's base",
+      worktreeAdded.status === 0 && onBase.ok && baseRow?.card?.valid === true
+      && baseView?.files?.join(" ") === baseFile,
+      JSON.stringify({ status: onBase.status, body: onBaseBody, row: baseRow, view: baseView }));
+    const noBase = await post("/api/tasks", { text: baseFile, queue: false, repo: REPO, card: baseCard });
+    const noBaseError = ((await noBase.json()) as { error?: string }).error ?? "";
+    check("(s6-base) the same file without base is refused as not tracked",
+      noBase.status === 400 && noBaseError.includes(`\"${baseFile}\" is not tracked`),
+      `${noBase.status} ${noBaseError}`);
+    if (worktreeAdded.status === 0) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", baseWorktree], { encoding: "utf8" });
+    spawnSync("git", ["-C", REPO, "branch", "-D", baseBranch], { encoding: "utf8" });
+    const missingBase = await post("/api/tasks", { text: baseFile, queue: false, repo: REPO,
+      base: baseBranch, card: baseCard });
+    const missingBaseText = await missingBase.text();
+    const staleRow = onBaseBody.task?.id ? await aDigest(onBaseBody.task.id) : undefined;
+    check("(s6-base) an unresolved base never falls through to main for card filing or derived surface",
+      missingBase.status === 400 && missingBaseText.includes("base branch does not exist")
+      && staleRow?.files === undefined,
+      JSON.stringify({ status: missingBase.status, error: missingBaseText, row: staleRow }));
+    if (onBaseBody.task?.id) await post(`/api/tasks/${onBaseBody.task.id}/delete`, {});
     const aShape = await post("/api/tasks", { text: "AUTHOR-CARD-SHAPE", queue: false, repo: REPO, card: "ctx-mod.txt" });
     check("(s6) a card that is not an object is a 400, never a silently ignored field",
       aShape.status === 400 && (await aShape.text()).includes("card must be an object"), String(aShape.status));

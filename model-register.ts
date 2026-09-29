@@ -13,7 +13,7 @@ export interface ModelEntry {
 export const MODEL_DEFAULTS: Readonly<Record<ModelRole, { harness: ModelHarness; id: string; effort: string }>> = {
   orchestrator: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
   main: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
-  worker: { harness: "codex", id: "gpt-6-sol", effort: "high" },
+  worker: { harness: "codex", id: "gpt-6.1-sol", effort: "high" },
   denk: { harness: "codex", id: "gpt-6-astra", effort: "medium" },
   summary: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
 };
@@ -30,10 +30,11 @@ export const MODEL_REGISTER: readonly ModelEntry[] = [
   { harness: "claude", id: "claude-sonnet-5[1m]", status: "superseded", supersededBy: "claude-sonnet-5-5[1m]", displayWindow: 1_000_000 },
   { harness: "claude", id: "claude-sonnet-5", status: "superseded", supersededBy: "claude-sonnet-5-5[1m]", displayWindow: 1_000_000 },
   { harness: "claude", id: "claude-haiku-4-5-20251001", status: "current", displayWindow: 200_000 },
-  { harness: "codex", id: "gpt-6-sol", status: "current", displayWindow: 272_000 },
+  { harness: "codex", id: "gpt-6.1-sol", status: "current", displayWindow: 258_400 },
+  { harness: "codex", id: "gpt-6-sol", status: "superseded", supersededBy: "gpt-6.1-sol", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-6-astra", status: "current", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-6-luna", status: "current", displayWindow: 272_000 },
-  { harness: "codex", id: "gpt-5.6-sol", status: "superseded", supersededBy: "gpt-6-sol", displayWindow: 272_000 },
+  { harness: "codex", id: "gpt-5.6-sol", status: "superseded", supersededBy: "gpt-6.1-sol", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.6-terra", status: "superseded", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.6-luna", status: "superseded", supersededBy: "gpt-6-luna", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.5", status: "current", displayWindow: 272_000 },
@@ -51,6 +52,7 @@ export const MODEL_ALIASES: Readonly<Record<string, string>> = {
   fable: "claude-fable-5-1[1m]", "fable 5.1": "claude-fable-5-1[1m]", "claude fable 5.1": "claude-fable-5-1[1m]",
   astra: MODEL_DEFAULTS.denk.id, "gpt-6 astra": MODEL_DEFAULTS.denk.id,
   sol: MODEL_DEFAULTS.worker.id, "gpt-6 sol": MODEL_DEFAULTS.worker.id,
+  "sol 6.1": MODEL_DEFAULTS.worker.id, "gpt-6.1 sol": MODEL_DEFAULTS.worker.id,
 };
 
 export const modelsForHarness = (harness: ModelHarness): string[] =>

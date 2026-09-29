@@ -279,6 +279,11 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
 
 ## Modell-Tiers
 
+- `MODEL_DEFAULTS.worker` (`model-register.ts`) ist `codex/gpt-6.1-sol/high`. Sol 6.1 ist
+  `current`; gpt-6-sol und gpt-5.6-sol bleiben im Register als `superseded` mit direktem Nachfolger
+  `gpt-6.1-sol`. Die Aliase `sol`, `sol 6.1` und `gpt-6.1 sol` folgen dem Worker-Default.
+  Das angezeigte Kontextfenster von Sol 6.1 ist 258 400 Tokens, gemessen als `model_context_window`
+  im Rollout einer gpt-6.1-sol-Session vom 2026-09-29.
 - Modell-Tiers: `DEFAULT_MODEL` (`server.ts`, override `FLEET_MODEL`) = Sessions/Lanes ohne eigenen Pin;
   `SUMMARY_MODEL` (override `FLEET_SUMMARY_MODEL`) = alle Wegwerf-Worker (summarize, Commit-Msg, enhance,
   Merge-Resolver, ② review, digest). Beide werden gegen `MODEL_RE` validiert.

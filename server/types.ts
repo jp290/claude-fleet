@@ -2135,7 +2135,7 @@ interface Slot {
   // delivery path wakes it first (server.ts#wakeSlot). Cleared by wake, open and teardown. Persisted,
   // so a restart does not silently wake every sleeper.
   sleeping: SlotSleep | null;
-  history: { text: string; ts: number }[]; // the durable "what did I prompt" record,
+  history: { text: string; ts: number; source?: "owner" | "fleet" }[]; // the durable "what did I prompt" record,
   // newest last: composed sends, plus terminal-typed prompts harvested from the
   // transcript (tickHarvest) — raw keystrokes themselves are deliberately not captured
   clients: Set<ServerWebSocket<WSData>>;

@@ -2761,12 +2761,14 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ ready: execCReady, row: execRowC }));
 
   // (iii) the owed preview: planted suite jobs on THIS lane, one restart per state.
+  const execTree = spawnSync("git", ["-C", execLaneCwd, "rev-parse", "HEAD^{tree}"],
+    { encoding: "utf8" }).stdout.trim();
   const execSuiteJob = (id: string, state: string, offeredAt: number,
     result: Record<string, unknown> | null): Record<string, unknown> => ({
     id, slot: executionLaneBody.slot,
     slotOpenedAt: readState().slots?.[String(executionLaneBody.slot)]?.openedAt ?? 0,
     repo: REPO, cwd: execLaneCwd, branch: execLaneBranch,
-    offeredAt, state, commitSha: null, treeSha: null, untracked: null, claim: null, result,
+    offeredAt, state, commitSha: null, treeSha: execTree, untracked: null, claim: null, result,
   });
   const execPlantJobs = async (jobs: Record<string, unknown>[]): Promise<void> => {
     await stopSrv();
@@ -2789,7 +2791,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const execVerdict = (result: "red" | "green", fails: string[]): Record<string, unknown> => ({
     exitCode: result === "red" ? 1 : 0, result, tail: "fixture", checks: null, fails,
     remote: { name: "fixture-helper", claimedAt: execJobAt, reportedAt: execJobAt + 10 },
-    treeSha: "f".repeat(40), ms: 1,
+    treeSha: execTree, ms: 1,
   });
   const execDoorCases: { name: string; holds: boolean; jobs: Record<string, unknown>[];
     door: (next: string) => boolean }[] = [

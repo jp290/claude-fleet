@@ -4225,7 +4225,26 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     const originalBytes = readFileSync(statePath, "utf8");
     const original = JSON.parse(originalBytes) as Record<string, unknown> & { slots?: Record<string, unknown> };
     const rowCount = Object.keys(original.slots ?? {}).length;
-    const foreignLog = await bootWith(JSON.stringify({ ...original, sock: `${SOCK}-elsewhere` }, null, 2));
+    const recoveryRepo = `${ROOT}/sock-owner-land`;
+    spawnSync("git", ["init", "-q", "-b", "main", recoveryRepo]);
+    spawnSync("git", ["-C", recoveryRepo, "config", "user.name", "e2e"]);
+    spawnSync("git", ["-C", recoveryRepo, "config", "user.email", "e2e@test"]);
+    spawnSync("git", ["-C", recoveryRepo, "commit", "--allow-empty", "-qm", "before land"]);
+    const gitAt = (...args: string[]): string =>
+      spawnSync("git", ["-C", recoveryRepo, ...args], { encoding: "utf8" }).stdout.trim();
+    const mainBefore = gitAt("rev-parse", "HEAD");
+    spawnSync("git", ["-C", recoveryRepo, "commit", "--allow-empty", "-qm", "advanced land"]);
+    const laneTip = gitAt("rev-parse", "HEAD");
+    const recoveryTask = { id: "sock-owner-task", text: "foreign sent task must not requeue", source: "owner",
+      status: "sent", slot: F, created: Date.now(), repo: recoveryRepo, kind: "auftrag" };
+    const recoveryState = { ...original,
+      tasks: [...(Array.isArray(original.tasks) ? original.tasks : []), recoveryTask],
+      landPending: { [recoveryRepo]: { repo: recoveryRepo, main: "main", branch: "sock-owner-land",
+        mainBefore, laneTip, at: Date.now(), prov: { confirmedByHuman: false, actor: { kind: "owner", via: "cookie" } } } } };
+    check("sock-owner recovery fixture: main advanced and no land note exists",
+      mainBefore !== laneTip && gitAt("notes", "--ref=fleet/land", "show", laneTip) === "",
+      `before=${mainBefore.slice(0, 8)} tip=${laneTip.slice(0, 8)}`);
+    const foreignLog = await bootWith(JSON.stringify({ ...recoveryState, sock: `${SOCK}-elsewhere` }, null, 2));
     const foreignRows = await projection();
     await Bun.sleep(1500); // a negative proof: give self-heal its window to respawn anything it holds
     const foreignPanes = await paneNames();
@@ -4237,6 +4256,23 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       foreignLog.includes(`state file belongs to tmux socket "${SOCK}-elsewhere", this server runs on '${SOCK}'`)
         && foreignLog.includes(`its ${rowCount} slot row(s)`) && !foreignLog.includes("REFUSING TO START"),
       foreignLog.split("\n").filter((l) => l.includes("state file belongs")).join(" | ").slice(0, 300) || foreignLog.slice(-300));
+
+    const foreignTasks = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[] }).tasks;
+    check("a foreign socket boot restores NO tasks and cannot requeue the foreign sent task",
+      foreignTasks.length === 0, JSON.stringify(foreignTasks.map((t) => ({ id: t.id, status: t.status }))));
+    check("a foreign socket boot does NOT finish a pending land in its repository",
+      gitAt("notes", "--ref=fleet/land", "show", laneTip) === ""
+        && gitAt("rev-parse", "main") === laneTip && !foreignLog.includes("land recovery:"),
+      foreignLog.split("\n").filter((l) => l.includes("land recovery:")).join(" | ") || "no recovery and no land note");
+    const ownRecoveryLog = await bootWith(JSON.stringify({ ...recoveryState, sock: SOCK }, null, 2));
+    const ownRecoveryTask = ((await (await get("/api/sessions")).json()) as
+      { tasks: { id: string; status: string; note?: string }[] }).tasks.find((t) => t.id === recoveryTask.id);
+    check("the SAME socket still recovers the pending land",
+      ownRecoveryLog.includes("land recovery:") && gitAt("notes", "--ref=fleet/land", "show", laneTip).length > 0,
+      `recovered=${ownRecoveryLog.includes("land recovery:")}`);
+    check("the SAME socket still requeues its stranded sent task",
+      ownRecoveryTask?.status === "queued" && ownRecoveryTask.note === "requeued after restart",
+      JSON.stringify(ownRecoveryTask));
 
     await bootWith(originalBytes);
     const sameRows = await projection();

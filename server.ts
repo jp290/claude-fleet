@@ -1,3 +1,4 @@
+import { historySource } from "./src/drafts";
 import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
 import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
@@ -75,9 +76,9 @@ import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NO
 // board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
 import {
   LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves, proposeBundles,
-  type BundleProposal, type LandWave, type LandWaveProjection,
+  type BundleProposal, type LandWave, type LandWaveProjection, type LandWaveTaskInput,
 } from "./task-land-waves";
-import { isTaskCardSize, type TaskCardSize, type TaskWaveInput, type TaskWaveRange } from "./task-waves";
+import { isTaskCardSize, type TaskCardSize, type TaskWaveRange } from "./task-waves";
 import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
 // The START PLAN: which land wave starts next, and what its rows passed. GET /api/start-plan shows it,
 // tickDispatch starts by it and the wave door resolves its ids in it (pinned in e2e/pins.ts).
@@ -2675,16 +2676,23 @@ function newestLaneReportFor(taskId: string, lane: Slot): string | null {
 
 // I8 — the lane's own isolated-suite preview, distilled to the three states the land door names.
 // A LIVE job (offered/claimed) outranks the newest reported verdict, exactly as laneSuiteOfferOf
-// reads the one open offer; a reported job counts only when it ran RED — green or unknown settled
-// the debt as far as the door is concerned. No phase rule reads this: a phase must not grade a
+// reads the one open offer; only reports on the lane's current HEAD tree can settle its verdict.
+// Green or unknown on that tree settles an earlier red. No phase rule reads this: a phase must not grade a
 // verify debt, the door is where "may I land" is answered.
 function lanePreviewFact(lane: Slot): { state: "offered" | "running" | "red"; id: string } | null {
   let settled: LaneSuiteJob | null = null;
+  let headTree: string | null | undefined;
   for (const j of laneSuiteJobs.values()) {
     if (j.slot !== lane.id || j.slotOpenedAt !== lane.openedAt) continue;
     if (j.state === "open") return { state: "offered", id: j.id };
     if (j.state === "claimed") return { state: "running", id: j.id };
-    if (j.state === "reported" && (!settled || j.offeredAt > settled.offeredAt)) settled = j;
+    if (j.state !== "reported") continue;
+    if (headTree === undefined) {
+      const head = lane.cwd ? Bun.spawnSync(["git", "-C", lane.cwd, "rev-parse", "HEAD^{tree}"],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }) : null;
+      headTree = head?.success ? head.stdout.toString().trim() : null;
+    }
+    if (headTree !== null && j.treeSha === headTree && (!settled || j.offeredAt > settled.offeredAt)) settled = j;
   }
   return settled?.result?.result === "red" ? { state: "red", id: settled.id } : null;
 }
@@ -4957,6 +4965,62 @@ function trackedSnapshotFor(repoRaw: string): TrackedSnapshot | null {
     return null;
   }
 }
+// The BASE half of the same fact: a row's tree is its effective base (Task.base, else the repo's
+// integration branch), and it is read per row per poll just as often (taskDigest, the start plan,
+// the land wave). So the REF resolves behind a stamp exactly like the index above: the loose ref
+// file and packed-refs in the common git dir (git replaces a ref by lock + rename, so a move or a
+// delete changes ino/mtime) plus the primary's HEAD file when no base is named. A hit costs stats
+// and no git process — three sync spawns per row measured 83 ms under load, which starved the
+// event loop. An unresolvable base caches as null behind the same stamp: unknown, never main.
+const taskBaseTreeCache = new Map<string, TrackedSnapshot>();
+const taskBaseRefCache = new Map<string, { stamp: string; commit: string | null }>();
+const taskBaseGitDirs = new Map<string, { gitDir: string; commonDir: string }>();
+const taskBaseFileStamp = (path: string): string => {
+  try { const s = statSync(path); return `${s.ino}:${s.mtimeMs}:${s.size}`; } catch { return "-"; }
+};
+function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapshot | null {
+  const repo = repoCanon(repoRaw);
+  const run = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args],
+    { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  let dirs = taskBaseGitDirs.get(repo);
+  if (!dirs) {
+    const found = run("rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir");
+    const [gitDir, commonDir] = found.success ? found.stdout.toString().trim().split("\n") : [];
+    if (!gitDir || !commonDir) return null;
+    dirs = { gitDir, commonDir };
+    taskBaseGitDirs.set(repo, dirs);
+  }
+  const current = requested ?? repoBases[repo] ?? (() => {
+    try { return /^ref: refs\/heads\/(.+)$/.exec(readFileSync(resolve(dirs.gitDir, "HEAD"), "utf8").trim())?.[1] ?? ""; }
+    catch { return ""; }
+  })();
+  if (!current) return null;
+  const stamp = `${taskBaseFileStamp(resolve(dirs.commonDir, "refs/heads", current))}\0${taskBaseFileStamp(resolve(dirs.commonDir, "packed-refs"))}`;
+  const refKey = `${repo}\0${current}`;
+  let resolved = taskBaseRefCache.get(refKey);
+  if (resolved?.stamp !== stamp) {
+    const ref = run("check-ref-format", "--branch", current).success
+      ? run("rev-parse", "--verify", "--quiet", `refs/heads/${current}^{commit}`) : null;
+    resolved = { stamp, commit: ref?.success ? ref.stdout.toString().trim() : null };
+    taskBaseRefCache.set(refKey, resolved);
+  }
+  const commit = resolved.commit;
+  if (!commit) return null;
+  const key = `${repo}\0${commit}`;
+  const cached = taskBaseTreeCache.get(key);
+  if (cached) return cached;
+  const listing = run("ls-tree", "-rz", commit);
+  if (!listing.success) return null;
+  const paths = new Set<string>();
+  for (const entry of listing.stdout.toString().split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab >= 0) paths.add(entry.slice(tab + 1));
+  }
+  const snapshot: TrackedSnapshot = { repo, project: basename(repo).replace(/\.git$/, ""),
+    paths, indexPath: null, indexStamp: commit };
+  taskBaseTreeCache.set(key, snapshot);
+  return snapshot;
+}
 // The graph half of the surface, cached exactly like the tracked snapshot above and for the same
 // reason: it is a REPOSITORY fact shared by every row, and re-reading a 10 000-node graph per row
 // per 2 s poll is not a projection, it is a load. `null` is the lane's honest answer — graphify-out/
@@ -4992,6 +5056,7 @@ function symbolIndexFor(repoRaw: string): SymbolIndexSnapshot | null {
 // `at` is the stamp of the DERIVATION, not of a write.
 function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null, project: string | null, repoRoot: string | null): TaskSurface | null {
+  if (!snapshot) return null;
   // THE TWO READINGS COME OFF THE GROUP FOR A VARIANT (E4, variantSourceOf) — the same exception
   // cardDue already makes one door earlier, drawn here because this is the second reader of them.
   // A variant carries neither by construction: the card sweep writes it none, and the brief door
@@ -5045,7 +5110,7 @@ function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
 }
 function taskView(t: Task): Task {
   const repoRaw = t.repo ?? (DISPATCH_REPO || null);
-  const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
+  const snapshot = repoRaw ? taskBaseSnapshotFor(repoRaw, t.base) : null;
   const project = snapshot?.project ?? (repoRaw ? basename(repoCanon(repoRaw)).replace(/\.git$/, "") : null);
   const repoRoot = snapshot?.repo ?? (repoRaw ? repoCanon(repoRaw) : null);
   const surface = taskSurfaceOf(t, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null, project, repoRoot);
@@ -8279,6 +8344,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.awaiting = null;
   summaryCache.delete(s.id);
   reviewCache.delete(s.id);
+  reviewInflight.delete(s.id);
   reviewAutoTried.delete(s.id);
   backlogNudgeTried.delete(s.id);
   inboxNudgeTried.delete(s.id);
@@ -10598,7 +10664,7 @@ async function resendSuccessionDebt(id: string): Promise<Response> {
       return json({ error: `brief still not delivered: ${e instanceof Error ? e.message : e} — the debt stays`, debt: id }, 409);
     }
     const sentAt = Date.now();
-    s.history = [...s.history, { text: debt.brief, ts: sentAt }].slice(-MAX_HISTORY);
+    s.history = [...s.history, { text: debt.brief, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(s);
     logPrompt(s, debt.brief, "auto", sentAt);
     successionDebts = successionDebts.filter((d) => d.id !== id);
@@ -11202,7 +11268,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
       return failed(e instanceof Error ? e.message : String(e));
     }
     const now = Date.now();
-    s.history = [...s.history, { text: brief, ts: now }].slice(-MAX_HISTORY);
+    s.history = [...s.history, { text: brief, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(s);
     logPrompt(s, brief, "auto", now);
     audit("lane_succession", s.id, `${ref.branch} session=${session} successions=${successions}`);
@@ -11433,7 +11499,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
         return await failed(`brief failed: ${e instanceof Error ? e.message : e}`);
       }
       const now = Date.now();
-      s.history = [...s.history, { text: brief, ts: now }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: brief, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, brief, "auto", now);
       if (orchCtx?.ok) await appendOrchestratorReceipt(s, orchCtx.value, brief, now);
@@ -11573,7 +11639,7 @@ function refuseClarification(c: ClarificationRequest, reason: string, at = Date.
     worker.awaiting = null;
     const line = `[fleet] clarification ${c.id} was refused: ${reason}. No reply will come from this request.`;
     void sendText(worker, line, true, { path: "clarification-reply", requireAgent: true }).then(() => {
-      worker.history = [...worker.history, { text: line, ts: Date.now() }].slice(-MAX_HISTORY);
+      worker.history = [...worker.history, { text: line, ts: Date.now(), source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(worker);
     }).catch((e: unknown) => logError("clarificationRefusalDelivery", e));
   }
@@ -11809,7 +11875,7 @@ async function notifyOrchestratorOfProgramLoss(key: string, programId: string, m
     });
     programEventNotified.add(key);
     const at = Date.now();
-    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(receiver);
     logPrompt(receiver, message, "auto", at, undefined, acceptance);
   } catch (e) {
@@ -12111,7 +12177,7 @@ async function tickOrphanReports(): Promise<void> {
       } });
     orphanReportNotified.add(report.id);
     const at = Date.now();
-    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(receiver);
     logPrompt(receiver, message, "auto", at, undefined, acceptance);
   } catch (e) {
@@ -12580,7 +12646,7 @@ async function replyClarification(s: Slot, id: string, body: Record<string, unkn
       status: "send-uncertain" }, 409);
   }
   const at = Date.now();
-  worker.history = [...worker.history, { text, ts: at }].slice(-MAX_HISTORY);
+  worker.history = [...worker.history, { text, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(worker);
   logPrompt(worker, text, "auto", at);
   request.status = "answered";
@@ -12805,7 +12871,7 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
           await saveStateNow();
         } });
       const at = Date.now();
-      recipient.history = [...recipient.history, { text, ts: at }].slice(-MAX_HISTORY);
+      recipient.history = [...recipient.history, { text, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(recipient);
       logPrompt(recipient, text, "auto", at);
       stamp("delivered", recipient.sessionId !== report.worker.sessionId
@@ -15323,7 +15389,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const taskBase = await taskBaseFromBody(body, targetRepo);
   if (!taskBase.ok) return json({ error: taskBase.error }, 400);
   const mainText = body.text.slice(0, MAX_TASK_TEXT).trim();
-  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, targetRepo, program.id);
+  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, targetRepo, program.id, taskBase.base);
   if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
   // (4b) THE OCCUPANT AND BINDING RE-PROOFS, followed by a fresh repo-list read before the first
   // mutation below (there is no await from here to `tasks = capTasks`). The succession door states
@@ -15526,7 +15592,7 @@ async function hintAttentionOrchestrator(a: AttentionRequest, receiver: Slot): P
           throw new DeliveryCancelled(`attention ${a.id} changed before paste`);
       } });
     const at = Date.now();
-    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(receiver);
     logPrompt(receiver, message, "auto", at, undefined, acceptance);
   } catch (e) {
@@ -16045,7 +16111,7 @@ async function tickAutos(): Promise<void> {
             recipient = current;
           } });
           const sentAt = Date.now();
-          recipient.history = [...recipient.history, { text: a.text, ts: sentAt }].slice(-MAX_HISTORY);
+          recipient.history = [...recipient.history, { text: a.text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(recipient);
           logPrompt(recipient, a.text, "auto", sentAt);
           a.lastRun = sentAt;
@@ -16202,7 +16268,7 @@ const LAND_WAVE_BUDGET = ((): number => {
 // is read" rule the card head and the card surface follow. None weighs medium.
 const taskSizeOf = (t: Task): TaskCardSize | undefined => t.card?.valid ? t.card.size : undefined;
 function landWaveProjectionNow(): LandWaveProjection {
-  const rows: TaskWaveInput[] = tasks
+  const rows: LandWaveTaskInput[] = tasks
     .filter((t) => t.kind === "auftrag" && (t.status === "queued" || t.status === "pending"))
     .map((t) => {
       const view = taskView(t);
@@ -16210,11 +16276,12 @@ function landWaveProjectionNow(): LandWaveProjection {
       // A file the row will ADD is surface too — two rows creating the same file collide — but it is
       // not part of `view.files`, which only ever holds tracked paths (confirm copies those alone).
       // Read off a surfaceValid card, the same bar confirm-cards sets for the card's files.
-      const files = [...(view.files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
+      const files = [...(view.files ?? []), ...(taskBaseSnapshotFor(t.repo ?? DISPATCH_REPO ?? "", t.base) && t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
       // `after` is read off ANY card: its ids were checked against the queue, and an order
       // constraint can only hold a row back, never bundle it.
       const after = t.card?.after ?? [];
       return { id: t.id, kind: t.kind, status: t.status, created: t.created,
+        base: t.base,
         ...(t.repo ? { repo: t.repo } : {}),
         ...(t.programId ? { programId: t.programId } : {}),
         // a variant is a wave of one and a group is in no wave (task-land-waves.ts#classify)
@@ -16249,6 +16316,8 @@ function landWaveProjectionNow(): LandWaveProjection {
 // plan needs its files for the collision edge. A `manual` row's surface is byte for byte what it was.
 // A VARIANT reads its card off its group (variantSourceOf) — the one reading all n variants share.
 const startPlanSurfaceOf = (t: Task): { files: string[] | null; ranges: StartPlanRow["ranges"] } => {
+  const repo = t.repo ?? DISPATCH_REPO;
+  if (!repo || !taskBaseSnapshotFor(repo, t.base)) return { files: null, ranges: null };
   const card = variantSourceOf(t).card;
   const read = [...(taskView(t).files ?? []), ...(card?.surfaceValid ? card.surface.creates ?? [] : [])];
   const files = programReleasePolicy(t) === "manual" ? read : [...new Set([...read, ...startPlanCardPaths(card ?? null)])];
@@ -17446,7 +17515,13 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
     const hit = sources.get(file);
     if (hit !== undefined) return hit;
     let text = "";
-    try { text = snapshot ? readFileSync(resolve(snapshot.repo, file), "utf8") : ""; } catch { text = ""; }
+    if (snapshot?.indexStamp && !snapshot.indexPath) {
+      const shown = Bun.spawnSync(["git", "-C", snapshot.repo, "show", `${snapshot.indexStamp}:${file}`],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      if (shown.success) text = shown.stdout.toString();
+    } else {
+      try { text = snapshot ? readFileSync(resolve(snapshot.repo, file), "utf8") : ""; } catch { text = ""; }
+    }
     sources.set(file, text);
     return text;
   };
@@ -17612,13 +17687,19 @@ async function tickCardSweep(): Promise<void> {
     const due = tasks.filter((t) => cardDue(t, now) && taskRepoOf(t) !== null);
     if (!due.length) return;
     const repo = taskRepoOf(due[0])!;
-    const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, CARD_BATCH_CAP);
+    const base = due[0]!.base;
+    const batch = due.filter((t) => taskRepoOf(t) === repo && t.base === base).slice(0, CARD_BATCH_CAP);
     if (!existsSync(repo) || !statSync(repo).isDirectory()) {
       for (const t of batch) cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
       console.log(`card extractor: repo not found, leaving ${batch.length} row(s) unread: ${repo}`);
       return;
     }
-    const snapshot = trackedSnapshotFor(repo);
+    const snapshot = taskBaseSnapshotFor(repo, base);
+    if (!snapshot) {
+      for (const t of batch) cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
+      console.log(`card extractor: base unavailable, leaving ${batch.length} row(s) unread: ${base ?? "integration branch"}`);
+      return;
+    }
     const index = symbolIndexFor(repo);
     await cardForeignVerifyCommand(repo);
     let wrote = false;
@@ -17855,7 +17936,8 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
 //     so a model cannot lift a path out of a proof line; an author declaring the surface is the
 //     declaration itself — a verify line in the text is still masked (task-metadata.ts#intentText).
 // `model: "author"` names the producer. Absent card: the door behaves exactly as before.
-async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined): Promise<
+async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined,
+  base?: string): Promise<
   { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string }> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     return { ok: false, status: 400, error: "card must be an object {ziel, rolle?, klasse?, surface{files, symbols}, done, verify, verboten, size?, after?}" };
@@ -17863,7 +17945,7 @@ async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null
   const known = ["ziel", "rolle", "klasse", "surface", "done", "verify", "verboten", "size", "after"];
   const extra = Object.keys(c).filter((k) => !known.includes(k));
   if (extra.length) return { ok: false, status: 400, error: `card reads ${known.join(", ")} only — [${extra.join(", ")}] is not read` };
-  const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
+  const snapshot = repoRaw ? taskBaseSnapshotFor(repoRaw, base) : null;
   if (!snapshot)
     return { ok: false, status: 409, error: `the tracked tree of ${repoRaw ?? "(no repo)"} is unreadable — a card cannot be validated against it, and an unvalidated card is not stored` };
   const surface = (c.surface && typeof c.surface === "object" ? c.surface : {}) as Record<string, unknown>;
@@ -19933,7 +20015,7 @@ async function tickHarvest(): Promise<void> {
           if (!t || t.startsWith("<command-") || t.startsWith("<local-command")) continue;
           if (composed.some((c) => c.text === t.slice(0, 5000))) continue;
           const ts = (e.ts && Date.parse(e.ts)) || Date.now();
-          s.history = [...s.history, { text: t, ts }].slice(-MAX_HISTORY);
+          s.history = [...s.history, { text: t, ts, source: t.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
           logPrompt(s, t, "terminal", ts);
           dirty = true;
         }
@@ -20343,7 +20425,7 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
   // founding intent + landability, fed FIRST so they never truncate: a dispatched lane's
   // task scrolls off the 40k transcript tail on long sessions, and ahead/behind vs the lane
   // base is the single most load-bearing "is this landable" signal the commit log can't give.
-  const laneTask = tasks.find((t) => t.slot === s.id)?.text ?? null;
+  const laneTask = foundingRowOf(s)?.text ?? null;
   const laneBase = s.worktree ? await laneBaseRef(s) : null;
   let landability = "";
   if (laneBase) {
@@ -21616,7 +21698,7 @@ async function tickAuditPing(): Promise<void> {
       // Await the marker: ordinary saveState is fire-and-forget, but this marker is what prevents
       // a new session after a deploy from receiving an already-delivered EVENT again.
       await saveStateNow();
-      s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, text, "auto", sentAt, undefined, acceptance);
       return; // at most ONE receiver, and only one audit event, per tick
@@ -21696,7 +21778,7 @@ async function tickFastProgramInbox(): Promise<void> {
           });
           fastInboxNotified.add(entry.id);
           const at = Date.now();
-          receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+          receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(receiver);
           logPrompt(receiver, message, "auto", at, undefined, acceptance);
         } catch (e) {
@@ -21770,7 +21852,7 @@ async function tickInboxNudge(): Promise<void> {
                 : acceptance === "not-observed"
                   ? { outcome: "not-accepted", at: sentAt, failure: "SendNotAccepted", reason: "acceptance not observed" }
                   : { outcome: "unobserved", at: sentAt, acceptance } } });
-          recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          recipient.history = [...recipient.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(recipient);
           logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
         } catch (e) {
@@ -21830,7 +21912,7 @@ async function tickMessageNudge(): Promise<void> {
             } });
           const sentAt = Date.now();
           messageNudgeTried.set(recipient.id, { key, lastAt: sentAt });
-          recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          recipient.history = [...recipient.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(recipient);
           logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
         } catch (e) {
@@ -21907,7 +21989,7 @@ async function tickBacklogNudge(): Promise<void> {
             const sentAt = Date.now();
             backlogNudgeTried.set(recipient.id, { session: backlogSessionKey(recipient), openKey, lastAt: sentAt,
               count: count + 1 });
-            recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+            recipient.history = [...recipient.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
             saveHistory(recipient);
             logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
           } catch (e) {
@@ -22266,7 +22348,7 @@ async function tickMigrate(): Promise<void> {
             attempt.gaveUp = true;
             audit("migrate_gave_up", s.id, `gave up session=${attempt.sessionId} after ${attempt.nudges} delivered nudges`);
           }
-          s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          s.history = [...s.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(s);
           logPrompt(s, text, "auto", sentAt, undefined, acceptance);
         } catch (e) {
@@ -22384,7 +22466,7 @@ async function tickParkedSends(): Promise<void> {
       try {
         const { acceptance } = await sendText(s, p.text, p.submit, { path: "owner", requireAgent: true });
         const ts = Date.now();
-        s.history = [...s.history, { text: p.text, ts }].slice(-MAX_HISTORY);
+        s.history = [...s.history, { text: p.text, ts, source: p.text.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
         saveHistory(s);
         logPrompt(s, p.text, "owner", ts, p.sendId, acceptance === "unobservable" ? "unobserved" : "sent");
         settleParked(p, "delivered", "the composer was free and Fleet typed into it", acceptance);
@@ -22576,7 +22658,7 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
   }
   clearComposerHold(event.id, event.receiverSlot, "hold ended — delivered to the bound receiver occupant");
   const deliveredAt = Date.now();
-  receiver.history = [...receiver.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
+  receiver.history = [...receiver.history, { text, ts: deliveredAt, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(receiver);
   logPrompt(receiver, text, "auto", deliveredAt);
   event.status = "delivered";
@@ -22662,7 +22744,7 @@ async function deliverFleetEventBundle(s: Slot, events: FleetEvent[]): Promise<v
     return;
   }
   const deliveredAt = Date.now();
-  deliveredTo.history = [...deliveredTo.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
+  deliveredTo.history = [...deliveredTo.history, { text, ts: deliveredAt, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(deliveredTo);
   logPrompt(deliveredTo, text, "auto", deliveredAt);
   for (const event of events) {
@@ -23042,7 +23124,7 @@ async function tickWatches(): Promise<void> {
         continue;
       }
       const deliveredAt = Date.now();
-      s.history = [...s.history, { text: message, ts: deliveredAt }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: message, ts: deliveredAt, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       // source "auto", not a sixth vocabulary word: the prompt log's "auto" already means "the machine
       // typed this, unattended"; the audit trail below is where a watch is told apart.
@@ -27561,6 +27643,10 @@ function helperJobsView(forDevice?: string): {
       cmd: j.cmd, timeoutMs: j.timeoutMs, artifacts: j.artifactGlobs,
     });
   }
+  const kindOrder: Record<HelperJobView["kind"], number> = {
+    "daemon-update": 0, command: 1, audit: 2, "lane-suite": 3,
+  };
+  jobs.sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind] || a.oldestAt - b.oldestAt);
   // `configured` still answers for the AUDIT queue alone, and the portal's own subline says both
   // halves: a fleet with no audit command can still be offered a lane's preview.
   // Field by field rather than a spread: the row now carries the claimant's deviceId, and that is
@@ -30920,7 +31006,7 @@ async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
   // the alternative (omitting the brief) would leave a prompt the SERVER typed into a pane off the
   // one journal that records such things, which is the worse trade.
   const now = Date.now();
-  s.history = [...s.history, { text: prompt, ts: now }].slice(-MAX_HISTORY);
+  s.history = [...s.history, { text: prompt, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(s);
   logPrompt(s, prompt, "auto", now);
   audit("merge_wake_author", s.id, `${branch}: ${conflicted.length} conflict${conflicted.length === 1 ? "" : "s"}`);
@@ -32454,7 +32540,7 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
   // such things) is the worse trade, exactly as it was there. The coupling does not follow the
   // MAIN receiver anywhere: laneOwnerPrompts reads LANES, and a MAIN is not one.
   const now = Date.now();
-  target.history = [...target.history, { text, ts: now }].slice(-MAX_HISTORY);
+  target.history = [...target.history, { text, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(target);
   logPrompt(target, text, "auto", now, undefined, acceptance);
   await mark(true);
@@ -32799,7 +32885,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       gateHoldPid = null;
       gateHeld = false;
     }
-    const laneTask = tasks.find((t) => t.slot === s.id)?.text ?? null;
+    const laneTask = foundingRowOf(s)?.text ?? null;
     // ② FORK IN THE ROAD, and the only one this job has: who resolves. The author gets first
     // refusal (wakeAuthor); the throwaway resolver below is the fallback. Strictly AFTER the script
     // pre-pass, which is unchanged and still the first step — the author is asked only about a
@@ -34684,7 +34770,7 @@ async function deliverOrchestratorSpawnCard(s: Slot): Promise<Record<string, unk
     return { delivered: false, reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
   }
   const at = Date.now();
-  s.history = [...s.history, { text: brief, ts: at }].slice(-MAX_HISTORY);
+  s.history = [...s.history, { text: brief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(s);
   logPrompt(s, brief, "auto", at);
   if (ctx.ok) await appendOrchestratorReceipt(s, ctx.value, brief, at);
@@ -34744,7 +34830,7 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
     snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
     briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
   });
-  s.history = [...s.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
+  s.history = [...s.history, { text: deliveredBrief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(s);
   logPrompt(s, deliveredBrief, "auto", at);
   await saveStateNow();
@@ -34836,7 +34922,7 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
         snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
-      s.history = [...s.history, { text: deliveredBrief, ts: sentAt }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: deliveredBrief, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, deliveredBrief, "auto", sentAt);
       // the pane's session id may have been learned during boot; the binding names the conversation
@@ -34959,7 +35045,7 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
         snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
-      free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
+      free.history = [...free.history, { text: deliveredBrief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
       await saveStateNow();
@@ -35051,7 +35137,7 @@ async function bindSupervisor(body: Record<string, unknown> | null): Promise<Res
     if (replaced)
       audit("supervisor_rebound", target.id,
         `replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
-    target.history = [...target.history, { text: delivered, ts: at }].slice(-MAX_HISTORY);
+    target.history = [...target.history, { text: delivered, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(target);
     logPrompt(target, delivered, "auto", at);
     await saveStateNow();
@@ -35542,7 +35628,7 @@ async function supervisorNudge(s: Slot, body: Record<string, unknown> | null): P
       receipt: { sendId: nudgeId, at, delivery: "uncertain", receiver } }, 409);
   }
   const ts = Date.now();
-  live.history = [...live.history, { text: delivered, ts }].slice(-MAX_HISTORY);
+  live.history = [...live.history, { text: delivered, ts, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(live);
   logPrompt(live, delivered, "supervisor", ts, nudgeId, acceptance === "unobservable" ? "unobserved" : "sent");
   audit("supervisor_nudge", receiver.slot, `${nudgeId} program:${program.id}`); // never the text
@@ -35841,7 +35927,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         receipt = false;
         audit("main_succession", s.id, `program ${program.id} receipt persistence failed: ${e instanceof Error ? e.message : e}`);
       }
-      s.history = [...s.history, { text: deliveredBrief, ts: sentAt }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: deliveredBrief, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, deliveredBrief, "auto", sentAt);
       // the pane's session id may have been learned during boot; the binding names the conversation
@@ -36062,7 +36148,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         audit("program_main_rebound", free.id, `${program.id} replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
       if (!sameSuccessionOccupant(free, candidateIdentity))
         return json({ error: "Program-MAIN slot changed after binding persistence" }, 409);
-      free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
+      free.history = [...free.history, { text: deliveredBrief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
       return json({ ok: true, slot: free.id, program: publicProgram(program), ...(replaced ? { replaced } : {}) });
@@ -36735,6 +36821,7 @@ if (existsSync(STATE_FILE)) {
     const persisted = (await Bun.file(STATE_FILE).json()) as {
       token?: unknown; slots?: Record<string, { cwd?: unknown; label?: unknown }>; recents?: unknown; shares?: unknown;
     };
+    const stateOwner = foreignStateOwner((persisted as { sock?: unknown }).sock, SOCK);
     if (typeof persisted.token === "string") persistedToken = persisted.token;
     if (typeof (persisted as { stewardToken?: unknown }).stewardToken === "string")
       stewardToken = (persisted as { stewardToken: string }).stewardToken;
@@ -36924,7 +37011,7 @@ if (existsSync(STATE_FILE)) {
       pins = ((persisted as { pins: unknown[] }).pins).filter((r): r is string => typeof r === "string").slice(0, MAX_PINS);
     // N3: how many task verdicts a hand-edited file carried past the cap. Counted, then said.
     let overCappedVerdicts = 0;
-    if (Array.isArray((persisted as { tasks?: unknown }).tasks))
+    if (stateOwner === null && Array.isArray((persisted as { tasks?: unknown }).tasks))
       tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
         typeof x === "object" && x !== null
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
@@ -37392,7 +37479,6 @@ if (existsSync(STATE_FILE)) {
     // suite booting from copied state must keep running), and the log names both sockets. Absent
     // field = ours; that backwards-compatibility line and why it is the dangerous one:
     // server/persist.ts#foreignStateOwner.
-    const stateOwner = foreignStateOwner((persisted as { sock?: unknown }).sock, SOCK);
     if (stateOwner !== null)
       console.log(`[fleet] state file belongs to tmux socket ${stateOwner}, this server runs on '${SOCK}' — `
         + `its ${Object.keys(persisted.slots ?? {}).length} slot row(s) describe that fleet's panes and are NOT `
@@ -37738,7 +37824,7 @@ if (existsSync(STATE_FILE)) {
     // ...and so does the land that was still IN FLIGHT. Restored here, resolved against git a few
     // lines below (finishLandsInFlight) — the restore only reads the file.
     const plp = (persisted as { landPending?: unknown }).landPending;
-    if (typeof plp === "object" && plp !== null && !Array.isArray(plp))
+    if (stateOwner === null && typeof plp === "object" && plp !== null && !Array.isArray(plp))
       for (const [k, v] of Object.entries(plp as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "object" && v !== null
           && typeof (v as LandPending).main === "string" && typeof (v as LandPending).branch === "string"
@@ -38457,7 +38543,7 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
     return json({ error: e instanceof Error ? e.message : "send failed" }, 502);
   }
   const ts = Date.now();
-  s.history = [...s.history, { text: rendered.text, ts }].slice(-MAX_HISTORY);
+  s.history = [...s.history, { text: rendered.text, ts, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(s);
   logPrompt(s, rendered.text, "steward", ts);
   audit("steward_send", s.id, `${kind}:${ref}`);
@@ -42730,7 +42816,7 @@ Bun.serve<WSData>({
     if (req.method === "GET" && histMatch) {
       const s = slotFrom(histMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
-      return json({ history: s.history });
+      return json({ history: s.history.map((h) => ({ ...h, source: historySource(h) })) });
     }
     // the global prompt directory: every composed send ever, across slots and slot
     // lifetimes, straight from the append-only prompts.jsonl. Sorted by ts (newest
@@ -44499,7 +44585,7 @@ Bun.serve<WSData>({
       const ownerText = body.text.slice(0, MAX_TASK_TEXT).trim();
       // the author's card (authorCardFrom): validated against the repo the row will dispatch into
       const authorCard = body.card === undefined ? null
-        : await authorCardFrom(body.card, ownerText, taskRepo ?? (DISPATCH_REPO || null), taskProgramId);
+        : await authorCardFrom(body.card, ownerText, taskRepo ?? (DISPATCH_REPO || null), taskProgramId, taskBase.base);
       if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
       const id = randomBytes(4).toString("hex");
       const t: Task = {
@@ -45779,7 +45865,7 @@ Bun.serve<WSData>({
           receipt: { sendId, at, delivery: "uncertain", ...(acceptance ? { acceptance } : {}), receiver } }, 409);
       }
       const ts = Date.now();
-      s.history = [...s.history, { text: body.text, ts }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: body.text, ts, source: body.text.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, body.text, "owner", ts, sendId, acceptance === "unobservable" ? "unobserved" : "sent");
       // RECEIPT ANATOMY (ACP-25): `submitted` is gone because it only ever echoed the request flag.

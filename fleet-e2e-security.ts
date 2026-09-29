@@ -293,12 +293,10 @@ if (INTAKE && DISPATCH_REPO) {
 // ---------------------------------------------------------------------------
 {
   const sinks = /\.innerHTML|\.outerHTML|insertAdjacentHTML|document\.write|\bsrcdoc\b|\beval\(|new Function\(/;
-  // ONE reviewed exception, pinned by its exact text: the directory picker's icons are a const
-  // table of static SVG literals, looked up by an internal `kind`, with a static fallback — no
-  // data crosses into markup. It is allowlisted rather than rewritten because rewriting working
-  // icon markup cannot be verified from here; the two checks below are what keep it honest —
-  // change the assignment in any way, or make the table dynamic, and this fails.
-  const ALLOWED = "s.innerHTML = PK_ICONS[kind] ?? PK_ICONS.folder;";
+  // No exception is left. The one reviewed exception — the directory picker's static SVG icon
+  // table (`s.innerHTML = PK_ICONS[kind] ?? PK_ICONS.folder;`) — went with the picker itself on
+  // 2026-09-29 (the founding window chooses a folder inside itself); the last check of this block
+  // keeps it from coming back as an allowlisted line.
   const offenders: string[] = [];
   // A line that IS a comment is prose and cannot execute; a line that merely ENDS in one is code,
   // and cutting at its first `//` is a lexical guess that knows nothing of strings or regex
@@ -309,10 +307,10 @@ if (INTAKE && DISPATCH_REPO) {
   for (const f of readdirSync(`${ROOT}/src`).filter((f) => f.endsWith(".ts"))) {
     for (const [i, line] of readFileSync(`${ROOT}/src/${f}`, "utf8").split("\n").entries()) {
       if (/^\s*\/\//.test(line)) continue;
-      if (sinks.test(line) && line.trim() !== ALLOWED) offenders.push(`src/${f}:${i + 1}`);
+      if (sinks.test(line)) offenders.push(`src/${f}:${i + 1}`);
     }
   }
-  check("§7 no HTML/eval sink in the client sources beyond the one reviewed static-icon exception",
+  check("§7 no HTML/eval sink in the client sources — no exception",
     offenders.length === 0, offenders.join(" "));
   // …and the premise that "all client code lives in src/" has to hold, or the check above scans
   // the wrong files: the served pages may only REFERENCE a bundle, never carry inline script.
@@ -325,9 +323,8 @@ if (INTAKE && DISPATCH_REPO) {
   check("§7 the served pages carry no inline script — every line of client code is in src/",
     inline.length === 0, inline.join(" | "));
   const client = readFileSync(`${ROOT}/src/client.ts`, "utf8");
-  const table = /const PK_ICONS[\s\S]*?\n};/.exec(client)?.[0] ?? "";
-  check("§7 the allowlisted icon table is static — no interpolation, no handler, no script",
-    !!table && !table.includes("${") && !/javascript:|\son\w+=|<script/i.test(table), table.slice(0, 80));
+  check("§7 the retired static-icon exception stays retired — no PK_ICONS table in src/client.ts",
+    !/PK_ICONS/.test(client), (/.*PK_ICONS.*/.exec(client)?.[0] ?? "").slice(0, 80));
   // The renderer's own line, over its CODE and not its prose: the file is expected to NAME the
   // sinks it refuses in its header comment, and a check that read a comment as a violation would
   // pay for that documentation by deleting it. The filter drops WHOLE-LINE comments only — it

@@ -1880,7 +1880,6 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     "slotact titles in src/client.ts");
   check("G0.5 tray and founding window: German tooltips, Fleet-English labels untouched",
     cliSrc.includes("Dateien an diese Session anhängen.") && !cliSrc.includes("attach files to this session")
-    && cliSrc.includes("Klick blendet die Worktree-Lanes aus") && !cliSrc.includes("worktree lanes hidden")
     && indexSrc.includes("Live-Mitschreiben") && indexSrc.includes("Prompt-Verlauf")
     && indexSrc.includes("Geplante Prompts für diese Session"),
     "tray titles in client.ts + public/index.html");
@@ -1892,14 +1891,15 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // B2b checks held before (packs only as an explicit choice, latest-wins plan, SKEW_NOTE on a
   // 404, attach without packs, packsDelivered:false never closed over). Source is the evidence —
   // this suite has no DOM; the rendered window was checked by screenshot and video (the commit).
-  let foundSrc = "", clientOnly = "", planSrc = "", foundSrcError = "";
+  let foundSrc = "", clientOnly = "", planSrc = "", prefsOnly = "", foundSrcError = "";
   try {
     foundSrc = readFileSync(`${sourceRoot}/src/founding.ts`, "utf8");
     clientOnly = readFileSync(`${sourceRoot}/src/client.ts`, "utf8");
     planSrc = readFileSync(`${sourceRoot}/context-plan.ts`, "utf8");
+    prefsOnly = readFileSync(`${sourceRoot}/src/prefs.ts`, "utf8");
   } catch (e) { foundSrcError = e instanceof Error ? e.message : String(e); }
-  check("founding window — PROBE: src/founding.ts, src/client.ts and context-plan.ts are readable",
-    !!foundSrc && !!clientOnly && !!planSrc, foundSrcError);
+  check("founding window — PROBE: src/founding.ts, src/client.ts, src/prefs.ts and context-plan.ts are readable",
+    !!foundSrc && !!clientOnly && !!planSrc && !!prefsOnly, foundSrcError);
   // whole-line comments stripped first: a claim about CODE must not be satisfied by prose
   const foundCode = foundSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
   check("founding window: the free slot opens src/founding.ts — client.ts keeps only the import and the call",
@@ -1914,7 +1914,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     "client.ts import + emptyRow, founding.ts exports");
   const foundCss = (() => {
     const at = indexSrc.indexOf("THE FOUNDING WINDOW (src/founding.ts");
-    const end = indexSrc.indexOf("/* the folder's own children", at);
+    const end = indexSrc.indexOf("/* end of THE FOUNDING WINDOW */", at);
     return at < 0 || end < 0 ? "" : indexSrc.slice(at, end).replace(/\/\*[\s\S]*?\*\//g, "");
   })();
   check("founding window: ONE shell window of one size over a dimmed backdrop — no per-state size, no anchored float",
@@ -1938,6 +1938,20 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && foundCode.includes("&find=${encodeURIComponent(q)}") && foundCode.includes("matchTree(")
     && !foundCode.includes("openTreePicker"),
     "renderList/loadDir/scheduleFind in src/founding.ts");
+  check("founding window: the five role tabs wrap instead of scrolling — at 390 px no tab is cut at the edge",
+    /\.fdtabs \{[^}]*flex-wrap: wrap;/.test(foundCss) && !/\.fdtabs \{[^}]*overflow/.test(foundCss)
+    && /\.fdtab \{[^}]*white-space: nowrap;/.test(foundCss),
+    /\.fdtabs \{[^}]*\}/.exec(foundCss)?.[0] ?? "no .fdtabs rule in the #shell-found block");
+  // THE OLD DIRECTORY WINDOW IS GONE (MAIN, 2026-09-29): its one entry was the founding window's
+  // "Anderer Ordner …", which now chooses inside itself, so openTreePicker left with its state, its
+  // icon table, its CSS family and its three device switches. should-reject: any of them back.
+  const treeLeft = [
+    ...(/openTreePicker|pickerSlot|PK_ICONS|function spawnBody\(|function browse\(|function paintPicker\(/.exec(clientOnly) ?? []),
+    ...(/\.pk(row|crumb|toggle|pathin|line2|guide|dent|dtree|pin|use|icon)\b/.exec(indexSrc) ?? []).slice(0, 1),
+    ...(/"fleet\.(hidewt|pkdot|pkdir)"/.exec(prefsOnly + clientOnly) ?? []).slice(0, 1),
+  ];
+  check("the directory tree window is deleted with what only it used — function, state, icon table, CSS rules, device switches",
+    treeLeft.length === 0, treeLeft.join(" ") || "none left");
   check("founding window: sessions carry their bar names (2A/2B), and no value is shown as the word default",
     foundCode.includes("laneBandNames(stacksOf())") && foundCode.includes("barName(names, x)")
     && !/["'`]default["'`]/.test(foundCode) && !foundCode.includes('"–"') && !foundCode.includes("Profil auf Standard"),
@@ -1950,12 +1964,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && foundCode.includes("row.title = `intern: ${o.reason}`;"),
     `reasons=${reasons.join(",")} missing=${reasons.filter((r) => !omitSay.includes(`"${r}":`)).join(",")}`);
   const bodySrc = foundCode.slice(foundCode.indexOf("function foundingBody()"), foundCode.indexOf("function blocker()"));
-  const spawnSrc = clientOnly.slice(clientOnly.indexOf("function spawnBody()"), clientOnly.indexOf("function renderDirDetail("));
-  const spawnCode = spawnSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
-  check("founding window — should-reject: with no switch on the body carries no packs — one packs key, only in the conditional, and the tree's spawnBody has none",
+  check("founding window — should-reject: with no switch on the body carries no packs — one packs key, only in the conditional, and client.ts builds no second spawn body",
     (bodySrc.match(/packs:/g) ?? []).length === 1 && bodySrc.includes("...(s.packs.size ? { packs: [...s.packs] } : {}),")
-    && !/packs:/.test(spawnCode) && spawnCode.length > 0,
-    "foundingBody in src/founding.ts + spawnBody in src/client.ts");
+    && !/function spawnBody\(/.test(clientOnly),
+    "foundingBody in src/founding.ts; no spawnBody in src/client.ts");
   check("founding window: the plan is read for (place, harness, mode), latest-wins, and re-read when any of the three moves",
     foundCode.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`")
     && foundCode.includes("if (S !== s || seq !== s.planSeq || s.place !== path) return; // latest-wins")
@@ -1978,13 +1990,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && foundCode.includes('post("/api/lanes", { repo: s.place, attach: s.orphan, slot: s.slot, ...attach })'),
     "renderDetail + start in src/founding.ts");
   const ssSrc = clientOnly.slice(clientOnly.indexOf("export async function startSession("), clientOnly.indexOf("export async function startWorktree("));
-  const swSrc = clientOnly.slice(clientOnly.indexOf("export async function startWorktree("), clientOnly.indexOf("// the directory tree window."));
+  const swSrc = clientOnly.slice(clientOnly.indexOf("export async function startWorktree("), clientOnly.indexOf("// --- sidebar ---"));
   check("founding window: a founding with packs waits visibly, and packsDelivered:false is said next to the button, never closed over as success",
     foundCode.includes('"Packs werden zugestellt …"') && foundCode.includes("go.disabled = s.busy || blocker() !== null;")
     && ssSrc.includes("if (j.packsDelivered === false)") && swSrc.includes("if (j.packsDelivered === false)")
     && ssSrc.indexOf("packsDelivered === false") < ssSrc.indexOf("closeFounding();")
     && swSrc.indexOf("packsDelivered === false") < swSrc.indexOf("closeFounding();")
-    && ssSrc.includes("...(via?.body ?? spawnBody())") && swSrc.includes("const body = via?.body ?? spawnBody();"),
+    && ssSrc.includes("...via.body });") && swSrc.includes("const { slot, body } = via;"),
     "start in src/founding.ts + startSession/startWorktree in src/client.ts");
   check("founding window: the keyboard — Enter on the chosen place starts, every control keeps its own Enter, a popover owns Esc before the window",
     foundCode.includes("const open = () => { void start(); };") && foundCode.includes('b.dataset.ownEnter = "1";')

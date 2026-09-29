@@ -22,7 +22,7 @@
 // No server route or field is new: /api/dirs, /api/dirinfo, /api/founding-plan, the two /open doors
 // and /api/lanes attach are what the founding used before, with the same bodies.
 import {
-  agentHarnesses, api, baseName, closePicker, containerDefaults, defaultModel, el, fleet, fmtTs, harnesses,
+  agentHarnesses, api, baseName, containerDefaults, defaultModel, el, fleet, fmtTs, harnesses,
   isMobile, laneBandNames, loadHarnesses, modelNotice, post, revealStartedSlot, setDrawer, SKEW_NOTE,
   stacksOf, startSession, startWorktree, type DirInfoResp, type HarnessInfo, type SlotInfo, type SpawnBody,
 } from "./client";
@@ -163,7 +163,6 @@ function blocker(): string | null {
 export function openPicker(slotId: number) {
   setDrawer(false);
   closeFounding();
-  closePicker();
   const restore = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const shell = openShell({
     id: "found",

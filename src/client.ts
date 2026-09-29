@@ -427,7 +427,7 @@ export interface TaskRefineFull { at: number; model: string;
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string; waveBudget?: number;
   lanes?: number; quiet?: boolean }
 export let fleet: SlotInfo[] = [];
-// the harness catalogue, fetched ONCE (it is a server constant) the first time the picker opens.
+// the harness catalogue, fetched ONCE (it is a server constant) the first time the founding window opens.
 // Empty until then, and every reader treats empty as "only the default exists" — so a failed or
 // pending fetch degrades to exactly the pre-harness UI rather than to a broken one.
 export let harnesses: HarnessInfo[] = [];
@@ -2314,11 +2314,6 @@ const PREF_APPLY: Record<string, () => void> = {
   "fleet.meter.open": () => { setMeterOpen(prefBool("fleet.meter.open")); renderSuiteMeter(); },
   "fleet.more": () => { moreOpen = prefBool("fleet.more"); applyMore(); },
   "fleet.histall": () => { histAll = prefBool("fleet.histall"); if (hist.style.display === "flex") void renderHist(); },
-  "fleet.hidewt": () => { hideWorktrees = prefBool("fleet.hidewt"); if (pkHideBtn) renderHideWtBtn(); },
-  "fleet.pkdot": () => {
-    showHidden = prefBool("fleet.pkdot");
-    if (pkDotBtn) { renderDotBtn(); if (pkShell?.isOpen()) void reloadTree(); }
-  },
   "fleet.bandDepth": () => renderSlots(),
   "fleet.queue.scope": () => { setQueueTreeOn(prefText("fleet.queue.scope") !== "line"); if (qShell?.isOpen()) { invalidateQueueList(); renderQueue(); } },
   "fleet.board.folds": () => { boardFolds.clear(); void renderBoard(); },
@@ -2329,7 +2324,6 @@ const PREF_APPLY: Record<string, () => void> = {
 
 // what a value row shows right now (mono, G5.3)
 const SET_VALUE: Record<string, () => string> = {
-  "fleet.pkdir": () => prefText("fleet.pkdir"),
   "fleet.board.folds": () => `${boardFolds.size} zugeklappt`,
   "fleet.stacks.closed": () => `${stackClosed.size} zugeklappt`,
   "fleet.view": () => `${layout} ${layout === 1 ? "Pane" : "Panes"}`,
@@ -2784,7 +2778,7 @@ function fleetSection(sec: HTMLElement): () => number {
 //   · it is fetched ONCE per working directory, never from the repaint loop. /api/sessions at 2s
 //     is what data-saver.md had to shrink; a subprocess per board render would put it back.
 //   · what the reader has OPENED is module state, not DOM state, so a repaint cannot fold the
-//     tree shut under their hands. Same reason the board's folds and the picker's `pkdOpen` are.
+//     tree shut under their hands. Same reason the board's folds are.
 //
 // Everything the reader has DONE to this card is keyed BY CWD, and that is the third rule. The
 // open-folder set used to be one global Set of `"a/b"` prefixes: two repos that both have a `src/`
@@ -3883,572 +3877,6 @@ function saveView() {
     chats: panes.map((p) => p.savedChat), hovers: panes.map((p) => p.savedHover) }));
 }
 
-// --- directory picker ---
-// Re-hosted in the src/shell.ts window; it was a 520px .panel with a list and three buttons. Same
-// rows, same pins, same type-a-few-letters-then-Enter path — plus the detail pane that answers the
-// question the old picker structurally could not: what IS this folder. A RE-HOST rather than a
-// rewrite on purpose. PK_ICONS below is pinned by fleet-e2e-security.ts §7, and the row anatomy
-// (pin star, ⎇ badge, start ▸) was already the part that worked.
-//
-// One interaction DID change, and it is the platform-standard direction: a single click selects
-// (and the detail follows) instead of navigating. Navigating in is now double-click or Enter, as it
-// is in Finder, Explorer and VS Code. Single-click-to-navigate made a detail pane unreachable —
-// you could never rest on a folder long enough to read about it. It also drops a 250ms timer that
-// only existed to tell a first click from a double.
-let pickerSlot = 0;
-let pkShell: Shell | null = null;
-let pkPins = new Set<string>(); // pinned paths, refreshed from /api/dirs on every browse()
-// worktree lanes clutter the picker (recents are mostly `*.worktrees/fleet-*`); hide them by
-// default. View-only pref, per device — kept in localStorage like the board/histall toggles.
-let hideWorktrees = prefBool("fleet.hidewt");
-// dotfolders were filtered out of every listing, so .claude and .github simply did not exist in the
-// picker — you could not start a session in one without typing its path. Off by default (a home
-// directory has more dot-entries than real ones), per device, like the lane toggle above.
-let showHidden = prefBool("fleet.pkdot");
-// a path is a lane if it lives under (or is) a `.worktrees` dir — reliable, no false positives
-function isWtPath(p: string): boolean { return /\.worktrees(\/|$)/.test(p); }
-
-// `way` = a row that is only on the PATH to a search hit, not a hit itself. It is drawn (a match
-// with no parents above it is unplaceable) but it is not counted as a match.
-interface PkRow { row: HTMLElement; path: string; name: string; head: HTMLElement | null; wt: boolean; way: boolean }
-let pkRows: PkRow[] = [];
-// the window's own controls, rebuilt on every open (the window itself is created per open)
-let pkFilter: HTMLInputElement;
-let pkPathIn: HTMLInputElement;
-let pkCrumb: HTMLElement;
-let pkHideBtn: HTMLButtonElement;
-let pkDotBtn: HTMLButtonElement;
-
-export function closePicker() { pkShell?.close(); }
-
-// a row is out when the worktree toggle hides it (pkwt) OR the text filter excludes it (pkhide)
-function pkVisible(): PkRow[] {
-  return pkRows.filter((r) => !r.row.classList.contains("pkhide") && !r.row.classList.contains("pkwt"));
-}
-
-// the shell walks the rows it was handed, so it must be handed only the ones actually on screen —
-// otherwise ↑/↓ stops on a row hidden by the filter or the lane toggle
-function pkSyncRows(select: number) {
-  const shell = pkShell;
-  if (!shell) return;
-  const vis = pkVisible();
-  shell.setRows(vis.map((r) => ({ el: r.row, open: () => void browse(r.path) })));
-  if (select >= 0 && vis.length) shell.select(Math.min(select, vis.length - 1));
-  else shell.select(-1, false, false);
-}
-
-// mark/unmark worktree rows, refresh section counts to match, then re-run the text filter
-function applyWtHide() {
-  for (const r of pkRows) r.row.classList.toggle("pkwt", hideWorktrees && r.wt);
-  // section count badges show how many rows survive the toggle (so RECENT 4→2 signals what it did).
-  // the "Up to …" parent row is navigation, not a folder in this dir — exclude it from the count.
-  // So is a `way` row: counting the folders a search walked THROUGH as matches would inflate the
-  // one number on screen that says how much the query found.
-  const counts = new Map<HTMLElement, number>();
-  const dropped = new Map<HTMLElement, number>();
-  for (const r of pkRows) {
-    if (!r.head || r.row.classList.contains("up") || r.way) continue;
-    const off = r.row.classList.contains("pkwt");
-    counts.set(r.head, (counts.get(r.head) ?? 0) + (off ? 0 : 1));
-    if (off) dropped.set(r.head, (dropped.get(r.head) ?? 0) + 1);
-  }
-  // A COUNT THAT SHRANK IS NOT A COUNT THAT EXPLAINS ITSELF. The badge was never wrong — it always
-  // showed the surviving rows — but it did not say that any were left out. Measured 2026-08-04 on
-  // the live board: Recent held 8 entries and read "3", the five missing ones being every lane the
-  // owner had worked in that day, hidden by a toggle localStorage had never been asked about
-  // (`fleet.hidewt` unset reads as ON). The folder detail pane already says „[Zitat entfernt]“ for its
-  // dot-entries, so this is the app's own vocabulary, not a new one.
-  for (const [head, n] of counts) {
-    const b = head.querySelector<HTMLElement>(".shellsecn");
-    if (!b) continue;
-    const h = dropped.get(head) ?? 0;
-    b.textContent = h ? `${n} · ${h} hidden` : String(n);
-    b.classList.toggle("reveal", h > 0);
-    b.title = h ? `${h} worktree lane${h === 1 ? "" : "s"} hidden by the ⎇ toggle — click to show them` : "";
-    // routed through the toggle's own button rather than re-implementing it: one place decides what
-    // hiding means, persists it, and repaints, so this can never drift from the ⎇ control
-    b.onclick = h ? (ev: MouseEvent): void => { ev.stopPropagation(); pkHideBtn.click(); } : null;
-  }
-  applyPkFilter();
-}
-
-function applyPkFilter() {
-  const q = pkFilter.value.trim().toLowerCase();
-  const headHits = new Map<HTMLElement, number>();
-  for (const r of pkRows) {
-    // in search mode the tree rows ARE the result: the server chose them, and the folders on the
-    // way to a hit do not carry the query in their own name. Re-testing them here would hide the
-    // deep matches the search just went and found — the substring test only owns the shortcuts.
-    const hit = q === "" || r.name.includes(q) || (pkFind !== null && r.row.classList.contains("tree"));
-    r.row.classList.toggle("pkhide", !hit);
-    // a row counts toward its section head only if it survives BOTH the query and the wt toggle
-    const shown = hit && !r.row.classList.contains("pkwt");
-    if (r.head) headHits.set(r.head, (headHits.get(r.head) ?? 0) + (shown ? 1 : 0));
-  }
-  for (const [head, n] of headHits) head.classList.toggle("pkhide", n === 0);
-  pkSyncRows(q ? 0 : -1); // filtering pre-selects the best match so Enter just works
-}
-
-function renderHideWtBtn() {
-  pkHideBtn.textContent = "⎇ hide lanes";
-  pkHideBtn.classList.toggle("on", hideWorktrees);
-  pkHideBtn.title = hideWorktrees ? "Worktree-Lanes sind ausgeblendet — Klick zeigt sie wieder" : "Klick blendet die Worktree-Lanes aus";
-}
-
-function renderDotBtn() {
-  pkDotBtn.textContent = "· hidden";
-  pkDotBtn.classList.toggle("on", showHidden);
-  pkDotBtn.title = showHidden
-    ? "Punkt-Ordner (.claude, .github) sind gelistet — Klick blendet sie wieder aus"
-    : "Klick listet auch Punkt-Ordner (.claude, .github) — sie sind standardmäßig ausgeblendet";
-}
-
-// crisp monochrome glyphs (stroke = currentColor, tinted per row-kind in CSS). Static markup,
-// no interpolated data — safe to set via innerHTML.
-const PK_ICONS: Record<string, string> = {
-  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
-  folderOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 19V7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v1.5"/><path d="M5.6 19h13a1.6 1.6 0 0 0 1.55-1.2l1.35-5.2A1 1 0 0 0 20.5 11.3H8.4a1.6 1.6 0 0 0-1.55 1.2l-1.35 5.2A1.6 1.6 0 0 1 3.5 19"/></svg>',
-  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M13.5 3v5.5H19"/></svg>',
-  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v4.7l3 1.8"/></svg>',
-  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg>',
-  star: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 3l2.6 5.8 6.4.6-4.8 4.2 1.4 6.2L12 17l-5.6 2.8 1.4-6.2L3 9.4l6.4-.6z"/></svg>',
-};
-function pkIcon(kind: string): HTMLElement {
-  const s = el("span", "pkicon");
-  s.innerHTML = PK_ICONS[kind] ?? PK_ICONS.folder;
-  return s;
-}
-
-interface DirRowOpts { label: string; sub?: string; path: string; cls: string; icon: string;
-  repo?: boolean; wt?: boolean; depth?: number; tree?: boolean;
-  // one flag per ANCESTOR level: true where that ancestor was the last of its siblings, so the
-  // spine at that level must stop rather than run past a branch that has nothing below it
-  blanks?: boolean[]; last?: boolean;
-  // search only: "hit" = this row's name matched, "way" = it is a folder on the path to one
-  find?: "hit" | "way" }
-function dirRow(o: DirRowOpts): HTMLElement {
-  const open = !!o.tree && pkIsOpen(o.path);
-  // `open` rides on the ROW, not just the ▸: it is what grows the line the children hang from,
-  // tints the icon, and turns the glyph. One state, one class, three things saying the same.
-  const row = el("div", `pkrow ${o.cls}${o.tree ? " tree" : ""}${open ? " open" : ""}`
-    + (o.find ? ` pk${o.find}` : ""));
-  row.title = o.path;
-  if (o.tree) {
-    // one guide span per ancestor level, each a vertical rule stretched over the FULL row box — that
-    // is what makes the lines continuous from row to row instead of a ladder of dashes. They live
-    // in their own container so .pkrow's 10px gap does not space them apart. The guide at the row's
-    // OWN level turns horizontally into the name (├), or corners into it if this is the last child
-    // (└) — that turn is what makes a column of names read as a branch of a tree.
-    const lead = el("span", "pklead");
-    const depth = o.depth ?? 0;
-    // depth + 1 columns, not depth: the row's OWN level gets an elbow too, so a top-level folder
-    // hangs off the same spine as everything below it and the whole section reads as ONE tree.
-    // Drawing them only for nested rows left the top level flat, and the first expansion then
-    // sprouted a line out of nowhere — the shape `tree(1)` gets right by connecting every entry.
-    for (let i = 0; i <= depth; i++) {
-      const g = el("span", "pkguide");
-      if (i === depth) g.classList.add(o.last ? "end" : "branch");
-      else if (o.blanks?.[i]) g.classList.add("blank");
-      lead.appendChild(g);
-    }
-    const tw = el("span", `pktw${open ? " open" : ""}`, open ? "▾" : "▸");
-    tw.title = open ? "collapse (←)" : "expand (→)";
-    tw.onclick = (e) => { e.stopPropagation(); void toggleNode(o.path); };
-    lead.appendChild(tw);
-    row.appendChild(lead);
-  }
-  // A folder icon on tree rows after all. It was dropped when every tree row was the same closed
-  // folder and the glyph therefore distinguished nothing — but an icon that OPENS is not the same
-  // glyph twice: it carries the one thing the name cannot say, and it says it in the place the eye
-  // already is. The shortcut sections keep their own kinds (star, clock, folder, up-arrow).
-  row.appendChild(pkIcon(o.tree ? (open ? "folderOpen" : "folder") : o.icon));
-  const name = el("span", "pkname");
-  name.appendChild(el("span", "pkleaf", o.label));
-  if (o.sub) name.appendChild(el("span", "cpksub", o.sub));
-  row.appendChild(name);
-  if (o.repo) {
-    const g = el("span", "pkgit", "⎇");
-    g.title = "git repo — ⌘Enter or “new lane” starts a worktree here";
-    row.appendChild(g);
-  }
-  // pin star: filled+amber when pinned (always shown), a ghost outline on hover otherwise.
-  // stopPropagation keeps the click off the row's browse/start timer.
-  const pinned = pkPins.has(o.path);
-  const star = el("span", `pkpin${pinned ? " on" : ""}`, pinned ? "★" : "☆");
-  star.title = pinned ? "unpin (⌘D)" : "pin this folder (⌘D)";
-  star.onclick = (e) => { e.stopPropagation(); void togglePin(o.path); };
-  row.appendChild(star);
-  // click 1 selects AND opens the folder (the detail pane follows), click 2 STARTS A SESSION here.
-  // No timer: both are idempotent-or-invisible, so the first click of a double-click costs nothing
-  // to let through — which is exactly what forced the old 250ms reconciliation. (A double-click
-  // that lands on a closed folder expands it on the way past; the window closes on the session it
-  // starts, so that is never seen.)
-  // Clicking the ROW to open it, not just the ▸, is what Finder, Explorer and VS Code all do, and
-  // the ▸ was an 18px target for the most common action in the window. Re-rooting — making a folder
-  // the top of the tree — stays on the breadcrumb, the "Up to …" row, the path box and Enter. The
-  // one row kind that navigates on double-click is "Up to …": it names a destination, not a place
-  // to work.
-  row.onclick = (e) => {
-    if (e.detail >= 2) { void (o.cls === "up" ? browse(o.path) : startSession(o.path)); return; }
-    // "Up to …" is pure navigation, and a phone has no comfortable double-click: one tap goes up.
-    // On a pointer device the double-click still does it and a single click inspects, unchanged.
-    if (o.cls === "up" && isMobile()) { void browse(o.path); return; }
-    const i = pkVisible().findIndex((r) => r.row === row);
-    if (i >= 0) pkShell?.select(i, false, false);
-    void showDirDetail(o.path);
-    // A click on a folder OPENS AND CLOSES it — the whole gesture, the way an explorer works. It
-    // used to open only, on the theory that collapsing would make the row under the cursor jump
-    // away; that theory was wrong, because collapsing removes the rows BELOW this one and leaves
-    // this one exactly where it is.
-    // Touch is the exception: there the same tap also pushes the detail pane OVER the list, so a
-    // collapse would happen behind it and be discovered on the way back — the folder you just
-    // opened, shut. On touch the tap only opens, and ▸ still closes.
-    if (o.tree && !(isMobile() && pkIsOpen(o.path))) void toggleNode(o.path);
-    // On a phone there is no second column, so the detail has to be PUSHED or it cannot be seen at
-    // all — which is exactly what it was: the picker never called this, so everything the pane
-    // knows (what is in the folder, its commits, "already open in slot N", ⎇ New lane) was
-    // desktop-only. The tree stays reachable: ▸ expands without leaving the list, and ‹ comes back.
-    if (isMobile()) pkShell?.showDetail(true);
-  };
-  const use = el("span", "pkuse", "start ▸");
-  use.onclick = (e) => {
-    e.stopPropagation();
-    void startSession(o.path);
-  };
-  row.appendChild(use);
-  return row;
-}
-
-// clickable path: each ancestor segment jumps straight there. /Users/<me> collapses to ~.
-function renderCrumb(path: string) {
-  pkCrumb.replaceChildren();
-  const home = /^(\/Users\/[^/]+)(\/.*)?$/.exec(path);
-  const segs: { label: string; full: string }[] = [];
-  let base: string;
-  let rest: string;
-  if (home) {
-    segs.push({ label: "~", full: home[1] });
-    base = home[1];
-    rest = home[2] ?? "";
-  } else {
-    segs.push({ label: "/", full: "/" });
-    base = "";
-    rest = path;
-  }
-  for (const part of rest.split("/").filter(Boolean)) {
-    base = `${base}/${part}`;
-    segs.push({ label: part, full: base });
-  }
-  segs.forEach((s, i) => {
-    if (i) pkCrumb.appendChild(el("span", "pksep", "›"));
-    const seg = el("span", "pkseg", s.label);
-    if (i === segs.length - 1) { seg.classList.add("here"); seg.title = s.full; }
-    else { seg.title = s.full; seg.onclick = () => void browse(s.full); }
-    pkCrumb.appendChild(seg);
-  });
-  pkCrumb.scrollLeft = pkCrumb.scrollWidth; // keep the current folder in view when deep
-  // fade the left edge when ancestors have scrolled out of view, so hidden segments are hinted
-  pkCrumb.classList.toggle("overflow", pkCrumb.scrollWidth > pkCrumb.clientWidth + 1);
-}
-
-async function browse(path: string): Promise<boolean> {
-  const res = await api(dirsUrl(path));
-  const data = (await res.json()) as
-    | { path: string; parent: string | null; dirs: string[]; repos?: string[]; worktrees?: string[];
-        recents: string[]; pins?: string[]; common: string[]; git?: boolean;
-        total?: number; capped?: boolean }
-    | { error: string };
-  const shell = pkShell;
-  if (!shell) return false;
-  if ("error" in data) {
-    pkPathIn.classList.add("bad");
-    setTimeout(() => pkPathIn.classList.remove("bad"), 1200);
-    return false;
-  }
-  pkPathIn.value = data.path;
-  pkPathIn.classList.remove("bad");
-  renderCrumb(data.path);
-  pkPins = new Set(data.pins ?? []);
-  prefSet("fleet.pkdir", data.path); // next openPicker starts where you left off
-  pkFilter.value = "";
-  // a new root is a new tree: nothing below it is expanded, and the cached children of the old
-  // root's descendants would only be stale weight. A search belongs to the root it ran under, so
-  // it goes with them.
-  clearFind();
-  pkRoot = data.path;
-  pkOpen.clear();
-  pkKids.clear();
-  pkCap.clear();
-  noteCap(data.path, data.total, data.capped);
-  pkKids.set(data.path, nodesOf(data.path, data.dirs, data.repos, data.worktrees));
-  pkShortcuts = { pins: data.pins ?? [], recents: data.recents, common: data.common, parent: data.parent };
-  paintPicker();
-  // the detail describes the folder you just navigated INTO until the cursor moves, so the pane is
-  // never empty and its actions always have an unambiguous target
-  void showDirDetail(data.path);
-  return true;
-}
-
-// --- the folder tree ---
-// The picker listed ONE directory at a time. Seeing whether a repo held the subfolder you wanted
-// meant navigating in, looking, and navigating back out — and the shortcut sections scrolled away
-// while you did it. Now the folders under the current root are a tree you expand in place, with a
-// guide line down each level so the nesting is readable at a glance rather than counted in spaces.
-interface PkNode { name: string; path: string; repo: boolean; wt: boolean; hit?: boolean }
-let pkRoot = "";
-const pkKids = new Map<string, PkNode[]>(); // path → its subfolders, fetched once per expansion
-const pkOpen = new Set<string>();           // which paths are expanded
-const pkBusy = new Set<string>();           // expansions in flight, so a double-click fetches once
-// path → how many subfolders it REALLY has, recorded only where the server's listing cap bit. The
-// tree used to serve 200 of them and say nothing, which reads exactly like a folder with 200 in it.
-const pkCap = new Map<string, number>();
-// A search is its own tree — the hits plus the folders on the way to them, nothing else. It is kept
-// SEPARATE from pkKids on purpose: merged in, a search's partial listing of a folder would be
-// cached as that folder's full contents and every later expansion of it would quietly be short.
-interface PkFind { q: string; kids: Map<string, PkNode[]>; open: Set<string>; partial: Set<string>;
-  hits: number; truncated: boolean }
-let pkFind: PkFind | null = null;
-let pkFindSeq = 0;                  // latest-wins: typing outruns the searches it starts
-let pkFindTimer: ReturnType<typeof setTimeout> | null = null;
-const PK_FIND_MIN = 2;              // one letter matches most of a disk — that is not a search
-let pkShortcuts: { pins: string[]; recents: string[]; common: string[]; parent: string | null } =
-  { pins: [], recents: [], common: [], parent: null };
-
-// which tree the picker is currently drawing: the browsed one, or a search's own
-function pkKidsOf(path: string): PkNode[] { return (pkFind ? pkFind.kids : pkKids).get(path) ?? []; }
-function pkIsOpen(path: string): boolean { return (pkFind ? pkFind.open : pkOpen).has(path); }
-
-// every listing request carries the dotfolder toggle: what the tree contains has to follow the
-// button that says what it contains
-function dirsUrl(path: string, extra = ""): string {
-  return `/api/dirs?path=${encodeURIComponent(path)}${showHidden ? "&hidden=1" : ""}${extra}`;
-}
-
-function nodesOf(base: string, dirs: string[], repos?: string[], worktrees?: string[]): PkNode[] {
-  const repoSet = new Set(repos ?? []);
-  const wtSet = new Set(worktrees ?? []);
-  return dirs.map((d) => ({
-    name: d, path: `${base}/${d}`.replace("//", "/"),
-    repo: repoSet.has(d), wt: wtSet.has(d) || d.endsWith(".worktrees"),
-  }));
-}
-
-// note what the server said it left out, so emit() can draw the line that says so
-function noteCap(path: string, total?: number, capped?: boolean) {
-  if (capped && typeof total === "number") pkCap.set(path, total);
-  else pkCap.delete(path);
-}
-
-async function fetchKids(path: string): Promise<PkNode[] | null> {
-  const res = await api(dirsUrl(path)).catch(() => null);
-  if (!res || !res.ok) return null;
-  const d = (await res.json().catch(() => null)) as
-    { path?: string; dirs?: string[]; repos?: string[]; worktrees?: string[];
-      total?: number; capped?: boolean } | null;
-  if (!d?.path || !d.dirs) return null;
-  noteCap(d.path, d.total, d.capped);
-  return nodesOf(d.path, d.dirs, d.repos, d.worktrees);
-}
-
-async function toggleNode(path: string) {
-  const open = pkFind ? pkFind.open : pkOpen;
-  const kids = pkFind ? pkFind.kids : pkKids;
-  if (open.has(path)) { open.delete(path); paintPicker(); return; }
-  // a search's synthesized listing holds only the children that lead to a match; re-opening such a
-  // folder fetches what is ACTUALLY in it, so expanding a result never shows a doctored directory
-  const partial = pkFind?.partial;
-  if (!kids.has(path) || partial?.has(path)) {
-    if (pkBusy.has(path)) return;
-    pkBusy.add(path);
-    const fresh = await fetchKids(path);
-    pkBusy.delete(path);
-    if (!pkShell?.isOpen()) return;
-    // an unreadable folder (permissions, or it vanished) caches as EMPTY rather than retrying on
-    // every click — the row then says so instead of silently doing nothing
-    kids.set(path, fresh ?? []);
-    partial?.delete(path);
-  }
-  open.add(path);
-  paintPicker();
-}
-
-// --- the search's own tree ---
-// The server answers with flat paths. Drawn flat they would be a list of names with no idea where
-// any of them is; drawn here they become the same tree as everything else, with the folders between
-// the root and each hit filled in as scaffolding (`hit: false`) so a match is never rootless.
-function buildFindTree(root: string, hits: { path: string; name: string; repo: boolean; wt: boolean }[],
-                       q: string, truncated: boolean): PkFind {
-  const kids = new Map<string, PkNode[]>();
-  const open = new Set<string>();
-  const partial = new Set<string>();
-  const hitPaths = new Set(hits.map((h) => h.path));
-  for (const h of hits) {
-    if (!h.path.startsWith(`${root}/`)) continue;
-    const rel = h.path.slice(root.length + 1).split("/");
-    let parent = root;
-    for (let i = 0; i < rel.length; i++) {
-      const path = `${parent}/${rel[i]}`;
-      const leaf = i === rel.length - 1;
-      const list = kids.get(parent) ?? [];
-      if (!list.some((n) => n.path === path)) {
-        list.push({ name: rel[i], path, hit: hitPaths.has(path),
-          repo: leaf ? h.repo : false, wt: (leaf && h.wt) || isWtPath(path) });
-        kids.set(parent, list);
-      }
-      if (!leaf) { open.add(path); partial.add(path); }
-      parent = path;
-    }
-  }
-  for (const list of kids.values()) list.sort((a, b) => a.name.localeCompare(b.name));
-  return { q, kids, open, partial, hits: hitPaths.size, truncated };
-}
-
-async function runFind(q: string) {
-  const seq = ++pkFindSeq;
-  const res = await api(dirsUrl(pkRoot, `&find=${encodeURIComponent(q)}`)).catch(() => null);
-  if (!res || !res.ok || seq !== pkFindSeq || !pkShell?.isOpen()) return;
-  const d = (await res.json().catch(() => null)) as
-    { hits?: { path: string; name: string; repo: boolean; wt: boolean }[]; truncated?: boolean } | null;
-  if (!d?.hits || seq !== pkFindSeq || !pkShell?.isOpen()) return;
-  pkFind = buildFindTree(pkRoot, d.hits, q, !!d.truncated);
-  paintPicker();
-}
-
-// typing is a filter FIRST (instant, on what is drawn) and a search SECOND (a round trip that
-// reaches into the folders that are not). The two are not alternatives: the local pass keeps the
-// window responsive per keystroke, the search replaces it a moment later with the deeper answer.
-function scheduleFind() {
-  const q = pkFilter.value.trim();
-  if (pkFindTimer) clearTimeout(pkFindTimer);
-  pkFindTimer = null;
-  if (q.length < PK_FIND_MIN) {
-    if (pkFind) { pkFind = null; pkFindSeq++; paintPicker(); }
-    return;
-  }
-  pkFindTimer = setTimeout(() => { pkFindTimer = null; void runFind(q); }, 200);
-}
-
-function clearFind() {
-  if (pkFindTimer) clearTimeout(pkFindTimer);
-  pkFindTimer = null;
-  pkFindSeq++;
-  pkFind = null;
-}
-
-// the dotfolder toggle changes what every listing CONTAINS, so every listing already on screen has
-// to be fetched again — keeping the folders the owner opened, which a plain browse() would drop
-async function reloadTree() {
-  const paths = [pkRoot, ...pkOpen];
-  const lists = await Promise.all(paths.map((p) => fetchKids(p)));
-  if (!pkShell?.isOpen()) return;
-  paths.forEach((p, i) => {
-    const kids = lists[i];
-    if (kids) pkKids.set(p, kids);
-    else { pkKids.delete(p); pkOpen.delete(p); } // gone or unreadable: stop claiming it is open
-  });
-  if (pkFind) await runFind(pkFind.q);
-  else paintPicker();
-}
-
-// rebuild the whole list from cached state. Cheap — the expensive part is the fetch, which happens
-// once per folder — and it keeps one painting path for browse(), expand, collapse and pin changes.
-function paintPicker() {
-  const shell = pkShell;
-  if (!shell) return;
-  const keep = pkFilter.value;
-  shell.list.replaceChildren();
-  pkRows = [];
-  let head: HTMLElement | null = null;
-  const addHead = (t: string, n?: number) => {
-    head = el("div", "shellsec");
-    head.appendChild(el("span", "shellsect", t));
-    if (n !== undefined) head.appendChild(el("span", "shellsecn", String(n)));
-    shell.list.appendChild(head);
-  };
-  const addRow = (o: DirRowOpts) => {
-    const row = dirRow(o);
-    shell.list.appendChild(row);
-    pkRows.push({ row, path: o.path, name: `${o.label} ${o.sub ?? ""}`.toLowerCase(), head,
-      wt: !!o.wt, way: o.find === "way" });
-  };
-  // the honest stand-in lines: "no subfolders", the listing cap, the search's own notes. They sit
-  // where a row would sit at that depth — the stylesheet owns that geometry via --pkdepth.
-  const addNote = (depth: number, text: string, cls = "") => {
-    const n = el("div", `pknone tree${cls ? ` ${cls}` : ""}`);
-    n.style.setProperty("--pkdepth", String(depth));
-    n.textContent = text;
-    shell.list.appendChild(n);
-  };
-  // full paths render as name-up-front + dimmed parent; a bare top-level dir (/tmp) still splits
-  const split = (p: string): { leaf: string; sub: string } => {
-    const disp = p.replace(/^\/Users\/[^/]+/, "~");
-    const i = disp.lastIndexOf("/");
-    if (i < 0) return { leaf: disp, sub: "" };
-    if (i === 0) return { leaf: disp.slice(1) || disp, sub: "/" };
-    return { leaf: disp.slice(i + 1), sub: disp.slice(0, i) };
-  };
-  // the shortcut sections stay FLAT: they are jump targets scattered across the disk, not places in
-  // this tree, and drawing guide lines beside them would claim a nesting that does not exist
-  if (pkShortcuts.pins.length) {
-    addHead("Pinned", pkShortcuts.pins.length);
-    for (const p of pkShortcuts.pins) {
-      const { leaf, sub } = split(p);
-      addRow({ label: leaf, sub, path: p, cls: "pin", icon: "star", wt: isWtPath(p) });
-    }
-  }
-  if (pkShortcuts.recents.length) {
-    addHead("Recent", pkShortcuts.recents.length);
-    for (const r of pkShortcuts.recents) {
-      const { leaf, sub } = split(r);
-      addRow({ label: leaf, sub, path: r, cls: "recent", icon: "clock", wt: isWtPath(r) });
-    }
-  }
-  addHead("Places");
-  for (const c of pkShortcuts.common)
-    addRow({ label: c.replace(/^\/Users\/[^/]+/, "~"), path: c, cls: "place", icon: "folder" });
-
-  const roots = pkKidsOf(pkRoot);
-  // in search mode the section counts MATCHES, not rows: the folders on the way to them are drawn
-  // but are not what the query found (applyWtHide recomputes this from the rows and skips them too)
-  addHead(pkFind ? `Matches for “${pkFind.q}”` : "Folders", pkFind ? pkFind.hits : roots.length);
-  if (pkShortcuts.parent)
-    addRow({ label: `Up to ${baseName(pkShortcuts.parent)}`, path: pkShortcuts.parent, cls: "up", icon: "up" });
-  // `blanks` grows one entry per level as we descend: the flag says whether the ancestor at that
-  // level was its parent's last child, and a spine below such an ancestor would draw a sibling that
-  // does not exist.
-  const emit = (parent: string, depth: number, blanks: boolean[]) => {
-    const kids = pkKidsOf(parent);
-    if (!kids.length && depth > 0) {
-      // depth only — the stylesheet owns the geometry and lines this up with the names above it.
-      // This was `61 + depth * 26`, a copy of the guide/▸/gap widths that no longer matched either
-      // the desktop or the phone once those changed.
-      addNote(depth, "no subfolders");
-      return;
-    }
-    kids.forEach((n, i) => {
-      const last = i === kids.length - 1;
-      addRow({ label: n.name, path: n.path, cls: "dir", icon: "folder", repo: n.repo, wt: n.wt,
-        depth, tree: true, blanks, last, find: pkFind ? (n.hit ? "hit" : "way") : undefined });
-      if (pkIsOpen(n.path)) emit(n.path, depth + 1, [...blanks, last]);
-    });
-    // the cap, said out loud. Serving 200 of 1284 folders silently is indistinguishable on screen
-    // from a folder that holds 200 — which is why nobody could tell it was happening.
-    const total = !pkFind ? pkCap.get(parent) : undefined;
-    if (total !== undefined) addNote(depth, `${kids.length} of ${total} — refine`, "pkcap");
-  };
-  emit(pkRoot, 0, []);
-  // the search has a budget (depth, folders read, matches returned) and it says when it spent it,
-  // so "no more results" is never reported as "no more matches" — the empty case most of all
-  if (pkFind) {
-    if (!pkFind.hits) addNote(0, pkFind.truncated
-      ? `nothing called “${pkFind.q}” in the part of this tree the search reached — it stopped at its limit`
-      : `nothing under this folder is called “${pkFind.q}”`);
-    else if (pkFind.truncated) addNote(0, "…and more below this — the search stopped at its limit", "pkcap");
-  } else if (!roots.length) shell.list.appendChild(el("div", "pknone", "no subfolders here"));
-  applyWtHide(); // honor the current "hide lanes" toggle for the freshly built rows
-  if (keep) { pkFilter.value = keep; applyPkFilter(); }
-}
-
 // --- what the highlighted folder actually is (GET /api/dirinfo) ---
 // The old picker could say "this is a git repo" and nothing more, so telling two similarly-named
 // checkouts apart meant opening a session in one to find out.
@@ -4466,7 +3894,6 @@ export interface DirInfoResp {
   packs?: string[] | { error: string };
   orphans?: { path: string; branch: string }[];
 }
-let pkInfoSeq = 0; // latest-wins: arrow-keying down a list outruns the fetches it starts
 
 // A 404 on a route this page KNOWS about means one specific thing in Fleet, and it is worth saying
 // out loud rather than spinning: `bun run build` publishes the client instantly (the server serves
@@ -4476,152 +3903,6 @@ let pkInfoSeq = 0; // latest-wins: arrow-keying down a list outruns the fetches 
 export const SKEW_NOTE = "this page is newer than the server it is talking to — that route does not exist"
   + " there yet. Restart Fleet's srv session to pick up the new routes (the sessions survive it).";
 
-// what the detail pane is currently able to say. A pane that can only render "loading" and "loaded"
-// has no way to stop loading, which is the whole defect: showDirDetail returned early on a failed
-// fetch and left the placeholder on screen forever.
-type DirLoad = { st: "loading" } | { st: "ok"; info: DirInfoResp } | { st: "fail"; why: string };
-
-// the folder the detail pane is currently describing — so a late-arriving harness catalogue can
-// repaint the pane it belongs to, instead of the options row appearing only on the NEXT click
-let pkDetailPath: string | null = null;
-
-async function showDirDetail(path: string) {
-  const shell = pkShell;
-  if (!shell) return;
-  pkDetailPath = path;
-  const seq = ++pkInfoSeq;
-  renderDirDetail(path, { st: "loading" });
-  const done = (load: DirLoad) => {
-    // a superseded fetch must not paint over the row the cursor has since moved to
-    if (shell.isOpen() && seq === pkInfoSeq) renderDirDetail(path, load);
-  };
-  const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`).catch(() => null);
-  if (!res) { done({ st: "fail", why: "couldn't reach the server — retry, or check the connection" }); return; }
-  if (res.status === 404) { done({ st: "fail", why: SKEW_NOTE }); return; }
-  if (!res.ok) { done({ st: "fail", why: `the server answered ${res.status} for this folder` }); return; }
-  const info = (await res.json().catch(() => null)) as DirInfoResp | null;
-  done(info ? { st: "ok", info } : { st: "fail", why: "the server's answer was not readable JSON" });
-}
-
-// What the NEXT session started from this picker will be spawned as. Held here rather than read
-// off the DOM at click time because the detail pane is re-rendered on every dir load, and a
-// choice that survives re-render but not a click would be the worst of both.
-// Reset per picker OPEN (openPicker), not per directory: picking a harness and then browsing to
-// the folder you want it in is the normal order of doing this.
-let spawnHarness: string | null = null;
-let spawnModel = "";
-let spawnEffort = "";
-let spawnContainer = "";
-let spawnContainerContext = "";
-
-// The spawn-options row — the first spawn-options UI in this app at all. Two things it closes at
-// once: choosing a harness (which never existed), and sending `model`, which the server routes
-// have accepted since long before this and no client call ever sent.
-//
-// The quick paths (⎇+ quicklane, ⌘Enter) deliberately do NOT read any of this: they stay
-// one-click on defaults. Only the two buttons in THIS pane carry the options.
-// `before`: the node to insert AHEAD of, or null for "append at the end". It exists because the
-// first call and the re-render after a harness change happen at different moments in the pane's
-// life. On the first call `host` ends at the buttons, so appending puts the row directly under
-// them; by the time a harness change re-renders, the whole rest of the pane is already there, so
-// appending would drop the row below the facts and the directory listing — far out of view. The
-// owner read that as the controls disappearing (2026-08-10), which is exactly what it looks like.
-function appendSpawnOptions(host: HTMLElement, before: Node | null = null): void {
-  // empty catalogue (not fetched yet, or the fetch failed) → render nothing at all. The pane is
-  // then exactly the pre-harness pane, and both buttons still work on defaults.
-  const agents = agentHarnesses();
-  if (agents.length < 2) return;
-  const row = el("div", "pkdopts");
-
-  const hSel = el("select", "pkdsel") as HTMLSelectElement;
-  for (const h of agents) {
-    const o = el("option", "", h.default ? `${h.id} (default)` : h.id) as HTMLOptionElement;
-    o.value = h.id;
-    if ((spawnHarness ?? agents.find((x) => x.default)?.id) === h.id) o.selected = true;
-    hSel.appendChild(o);
-  }
-  row.appendChild(labelled("harness", hSel));
-
-  const chosen = agents.find((h) => h.id === hSel.value) ?? agents.find((h) => h.default);
-
-  const mIn = el("input", "pkdin") as HTMLInputElement;
-  mIn.type = "text";
-  // the DEFAULT is only knowable for the default adapter — the server publishes exactly one
-  // value and says it is Claude-only. For a foreign harness the honest placeholder is the word
-  // "default", never this id: claiming it there would be a fact the server never asserted.
-  mIn.placeholder = chosen?.default && defaultModel ? defaultModel : "default";
-  mIn.value = spawnModel;
-  mIn.oninput = () => { spawnModel = mIn.value.trim(); };
-  if (chosen?.supports.model) row.appendChild(labelled("model", mIn));
-
-  // effort only exists for a harness that HAS the concept — the row simply does not offer it
-  // otherwise, which is the visible degradation: no dead control that silently does nothing.
-  if (chosen?.supports.effort && chosen.effortLevels.length) {
-    const eSel = el("select", "pkdsel") as HTMLSelectElement;
-    for (const lv of ["", ...chosen.effortLevels]) {
-      const o = el("option", "", lv || "default") as HTMLOptionElement;
-      o.value = lv;
-      if (spawnEffort === lv) o.selected = true;
-      eSel.appendChild(o);
-    }
-    eSel.onchange = () => { spawnEffort = eSel.value; };
-    row.appendChild(labelled("effort", eSel));
-  }
-
-  // the box: which container, and on which docker daemon. Only for a harness that runs in one —
-  // the same visible degradation as effort. Empty means the fleet default (the placeholder says
-  // which), never docker's ambient context. The two belong together: an IMAGE lives in exactly one
-  // daemon, so a context without this container's image is a pane full of docker's own error.
-  if (chosen?.supports.container) {
-    const cIn = el("input", "pkdin") as HTMLInputElement;
-    cIn.type = "text";
-    cIn.placeholder = containerDefaults?.container ?? "container";
-    cIn.value = spawnContainer;
-    cIn.oninput = () => { spawnContainer = cIn.value.trim(); };
-    row.appendChild(labelled("container", cIn));
-
-    const xIn = el("input", "pkdin") as HTMLInputElement;
-    xIn.type = "text";
-    xIn.placeholder = containerDefaults?.containerContext ?? "docker context";
-    xIn.value = spawnContainerContext;
-    xIn.title = "Auf welchem Docker-Daemon der Container läuft — ein Image lebt in genau einem, deshalb der Context, in dem es gebaut wurde (intern: docker context).";
-    xIn.oninput = () => { spawnContainerContext = xIn.value.trim(); };
-    row.appendChild(labelled("docker context", xIn));
-  }
-
-  hSel.onchange = () => {
-    // read from the SAME list the dropdown was built from — a place is not selectable, so looking
-    // it up in the unfiltered catalogue could only ever find something this control cannot show
-    const next = agents.find((h) => h.id === hSel.value);
-    spawnHarness = next && !next.default ? next.id : null;
-    // a level from the harness being left behind must not ride along to the next one
-    if (!next?.supports.effort || !next.effortLevels.includes(spawnEffort)) spawnEffort = "";
-    if (!next?.supports.model) spawnModel = "";
-    // ...and a box must not either: the server refuses one for a harness without the concept, so
-    // carrying it over would turn a harness change into a 400 the owner cannot see the cause of
-    if (!next?.supports.container) { spawnContainer = ""; spawnContainerContext = ""; }
-    renderSpawnOptions(host, row);
-  };
-
-  host.insertBefore(row, before);
-  // the caveat a harness states about ITSELF, shown before it is ever spawned rather than
-  // discovered afterwards — for Pi that is the shape of its write fence, and what the fence does
-  // NOT cover (reads, network), which is the half an owner has to weigh before picking it.
-  if (chosen?.note) host.insertBefore(el("div", "pkdwarn", `${chosen.id}: ${chosen.note}`), before);
-}
-
-// re-render the row in place after a harness change (the fields on offer depend on it)
-function renderSpawnOptions(host: HTMLElement, old: HTMLElement): void {
-  const note = old.nextElementSibling;
-  const warn = note?.classList.contains("pkdwarn") ? note : null;
-  // the anchor is read BEFORE either removal, so the rebuilt row goes back exactly where this one
-  // stood instead of at the end of a pane that has since been filled in
-  const anchor = (warn ?? old).nextSibling;
-  warn?.remove();
-  old.remove();
-  appendSpawnOptions(host, anchor);
-}
-
 export function labelled(text: string, control: HTMLElement): HTMLElement {
   const wrap = el("label", "pkdopt");
   wrap.appendChild(el("span", "pkdoptl", text));
@@ -4629,272 +3910,13 @@ export function labelled(text: string, control: HTMLElement): HTMLElement {
   return wrap;
 }
 
-// the options every spawn from this pane carries. Absent fields mean "the default", which is
-// exactly what the server reads them as. `packs` is the founding window's alone (src/founding.ts
-// builds its own body); the tree never sends one.
+// the options a founding sends with the slot's /open door. Absent fields mean "the default", which
+// is exactly what the server reads them as. src/founding.ts builds it.
 export interface SpawnBody { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[] }
-function spawnBody(): SpawnBody {
-  return {
-    ...(spawnHarness ? { harness: spawnHarness } : {}),
-    ...(spawnModel ? { model: spawnModel } : {}),
-    ...(spawnEffort ? { effort: spawnEffort } : {}),
-    ...(spawnContainer ? { container: spawnContainer } : {}),
-    ...(spawnContainerContext ? { containerContext: spawnContainerContext } : {}),
-  };
-}
-
-function renderDirDetail(path: string, load: DirLoad) {
-  const shell = pkShell;
-  if (!shell) return;
-  const info = load.st === "ok" ? load.info : null;
-  shell.detail.replaceChildren();
-  shell.detail.appendChild(el("div", "rvhead", baseName(path)));
-  shell.detail.appendChild(el("div", "pkdpath", path.replace(/^\/Users\/[^/]+/, "~")));
-
-  // a slot already sitting in this folder is the single most useful thing to know before starting
-  // another one there — Fleet will happily open two sessions on the same tree
-  const open = fleet.filter((s) => s.cwd === path);
-  if (open.length) {
-    const who = open.map((s) => `slot ${s.id}${s.label ? ` (${s.label})` : ""}`).join(", ");
-    shell.detail.appendChild(el("div", "pkdwarn", `already open in ${who}`));
-  }
-
-  const acts = el("div", "pkdacts");
-  const start = el("button", "shrbtn primary", "Start session here") as HTMLButtonElement;
-  start.onclick = () => void startSession(path);
-  acts.appendChild(start);
-  if (info?.git && !info.worktree) {
-    const lane = el("button", "shrbtn", "⎇ New lane here") as HTMLButtonElement;
-    lane.title = "create a git worktree (lane) in this repo and open a session in it";
-    lane.onclick = () => void startWorktree(path);
-    acts.appendChild(lane);
-  }
-  shell.detail.appendChild(acts);
-  appendSpawnOptions(shell.detail);
-
-  if (load.st === "loading") { shell.detail.appendChild(el("div", "hint shellhint", "reading…")); return; }
-  if (load.st === "fail") { shell.detail.appendChild(el("div", "diffstat err", load.why)); return; }
-  if (!info) return; // unreachable: st === "ok" carries one
-  if (info.error) { shell.detail.appendChild(el("div", "diffstat err", info.error)); return; }
-  if (!info.exists) {
-    shell.detail.appendChild(el("div", "diffstat err", "this folder no longer exists"));
-    return;
-  }
-  if (!info.git) {
-    shell.detail.appendChild(el("div", "hint shellhint",
-      "not a git repo — a session here works fine, there is just nothing to branch, diff or land"));
-    appendDirContents(shell.detail, info);
-    return;
-  }
-
-  const facts = el("div", "ocfacts");
-  facts.appendChild(chip(info.branch ?? "detached HEAD", info.branch ? "" : "warn"));
-  if (info.worktree) facts.appendChild(chip("⎇ this is a lane", "",
-    "a git worktree, not the primary checkout — Fleet lanes live in <repo>.worktrees/"));
-  facts.appendChild(info.dirty
-    ? chip(`${info.dirty} uncommitted`, "warn")
-    : chip("clean tree", "ok"));
-  // ABSENT is not zero: a branch with no upstream has nothing to be ahead OF, and rendering 0/0
-  // would state a comparison that was never made
-  if (typeof info.ahead === "number" && typeof info.behind === "number")
-    facts.appendChild(chip(`↑${info.ahead} ↓${info.behind}`, info.ahead ? "warn" : "",
-      "commits ahead of / behind the upstream branch"));
-  else facts.appendChild(chip("no upstream", "dim",
-    "this branch tracks nothing, so there is no ahead/behind to report — not a measured zero"));
-  if (info.lanes) facts.appendChild(chip(`${info.lanes} lane${info.lanes === 1 ? "" : "s"}`, "",
-    "Fleet worktrees forked from this repo, in <repo>.worktrees/"));
-  shell.detail.appendChild(facts);
-
-  appendDirContents(shell.detail, info);
-
-  // `recent` is a newer field than this route: a client built ahead of the server it talks to gets
-  // `last` alone, and one commit is what it can honestly show — not a padded list of one.
-  const commits = info.recent ?? (info.last ? [info.last] : []);
-  const sec = el("div", "shellsec");
-  sec.appendChild(el("span", "shellsect", "Recent commits"));
-  if (commits.length) sec.appendChild(el("span", "shellsecn", String(commits.length)));
-  shell.detail.appendChild(sec);
-  if (!commits.length) {
-    shell.detail.appendChild(el("div", "hint shellhint", "no commits yet in this repo"));
-    return;
-  }
-  for (const c of commits) {
-    const row = el("div", "pkdcommit");
-    row.appendChild(el("div", "pkdlast", c.subject));
-    row.appendChild(el("div", "diffstat", `${c.hash} · ${fmtTs(c.ts)}`));
-    shell.detail.appendChild(row);
-  }
-  // says what this list is NOT, so nobody reads five subjects as the repo's history: the audit
-  // trail and the activity window's commits lens are where the full record lives.
-  shell.detail.appendChild(el("div", "hint shellhint",
-    `the newest ${commits.length} — a glance at what this repo has been doing, not its history.`
-    + " The activity window's Commits lens carries the full list."));
-}
-
-// the folder's own children. This is the thing the pane was missing: a branch name and a commit
-// subject do not tell two similarly-named checkouts apart, and their contents do at one glance.
-// --- Contents: a tree you open IN PLACE, not a listing that sends you somewhere -----------------
-//
-// This list used to be one flat level, and a folder in it RE-ROOTED the tree on the left — you
-// asked what is in a folder and the whole window moved. Now it opens where it stands, with the
-// same guides, elbows and descender the left tree uses, so nesting is drawn rather than implied.
-// Its expansion state is its OWN: the left tree answers "where do I want to work", this answers
-// "what is in this project", and neither is a view of the other.
-interface DirEntry { name: string; dir: boolean }
-let pkdRoot = "";                                     // the folder this pane is showing
-let pkdBox: HTMLElement | null = null;                // the element to repaint on expand/collapse
-let pkdInfo: DirInfoResp | null = null;
-const pkdOpen = new Set<string>();
-const pkdKids = new Map<string, DirEntry[] | null>(); // null = read, and unreadable
-const pkdBusy = new Set<string>();
-
-// entries (files AND folders) for any path. /api/dirs is folders-only, which is right for the
-// left tree and useless here. No new route: this keeps the whole change client-side, so it goes
-// live on `bun run build` without an srv restart.
-async function fetchEntries(path: string): Promise<DirEntry[] | null> {
-  const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`).catch(() => null);
-  if (!res || !res.ok) return null;
-  const d = (await res.json().catch(() => null)) as DirInfoResp | null;
-  return d?.entries ?? null;
-}
-
-async function toggleContents(path: string) {
-  if (pkdOpen.has(path)) { pkdOpen.delete(path); paintContents(); return; }
-  if (!pkdKids.has(path)) {
-    if (pkdBusy.has(path)) return;
-    pkdBusy.add(path);
-    paintContents();                                  // the row says it is working
-    const kids = await fetchEntries(path);
-    pkdBusy.delete(path);
-    // an unreadable folder caches as null rather than retrying on every click — the row then says
-    // so, which is the same bargain the left tree makes
-    pkdKids.set(path, kids);
-  }
-  pkdOpen.add(path);
-  paintContents();
-}
-
-function contentsRow(e: DirEntry, path: string, depth: number, blanks: boolean[], last: boolean,
-                     rootPath: string): HTMLElement {
-  const open = e.dir && pkdOpen.has(path);
-  const row = el("div", `pkdent${e.dir ? " dir" : ""}${open ? " open" : ""}`);
-  row.title = path;
-  const lead = el("span", "pklead");
-  for (let i = 0; i <= depth; i++) {
-    const g = el("span", "pkguide");
-    if (i === depth) g.classList.add(last ? "end" : "branch");
-    else if (blanks[i]) g.classList.add("blank");
-    lead.appendChild(g);
-  }
-  // a FILE reserves the same column the ▸ occupies. It has nothing to expand, but taking the
-  // column away would step every filename left of its sibling folders and undo the alignment the
-  // guides just established.
-  const tw = el("span", `pktw${open ? " open" : ""}`,
-    e.dir ? (pkdBusy.has(path) ? "·" : open ? "▾" : "▸") : "");
-  if (e.dir) {
-    tw.title = open ? "collapse" : "expand";
-    tw.onclick = (ev) => { ev.stopPropagation(); void toggleContents(path); };
-  }
-  lead.appendChild(tw);
-  row.appendChild(lead);
-  row.appendChild(pkIcon(e.dir ? (open ? "folderOpen" : "folder") : "file"));
-  row.appendChild(el("span", "pkdname", e.name + (e.dir ? "/" : "")));
-  if (e.dir) {
-    // re-rooting the left tree was what a click did here, and it is still worth having — it just
-    // stops being what happens when you only wanted to look inside.
-    const go = el("span", "pkdgo", "↗");
-    go.title = `make ${e.name}/ the top of the tree on the left`;
-    go.onclick = (ev) => { ev.stopPropagation(); void browse(path); };
-    row.appendChild(go);
-    row.onclick = () => void toggleContents(path);
-  } else {
-    row.onclick = () => {
-      const shell = pkShell;
-      if (!shell) return;
-      showFileView(shell, {
-        path, label: e.name,
-        source: "as it is on disk right now",
-        back: { label: baseName(rootPath), go: () => void showDirDetail(rootPath) },
-      });
-    };
-  }
-  return row;
-}
-
-function paintContents() {
-  const box = pkdBox;
-  const info = pkdInfo;
-  if (!box || !info) return;
-  box.replaceChildren();
-  // Nothing expanded means every row is a sibling of every other, and siblings do not need to be
-  // stacked in one column down the middle of a wide pane — the stylesheet lays them out as a grid.
-  // Expanding anything ends that: nesting reads top-to-bottom, and a grid would break a subtree
-  // across a column boundary, away from the parent whose guide line claims it.
-  box.classList.toggle("flat", pkdOpen.size === 0);
-  const emit = (path: string, depth: number, blanks: boolean[]) => {
-    const kids = pkdKids.get(path);
-    if (kids === null) {
-      const bad = el("div", "pknone tree", "could not be read — that is a permissions answer");
-      bad.style.setProperty("--pkdepth", String(depth));
-      box.appendChild(bad);
-      return;
-    }
-    if (!kids) return;
-    if (!kids.length) {
-      const none = el("div", "pknone tree", "empty");
-      none.style.setProperty("--pkdepth", String(depth));
-      box.appendChild(none);
-      return;
-    }
-    kids.forEach((e, i) => {
-      const last = i === kids.length - 1;
-      const full = `${path}/${e.name}`;
-      box.appendChild(contentsRow(e, full, depth, blanks, last, info.path));
-      if (e.dir && pkdOpen.has(full)) emit(full, depth + 1, [...blanks, last]);
-    });
-  };
-  emit(info.path, 0, []);
-}
-
-function appendDirContents(target: HTMLElement, info: DirInfoResp) {
-  const sec = el("div", "shellsec");
-  sec.appendChild(el("span", "shellsect", "Contents"));
-  const entries = info.entries;
-  if (entries === undefined) {
-    target.appendChild(sec);
-    target.appendChild(el("div", "hint shellhint",
-      "this folder's contents could not be read — that is a permissions answer, not an empty folder"));
-    return;
-  }
-  // counted over what was actually LISTED. A capped listing says so instead of splitting a total it
-  // only partly saw — the entries sort folders first, so the unlisted tail is not a known mix.
-  const dirs = entries.filter((e) => e.dir).length;
-  const files = entries.length - dirs;
-  const total = info.entryTotal ?? entries.length;
-  const parts = [`${dirs} folder${dirs === 1 ? "" : "s"}`, `${files} file${files === 1 ? "" : "s"}`];
-  if (total > entries.length) parts.unshift(`${entries.length} of ${total}`);
-  if (info.hidden) parts.push(`${info.hidden} hidden`);
-  sec.appendChild(el("span", "shellsecn", parts.join(" · ")));
-  target.appendChild(sec);
-  if (!entries.length) {
-    target.appendChild(el("div", "hint shellhint",
-      info.hidden ? "nothing here but dot-entries — the folder is not empty, its contents are all hidden"
-        : "this folder is empty"));
-    return;
-  }
-  // switching to a DIFFERENT folder starts a fresh tree; re-rendering the same one (the pane
-  // repaints on every selection) keeps whatever the reader has opened
-  if (info.path !== pkdRoot) { pkdRoot = info.path; pkdOpen.clear(); pkdKids.clear(); pkdBusy.clear(); }
-  pkdKids.set(info.path, entries);
-  pkdInfo = info;
-  pkdBox = el("div", "pkdtree");
-  paintContents();
-  target.appendChild(pkdBox);
-}
 
 // --- the file view: one renderer for every file list in the app ---------------------------------
 //
-// Four surfaces list files and none of them could open one: the picker's Contents, a commit's
+// Four surfaces listed files and none of them could open one: the old picker's Contents, a commit's
 // files, a land's footprint, and the board's changed-files card (whose rows all opened the WHOLE
 // working diff, whichever row you clicked). They are the same gesture — "show me that file" — so
 // they share this one function, and each caller supplies the two things only it knows: WHICH
@@ -5121,19 +4143,6 @@ function openFileEditor(shell: Shell, body: HTMLElement,
   ta.focus();
 }
 
-// pin/unpin round-trips to the server (pins follow the owner across devices), then re-renders
-async function togglePin(path: string) {
-  const res = await post("/api/pins", { path, on: !pkPins.has(path) });
-  if (!res.ok) return;
-  const data = (await res.json()) as { pins?: string[] };
-  pkPins = new Set(data.pins ?? []);
-  const keepFilter = pkFilter.value; // browse() clears it — restore so ⌘D-pin keeps your context
-  await browse(pkPathIn.value); // rebuild the Pinned section + star states from the new set
-  // browse() drops the search with the root it belonged to; the query is back on screen, so the
-  // search it stands for has to come back too, or the box would describe a list it no longer made
-  if (keepFilter) { pkFilter.value = keepFilter; applyPkFilter(); scheduleFind(); }
-}
-
 export async function revealStartedSlot(slot: number): Promise<boolean> {
   const deadline = Date.now() + 4500;
   do {
@@ -5144,52 +4153,40 @@ export async function revealStartedSlot(slot: number): Promise<boolean> {
   return false;
 }
 
-// `via` is the founding window (src/founding.ts): it names its own slot and sends its own body;
-// the tree picker passes nothing and founds on pickerSlot with spawnBody(), as before
+// `via` is the founding window (src/founding.ts), the one caller: it names its own slot and sends
+// its own body, and every refusal is said through onError where the click was
 export interface SpawnVia { slot: number; body: SpawnBody }
-export async function startSession(path: string, label?: string, onError?: (msg: string) => void, via?: SpawnVia) {
-  const slot = via?.slot ?? pickerSlot;
-  if (!slot) return;
+export async function startSession(path: string, label: string | undefined, onError: (msg: string) => void, via: SpawnVia) {
+  const slot = via.slot;
   // the label is the ROLE at founding time: the server keys its one role card and the steward
   // token export off exactly this string, so the founding window sends it here and nowhere else
-  const res = await post(`/api/slots/${slot}/open`, { cwd: path, ...(label ? { label } : {}), ...(via?.body ?? spawnBody()) });
+  const res = await post(`/api/slots/${slot}/open`, { cwd: path, ...(label ? { label } : {}), ...via.body });
   const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
   if (!res.ok) {
-    // the options row can now make this fail for a reason the path field cannot express (an
-    // unknown harness, a model the chosen harness rejects) — say which, instead of only
-    // flashing the path box red as if the folder were at fault. The founding window has no
-    // path box: there the refusal is said where the click was, not in a dialog above it.
-    pkPathIn?.classList.add("bad");
-    setTimeout(() => pkPathIn?.classList.remove("bad"), 1200);
-    if (onError) onError(j.error ?? `the server answered ${res.status}`);
-    else if (j.error) alert(`Session failed: ${j.error}`);
+    // the options row can make this fail for a reason the folder is not at fault for (an unknown
+    // harness, a model the chosen harness rejects) — say which
+    onError(j.error ?? `the server answered ${res.status}`);
     return;
   }
   if (j.packsDelivered === false) {
     // B2b: the founding stands, the packs did not cross — said where the click was (the founding window's foot),
     // and the window stays open: closing it would read the delivery as having succeeded
-    if (onError) onError(j.reason ?? "the packs were not delivered");
-    else alert(`Session opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
+    onError(j.reason ?? "the packs were not delivered");
     return;
   }
   if (!await revealStartedSlot(slot)) {
-    const msg = `Session opened, but slot ${slot} did not appear within 5 seconds.`;
-    if (onError) onError(msg); else alert(msg);
+    onError(`Session opened, but slot ${slot} did not appear within 5 seconds.`);
     return;
   }
   closeFounding();
-  closePicker();
 }
 
-export async function startWorktree(repo: string, onError?: (msg: string) => void, via?: SpawnVia) {
-  const slot = via?.slot ?? pickerSlot;
-  if (!slot) return;
-  const body = via?.body ?? spawnBody();
+export async function startWorktree(repo: string, onError: (msg: string) => void, via: SpawnVia) {
+  const { slot, body } = via;
   const chosen = harnesses.find((h) => h.id === body.harness)
     ?? harnesses.find((h) => h.default);
   if (chosen?.allowsLanes === false) {
-    const msg = `${chosen.id} is main-session only — choose “Start session here”, not a lane.`;
-    if (onError) onError(msg); else alert(msg);
+    onError(`${chosen.id} runs as a main session only, not as a lane.`);
     return;
   }
   // branch names are plumbing, not something to type: the server auto-names the lane
@@ -5197,135 +4194,20 @@ export async function startWorktree(repo: string, onError?: (msg: string) => voi
   const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "", ...body });
   const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
   if (!res.ok) {
-    pkPathIn?.classList.add("bad");
-    setTimeout(() => pkPathIn?.classList.remove("bad"), 1200);
-    if (onError) onError(j.error ?? `the server answered ${res.status}`);
-    else if (j.error) alert(`Lane failed: ${j.error}`);
+    onError(j.error ?? `the server answered ${res.status}`);
     return;
   }
   if (j.packsDelivered === false) {
     // B2b: the lane stands, the packs did not cross — said where the click was (the founding window's foot),
     // and the window stays open: closing it would read the delivery as having succeeded
-    if (onError) onError(j.reason ?? "the packs were not delivered");
-    else alert(`Lane opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
+    onError(j.reason ?? "the packs were not delivered");
     return;
   }
   if (!await revealStartedSlot(slot)) {
-    const msg = `Lane opened, but slot ${slot} did not appear within 5 seconds.`;
-    if (onError) onError(msg); else alert(msg);
+    onError(`Lane opened, but slot ${slot} did not appear within 5 seconds.`);
     return;
   }
   closeFounding();
-  closePicker();
-}
-
-// the directory tree window. Its two buttons carry their own meaning ("Start session here",
-// "⎇ New lane here") and its own options row writes spawnBody. Since the founding window's rebuild
-// (src/founding.ts, 2026-09-29) chooses any folder inside itself, the free slot no longer opens
-// this window; it stays as it was (card: the old window is not rebuilt).
-function openTreePicker(slotId: number) {
-  setDrawer(false);
-  pkShell?.close();
-  pickerSlot = slotId;
-  pkDetailPath = null;
-  // fetch-once, and only from here: the catalogue is needed exactly when a spawn is being
-  // composed, so it never costs anything on a board that is only being watched.
-  void loadHarnesses().then(() => {
-    if (pkShell?.isOpen() && pkDetailPath) void showDirDetail(pkDetailPath);
-  });
-  const shell = openShell({
-    id: "picker",
-    title: `New session — slot ${slotId}`,
-    listWidth: 460,
-    onSelect: (row) => {
-      const hit = pkRows.find((r) => r.row === row.el);
-      if (hit) void showDirDetail(hit.path);
-    },
-    onClose: () => { pickerSlot = 0; pkShell = null; pkRows = []; },
-  });
-  pkShell = shell;
-
-  // --- the window's controls. Line 1 is the fast path (filter + lane toggle); the breadcrumb and
-  // the type-a-path box wrap onto line 2, where they are navigation rather than the common case.
-  pkFilter = el("input", "pkfilterin") as HTMLInputElement;
-  pkFilter.type = "text";
-  pkFilter.spellcheck = false;
-  pkFilter.autocomplete = "off";
-  // a phone has no ⌘, no double-click idiom and no arrow keys: the desktop legend is not a shorter
-  // version of the truth there, it is the wrong instructions
-  pkFilter.placeholder = isMobile()
-    ? "search folders — subfolders too"
-    : "search — subfolders too · ↑↓ select · ⌘Enter start · Enter re-root · ⌘D pin";
-  pkHideBtn = el("button", "pktoggle") as HTMLButtonElement;
-  pkHideBtn.onclick = () => {
-    hideWorktrees = !hideWorktrees;
-    prefSetBool("fleet.hidewt", hideWorktrees);
-    renderHideWtBtn();
-    applyWtHide();
-  };
-  renderHideWtBtn();
-  // the lane toggle is a VIEW filter — the rows are there and get a class. This one is not: what a
-  // listing contains is decided on the server, so flipping it has to fetch the tree again.
-  pkDotBtn = el("button", "pktoggle") as HTMLButtonElement;
-  pkDotBtn.onclick = () => {
-    showHidden = !showHidden;
-    prefSetBool("fleet.pkdot", showHidden);
-    renderDotBtn();
-    void reloadTree();
-  };
-  renderDotBtn();
-  pkCrumb = el("div", "pkcrumb");
-  pkCrumb.setAttribute("aria-label", "current location");
-  pkPathIn = el("input", "pkpathin") as HTMLInputElement;
-  pkPathIn.type = "text";
-  pkPathIn.spellcheck = false;
-  pkPathIn.autocomplete = "off";
-  pkPathIn.placeholder = "or type a path";
-  pkPathIn.dataset.ownEnter = "1"; // Enter here goes to what was TYPED, not to the selected row
-  const line2 = el("div", "pkline2");
-  line2.append(pkCrumb, pkPathIn);
-  shell.tools.append(pkFilter, pkHideBtn, pkDotBtn, line2);
-
-  pkFilter.addEventListener("input", () => { applyPkFilter(); scheduleFind(); });
-  pkPathIn.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || e.metaKey || e.ctrlKey) return;
-    e.preventDefault();
-    void browse(pkPathIn.value);
-  });
-  // ⌘Enter starts, ⌘D pins. Both ride on the shell root: the shell skips modified Enter precisely
-  // so a view can claim it, and it never binds plain letters at all.
-  shell.root.addEventListener("keydown", (e) => {
-    const target = () => {
-      const i = shell.selectedIndex();
-      const vis = pkVisible();
-      return i >= 0 && vis[i] ? vis[i].path : pkPathIn.value;
-    };
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void startSession(target()); return; }
-    if ((e.metaKey || e.ctrlKey) && (e.key === "d" || e.key === "D")) { e.preventDefault(); void togglePin(target()); }
-    // →/← walk the tree. Only on tree rows: a shortcut row has no children to open, and swallowing
-    // the arrows inside the filter box would break moving the caret through what you typed.
-    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-    const i = shell.selectedIndex();
-    const hit = i >= 0 ? pkVisible()[i] : undefined;
-    if (!hit || !hit.row.classList.contains("tree")) return;
-    if ((e.target as HTMLElement | null)?.tagName === "INPUT" && pkFilter.value) return;
-    e.preventDefault();
-    if (e.key === "ArrowRight") { if (!pkIsOpen(hit.path)) void toggleNode(hit.path); }
-    else if (pkIsOpen(hit.path)) void toggleNode(hit.path);
-  });
-
-  shell.foot.textContent = isMobile()
-    ? "tap ▸ to open a folder in place · tap its name for what is inside it · “start ▸” opens a"
-      + " session there · ‹ goes back"
-    : "click selects and opens · double-click (or ⌘Enter) starts a session here"
-      + " · →/← expand and collapse · Enter re-roots the tree · ⌘D pins";
-
-  const last = prefText("fleet.pkdir");
-  void browse(last).then(async (ok) => {
-    if (!ok && last !== "~") await browse("~"); // remembered dir may have been deleted
-    // focusing an input on mobile would pop the keyboard over the folder list
-    if (!isMobile()) pkFilter.focus();
-  });
 }
 
 // --- sidebar ---

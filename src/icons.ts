@@ -1,4 +1,4 @@
-// The composer's icon set, in the board's existing grammar (client.ts#PK_ICONS: 24-unit box,
+// The composer's icon set, in the board's grammar (the former directory picker's icons: 24-unit box,
 // stroke 1.8, round caps and joins, currentColor) — built node by node with createElementNS, so
 // no markup string ever reaches a sink (the md.ts rule; fleet-e2e-security.ts §7).
 const NS = "http://www.w3.org/2000/svg";

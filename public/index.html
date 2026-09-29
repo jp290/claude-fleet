@@ -16,7 +16,7 @@
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; overflow: hidden; background: #141414; overscroll-behavior: none; }
   body { font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--text); -webkit-text-size-adjust: 100%; }
-  button, .slot, .chip, .pkrow { touch-action: manipulation; }
+  button, .slot, .chip { touch-action: manipulation; }
   /* momentum scrolling for the terminal scrollback on touch */
   .xterm .xterm-viewport { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 
@@ -24,7 +24,7 @@
      ). No hex here: each design language carries --sb-thumb/--sb-thumb-h/--sb-track
      and every surface hears its own language's values (chat: .pane.chat below, board: :root below).
      Both engines are dressed — one with ::-webkit-scrollbar takes that branch (it owns hover, the
-     only state), the rest take the standard thin pair. The three hide-rules (#keys, .pkcrumb,
+     only state), the rest take the standard thin pair. The two hide-rules (#keys,
      #comptray) outrank this block by specificity and keep hiding. */
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: var(--sb-track); }
@@ -1750,157 +1750,19 @@
     #shell-queue .pkfilterin { flex: 1 0 100%; max-width: none; min-height: 40px; }
     .qwavehint { padding-bottom: 8px; }
   }
-
-  /* picker controls, built by openPicker into the window's .shelltools. They sit on ONE line and
-     wrap only when the window is too narrow to hold them. `flex-basis: 100%` on the navigation
-     group used to force the wrap unconditionally, which cost 37px of window height at every width
-     — on a 1400px window the breadcrumb line was "~" at the far left, the path box at the far
-     right and 1100px of nothing between them. */
-  .pkline2 { flex: 1 1 320px; display: flex; align-items: center; gap: 8px; min-width: 0; }
   /* capped: past ~420px the filter is only eating the breadcrumb's room, and its placeholder (the
      keyboard legend) is fully readable well before that */
   .pkfilterin { flex: 1 1 240px; min-width: 0; max-width: 420px; height: 32px; padding: 0 12px; border-radius: 9px;
     border: 1px solid var(--line); background: #1a1a1a; color: #ddd; font-size: 13px; font-family: inherit; }
   .pkfilterin:focus { outline: none; border-color: var(--focus); }
-  .pkpathin { flex: none; width: 240px; height: 28px; padding: 0 10px; border-radius: 8px;
-    border: 1px solid #2e2e2e; background: #191919; color: #bbb; font-size: 11.5px;
-    font-family: ui-monospace, Menlo, Consolas, monospace; }
-  .pkpathin:focus { outline: none; border-color: var(--focus); }
-  .pkpathin.bad { border-color: var(--danger); }
-
-  /* breadcrumb: where you are + one-click jump to any ancestor. Scrolls sideways when deep. */
-  .pkcrumb { flex: 1; min-width: 0; display: flex; align-items: center; gap: 1px; padding: 1px 2px;
-    min-height: 24px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
-  .pkcrumb::-webkit-scrollbar { display: none; }
-  .pkseg { flex: none; padding: 3px 7px; border-radius: 6px; font-size: 12px; color: #8b93b0;
-    cursor: pointer; }
-  .pkseg:hover { background: var(--raised); color: #cdd6f4; }
-  .pkseg.here { color: #e8e8e8; font-weight: 600; cursor: default; }
-  .pkseg.here:hover { background: none; }
-  .pksep { flex: none; color: #4c4c4c; font-size: 11px; }
 
   #pkfilterrow { display: flex; gap: 7px; align-items: stretch; }
   #pkfilter { flex: 1; min-width: 0; height: 34px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line);
     background: #1a1a1a; color: #ddd; font-size: 13px; }
   #pkfilter:focus { outline: none; border-color: var(--focus); }
-  /* "hide lanes" toggle — dim by default, amber when active (matches #live.on / #queuebtn.hot) */
-  .pktoggle { flex: none; padding: 0 11px; border-radius: 9px; border: 1px solid var(--line); background: #1a1a1a;
-    color: var(--dim); font-size: 11px; font-family: inherit; cursor: pointer; white-space: nowrap; }
-  .pktoggle:hover { color: var(--text); border-color: #444; }
-  .pktoggle.on { background: #2a2320; color: var(--amber); border-color: #5a4a2a; }
-
-  .pkrow.pkhide, .shellsec.pkhide, .pknone.pkhide { display: none; }
-
-  .pkrow { display: flex; align-items: center; gap: 10px; padding: 6px 9px; border-radius: 7px;
-    cursor: pointer; }
-  /* --- tree rows: one guide line per ancestor level ---
-     The vertical padding moves OFF the row and onto its name, so a guide with align-self:stretch
-     covers the full row box. Left on the row, stretch would only span the content box and the
-     lines would break into a ladder of dashes with a gap at every row boundary. */
-  .pkrow.tree { padding-top: 0; padding-bottom: 0; gap: var(--pkgap); }
-  /* 7px, not 10: a 37px row put 19 folders on a 707px column while the list scrolled 4539px. At
-     31px it is 22, and the row is still taller than the 26px one in the Contents pane beside it.
-     The phone keeps its 10px below — 31px is a comfortable pointer target and a poor finger one. */
-  .pkrow.tree .pkname { padding: 7px 0; }
-  .pkrow.tree .pkleaf { font-size: 14px; }
-  .pklead { flex: none; align-self: stretch; display: flex; align-items: stretch; position: relative; }
-  /* AN OPEN FOLDER GROWS THE LINE ITS CHILDREN HANG FROM. From the middle of this row — where its
-     own elbow turns into the name — straight down to the row's bottom edge, in exactly the column
-     the children draw their spine in: the lead is (depth+1) columns wide, so that column begins at
-     its right edge, and left:100% lands on it whatever the depth or the column width.
-     Without it a child's spine started out of nowhere below the parent, and expanding a folder
-     read as "some rows appeared" rather than "this folder opened and here is what is inside". */
-  .pkrow.tree.open .pklead::after, .pkdent.open .pklead::after {
-    content: ""; position: absolute; top: 50%; bottom: 0;
-    left: calc(100% - var(--pktwid));
-    border-left: 3px solid var(--pkline); }
-  /* Each level is a column carrying a vertical rule (::before) and, at the row's own level, a
-     horizontal one turning into the name (::after). Drawn as pseudo-elements rather than a border
-     on the box so the last child can stop its vertical half-way (└) while staying pixel-aligned
-     with the full-height rules (│) of the siblings above it.
-     Sized for READING: 30px columns, a 3px rule and a 26px branch. At 16px and 1px the levels sat
-     so close, and the lines so faint, that the tree read as plain indentation — which is what it
-     was replacing. 26/2/18 fixed the spacing and still read as thin, so the stroke took weight and
-     the branch grew until it runs the whole column and arrives at the ▸ it points at. */
-  /* ONE definition of the tree's geometry. The guides read it, the ▸ reads it, and so does the
-     indent of the "empty" line that stands in where a row would be. That indent used to be a
-     magic `61 + depth * 26` in the renderer — a copy of these numbers that went wrong the instant
-     either changed, and was already wrong on the phone, where the ▸ is 34px and not 18px. */
-  /* --pkline lives on the ROW, not on .pkguide: the descender below is drawn by .pklead, which is
-     not inside a guide, and an out-of-scope var makes the whole `border-left` shorthand invalid —
-     computing to width 0, i.e. a line that silently is not there. */
-  /* 24px columns, down from 30: the column width is only indentation, and at depth 3 the desktop
-     was charging 90px of it to a 460px list — the same trade the phone already makes below, for
-     the same reason. The 3px stroke is what makes a tree legible; the gap between levels is not. */
-  .pkrow.tree, .pknone.tree { --pkline: #5b6a91; --pkcol: 24px; --pktwid: 18px; --pkiconw: 16px;
-    --pkgap: 8px;
-    /* where a row's NAME starts, measured from the row's left edge: padding + ▸ + gap + icon + gap.
-       Derived once so the stand-in line below tracks it — adding the folder icon moved every name
-       24px right and would otherwise have left that line behind, exactly as the old hardcoded
-       `61 + depth * 26` did. */
-    --pkname0: calc(9px + var(--pktwid) + var(--pkgap) + var(--pkiconw) + var(--pkgap)); }
-  .pkguide { flex: none; width: var(--pkcol); position: relative; }
-  .pkguide::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
-    border-left: 3px solid var(--pkline); }
-  .pkguide.blank::before { border-left-color: transparent; }
-  .pkguide.end::before { bottom: 50%; }
-  .pkguide.branch::after, .pkguide.end::after { content: ""; position: absolute; left: 0; top: 50%;
-    width: calc(var(--pkcol) - 4px); border-top: 3px solid var(--pkline); }
-  .pkrow.tree:hover, .pkrow.tree.sel { --pkline: var(--accent); }
-  /* the branch runs INTO this glyph, so an 11px one reads as a speck at the end of a 3px stroke */
-  .pktw { flex: none; width: var(--pktwid, 18px); display: flex; align-items: center;
-    justify-content: center; color: #9aa0ad; font-size: 13px; cursor: pointer; }
-  .pktw.open { color: var(--accent); }
-  .pktw:hover { color: #fff; }
-  .pkdtree .pknone.tree { --pkline: #5b6a91; --pkcol: 20px; --pktwid: 15px; --pkiconw: 14px;
-    --pkgap: 7px; --pkname0: calc(6px + var(--pktwid) + var(--pkgap) + var(--pkiconw) + var(--pkgap));
-    font-size: 11.5px; }
-  .pknone.tree { padding: 5px 9px; font-size: 12px; color: #5a5a5a; text-align: left;
-    padding-left: calc(var(--pkname0) + (var(--pkdepth, 0) + 1) * var(--pkcol)); }
-  /* what the tree LEFT OUT — the listing cap and the search budget. Amber, because it is not a
-     description of the folder (that is #5a5a5a above) but a statement that this list is short. */
-  .pknone.tree.pkcap { color: #b08a4a; }
-  /* a search draws its hits AND the folders on the way to them; the way is dimmed and the hit takes
-     the amber, so at a glance the answer is separable from the route to it */
-  .pkrow.tree.pkhit .pkleaf { color: var(--amber); }
-  .pkrow.tree.pkway .pkleaf { color: #7e7e7e; }
-  .pkrow:hover { background: var(--raised); }
-  .pkrow.sel { background: var(--sel); }
-  .pkrow.sel .pkuse { visibility: visible; }
-  .pkicon { flex: none; display: flex; width: 16px; height: 16px; color: #7f7f7f; }
-  .pkicon svg { width: 16px; height: 16px; display: block; }
-  /* the tree's icon is a STATE, so it is lit like one: grey shut, accent open — the same accent
-     the ▾ and the guides take, so one glance at a row answers "is this open" three ways */
-  .pkrow.tree .pkicon, .pkrow.tree .pkicon svg { width: var(--pkiconw); height: var(--pkiconw); }
-  .pkrow.tree .pkicon { color: #8a93a6; }
-  .pkrow.tree.open .pkicon { color: var(--accent); }
-  .pkrow.recent .pkicon { color: #a7c080; }
-  .pkrow.place .pkicon { color: var(--accent); }
-  .pkrow.up .pkicon { color: var(--dim); }
-  .pkname { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 9px; overflow: hidden; }
-  .pkleaf { flex: none; max-width: 64%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-size: 13px; color: #dcdcdc; }
-  .pkrow.up .pkleaf { color: #999; }
   .pksub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 11px; color: #5f5f5f; }
-  .pkgit { flex: none; font-size: 11px; color: var(--accent); opacity: 0.7; padding: 0 2px; }
-  .pkuse { flex: none; margin-left: 4px; padding: 3px 10px; border-radius: 6px; font-size: 12px;
-    color: var(--accent); visibility: hidden; }
-  .pkrow:hover .pkuse, .pkrow.sel .pkuse { visibility: visible; }
-  .pkuse:hover { background: var(--sel); }
   .pknone { padding: 12px 9px; font-size: 12px; color: #555; text-align: center; }
-  /* pin star: reserves a gutter (visibility, not display), ghost on hover, amber when pinned */
-  .pkpin { flex: none; width: 20px; text-align: center; font-size: 13px; color: #6a6a6a;
-    visibility: hidden; cursor: pointer; }
-  .pkrow:hover .pkpin, .pkrow.sel .pkpin { visibility: visible; }
-  .pkpin:hover { color: var(--amber); }
-  .pkpin.on { visibility: visible; color: var(--amber); }
-  .pkrow.pin .pkicon { color: var(--amber); }
-  .pkrow.pkwt { display: none; } /* hidden by the "hide lanes" toggle — separate from filter's pkhide */
-  /* left-fade the breadcrumb when ancestors have scrolled out of view (hint they're reachable) */
-  .pkcrumb.overflow { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);
-    mask-image: linear-gradient(90deg, transparent 0, #000 26px); }
-  /* the picker's detail pane: what this folder IS */
   /* WHERE AM I is the one question this pane must answer at a glance. The path was here all along
      but painted #777 — the same grey as secondary metadata — so it read as a caption rather than
      as the answer. Owner, 2026-08-04: „[Zitat entfernt]“
@@ -1942,9 +1804,6 @@
   .qspawnfx { font: 11.5px ui-monospace, Menlo, Consolas, monospace; color: var(--dim); line-height: 1.45; }
   .qspawnblock { font-size: 12px; color: var(--amber); background: #2a2320; border: 1px solid #5a4a2a;
     border-radius: 7px; padding: 6px 9px; line-height: 1.45; }
-  .pkdlast { font-size: 12.5px; color: #ddd; margin-top: 4px; }
-  .pkdcommit { padding: 5px 0; border-bottom: 1px solid #1e1e1e; }
-  .pkdcommit:last-of-type { border-bottom: 0; }
 
   /* THE FOUNDING WINDOW (src/founding.ts, Neuentwurf 2026-09-29) — a src/shell.ts window in the
      chat material (G6.3): one fixed size for every state, the backdrop dimmed, role tabs (G3.1)
@@ -1967,7 +1826,9 @@
   #shell-found .shellclose { display: grid; place-items: center; }
   #shell-found .shellclose svg { width: 14px; height: 14px; }
   #shell-found .shelltools { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; }
-  .fdtabs { display: flex; gap: 2px; overflow-x: auto; }
+  /* the five roles WRAP, never scroll: at 390px a scrolling row cut "Steward" to "Stewa" at the
+     edge, a role hidden behind a gesture the phone does not show */
+  .fdtabs { display: flex; flex-wrap: wrap; gap: 2px; }
   .fdtab { padding: 6px 10px; border-radius: var(--r1); white-space: nowrap;
     font: 500 var(--chat-code-fs)/1.2 var(--chat-sans); color: var(--chat-mute);
     transition: background var(--t), color var(--t); }
@@ -2092,54 +1953,7 @@
   .fdpin input { padding: 6px 8px; border-radius: var(--r1); font: 400 var(--chat-code-fs)/1.3 var(--chat-mono);
     color: var(--chat-ink); background: var(--chat-surface); border: 1px solid var(--chat-edge); }
   .fdpin input:focus { outline: none; border-color: var(--chat-mute); }
-  /* the folder's own children — drawn with the same elbows as the tree on the left.
-     NO max-height and NO scroller of its own: it had `max-height: 340px; overflow-y: auto`, which
-     sealed 1020px of listing into a 340px box while 197px of the detail pane below it sat empty.
-     That is the nested-scroller bug this window's own header calls out ("two nested scrollers is
-     the bug that made the old overlay feel like a keyhole") — .shelldetail already scrolls, so the
-     list simply runs to the bottom of the pane and the pane carries it. */
-  .pkdtree { margin-top: 8px; font: 13.5px ui-monospace, Menlo, Consolas, monospace; }
-  /* A FLAT listing is a grid, a NESTED one is a tree. With nothing expanded these rows are one
-     level of siblings in alphabetical order — 40 of them, 345px of ink each, stacked down the
-     middle of a 910px column. As a grid they are three columns and one glance. The moment anything
-     is expanded the class comes off in paintContents(): depth has to be drawn top-to-bottom, and a
-     column break through the middle of a subtree would cut the guide lines that say what contains
-     what. */
-  .pkdtree.flat { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    column-gap: 18px; }
-  /* the guides are the drawing of NESTING, and a flat grid has none — at one level they are an
-     elbow pointing at nothing, 20px per row of pure decoration. The ▸ stays: it is the control
-     that leaves this mode. */
-  .pkdtree.flat .pkguide { display: none; }
-  /* the SAME drawing as the tree on the left — guides, elbows, the descender under an open folder
-     — at this pane's smaller scale. It is one visual language for one idea (this is inside that),
-     and it is the reason these rows carry .pklead/.pkguide/.pktw rather than a ├ character: a
-     character cannot join up with the row above it, which is exactly what a tree has to do. */
-  .pkdent { display: flex; align-items: center; gap: var(--pkgap); padding: 0 6px; border-radius: 6px;
-    cursor: pointer; --pkline: #5b6a91; --pkcol: 20px; --pktwid: 15px; --pkiconw: 14px; --pkgap: 7px;
-    --pkname0: calc(6px + var(--pktwid) + var(--pkgap) + var(--pkiconw) + var(--pkgap)); }
-  .pkdent .pkdname { padding: 5px 0; }
-  .pkdent:hover { --pkline: var(--accent); }
-  .pkdent .pkicon, .pkdent .pkicon svg { width: var(--pkiconw); height: var(--pkiconw); }
-  .pkdent .pkicon { color: #7f8798; }
-  .pkdent.dir .pkicon { color: #8a93a6; }
-  .pkdent.open .pkicon { color: var(--accent); }
-  .pkdent .pktw { font-size: 11px; }
-  .pkdgo { flex: none; margin-left: auto; padding: 0 5px; color: var(--accent); font-size: 12px;
-    visibility: hidden; }
-  .pkdent:hover .pkdgo { visibility: visible; }
-  .pkdgo:hover { color: #cfe0ff; }
-  .pkdname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9a9a9a; }
-  .pkdent.dir .pkdname { color: var(--accent); }
-  /* EVERY row here acts on a click — a folder re-roots the tree, a file opens in the viewer — so
-     every row says so under the cursor. Only the folders ever did: when the file rows became
-     clickable they kept the text caret and no hover at all, which reads as prose that happens to
-     respond, and a row that acts without looking like it will is a row nobody clicks. */
-  .pkdent:hover { background: #232a3a; }
-  .pkdent:hover .pkdelbow { color: var(--accent); }
-  .pkdent:hover .pkdname { color: #dcdcdc; text-decoration: underline;
-    text-decoration-color: var(--accent); text-underline-offset: 3px; }
-  .pkdent.dir:hover .pkdname { color: #9ec1ff; }
+  /* end of THE FOUNDING WINDOW */
   .pkbtns { display: flex; justify-content: flex-end; gap: 8px; }
   .pkbtns button { padding: 9px 18px; border-radius: 9px; border: 1px solid var(--line); background: var(--raised);
     color: var(--text); font-size: 13px; font-family: inherit; cursor: pointer; }
@@ -2933,7 +2747,6 @@
   .bbtnrow .bbtn { margin-top: 0; }
   .bbtn:disabled { opacity: 0.55; cursor: default; }
   .bbtn.on { border-color: var(--chat-mute); background: var(--chat-surface); color: var(--chat-ink); }
-  .bbtn.ghost { background: transparent; }
   .bbtn.subtle { margin-top: 5px; padding: 3px 9px; color: var(--chat-mute); }
   /* one helper device: a card in the machine-level group. The board is 264px wide and a device
      names ITSELF (up to 40 chars), so the name must wrap rather than push the panel sideways —
@@ -3092,7 +2905,6 @@
        the hover rule, later in the sheet, so this wins) */
     .slot:hover .r1 .ctxfill, .slot:hover .r1 .act,
     .slot:focus-within .r1 .ctxfill, .slot:focus-within .r1 .act { visibility: visible; }
-    .pkrow .pkuse, .pkrow .pkpin { visibility: visible; }
   }
 
   /* --- mobile: phones in any orientation (short landscape counts too) --- */
@@ -3272,20 +3084,9 @@
     #morepanel .bbtn { min-height: 40px; }
 
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
-    .pkrow { padding: 11px 9px; font-size: 13px; }
     .qrelease { align-items: stretch; flex-wrap: wrap; }
     .qreleasenote { flex-basis: 100%; font-size: 12px; }
     .qrelease .shrbtn { min-height: 44px; }
-    /* the ▸ is the one control that must NOT push the detail pane — it is how you walk the tree
-       without leaving the list — so on touch it gets a target worth aiming at. Widening it shifts
-       the name column only: the guides sit BEFORE it, so a child's spine still lands on its
-       parent's elbow. */
-    /* the guides keep their WEIGHT here and give back their WIDTH. Clarity is the 3px stroke; the
-       column width is only indentation, and on 390px it is charged to the name — at depth 2 the
-       desktop's 30px columns plus the 34px touch target left 115px for a filename. */
-    .pkrow.tree, .pknone.tree { --pkcol: 22px; --pktwid: 34px; --pkiconw: 15px; --pkgap: 7px; }
-    /* the desktop row tightened to 31px; a finger needs the 37px back */
-    .pkrow.tree .pkname { padding: 10px 0; }
     /* clear of the prompt bar, which owns the bottom of a phone screen */
     #newver { right: 10px; bottom: calc(74px + env(safe-area-inset-bottom)); }
     #pkpath, #pkfilter, #gatein { font-size: 16px; }

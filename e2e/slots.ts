@@ -1308,7 +1308,8 @@ export async function run(): Promise<void> {
   // snapToBottom is Pane's one door for programmatic tail jumps (past the wheel smoothing); it
   // counts on the same counter as the bare xterm call it replaced
   const switched = { term: { scrollToBottom: () => { pinnedOnSwitch++; } }, snapToBottom: () => { pinnedOnSwitch++; },
-    pinToBottom: () => { pinnedOnSwitch++; }, chatEl: { scrollTop: 0, scrollHeight: 300 } };
+    pinToBottom: () => { pinnedOnSwitch++; }, chatEl: { scrollTop: 0, scrollHeight: 300 },
+    chatStuck: false, chatUnseen: 0, paintEndBtn: () => {} };
   // a lifted method that calls something this stub lacks must fail THIS check, not end the module
   let scrollThrew = "";
   try { scrollToEnd?.call(switched); } catch (e) { scrollThrew = e instanceof Error ? e.message : String(e); }
@@ -1333,14 +1334,27 @@ export async function run(): Promise<void> {
   // network: pollChat is a stand-in that fills an empty view from 0 and pins it the way the real one
   // does (the 120-px rule) and appends a delta otherwise.
   {
-    type Kid = { h: number; text: string; parent: FakeChat | null; readonly offsetTop: number; readonly offsetHeight: number; remove(): void };
+    type Kid = { h: number; text: string; parent: FakeChat | null; readonly offsetTop: number; readonly offsetHeight: number; remove(): void;
+      classList: Set<string> & { contains(c: string): boolean } };
     class FakeChat {
       kids: Kid[] = [];
       clientHeight = 400;
       private top = 0;
       get scrollHeight(): number { return this.kids.reduce((n, k) => n + k.h, 0); }
+      // a browser fires `scroll` when the position changes — Pane's reader (chatScrolled) hangs here
+      onscroll: (() => void) | null = null;
+      glides = 0;
       get scrollTop(): number { return this.top; }
-      set scrollTop(v: number) { this.top = Math.max(0, Math.min(v, Math.max(0, this.scrollHeight - this.clientHeight))); }
+      set scrollTop(v: number) {
+        const was = this.top;
+        this.top = Math.max(0, Math.min(v, Math.max(0, this.scrollHeight - this.clientHeight)));
+        if (this.top !== was) this.onscroll?.();
+      }
+      scrollTo(o: { top: number; behavior?: string }): void { if (o.behavior === "smooth") this.glides++; this.scrollTop = o.top; }
+      insertBefore(n: Kid, ref: Kid | null): Kid {
+        if (!ref || ref.parent !== this) return this.appendChild(n);
+        n.parent?.kids.splice(n.parent.kids.indexOf(n), 1); n.parent = this; this.kids.splice(this.kids.indexOf(ref), 0, n); return n;
+      }
       get childNodes(): Kid[] { return [...this.kids]; }
       get children(): Kid[] { return [...this.kids]; }
       get childElementCount(): number { return this.kids.length; }
@@ -1361,7 +1375,8 @@ export async function run(): Promise<void> {
       }
     }
     const kid = (text: string, h: number): Kid => {
-      const k: Kid = { h, text, parent: null,
+      const classList = Object.assign(new Set<string>(), { contains(this: Set<string>, c: string) { return this.has(c); } });
+      const k: Kid = { h, text, parent: null, classList,
         get offsetTop() { let y = 0; for (const o of k.parent?.kids ?? []) { if (o === k) return y; y += o.h; } return 0; },
         get offsetHeight() { return k.h; },
         remove() { if (k.parent) { k.parent.kids.splice(k.parent.kids.indexOf(k), 1); k.parent = null; } } };
@@ -1376,7 +1391,8 @@ export async function run(): Promise<void> {
       /\nconst CHAT_SHELF_MAX = .*;/, /\nconst chatShelf = .*;/, /\nconst bodySource = .*;/]
       .map((re) => re.exec(cliSrc!)?.[0] ?? "").join("\n");
     const lifted = ["assign", "refreshEntities", "relinkChat", "resetChat", "shelveChat", "unshelveChat", "chatKids",
-      "applyChatMemo", "scrollToEnd"].map(methodSrc);
+      "applyChatMemo", "scrollToEnd", "chatPosition", "chatScrolled", "followEnd", "settleEnd", "chatGrew", "paintEndBtn",
+      "chatAdd"].map(methodSrc);
     let liftError = "";
     let PaneClass: (new () => Record<string, unknown>) | null = null;
     try {
@@ -1386,19 +1402,28 @@ export async function run(): Promise<void> {
 ${topSrc}
 class LiftedPane { ${lifted.join("\n")} }
 export default LiftedPane;`).replace(/export default LiftedPane;?/, "return LiftedPane;");
+      // HTMLElement: chatAdd marks a delta's node .fresh only on an element — a fake kid counts as one
       PaneClass = new Function("fleet", "fxTree", "loadTree", "loadEntityDetails", "renderSlots", "saveView", "requestAnimationFrame",
-        "setTimeout", "clearTimeout", "CACHE_TTL_MS", "el", "mdInto", "decorateCode", "entityKnown", code)(
+        "setTimeout", "clearTimeout", "CACHE_TTL_MS", "el", "mdInto", "decorateCode", "entityKnown", "chatStill", "HTMLElement", code)(
         [], new Map(), async () => {}, async () => {}, () => {}, () => {}, (cb: () => void) => cb(),
-        () => 0, () => {}, 300_000, () => ({ querySelectorAll: () => [] }), () => {}, () => {}, () => false);
+        () => 0, () => {}, 300_000, () => ({ querySelectorAll: () => [] }), () => {}, () => {}, () => false, { matches: false },
+        { [Symbol.hasInstance]: (x: unknown) => !!(x as { classList?: unknown })?.classList });
     } catch (e) { liftError = e instanceof Error ? e.message : String(e); }
     // one transcript per slot: 30 messages of mixed height; the stand-in poll loads them from 0 or
     // brings `grow` new ones as a delta
     const transcript = (slot: number, from: number, n: number): Kid[] =>
       Array.from({ length: n }, (_, i) => kid(`slot ${slot} msg ${from + i}`, 60 + ((from + i) * 37) % 90));
-    const mkPane = (): Record<string, unknown> & { chatEl: FakeChat } => {
+    type FakeBtn = { title: string; classList: { on: Set<string>; toggle(c: string, v: boolean): void };
+      setAttribute(k: string, v: string): void; getAttribute(k: string): string | null };
+    const mkPane = (): Record<string, unknown> & { chatEl: FakeChat; endBtn: FakeBtn; endCount: { textContent: string } } => {
       const chatEl = new FakeChat();
+      const endAttrs = new Map<string, string>();
+      const endBtn: FakeBtn = { title: "", classList: { on: new Set<string>(), toggle(c: string, v: boolean) { if (v) this.on.add(c); else this.on.delete(c); } },
+        setAttribute: (k: string, v: string) => { endAttrs.set(k, v); }, getAttribute: (k: string) => endAttrs.get(k) ?? null };
       const p = Object.assign(PaneClass ? new PaneClass() : {}, {
         slot: 0, view: "chat", pastN: null, hoverOn: false, chatEl, workEl: kid("work", 0),
+        chatStuck: true, chatUnseen: 0, chatLastTop: 0, chatFresh: false, followTimer: undefined, cacheTtlSec: null,
+        endBtn, endCount: { textContent: "" },
         term: { reset() {} }, ws: null, gen: 0, retries: 0, held: "", dropped: 0, fit: { fit() {} },
         boardBtn: { style: {} }, reloadBtn: { style: {} }, hint: { style: {} }, pinPending: false,
         chatTotal: 0, chatSource: null, chatGen: 0, chatMemo: null, chatBusy: false, chatPinUntil: 0,
@@ -1406,16 +1431,22 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         pending: [], openAgents: new Map(), grow: 0,
         leavePast() {}, hideDown() {}, hideCopy() {}, syncHarnessAffordances() {}, connect() {}, focus() {},
         snapToBottom() {}, pinToBottom() {}, updateWork() {},
-        pollChat(this: { slot: number; chatEl: FakeChat; chatTotal: number; chatSource: string | null; grow: number }) {
-          const pinned = this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - 120;
+        // the network stand-in; what it does with the entries is the real pollChat's delta path
+        // (first/before/chatFresh/chatAdd/chatGrew — pinned against the source below)
+        pollChat(this: { slot: number; chatEl: FakeChat; chatTotal: number; chatSource: string | null; grow: number;
+          chatFresh: boolean; chatAdd(n: Kid): void; chatGrew(added: number, first: boolean): void }) {
+          const first = this.chatTotal === 0, before = this.chatEl.childElementCount;
           const add = this.chatTotal ? transcript(this.slot, this.chatTotal, this.grow) : transcript(this.slot, 0, 30);
-          for (const k of add) this.chatEl.appendChild(k);
+          this.chatFresh = !first;
+          for (const k of add) this.chatAdd(k);
+          this.chatFresh = false;
           this.chatTotal += add.length;
           this.chatSource = `s${this.slot}.jsonl`;
-          if (pinned) this.chatEl.scrollTop = this.chatEl.scrollHeight;
+          this.chatGrew(this.chatEl.childElementCount - before, first);
         },
       });
-      return p as Record<string, unknown> & { chatEl: FakeChat };
+      chatEl.onscroll = () => { const f: unknown = (p as Record<string, unknown>).chatScrolled; if (typeof f === "function") f.call(p); };
+      return p as Record<string, unknown> & { chatEl: FakeChat; endBtn: FakeBtn; endCount: { textContent: string } };
     };
     const call = (p: Record<string, unknown>, m: string, ...a: unknown[]): string => {
       const f = p[m];
@@ -1473,6 +1504,139 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("chat position: two panes on different slots keep their positions independently",
       !liftError && same(aTop, aBack) && same(bPaneTop, bPaneAfter) && bPaneTop?.kid === bPaneAfter?.kid,
       `pane 2 ${bPaneTop?.kid.text}@${bPaneTop?.off} -> ${bPaneAfter?.kid.text}@${bPaneAfter?.off}`);
+
+    // --- TRANCHE 2 (owner 2026-09-29: „[Zitat entfernt]“
+    // ). The same lifted Pane, the same fake geometry;
+    // a scrollTop change calls Pane's scroll reader the way a browser's scroll event does.
+    // (A) haften: at the end the view follows, gliding; a scroll UP lets go, and what arrives then is
+    // counted on the end button while nothing moves; scrolling back down to the end sets it again;
+    // the button glides there and haftet.
+    // slots 12 and 13: the shelf is the page's one map, and slot 2 still sits on it from above
+    const h = mkPane();
+    errs.length = 0;
+    errs.push(call(h, "assign", 12));
+    const pressedAtOpen = h.endBtn.getAttribute("aria-pressed");
+    h.grow = 2;
+    const glidesBefore = h.chatEl.glides;
+    errs.push(call(h, "pollChat"));
+    const followed = h.chatEl.scrollTop + h.chatEl.clientHeight >= h.chatEl.scrollHeight - 1 && h.chatEl.glides > glidesBefore;
+    h.chatEl.scrollTop -= 300; // the reader's hand
+    const released = h.endBtn.getAttribute("aria-pressed") === "false";
+    const heldTop = h.chatEl.topKid();
+    h.grow = 3;
+    errs.push(call(h, "pollChat"));
+    errs.push(call(h, "pollChat"));
+    const heldAfter = h.chatEl.topKid();
+    const counted = h.endCount.textContent, news = h.endBtn.classList.on.has("news");
+    h.chatEl.scrollTop = h.chatEl.scrollHeight; // scrolled down to the end by hand
+    const reStuck = h.endBtn.getAttribute("aria-pressed") === "true" && h.endCount.textContent === "";
+    h.chatEl.scrollTop -= 500;
+    h.grow = 1;
+    errs.push(call(h, "pollChat"));
+    const glides2 = h.chatEl.glides;
+    const onclick = /this\.endBtn\.onclick = \(e\) => \{ e\.stopPropagation\(\); this\.followEnd\(true\); \};/.test(cliSrc);
+    errs.push(call(h, "followEnd", true)); // what the button's onclick runs
+    const buttonEnd = h.chatEl.scrollTop + h.chatEl.clientHeight >= h.chatEl.scrollHeight - 1 && h.chatEl.glides === glides2 + 1
+      && h.endBtn.getAttribute("aria-pressed") === "true" && h.endCount.textContent === "";
+    check("chat haftet (A): at the end the view follows new messages with a glide, the end button pressed",
+      !liftError && pressedAtOpen === "true" && followed,
+      `${errs.filter(Boolean).join("; ") || "ran"} · pressed at open ${pressedAtOpen} · followed ${followed}`);
+    check("chat haftet (A): a scroll up lets go — new messages are counted on the end button (\"6 neu\") and the read message stays put",
+      !liftError && released && counted === "6 neu" && news && same(heldTop, heldAfter),
+      `released ${released} · count "${counted}" · news ${news} · top ${heldTop?.kid.text}@${heldTop?.off} -> ${heldAfter?.kid.text}@${heldAfter?.off}`);
+    check("chat haftet (A): scrolling down to the end, or the end button (a glide), sets it again and clears the count",
+      !liftError && reStuck && onclick && buttonEnd,
+      `by hand ${reStuck} · onclick followEnd(true) ${onclick} · button ${buttonEnd}`);
+    check("chat haftet (A): the end button replaces \"zum Anfang\" in the chat half of the corner row, after the prompt jumps",
+      cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navUp, navDn, navEnd, this.sizeBtn)")
+        && /this\.endBtn = el\("button", "promptnav end"\)/.test(cliSrc) && !/promptnav top/.test(cliSrc)
+        && !/scrollTo\(\{ top: 0/.test(cliSrc),
+      "Pane endBtn / toolsView");
+    // (B) the fly-in: a delta's new nodes carry .fresh, a first fill does not; and 120 s of a growing
+    // transcript (a poll every 3 s) leave the read message of a released view on its pixel (±2)
+    const g = mkPane();
+    errs.length = 0;
+    errs.push(call(g, "assign", 13));
+    const firstFresh = g.chatEl.kids.filter((k) => k.classList.contains("fresh")).length;
+    g.chatEl.scrollTop = 1200;
+    const gTop = g.chatEl.topKid();
+    let freshDelta = 0, deltaKids = 0;
+    for (let t = 0; t < 120; t += 3) {
+      g.grow = 1 + (t % 3);
+      const n = g.chatEl.kids.length;
+      errs.push(call(g, "pollChat"));
+      const add = g.chatEl.kids.slice(n);
+      deltaKids += add.length;
+      freshDelta += add.filter((k) => k.classList.contains("fresh")).length;
+    }
+    const gAfter = g.chatEl.topKid();
+    const pollSrc = /\n  private async pollChat\(\)[\s\S]*?\n  \}/.exec(cliSrc)?.[0] ?? "";
+    const realDelta = /const first = this\.chatTotal === 0, before = this\.chatEl\.childElementCount;\n\s*this\.chatFresh = !first;/.test(pollSrc)
+      && /this\.chatFresh = false;[\s\S]{0,300}this\.chatGrew\(this\.chatEl\.childElementCount - before, first\);/.test(pollSrc);
+    const fresh = /\n\s*\.panechat \.fresh \{([^}]*)\}/.exec(indexSrc)?.[1] ?? "";
+    const ms = Number(/animation:\s*chatin\s+(\d+)ms/.exec(fresh)?.[1] ?? NaN);
+    const still = /@media \(prefers-reduced-motion: reduce\) \{ \.panechat \.fresh \{ animation: none; \} \}/.test(indexSrc);
+    // one check: the fly-in is only acceptable WITH the Tranche-1 guarantee under it (the position
+    // half alone already held before the fly-in existed)
+    check("chat einfliegen (B): new messages and tool calls fly in (≤ 250 ms, off under prefers-reduced-motion, not on a first fill) while 120 s of growth keep a released view's read message within 2 px",
+      !liftError && firstFresh === 0 && deltaKids > 0 && freshDelta === deltaKids && realDelta && ms > 0 && ms <= 250 && still
+        && /if \(this\.chatFresh\) step\.classList\.add\("fresh"\)/.test(cliSrc)
+        && same(gTop, gAfter) && gTop?.kid === gAfter?.kid,
+      `${errs.filter(Boolean).join("; ") || "ran"} · first fill fresh ${firstFresh} · delta ${freshDelta}/${deltaKids} fresh · pollChat delta path ${realDelta} · ${ms} ms · reduced-motion ${still} · top ${gTop?.kid.text}@${gTop?.off} -> ${gAfter?.kid.text}@${gAfter?.off}`);
+  }
+  // (C) a send shows whether it still waits or is through: the pending bubble carries "wartet" once
+  // the board delivered it, the transcript entry that retires it carries "durch"
+  check("chat senden (C): a sent message shows \"wartet\" until the transcript has it, then \"durch\"",
+    /msg\.append\(body, sendState\("sending"\), meta\)/.test(cliSrc)
+      && /pending\?\.querySelector\("\.msend"\)\?\.replaceWith\(sendState\("wait"\)\)/.test(cliSrc)
+      && /const arrived = e\.role === "user" && this\.settlePending\(raw\);/.test(cliSrc)
+      && /msg\.append\(body, \.\.\.\(arrived \? \[sendState\("done"\)\] : \[\]\), meta\)/.test(cliSrc)
+      && /wait: "wartet", done: "durch"/.test(cliSrc),
+    "addPending / doSend / appendEntry / sendState in src/client.ts");
+  // (D) the click into the composer: the free space under the last message and the bottom third,
+  // never a selection, a double click or something with its own click
+  {
+    const src = /\nconst CHAT_CLICK_OWN = [^\n]*\n/.exec(cliSrc)?.[0] ?? "";
+    const fn = /\nfunction chatClickToComposer\([\s\S]*?\n\}/.exec(cliSrc)?.[0] ?? "";
+    let clickErr = "";
+    const got: boolean[] = [];
+    try {
+      const f = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(src + fn) + "\nreturn chatClickToComposer;")() as
+        (e: { detail: number; clientY: number; target: unknown }, v: { top: number; height: number }, last: number, sel: boolean) => boolean;
+      const plain = { closest: () => null }, link = { closest: (q: string) => (q.includes("a,") ? {} : null) };
+      const v = { top: 100, height: 600 };
+      got.push(f({ detail: 1, clientY: 650, target: plain }, v, 900, false)); // bottom third, over a message → composer
+      got.push(f({ detail: 1, clientY: 300, target: plain }, v, 900, false)); // upper two thirds, over a message → no
+      got.push(f({ detail: 1, clientY: 320, target: plain }, v, 280, false)); // under the last message → composer
+      got.push(f({ detail: 1, clientY: 650, target: plain }, v, 900, true)); // a selection → no
+      got.push(f({ detail: 2, clientY: 650, target: plain }, v, 900, false)); // a double click → no
+      got.push(f({ detail: 1, clientY: 650, target: link }, v, 900, false)); // a link → no
+    } catch (e) { clickErr = e instanceof Error ? e.message : String(e); }
+    check("chat eingabe (D): a click under the last message or in the bottom third goes to the composer — never a selection, a double click or a link",
+      !clickErr && got.join(",") === "true,false,true,false,false,false"
+        && /if \(chatClickToComposer\(e, \{ top: box\.top, height: box\.height \}, lastBottom, !!sel && !sel\.isCollapsed\)\) ta\.focus\(\);/.test(cliSrc),
+      clickErr || got.join(","));
+  }
+  // (E) the cache counter of a claude pane reads the tier from the server: transcriptPayload carries
+  // ttlSec from deliveryCacheState (live slot only), pollChat takes it, and the warning comes
+  // min(300, ttlSec/5) s before the edge; codex/pi (no tier named) keep the 20 s lead
+  {
+    let srv = "", leadErr = "";
+    try { srv = readFileSync(`${sourceRoot}/server.ts`, "utf8"); } catch (e) { leadErr = e instanceof Error ? e.message : String(e); }
+    const lead = /\nconst CACHE_COLD_LEAD_MS = [^\n]*\n/.exec(cliSrc)?.[0] ?? "";
+    const fn = /\nexport function cacheLeadMs\([\s\S]*?\n\}/.exec(cliSrc)?.[0] ?? "";
+    let leads: number[] = [];
+    try {
+      const f = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(lead + fn.replace("export ", "")) + "\nreturn cacheLeadMs;")() as (t: number | null) => number;
+      leads = [f(3600), f(300), f(null)];
+    } catch (e) { leadErr ||= e instanceof Error ? e.message : String(e); }
+    const payload = /const tier = harnessOf\(s\.harness\)\.id === "claude" && slots\[s\.id - 1\] === s \? \{ ttlSec: deliveryCacheState\(s\)\.ttlSec \} : \{\};/.test(srv)
+      && /return \{ entries, total: lines\.length, source: file\.split\("\/"\)\.pop\(\) \?\? null, model, effort, \.\.\.tier \};/.test(srv);
+    const taken = /if \(data\.cache === undefined && typeof data\.ttlSec === "number"[^\n]*\n\s*this\.cacheTtlSec = data\.ttlSec;\n\s*this\.cacheTtl = data\.ttlSec \* 1000;/.test(cliSrc);
+    const used = /const cold = ms >= ttl - cacheLeadMs\(panes\[focused\]\?\.cacheTtlSec \?\? null\);/.test(cliSrc);
+    check("cache counter (E): a claude pane measures against the server's tier and warns min(300, ttlSec/5) s before the edge; codex/pi keep 20 s",
+      !leadErr && leads.join(",") === "300000,60000,20000" && payload && taken && used,
+      leadErr || `leads 1h/5m/none ${leads.join(",")} · payload ${payload} · pollChat ${taken} · tickCacheAge ${used}`);
   }
   // (7) after a switch the keyboard lands on the input of the view on screen: in the chat view that
   // is the composer (the terminal under it is visibility:hidden and refuses focus — measured: every
@@ -1493,12 +1657,6 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("chat position: a switch puts the keyboard on the composer in the chat view and on the terminal in the terminal view",
       !focusErr && got.join(",") === "composer,terminal", focusErr || got.join(","));
   }
-  // (5) the way back to the top: a corner-row button beside the prompt jumps that scrolls to 0
-  check("chat position: a \"zum Anfang\" button in the chat corner row scrolls to the first message",
-    /navTop = el\("button", "promptnav top"\)/.test(cliSrc)
-      && /navTop\.onclick = [^\n]*this\.chatEl\.scrollTo\(\{ top: 0/.test(cliSrc)
-      && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navTop, navUp, navDn, this.sizeBtn)"),
-    "Pane navTop");
   check("B2: every pane observes its own size, debounces refit, and disconnects at disposal",
     /this\.sizeObserver = new ResizeObserver\(/.test(cliSrc)
       && /this\.sizeObserver\.observe\(this\.root\)/.test(cliSrc)
@@ -2910,12 +3068,12 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
           JSON.stringify({ closeCenter, toggleCenter, dx, dy }));
       }
       // …and the two rows split both-view from view-bound: ℹ 💬 ⚙ never move (top), the active
-      // view's own sit below — terminal ↻ ⇔, chat ⤒ ↑ ↓ Aa (the mapping Pane's build encodes and
-      // index.html's visibility rules paint; ⤒ "zum Anfang" is a .promptnav, so it rides the same
+      // view's own sit below — terminal ↻ ⇔, chat ↑ ↓ ⤓ Aa (the mapping Pane's build encodes and
+      // index.html's visibility rules paint; ⤓ the end button is a .promptnav, so it rides the same
       // rules). Mutation probe: move widthBtn into toolsTop and this goes red.
-      check("client: the corner group's rows split both-view (⚙ ⌕ 💬 ℹ) from view-bound (terminal ↻ ⇔ / chat ⤒ ↑ ↓ Aa) — ℹ rightmost, on the corner the close box must land on",
+      check("client: the corner group's rows split both-view (⚙ ⌕ 💬 ℹ) from view-bound (terminal ↻ ⇔ / chat ↑ ↓ ⤓ Aa) — ℹ rightmost, on the corner the close box must land on",
         cliSrc.includes("toolsTop.append(this.gearBtn, this.hoverBtn, this.viewBtn, this.boardBtn)")
-        && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navTop, navUp, navDn, this.sizeBtn)")
+        && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navUp, navDn, navEnd, this.sizeBtn)")
         && /flex-direction:\s*column/.test(cssBody(".panetools"))
         && /visibility:\s*hidden/.test(cssBody(".pane.chat .termwidth, .pane.chat .panereload"))
         && /visibility:\s*visible/.test(cssBody(".pane.chat .promptnav, .pane.chat .chatsizebtn")),

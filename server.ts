@@ -19364,12 +19364,17 @@ function viewEntry(raw: unknown, n: number, full = false): TEntry | null {
 // the conversation view's data source, shared by the owner chat view and the guest
 // reader — `after` = line count the client has already consumed, so entry numbering
 // must be absolute line numbers
+// `ttlSec` (claude only, Tranche 2 of the chat view): the cache tier the composer's counter measures
+// against — the same reading the delivery cache edge uses (deliveryCacheState: 3600 on a 1 h write,
+// 300 on a 5 min one or when the file names none). Only for the slot's LIVE record: a past session's
+// copy (pastTranscript) would re-key the per-slot context cache under a stranger's session id.
 async function transcriptPayload(s: Slot, afterRaw: number, full = false):
-  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null }> {
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null; ttlSec?: number }> {
   const conv = harnessOf(s.harness).conversation;
   if (conv) return conversationPayload(s, conv, afterRaw);
   const file = transcriptFile(s);
   if (!file) return { entries: [], total: 0, source: null };
+  const tier = harnessOf(s.harness).id === "claude" && slots[s.id - 1] === s ? { ttlSec: deliveryCacheState(s).ttlSec } : {};
   const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
   const after = Math.max(0, afterRaw | 0);
   // A queued prompt the transcript ALSO records as its own type:user turn (same source_uuid)
@@ -19397,10 +19402,10 @@ async function transcriptPayload(s: Slot, afterRaw: number, full = false):
       // only the FINAL line may be a partial mid-append (cap total so the next poll
       // re-reads it once complete) — an unparseable line mid-file is just skipped,
       // otherwise it would pin total forever and loop the client on the same range
-      if (i === lines.length - 1) return { entries, total: i, source: file.split("/").pop() ?? null, model, effort };
+      if (i === lines.length - 1) return { entries, total: i, source: file.split("/").pop() ?? null, model, effort, ...tier };
     }
   }
-  return { entries, total: lines.length, source: file.split("/").pop() ?? null, model, effort };
+  return { entries, total: lines.length, source: file.split("/").pop() ?? null, model, effort, ...tier };
 }
 
 // the model the conversation's newest assistant turn ran on (Claude writes message.model on every

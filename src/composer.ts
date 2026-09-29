@@ -131,6 +131,14 @@ function setModelWarnOff(): void {
 export const CACHE_TTL_MS = 5 * 60_000;
 // The same 20 s lead before every TTL, so the turn to cold never arrives as a surprise.
 const CACHE_COLD_LEAD_MS = 20_000;
+// CLAUDE, Tranche 2 of the chat view: the server names the tier (transcript payload `ttlSec`, from
+// server.ts#deliveryCacheState — measured docs/messungen/2026-09-29-claude-cache-ttl.md: the main
+// conversations hold 1 h), and the warning comes min(300, ttlSec/5) s before the edge — the same edge
+// the delivery path calls "kalt". null = no tier named by the server (codex, pi, before the first
+// read): the 20 s lead as before.
+export function cacheLeadMs(ttlSec: number | null): number {
+  return ttlSec === null ? CACHE_COLD_LEAD_MS : Math.min(300, ttlSec / 5) * 1000;
+}
 // codex and pi (sixteenth cut): MEASURED, not documented — docs/messungen/2026-09-19-codex-pi-
 // composer-anbindung.md §Cache-Treffer. z.ai: ≥ 76 % hits up to 15 min pause, 60 % at 15–30, 20 % at
 // 30–60 → 15 min. codex (ChatGPT backend): 84–85 % up to 60 min, 73 % at 1–2 h, 20 % beyond → 1 h.
@@ -176,7 +184,7 @@ export function tickCacheAge(): void {
   ageEl.hidden = ms === null;
   if (ms === null) return;
   const ttl = panes[focused]?.cacheTtl ?? CACHE_TTL_MS;
-  const cold = ms >= ttl - CACHE_COLD_LEAD_MS;
+  const cold = ms >= ttl - cacheLeadMs(panes[focused]?.cacheTtlSec ?? null);
   ageEl.textContent = fmtAge(ms);
   ageEl.classList.toggle("cold", cold);
   ageEl.title = cold
@@ -410,7 +418,7 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
       ? "Switching the model drops this session's prompt cache — the next turn re-reads the full context."
       : `${harnessEntry(slot)?.id ?? "This harness"} has no in-session /${field}: Switch restarts the pane with the new ${field} and resumes the conversation. Whatever it is doing right now stops.`));
     const ttl = panes[focused]?.cacheTtl ?? CACHE_TTL_MS;
-    if (ms !== null) box.appendChild(el("div", "cfage", `Last request ${fmtAge(ms)} ago${ms >= ttl ? " — the cache is probably cold already" : ms >= ttl - CACHE_COLD_LEAD_MS ? " — the cache expires shortly" : ""}.`));
+    if (ms !== null) box.appendChild(el("div", "cfage", `Last request ${fmtAge(ms)} ago${ms >= ttl ? " — the cache is probably cold already" : ms >= ttl - cacheLeadMs(panes[focused]?.cacheTtlSec ?? null) ? " — the cache expires shortly" : ""}.`));
     const opt = el("label", "cfskip");
     const cb = document.createElement("input");
     cb.type = "checkbox";

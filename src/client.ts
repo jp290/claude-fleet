@@ -877,12 +877,49 @@ const PRESS_MS = 450;
 const PRESS_SLOP_PX = 10;
 
 // THE CHAT VIEW'S READING POSITION (Tranche 1, owner 2026-09-29: „[Zitat entfernt]“
-// ). Within CHAT_FOLLOW_PX of the end the
-// view follows new messages; anywhere above it stands still. A position is kept as an ANCHOR — the
+// ). A position is kept as an ANCHOR — the
 // topmost visible top-level child and how far its top sits from the viewport's top — not as a
 // scrollTop: a pane of another width reflows every message above it, and the anchor survives that
 // where a pixel offset does not. "end" = the view was following.
-const CHAT_FOLLOW_PX = 120;
+// Tranche 2 (owner, same day: „[Zitat entfernt]“): following is a STATE, Pane's
+// chatStuck — scrolling up releases it, reaching the end sets it again. CHAT_FOLLOW_PX is only how
+// close to the bottom counts as "at the end" (sub-pixel scroll positions, a trackpad's last nudge);
+// it was 120 px while the geometry alone decided, and then a short scroll up never let go.
+const CHAT_FOLLOW_PX = 8;
+// the fly-in of a new message or tool call (public/index.html .fresh, ≤ 250 ms, off under
+// prefers-reduced-motion) — and the same switch decides whether following glides or jumps
+const chatStill = matchMedia("(prefers-reduced-motion: reduce)");
+// A SEND'S STATE under YOUR bubble (Tranche 2, owner: „[Zitat entfernt]“
+// ): the state as a word, the dot in the state colour (G2.3).
+// "wartet" = this board sent it and the transcript has not brought it back — Claude Code queues a
+// prompt sent mid-turn and writes it after the turn; "durch" = the transcript has it (the entry that
+// retired the bubble). Nothing more is claimed: not read, not answered.
+type SendState = "sending" | "wait" | "done";
+const SEND_WORD: Record<SendState, string> = { sending: "wird gesendet …", wait: "wartet", done: "durch" };
+const SEND_TITLE: Record<SendState, string> = {
+  sending: "Geht gerade an die Session.",
+  wait: "Gesendet, aber noch nicht im Verlauf der Session — läuft dort gerade ein Schritt, nimmt sie die Nachricht danach.",
+  done: "Im Verlauf der Session angekommen — sie arbeitet damit.",
+};
+function sendState(kind: SendState): HTMLElement {
+  const s = el("div", `msend ${kind}`);
+  s.append(el("span", "msenddot"), SEND_WORD[kind]);
+  s.title = SEND_TITLE[kind];
+  return s;
+}
+// THE CLICK INTO THE COMPOSER (Tranche 2, owner: „[Zitat entfernt]“
+// ). A plain click lands in the
+// composer when it hits the free space under the last message, or anywhere in the view's bottom
+// third — unless it made a selection, was a double click, or hit something that has its own click
+// (a link, a button, a fold, an entity reference, an image, a field).
+const CHAT_CLICK_OWN = "a, button, summary, input, textarea, select, label, img, [data-ent], [contenteditable]";
+function chatClickToComposer(e: { detail: number; clientY: number; target: EventTarget | null },
+  view: { top: number; height: number }, lastBottom: number, selected: boolean): boolean {
+  if (selected || e.detail > 1) return false;
+  const t = e.target as Element | null;
+  if (t && typeof t.closest === "function" && t.closest(CHAT_CLICK_OWN)) return false;
+  return e.clientY >= lastBottom || e.clientY >= view.top + (view.height * 2) / 3;
+}
 type ChatAnchor = "end" | { node: ChatKid; off: number };
 type ChatBox = { scrollTop: number; readonly clientHeight: number; readonly scrollHeight: number };
 type ChatKid = { offsetTop: number; offsetHeight: number };
@@ -904,7 +941,7 @@ function restoreChatAnchor(chat: ChatBox, kids: ArrayLike<ChatKid>, a: ChatAncho
 const CHAT_SHELF_MAX = 8;
 type ChatToolGroup = { det: HTMLElement; sum: HTMLElement; body: HTMLElement; count: number; lastStep: HTMLElement | null };
 type ChatNotifGroup = { sum: HTMLElement; body: HTMLElement; count: number };
-type ChatShelfRow = { nodes: Node[]; total: number; source: string | null; lastTurnAt: number; cacheTtl: number | null;
+type ChatShelfRow = { nodes: Node[]; total: number; source: string | null; lastTurnAt: number; cacheTtl: number | null; cacheTtlSec: number | null;
   model: string | null; effort: string | null; toolGroup: ChatToolGroup | null; notifGroup: ChatNotifGroup | null;
   pending: { text: string; el: HTMLElement }[]; openAgents: Map<string, { step: HTMLElement; run: HTMLElement }>;
   hover: boolean; anchor: ChatAnchor | null };
@@ -926,7 +963,18 @@ class Pane {
   private lastRows = 0;
   private resizeTimer: ReturnType<typeof setTimeout> | undefined;
   private bottomTimer: ReturnType<typeof setTimeout> | undefined;
-  private chatPinUntil = 0;
+  // THE CHAT VIEW HAFTET AM ENDE (Tranche 2): true = the view follows new messages, gliding;
+  // scrolling up releases it, reaching the end or the end button sets it again. What arrives while
+  // it is released is counted (chatUnseen) and shown on the end button.
+  private chatStuck = true;
+  private chatUnseen = 0;
+  private chatLastTop = 0;
+  private followTimer: ReturnType<typeof setTimeout> | undefined;
+  // set while a poll appends a DELTA: what goes into the view then flies in (.fresh); a first fill,
+  // a refill and a slot coming off the shelf do not
+  private chatFresh = false;
+  private readonly endBtn: HTMLButtonElement;
+  private readonly endCount: HTMLElement;
   private readonly sizeObserver: ResizeObserver;
   private observedRefit: ReturnType<typeof setTimeout> | undefined;
   readonly root: HTMLElement;
@@ -957,6 +1005,9 @@ class Pane {
   // the TTL the counter measures against, named by the conversation source: Claude's 5 min, or
   // the provider a codex/pi file names (cacheTtlFor). null = a provider nobody measured → no counter.
   cacheTtl: number | null = CACHE_TTL_MS;
+  // claude: the tier the server named (transcript payload `ttlSec`); cacheTtl follows it and the
+  // warning lead comes from it (composer.ts#cacheLeadMs). null = not named — codex/pi, or no read yet
+  cacheTtlSec: number | null = null;
   // the model the conversation's newest request ran on, as its file names it (transcript payload
   // `model`); null until the chat view has read one
   observedModel: string | null = null;
@@ -1010,6 +1061,21 @@ class Pane {
       e.clipboardData.setData("text/plain", md);
       e.preventDefault();
     });
+    this.chatEl.addEventListener("scroll", () => this.chatScrolled(), { passive: true });
+    // a glide can stop short when a message it passed was laid out late (content-visibility):
+    // the rest is a snap of a few pixels
+    this.chatEl.addEventListener("scrollend", () => this.settleEnd());
+    this.chatEl.addEventListener("animationend", (e) => { (e.target as Element).classList?.remove("fresh"); });
+    this.chatEl.addEventListener("click", (e) => {
+      if (!this.slot || this.pastN !== null || ta.disabled) return;
+      const box = this.chatEl.getBoundingClientRect();
+      const kids = this.chatKids();
+      let last: HTMLElement | null = null;
+      for (let i = kids.length - 1; i >= 0 && !last; i--) if (kids[i] !== this.workEl && kids[i].offsetHeight) last = kids[i];
+      const lastBottom = last ? last.getBoundingClientRect().bottom : box.top;
+      const sel = window.getSelection();
+      if (chatClickToComposer(e, { top: box.top, height: box.height }, lastBottom, !!sel && !sel.isCollapsed)) ta.focus();
+    });
     // THE PANE'S CORNER GROUP (Grammatik K4): one container, one base rule in index.html — no
     // per-button absolute top/right arithmetic. TWO ROWS (owner 2026-09-22: „[Zitat entfernt]“
     // ): the top row
@@ -1059,12 +1125,16 @@ class Pane {
     navDn.appendChild(icon("down"));
     navDn.title = "Dein nächster Prompt";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
-    // owner 2026-09-29: „[Zitat entfernt]“ — beside the
-    // prompt jumps it serves (Grammatik §1 Zuhause: the pane's corner row, chat half)
-    const navTop = el("button", "promptnav top") as HTMLButtonElement;
-    navTop.appendChild(icon("up"));
-    navTop.title = "Zum Anfang der Konversation";
-    navTop.onclick = (e) => { e.stopPropagation(); this.chatEl.scrollTo({ top: 0, behavior: "smooth" }); };
+    // THE END BUTTON (Tranche 2) replaces Tranche 1's "zum Anfang" — owner: „[Zitat entfernt]“
+    // 
+    // . Home: the pane's corner row, chat half, after the prompt jumps (Grammatik §1). It is a
+    // toggle (G1.3): pressed = the view haftet am Ende; released with news = the count in words.
+    this.endBtn = el("button", "promptnav end") as HTMLButtonElement;
+    this.endBtn.appendChild(icon("down"));
+    this.endCount = el("span", "endcount");
+    this.endBtn.appendChild(this.endCount);
+    this.endBtn.onclick = (e) => { e.stopPropagation(); this.followEnd(true); };
+    const navEnd = this.endBtn;
     this.sizeBtn = el("button", "chatsizebtn", "Aa") as HTMLButtonElement;
     this.sizeBtn.title = "Schrift und Spalte — in den Einstellungen (Strg/⌘ + / − / 0)";
     // the Aa panel's ONE home is the settings window's "Schrift" section (G5.3, kein zweites
@@ -1096,7 +1166,7 @@ class Pane {
     const toolsTop = el("div", "ptrow ptboth");
     toolsTop.append(this.gearBtn, this.hoverBtn, this.viewBtn, this.boardBtn);
     const toolsView = el("div", "ptrow ptview");
-    toolsView.append(this.reloadBtn, this.widthBtn, navTop, navUp, navDn, this.sizeBtn);
+    toolsView.append(this.reloadBtn, this.widthBtn, navUp, navDn, navEnd, this.sizeBtn);
     this.toolsBox = el("div", "panetools");
     this.toolsBox.append(toolsTop, toolsView);
     this.pastBar = el("div", "pastbar");
@@ -1118,10 +1188,9 @@ class Pane {
       clearTimeout(this.observedRefit);
       this.observedRefit = setTimeout(() => {
         if (this.root.isConnected && this.root.clientWidth && this.root.clientHeight) {
-          const chatFollowing = this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - CHAT_FOLLOW_PX;
           this.refit();
-          if (this.view === "chat" && Date.now() < this.chatPinUntil && chatFollowing)
-            this.chatEl.scrollTop = this.chatEl.scrollHeight;
+          // a composer that grew, a wider pane: a view that haftet stays on its end
+          if (this.view === "chat" && this.chatStuck) this.chatEl.scrollTop = this.chatEl.scrollHeight;
         }
       }, 60);
     });
@@ -1199,6 +1268,7 @@ class Pane {
     this.jump.onclick = () => { this.snapToBottom(); this.focus(); };
     this.root.addEventListener("mousedown", () => focusPane(this.index));
     this.root.addEventListener("animationend", () => this.root.classList.remove("flash"));
+    this.paintEndBtn();
   }
 
   get savedHover(): boolean { return this.hoverOn; }
@@ -1307,7 +1377,7 @@ class Pane {
   setView(v: "term" | "chat") {
     // the terminal view hides the chat (display:none) and a hidden element has no scroll position:
     // read it on the way out, restore it on the way back (applyChatMemo below)
-    if (this.view === "chat" && v !== "chat") this.chatMemo ??= chatAnchor(this.chatEl, this.chatKids());
+    if (this.view === "chat" && v !== "chat") this.chatMemo ??= this.chatPosition();
     this.view = v;
     this.root.classList.toggle("chat", v === "chat");
     // the view toggle's two faces: the conversation bubble and, on the way back, the terminal
@@ -1375,12 +1445,17 @@ class Pane {
     this.chatTotal = 0;
     this.lastTurnAt = 0;
     this.cacheTtl = CACHE_TTL_MS;
+    this.cacheTtlSec = null;
     this.observedModel = null;
     this.observedEffort = null;
     this.chatSource = null;
     this.toolGroup = null;
     this.notifGroup = null;
     this.pending = [];
+    // a rebuilt view starts at its end, following, with nothing unread
+    this.chatStuck = true;
+    this.chatUnseen = 0;
+    this.paintEndBtn();
     // a rebuilt view has no open agent calls: whatever ran in the old DOM is gone with it. A NEW
     // map, not clear(): the old one may be riding on the shelf with the nodes it points into.
     this.openAgents = new Map();
@@ -1393,10 +1468,10 @@ class Pane {
   // is not shelved — it is read-only and cheap to read again; nor is a chat that never loaded.
   private shelveChat(): void {
     if (!this.slot || this.pastN !== null || (!this.chatTotal && this.chatSource === null)) { this.resetChat(); return; }
-    const anchor = this.chatMemo ?? (this.view === "chat" ? chatAnchor(this.chatEl, this.chatKids()) : null);
+    const anchor = this.chatMemo ?? (this.view === "chat" ? this.chatPosition() : null);
     chatShelf.delete(this.slot);
     chatShelf.set(this.slot, { nodes: [...this.chatEl.childNodes].filter((n) => n !== this.workEl),
-      total: this.chatTotal, source: this.chatSource, lastTurnAt: this.lastTurnAt, cacheTtl: this.cacheTtl,
+      total: this.chatTotal, source: this.chatSource, lastTurnAt: this.lastTurnAt, cacheTtl: this.cacheTtl, cacheTtlSec: this.cacheTtlSec,
       model: this.observedModel, effort: this.observedEffort, toolGroup: this.toolGroup, notifGroup: this.notifGroup,
       pending: this.pending, openAgents: this.openAgents, hover: this.hoverOn, anchor });
     for (const old of chatShelf.keys()) { if (chatShelf.size <= CHAT_SHELF_MAX) break; chatShelf.delete(old); }
@@ -1415,6 +1490,7 @@ class Pane {
     this.chatSource = row.source;
     this.lastTurnAt = row.lastTurnAt;
     this.cacheTtl = row.cacheTtl;
+    this.cacheTtlSec = row.cacheTtlSec;
     this.observedModel = row.model;
     this.observedEffort = row.effort;
     this.toolGroup = row.toolGroup;
@@ -1423,6 +1499,8 @@ class Pane {
     this.openAgents = row.openAgents;
     if (row.hover !== this.hoverOn) this.relinkChat();
     this.chatMemo = row.anchor;
+    this.chatStuck = row.anchor === null || row.anchor === "end";
+    this.paintEndBtn();
     if (this.view === "chat") this.applyChatMemo();
     return true;
   }
@@ -1434,7 +1512,15 @@ class Pane {
   private applyChatMemo(): void {
     if (!this.chatMemo || !this.chatEl.clientHeight) return; // not laid out yet — setView tries again
     restoreChatAnchor(this.chatEl, this.chatKids(), this.chatMemo);
+    this.chatStuck = this.chatMemo === "end";
+    this.chatLastTop = this.chatEl.scrollTop;
     this.chatMemo = null;
+    this.paintEndBtn();
+  }
+  // where the view stands, for the shelf and the terminal view: a view that haftet is "end" even
+  // when a glide towards it has not arrived yet
+  private chatPosition(): ChatAnchor | null {
+    return this.chatStuck ? "end" : chatAnchor(this.chatEl, this.chatKids());
   }
 
   // --- THE WORK INDICATOR (Grammatik G2.3: one status line in the surface of the thing it is
@@ -1453,6 +1539,7 @@ class Pane {
   // the line back to the end on every poll that brought something (a remove + re-add each time,
   // restarting its dot's animation — measured 2026-09-29, 40× in 120 s)
   private chatAdd(node: Node): void {
+    if (this.chatFresh && node instanceof HTMLElement) node.classList.add("fresh");
     this.chatEl.insertBefore(node, this.workEl.parentNode === this.chatEl ? this.workEl : null);
   }
 
@@ -1516,6 +1603,7 @@ class Pane {
         : b.t === "tool" ? `${b.name ?? "tool"} ${b.text.slice(0, 90)}`
         : "result";
       step.append(sum, el("pre", "", b.text));
+      if (this.chatFresh) step.classList.add("fresh");
       g.body.appendChild(step);
       g.count++;
       if (b.t === "tool") this.addAgentStep(b, step, sum);
@@ -1617,7 +1705,7 @@ class Pane {
       if (b.t === "text") {
         this.toolGroup = null; // a message ends the current work block
         const raw = e.role === "user" ? unwrapPasted(b.text) : b.text;
-        if (e.role === "user") this.settlePending(raw);
+        const arrived = e.role === "user" && this.settlePending(raw);
         // Fleet's typed delivery head is transport provenance, not something the owner wrote: it rides
         // in the meta row beside the bubble, and the bubble and its copy carry only the body.
         const { header, body: text } = e.role === "user" ? splitDeliveryHeader(raw) : { header: null, body: raw };
@@ -1636,7 +1724,7 @@ class Pane {
           meta.appendChild(head);
         }
         meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
-        msg.append(body, meta);
+        msg.append(body, ...(arrived ? [sendState("done")] : []), meta);
         this.chatAdd(msg);
       } else {
         this.addStep(b);
@@ -1650,26 +1738,27 @@ class Pane {
   // prompt, 6.4 s. The local bubble shows at Enter; the transcript entry replaces it.
   addPending(text: string): HTMLElement | null {
     if (this.view !== "chat" || this.pastN !== null) return null;
-    const msg = el("div", "msg user pending");
-    msg.style.opacity = "0.6";
+    const msg = el("div", "msg user pending fresh");
     const body = el("div", "mbody");
     mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
     bodySource.set(body, text);
     const meta = el("div", "mmeta");
     meta.appendChild(el("span", "mwho", "you · wird gesendet…"));
-    msg.append(body, meta);
+    msg.append(body, sendState("sending"), meta);
     this.chatAdd(msg);
     this.pending = [...this.pending, { text, el: msg }];
-    this.chatEl.scrollTop = this.chatEl.scrollHeight;
+    this.followEnd(true);
     return msg;
   }
   dropPending(msg: HTMLElement): void {
     msg.remove();
     this.pending = this.pending.filter((p) => p.el !== msg);
   }
-  private settlePending(text: string): void {
+  // true = the entry retired a bubble this board put up: it is the same send, now DURCH
+  private settlePending(text: string): boolean {
     const hit = this.pending.find((p) => pendingSettledBy(p.text, text));
     if (hit) this.dropPending(hit.el);
+    return !!hit;
   }
 
   // jump between YOUR messages — the reason this view exists
@@ -1711,7 +1800,7 @@ class Pane {
       if (this.slot !== slot || this.pastN !== past || this.chatGen !== gen) return; // reassigned during the fetch — stale
       if (!res.ok) return;
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
-        cache?: { at: number; provider: string } | null; model?: string | null;
+        cache?: { at: number; provider: string } | null; model?: string | null; ttlSec?: number;
         effort?: string | null;
         // the band's past session (GET /api/slots/:id/succession/:n/transcript)
         session?: number; startedAt?: number | null; handedAt?: number | null; assigned?: boolean;
@@ -1727,7 +1816,7 @@ class Pane {
         }
         // a past file does not grow: what it names about model, effort and cache is not the
         // composer's business, so only the entries are read below
-        data.cache = undefined; data.model = undefined; data.effort = undefined;
+        data.cache = undefined; data.model = undefined; data.effort = undefined; data.ttlSec = undefined;
       }
       // the slot's active transcript changed (fresh claude after a self-heal, or a better
       // pinned file appeared) — start over from the top of the new file
@@ -1748,8 +1837,9 @@ class Pane {
       if (data.entries.length) {
         const empty = this.chatEl.querySelector(".chatempty");
         if (empty) empty.remove();
-        // keep the view pinned to the newest message unless the user scrolled up to read
-        const pinned = this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - CHAT_FOLLOW_PX;
+        // a delta flies in; a first fill (and a refill after a source change) does not
+        const first = this.chatTotal === 0, before = this.chatEl.childElementCount;
+        this.chatFresh = !first;
         for (const e of data.entries) {
           this.appendEntry(e);
           // the cache counter's reference is the last API REQUEST, and a request starts right
@@ -1764,13 +1854,21 @@ class Pane {
         }
         // what has not arrived yet stays below what has
         // (a pending bubble already right above the work line stays put — no remove + re-add)
+        this.chatFresh = false;
         for (const p of this.pending) if (p.el.nextSibling !== (this.workEl.parentNode ? this.workEl : null)) this.chatAdd(p.el);
         tickCacheAge();
-        if (pinned) this.chatEl.scrollTop = this.chatEl.scrollHeight;
+        this.chatGrew(this.chatEl.childElementCount - before, first);
       }
       // codex / pi: the file's own newest request record (server/conversation-read.ts) — codex its
       // newest token_usage_record, pi its newest assistant message's request start — and the
       // provider that sets the TTL. Read on every poll, not only when new entries arrived.
+      // claude: the server names the cache tier — the counter measures against it (codex/pi above
+      // and below are untouched: they carry `cache`, never `ttlSec`)
+      if (data.cache === undefined && typeof data.ttlSec === "number" && data.ttlSec > 0 && data.ttlSec !== this.cacheTtlSec) {
+        this.cacheTtlSec = data.ttlSec;
+        this.cacheTtl = data.ttlSec * 1000;
+        tickCacheAge();
+      }
       if (data.cache !== undefined) {
         if (data.cache && data.cache.at > this.lastTurnAt) this.lastTurnAt = data.cache.at;
         this.cacheTtl = data.cache ? cacheTtlFor(data.cache.provider) : this.cacheTtl;
@@ -1791,6 +1889,7 @@ class Pane {
     } catch {
       // transient fetch error — next tick retries
     } finally {
+      if (this.chatGen === gen) this.chatFresh = false; // an entry that threw must not leave the flag up
       // only the poll that still owns the current slot manages busy/timer state; a stale
       // (reassigned) poll must not reset the new slot's chatBusy or reschedule its timer.
       if (this.slot === slot && this.chatGen === gen) {
@@ -1945,16 +2044,65 @@ class Pane {
     this.snapToBottom();
     this.pinToBottom();
     if (!chat) return;
-    this.chatPinUntil = Date.now() + 1000;
+    this.chatStuck = true;
+    this.chatUnseen = 0;
+    this.paintEndBtn();
     requestAnimationFrame(() => {
       this.chatEl.scrollTop = this.chatEl.scrollHeight;
       requestAnimationFrame(() => { this.chatEl.scrollTop = this.chatEl.scrollHeight; });
     });
     clearTimeout(this.bottomTimer);
-    this.bottomTimer = setTimeout(() => {
-      if (this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - CHAT_FOLLOW_PX)
-        this.chatEl.scrollTop = this.chatEl.scrollHeight;
-    }, 500);
+    this.bottomTimer = setTimeout(() => { if (this.chatStuck) this.chatEl.scrollTop = this.chatEl.scrollHeight; }, 500);
+  }
+
+  // --- HAFTEN AM ENDE (Tranche 2). The one reader of the view's scroll: at the end (within
+  // CHAT_FOLLOW_PX) the view haftet and the count is cleared; a scroll UP from anywhere else lets go.
+  // A glide down, a view that grew under a still scrollTop, content that shrank at the end — none of
+  // them scrolls up away from the end, so only the reader's own hand releases it.
+  private chatScrolled(): void {
+    const c = this.chatEl;
+    const top = c.scrollTop;
+    if (top + c.clientHeight >= c.scrollHeight - CHAT_FOLLOW_PX) {
+      if (!this.chatStuck || this.chatUnseen) { this.chatStuck = true; this.chatUnseen = 0; this.paintEndBtn(); }
+    } else if (top < this.chatLastTop - 1 && this.chatStuck) {
+      this.chatStuck = false;
+      this.paintEndBtn();
+    }
+    this.chatLastTop = top;
+  }
+  // the end button, a send, and every delta while the view haftet: glide to the newest message
+  // (a jump under prefers-reduced-motion, and for a first fill — `smooth` false)
+  private followEnd(smooth: boolean): void {
+    this.chatStuck = true;
+    this.chatUnseen = 0;
+    this.paintEndBtn();
+    const c = this.chatEl;
+    if (smooth && !chatStill.matches) c.scrollTo({ top: c.scrollHeight, behavior: "smooth" });
+    else c.scrollTop = c.scrollHeight;
+    // the fallback for an engine without scrollend
+    clearTimeout(this.followTimer);
+    this.followTimer = setTimeout(() => this.settleEnd(), 900);
+  }
+  private settleEnd(): void {
+    const c = this.chatEl;
+    if (this.chatStuck && c.scrollTop + c.clientHeight < c.scrollHeight - 1) c.scrollTop = c.scrollHeight;
+  }
+  // after a poll appended: `added` new top-level nodes (messages, a new tool block). Following → to
+  // the end; released → nothing moves, the count grows.
+  private chatGrew(added: number, first: boolean): void {
+    if (this.chatStuck) this.followEnd(!first);
+    else if (added > 0) { this.chatUnseen += added; this.paintEndBtn(); }
+  }
+  private paintEndBtn(): void {
+    const b = this.endBtn, n = this.chatStuck ? 0 : this.chatUnseen;
+    b.setAttribute("aria-pressed", String(this.chatStuck));
+    b.classList.toggle("news", n > 0);
+    this.endCount.textContent = n ? `${n} neu` : "";
+    b.title = this.chatStuck
+      ? "Haftet an der neuesten Nachricht — neue Nachrichten erscheinen hier live. Hochscrollen löst das."
+      : n ? `${n} neue Nachricht${n === 1 ? "" : "en"} unten — klicken führt hin, die Ansicht haftet dann dort`
+      : "Zur neuesten Nachricht — die Ansicht haftet dann dort und folgt neuen Nachrichten";
+    b.setAttribute("aria-label", n ? `${n} neue Nachrichten unten` : this.chatStuck ? "Haftet am Ende" : "Zur neuesten Nachricht");
   }
 
   // the reload/refresh button: forces a fresh WS connection that always re-seeds from a
@@ -9635,6 +9783,7 @@ async function doSend() {
   try {
     if (!await deliver(slot, outgoing)) { if (pending) pane.dropPending(pending); return; }
     pending?.querySelector(".mwho")?.replaceChildren("you · gesendet");
+    pending?.querySelector(".msend")?.replaceWith(sendState("wait"));
     // the send IS the next turn: the counter restarts now, not one transcript poll later
     pane.lastTurnAt = Math.max(pane.lastTurnAt, serverClock());
     tickCacheAge();

@@ -8295,6 +8295,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.awaiting = null;
   summaryCache.delete(s.id);
   reviewCache.delete(s.id);
+  reviewInflight.delete(s.id);
   reviewAutoTried.delete(s.id);
   backlogNudgeTried.delete(s.id);
   inboxNudgeTried.delete(s.id);
@@ -20278,7 +20279,7 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
   // founding intent + landability, fed FIRST so they never truncate: a dispatched lane's
   // task scrolls off the 40k transcript tail on long sessions, and ahead/behind vs the lane
   // base is the single most load-bearing "is this landable" signal the commit log can't give.
-  const laneTask = tasks.find((t) => t.slot === s.id)?.text ?? null;
+  const laneTask = foundingRowOf(s)?.text ?? null;
   const laneBase = s.worktree ? await laneBaseRef(s) : null;
   let landability = "";
   if (laneBase) {
@@ -32734,7 +32735,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       gateHoldPid = null;
       gateHeld = false;
     }
-    const laneTask = tasks.find((t) => t.slot === s.id)?.text ?? null;
+    const laneTask = foundingRowOf(s)?.text ?? null;
     // ② FORK IN THE ROAD, and the only one this job has: who resolves. The author gets first
     // refusal (wakeAuthor); the throwaway resolver below is the fallback. Strictly AFTER the script
     // pre-pass, which is unchanged and still the first step — the author is asked only about a
@@ -36670,6 +36671,7 @@ if (existsSync(STATE_FILE)) {
     const persisted = (await Bun.file(STATE_FILE).json()) as {
       token?: unknown; slots?: Record<string, { cwd?: unknown; label?: unknown }>; recents?: unknown; shares?: unknown;
     };
+    const stateOwner = foreignStateOwner((persisted as { sock?: unknown }).sock, SOCK);
     if (typeof persisted.token === "string") persistedToken = persisted.token;
     if (typeof (persisted as { stewardToken?: unknown }).stewardToken === "string")
       stewardToken = (persisted as { stewardToken: string }).stewardToken;
@@ -36859,7 +36861,7 @@ if (existsSync(STATE_FILE)) {
       pins = ((persisted as { pins: unknown[] }).pins).filter((r): r is string => typeof r === "string").slice(0, MAX_PINS);
     // N3: how many task verdicts a hand-edited file carried past the cap. Counted, then said.
     let overCappedVerdicts = 0;
-    if (Array.isArray((persisted as { tasks?: unknown }).tasks))
+    if (stateOwner === null && Array.isArray((persisted as { tasks?: unknown }).tasks))
       tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
         typeof x === "object" && x !== null
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
@@ -37337,7 +37339,6 @@ if (existsSync(STATE_FILE)) {
     // suite booting from copied state must keep running), and the log names both sockets. Absent
     // field = ours; that backwards-compatibility line and why it is the dangerous one:
     // server/persist.ts#foreignStateOwner.
-    const stateOwner = foreignStateOwner((persisted as { sock?: unknown }).sock, SOCK);
     if (stateOwner !== null)
       console.log(`[fleet] state file belongs to tmux socket ${stateOwner}, this server runs on '${SOCK}' — `
         + `its ${Object.keys(persisted.slots ?? {}).length} slot row(s) describe that fleet's panes and are NOT `
@@ -37683,7 +37684,7 @@ if (existsSync(STATE_FILE)) {
     // ...and so does the land that was still IN FLIGHT. Restored here, resolved against git a few
     // lines below (finishLandsInFlight) — the restore only reads the file.
     const plp = (persisted as { landPending?: unknown }).landPending;
-    if (typeof plp === "object" && plp !== null && !Array.isArray(plp))
+    if (stateOwner === null && typeof plp === "object" && plp !== null && !Array.isArray(plp))
       for (const [k, v] of Object.entries(plp as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "object" && v !== null
           && typeof (v as LandPending).main === "string" && typeof (v as LandPending).branch === "string"

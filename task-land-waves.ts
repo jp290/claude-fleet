@@ -29,8 +29,12 @@ export interface LandWaveCosts {
   fullGateSec: number; docsGateSec: number; fullAuditSec: number; docsAuditSec: number;
 }
 
+export interface LandWaveTaskInput extends TaskWaveInput {
+  base?: string;
+}
+
 export interface ProjectLandWavesInput {
-  tasks: readonly TaskWaveInput[];
+  tasks: readonly LandWaveTaskInput[];
   dispatchRepo?: string;
   budget?: number;
   costs: LandWaveCosts;
@@ -134,6 +138,7 @@ export const LAND_WAVE_COSTS_2026_09: LandWaveCosts = {
 
 interface ClassifiedRow {
   id: string; created: number; files: string[]; programId: string | null; units: number; after: string[];
+  base?: string;
   ranges: readonly TaskWaveRange[] | null;
   // true for a surface the card tick lifted without a confirming act (`filesOrigin:"card"`)
   card: boolean;
@@ -194,7 +199,7 @@ const textOrder = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
 const rowOrder = (a: { created: number; id: string }, b: { created: number; id: string }): number =>
   a.created - b.created || textOrder(a.id, b.id);
 
-function classify(task: TaskWaveInput): ClassifiedRow {
+function classify(task: LandWaveTaskInput): ClassifiedRow {
   const files = [...new Set(task.files ?? [])].sort(textOrder);
   const programId = task.programId?.trim() || null;
   const proportion = verificationProportionFor(files);
@@ -229,6 +234,7 @@ function classify(task: TaskWaveInput): ClassifiedRow {
             : files.some(isGateMachinery) ? "gate-aenderer"
               : null;
   return { id: task.id, created: task.created, files, programId, units: landWaveUnits(task.size), card,
+    base: task.base,
     after: [...new Set(task.after ?? [])].filter((id) => id !== task.id),
     // absent and null are ONE fact here: not measured. Only an array reaches the collision rule.
     ranges: task.ranges ?? null, klasse, reasonAgainst };
@@ -395,9 +401,18 @@ function wavesFor(inputRows: readonly ClassifiedRow[], budget: number, costs: La
       group.push(row);
       byProgram.set(program, group);
     }
-    for (const bundlable of byProgram.values()) for (const component of componentsOf(bundlable))
-      for (const members of cutByBudget(component, budget))
-        built.push({ members, wave: waveOf(members, costs) });
+    for (const bundlable of byProgram.values()) {
+      const byBase: ClassifiedRow[][] = [];
+      for (const row of bundlable) {
+        // Match the dispatch guard exactly: an omitted base is not an explicit "main".
+        const group = byBase.find((members) => members[0].base === row.base);
+        if (group) group.push(row);
+        else byBase.push([row]);
+      }
+      for (const group of byBase) for (const component of componentsOf(group))
+        for (const members of cutByBudget(component, budget))
+          built.push({ members, wave: waveOf(members, costs) });
+    }
   }
   return placeByAfter(built, rank, costs);
 }

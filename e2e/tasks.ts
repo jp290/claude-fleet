@@ -8198,6 +8198,23 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(machinery));
   }
 
+  // --- (lw-base) Integration bases are compared without defaults or normalization.
+  {
+    const bases = [undefined, "main", "overhaul", " main"];
+    const failures: unknown[] = [];
+    for (const a of bases) for (const b of bases) {
+      const rows: ProjectLandWavesInput["tasks"] = [a, b].map((base, i) => ({
+        id: `base-${i}`, created: i, kind: "auftrag", status: "queued", repo: "/repo/base",
+        programId: "base-program", files: ["server.ts"], filesOrigin: "confirmed", base,
+      }));
+      const waves = projectLandWaves({ tasks: rows, costs: LAND_WAVE_COSTS_2026_09 }).repos[0]?.waves;
+      const expected = a === b ? [["base-0", "base-1"]] : [["base-0"], ["base-1"]];
+      if (JSON.stringify(waves?.map((w) => w.ids)) !== JSON.stringify(expected)) failures.push({ a, b, waves });
+    }
+    check("(lw-base) land waves use strict base equality, including undefined and unnormalized strings",
+      failures.length === 0, JSON.stringify(failures));
+  }
+
   // --- W2 · the file surface of an EXISTING row: PROPOSE (self) / CONFIRM (owner). The pair that
   // finally gives the land fold above something to fold. Until 2026-09-07 `filesOrigin:"confirmed"`
   // had exactly ONE writer — the refine promote, which can only stamp rows it is itself creating —
@@ -11438,6 +11455,57 @@ export async function run(ctx: Ctx): Promise<void> {
       && spMine.every((w) => w.next !== undefined && w.rows.every((r) => r.checks?.filedBy === "owner")),
       JSON.stringify({ route: spRoute2.plan.slice(0, 600), cli: spCliOut.slice(0, 600), buendel: spRoute2.buendel }));
     for (const id of spIds) await post(`/api/tasks/${id}/delete`, {});
+  }
+
+  // --- (sp-wave-base) The live start plan receives each row's integration base.
+  {
+    await post("/api/dispatch", { on: false });
+    const createdBranches: string[] = [];
+    const branchErrors: string[] = [];
+    for (const base of ["main", "overhaul"]) {
+      if (spawnSync("git", ["-C", REPO2, "show-ref", "--verify", "--quiet", `refs/heads/${base}`]).status === 0) continue;
+      const made = spawnSync("git", ["-C", REPO2, "branch", base, "HEAD"], { encoding: "utf8" });
+      if (made.status === 0) createdBranches.push(base);
+      else branchErrors.push(`${base}: ${made.stderr}`);
+    }
+    const programRes = await post("/api/programs", { title: "start-plan wave bases",
+      intent: "Separate overlapping queued work by its integration base.",
+      successCriterion: "Same bases bundle; main and overhaul stay in separate waves.",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+    const programId = ((await programRes.json()) as { program?: { id: string } }).program?.id ?? "";
+    const confirmed = await post(`/api/programs/${programId}/confirm`, {});
+    const ids: string[] = [];
+    const setup: { base: string; status: number; id: string; files: number; error?: string }[] = [];
+    for (const base of ["main", "main", "overhaul"]) {
+      await Bun.sleep(15);
+      const filed = await post("/api/tasks", { text: `SP-WAVE-BASE repair code.txt on ${base}`,
+        repo: REPO2, programId, base, queue: true });
+      const body = (await filed.json()) as { task?: { id: string }; error?: string };
+      const id = body.task?.id ?? "";
+      if (id) ids.push(id);
+      const files = id ? (await post(`/api/tasks/${id}/files`, { files: ["code.txt"] })).status : 0;
+      setup.push({ base, status: filed.status, id, files, ...(body.error ? { error: body.error } : {}) });
+    }
+    const rows = ((await (await get("/api/tasks")).json()) as
+      { tasks: { id: string; base?: string; status: string; files?: string[]; filesOrigin?: string }[] }).tasks;
+    const ready = branchErrors.length === 0 && programRes.ok && confirmed.ok && setup.length === 3
+      && setup.every((r) => r.status === 200 && r.files === 200 && rows.some((t) =>
+        t.id === r.id && t.status === "queued" && t.base === r.base
+        && t.filesOrigin === "confirmed" && t.files?.join(" ") === "code.txt"));
+    check("(sp-wave-base) PROBE: three queued rows of one program have confirmed code.txt surfaces and bases main/main/overhaul",
+      ready, JSON.stringify({ setup, branchErrors, program: programRes.status, confirm: confirmed.status }));
+    const plan = (await (await get("/api/start-plan")).json()) as StartPlan;
+    const waves = plan.repos.find((r) => r.repo === REPO2)?.waves ?? [];
+    const waveOf = (id: string): string[] => waves.find((w) => w.ids.includes(id))?.ids ?? [];
+    check("(sp-wave-base) GET /api/start-plan separates overlapping queued main and overhaul rows into two waves",
+      ready && waveOf(ids[0]).length === 2 && waveOf(ids[2]).join(" ") === ids[2]
+      && !waveOf(ids[0]).includes(ids[2]), JSON.stringify({ main: waveOf(ids[0]), overhaul: waveOf(ids[2]) }));
+    check("(sp-wave-base) GET /api/start-plan keeps overlapping queued rows with the same main base in one wave",
+      ready && JSON.stringify([...waveOf(ids[0])].sort()) === JSON.stringify([ids[0], ids[1]].sort()),
+      JSON.stringify({ expected: [ids[0], ids[1]], actual: waveOf(ids[0]) }));
+    for (const id of ids) await post(`/api/tasks/${id}/delete`, {});
+    await post(`/api/programs/${programId}/complete`, { force: true });
+    for (const base of createdBranches) spawnSync("git", ["-C", REPO2, "branch", "-d", base]);
   }
 
   // --- (sp-tick) THE TICK STARTS BY THE PLAN (Schnitt 2, server.ts#tickDispatch). Three facts on one

@@ -76,9 +76,9 @@ import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NO
 // board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
 import {
   LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves, proposeBundles,
-  type BundleProposal, type LandWave, type LandWaveProjection,
+  type BundleProposal, type LandWave, type LandWaveProjection, type LandWaveTaskInput,
 } from "./task-land-waves";
-import { isTaskCardSize, type TaskCardSize, type TaskWaveInput, type TaskWaveRange } from "./task-waves";
+import { isTaskCardSize, type TaskCardSize, type TaskWaveRange } from "./task-waves";
 import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
 // The START PLAN: which land wave starts next, and what its rows passed. GET /api/start-plan shows it,
 // tickDispatch starts by it and the wave door resolves its ids in it (pinned in e2e/pins.ts).
@@ -16124,7 +16124,7 @@ const LAND_WAVE_BUDGET = ((): number => {
 // is read" rule the card head and the card surface follow. None weighs medium.
 const taskSizeOf = (t: Task): TaskCardSize | undefined => t.card?.valid ? t.card.size : undefined;
 function landWaveProjectionNow(): LandWaveProjection {
-  const rows: TaskWaveInput[] = tasks
+  const rows: LandWaveTaskInput[] = tasks
     .filter((t) => t.kind === "auftrag" && (t.status === "queued" || t.status === "pending"))
     .map((t) => {
       const view = taskView(t);
@@ -16137,6 +16137,7 @@ function landWaveProjectionNow(): LandWaveProjection {
       // constraint can only hold a row back, never bundle it.
       const after = t.card?.after ?? [];
       return { id: t.id, kind: t.kind, status: t.status, created: t.created,
+        base: t.base,
         ...(t.repo ? { repo: t.repo } : {}),
         ...(t.programId ? { programId: t.programId } : {}),
         // a variant is a wave of one and a group is in no wave (task-land-waves.ts#classify)

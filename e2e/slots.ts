@@ -1300,7 +1300,7 @@ export async function run(): Promise<void> {
   const scrollToEnd = scrollSource ? new Function("requestAnimationFrame",
     `return function ${scrollSource.trim()}`)((cb: () => void) => cb()) as
     (this: { term: { scrollToBottom: () => void }; snapToBottom: () => void; pinToBottom: () => void;
-      chatEl: { scrollTop: number; scrollHeight: number } }) => void : null;
+      chatEl: { scrollTop: number; scrollHeight: number } }, chat?: boolean) => void : null;
   // snapToBottom is Pane's one door for programmatic tail jumps (past the wheel smoothing); it
   // counts on the same counter as the bare xterm call it replaced
   const switched = { term: { scrollToBottom: () => { pinnedOnSwitch++; } }, snapToBottom: () => { pinnedOnSwitch++; },
@@ -1308,11 +1308,174 @@ export async function run(): Promise<void> {
   // a lifted method that calls something this stub lacks must fail THIS check, not end the module
   let scrollThrew = "";
   try { scrollToEnd?.call(switched); } catch (e) { scrollThrew = e instanceof Error ? e.message : String(e); }
-  check("B1: switching a pane pins both the terminal and the chat to their ends",
-    pinnedOnSwitch === 2 && switched.chatEl.scrollTop === 300
+  // the chat half is skipped on a switch back to a slot whose chat came off the shelf (Tranche 1,
+  // 2026-09-29: the owner wants to come back where he was — see the chat-position checks below)
+  const kept = { ...switched, chatEl: { scrollTop: 40, scrollHeight: 300 } };
+  const pinsBefore = pinnedOnSwitch;
+  try { scrollToEnd?.call(kept, false); } catch (e) { scrollThrew ||= e instanceof Error ? e.message : String(e); }
+  check("B1: switching a pane pins the terminal to its end, and the chat on a first open only",
+    pinsBefore === 2 && switched.chatEl.scrollTop === 300 && pinnedOnSwitch === 4 && kept.chatEl.scrollTop === 40
       && /if \(existing\) \{ existing\.focus\(\); existing\.scrollToEnd\(\)/.test(cliSrc)
-      && /this\.scrollToEnd\(\);\n    renderSlots\(\)/.test(cliSrc),
-    scrollThrew ? `scrollToEnd threw: ${scrollThrew}` : `${pinnedOnSwitch} terminal pins · chat ${switched.chatEl.scrollTop}`);
+      && /this\.scrollToEnd\(!restored\);\n    renderSlots\(\)/.test(cliSrc),
+    scrollThrew ? `scrollToEnd threw: ${scrollThrew}` : `${pinsBefore} terminal pins · chat ${switched.chatEl.scrollTop} · kept chat ${kept.chatEl.scrollTop}`);
+
+  // --- THE CHAT VIEW'S READING POSITION (Tranche 1, owner 2026-09-29: „[Zitat entfernt]“
+  // · „[Zitat entfernt]“). Measured in a browser against
+  // a test instance: with the loupe on, loadEntityDetails → refreshEntities → resetChat emptied the
+  // view every ~62 s (every message node replaced, then pinned to the end), and assign rebuilt every
+  // slot from 0 at the end. No DOM harness here, so Pane's own methods are lifted out of the source
+  // and run against a chat element that keeps real geometry: node identity, children stacked by
+  // height, scrollTop clamped to the content the way a browser clamps it. What stays stubbed is the
+  // network: pollChat is a stand-in that fills an empty view from 0 and pins it the way the real one
+  // does (the 120-px rule) and appends a delta otherwise.
+  {
+    type Kid = { h: number; text: string; parent: FakeChat | null; readonly offsetTop: number; readonly offsetHeight: number; remove(): void };
+    class FakeChat {
+      kids: Kid[] = [];
+      clientHeight = 400;
+      private top = 0;
+      get scrollHeight(): number { return this.kids.reduce((n, k) => n + k.h, 0); }
+      get scrollTop(): number { return this.top; }
+      set scrollTop(v: number) { this.top = Math.max(0, Math.min(v, Math.max(0, this.scrollHeight - this.clientHeight))); }
+      get childNodes(): Kid[] { return [...this.kids]; }
+      get children(): Kid[] { return [...this.kids]; }
+      get childElementCount(): number { return this.kids.length; }
+      get lastChild(): Kid | null { return this.kids.at(-1) ?? null; }
+      replaceChildren(...nodes: Kid[]): void {
+        for (const k of this.kids) k.parent = null;
+        this.kids = [];
+        for (const n of nodes) this.appendChild(n);
+        this.scrollTop = this.top; // the browser re-clamps once the content changed
+      }
+      appendChild(n: Kid): Kid { n.parent?.kids.splice(n.parent.kids.indexOf(n), 1); n.parent = this; this.kids.push(n); return n; }
+      append(...nodes: Kid[]): void { for (const n of nodes) this.appendChild(n); }
+      querySelectorAll(sel: string): Kid[] { return sel === ":scope > *" ? [...this.kids] : []; }
+      querySelector(): null { return null; }
+      topKid(): { kid: Kid; off: number } | null {
+        for (const k of this.kids) if (k.h && k.offsetTop + k.h > this.top) return { kid: k, off: k.offsetTop - this.top };
+        return null;
+      }
+    }
+    const kid = (text: string, h: number): Kid => {
+      const k: Kid = { h, text, parent: null,
+        get offsetTop() { let y = 0; for (const o of k.parent?.kids ?? []) { if (o === k) return y; y += o.h; } return 0; },
+        get offsetHeight() { return k.h; },
+        remove() { if (k.parent) { k.parent.kids.splice(k.parent.kids.indexOf(k), 1); k.parent = null; } } };
+      return k;
+    };
+    const methodSrc = (name: string): string => {
+      const m = new RegExp(`\\n  (?:private )?(?:async )?${name}\\([^)]*\\)(?:: [^{]+)? \\{[\\s\\S]*?\\n  \\}`).exec(cliSrc!);
+      return m ? m[0] : "";
+    };
+    const topSrc = [/\nconst CHAT_FOLLOW_PX = .*;/, /\ntype ChatAnchor[^\n]*/, /\ntype ChatBox[^\n]*/, /\ntype ChatKid[^\n]*/,
+      /\nfunction chatAnchor\([\s\S]*?\n\}/, /\nfunction restoreChatAnchor\([\s\S]*?\n\}/,
+      /\nconst CHAT_SHELF_MAX = .*;/, /\nconst chatShelf = .*;/, /\nconst bodySource = .*;/]
+      .map((re) => re.exec(cliSrc!)?.[0] ?? "").join("\n");
+    const lifted = ["assign", "refreshEntities", "relinkChat", "resetChat", "shelveChat", "unshelveChat", "chatKids",
+      "applyChatMemo", "scrollToEnd"].map(methodSrc);
+    let liftError = "";
+    let PaneClass: (new () => Record<string, unknown>) | null = null;
+    try {
+      // the types the lifted pieces name are stripped by the transpiler; the ones only the real
+      // module declares (ChatShelfRow, the group shapes) are declared loosely here
+      const code = new Bun.Transpiler({ loader: "ts" }).transformSync(`type ChatShelfRow = any; type ChatToolGroup = any; type ChatNotifGroup = any;
+${topSrc}
+class LiftedPane { ${lifted.join("\n")} }
+export default LiftedPane;`).replace(/export default LiftedPane;?/, "return LiftedPane;");
+      PaneClass = new Function("fleet", "fxTree", "loadTree", "loadEntityDetails", "renderSlots", "saveView", "requestAnimationFrame",
+        "setTimeout", "clearTimeout", "CACHE_TTL_MS", "el", "mdInto", "decorateCode", "entityKnown", code)(
+        [], new Map(), async () => {}, async () => {}, () => {}, () => {}, (cb: () => void) => cb(),
+        () => 0, () => {}, 300_000, () => ({ querySelectorAll: () => [] }), () => {}, () => {}, () => false);
+    } catch (e) { liftError = e instanceof Error ? e.message : String(e); }
+    // one transcript per slot: 30 messages of mixed height; the stand-in poll loads them from 0 or
+    // brings `grow` new ones as a delta
+    const transcript = (slot: number, from: number, n: number): Kid[] =>
+      Array.from({ length: n }, (_, i) => kid(`slot ${slot} msg ${from + i}`, 60 + ((from + i) * 37) % 90));
+    const mkPane = (): Record<string, unknown> & { chatEl: FakeChat } => {
+      const chatEl = new FakeChat();
+      const p = Object.assign(PaneClass ? new PaneClass() : {}, {
+        slot: 0, view: "chat", pastN: null, hoverOn: false, chatEl, workEl: kid("work", 0),
+        term: { reset() {} }, ws: null, gen: 0, retries: 0, held: "", dropped: 0, fit: { fit() {} },
+        boardBtn: { style: {} }, reloadBtn: { style: {} }, hint: { style: {} }, pinPending: false,
+        chatTotal: 0, chatSource: null, chatGen: 0, chatMemo: null, chatBusy: false, chatPinUntil: 0,
+        lastTurnAt: 0, cacheTtl: null, observedModel: null, observedEffort: null, toolGroup: null, notifGroup: null,
+        pending: [], openAgents: new Map(), grow: 0,
+        leavePast() {}, hideDown() {}, hideCopy() {}, syncHarnessAffordances() {}, connect() {}, focus() {},
+        snapToBottom() {}, pinToBottom() {}, updateWork() {},
+        pollChat(this: { slot: number; chatEl: FakeChat; chatTotal: number; chatSource: string | null; grow: number }) {
+          const pinned = this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - 120;
+          const add = this.chatTotal ? transcript(this.slot, this.chatTotal, this.grow) : transcript(this.slot, 0, 30);
+          for (const k of add) this.chatEl.appendChild(k);
+          this.chatTotal += add.length;
+          this.chatSource = `s${this.slot}.jsonl`;
+          if (pinned) this.chatEl.scrollTop = this.chatEl.scrollHeight;
+        },
+      });
+      return p as Record<string, unknown> & { chatEl: FakeChat };
+    };
+    const call = (p: Record<string, unknown>, m: string, ...a: unknown[]): string => {
+      const f = p[m];
+      if (typeof f !== "function") return `${m} missing`;
+      try { f.apply(p, a); return ""; } catch (e) { return `${m} threw: ${e instanceof Error ? e.message : String(e)}`; }
+    };
+    const errs: string[] = [];
+    if (liftError) errs.push(`lift: ${liftError}`);
+    // (2) a chat read a screen above its end: the entity refresh and a growing transcript leave
+    // every message node in place and the topmost visible one on the same pixel (tolerance 2)
+    const r = mkPane();
+    errs.push(call(r, "assign", 2));
+    r.chatEl.scrollTop = 900;
+    const before = r.chatEl.topKid(), nodesBefore = [...r.chatEl.kids];
+    r.grow = 3;
+    for (let tick = 0; tick < 4; tick++) {
+      errs.push(call(r, "refreshEntities"));
+      if (r.chatEl.childElementCount && r.chatTotal) errs.push(call(r, "pollChat"));
+    }
+    const after = r.chatEl.topKid();
+    const gone = nodesBefore.filter((k) => k.parent !== r.chatEl).length;
+    const dy = before && after && before.kid === after.kid ? Math.abs(after.off - before.off) : Infinity;
+    check("chat position: an entity refresh and a growing transcript remove no message node and move the read message by <= 2 px",
+      !liftError && gone === 0 && dy <= 2 && r.chatEl.childElementCount === 42,
+      `${errs.filter(Boolean).join("; ") || "ran"} · ${gone}/${nodesBefore.length} nodes removed · top ${before?.kid.text} -> ${after?.kid.text} · dy ${dy} · ${r.chatEl.childElementCount} kids`);
+    // (3) at the end it follows, as before
+    const f = mkPane();
+    errs.length = 0;
+    errs.push(call(f, "assign", 2));
+    f.grow = 4;
+    errs.push(call(f, "pollChat"));
+    check("chat position: a view at the end follows new messages",
+      !liftError && f.chatEl.scrollTop + f.chatEl.clientHeight >= f.chatEl.scrollHeight - 1,
+      `${errs.filter(Boolean).join("; ") || "ran"} · ${f.chatEl.scrollTop}+${f.chatEl.clientHeight}/${f.chatEl.scrollHeight}`);
+    // (4) slot A -> B -> A in one pane restores each slot's topmost visible message and offset;
+    // a second pane on another slot keeps its own position throughout
+    const a = mkPane(), b = mkPane();
+    errs.length = 0;
+    errs.push(call(a, "assign", 2), call(b, "assign", 3));
+    a.chatEl.scrollTop = 700; b.chatEl.scrollTop = 1300;
+    const aTop = a.chatEl.topKid(), bPaneTop = b.chatEl.topKid();
+    errs.push(call(a, "assign", 4));
+    a.chatEl.scrollTop = 500;
+    const cTop = a.chatEl.topKid();
+    errs.push(call(a, "assign", 2));
+    const aBack = a.chatEl.topKid();
+    errs.push(call(a, "assign", 4));
+    const cBack = a.chatEl.topKid();
+    const bPaneAfter = b.chatEl.topKid();
+    const same = (x: { kid: Kid; off: number } | null, y: { kid: Kid; off: number } | null): boolean =>
+      !!x && !!y && x.kid.text === y.kid.text && Math.abs(x.off - y.off) <= 2;
+    check("chat position: slot A -> B -> A restores the same topmost message at the same offset, for A and for B",
+      !liftError && same(aTop, aBack) && same(cTop, cBack),
+      `${errs.filter(Boolean).join("; ") || "ran"} · A ${aTop?.kid.text}@${aTop?.off} -> ${aBack?.kid.text}@${aBack?.off} · B ${cTop?.kid.text}@${cTop?.off} -> ${cBack?.kid.text}@${cBack?.off}`);
+    check("chat position: two panes on different slots keep their positions independently",
+      !liftError && same(aTop, aBack) && same(bPaneTop, bPaneAfter) && bPaneTop?.kid === bPaneAfter?.kid,
+      `pane 2 ${bPaneTop?.kid.text}@${bPaneTop?.off} -> ${bPaneAfter?.kid.text}@${bPaneAfter?.off}`);
+  }
+  // (5) the way back to the top: a corner-row button beside the prompt jumps that scrolls to 0
+  check("chat position: a \"zum Anfang\" button in the chat corner row scrolls to the first message",
+    /navTop = el\("button", "promptnav top"\)/.test(cliSrc)
+      && /navTop\.onclick = [^\n]*this\.chatEl\.scrollTo\(\{ top: 0/.test(cliSrc)
+      && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navTop, navUp, navDn, this.sizeBtn)"),
+    "Pane navTop");
   check("B2: every pane observes its own size, debounces refit, and disconnects at disposal",
     /this\.sizeObserver = new ResizeObserver\(/.test(cliSrc)
       && /this\.sizeObserver\.observe\(this\.root\)/.test(cliSrc)
@@ -2724,12 +2887,12 @@ export async function run(): Promise<void> {
           JSON.stringify({ closeCenter, toggleCenter, dx, dy }));
       }
       // …and the two rows split both-view from view-bound: ℹ 💬 ⚙ never move (top), the active
-      // view's own sit below — terminal ↻ ⇔, chat ↑ ↓ Aa (the mapping Pane's build encodes and
-      // index.html's visibility rules paint). Mutation probe: move widthBtn into toolsTop and
-      // this goes red.
-      check("client: the corner group's rows split both-view (⚙ ⌕ 💬 ℹ) from view-bound (terminal ↻ ⇔ / chat ↑ ↓ Aa) — ℹ rightmost, on the corner the close box must land on",
+      // view's own sit below — terminal ↻ ⇔, chat ⤒ ↑ ↓ Aa (the mapping Pane's build encodes and
+      // index.html's visibility rules paint; ⤒ "zum Anfang" is a .promptnav, so it rides the same
+      // rules). Mutation probe: move widthBtn into toolsTop and this goes red.
+      check("client: the corner group's rows split both-view (⚙ ⌕ 💬 ℹ) from view-bound (terminal ↻ ⇔ / chat ⤒ ↑ ↓ Aa) — ℹ rightmost, on the corner the close box must land on",
         cliSrc.includes("toolsTop.append(this.gearBtn, this.hoverBtn, this.viewBtn, this.boardBtn)")
-        && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navUp, navDn, this.sizeBtn)")
+        && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navTop, navUp, navDn, this.sizeBtn)")
         && /flex-direction:\s*column/.test(cssBody(".panetools"))
         && /visibility:\s*hidden/.test(cssBody(".pane.chat .termwidth, .pane.chat .panereload"))
         && /visibility:\s*visible/.test(cssBody(".pane.chat .promptnav, .pane.chat .chatsizebtn")),

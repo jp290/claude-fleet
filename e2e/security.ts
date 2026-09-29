@@ -430,6 +430,12 @@ const PRE_AUTH_ROUTES = [
   //     /api/helper/bundle route, so the helper perimeter is unchanged by this feature too.
   '= /api/self/jobs',
   String.raw`~ /^\/api\/self\/jobs\/([0-9a-f]{12})$/`,
+  // …and its way back out (2026-09-29, the command-job twin of /api/self/suite-offer/withdraw): the
+  // same session principal and flat 401, and it answers the OFFERING session alone (slot AND
+  // openedAt, 409 for any other live session). It changes one job of that session from open or
+  // claimed to withdrawn/abandoned; a claimed job needs an explicit `{"abandon":true}`. It starts
+  // nothing, writes into no pane and reaches no foreign slot.
+  String.raw`~ /^\/api\/self\/jobs\/([0-9a-f]{12})\/withdraw$/`,
   // The handler sits before the steward interceptor only so a steward credential meets the same
   // tokenGate 401 as any other non-owner credential. Every matching route calls tokenGate inline
   // before the owner handler; the regex is pinned here as an explicitly reviewed pre-auth shape.

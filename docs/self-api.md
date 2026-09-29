@@ -22,6 +22,13 @@ Resolver erteilt selbst keinen Grant. Owner-, Helper-, Steward-, Share- und Inta
 ihre eigenen Reihenfolgen und Fehlerpfade. Eine Kombination mehrerer Credentials auf einem Request
 ändert damit keine Türentscheidung.
 
+`audit.jsonl` trägt auf jeder neuen Zeile `actor`. `server/audit-log.ts#audit` schreibt den
+Principal aus dem asynchronen Kontext; `server.ts#fetch` bindet ihn beim Request-Eingang über
+`resolvePrincipal(req)`. Ohne erkannte Credential steht `{kind:"unknown",why:"no-credential"}`.
+Scheduler-Ticks tragen `{kind:"machine",why:"tick"}`, Boot-Arbeit
+`{kind:"machine",why:"boot"}`. Ein `audit()`-Aufrufer kann `actor` über `fields` nicht überschreiben.
+Das Feld enthält nur die vom Resolver benannten Identitätsmerkmale, keine Token oder Header-Werte.
+
 ## position — `GET /api/self` → `position`
 
 Jede Session liest mit ihrem eigenen `FLEET_SELF_TOKEN` ihr Lagebild. Die bisherigen Felder von

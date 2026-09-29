@@ -167,7 +167,7 @@ import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, read
 import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntriesFor, stageOneTied,
   UNMEASURED_DIFF, type VariantCompareVariant, type VariantDecidedAt, type VariantDiffStat,
   type VariantDoneEntry, type VariantDoneResult, type VariantGate, type VariantStageCandidate } from "./variant-compare";
-import { audit, AUDIT_FILE } from "./server/audit-log";
+import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/audit-log";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import { parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile } from "./server/pi-zai-fence";
@@ -182,6 +182,8 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, setPrin
 import { konzeptIndex, konzeptOpOf, konzeptRequest } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { readCodexRollout, readPiSession, type ConversationRead, type TBlock, type TEntry } from "./server/conversation-read";
+
+auditActorScope.enterWith({ kind: "machine", why: "boot" });
 
 // lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
 // output is line-aligned and already reflowed to the pane's width, so it can neither begin
@@ -37844,6 +37846,7 @@ function buildStateSnapshot(now: number): Record<string, unknown> {
 
 // THE SCHEDULER TICKS: every one names itself to logError, because a tick that throws has skipped
 // its whole round and an empty catch hid that. The `p.kill()` and pty-chain catches stay empty on purpose.
+withAuditActor({ kind: "machine", why: "tick" }, () => {
 setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
@@ -37933,6 +37936,7 @@ setInterval(() => {
     void ensureSlot(s).catch((e: unknown) => logError("selfHeal", e));
   }
 }, 2000);
+});
 
 type StewardKind = "state_relay" | "lifecycle_op" | "continue_nudge" | "pulse";
 // static suffix every intervention template carries (steward-autonomy.md joint 5's
@@ -40466,6 +40470,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
 }
 
 
+auditActorScope.enterWith({ kind: "unknown", why: "no-credential" });
 Bun.serve<WSData>({
   hostname: HOST,
   port: PORT,
@@ -40487,7 +40492,8 @@ Bun.serve<WSData>({
     // Every response leaves through finishHttp — the only place that sees the finished body AND the
     // accept-encoding (json() sees neither). Nested on purpose: a top-level extraction would reindent
     // ~1200 lines for no behavioural difference. Narrativ: server-narrativ-archiv.md#fetch-entry
-    return finishHttp(req, server.requestIP(req)?.address ?? "", await handle());
+    return withAuditActor(resolvePrincipal(req) ?? { kind: "unknown", why: "no-credential" },
+      async () => finishHttp(req, server.requestIP(req)?.address ?? "", await handle()));
     async function handle(): Promise<Response | undefined> {
     const blocked = guard(req);
     if (blocked) return blocked;

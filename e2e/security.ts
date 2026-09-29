@@ -20,13 +20,13 @@
 // non-owner-readable payload.
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, H, REPO, ROOT, TOKEN, check, get, post, readText, tmuxOut } from "./harness";
+import { afterTick, AUTOS_TICK_MS, BASE, H, REPO, ROOT, TOKEN, check, get, post, readText, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
 
 interface FleetState {
   token?: string;
   stewardToken?: string;
-  slots?: Record<string, { cwd?: string; selfToken?: string }>;
+  slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number }>;
   shares?: { id: string; secret: string }[];
 }
 const readState = (): FleetState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as FleetState;
@@ -902,12 +902,53 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   if (!REPO) return; // §3–§5 need a lane; the lane sections of the suite are repo-gated too
 
   // ===== §3 a scoped credential dies with its session =====
+  const actorProbeAt = Date.now();
   const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   const selfTok = await selfTokenOf(ln.slot);
-  const selfAuto = (tok: string) => fetch(BASE + "/api/self/autos", {
+  const selfAuto = (tok: string, inSec = 3600) => fetch(BASE + "/api/self/autos", {
     method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok },
-    body: JSON.stringify({ text: "security-probe", inSec: 3600 }),
+    body: JSON.stringify({ text: "security-probe", inSec }),
   });
+  const openedAt = readState().slots?.[String(ln.slot)]?.openedAt;
+  const drift = await fetch(BASE + "/api/self/drift", { headers: { "x-fleet-self-token": selfTok } });
+  check("§3 actor fixture: the lane's self drift route answers", drift.status === 200, String(drift.status));
+  const tickAuto = await selfAuto(selfTok, 1);
+  check("§3 actor fixture: a one-shot auto is scheduled for the tick", tickAuto.ok, String(tickAuto.status));
+  const tickAutoId = ((await tickAuto.json()) as { auto?: { id?: string } }).auto?.id;
+  type AuditActor = { kind: string; via?: string; slot?: number; openedAt?: number; role?: string; why?: string };
+  type ActorRow = { ts?: number; event?: string; slot?: number; detail?: string; actor?: AuditActor };
+  const actorRows = async (): Promise<ActorRow[]> => {
+    const raw = (await readText(ctx.auditPath)) + (await readText(`${ctx.auditPath}.1`));
+    return raw.split("\n").filter(Boolean).flatMap((line) => {
+      try { return [JSON.parse(line) as ActorRow]; } catch { return []; }
+    });
+  };
+  let ownerRow: ActorRow | undefined;
+  let selfRow: ActorRow | undefined;
+  let tickRow: ActorRow | undefined;
+  const deadline = Date.now() + afterTick(1000, AUTOS_TICK_MS);
+  while (Date.now() < deadline) {
+    const rows = await actorRows();
+    ownerRow = rows.find((r) => (r.ts ?? 0) >= actorProbeAt && r.event === "slot_open"
+      && r.slot === ln.slot && r.detail === ln.cwd);
+    selfRow = rows.find((r) => (r.ts ?? 0) >= actorProbeAt && r.event === "self_drift"
+      && r.slot === ln.slot && r.detail?.startsWith(ln.branch));
+    tickRow = rows.find((r) => (r.ts ?? 0) >= actorProbeAt && r.event === "auto_skip" && r.slot === ln.slot);
+    if (ownerRow && selfRow && tickRow) break;
+    await Bun.sleep(50);
+  }
+  check("§3 owner Bearer action is audited with owner via bearer",
+    ownerRow?.actor?.kind === "owner" && ownerRow.actor.via === "bearer", JSON.stringify(ownerRow?.actor));
+  check("§3 self-token action is audited with its session slot, openedAt and lane role",
+    selfRow?.actor?.kind === "session" && selfRow.actor.slot === ln.slot
+      && typeof openedAt === "number" && selfRow.actor.openedAt === openedAt && selfRow.actor.role === "lane",
+    JSON.stringify(selfRow?.actor));
+  check("§3 tick action is audited as machine tick", tickRow?.actor?.kind === "machine"
+    && tickRow.actor.why === "tick", JSON.stringify(tickRow?.actor));
+  check("§3 self and tick actions never claim owner without an owner credential",
+    selfRow?.actor?.kind !== "owner" && tickRow?.actor?.kind !== "owner"
+      && !!selfRow?.actor && !!tickRow?.actor);
+  if (tickAutoId) await post(`/api/autos/${tickAutoId}/delete`, {});
   const live = await selfAuto(selfTok);
   const liveJ = (await live.json()) as { auto?: { id: string } };
   check("§3 control: the live lane's selfToken authenticates (so the refusals below mean revocation)",

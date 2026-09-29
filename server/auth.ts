@@ -41,6 +41,7 @@ export function secretEq(a: string, b: string): boolean {
 
 export type Principal =
   | { kind: "owner"; via: "cookie" | "bearer" | "query" }
+  | { kind: "unknown"; why: "no-credential" }
   | { kind: "session"; slot: number; openedAt: number; role: "lane" | "main" | "generic" }
   | { kind: "device"; deviceId: string }
   | { kind: "guest"; shareId: string }

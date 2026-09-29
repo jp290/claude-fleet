@@ -12080,11 +12080,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const onBase = await post("/api/tasks", { text: `${baseFile} und branch-only/new.ts`, queue: false,
       repo: REPO, base: baseBranch, card: baseCard });
     const onBaseBody = (await onBase.json()) as { task?: { id: string }; error?: string };
-    const baseRow = onBaseBody.task?.id ? await aDigest(onBaseBody.task.id) : undefined;
+    const baseRow = onBaseBody.task?.id ? await aFull(onBaseBody.task.id) : undefined;
+    const baseView = onBaseBody.task?.id ? await aDigest(onBaseBody.task.id) : undefined;
     check("(s6-base) a branch-only file validates in FLAECHE and its directory validates NEU on that row's base",
       worktreeAdded.status === 0 && onBase.ok && baseRow?.card?.valid === true
-      && baseRow.files?.join(" ") === baseFile,
-      JSON.stringify({ status: onBase.status, body: onBaseBody, row: baseRow }));
+      && baseView?.files?.join(" ") === baseFile,
+      JSON.stringify({ status: onBase.status, body: onBaseBody, row: baseRow, view: baseView }));
     const noBase = await post("/api/tasks", { text: baseFile, queue: false, repo: REPO, card: baseCard });
     const noBaseText = await noBase.text();
     check("(s6-base) the same file without base is refused as not tracked",

@@ -178,7 +178,7 @@ import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, setPrincipalState, commentStrike, authFails, failStrike,
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
-import { konzeptOpOf, konzeptRequest } from "./konzept-ledger";
+import { konzeptIndex, konzeptOpOf, konzeptRequest } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { readCodexRollout, readPiSession, type ConversationRead, type TBlock, type TEntry } from "./server/conversation-read";
 
@@ -42105,6 +42105,14 @@ Bun.serve<WSData>({
     // THE KONZEPT OWNER DOOR (docs/self-api.md §konzepte): the same ledger as /api/self/konzepte, with
     // the owner as actor and an empty kontext — the owner credential proves no binding. A request that
     // ALSO carries a self token resolves to that session and is sent to its own door.
+    // THE INDEX beside it (Karte 2, the board's Konzepte view): every konzept under the root with its
+    // latest version row and the anmerkung counts — metadata only, never a fassung. Same owner-only rule.
+    if (url.pathname === "/api/konzepte" && req.method === "GET") {
+      if (resolvePrincipal(req)?.kind !== "owner")
+        return json({ error: "this is the owner's konzept index — a session reads one konzept through /api/self/konzepte/:id/…" }, 409);
+      const answer = await konzeptIndex(KONZEPT_ROOT);
+      return json(answer.body, answer.status);
+    }
     const ownerKonzept = /^\/api\/konzepte\/([^/]+)\/(.+)$/.exec(url.pathname);
     if (ownerKonzept) {
       const op = konzeptOpOf(req.method, ownerKonzept[2]!);

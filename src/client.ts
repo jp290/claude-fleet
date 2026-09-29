@@ -6898,11 +6898,12 @@ export async function refresh() {
     // proposal arrived on this poll, but the detail only ever repainted on reselect — the
     // owner sat in front of a stale pane while the lane waited on them. Keyed on the fields
     // the detail actually paints, so hover and an in-progress criterion edit survive quiet polls.
-    if (qShell?.isOpen() && qPick !== null && qPick.startsWith("repo:")) {
+    if (qShell?.isOpen() && qPick !== null && (qPick.startsWith("repo:") || qPick.startsWith("konz:"))) {
       // THE REPO SHEET IS ON DEMAND (K2): the pane fetches GET /api/repos/:canon/view itself and
       // carries no poll field, so there is deliberately NO detail key here — repainting it on
       // every poll would turn "Ledger auf Abruf" into a 2-s ledger poll through the client's
-      // back door. It repaints only when reopened or on its own "read again" button.
+      // back door. It repaints only when reopened or on its own "read again" button. A konzept pane
+      // (queue.ts#renderKonzeptDetail) is the same: its ledgers are not on the poll.
     } else if (qShell?.isOpen() && qPick !== null && qPick.startsWith("prog:")) {
       // the same rule for a program pane: its MARK moves with the SLOTS, not with the program,
       // so a pane keyed on the program alone would keep claiming a MAIN that just died

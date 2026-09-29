@@ -22,6 +22,9 @@
 //                       or interleave a line.
 //   file check        — assign N without checking v<N>.md exists and hashes to the body's sha256.
 //   scope             — let a plain session (neither lane nor bound MAIN) read or write, or 401 it.
+//   index             — list a directory that is no konzept id, read a fassung into the list, miscount the
+//                       fold, or answer a request carrying a self token anything but 401 (alone) / 409
+//                       (beside the owner's) — GET /api/konzepte, the board's list.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -290,6 +293,23 @@ export async function run(): Promise<void> {
         && JSON.stringify(ownerRead.body.versionen) === JSON.stringify(laneRead.body.versionen),
       `${ownerRead.status}/${laneRead.status} letzte=${ownerRead.body.letzte} malformed=${ownerRead.body.malformed}`);
 
+    // ---- index (the board's list): konzept dirs only, the latest version row and the fold's counts, no content
+    mkdirSync(`${i.root}/k-e2e-leer`, { recursive: true });
+    mkdirSync(`${i.root}/kein-konzept`, { recursive: true });
+    const idx = await call("/api/konzepte", "GET", OH);
+    const idxBody = idx.body as { konzepte?: { konzept: string; letzte: KonzeptVersion | null; versionen: number;
+      anmerkungen: { offen: number; eingearbeitet: number; verworfen: number } }[] };
+    const row = idxBody.konzepte?.find((k) => k.konzept === K);
+    const idxSelf = await call("/api/konzepte", "GET", { "x-fleet-self-token": laneTok! });
+    const idxBoth = await call("/api/konzepte", "GET", { ...OH, "x-fleet-self-token": laneTok! });
+    check("konzepte index: GET /api/konzepte lists konzept dirs only, with the latest version and the folded counts, never a fassung",
+      idx.status === 200 && JSON.stringify(idxBody.konzepte?.map((k) => k.konzept)) === JSON.stringify(["k-e2e-konzept", "k-e2e-leer"])
+        && row?.letzte?.version === 11 && row.versionen === 11
+        && JSON.stringify(row.anmerkungen) === '{"offen":8,"eingearbeitet":2,"verworfen":1}'
+        && idxBody.konzepte?.find((k) => k.konzept === "k-e2e-leer")?.letzte === null
+        && !JSON.stringify(idx.body).includes("# Konzept") && idxSelf.status === 401 && idxBoth.status === 409,
+      `${idx.status} self=${idxSelf.status} both=${idxBoth.status} ${JSON.stringify(idx.body).slice(0, 500)}`);
+
     // ---- scope: a plain session is 409 on read and write, no token 401
     const plainW = await self(plainTok!, "anmerkungen", "POST", { version: 1, text: "x" });
     const plainR = await self(plainTok!, "versionen", "GET");
@@ -303,11 +323,13 @@ export async function run(): Promise<void> {
     renameSync(i.root, `${i.root}.away`);
     const goneW = await self(laneTok!, "anmerkungen", "POST", { version: 1, text: "ins Nichts" });
     const goneR = await owner("versionen", "GET");
+    const goneIdx = await call("/api/konzepte", "GET", OH);
     const recreated = existsSync(i.root);
     renameSync(`${i.root}.away`, i.root);
     check("konzepte missing root: 503 naming FLEET_KONZEPT_ROOT on read and write, and no root is created",
-      goneW.status === 503 && goneR.status === 503 && (goneW.body.error ?? "").includes("FLEET_KONZEPT_ROOT") && !recreated,
-      `write=${goneW.status} ${goneW.body.error} read=${goneR.status} recreated=${recreated}`);
+      goneW.status === 503 && goneR.status === 503 && goneIdx.status === 503
+        && (goneW.body.error ?? "").includes("FLEET_KONZEPT_ROOT") && !recreated,
+      `write=${goneW.status} ${goneW.body.error} read=${goneR.status} index=${goneIdx.status} recreated=${recreated}`);
   } finally {
     await stop(i);
     spawnSync("tmux", ["-L", i.sock, "kill-server"]);

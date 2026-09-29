@@ -1087,7 +1087,18 @@ curl -s -X POST http://<fleet-host>:<port>/api/konzepte/<konzept>/anmerkungen \
   -d '{"version":<N>,"text":"<≤4000>"}'
 ```
 
-**Grenzen dieses Schnitts:** keine Board-Oberflaeche (Karte 2), kein Pack-Anschluss (Karte 3, der
+### Der OWNER-Index — `GET /api/konzepte` (Karte 2)
+
+Jedes Konzept-Verzeichnis unter der Wurzel, dessen Name `^k-[a-z0-9-]{1,64}$` erfuellt, als
+`{konzept, letzte: <Versionszeile>|null, versionen, anmerkungen: {offen, eingearbeitet, verworfen},
+malformed}` (`konzept-ledger.ts#konzeptIndex`). Nur Metadaten: die Fassung `v<N>.md` wird dabei nie
+gelesen. Dieselben Antworten wie die Owner-Tuer — 401 ohne Owner-Token, **409** fuer eine Anfrage, die
+zusaetzlich ein Self-Token traegt, **503** mit
+`FLEET_KONZEPT_ROOT` im Text, wenn die Wurzel fehlt. Die Board-Ansicht dazu ist die Queue-Sicht
+„Konzepte" (`src/queue.ts#renderKonzeptDetail`); ihr Anmerkungs-Thread ist dieselbe Komponente wie der
+Task-Kommentar-Thread (`src/queue.ts#commentThread`).
+
+**Grenzen dieses Schnitts:** kein Pack-Anschluss (Karte 3, der
 Pack-Aufloeser f38eb1c8 teilt sich spaeter `FLEET_KONZEPT_ROOT`), keine `unknown`-Variante im Principal
 (jede Tuer verlangt eine erkannte Credential, D2a 5b71d60c bleibt unberuehrt). Beweis: `e2e/konzepte.ts`
 (eigene Scratch-Instanz, `FLEET_E2E_MODULES=konzepte`).

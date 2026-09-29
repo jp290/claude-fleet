@@ -6,6 +6,9 @@ import { attachEntityCards } from "./entcard";
 import { mdInto } from "./md";
 import { noteFirstSentence } from "../task-notes";
 import { ProjectedWaveTask, TaskWaveProjection, TaskWaveUnresolved, projectTaskWaves } from "../task-waves";
+import type { KonzeptAnmerkung, KonzeptIndexRow, KonzeptVersion } from "../konzept-ledger";
+import type { Principal } from "../server/auth";
+import type { TraceRefs } from "../trace-index";
 import { BundleProposal, LAND_WAVE_COSTS_2026_09, LAND_WAVE_ROWS_MAX, LandWave, LandWaveCosts, LandWaveProjection, projectLandWaves } from "../task-land-waves";
 
 // --- task queue window ---
@@ -60,7 +63,7 @@ export let taskTextEpoch = 0;
 export let qShell: Shell | null = null;
 export let qPick: string | null = null;  // selected task id; null = the compose row
 export let qQuery = "";
-export type QView = "work" | "notes" | "programs" | "history" | "waves";
+export type QView = "work" | "notes" | "programs" | "history" | "waves" | "konzepte";
 export let qView: QView = "work";        // the operational list is primary; polls never reset the view
 export let qProgDone = false;            // show `complete` programs in the Programs section (default off)
 // renderQueue lives outside openQueue, where the view switch is built; the Work list's Notes
@@ -1940,6 +1943,297 @@ export function qDetailSection(parent: HTMLElement, title: string, disclosure = 
   return body;
 }
 
+// THE ONE COMMENT THREAD (Program Konzeptgedaechtnis 31aa88ea, Karte 2): the Task.comments rail,
+// generalized to a TARGET instead of copied — a task row, or a konzept at its current version. The
+// thread paints each entry as the task thread always did (the text block with its copy button, then
+// one line of who/what/when and the entry's one act) and ends in the compose box. What differs per
+// target is handed in, never branched on here: the entries' lines, the act, and where `send` posts.
+export type CommentTarget = { kind: "task"; id: string } | { kind: "konzept"; id: string; version: number };
+export const commentTargetKey = (t: CommentTarget): string =>
+  t.kind === "task" ? `task:${t.id}` : `konzept:${t.id}@v${t.version}`;
+export interface CommentEntry {
+  id: string; ts: number; text: string; label: string;
+  // painted left to right before the timestamp: a string is a hint line, a node goes in as it is
+  lines: (string | HTMLElement)[];
+  // `ask` = the act needs a reason: the click opens a one-line box under the entry instead of acting
+  act?: { text: string; title: string; ask?: string; run: (reason: string) => void };
+}
+export interface CommentCompose { placeholder: string; button: string; title: string;
+  send: (text: string) => Promise<boolean> }
+// the reason box of an act that asks one, kept across repaints like the compose box — keyed by
+// target and entry, so a half-typed Grund never lands on another entry
+let qCmAsk: { key: string; box: HTMLInputElement } | null = null;
+export function commentThread(parent: HTMLElement, target: CommentTarget, title: string,
+  entries: readonly CommentEntry[], compose: CommentCompose | null): void {
+  const tkey = commentTargetKey(target);
+  parent.appendChild(el("div", "rvhead", entries.length ? `${title} · ${entries.length}` : title));
+  for (const c of entries) {
+    qTextBlock(parent, c.label, c.text);
+    const cline = el("div", "pkdacts");
+    for (const l of c.lines) cline.appendChild(typeof l === "string" ? el("div", "hint shellhint", l) : l);
+    cline.appendChild(el("div", "hint shellhint", fmtTs(c.ts)));
+    const act = c.act;
+    const askKey = `${tkey}#${c.id}`;
+    if (act) {
+      const cx = el("button", "shrbtn", act.text) as HTMLButtonElement;
+      cx.title = act.title;
+      cx.onclick = () => {
+        if (act.ask === undefined) { act.run(""); return; }
+        if (qCmAsk?.key === askKey) qCmAsk = null;
+        else {
+          const box = el("input", "qaddin") as HTMLInputElement;
+          box.type = "text";
+          box.placeholder = act.ask;
+          qCmAsk = { key: askKey, box };
+        }
+        qDetailKey = ""; renderQueueDetail();
+        qCmAsk?.box.focus();
+      };
+      cline.appendChild(cx);
+    }
+    parent.appendChild(cline);
+    if (act?.ask !== undefined && qCmAsk?.key === askKey) {
+      const ask = qCmAsk;
+      const row = el("div", "pkdacts");
+      const go = el("button", "shrbtn", act.text) as HTMLButtonElement;
+      go.title = act.title;
+      go.onclick = () => {
+        const reason = ask.box.value.trim();
+        if (!reason) { ask.box.focus(); return; }
+        act.run(reason);
+      };
+      ask.box.onkeydown = (e) => { if (e.key === "Enter") go.click(); };
+      row.append(ask.box, go);
+      parent.appendChild(row);
+    }
+  }
+  if (!compose) return;
+  // the box itself is kept across rebuilds (see qCmBox): the 2 s poll repaints this pane whenever
+  // a verdict or a comment lands, and a locally-created textarea would lose a half-typed remark
+  if (!qCmBox || qCmFor !== tkey) {
+    qCmBox = el("textarea", "qdcrit") as HTMLTextAreaElement;
+    qCmBox.rows = 3;
+    qCmBox.placeholder = compose.placeholder;
+    qCmFor = tkey;
+  }
+  const cbox = qCmBox;
+  parent.appendChild(cbox);
+  const cmacts = el("div", "pkdacts");
+  const cmb = el("button", "shrbtn", compose.button) as HTMLButtonElement;
+  cmb.title = compose.title;
+  cmb.onclick = () => {
+    if (!cbox.value.trim()) return;
+    // cleared only once the server has it — a draft dropped on a failed post is gone for good
+    void compose.send(cbox.value).then((ok) => { if (ok) cbox.value = ""; });
+  };
+  cmacts.appendChild(cmb);
+  parent.appendChild(cmacts);
+}
+// THE KONZEPTE VIEW (Program Konzeptgedaechtnis 31aa88ea, Karte 2): each konzept under the private
+// root, its current version's METADATA and the anmerkungen of this and earlier versions as a thread.
+// The fassung itself (v<N>.md) is never fetched or drawn — the index and the two ledger reads carry
+// no content, so this view cannot leak it. Owner-only reads (GET /api/konzepte, /api/konzepte/:id/…).
+export let konzepteIndex: KonzeptIndexRow[] = [];
+export let konzepteRead: "unread" | "ok" | "fail" = "unread";
+let konzepteErr: string | null = null;
+let konzepteKey = "";
+let konzepteAt = 0;
+let konzepteBusy = false;
+// the detail's two reads per konzept — see renderKonzeptDetail for when they are dropped
+const konzeptFull = new Map<string, { versionen: KonzeptVersion[]; anmerkungen: KonzeptAnmerkung[] } | { error: string }>();
+const KONZEPTE_FLOOR_MS = 15_000; // the list is not on the poll; a view open for minutes re-reads at most this often
+export async function loadKonzepte(force = false): Promise<void> {
+  if (konzepteBusy || (!force && Date.now() - konzepteAt < KONZEPTE_FLOOR_MS)) return;
+  konzepteBusy = true;
+  try {
+    const r = await api("/api/konzepte").catch(() => null);
+    const j = r ? (await r.json().catch(() => null)) as { konzepte?: KonzeptIndexRow[]; error?: string } | null : null;
+    if (r?.ok && Array.isArray(j?.konzepte)) { konzepteIndex = j.konzepte; konzepteRead = "ok"; konzepteErr = null; }
+    else {
+      konzepteRead = "fail";
+      konzepteErr = r ? `GET /api/konzepte answered ${r.status}${j?.error ? ` — ${j.error}` : ""}` : "GET /api/konzepte: no answer";
+    }
+  } finally { konzepteBusy = false; konzepteAt = Date.now(); }
+  const key = JSON.stringify([konzepteRead, konzepteErr, konzepteIndex]);
+  if (key !== konzepteKey) { konzepteKey = key; qKey = ""; renderQueue(); }
+}
+
+// WHO wrote it, from the Principal as the ledger recorded it — never re-derived here
+export function konzeptWho(a: Principal | { kind: string } | null | undefined): string {
+  if (!a) return "unbekannt";
+  const p = a as Principal;
+  switch (p.kind) {
+    case "owner": return "Owner";
+    case "session": return `Session · Slot ${p.slot} · ${p.role}`;
+    case "device": return `Geraet ${p.deviceId.slice(0, 8)}`;
+    case "guest": return `Gast ${p.shareId}`;
+    case "machine": return `Maschine · ${p.why}`;
+    default: return a.kind;
+  }
+}
+
+// THE KONTEXT as links: a task opens its row, a program its pane — both as hoverable ids (entcard)
+// when the board knows them, plain text when it does not (an archived row is still its id)
+function konzeptKontext(k: TraceRefs | undefined): HTMLElement | null {
+  if (!k) return null;
+  const parts: (string | HTMLElement)[] = [];
+  const link = (kind: "task" | "program", id: string, go: () => void): HTMLElement => {
+    if (!entityKnown(kind, id)) return el("span", "", id);
+    const span = el("span", `ent ent-${kind}`, kind === "program" ? id.slice(0, 8) : id);
+    span.dataset.ent = kind;
+    span.dataset.id = id;
+    span.tabIndex = 0;
+    span.style.cursor = "pointer";
+    span.onclick = go;
+    return span;
+  };
+  if (k.task) {
+    const id = k.task;
+    parts.push("Task ", link("task", id, () => {
+      const t = tasksList.find((x) => x.id === id);
+      qChooseView?.(t && qClosed(t) ? "history" : "work");
+      qSelect(id);
+    }));
+  }
+  if (k.program) {
+    const id = k.program;
+    if (parts.length) parts.push(" · ");
+    parts.push("Program ", link("program", id, () => { qChooseView?.("programs"); qSelect(`prog:${id}`); }));
+  }
+  if (typeof k.slot === "number") parts.push(`${parts.length ? " · " : ""}Slot ${k.slot}`);
+  if (k.branch) parts.push(`${parts.length ? " · " : ""}${k.branch}`);
+  if (!parts.length) return null;
+  const line = el("div", "hint shellhint", "Kontext: ");
+  line.append(...parts);
+  return line;
+}
+
+function konzeptStatus(s: KonzeptAnmerkung["status"]): HTMLElement {
+  if (s === "offen") return el("span", "qchip qc-need", "offen");
+  if ("eingearbeitet" in s) return el("span", "qchip qc-run", `eingearbeitet in v${s.eingearbeitet}`);
+  const v = el("span", "qchip qc-kind", `verworfen · ${konzeptWho(s.actor)}`);
+  v.title = `Grund: ${s.verworfen}`;
+  return v;
+}
+
+async function konzeptPost(id: string, rest: string, body: Record<string, unknown>): Promise<boolean> {
+  const r = await post(`/api/konzepte/${encodeURIComponent(id)}/${rest}`, body);
+  if (!r.ok) {
+    const j = (await r.json().catch(() => null)) as { error?: string } | null;
+    toast(j?.error ?? `POST /api/konzepte/${id}/${rest} answered ${r.status}`);
+    return false;
+  }
+  qCmAsk = null;
+  konzeptFull.delete(id);
+  await loadKonzepte(true);
+  qKey = ""; qDetailKey = "";
+  renderQueue();
+  renderQueueDetail();
+  return true;
+}
+
+export function renderKonzeptDetail(shell: Shell, id: string): void {
+  const row = konzepteIndex.find((k) => k.konzept === id);
+  const titleBox = el("div", "qdtitle");
+  titleBox.appendChild(el("div", "qdtitle-t", id));
+  const chips = el("div", "qchips");
+  if (row?.letzte) {
+    chips.appendChild(el("span", "qchip qc-kind", `v${row.letzte.version}`));
+    chips.appendChild(el("span", "qchip qc-prog", row.letzte.ebene));
+  }
+  chips.appendChild(el("span", "qdtitle-id", id));
+  titleBox.appendChild(chips);
+  shell.detail.appendChild(titleBox);
+  const body = el("div", "");
+  shell.detail.appendChild(body);
+  // ON DEMAND like the repo sheet: the poll does not repaint this pane (client.ts, the konz: branch).
+  // The two reads are cached per konzept so a repaint (the reason box, a failed post) draws at once
+  // and keeps its focus; a write, "neu lesen" and reopening the view drop the cache.
+  const full = konzeptFull.get(id);
+  if (!full) {
+    body.appendChild(el("div", "hint shellhint", "lese die Versionen und Anmerkungen dieses Konzepts …"));
+    const enc = encodeURIComponent(id);
+    void Promise.all([api(`/api/konzepte/${enc}/versionen`).catch(() => null),
+      api(`/api/konzepte/${enc}/anmerkungen`).catch(() => null)]).then(async ([rv, ra]) => {
+      const jv = rv ? (await rv.json().catch(() => null)) as { versionen?: KonzeptVersion[]; error?: string } | null : null;
+      const ja = ra ? (await ra.json().catch(() => null)) as { anmerkungen?: KonzeptAnmerkung[]; error?: string } | null : null;
+      if (rv?.ok && ra?.ok && Array.isArray(jv?.versionen) && Array.isArray(ja?.anmerkungen))
+        konzeptFull.set(id, { versionen: jv.versionen, anmerkungen: ja.anmerkungen });
+      else {
+        const bad = !rv?.ok ? rv : ra;
+        const err = (!rv?.ok ? jv : ja)?.error;
+        konzeptFull.set(id, { error: bad ? `GET /api/konzepte/${id}/… answered ${bad.status}${err ? ` — ${err}` : ""}`
+          : "keine Antwort — Versionen und Anmerkungen dieses Konzepts sind gerade unbekannt" });
+      }
+      if (qPick === `konz:${id}` && body.isConnected) { qDetailKey = ""; renderQueueDetail(); }
+    });
+    return;
+  }
+  if ("error" in full) {
+    body.appendChild(el("div", "pkdwarn", full.error));
+    const retry = el("button", "shrbtn", "↻ neu lesen") as HTMLButtonElement;
+    retry.onclick = () => { konzeptFull.delete(id); qDetailKey = ""; renderQueueDetail(); };
+    body.appendChild(retry);
+    return;
+  }
+  const versionen = [...full.versionen].sort((a, b) => b.version - a.version);
+  const cur = versionen[0];
+  const again = el("button", "shrbtn", "↻ neu lesen") as HTMLButtonElement;
+  again.type = "button";
+  again.title = "die beiden Ledger dieses Konzepts neu lesen — der Poll haelt diese Ansicht nicht frisch";
+  again.onclick = () => { konzeptFull.delete(id); void loadKonzepte(true); qDetailKey = ""; renderQueueDetail(); };
+  const top = el("div", "pkdacts");
+  top.appendChild(again);
+  body.appendChild(top);
+  if (!cur) {
+    body.appendChild(el("div", "hint shellhint",
+      "noch keine Version — eine Anmerkung haengt an einer veroeffentlichten Version, darum gibt es hier noch nichts zu schreiben"));
+    return;
+  }
+  const head = qDetailSection(body, "Aktuelle Version");
+  head.appendChild(el("div", "qdtext", `v${cur.version} · ${fmtTs(cur.at)} · ${konzeptWho(cur.actor)}`));
+  const kx = konzeptKontext(cur.kontext);
+  if (kx) head.appendChild(kx);
+  qTextBlock(head, "Anlass", cur.anlass);
+  const facts = el("div", "hint shellhint", `Ebene ${cur.ebene} · gilt: ${cur.geltung}`
+    + (cur.arbeitetEin.length ? ` · arbeitet ${cur.arbeitetEin.length} Anmerkung${cur.arbeitetEin.length === 1 ? "" : "en"} ein` : "")
+    + ` · sha256 ${cur.sha256.slice(0, 12)}…`);
+  facts.title = `sha256 ${cur.sha256}`;
+  head.appendChild(facts);
+
+  // the thread: this version's anmerkungen and every earlier one, oldest first like a conversation
+  const thread = el("div", "");
+  body.appendChild(thread);
+  const anm = [...full.anmerkungen].sort((a, b) => a.at - b.at);
+  commentThread(thread, { kind: "konzept", id, version: cur.version }, "Anmerkungen", anm.map((a) => {
+    const lines: (string | HTMLElement)[] = [el("span", "qchip qc-kind", `v${a.version}`)];
+    if (a.anker) lines.push(`§ ${a.anker.abschnitt}`);
+    lines.push(konzeptStatus(a.status));
+    const kc = konzeptKontext(a.kontext);
+    if (kc) lines.push(kc);
+    if (typeof a.status === "object" && "verworfen" in a.status) lines.push(`Grund: ${a.status.verworfen}`);
+    return { id: a.id, ts: a.at, text: a.text, label: konzeptWho(a.actor), lines,
+      act: typeof a.status === "object" && "verworfen" in a.status ? undefined : {
+        text: "✕ verwerfen", title: "diese Anmerkung verwerfen — der Grund steht danach im Ledger, mit dir als actor",
+        ask: "Grund — warum diese Anmerkung nicht eingearbeitet wird",
+        run: (grund: string) => void konzeptPost(id, `anmerkungen/${a.id}/verwerfen`, { grund }),
+      } };
+  }), {
+    placeholder: `Anmerkung zu ${id} v${cur.version}…`, button: `💬 an v${cur.version} anmerken`,
+    title: `haengt an Version ${cur.version} — dein Principal (Owner) wird serverseitig als actor gesetzt`,
+    send: (text) => konzeptPost(id, "anmerkungen", { version: cur.version, text }),
+  });
+
+  if (versionen.length > 1) {
+    const older = qDetailSection(body, `Fruehere Versionen · ${versionen.length - 1}`, true, false);
+    for (const v of versionen.slice(1)) {
+      older.appendChild(el("div", "qdtext", `v${v.version} · ${fmtTs(v.at)} · ${konzeptWho(v.actor)} — ${v.anlass}`));
+      const vk = konzeptKontext(v.kontext);
+      if (vk) older.appendChild(vk);
+    }
+  }
+}
+
 // One program, in the SAME list/detail pane the tasks use. What it must make impossible is the
 // state this surface was built for: a program whose MAIN died months ago reading like a running
 // one. So the mark, its derivation sentence, and the founding flow all sit on one pane.
@@ -2996,7 +3290,9 @@ export function renderQueueDetail() {
         ? ["Programs", "Select a Program to inspect its binding, lifecycle and owner controls."]
         : qView === "history"
           ? ["History", "Select a done or archived task to inspect its record."]
-          : ["Waves", "Select a projected task to inspect its evidence and actions."];
+          : qView === "konzepte"
+            ? ["Konzepte", "Waehle ein Konzept: seine aktuelle Version und die Anmerkungen dazu."]
+            : ["Waves", "Select a projected task to inspect its evidence and actions."];
       shell.detail.appendChild(el("div", "rvhead", emptyDetail[0]));
       shell.detail.appendChild(el("div", "hint shellhint", emptyDetail[1]));
       restoreFocus();
@@ -3099,6 +3395,11 @@ export function renderQueueDetail() {
   }
   if (qPick.startsWith("repo:")) {
     renderRepoDetail(shell, qPick.slice(5));
+    restoreFocus();
+    return;
+  }
+  if (qPick.startsWith("konz:")) {
+    renderKonzeptDetail(shell, qPick.slice(5));
     restoreFocus();
     return;
   }
@@ -3500,43 +3801,19 @@ export function renderQueueDetail() {
   // present, even empty: "there was nowhere to leave a remark" is the defect this closes, and a
   // box that appears only once a thread exists has the same problem one click deeper.
   const cms = taskCommentsFull.get(t.id) ?? [];
-  discussion.appendChild(el("div", "rvhead", cms.length ? `comments · ${cms.length}` : "comments"));
-  for (const c of cms) {
-    qTextBlock(discussion, c.from ?? "comment", c.text);
-    const cline = el("div", "pkdacts");
+  commentThread(discussion, { kind: "task", id: t.id }, "comments", cms.map((c) => ({
+    id: c.id, ts: c.ts, text: c.text, label: c.from ?? "comment",
     // WHO said it and WHAT they claimed, beside the timestamp. Only `erledigt` ever moves this row,
     // and only when the branch that wrote it lands — said here rather than left to be inferred,
     // because a `widerlegt` sitting under a still-pending note otherwise reads as an ignored report.
-    if (c.verdict) cline.appendChild(el("div", "hint shellhint",
-      `${c.verdict} · ${c.from ?? "lane"}${c.verdict === "erledigt" ? " — closes this note when that branch lands" : ""}`));
-    cline.appendChild(el("div", "hint shellhint", fmtTs(c.ts)));
-    const cx = el("button", "shrbtn", "✕") as HTMLButtonElement;
-    cx.title = "delete this comment";
-    cx.onclick = () => void qAct(t.id, "comment-delete", { comment: c.id });
-    cline.appendChild(cx);
-    discussion.appendChild(cline);
-  }
-  // the box itself is kept across rebuilds (see qCmBox): the 2 s poll repaints this pane whenever
-  // a verdict or a comment lands, and a locally-created textarea would lose a half-typed remark
-  if (!qCmBox || qCmFor !== t.id) {
-    qCmBox = el("textarea", "qdcrit") as HTMLTextAreaElement;
-    qCmBox.rows = 3;
-    qCmBox.placeholder = "leave a comment on this task…";
-    qCmFor = t.id;
-  }
-  const cbox = qCmBox;
-  discussion.appendChild(cbox);
-  const cmacts = el("div", "pkdacts");
-  const cmb = el("button", "shrbtn", "💬 comment") as HTMLButtonElement;
-  cmb.title = "a remark for whoever picks this up — read, never executed:"
-    + " it is not appended to the brief the lane receives";
-  cmb.onclick = () => {
-    if (!cbox.value.trim()) return;
-    // cleared only once the server has it — a draft dropped on a failed post is gone for good
-    void qAct(t.id, "comment", { text: cbox.value }).then((ok) => { if (ok) cbox.value = ""; });
-  };
-  cmacts.appendChild(cmb);
-  discussion.appendChild(cmacts);
+    lines: c.verdict ? [`${c.verdict} · ${c.from ?? "lane"}${c.verdict === "erledigt" ? " — closes this note when that branch lands" : ""}`] : [],
+    act: { text: "✕", title: "delete this comment", run: () => void qAct(t.id, "comment-delete", { comment: c.id }) },
+  })), {
+    placeholder: "leave a comment on this task…", button: "💬 comment",
+    title: "a remark for whoever picks this up — read, never executed:"
+      + " it is not appended to the brief the lane receives",
+    send: (text) => qAct(t.id, "comment", { text }),
+  });
   // THE BRIEF — the exact bytes a lane receives, editable while the task has not been sent.
   // It exists in the UI at all because it used to be compiled at spawn time and fired straight
   // into the pane: unreadable before the fact, and a different string from the one that had been
@@ -4182,6 +4459,7 @@ export function renderQueue() {
   void loadTaskTexts(); // no-op unless the visible task set changed
   void loadPrograms();  // no-op unless the poll's digest moved or the floor elapsed
   if (qView === "waves") void loadBundles(); // no-op unless a task fact the proposal reads moved
+  if (qView === "konzepte") void loadKonzepte(); // no-op inside its floor
   const scoped = tasksList.filter(qInScope);
   const model = qTaskListModel(scoped, taskText, programsList, qQuery);
   const shown = model.work;
@@ -4196,6 +4474,7 @@ export function renderQueue() {
     // not moved, and the early return below leaves the button it unlocks disabled.
     qView === "waves" ? qWaveAck : null,
     qView === "waves" ? [qBundlesRead, qBundles] : null,
+    qView === "konzepte" ? [konzepteRead, konzepteKey] : null,
     // the lane line is derived from the slots too — a lane going idle or dirty moves no task field
     qLaneKey(laneJoins),
     // the MARK is derived from the slots, so it moves without any program field moving. Leaving
@@ -4228,6 +4507,10 @@ export function renderQueue() {
     shell.setSubtitle(programsRead === "fail" ? "Programs unavailable — the last read failed"
       : `${programsList.length} program${programsList.length === 1 ? "" : "s"}`
         + (programsStale > 0 ? ` · ${programsStale} stale active` : ""));
+  } else if (qView === "konzepte") {
+    const offen = konzepteIndex.reduce((n, k) => n + k.anmerkungen.offen, 0);
+    shell.setSubtitle(konzepteRead === "fail" ? "Konzepte nicht lesbar — der letzte Abruf scheiterte"
+      : `${konzepteIndex.length} Konzept${konzepteIndex.length === 1 ? "" : "e"} · ${offen} offene Anmerkung${offen === 1 ? "" : "en"}`);
   } else if (qView === "history") {
     const count = scoped.filter(qClosed).length;
     shell.setSubtitle(`${count} done or archived task${count === 1 ? "" : "s"}`);
@@ -4389,6 +4672,30 @@ export function renderQueue() {
     }
     if (!visibleRows) shell.list.appendChild(el("div", "pknone",
       qQuery ? "no notes match this search" : "no open notes — nothing is waiting to be read"));
+  } else if (qView === "konzepte") {
+    if (konzepteRead === "fail") shell.list.appendChild(el("div", "pknone", konzepteErr ?? "GET /api/konzepte did not answer"));
+    const shownK = konzepteIndex.filter((k) => !qQuery || k.konzept.includes(qQuery)
+      || (k.letzte?.anlass ?? "").toLowerCase().includes(qQuery) || (k.letzte?.geltung ?? "").toLowerCase().includes(qQuery));
+    if (shownK.length) addSection("Konzepte", shownK.length,
+      "jedes Konzept unter der privaten Konzeptwurzel (FLEET_KONZEPT_ROOT) mit seiner letzten Version —"
+      + " nur Metadaten; der Inhalt einer Fassung wird hier nie gezeigt");
+    for (const k of shownK) {
+      const v = k.letzte;
+      const sub = el("div", "hint shellhint", v
+        ? `v${v.version} · ${fmtTs(v.at)} · ${konzeptWho(v.actor)}` : "noch keine Version veroeffentlicht");
+      add({ name: k.konzept, id: `konz:${k.konzept}`, sub, cls: k.anmerkungen.offen ? "" : "q-obs",
+        chips: [
+          ...(v ? [{ text: `v${v.version}`, cls: "kind", title: `${k.versionen} Version${k.versionen === 1 ? "" : "en"}` },
+            { text: v.ebene, cls: "prog", title: `Ebene · gilt: ${v.geltung}` }] : []),
+          ...(k.anmerkungen.offen ? [{ text: `💬 ${k.anmerkungen.offen} offen`, cls: "need",
+            title: `${k.anmerkungen.offen} offen · ${k.anmerkungen.eingearbeitet} eingearbeitet · ${k.anmerkungen.verworfen} verworfen` }] : []),
+          ...(k.malformed ? [{ text: `⚠ ${k.malformed}`, cls: "need", title: `${k.malformed} unlesbare Ledger-Zeile(n)` }] : []),
+        ] });
+      visibleRows++;
+    }
+    if (!visibleRows && konzepteRead !== "fail") shell.list.appendChild(el("div", "pknone",
+      konzepteRead === "unread" ? "lese GET /api/konzepte …"
+        : qQuery ? "kein Konzept passt zu dieser Suche" : "keine Konzepte unter der Konzeptwurzel"));
   } else if (qView === "history") {
     if (model.history.length) {
       addSection("History", model.history.length, "done and archived tasks, newest first");
@@ -4624,6 +4931,7 @@ export function openQueue() {
   view.setAttribute("aria-label", "Task queue views");
   const views = ([
     ["work", "Work"], ["notes", "Notes"], ["programs", "Programs"], ["history", "History"], ["waves", "Waves"],
+    ["konzepte", "Konzepte"],
   ] as const).map(([id, label]) => {
     const button = el("button", "", label) as HTMLButtonElement;
     button.type = "button";
@@ -4642,6 +4950,7 @@ export function openQueue() {
     qView = next;
     if (next !== "work") { qBundleMode = false; qSel.clear(); }
     if (next === "waves") void loadBundles(true);
+    if (next === "konzepte") { konzeptFull.clear(); void loadKonzepte(true); }
     qPick = null;
     qRawAck = null;
     qKey = "";

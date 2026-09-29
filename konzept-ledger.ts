@@ -15,7 +15,7 @@
 // anmerkungen.jsonl. The newest event wins. A version therefore needs ONE append, never a second write
 // into the other file that a crash between the two could tear.
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, readFile, stat } from "node:fs/promises";
+import { appendFile, readFile, readdir, stat } from "node:fs/promises";
 import type { Principal } from "./server/auth";
 import type { TraceDetailRef, TraceRefs } from "./trace-index";
 
@@ -160,6 +160,30 @@ async function rootDir(root: string | null): Promise<string | KonzeptAnswer> {
   if (!root) return refuse(503, `${KONZEPT_ROOT_ENV} is not set — the konzept store has no root on this server`);
   try { if ((await stat(root)).isDirectory()) return root; } catch { /* named below */ }
   return refuse(503, `${KONZEPT_ROOT_ENV} does not name an existing directory — the konzept store is unavailable`);
+}
+
+// THE INDEX (Karte 2, the board's list): every konzept directory under the root with its LATEST version
+// row and the fold's counts. Metadata only — the fassung v<N>.md is never read here, so the list cannot
+// carry konzept content. A directory whose name is not a konzept id is skipped, never an error: the
+// root is the owner's, and a stray folder in it is not a konzept.
+export interface KonzeptIndexRow { konzept: string; letzte: KonzeptVersion | null; versionen: number;
+  anmerkungen: { offen: number; eingearbeitet: number; verworfen: number }; malformed: number }
+export async function konzeptIndex(root: string | null): Promise<KonzeptAnswer> {
+  const dir = await rootDir(root);
+  if (isAnswer(dir)) return dir;
+  const names = (await readdir(dir, { withFileTypes: true }))
+    .filter((e) => e.isDirectory() && KONZEPT_ID_RE.test(e.name)).map((e) => e.name).sort();
+  const konzepte: KonzeptIndexRow[] = [];
+  for (const konzept of names) {
+    const l = await readLedgers(`${dir}/${konzept}`, konzept);
+    const n = lastVersion(l);
+    const counts = { offen: 0, eingearbeitet: 0, verworfen: 0 };
+    for (const a of folded(l))
+      counts[a.status === "offen" ? "offen" : "eingearbeitet" in a.status ? "eingearbeitet" : "verworfen"]++;
+    konzepte.push({ konzept, letzte: l.versionen.find((v) => v.version === n) ?? null,
+      versionen: l.versionen.length, anmerkungen: counts, malformed: l.malformed });
+  }
+  return { status: 200, body: { konzepte } };
 }
 
 export type KonzeptOp =

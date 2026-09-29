@@ -635,6 +635,10 @@ const dangerous = (slot: number): Probe[] => [
   // forge the one provenance the ledger exists to prove. An empty body is a side-effect-free named 400
   // (validated before the root is looked at), which carries the positive control.
   { path: "/api/konzepte/k-authprobe/anmerkungen", method: "POST", body: {}, owner: 400 },
+  // the index beside it lists every konzept under the private root. Deny-only: this suite runs without
+  // FLEET_KONZEPT_ROOT, so the owner's answer is the named 503, which the control below rightly refuses to
+  // read as admission. Its owner-side proof is e2e/konzepte.ts (index), on an instance with a root.
+  { path: "/api/konzepte", method: "GET" },
   { path: "/api/dispatch", method: "POST", body: {} },
   // the board editor's pair (§F5). The WRITE route is the only one on this server that puts bytes
   // into a file the caller named, so an auth regression here is not a leak — it is arbitrary code

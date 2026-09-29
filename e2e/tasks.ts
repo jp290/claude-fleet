@@ -13557,7 +13557,7 @@ export async function run(ctx: Ctx): Promise<void> {
       check(`MAIN doors lane: ${door.method} ${door.suffix || "full text"} refuses with the lane reason`,
         lane.status === 409 && (await lane.text()).includes("a lane may not"), String(lane.status));
     }
-    const fullText = "acp25 full task text " + "beyond the preview. ".repeat(30);
+    const fullText = ("acp25 full task text " + "beyond the preview. ".repeat(30)).trim();
     const fullId = await nMake(fullText, nBoundProgram);
     const full = await doorCall(`/api/self/tasks/${fullId}`, "GET");
     const fullBody = await full.json() as { task?: NRow };

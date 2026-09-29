@@ -3,9 +3,10 @@
 Eine Fleet-Instanz, die zu GENAU EINEM Worktree gehört: jeder Checkout leitet Port, tmux-Socket
 und Verzeichnis aus seinem eigenen Pfad ab, zwei Lanes laufen deshalb nebeneinander statt sich
 8862/fleetti733b zu teilen (gemessen 2026-09-24: alle Kopien antworteten mit dem Stand einer
-fremden Lane). Sie läuft von selbst ab (TTL), und sie trägt keine Live-Werte.
+fremden Lane). Sie läuft von selbst ab (TTL). Der Modus `snapshot` zeigt dem Owner auf Tailscale
+eine bereinigte Kopie echter Daten: „[Zitat entfernt]“.
 
-    ./testinstanz.sh up [mixed|full] [--ttl <min>]   aufstellen, bauen, starten, Fixtures pflanzen
+    ./testinstanz.sh up [mixed|full|snapshot] [--ttl <min>]   aufstellen, bauen, starten, Daten pflanzen
     ./testinstanz.sh fixtures [mixed|full]           neu pflanzen, ohne Neustart
     ./testinstanz.sh states                          was die Leiste JETZT malt, je Zustand
     ./testinstanz.sh status                          läuft sie, wo, Restzeit — und wer den Mutex hält
@@ -36,6 +37,16 @@ dahinter in der Schlange. `testinstanz.sh` staged deshalb mit `rsync` und fasst 
 an. `status` druckt `./ctl.sh lock` mit — der Beweis gehört neben die Behauptung.
 
 ## Keine Live-Werte — der Zaun in drei Schichten
+
+Dieser Zaun gilt unverändert für `mixed` und `full`. Nur `up snapshot` öffnet ihn für den Owner
+auf Tailscale: Der echte overhaul-Server liest eine bereinigte Kopie von `fleet.json` und den
+letzten sieben Tagen aus `lane-outcomes.jsonl`, `post-land-audits.jsonl` und `audit.jsonl`. Ohne
+echte Queue-, Programm- und Reportzeilen lässt sich die overhaul-Oberfläche nicht beurteilen.
+Die Quelle ist der Haupt-Checkout, ermittelt über `git rev-parse --git-common-dir`; für eine
+synthetische Probe kann `FLEET_TI_SNAPSHOT_SRC` ein anderes Verzeichnis setzen. Der Kopiervorgang
+liest die Quelle nur. Zugangswerte, Shares und Helper-Geräte werden ausgelassen, Slot-Pfade
+zeigen ausschließlich in die Instanz, `dispatch` und `autosOn` sind aus. Die isolierte Kopie
+bleibt hinter dem eigenen Port, Socket, Verzeichnis und `env -i`.
 
 1. **Beim Kopieren:** das rsync trägt `.env`, `fleet.json*` und `*.jsonl` nicht über — keine
    private Konfiguration, keine fremden Sessions, keine Transkripte im Klon.

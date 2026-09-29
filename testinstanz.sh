@@ -13,7 +13,7 @@
 # copy is what gives it its own state), and FLEET_CMD=true so no agent is ever spawned. The three
 # live values are refused by name below rather than merely avoided.
 #
-#   ./testinstanz.sh up [mixed|full] [--ttl <min>]   stage, build, start, plant EVERYTHING (fixtures,
+#   ./testinstanz.sh up [mixed|full|snapshot] [--ttl <min>]   stage, build, start, plant EVERYTHING (fixtures,
 #                                           succession, ctx, codex states, painters), print the URL
 #                                           — the whole demo; FLEET_TI_TOKEN=<old> keeps the link the
 #                                           owner holds; default ttl 240 min
@@ -144,7 +144,11 @@ ti_serve() {
   # TWO COMPUTERS, as the live fleet has them (mac + workhorse), so the device display has something
   # to show; "mac" is THIS instance's own origin, so the board marks it as here. The workhorse link
   # only navigates when clicked. FLEET_TI_INSTANCES= (set, empty) gives the single-host board.
-  TI_TWO='[{"name":"mac","url":"http://'"$(ti_addr):$PORT"'"},{"name":"workhorse","url":"'"$(ti_workhorse_url)"'"}]'
+  if [ "${TI_KIND:-}" = snapshot ]; then
+    TI_TWO=""
+  else
+    TI_TWO='[{"name":"mac","url":"http://'"$(ti_addr):$PORT"'"},{"name":"workhorse","url":"'"$(ti_workhorse_url)"'"}]'
+  fi
   TI_INST="${FLEET_TI_INSTANCES-$TI_TWO}"
   TI_NAME="${FLEET_TI_INSTANCE-mac}"
   [ -z "$TI_INST" ] && TI_NAME="${FLEET_TI_INSTANCE-}"
@@ -214,8 +218,8 @@ up)
       --ttl) [ $# -ge 2 ] || { echo "up: --ttl needs a number of minutes" >&2; exit 2; }
              TI_TTL=$2; shift 2 ;;
       --ttl=*) TI_TTL="${1#--ttl=}"; shift ;;
-      mixed|full) TI_KIND=$1; shift ;;
-      *) echo "usage: ./testinstanz.sh up [mixed|full] [--ttl <minutes>]" >&2; exit 2 ;;
+      mixed|full|snapshot) TI_KIND=$1; shift ;;
+      *) echo "usage: ./testinstanz.sh up [mixed|full|snapshot] [--ttl <minutes>]" >&2; exit 2 ;;
     esac
   done
   case "$TI_TTL" in ''|*[!0-9]*) echo "up: --ttl wants whole minutes" >&2; exit 2 ;; esac
@@ -236,6 +240,10 @@ up)
   # without it every `up` mints a fresh one and the link he holds stops opening.
   TOK="${FLEET_TI_TOKEN:-$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
   printf '%s' "$TOK" > "$TOKF"; chmod 600 "$TOKF"
+  if [ "$TI_KIND" = snapshot ]; then
+    FLEET_TI_SRC="$SRC" FLEET_TI_DIR="$DIR" FLEET_TI_SOCK="$SOCK" FLEET_TI_TOKEN="$TOK" \
+      bun "$SRC/testinstanz-snapshot.js" || { echo "up: snapshot failed — nothing started" >&2; exit 1; }
+  fi
   # THE STATE FILE is the machine-wide index: `list` reads it, scratch-reap.sh reaps by it, and
   # it records the values ACTUALLY chosen (the port bump may have moved off the hash port). No
   # token in it — the token stays in $TOKF, and `list` prints the URL WITHOUT it.
@@ -252,6 +260,11 @@ up)
   } > "$STATE"
   ADDR=$(ti_addr)
   ti_serve || exit 1
+  if [ "$TI_KIND" = snapshot ]; then
+    echo "TESTINSTANZ SNAPSHOT UP   http://$ADDR:$PORT/?token=$TOK"
+    echo "  down: $SRC/testinstanz.sh down"
+    exit 0
+  fi
   ti_plant "$TI_KIND"
   # ONE COMMAND, THE WHOLE DEMO. Succession used to be a second, separate step (`succession`) — an
   # instance brought up with `up` alone showed no succession anywhere, on any #band.
@@ -343,5 +356,5 @@ down)
   echo "down: server stopped, port $PORT free, tmux -L $SOCK killed, $DIR removed"
   ;;
 *)
-  echo "usage: ./testinstanz.sh up [mixed|full] [--ttl <min>] | fixtures [mixed|full] | succession | states | status | list | down" >&2; exit 2;;
+  echo "usage: ./testinstanz.sh up [mixed|full|snapshot] [--ttl <min>] | fixtures [mixed|full] | succession | states | status | list | down" >&2; exit 2;;
 esac

@@ -1694,6 +1694,49 @@ async function memoryDoor(): Promise<void> {
     check("the delivered lane footer names the same MAIN receiver as GET /api/self position",
       prompts.some((p) => p.slot === laneSlot[0] && p.text.includes("Empfaenger: program-main Slot 1")),
       JSON.stringify(prompts.filter((p) => p.slot === laneSlot[0]).map((p) => p.text.includes("Empfaenger: program-main Slot 1"))));
+    check("the delivered lane footer points to GET /api/self position.receiver with its self-token header as the live receiver",
+      prompts.some((p) => p.slot === laneSlot[0]
+        && p.text.includes("Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self-token: $FLEET_SELF_TOKEN, Feld position.receiver. Die Slotnummer oben ist ein Snapshot.")),
+      JSON.stringify(prompts.filter((p) => p.slot === laneSlot[0]).map((p) => p.text.includes("Feld position.receiver"))));
+
+    await memStop(i);
+    const positionBaseline = readState();
+    const recycledMain = structuredClone(positionBaseline);
+    const oldOpenedAt = (positionBaseline.programs?.[0] as { main: { openedAt: number } }).main.openedAt;
+    (recycledMain.programs?.[0] as { main: { openedAt: number } }).main.openedAt = oldOpenedAt + 1;
+    writeFileSync(`${dir}/fleet.json`, JSON.stringify(recycledMain, null, 2), { mode: 0o600 });
+    check("position fixture: recycled MAIN binding boots", await memBoot(i), i.log.slice(-300));
+    const recycledLane = ((await (await getPosition(laneTok[0]!)).json()) as { position: Position }).position;
+    check("GET /api/self position: a MAIN slot with another openedAt is no lane receiver",
+      recycledLane.role === "lane" && recycledLane.receiver === null, JSON.stringify(recycledLane));
+
+    await memStop(i);
+    const inactiveProgram = structuredClone(positionBaseline);
+    (inactiveProgram.programs?.[0] as { status: string }).status = "complete";
+    writeFileSync(`${dir}/fleet.json`, JSON.stringify(inactiveProgram, null, 2), { mode: 0o600 });
+    check("position fixture: inactive Program boots", await memBoot(i), i.log.slice(-300));
+    const inactiveLane = ((await (await getPosition(laneTok[0]!)).json()) as { position: Position }).position;
+    check("GET /api/self position: an inactive Program has no lane receiver",
+      inactiveLane.role === "lane" && inactiveLane.receiver === null, JSON.stringify(inactiveLane));
+
+    await memStop(i);
+    writeFileSync(`${dir}/fleet.json`, JSON.stringify(positionBaseline, null, 2), { mode: 0o600 });
+    check("position fixture: original Program binding restored", await memBoot(i), i.log.slice(-300));
+    const restoredMain = ((await (await getPosition(mainTok[0]!)).json()) as { position: Position }).position;
+    check("position fixture: the restored MAIN again sees the single original Orchestrator",
+      restoredMain.role === "program-main" && restoredMain.receiver?.slot === 5,
+      JSON.stringify(restoredMain));
+    check("position fixture: the second Orchestrator slot is free before opening",
+      !readState().slots["9"]?.cwd, JSON.stringify(readState().slots["9"] ?? null));
+    const secondOrchestrator = await opost("/api/slots/9/open", { cwd: rA, label: "🎛 Orchestrator (second)" });
+    check("position fixture: a second labelled Orchestrator occupies a distinct live slot",
+      secondOrchestrator.ok && !!readState().slots["9"]?.cwd, `open=${secondOrchestrator.status}`);
+    const ambiguousMain = ((await (await getPosition(mainTok[0]!)).json()) as { position: Position }).position;
+    check("GET /api/self position: two Orchestrator-labelled slots leave the MAIN receiver null",
+      ambiguousMain.role === "program-main" && ambiguousMain.receiver === null, JSON.stringify(ambiguousMain));
+    const removedSecondOrchestrator = await opost("/api/slots/9/kill", {});
+    check("position fixture: second Orchestrator removed before memory assertions", removedSecondOrchestrator.ok,
+      String(removedSecondOrchestrator.status));
 
     // --- six positive cases: 3 repositories × {lane, Program-MAIN} ---
     for (const n of [0, 1, 2]) {

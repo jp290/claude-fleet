@@ -16486,6 +16486,7 @@ function laneExitFooter(harness: string | null, receiver: { role: string; slot: 
 --- HOW THIS LANE ENDS (three acts, in this order — they are the deliverable, not paperwork)
 
 Empfaenger: ${receiver ? `${receiver.role} Slot ${receiver.slot}` : "unbekannt"}
+Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self-token: $FLEET_SELF_TOKEN, Feld position.receiver. Die Slotnummer oben ist ein Snapshot.
 
 1. COMMIT. A lane that stops with uncommitted work cannot be landed, and NO untracked files may
    remain in the worktree — they block the land outright. Scratch files belong in the session

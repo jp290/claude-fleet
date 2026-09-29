@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
+import { AUTOS_TICK_MS, BASE, REPO, REPO2, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 
 interface SendAudit { event?: string; slot?: number; path?: string; detail?: string; file?: string;
   ts?: number; dueAt?: number; deliveryClass?: string; ttlSec?: number; ttlQuelle?: string;
@@ -517,6 +517,106 @@ export async function run(): Promise<void> {
       await post(`/api/slots/${vacant}/kill`, {});
       rmSync(fakeDir, { recursive: true, force: true });
     }
+    const reportTask = (await (await post("/api/tasks", { text: `${marker} predecessor report lane`,
+      repo: REPO2, queue: false })).json() as { task: { id: string } }).task.id;
+    let successorTask = "";
+    let reportSlot = 0;
+    try {
+      const firstDispatchAt = auditRows().length;
+      const dispatched = await post(`/api/tasks/${reportTask}/dispatch`, {});
+      reportSlot = ((await dispatched.json()) as { slot?: number }).slot ?? 0;
+      await until(() => auditRows().slice(firstDispatchAt).find((r) =>
+        r.event === "send" && r.path === "brief" && r.slot === reportSlot) ?? null,
+      { timeoutMs: 12_000, what: "predecessor founding brief is typed" });
+      const oldOpenedAt = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; openedAt: number }[] }).slots.find((s) => s.id === reportSlot)?.openedAt ?? 0;
+      const oldToken = reportSlot ? currentSelfToken(reportSlot) : "";
+      check("report bundle fixture: a dispatched predecessor has a token and openedAt",
+        dispatched.ok && reportSlot === vacant && !!oldToken && oldOpenedAt > 0,
+        `slot=${reportSlot} expected=${vacant} openedAt=${oldOpenedAt}`);
+      const filed = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": oldToken },
+        body: JSON.stringify({ status: "complete", text: `${marker} report held for a decision` }) });
+      const reportId = filed.ok ? ((await filed.json()) as { report?: { id?: string } }).report?.id ?? "" : "";
+      check("report bundle fixture: predecessor files an owner-inbox report", filed.ok && !!reportId,
+        `${filed.status} report=${reportId}`);
+      if (composerMode) writeFileSync(composerMode, "normal\n");
+      const draft = `${marker}-report-draft`;
+      await tmuxOut("send-keys", "-l", "-t", `s${reportSlot}`, draft);
+      await until(async () => (await paneText(`s${reportSlot}`)).includes(draft) || null,
+        { timeoutMs: 5_000, what: "predecessor composer holds a draft" });
+      const reportAuditAt = auditRows().length;
+      const accepted = await post(`/api/fleet-report/${reportId}/accept`, { reason: `${marker} accepted` });
+      check("report bundle fixture: owner accepts while predecessor composer is occupied", accepted.ok,
+        `${accepted.status}`);
+      await until(() => auditRows().slice(reportAuditAt).find((r) =>
+        r.event === "delivery_bundle_refused" && r.slot === reportSlot
+        && r.detail?.includes("composer occupied")) ?? null,
+      { timeoutMs: 12_000, what: "report decision remains bundled after composer refusal" });
+      await post(`/api/slots/${reportSlot}/kill`, {});
+      const successorFiled = await post("/api/tasks", { text: `${marker} successor dispatch brief`,
+        repo: REPO2, queue: false });
+      successorTask = ((await successorFiled.json()) as { task: { id: string } }).task.id;
+      const dispatchAt = auditRows().length;
+      const successorDispatch = await post(`/api/tasks/${successorTask}/dispatch`, {});
+      const successorSlot = ((await successorDispatch.json()) as { slot?: number }).slot ?? 0;
+      await until(() => auditRows().slice(dispatchAt).find((r) =>
+        r.event === "send" && r.path === "brief" && r.slot === successorSlot) ?? null,
+      { timeoutMs: 12_000, what: "successor founding brief is typed" });
+      const ownerOnly = `${marker} owner text for successor alone`;
+      const ownerSend = await post("/send", { slot: successorSlot, text: ownerOnly });
+      const dropped = await until(() => auditRows().slice(reportAuditAt).find((r) =>
+        r.event === "delivery_bundle_dropped" && r.path === "report-decision"
+        && r.detail?.includes(`slot:${reportSlot}`)) ?? null,
+      { timeoutMs: 12_000, what: "predecessor report bundle is dropped" });
+      const report = await until(async () => ((await (await get("/api/fleet-report")).json()) as
+        { reports: { id: string; decisionDelivery?: { state: string; reason: string | null } }[] })
+        .reports.find((r) => r.id === reportId && r.decisionDelivery?.state === "worker-gone") ?? null,
+      { timeoutMs: 8_000, what: "report delivery records worker-gone" });
+      const successorPane = successorSlot ? await paneText(`s${successorSlot}`) : "";
+      const successorHistory = successorSlot ? ((await (await get(`/api/slots/${successorSlot}/history`)).json()) as
+        { history: { text: string }[] }).history : [];
+      const tailAudit = auditRows().slice(dispatchAt);
+      check("recycled slot drops the predecessor report; only successor brief and owner text arrive",
+        successorDispatch.ok && successorSlot === reportSlot && ownerSend.ok
+          && successorPane.includes(ownerOnly) && successorPane.includes(successorTask)
+          && !successorPane.includes("YOUR REPORT WAS")
+          && !successorHistory.some((h) => h.text.includes("YOUR REPORT WAS"))
+          && report.decisionDelivery?.reason?.includes(String(oldOpenedAt)) === true
+          && dropped.detail?.includes("slot occupant ended") === true
+          && !tailAudit.some((r) => r.event === "delivery_bundle_rerouted" && r.detail?.includes(`slot:${reportSlot}`))
+          && !tailAudit.some((r) => r.event === "dispatch_requeued" && r.detail?.includes(successorTask))
+          && !tailAudit.some((r) => r.event === "fleet_report_decision_delivered" && r.detail?.includes(reportId)),
+        `dispatch=${successorDispatch.status} owner=${ownerSend.status} state=${report.decisionDelivery?.state}`);
+    } finally {
+      if (reportSlot) await post(`/api/slots/${reportSlot}/kill`, {});
+      for (const id of [reportTask, successorTask]) if (id) await post(`/api/tasks/${id}/delete`, {});
+    }
+    const emptyOpen = await post(`/api/slots/${vacant}/open`, { cwd: REPO, harness: "pi" });
+    const emptyToken = emptyOpen.ok ? currentSelfToken(vacant) : "";
+    const emptyDeployId = (Date.now() >>> 0).toString(16).padStart(8, "0");
+    appendFileSync(`${ROOT}/deploys.jsonl`, `${JSON.stringify({ at: Date.now(), id: emptyDeployId,
+      by: "owner", stage: "boot", ok: true, target: "1".repeat(40), bootHead: "1".repeat(40),
+      head: "1".repeat(40), hitTarget: true, bundleStale: false })}\n`);
+    const emptyAuditAt = auditRows().length;
+    const emptySub = await fetch(`${BASE}/api/self/watch`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": emptyToken },
+      body: JSON.stringify({ kind: "deploy", deployId: emptyDeployId, idleSec: 0 }) });
+    await until(() => auditRows().slice(emptyAuditAt).find((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === vacant && r.path === "fleet-event") ?? null,
+    { timeoutMs: 8_000, what: "empty-slot fixture queues a green watch" });
+    await post(`/api/slots/${vacant}/kill`, {});
+    const emptyDrop = await until(() => auditRows().slice(emptyAuditAt).find((r) =>
+      r.event === "delivery_bundle_dropped" && r.detail?.includes(`slot:${vacant}`)) ?? null,
+    { timeoutMs: AUTOS_TICK_MS + 5_000, what: "empty slot bundle is dropped on a watch tick" });
+    const emptyDropAt = auditRows().length;
+    await Bun.sleep(3 * AUTOS_TICK_MS + 500);
+    check("an empty slot drops its bundle once and queues or refuses nothing for three ticks",
+      emptySub.ok && emptyDrop.detail?.includes("slot occupant ended") === true
+        && !auditRows().slice(emptyDropAt).some((r) =>
+          (r.event === "delivery_bundle_queued" || r.event === "delivery_bundle_refused")
+            && r.detail?.includes(`slot:${vacant}`)),
+      `drop=${emptyDrop.detail}`);
     const opened = vacant ? await post(`/api/slots/${vacant}/open`, { cwd: REPO, harness: "pi" }) : null;
     const token = opened?.ok ? await paneEnv(`s${vacant}`, "FLEET_SELF_TOKEN") : null;
     check("watch reroute fixture: a separate slot opens with a self token",
@@ -550,7 +650,7 @@ export async function run(): Promise<void> {
     const refused = await until(() => auditRows().find((r) => r.event === "delivery_bundle_refused"
       && r.slot === vacant && r.detail?.includes("composer occupied")) ?? null,
     { timeoutMs: 8_000, what: "watch bundle refused before paste by the draft" });
-    check("a composer refusal leaves the green watch pending for a later recipient",
+    check("a composer refusal leaves the green watch pending for its bound occupant",
       refused.detail?.includes("nothing typed") === true
         && (await (await get("/api/events")).json() as
           { events: { id: string; status: string }[] }).events.find((r) => r.id === event.id)?.status === "pending",
@@ -559,20 +659,17 @@ export async function run(): Promise<void> {
     const successor = await post(`/api/slots/${vacant}/open`, { cwd: REPO });
     check("watch reroute fixture: the old slot occupant ends and a new one opens",
       killed.ok && successor.ok, `${killed.status}/${successor.status}`);
-    const delivered = await until(async () => {
+    const gone = await until(async () => {
       const rows = (await (await get("/api/events")).json() as
         { events: { id: string; status: string; receiverOpenedAt: number }[] }).events;
       const row = rows.find((r) => r.id === event.id);
-      return row?.status === "delivered" ? row : null;
-    }, { timeoutMs: 12_000, what: "queued watch reaches the replacement occupant" });
-    check("an unattempted subscribed watch follows the current slot occupant with a reroute audit",
-      delivered.receiverOpenedAt !== event.receiverOpenedAt
-        && auditRows().some((r) => r.event === "delivery_bundle_rerouted"
+      return row?.status === "receiver-gone" ? row : null;
+    }, { timeoutMs: 12_000, what: "queued slot watch ends with its original receiver" });
+    check("an unattempted subscribed slot watch ends receiver-gone without rerouting to a replacement",
+      gone.receiverOpenedAt === event.receiverOpenedAt
+        && !auditRows().some((r) => r.event === "delivery_bundle_rerouted"
           && r.slot === vacant && r.detail?.includes(event.id)),
-      `${event.receiverOpenedAt} -> ${delivered.receiverOpenedAt}`);
-    const successorToken = await paneEnv(`s${vacant}`, "FLEET_SELF_TOKEN") ?? "";
-    await fetch(`${BASE}/api/self/events/${event.id}/ack`, { method: "POST",
-      headers: { "x-fleet-self-token": successorToken } });
+      `${event.receiverOpenedAt} -> ${gone.receiverOpenedAt}`);
     await post(`/api/slots/${vacant}/kill`, {});
     const uncertainReceiver = await post(`/api/slots/${vacant}/open`, { cwd: REPO, harness: "pi" });
     const uncertainToken = uncertainReceiver.ok ? await paneEnv(`s${vacant}`, "FLEET_SELF_TOKEN") ?? "" : "";

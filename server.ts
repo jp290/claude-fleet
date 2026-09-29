@@ -167,7 +167,7 @@ import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, read
 import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntriesFor, stageOneTied,
   UNMEASURED_DIFF, type VariantCompareVariant, type VariantDecidedAt, type VariantDiffStat,
   type VariantDoneEntry, type VariantDoneResult, type VariantGate, type VariantStageCandidate } from "./variant-compare";
-import { audit, AUDIT_FILE } from "./server/audit-log";
+import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/audit-log";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import { parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile } from "./server/pi-zai-fence";
@@ -182,6 +182,8 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, setPrin
 import { konzeptIndex, konzeptOpOf, konzeptRequest } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { readCodexRollout, readPiSession, type ConversationRead, type TBlock, type TEntry } from "./server/conversation-read";
+
+auditActorScope.enterWith({ kind: "machine", why: "boot" });
 
 // lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
 // output is line-aligned and already reflowed to the pane's width, so it can neither begin
@@ -8708,6 +8710,7 @@ type SendPath =
   | "audit-ping"        // a post-land audit red offered to an eligible main session
   | "inbox-nudge"       // "your program's inbox has unread entries"
   | "report-orphan"     // an undecided Program report lost its MAIN
+  | "program-event-orphan" // a terminal Program event or merge verdict lost its MAIN
   | "attention-orchestrator" // a bound MAIN's question waits first on the unique Orchestratorin
   | "backlog-nudge"     // the open-backlog reminder
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
@@ -8758,6 +8761,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "audit-ping": "Post-Land-Audit-Hinweis",
   "inbox-nudge": "Inbox-Hinweis",
   "report-orphan": "Hinweis auf verwaisten Program-Report",
+  "program-event-orphan": "Hinweis auf unzustellbares Program-Ereignis",
   "attention-orchestrator": "Rueckfrage einer MAIN an die Orchestratorin",
   "backlog-nudge": "Backlog-Erinnerung",
   "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
@@ -8781,6 +8785,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
   "inbox-nudge": "naechster Schritt: lies die ungelesenen Program-Eintraege · Grenze: dein Program",
   "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
+  "program-event-orphan": "naechster Schritt: pruefe das benannte Ereignis · Grenze: nur bestehende Tueren",
   "attention-orchestrator": "naechster Schritt: beantworte die Rueckfrage oder reiche sie mit Grund an den Owner · Grenze: nur die benannten Tueren",
   "backlog-nudge": "naechster Schritt: pruefe den offenen Backlog · Grenze: dein bestaetigtes Program",
   "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine bestehende Rolle",
@@ -8881,13 +8886,14 @@ async function seedInbound(): Promise<void> {
 // region above); no boot path reaches sendText today, checked at both of the boot awaits.
 function auditSend(s: Slot, path: SendPath, bytes: number,
   acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>, klass = deliveryClass(path), reportId?: string,
-  inboxId?: string): void {
+  inboxId?: string, programEventId?: string): void {
   const fill = contextFill(s);
   const cache = deliveryCacheState(s);
   audit("send", s.id, `${path} ${bytes}B ${acceptance}${reportId ? ` report=${reportId}` : ""}${inboxId ? ` inbox=${inboxId}` : ""}`,
     { path, bytes, acceptance, deliveryClass: klass, ttlSec: cache.ttlSec,
       ttlQuelle: cache.ttlQuelle, cache: cache.cache, ...(fill ? { ctxPct: fill.pct } : {}),
-      ...(reportId ? { reportId } : {}), ...(inboxId ? { inboxId } : {}) });
+      ...(reportId ? { reportId } : {}), ...(inboxId ? { inboxId } : {}),
+      ...(programEventId ? { programEventId } : {}) });
   bumpInbound(s.id, Date.now(), bytes);
 }
 
@@ -9115,6 +9121,7 @@ type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent
   deliveryClass?: DeliveryClass; subscribedWatch?: true; beforeSend?: (receiver: Slot) => Promise<void>;
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
   eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string; inboxId?: string;
+  programEventId?: string;
   bundleGate?: { harness?: false; quietHours?: false; idleMs?: number } };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
 type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
@@ -9597,10 +9604,12 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // neighbours, so it can neither delay nor fail the send it records.
   try {
     const result = await task;
-    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass, options.reportId, options.inboxId);
+    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass, options.reportId,
+      options.inboxId, options.programEventId);
     return result;
   } catch (e) {
-    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass, options.reportId, options.inboxId);
+    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass, options.reportId,
+      options.inboxId, options.programEventId);
     if (e instanceof SendRefused) await options.onRefused?.(s);
     throw e;
   }
@@ -11713,6 +11722,78 @@ function markFleetEventsSubjectGone(): boolean {
   return touched.size > 0;
 }
 
+function programWithoutMain(id: string, endingSlot?: number): boolean {
+  const program = programs.find((p) => p.id === id && (p.status === "active" || p.status === "complete"));
+  if (!program) return false;
+  const main = program.main;
+  const live = main && main.slot !== endingSlot ? slotFrom(main.slot) : null;
+  return !live?.cwd || live.openedAt !== main?.openedAt || live.sessionId !== main?.sessionId;
+}
+
+const programEventNotified = new Set<string>();
+const programEventNotifying = new Set<string>();
+let programEventNotifiedSeeded = false;
+async function notifyOrchestratorOfProgramLoss(key: string, programId: string, message: string,
+  receiver: Slot, ending?: { slot: number; openedAt: number | null; notAlive?: true }): Promise<void> {
+  if (programEventNotifying.has(key)) return;
+  programEventNotifying.add(key);
+  try {
+    if (!programEventNotifiedSeeded) {
+      for (const row of (await readEventLog(AUDIT_FILE)).rows)
+        if (row.event === "send" && row.path === "program-event-orphan"
+          && typeof row.programEventId === "string" && typeof row.bytes === "number" && row.bytes > 0)
+          programEventNotified.add(row.programEventId);
+      programEventNotifiedSeeded = true;
+    }
+    if (programEventNotified.has(key)) return;
+    const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+    const { acceptance } = await sendText(receiver, message, true, {
+      path: "program-event-orphan", deliveryClass: "sofort", rollbackOwnPayload: true,
+      programEventId: key,
+      address: { kind: "orchestrator" },
+      beforeSend: async (current) => {
+        const main = programs.find((p) => p.id === programId)?.main;
+        const deadPane = ending?.notAlive && main?.slot === ending.slot
+          && main.openedAt === ending.openedAt ? slotFrom(ending.slot) : null;
+        const stillGone = programWithoutMain(programId)
+          || (ending && main?.slot === ending.slot && main.openedAt === ending.openedAt
+            && (slotTeardownInflight.has(ending.slot) && programWithoutMain(programId, ending.slot)
+              || deadPane?.cwd && !(await claudeAlive(deadPane))));
+        if (deliveryRecipient({ kind: "orchestrator" }) !== current
+          || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+          || !stillGone)
+          throw new DeliveryCancelled(`program event ${key} changed before paste`);
+      },
+    });
+    programEventNotified.add(key);
+    const at = Date.now();
+    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    saveHistory(receiver);
+    logPrompt(receiver, message, "auto", at, undefined, acceptance);
+  } catch (e) {
+    if (!(e instanceof DeliveryCancelled)) logError("notifyOrchestratorOfProgramLoss", e);
+  } finally {
+    programEventNotifying.delete(key);
+  }
+}
+
+function lostProgramEventNotice(event: FleetEvent, endingSlot?: number):
+  { programId: string; receiver: Slot | null } | null {
+  const address = event.receiverAddress;
+  if (fleetEventDeliveryClass(event) !== "sofort"
+    || event.kind === "fleet-report" || event.kind === "message" || event.kind === "clarification-request") return null;
+  // The legacy lane-ready loader preserves the exact receiver occupant but drops receiverAddress.
+  // An exact, unique Program binding recovers only that lost address, never a guessed Program.
+  const legacy = !address && (event.kind === "lane-ready" || event.kind === "host-commit-ready")
+    ? programs.filter((p) => (p.status === "active" || p.status === "complete")
+      && p.main?.slot === event.receiverSlot && p.main.openedAt === event.receiverOpenedAt)
+    : [];
+  const programId = address?.kind === "program" ? address.id
+    : legacy.length === 1 ? legacy[0]!.id : null;
+  if (!programId || !programWithoutMain(programId, endingSlot)) return null;
+  return { programId, receiver: deliveryRecipient({ kind: "orchestrator" }) };
+}
+
 function markFleetEventReceiverGone(slotId: number): boolean {
   let dirty = false;
   for (const e of fleetEvents) {
@@ -11732,7 +11813,12 @@ function markFleetEventReceiverGone(slotId: number): boolean {
       continue;
     }
     e.status = "receiver-gone";
-    audit("fleet_event_receiver_gone", slotId, e.id);
+    const notice = lostProgramEventNotice(e, slotId);
+    audit("fleet_event_receiver_gone", slotId,
+      `${e.id}${notice ? ` escalation ${notice.receiver ? "orchestrator" : "none"}` : ""}`);
+    if (notice?.receiver) void notifyOrchestratorOfProgramLoss(`event:${e.id}`, notice.programId,
+      `[fleet program event orphan] Event ${e.id} (${e.kind}) fuer Program ${notice.programId} ist receiver-gone; die MAIN ist nicht lebend. Pruefe das Ereignis; der Hinweis erteilt kein Recht.`,
+      notice.receiver, { slot: slotId, openedAt: e.receiverOpenedAt });
     dirty = true;
   }
   if (dirty) pruneFleetEvents(slotId);
@@ -12320,21 +12406,21 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   // armed only to manufacture receiver evidence, which b6956c9 now correctly refuses.
   //
   // WHAT THIS DOES NOT WIDEN, on purpose:
-  //  · a lane WITH a programId keeps its binding and its 409 — its result belongs to the MAIN
-  //    that dispatched it, and a closed return path there is a program fact the owner already
-  //    sees on `programReturnPath`, not a reason to route around the coordinator.
+  //  · an ACTIVE Program still owns its lane's report. A completed Program cannot receive it,
+  //    so the owner inbox receives the terminal fact with its original programId provenance.
   //  · a lane with contradictory or legacy-only watch evidence keeps its loud refusal. Absent
   //    evidence and ambiguous evidence are opposite facts.
-  //  · a lane with no task at all keeps its 409: nothing dispatched it, so nothing is owed a
-  //    terminal result, and there would be no taskId for the owner to join the row against.
+  //  · a programless lane with no task keeps its 409: nothing dispatched it, so nothing is owed a
+  //    terminal result. A completed Program's own binding is sufficient provenance.
   //  · clarifications are untouched. An inbox cannot answer, so `/api/self/clarifications` keeps
   //    this exact 409 — a worker routed there would wait on a receiver that cannot speak.
-  const resolved = clarificationReceiverFor(s);
-  const bound = "error" in resolved ? null
+  const completedProgram = program?.status === "complete";
+  const resolved = completedProgram ? null : clarificationReceiverFor(s);
+  const bound = !resolved || "error" in resolved ? null
     : resolved as ClarificationReceiver & { basis: Exclude<ClarificationBasis, "orchestrator"> };
   if (!bound) {
-    const reason = (resolved as { error: string }).error;
-    if (reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId)
+    const reason = resolved ? (resolved as { error: string }).error : NO_RECEIVER_EVIDENCE;
+    if (!completedProgram && (reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId))
       return json({ error: reason }, 409);
     if (ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX)
       return json({ error: "owner operations inbox has no FleetEvent delivery budget" }, 409);
@@ -13332,6 +13418,7 @@ interface ProgramStatusMemoryView {
   attention: { open: number };
   // the two numbers of the PROGRAM INBOX, so "something is waiting" is visible without pulling it
   inbox: { unread: number; oldestAt: number | null };
+  messages: { unread: number; oldestAt: number | null };
   lanes: { running: number; queued: number; waiting: number };
 }
 // ONE ROW PER REPO THE PROGRAM HAS LANDED IN — the newest land of THAT repo, and THAT repo's
@@ -13386,6 +13473,7 @@ function programStatusView(p: Program, ctx?: ProgramStatusContext): ProgramStatu
     attention: { open: attentionRequests.filter((a) => a.programId === p.id
       && (a.status === "open" || a.status === "send-uncertain")).length },
     inbox: programInboxStatus(p),
+    messages: programMessageStatus(p),
     lanes: {
       running: slots.filter((s) => s.cwd && s.programId === p.id).length,
       queued: queued.length,
@@ -13908,6 +13996,13 @@ function messageInboundFor(s: Slot, m: Message, mine = messageAddressesFor(s)): 
   return reached.ok && reached.escalatedTo === "orchestrator" && reached.holder === s;
 }
 
+function programMessageStatus(p: Program): { unread: number; oldestAt: number | null } {
+  const unread = messages.entries.filter((m) => m.readBy === null
+    && m.to.kind === "program" && m.to.id === p.id);
+  return { unread: unread.length,
+    oldestAt: unread.reduce<number | null>((oldest, m) => oldest === null || m.at < oldest ? m.at : oldest, null) };
+}
+
 // GET /api/self/messages — the pull half. Pure projection, stamps nothing, newest first.
 function messageViewFor(s: Slot): Response {
   const mine = messageAddressesFor(s);
@@ -14001,13 +14096,6 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
     fleetEvents = [...fleetEvents, event];
   }
   await saveStateNow();
-  if (resolved.holder) {
-    const holder = resolved.holder;
-    const text = `[fleet message] ${addressLabel(to)}: ${entry.id} — GET /api/self/messages, dann POST /api/self/messages/${entry.id}/read.`;
-    void sendText(holder, text, true, { path: "inbox-nudge", deliveryClass: "sofort",
-      rollbackOwnPayload: true })
-      .catch((error: unknown) => logError("messageNudgeSend", error));
-  }
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
   return json({ ok: true, existing: false, message: entry,
@@ -15911,6 +15999,55 @@ const cardSpawnOf = (t: Task): DispatchSpawn | undefined => {
 // with a valid ROLLE on their card) without rewriting a stored row.
 const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? cardSpawnOf(t) ?? DEFAULT_SPAWN;
 
+async function setTaskSpawn(id: string, req: Request, actor?: { slot: number; openedAt: number }): Promise<Response> {
+  let sessionIdMatch: "exact" | "divergent" | "unknown" | undefined;
+  let programId: string | undefined;
+  if (actor) {
+    const s = slotFrom(actor.slot);
+    if (!s?.cwd || s.openedAt !== actor.openedAt) return json({ error: "session occupant changed" }, 409);
+    const bound = boundProgramForMain(s);
+    if (!bound.ok) return json({ error: bound.error }, 409);
+    sessionIdMatch = bound.sessionIdMatch;
+    programId = bound.program.id;
+  }
+  const t = tasks.find((x) => x.id === id);
+  if (!t) return json({ error: "unknown task" }, 404);
+  if (programId && t.programId !== programId)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN changes workers only for rows of program ${programId}` }, 409);
+  if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — only an auftrag has a worker` }, 409);
+  if (t.variants?.length || t.variantOf !== undefined)
+    return json({ error: "a variant group's workers are fixed in its variants" }, 409);
+  if (t.status !== "pending" && t.status !== "queued")
+    return json({ error: `task is ${t.status} — only a pending or queued row can change its worker` }, 409);
+  if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
+  const body = await readJson(req);
+  if (!body || Array.isArray(body)) return json({ error: "invalid json" }, 400);
+  const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort");
+  if (extra.length) return json({ error: `this door reads harness, model and effort only — [${extra.join(", ")}] is not read` }, 400);
+  const choice = taskSpawnFromBody(body);
+  if (!choice.ok) return json({ error: choice.error }, 400);
+  if (!tasks.includes(t) || t.kind !== "auftrag" || t.variants?.length || t.variantOf !== undefined
+    || (t.status !== "pending" && t.status !== "queued") || dispatchingTasks.has(t.id))
+    return json({ error: "task changed while its worker was being set" }, 409);
+  if (actor) {
+    const current = slotFrom(actor.slot);
+    if (!current?.cwd || current.openedAt !== actor.openedAt || current.worktree) return json({ error: "session occupant changed" }, 409);
+    const bound = boundProgramForMain(current);
+    if (!bound.ok || bound.program.id !== programId || t.programId !== programId)
+      return json({ error: "Program-MAIN binding changed while its worker was being set" }, 409);
+  }
+  const before = t.spawn;
+  const result = { ok: true, task: t, ...(sessionIdMatch ? { sessionIdMatch } : {}) };
+  if (JSON.stringify(before) === JSON.stringify(choice.spawn)) return json({ ...result, unchanged: true });
+  if (choice.spawn) t.spawn = choice.spawn;
+  else delete t.spawn;
+  saveState();
+  audit("task_spawn", actor?.slot,
+    `${t.id} ${JSON.stringify(before ?? null)}->${JSON.stringify(choice.spawn ?? null)}`
+      + (actor ? ` program=${programId} Slot ${actor.slot} openedAt=${actor.openedAt}` : ""));
+  return json(result);
+}
+
 // THE LAND-WAVE SENSOR, SERVER-SIDE, over exactly the facts the board projects: taskView's surface
 // (the owner-confirmed one where there is one, derived otherwise), the row's programId, and the
 // dispatch default for a row that names no repo of its own. ONE classifier for the board line, for
@@ -16361,6 +16498,8 @@ function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
     }
   }
   const waitingOnMe = [
+    ...messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
+      .map((m) => ({ kind: "message", id: m.id, slot: s.id })),
     ...watches.filter((w) => w.armed && "target" in w && w.target === s.id
       && w.targetCwd === s.cwd && w.targetBranch === s.worktree?.branch
       && w.slot !== s.id && w.slotOpenedAt !== undefined
@@ -16400,6 +16539,7 @@ function laneExitFooter(harness: string | null, receiver: { role: string; slot: 
 --- HOW THIS LANE ENDS (three acts, in this order — they are the deliverable, not paperwork)
 
 Empfaenger: ${receiver ? `${receiver.role} Slot ${receiver.slot}` : "unbekannt"}
+Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self-token: $FLEET_SELF_TOKEN, Feld position.receiver. Die Slotnummer oben ist ein Snapshot.
 
 1. COMMIT. A lane that stops with uncommitted work cannot be landed, and NO untracked files may
    remain in the worktree — they block the land outright. Scratch files belong in the session
@@ -21071,6 +21211,8 @@ interface InboxNudgeMarker { key: string; lastAt: number; last: InboxNudgeAttemp
 // not. The self-token fallback gives unpinned/custom harness sessions that same lifecycle boundary.
 const backlogNudgeTried = new Map<number, BacklogNudgeMarker>();
 const inboxNudgeTried = new Map<number, InboxNudgeMarker>();
+const messageNudgeTried = new Map<number, { key: string; lastAt: number }>();
+const pendingMessageNudges = new Set<number>();
 const backlogSessionKey = (s: Slot): string => s.sessionId ?? `unbound:${s.selfToken}`;
 
 // The prompt is a pointer to the register, never an assignment. Task text is flattened and capped
@@ -21509,6 +21651,60 @@ async function tickInboxNudge(): Promise<void> {
   } finally {
     inboxNudgeBusy = false;
   }
+}
+
+let messageNudgeBusy = false;
+async function tickMessageNudge(): Promise<void> {
+  if (messageNudgeBusy) return;
+  messageNudgeBusy = true;
+  try {
+    const now = Date.now();
+    for (const s of slots) {
+      if (!s.cwd || s.lastOutput === 0 || pendingMessageNudges.has(s.id)) continue;
+      const unreadIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
+        .map((m) => m.id).sort();
+      if (!unreadIds.length) continue;
+      const session = backlogSessionKey(s);
+      const openedAt = s.openedAt;
+      const key = `${session}|${unreadIds.join(",")}`;
+      const prior = messageNudgeTried.get(s.id);
+      if (prior?.key === key || (prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
+      const verdict = await canDeliver(s, { now, idleMs: BACKLOG_IDLE_MS, quietHours: true });
+      if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) continue;
+      const currentIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
+        .map((m) => m.id).sort();
+      if (currentIds.join(",") !== unreadIds.join(",")) continue;
+      const text = `[fleet message] ${unreadIds.length} ungelesene adressierte Nachricht${unreadIds.length === 1 ? "" : "en"} fuer diese Session — `
+        + "GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
+      pendingMessageNudges.add(s.id);
+      void (async () => {
+        let recipient = s;
+        try {
+          const { acceptance } = await sendText(s, text, true, { path: "inbox-nudge", rollbackOwnPayload: true,
+            bundleGate: { idleMs: BACKLOG_IDLE_MS },
+            beforeSend: async (current) => {
+              const ids = messages.entries.filter((m) => m.readBy === null && messageInboundFor(current, m))
+                .map((m) => m.id).sort();
+              if (current.openedAt !== openedAt || backlogSessionKey(current) !== session
+                || ids.join(",") !== unreadIds.join(","))
+                throw new DeliveryCancelled(`messages for slot ${s.id} changed before paste`);
+              recipient = current;
+            } });
+          const sentAt = Date.now();
+          messageNudgeTried.set(recipient.id, { key, lastAt: sentAt });
+          recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          saveHistory(recipient);
+          logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
+        } catch (e) {
+          if (!(e instanceof DeliveryCancelled)) {
+            messageNudgeTried.set(s.id, { key: prior?.key ?? "", lastAt: Date.now() });
+            logError("messageNudgeSend", e);
+            logPrompt(recipient, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+          }
+        } finally { pendingMessageNudges.delete(s.id); }
+      })();
+    }
+  } finally { messageNudgeBusy = false; }
 }
 
 let backlogNudgeBusy = false;
@@ -22549,8 +22745,12 @@ async function tickWatches(): Promise<void> {
       const s = pendingFleetEventReceiver(event);
       if (!s) {
         event.status = "receiver-gone";
+        const notice = lostProgramEventNotice(event);
         audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined,
-          `${event.id} no current role occupant`);
+          `${event.id} no current role occupant${notice ? ` escalation ${notice.receiver ? "orchestrator" : "none"}` : ""}`);
+        if (notice?.receiver) await notifyOrchestratorOfProgramLoss(`event:${event.id}`, notice.programId,
+          `[fleet program event orphan] Event ${event.id} (${event.kind}) fuer Program ${notice.programId} ist receiver-gone; die MAIN ist nicht lebend. Pruefe das Ereignis; der Hinweis erteilt kein Recht.`,
+          notice.receiver);
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -22558,8 +22758,12 @@ async function tickWatches(): Promise<void> {
       if (event.receiverAddress?.kind === "slot"
         && (event.receiverSlot !== s.id || event.receiverOpenedAt !== s.openedAt)) {
         event.status = "receiver-gone";
+        const notice = lostProgramEventNotice(event);
         audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined,
-          `${event.id} receiver occupant ended before delivery`);
+          `${event.id} receiver occupant ended before delivery${notice ? ` escalation ${notice.receiver ? "orchestrator" : "none"}` : ""}`);
+        if (notice?.receiver) await notifyOrchestratorOfProgramLoss(`event:${event.id}`, notice.programId,
+          `[fleet program event orphan] Event ${event.id} (${event.kind}) fuer Program ${notice.programId} ist receiver-gone; die MAIN ist nicht lebend. Pruefe das Ereignis; der Hinweis erteilt kein Recht.`,
+          notice.receiver);
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -22591,7 +22795,12 @@ async function tickWatches(): Promise<void> {
         // busy/kill-switch keep the event pending. Only a dead endpoint is terminal.
         if (verdict.gate !== "not-alive") continue;
         event.status = "receiver-gone";
-        audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined, `${event.id} no agent running in pane`);
+        const notice = lostProgramEventNotice(event, event.receiverSlot ?? undefined);
+        audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined,
+          `${event.id} no agent running in pane${notice ? ` escalation ${notice.receiver ? "orchestrator" : "none"}` : ""}`);
+        if (notice?.receiver) await notifyOrchestratorOfProgramLoss(`event:${event.id}`, notice.programId,
+          `[fleet program event orphan] Event ${event.id} (${event.kind}) fuer Program ${notice.programId} ist receiver-gone; die MAIN ist nicht lebend. Pruefe das Ereignis; der Hinweis erteilt kein Recht.`,
+          notice.receiver, { slot: event.receiverSlot!, openedAt: event.receiverOpenedAt, notAlive: true });
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -26835,6 +27044,107 @@ function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
       ? { ...j.result, remote: { ...j.result.remote, artifact: art } }
       : j.result,
   };
+}
+// THE ONE ANLAGE OF A LANE-SUITE JOB, read and mint, behind all three doors that may hand a lane's
+// tree to the portal: the lane's own (POST /api/self/suite-offer), the owner's
+// (POST /api/slots/:id/suite-offer) and its program MAIN's (POST /api/self/lanes/:slot/suite-offer).
+// The doors decide WHO may ask for WHICH lane and nothing else; everything the job is made of comes
+// from the lane's row here — slot + openedAt, repo/branch from s.worktree, the tree from s.cwd — so a
+// proxy door cannot name a tree either, and a verdict it caused lands on the lane's job exactly as
+// one the lane caused. `by` is null on the lane's own door (its trail line stays as it was) and
+// names the proxy otherwise, for the trail only: the job carries no field for it, because the job
+// is the lane's and answers to the lane.
+async function laneSuiteOfferDoor(s: Slot, wt: NonNullable<Slot["worktree"]>, req: Request,
+  by: string | null): Promise<Response> {
+  expireHelperClaims();
+  const existing = laneSuiteOfferOf(s);
+  // THE READ HALF: state, and on a settled offer the verdict WITH provenance. `waitPolicy` and
+  // `suiteLock` travel with it because they decide how long waiting is worth (§5.2).
+  if (req.method === "GET") {
+    // a settled offer is still readable by the lane that made it — the verdict outlives the
+    // offer, or a lane that asked one second too late could never learn its own answer
+    const last = existing ?? [...laneSuiteJobs.values()]
+      .filter((j) => j.slot === s.id && j.slotOpenedAt === s.openedAt)
+      .sort((a, b) => b.offeredAt - a.offeredAt)[0] ?? null;
+    return json({
+      offer: last ? laneSuiteView(last) : null,
+      waitPolicy: suiteOfferWait(existing?.offeredAt),
+      suiteLock: suiteLockView(),
+      helper: helperPresence(), // …and WHO could take it, same reading as /api/self/gate's
+    });
+  }
+  // THE ONE BODY FIELD: `modules`, the narrowed preview (`FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`
+  // — what /api/self/gate's localProof.modules recommends). Validated FIRST, before the existing
+  // branch and before a row can exist, through the runner's own decision
+  // (suite-modules.ts#moduleListFrom): known module names only, so nothing but a list of words
+  // from that table can ever reach the helper's env. Absent — including a POST with no JSON body
+  // at all, which is every caller from before this field — is the full run, unchanged.
+  const offerBody = await readJson(req);
+  let modules: string[] | undefined;
+  if (offerBody?.modules !== undefined) {
+    const m = moduleListFrom(offerBody.modules);
+    if (!m.ok) return json({ error: m.error }, 400);
+    modules = m.modules;
+  }
+  // ONE OPEN OFFER PER SLOT. A second POST returns the first with `existing: true` rather than
+  // minting a rival — the same idempotent shape createWatchForSlot uses, and for the same
+  // reason: a caller that retries must not end up holding two of anything. It is returned AS IT
+  // IS, modules or none: the lane reads `offer.modules` to see which run it is waiting on.
+  // `waitPolicy` rides on BOTH minting answers too: "how long is this offer worth waiting for" is
+  // decided in the same instant the offer is, and the saturated reason is what a lane would
+  // otherwise only learn by polling GET — which is the loop the report rail exists to end.
+  // One offer per SLOT, not per door: an offer the owner or the MAIN made is the lane's open offer.
+  if (existing) return json({ offer: laneSuiteView(existing), existing: true, helper: helperPresence(),
+    waitPolicy: suiteOfferWait(existing.offeredAt) });
+  // NO OFFER WITHOUT A MACHINE THAT COULD TAKE IT. Before this, a lane in a fleet where nothing
+  // was beating still got an open job back and then waited SUITE_OFFER_WAIT_FREE_MS (180 s) for
+  // a claim that could not arrive — pure delay on the lane's own preview, and invisible from
+  // inside, because the register is the owner's panel. The rulebook's rule („[Zitat entfernt]“
+  // ) is now answerable in ONE round trip: `offer: null` with a reason.
+  // 200, not an error: nothing went wrong, and a 4xx would send a lane looking for a fault.
+  // ORDER MATTERS. The existing-offer branch above runs FIRST and unconditionally — a lane must
+  // always be able to find its own open offer again, and a helper going quiet after the offer
+  // was minted does not un-mint it. This gate stands in front of MINTING and nothing else.
+  // And it is presence, not claimability: a device that is beating but `quiet` still gets the
+  // offer, because `quiet` is a state its next heartbeat can leave. `helper.mode` rides in the
+  // answer so the lane can read that for itself rather than be judged by a boolean.
+  const presence = helperPresence();
+  if (!presence.online)
+    return json({ offer: null, reason: "no helper online", helper: presence,
+      waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
+  // …and the same refusal, one question narrower: a NARROWED offer is only ever shown to a device
+  // that declared LANE_SUITE_MODULES_FEATURE, so with none of those beating it would wait out the
+  // budget for a claim that cannot come. Same 200, same shape, its own reason — the lane runs the
+  // narrowed preview locally now, or offers the full run instead.
+  if (modules && !presence.takesModules)
+    return json({ offer: null, reason: "no helper online takes a narrowed preview", helper: presence,
+      waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
+  const job: LaneSuiteJob = {
+    id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
+    repo: wt.repo, cwd: s.cwd!, branch: wt.branch,
+    programId: s.programId, ...(modules ? { modules } : {}), offeredAt: Date.now(),
+    state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
+  };
+  laneSuiteJobs.set(job.id, job);
+  audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`
+    + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}${by ? ` (offered by ${by})` : ""}`);
+  await saveStateNow();
+  return json({ offer: laneSuiteView(job), existing: false, helper: presence,
+    waitPolicy: suiteOfferWait(job.offeredAt) });
+}
+// THE TARGET OF A PROXY OFFER: a LIVE lane. A slot without a worktree is not a lane (a plain
+// session, a MAIN, an empty place), and a worktree slot without a cwd has no tree to take — both
+// answer 409 in one sentence, since either way there is no lane tree on that place to hand over.
+// The steward carries a worktree but is a standing role, not a lane, exactly as the self doors
+// that exclude it say.
+function laneSuiteProxyTarget(raw: string):
+  { ok: true; lane: Slot; wt: NonNullable<Slot["worktree"]> } | { ok: false; response: Response } {
+  const id = Number(raw);
+  const t = Number.isInteger(id) && id >= 1 ? slots[id - 1] : undefined;
+  if (!t) return { ok: false, response: json({ error: `no slot ${raw}` }, 404) };
+  if (!t.worktree || !t.cwd || t.label === STEWARD_LABEL)
+    return { ok: false, response: json({ error: `slot ${t.id} is not a live lane — a suite offer hands over a lane's own working tree` }, 409) };
+  return { ok: true, lane: t, wt: t.worktree };
 }
 // The one way anything OUTSIDE the land path restarts the drain. `schedulePostLandAudit` owns the
 // land path's own kick; this is for the two moments a job becomes drainable again without a land:
@@ -31928,8 +32238,15 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
     const recv = mainVerdictReceiver(to);
     if (!recv.ok) {
       await mark(false, "receiver-gone");
+      const orphaned = programWithoutMain(to.program);
+      const orchestrator = orphaned ? deliveryRecipient({ kind: "orchestrator" }) : null;
       audit("merge_verdict_undeliverable", to.slot,
-        `${branch}: ${kind} — ${recv.why} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS}, lane slot=${s.id})`);
+        `${branch}: ${kind} — ${recv.why} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS}, lane slot=${s.id})`
+        + (orphaned ? ` escalation ${orchestrator ? "orchestrator" : "none"}` : ""));
+      if (orchestrator) await notifyOrchestratorOfProgramLoss(
+        `merge:${to.program}:${s.id}:${branch}:${outcome.at}`, to.program,
+        `[fleet program verdict orphan] Branch ${branch}: ${kind}, Lane-Slot ${s.id}, Program ${to.program}; das Merge-Verdict ist receiver-gone. Pruefe den Merge-Status; der Hinweis erteilt kein Recht.`,
+        orchestrator);
       return;
     }
     target = recv.slot;
@@ -31953,6 +32270,19 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
   const gate = await canDeliver(target, { now: Date.now(), killSwitch: false, harness: false,
     quietHours: false, idleMs: MERGE_IDLE_MS });
   if (!gate.ok) {
+    if (to && gate.gate === "not-alive") {
+      await mark(false, "receiver-gone");
+      const orphaned = programWithoutMain(to.program, target.id);
+      const orchestrator = orphaned ? deliveryRecipient({ kind: "orchestrator" }) : null;
+      audit("merge_verdict_undeliverable", target.id,
+        `${branch}: ${kind} — no agent running in MAIN pane (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS}, lane slot=${s.id})`
+        + (orphaned ? ` escalation ${orchestrator ? "orchestrator" : "none"}` : ""));
+      if (orchestrator) await notifyOrchestratorOfProgramLoss(
+        `merge:${to.program}:${s.id}:${branch}:${outcome.at}`, to.program,
+        `[fleet program verdict orphan] Branch ${branch}: ${kind}, Lane-Slot ${s.id}, Program ${to.program}; das Merge-Verdict ist receiver-gone. Pruefe den Merge-Status; der Hinweis erteilt kein Recht.`,
+        orchestrator, { slot: target.id, openedAt: target.openedAt, notAlive: true });
+      return;
+    }
     await mark(false, gate.gate);
     audit("merge_verdict_skip", target.id, `${branch}: ${kind} — ${gate.gate} (attempt ${attempts}/${MERGE_VERDICT_MAX_ATTEMPTS})${suffix}`);
     return;
@@ -33945,6 +34275,7 @@ function handoverCaptureRefusal(handover: ProgramHandover): string | null {
 
 function standardHandoverLines(program: Program, handover: ProgramHandover): string[] {
   const inbox = programInboxStatus(program);
+  const addressed = programMessageStatus(program);
   const entries = program.inbox?.entries.length ?? 0;
   const of = (kind: ProgramHandoverObligation["kind"]): ProgramHandoverObligation[] =>
     handover.obligations.filter((o) => o.kind === kind);
@@ -33972,6 +34303,7 @@ function standardHandoverLines(program: Program, handover: ProgramHandover): str
     program.inboxLost
       ? `- Program inbox: LOST at ${new Date(program.inboxLost.at).toISOString()} — the persisted record could not be read (${program.inboxLost.error}) and every pointer written before then is gone for good. An empty answer from GET /api/self/inbox proves nothing about what was there; the same loss is on that route's own \`unknown\` list.`
       : `- Program inbox: ${inbox.unread} unread of ${entries} entries${inbox.oldestAt === null ? "" : `, oldest unread ${new Date(inbox.oldestAt).toISOString()}`}. GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one.`,
+    `- Addressed messages: ${addressed.unread} unread for this Program${addressed.oldestAt === null ? "" : `, oldest unread ${new Date(addressed.oldestAt).toISOString()}`}. GET /api/self/messages reads them; POST /api/self/messages/<id>/read receipts one.`,
     `- Obligations that END with your predecessor: ${ofOwn("attention")} historical owner decisions, ${ofOwn("watch")} armed watches, ${ofOwn("auto")} scheduled check-ins${carried === 0 ? "" : `, plus ${carried} still unsettled from earlier sessions of this Program`}. NOTHING was re-armed — that is deliberate; re-registering is your act. Each row is RETAINED IN FULL (id, complete text, reconstruction parameters) as \`handover\` in GET /api/self/program-execution, and every row still open is CARRIED FORWARD by the next succession too — handing this Program on loses none of it. Live attention is Program state and remains on GET /api/self/attention instead of being copied here. THE LINES BELOW ARE PREVIEWS, truncated on purpose; \`owedBy\` on each says which session owed it.`,
     ...preview("attention"),
     ...preview("watch"),
@@ -36032,10 +36364,30 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
       && successionInflight.has(mainOccupant.selfToken);
     if (programBootstrapInflight.has(program.id) || program.founding || successionBusy)
       return json({ error: "cannot complete while a Program-MAIN founding is in flight — wait for its durable binding or rollback" }, 409);
+    const body = await readJson(req);
+    if (body && (Array.isArray(body) || Object.keys(body).some((key) => key !== "force")
+      || ("force" in body && body.force !== true)))
+      return json({ error: "complete reads only {force:true} or an empty body" }, 400);
+    const obligations = {
+      lanes: slots.filter((s) => s.cwd && s.programId === program.id).map((s) => s.id),
+      clarifications: clarifications.filter((c) => c.provenance.programId === program.id
+        && (c.status === "open" || c.status === "send-uncertain")).map((c) => c.id),
+      attention: attentionRequests.filter((a) => a.programId === program.id
+        && (a.status === "open" || a.status === "send-uncertain")).map((a) => a.id),
+      reports: fleetReports.filter((r) => r.provenance.programId === program.id
+        && r.basis === "program" && !r.decision).map((r) => r.id),
+      watches: watches.filter((w) => w.armed && w.slot === program.main?.slot
+        && w.slotOpenedAt === program.main.openedAt).map((w) => w.id),
+    };
+    if (Object.values(obligations).some((ids) => ids.length > 0) && body?.force !== true)
+      return json({ error: "program has open obligations — complete requires {force:true}", obligations }, 409);
     program.status = "complete";
     program.completedAt = Date.now();
+    if (body?.force === true)
+      audit("program_complete_forced" as Parameters<typeof audit>[0], undefined,
+        `${program.id} ${JSON.stringify(obligations)}`);
     await saveStateNow();
-    return json({ ok: true, id: program.id, status: program.status });
+    return json({ ok: true, id: program.id, status: program.status, obligations });
   }
   if (program.status !== "proposed")
     return json({ error: `illegal transition: cannot discard a ${program.status} program` }, 409);
@@ -37626,6 +37978,7 @@ function buildStateSnapshot(now: number): Record<string, unknown> {
 
 // THE SCHEDULER TICKS: every one names itself to logError, because a tick that throws has skipped
 // its whole round and an empty catch hid that. The `p.kill()` and pty-chain catches stay empty on purpose.
+withAuditActor({ kind: "machine", why: "tick" }, () => {
 setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
@@ -37703,6 +38056,7 @@ if (BACKLOG_NUDGE_MS > 0) setInterval(() => void tickBacklogNudge().catch((e: un
 if (ACCEPT_BY_LAND_MS > 0) setInterval(() => void tickAcceptByLand("tick").catch((e: unknown) => logError("tickAcceptByLand", e)), ACCEPT_BY_LAND_MS);
 if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown) => logError("tickAuditPing", e)), AUDIT_PING_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
+if (INBOX_NUDGE_MS > 0) setInterval(() => void tickMessageNudge().catch((e: unknown) => logError("tickMessageNudge", e)), INBOX_NUDGE_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);
 if (API_STALL_RESUME_ON) setInterval(() => void tickApiStallResume().catch((e: unknown) => logError("tickApiStallResume", e)), API_STALL_TICK_MS);
 setInterval(() => void tickRateLimitResume().catch((e: unknown) => logError("tickRateLimitResume", e)), RATE_LIMIT_TICK_MS);
@@ -37714,6 +38068,7 @@ setInterval(() => {
     void ensureSlot(s).catch((e: unknown) => logError("selfHeal", e));
   }
 }, 2000);
+});
 
 type StewardKind = "state_relay" | "lifecycle_op" | "continue_nudge" | "pulse";
 // static suffix every intervention template carries (steward-autonomy.md joint 5's
@@ -40247,6 +40602,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
 }
 
 
+auditActorScope.enterWith({ kind: "unknown", why: "no-credential" });
 Bun.serve<WSData>({
   hostname: HOST,
   port: PORT,
@@ -40268,7 +40624,8 @@ Bun.serve<WSData>({
     // Every response leaves through finishHttp — the only place that sees the finished body AND the
     // accept-encoding (json() sees neither). Nested on purpose: a top-level extraction would reindent
     // ~1200 lines for no behavioural difference. Narrativ: server-narrativ-archiv.md#fetch-entry
-    return finishHttp(req, server.requestIP(req)?.address ?? "", await handle());
+    return withAuditActor(resolvePrincipal(req) ?? { kind: "unknown", why: "no-credential" },
+      async () => finishHttp(req, server.requestIP(req)?.address ?? "", await handle()));
     async function handle(): Promise<Response | undefined> {
     const blocked = guard(req);
     if (blocked) return blocked;
@@ -40888,6 +41245,17 @@ Bun.serve<WSData>({
       return reviewParkTaskForMain(s, selfTaskReviewPark[1]!, body);
     }
 
+    const selfTaskSpawn = /^\/api\/self\/tasks\/([a-z0-9]+)\/spawn$/.exec(url.pathname);
+    if (selfTaskSpawn && req.method === "POST") {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not change a queue row's worker" }, 409);
+      const actor = { slot: s.id, openedAt: s.openedAt };
+      return setTaskSpawn(selfTaskSpawn[1]!, req, actor);
+    }
+
     // ACP-23 · Program-MAIN filing. Non-lane only, for the same "one edge per role" reason as its
     // two neighbours: a lane EXECUTES the row it was founded on — it does not fill the queue its
     // own MAIN releases from. Placed ABOVE the release route on purpose: that route's pin holds
@@ -41187,80 +41555,33 @@ Bun.serve<WSData>({
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a suite offer hands over a lane's own working tree" }, 409);
-      expireHelperClaims();
-      const existing = laneSuiteOfferOf(s);
-      // THE READ HALF: state, and on a settled offer the verdict WITH provenance. `waitPolicy` and
-      // `suiteLock` travel with it because they decide how long waiting is worth (§5.2).
-      if (req.method === "GET") {
-        // a settled offer is still readable by the lane that made it — the verdict outlives the
-        // offer, or a lane that asked one second too late could never learn its own answer
-        const last = existing ?? [...laneSuiteJobs.values()]
-          .filter((j) => j.slot === s.id && j.slotOpenedAt === s.openedAt)
-          .sort((a, b) => b.offeredAt - a.offeredAt)[0] ?? null;
-        return json({
-          offer: last ? laneSuiteView(last) : null,
-          waitPolicy: suiteOfferWait(existing?.offeredAt),
-          suiteLock: suiteLockView(),
-          helper: helperPresence(), // …and WHO could take it, same reading as /api/self/gate's
-        });
-      }
-      // THE ONE BODY FIELD: `modules`, the narrowed preview (`FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`
-      // — what /api/self/gate's localProof.modules recommends). Validated FIRST, before the existing
-      // branch and before a row can exist, through the runner's own decision
-      // (suite-modules.ts#moduleListFrom): known module names only, so nothing but a list of words
-      // from that table can ever reach the helper's env. Absent — including a POST with no JSON body
-      // at all, which is every caller from before this field — is the full run, unchanged.
-      const offerBody = await readJson(req);
-      let modules: string[] | undefined;
-      if (offerBody?.modules !== undefined) {
-        const m = moduleListFrom(offerBody.modules);
-        if (!m.ok) return json({ error: m.error }, 400);
-        modules = m.modules;
-      }
-      // ONE OPEN OFFER PER SLOT. A second POST returns the first with `existing: true` rather than
-      // minting a rival — the same idempotent shape createWatchForSlot uses, and for the same
-      // reason: a caller that retries must not end up holding two of anything. It is returned AS IT
-      // IS, modules or none: the lane reads `offer.modules` to see which run it is waiting on.
-      // `waitPolicy` rides on BOTH minting answers too: "how long is this offer worth waiting for" is
-      // decided in the same instant the offer is, and the saturated reason is what a lane would
-      // otherwise only learn by polling GET — which is the loop the report rail exists to end.
-      if (existing) return json({ offer: laneSuiteView(existing), existing: true, helper: helperPresence(),
-        waitPolicy: suiteOfferWait(existing.offeredAt) });
-      // NO OFFER WITHOUT A MACHINE THAT COULD TAKE IT. Before this, a lane in a fleet where nothing
-      // was beating still got an open job back and then waited SUITE_OFFER_WAIT_FREE_MS (180 s) for
-      // a claim that could not arrive — pure delay on the lane's own preview, and invisible from
-      // inside, because the register is the owner's panel. The rulebook's rule („[Zitat entfernt]“
-      // ) is now answerable in ONE round trip: `offer: null` with a reason.
-      // 200, not an error: nothing went wrong, and a 4xx would send a lane looking for a fault.
-      // ORDER MATTERS. The existing-offer branch above runs FIRST and unconditionally — a lane must
-      // always be able to find its own open offer again, and a helper going quiet after the offer
-      // was minted does not un-mint it. This gate stands in front of MINTING and nothing else.
-      // And it is presence, not claimability: a device that is beating but `quiet` still gets the
-      // offer, because `quiet` is a state its next heartbeat can leave. `helper.mode` rides in the
-      // answer so the lane can read that for itself rather than be judged by a boolean.
-      const presence = helperPresence();
-      if (!presence.online)
-        return json({ offer: null, reason: "no helper online", helper: presence,
-          waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
-      // …and the same refusal, one question narrower: a NARROWED offer is only ever shown to a device
-      // that declared LANE_SUITE_MODULES_FEATURE, so with none of those beating it would wait out the
-      // budget for a claim that cannot come. Same 200, same shape, its own reason — the lane runs the
-      // narrowed preview locally now, or offers the full run instead.
-      if (modules && !presence.takesModules)
-        return json({ offer: null, reason: "no helper online takes a narrowed preview", helper: presence,
-          waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
-      const job: LaneSuiteJob = {
-        id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
-        repo: s.worktree.repo, cwd: s.cwd!, branch: s.worktree.branch,
-        programId: s.programId, ...(modules ? { modules } : {}), offeredAt: Date.now(),
-        state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
-      };
-      laneSuiteJobs.set(job.id, job);
-      audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`
-        + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}`);
-      await saveStateNow();
-      return json({ offer: laneSuiteView(job), existing: false, helper: presence,
-        waitPolicy: suiteOfferWait(job.offeredAt) });
+      return laneSuiteOfferDoor(s, s.worktree, req, null);
+    }
+
+    // THE MAIN'S OFFER DOOR — a bound program MAIN hands the preview of one of ITS OWN lanes to the
+    // portal, for a lane that cannot ask itself (its harness has no quota left) or that the MAIN
+    // wants measured before it lands it. The same anlage as the lane's door (laneSuiteOfferDoor):
+    // the tree, repo and branch come from the LANE's row, the body carries `modules` and nothing
+    // else, and the job, its verdict and its delivery are the lane's. GET reads the lane's offer the
+    // way the lane reads it. The scope is the program bracket, checked in this order: a lane as
+    // caller is refused first (a lane offers its own tree on its own door, never a sibling's), then
+    // the binding answers in boundProgramForMain's own words, then the target must be a live lane
+    // whose programId IS the caller's program. 409 throughout, never 401: the token is right, the
+    // question is not askable from where the caller stands.
+    const mainLaneOffer = /^\/api\/self\/lanes\/(\d+)\/suite-offer$/.exec(url.pathname);
+    if (mainLaneOffer && (req.method === "GET" || req.method === "POST")) {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not offer another lane's tree — a lane offers its own on POST /api/self/suite-offer" }, 409);
+      const bound = boundProgramForMain(s);
+      if (!bound.ok) return json({ error: bound.error }, 409);
+      const target = laneSuiteProxyTarget(mainLaneOffer[1]!);
+      if (!target.ok) return target.response;
+      if (target.lane.programId !== bound.program.id)
+        return json({ error: `slot ${target.lane.id} is not a lane of program ${bound.program.id} — a MAIN offers the trees of its own program's lanes only` }, 409);
+      return laneSuiteOfferDoor(target.lane, target.wt, req, `MAIN slot ${s.id} of ${bound.program.id}`);
     }
 
     // THE COMMAND DOOR — a session hands another machine a TREE AND A COMMAND, and gets a receipt.
@@ -43978,31 +44299,7 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/start-plan" && req.method === "GET") return json(startPlanNow());
     const taskSpawn = /^\/api\/tasks\/([a-z0-9]+)\/spawn$/.exec(url.pathname);
     if (req.method === "POST" && taskSpawn) {
-      const t = tasks.find((x) => x.id === taskSpawn[1]);
-      if (!t) return json({ error: "unknown task" }, 404);
-      if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — only an auftrag has a worker` }, 409);
-      if (t.variants?.length || t.variantOf !== undefined)
-        return json({ error: "a variant group's workers are fixed in its variants" }, 409);
-      if (t.status !== "pending" && t.status !== "queued")
-        return json({ error: `task is ${t.status} — only a pending or queued row can change its worker` }, 409);
-      if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
-      const body = await readJson(req);
-      if (!body || Array.isArray(body)) return json({ error: "invalid json" }, 400);
-      const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort");
-      if (extra.length) return json({ error: `this door reads harness, model and effort only — [${extra.join(", ")}] is not read` }, 400);
-      const choice = taskSpawnFromBody(body);
-      if (!choice.ok) return json({ error: choice.error }, 400);
-      if (!tasks.includes(t) || t.kind !== "auftrag" || t.variants?.length || t.variantOf !== undefined
-        || (t.status !== "pending" && t.status !== "queued") || dispatchingTasks.has(t.id))
-        return json({ error: "task changed while its worker was being set" }, 409);
-      const before = t.spawn;
-      if (JSON.stringify(before) === JSON.stringify(choice.spawn)) return json({ ok: true, task: t, unchanged: true });
-      if (choice.spawn) t.spawn = choice.spawn;
-      else delete t.spawn;
-      saveState();
-      audit("task_spawn", undefined,
-        `${t.id} ${JSON.stringify(before ?? null)}->${JSON.stringify(choice.spawn ?? null)}`);
-      return json({ ok: true, task: t });
+      return setTaskSpawn(taskSpawn[1]!, req);
     }
     // The reversible category route. `adopt` predates the four-value model and remains below as a
     // compatibility alias for notiz→auftrag; this route is the complete owner surface, including
@@ -44763,6 +45060,16 @@ Bun.serve<WSData>({
       saveState();
       audit("autos_quiet", undefined, quietHours ? `${quietHours.start}-${quietHours.end}` : "off");
       return json({ ok: true, quietHours });
+    }
+    // THE OWNER'S OFFER DOOR — the owner hands a live lane's preview to the portal, e.g. for a lane
+    // whose harness cannot ask any more. The same anlage as the lane's own door and its MAIN's
+    // (laneSuiteOfferDoor): tree, repo and branch from the lane's row, `modules` the only body
+    // field, the job and its verdict the lane's. GET reads the lane's offer as the lane reads it.
+    const ownerLaneOffer = /^\/api\/slots\/(\d+)\/suite-offer$/.exec(url.pathname);
+    if (ownerLaneOffer && (req.method === "GET" || req.method === "POST")) {
+      const target = laneSuiteProxyTarget(ownerLaneOffer[1]!);
+      if (!target.ok) return target.response;
+      return laneSuiteOfferDoor(target.lane, target.wt, req, "owner");
     }
     const autoCreate = /^\/api\/slots\/(\d+)\/autos$/.exec(url.pathname);
     if (req.method === "POST" && autoCreate) {

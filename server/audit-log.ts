@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { appendEvent } from "./persist";
+import type { Principal } from "./auth";
 
 // this module sits one level below the repo root, so the ledger path is anchored explicitly
 // rather than on import.meta.dir — it is the same absolute string as before, when the constant
@@ -493,13 +495,17 @@ type AuditEvent =
   // filed / failed, the candidate and review ids and the patch id — never a finding's text
   | "candidate_review";
 // `fields` — machine-readable columns for the rows that need them, beside (not instead of) the
-// prose `detail` every other event uses. The four identity keys are RESERVED: a caller cannot
+// prose `detail` every other event uses. Identity keys are RESERVED: a caller cannot
 // overwrite what row this is, which is why they are filtered rather than merely documented.
-const AUDIT_RESERVED = new Set(["ts", "event", "slot", "detail"]);
+const AUDIT_RESERVED = new Set(["ts", "event", "slot", "detail", "actor"]);
+export const auditActorScope = new AsyncLocalStorage<Principal>();
+export function withAuditActor<T>(actor: Principal, fn: () => T): T {
+  return auditActorScope.run(actor, fn);
+}
 export function audit(event: AuditEvent, slot?: number, detail?: string,
   fields?: Record<string, string | number | boolean>): void {
   appendEvent(AUDIT_FILE, {
-    ts: Date.now(), event,
+    ts: Date.now(), event, actor: auditActorScope.getStore() ?? { kind: "unknown", why: "no-credential" },
     ...(slot !== undefined ? { slot } : {}),
     ...(detail !== undefined ? { detail } : {}),
     ...(fields ? Object.fromEntries(Object.entries(fields).filter(([k]) => !AUDIT_RESERVED.has(k))) : {}),

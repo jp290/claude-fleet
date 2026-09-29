@@ -1079,10 +1079,160 @@ export async function run(): Promise<void> {
         && !mainRows.some((e) => e.receiverSlot === null)
         && !(await redsOf()).some((r) => r.jobId === mainJob),
       `${mainRed.status} rows=${JSON.stringify(mainRows.map((e) => ({ r: e.receiverSlot, d: e.delivery, s: e.status })))}`);
+
+    // ===== (LS.12) THE PROXY DOORS — the owner and the lane's own MAIN offer a LIVE lane's tree ====
+    // Owner 2026-09-29, after nine local e2e runs queued up to 2 h on this box's mutex while the
+    // workhorse sat empty: a lane whose harness has no quota left cannot ask, and a MAIN that wants
+    // its lane's tree measured before the land had no door either. Two doors now reach the SAME
+    // anlage as the lane's own (server.ts#laneSuiteOfferDoor): the tree, repo and branch come from
+    // the lane's row, the verdict lands on the lane's job. What is under test: each door mints WITH
+    // modules, the lane and both proxies read the one verdict, a second offer is the first one, and
+    // every refusal — above all the program bracket on the MAIN door, which the mutation probe for
+    // this cut removes.
+    {
+      const mainTok = await selfTokenOf(freeSlot);
+      const laneRow = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { openedAt?: number; cwd?: string | null; worktree?: { branch?: string } | null }> })
+        .slots?.[String(pileSlot)];
+      const diskRow = (id: string): Record<string, unknown> | undefined => {
+        try {
+          return ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { laneSuiteJobs?: Record<string, unknown>[] })
+            .laneSuiteJobs ?? []).find((j) => j.id === id);
+        } catch { return undefined; }
+      };
+      const diskRows = (): number => {
+        try { return ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { laneSuiteJobs?: unknown[] }).laneSuiteJobs ?? []).length; }
+        catch { return -1; }
+      };
+      // …and a lane of ANOTHER program, the target the MAIN must be refused on
+      const otherProgram = ((await (await post("/api/programs", {
+        title: "Lane-suite foreign program", intent: "A lane the probe MAIN does not own.",
+        successCriterion: "Its tree is never offered by another program's MAIN.",
+        nonGoals: [], decisions: [], evidence: [], openQuestions: [] })).json()) as { program?: { id: string } }).program?.id ?? "";
+      await post(`/api/programs/${otherProgram}/confirm`, {});
+      await post(`/api/programs/${otherProgram}/activate`, {});
+      const otherTask = (await (await post("/api/tasks", { text: "lane-suite foreign program lane",
+        repo: REPO, programId: otherProgram })).json()) as { task?: { id: string } };
+      const otherSlot = ((await (await post(`/api/tasks/${otherTask.task?.id}/dispatch`, {})).json()) as
+        { slot?: number }).slot ?? 0;
+      check("(LS.12) setup: the MAIN carries its own credential, the program lane its row, and a lane of another program exists",
+        /^[0-9a-f]{32}$/.test(mainTok) && (laneRow?.openedAt ?? 0) > 0 && !!laneRow?.cwd && !!laneRow?.worktree?.branch
+          && !!otherProgram && otherSlot > 0 && otherSlot !== pileSlot,
+        JSON.stringify({ main: freeSlot, tok: !!mainTok, lane: laneRow, otherProgram, otherSlot }));
+      const beatAsDaemon = (): Promise<Response> =>
+        hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, features: [...DAEMON_FEATURES] });
+      const ownerDoor = (slot: number | string): string => `/api/slots/${slot}/suite-offer`;
+      const mainDoor = (slot: number | string): string => `/api/self/lanes/${slot}/suite-offer`;
+
+      // --- (1) THE OWNER'S DOOR --------------------------------------------------------------------
+      await beatAsDaemon();
+      const ownerNonLane = await post(ownerDoor(freeSlot), {});
+      const ownerNonLaneErr = (await bodyOf<OfferPayload>(ownerNonLane)).error ?? "";
+      check("(LS.12 owner) a slot that is not a lane is refused 409 — the MAIN's own plain slot has no lane tree",
+        ownerNonLane.status === 409 && ownerNonLaneErr.includes("not a live lane"),
+        `${ownerNonLane.status} ${ownerNonLaneErr}`);
+      const rowsBefore = diskRows();
+      const ownerBad = await post(ownerDoor(pileSlot), { modules: ["security", "nope-module"] });
+      const ownerBadErr = (await bodyOf<OfferPayload>(ownerBad)).error ?? "";
+      check("(LS.12 owner) an unknown module is refused 400, naming it — and nothing is minted",
+        ownerBad.status === 400 && ownerBadErr.includes("nope-module") && diskRows() === rowsBefore,
+        `${ownerBad.status} ${ownerBadErr} rows ${rowsBefore}→${diskRows()}`);
+      const ownerRes = await post(ownerDoor(pileSlot), { modules: ["security", "lane-suite"] });
+      const ownerOffer = await bodyOf<OfferPayload>(ownerRes);
+      const ownerJob = ownerOffer.offer?.id ?? "";
+      const ownerDisk = diskRow(ownerJob);
+      check("(LS.12 owner) the owner's door mints the LANE's job: its slot + openedAt, its branch and cwd, the modules in the runner's order",
+        ownerRes.ok && ownerOffer.existing === false && /^[0-9a-f]{12}$/.test(ownerJob)
+          && JSON.stringify(ownerOffer.offer?.modules) === '["lane-suite","security"]'
+          && ownerDisk?.slot === pileSlot && ownerDisk.slotOpenedAt === laneRow?.openedAt
+          && ownerDisk.branch === laneRow?.worktree?.branch && ownerDisk.cwd === laneRow?.cwd
+          && ownerDisk.programId === pileProgram,
+        `${ownerRes.status} ${JSON.stringify(ownerOffer.offer).slice(0, 200)} disk=${JSON.stringify(ownerDisk).slice(0, 240)}`);
+      const laneSees = await offerOf(pileTok);
+      check("(LS.12 owner) …and it IS the lane's open offer: the lane reads it on its own door",
+        laneSees.offer?.id === ownerJob && laneSees.offer.state === "open",
+        JSON.stringify(laneSees.offer).slice(0, 200));
+      const mainAgain = await bodyOf<OfferPayload>(await selfPost(mainDoor(pileSlot), mainTok, { modules: ["lane-suite"] }));
+      const laneAgain = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", pileTok));
+      check("(LS.12) a second offer while one is open returns THAT one with existing:true — on the MAIN's door and on the lane's",
+        mainAgain.existing === true && mainAgain.offer?.id === ownerJob
+          && laneAgain.existing === true && laneAgain.offer?.id === ownerJob,
+        JSON.stringify({ main: [mainAgain.existing, mainAgain.offer?.id], lane: [laneAgain.existing, laneAgain.offer?.id], ownerJob }));
+      const ownerClaim = await hpost("/api/helper/claim", { jobId: ownerJob, deviceId: DEVICE });
+      const ownerGreen = await hpost("/api/helper/result", { jobId: ownerJob, exitCode: 0, tail: "PASS  proxied\nALL PASS" });
+      const verdictOnLane = await offerOf(pileTok);
+      const verdictOwner = await bodyOf<OfferPayload>(await get(ownerDoor(pileSlot)));
+      const verdictMain = await bodyOf<OfferPayload>(await selfGet(mainDoor(pileSlot), mainTok));
+      check("(LS.12 owner) the verdict lands on the lane's job: the lane reads it, and so do the owner and the MAIN on their GET",
+        ownerClaim.ok && ownerGreen.ok
+          && [verdictOnLane, verdictOwner, verdictMain].every((v) => v.offer?.id === ownerJob
+            && v.offer.state === "reported" && v.offer.result?.result === "green"
+            && JSON.stringify(v.offer.modules) === '["lane-suite","security"]'),
+        JSON.stringify([verdictOnLane, verdictOwner, verdictMain].map((v) => [v.offer?.id, v.offer?.state, v.offer?.result?.result])));
+
+      // --- (2) THE MAIN'S DOOR ---------------------------------------------------------------------
+      await beatAsDaemon();
+      const mainBad = await selfPost(mainDoor(pileSlot), mainTok, { modules: ["nope-module"] });
+      const mainBadErr = (await bodyOf<OfferPayload>(mainBad)).error ?? "";
+      check("(LS.12 main) an unknown module is refused 400 on the MAIN's door too",
+        mainBad.status === 400 && mainBadErr.includes("nope-module"), `${mainBad.status} ${mainBadErr}`);
+      const mainRes = await selfPost(mainDoor(pileSlot), mainTok, { modules: ["lane-suite"] });
+      const mainOffer2 = await bodyOf<OfferPayload>(mainRes);
+      const mainJob2 = mainOffer2.offer?.id ?? "";
+      const mainDisk = diskRow(mainJob2);
+      check("(LS.12 main) the bound MAIN mints its own program lane's job, with the lane's identity and its modules",
+        mainRes.ok && mainOffer2.existing === false && /^[0-9a-f]{12}$/.test(mainJob2) && mainJob2 !== ownerJob
+          && JSON.stringify(mainOffer2.offer?.modules) === '["lane-suite"]'
+          && mainDisk?.slot === pileSlot && mainDisk.slotOpenedAt === laneRow?.openedAt && mainDisk.cwd === laneRow?.cwd,
+        `${mainRes.status} ${JSON.stringify(mainOffer2).slice(0, 240)}`);
+      const mainClaim2 = await hpost("/api/helper/claim", { jobId: mainJob2, deviceId: DEVICE });
+      const mainGreen2 = await hpost("/api/helper/result", { jobId: mainJob2, exitCode: 0, tail: "PASS  proxied by main\nALL PASS" });
+      const laneRead2 = await offerOf(pileTok);
+      const mainRead2 = await bodyOf<OfferPayload>(await selfGet(mainDoor(pileSlot), mainTok));
+      check("(LS.12 main) …and the lane reads that verdict on its own door, the MAIN on its GET",
+        mainClaim2.ok && mainGreen2.ok
+          && laneRead2.offer?.id === mainJob2 && laneRead2.offer.result?.result === "green"
+          && mainRead2.offer?.id === mainJob2 && mainRead2.offer.state === "reported",
+        JSON.stringify({ lane: [laneRead2.offer?.id, laneRead2.offer?.result?.result], main: [mainRead2.offer?.id, mainRead2.offer?.state] }));
+
+      // --- THE REFUSALS ----------------------------------------------------------------------------
+      await beatAsDaemon(); // a taker is beating, so a refusal below can only be the SCOPE's
+      const foreignRows = diskRows();
+      const foreign = await selfPost(mainDoor(otherSlot), mainTok, {});
+      const foreignErr = (await bodyOf<OfferPayload>(foreign)).error ?? "";
+      const foreignRead = await bodyOf<OfferPayload>(await get(ownerDoor(otherSlot)));
+      check("(LS.12 main) a MAIN is refused 409 on a lane of ANOTHER program — and that lane has no offer afterwards",
+        foreign.status === 409 && foreignErr.includes("not a lane of program")
+          && diskRows() === foreignRows && foreignRead.offer === null,
+        `${foreign.status} ${foreignErr} rows ${foreignRows}→${diskRows()} offer=${JSON.stringify(foreignRead.offer)?.slice(0, 80)}`);
+      const mainOnSelf = await selfPost(mainDoor(freeSlot), mainTok, {});
+      check("(LS.12 main) a MAIN naming a slot that is not a lane (its own) is refused 409",
+        mainOnSelf.status === 409, `${mainOnSelf.status} ${(await bodyOf(mainOnSelf)).error}`);
+      const laneAsCaller = await selfPost(mainDoor(pileSlot), pileTok, {});
+      const laneAsCallerErr = (await bodyOf<OfferPayload>(laneAsCaller)).error ?? "";
+      check("(LS.12 main) a LANE calling the MAIN's door is refused 409 — even for its own slot — never 401",
+        laneAsCaller.status === 409 && laneAsCallerErr.includes("a lane may not"),
+        `${laneAsCaller.status} ${laneAsCallerErr}`);
+      check("(LS.12 main) an unknown self token is refused 401 on the MAIN's door",
+        (await selfPost(mainDoor(pileSlot), "0".repeat(32))).status === 401);
+
+      // --- ONE ANLAGE: all three doors call the same function, and nothing else mints a row ------
+      const srv = readFileSync(`${ROOT}/server.ts`, "utf8");
+      check("(LS.12) one anlage: laneSuiteOfferDoor is declared once and called by exactly three doors, and it holds the only minting laneSuiteJobs.set",
+        (srv.match(/\blaneSuiteOfferDoor\(/g) ?? []).length === 4
+          && (srv.match(/laneSuiteJobs\.set\(job\.id, job\)/g) ?? []).length === 1
+          && srv.indexOf("laneSuiteJobs.set(job.id, job)") > srv.indexOf("async function laneSuiteOfferDoor(")
+          && srv.indexOf("laneSuiteJobs.set(job.id, job)") < srv.indexOf("function laneSuiteProxyTarget("),
+        `calls=${(srv.match(/\blaneSuiteOfferDoor\(/g) ?? []).length} sets=${(srv.match(/laneSuiteJobs\.set\(job\.id, job\)/g) ?? []).length}`);
+
+      if (otherSlot) await post(`/api/slots/${otherSlot}/kill`, {});
+      if (otherTask.task) await post(`/api/tasks/${otherTask.task.id}/delete`, {});
+      await post(`/api/programs/${otherProgram}/complete`, {});
+    }
     await post(`/api/slots/${pileSlot}/kill`, {});
     await post(`/api/slots/${freeSlot}/kill`, {});
     await post(`/api/tasks/${pileTask.task.id}/delete`, {});
-    await post(`/api/programs/${pileProgram}/complete`, {});
+    await post(`/api/programs/${pileProgram}/complete`, { force: true });
   }
 
   // ===== (LS.mod) THE NARROWED PREVIEW — `modules` at the door, FLEET_E2E_MODULES on the daemon ====

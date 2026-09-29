@@ -4406,16 +4406,20 @@ export async function run(): Promise<void> {
     // BREAKS IF: openFleetReport branches on programId presence rather than ACTIVE status.
     await stopSrv();
     const d1Inactive = JSON.parse(readFileSync(d1Path, "utf8")) as
-      { programs?: { id?: string; status?: string }[] };
+      { programs?: { id?: string; status?: string; completedAt?: number }[] };
     const inactiveProgram = d1Inactive.programs?.find((p) => p.id === d1ProgramId);
-    if (inactiveProgram) inactiveProgram.status = "complete";
+    if (inactiveProgram) {
+      inactiveProgram.status = "complete";
+      inactiveProgram.completedAt = Date.now();
+    }
     writeFileSync(d1Path, JSON.stringify(d1Inactive, null, 2), { mode: 0o600 });
     await restartSrv();
     const inactiveReport = await selfFleetReport(terminalTok,
       { status: "complete", text: "A complete Program does not own this new row." });
     const inactiveText = await inactiveReport.text();
-    check("fleet-report inactive program: a lane whose Program is complete falls back to exact receiver evidence or the named 409",
-      inactiveReport.status === 409 && inactiveText.includes("no exact clarification receiver evidence"),
+    check("fleet-report inactive program: a lane whose Program is complete reaches the owner inbox with its Program provenance",
+      inactiveReport.status === 200 && (JSON.parse(inactiveText) as { report?: FleetReportRow }).report?.basis === "owner-inbox"
+        && (JSON.parse(inactiveText) as { report?: FleetReportRow }).report?.provenance.programId === d1ProgramId,
       `${inactiveReport.status} ${inactiveText}`);
 
     for (const slot of [acceptLane.slot, rejectLane.slot, terminalLane.slot, inboxLane.slot,
@@ -4430,6 +4434,106 @@ export async function run(): Promise<void> {
     d1Cleaned.fleetReports = [];
     d1Cleaned.programs = (d1Cleaned.programs ?? []).filter((p) => p.id !== d1ProgramId);
     writeFileSync(d1Path, JSON.stringify(d1Cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
+  // === PROGRAM COMPLETE · AN OPEN RESULT MUST HAVE A RETURN PATH =============================
+  {
+    const main = await freeSlot();
+    const mainOpen = main ? await post(`/api/slots/${main}/open`, { cwd: REPO, label: "complete-guard-main" }) : null;
+    const lane = async () => (await (await post("/api/lanes", { repo: REPO })).json()) as
+      { slot: number; cwd: string; branch: string };
+    const reporting = await lane();
+    const waiting = await lane();
+    const mainToken = await paneEnv(`s${main}`, "FLEET_SELF_TOKEN") ?? "";
+    const reportingToken = await paneEnv(`s${reporting.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const waitingToken = await paneEnv(`s${waiting.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    check("complete guard fixture: bound MAIN and two live Program lanes carry distinct credentials",
+      !!mainOpen?.ok && new Set([main, reporting.slot, waiting.slot]).size === 3
+        && [mainToken, reportingToken, waitingToken].every((t) => /^[0-9a-f]{32}$/.test(t)));
+    const path = `${ROOT}/fleet.json`;
+    const programId = "b".repeat(24);
+    const cleanId = "a".repeat(24);
+    await stopSrv();
+    const planted = JSON.parse(readFileSync(path, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+    };
+    const now = Date.now();
+    planted.programs = [...(planted.programs ?? []), ...[programId, cleanId].map((id) => ({
+      id, title: "Complete guard fixture", intent: "Preserve the return path",
+      successCriterion: "Open obligations have named ids", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: now - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: now - 900, activatedAt: now - 800,
+      ...(id === programId ? { main: { slot: main, openedAt: planted.slots[String(main)].openedAt,
+        sessionId: planted.slots[String(main)].sessionId, boundAt: now - 700 } } : {}),
+    }))];
+    for (const l of [reporting, waiting]) planted.slots[String(l.slot)].programId = programId;
+    planted.slots[String(reporting.slot)].taskId = "complete-guard-report";
+    planted.slots[String(waiting.slot)].taskId = "complete-guard-question";
+    writeFileSync(path, JSON.stringify(planted, null, 2), { mode: 0o600 });
+    await restartSrv();
+
+    const watchRes = await post(`/api/slots/${main}/watch`, { target: waiting.slot, idleSec: 3600 });
+    const watchId = (await watchRes.json() as { watch?: { id: string } }).watch?.id;
+    const clarificationRes = await selfClarify(waitingToken, { question: "Who answers before complete?" });
+    const clarificationId = (await clarificationRes.json() as { request?: { id: string } }).request?.id;
+    const attentionRes = await fetch(`${BASE}/api/self/attention`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": mainToken },
+      body: JSON.stringify({ kind: "blocked", text: "Owner decision remains open." }) });
+    const attentionId = (await attentionRes.json() as { request?: { id: string } }).request?.id;
+    const reportRes = await selfFleetReport(reportingToken,
+      { status: "needs-main", text: "This Program report needs a decision." });
+    const reportId = (await reportRes.json() as { report?: { id: string } }).report?.id;
+    check("complete guard fixture: all four obligation producers accepted their rows",
+      watchRes.ok && !!watchId && clarificationRes.ok && !!clarificationId
+        && attentionRes.ok && !!attentionId && reportRes.ok && !!reportId,
+      JSON.stringify({ watch: watchRes.status, clarification: clarificationRes.status,
+        attention: attentionRes.status, report: reportRes.status }));
+    const expected = { lanes: [reporting.slot, waiting.slot], clarifications: [clarificationId],
+      attention: [attentionId], reports: [reportId], watches: [watchId] };
+    const refusal = await post(`/api/programs/${programId}/complete`, {});
+    const refusalBody = await refusal.json() as { obligations?: unknown };
+    const statusAfterRefusal = (((await (await get("/api/programs")).json()) as
+      { programs: { id: string; status: string }[] }).programs.find((p) => p.id === programId))?.status;
+    check("complete guard: ordinary complete refuses 409 with every open id and leaves Program active",
+      refusal.status === 409 && JSON.stringify(refusalBody.obligations) === JSON.stringify(expected)
+        && statusAfterRefusal === "active",
+      JSON.stringify({ status: refusal.status, obligations: refusalBody.obligations, program: statusAfterRefusal }));
+    const clean = await post(`/api/programs/${cleanId}/complete`, {});
+    check("complete guard: a Program with no open obligations completes without force", clean.status === 200,
+      String(clean.status));
+    const forced = await post(`/api/programs/${programId}/complete`, { force: true });
+    const forcedBody = await forced.json() as { obligations?: unknown; status?: string };
+    const auditLine = auditRows().filter((row) => row.event === "program_complete_forced"
+      && row.detail?.startsWith(`${programId} `));
+    check("complete guard: force closes and audits the same named obligations",
+      forced.status === 200 && forcedBody.status === "complete"
+        && JSON.stringify(forcedBody.obligations) === JSON.stringify(expected)
+        && auditLine.length === 1 && auditLine[0]?.detail === `${programId} ${JSON.stringify(expected)}`,
+      JSON.stringify({ status: forced.status, obligations: forcedBody.obligations, audit: auditLine.map((r) => r.detail) }));
+    const after = await selfFleetReport(waitingToken,
+      { status: "complete", text: "The still-running lane can file after force." });
+    const afterBody = await after.json() as { report?: FleetReportRow };
+    check("complete guard: a running lane files to owner inbox after force with Program provenance",
+      after.status === 200 && afterBody.report?.basis === "owner-inbox"
+        && afterBody.report.provenance.programId === programId,
+      JSON.stringify({ status: after.status, report: afterBody.report }));
+    const repeated = await post(`/api/programs/${programId}/complete`, {});
+    check("complete guard: complete on a completed Program remains idempotent", repeated.status === 200,
+      String(repeated.status));
+    for (const slot of [reporting.slot, waiting.slot, main]) await post(`/api/slots/${slot}/kill`, {});
+    await stopSrv();
+    const cleaned = JSON.parse(readFileSync(path, "utf8")) as {
+      programs?: { id: string }[]; fleetReports?: { id: string }[];
+      clarifications?: { id: string }[]; attentionRequests?: { id: string }[];
+      events?: { kind?: string }[];
+    };
+    cleaned.programs = (cleaned.programs ?? []).filter((p) => p.id !== programId && p.id !== cleanId);
+    cleaned.fleetReports = (cleaned.fleetReports ?? []).filter((r) => r.id !== reportId && r.id !== afterBody.report?.id);
+    cleaned.clarifications = (cleaned.clarifications ?? []).filter((r) => r.id !== clarificationId);
+    cleaned.attentionRequests = (cleaned.attentionRequests ?? []).filter((r) => r.id !== attentionId);
+    cleaned.events = (cleaned.events ?? []).filter((e) => e.kind !== "fleet-report" && e.kind !== "clarification-request");
+    writeFileSync(path, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
     await restartSrv();
   }
 
@@ -7924,6 +8028,114 @@ export async function run(): Promise<void> {
         .map((l) => `${l}\n`).join(""));
     }
     rmSync(ablGit, { recursive: true, force: true });
+    await restartSrv();
+  }
+
+  {
+    const main = await freeSlot();
+    const mainOpen = main ? await post(`/api/slots/${main}/open`, { cwd: REPO, label: "program-event-main" }) : null;
+    const orchestrator = await freeSlot();
+    const orchestratorOpen = orchestrator
+      ? await post(`/api/slots/${orchestrator}/open`, { cwd: REPO, label: "🎛 Orchestratorin" }) : null;
+    const lane = (await (await post("/api/lanes", { repo: REPO })).json()) as
+      { slot: number; cwd: string; branch: string };
+    const laneToken = await paneEnv(`s${lane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const programId = ((await (await post("/api/programs", {
+      title: "program event loss fixture", intent: "show a receiver-gone event after owner kill",
+      successCriterion: "one Orchestratorin hint names the event", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    })).json()) as { program?: { id: string } }).program?.id ?? "";
+    check("program event orphan fixture: MAIN, labelled Orchestratorin and Program lane exist",
+      !!mainOpen?.ok && !!orchestratorOpen?.ok && !!programId && /^[0-9a-f]{32}$/.test(laneToken)
+        && await catPane(`s${orchestrator}`),
+      JSON.stringify({ main: mainOpen?.status, orchestrator: orchestratorOpen?.status, programId, lane: lane.slot }));
+    await stopSrv();
+    const path = `${ROOT}/fleet.json`;
+    const plant = JSON.parse(readFileSync(path, "utf8")) as {
+      programs?: Record<string, unknown>[]; events?: Record<string, unknown>[];
+      slots?: Record<string, { openedAt?: number; sessionId?: string | null; programId?: string }> };
+    const mainOcc = plant.slots?.[String(main)];
+    const laneOcc = plant.slots?.[String(lane.slot)];
+    const program = plant.programs?.find((p) => p.id === programId);
+    if (program) Object.assign(program, { status: "active", confirmedAt: Date.now() - 2000,
+      activatedAt: Date.now() - 1000,
+      main: { slot: main, openedAt: mainOcc?.openedAt, sessionId: mainOcc?.sessionId ?? null,
+        boundAt: Date.now() - 1000 } });
+    if (laneOcc) laneOcc.programId = programId;
+    const eventId = "6b".padEnd(24, "1");
+    const greenId = "6b".padEnd(24, "2");
+    const base = { receiverSlot: main, receiverOpenedAt: mainOcc?.openedAt,
+      receiverSessionId: mainOcc?.sessionId ?? null, receiverAddress: { kind: "program", id: programId },
+      receiverIdleSec: 3600, createdAt: Date.now(), status: "pending", attempts: 0,
+      deliveredAt: null, acknowledgedAt: null };
+    plant.events = [...(plant.events ?? []),
+      { ...base, id: eventId, watchId: `${eventId}w`, kind: "lane-ready", subjectSlot: lane.slot,
+        subjectBranch: lane.branch, subjectOpenedAt: laneOcc?.openedAt,
+        payload: { ahead: 1, dirty: 0, idleMs: 1000, observed: true, gitOp: false,
+          awaiting: null, hostCommits: false } },
+      { ...base, id: greenId, watchId: `${greenId}w`, kind: "merge-terminal", subjectSlot: lane.slot,
+        subjectCwd: lane.cwd, subjectBranch: lane.branch,
+        payload: { status: "merged", landed: true, branch: lane.branch, at: Date.now() } }];
+    check("program event orphan fixture: persisted Program binding and two pending event classes are complete",
+      !!program && !!mainOcc?.openedAt && !!laneOcc?.openedAt && plant.events?.some((e) => e.id === eventId)
+        && plant.events.some((e) => e.id === greenId),
+      JSON.stringify({ program: !!program, main: mainOcc?.openedAt, lane: laneOcc?.openedAt }));
+    writeFileSync(path, JSON.stringify(plant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const hydrated = ((await (await get("/api/events")).json()) as
+      { events: { id: string; status: string }[] }).events;
+    check("program event orphan fixture: both Watch events hydrate as pending before owner kill",
+      hydrated.find((e) => e.id === eventId)?.status === "pending"
+        && hydrated.find((e) => e.id === greenId)?.status === "pending",
+      JSON.stringify({ event: hydrated.find((e) => e.id === eventId), green: hydrated.find((e) => e.id === greenId) }));
+    const reportResponse = await selfFleetReport(laneToken,
+      { status: "complete", text: "Program event loss fixture: one unjudged report." });
+    const report = (await reportResponse.json() as { report?: FleetReportRow }).report;
+    check("program event orphan control: the lane filed one unjudged Program report before its MAIN died",
+      reportResponse.ok && report?.basis === "program" && report?.decision == null,
+      JSON.stringify({ status: reportResponse.status, id: report?.id, basis: report?.basis }));
+    await post(`/api/slots/${main}/kill`, {});
+    const history = async () => ((await (await get(`/api/slots/${orchestrator}/history`)).json()) as
+      { history: { text: string }[] }).history;
+    let eventNotice = (await history()).filter((h) => h.text.includes(eventId));
+    for (let i = 0; i < 150 && eventNotice.length === 0; i++) {
+      await Bun.sleep(100);
+      eventNotice = (await history()).filter((h) => h.text.includes(eventId));
+    }
+    let reportNotice = (await history()).filter((h) => h.text.includes(`[fleet report orphan] Program-Report ${report?.id}`));
+    for (let i = 0; i < 150 && reportNotice.length === 0; i++) {
+      await Bun.sleep(100);
+      reportNotice = (await history()).filter((h) => h.text.includes(`[fleet report orphan] Program-Report ${report?.id}`));
+    }
+    await Bun.sleep(AUTOS_TICK_MS * 2 + 500);
+    eventNotice = (await history()).filter((h) => h.text.includes(eventId));
+    reportNotice = (await history()).filter((h) => h.text.includes(`[fleet report orphan] Program-Report ${report?.id}`));
+    const rows = (await (await get("/api/events")).json()) as
+      { events: { id: string; status: string }[] };
+    const sent = auditRows().filter((a) => a.event === "send") as
+      (AuditRow & { path?: string; programEventId?: string; reportId?: string })[];
+    check("program event orphan: owner kill makes one immediate Orchestratorin hint with event ID, across later ticks",
+      rows.events.find((e) => e.id === eventId)?.status === "receiver-gone"
+        && eventNotice.length === 1 && eventNotice[0]!.text.includes(programId)
+        && eventNotice[0]!.text.includes("der Hinweis erteilt kein Recht")
+        && sent.filter((r) => r.path === "program-event-orphan" && r.programEventId === `event:${eventId}`).length === 1,
+      JSON.stringify({ event: rows.events.find((e) => e.id === eventId), notices: eventNotice.length }));
+    check("program event orphan controls: green bundle stays audit-only and report keeps its single report-orphan rail",
+      !((await history()).some((h) => h.text.includes(greenId)))
+        && sent.filter((r) => r.path === "program-event-orphan" && r.programEventId === `event:${greenId}`).length === 0
+        && reportNotice.length === 1
+        && sent.filter((r) => r.path === "report-orphan" && r.reportId === report?.id).length === 1
+        && !sent.some((r) => r.path === "program-event-orphan" && r.programEventId?.includes(report?.id ?? "?")),
+      JSON.stringify({ green: rows.events.find((e) => e.id === greenId), reports: reportNotice.length }));
+    await post(`/api/slots/${orchestrator}/kill`, {});
+    await post(`/api/slots/${lane.slot}/kill`, {});
+    await post("/api/worktrees/discard", { repo: REPO, path: lane.cwd, branch: lane.branch });
+    await stopSrv();
+    const clean = JSON.parse(readFileSync(path, "utf8")) as {
+      programs?: { id?: string }[]; events?: { id?: string }[]; fleetReports?: { id?: string }[] };
+    clean.programs = (clean.programs ?? []).filter((p) => p.id !== programId);
+    clean.events = (clean.events ?? []).filter((e) => e.id !== eventId && e.id !== greenId);
+    clean.fleetReports = (clean.fleetReports ?? []).filter((r) => r.id !== report?.id);
+    writeFileSync(path, JSON.stringify(clean, null, 2), { mode: 0o600 });
     await restartSrv();
   }
 

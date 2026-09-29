@@ -1754,6 +1754,6 @@ export async function run(): Promise<void> {
 
     for (const slot of [pileB.slot, freeSlot]) if (slot) await post(`/api/slots/${slot}/kill`, {});
     for (const id of [pileA.taskId, pileB.taskId, pileC.taskId]) await post(`/api/tasks/${id}/delete`, {});
-    await post(`/api/programs/${pileProgram}/complete`, {});
+    await post(`/api/programs/${pileProgram}/complete`, { force: true });
   }
 }

@@ -594,7 +594,7 @@ export async function run(): Promise<void> {
   // --- 10. completed Programs cannot receive another pointer -------------------------------------
   const inactiveRow = await raised(await selfRaise(successorToken, { kind: "blocked", text: "Complete before answering me." }));
   const inactiveBefore = await selfInbox(successorToken);
-  const completeProgram = await post(`/api/programs/${programA}/complete`, {});
+  const completeProgram = await post(`/api/programs/${programA}/complete`, { force: true });
   const inactiveAnswer = await post(`/api/attention/${inactiveRow?.id}/answer`, { text: "Too late for this Program." });
   const inactiveText = await inactiveAnswer.text();
   const inactiveAfterState = JSON.parse(readFileSync(statePath, "utf8")) as {
@@ -745,7 +745,7 @@ export async function run(): Promise<void> {
       JSON.stringify({ status: dRead?.status, self: readSelf?.delivery, owner: readOwner?.delivery }));
 
     await post(`/api/attention/${dOpenRow?.id}/refuse`, { reason: "12 fixture: delivery block, closed by hand." });
-    await post(`/api/programs/${programD}/complete`, {});
+    await post(`/api/programs/${programD}/complete`, { force: true });
     if (dSlot) await post(`/api/slots/${dSlot}/kill`, {});
   }
 
@@ -955,7 +955,7 @@ export async function run(): Promise<void> {
     for (const [id, why] of [[twoRow?.id, "13 fixture: two Orchestratorinnen"], [parked?.id, "13 fixture: parked"],
       [noneRow?.id, "13 fixture: no Orchestratorin"]] as const)
       await post(`/api/attention/${id}/refuse`, { reason: why });
-    await post(`/api/programs/${programE}/complete`, {});
+    await post(`/api/programs/${programE}/complete`, { force: true });
     if (eSlot) await post(`/api/slots/${eSlot}/kill`, {});
   }
 

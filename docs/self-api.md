@@ -22,6 +22,13 @@ Resolver erteilt selbst keinen Grant. Owner-, Helper-, Steward-, Share- und Inta
 ihre eigenen Reihenfolgen und Fehlerpfade. Eine Kombination mehrerer Credentials auf einem Request
 ändert damit keine Türentscheidung.
 
+`audit.jsonl` trägt auf jeder neuen Zeile `actor`. `server/audit-log.ts#audit` schreibt den
+Principal aus dem asynchronen Kontext; `server.ts#fetch` bindet ihn beim Request-Eingang über
+`resolvePrincipal(req)`. Ohne erkannte Credential steht `{kind:"unknown",why:"no-credential"}`.
+Scheduler-Ticks tragen `{kind:"machine",why:"tick"}`, Boot-Arbeit
+`{kind:"machine",why:"boot"}`. Ein `audit()`-Aufrufer kann `actor` über `fields` nicht überschreiben.
+Das Feld enthält nur die vom Resolver benannten Identitätsmerkmale, keine Token oder Header-Werte.
+
 ## position — `GET /api/self` → `position`
 
 Jede Session liest mit ihrem eigenen `FLEET_SELF_TOKEN` ihr Lagebild. Die bisherigen Felder von
@@ -37,10 +44,12 @@ steht `receiver:null`, nie `owner`. `taskId` und `programId` kommen aus dem Lane
 die MAIN erhält ihre `programId` aus der aktiven Bindung. Fehlende Werte bleiben `null`.
 `harness` und `model` sind die gespeicherten Spawn-Werte; `null` bedeutet Fleet-Default.
 
-`waitingOnMe` enthält offene Einträge `{kind,id,slot}` für fremde bewaffnete Watches auf
-die aktuelle Lane, geparkte Sends an ihre Occupation, offene Clarifications, unentschiedene
+`waitingOnMe` enthält offene Einträge `{kind,id,slot}` für ungelesene eingehende Nachrichten,
+fremde bewaffnete Watches auf die aktuelle Lane, geparkte Sends an ihre Occupation, offene Clarifications, unentschiedene
 Fleet-Reports und einen noch offenen Succession-Debt für diesen Nachfolger. `slot` bezeichnet
-den wartenden Slot; beim Debt den betroffenen Slot selbst. Der Blick ist eine aktuelle
+bei Nachrichten den eigenen Slot, sonst den wartenden Slot; beim Debt den betroffenen Slot selbst.
+Die Nachrichtenadresse wird bei jedem Lesen aufgelöst: eine eskalierte Program-Nachricht steht
+bis zur MAIN-Bindung bei der Orchestratorin und danach bei der MAIN. Der Blick ist eine aktuelle
 Momentaufnahme, keine historische Vollständigkeitszusage. Der mutierende Lane-Brief rendert
 denselben Empfänger im Footer als `Empfaenger: <Rolle> Slot <n>`; ohne Empfänger steht dort
 `Empfaenger: unbekannt`.
@@ -207,6 +216,12 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   identisch gebunden ist, bleibt dagegen `pending` und wird zugestellt, sobald dein Composer frei
   ist. Ein Halt am belegten Composer zählt dabei NICHT als Zustellversuch (`attempts` bleibt stehen;
   gezählt werden Holds als `fleet_event_held` im Audit-Trail).
+- Wird ein sofortiges Event mit `receiverAddress:{kind:"program"}` wegen einer fehlenden MAIN
+  `receiver-gone`, erhält die eindeutig lebende Orchestratorin einmal einen Hinweis mit Event-ID
+  und Program-ID. Er nennt die bestehende Ereignis-Sicht und erteilt kein Recht. Fehlt eine
+  eindeutige Orchestratorin, nennt `fleet_event_receiver_gone` im Audit `escalation none`.
+  Grüne bündelbare Events, Program-Reports sowie Nachrichten und Rückfragen bleiben auf ihren
+  eigenen Wegen; die Standard-Nachfolge bindet offene sofortige Events weiterhin um.
 - **Ein belegter Composer wird nicht jeden Tick neu angetippt — der Hold-Backoff (K1, seit
   2026-09-11).** Eine Vor-Paste-Verweigerung sagt etwas über eine PANE, und die ändert sich zwischen
   zwei Ticks nicht. Nach der ersten Verweigerung wartet der Server deshalb **2 Ticks**, dann 4, 8,
@@ -1487,8 +1502,26 @@ Owner-Token, **keine** Self-Route; Entwurf B aus `docs/messungen/2026-09-15-frei
   Worker-Wahl eines `pending`- oder `queued`-Auftrags neu (`server.ts#taskSpawnFromBody`). Ein leerer Body
   oder drei `null`-Werte entfernen `Task.spawn` und stellen den Default bei Dispatch wieder her. Die
   Route lässt Status, Hold, Karte, Program und Kommentare stehen; `sent` und Variantengruppen sind 409.
-  Jede tatsächliche Änderung schreibt `task_spawn` mit alter und neuer Wahl ins Audit. Es gibt keine
-  `/api/self/*`-Route dafür.
+  Jede tatsächliche Änderung schreibt `task_spawn` mit alter und neuer Wahl ins Audit.
+
+## spawn — `POST /api/self/tasks/:id/spawn`
+
+Die exakt gebundene MAIN eines aktiven Programs kann die Worker-Wahl einer eigenen `pending`- oder
+`queued`-Zeile mit `{"harness"?,"model"?,"effort"?}` ändern. Dieselbe Funktion wie bei der
+Owner-Route validiert das Tripel; ein leerer Body oder drei `null`-Werte entfernen `Task.spawn`.
+Die Antwort enthält `{ok:true,task,sessionIdMatch}`; bei unveränderter Wahl zusätzlich
+`unchanged:true`. Eine tatsächliche Änderung schreibt `task_spawn` mit Slot und `openedAt` ins
+Audit. Die Route startet keine Lane und ändert weder Status noch Hold, Karte oder Program.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/spawn \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"harness":"codex"}'
+```
+
+Eine Lane, eine fremde Program-Zeile, eine gestartete oder abgeschlossene Zeile und eine
+Variantengruppe erhalten 409. Ein ungültiges Modell oder fremdes Body-Feld erhält 400. Die
+Bindung wird nach dem Lesen des Bodys erneut gegen Slot und `openedAt` geprüft.
 
 ## hold — `POST /api/self/tasks/:id/hold`
 
@@ -2270,7 +2303,15 @@ DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, 
 | `role:"orchestrator"` ohne genau eine lebende Orchestratorin | 200 mit `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse |
 | Gültige Adresse mit lebendem Halter | 200, `holder:{slot,openedAt}` | ja |
 
-Ein lebender Halter bekommt genau einen Hinweis über den bestehenden SendPath `inbox-nudge`.
+`programStatusView` zeigt daneben `messages:{unread,oldestAt}` für ungelesene Nachrichten an die
+Program-Adresse. Der Standard-Nachfolgebrief nennt diese Nachrichten mit `GET /api/self/messages`;
+sie werden nicht als Handover-Obligations gespeichert.
+
+Der Nachrichten-Tick prüft Zustellbarkeit, Leerlauf und Ruhezeit und schreibt beim nächsten
+zustellbaren Aktivwerden einen `[fleet message]`-Hinweis über `inbox-nudge`. Ein unveränderter
+Satz ungelesener IDs erhält in derselben Session keinen zweiten Hinweis; ein später gebundener
+Halter kann die gespeicherte Nachricht und den Hinweis erhalten. Das Senden selbst tippt nichts
+in die Pane.
 `ctl.sh send --orchestrator <textfile>` sendet über `POST /api/self/messages` mit
 `FLEET_SELF_TOKEN`; die Owner-Credential wird dafür nicht gelesen.
 
@@ -2363,7 +2404,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   -d '{}' http://<fleet-host>:<port>/api/self/jobs/<jobId>/withdraw
 ```
 
-**Eine MAIN gibt ihre Vorschau über diese Tür an den Helfer** — `suite-offer` ist lane-only, also
+**Eine MAIN gibt ihre EIGENE Vorschau über diese Tür an den Helfer** — `suite-offer` ist lane-only
+(den Baum einer LANE ihres Programs bietet sie über `POST /api/self/lanes/:slot/suite-offer` an,
+§suite-offer „Stellvertreter-Türen"), also
 `{"cmd":"./e2e-isolated.sh","timeoutMs":2700000}` und danach eine `job`-Watch statt Polling
 (§watch). Der Default von 15 min würgte einen vollen Lauf ab (gemessen 2 120 s,
 `suite-modules.ts`); mehr als 2 700 000 kauft nichts, weil der Claim nach
@@ -2715,6 +2758,42 @@ ist `unknown`, nie `gone`.
 genau einem Aufrufer erreichbar — die Abwesenheit ist strukturell, kein Filter, den jemand
 mitpflegen muss.
 
+### Stellvertreter-Türen — der Owner und die Program-MAIN bieten den Baum einer LEBENDEN Lane an (seit 2026-09-29)
+
+Anlass (Owner 2026-09-29): neun lokale e2e-Läufe standen bis zu 2 h vor dem Mutex dieser Maschine,
+während der Workhorse leer war. Zwei Fälle hatten keine Tür: eine Lane, deren Harness kein
+Kontingent mehr hat, kann nicht selbst anbieten, und eine MAIN, die den Baum ihrer Lane vor dem Land
+messen will, konnte über `jobs` nur ihren EIGENEN Baum weitergeben. Zwei Türen schließen das:
+
+```
+curl -s -X POST -H "Authorization: Bearer <owner-token>" -H 'content-type: application/json' \
+  -d '{"modules":["lane-suite"]}' http://<fleet-host>:<port>/api/slots/<lane-slot>/suite-offer
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{}' http://<fleet-host>:<port>/api/self/lanes/<lane-slot>/suite-offer
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/lanes/<lane-slot>/suite-offer      # Zustand + Verdikt
+```
+
+- **Eine Anlage, drei Türen.** Beide rufen dieselbe Funktion wie die Lane-Tür
+  (`server.ts#laneSuiteOfferDoor`): Slot und `slotOpenedAt` der Lane, Repo und Branch aus ihrem
+  `worktree`, der Baum aus ihrem `cwd`, `modules` als einziges Body-Feld mit derselben Prüfung
+  (`suite-modules.ts#moduleListFrom`, unbekannter Name → **400**). Kein neuer Job-Typ, kein Feld
+  nominiert einen Baum. Die Tür steht nur im Audit-Trail (`offered by owner` /
+  `offered by MAIN slot N of <program>`), nicht auf dem Job — der Job gehört der Lane.
+- **Das Verdikt ist das der Lane.** Es landet auf ihrem Job und in ihrer Pane wie bei einem eigenen
+  Angebot; die Lane liest es auf `GET /api/self/suite-offer`, der Owner auf
+  `GET /api/slots/:id/suite-offer`, die MAIN auf `GET /api/self/lanes/:slot/suite-offer` (eine
+  Self-Credential passiert das Owner-Gate nicht, daher die GET-Hälfte der MAIN-Tür). Solange das
+  Angebot offen oder geclaimt ist, bindet es die Lane wie ihr eigenes: kein lokaler Lauf, Rückzug
+  über ihre `withdraw`-Tür.
+- **Ein offenes Angebot pro Slot, nicht pro Tür.** Ein zweites POST — auf welcher der drei Türen
+  auch immer — gibt das bestehende mit `existing: true` zurück.
+- **Ablehnungen, alle 409 mit Satz:** ein Slot ohne lebende Lane (kein `worktree`, kein `cwd`, der
+  Steward) auf beiden Türen; auf der MAIN-Tür zuerst eine LANE als Aufruferin (auch für ihren eigenen
+  Slot — die eigene Tür ist `/api/self/suite-offer`), dann eine Session ohne Program-Bindung
+  (`server.ts#boundProgramForMain`, dessen Wortlaut), dann eine Lane, deren `programId` nicht das
+  Program der MAIN ist. Ein unbekannter Slot ist **404**. Belegt in `e2e/lane-suite.ts` (LS.12).
+
 
 ## fleet-report — `POST /api/self/fleet-report`, `GET /api/self/fleet-report`
 
@@ -2781,9 +2860,11 @@ Benachrichtigung des entschärften Lane-Watches; der Report bleibt allein ein In
 erzeugt kein FleetEvent. `clarificationReceiverFor` bleibt für Fragen unverändert, weil eine
 Frage einen lebenden Antwortenden braucht.
 
-Nur wenn das genannte Program nicht aktiv ist oder die Lane kein Program trägt, gilt die bisherige
-Empfänger-Ableitung aus Watch-Evidenz beziehungsweise der Owner-Inbox-Rückfall. Dort bleiben die
-Ablehnungen exakt wie sie waren:
+Ist das genannte Program `complete`, geht der Report einer noch laufenden Lane direkt in die
+Owner-Operations-Inbox: `basis:„[Zitat entfernt]“`, `receiver:null`; `provenance.programId` bleibt die
+ursprüngliche Program-ID. Das gilt auch bei einem noch armierten Lane-Watch der früheren MAIN.
+Eine Program-lose Lane nutzt weiterhin Watch-Evidenz beziehungsweise den Owner-Inbox-Rückfall.
+Dort bleiben die Ablehnungen exakt wie sie waren:
 
 - `lane-watch evidence names multiple receiver occupants` — zwei verschiedene Watch-Occupants sind
   kein Empfänger, sondern ein Münzwurf. Bleibt wortgleich (`e2e/pins.ts`, B2).
@@ -3126,7 +3207,7 @@ curl -s -X POST http://<fleet-host>:<port>/api/fleet-report/<report-id>/accept \
 2026-09-09 an Report `4e330915`.** Während die Vorgängerin nach `succeed` noch in der Grace lebte,
 war ihre Zeile für die Nachfolgerin wegen des alten Empfänger-Tripels und für den Owner wegen des
 noch lebenden Slots zugleich 409; erst der Reap öffnete die Owner-Tür. Das bleibt richtig für
-`basis:"owner-inbox"` und für jede Lane, deren Program nicht aktiv ist: ihre Zeile bleibt an den
+`basis:"owner-inbox"` und für eine Lane ohne Program-Bindung: ihre Zeile bleibt an den
 damals abgeleiteten Principal beziehungsweise Occupant gebunden. Für `basis:"program"` ist dagegen
 `boundProgramForMain` der Empfänger: die neue MAIN liest und beurteilt dieselbe Program-Zeile sofort,
 auch solange der Vorgänger-Slot noch lebt. **Succession verliert ihre Beurteilbarkeit nicht mehr.**
@@ -3906,6 +3987,14 @@ Seit `server.ts#deliverMergeVerdict` den `actor` des Laufs kennt, folgt der Empf
   auch die MAIN-Pane hat Liveness-, blocked-screen- und Idle-Gate. Prosa in eine Pane ohne Agent
   dahinter ist ein Shell-Kommando.
 
+Ist ein nicht gelandetes Merge-Verdict wegen einer fehlenden MAIN eines aktiven oder gerade
+abgeschlossenen Programs `receiver-gone`, nennt `merge_verdict_undeliverable` die Eskalation.
+Eine eindeutig lebende, per Label erkannte Orchestratorin erhält einmal einen sofortigen Hinweis
+mit Branch, Verdict-Art, Lane-Slot und Program-ID. Der Hinweis zeigt auf den lesbaren Merge-Status
+und erteilt kein Recht; er ist weder ein Lane-Fallback noch ein neues Land-Urteil. Ohne eindeutige
+Orchestratorin steht `escalation none` in der Audit-Zeile. Weitere Verdict-Versuche wiederholen
+einen zugestellten Hinweis nicht.
+
 ### Die Identität ist sichtbar, bevor die Tür sie prüft (V1a)
 
 Sprosse 2 oben ist die einzige, die eine Session **an ihrer Identität** abweist — und genau dieser
@@ -4401,6 +4490,22 @@ antwortet vor allen Sperren 200 und schreibt nichts.
 der Owner die Produktarbeit bewusst beendet oder stillgelegt hat; ein laufendes `founding` bleibt
 409. Completion beendet eine vorhandene MAIN-Pane nicht automatisch — Pane-Retirement und
 Program-Lifecycle bleiben getrennte Owner-Entscheidungen.
+
+### Program abschließen — `POST /api/programs/:id/complete`
+
+Ohne Body oder mit `{}` schließt die Owner-Tür ein aktives Program nur, wenn keine offenen
+Pflichten mehr vorliegen. Sonst antwortet sie 409 mit `obligations`: `lanes` (laufende Slot-IDs
+mit dieser `programId`), `clarifications` (offen oder `send-uncertain`), `attention` (offen oder
+`send-uncertain`), `reports` (unbeurteilte Program-Reports) und `watches` (armiert von der exakt
+gebundenen MAIN-Belegung). Jede Liste enthält die IDs der betreffenden Zeilen; ungelesene
+Program-Inbox-Einträge zählen nicht als Sperre. Das Program bleibt `active`.
+
+`{"force":true}` schließt trotz dieser Pflichten. Die 200-Antwort trägt dieselbe
+`obligations`-Liste; eine Audit-Zeile `program_complete_forced` hält Program-ID und Liste fest.
+Weitere Body-Felder oder ein anderer `force`-Wert sind 400. Ein bereits abgeschlossenes Program
+antwortet weiterhin idempotent 200. Nach einem erzwungenen Abschluss kann eine noch laufende
+Lane ihren Report an die Owner-Inbox filen; ihre `provenance.programId` bleibt erhalten. Der
+Rückfrage-Weg wird dadurch nicht geändert.
 
 **Die Nachfolge hat ein zweites Gate.** Das generische bleibt unverändert (HANDOFF.md existiert, ist
 sauber, jünger als die Session). Für `game-maker` wird zusätzlich die COMMITTETE HEAD-Fassung

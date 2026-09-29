@@ -1377,14 +1377,17 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
 
 - Deckel: **`PROGRAM_MAX_RELEASED` freigegebene, noch nicht gestartete Zeilen pro Program**
   (`FLEET_PROGRAM_MAX_RELEASED`, Default 5). Gezählt werden ausschließlich `queued`-Zeilen des
-  Programs; `sent`-Zeilen sind Lanes und bereits doppelt durch die zwei Dispatch-Deckel gebunden.
+  Programs ohne Hold; eine gehaltene `queued`-Zeile belegt bis zum Aufheben des Holds keinen Platz.
+  `sent`-Zeilen sind Lanes und bereits doppelt durch die zwei Dispatch-Deckel gebunden.
   Der Deckel bindet QUEUE-TIEFE und sonst nichts — und **nur unter der Freigabe-Politik `manual`**
   (Abschnitt unten): unter `card-valid`/`all` ist die freigegebene Menge die Queue des Programs selbst.
 - **Auf einer GEHALTENEN `queued`-Zeile** hebt die Route den Hold auf und schreibt sonst nichts:
   `{ok:true, sessionIdMatch, lifted:"hold", task:{…}}`, ein `task_hold`-Audit-Event
   (`… lifted grund=<der aufgehobene Grund, JSON, oder null>`). Auf einer gehaltenen `pending`-Zeile
   ist es die normale Freigabe — `releaseTask` hebt jeden Hold mit auf, und das `task_release`-Event
-  endet dann auf ` hold-lifted grund=…`.
+  endet dann auf ` hold-lifted grund=…`. Unter `manual` misst auch das Aufheben eines `queued`-Holds
+  den Deckel: bei vollem Deckel 409, der Hold bleibt gesetzt und die Fehlermeldung zählt nur
+  nicht gehaltene Zeilen.
 - **Nur mit gültiger Karte (seit 2026-09-18, Zeile 4ae22c7a, `server.ts#releaseCardRefusal`).** Der
   Startplan liest die Reihenfolge einer Zeile AUSSCHLIESSLICH aus `card.after`; K3 (1da3b56c) wurde
   ohne Karte freigegeben und startete 13 min nach dem Filen, sein `NACH a8bbd1af` stand nur in der
@@ -1497,7 +1500,9 @@ aus dem Checkout, `slot`/`at` aus dem Token. **Ein Hold ohne Grund wird angenomm
 2026-09-17 setzten zwei MAIN-Slots 42 Holds in 50 min ohne Grund, und einen Tag später konnte
 niemand sagen, was sie aufhebt (`docs/messungen/2026-09-18-queue-durchsatz.md` §b). Idempotent: ein
 zweiter Aufruf schreibt nur einen NEUEN Grund (Nachtrag, `at` bleibt), sonst nichts. Aufheben:
-`POST /api/self/tasks/:id/release` (oder der `▸ queue` des Owners). Nicht-Lane-only wie `release`.
+`POST /api/self/tasks/:id/release` (oder der `▸ queue` des Owners). Eine gehaltene `queued`-Zeile
+entlastet den `manual`-Freigabedeckel; das Aufheben über die Self-Route braucht einen freien Platz.
+Nicht-Lane-only wie `release`.
 
 ```
 curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/hold \

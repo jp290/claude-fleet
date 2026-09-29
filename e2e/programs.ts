@@ -7893,6 +7893,32 @@ export async function run(ctx: Ctx): Promise<void> {
       self: policySelf.status, underPolicy: underPolicy.status, row: underPolicyRow, cleared: policyCleared.status, release: programAfter?.release }));
   // back to the state the S5 section below expects: nothing of this probe left queued in P
   await post(`/api/tasks/${holdPending}/unqueue`, {});
+  const capHeldId = capIds[0]!;
+  const capNextId = capIds.at(-1)!;
+  const capHold = await selfHold(successorToken, capHeldId, { grund: "vorgezogene Arbeit" });
+  const capNext = await selfRelease(successorToken, capNextId);
+  check("Schnitt 3 cap: holding one of five queued rows frees one release place",
+    capHold.status === 200 && capNext.status === 200
+      && (await holdRow(capHeldId))?.status === "queued" && !!(await holdRow(capHeldId))?.hold
+      && (await holdRow(capNextId))?.status === "queued" && (await queuedOfMain()) === RELEASE_CAP + 1,
+    JSON.stringify({ hold: capHold.status, next: capNext.status, held: await holdRow(capHeldId), nextRow: await holdRow(capNextId) }));
+  const capLiftFull = await selfRelease(successorToken, capHeldId);
+  const capLiftFullText = await capLiftFull.text();
+  check("Schnitt 3 cap: lifting the queued hold at a full cap is 409, counts only unheld rows, and keeps the hold",
+    capLiftFull.status === 409
+      && capLiftFullText.includes(`release cap reached (${RELEASE_CAP}/${RELEASE_CAP} released rows not yet started)`)
+      && !!(await holdRow(capHeldId))?.hold,
+    JSON.stringify({ lift: capLiftFull.status, text: capLiftFullText, held: await holdRow(capHeldId) }));
+  if (capNext.status === 200) {
+    await post(`/api/tasks/${capNextId}/unqueue`, {});
+    const capLiftAfterSpace = await selfRelease(successorToken, capHeldId);
+    check("Schnitt 3 cap: lifting the queued hold succeeds after a place opens",
+      capLiftAfterSpace.status === 200 && !(await holdRow(capHeldId))?.hold
+        && (await queuedOfMain()) === RELEASE_CAP,
+      JSON.stringify({ lift: capLiftAfterSpace.status, held: await holdRow(capHeldId), queued: await queuedOfMain() }));
+  } else {
+    await post(`/api/tasks/${capHeldId}/queue`, {});
+  }
 
   // === S5 (b8cb3c75) · THE CARD-SURFACE CONFIRMATION AS A BATCH ================================
   // Same live binding, same REPO. The rows are filed through the owner door WITH a card (S6), so

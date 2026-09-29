@@ -14312,12 +14312,15 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // last lock and the ▸ queue button) — one sentence for one question, wherever it is asked.
   if (t.kind !== "auftrag")
     return json({ error: `a ${t.kind} is advisory — the dispatcher never runs this` }, 409);
+  const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued" && !x.hold && !x.variants).length;
   // (4) Only pending → queued is a RELEASE. A `queued` row is already released (by whichever door),
   // a `sent` row is running, and a terminal row is history; naming the status the caller actually
   // hit is what lets a nervous retry read its own answer instead of a generic refusal.
   // ONE EXCEPTION, and it is the hold's counter-act rather than a second release: a HELD queued row is
   // released already, so this door lifts the hold and writes nothing else (TaskHold).
   if (t.status === "queued" && t.hold) {
+    if (programReleasePolicy(t) === "manual" && openReleased >= PROGRAM_MAX_RELEASED)
+      return json({ error: `program release cap reached (${openReleased}/${PROGRAM_MAX_RELEASED} released rows not yet started) — let the tick start one first` }, 409);
     const lifted = t.hold.grund;
     t.hold = undefined;
     audit("task_hold", s.id, `${t.id} program=${program.id} lifted grund=${JSON.stringify(lifted)}`);
@@ -14381,7 +14384,6 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // group of 2 refuse 6/5). Measured 2026-09-18: a `>` here let the 6th release of a 5-cap
   // through (ACP-16, 200 instead of 409) — part 1's rewrite of this line lost the boundary.
   const groupVariants = t.variants ? variantsOfGroup(t).filter((v) => v.status === "pending").length : 0;
-  const openReleased = tasks.filter((x) => x.programId === program.id && x.status === "queued" && !x.variants).length;
   // E5 · A WAVE PARTNER OF AN ALREADY-RELEASED ROW IS NOT A NEW WAVE (2026-09-22). A wave starts
   // only when EVERY member of it is released (the plan's `unreleased` verdict — "a partner that is
   // not released holds the whole wave"), so a released row whose partner is still pending starts

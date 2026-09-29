@@ -8840,6 +8840,65 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 }
 
 // ================================================================================================
+// SECTION S10d — THE SUITE WAY IS WRITTEN WHERE EVERY HARNESS READS (2026-09-29, owner: „[Zitat entfernt]“
+// ). Codex and Pi
+// load AGENTS.md and nothing else of this repo's rules; §S10c made every recommended run offerable,
+// and AGENTS.md §Verify still knew neither `modules`, nor the wait numbers' field, nor the jobs door —
+// the host rules lived only in the git-ignored overlay. Three pairs with no compiler between halves:
+//   (a) the doors and fields §Verify names exist under those names: the offer door, the served
+//       `waitPolicy` fields it quotes (server.ts#SuiteOfferWait) and `localProof.offerBody`, which
+//       server.ts#laneLocalProof must actually serve, from `modules`, only while a preview can be owed;
+//   (b) every `"cmd":"…"` §Verify teaches for the jobs door is a HELPER_CMD_ALLOW key — a body the
+//       door refuses with 400 is a copyable command that cannot work;
+//   (c) every land-gate suite, and the MAIN's full preview, is among them, so a suite added to the
+//       gate is a line added here too.
+// ================================================================================================
+{
+  const RULE_SUITE_WAY = "AGENTS.md §Verify carries the suite way every harness reads: offer with modules, waitPolicy, the jobs door";
+  const verifySec = /\n## Verify\n([\s\S]*?)(?=\n## |$)/.exec(read("AGENTS.md"))?.[1] ?? null;
+  if (verifySec === null) pin(`${RULE_SUITE_WAY} — PROBE: AGENTS.md has a '## Verify' section`, false, "not found");
+  else {
+    const flat = verifySec.replace(/\s+/g, " ");
+    const waitFields = [...flat.matchAll(/`waitPolicy\.([a-zA-Z]+)`/g)].map((m) => m[1]);
+    const iface = /interface SuiteOfferWait \{([^}]*)\}/.exec(server)?.[1] ?? "";
+    const served = [...iface.matchAll(/([a-zA-Z]+):/g)].map((m) => m[1]);
+    const phantom = waitFields.filter((f) => !served.includes(f));
+    const names: [string, boolean][] = [
+      ["offer door", flat.includes("`POST /api/self/suite-offer`")],
+      ["copyable offer curl", /curl -s -X POST -H "x-fleet-self-token: \$FLEET_SELF_TOKEN"[^\n]*\n[^\n]*"\$FLEET_SELF_URL\/api\/self\/suite-offer"/.test(verifySec)],
+      ["localProof.modules", flat.includes("`localProof.modules`")],
+      ["localProof.offerBody", flat.includes("`localProof.offerBody`")],
+      ["withdraw", flat.includes("`POST /api/self/suite-offer/withdraw`")],
+      ["waitPolicy unclaimed+held", waitFields.includes("unclaimedMs") && waitFields.includes("heldMs") && phantom.length === 0],
+      ["jobs door", flat.includes("`POST /api/self/jobs`")],
+      ["lock-pid ban", flat.includes("`/tmp/fleet-e2e.lock/pid`") && flat.includes("`suiteLock.pid`")],
+      ["runner + socket", flat.includes("`pgrep -P <pid>`") && flat.includes("`tmux -L <SOCK><pid> kill-server`")],
+    ];
+    const absent = names.filter(([, ok]) => !ok).map(([n]) => n);
+    pin(`${RULE_SUITE_WAY} — (a) the doors, fields and abort steps are named`, absent.length === 0,
+      `missing=[${absent}] waitPolicy cited=[${waitFields}] served=[${served}]`);
+
+    const proofFn = serverU.span("function withOfferBody(", "\n}")?.text ?? null;
+    const laneFn = serverU.span("async function laneLocalProof(", "\n}")?.text ?? null;
+    pin(`${RULE_SUITE_WAY} — (a) server.ts#laneLocalProof serves offerBody, built from modules, absent when no preview can be owed`,
+      proofFn !== null && laneFn !== null
+        && /if \(p\.isolatedPreview === false\) return p;/.test(proofFn)
+        && /offerBody: p\.modules \? \{ modules: p\.modules \} : \{\}/.test(proofFn)
+        && /return withOfferBody\(localProofFor\(/.test(laneFn),
+      proofFn === null || laneFn === null ? `withOfferBody=${proofFn !== null} laneLocalProof=${laneFn !== null}`
+        : `gated=${/isolatedPreview === false/.test(proofFn)} fromModules=${/p\.modules \?/.test(proofFn)} wired=${/withOfferBody\(localProofFor/.test(laneFn)}`);
+
+    const cmds = [...flat.matchAll(/"cmd":"([^"]+)"/g)].map((m) => m[1]);
+    const refused = cmds.filter((c) => !HELPER_CMD_ALLOW[c] || !helperCmdCheck(c).ok);
+    pin(`${RULE_SUITE_WAY} — (b) every jobs-door cmd it teaches is a HELPER_CMD_ALLOW key`,
+      cmds.length > 0 && refused.length === 0, `taught=[${cmds}] refused=[${refused}]`);
+    const untaught = [...gateSuites.map((g) => `./${g}`), "./e2e-isolated.sh"].filter((c) => !cmds.includes(c));
+    pin(`${RULE_SUITE_WAY} — (c) every land-gate suite and the MAIN's full preview is taught as a jobs-door cmd`,
+      gateSuites.length >= 3 && untaught.length === 0, `gate=[${gateSuites}] untaught=[${untaught}]`);
+  }
+}
+
+// ================================================================================================
 // SECTION S11 — HELPER PRESENCE HAS ONE SOURCE. "Is that machine there?" is answered in three
 // places now — the owner's dot, /api/self/gate, and the door that decides whether a lane's preview
 // offer is minted at all — and before this cut two of them were going to answer it from two

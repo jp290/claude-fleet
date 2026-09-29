@@ -72,6 +72,15 @@ Vorschau?": `true` genau dann, wenn IRGENDEIN Gerät im selben Fenster in seinem
 Feature `lane-suite-modules` gemeldet hat (`server.ts#helperTakesModules`) — nicht nur das
 zuletzt gehörte. Es folgt also aus `online`, nie umgekehrt.
 
+**`localProof.offerBody` — der fertige Body für `POST /api/self/suite-offer`** (seit 2026-09-29).
+`server.ts#laneLocalProof` legt ihn neben `localProof`s übrige Felder, solange eine Vorschau
+geschuldet sein KANN (`isolatedPreview` ist `true` oder `"self-assess"`): `{}` ist der volle Lauf,
+`{"modules":[…]}` der eingeengte — dieselbe Liste wie `localProof.modules`, nie eine zweite
+Rechnung. Er ist kein Urteil: ob der Lauf geschuldet ist, sagt `isolatedPreview` samt der Regel in
+`AGENTS.md` §Verify; der Body erspart nur das Zusammensetzen. Er fehlt bei `isolatedPreview: false`
+(auch in jedem Fremdrepo, `steps: []`) und mit `localProof: null`. Ein eingeengter Body braucht
+`helper.takesModules`, sonst antwortet die Tür `offer: null` (§suite-offer).
+
 ## autos — `POST /api/self/autos`
 
 Use them to schedule a future check-in on yourself, e.g. right before you'd otherwise go idle waiting on
@@ -2403,7 +2412,8 @@ prüft es mit derselben Entscheidung, die der Runner drüben fährt (`suite-modu
 → `#selectModules`), VOR dem `existing`-Zweig und bevor eine Zeile entsteht. Ein Nicht-Array, eine
 leere Liste oder ein unbekannter Name → **400** mit Feldname und Modulname, keine Zeile. Das Angebot
 trägt die Liste dedupliziert in Runner-Reihenfolge. Ohne `modules` — auch ein POST ganz ohne
-JSON-Body — ist es der volle Lauf wie bisher.
+JSON-Body — ist es der volle Lauf wie bisher. Den passenden Body serviert `/api/self/gate` fertig
+als `localProof.offerBody` (§gate).
 
 - **Nur ein Daemon, der es kann, sieht den Job.** Ein eingeengter Job wird ausschließlich einem
   Gerät gelistet, gegeben und geweckt, dessen letzter Heartbeat `features:["lane-suite-modules"]`

@@ -5720,7 +5720,18 @@ async function laneBaseRef(s: Slot): Promise<string | null> {
 // full chain. An EMPTY list is the opposite statement and is reached only through the repo lock
 // below — "there is nothing of this chain to run here" — and it always carries the `note` that
 // says so. The authoritative land gate does not call this helper.
-async function laneLocalProof(s: Slot): Promise<LocalProof | null> {
+// THE READY OFFER BODY (2026-09-29, owner: every worker of every harness must know the suite way).
+// `isolatedPreview` and `modules` already said WHICH preview; the JSON the offer door reads was still
+// assembled by hand, and its shape stood only in docs/self-api.md, which a Codex/Pi lane never loads.
+// Served while a preview CAN be owed (`isolatedPreview` true or "self-assess") — the flag decides,
+// the body only saves the typing: `{}` is the full run, `{modules}` the narrowed one, built from the
+// same list the classifier served, so a lane posting it verbatim cannot name a module it was not told.
+type LaneLocalProof = LocalProof & { offerBody?: { modules?: string[] } };
+function withOfferBody(p: LocalProof): LaneLocalProof {
+  if (p.isolatedPreview === false) return p;
+  return { ...p, offerBody: p.modules ? { modules: p.modules } : {} };
+}
+async function laneLocalProof(s: Slot): Promise<LaneLocalProof | null> {
   if (!s.cwd || !s.worktree) return null;
   // THE REPO IS ASKED BEFORE THE DIFF, because the answer does not depend on the diff. Every name
   // in LOCAL_PROOF_STEPS is a line of THIS repo's chain — `bun e2e/pins.ts` is a file only this
@@ -5751,7 +5762,7 @@ async function laneLocalProof(s: Slot): Promise<LocalProof | null> {
   if (!base) return null;
   const changed = await gitRead(s.cwd, "diff", "--no-renames", "--name-only", `${base}...HEAD`);
   if (changed.code !== 0) return null;
-  return localProofFor(changed.out.split("\n").filter(Boolean));
+  return withOfferBody(localProofFor(changed.out.split("\n").filter(Boolean)));
 }
 // --- the slot's commits, for the review window's left column ---
 // ONE list, used twice: the client renders it, and the per-commit diff route checks a requested

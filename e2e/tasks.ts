@@ -12212,7 +12212,8 @@ export async function run(ctx: Ctx): Promise<void> {
       k2Ctl.status === 0 && k2Slot?.model === SONNET.model && k2Slot.effort === SONNET.effort && k2Slot.harness === null,
       JSON.stringify({ exit: k2Ctl.status, slot: k2Slot, stdout: k2Ctl.stdout.trim().slice(0, 600), stderr: k2Ctl.stderr.trim() }));
     check("(kr2) ctl.sh dispatch prints the harness/model/effort the lane started with, and where each came from",
-      k2Ctl.stdout.includes(`  spawn harness=claude (default) model=${SONNET.model} (card) effort=${SONNET.effort} (card)`),
+      k2Ctl.stdout.includes("  NOTE: the row names harness claude (card) — if FLEET_HARNESS_AUTOMATION declines it")
+      && k2Ctl.stdout.includes(`  spawn harness=claude (default) model=${SONNET.model} (card) effort=${SONNET.effort} (card)`),
       k2Ctl.stdout.trim().slice(0, 600));
     await kClose(k2SlotId, k2?.id);
 
@@ -12558,6 +12559,8 @@ export async function run(ctx: Ctx): Promise<void> {
     interface MRow {
       id: string; text: string; source: string; kind: string; status: string;
       programId?: string; repo?: string | null; releasedBy?: string; slot?: number | null;
+      spawn?: { harness: string | null; model: string | null; effort: string | null };
+      card?: { valid?: boolean; rolle?: { harness: string; model: string; effort: string } };
     }
     const mState = (): MState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as MState;
     const mSess = async (): Promise<MSlot[]> =>
@@ -12632,6 +12635,21 @@ export async function run(ctx: Ctx): Promise<void> {
       mSlot >= 0 && !!mOpen?.ok && /^[0-9a-f]{32}$/.test(mToken)
         && !!mLive?.cwd && !mLive.worktree && mBoundSlot === mSlot,
       `slot=${mSlot} open=${mOpen?.status} token=${mToken.length} cwd=${mLive?.cwd} bound=${mBoundSlot}`);
+
+    // (kr6) The MAIN's create door uses the same card-role adoption as the owner door in (kr1).
+    // Removing adoptSpawnFromCard(t) from createTaskForMain leaves this stored row without spawn.
+    const mRole = { harness: "codex", model: "gpt-6-sol", effort: "high" };
+    const mRoleRes = await mFile(mToken, { text: "KARTEN-ROLLE kr6: AGENTS.md bekommt eine Zeile.", kind: "auftrag",
+      card: { ziel: "AGENTS.md bekommt eine Zeile", rolle: mRole,
+        surface: { files: ["AGENTS.md"], symbols: [] }, done: "die Zeile steht in AGENTS.md",
+        verify: "bun e2e/pins.ts", verboten: [] } });
+    const mRoleId = ((await mRoleRes.json()) as { task?: { id: string } }).task?.id ?? "";
+    const mRoleRow = await mRow(mRoleId);
+    check("(kr6) POST /api/self/tasks with a valid card role: Task.spawn carries the card's harness/model/effort at birth",
+      mRoleRes.status === 200 && mRoleRow?.card?.valid === true
+      && JSON.stringify(mRoleRow.card.rolle) === JSON.stringify(mRole)
+      && JSON.stringify(mRoleRow.spawn) === JSON.stringify(mRole),
+      `${mRoleRes.status} ${JSON.stringify({ card: mRoleRow?.card, spawn: mRoleRow?.spawn })}`);
 
     // (1) THE ACT ITSELF: one pending row, the program from the BINDING, the repo from the
     // CHECKOUT, no releasedBy, and one greppable trail line naming both ids.

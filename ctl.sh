@@ -1086,7 +1086,8 @@ const lines = [`task ${want}  kind=${row.kind}  status=${row.status}  repo=${rep
 // Two plain-language notes the route itself will not give: an advisory row has no motor at all, and
 // a row whose harness the automation policy declines can ONLY be started through this door.
 if (row.kind !== "auftrag") lines.push(`  NOTE: a ${row.kind} is advisory — the dispatcher never runs this, and this door will refuse it too`);
-if (row.spawn?.harness) lines.push(`  NOTE: the row names harness ${row.spawn.harness} — if FLEET_HARNESS_AUTOMATION declines it, the unattended tick never starts this row and this door is its only start path`);
+const namedHarness = row.spawn ? row.spawn.harness : row.card?.rolle?.harness;
+if (namedHarness) lines.push(`  NOTE: the row names harness ${namedHarness}${row.spawn ? "" : " (card)"} — if FLEET_HARNESS_AUTOMATION declines it, the unattended tick never starts this row and this door is its only start path`);
 if (held && process.env.CTL_FORCE !== "1") {
   lines.push(`  REFUSED: ${held.count}/${held.cap} lanes open (${held.source}) — land or close one, or pass --force`);
   out({ ok: false, task: row, openLanes: held.count, cap: held.cap, refused: held.source }, lines);

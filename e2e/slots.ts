@@ -111,6 +111,45 @@ export async function run(): Promise<void> {
       JSON.stringify(legacy.slots.map((s) => s.id)));
   }
 
+  {
+    const deadSlot = 1;
+    let lane: { slot?: number; cwd?: string } | null = null;
+    try {
+      const opened = await post(`/api/slots/${deadSlot}/open`, { cwd: REPO });
+      check("tmux enumeration setup: the dead-pane fixture opened", opened.ok, `${opened.status}`);
+      await tmuxOut("set-option", "-t", `=s${deadSlot}`, "remain-on-exit", "on");
+      await tmuxOut("send-keys", "-t", `s${deadSlot}`, "exit", "Enter");
+      let dead = await tmuxOut("display-message", "-p", "-t", `s${deadSlot}`,
+        "#{pane_dead}\t#{pane_current_path}");
+      for (let i = 0; i < 100 && !(dead.code === 0 && dead.out.trimEnd() === "1"); i++) {
+        await Bun.sleep(50);
+        dead = await tmuxOut("display-message", "-p", "-t", `s${deadSlot}`,
+          "#{pane_dead}\t#{pane_current_path}");
+      }
+      check("tmux enumeration setup: remain-on-exit leaves a dead pane without an absolute path",
+        dead.code === 0 && dead.out.trimEnd() === "1", JSON.stringify(dead));
+      await restartSrv();
+      const response = await post("/api/lanes", { repo: REPO });
+      const body = await response.json() as { slot?: number; cwd?: string; error?: string };
+      if (response.ok) lane = body;
+      check("tmux enumeration: an unknown pane path does not block a lane on another slot",
+        response.ok && typeof body.slot === "number" && body.slot !== deadSlot,
+        `${response.status} ${JSON.stringify(body)}`);
+      const occupied = await (await get("/api/sessions")).json() as
+        { slots: { id: number; cwd: string | null }[] };
+      const stillDead = await tmuxOut("display-message", "-p", "-t", `s${deadSlot}`,
+        "#{pane_dead}\t#{pane_current_path}");
+      check("tmux enumeration: the unknown dead slot stays occupied and its pane is never recycled",
+        occupied.slots.find((s) => s.id === deadSlot)?.cwd === REPO
+          && stillDead.code === 0 && stillDead.out.trimEnd() === "1",
+        JSON.stringify({ slot: occupied.slots.find((s) => s.id === deadSlot), pane: stillDead }));
+    } finally {
+      if (lane?.slot) await post(`/api/slots/${lane.slot}/kill`, {});
+      if (lane?.cwd) spawnSync("git", ["worktree", "remove", "--force", lane.cwd], { cwd: REPO });
+      await post(`/api/slots/${deadSlot}/kill`, {});
+    }
+  }
+
   // --- the harness catalogue's commands field (the ⌘-overlay's fact layer, 2026-09-19). The card's
   // evidence rule made mechanical: the SETS below are the documented bare commands (claude: the
   // vendor's command reference on code.claude.com; pi family: the installed pi-coding-agent's

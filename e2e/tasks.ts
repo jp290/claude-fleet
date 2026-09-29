@@ -2030,6 +2030,7 @@ export async function run(ctx: Ctx): Promise<void> {
         FLEET_BACKLOG_NUDGE_IDLE_MS: "100",
         FLEET_BACKLOG_COOLDOWN_MS: String(COOLDOWN_MS),
         FLEET_BACKLOG_NUDGE_MAX: "2",
+        FLEET_DELIVERY_BUNDLE_SEC: "1",
       });
 
       const loaded = await sessions();
@@ -2167,6 +2168,11 @@ export async function run(ctx: Ctx): Promise<void> {
         `A(s${mainA}).lastOutput=${aOut} B(s${mainB}).lastOutput=${bOut} delta=${bOut - aOut}ms`
           + ` settle=${A_SETTLE_MS}ms attempts=${attempts}${settleNote ? ` last=${settleNote}` : ""}`);
 
+      const bundleRows = (): { event?: string; path?: string; slot?: number; deliveryClass?: string }[] =>
+        readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+          .map((line) => JSON.parse(line) as { event?: string; path?: string; slot?: number; deliveryClass?: string })
+          .filter((row) => row.event === "delivery_bundle_queued" && row.path === "backlog-nudge");
+      const bundleFrom = bundleRows().length;
       await post("/api/autos/quiet", { start: null });
 
       // INSTRUMENT (2026-09-16, MAIN-Entscheid zu 5aeaa29d). WHICH of the two mains this round picks
@@ -2197,9 +2203,6 @@ export async function run(ctx: Ctx): Promise<void> {
       }
       // the three polls around the one that saw it — the ordering the round actually sorted on
       const nudgeWindow = samples.slice(-3).join(" | ");
-      // Remove B before another round: this lets the next full tick prove A's same-set marker
-      // without legitimately delivering the same backlog to a different session in a later round.
-      if (first.length) await post(`/api/slots/${mainB}/kill`, {});
       check("backlog nudge sends exactly one slot in the round, choosing the longest-idle main",
         first.length === 1 && first[0].slot === mainA
         && !first.some((p) => p.slot === mainB || p.slot === stewardMain || p.slot === awaitingMain
@@ -2222,8 +2225,12 @@ export async function run(ctx: Ctx): Promise<void> {
         firstText.slice(-400));
 
       await Bun.sleep(600); // > one tick, < cooldown
-      check("backlog nudge sends the same session the unchanged open set exactly once",
-        (await nudges()).length === 1, JSON.stringify((await nudges()).map((p) => p.slot)));
+      const reserved = bundleRows().slice(bundleFrom);
+      check("backlog nudge sends the unchanged open set to exactly one session even after bundle flush",
+        (await nudges()).length === 1 && reserved.length === 1
+          && reserved[0].slot === mainA && reserved[0].deliveryClass === "buendelbar",
+        JSON.stringify({ prompts: (await nudges()).map((p) => p.slot), bundles: reserved }));
+      await post(`/api/slots/${mainB}/kill`, {});
 
       const fifth = ((await (await post("/api/tasks", {
         text: "backlog-fifth-new-row — re-arms after cooldown", queue: false,
@@ -8720,7 +8727,13 @@ export async function run(ctx: Ctx): Promise<void> {
         && JSON.stringify(w3OkBody.returned) === JSON.stringify([w3Follower])
         && w3OkBody.head === w3Head,
         `${w3Ok.status} ${JSON.stringify(w3OkBody)}`);
-      const w3BackRow = await wDigest(w3Follower);
+      let w3BackRow = await wDigest(w3Follower);
+      for (let i = 0; i < 100 && !w3BackRow?.note?.startsWith("waiting: dispatcher stopped"); i++) {
+        await Bun.sleep(50);
+        w3BackRow = await wDigest(w3Follower);
+      }
+      check("(w3) setup: the stopped dispatcher has inspected the split row",
+        w3BackRow?.note?.startsWith("waiting: dispatcher stopped") === true, JSON.stringify(w3BackRow));
       const w3KeptRow = await wDigest(w3Head);
       check("(w3) the returned row is `queued` — not `pending` — and carries the lane's reason in its note",
         w3BackRow?.status === "queued" && (w3BackRow as { slot?: number | null }).slot == null

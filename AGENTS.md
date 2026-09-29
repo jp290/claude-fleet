@@ -262,7 +262,10 @@ checkout's untracked state uses `pinSource` (`SRC-FAIL`, printed but uncounted o
 One check, one claim; the detail names the conjunct that died. An exactness invariant carries no
 tolerance unless one code sentence names the clock it forgives. A synthetic timeline lives as a
 table (t | event | exclusive owner) beside its literals. A policy exception or dual-mode filter is
-a NAMED predicate (`suiteRestartedSrv`), never a shape proxy (`results.length > N`).
+a NAMED predicate (`suiteRestartedSrv`), never a shape proxy (`results.length > N`). A source
+anchor that counts code strips whole-line comments first (the `fleet-e2e-security.ts` §7 filter):
+a commented-out line still satisfies an exact string anchor, so the check passes a line that is
+gone — count over the filtered code and let a mutation prove the check can fail.
 
 ## If you are a Codex or Pi lane
 

@@ -1360,6 +1360,31 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       prefix === null ? "no DELIVERY_HEADER_PREFIX in server.ts" : `prefix=${JSON.stringify(prefix)} in-contract=${defined}`);
   }
 
+  // THE OWNER HEAD (Sinnpruefung Buendel 5b): path=owner is the one head source without a position
+  // sentence and without `path=` — the route is shared by ctl.sh send, the Orchestratorin and the
+  // MAINs, so the head names the credential and the slot, never a speaker or an errand. Every other
+  // path keeps the long form. The contract must define BOTH forms, or claude reads one it was never told.
+  // BREAKS IF: the owner branch gets its sentence or path back, a speaker word enters DELIVERY_SOURCE.owner,
+  // another path loses its long form, or AGENTS.md §Hard invariants defines only one form.
+  const RULE_OWNER_HEAD = "the owner delivery head is the credential and the slot only; AGENTS.md defines both forms";
+  if (agents === null) skip(RULE_OWNER_HEAD, "no AGENTS.md in this tree");
+  else {
+    const headFn = /function deliveryHeader\([^\n]*\{\n([\s\S]*?)\n\}\n/.exec(server)?.[1] ?? "";
+    const ownerLine = /if \(path === "owner"\) return (`[^`\n]*`);/.exec(headFn)?.[1] ?? "";
+    const longLine = /\n  return (`[^`\n]*`);\s*$/.exec(headFn)?.[1] ?? "";
+    const ownerSource = /^\s*"owner":\s*"([^"]*)",\s*$/m.exec(/const DELIVERY_SOURCE:[^\n]+ = \{([\s\S]*?)\n\};/.exec(server)?.[1] ?? "")?.[1] ?? null;
+    const hardInv = /\n### Hard invariants\n([\s\S]*?)(?=\n### |\n## |$)/.exec(agents)?.[1] ?? "";
+    const flat = hardInv.replace(/\s+/g, " ");
+    const ownerOk = ownerLine === "`${DELIVERY_HEADER_PREFIX}${source} · Slot ${slot}] `"
+      && ownerSource === "Owner-Credential" && !/path=|deliveryMeaning|Sprecher|Board|OWNER/.test(ownerLine);
+    const longOk = longLine.includes("path=${path}") && longLine.includes("deliveryMeaning(path, s)");
+    const definesBoth = flat.includes("`[fleet-zustellung · <source> · path=<SendPath> · Slot <n> · <position sentence>]`")
+      && flat.includes("`[fleet-zustellung · Owner-Credential · Slot <n>]`")
+      && flat.includes("`server.ts#DELIVERY_MEANING`") && flat.includes("DELIVERY_MEANING_BY_ROLE");
+    pin(RULE_OWNER_HEAD, ownerOk && longOk && definesBoth,
+      `ownerLine=${ownerLine || "none"} ownerSource=${JSON.stringify(ownerSource)} longForm=${longOk} contractDefinesBoth=${definesBoth}`);
+  }
+
   const sourceBody = /const DELIVERY_SOURCE:[^\n]+ = \{([\s\S]*?)\n\};/.exec(server)?.[1] ?? "";
   const meaningBody = /const DELIVERY_MEANING:[^\n]+ = \{([\s\S]*?)\n\};/.exec(server)?.[1] ?? "";
   const entries = (body: string): Map<string, string> => new Map(

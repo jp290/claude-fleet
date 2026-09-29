@@ -4531,9 +4531,15 @@ berechnet der Watch-Tick die Kante aus der neuesten Session-Usage erneut; ein We
 Claude-Cache-Stufe bleibt nicht am alten Timer haengen.
 
 Ein unversuchtes Buendel loest eine Program-MAIN- oder Orchestratorin-Rolle erst beim Ausliefern
-auf; slot-adressierte Nachrichten gehen an den aktuellen Occupant des Slots. Eine Abweisung vor
-dem Paste laesst den Inhalt im Buendel. Ein bereits als `send-uncertain` persistierter Versuch
-bleibt an seinen `openedAt`-Occupant gebunden und wird nicht umgeleitet. `send` im Audit nennt
+auf. Eine Slot-Adresse bleibt an den `openedAt`-Insassen beim Einreihen gebunden: endet er,
+verwirft der Flush den Eintrag mit `delivery_bundle_dropped`, auch wenn der Slot inzwischen neu
+belegt ist oder eine sofortige Zustellung das Buendel ausloest. Ein leerer Slot wird beim naechsten
+Watch-Tick verworfen. Die Insassen-Pruefung erfolgt nach den Zustell-Gates und vor dem Paste;
+ein Report-Entscheid endet dabei als `worker-gone`, ein gruenes Slot-Watch-Event als
+`receiver-gone`. Rollen-Adressen behalten ihre Umleitung und ihr 30-s-Fenster bei Abwesenheit.
+Eine abgewiesene Zustellung an den lebenden Insassen bleibt im Buendel. Ein bereits als
+`send-uncertain` persistierter Versuch bleibt an seinen `openedAt`-Insassen gebunden.
+`send` im Audit nennt
 `deliveryClass`, `ttlSec`, `ttlQuelle` (`1h`, `5m`, `codex`, `unknown`) und `cache` (`warm` oder
 `kalt`); `delivery_bundle_*` trennt Queue, Send, Abweisung, Umleitung und Drop.
 Der Flush prueft die Gates fuer den aktuellen Empfaenger erneut, mit der strengsten Policy aller

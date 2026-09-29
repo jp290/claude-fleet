@@ -23,7 +23,7 @@ import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, p
 import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
-import { pendingSettledBy } from "./pendingsend";
+import { pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
 import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
@@ -1485,8 +1485,11 @@ class Pane {
     for (const b of e.blocks) {
       if (b.t === "text") {
         this.toolGroup = null; // a message ends the current work block
-        const text = e.role === "user" ? unwrapPasted(b.text) : b.text;
-        if (e.role === "user") this.settlePending(text);
+        const raw = e.role === "user" ? unwrapPasted(b.text) : b.text;
+        if (e.role === "user") this.settlePending(raw);
+        // Fleet's typed delivery head is transport provenance, not something the owner wrote: it rides
+        // in the meta row beside the bubble, and the bubble and its copy carry only the body.
+        const { header, body: text } = e.role === "user" ? splitDeliveryHeader(raw) : { header: null, body: raw };
         const msg = el("div", `msg ${e.role}`);
         const body = el("div", "mbody");
         mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
@@ -1494,6 +1497,12 @@ class Pane {
         const meta = el("div", "mmeta");
         const who = e.role === "user" ? "you" : "claude";
         meta.appendChild(el("span", "mwho", e.ts ? `${who} · ${fmtClock(e.ts)}` : who));
+        if (header) {
+          const head = el("span", "mhead", header);
+          head.title = `fleet-zustellung · ${header}`;
+          head.style.cssText = "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+          meta.appendChild(head);
+        }
         meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
         msg.append(body, meta);
         this.chatEl.appendChild(msg);

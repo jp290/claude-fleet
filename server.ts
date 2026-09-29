@@ -8741,7 +8741,7 @@ function deliveryAuditCache(s: Slot | null): { ttlSec: number; ttlQuelle: Delive
 const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
 const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "bundle": "gebuendelte Fleet-Zustellungen",
-  "owner": "POST /send mit Owner-Credential",
+  "owner": "Owner-Credential",
   "brief": "Gruendungs-Brief einer Lane",
   "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Supervisor, Orchestratorin)",
   "succession": "Nachfolge-Brief (POST /api/self/succeed)",
@@ -8823,6 +8823,12 @@ function deliveryHeader(form: Harness, path: SendPath, slot: number, text: strin
   const source = DELIVERY_SOURCE[path];
   if (!source || path === "model-push" || !headsDelivery(form)
     || (path === "owner" && text.trimStart().startsWith("/"))) return null;
+  // owner is the ONE source with no position sentence and no path: `ctl.sh send`, the Orchestratorin
+  // and the MAINs ride the same route with the same credential, so the head names the credential and
+  // the slot, never a speaker or an errand (Sinnpruefung Buendel 5b; the prefix stays for
+  // sendText's residue check, src/pendingsend.ts and the pins). Its DELIVERY_MEANING sentence now
+  // lives only in a bundle mark, where an owner send shares a paste with waiting deliveries.
+  if (path === "owner") return `${DELIVERY_HEADER_PREFIX}${source} · Slot ${slot}] `;
   return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${deliveryMeaning(path, s)}] `;
 }
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
@@ -9116,7 +9122,8 @@ class DeliveryCancelled extends Error {}
 type DeliveryBundle = { address: DeliveryAddress; entries: QueuedDelivery[]; dueAt: number;
   retryAt: number; absentAt: number | null;
   timer: ReturnType<typeof setTimeout> | null; inflight: Promise<{ acceptance: Acceptance } | void> | null };
-type ImmediateDelivery = { slot: Slot; text: string; submit: boolean; options: SendTextOptions };
+type ImmediateDelivery = { slot: Slot; text: string; submit: boolean; options: SendTextOptions;
+  origin: { slot: number; openedAt: number } };
 const deliveryBundles = new Map<string, DeliveryBundle>();
 const DELIVERY_BUNDLE_SEC = Math.max(0, Number(process.env.FLEET_DELIVERY_BUNDLE_SEC ?? 900) | 0);
 function deliveryAddress(s: Slot): DeliveryAddress {
@@ -9166,7 +9173,9 @@ function refreshDeliveryBundles(): void {
     if (bundle.inflight || !bundle.entries.length) continue;
     const s = deliveryRecipient(bundle.address);
     if (!s) {
-      if (bundle.address.kind !== "slot") {
+      if (bundle.address.kind === "slot") {
+        void flushDeliveryBundle(key);
+      } else {
         bundle.absentAt ??= now;
         bundle.dueAt = Math.min(bundle.dueAt, bundle.absentAt + 30_000);
         scheduleDeliveryBundle(key, bundle);
@@ -9174,6 +9183,11 @@ function refreshDeliveryBundles(): void {
       continue;
     }
     bundle.absentAt = null;
+    if (bundle.address.kind === "slot" && bundle.entries.some((entry) =>
+      entry.origin.slot !== s.id || entry.origin.openedAt !== s.openedAt)) {
+      void flushDeliveryBundle(key);
+      continue;
+    }
     const next = bundleDeadline(bundle, s, now);
     if (next === bundle.dueAt) continue;
     bundle.dueAt = next;
@@ -9202,6 +9216,9 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
   if (!bundle) {
     if (!immediate) return;
     await immediate.options.beforeSend?.(immediate.slot);
+    if (immediate.options.address?.kind === "slot"
+      && immediate.slot.openedAt !== immediate.origin.openedAt)
+      throw new DeliveryCancelled("slot occupant changed before immediate delivery");
     return sendText(immediate.slot, immediate.text, immediate.submit, { ...immediate.options, bypassQueue: true });
   }
   if (bundle.inflight) {
@@ -9221,18 +9238,19 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
           return;
         }
       }
-      if (bundle.address.kind === "slot" && !immediate) {
-        bundle.dueAt = Date.now() + 5000;
-        scheduleDeliveryBundle(key, bundle);
-        return;
-      }
       deliveryBundles.delete(key);
-      audit("delivery_bundle_dropped", undefined, `${key} no current role occupant`,
-        { count: bundle.entries.length, reason: "no current role occupant", deliveryClass: "buendelbar",
-          ...deliveryAuditCache(slotFrom(bundle.entries[0]?.origin.slot ?? 0) ?? null) });
-      for (const entry of bundle.entries) entry.reject(new SendRefused("no current role occupant — nothing typed"));
+      const reason = bundle.address.kind === "slot" ? "slot occupant ended — nothing typed"
+        : "no current role occupant — nothing typed";
+      for (const entry of bundle.entries) {
+        audit("delivery_bundle_dropped", entry.origin.slot, `${key} ${reason}`,
+          { path: entry.options.path, reason, deliveryClass: "buendelbar",
+            ...deliveryAuditCache(slotFrom(entry.origin.slot) ?? null) });
+        entry.reject(bundle.address.kind === "slot" ? new DeliveryCancelled(reason) : new SendRefused(reason));
+      }
       if (immediate) {
         await immediate.options.beforeSend?.(immediate.slot);
+        if (bundle.address.kind === "slot" && immediate.slot.openedAt !== immediate.origin.openedAt)
+          throw new DeliveryCancelled("slot occupant changed before immediate delivery");
         return sendText(immediate.slot, immediate.text, immediate.submit,
           { ...immediate.options, bypassQueue: true });
       }
@@ -9244,7 +9262,8 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
     if (!immediate) {
       bundle.entries.unshift(...entries);
       const next = bundleDeadline(bundle, s, Date.now());
-      if (next > Date.now()) {
+      if (next > Date.now() && !(bundle.address.kind === "slot" && entries.some((entry) =>
+        entry.origin.slot !== s.id || entry.origin.openedAt !== s.openedAt))) {
         bundle.dueAt = next;
         scheduleDeliveryBundle(key, bundle);
         return;
@@ -9254,6 +9273,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
     try {
       for (const entry of entries) {
         if (entry.origin.slot !== s.id || entry.origin.openedAt !== s.openedAt) {
+          if (bundle.address.kind === "slot") continue;
           audit("delivery_bundle_rerouted", s.id,
             `${key} from slot=${entry.origin.slot} openedAt=${entry.origin.openedAt} to slot=${s.id} openedAt=${s.openedAt}`,
             { fromSlot: entry.origin.slot, toSlot: s.id, reason: "unattempted bundle resolved at delivery",
@@ -9279,7 +9299,19 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
         harness: entries.every((entry) => entry.options.bundleGate?.harness === false) ? false : true,
         quietHours: entries.every((entry) => entry.options.bundleGate?.quietHours === false) ? false : true,
         idleMs: Math.max(0, ...entries.map((entry) => entry.options.bundleGate?.idleMs ?? 0)) }) : { ok: true } as const;
-      if (!gate.ok) {
+      if (bundle.address.kind === "slot") {
+        for (const entry of [...entries]) {
+          if (entry.origin.slot === s.id && entry.origin.openedAt === s.openedAt) continue;
+          entries.splice(entries.indexOf(entry), 1);
+          const reason = `slot occupant ended — queued openedAt=${entry.origin.openedAt}, current openedAt=${s.openedAt}`;
+          audit("delivery_bundle_dropped", s.id, `${key} ${reason}`,
+            { path: entry.options.path, reason, deliveryClass: "buendelbar", ...deliveryAuditCache(s) });
+          entry.reject(new DeliveryCancelled(reason));
+        }
+        if (immediate && immediate.origin.openedAt !== s.openedAt)
+          throw new DeliveryCancelled("slot occupant changed before immediate delivery");
+      }
+      if (!gate.ok && entries.length) {
         const reason = `gate=${gate.gate}${gate.detail ? `: ${gate.detail}` : ""} — nothing typed`;
         if (gate.gate === "not-alive") {
           const agent = await paneAgentAt(sess(s.id), commsFor(s));
@@ -9288,9 +9320,10 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
         if (gate.gate === "blocked-screen" || gate.gate === "harness") throw new DeliveryGateDropped(reason);
         throw new SendRefused(reason);
       }
+      if (!entries.length && !immediate) { deliveryBundles.delete(key); return; }
       const ordered = immediate ? [{ text: immediate.text,
         submit: immediate.submit, options: immediate.options,
-        origin: { slot: immediate.slot.id, openedAt: immediate.slot.openedAt }, queuedAt: Date.now(),
+        origin: immediate.origin, queuedAt: Date.now(),
         resolve: () => {}, reject: () => {} }, ...entries] : entries;
       const payload = bundleText(ordered, s);
       // a single entry keeps its own path: the header then carries its own sentence, and the send
@@ -9350,6 +9383,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
   return bundle.inflight;
 }
 async function sendText(s: Slot, given: string, submit: boolean, options: SendTextOptions): Promise<{ acceptance: Acceptance }> {
+  const origin = { slot: s.id, openedAt: s.openedAt };
   if (!options.bypassQueue) {
   const address = options.address ?? deliveryAddress(s);
   const key = deliveryAddressKey(address);
@@ -9359,10 +9393,13 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
     // It goes alone and first, headerless (deliveryHeader); the bundle keeps its own window.
     const ownerCommand = options.path === "owner" && given.trimStart().startsWith("/");
     if (submit && !ownerCommand && deliveryBundles.has(key)) {
-      const sent = await flushDeliveryBundle(key, { slot: s, text: given, submit, options });
+      const sent = await flushDeliveryBundle(key, { slot: s, text: given, submit,
+        options: { ...options, address }, origin });
       if (sent) return sent;
     }
     await options.beforeSend?.(s);
+    if (address.kind === "slot" && s.openedAt !== origin.openedAt)
+      throw new DeliveryCancelled("slot occupant changed before immediate delivery");
   } else {
   const now = Date.now();
   const cache = deliveryCacheState(s, now);
@@ -9374,7 +9411,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       bundle = { address, entries: [], dueAt: deadline, retryAt: 0, absentAt: null, timer: null, inflight: null };
       deliveryBundles.set(key, bundle);
     }
-    bundle.entries.push({ text: given, submit, options, origin: { slot: s.id, openedAt: s.openedAt },
+    bundle.entries.push({ text: given, submit, options, origin,
       queuedAt: now, resolve, reject });
     bundle.dueAt = Math.min(bundle.dueAt, deadline);
     audit("delivery_bundle_queued", s.id, `${key} count=${bundle.entries.length}`,
@@ -9405,6 +9442,8 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes can interleave with them and reorder pty input
   const task = s.inputChain.then(async () => {
+    if (s.openedAt !== origin.openedAt)
+      throw new DeliveryCancelled("slot occupant changed before paste");
     // every paste reaches a sleeping pane by waking it first; a failed wake types nothing, and the
     // ledger row below books it as SendRefused rather than as a delivery
     if (s.sleeping || slotWakeInflight.has(s.id)) {
@@ -9414,6 +9453,8 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
     if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
       throw new SendRefused("slot changed before send — nothing typed");
     const target = await existingTmuxTarget(sess(occupant.slot));
+    if (s.openedAt !== origin.openedAt)
+      throw new DeliveryCancelled("slot occupant changed before paste");
     if (!target || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
       throw new SendRefused("slot pane unavailable or changed before send — nothing typed");
     const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms, bootSettleMs };
@@ -11680,6 +11721,7 @@ function markFleetEventReceiverGone(slotId: number): boolean {
         || clarifications.some((c) => c.eventId === e.id && c.status === "open"
           && c.basis === "program-main" && c.provenance.programId === holding.id))) continue;
     if (DELIVERY_BUNDLE_SEC > 0 && e.status === "pending" && e.receiverAddress
+      && e.receiverAddress.kind !== "slot"
       && fleetEventDeliveryClass(e) === "buendelbar") continue;
     if (e.kind === "fleet-report" && e.status === "send-uncertain"
       && (e.recovery?.state === "retryable" || e.recovery?.state === "blocked")) {
@@ -12622,6 +12664,8 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
         reportId: report.id,
         beforeSend: async (current) => {
           if (report.decision !== decision) throw new DeliveryCancelled(`report ${report.id} decision changed`);
+          if (!current.cwd || current.openedAt !== report.worker.openedAt)
+            throw new DeliveryCancelled(`slot ${report.worker.slot} worker ended — openedAt ${report.worker.openedAt}`);
           recipient = current;
           stamp("send-uncertain", "persisted before the paste; the send did not resolve");
           await saveStateNow();
@@ -12639,7 +12683,12 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
       audit("fleet_report_decision_delivered", recipient.id, `${report.id} ${decision.disposition}`);
       await saveStateNow();
     } catch (e) {
-      if (!(e instanceof DeliveryCancelled)) {
+      if (e instanceof DeliveryCancelled && report.decision === decision) {
+        stamp("worker-gone", `slot ${report.worker.slot} worker ended — openedAt ${report.worker.openedAt}: ${e.message}`);
+        audit("fleet_report_decision_undelivered", report.worker.slot,
+          `${report.id} ${decision.disposition} ${e.message}`);
+        await saveStateNow();
+      } else if (!(e instanceof DeliveryCancelled)) {
         audit("fleet_report_decision_send_uncertain", recipient.id,
           `${report.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
       }
@@ -22248,6 +22297,8 @@ async function markFleetEventSend(event: FleetEvent, receiver: Slot): Promise<vo
     throw new DeliveryCancelled(`event ${event.id} role occupant changed before paste`);
   if (DELIVERY_BUNDLE_SEC > 0 && fleetEventDeliveryClass(event) === "buendelbar"
     && (event.receiverSlot !== receiver.id || event.receiverOpenedAt !== receiver.openedAt)) {
+    if (event.receiverAddress?.kind === "slot")
+      throw new DeliveryCancelled(`event ${event.id} receiver occupant ended before paste`);
     audit("delivery_bundle_rerouted", receiver.id,
       `${event.id} from slot=${event.receiverSlot} openedAt=${event.receiverOpenedAt} to slot=${receiver.id} openedAt=${receiver.openedAt}`,
       { eventId: event.id, fromSlot: event.receiverSlot ?? 0, toSlot: receiver.id,
@@ -22398,10 +22449,18 @@ async function tickWatches(): Promise<void> {
         && fleetEventDeliveryClass(event) === "sofort") continue;
       const s = pendingFleetEventReceiver(event);
       if (!s) {
-        if (event.receiverAddress?.kind === "slot") continue;
         event.status = "receiver-gone";
         audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined,
           `${event.id} no current role occupant`);
+        pruneFleetEvents(event.receiverSlot);
+        dirty = true;
+        continue;
+      }
+      if (event.receiverAddress?.kind === "slot"
+        && (event.receiverSlot !== s.id || event.receiverOpenedAt !== s.openedAt)) {
+        event.status = "receiver-gone";
+        audit("fleet_event_receiver_gone", event.receiverSlot ?? undefined,
+          `${event.id} receiver occupant ended before delivery`);
         pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
@@ -37195,6 +37254,7 @@ watches = watches.filter((w) => {
 for (const e of fleetEvents) {
   if (FLEET_EVENT_TERMINAL.includes(e.status)) continue;
   if (DELIVERY_BUNDLE_SEC > 0 && e.status === "pending" && e.receiverAddress
+    && e.receiverAddress.kind !== "slot"
     && fleetEventDeliveryClass(e) === "buendelbar") continue;
   if (e.receiverSlot === null || fleetEventReceiver(e)) continue;
   if (e.kind === "fleet-report" && e.status === "send-uncertain" && e.recovery?.state === "retryable") {
@@ -44310,7 +44370,7 @@ Bun.serve<WSData>({
       const lane = t.status === "sent" && t.slot !== null ? slotFrom(t.slot) : null;
       if (!lane?.cwd || !lane.worktree || !tasks.some((x) => x.id === t.id && x.slot === lane.id && x.status === "sent"))
         return json({ ok: true, comment: c, delivery: "no-live-lane" });
-      const message = `[fleet] OWNER COMMENT on task ${t.id} (comment ${c.id}):\n\n${text}`;
+      const message = `[fleet] Kommentar mit Owner-Credential zu Task ${t.id} (comment ${c.id}):\n\n${text}`;
       const sendId = randomBytes(12).toString("hex");
       const receiver = { slot: lane.id, openedAt: lane.openedAt, sessionId: lane.sessionId };
       try {

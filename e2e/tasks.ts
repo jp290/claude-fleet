@@ -2921,11 +2921,18 @@ export async function run(ctx: Ctx): Promise<void> {
     const livePrompt = ((await (await get("/api/prompts?limit=100")).json()) as
       { prompts: { slot?: number; source?: string; text?: string }[] }).prompts
       .find((p) => p.slot === s3Ohne.slot && p.source === "owner"
-        && (p.text ?? "").includes(`OWNER COMMENT on task ${s3Ohne.id}`));
+        && (p.text ?? "").includes(liveComment));
     check("(s3) a new owner comment on a sent row reaches its current lane as its own turn",
       liveResponse.ok && liveResult.delivery === "sent" && !!liveResult.comment?.id
         && livePrompt?.text?.includes(liveComment) === true,
       JSON.stringify({ status: liveResponse.status, delivery: liveResult.delivery, prompt: !!livePrompt }));
+    // The route serves the owner credential — the Orchestratorin and the MAINs send through it too — so the
+    // typed line names the credential, never a speaker (Sinnpruefung Buendel 5b).
+    // BREAKS IF: the comment text speaks as "OWNER" again, or stops naming the credential.
+    check("(s3) the typed task comment names the owner credential and no longer says OWNER COMMENT",
+      livePrompt?.text?.includes(`Kommentar mit Owner-Credential zu Task ${s3Ohne.id}`) === true
+        && !/OWNER COMMENT/.test(livePrompt?.text ?? ""),
+      JSON.stringify((livePrompt?.text ?? "").slice(0, 120)));
     const s3Slots = [s3Mit.slot, s3Ohne.slot].filter((s): s is number => typeof s === "number");
     for (const s of s3Slots) await post(`/api/slots/${s}/kill`, {});
     await slotsEmptied(s3Slots);

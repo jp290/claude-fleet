@@ -1318,13 +1318,16 @@ export async function run(ctx: Ctx): Promise<void> {
         modelRegistry?: { harness: string; id: string; status: string; supersededBy?: string; availability: string }[];
       };
       const oldSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-5.6-sol");
-      const newSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6-sol");
+      const previousSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6-sol");
+      const newSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6.1-sol");
       check("model catalogue serves the role default and warns on superseded Sol without removing it",
-        modelCat.modelDefaults?.worker?.id === "gpt-6-sol"
-          && oldSol?.status === "superseded" && oldSol.supersededBy === "gpt-6-sol"
+        modelCat.modelDefaults?.worker?.harness === "codex" && modelCat.modelDefaults.worker.id === "gpt-6.1-sol"
+          && modelCat.modelDefaults.worker.effort === "high"
+          && oldSol?.status === "superseded" && oldSol.supersededBy === "gpt-6.1-sol"
+          && previousSol?.status === "superseded" && previousSol.supersededBy === "gpt-6.1-sol"
           && newSol?.status === "current"
           && ["available", "unavailable", "unknown"].includes(newSol?.availability ?? ""),
-        JSON.stringify({ oldSol, newSol, worker: modelCat.modelDefaults?.worker }));
+        JSON.stringify({ oldSol, previousSol, newSol, worker: modelCat.modelDefaults?.worker }));
       const dflt = cat.find((h) => h.default);
       const codex = cat.find((h) => h.id === "codex");
       const noEffort = cat.find((h) => (h.role ?? "agent") === "agent" && !h.supports.effort);
@@ -1684,12 +1687,18 @@ export async function run(ctx: Ctx): Promise<void> {
       ((await (await get("/api/sessions")).json()) as { tasks: { id: string; modelSuperseded?: { id: string; supersededBy?: string } }[] })
         .tasks.find((task) => task.id === policyRow.id);
     const oldPolicy = await policyDigest();
-    check("queue row: gpt-5.6-sol is marked superseded with gpt-6-sol as its successor",
-      oldPolicy?.modelSuperseded?.id === "gpt-5.6-sol" && oldPolicy.modelSuperseded.supersededBy === "gpt-6-sol",
+    check("queue row: gpt-5.6-sol is marked superseded with gpt-6.1-sol as its successor",
+      oldPolicy?.modelSuperseded?.id === "gpt-5.6-sol" && oldPolicy.modelSuperseded.supersededBy === "gpt-6.1-sol",
       JSON.stringify(oldPolicy));
-    const currentPolicySet = await set(policyRow.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    const previousPolicySet = await set(policyRow.id, { harness: "codex", model: "gpt-6-sol", effort: "high" });
+    const previousPolicy = await policyDigest();
+    check("same queue row: gpt-6-sol is accepted and marked superseded with gpt-6.1-sol as its successor",
+      previousPolicySet.status === 200 && previousPolicy?.modelSuperseded?.id === "gpt-6-sol"
+        && previousPolicy.modelSuperseded.supersededBy === "gpt-6.1-sol",
+      JSON.stringify({ status: previousPolicySet.status, previousPolicy }));
+    const currentPolicySet = await set(policyRow.id, { harness: "codex", model: "gpt-6.1-sol", effort: "high" });
     const currentPolicy = await policyDigest();
-    check("same queue row: gpt-6-sol clears the superseded marker without refusing the choice",
+    check("same queue row: gpt-6.1-sol clears the superseded marker without refusing the choice",
       currentPolicySet.status === 200 && currentPolicy !== undefined && currentPolicy.modelSuperseded === undefined,
       JSON.stringify({ status: currentPolicySet.status, currentPolicy }));
     await post(`/api/tasks/${policyRow.id}/delete`, {});

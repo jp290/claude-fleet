@@ -9,7 +9,7 @@ import { ProjectedWaveTask, TaskWaveProjection, TaskWaveUnresolved, projectTaskW
 import type { KonzeptAnmerkung, KonzeptIndexRow, KonzeptVersion } from "../konzept-ledger";
 import type { Principal } from "../server/auth";
 import type { TraceRefs } from "../trace-index";
-import { BundleProposal, LAND_WAVE_COSTS_2026_09, LAND_WAVE_ROWS_MAX, LandWave, LandWaveCosts, LandWaveProjection, projectLandWaves } from "../task-land-waves";
+import { type BundleSuggestions, absorbedTaskIds, BundleProposal, LAND_WAVE_COSTS_2026_09, LAND_WAVE_ROWS_MAX, LandWave, LandWaveCosts, LandWaveProjection, projectLandWaves } from "../task-land-waves";
 
 // --- task queue window ---
 //
@@ -52,6 +52,8 @@ export const taskCommentsFull = new Map<string, TaskCommentView[]>();
 export interface TaskNotePinView { noteId: string; at: number; by: "owner" | "main" }
 export interface TaskNoteVerdictView { taskId: string; branch: string; verdict: string; text: string;
   at: number; landedAt?: number; landedSha?: string }
+export const taskAbsorbedFull = new Map<string, string[]>();
+export const taskDispositionFull = new Map<string, { beleg?: string }>();
 export const taskNotesFull = new Map<string, TaskNotePinView[]>();
 export const taskVerdictsFull = new Map<string, TaskNoteVerdictView[]>();
 export let taskTextKey = ""; // the id+full-data-generation set this cache was last filled for
@@ -386,7 +388,7 @@ export let qRowId = new Map<HTMLElement, string | null>();
 // announce a new top-level briefAt while the old full cache is still present; treating that cache
 // as current would briefly call a stored brief absent.
 export const qTaskFullKey = () => tasksList.map((t) =>
-  `${t.id}:${t.briefAt ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}:${t.notes?.n ?? 0}:${t.notes?.at ?? 0}:${t.verdicts?.n ?? 0}:${t.verdicts?.at ?? 0}`
+  `${t.id}:${t.status}:${t.briefAt ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}:${t.notes?.n ?? 0}:${t.notes?.at ?? 0}:${t.verdicts?.n ?? 0}:${t.verdicts?.at ?? 0}`
 ).join(",");
 export const qTaskFullLoaded = (id: string) => taskText.has(id) && taskTextKey === qTaskFullKey();
 
@@ -405,7 +407,7 @@ export async function loadTaskTexts() {
       const data = (await res.json()) as { tasks: { id: string; text: string;
         brief?: FullBrief; criterion?: NonNullable<TaskInfo["criterion"]>;
         refine?: TaskRefineFull; comments?: TaskCommentView[]; spawn?: NonNullable<QSpawnRow>; card?: QCardView;
-        notes?: TaskNotePinView[]; verdicts?: TaskNoteVerdictView[] }[] };
+        notes?: TaskNotePinView[]; verdicts?: TaskNoteVerdictView[]; absorbed?: string[]; disposition?: { beleg?: string } }[] };
       // A brief save can complete while this GET (started before it) is in flight. Never publish
       // that older response under the post-save generation; the retry below fetches the new truth.
       if (epoch === taskTextEpoch) {
@@ -415,12 +417,16 @@ export async function loadTaskTexts() {
         taskRefineFull.clear();
         taskCommentsFull.clear();
         taskNotesFull.clear();
+        taskAbsorbedFull.clear();
+        taskDispositionFull.clear();
         taskVerdictsFull.clear();
         taskSpawnFull.clear();
         taskCardFull.clear();
         for (const t of data.tasks) {
           if (t.card) taskCardFull.set(t.id, t.card);
           taskText.set(t.id, t.text);
+          if (t.absorbed) taskAbsorbedFull.set(t.id, t.absorbed);
+          if (t.disposition) taskDispositionFull.set(t.id, t.disposition);
           if (t.spawn) taskSpawnFull.set(t.id, t.spawn);
           if (t.brief) taskBriefFull.set(t.id, t.brief);
           if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
@@ -1759,8 +1765,8 @@ export async function loadBundles(force = false): Promise<void> {
   try {
     const res = await api("/api/start-plan");
     if (res.ok) {
-      const data = (await res.json()) as { buendel?: BundleProposal[] };
-      if (Array.isArray(data.buendel)) { qBundles = data.buendel; qBundlesRead = "ok"; } else qBundlesRead = "fail";
+      const data = (await res.json()) as { buendel?: BundleSuggestions };
+      if (Array.isArray(data.buendel?.pairs)) { qBundles = data.buendel.pairs; qBundlesRead = "ok"; } else qBundlesRead = "fail";
     } else qBundlesRead = "fail";
   } catch {
     qBundlesRead = "fail";
@@ -4484,7 +4490,7 @@ export function renderQueue() {
     [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining, t.comments?.n, t.notes?.at, t.hold?.at, t.size, t.programId]),
-    qNotesOpen, taskTextKey, qRepo, qProg, [...qSel], qBundleBusy, qBundleMode]);
+    qNotesOpen, taskTextKey, [...taskAbsorbedFull], [...taskDispositionFull], qRepo, qProg, [...qSel], qBundleBusy, qBundleMode]);
   if (key === qKey) return;
   qKey = key;
   paintQueueScope();
@@ -4582,6 +4588,11 @@ export function renderQueue() {
   const addTask = (t: TaskInfo) => {
     const summary = qTaskSummary(t, qTaskText(t.id), now, programsList);
     const sources = qBundleSources(qTaskText(t.id));
+    if (t.status === "archived") {
+      const into = tasksList.filter((target) => absorbedTaskIds(target.id, [{ id: t.id, status: t.status,
+        disposition: taskDispositionFull.get(t.id) }]).includes(t.id));
+      for (const target of into) summary.chips.push({ text: `aufgegangen in ${target.id}`, cls: "bundle" });
+    }
     if (sources.length) summary.chips.unshift({ text: `⧉ ${sources.length}`, cls: "bundle",
       title: `bundle of ${sources.join(", ")}` });
     add({
@@ -4590,6 +4601,9 @@ export function renderQueue() {
       sub: qLaneLine(laneJoins.get(t.id) ?? { kind: "none" }),
       cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : "", t.hold ? "q-held" : ""].filter(Boolean).join(" "),
     });
+    for (const id of taskAbsorbedFull.get(t.id) ?? []) {
+      add({ name: `↳ aufgegangen: ${id} · ${qFirstLine(qTaskText(id))}`, id, cls: "qchild q-archived", chips: [] });
+    }
     for (const n of pinnedUnder.get(t.id) ?? []) {
       add({ name: `↳ ${qFirstLine(qTaskText(n.id))}`, id: n.id, cls: "qchild q-obs",
         chips: [{ text: n.kind ?? "notiz", cls: "kind" }] });

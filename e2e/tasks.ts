@@ -19,7 +19,7 @@ import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, ups
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
-  LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, proposeBundles, taskOverlap,
+  LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, proposeBundles, taskOverlap, absorbedTaskIds,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
   type StartPlanLane, type StartPlanLaneClaim, type StartPlanRelease, type StartPlanRow } from "../start-plan";
@@ -1847,8 +1847,9 @@ export async function run(ctx: Ctx): Promise<void> {
       !!legacyLane && !!legacyNote, migrationError);
     if (legacyLane) { legacyLane.kind = "lane"; delete legacyLane.originId; delete legacyLane.programId; }
     if (legacyNote) { legacyNote.kind = "note"; delete legacyNote.originId; legacyNote.programId = 7; }
-    const expectLane = legacyLane ? { ...legacyLane, kind: "auftrag" } : null;
-    const expectNote = legacyNote ? { ...legacyNote, kind: "notiz" } : null;
+    // The API adds the empty reverse archive projection; it must never enter the persisted row.
+    const expectLane = legacyLane ? { ...legacyLane, kind: "auftrag", absorbed: [] } : null;
+    const expectNote = legacyNote ? { ...legacyNote, kind: "notiz", absorbed: [] } : null;
     if (expectNote) delete expectNote.programId;
     if (migrationState) await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(migrationState)}\n`);
     await restartSrv();
@@ -10948,14 +10949,14 @@ export async function run(ctx: Ctx): Promise<void> {
       size: o.size ?? "klein", files: o.files ?? ["shared.ts"], ...(o.verify ? { verify: o.verify } : {}),
       ...(o.after ? { after: o.after } : {}) });
     const bdGot = {
-      same: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2)] }),
-      diffVerify: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { verify: "install, pins, tsc, build" })] }),
-      sameVerifyAnyOrder: proposeBundles({ tasks: [bdRow("b1", 1, { verify: "install, pins" }), bdRow("b2", 2, { verify: "pins + install" })] }),
-      tooBig: proposeBundles({ tasks: [bdRow("b1", 1, { size: "mittel" }), bdRow("b2", 2)] }),
-      diffProgram: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { programId: "other" })] }),
-      diffSurface: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { files: ["other.ts"] })] }),
-      chain: proposeBundles({ tasks: [bdRow("p1", 1, { after: ["q1"] }), bdRow("q1", 2)] }),
-      terminal: proposeBundles({ tasks: [bdRow("b1", 1, { status: "done" }), bdRow("b2", 2, { status: "done" })] }),
+      same: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2)] }).pairs,
+      diffVerify: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { verify: "install, pins, tsc, build" })] }).pairs,
+      sameVerifyAnyOrder: proposeBundles({ tasks: [bdRow("b1", 1, { verify: "install, pins" }), bdRow("b2", 2, { verify: "pins + install" })] }).pairs,
+      tooBig: proposeBundles({ tasks: [bdRow("b1", 1, { size: "mittel" }), bdRow("b2", 2)] }).pairs,
+      diffProgram: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { programId: "other" })] }).pairs,
+      diffSurface: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { files: ["other.ts"] })] }).pairs,
+      chain: proposeBundles({ tasks: [bdRow("p1", 1, { after: ["q1"] }), bdRow("q1", 2)] }).pairs,
+      terminal: proposeBundles({ tasks: [bdRow("b1", 1, { status: "done" }), bdRow("b2", 2, { status: "done" })] }).pairs,
       landPure: !("buendel" in projectLandWaves({ tasks: [
         { id: "b1", created: 1, kind: "auftrag", status: "queued", programId: "prog", filesOrigin: "confirmed", files: ["shared.ts"] },
         { id: "b2", created: 2, kind: "auftrag", status: "queued", programId: "prog", filesOrigin: "confirmed", files: ["shared.ts"] },
@@ -10982,13 +10983,68 @@ export async function run(ctx: Ctx): Promise<void> {
       && bo?.buendel.length === 1 && bo.buendel[0].ids.includes("new")
       && taskOverlap("unknown", boRows) === null,
       JSON.stringify(bo));
+    const baTask = { ...bdRow("target", 1), repo: "repo-a" };
+    const baNote = { ...bdRow("note", 3), kind: "notiz", status: "pending", repo: "repo-a" };
+    const ba = proposeBundles({ tasks: [baTask, { ...baTask, id: "second", created: 2 }, baNote] });
+    check("(buendel-attach) one pending note proposes the oldest shared-file work row exactly once; foreign Program, foreign Repo, unknown surface, closed work and already pinned note propose none",
+      JSON.stringify(ba.attach.map((a) => ({ noteId: a.noteId, taskId: a.taskId }))) === JSON.stringify([{ noteId: "note", taskId: "target" }])
+      && ba.attach[0]?.grund.includes("shared.ts")
+      && [{ ...baNote, programId: "other" }, { ...baNote, repo: "repo-b" }, { ...baNote, files: [] }]
+        .every((n) => proposeBundles({ tasks: [baTask, n] }).attach.length === 0)
+      && proposeBundles({ tasks: [{ ...baTask, status: "done" }, baNote] }).attach.length === 0
+      && proposeBundles({ tasks: [{ ...baTask, notes: [{ noteId: "note" }] }, baNote] }).attach.length === 0,
+      JSON.stringify(ba));
+    const abRows = [{ id: "source", status: "archived", disposition: { beleg: "target" } },
+      { id: "open", status: "pending", disposition: { beleg: "target" } },
+      { id: "other", status: "archived", disposition: { beleg: "target-suffix" } }];
+    check("(buendel-absorbed) only archived rows naming the whole target id in disposition.beleg are absorbed",
+      JSON.stringify(absorbedTaskIds("target", abRows)) === JSON.stringify(["source"])
+      && absorbedTaskIds("unknown", abRows).length === 0, JSON.stringify(abRows));
+    // Execute source mutations of the pure producers; each must change the measured verdict.
+    const baSource = readFileSync(`${ROOT}/task-land-waves.ts`, "utf8");
+    const baCode = baSource.slice(baSource.indexOf("const verifyStepSet"), baSource.indexOf("// --- CLI:"))
+      .replace(/export /g, "");
+    const baFns = (code: string) => new Function("LOCAL_PROOF_STEPS", "landWaveUnits", "rowOrder", "textOrder",
+      new Bun.Transpiler({ loader: "ts" }).transformSync(code) + "\nreturn {proposeBundles, taskOverlap, absorbedTaskIds};")(
+      LOCAL_PROOF_STEPS, landWaveUnits,
+      (a: { created: number; id: string }, b: { created: number; id: string }) => a.created - b.created || a.id.localeCompare(b.id),
+      (a: string, b: string) => a.localeCompare(b)) as {
+        proposeBundles: typeof proposeBundles; taskOverlap: typeof taskOverlap; absorbedTaskIds: typeof absorbedTaskIds };
+    check("(buendel) MUTATION: removing Program/file/null overlap guards, attach Program/Repo/file guards, or absorbed status/id guards changes the verdict",
+      baFns(baCode.replace("t.programId === row.programId", "true")).taskOverlap("new", boRows)?.rows.some((r) => r.id === "foreign") === true
+      && baFns(baCode.replace("t.files.filter((f) => row.files.includes(f))", "t.files")).taskOverlap("new", [...boRows, bdRow("disjoint", 7, { files: ["other.ts"] })])?.rows.some((r) => r.id === "disjoint") === true
+      && baFns(baCode.replace("if (!row?.files.length) return null;", "if (!row) return null;")).taskOverlap("unknown", boRows) !== null
+      && baFns(baCode.replace("t.programId === note.programId", "true")).proposeBundles({ tasks: [baTask, { ...baNote, programId: "other" }] }).attach.length === 1
+      && baFns(baCode.replace("t.repo === note.repo", "true")).proposeBundles({ tasks: [baTask, { ...baNote, repo: "repo-b" }] }).attach.length === 1
+      && baFns(baCode.replace("t.files.some((f) => note.files.includes(f))", "true")).proposeBundles({ tasks: [baTask, { ...baNote, files: ["other.ts"] }] }).attach.length === 1
+      && baFns(baCode.replace('t.status === "archived"', 'true')).absorbedTaskIds("target", abRows).includes("open")
+      && baFns(baCode.replace('t.disposition?.beleg?.split(/[^a-zA-Z0-9_-]+/).includes(id)', 'true')).absorbedTaskIds("target", abRows).includes("other"),
+      "eight producer mutations must invalidate their own observed claim");
     const bdSrv = (() => { try { return readFileSync(`${ROOT}/server.ts`, "utf8"); } catch { return ""; } })();
-    const bdTickSrc = bdSrv.slice(bdSrv.indexOf("async function tickDispatch("), bdSrv.indexOf("\nasync function ownerSeedCapture("));
+    const bdTickSrc = bdSrv.slice(bdSrv.indexOf("async function tickDispatch("), bdSrv.indexOf("\nasync function ownerSeedCapture(")).split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
     check("(buendel) PROBE + wiring: the tick reads no buendel and still walks startPlanWaves · StartPlanView carries the field, startPlanNow attaches it, the route serves it unchanged",
-      bdTickSrc.length > 1000 && !bdTickSrc.includes("buendel") && !bdTickSrc.includes("overlap") && /startPlanWaves\(\)/.test(bdTickSrc)
-      && /type StartPlanView = StartPlan & \{ waits: WaitRow\[\]; stau: ReturnType<typeof stallView>; buendel: BundleProposal\[\] \};/.test(bdSrv)
+      bdTickSrc.length > 1000 && !/\b(?:buendel|overlap|attach|absorbed)\b/.test(bdTickSrc) && /startPlanWaves\(\)/.test(bdTickSrc)
+      && /type StartPlanView = StartPlan & \{ waits: WaitRow\[\]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles> \};/.test(bdSrv)
       && /return \{ \.\.\.plan, buendel, waits: waitsOf\(plan\), stau: stallView\(\) \};/.test(bdSrv)
       && /return json\(startPlanNow\(\)\)/.test(bdSrv), `tick=${bdTickSrc.length}`);
+    const baTickSafe = (code: string) => !/\b(?:attach|absorbed|overlap|buendel)\b/.test(code);
+    const baSweep = bdSrv.slice(bdSrv.indexOf("async function tickCardSweep("), bdSrv.indexOf("// --- ↻ refine"))
+      .split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+    const baVerdictWired = (code: string) => code.includes('appendProgramInbox(program, "card-verdict", t.id)')
+      && code.includes('t.card?.valid !== false') && code.includes('e.kind === "card-verdict" && e.ref === t.id');
+    check("(buendel) MUTATION wiring: card inbox producer guards are present; dispatch cannot read overlap, attach, absorbed or buendel even with a source mutation",
+      baVerdictWired(baSweep)
+      && !baVerdictWired(baSweep.replace('appendProgramInbox(program, "card-verdict", t.id)', 'void 0'))
+      && !baVerdictWired(baSweep.replace('t.card?.valid !== false', 'true'))
+      && baTickSafe(bdTickSrc) && ["attach", "absorbed", "overlap", "buendel"].every((field) => !baTickSafe(bdTickSrc + `\nplan.${field};`)),
+      "one inbox producer; four forbidden dispatcher readings rejected");
+    const baUI = taskClientSource;
+    const baVisible = (code: string) => code.includes('`aufgegangen in ${target.id}`')
+      && code.includes('taskAbsorbedFull.get(t.id)') && code.includes('`↳ aufgegangen: ${id}');
+    check("(buendel-absorbed) MUTATION UI: archive and target both show the derived links; removing either rendering is detected",
+      baVisible(baUI) && !baVisible(baUI.replace('`aufgegangen in ${target.id}`', '"hidden"'))
+      && !baVisible(baUI.replace('taskAbsorbedFull.get(t.id)', '[]')),
+      "archive label plus sources below the target");
     // (sp-criterion) A LANE PARKED ON THE OWNER WITH AN UNWRITTEN TREE HOLDS NO SURFACE
     // (start-plan.ts#startPlanLaneClaims). One rule, two lane builders — server.ts#startPlanNow off
     // the live slot, the CLI off a state file — so the rule is exercised directly here and the two
@@ -11461,7 +11517,9 @@ export async function run(ctx: Ctx): Promise<void> {
       spSaved && spCli.status === 0, `saved=${spSaved} exit=${spCli.status} ${spCli.stderr.slice(0, 300)}`);
     check("(sp) the route and `bun start-plan.ts --state fleet.json` print the same object, and it carries the two rows with next + checks",
       (spCliOut === spRoute1.plan || spCliOut === spRoute2.plan) && spPlanLive.version === 1
-      && Array.isArray(spRoute2.buendel)
+      && !!spRoute2.buendel && typeof spRoute2.buendel === "object"
+      && Array.isArray((spRoute2.buendel as { pairs?: unknown }).pairs)
+      && Array.isArray((spRoute2.buendel as { attach?: unknown }).attach)
       && spMine.flatMap((w) => w.ids).sort().join(" ") === [...spIds].sort().join(" ")
       && spMine.every((w) => w.next !== undefined && w.rows.every((r) => r.checks?.filedBy === "owner")),
       JSON.stringify({ route: spRoute2.plan.slice(0, 600), cli: spCliOut.slice(0, 600), buendel: spRoute2.buendel }));
@@ -12803,6 +12861,27 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv();
     rmSync(boFake, { force: true });
     for (const row of [boOld, boNew, boOwner, boUnknown, boBad]) if (row.task?.id) await post(`/api/tasks/${row.task.id}/delete`, {});
+
+    const baLiveWorkRes = await mFile(mToken, { text: "attach work", kind: "auftrag", card: boCard });
+    const baLiveWork = await baLiveWorkRes.json() as BOReply;
+    const baLiveNoteRes = await mFile(mToken, { text: "attach note", kind: "notiz", card: boCard });
+    const baLiveNote = await baLiveNoteRes.json() as BOReply;
+    const baPlan = await (await get("/api/start-plan")).json() as { buendel: { attach: { noteId: string; taskId: string }[] } };
+    const baExecution = await (await fetch(`${BASE}/api/self/program-execution`, { headers: { "x-fleet-self-token": mToken } })).json() as
+      { programs: { program: { id: string }; buendel: { attach: { noteId: string; taskId: string; nextStep: { path: string; body: { note: string } } }[] } }[] };
+    const baSuggested = baExecution.programs?.find((p) => p.program.id === mMainProgram)?.buendel.attach.find((a) => a.noteId === baLiveNote.task?.id);
+    check("(buendel-attach-live) start plan and bound MAIN execution expose the same note suggestion with the existing notes door as next step",
+      baLiveWorkRes.ok && baLiveNoteRes.ok && !!baPlan.buendel.attach.some((a) => a.noteId === baLiveNote.task?.id)
+      && !!baSuggested && baSuggested.nextStep.path === `/api/self/tasks/${baSuggested.taskId}/notes`
+      && baSuggested.nextStep.body.note === baLiveNote.task?.id,
+      JSON.stringify(baSuggested));
+    const baArcRes = baLiveNote.task?.id ? await post(`/api/tasks/${baLiveNote.task.id}/archive`, { grund: "aufgegangen", beleg: baLiveWork.task?.id }) : null;
+    const baFullRows = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; absorbed?: string[]; notes?: unknown }[] }).tasks;
+    check("(buendel-absorbed-live) archive disposition alone derives the reverse link on the open work row; proposing never pins a note",
+      baArcRes?.ok === true && JSON.stringify(baFullRows.find((t) => t.id === baLiveWork.task?.id)?.absorbed) === JSON.stringify([baLiveNote.task?.id])
+      && baFullRows.find((t) => t.id === baLiveWork.task?.id)?.notes === undefined,
+      JSON.stringify(baFullRows.find((t) => t.id === baLiveWork.task?.id)));
+    for (const row of [baLiveWork, baLiveNote]) if (row.task?.id) await post(`/api/tasks/${row.task.id}/delete`, {});
 
     // (kr6) The MAIN's create door uses the same card-role adoption as the owner door in (kr1).
     // Removing adoptSpawnFromCard(t) from createTaskForMain leaves this stored row without spawn.

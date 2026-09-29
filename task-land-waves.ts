@@ -470,6 +470,7 @@ export interface BundleRowInput {
   id: string; created: number; kind?: string; status: string;
   programId?: string | null;
   repo?: string | null;
+  notes?: readonly { noteId: string }[];
   size?: TaskCardSize;
   // the row's stored card verify text, as validated; null or absent = no card verify — the empty step set
   verify?: string | null;
@@ -480,12 +481,14 @@ export interface BundleRowInput {
   variantGroup?: boolean;
 }
 export interface BundleProposal { ids: string[]; grund: string; units: number }
+export interface AttachProposal { noteId: string; taskId: string; grund: string }
+export interface BundleSuggestions { pairs: BundleProposal[]; attach: AttachProposal[] }
 
 const verifyStepSet = (verify: string | null | undefined): string =>
   !verify ? "" : LOCAL_PROOF_STEPS.filter((step) => verify.includes(step)).join("+");
 
 /** Propose bundles under the owner's rule, in queue order; a row without a partner proposes nothing. */
-export function proposeBundles(input: { tasks: readonly BundleRowInput[] }): BundleProposal[] {
+export function proposeBundles(input: { tasks: readonly BundleRowInput[] }): BundleSuggestions {
   // the same open-shape filter projectLandWaves makes, plus the variant exclusions classify reads:
   // a variant row bundles never (E4), a variant group is in no wave at all.
   const candidates = input.tasks
@@ -524,7 +527,28 @@ export function proposeBundles(input: { tasks: readonly BundleRowInput[] }): Bun
     const shared = a.files.filter((file) => b.files.includes(file)).sort(textOrder);
     out.push({ ids, units: a.units + b.units, grund: `${chained ? "after-Kette: " : ""}gleiches Program ${a.programId}, gemeinsame Flaeche ${shared.join(" ")}, Einheiten ${a.units + b.units}, gleiche VERIFY-Stufen ${a.steps || "keine"}` });
   }
-  return out;
+  const openWork = input.tasks.filter((t) => t.kind === "auftrag"
+    && (t.status === "pending" || t.status === "queued" || t.status === "sent")
+    && !t.variantGroup && !t.variantOf).slice().sort(rowOrder);
+  const pinned = new Set(input.tasks.flatMap((t) => (t.notes ?? []).map((n) => n.noteId)));
+  const attach: AttachProposal[] = [];
+  for (const note of input.tasks.filter((t) => t.kind === "notiz" && t.status === "pending"
+    && t.files.length > 0 && !pinned.has(t.id)).slice().sort(rowOrder)) {
+    const task = openWork.find((t) => !!note.programId && t.programId === note.programId
+      && !!note.repo && t.repo === note.repo && t.files.some((f) => note.files.includes(f)));
+    if (!task) continue;
+    const shared = [...new Set(note.files.filter((f) => task.files.includes(f)))].sort(textOrder);
+    attach.push({ noteId: note.id, taskId: task.id,
+      grund: `gleiches Program ${note.programId}, gleiches Repo ${note.repo}, gemeinsame Flaeche ${shared.join(" ")}` });
+  }
+  return { pairs: out, attach };
+}
+
+export function absorbedTaskIds(id: string, rows: readonly {
+  id: string; status: string; disposition?: { beleg?: string };
+}[]): string[] {
+  return rows.filter((t) => t.id !== id && t.status === "archived"
+    && t.disposition?.beleg?.split(/[^a-zA-Z0-9_-]+/).includes(id)).map((t) => t.id);
 }
 
 export function taskOverlap(id: string, rows: readonly BundleRowInput[]): {
@@ -537,7 +561,7 @@ export function taskOverlap(id: string, rows: readonly BundleRowInput[]): {
     && (t.status === "pending" || t.status === "queued" || t.status === "sent"))
     .map((t) => ({ id: t.id, kind: t.kind!, files: [...new Set(t.files.filter((f) => row.files.includes(f)))].sort(textOrder) }))
     .filter((t) => t.files.length > 0);
-  return { rows: matches, buendel: proposeBundles({ tasks: rows }).filter((p) => p.ids.includes(id)) };
+  return { rows: matches, buendel: proposeBundles({ tasks: rows }).pairs.filter((p) => p.ids.includes(id)) };
 }
 
 // --- CLI: the same projector for shell/read-only consumers. The MAIN runs it in the main checkout
@@ -552,7 +576,7 @@ const argAfter = (name: string): string | null => {
 interface StateTask {
   id?: unknown; kind?: unknown; status?: unknown; created?: unknown; repo?: unknown; programId?: unknown;
   card?: { valid?: unknown; size?: unknown; surfaceValid?: unknown; after?: unknown; verify?: unknown; surface?: { creates?: unknown } };
-  variantOf?: unknown; variants?: unknown;
+  variantOf?: unknown; variants?: unknown; notes?: { noteId: string }[];
 }
 
 async function cli(): Promise<void> {
@@ -615,7 +639,7 @@ async function cli(): Promise<void> {
       ...(typeof task.programId === "string" && task.programId ? { programId: task.programId } : {}),
       ...(task.card?.valid === true && isTaskCardSize(task.card.size) ? { size: task.card.size } : {}),
       ...(typeof task.card?.verify === "string" ? { verify: task.card.verify } : {}),
-      files,
+      files, repo: typeof task.repo === "string" && task.repo ? task.repo : defaultRepo, notes: task.notes,
       ...(after.length ? { after } : {}),
       ...(typeof task.variantOf === "string" && task.variantOf ? { variantOf: task.variantOf } : {}),
       ...(Array.isArray(task.variants) ? { variantGroup: true as const } : {}),

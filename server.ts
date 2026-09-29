@@ -75,8 +75,8 @@ import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NO
 // boundary: it asks THIS projector whether the ids it was handed are one of its own waves, so the
 // board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
 import {
-  LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves, proposeBundles, taskOverlap,
-  type BundleRowInput, type BundleProposal, type LandWave, type LandWaveProjection, type LandWaveTaskInput,
+  LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves, proposeBundles, taskOverlap, absorbedTaskIds,
+  type BundleRowInput, type LandWave, type LandWaveProjection, type LandWaveTaskInput,
 } from "./task-land-waves";
 import { isTaskCardSize, type TaskCardSize, type TaskWaveRange } from "./task-waves";
 import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
@@ -2822,7 +2822,10 @@ async function programExecutionView(s: Slot): Promise<Response> {
     // that is actually possible — a line that fired on an empty tail would be noise, not a gap.
     if (fleetReports.length >= FLEET_REPORT_KEEP)
       unknown.push(`report retention holds ${fleetReports.length} rows at the ceiling of ${FLEET_REPORT_KEEP}; a task row with report null may have had one dropped rather than never filed.`);
+    const buendel = proposeBundles({ tasks: bundleRowsNow().filter((t) => t.programId === p.id) });
     return {
+      buendel: { ...buendel, attach: buendel.attach.map((a) => ({ ...a,
+        nextStep: { method: "POST", path: `/api/self/tasks/${a.taskId}/notes`, body: { note: a.noteId } } })) },
       program: {
         id: p.id, status: p.status, title: p.title, createdAt: p.createdAt,
         confirmedAt: p.confirmedAt ?? null, activatedAt: p.activatedAt ?? null,
@@ -5108,7 +5111,7 @@ function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
     origin: metadata.filesOrigin, at: Date.now(), sha };
   return t.surface;
 }
-function taskView(t: Task): Task {
+function taskView(t: Task): Task & { absorbed?: string[] } {
   const repoRaw = t.repo ?? (DISPATCH_REPO || null);
   const snapshot = repoRaw ? taskBaseSnapshotFor(repoRaw, t.base) : null;
   const project = snapshot?.project ?? (repoRaw ? basename(repoCanon(repoRaw)).replace(/\.git$/, "") : null);
@@ -5119,6 +5122,7 @@ function taskView(t: Task): Task {
   // never changed.
   const cluster = surface ? clusterForFiles(surface.files, project) : undefined;
   return { ...t,
+    ...(["pending", "queued", "sent"].includes(t.status) ? { absorbed: absorbedTaskIds(t.id, tasks) } : {}),
     files: surface?.files, filesOrigin: surface?.origin, cluster,
     ...(t.refine ? { refine: { ...t.refine, ...refineValidationFor(t, snapshot) } } : {}) };
 }
@@ -16353,11 +16357,11 @@ function bundleRowsNow(): BundleRowInput[] {
       programId: t.programId, repo: taskRepoOf(t), size: taskSizeOf(t) ?? undefined,
       verify: t.card?.verify, variantGroup: !!t.variants, variantOf: t.variantOf,
       files: [...(view.files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])],
-      after: t.card?.after };
+      after: t.card?.after, notes: t.notes };
   });
 }
 
-type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView>; buendel: BundleProposal[] };
+type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles> };
 function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlanView {
   const baseCache = new Map<string, string | null>();
   const baseOf = (repo: string | null): string | null => {

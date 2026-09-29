@@ -172,7 +172,7 @@ export async function run(): Promise<void> {
   const created = await createRes.json() as { ok?: boolean; ran?: string; afterwards?: string; sessionActive?: boolean };
   const createdStatus = spawnSync("git", ["-C", ln.cwd, "status", "--porcelain", "--", createdPath]).stdout.toString();
   check("Explorer create: empty file with intermediate directories, without git add, and an activity hint",
-    createRes.status === 200 && created.ok === true && created.ran === "no git command (create empty file without git add)"
+    createRes.status === 200 && created.ok === true && created.ran === `git '-C' '${realpathSync(ln.cwd)}' 'rev-parse' '--is-inside-work-tree'`
     && created.afterwards === `empty file at ${createdPath}; not added to git`
     && typeof created.sessionActive === "boolean" && readFileSync(`${ln.cwd}/${createdPath}`).length === 0
     && createdStatus.startsWith("?? "), `${createRes.status} ${JSON.stringify(created)} ${createdStatus}`);

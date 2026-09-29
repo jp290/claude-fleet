@@ -44239,7 +44239,7 @@ Bun.serve<WSData>({
           mkdirSync(dirname(target), { recursive: true });
           writeFileSync(target, "", { flag: "wx" });
           audit("file_write", s.id, `create · ${rel}`);
-          return json({ ok: true, ran: "no git command (create empty file without git add)",
+          return json({ ok: true, ran: `git ${["-C", root, "rev-parse", "--is-inside-work-tree"].map(quote).join(" ")}`,
             afterwards: `empty file at ${rel}; not added to git`, sessionActive });
         } catch { return json({ error: "could not create this file — nothing was overwritten" }, 409); }
       }

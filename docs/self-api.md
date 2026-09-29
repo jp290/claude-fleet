@@ -37,10 +37,12 @@ steht `receiver:null`, nie `owner`. `taskId` und `programId` kommen aus dem Lane
 die MAIN erhält ihre `programId` aus der aktiven Bindung. Fehlende Werte bleiben `null`.
 `harness` und `model` sind die gespeicherten Spawn-Werte; `null` bedeutet Fleet-Default.
 
-`waitingOnMe` enthält offene Einträge `{kind,id,slot}` für fremde bewaffnete Watches auf
-die aktuelle Lane, geparkte Sends an ihre Occupation, offene Clarifications, unentschiedene
+`waitingOnMe` enthält offene Einträge `{kind,id,slot}` für ungelesene eingehende Nachrichten,
+fremde bewaffnete Watches auf die aktuelle Lane, geparkte Sends an ihre Occupation, offene Clarifications, unentschiedene
 Fleet-Reports und einen noch offenen Succession-Debt für diesen Nachfolger. `slot` bezeichnet
-den wartenden Slot; beim Debt den betroffenen Slot selbst. Der Blick ist eine aktuelle
+bei Nachrichten den eigenen Slot, sonst den wartenden Slot; beim Debt den betroffenen Slot selbst.
+Die Nachrichtenadresse wird bei jedem Lesen aufgelöst: eine eskalierte Program-Nachricht steht
+bis zur MAIN-Bindung bei der Orchestratorin und danach bei der MAIN. Der Blick ist eine aktuelle
 Momentaufnahme, keine historische Vollständigkeitszusage. Der mutierende Lane-Brief rendert
 denselben Empfänger im Footer als `Empfaenger: <Rolle> Slot <n>`; ohne Empfänger steht dort
 `Empfaenger: unbekannt`.
@@ -2265,7 +2267,15 @@ DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, 
 | `role:"orchestrator"` ohne genau eine lebende Orchestratorin | 200 mit `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse |
 | Gültige Adresse mit lebendem Halter | 200, `holder:{slot,openedAt}` | ja |
 
-Ein lebender Halter bekommt genau einen Hinweis über den bestehenden SendPath `inbox-nudge`.
+`programStatusView` zeigt daneben `messages:{unread,oldestAt}` für ungelesene Nachrichten an die
+Program-Adresse. Der Standard-Nachfolgebrief nennt diese Nachrichten mit `GET /api/self/messages`;
+sie werden nicht als Handover-Obligations gespeichert.
+
+Der Nachrichten-Tick prüft Zustellbarkeit, Leerlauf und Ruhezeit und schreibt beim nächsten
+zustellbaren Aktivwerden einen `[fleet message]`-Hinweis über `inbox-nudge`. Ein unveränderter
+Satz ungelesener IDs erhält in derselben Session keinen zweiten Hinweis; ein später gebundener
+Halter kann die gespeicherte Nachricht und den Hinweis erhalten. Das Senden selbst tippt nichts
+in die Pane.
 `ctl.sh send --orchestrator <textfile>` sendet über `POST /api/self/messages` mit
 `FLEET_SELF_TOKEN`; die Owner-Credential wird dafür nicht gelesen.
 

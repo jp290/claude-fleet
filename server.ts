@@ -13332,6 +13332,7 @@ interface ProgramStatusMemoryView {
   attention: { open: number };
   // the two numbers of the PROGRAM INBOX, so "something is waiting" is visible without pulling it
   inbox: { unread: number; oldestAt: number | null };
+  messages: { unread: number; oldestAt: number | null };
   lanes: { running: number; queued: number; waiting: number };
 }
 // ONE ROW PER REPO THE PROGRAM HAS LANDED IN — the newest land of THAT repo, and THAT repo's
@@ -13386,6 +13387,7 @@ function programStatusView(p: Program, ctx?: ProgramStatusContext): ProgramStatu
     attention: { open: attentionRequests.filter((a) => a.programId === p.id
       && (a.status === "open" || a.status === "send-uncertain")).length },
     inbox: programInboxStatus(p),
+    messages: programMessageStatus(p),
     lanes: {
       running: slots.filter((s) => s.cwd && s.programId === p.id).length,
       queued: queued.length,
@@ -13908,6 +13910,13 @@ function messageInboundFor(s: Slot, m: Message, mine = messageAddressesFor(s)): 
   return reached.ok && reached.escalatedTo === "orchestrator" && reached.holder === s;
 }
 
+function programMessageStatus(p: Program): { unread: number; oldestAt: number | null } {
+  const unread = messages.entries.filter((m) => m.readBy === null
+    && m.to.kind === "program" && m.to.id === p.id);
+  return { unread: unread.length,
+    oldestAt: unread.reduce<number | null>((oldest, m) => oldest === null || m.at < oldest ? m.at : oldest, null) };
+}
+
 // GET /api/self/messages — the pull half. Pure projection, stamps nothing, newest first.
 function messageViewFor(s: Slot): Response {
   const mine = messageAddressesFor(s);
@@ -14001,13 +14010,6 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
     fleetEvents = [...fleetEvents, event];
   }
   await saveStateNow();
-  if (resolved.holder) {
-    const holder = resolved.holder;
-    const text = `[fleet message] ${addressLabel(to)}: ${entry.id} — GET /api/self/messages, dann POST /api/self/messages/${entry.id}/read.`;
-    void sendText(holder, text, true, { path: "inbox-nudge", deliveryClass: "sofort",
-      rollbackOwnPayload: true })
-      .catch((error: unknown) => logError("messageNudgeSend", error));
-  }
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
   return json({ ok: true, existing: false, message: entry,
@@ -16359,6 +16361,8 @@ function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
     }
   }
   const waitingOnMe = [
+    ...messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
+      .map((m) => ({ kind: "message", id: m.id, slot: s.id })),
     ...watches.filter((w) => w.armed && "target" in w && w.target === s.id
       && w.targetCwd === s.cwd && w.targetBranch === s.worktree?.branch
       && w.slot !== s.id && w.slotOpenedAt !== undefined
@@ -21064,6 +21068,8 @@ interface InboxNudgeMarker { key: string; lastAt: number; last: InboxNudgeAttemp
 // not. The self-token fallback gives unpinned/custom harness sessions that same lifecycle boundary.
 const backlogNudgeTried = new Map<number, BacklogNudgeMarker>();
 const inboxNudgeTried = new Map<number, InboxNudgeMarker>();
+const messageNudgeTried = new Map<number, { key: string; lastAt: number }>();
+const pendingMessageNudges = new Set<number>();
 const backlogSessionKey = (s: Slot): string => s.sessionId ?? `unbound:${s.selfToken}`;
 
 // The prompt is a pointer to the register, never an assignment. Task text is flattened and capped
@@ -21502,6 +21508,60 @@ async function tickInboxNudge(): Promise<void> {
   } finally {
     inboxNudgeBusy = false;
   }
+}
+
+let messageNudgeBusy = false;
+async function tickMessageNudge(): Promise<void> {
+  if (messageNudgeBusy) return;
+  messageNudgeBusy = true;
+  try {
+    const now = Date.now();
+    for (const s of slots) {
+      if (!s.cwd || s.lastOutput === 0 || pendingMessageNudges.has(s.id)) continue;
+      const unreadIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
+        .map((m) => m.id).sort();
+      if (!unreadIds.length) continue;
+      const session = backlogSessionKey(s);
+      const openedAt = s.openedAt;
+      const key = `${session}|${unreadIds.join(",")}`;
+      const prior = messageNudgeTried.get(s.id);
+      if (prior?.key === key || (prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
+      const verdict = await canDeliver(s, { now, idleMs: BACKLOG_IDLE_MS, quietHours: true });
+      if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) continue;
+      const currentIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
+        .map((m) => m.id).sort();
+      if (currentIds.join(",") !== unreadIds.join(",")) continue;
+      const text = `[fleet message] ${unreadIds.length} ungelesene adressierte Nachricht${unreadIds.length === 1 ? "" : "en"} fuer diese Session — `
+        + "GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
+      pendingMessageNudges.add(s.id);
+      void (async () => {
+        let recipient = s;
+        try {
+          const { acceptance } = await sendText(s, text, true, { path: "inbox-nudge", rollbackOwnPayload: true,
+            bundleGate: { idleMs: BACKLOG_IDLE_MS },
+            beforeSend: async (current) => {
+              const ids = messages.entries.filter((m) => m.readBy === null && messageInboundFor(current, m))
+                .map((m) => m.id).sort();
+              if (current.openedAt !== openedAt || backlogSessionKey(current) !== session
+                || ids.join(",") !== unreadIds.join(","))
+                throw new DeliveryCancelled(`messages for slot ${s.id} changed before paste`);
+              recipient = current;
+            } });
+          const sentAt = Date.now();
+          messageNudgeTried.set(recipient.id, { key, lastAt: sentAt });
+          recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          saveHistory(recipient);
+          logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
+        } catch (e) {
+          if (!(e instanceof DeliveryCancelled)) {
+            messageNudgeTried.set(s.id, { key: prior?.key ?? "", lastAt: Date.now() });
+            logError("messageNudgeSend", e);
+            logPrompt(recipient, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+          }
+        } finally { pendingMessageNudges.delete(s.id); }
+      })();
+    }
+  } finally { messageNudgeBusy = false; }
 }
 
 let backlogNudgeBusy = false;
@@ -33934,6 +33994,7 @@ function handoverCaptureRefusal(handover: ProgramHandover): string | null {
 
 function standardHandoverLines(program: Program, handover: ProgramHandover): string[] {
   const inbox = programInboxStatus(program);
+  const addressed = programMessageStatus(program);
   const entries = program.inbox?.entries.length ?? 0;
   const of = (kind: ProgramHandoverObligation["kind"]): ProgramHandoverObligation[] =>
     handover.obligations.filter((o) => o.kind === kind);
@@ -33961,6 +34022,7 @@ function standardHandoverLines(program: Program, handover: ProgramHandover): str
     program.inboxLost
       ? `- Program inbox: LOST at ${new Date(program.inboxLost.at).toISOString()} — the persisted record could not be read (${program.inboxLost.error}) and every pointer written before then is gone for good. An empty answer from GET /api/self/inbox proves nothing about what was there; the same loss is on that route's own \`unknown\` list.`
       : `- Program inbox: ${inbox.unread} unread of ${entries} entries${inbox.oldestAt === null ? "" : `, oldest unread ${new Date(inbox.oldestAt).toISOString()}`}. GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one.`,
+    `- Addressed messages: ${addressed.unread} unread for this Program${addressed.oldestAt === null ? "" : `, oldest unread ${new Date(addressed.oldestAt).toISOString()}`}. GET /api/self/messages reads them; POST /api/self/messages/<id>/read receipts one.`,
     `- Obligations that END with your predecessor: ${ofOwn("attention")} historical owner decisions, ${ofOwn("watch")} armed watches, ${ofOwn("auto")} scheduled check-ins${carried === 0 ? "" : `, plus ${carried} still unsettled from earlier sessions of this Program`}. NOTHING was re-armed — that is deliberate; re-registering is your act. Each row is RETAINED IN FULL (id, complete text, reconstruction parameters) as \`handover\` in GET /api/self/program-execution, and every row still open is CARRIED FORWARD by the next succession too — handing this Program on loses none of it. Live attention is Program state and remains on GET /api/self/attention instead of being copied here. THE LINES BELOW ARE PREVIEWS, truncated on purpose; \`owedBy\` on each says which session owed it.`,
     ...preview("attention"),
     ...preview("watch"),
@@ -37692,6 +37754,7 @@ if (BACKLOG_NUDGE_MS > 0) setInterval(() => void tickBacklogNudge().catch((e: un
 if (ACCEPT_BY_LAND_MS > 0) setInterval(() => void tickAcceptByLand("tick").catch((e: unknown) => logError("tickAcceptByLand", e)), ACCEPT_BY_LAND_MS);
 if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown) => logError("tickAuditPing", e)), AUDIT_PING_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
+if (INBOX_NUDGE_MS > 0) setInterval(() => void tickMessageNudge().catch((e: unknown) => logError("tickMessageNudge", e)), INBOX_NUDGE_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);
 if (API_STALL_RESUME_ON) setInterval(() => void tickApiStallResume().catch((e: unknown) => logError("tickApiStallResume", e)), API_STALL_TICK_MS);
 setInterval(() => void tickRateLimitResume().catch((e: unknown) => logError("tickRateLimitResume", e)), RATE_LIMIT_TICK_MS);

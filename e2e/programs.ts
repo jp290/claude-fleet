@@ -133,6 +133,7 @@ interface ProgramStatusViewMemory {
   main: { slot: number | null; occupancy: "live" | "stale" | "unbound";
     sessionIdMatch: "exact" | "divergent" | "unknown" };
   attention: { open: number };
+  messages: { unread: number; oldestAt: number | null };
   lanes: { running: number; queued: number; waiting: number };
 }
 interface ProgramStatusView extends ProgramStatusViewMemory {
@@ -3361,10 +3362,25 @@ export async function run(ctx: Ctx): Promise<void> {
       && msgOutBody.holder?.slot === msgBSlot && msgOutBody.note === null,
     `${msgOut.status} id=${msgOutId} from=${JSON.stringify(msgOutBody.message?.from)} holder=${JSON.stringify(msgOutBody.holder)}`);
 
+  const msgOutStored = (readState().messages as { entries?: MessageRow[] } | undefined)?.entries
+    ?.find((m) => m.id === msgOutId);
+  const msgBStatus = (await ownerPrograms()).find((p) => p.id === msgProgramB.id)?.executionStatus?.messages;
+  const msgBPosition = (await (await fetch(`${BASE}/api/self`,
+    { headers: { "x-fleet-self-token": msgBToken } })).json()) as {
+      position?: { waitingOnMe?: { kind: string; id: string; slot: number }[] } };
+  check("message status and waitingOnMe: B sees the unread addressed message and its own slot until receipt",
+    msgOutStored !== undefined && msgBStatus?.unread === 1 && msgBStatus.oldestAt === msgOutStored.at
+      && msgBPosition.position?.waitingOnMe?.some((w) => w.kind === "message"
+        && w.id === msgOutId && w.slot === msgBSlot) === true,
+    JSON.stringify({ status: msgBStatus, waiting: msgBPosition.position?.waitingOnMe, id: msgOutId }));
+
   const msgBView = await selfMessages(msgBToken);
   const msgBSeen = msgBView.view?.entries.find((e) => e.id === msgOutId);
   const msgBReceipt = await selfMessageRead(msgBToken, msgOutId);
   const msgBReceiptBody = await msgBReceipt.json() as { existing?: boolean; message?: MessageRow };
+  const msgBAfterRead = (await (await fetch(`${BASE}/api/self`,
+    { headers: { "x-fleet-self-token": msgBToken } })).json()) as {
+      position?: { waitingOnMe?: { kind: string; id: string }[] } };
   check("message rail: B reads what is addressed to B, and the receipt stamps B's exact occupant triple",
     msgBView.response.ok && !!msgBSeen && msgBSeen.payload.text === msgOutText
       && msgBSeen.readBy === null && msgBView.view?.unread === 1
@@ -3373,6 +3389,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && msgBReceiptBody.message.readBy.openedAt === (readState().slots?.[String(msgBSlot)]?.openedAt ?? -1)
       && typeof msgBReceiptBody.message.readAt === "number",
     `view=${msgBView.response.status} seen=${!!msgBSeen} receipt=${msgBReceipt.status} ${JSON.stringify(msgBReceiptBody.message?.readBy)}`);
+  check("message waitingOnMe: a receipt removes the addressed message",
+    msgBAfterRead.position?.waitingOnMe?.some((w) => w.kind === "message" && w.id === msgOutId) === false,
+    JSON.stringify(msgBAfterRead.position?.waitingOnMe));
 
   // THE RUECKWEG, and `replyTo` is a FIELD rather than a convention — that is what makes "the
   // message and its answer under the same references" an assertion instead of a habit.
@@ -3748,6 +3767,12 @@ export async function run(ctx: Ctx): Promise<void> {
   const expectedTaskLine = "- Task rows: not copied here. GET /api/self/memory?view=work reads each row's status, hold.grund and audit state";
   const expectedInboxLine = `- Program inbox: ${handoverUnread.length} unread of ${handoverInbox?.entries.length ?? 0} entries`
     + `${handoverOldest === null ? "" : `, oldest unread ${new Date(handoverOldest).toISOString()}`}.`;
+  const handoverMessages = ((readState().messages as { entries?: MessageRow[] } | undefined)?.entries ?? [])
+    .filter((m) => m.to.kind === "program" && m.to.id === mainProgram.id && m.readBy === null);
+  const handoverMessageOldest = handoverMessages.reduce<number | null>((oldest, m) =>
+    oldest === null || m.at < oldest ? m.at : oldest, null);
+  const expectedMessagesLine = `- Addressed messages: ${handoverMessages.length} unread for this Program`
+    + `${handoverMessageOldest === null ? "" : `, oldest unread ${new Date(handoverMessageOldest).toISOString()}`}.`;
   const successionHeadAfter = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
   // BREAKS IF: the succession is bought with a commit again, in this fixture or in the server.
   check("Program-MAIN Standard succession costs the tree no commit: HEAD is unmoved and no HANDOFF.md was written",
@@ -3762,8 +3787,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && successionPrompt.includes(expectedTaskLine) && !successionPrompt.includes("- Open task rows:")
       && successionPrompt.includes("GET /api/self/program-execution gives each row its phase")
       && successionPrompt.includes(expectedInboxLine)
-      && successionPrompt.includes("GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one."),
-    JSON.stringify({ expectedTaskLine, expectedInboxLine,
+      && successionPrompt.includes("GET /api/self/inbox reads them; POST /api/self/inbox/<id>/read receipts one.")
+      && handoverMessages.length > 0 && successionPrompt.includes(expectedMessagesLine)
+      && successionPrompt.includes("GET /api/self/messages reads them; POST /api/self/messages/<id>/read receipts one."),
+    JSON.stringify({ expectedTaskLine, expectedInboxLine, expectedMessagesLine,
       got: successionPrompt.split("\n").filter((line) => line.startsWith("- ")) }));
   // --- DYING OBLIGATIONS ARE RETAINED; PROGRAM ATTENTION STAYS LIVE. ----------------------------
   // Watches and autos disappear with the predecessor, so the successor reads their complete rows
@@ -4097,6 +4124,8 @@ export async function run(ctx: Ctx): Promise<void> {
     `unreadKept=${(msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "unread-oldest")} readGone=${!(msgOrder?.entries ?? []).some((e) => e.idempotencyKey === "read-newer")} dropped=${msgOrder?.dropped}`);
   await msgPlant(undefined, undefined);
 
+  await restartSrv({ FLEET_INBOX_NUDGE_MS: "10000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
+
   const orchFree = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
   const orchOpen = await post(`/api/slots/${orchFree}/open`, { cwd: REPO, label: "🎛 message receiver" });
   const msgOrchToken = slotToken(orchFree);
@@ -4116,14 +4145,32 @@ export async function run(ctx: Ctx): Promise<void> {
     payload: { kind: "text", text: "direct orchestrator address" }, idempotencyKey: "escalate-direct" });
   const directBody = await directOrch.json() as { holder?: { slot?: number }; escalatedTo?: string | null;
     message?: { id?: string } };
+  const beforeFirstTick = nudgeCount();
+  check("message send: sending records the message without an immediate inbox-nudge send",
+    directOrch.ok && beforeFirstTick === beforeNudge,
+    `send=${directOrch.status} nudges=${beforeFirstTick - beforeNudge}`);
   const directView = await selfMessages(msgOrchToken);
+  const directPosition = (await (await fetch(`${BASE}/api/self`,
+    { headers: { "x-fleet-self-token": msgOrchToken } })).json()) as {
+      position?: { waitingOnMe?: { kind: string; id: string; slot: number }[] } };
+  check("message waitingOnMe: the unique Orchestrator sees its direct message",
+    directPosition.position?.waitingOnMe?.some((w) => w.kind === "message"
+      && w.id === directBody.message?.id && w.slot === orchFree) === true,
+    JSON.stringify(directPosition.position?.waitingOnMe));
+  await restartSrv({ FLEET_INBOX_NUDGE_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
   try { await until(() => nudgeCount() >= beforeNudge + 1, { timeoutMs: 20_000, stepMs: 100,
     what: "one inbox-nudge send audit for direct orchestrator message" }); } catch { /* asserted below */ }
-  check("message escalation: MAIN addresses the unique Orchestrator, whose own view holds the message and whose slot gets one inbox-nudge send",
+  const directPromptCount = async (): Promise<number> => (await plogRead()).filter((e) =>
+    e.slot === orchFree && e.openedAt === readState().slots?.[String(orchFree)]?.openedAt
+      && e.text.startsWith("[fleet message]")).length;
+  const firstMessagePrompts = await directPromptCount();
+  await Bun.sleep(1200);
+  check("message escalation: MAIN addresses the unique Orchestrator, whose own view holds the message and whose slot gets one inbox-nudge send on the tick",
     directOrch.ok && directBody.holder?.slot === orchFree && directBody.escalatedTo === null
       && directView.view?.entries.some((m) => m.id === directBody.message?.id) === true
-      && nudgeCount() === beforeNudge + 1,
-    `status=${directOrch.status} holder=${directBody.holder?.slot} view=${directView.view?.entries.some((m) => m.id === directBody.message?.id)} nudges=${nudgeCount() - beforeNudge}`);
+      && nudgeCount() === beforeNudge + 1 && firstMessagePrompts === 1
+      && await directPromptCount() === 1,
+    `status=${directOrch.status} holder=${directBody.holder?.slot} view=${directView.view?.entries.some((m) => m.id === directBody.message?.id)} nudges=${nudgeCount() - beforeNudge} prompts=${firstMessagePrompts}/${await directPromptCount()}`);
 
   const supervisorEscalated = await selfSend(slotToken(successorSlot), { to: { kind: "role", role: "supervisor" },
     payload: { kind: "text", text: "Supervisor has no live binding" }, idempotencyKey: "escalate-supervisor" });
@@ -4132,11 +4179,16 @@ export async function run(ctx: Ctx): Promise<void> {
     payload: { kind: "text", text: "Program has no live MAIN" }, idempotencyKey: "escalate-program" });
   const programBody = await programEscalated.json() as { escalatedTo?: string; message?: { id?: string } };
   const escalatedView = await selfMessages(msgOrchToken);
+  const escalatedPosition = (await (await fetch(`${BASE}/api/self`,
+    { headers: { "x-fleet-self-token": msgOrchToken } })).json()) as {
+      position?: { waitingOnMe?: { kind: string; id: string; slot: number }[] } };
   check("message escalation: unbound Supervisor and Program keep their original addresses and become visible to the Orchestrator",
     supervisorEscalated.ok && programEscalated.ok
       && supervisorBody.escalatedTo === "orchestrator" && programBody.escalatedTo === "orchestrator"
       && escalatedView.view?.entries.some((m) => m.id === supervisorBody.message?.id && m.to.role === "supervisor") === true
-      && escalatedView.view?.entries.some((m) => m.id === programBody.message?.id && m.to.id === msgUnheldProgram.id) === true,
+      && escalatedView.view?.entries.some((m) => m.id === programBody.message?.id && m.to.id === msgUnheldProgram.id) === true
+      && escalatedPosition.position?.waitingOnMe?.some((w) => w.kind === "message"
+        && w.id === programBody.message?.id && w.slot === orchFree) === true,
     `supervisor=${supervisorEscalated.status}/${supervisorBody.escalatedTo} program=${programEscalated.status}/${programBody.escalatedTo}`);
 
   const clarificationLaneOpen = await post("/api/lanes", { repo: REPO });
@@ -4160,6 +4212,39 @@ export async function run(ctx: Ctx): Promise<void> {
       && orchClarificationBody.requests?.some((r) => r.id === askBody.request?.id) === true && orchReply.ok,
     `ask=${askOrch.status}/${askBody.request?.basis} receiver=${askBody.request?.receiver?.slot} reply=${orchReply.status}`);
   await post(`/api/slots/${clarificationLaneSlot}/kill`, {});
+
+  const lateMsgSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const rebindOpen = await post(`/api/slots/${lateMsgSlot}/open`, { cwd: REPO, label: "message-late-main" });
+  await stopSrv();
+  const lateMsgState = readState();
+  const rebindOccupant = lateMsgState.slots?.[String(lateMsgSlot)];
+  const rebindProgram = lateMsgState.programs?.find((p) => p.id === msgUnheldProgram.id);
+  if (rebindProgram && rebindOccupant)
+    rebindProgram.main = { slot: lateMsgSlot, openedAt: rebindOccupant.openedAt ?? 0,
+      sessionId: rebindOccupant.sessionId ?? null, boundAt: Date.now() };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(lateMsgState, null, 2), { mode: 0o600 });
+  await restartSrv({ FLEET_INBOX_NUDGE_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
+  const rebindPosition = (await (await fetch(`${BASE}/api/self`,
+    { headers: { "x-fleet-self-token": slotToken(lateMsgSlot) } })).json()) as {
+      position?: { waitingOnMe?: { kind: string; id: string; slot: number }[] } };
+  const orchAfterRebind = (await (await fetch(`${BASE}/api/self`,
+    { headers: { "x-fleet-self-token": msgOrchToken } })).json()) as {
+      position?: { waitingOnMe?: { kind: string; id: string }[] } };
+  try { await until(async () => (await plogRead()).some((e) => e.slot === lateMsgSlot
+    && e.openedAt === readState().slots?.[String(lateMsgSlot)]?.openedAt
+    && e.text.startsWith("[fleet message]")), { timeoutMs: 20_000, stepMs: 100,
+    what: "one message nudge after late Program MAIN binding" }); } catch { /* asserted below */ }
+  const rebindPrompts = (await plogRead()).filter((e) => e.slot === lateMsgSlot
+    && e.openedAt === readState().slots?.[String(lateMsgSlot)]?.openedAt
+    && e.text.startsWith("[fleet message]"));
+  check("message late binding: the Program message moves from Orchestrator waitingOnMe to its MAIN and gets one tick hint",
+    rebindOpen.ok && lateMsgSlot > 0 && rebindPosition.position?.waitingOnMe?.some((w) =>
+      w.kind === "message" && w.id === programBody.message?.id && w.slot === lateMsgSlot) === true
+      && orchAfterRebind.position?.waitingOnMe?.some((w) => w.kind === "message"
+        && w.id === programBody.message?.id) === false && rebindPrompts.length === 1,
+    JSON.stringify({ slot: lateMsgSlot, main: rebindPosition.position?.waitingOnMe,
+      orchestrator: orchAfterRebind.position?.waitingOnMe, prompts: rebindPrompts.length }));
+  await post(`/api/slots/${lateMsgSlot}/kill`, {});
 
   const secondOrch = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
   const secondOpen = await post(`/api/slots/${secondOrch}/open`, { cwd: REPO, label: "🎛 second receiver" });

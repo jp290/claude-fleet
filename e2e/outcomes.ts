@@ -1167,6 +1167,7 @@ export async function run(): Promise<void> {
       recSup?.review?.state === "superseded" && (recSup?.review?.findings?.length ?? 0) === 2,
       JSON.stringify(recSup?.review ?? null).slice(0, 200));
 
+    await restartSrv();
     // t | event | exclusive owner
     // 0 | A review enters the external latch | A job
     // 1 | A is torn down, B reuses the slot and clicks ③ | B job

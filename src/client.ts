@@ -2814,7 +2814,7 @@ export function closeFxMenu(refocus: boolean): void {
   open?.trigger.classList.remove("on");
   if (refocus) open?.trigger.focus();
 }
-function fxActions(slot: number, rel: string): HTMLElement {
+function fxActions(slot: number, rel: string, writes?: (menu: HTMLElement) => void): HTMLElement {
   const actions = el("div", "fxacts");
   const more = el("button", "fxmore") as HTMLButtonElement;
   more.appendChild(icon("dots"));
@@ -2839,6 +2839,7 @@ function fxActions(slot: number, rel: string): HTMLElement {
       closeFxMenu(false);
     });
     item("Copy path", `Kopiert den relativen Pfad ${rel}`, (b) => { copyText(rel); b.textContent = "Copied"; });
+    writes?.(menu);
     actions.appendChild(menu);
     more.classList.add("on");
     fxMenu = { panel: menu, trigger: more };
@@ -2901,6 +2902,7 @@ interface PaintOpts {
   changedOnly?: boolean;
   actions?: (rel: string) => HTMLElement;
   onDrag?: (rel: string, e: DragEvent) => void;
+  onDrop?: (folder: string, e: DragEvent) => void;
 }
 const FX_PATH_MIME = "application/x-fleet-explorer-path";
 interface FxPathDrop { slot: number; path: string }
@@ -2918,7 +2920,7 @@ function fxAppendPath(text: string, path: string): string {
 export function fxStartDrag(slot: number, path: string, e: DragEvent): void {
   if (!e.dataTransfer) return;
   e.dataTransfer.setData(FX_PATH_MIME, JSON.stringify({ slot, path } satisfies FxPathDrop));
-  e.dataTransfer.effectAllowed = "copy";
+  e.dataTransfer.effectAllowed = "copyMove";
   const source = e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
   const explorer = source?.closest<HTMLElement>("#shell-files");
   if (explorer && source) {
@@ -3025,6 +3027,14 @@ export function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void
       row.setAttribute("aria-expanded", open ? "true" : "false");
       const act = () => { if (open) o.open.delete(rel); else o.open.add(rel); wantFocus = rel; redraw(); };
       row.onclick = act;
+      if (o.onDrop) {
+        row.ondragover = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = e.dataTransfer.types.includes(FX_PATH_MIME)
+            && !e.dataTransfer.types.includes("Files") ? "move" : "none";
+        };
+        row.ondrop = (e) => { e.preventDefault(); e.stopPropagation(); o.onDrop?.(rel, e); };
+      }
       appendRow(row, `${rel}/`, rows, act);
       takeFocus(rel, row);
       if (open) walkTree(kid, rel, depth + 1, rows);
@@ -3098,6 +3108,92 @@ export function fxTreeOf(paths: string[]): TreeNode {
   }
   return root;
 }
+type FxWriteKind = "New file" | "Rename" | "Move" | "Delete";
+interface FxWriteReply { ran?: string; afterwards?: string; sessionActive?: boolean; error?: string }
+function fxMoveDrop(slot: number, tracked: string[], folder: string, e: DragEvent): FxPathDrop | null {
+  if (!e.dataTransfer || e.dataTransfer.types.includes("Files")) return null;
+  const source = fxPathDrop(e.dataTransfer.getData(FX_PATH_MIME));
+  return source?.slot === slot && tracked.includes(source.path) && !source.path.endsWith("/")
+    && `${folder}/${source.path.split("/").pop()}` !== source.path ? source : null;
+}
+async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: string, to = ""):
+  Promise<FxWriteReply | null> {
+  const create = kind === "New file";
+  const remove = kind === "Delete";
+  const rename = kind === "Rename";
+  const parent = path.slice(0, path.lastIndexOf("/") + 1);
+  const body = el("div", "fxwritebody");
+  if (sessionActive(slot)) body.appendChild(el("div", "ocwarn",
+    "this session is working right now — " + (create
+      ? "it may create this same path; an existing file will not be overwritten"
+      : remove ? "it may still read or write this file; deleting it does not stop the session"
+      : "it may still read or write the old path; imports and references will not follow this move")));
+  let input: HTMLInputElement | null = null;
+  if (!remove) {
+    const label = el("label", "fxwritelabel", rename ? "New name" : "Path");
+    input = el("input", "fxwriteinput") as HTMLInputElement;
+    input.type = "text"; input.spellcheck = false; input.autocomplete = "off";
+    input.dataset.ownEnter = "1";
+    input.value = create ? to : rename ? path.slice(parent.length) : to || path;
+    input.title = rename ? "Neuer Dateiname im selben Ordner" : "Relativer Dateipfad in dieser Session";
+    label.appendChild(input); body.appendChild(label);
+  }
+  const row = (label: string) => {
+    const r = el("div", "fxwriterow");
+    const value = el("span", "fxwritevalue");
+    r.append(el("span", "fxwritekey", label), value); body.appendChild(r);
+    return value;
+  };
+  const runs = row("Runs");
+  row("Where").textContent = `${root} · Slot ${slot}`;
+  const afterwards = row("Afterwards");
+  row("Not moved").textContent = create ? "Bestehende Dateien bleiben unverändert; kein git add und kein Commit."
+    : remove ? "Verweise bleiben unverändert; die Session läuft weiter; kein Commit."
+    : "Importe und Verweise bleiben am alten Pfad; die Session läuft weiter; kein Commit.";
+  row("Recovery").textContent = create ? "Die neue Datei löschen; ungetrackte Dateien blockieren das Land."
+    : remove ? "git restore --staged --worktree — eine gestagte Löschung braucht einen Commit."
+    : "git mv zurück — eine gestagte Umbenennung braucht einen Commit.";
+  const quote = (arg: string) => "'" + arg.replaceAll("'", "'\\''") + "'";
+  let target = "";
+  let valid = remove;
+  const update = () => {
+    const value = input?.value ?? "";
+    target = rename ? parent + value : value;
+    valid = remove || !!target.trim() && !target.startsWith("/") && !/[\0\r\n]/.test(target)
+      && target.split("/").every((p) => !!p && p !== "." && p !== "..")
+      && (!rename || !value.includes("/")) && (create || target !== path);
+    const args = create ? ["-C", root, "rev-parse", "--is-inside-work-tree"]
+      : ["-C", root, "--literal-pathspecs", remove ? "rm" : "mv", "--", path, ...(!remove ? [target] : [])];
+    runs.textContent = `git ${args.map(quote).join(" ")}`;
+    afterwards.textContent = create ? `empty file at ${target || "…"}; not added to git`
+      : remove ? `${path} removed from the worktree; deletion staged in git`
+      : `${path} moved to ${target}; rename staged in git`;
+    input?.setAttribute("aria-invalid", String(!valid));
+    const button = body.closest(".panel")?.querySelector<HTMLButtonElement>(".riskbtn.primary, .riskbtn.danger");
+    if (button) button.disabled = !valid;
+  };
+  update();
+  if (input) input.oninput = update;
+  const answer = askRisk({ title: `${kind}${create ? "" : ` — ${path}`}`, body: [body],
+    panelClass: "riskpanel fxwritepanel",
+    buttons: [{ label: "Cancel", value: false },
+      { label: kind, value: true, primary: !remove, danger: remove, disabled: !valid }] });
+  const shield = (e: KeyboardEvent) => {
+    e.stopPropagation();
+    if (e.key === "Escape") body.closest(".panel")?.querySelector<HTMLButtonElement>(".riskbtn")?.click();
+  };
+  window.addEventListener("keydown", shield, true);
+  input?.focus();
+  const accepted = await answer.finally(() => window.removeEventListener("keydown", shield, true));
+  if (!accepted || !valid) return null;
+  try {
+    const res = await post(`/api/file/${create ? "create" : remove ? "delete" : "move"}`,
+      { slot, path: create ? target : path, ...(!create && !remove ? { to: target } : {}) });
+    const reply = await res.json().catch(() => null) as FxWriteReply | null;
+    return res.ok && reply?.ran && reply.afterwards ? reply
+      : { error: reply?.error ?? `the server refused this change (${res.status})` };
+  } catch { return { error: "the change could not be confirmed — re-read the tree before retrying" }; }
+}
 export async function loadTree(slot: number, cwd: string): Promise<void> {
   const res = await api(`/api/tree?slot=${slot}`).catch(() => null);
   if (res?.ok) {
@@ -3168,13 +3264,61 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   const shell = openShell({
     id: "files",
     title: "Files",
-    detailHint: "Pick a file on the left. This window only reads — ✎ under a file is one extra click.",
+    detailHint: "Pick a file on the left. New file and the file menu preview each change before writing.",
     listWidth: 300,
     onClose: () => { fxShell = null; closeFxMenu(false); clearInterval(timer); clearTimeout(searchTimer); searchSeq++; },
   });
   fxShell = shell;
   // a ↻ that failed leaves the error in fxTree; the window keeps painting the last tree it had
   const tree = (): TreeInfo => { const t = fxTree.get(cwd); return t && !("error" in t) ? t : t0; };
+  let writeBusy = false;
+  const writeState = el("div", "fxwritestate");
+  writeState.setAttribute("role", "status");
+  shell.tools.after(writeState);
+  const write = async (kind: FxWriteKind, path = "", to = "") => {
+    if (writeBusy || !shell.isOpen()) return;
+    if (shell.detail.querySelector(".fvedit-ta")) {
+      writeState.textContent = "Finish editing this file before changing paths.";
+      return;
+    }
+    if (kind !== "New file" && !tree().files.includes(path)) return;
+    writeBusy = true;
+    closeFxMenu(false);
+    shell.setCloseGuard(() => true);
+    const reply = await fxWrite(slot, tree().root, kind, path, to);
+    shell.setCloseGuard(null);
+    if (reply) {
+      writeState.classList.toggle("err", !!reply.error);
+      writeState.textContent = reply.error ?? `Afterwards: ${reply.afterwards}`;
+      writeState.title = reply.ran ?? "";
+      if (!reply.error) {
+        fxUntracked.set(cwd, true);
+        if (kind === "Delete" && picked === path) {
+          picked = null; head = null; facts = null;
+          shell.detail.replaceChildren(el("div", "shellhint", reply.afterwards));
+        } else if ((kind === "Move" || kind === "Rename") && picked === path) {
+          picked = null; head = null; facts = null;
+          shell.detail.replaceChildren(el("div", "shellhint", "Pick the file at its new path to read it."));
+        }
+        await reread();
+        if (fxContents.get(cwd)) scheduleContents();
+      }
+    }
+    writeBusy = false;
+  };
+  const actions = (rel: string) => fxActions(slot, rel, (menu) => {
+    if (rel.endsWith("/") || !tree().files.includes(rel)) return;
+    for (const [kind, title] of [
+      ["Rename", "Datei im selben Ordner umbenennen — erst nach Bestätigung"],
+      ["Move", "Datei an einen anderen relativen Pfad verschieben — erst nach Bestätigung"],
+      ["Delete", "Getrackte Datei mit git rm löschen — erst nach Bestätigung"],
+    ] as const) {
+      const b = el("button", "fxmenuitem", kind) as HTMLButtonElement;
+      b.title = title; b.setAttribute("role", "menuitem");
+      b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); void write(kind, rel); };
+      menu.appendChild(b);
+    }
+  });
 
   // ↻ in the window's own head, beside ✕ (G1.1). Before this the window showed a tree it had read
   // once, and a file the agent had just written stayed missing until the CARD's ↻.
@@ -3238,7 +3382,10 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   };
   pathsB.onclick = () => setMode(false);
   contentsB.onclick = () => setMode(true);
-  shell.tools.append(search, mode, seg, untr);
+  const newFile = el("button", "fxtog", "New file") as HTMLButtonElement;
+  newFile.title = "Eine leere Datei anlegen — Pfad und Folgen vor dem Schreiben bestätigen";
+  newFile.onclick = () => void write("New file");
+  shell.tools.append(search, mode, seg, untr, newFile);
   const paintTools = () => {
     const v = fxView(cwd, tree());
     const changed = fxChanged.get(cwd) ?? false;
@@ -3292,7 +3439,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
     const mention = el("button", "fxmention", "Mention") as HTMLButtonElement;
     mention.title = `Fügt ${rel} in den Entwurf von Slot ${slot} ein — schreibt keine Datei`;
     mention.onclick = () => mentionExplorerPath(slot, rel);
-    top.append(crumb, mention, fxActions(slot, rel));
+    top.append(crumb, mention, actions(rel));
     h.appendChild(top);
     const meta = el("div", "fxfmeta");
     meta.appendChild(el("span", "", xy === "??"
@@ -3350,7 +3497,10 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
     const rows: ShellRow[] = [];
     for (const hit of contentResult.matches) {
       const row = el("button", `fxrow fxcontent${picked === hit.path ? " fxpicked" : ""}`) as HTMLButtonElement;
-      row.append(el("span", "fxcontentpath", hit.path), el("span", "fxcontentline", String(hit.line)),
+      const path = el("span", "fxcontentpath", hit.path.split("/").pop());
+      const parent = hit.path.slice(0, hit.path.lastIndexOf("/"));
+      if (hit.path.includes("/")) path.appendChild(el("span", "fxcontentdir", ` · ${parent}/`));
+      row.append(path, el("span", "fxcontentline", String(hit.line)),
         el("span", "fxcontenttext", hit.text.trim()));
       row.title = `${hit.path}:${hit.line}`;
       const act = () => open(hit.path, hit.line);
@@ -3358,7 +3508,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
       row.draggable = true;
       row.ondragstart = (e) => fxStartDrag(slot, hit.path, e);
       const line = el("div", "fxline");
-      line.append(row, fxActions(slot, hit.path));
+      line.append(row, actions(hit.path));
       shell.list.appendChild(line);
       rows.push({ el: row, open: act });
     }
@@ -3407,7 +3557,11 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
       query: fxQuery.get(cwd) ?? "",
       all: v.paths, capped: t.capped, shown: t.files.length, total: t.total,
       status: v.status, statusMore: v.statusMore, changedOnly: fxChanged.get(cwd) ?? false,
-      actions: (rel) => fxActions(slot, rel), onDrag: (rel, e) => fxStartDrag(slot, rel, e),
+      actions, onDrag: (rel, e) => fxStartDrag(slot, rel, e),
+      onDrop: (folder, e) => {
+        const source = fxMoveDrop(slot, t.files, folder, e);
+        if (source) void write("Move", source.path, `${folder}/${source.path.split("/").pop()}`);
+      },
       // ↑↓ walk the rows and Enter opens the selected one — the same keyboard contract every other
       // window here has. Without it this list was mouse-only, alone among the four.
       onRows: (rows) => {

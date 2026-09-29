@@ -2358,6 +2358,20 @@
   .fxrow:hover { background: var(--c-hover); }
   .fxrow[draggable="true"] { cursor: grab; }
   .fxrow[draggable="true"]:active { cursor: grabbing; }
+  .fxwritepanel { width: min(620px, 94vw); overflow-y: auto; }
+  .fxwritepanel h2 { overflow-wrap: anywhere; }
+  .fxwritebody { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .fxwritelabel { display: flex; flex-direction: column; gap: 5px; color: var(--chat-mute); }
+  .fxwriteinput { width: 100%; box-sizing: border-box; min-height: 36px; padding: 6px 8px;
+    font: var(--chat-code-fs) var(--chat-mono); color: var(--chat-ink); background: var(--chat-surface);
+    border: 1px solid var(--chat-edge); border-radius: var(--r1); }
+  .fxwriterow { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; }
+  .fxwritekey { color: var(--chat-mute); font-family: var(--chat-sans); }
+  .fxwritevalue { overflow-wrap: anywhere; white-space: pre-wrap; font-family: var(--chat-mono); }
+  .fxwritestate { flex: none; padding: 8px 14px; border-bottom: 1px solid var(--chat-edge-soft);
+    font-size: var(--chat-ui-fs); overflow-wrap: anywhere; }
+  .fxwritestate:empty { display: none; }
+  .fxwritestate.err { color: var(--danger); }
   .fxline { position: relative; display: flex; align-items: center; min-width: 0; flex: none; }
   .fxline > .fxrow { flex: 1 1 auto; min-width: 0; }
   .fxacts { position: relative; flex: none; display: flex; align-items: center; }
@@ -2408,7 +2422,8 @@
   /* A dragged path has to reach the composer behind this full-screen window. Keep the explorer
      visible as the source, but let pointer events and the user's eye through to the drop target. */
   #shell-files.fxdragging { pointer-events: none; background: #0002; }
-  #shell-files.fxdragging .shellwin { opacity: .16; }
+  #shell-files.fxdragging .shellwin { opacity: .85; }
+  #shell-files.fxdragging .shelllist { pointer-events: auto; }
   #shell-files .shellhead { border-bottom: 0; padding-bottom: 6px; }
   #shell-files .fxmono { font-family: var(--chat-mono); color: var(--chat-prose); }
   #shell-files .fxnum { font-variant-numeric: tabular-nums; }
@@ -2460,6 +2475,7 @@
   .fxcontent { display: grid; grid-template-columns: minmax(90px, 38%) 34px minmax(0, 1fr); gap: 8px;
     font-family: var(--chat-sans); }
   .fxcontentpath { overflow: hidden; text-overflow: ellipsis; color: var(--chat-ink); font-family: var(--chat-mono); }
+  .fxcontentdir { color: var(--chat-faint); }
   .fxcontentline { color: var(--chat-faint); text-align: right; font-variant-numeric: tabular-nums; }
   .fxcontenttext { overflow: hidden; text-overflow: ellipsis; color: var(--chat-mute); }
   .fxcontentempty { margin: 8px; line-height: 1.45; }
@@ -2492,6 +2508,12 @@
     #shell-files .pkfilterin { flex: 1 0 100%; max-width: none; height: 40px; font-size: 16px; }
     .fxseg { overflow-x: auto; }
     .fxseg button, .fxtog { height: 40px; }
+    .panel.fxwritepanel { width: 100vw; max-width: none; max-height: none;
+      height: var(--vvh, 100dvh); box-sizing: border-box; border-radius: 0;
+      overflow-y: auto; }
+    .fxwriteinput { min-height: 40px; font-size: 16px; }
+    .fxwritepanel .riskbtn { min-height: 40px; }
+    .fxwriterow { grid-template-columns: 80px minmax(0, 1fr); gap: 8px; }
     .fxreload { width: 40px; height: 40px; }
     #shell-files .fxrow { height: 40px; }
     .fxmore, .fxmention { min-width: 40px; height: 40px; }

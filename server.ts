@@ -2634,16 +2634,23 @@ function newestLaneReportFor(taskId: string, lane: Slot): string | null {
 
 // I8 — the lane's own isolated-suite preview, distilled to the three states the land door names.
 // A LIVE job (offered/claimed) outranks the newest reported verdict, exactly as laneSuiteOfferOf
-// reads the one open offer; a reported job counts only when it ran RED — green or unknown settled
-// the debt as far as the door is concerned. No phase rule reads this: a phase must not grade a
+// reads the one open offer; only reports on the lane's current HEAD tree can settle its verdict.
+// Green or unknown on that tree settles an earlier red. No phase rule reads this: a phase must not grade a
 // verify debt, the door is where "may I land" is answered.
 function lanePreviewFact(lane: Slot): { state: "offered" | "running" | "red"; id: string } | null {
   let settled: LaneSuiteJob | null = null;
+  let headTree: string | null | undefined;
   for (const j of laneSuiteJobs.values()) {
     if (j.slot !== lane.id || j.slotOpenedAt !== lane.openedAt) continue;
     if (j.state === "open") return { state: "offered", id: j.id };
     if (j.state === "claimed") return { state: "running", id: j.id };
-    if (j.state === "reported" && (!settled || j.offeredAt > settled.offeredAt)) settled = j;
+    if (j.state !== "reported") continue;
+    if (headTree === undefined) {
+      const head = lane.cwd ? Bun.spawnSync(["git", "-C", lane.cwd, "rev-parse", "HEAD^{tree}"],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }) : null;
+      headTree = head?.success ? head.stdout.toString().trim() : null;
+    }
+    if (headTree !== null && j.treeSha === headTree && (!settled || j.offeredAt > settled.offeredAt)) settled = j;
   }
   return settled?.result?.result === "red" ? { state: "red", id: settled.id } : null;
 }
@@ -27498,6 +27505,10 @@ function helperJobsView(forDevice?: string): {
       cmd: j.cmd, timeoutMs: j.timeoutMs, artifacts: j.artifactGlobs,
     });
   }
+  const kindOrder: Record<HelperJobView["kind"], number> = {
+    "daemon-update": 0, command: 1, audit: 2, "lane-suite": 3,
+  };
+  jobs.sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind] || a.oldestAt - b.oldestAt);
   // `configured` still answers for the AUDIT queue alone, and the portal's own subline says both
   // halves: a fleet with no audit command can still be offered a lane's preview.
   // Field by field rather than a spread: the row now carries the claimant's deviceId, and that is

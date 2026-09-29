@@ -1080,6 +1080,67 @@ export async function run(): Promise<void> {
         && !(await redsOf()).some((r) => r.jobId === mainJob),
       `${mainRed.status} rows=${JSON.stringify(mainRows.map((e) => ({ r: e.receiverSlot, d: e.delivery, s: e.status })))}`);
 
+    // t | event | exclusive owner
+    // 0 | red on HEAD | this program lane
+    // 1 | green on HEAD | this program lane
+    // 2 | newer red on another tree | this program lane
+    {
+      const mainTok = await selfTokenOf(freeSlot);
+      await stopSrv();
+      const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+        laneSuiteJobs?: Record<string, unknown>[]; merges?: Record<string, unknown>;
+        slots?: Record<string, { cwd?: string; worktree?: { branch?: string } }>;
+      };
+      const lane = state.slots?.[String(pileSlot)];
+      const headTree = git(lane?.cwd ?? "", "rev-parse", "HEAD^{tree}");
+      const otherTree = spawnSync("git", ["-C", lane?.cwd ?? "", "mktree"],
+        { input: "", encoding: "utf8" }).stdout.trim();
+      const originalJobs = state.laneSuiteJobs ?? [];
+      const red = originalJobs.find((j) => j.id === mainJob);
+      const originalMerges = state.merges ?? {};
+      const t = Date.now();
+      const redId = "a1a1a1a1a1a1";
+      const greenId = "b2b2b2b2b2b2";
+      const mutationId = "c3c3c3c3c3c3";
+      state.merges = { ...originalMerges, [String(pileSlot)]: {
+        status: "blocked", landed: false, detail: "preview pointer fixture", branch: lane?.worktree?.branch, at: t,
+      } };
+      state.laneSuiteJobs = [...originalJobs.filter((j) => j.id !== mainJob),
+        { ...red, id: redId, offeredAt: t, treeSha: headTree }];
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state));
+      await restartSrv();
+      const next = async (): Promise<{ phase?: string; nextAction?: string } | undefined> => {
+        const view = await bodyOf<{ programs?: { tasks?: { rows?: { id: string; phase?: string; nextAction?: string }[] } }[] }>(
+          await selfGet("/api/self/program-execution", mainTok));
+        return view.programs?.flatMap((p) => p.tasks?.rows ?? []).find((r) => r.id === pileTask.task.id);
+      };
+      const owed = await next();
+      check("(LS.tree) a red on the current HEAD tree points at the owed preview",
+        !!red && /^[0-9a-f]{40}$/.test(headTree) && otherTree !== headTree
+          && owed?.phase === "REVIEWABLE" && (owed.nextAction ?? "").includes(`ran red (job ${redId})`),
+        JSON.stringify({ headTree, otherTree, owed }));
+      await stopSrv();
+      const settled = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof state;
+      const redResult = red?.result as Record<string, unknown> | undefined;
+      settled.laneSuiteJobs = [...(settled.laneSuiteJobs ?? []),
+        { ...red, id: greenId, offeredAt: t + 1, treeSha: headTree,
+          result: { ...redResult, result: "green", exitCode: 0, tail: "ALL PASS", fails: [], treeSha: headTree } },
+        { ...red, id: mutationId, offeredAt: t + 2, treeSha: otherTree,
+          result: { ...redResult, treeSha: otherTree } }];
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(settled));
+      await restartSrv();
+      const clear = await next();
+      check("(LS.tree) green on HEAD settles its earlier red; a NEWER red mutation on another tree leaves NO red pointer",
+        clear?.phase === "REVIEWABLE" && !!clear.nextAction && !clear.nextAction.includes("isolated suite preview"),
+        JSON.stringify({ headTree, otherTree, clear }));
+      await stopSrv();
+      const clean = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof state;
+      clean.laneSuiteJobs = originalJobs;
+      clean.merges = originalMerges;
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(clean));
+      await restartSrv();
+    }
+
     // ===== (LS.12) THE PROXY DOORS — the owner and the lane's own MAIN offer a LIVE lane's tree ====
     // Owner 2026-09-29, after nine local e2e runs queued up to 2 h on this box's mutex while the
     // workhorse sat empty: a lane whose harness has no quota left cannot ask, and a MAIN that wants
@@ -1372,6 +1433,9 @@ export async function run(): Promise<void> {
       JSON.stringify({ openedAt: lnOpenedAt, offer: afterBoot.offer?.id, state: afterBoot.offer?.state, modules: afterBoot.offer?.modules }));
 
     // --- (3) THE JOBS DOOR takes the land-gate suites and lets the offering session reclaim them ---
+    await beatAsDaemon();
+    const olderPreview = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
+    const olderPreviewId = olderPreview.offer?.id ?? "";
     const notTaken: string[] = [];
     const commandIds: string[] = [];
     for (const cmd of ["./e2e-claude-gate.sh", "./e2e-clean-review.sh"]) {
@@ -1416,6 +1480,18 @@ export async function run(): Promise<void> {
       `${freeWithdraw.status} ${JSON.stringify({ freeBody, freeRead })}`);
     const daemonSha = git(ROOT, "rev-parse", "HEAD");
     const capableBeat = await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, daemonSha });
+    const priorityList = await jobs();
+    const gateJob = priorityList.find((j) => j.id === heldId);
+    const previewJob = priorityList.find((j) => j.id === olderPreviewId);
+    check("(LS.cmd priority) GET /api/helper/jobs lists a newer command BEFORE the older lane-suite offer",
+      capableBeat.ok && olderPreview.offer?.state === "open"
+        && previewJob?.kind === "lane-suite" && gateJob?.kind === "command"
+        && previewJob.oldestAt < gateJob.oldestAt && priorityList[0]?.id === heldId,
+      JSON.stringify(priorityList.map((j) => ({ id: j.id, kind: j.kind, at: j.oldestAt }))));
+    const priorityWithdraw = await selfPost("/api/self/suite-offer/withdraw", laneTok);
+    check("(LS.cmd priority) the older preview can still be withdrawn independently of the command",
+      priorityWithdraw.ok && (await bodyOf<OfferPayload>(priorityWithdraw)).mayRunLocally === true,
+      `preview=${olderPreviewId}`);
     check("(LS.cmd) a withdrawn command is no longer in helperJobsView or claimable",
       capableBeat.ok && !(await jobs()).some((j) => j.id === freeId)
         && (await hpost("/api/helper/claim", { jobId: freeId, deviceId: DEVICE })).status === 404,

@@ -12064,6 +12064,43 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(s6) an untracked path in the card is a 400 naming the path verbatim, and nothing is filed",
       aBad.status === 400 && aBadText.includes("gibt-es-nicht.ts") && aBadText.includes("not tracked")
       && aAfter === aBefore, `${aBad.status} ${aBadText} rows ${aBefore}->${aAfter}`);
+    const baseBranch = `card-base-${randomBytes(4).toString("hex")}`;
+    const baseWorktree = `${ROOT}/${baseBranch}`;
+    const baseFile = "branch-only/only.ts";
+    const baseCard = { ...aCard, ziel: `${baseFile} wird bearbeitet`,
+      surface: { files: [baseFile], symbols: [], creates: ["branch-only/new.ts"] },
+      done: `${baseFile} ist bearbeitet` };
+    const worktreeAdded = spawnSync("git", ["-C", REPO, "worktree", "add", "-q", "-b", baseBranch, baseWorktree], { encoding: "utf8" });
+    if (worktreeAdded.status === 0) {
+      mkdirSync(`${baseWorktree}/branch-only`, { recursive: true });
+      writeFileSync(`${baseWorktree}/${baseFile}`, "export const only = true;\n");
+      spawnSync("git", ["-C", baseWorktree, "add", baseFile], { encoding: "utf8" });
+      spawnSync("git", ["-C", baseWorktree, "-c", "user.name=e2e", "-c", "user.email=e2e@localhost", "commit", "-qm", "branch-only file"], { encoding: "utf8" });
+    }
+    const onBase = await post("/api/tasks", { text: `${baseFile} und branch-only/new.ts`, queue: false,
+      repo: REPO, base: baseBranch, card: baseCard });
+    const onBaseBody = (await onBase.json()) as { task?: { id: string }; error?: string };
+    const baseRow = onBaseBody.task?.id ? await aDigest(onBaseBody.task.id) : undefined;
+    check("(s6-base) a branch-only file validates in FLAECHE and its directory validates NEU on that row's base",
+      worktreeAdded.status === 0 && onBase.ok && baseRow?.card?.valid === true
+      && baseRow.files?.join(" ") === baseFile,
+      JSON.stringify({ status: onBase.status, body: onBaseBody, row: baseRow }));
+    const noBase = await post("/api/tasks", { text: baseFile, queue: false, repo: REPO, card: baseCard });
+    const noBaseText = await noBase.text();
+    check("(s6-base) the same file without base is refused as not tracked",
+      noBase.status === 400 && noBaseText.includes(`\"${baseFile}\" is not tracked`),
+      `${noBase.status} ${noBaseText}`);
+    if (worktreeAdded.status === 0) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", baseWorktree], { encoding: "utf8" });
+    spawnSync("git", ["-C", REPO, "branch", "-D", baseBranch], { encoding: "utf8" });
+    const missingBase = await post("/api/tasks", { text: baseFile, queue: false, repo: REPO,
+      base: baseBranch, card: baseCard });
+    const missingBaseText = await missingBase.text();
+    const staleRow = onBaseBody.task?.id ? await aDigest(onBaseBody.task.id) : undefined;
+    check("(s6-base) an unresolved base never falls through to main for card filing or derived surface",
+      missingBase.status === 400 && missingBaseText.includes("base branch does not exist")
+      && staleRow?.files === undefined,
+      JSON.stringify({ status: missingBase.status, error: missingBaseText, row: staleRow }));
+    if (onBaseBody.task?.id) await post(`/api/tasks/${onBaseBody.task.id}/delete`, {});
     const aShape = await post("/api/tasks", { text: "AUTHOR-CARD-SHAPE", queue: false, repo: REPO, card: "ctx-mod.txt" });
     check("(s6) a card that is not an object is a 400, never a silently ignored field",
       aShape.status === 400 && (await aShape.text()).includes("card must be an object"), String(aShape.status));

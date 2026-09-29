@@ -4915,6 +4915,34 @@ function trackedSnapshotFor(repoRaw: string): TrackedSnapshot | null {
     return null;
   }
 }
+const taskBaseTreeCache = new Map<string, TrackedSnapshot>();
+function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapshot | null {
+  const repo = repoCanon(repoRaw);
+  const run = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args],
+    { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  const current = requested ?? repoBases[repo] ?? (() => {
+    const branch = run("rev-parse", "--abbrev-ref", "HEAD");
+    return branch.success ? branch.stdout.toString().trim() : "";
+  })();
+  if (!current || current === "HEAD" || !run("check-ref-format", "--branch", current).success) return null;
+  const ref = run("rev-parse", "--verify", "--quiet", `refs/heads/${current}^{commit}`);
+  if (!ref.success) return null;
+  const commit = ref.stdout.toString().trim();
+  const key = `${repo}\0${commit}`;
+  const cached = taskBaseTreeCache.get(key);
+  if (cached) return cached;
+  const listing = run("ls-tree", "-rz", commit);
+  if (!listing.success) return null;
+  const paths = new Set<string>();
+  for (const entry of listing.stdout.toString().split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab >= 0) paths.add(entry.slice(tab + 1));
+  }
+  const snapshot: TrackedSnapshot = { repo, project: basename(repo).replace(/\.git$/, ""),
+    paths, indexPath: null, indexStamp: commit };
+  taskBaseTreeCache.set(key, snapshot);
+  return snapshot;
+}
 // The graph half of the surface, cached exactly like the tracked snapshot above and for the same
 // reason: it is a REPOSITORY fact shared by every row, and re-reading a 10 000-node graph per row
 // per 2 s poll is not a projection, it is a load. `null` is the lane's honest answer — graphify-out/
@@ -4950,6 +4978,7 @@ function symbolIndexFor(repoRaw: string): SymbolIndexSnapshot | null {
 // `at` is the stamp of the DERIVATION, not of a write.
 function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null, project: string | null, repoRoot: string | null): TaskSurface | null {
+  if (!snapshot) return null;
   // THE TWO READINGS COME OFF THE GROUP FOR A VARIANT (E4, variantSourceOf) — the same exception
   // cardDue already makes one door earlier, drawn here because this is the second reader of them.
   // A variant carries neither by construction: the card sweep writes it none, and the brief door
@@ -5003,7 +5032,7 @@ function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
 }
 function taskView(t: Task): Task {
   const repoRaw = t.repo ?? (DISPATCH_REPO || null);
-  const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
+  const snapshot = repoRaw ? taskBaseSnapshotFor(repoRaw, t.base) : null;
   const project = snapshot?.project ?? (repoRaw ? basename(repoCanon(repoRaw)).replace(/\.git$/, "") : null);
   const repoRoot = snapshot?.repo ?? (repoRaw ? repoCanon(repoRaw) : null);
   const surface = taskSurfaceOf(t, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null, project, repoRoot);
@@ -15186,7 +15215,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const taskBase = await taskBaseFromBody(body, targetRepo);
   if (!taskBase.ok) return json({ error: taskBase.error }, 400);
   const mainText = body.text.slice(0, MAX_TASK_TEXT).trim();
-  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, targetRepo, program.id);
+  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, targetRepo, program.id, taskBase.base);
   if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
   // (4b) THE OCCUPANT AND BINDING RE-PROOFS, followed by a fresh repo-list read before the first
   // mutation below (there is no await from here to `tasks = capTasks`). The succession door states
@@ -16073,7 +16102,7 @@ function landWaveProjectionNow(): LandWaveProjection {
       // A file the row will ADD is surface too — two rows creating the same file collide — but it is
       // not part of `view.files`, which only ever holds tracked paths (confirm copies those alone).
       // Read off a surfaceValid card, the same bar confirm-cards sets for the card's files.
-      const files = [...(view.files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
+      const files = [...(view.files ?? []), ...(taskBaseSnapshotFor(t.repo ?? DISPATCH_REPO ?? "", t.base) && t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
       // `after` is read off ANY card: its ids were checked against the queue, and an order
       // constraint can only hold a row back, never bundle it.
       const after = t.card?.after ?? [];
@@ -16112,6 +16141,8 @@ function landWaveProjectionNow(): LandWaveProjection {
 // plan needs its files for the collision edge. A `manual` row's surface is byte for byte what it was.
 // A VARIANT reads its card off its group (variantSourceOf) — the one reading all n variants share.
 const startPlanSurfaceOf = (t: Task): { files: string[] | null; ranges: StartPlanRow["ranges"] } => {
+  const repo = t.repo ?? DISPATCH_REPO;
+  if (!repo || !taskBaseSnapshotFor(repo, t.base)) return { files: null, ranges: null };
   const card = variantSourceOf(t).card;
   const read = [...(taskView(t).files ?? []), ...(card?.surfaceValid ? card.surface.creates ?? [] : [])];
   const files = programReleasePolicy(t) === "manual" ? read : [...new Set([...read, ...startPlanCardPaths(card ?? null)])];
@@ -17308,7 +17339,13 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
     const hit = sources.get(file);
     if (hit !== undefined) return hit;
     let text = "";
-    try { text = snapshot ? readFileSync(resolve(snapshot.repo, file), "utf8") : ""; } catch { text = ""; }
+    if (snapshot?.indexStamp && !snapshot.indexPath) {
+      const shown = Bun.spawnSync(["git", "-C", snapshot.repo, "show", `${snapshot.indexStamp}:${file}`],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      if (shown.success) text = shown.stdout.toString();
+    } else {
+      try { text = snapshot ? readFileSync(resolve(snapshot.repo, file), "utf8") : ""; } catch { text = ""; }
+    }
     sources.set(file, text);
     return text;
   };
@@ -17474,13 +17511,19 @@ async function tickCardSweep(): Promise<void> {
     const due = tasks.filter((t) => cardDue(t, now) && taskRepoOf(t) !== null);
     if (!due.length) return;
     const repo = taskRepoOf(due[0])!;
-    const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, CARD_BATCH_CAP);
+    const base = due[0]!.base;
+    const batch = due.filter((t) => taskRepoOf(t) === repo && t.base === base).slice(0, CARD_BATCH_CAP);
     if (!existsSync(repo) || !statSync(repo).isDirectory()) {
       for (const t of batch) cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
       console.log(`card extractor: repo not found, leaving ${batch.length} row(s) unread: ${repo}`);
       return;
     }
-    const snapshot = trackedSnapshotFor(repo);
+    const snapshot = taskBaseSnapshotFor(repo, base);
+    if (!snapshot) {
+      for (const t of batch) cardRetry.set(t.id, { attempts: (cardRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
+      console.log(`card extractor: base unavailable, leaving ${batch.length} row(s) unread: ${base ?? "integration branch"}`);
+      return;
+    }
     const index = symbolIndexFor(repo);
     await cardForeignVerifyCommand(repo);
     let wrote = false;
@@ -17717,7 +17760,8 @@ function refineChildCard(c: RefineChild, programId: string | undefined,
 //     so a model cannot lift a path out of a proof line; an author declaring the surface is the
 //     declaration itself — a verify line in the text is still masked (task-metadata.ts#intentText).
 // `model: "author"` names the producer. Absent card: the door behaves exactly as before.
-async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined): Promise<
+async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null, programId: string | undefined,
+  base?: string): Promise<
   { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string }> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     return { ok: false, status: 400, error: "card must be an object {ziel, rolle?, klasse?, surface{files, symbols}, done, verify, verboten, size?, after?}" };
@@ -17725,7 +17769,7 @@ async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null
   const known = ["ziel", "rolle", "klasse", "surface", "done", "verify", "verboten", "size", "after"];
   const extra = Object.keys(c).filter((k) => !known.includes(k));
   if (extra.length) return { ok: false, status: 400, error: `card reads ${known.join(", ")} only — [${extra.join(", ")}] is not read` };
-  const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
+  const snapshot = repoRaw ? taskBaseSnapshotFor(repoRaw, base) : null;
   if (!snapshot)
     return { ok: false, status: 409, error: `the tracked tree of ${repoRaw ?? "(no repo)"} is unreadable — a card cannot be validated against it, and an unvalidated card is not stored` };
   const surface = (c.surface && typeof c.surface === "object" ? c.surface : {}) as Record<string, unknown>;
@@ -44261,7 +44305,7 @@ Bun.serve<WSData>({
       const ownerText = body.text.slice(0, MAX_TASK_TEXT).trim();
       // the author's card (authorCardFrom): validated against the repo the row will dispatch into
       const authorCard = body.card === undefined ? null
-        : await authorCardFrom(body.card, ownerText, taskRepo ?? (DISPATCH_REPO || null), taskProgramId);
+        : await authorCardFrom(body.card, ownerText, taskRepo ?? (DISPATCH_REPO || null), taskProgramId, taskBase.base);
       if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
       const id = randomBytes(4).toString("hex");
       const t: Task = {

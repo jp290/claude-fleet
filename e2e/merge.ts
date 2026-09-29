@@ -2131,9 +2131,9 @@ export async function run(lc: LaneCtx): Promise<void> {
     }
     const mainSlot = await freeSlot();
     const mainOpen = mainSlot ? await post(`/api/slots/${mainSlot}/open`, { cwd: REPO, label: "orphan-verdict-main" }) : null;
-    const orchSlot = await freeSlot();
-    const orchOpen = orchSlot ? await post(`/api/slots/${orchSlot}/open`, { cwd: REPO, label: "🎛 Orchestrator" }) : null;
-    const orchCat = orchSlot ? await catPane(`s${orchSlot}`) : false;
+    const orchSlot = receiverA;
+    const orchLabel = await post(`/api/slots/${orchSlot}/rename`, { label: "🎛 Orchestrator" });
+    const orchCat = await catPane(`s${orchSlot}`);
     const orphanProgram = ((await (await post("/api/programs", {
       title: "orphan verdict fixture", intent: "a MAIN killed before its red verdict returns",
       successCriterion: "the unique Orchestratorin sees the loss once", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
@@ -2143,8 +2143,8 @@ export async function run(lc: LaneCtx): Promise<void> {
       successCriterion: "the audit names escalation none", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
     })).json()) as { program?: { id: string } }).program?.id ?? "";
     check("program verdict orphan setup: MAIN and labelled Orchestratorin are distinct live occupants",
-      !!mainOpen?.ok && !!orchOpen?.ok && orchCat && !!orphanProgram && !!noOrchProgram,
-      JSON.stringify({ mainSlot, orchSlot, mainOpen: mainOpen?.status, orchOpen: orchOpen?.status,
+      !!mainOpen?.ok && orchLabel.ok && orchCat && !!orphanProgram && !!noOrchProgram,
+      JSON.stringify({ mainSlot, orchSlot, mainOpen: mainOpen?.status, orchLabel: orchLabel.status,
         orchCat, orphanProgram, noOrchProgram }));
     await stopSrv();
     const orphanState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
@@ -2174,8 +2174,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     const orphanMark = await awaitMark(lnOrphan.slot, (d) => d.attempts >= 2);
     const orphanVerdict = ((await (await get(`/api/slots/${lnOrphan.slot}/merge`)).json()) as
       { last: { landed?: boolean } | null }).last;
-    const orphanMessages = async () => ((await (await get(`/api/slots/${orchSlot}/history`)).json()) as
-      { history: { text: string }[] }).history.filter((h) => h.text.includes(lnOrphan.branch));
+    const orphanMessages = async () => (((await (await get(`/api/slots/${orchSlot}/history`)).json()) as
+      { history?: { text: string }[] }).history ?? []).filter((h) => h.text.includes(lnOrphan.branch));
     let notices = await orphanMessages();
     for (let i = 0; i < 120 && notices.length === 0; i++) {
       await Bun.sleep(100);
@@ -2194,7 +2194,7 @@ export async function run(lc: LaneCtx): Promise<void> {
         && orphanAudit.some((r) => r.event === "merge_verdict_undeliverable"
           && r.detail?.startsWith(`${lnOrphan.branch}:`) && r.detail.includes("escalation orchestrator")),
       JSON.stringify({ mark: orphanMark, notices, sends: orphanKey.length }));
-    await post(`/api/slots/${orchSlot}/kill`, {});
+    await post(`/api/slots/${orchSlot}/rename`, { label: "merge-receiver" });
     await stopSrv();
     const noOrchState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
       { merges?: Record<string, Record<string, unknown>> };

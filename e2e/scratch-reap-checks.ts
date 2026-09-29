@@ -250,8 +250,8 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
   spawnSync("git", ["-C", snapSource, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]);
   const beforeRefs = ref(), beforeHead = head();
   const snapToken = marker("instance");
-  const planted = spawnSync("bun", [`${ROOT}/testinstanz-snapshot.js`], {
-    env: { ...process.env, FLEET_TI_SRC: ROOT, FLEET_TI_SNAPSHOT_SRC: snapSource,
+  const planted = spawnSync("bun", [`${source}/testinstanz-snapshot.js`], {
+    env: { ...process.env, FLEET_TI_SRC: source, FLEET_TI_SNAPSHOT_SRC: snapSource,
       FLEET_TI_DIR: snapDir, FLEET_TI_SOCK: `fleettisnap${process.pid}`, FLEET_TI_TOKEN: snapToken },
     encoding: "utf8", timeout: 30_000,
   });
@@ -280,7 +280,7 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
     const env = { ...process.env, FLEET_TI_DIR: snapDir, FLEET_TI_PORT: String(tiPort),
       FLEET_TI_SOCK: `fleettisnap${process.pid}`, FLEET_TI_SNAPSHOT_SRC: snapSource,
       FLEET_TI_TOKEN: snapToken };
-    const up = spawnSync(`${ROOT}/testinstanz.sh`, ["up", "snapshot", "--ttl", "5"],
+    const up = spawnSync(tiScript, ["up", "snapshot", "--ttl", "5"],
       { env, encoding: "utf8", timeout: 120_000 });
     const address = up.stdout?.match(/TESTINSTANZ SNAPSHOT UP\s+(http:\/\/[^/]+)\//)?.[1];
     check("host-hygiene §e9 synthetic snapshot instance starts", up.status === 0 && !!address,
@@ -318,7 +318,7 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
         }
       }
     } finally {
-      const down = spawnSync(`${ROOT}/testinstanz.sh`, ["down"],
+      const down = spawnSync(tiScript, ["down"],
         { env, encoding: "utf8", timeout: 30_000 });
       check("host-hygiene §e9 synthetic snapshot down frees its instance", down.status === 0,
         `exit=${down.status} tail=${down.stderr?.trim().split("\n").slice(-1)[0] ?? ""}`);

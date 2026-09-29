@@ -1295,10 +1295,14 @@ export async function run(): Promise<void> {
       seedFramePlan(5, 5, true)?.reset === true && seedFramePlan(5, 5, true)?.pin === true
         && seedFramePlan(5, 5, false)?.pin === false);
   }
-  const scrollSource = /  scrollToEnd\(\) \{[\s\S]*?\n  \}/.exec(cliSrc)?.[0] ?? "";
+  // any parameter list: the chat flag (Tranche 1) made `scrollToEnd()` a `scrollToEnd(chat = true)`,
+  // and a regex that only knew the empty list lifted nothing — the check then measured nothing
+  const scrollSource = /  scrollToEnd\([^)]*\) \{[\s\S]*?\n  \}/.exec(cliSrc)?.[0] ?? "";
   let pinnedOnSwitch = 0;
-  const scrollToEnd = scrollSource ? new Function("requestAnimationFrame",
-    `return function ${scrollSource.trim()}`)((cb: () => void) => cb()) as
+  // the 500-ms settle timer is stubbed: a real one would fire after this module and reach names
+  // (CHAT_FOLLOW_PX) that only the client module declares
+  const scrollToEnd = scrollSource ? new Function("requestAnimationFrame", "setTimeout", "clearTimeout", "CHAT_FOLLOW_PX",
+    `return function ${scrollSource.trim()}`)((cb: () => void) => cb(), () => 0, () => {}, 120) as
     (this: { term: { scrollToBottom: () => void }; snapToBottom: () => void; pinToBottom: () => void;
       chatEl: { scrollTop: number; scrollHeight: number } }, chat?: boolean) => void : null;
   // snapToBottom is Pane's one door for programmatic tail jumps (past the wheel smoothing); it
@@ -1317,7 +1321,7 @@ export async function run(): Promise<void> {
     pinsBefore === 2 && switched.chatEl.scrollTop === 300 && pinnedOnSwitch === 4 && kept.chatEl.scrollTop === 40
       && /if \(existing\) \{ existing\.focus\(\); existing\.scrollToEnd\(\)/.test(cliSrc)
       && /this\.scrollToEnd\(!restored\);\n    renderSlots\(\)/.test(cliSrc),
-    scrollThrew ? `scrollToEnd threw: ${scrollThrew}` : `${pinsBefore} terminal pins · chat ${switched.chatEl.scrollTop} · kept chat ${kept.chatEl.scrollTop}`);
+    !scrollSource ? "scrollToEnd not found in the client source" : scrollThrew ? `scrollToEnd threw: ${scrollThrew}` : `${pinsBefore} terminal pins · chat ${switched.chatEl.scrollTop} · kept chat ${kept.chatEl.scrollTop}`);
 
   // --- THE CHAT VIEW'S READING POSITION (Tranche 1, owner 2026-09-29: „[Zitat entfernt]“
   // · „[Zitat entfernt]“). Measured in a browser against

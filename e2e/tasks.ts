@@ -11508,7 +11508,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(sp-wave-base) PROBE: three queued rows of one program have confirmed code.txt surfaces and bases main/main/overhaul",
       ready, JSON.stringify({ setup, branchErrors, program: programRes.status, confirm: confirmed.status }));
     const plan = (await (await get("/api/start-plan")).json()) as StartPlan;
-    const waves = plan.repos.find((r) => r.repo === REPO2)?.waves ?? [];
+    const waves = plan.repos.find((r) => resolve(r.repo) === resolve(REPO2))?.waves ?? [];
     const waveOf = (id: string): string[] => waves.find((w) => w.ids.includes(id))?.ids ?? [];
     check("(sp-wave-base) GET /api/start-plan separates overlapping queued main and overhaul rows into two waves",
       ready && waveOf(ids[0]).length === 2 && waveOf(ids[2]).join(" ") === ids[2]

@@ -2820,12 +2820,15 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && /sinceShort\(serverNow - s\.lastOutput\)/.test(cliSrc)
         && !/serverNow - s\.lastOutput < RECENT_MS,\n/.test(cliSrc.slice(cliSrc.indexOf("const key = JSON.stringify"))),
       "the sidebar render key");
-    // THE PLACE FOR THE MARK IS PREPARED AND EMPTY. Build 2 of this card draws it; build 1 owes the
-    // geometry, so that landing the mark moves nothing. "Empty" is asserted too — a placeholder
-    // that paints something is a mark nobody chose.
+    // THE PLACE FOR THE MARK IS RESERVED AND EMPTY IN THE DOM. Build 1 owed the geometry, so that
+    // landing the mark moves nothing; build 2 (Fassung B, src/marks.ts) draws into it from the bar's
+    // ONE canvas and never into the span — so "empty" still holds: no content, no background, no
+    // border. The span is registered with its facts for placeMarks, which renderSlots calls.
     check("client: every row reserves the session mark's place, at one declared size, with nothing in it",
-      /r1\.appendChild\(el\("span", "mark"\)\)/.test(rowSrc)
-        && /el\("span", "mark"\)/.test(emptySrc)
+      /const mk = el\("span", "mark"\);\s*r1\.appendChild\(mk\)/.test(rowSrc)
+        && /markItems\.push\(\{ el: mk, facts: markFacts\(/.test(rowSrc)
+        && /el\("span", "mark"\)/.test(emptySrc) && /markItems\.push\(\{ el: mk, facts: null \}\)/.test(emptySrc)
+        && /placeMarks\(marks, slotsEl, markItems\)/.test(cliSrc)
         && /\.slot \.mark \{[^}]*width: var\(--mark-size, 26px\)[^}]*height: var\(--mark-size, 26px\)/.test(indexSrc)
         && /\.slot\.lane \{ --mark-size: 21px; \}/.test(indexSrc)
         // nothing is drawn into it: no content, no background, no border anywhere in the bar

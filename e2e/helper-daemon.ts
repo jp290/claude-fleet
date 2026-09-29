@@ -146,16 +146,32 @@ export async function run(h: {
   const ids = (js: JobView[]): string => js.map((j) => j.id).join(",");
   const audit = kindJob("a00000000001", "audit"), preview = kindJob("b00000000002", "lane-suite");
   const update = kindJob("u00000000009", "daemon-update");
-  const idleWithUpdate = jobsToStart([audit, update, preview], 2, 0);
-  const busyWithUpdate = jobsToStart([audit, update], 1, 1);
-  const busyUpdateMine = jobsToStart([audit, kindJob("u00000000009", "daemon-update", { name: "me", claimedAt: 1 })], 1, 1);
-  const idleStaleUpdate = jobsToStart([audit, kindJob("u00000000009", "daemon-update", { name: "me", claimedAt: 1 })], 2, 0);
-  const noUpdate = jobsToStart([audit, preview, kindJob("c00000000003", "audit")], 2, 0);
+  const none = new Set<string>();
+  const idleWithUpdate = jobsToStart([audit, update, preview], 2, 0, none);
+  const busyWithUpdate = jobsToStart([audit, update], 1, 1, none);
+  const busyUpdateMine = jobsToStart([audit, kindJob("u00000000009", "daemon-update", { name: "me", claimedAt: 1 })], 1, 1, none);
+  const idleStaleUpdate = jobsToStart([audit, kindJob("u00000000009", "daemon-update", { name: "me", claimedAt: 1 })], 2, 0, none);
+  const noUpdate = jobsToStart([audit, preview, kindJob("c00000000003", "audit")], 2, 0, none);
   check("(HD) a listed daemon-update starts ALONE and only on an empty machine — nothing is claimed beside it, before it, or while it runs",
     ids(idleWithUpdate) === "u00000000009" && ids(busyWithUpdate) === "" && ids(busyUpdateMine) === ""
       && ids(idleStaleUpdate) === "a00000000001" && ids(noUpdate) === "a00000000001,b00000000002",
     `idle=[${ids(idleWithUpdate)}] busy=[${ids(busyWithUpdate)}] inFlight=[${ids(busyUpdateMine)}]`
     + ` staleClaim=[${ids(idleStaleUpdate)}] noUpdate=[${ids(noUpdate)}]`);
+  // A JOB STILL BEING CLAIMED IS NOT STARTED AGAIN (2026-09-29 11:17Z/11:23Z, workhorse): the claim
+  // took ~80 s while the fleet built the bundle, the job stayed UNCLAIMED on the list that long, and
+  // the next tick started it a second time — three jobs claimed twice, the second refused 409, and
+  // `running` at 8 of 8 over 5 real runs. The second call below is that next tick: the SAME open
+  // list, one slot still free, the first two ids in `busy` (what start() filled before its first
+  // await). It must start only the third job, and a tick whose only open job is mid-claim nothing.
+  // MUTATION: drop `!busy.has(j.id)` in daemon.ts#jobsToStart ⇒ the second tick starts a00000000001
+  // again ⇒ red.
+  const third = kindJob("c00000000003", "audit");
+  const firstTick = jobsToStart([audit, preview], 2, 0, none);
+  const secondTick = jobsToStart([audit, preview], 1, 2, new Set(firstTick.map((j) => j.id)));
+  const withThird = jobsToStart([audit, preview, third], 1, 2, new Set(firstTick.map((j) => j.id)));
+  check("(HD) a job this daemon is still starting or claiming is not started again while the fleet lists it unclaimed",
+    ids(firstTick) === "a00000000001,b00000000002" && ids(secondTick) === "" && ids(withThird) === "c00000000003",
+    `first=[${ids(firstTick)}] second=[${ids(secondTick)}] withThird=[${ids(withThird)}]`);
   // THE PRUNE AND THE RUN IN FLIGHT (C1, 2026-09-13). The oldest dir is a run still going — above cap
   // 1 the normal shape of a long suite beside short ones — and each finished run keeps a red
   // instance in its `tmp/`. keepRuns 2 must leave the running one AND the two newest finished.

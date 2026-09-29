@@ -602,16 +602,30 @@ export function withdrawnRuns(running: ReadonlyMap<string, { claimedAt: number |
 // One exception keeps a dead predecessor from parking the machine: an update listed as CLAIMED
 // while nothing runs here is not this process's (its own claim is always counted in `running`, from
 // `start` to the `finally`), so ordinary jobs go on until that stale claim lapses or is reported.
-export function jobsToStart(jobs: readonly JobView[], free: number, running: number): JobView[] {
+// …AND A JOB THIS PROCESS IS ALREADY STARTING IS NOT OPEN, whatever the list says. Measured
+// 2026-09-29 11:17Z and 11:23Z on workhorse (journalctl -u fleet-helper): a claim took ~80 s because
+// the server built the bundle on a loaded Mac, the job stayed unclaimed on the list that long, and
+// the next 15 s tick started it AGAIN — d75ab95a5a56, b8bc95b68006 and be393e0c3e84 each claimed
+// twice, the second one refused 409, and `running` stood at 8 of 8 with 5 real runs, so the machine
+// took nothing more. `busy` is the ids `start` has launched and not yet finished (plus every run in
+// `inFlight`); it is a parameter so this function stays pure and HD can drive it.
+export function jobsToStart(jobs: readonly JobView[], free: number, running: number,
+  busy: ReadonlySet<string>): JobView[] {
   const update = jobs.find((j) => j.kind === "daemon-update");
   if (update && (running > 0 || !update.claim)) return running === 0 ? [update] : [];
-  return jobs.filter((j) => j.kind !== "daemon-update" && !j.claim && !j.localRunning).slice(0, Math.max(0, free));
+  return jobs.filter((j) => j.kind !== "daemon-update" && !j.claim && !j.localRunning && !busy.has(j.id))
+    .slice(0, Math.max(0, free));
 }
+// THE IDS `start` HAS LAUNCHED — filled SYNCHRONOUSLY beside `runningJobs++`, before the claim's
+// first await, and emptied in the same `finally`, so the claim window (where the fleet still lists
+// the job open) is covered from its first instant to its last.
+const startingJobs = new Set<string>();
 function start(cfg: HelperConfig, job: JobView): void {
   runningJobs++;
+  startingJobs.add(job.id);
   void work(cfg, job)
     .catch((e) => onFault(e, `job ${job.id}`))
-    .finally(() => { runningJobs--; });
+    .finally(() => { runningJobs--; startingJobs.delete(job.id); });
 }
 
 async function work(cfg: HelperConfig, job: JobView): Promise<void> {
@@ -1068,7 +1082,7 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
   // Sliced to `free`, so a tick that arrives at an empty machine with three open jobs fills every
   // slot at once rather than one per poll — and one that arrives with one slot left takes one job.
   // A listed daemon-update overrides the slice: alone, and only on an empty machine (jobsToStart).
-  const open = jobsToStart(list.jobs ?? [], free, runningJobs);
+  const open = jobsToStart(list.jobs ?? [], free, runningJobs, new Set([...startingJobs, ...inFlight.keys()]));
   for (const j of open) start(cfg, j);
 }
 

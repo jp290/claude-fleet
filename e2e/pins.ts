@@ -9154,13 +9154,16 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   else {
     const tickFn = /export async function tick\(cfg: HelperConfig, st: LoopState\)[\s\S]*?\n\}/.exec(src)?.[0] ?? "";
     const pickFn = /export function jobsToStart\([\s\S]*?\n\}/.exec(src)?.[0] ?? "";
-    const routed = /const open = jobsToStart\(list\.jobs \?\? \[\], free, runningJobs\);/.test(tickFn)
+    const routed = /const open = jobsToStart\(list\.jobs \?\? \[\], free, runningJobs, new Set\(\[\.\.\.startingJobs, \.\.\.inFlight\.keys\(\)\]\)\);/.test(tickFn)
       && /for \(const j of open\) start\(cfg, j\);/.test(tickFn);
     const updateFirst = /const update = jobs\.find\(\(j\) => j\.kind === "daemon-update"\);/.test(pickFn)
       && /if \(update && \(running > 0 \|\| !update\.claim\)\) return running === 0 \? \[update\] : \[\];/.test(pickFn);
     const neverBeside = /j\.kind !== "daemon-update"/.test(pickFn);
-    pin(RULE_UPD, tickFn !== "" && pickFn !== "" && routed && updateFirst && neverBeside,
-      `tick=${tickFn !== ""} jobsToStart=${pickFn !== ""} routed=${routed} updateGate=${updateFirst} excludedFromSlice=${neverBeside}`);
+    // …and a job this process is still starting or claiming stays out of the slice (2026-09-29:
+    // three jobs claimed twice while the first claim waited ~80 s on the bundle).
+    const skipsBusy = /!busy\.has\(j\.id\)/.test(pickFn);
+    pin(RULE_UPD, tickFn !== "" && pickFn !== "" && routed && updateFirst && neverBeside && skipsBusy,
+      `tick=${tickFn !== ""} jobsToStart=${pickFn !== ""} routed=${routed} updateGate=${updateFirst} excludedFromSlice=${neverBeside} skipsBusy=${skipsBusy}`);
   }
 }
 

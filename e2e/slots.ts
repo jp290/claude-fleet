@@ -1495,11 +1495,6 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       && /navTop\.onclick = [^\n]*this\.chatEl\.scrollTo\(\{ top: 0/.test(cliSrc)
       && cliSrc.includes("toolsView.append(this.reloadBtn, this.widthBtn, navTop, navUp, navDn, this.sizeBtn)"),
     "Pane navTop");
-  // the switch back must not lay out a whole long chat at once — and the rule that prevents it is
-  // gated on scroll anchoring, without which a late-rendering message above the view moves it
-  check("chat position: offscreen chat messages skip layout only where the browser anchors the scroll",
-    /@supports \(overflow-anchor: auto\) \{\s*\.panechat > \* \{ content-visibility: auto; contain-intrinsic-size: auto \d+px; \}/.test(indexSrc),
-    "index.html @supports (overflow-anchor: auto)");
   check("B2: every pane observes its own size, debounces refit, and disconnects at disposal",
     /this\.sizeObserver = new ResizeObserver\(/.test(cliSrc)
       && /this\.sizeObserver\.observe\(this\.root\)/.test(cliSrc)

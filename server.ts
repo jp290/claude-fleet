@@ -17232,7 +17232,7 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
 // the default model). Both doors now call this helper on the minted row; the validation is the one
 // in cardRoleSpawn, shared with taskSpawnOf's read-time fallback.
 // COUNTER-PROBES (e2e/tasks.ts): removing the adoption call at `t.card = card` leaves the (j2) probe
-// row spawn-less, and removing it at the owner create door leaves the (k1) author-card row spawn-less
+// row spawn-less, and removing it at the owner create door leaves the (kr1) author-card row spawn-less
 // — each turns its own check red.
 const adoptSpawnFromCard = (t: Task): boolean => {
   if (t.spawn) return false;

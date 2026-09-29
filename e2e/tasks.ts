@@ -12075,15 +12075,17 @@ export async function run(ctx: Ctx): Promise<void> {
   // valid ROLLE never reached Task.spawn — the sweep's adoption (bef073c0, (j2)) never reads a row
   // that was born WITH its card — so a hand start ran the default model with codex/gpt-6-sol/high on
   // the card. Two halves, each with its own counter-probe:
-  //   (k1) SET time: the create door adopts the role into Task.spawn (server.ts#adoptSpawnFromCard
-  //        at the door). COUNTER-PROBE: removing that call leaves the k1 rows spawn-less — red.
-  //   (k2)-(k5) READ time: a row whose spawn is ABSENT beside a valid role (the shape the live rows
+  //   (kr1) SET time: the create door adopts the role into Task.spawn (server.ts#adoptSpawnFromCard
+  //        at the door). COUNTER-PROBE: removing that call leaves the kr1 rows spawn-less — red.
+  //   (kr2)-(kr5) READ time: a row whose spawn is ABSENT beside a valid role (the shape the live rows
   //        still have; made here by clearing the adopted spawn through the owner's spawn door) runs
   //        the role through server.ts#taskSpawnOf — hand start and tick alike, a body field still
   //        wins per field, a refused role runs DEFAULT_SPAWN and says so once in the log, and a
   //        foreign harness from a card is held by the tick's harness gate exactly like a stored one.
-  //        COUNTER-PROBE: `taskSpawnOf = t.spawn ?? DEFAULT_SPAWN` turns k2, k3 and k5 red (the
-  //        slots carry null model/effort, and the codex row starts on the default adapter).
+  //        COUNTER-PROBE: `taskSpawnOf = t.spawn ?? DEFAULT_SPAWN` turns kr2-kr5 red (the slots
+  //        carry null model/effort, the refused role logs nothing, and the codex row starts on the
+  //        default adapter). Both probes measured 2026-09-29 in one mutated run: 7 of these checks
+  //        red, the three setup and precedence checks green.
   {
     type KSpawn = { harness: string | null; model: string | null; effort: string | null };
     interface KRow { id: string; status: string; note?: string | null; slot?: number | null; spawn?: KSpawn;
@@ -12130,7 +12132,7 @@ export async function run(ctx: Ctx): Promise<void> {
       return { status: res.status, j: (await res.json()) as KStart };
     };
     // kill THEN delete at once: the dying brief tail may requeue the row, and a requeued leftover
-    // would be a released row the tick fixture in (k5) did not put there
+    // would be a released row the tick fixture in (kr5) did not put there
     const kClose = async (slot: number | null | undefined, id: string | undefined): Promise<void> => {
       if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {});
       if (id) await post(`/api/tasks/${id}/delete`, {});
@@ -12138,11 +12140,11 @@ export async function run(ctx: Ctx): Promise<void> {
     };
     const kBefore = await kSessions();
     await post("/api/dispatch", { on: false });
-    // the refused-role line in (k4) is counted over the WHOLE section, so an earlier reader of the
+    // the refused-role line in (kr4) is counted over the WHOLE section, so an earlier reader of the
     // accessor cannot hide a second line before the count starts
     const kLogAt = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
 
-    // (k1) SET time, at the create door: the card's role IS the row's spawn (a bare "claude" collapses
+    // (kr1) SET time, at the create door: the card's role IS the row's spawn (a bare "claude" collapses
     // to null, the one representation of the default harness); the live row's codex triple likewise;
     // a body triple is the choice and the card fills nothing; a role the validators refuse (claude has
     // no "ultra" — codex does, so the card validator knows the word) adopts nothing at all.
@@ -12151,45 +12153,45 @@ export async function run(ctx: Ctx): Promise<void> {
     const k1Body = await kMk("KARTEN-ROLLE k1 body: code.txt bekommt eine Zeile.", kCard("code.txt", SONNET), { model: "k-body-model" });
     const k1Bad = await kMk("KARTEN-ROLLE k1 bad: code.txt bekommt eine Zeile.",
       kCard("code.txt", { harness: "claude", model: "claude-sonnet-5-5[1m]", effort: "ultra" }));
-    check("(k1) POST /api/tasks with an author card: Task.spawn carries the card's harness/model/effort at birth (the live codex triple too)",
+    check("(kr1) POST /api/tasks with an author card: Task.spawn carries the card's harness/model/effort at birth (the live codex triple too)",
       k1?.card?.valid === true && JSON.stringify(k1.spawn) === JSON.stringify({ harness: null, model: SONNET.model, effort: SONNET.effort })
       && k1Live?.card?.valid === true && JSON.stringify(k1Live.spawn) === JSON.stringify(LIVE),
       JSON.stringify({ k1: { card: k1?.card?.rolle, spawn: k1?.spawn }, live: { card: k1Live?.card?.rolle, spawn: k1Live?.spawn } }));
-    check("(k1) a body triple beside the card is the choice, and a role the validators refuse adopts nothing — the card stays valid, spawn absent",
+    check("(kr1) a body triple beside the card is the choice, and a role the validators refuse adopts nothing — the card stays valid, spawn absent",
       JSON.stringify(k1Body?.spawn) === JSON.stringify({ harness: null, model: "k-body-model", effort: null })
       && k1Bad?.card?.valid === true && k1Bad.card.rolle.effort === "ultra" && !!k1Bad && !("spawn" in k1Bad),
       JSON.stringify({ body: k1Body?.spawn ?? null, bad: { card: k1Bad?.card ?? null, spawn: k1Bad?.spawn ?? null } }));
 
-    // (k2) READ time, hand start through `ctl.sh dispatch` — the live path, which sends `{}`: the row
+    // (kr2) READ time, hand start through `ctl.sh dispatch` — the live path, which sends `{}`: the row
     // has no spawn, the lane runs the card's model and effort, and the verb PRINTS what it started
     // with, each field named by its origin. --force: this door's cap refusal is not the question here.
     const k2 = await kLegacy("KARTEN-ROLLE k2: code.txt bekommt eine Zeile.", "code.txt", SONNET);
-    check("(k2) setup: the row carries a valid role and NO spawn — the shape of the live rows",
+    check("(kr2) setup: the row carries a valid role and NO spawn — the shape of the live rows",
       k2?.card?.valid === true && !("spawn" in k2), JSON.stringify(k2 ?? null));
     const k2Ctl = spawnSync("bash", [`${ROOT}/ctl.sh`, "dispatch", k2?.id ?? "-", "--force"], {
       encoding: "utf8", env: { ...process.env, FLEET_CTL_HOME: ROOT, FLEET_CTL_URL: BASE },
     });
     const k2SlotId = Number(/"slot":(\d+)/.exec(k2Ctl.stdout)?.[1] ?? NaN);
     const k2Slot = await kSlot(Number.isFinite(k2SlotId) ? k2SlotId : null);
-    check("(k2) a hand start without spawn fields runs the CARD's model and effort",
+    check("(kr2) a hand start without spawn fields runs the CARD's model and effort",
       k2Ctl.status === 0 && k2Slot?.model === SONNET.model && k2Slot.effort === SONNET.effort && k2Slot.harness === null,
       JSON.stringify({ exit: k2Ctl.status, slot: k2Slot, stdout: k2Ctl.stdout.trim().slice(0, 600), stderr: k2Ctl.stderr.trim() }));
-    check("(k2) ctl.sh dispatch prints the harness/model/effort the lane started with, and where each came from",
+    check("(kr2) ctl.sh dispatch prints the harness/model/effort the lane started with, and where each came from",
       k2Ctl.stdout.includes(`  spawn harness=claude (default) model=${SONNET.model} (card) effort=${SONNET.effort} (card)`),
       k2Ctl.stdout.trim().slice(0, 600));
     await kClose(k2SlotId, k2?.id);
 
-    // (k3) …and an explicit body field still wins PER FIELD over the card's role.
+    // (kr3) …and an explicit body field still wins PER FIELD over the card's role.
     const k3 = await kLegacy("KARTEN-ROLLE k3: code.txt bekommt eine Zeile.", "code.txt", SONNET);
     const k3Start = k3 ? await kStart(k3.id, { effort: "low" }) : { status: 0, j: {} as KStart };
     const k3Slot = await kSlot(k3Start.j.slot);
-    check("(k3) a body effort beside a card role: the body's effort wins, the card's model stays",
+    check("(kr3) a body effort beside a card role: the body's effort wins, the card's model stays",
       !!k3 && !("spawn" in k3) && k3Start.status === 200 && k3Slot?.model === SONNET.model && k3Slot.effort === "low"
       && k3Start.j.spawn?.from.model === "card" && k3Start.j.spawn.from.effort === "body",
       JSON.stringify({ status: k3Start.status, answer: k3Start.j, slot: k3Slot }));
     await kClose(k3Start.j.slot, k3?.id);
 
-    // (k4) a refused role: DEFAULT_SPAWN, never a guessed or repaired role, and one log line naming
+    // (kr4) a refused role: DEFAULT_SPAWN, never a guessed or repaired role, and one log line naming
     // the row and the validator's refusal.
     const k4Start = k1Bad ? await kStart(k1Bad.id, {}) : { status: 0, j: {} as KStart };
     const k4Slot = await kSlot(k4Start.j.slot);
@@ -12202,14 +12204,14 @@ export async function run(ctx: Ctx): Promise<void> {
       }, { timeoutMs: 5_000, stepMs: 100, what: "the refused-role log line" });
     } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
     const k4Lines = k4Log.split("\n").filter((l) => l.includes(k4Needle));
-    check("(k4) a card role the validators refuse runs DEFAULT_SPAWN — null slot fields, origin default — and the log says so once",
+    check("(kr4) a card role the validators refuse runs DEFAULT_SPAWN — null slot fields, origin default — and the log says so once",
       k4Start.status === 200 && k4Slot !== null && k4Slot.model === null && k4Slot.effort === null && k4Slot.harness === null
       && k4Start.j.spawn?.from.model === "default" && k4Start.j.spawn.from.effort === "default"
       && k4Lines.length === 1 && k4Lines[0].includes("bad effort") && k4Lines[0].includes("DEFAULT_SPAWN"),
       JSON.stringify({ status: k4Start.status, answer: k4Start.j, slot: k4Slot, log: k4Lines }));
     await kClose(k4Start.j.slot, k1Bad?.id);
 
-    // (k5) THE TICK reads the same accessor: a released claude-role row starts with the card's
+    // (kr5) THE TICK reads the same accessor: a released claude-role row starts with the card's
     // model/effort, and a released codex-role row — no stored spawn, the role only on its card —
     // waits LOUDLY at the harness gate (FLEET_HARNESS_AUTOMATION=0 here) instead of starting on the
     // default adapter. Distinct files, so the land fold cannot bundle the two into one wave.
@@ -12221,7 +12223,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const k5Board = await kSessions();
     const k5Queued = ((await (await get("/api/tasks")).json()) as { tasks: KRow[] }).tasks
       .filter((t) => t.status === "queued").map((t) => t.id);
-    check("(k5) setup: two role rows without spawn, free slots, no other released row (non-tautology guard)",
+    check("(kr5) setup: two role rows without spawn, free slots, no other released row (non-tautology guard)",
       !!k5 && !("spawn" in k5) && !!k5Codex && !("spawn" in k5Codex)
       && k5Board.slots.filter((s) => !s.cwd).length >= 2 && k5Board.slots.filter((s) => s.worktree).length <= 1
       && k5Queued.length === 0,
@@ -12239,13 +12241,16 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     await post("/api/dispatch", { on: false });
     const k5Slot = await kSlot(k5After?.slot);
-    check("(k5) the TICK starts a card-role row with the card's model and effort",
+    check("(kr5) the TICK starts a card-role row with the card's model and effort",
       k5After?.status === "sent" && k5Slot?.model === SONNET.model && k5Slot.effort === SONNET.effort && k5Slot.harness === null,
       JSON.stringify({ row: { status: k5After?.status, note: k5After?.note }, slot: k5Slot }));
-    check("(k5) a codex role on the card alone is held by the harness gate — still queued, the adapter named, never the default adapter",
+    check("(kr5) a codex role on the card alone is held by the harness gate — still queued, the adapter named, never the default adapter",
       k5CodexAfter?.status === "queued" && (k5CodexAfter.note ?? "").includes("harness codex is not automatable"),
       JSON.stringify({ status: k5CodexAfter?.status, note: k5CodexAfter?.note }));
     await kClose(k5After?.slot, k5?.id);
+    // a codex row that STARTED (the counter-probe's world, where the gate never sees the card) must
+    // not leave its lane holding the repo cap for the sections after this one
+    await kClose(k5CodexAfter?.slot, k5Codex?.id);
 
     // cleanup — dispatcher off above; every probe row goes, and both switches return to what this
     // section found (quiet hours stay cleared, the suite default)

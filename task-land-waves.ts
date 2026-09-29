@@ -469,6 +469,7 @@ export function projectLandWaves(input: ProjectLandWavesInput): LandWaveProjecti
 export interface BundleRowInput {
   id: string; created: number; kind?: string; status: string;
   programId?: string | null;
+  repo?: string | null;
   size?: TaskCardSize;
   // the row's stored card verify text, as validated; null or absent = no card verify — the empty step set
   verify?: string | null;
@@ -524,6 +525,19 @@ export function proposeBundles(input: { tasks: readonly BundleRowInput[] }): Bun
     out.push({ ids, units: a.units + b.units, grund: `${chained ? "after-Kette: " : ""}gleiches Program ${a.programId}, gemeinsame Flaeche ${shared.join(" ")}, Einheiten ${a.units + b.units}, gleiche VERIFY-Stufen ${a.steps || "keine"}` });
   }
   return out;
+}
+
+export function taskOverlap(id: string, rows: readonly BundleRowInput[]): {
+  rows: { id: string; kind: string; files: string[] }[]; buendel: BundleProposal[];
+} | null {
+  const row = rows.find((t) => t.id === id);
+  if (!row?.files.length) return null;
+  const matches = rows.filter((t) => t.id !== id && !!row.programId && t.programId === row.programId
+    && (t.kind === "auftrag" || t.kind === "notiz")
+    && (t.status === "pending" || t.status === "queued" || t.status === "sent"))
+    .map((t) => ({ id: t.id, kind: t.kind!, files: [...new Set(t.files.filter((f) => row.files.includes(f)))].sort(textOrder) }))
+    .filter((t) => t.files.length > 0);
+  return { rows: matches, buendel: proposeBundles({ tasks: rows }).filter((p) => p.ids.includes(id)) };
 }
 
 // --- CLI: the same projector for shell/read-only consumers. The MAIN runs it in the main checkout

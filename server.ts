@@ -75,8 +75,8 @@ import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NO
 // boundary: it asks THIS projector whether the ids it was handed are one of its own waves, so the
 // board, `bun task-land-waves.ts --state fleet.json` and the door all answer from one classifier.
 import {
-  LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves, proposeBundles,
-  type BundleProposal, type LandWave, type LandWaveProjection, type LandWaveTaskInput,
+  LAND_WAVE_COSTS_2026_09, LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, projectLandWaves, proposeBundles, taskOverlap,
+  type BundleRowInput, type BundleProposal, type LandWave, type LandWaveProjection, type LandWaveTaskInput,
 } from "./task-land-waves";
 import { isTaskCardSize, type TaskCardSize, type TaskWaveRange } from "./task-waves";
 import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
@@ -13922,7 +13922,13 @@ function inboxJoinCtx(): InboxJoinCtx {
 }
 
 async function inboxSubject(e: ProgramInboxEntry, ctx: InboxJoinCtx):
-    Promise<{ subject: AttentionRequest | FleetReport | AmbientLandSubject | AuditRedSubject | null; unknown: string | null }> {
+    Promise<{ subject: AttentionRequest | FleetReport | AmbientLandSubject | AuditRedSubject | { taskId: string; gaps: string[] } | null; unknown: string | null }> {
+  if (e.kind === "card-verdict") {
+    const task = tasks.find((t) => t.id === e.ref);
+    return task?.card
+      ? { subject: { taskId: task.id, gaps: task.card.gaps }, unknown: null }
+      : { subject: null, unknown: `entry ${e.id} names a card verdict no longer present (retention)` };
+  }
   if (e.kind === "audit-red") return await auditRedSubject(e, ctx);
   if (e.kind === "ambient-land") return await ambientLandSubject(e);
   const row: AttentionRequest | FleetReport | undefined = e.kind === "attention-answer"
@@ -15490,7 +15496,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
         : proposalUnknown.length ? ` (untracked: ${proposalUnknown.join(",")})` : ""));
   // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, the same shape releaseTaskForMain
   // and openAttention answer with.
-  return json({ ok: true, sessionIdMatch, task: t, ...(variantRows.length ? { variants: variantRows } : {}) });
+  return json({ ok: true, sessionIdMatch, task: t, overlap: taskOverlap(t.id, bundleRowsNow()), ...(variantRows.length ? { variants: variantRows } : {}) });
 }
 
 const attentionBound = (a: AttentionRequest, s: Slot): boolean =>
@@ -16340,6 +16346,17 @@ const startPlanRowOf = (t: Task): StartPlanRow => {
 // first and unchanged, so the plan half is still byte for byte what `bun start-plan.ts --state
 // fleet.json` prints — buendel travels beside the plan, like waits and stau, and no reader that
 // STARTS anything reads it (the tick walks plan.repos through startPlanWaves()).
+function bundleRowsNow(): BundleRowInput[] {
+  return tasks.map((t) => {
+    const view = taskView(t);
+    return { id: t.id, created: t.created, kind: t.kind, status: t.status,
+      programId: t.programId, repo: taskRepoOf(t), size: taskSizeOf(t) ?? undefined,
+      verify: t.card?.verify, variantGroup: !!t.variants, variantOf: t.variantOf,
+      files: [...(view.files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])],
+      after: t.card?.after };
+  });
+}
+
 type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView>; buendel: BundleProposal[] };
 function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlanView {
   const baseCache = new Map<string, string | null>();
@@ -16404,17 +16421,7 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
   // tick walks the plan's waves; the land projection above carries no bundle. The rows read the
   // same surface the land fold reads (taskView files plus a surfaceValid card's creates), the
   // card's verified verify text and its size — a proposal is a sensor answer, never a new reading.
-  const buendel = proposeBundles({ tasks: tasks
-    .filter((t) => t.kind === "auftrag" && (t.status === "queued" || t.status === "pending") && !t.variants && !t.variantOf)
-    .map((t) => {
-      const view = taskView(t);
-      const files = [...(view.files ?? []), ...(t.card?.surfaceValid ? t.card.surface.creates ?? [] : [])];
-      return { id: t.id, created: t.created, kind: t.kind, status: t.status,
-        ...(t.programId ? { programId: t.programId } : {}),
-        ...(taskSizeOf(t) ? { size: taskSizeOf(t)! } : {}),
-        ...(t.card ? { verify: t.card.verify } : {}),
-        files, ...(t.card?.after?.length ? { after: t.card.after } : {}) };
-    }) });
+  const buendel = proposeBundles({ tasks: bundleRowsNow() });
   return { ...plan, buendel, waits: waitsOf(plan), stau: stallView() };
 }
 // THE FACTS the wait register reads (waits.ts#deriveWaits), taken off the live state in one pass:
@@ -17709,7 +17716,13 @@ async function tickCardSweep(): Promise<void> {
         const formatted = formatCardOf(t, snapshot, index);
         const run: { answer?: string } = {};
         const card = formatted ?? await extractCard(t, repo, snapshot, index, (answer) => { run.answer = answer; });
+        const firstInvalid = card.valid === false && t.card?.valid !== false;
         t.card = card;
+        if (firstInvalid && t.source === "main" && t.programId) {
+          const program = programs.find((p) => p.id === t.programId);
+          if (program && !program.inbox?.entries.some((e) => e.kind === "card-verdict" && e.ref === t.id))
+            appendProgramInbox(program, "card-verdict", t.id);
+        }
         // THE BIRTH OF A CARD is where its role adopts (adoptSpawnFromCard above): a row that filed
         // without a body triple takes Task.spawn from the card just attached. cardDue has already
         // excluded a started, mid-dispatch or variant row; the helper re-asks so the rule stays one
@@ -44611,7 +44624,7 @@ Bun.serve<WSData>({
       tasks = capTasks([...tasks, t, ...variantRows]);
       saveState();
       if (variantRows.length) audit("variant_group", undefined, `${t.id} n=${variantRows.length} by=owner`);
-      return json({ ok: true, task: t, ...(variantRows.length ? { variants: variantRows } : {}) });
+      return json({ ok: true, task: t, overlap: taskOverlap(t.id, bundleRowsNow()), ...(variantRows.length ? { variants: variantRows } : {}) });
     }
     // the full prompt texts, kept off the 2 s poll (see TaskDigest). The queue overlay fetches
     // this when it opens; a task's text never changes after creation, so the client caches by id.

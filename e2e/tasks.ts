@@ -19,7 +19,7 @@ import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, ups
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
-  LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, proposeBundles,
+  LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, proposeBundles, taskOverlap,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
   type StartPlanLane, type StartPlanLaneClaim, type StartPlanRelease, type StartPlanRow } from "../start-plan";
@@ -10972,10 +10972,20 @@ export async function run(ctx: Ctx): Promise<void> {
       && bdGot.chain[0]?.grund.startsWith("after-Kette: ")
       && bdGot.terminal.length === 0 && bdGot.landPure === true,
       JSON.stringify(bdGot.chain));
+    const boRows = [bdRow("old", 1), { ...bdRow("note", 2), kind: "notiz" },
+      bdRow("foreign", 3, { programId: "other" }), bdRow("closed", 4, { status: "done" }),
+      bdRow("new", 5), bdRow("unknown", 6, { files: [] })];
+    const bo = taskOverlap("new", boRows);
+    check("(buendel-overlap) same Program open work AND notes share exactly the common paths; foreign Program and terminal rows do not; unknown surface is null",
+      JSON.stringify(bo?.rows) === JSON.stringify([{ id: "old", kind: "auftrag", files: ["shared.ts"] },
+        { id: "note", kind: "notiz", files: ["shared.ts"] }])
+      && bo?.buendel.length === 1 && bo.buendel[0].ids.includes("new")
+      && taskOverlap("unknown", boRows) === null,
+      JSON.stringify(bo));
     const bdSrv = (() => { try { return readFileSync(`${ROOT}/server.ts`, "utf8"); } catch { return ""; } })();
     const bdTickSrc = bdSrv.slice(bdSrv.indexOf("async function tickDispatch("), bdSrv.indexOf("\nasync function ownerSeedCapture("));
     check("(buendel) PROBE + wiring: the tick reads no buendel and still walks startPlanWaves · StartPlanView carries the field, startPlanNow attaches it, the route serves it unchanged",
-      bdTickSrc.length > 1000 && !bdTickSrc.includes("buendel") && /startPlanWaves\(\)/.test(bdTickSrc)
+      bdTickSrc.length > 1000 && !bdTickSrc.includes("buendel") && !bdTickSrc.includes("overlap") && /startPlanWaves\(\)/.test(bdTickSrc)
       && /type StartPlanView = StartPlan & \{ waits: WaitRow\[\]; stau: ReturnType<typeof stallView>; buendel: BundleProposal\[\] \};/.test(bdSrv)
       && /return \{ \.\.\.plan, buendel, waits: waitsOf\(plan\), stau: stallView\(\) \};/.test(bdSrv)
       && /return json\(startPlanNow\(\)\)/.test(bdSrv), `tick=${bdTickSrc.length}`);
@@ -12751,6 +12761,48 @@ export async function run(ctx: Ctx): Promise<void> {
       mSlot >= 0 && !!mOpen?.ok && /^[0-9a-f]{32}$/.test(mToken)
         && !!mLive?.cwd && !mLive.worktree && mBoundSlot === mSlot,
       `slot=${mSlot} open=${mOpen?.status} token=${mToken.length} cwd=${mLive?.cwd} bound=${mBoundSlot}`);
+
+    // Mutation probes: drop either response field, the Program filter, the null guard, the
+    // inbox append, its first-verdict guard, or the gaps join: each named check below turns red.
+    type BOReply = { task?: { id: string }; overlap?: { rows: { id: string; kind: string; files: string[] }[] } | null };
+    const boCard = { ziel: "AGENTS.md bekommt eine Zeile", surface: { files: ["AGENTS.md"], symbols: [] },
+      done: "die Zeile steht in AGENTS.md", verify: "bun e2e/pins.ts", verboten: [] };
+    const boOldRes = await post("/api/tasks", { text: "overlap older", kind: "notiz", programId: mMainProgram, card: boCard, repo: REPO });
+    const boOld = await boOldRes.json() as BOReply;
+    const boNewRes = await mFile(mToken, { text: "overlap newer", kind: "notiz", card: boCard });
+    const boNew = await boNewRes.json() as BOReply;
+    const boOwnerRes = await post("/api/tasks", { text: "overlap owner newer", kind: "notiz", programId: mMainProgram, card: boCard, repo: REPO });
+    const boOwner = await boOwnerRes.json() as BOReply;
+    const boUnknownRes = await mFile(mToken, { text: "opaque xyzwv filing", kind: "notiz" });
+    const boUnknown = await boUnknownRes.json() as BOReply;
+    check("(buendel-overlap-live) both create doors report the older same-Program note; unknown filing reports null",
+      boOldRes.ok && boNewRes.ok && boOwnerRes.ok && boUnknownRes.ok
+      && !!boOld.task?.id && !!boNew.overlap?.rows.some((r) => r.id === boOld.task?.id && r.kind === "notiz" && r.files.join(" ") === "AGENTS.md")
+      && !!boOwner.overlap?.rows.some((r) => r.id === boNew.task?.id) && boUnknown.overlap === null,
+      JSON.stringify({ self: boNew.overlap, owner: boOwner.overlap, unknown: boUnknown.overlap }));
+    const boBadRes = await mFile(mToken, { kind: "auftrag", text:
+      "ZIEL: AGENTS.md bekommt eine Zeile\nFLAECHE: AGENTS.md\nDONE:\nVERIFY: bun e2e/pins.ts\nVERBOTEN: keine anderen Dateien" });
+    const boBad = await boBadRes.json() as BOReply;
+    const boFake = `${ROOT}/fakecard-verdict`;
+    writeFileSync(boFake, "#!/bin/sh\ncat >/dev/null\necho '{}'\n", { mode: 0o700 });
+    await restartSrv({ FLEET_CARD_MS: "100", FLEET_CARD_CMD: boFake });
+    type BOInbox = { entries: { kind: string; ref: string; subject: { gaps?: string[] } | null }[] };
+    const boInbox = async (): Promise<BOInbox> => (await fetch(`${BASE}/api/self/inbox`,
+      { headers: { "x-fleet-self-token": mToken } })).json();
+    await until(async () => (await boInbox()).entries.some((e) => e.kind === "card-verdict" && e.ref === boBad.task?.id),
+      { timeoutMs: 10_000, what: "first invalid card verdict in bound MAIN inbox" }).catch((e: unknown) => { if (!(e instanceof UntilTimeout)) throw e; });
+    // Several real sweep intervals; the card remains attached and is not due again.
+    await Bun.sleep(450);
+    const boEntries = (await boInbox()).entries.filter((e) => e.kind === "card-verdict" && e.ref === boBad.task?.id);
+    const boFull = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; card?: { valid: boolean; gaps: string[] } }[] })
+      .tasks.find((t) => t.id === boBad.task?.id);
+    check("(buendel-card-verdict) an invalid MAIN card produces exactly ONE inbox entry over repeated sweeps; subject carries literal gaps",
+      boBadRes.ok && boFull?.card?.valid === false && !!boFull.card.gaps.length && boEntries.length === 1
+      && JSON.stringify(boEntries[0].subject?.gaps) === JSON.stringify(boFull.card.gaps),
+      JSON.stringify({ card: boFull?.card, entries: boEntries }));
+    await restartSrv();
+    rmSync(boFake, { force: true });
+    for (const row of [boOld, boNew, boOwner, boUnknown, boBad]) if (row.task?.id) await post(`/api/tasks/${row.task.id}/delete`, {});
 
     // (kr6) The MAIN's create door uses the same card-role adoption as the owner door in (kr1).
     // Removing adoptSpawnFromCard(t) from createTaskForMain leaves this stored row without spawn.

@@ -2731,7 +2731,7 @@ const loadProgramLineage = (value: unknown): ProgramLineageRead => {
 // with an owner token that did not come from the board (LandActor.bypassed), which is a fact about
 // the Program and not about whoever held the pane at the time. That is why it belongs here rather
 // than in a FleetEvent: a succession retires the events, and this must outlive it.
-type ProgramInboxKind = "attention-answer" | "fleet-report" | "audit-red" | "ambient-land";
+type ProgramInboxKind = "attention-answer" | "fleet-report" | "audit-red" | "ambient-land" | "card-verdict";
 interface ProgramInboxEntry {
   id: string;                       // 24 hex, minted by appendProgramInbox
   kind: ProgramInboxKind;
@@ -2744,7 +2744,7 @@ interface ProgramInbox { v: 1; entries: ProgramInboxEntry[]; dropped: number }
 // the cap is on the RECORD, so a hand-written file cannot make a Program carry an unbounded
 // history either; past it appendProgramInbox drops and COUNTS, exactly like the lineage
 const PROGRAM_INBOX_MAX = 100;
-const PROGRAM_INBOX_KINDS: ProgramInboxKind[] = ["attention-answer", "fleet-report", "audit-red", "ambient-land"];
+const PROGRAM_INBOX_KINDS: ProgramInboxKind[] = ["attention-answer", "fleet-report", "audit-red", "ambient-land", "card-verdict"];
 const PROGRAM_INBOX_ENTRY_KEYS = ["id", "kind", "at", "ref", "readBy", "readAt"];
 const PROGRAM_INBOX_REF_MAX = 200;
 type ProgramInboxRead = { ok: true; inbox: ProgramInbox } | { ok: false; error: string };

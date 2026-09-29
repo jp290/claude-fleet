@@ -8868,13 +8868,14 @@ async function seedInbound(): Promise<void> {
 // exception and would fail loudly in their temporal dead zone (the hazard commsFor documents one
 // region above); no boot path reaches sendText today, checked at both of the boot awaits.
 function auditSend(s: Slot, path: SendPath, bytes: number,
-  acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>, klass = deliveryClass(path), reportId?: string): void {
+  acceptance: Acceptance | ReturnType<typeof sendFailureDelivery>, klass = deliveryClass(path), reportId?: string,
+  inboxId?: string): void {
   const fill = contextFill(s);
   const cache = deliveryCacheState(s);
-  audit("send", s.id, `${path} ${bytes}B ${acceptance}${reportId ? ` report=${reportId}` : ""}`,
+  audit("send", s.id, `${path} ${bytes}B ${acceptance}${reportId ? ` report=${reportId}` : ""}${inboxId ? ` inbox=${inboxId}` : ""}`,
     { path, bytes, acceptance, deliveryClass: klass, ttlSec: cache.ttlSec,
       ttlQuelle: cache.ttlQuelle, cache: cache.cache, ...(fill ? { ctxPct: fill.pct } : {}),
-      ...(reportId ? { reportId } : {}) });
+      ...(reportId ? { reportId } : {}), ...(inboxId ? { inboxId } : {}) });
   bumpInbound(s.id, Date.now(), bytes);
 }
 
@@ -9101,7 +9102,7 @@ async function submitFleetResidue(s: Slot, bound: BoundSlotPane): Promise<string
 type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true;
   deliveryClass?: DeliveryClass; subscribedWatch?: true; beforeSend?: (receiver: Slot) => Promise<void>;
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
-  eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string;
+  eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string; inboxId?: string;
   bundleGate?: { harness?: false; quietHours?: false; idleMs?: number } };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
 type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
@@ -9584,10 +9585,10 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // neighbours, so it can neither delay nor fail the send it records.
   try {
     const result = await task;
-    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass, options.reportId);
+    auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass, options.reportId, options.inboxId);
     return result;
   } catch (e) {
-    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass, options.reportId);
+    auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass, options.reportId, options.inboxId);
     if (e instanceof SendRefused) await options.onRefused?.(s);
     throw e;
   }
@@ -21279,6 +21280,71 @@ function nudgeableUnread(program: Program): string[] {
   return (program.inbox?.entries ?? [])
     .filter((entry) => entry.readBy === null && entry.kind !== "audit-red")
     .map((entry) => entry.id).sort();
+}
+
+const fastInboxNotified = new Set<string>();
+const fastInboxPending = new Set<string>();
+let fastInboxSeeded = false;
+let fastInboxBusy = false;
+async function tickFastProgramInbox(): Promise<void> {
+  if (fastInboxBusy) return;
+  fastInboxBusy = true;
+  try {
+    if (!fastInboxSeeded) {
+      const { rows } = await readEventLog(AUDIT_FILE);
+      for (const row of rows)
+        if (row.event === "send" && row.path === "inbox-nudge"
+          && typeof row.inboxId === "string" && typeof row.bytes === "number" && row.bytes > 0)
+          fastInboxNotified.add(row.inboxId);
+      fastInboxSeeded = true;
+    }
+    for (const program of programs) {
+      if (program.status !== "active" || programOccupancy(program) !== "live" || !program.main) continue;
+      const entry = program.inbox?.entries.find((e) => e.readBy === null
+        && (e.kind === "attention-answer" || e.kind === "fleet-report")
+        && !fastInboxNotified.has(e.id) && !fastInboxPending.has(e.id));
+      if (!entry) continue;
+      const receiver = slotFrom(program.main.slot);
+      if (!receiver?.cwd || receiver.openedAt !== program.main.openedAt || receiver.lastOutput === 0) continue;
+      const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+      const verdict = await canDeliver(receiver, { now: Date.now(), harness: false,
+        quietHours: false, idleMs: REPORT_DECISION_IDLE_MS });
+      if (!verdict.ok || program.status !== "active" || programOccupancy(program) !== "live"
+        || program.main?.slot !== occupant.slot || program.main.openedAt !== occupant.openedAt
+        || entry.readBy !== null || fastInboxNotified.has(entry.id)) continue;
+      const message = `[fleet inbox] ${entry.kind} ${entry.id} in Program ${program.id} — `
+        + "Self-Token aus $FLEET_SELF_TOKEN im Header x-fleet-self-token: "
+        + "GET /api/self/inbox, dann POST /api/self/inbox/<id>/read.";
+      fastInboxPending.add(entry.id);
+      void (async () => {
+        try {
+          const { acceptance } = await sendText(receiver, message, true, {
+            path: "inbox-nudge", deliveryClass: "sofort", rollbackOwnPayload: true, inboxId: entry.id,
+            beforeSend: async (current) => {
+              if (current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+                || program.status !== "active" || programOccupancy(program) !== "live"
+                || program.main?.slot !== occupant.slot || program.main.openedAt !== occupant.openedAt
+                || entry.readBy !== null) throw new DeliveryCancelled(`inbox ${entry.id} changed before paste`);
+            },
+          });
+          fastInboxNotified.add(entry.id);
+          const at = Date.now();
+          receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+          saveHistory(receiver);
+          logPrompt(receiver, message, "auto", at, undefined, acceptance);
+        } catch (e) {
+          if (!(e instanceof DeliveryCancelled)) {
+            fastInboxNotified.add(entry.id);
+            logError("tickFastProgramInbox", e);
+            logPrompt(receiver, message, "auto", Date.now(), undefined, sendFailureDelivery(e));
+          }
+        } finally { fastInboxPending.delete(entry.id); }
+      })();
+      return;
+    }
+  } catch (e) {
+    logError("tickFastProgramInbox", e);
+  } finally { fastInboxBusy = false; }
 }
 
 let inboxNudgeBusy = false;
@@ -37326,6 +37392,7 @@ setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
 setInterval(() => void tickWatches().catch((e: unknown) => logError("tickWatches", e)), AUTOS_TICK_MS);
 setInterval(() => void tickOrphanReports().catch((e: unknown) => logError("tickOrphanReports", e)), AUTOS_TICK_MS);
+setInterval(() => void tickFastProgramInbox().catch((e: unknown) => logError("tickFastProgramInbox", e)), AUTOS_TICK_MS);
 // the owner's own parked /send (THE PARKED SEND): owner-initiated, so no automation switch holds it
 setInterval(() => void tickParkedSends().catch((e: unknown) => logError("tickParkedSends", e)), AUTOS_TICK_MS);
 setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), GIT_TICK_MS);

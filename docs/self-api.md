@@ -154,7 +154,9 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   und der Watch-Tick mintet danach kein redundantes `lane-ready`-Event. Merge-Watches bleiben armed:
   ein Land ist ein anderer Fakt. Program-Reports verwenden dafür die lebende Program-MAIN-Bindung,
   programlose Reports ihre exakte Lane-Watch-Evidenz; ein Owner-Inbox-Report entwaffnet nichts.
-- Ablehnungen, jede sagt „[Zitat entfernt]“: `bad target` (400) ·
+  Für den Program-Report nennt der schnelle Inbox-Hinweis die Eintrags-id binnen eines 5-s-Ticks
+  nach dem 3-s-Leerlauf-Tor. Der Watch bleibt entwaffnet, und es entsteht kein FleetEvent.
+- Ablehnungen, jede sagt „dieser Watch könnte nie feuern": `bad target` (400) ·
   `a session cannot watch itself` (400) · `target slot not active` (400) ·
   `target is not a lane — done-looking only classifies lanes` (409) ·
   `the ⚙ steward is never classified done-looking` (409) ·
@@ -1998,6 +2000,13 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   vollständig adressiert wird er zu `ping.status: "program-inbox"` (nicht `delivered` — es wurde
   nichts getippt), teilweise adressiert feuert er weiter und nennt die Hälfte, die schon einen Leser
   hat.
+- **Schneller Rückweg für `attention-answer` und `fleet-report`:** Ein ungelesener Zeiger an eine
+  lebende Program-MAIN bekommt über `inbox-nudge` einen einzeiligen Hinweis mit seiner Eintrags-id.
+  Der 5-s-Tick nutzt das 3-s-Leerlauf-Tor der Report-Entscheidung, prüft Kill-Switch und lebenden
+  Agenten und sendet mit Klasse `sofort`, unabhängig von Bündelzeit und der 10-min-Abkühlzeit des
+  allgemeinen Inbox-Hinweises. Die Send-Audit-Zeile mit `inboxId` verhindert einen zweiten
+  Hinweis nach einem Neustart. Ein vor dem Paste gelesener Eintrag wird nicht mehr gemeldet.
+  Andere Inbox-Arten behalten den allgemeinen 60-s-Tick mit 300-s-Leerlauf und Abkühlzeit.
 - **Schreiber:** Eine Owner-Antwort über `POST /api/attention/:id/answer` schreibt genau einen
   `attention-answer`-Zeiger zusammen mit dem `answered`-Status. **Und seit 2026-09-12 schreibt
   `POST /api/tasks/:id/criterion-confirm` denselben Zeiger für jede Zeile, die genau um diesen Akt
@@ -2723,8 +2732,10 @@ adressiert: `basis:"program"`, `receiver:null`, `eventId:null`, genau ein ungele
 `fleet-report`-Eintrag in `Program.inbox`. Das gilt bei lebender wie staler MAIN-Bindung; es wird
 kein FleetEvent gemintet und kein Occupant-Zustellbudget gelesen. Die jeweils durch
 `boundProgramForMain` gebundene MAIN liest die Zeile, also auch eine Nachfolgerin mit anderem
-Tripel. `clarificationReceiverFor` bleibt für Fragen unverändert, weil eine Frage einen lebenden
-Antwortenden braucht.
+Tripel. Bei lebender MAIN ersetzt der schnelle Inbox-Hinweis mit der Eintrags-id die unmittelbare
+Benachrichtigung des entschärften Lane-Watches; der Report bleibt allein ein Inbox-Zeiger und
+erzeugt kein FleetEvent. `clarificationReceiverFor` bleibt für Fragen unverändert, weil eine
+Frage einen lebenden Antwortenden braucht.
 
 Nur wenn das genannte Program nicht aktiv ist oder die Lane kein Program trägt, gilt die bisherige
 Empfänger-Ableitung aus Watch-Evidenz beziehungsweise der Owner-Inbox-Rückfall. Dort bleiben die

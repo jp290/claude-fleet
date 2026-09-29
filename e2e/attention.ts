@@ -749,6 +749,66 @@ export async function run(): Promise<void> {
     if (dSlot) await post(`/api/slots/${dSlot}/kill`, {});
   }
 
+  // A recent ordinary inbox hint must not hold an owner answer behind its ten-minute cooldown.
+  {
+    const slot = await freeSlot();
+    const opened = slot ? await post(`/api/slots/${slot}/open`,
+      { cwd: REPO, label: "attention-fast-return", harness: "pi" }) : null;
+    const token = slot ? await paneEnv(`s${slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const programId = "fa".repeat(12);
+    const ambientId = "fa".repeat(12);
+    check("fast attention fixture: a live pi MAIN has its own scoped token",
+      !!opened?.ok && /^[0-9a-f]{32}$/.test(token),
+      JSON.stringify({ slot, status: opened?.status, tokenLength: token.length }));
+    await stopSrv();
+    const image = JSON.parse(readFileSync(statePath, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+    };
+    const occupant = image.slots[String(slot)] ?? {};
+    image.programs = [...(image.programs ?? []), {
+      id: programId, title: "Fast answer fixture", intent: "Get the owner answer promptly",
+      successCriterion: "The entry id reaches the MAIN", nonGoals: [], decisions: [], evidence: [],
+      openQuestions: [], status: "active", createdAt: Date.now() - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
+      main: { slot, openedAt: occupant.openedAt, sessionId: occupant.sessionId ?? null, boundAt: Date.now() - 700 },
+      inbox: { v: 1, dropped: 0, entries: [{ id: ambientId, kind: "ambient-land", at: Date.now() - 600,
+        ref: `${"a".repeat(40)} ${REPO}`, readBy: null, readAt: null }] },
+    }];
+    writeFileSync(statePath, JSON.stringify(image, null, 2), { mode: 0o600 });
+    await restartSrv({ FLEET_HARNESS_AUTOMATION: "1", FLEET_INBOX_NUDGE_MS: "250",
+      FLEET_BACKLOG_NUDGE_IDLE_MS: "300", FLEET_DELIVERY_BUNDLE_SEC: "2" });
+    await tmuxOut("send-keys", "-t", `s${slot}`, "Enter");
+    const history = async () => ((await (await get(`/api/slots/${slot}/history`)).json()) as
+      { history?: { text: string; ts: number }[] }).history ?? [];
+    let prior = (await history()).filter((h) => h.text.includes("ungelesene Eintraege") && h.text.includes(programId));
+    for (let i = 0; i < 100 && prior.length === 0; i++) {
+      await Bun.sleep(100);
+      prior = (await history()).filter((h) => h.text.includes("ungelesene Eintraege") && h.text.includes(programId));
+    }
+    check("fast attention fixture: a slow inbox hint was already sent with bundling enabled",
+      prior.length === 1, JSON.stringify({ prior: prior.length }));
+    const request = await raised(await selfRaise(token, { kind: "decision", text: "Fast answer after prior hint?" }));
+    const answered = await post(`/api/attention/${request?.id}/answer`, { text: "Yes, read the answer." });
+    const body = await answered.json() as { inbox?: string };
+    const answeredAt = Date.now();
+    let lines = (await history()).filter((h) => h.text.includes(`attention-answer ${body.inbox}`));
+    for (let i = 0; i < 150 && lines.length === 0; i++) {
+      await Bun.sleep(100);
+      lines = (await history()).filter((h) => h.text.includes(`attention-answer ${body.inbox}`));
+    }
+    const sends = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { event?: string; inboxId?: string; deliveryClass?: string })
+      .filter((row) => row.event === "send" && row.inboxId === body.inbox);
+    check("fast attention: owner answer reaches the bound MAIN in 15 s despite bundling and a recent hint",
+      answered.ok && !!body.inbox && lines.length === 1
+        && lines[0]!.ts - answeredAt <= 15_000 && sends.length === 1
+        && sends[0]?.deliveryClass === "sofort",
+      JSON.stringify({ status: answered.status, entry: body.inbox, latencyMs: lines[0]?.ts - answeredAt,
+        lines: lines.length, sends }));
+    await post(`/api/slots/${slot}/kill`, {});
+    await restartSrv();
+  }
+
   // --- 13. the Rückfrage-Kette: a MAIN's question waits on the Orchestratorin first (Verfassung §5) ---
   // Owner rule 2026-09-25: worker → MAIN → Orchestratorin → owner. The stage is chosen at raise time
   // through deliveryRecipient({kind:"orchestrator"}): exactly one live 🎛 slot → "orchestrator",

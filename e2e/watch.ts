@@ -3976,7 +3976,9 @@ export async function run(): Promise<void> {
     d3dPlant.watches = [...oldSpent, ...(d3dPlant.watches ?? []),
       ...plantedControls];
     writeFileSync(d1Path, JSON.stringify(d3dPlant, null, 2), { mode: 0o600 });
-    await restartSrv();
+    await restartSrv({ FLEET_INBOX_NUDGE_MS: "60000", FLEET_BACKLOG_NUDGE_IDLE_MS: "300000" });
+    const d1Reader = await catPane(`s${d1Main}`);
+    check("D1 fast report fixture: the bound MAIN has an observed line reader", d1Reader);
 
     const d1BudgetBefore = await programBudget(d1ProgramId);
     const d1EventsBefore = (await fleetReportEventRows()).filter((e) => e.receiverSlot === d1Main).length;
@@ -3991,7 +3993,40 @@ export async function run(): Promise<void> {
       filed.map(async (r) => (await r.json() as { report?: FleetReportRow }).report));
     const d1Inbox = await (await fetch(`${BASE}/api/self/inbox`,
       { headers: { "x-fleet-self-token": d1MainTok } })).json() as
-      { unread?: number; entries?: { kind?: string; ref?: string; readBy?: unknown }[] };
+      { unread?: number; entries?: { id?: string; kind?: string; ref?: string; readBy?: unknown }[] };
+    const fastEntry = d1Inbox.entries?.find((e) => e.kind === "fleet-report" && e.ref === acceptReport?.id);
+    const readEarly = d1Inbox.entries?.find((e) => e.kind === "fleet-report" && e.ref === terminalReport?.id);
+    const earlyReceipt = readEarly?.id ? await fetch(`${BASE}/api/self/inbox/${readEarly.id}/read`,
+      { method: "POST", headers: { "x-fleet-self-token": d1MainTok } }) : null;
+    const fastHistory = async () => ((await (await get(`/api/slots/${d1Main}/history`)).json()) as
+      { history?: { text: string; ts: number }[] }).history ?? [];
+    let fastLines = (await fastHistory()).filter((h) => h.text.includes(`fleet-report ${fastEntry?.id}`));
+    for (let i = 0; i < 150 && fastLines.length === 0; i++) {
+      await Bun.sleep(100);
+      fastLines = (await fastHistory()).filter((h) => h.text.includes(`fleet-report ${fastEntry?.id}`));
+    }
+    const reportSends = auditRows().filter((r) => r.event === "send"
+      && (r as AuditRow & { inboxId?: string }).inboxId === fastEntry?.id);
+    check("D1 fast report: the disarmed MAIN watch is replaced by one immediate inbox-id line within 15 s, without a FleetEvent",
+      !!fastEntry?.id && fastLines.length === 1 && fastLines[0]!.ts - (acceptReport?.reportedAt ?? 0) <= 15_000
+        && reportSends.length === 1
+        && (reportSends[0] as AuditRow & { deliveryClass?: string })?.deliveryClass === "sofort"
+        && !(await fleetReportEventRows()).some((e) => e.receiverSlot === d1Main && e.kind === "fleet-report"),
+      JSON.stringify({ entry: fastEntry?.id, delay: fastLines[0]?.ts - (acceptReport?.reportedAt ?? 0),
+        history: fastLines.length, sends: reportSends.length }));
+    check("D1 fast report: an entry read before the idle gate produces no pane hint",
+      !!earlyReceipt?.ok && !!readEarly?.id
+        && !(await fastHistory()).some((h) => h.text.includes(`fleet-report ${readEarly.id}`)),
+      JSON.stringify({ receipt: earlyReceipt?.status, entry: readEarly?.id }));
+    await Bun.sleep(AUTOS_TICK_MS * 2 + 500);
+    const beforeFastRestart = (await fastHistory()).filter((h) => h.text.includes(`fleet-report ${fastEntry?.id}`)).length;
+    await restartSrv({ FLEET_INBOX_NUDGE_MS: "60000", FLEET_BACKLOG_NUDGE_IDLE_MS: "300000" });
+    await Bun.sleep(AUTOS_TICK_MS * 2 + 500);
+    check("D1 fast report: two more ticks and a server restart send no second line for the same entry",
+      beforeFastRestart === 1
+        && (await fastHistory()).filter((h) => h.text.includes(`fleet-report ${fastEntry?.id}`)).length === 1
+        && !(await fastHistory()).some((h) => h.text.includes(`fleet-report ${readEarly?.id}`)),
+      JSON.stringify({ beforeFastRestart, entry: fastEntry?.id, readEarly: readEarly?.id }));
     const d1Self = await selfGet(d1MainTok).then((r) => r.json() as Promise<{ events?: FleetReportEventRow[] }>);
     const d1BudgetAfter = await programBudget(d1ProgramId);
     check("Q3 fleet-report scope: the bound MAIN reads all three program rows, its inbox holds three unread pointers, no FleetEvent exists, the worker sees its row, and a foreign MAIN sees neither",
@@ -7587,12 +7622,14 @@ export async function run(): Promise<void> {
       holdLines.length >= 1 && holdLines[0]?.delivery === "SendNotAccepted"
         && holdLines[0]?.source === "auto",
       JSON.stringify(holdLines.map((l) => ({ delivery: l.delivery ?? null, source: l.source }))));
-    // …and the FAILED attempt spends the cooldown. Ten ticks of the shrunk timer: without the stamp
-    // every one of them pastes again, because neither the dedupe key nor lastAt had moved.
+    // …and each FAILED path attempts only once: the general hint spends its cooldown, while the
+    // fast entry keeps its own one-entry stamp. Ten ticks must paste neither one again.
     await Bun.sleep(250 * 10 + 500);
     const holdAfterTicks = await holdPrompts();
-    check("…and the failed attempt is STAMPED: ten further inbox-nudge ticks paste nothing more into the same composer",
-      holdAfterTicks.length === 1,
+    check("…and failed fast and general hints are each STAMPED: ten further ticks paste neither one again",
+      holdAfterTicks.filter((l) => l.text.includes("attention-answer")).length === 1
+        && holdAfterTicks.filter((l) => l.text.includes("ungelesene Eintraege")).length === 1
+        && holdAfterTicks.length === 2,
       `${holdAfterTicks.length} attempt(s): ${JSON.stringify(holdAfterTicks.map((l) => l.delivery ?? null))}`);
 
     writeFileSync(holdMode, "normal\n");

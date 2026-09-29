@@ -13959,6 +13959,8 @@ function escalateMessage(note: string): AddressResolution {
 }
 function resolveMessageAddress(a: MessageAddress): AddressResolution {
   if (a.kind === "role") {
+    if (a.role === "owner")
+      return { ok: false, error: 'role "owner" is sender-only, never a message destination — questions to the Owner use the clarification chain' };
     // The one named-but-unresolvable member. It documents the dead end instead of hiding it, and a
     // later owner-promoted Controller binding turns this branch into a resolution — a resolver
     // change, never a record migration, because the address shape already carries it.
@@ -14098,6 +14100,62 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   await saveStateNow();
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
+  return json({ ok: true, existing: false, message: entry,
+    holder: resolved.holder ? { slot: resolved.holder.id, openedAt: resolved.holder.openedAt } : null,
+    note: resolved.note, escalatedTo: resolved.escalatedTo });
+}
+
+function ownerMessageView(url: URL): Response {
+  const unread = url.searchParams.get("unread");
+  if (unread !== null && unread !== "true" && unread !== "false")
+    return json({ error: "unread must be true or false" }, 400);
+  const to = url.searchParams.get("to");
+  if (to !== null && !/^program:[0-9a-f]{24}$/.test(to)
+    && !["supervisor", "orchestrator", "controller"].some((role) => to === `role:${role}`))
+    return json({ error: "to must be program:<24-hex> or role:supervisor|orchestrator|controller" }, 400);
+  const unknown: string[] = [];
+  if (messagesLost)
+    unknown.push(`the message record was unreadable at ${new Date(messagesLost.at).toISOString()} (${messagesLost.error}) and loaded as empty; every message written before then is gone.`);
+  if (messages.dropped > 0)
+    unknown.push(`${messages.dropped} messages have fallen off the fleet-wide cap of ${MESSAGES_MAX} since this record began.`);
+  const entries = messages.entries
+    .filter((m) => (unread === null || (m.readBy === null) === (unread === "true"))
+      && (to === null || addressLabel(m.to) === to))
+    .sort((a, b) => b.at - a.at)
+    .map((m) => {
+      const resolved = resolveMessageAddress(m.to);
+      const resolution = resolved.ok ? { ok: true, holder: resolved.holder
+        ? { slot: resolved.holder.id, openedAt: resolved.holder.openedAt } : null,
+        note: resolved.note, escalatedTo: resolved.escalatedTo } : resolved;
+      return { ...m, resolution };
+    });
+  return json({ unread: messages.entries.filter((m) => m.readBy === null).length,
+    droppedFleetWide: messages.dropped, entries, unknown });
+}
+
+async function replyToMessageAsOwner(id: string, body: Record<string, unknown> | null): Promise<Response> {
+  if (!body) return json({ error: "body must be an object" }, 400);
+  if (Object.keys(body).some((k) => !["payload", "idempotencyKey"].includes(k)))
+    return json({ error: "body reads only payload, idempotencyKey — from, to and replyTo are derived" }, 400);
+  const payload = loadMessagePayload(body.payload, "payload");
+  if (typeof payload === "string") return json({ error: payload }, 400);
+  if (typeof body.idempotencyKey !== "string" || body.idempotencyKey === ""
+    || body.idempotencyKey.length > MESSAGE_IDEMPOTENCY_KEY_MAX)
+    return json({ error: `idempotencyKey must be a non-empty string of at most ${MESSAGE_IDEMPOTENCY_KEY_MAX} chars` }, 400);
+  const from: MessageAddress = { kind: "role", role: "owner" };
+  const prior = messages.entries.find((m) => sameAddress(m.from, from) && m.idempotencyKey === body.idempotencyKey);
+  if (prior) {
+    if (prior.replyTo !== id || !samePayload(prior.payload, payload))
+      return json({ error: `idempotencyKey ${body.idempotencyKey} was already used by this sender for a different message (${prior.id}) — one key names one act` }, 409);
+    return json({ ok: true, existing: true, message: prior });
+  }
+  const parent = messages.entries.find((m) => m.id === id);
+  if (!parent) return json({ error: "no retained message with this id" }, 404);
+  const to = parent.from;
+  const resolved = resolveMessageAddress(to);
+  if (!resolved.ok) return json({ error: resolved.error }, 409);
+  const entry = appendMessage(from, to, payload, body.idempotencyKey, parent.id);
+  await saveStateNow();
   return json({ ok: true, existing: false, message: entry,
     holder: resolved.holder ? { slot: resolved.holder.id, openedAt: resolved.holder.openedAt } : null,
     note: resolved.note, escalatedTo: resolved.escalatedTo });
@@ -42075,6 +42133,11 @@ Bun.serve<WSData>({
 
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
+
+    if (url.pathname === "/api/messages" && req.method === "GET") return ownerMessageView(url);
+    const ownerMessageReply = /^\/api\/messages\/([0-9a-f]{24})\/reply$/.exec(url.pathname);
+    if (ownerMessageReply && req.method === "POST")
+      return await replyToMessageAsOwner(ownerMessageReply[1], await readJson(req));
 
     // /api/slots/<lane name>/… (S3c): resolved ONCE here, then rewritten to the lane's numeric
     // place so every /api/slots/:id route below serves it unchanged. After the token gate on

@@ -4172,6 +4172,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && await directPromptCount() === 1,
     `status=${directOrch.status} holder=${directBody.holder?.slot} view=${directView.view?.entries.some((m) => m.id === directBody.message?.id)} nudges=${nudgeCount() - beforeNudge} prompts=${firstMessagePrompts}/${await directPromptCount()}`);
 
+  await selfMessageRead(msgOrchToken, directBody.message?.id ?? "");
+
   const supervisorEscalated = await selfSend(slotToken(successorSlot), { to: { kind: "role", role: "supervisor" },
     payload: { kind: "text", text: "Supervisor has no live binding" }, idempotencyKey: "escalate-supervisor" });
   const supervisorBody = await supervisorEscalated.json() as { escalatedTo?: string; message?: { id?: string } };
@@ -4268,6 +4270,140 @@ export async function run(ctx: Ctx): Promise<void> {
     noOrch.ok && noBody.escalatedTo === "owner" && noBody.holder === null
       && noOwnerRow?.status === "inbox" && noOwnerRow.receiverSlot === null,
     `send=${noOrch.status}/${noBody.escalatedTo} event=${noOwnerRow?.status}`);
+
+  const msgOwnerMessages = async (query = ""): Promise<{ response: Response; entries: (MessageRow & {
+    resolution: { ok: boolean; holder: { slot: number; openedAt: number } | null;
+      escalatedTo: string | null; error?: string };
+  })[] }> => {
+    const response = await get(`/api/messages${query}`);
+    const body = await response.json() as { entries?: (MessageRow & {
+      resolution: { ok: boolean; holder: { slot: number; openedAt: number } | null;
+        escalatedTo: string | null; error?: string };
+    })[] };
+    return { response, entries: body.entries ?? [] };
+  };
+  const msgOwnerBefore = JSON.stringify(readState().messages);
+  const msgOwnerAll = await msgOwnerMessages();
+  const msgOwnerUnread = await msgOwnerMessages("?unread=true");
+  const msgOwnerRead = await msgOwnerMessages("?unread=false");
+  const msgOwnerToOrch = await msgOwnerMessages("?to=role:orchestrator&unread=true");
+  const msgOwnerRetained = (readState().messages as { entries: MessageRow[] }).entries;
+  check("owner message view: all retained rows are newest first, with current Owner escalation and no receipt writes",
+    msgOwnerAll.response.ok && msgOwnerAll.entries.length > 1 && msgOwnerAll.entries.length === msgOwnerRetained.length
+      && msgOwnerRetained.every((m) => msgOwnerAll.entries.some((e) => JSON.stringify({ ...e, resolution: undefined }) === JSON.stringify(m)))
+      && msgOwnerAll.entries.every((m, i) => i === 0 || msgOwnerAll.entries[i - 1].at >= m.at)
+      && msgOwnerAll.entries.find((m) => m.id === noBody.message?.id)?.resolution.escalatedTo === "owner"
+      && msgOwnerAll.entries.find((m) => m.id === noBody.message?.id)?.resolution.holder === null
+      && JSON.stringify(readState().messages) === msgOwnerBefore,
+    `status=${msgOwnerAll.response.status} count=${msgOwnerAll.entries.length}/${msgOwnerRetained.length} unchanged=${JSON.stringify(readState().messages) === msgOwnerBefore}`);
+  check("owner message view: unread and to filters select the exact retained sets",
+    msgOwnerUnread.response.ok && msgOwnerRead.response.ok && msgOwnerToOrch.response.ok && msgOwnerToOrch.entries.length > 0
+      && msgOwnerRead.entries.length > 0
+      && JSON.stringify(msgOwnerRead.entries.map((m) => m.id).sort()) === JSON.stringify(msgOwnerRetained.filter((m) => m.readBy !== null).map((m) => m.id).sort())
+      && JSON.stringify(msgOwnerUnread.entries.map((m) => m.id).sort()) === JSON.stringify(msgOwnerRetained.filter((m) => m.readBy === null).map((m) => m.id).sort())
+      && JSON.stringify(msgOwnerToOrch.entries.map((m) => m.id).sort()) === JSON.stringify(msgOwnerRetained.filter((m) => m.readBy === null && m.to.kind === "role" && m.to.role === "orchestrator").map((m) => m.id).sort()),
+    `unread=${msgOwnerUnread.entries.length} toOrchestrator=${msgOwnerToOrch.entries.length}`);
+  const rejectOwner = await selfSend(slotToken(successorSlot), { to: { kind: "role", role: "owner" },
+    payload: { kind: "text", text: "must use the clarification chain" }, idempotencyKey: "reject-owner-target" });
+  const rejectOwnerBody = await rejectOwner.json() as { error?: string };
+  check("owner is sender-only: self send to Owner is a named 409 and stores nothing",
+    rejectOwner.status === 409 && rejectOwnerBody.error?.includes('role "owner" is sender-only') === true
+      && JSON.stringify(readState().messages) === msgOwnerBefore,
+    `${rejectOwner.status} ${rejectOwnerBody.error}`);
+  const invalidOwnerFilter = await get("/api/messages?unread=maybe");
+  const invalidOwnerReply = await post(`/api/messages/${noBody.message?.id}/reply`, {
+    payload: { kind: "text", text: "spoof" }, idempotencyKey: "owner-spoof", from: orchAddress });
+  check("owner message routes: invalid unread filter and caller-supplied address are rejected before writing",
+    invalidOwnerFilter.status === 400 && invalidOwnerReply.status === 400
+      && JSON.stringify(readState().messages) === msgOwnerBefore,
+    `filter=${invalidOwnerFilter.status} reply=${invalidOwnerReply.status}`);
+
+  const msgOwnerParentBefore = JSON.stringify(msgOwnerRetained.find((m) => m.id === noBody.message?.id));
+  const msgOwnerMissing = await post("/api/messages/000000000000000000000000/reply", {
+    payload: { kind: "text", text: "missing parent" }, idempotencyKey: "owner-missing-parent" });
+  check("owner reply: a missing parent is a named 404", msgOwnerMissing.status === 404, `${msgOwnerMissing.status}`);
+  const msgOwnerReplyBody = { payload: { kind: "text", text: "Owner answer follows the Program address" },
+    idempotencyKey: "owner-reply-late-binding" };
+  const msgOwnerReply = await post(`/api/messages/${noBody.message?.id}/reply`, msgOwnerReplyBody);
+  const msgOwnerReplyRow = await msgOwnerReply.json() as { existing?: boolean; message?: MessageRow };
+  const msgOwnerReplyId = msgOwnerReplyRow.message?.id ?? "";
+  const msgOwnerReplay = await post(`/api/messages/${noBody.message?.id}/reply`, msgOwnerReplyBody);
+  const msgOwnerReplayRow = await msgOwnerReplay.json() as { existing?: boolean; message?: MessageRow };
+  const msgOwnerConflict = await post(`/api/messages/${noBody.message?.id}/reply`, {
+    ...msgOwnerReplyBody, payload: { kind: "text", text: "different act" } });
+  check("owner reply: derived Owner sender, parent.from target and parent.id edge are idempotent; changed payload conflicts",
+    msgOwnerReply.ok && msgOwnerReplyRow.existing === false && /^[0-9a-f]{24}$/.test(msgOwnerReplyId)
+      && JSON.stringify(msgOwnerReplyRow.message?.from) === JSON.stringify({ kind: "role", role: "owner" })
+      && JSON.stringify(msgOwnerReplyRow.message?.to) === JSON.stringify({ kind: "program", id: mainProgram.id })
+      && msgOwnerReplyRow.message?.replyTo === noBody.message?.id
+      && msgOwnerReplyRow.message?.readBy === null
+      && JSON.stringify((readState().messages as { entries: MessageRow[] }).entries.find((m) => m.id === noBody.message?.id)) === msgOwnerParentBefore
+      && msgOwnerReplay.ok && msgOwnerReplayRow.existing === true
+      && msgOwnerReplayRow.message?.id === msgOwnerReplyId && msgOwnerConflict.status === 409
+      && (readState().messages as { entries: MessageRow[] }).entries.filter((m) => m.id === msgOwnerReplyId).length === 1,
+    `reply=${msgOwnerReply.status} replay=${msgOwnerReplay.status}/${msgOwnerReplayRow.existing} conflict=${msgOwnerConflict.status} to=${JSON.stringify(msgOwnerReplyRow.message?.to)}`);
+
+  const msgOwnerBeforeRebind = await selfMessages(slotToken(successorSlot));
+  check("owner reply: the current Program holder reads the answer in self/messages and waitingOnMe",
+    msgOwnerBeforeRebind.view?.entries.some((m) => m.id === msgOwnerReplyId && m.readBy === null) === true
+      && ((await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": slotToken(successorSlot) } })).json()) as {
+        position?: { waitingOnMe?: { kind: string; id: string; slot: number }[] };
+      }).position?.waitingOnMe?.some((w) => w.kind === "message" && w.id === msgOwnerReplyId && w.slot === successorSlot) === true,
+    `holder=${successorSlot} id=${msgOwnerReplyId}`);
+  const msgOwnerNewSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const msgOwnerNewOpen = await post(`/api/slots/${msgOwnerNewSlot}/open`, { cwd: REPO, label: "owner-answer-new-main" });
+  await stopSrv();
+  const msgOwnerRebindState = readState();
+  const msgOwnerRebindProgram = msgOwnerRebindState.programs?.find((p) => p.id === mainProgram.id);
+  const msgOwnerOldMain = msgOwnerRebindProgram?.main;
+  const msgOwnerNewOccupant = msgOwnerRebindState.slots?.[String(msgOwnerNewSlot)];
+  if (msgOwnerRebindProgram && msgOwnerNewOccupant)
+    msgOwnerRebindProgram.main = { slot: msgOwnerNewSlot, openedAt: msgOwnerNewOccupant.openedAt ?? 0,
+      sessionId: msgOwnerNewOccupant.sessionId ?? null, boundAt: Date.now() };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(msgOwnerRebindState, null, 2), { mode: 0o600 });
+  await restartSrv({ FLEET_INBOX_NUDGE_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
+  const msgOwnerNewView = await selfMessages(slotToken(msgOwnerNewSlot));
+  const msgOwnerNewPosition = await (await fetch(`${BASE}/api/self`, {
+    headers: { "x-fleet-self-token": slotToken(msgOwnerNewSlot) } })).json() as {
+      position?: { waitingOnMe?: { kind: string; id: string; slot: number }[] };
+    };
+  const msgOwnerResolved = await msgOwnerMessages(`?to=program:${mainProgram.id}&unread=true`);
+  try { await until(async () => (await plogRead()).some((e) => e.slot === msgOwnerNewSlot
+    && e.text.startsWith("[fleet message]")),
+    { timeoutMs: 20_000, stepMs: 100, what: "Owner reply tick hint to the new Program holder" }); } catch { /* asserted below */ }
+  check("owner reply late binding: the answer follows parent.from to the new holder in self/messages, waitingOnMe and the message tick",
+    msgOwnerNewOpen.ok && msgOwnerNewView.view?.entries.some((m) => m.id === msgOwnerReplyId && m.readBy === null) === true
+      && msgOwnerNewPosition.position?.waitingOnMe?.some((w) => w.kind === "message" && w.id === msgOwnerReplyId && w.slot === msgOwnerNewSlot) === true
+      && msgOwnerResolved.entries.find((m) => m.id === msgOwnerReplyId)?.resolution.holder?.slot === msgOwnerNewSlot
+      && msgOwnerResolved.entries.find((m) => m.id === msgOwnerReplyId)?.resolution.escalatedTo === null
+      && (await plogRead()).some((e) => e.slot === msgOwnerNewSlot && e.text.startsWith("[fleet message]")),
+    `newHolder=${msgOwnerNewSlot} self=${msgOwnerNewView.view?.entries.some((m) => m.id === msgOwnerReplyId)} waiting=${JSON.stringify(msgOwnerNewPosition.position?.waitingOnMe)} resolution=${JSON.stringify(msgOwnerResolved.entries.find((m) => m.id === msgOwnerReplyId)?.resolution)}`);
+  await stopSrv();
+  const msgOwnerRestoreState = readState();
+  const msgOwnerRestoreProgram = msgOwnerRestoreState.programs?.find((p) => p.id === mainProgram.id);
+  if (msgOwnerRestoreProgram) {
+    if (msgOwnerOldMain) msgOwnerRestoreProgram.main = msgOwnerOldMain;
+    else delete msgOwnerRestoreProgram.main;
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(msgOwnerRestoreState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  await post(`/api/slots/${msgOwnerNewSlot}/kill`, {});
+
+  const msgOwnerRoleOpen = await post(`/api/slots/${msgOwnerNewSlot}/open`, { cwd: REPO, label: "🎛 owner-role-reply" });
+  const msgOwnerRoleParent = await selfSend(slotToken(msgOwnerNewSlot), { to: { kind: "program", id: mainProgram.id },
+    payload: { kind: "text", text: "A role also has an answer address" }, idempotencyKey: "owner-role-parent" });
+  const msgOwnerRoleParentId = await sentId(msgOwnerRoleParent);
+  const msgOwnerRoleReply = await post(`/api/messages/${msgOwnerRoleParentId}/reply`, {
+    payload: { kind: "text", text: "Owner answer to Orchestrator role" }, idempotencyKey: "owner-role-reply" });
+  const msgOwnerRoleReplyId = await sentId(msgOwnerRoleReply);
+  const msgOwnerRoleView = await selfMessages(slotToken(msgOwnerNewSlot));
+  check("owner reply: a role sender receives the answer at its role address",
+    msgOwnerRoleOpen.ok && msgOwnerRoleParent.ok && msgOwnerRoleReply.ok
+      && msgOwnerRoleView.view?.entries.some((m) => m.id === msgOwnerRoleReplyId
+        && m.to.kind === "role" && m.to.role === "orchestrator" && m.from.role === "owner"
+        && m.replyTo === msgOwnerRoleParentId && m.readBy === null) === true,
+    `open=${msgOwnerRoleOpen.status} parent=${msgOwnerRoleParent.status} reply=${msgOwnerRoleReply.status} id=${msgOwnerRoleReplyId}`);
+  await post(`/api/slots/${msgOwnerNewSlot}/kill`, {});
 
   // --- D1 · A DECIDED REPORT IS VISIBLE TO THE SUCCESSOR, WHICH NEVER RECEIVED IT. -----------
   // A worker's typed report is filed to ONE MAIN occupant, and the only door that occupant had was

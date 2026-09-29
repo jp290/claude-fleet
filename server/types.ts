@@ -2829,13 +2829,13 @@ const loadProgramInbox = (value: unknown): ProgramInboxRead => {
 // the same message under the same id. The READ RECEIPT is decided by the OCCUPANT TRIPLE — so the
 // record still says exactly who read it, and a later occupant never overwrites that. Two different
 // questions; a slot-keyed record answers both with one wrong answer.
-type MessageRole = "supervisor" | "orchestrator" | "controller";
+type MessageRole = "supervisor" | "orchestrator" | "controller" | "owner";
 // `controller` is carried DELIBERATELY as a well-formed but unresolvable address. The Controller is
 // Scope and holds no binding (docs/controller.md), so naming it here is how the dead end is
 // DOCUMENTED rather than invented: the loader accepts the address, the resolver refuses it by name,
 // and a later owner-promoted binding is a resolver change instead of a record migration. A MAIN
 // that wants to reach the Controller today addresses the Program the Controller is MAIN of.
-const MESSAGE_ROLES: MessageRole[] = ["supervisor", "orchestrator", "controller"];
+const MESSAGE_ROLES: MessageRole[] = ["supervisor", "orchestrator", "controller", "owner"];
 type MessageAddress = { kind: "program"; id: string } | { kind: "role"; role: MessageRole };
 // CLOSED BY KIND, with exactly one member today. An unknown kind is a named refusal rather than a
 // tolerated extra — but the honest limit of what that buys: it keeps TODAY's text records stably
@@ -2847,7 +2847,7 @@ const MESSAGE_IDEMPOTENCY_KEY_MAX = 200;
 const MESSAGE_ENTRY_KEYS = ["id", "from", "to", "at", "payload", "idempotencyKey", "replyTo", "readBy", "readAt"];
 interface Message {
   id: string;                       // 24 hex, minted by appendMessage
-  from: MessageAddress;             // DERIVED from the sender's binding, never read from a body
+  from: MessageAddress;             // DERIVED from the sender's binding or owner credential, never from a body
   to: MessageAddress;
   at: number;
   payload: MessagePayload;
@@ -2907,6 +2907,7 @@ const loadMessageEntry = (value: unknown, index: number): Message | string => {
   if (typeof from === "string") return from;
   const to = loadMessageAddress(r.to, `entry ${index} to`);
   if (typeof to === "string") return to;
+  if (to.kind === "role" && to.role === "owner") return `entry ${index} to: owner is sender-only, never a message destination`;
   if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
     return `entry ${index} at must be a positive number`;
   const payload = loadMessagePayload(r.payload, `entry ${index} payload`);

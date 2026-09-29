@@ -2270,7 +2270,8 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Die einzige lebende Session mit Orchestratorin-Label sendet als
   `{kind:"role",role:"orchestrator"}`; das Label gewährt keine weiteren Rechte.
 - **Adress-Union, geschlossen:** `{kind:"program", id}` | `{kind:"role", role}` mit
-  `role ∈ {supervisor, orchestrator, controller}`.
+  `role ∈ {supervisor, orchestrator, controller, owner}`. `owner` ist ausschließlich Absender;
+  als Ziel wird es mit benannter **409** abgelehnt. Auch der Record-Loader lehnt `to: owner` ab.
 - **`role:"controller"` ist BENANNT, aber nicht auflösbar** — 409, und **nichts wird gespeichert**.
   Der Controller ist Scope und hält keine Bindung (`docs/controller.md`). Wer ihn heute erreichen
   will, adressiert **das Program, dessen MAIN er ist**, als `{kind:"program",id}`. Die Rolle steht
@@ -2385,6 +2386,36 @@ Audit-Zeile `messages_unreadable`) und hinterlässt eine **persistierte Narbe** 
 exakt wie einer, an den nie jemand geschrieben hat. Die erste Narbe gewinnt: ein späterer Boot
 sieht keine kaputten Bytes mehr, und `at` nach vorn zu schieben würde den Verlust auf Nachrichten
 umdatieren, die längst weg waren.
+
+### Owner liest und antwortet — `GET /api/messages`, `POST /api/messages/:id/reply`
+
+Beide Routen benötigen das **Owner-Token**; ein Self-Token gewährt keinen Zugriff.
+`GET /api/messages` liefert alle behaltenen Einträge neuestzuerst und verändert weder `readBy`
+noch `readAt`. Optional filtert `unread=true` auf unquittierte, `unread=false` auf quittierte
+Einträge; `to=program:<24-hex>` oder `to=role:supervisor|orchestrator|controller` filtert die
+Zieladresse. Beide Filter sind kombinierbar. Ungültige Filter antworten **400**.
+
+Die Antwort enthält `{entries, unread, droppedFleetWide, unknown}`; `unread` zählt fleetweit vor
+Filterung. Jeder Eintrag trägt zusätzlich `resolution`, bei jeder Abfrage neu berechnet:
+`{ok:true, holder:{slot,openedAt}|null, note, escalatedTo:null|"orchestrator"|"owner"}` oder
+`{ok:false,error}` bei einer nicht mehr auflösbaren Adresse. Record-Verlust und Deckel bleiben
+als `unknown` sichtbar. Das Lesen durch den Owner ist keine Quittung einer Session.
+
+`POST /api/messages/:id/reply` liest ausschließlich
+`{payload:{kind:"text",text:"…"}, idempotencyKey:"…"}`. Es leitet
+`from={kind:"role",role:"owner"}`, `to=parent.from` und `replyTo=parent.id` ab;
+Adress- und Antwortfelder im Body werden mit **400** abgelehnt. Ein nicht mehr behaltener
+Elterneintrag antwortet **404**, ein nicht zustellbares Ziel **409**. Die Antwortform ist dieselbe
+wie beim Self-Senden: `{ok,existing,message}` und bei einer neuen Nachricht die aktuelle
+`holder`-/`note`-/`escalatedTo`-Auflösung. Gleicher Owner-Schlüssel, Text und Elterneintrag liefern
+idempotent dieselbe Id; derselbe Schlüssel für einen anderen Akt antwortet **409**. Die Garantie
+gilt nur innerhalb der behaltenen Einträge unter `MESSAGES_MAX`, auch wenn der Elterneintrag
+inzwischen vom Deckel verdrängt wurde.
+
+Die Antwort bleibt an die Program- oder Rollenadresse des ursprünglichen Absenders gebunden.
+`GET /api/self/messages`, `waitingOnMe` und der bestehende Nachrichten-Tick lösen sie beim
+jeweiligen Lesen/Zustellen auf die dann gebundene Session auf. Die Owner-Route quittiert den
+Elterneintrag nicht. Fragen an den Owner laufen weiterhin über die Rückfrage-Kette.
 
 ## jobs — `POST /api/self/jobs`, `GET /api/self/jobs/:id`, `POST /api/self/jobs/:id/withdraw`
 

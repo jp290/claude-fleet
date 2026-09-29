@@ -642,6 +642,8 @@ const dangerous = (slot: number): Probe[] => [
   // the content-bearing read exists while the principal matrix proves scoped credentials do not.
   { path: "/api/programs", method: "POST", body: {}, owner: 400 },
   { path: "/api/programs", method: "GET", owner: 200 },
+  { path: "/api/messages", method: "GET", owner: 200 },
+  { path: "/api/messages/000000000000000000000000/reply", method: "POST", body: {}, owner: 400 },
   // The studio inventory is owner truth about the WORKFLOW a Program binds — stages, spawn triples,
   // gates, brief blocks — so it is owner-only for the reason the Program bodies above are: a session
   // that could write it would be choosing the workflow it is judged by. Empty POST is a

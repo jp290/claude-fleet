@@ -38,9 +38,10 @@ import {
 } from "./rulebook";
 import { validateRefineProposal, briefReviewArm, briefReviewEligible, isBriefReviewKind,
   type RefineValidation } from "./refine-validate";
-import { planContext, planProgramContext, programContextPacksFrom, resolveContextHarness, validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
+import { planContext, planProgramContext, programContextPacksFrom, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack,
+  validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
   PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
-  type ProgramContextPack } from "./context-plan";
+  type PrivatePackResolution, type ProgramContextPack } from "./context-plan";
 import { buildSnippetPackage, planSnippets, snippetReceipt, renderSnippetBlock, type SnippetFile, type SnippetReceipt } from "./context-snippets";
 import {
   CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest, taskContextTriggers,
@@ -4801,8 +4802,8 @@ function taskDigest(t: Task): TaskDigest {
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
 // the PRIVATE konzept store (konzept-ledger.ts): versions and anmerkungen live under this root, never in
-// fleet.json or the tree. Unset = the konzept doors answer 503 by name; the pack resolver (f38eb1c8)
-// is meant to share the same root later.
+// fleet.json or the tree. Unset = the konzept doors answer 503 by name, and a private pack whose id is a
+// konzept id renders `hash missing` in every brief (context-plan.ts#resolvePrivatePack reads the same root).
 const KONZEPT_ROOT = process.env.FLEET_KONZEPT_ROOT?.trim() || null;
 const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
 // A SECOND cap, per Program, and it can only ever NARROW: the repo cap above is checked first and
@@ -16739,16 +16740,43 @@ type ContextReceiptSelection = {
   anchors: readonly { path: string; anchor: string }[] | { privateSourceId: string };
   sourceHash?: string;
   origin?: "program";
+  // a private row only: the hash verdict and the fassung it was taken on — never the local path
+  private?: { verdict: PrivatePackResolution["verdict"]; version: number | null };
 };
+
+// A repo-declared pack carries its own observation on the selection; a Fleet seed's hash is read from
+// the seed manifest. Neither invents one for the other.
+function declaredSourceHash(selection: ContextPlanSelection): string | undefined {
+  if (selection.sourceHash !== undefined) return selection.sourceHash;
+  const manifest = CONTEXT_PACKS.find((pack) => pack.id === selection.id);
+  return manifest && "sourceHash" in manifest ? manifest.sourceHash : undefined;
+}
+
+// ONE RESOLUTION PER DELIVERED SELECTION: the block and the receipt of one delivery hand the renderer
+// and contextReceiptSelections the same selection objects, so keying on the object makes both read
+// the verdict the files had once — a file rewritten between the two calls cannot make the receipt
+// state a verdict the block did not show. A fresh plan is a fresh object, so nothing goes stale.
+const privatePackResolutions = new WeakMap<ContextPlanSelection, PrivatePackResolution>();
+function privatePackResolutionOf(selection: ContextPlanSelection, privateSourceId: string): PrivatePackResolution {
+  const known = privatePackResolutions.get(selection);
+  if (known) return known;
+  const resolved = resolvePrivatePack(KONZEPT_ROOT, privateSourceId, declaredSourceHash(selection));
+  privatePackResolutions.set(selection, resolved);
+  return resolved;
+}
 
 // v2 renders PURPOSE beside the pointer: useWhen once per pack, pointers indented beneath it. A
 // selection WITHOUT useWhen (a repo-declared pack from before the field) keeps every pointer.
+// A PRIVATE pack renders its resolved local path, the hash verdict and its Anmerkung door
+// (context-plan.ts#renderPrivatePackLines) — the one part of the block a receipt row does not carry
+// byte for byte: the private root is the server's local fact and stays out of the ledger on purpose,
+// the verdict and the version are on the row.
 function renderContextAnchorBlock(plan: ContextPlan): string {
   if (plan.selected.length === 0) return "";
   const lines = ["ContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"];
   for (const pack of plan.selected) {
     lines.push(pack.useWhen ? `- ${pack.id} — ${pack.useWhen}` : `- ${pack.id}`);
-    if ("privateSourceId" in pack.sources) lines.push(`  ${pack.sources.privateSourceId}`);
+    if ("privateSourceId" in pack.sources) lines.push(...renderPrivatePackLines(privatePackResolutionOf(pack, pack.sources.privateSourceId)));
     else for (const source of pack.sources) lines.push(`  ${source.path} | ${source.anchor}`);
   }
   return `\n\n${lines.join("\n")}`;
@@ -16756,12 +16784,8 @@ function renderContextAnchorBlock(plan: ContextPlan): string {
 
 function contextReceiptSelections(selected: readonly ContextPlanSelection[]): ContextReceiptSelection[] {
   return selected.map((selection) => {
-    // A repo-declared pack carries its own observation on the selection; a Fleet seed's hash is
-    // read from the seed manifest. Neither invents one for the other.
-    const manifest = CONTEXT_PACKS.find((pack) => pack.id === selection.id);
-    const sourceHash = selection.sourceHash !== undefined
-      ? { sourceHash: selection.sourceHash }
-      : manifest && "sourceHash" in manifest ? { sourceHash: manifest.sourceHash } : {};
+    const declared = declaredSourceHash(selection);
+    const sourceHash = declared !== undefined ? { sourceHash: declared } : {};
     // useWhen is copied from the SELECTION, never re-read from the seed: the row must describe the
     // block that was delivered, and the plan is the only thing the renderer saw.
     const useWhen = selection.useWhen !== undefined ? { useWhen: selection.useWhen } : {};
@@ -16769,11 +16793,13 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[]): Co
     const origin = "origin" in selection && selection.origin === "program" ? { origin: selection.origin } : {};
     if (!("privateSourceId" in selection.sources))
       return { id: selection.id, ...useWhen, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash, ...origin };
+    const resolved = privatePackResolutionOf(selection, selection.sources.privateSourceId);
     return {
       id: selection.id,
       ...useWhen,
       anchors: { privateSourceId: selection.sources.privateSourceId },
       ...sourceHash,
+      private: { verdict: resolved.verdict, version: resolved.version },
     };
   });
 }

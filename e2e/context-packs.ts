@@ -19,6 +19,7 @@ import {
 import { USE_WHEN_MAX, validateContextPacks, type ContextPackRepoFacts } from "../context-pack-validator";
 import { CONTEXT_MANIFEST_PATH, planRepoContext, readContextManifest, taskContextTriggers } from "../context-manifest";
 import { planContext } from "../context-plan";
+import { KONZEPT_ID_RE } from "../konzept-ledger";
 
 export type ContextPackCheck = (name: string, ok: boolean, detail?: string) => void;
 
@@ -155,6 +156,21 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
       privateLeakResult.verdict === "fail" && hasCode(privateLeakResult, "PRIVATE_SOURCE_LEAK")
         && hasCode(privateLeakResult, "PRIVATE_SOURCE_HASH_INVALID"),
       issueSummary(privateLeakResult));
+
+    // A private id is an opaque token OR a konzept id of the ledger — the one form the brief's resolver
+    // can turn into a readable path (context-plan.ts#resolvePrivatePack). Anything else stays refused.
+    const privateIdFacts = fixture.facts;
+    const privateIdResult = (privateSourceId: string) => {
+      const packs = clonePacks();
+      packs.find((pack) => pack.id === "konzept-claude-fleet")!.privateSourceId = privateSourceId;
+      return validateContextPacks({ packs, repo: privateIdFacts, capabilities });
+    };
+    const privateIds = ["k-claude-fleet", "opaque-3f4c19d8a6e2b701", "k-Claude-Fleet", "claude-fleet", "k-", "k-a/b"]
+      .map((id) => ({ id, ok: !hasCode(privateIdResult(id), "PRIVATE_SOURCE_ID_INVALID") }));
+    check("context packs: a private id is accepted as an opaque token or a konzept id, and refused in every other spelling",
+      JSON.stringify(privateIds.map((row) => row.ok)) === JSON.stringify([true, true, false, false, false, false])
+        && privateIds.every((row) => row.ok === (/^opaque-[a-f0-9]{16,64}$/.test(row.id) || KONZEPT_ID_RE.test(row.id))),
+      JSON.stringify(privateIds));
 
     // useWhen is PURPOSE, one line, and it is delivered verbatim into a brief — so the seeds are
     // held to the same bound the validator enforces, and the field's ABSENCE stays legal because

@@ -108,7 +108,8 @@ export async function run(ctx: Ctx): Promise<void> {
     taskId: string | null; originId: string | null; programId: string | null;
     slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
     mode: string; triggers: string[];
-    selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
+    selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string;
+      private?: { verdict: string; version: number | null } }[];
     omitted: { id: string; why: string }[];
     deliveredBytes: number; truncated: boolean;
     // the ids of the queue notes the block carried. `[]` is a real answer (no hit, or a clarify
@@ -5190,9 +5191,9 @@ export async function run(ctx: Ctx): Promise<void> {
       !!fReceipt && fPrompt.includes("\n\nQuellpaket")
       && fReceipt.deliveredBytes === new TextEncoder().encode(fPrompt).byteLength,
       JSON.stringify({ deliveredBytes: fReceipt?.deliveredBytes ?? null, prompt: new TextEncoder().encode(fPrompt).byteLength }));
-    check("a dispatch INSIDE the Fleet checkout still renders the two-pack anchor block (the derivation is not a blanket refusal)",
+    check("a dispatch INSIDE the Fleet checkout still renders the three-pack anchor block (the derivation is not a blanket refusal)",
       fd.ok && fdJ.ok === true && fPrompt.startsWith(fBrief) && fPrompt.includes("\n\nContextPlan v2 anchors")
-      && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
+      && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "konzept-claude-fleet,portable-core,verify-e2e"
       && fReceipt.omitted.length === CONTEXT_PACKS.length - fReceipt.selected.length
       && fReceipt.omitted.every((entry) => entry.why !== "source-unavailable"),
       `${fd.status} ${JSON.stringify(fReceipt ?? null)} ${fPrompt.slice(0, 200)}`);
@@ -5209,11 +5210,26 @@ export async function run(ctx: Ctx): Promise<void> {
     // two-source pack like verify-e2e would otherwise take.
     const useWhenLines = fPrompt.split("\n").filter((line) => line.startsWith("- ") && line.includes(" — "));
     check("the v2 block states each selected pack's purpose exactly once, whatever its source count",
-      !!fReceipt && fReceipt.selected.length === 2
+      !!fReceipt && fReceipt.selected.length === 3
       && fReceipt.selected.every((pack) => typeof pack.useWhen === "string" && pack.useWhen.length > 0
         && useWhenLines.filter((line) => line === `- ${pack.id} — ${pack.useWhen}`).length === 1)
-      && useWhenLines.length === 2,
+      && useWhenLines.length === 3,
       `${JSON.stringify(useWhenLines)} ${JSON.stringify(fReceipt?.selected ?? null)}`);
+    // THE PRIVATE KONZEPT PACK in a real lane brief (Program 31aa88ea, Schnitt 4). Which verdict this
+    // instance renders depends on whether its env names a private root — so the probe holds the
+    // CONSISTENCY, not one verdict: the receipt's verdict is the one the delivered line states, and a
+    // local path the line shows never reaches the receipt row. The three verdicts themselves are
+    // proven against a fixture root in e2e/context-plan.ts.
+    const konzeptRow = fReceipt?.selected.find((pack) => pack.id === "konzept-claude-fleet");
+    const konzeptLine = fPrompt.split("\n").find((line) => line.startsWith("  ") && line.includes("k-claude-fleet")) ?? "";
+    const konzeptPath = konzeptLine.includes(" | ") ? konzeptLine.trim().split(" | ")[0]! : null;
+    check("the Fleet lane brief carries the private konzept pack as a hash verdict the receipt repeats, and the receipt carries no local path",
+      !!konzeptRow && !Array.isArray(konzeptRow.anchors) && konzeptRow.anchors.privateSourceId === "k-claude-fleet"
+      && ["match", "drift", "missing"].includes(konzeptRow.private?.verdict ?? "")
+      && konzeptLine.includes(`hash ${konzeptRow.private!.verdict}`)
+      && (konzeptRow.private!.verdict === "missing") === (konzeptPath === null)
+      && (konzeptPath === null || !JSON.stringify(fReceipt).includes(konzeptPath)),
+      `${konzeptLine} ${JSON.stringify(konzeptRow ?? null)}`);
     // The row must NAME the renderer that wrote the block it receipts, or "reconstruct every byte
     // from the row" silently becomes "…with whichever renderer ships today".
     check("the receipt names the renderer that produced the delivered block",

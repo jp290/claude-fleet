@@ -99,7 +99,9 @@ const SOURCE_KEYS = new Set(["path", "anchor"]);
 const CONTENT_KEY = /^(?:content|contents|prose|text|passage|quote|body)$/i;
 const PRIVATE_LEAK_KEY = /^(?:path|anchor|privatePath|host|hostname|identity|version|versionClaim)$/i;
 const PACK_ID = /^[a-z][a-z0-9-]*$/;
-const PRIVATE_SOURCE_ID = /^opaque-[a-f0-9]{16,64}$/;
+// An opaque token, or a konzept id of the private konzept ledger (konzept-ledger.ts#KONZEPT_ID_RE) —
+// the one private id this server can resolve to a readable file (context-plan.ts#resolvePrivatePack).
+const PRIVATE_SOURCE_ID = /^(?:opaque-[a-f0-9]{16,64}|k-[a-z0-9-]{1,64})$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const OBSERVED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const ANCHOR_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_.$:[\]`()/-]*$/;
@@ -225,7 +227,7 @@ export function validateContextPacks(input: ContextPackValidationInput): Context
       for (const field of ["privateSourceId", "sourceHash", "observedAt"] as const)
         if (!(field in raw)) emit("PACK_REQUIRED_FIELD_MISSING", "error", packId, `private source field is missing: ${field}`);
       if (typeof raw.privateSourceId !== "string" || !PRIVATE_SOURCE_ID.test(raw.privateSourceId))
-        emit("PRIVATE_SOURCE_ID_INVALID", "error", packId, "privateSourceId must be an opaque identifier");
+        emit("PRIVATE_SOURCE_ID_INVALID", "error", packId, "privateSourceId must be an opaque identifier or a konzept id");
       if (typeof raw.sourceHash !== "string" || !SHA256.test(raw.sourceHash))
         emit("PRIVATE_SOURCE_HASH_INVALID", "error", packId, "sourceHash must be a lowercase SHA-256");
       if (!validObservedAt(raw.observedAt))

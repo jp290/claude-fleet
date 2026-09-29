@@ -1098,8 +1098,17 @@ zusaetzlich ein Self-Token traegt, **503** mit
 „Konzepte" (`src/queue.ts#renderKonzeptDetail`); ihr Anmerkungs-Thread ist dieselbe Komponente wie der
 Task-Kommentar-Thread (`src/queue.ts#commentThread`).
 
-**Grenzen dieses Schnitts:** kein Pack-Anschluss (Karte 3, der
-Pack-Aufloeser f38eb1c8 teilt sich spaeter `FLEET_KONZEPT_ROOT`), keine `unknown`-Variante im Principal
+**Pack-Anschluss (Schnitt 4, f38eb1c8):** ein privater Context Pack, dessen `privateSourceId` eine
+Konzept-id ist (Seed `konzept-claude-fleet` → `k-claude-fleet`, Trigger `always`, jede Lane und MAIN
+dieses Baums ausser `container`), wird beim Rendern des Anker-Blocks gegen dieselbe Wurzel aufgeloest
+(`context-plan.ts#resolvePrivatePack`): Pfad der AKTUELLEN Fassung `<wurzel>/<konzept>/v<N>.md` laut
+`versionen.jsonl`, Hash-Urteil `match` (Datei = deklarierter `sourceHash` = Ledger-Zeile) · `drift` (Datei
+nach Veroeffentlichung geaendert, oder die aktuelle Fassung ist nicht die deklarierte) · `missing` (keine
+Wurzel, keine Version, keine Datei, opake id), dazu die Zeile mit dieser Anmerkungs-Tuer fuer `v<N>`. Der
+Inhalt wird nie kopiert; der Receipt traegt `private: {verdict, version}`, nie den Pfad. Beweis:
+`e2e/context-plan.ts` (Fixture-Wurzel, je Urteil eine benannte Mutation).
+
+**Grenzen dieses Schnitts:** keine `unknown`-Variante im Principal
 (jede Tuer verlangt eine erkannte Credential, D2a 5b71d60c bleibt unberuehrt). Beweis: `e2e/konzepte.ts`
 (eigene Scratch-Instanz, `FLEET_E2E_MODULES=konzepte`).
 

@@ -8,6 +8,9 @@ import {
   type ContextPackTrigger,
 } from "./context-packs";
 import { USE_WHEN_MAX, validateContextPacks, type ContextPackRepoFacts } from "./context-pack-validator";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { KONZEPT_ID_RE, KONZEPT_ROOT_ENV, currentKonzeptVersion } from "./konzept-ledger";
 
 // Ladder order is the contract: the FIRST rule a pack fails is the reason it is omitted.
 // `manifest-invalid` leads because it is the only reason that disqualifies a pack before its
@@ -265,4 +268,78 @@ export function planProgramContext(input: ProgramContextPlanInput): ContextPlan 
       estimatedBytes: 0, origin: "program" });
   }
   return { selected, omitted };
+}
+
+// --- PRIVATE PACKS: a readable local path and a hash verdict, never the content.
+//
+// A private pack names its source by `privateSourceId` only, because this repository is public. Until
+// Program Konzeptgedaechtnis 31aa88ea (Schnitt 4) nothing resolved that id, so a lane received a token
+// it could do nothing with. A KONZEPT id resolves through the konzept ledger (konzept-ledger.ts) under
+// the one private root the server already has, FLEET_KONZEPT_ROOT: the CURRENT fassung is the highest
+// version in `<root>/<id>/versionen.jsonl`, its file `<root>/<id>/v<N>.md`. The bytes are hashed here
+// and compared, never copied: the brief carries the path, the verdict and the door an Anmerkung takes.
+//
+// THREE VERDICTS, one reason each:
+//  * match   — v<N>.md hashes to the pack's declared sourceHash AND to its own versionen.jsonl row.
+//  * drift   — the file is there and readable but one of the two comparisons fails: either the file
+//              changed after it was published, or the current fassung is not the one the pack pins.
+//  * missing — nothing readable to point at: no root on this server, no published version, no file,
+//              or an opaque id no resolver knows. Named, never a silent omission.
+// The path is the server's local fact and is never receipted; the verdict and the version are.
+export const PRIVATE_PACK_VERDICTS = ["match", "drift", "missing"] as const;
+export type PrivatePackVerdict = (typeof PRIVATE_PACK_VERDICTS)[number];
+
+export interface PrivatePackResolution {
+  readonly privateSourceId: string;
+  readonly verdict: PrivatePackVerdict;
+  /** why the verdict is not `match`; null on a match */
+  readonly why: string | null;
+  /** the current fassung's N, whenever the ledger names one */
+  readonly version: number | null;
+  /** the readable file — present exactly when the file was read and hashed */
+  readonly path: string | null;
+}
+
+const sha256Hex = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+
+/** Resolve one private pack against the private root. Reads two small files synchronously. */
+export function resolvePrivatePack(root: string | null, privateSourceId: string, declaredHash: string | undefined): PrivatePackResolution {
+  const missing = (why: string, version: number | null = null): PrivatePackResolution =>
+    ({ privateSourceId, verdict: "missing", why, version, path: null });
+  if (!KONZEPT_ID_RE.test(privateSourceId)) return missing("an opaque id — no resolver on this server knows it");
+  if (!root) return missing(`${KONZEPT_ROOT_ENV} is not set on this server`);
+  let raw: string;
+  try { raw = readFileSync(`${root}/${privateSourceId}/versionen.jsonl`, "utf8"); }
+  catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return missing(code === "ENOENT" ? "no versionen.jsonl for it under the root" : `versionen.jsonl unreadable (${code ?? "error"})`);
+  }
+  const current = currentKonzeptVersion(raw, privateSourceId);
+  if (!current) return missing("no published version in versionen.jsonl");
+  const path = `${root}/${privateSourceId}/v${current.version}.md`;
+  let fileHash: string;
+  try { fileHash = sha256Hex(readFileSync(path)); }
+  catch { return missing(`v${current.version}.md is absent under the root`, current.version); }
+  const drift = (why: string): PrivatePackResolution =>
+    ({ privateSourceId, verdict: "drift", why, version: current.version, path });
+  if (current.sha256 !== null && fileHash !== current.sha256)
+    return drift(`v${current.version}.md no longer hashes to its versionen.jsonl row — the file changed after it was published`);
+  if (declaredHash === undefined) return drift("the pack declares no sourceHash to compare against");
+  if (fileHash !== declaredHash)
+    return drift(`the current fassung v${current.version} is not the one the pack declares — the pack's sourceHash is behind or ahead`);
+  return { privateSourceId, verdict: "match", why: null, version: current.version, path };
+}
+
+/**
+ * The indented lines one private pack contributes to the anchor block. The id stays on the first line
+ * in every verdict, so a receipt row's privateSourceId is always findable in the delivered bytes; the
+ * Anmerkung door is named whenever a version exists to hang the Anmerkung on.
+ */
+export function renderPrivatePackLines(resolution: PrivatePackResolution): string[] {
+  const { privateSourceId: id, verdict, why, version, path } = resolution;
+  const where = version !== null ? `${id} v${version}` : id;
+  const lines = [`  ${path ? `${path} | ` : ""}${where} · privat, lesen statt kopieren · hash ${verdict}${why ? ` (${why})` : ""}`];
+  if (version !== null)
+    lines.push(`  Anmerkung an v${version}: POST /api/self/konzepte/${id}/anmerkungen {"version":${version},"text":"…"} (x-fleet-self-token; Lane oder gebundene MAIN)`);
+  return lines;
 }

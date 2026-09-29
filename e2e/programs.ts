@@ -226,7 +226,8 @@ interface ContextReceipt {
   taskId: string | null; originId: string | null; programId: string | null;
   slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
   mode: string; triggers: string[];
-  selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string }[];
+  selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string;
+    private?: { verdict: string; version: number | null } }[];
   omitted: { id: string; why: string }[];
   deliveredBytes: number; truncated: boolean;
   // absent on a row written before the renderer was named — that row's block is v1 by date
@@ -763,10 +764,12 @@ export async function run(ctx: Ctx): Promise<void> {
   };
   const anchorsResolve = (receipt: ContextReceipt | undefined): boolean => !!receipt
     && receipt.selected.every((selection) => Array.isArray(selection.anchors)
-      && selection.anchors.every(({ path, anchor }) => {
+      ? selection.anchors.every(({ path, anchor }) => {
         const source = spawnSync("git", ["-C", receipt.repo, "show", `${receipt.head}:${path}`], { encoding: "utf8" });
         return source.status === 0 && source.stdout.includes(anchor);
-      }));
+      })
+      // a private row resolves nothing in git: its "resolution" is the hash verdict the brief stated
+      : ["match", "drift", "missing"].includes(selection.private?.verdict ?? ""));
 
   const decoyProgram = await activateNewProgram("Filename decoys stay foreign");
   const decoyLabel = "program-main-decoy";
@@ -930,7 +933,7 @@ export async function run(ctx: Ctx): Promise<void> {
     !!fleetReceipt && fleetReceiptRows.total === fleetReceiptsBefore.total + 1
       && fleetBody.program?.main?.slot === fleetSlot && fleetReceipt.repo === ROOT
       && fleetReceipt.head === fleetExpectedHead && fleetReceipt.branch === fleetExpectedBranch
-      && fleetReceipt.selected.length === 3 && fleetReceipt.omitted.length === CONTEXT_PACKS.length - 2
+      && fleetReceipt.selected.length === 4 && fleetReceipt.omitted.length === CONTEXT_PACKS.length - 3
       && fleetReceipt.selected.length + fleetReceipt.omitted.length === CONTEXT_PACKS.length + 1
       && anchorsResolve(fleetReceipt) && fleetReceipt.hash === promptHash(fleetPrompt, fleetReceipt)
       && fleetReceipt.deliveredBytes === new TextEncoder().encode(fleetPrompt).byteLength,
@@ -947,7 +950,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && !fleetReceipt.omitted.some((entry) => entry.id === "@manifest")
       // the manifest row is an ADDITION, never a replacement: the seeds keep their own verdict
       && fleetReceipt.selected.filter((selection) => selection.id !== "fleet-frame-carrier-probe")
-        .map((selection) => selection.id).sort().join(",") === "portable-core,verify-e2e",
+        .map((selection) => selection.id).sort().join(",") === "konzept-claude-fleet,portable-core,verify-e2e",
     `${fleetManifestCommit.status} ${JSON.stringify(fleetReceipt?.selected ?? null)}`);
 
   // THE FLEET FRAME SUCCEEDS WITH NO HANDOFF COMMIT AT ALL. This checkout has a HANDOFF.md at its
@@ -1057,8 +1060,8 @@ export async function run(ctx: Ctx): Promise<void> {
     fleetSuccessionResponse.ok
       && JSON.stringify(fleetSuccessionPrompt.split("\n").filter((line) => /^\d+\./.test(line)))
         === JSON.stringify(successionGroundingSteps)
-      && fleetSuccessionPrompt.includes(fleetCarry) && fleetSuccessionReceipt?.selected.length === 3
-      && fleetSuccessionReceipt.omitted.length === CONTEXT_PACKS.length - 2 && anchorsResolve(fleetSuccessionReceipt)
+      && fleetSuccessionPrompt.includes(fleetCarry) && fleetSuccessionReceipt?.selected.length === 4
+      && fleetSuccessionReceipt.omitted.length === CONTEXT_PACKS.length - 3 && anchorsResolve(fleetSuccessionReceipt)
       && fleetSuccessionReceipt.hash === promptHash(fleetSuccessionPrompt, fleetSuccessionReceipt)
       && fleetSuccessionReceipt.deliveredBytes === new TextEncoder().encode(fleetSuccessionPrompt).byteLength,
     `${fleetSuccessionResponse.status} ${fleetSuccessionPrompt.slice(0, 500)}`);

@@ -105,10 +105,7 @@ function detailRefOf(body: Record<string, unknown>): TraceDetailRef | undefined 
 }
 
 interface Ledgers { versionen: KonzeptVersion[]; anmerkungen: AnmerkungLine[]; verworfen: VerworfenLine[]; malformed: number }
-async function lines(path: string): Promise<{ rows: unknown[]; malformed: number }> {
-  let raw: string;
-  try { raw = await readFile(path, "utf8"); }
-  catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return { rows: [], malformed: 0 }; throw e; }
+function jsonlRows(raw: string): { rows: unknown[]; malformed: number } {
   const rows: unknown[] = [];
   let malformed = 0;
   for (const l of raw.split("\n")) {
@@ -117,6 +114,14 @@ async function lines(path: string): Promise<{ rows: unknown[]; malformed: number
   }
   return { rows, malformed };
 }
+async function lines(path: string): Promise<{ rows: unknown[]; malformed: number }> {
+  let raw: string;
+  try { raw = await readFile(path, "utf8"); }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return { rows: [], malformed: 0 }; throw e; }
+  return jsonlRows(raw);
+}
+const isVersionRow = (r: unknown, konzept: string): boolean =>
+  isObj(r) && r.konzept === konzept && Number.isInteger(r.version) && (r.version as number) >= 1;
 async function readLedgers(dir: string, konzept: string): Promise<Ledgers> {
   const v = await lines(`${dir}/versionen.jsonl`);
   const a = await lines(`${dir}/anmerkungen.jsonl`);
@@ -124,8 +129,7 @@ async function readLedgers(dir: string, konzept: string): Promise<Ledgers> {
   // a line that does not name THIS konzept, or lacks the key the fold reads, counts as malformed —
   // never silently dropped, never trusted
   for (const r of v.rows)
-    if (isObj(r) && r.konzept === konzept && Number.isInteger(r.version) && (r.version as number) >= 1)
-      out.versionen.push(r as unknown as KonzeptVersion);
+    if (isVersionRow(r, konzept)) out.versionen.push(r as unknown as KonzeptVersion);
     else out.malformed++;
   for (const r of a.rows)
     if (isObj(r) && r.konzept === konzept && r.art === "anmerkung" && typeof r.id === "string")
@@ -136,6 +140,18 @@ async function readLedgers(dir: string, konzept: string): Promise<Ledgers> {
   return out;
 }
 const lastVersion = (l: Ledgers): number => l.versionen.reduce((m, v) => Math.max(m, v.version), 0);
+
+// THE CURRENT FASSUNG from the raw bytes of versionen.jsonl — the same row rule and the same "highest
+// N wins" as the ledger above, for a reader that holds the bytes already (the brief's private-pack
+// resolver, context-plan.ts#resolvePrivatePack). `sha256` is the row's claim, not a hash of the file.
+export function currentKonzeptVersion(raw: string, konzept: string): { version: number; sha256: string | null } | null {
+  let best: Record<string, unknown> | null = null;
+  for (const r of jsonlRows(raw).rows)
+    if (isVersionRow(r, konzept) && (!best || (r as { version: number }).version > (best.version as number)))
+      best = r as Record<string, unknown>;
+  if (!best) return null;
+  return { version: best.version as number, sha256: typeof best.sha256 === "string" && HEX64.test(best.sha256) ? best.sha256 : null };
+}
 
 // newest event wins; the two files share no order, so at the SAME millisecond a verwerfen outranks a
 // version (read second) — the explicit act over the implied one

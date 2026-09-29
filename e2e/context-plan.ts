@@ -4,9 +4,13 @@ import {
   CONTEXT_PACKS,
   type ContextPackCapability,
 } from "../context-packs";
-import { CONTEXT_PLAN_OMISSION_REASONS, PROGRAM_CONTEXT_PACKS_MAX, planContext, planProgramContext,
-  programContextPacksFrom, validateProgramContextPacks } from "../context-plan";
+import { CONTEXT_PLAN_OMISSION_REASONS, PRIVATE_PACK_VERDICTS, PROGRAM_CONTEXT_PACKS_MAX, planContext, planProgramContext,
+  programContextPacksFrom, renderPrivatePackLines, resolvePrivatePack, validateProgramContextPacks } from "../context-plan";
+import { KONZEPT_ID_RE } from "../konzept-ledger";
 import { createHash } from "node:crypto";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, observedSourceHash, planRepoContext,
   readContextManifest, stampObservedSourceHashes } from "../context-manifest";
 import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_CONTEXT_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
@@ -33,7 +37,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     && new Set([...normal.selected, ...normal.omitted].map((pack) => pack.id)).size === CONTEXT_PACKS.length,
     summary(normal));
   check("context plan: the delivery facts select the always + verification packs",
-    normal.selected.map((pack) => pack.id).join(",") === "portable-core,verify-e2e", summary(normal));
+    normal.selected.map((pack) => pack.id).join(",") === "portable-core,verify-e2e,konzept-claude-fleet", summary(normal));
   check("context plan: each real omission names the first failed rule",
     normal.omitted.length === CONTEXT_PACKS.length - normal.selected.length
     && normal.omitted.every((pack) => pack.why === "trigger-not-matched"),
@@ -42,7 +46,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   // The plan is what the renderer sees, so PURPOSE must survive selection — a seed's mandatory
   // useWhen reaching the selection unchanged is the only reason the v2 block can state one.
   check("context plan: every selected Fleet seed carries its seed's purpose line verbatim",
-    normal.selected.length === 2 && normal.selected.every((pack) =>
+    normal.selected.length === 3 && normal.selected.every((pack) =>
       pack.useWhen === CONTEXT_PACKS.find((seed) => seed.id === pack.id)?.useWhen
       && typeof pack.useWhen === "string" && pack.useWhen.length > 0),
     summary(normal));
@@ -330,7 +334,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   const merged = stampObservedSourceHashes([...seedsOnly.selected, ...ownLane.selected],
     new Map([["docs/messungen/grok-1.md", "b".repeat(40)]]));
   check("program packs: stamping keeps origin and versions the Program pack like any other row",
-    JSON.stringify(merged.map((row) => "origin" in row ? row.origin : null)) === JSON.stringify([null, null, "program"])
+    JSON.stringify(merged.map((row) => "origin" in row ? row.origin : null)) === JSON.stringify([null, null, null, "program"])
       && merged.at(-1)?.sourceHash === observedSourceHash(stored[0].sources, new Map([["docs/messungen/grok-1.md", "b".repeat(40)]])),
     JSON.stringify(merged.at(-1)));
   const foreignProgramLane = planProgramContext({ program: { status: "active" }, trackedPaths: progTracked });
@@ -634,10 +638,132 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     SNIPPET_CONTEXT_LINES === 20 && definitionLines(alpha.split("\n"), "alphaTwo").join(",") === "5",
     `${SNIPPET_CONTEXT_LINES} ${definitionLines(alpha.split("\n"), "alphaTwo")}`);
 
+  privatePackChecks(check);
+
   if (!externalCheck) {
     console.log(rows.join("\n"));
     console.log(failures ? `\n${failures} FAILURES` : "\nALL PASS");
     if (failures) process.exitCode = 1;
+  }
+}
+
+// --- PRIVATE PACKS (Program Konzeptgedaechtnis 31aa88ea, Schnitt 4). The konzept seed is selected for
+// every lane and MAIN harness of this tree, and its id resolves under a FIXTURE private root to the
+// current fassung's path plus one of three hash verdicts. Each verdict is produced by a NAMED mutation
+// of the fixture and undone again, so a green verdict is shown to be caused, not merely observed.
+function privatePackChecks(check: ContextPlanCheck): void {
+  const seed = CONTEXT_PACKS.find((pack) => pack.id === "konzept-claude-fleet");
+  const V2_SHA = "a085430ef83f317157cfc613561c99a72317cf6e129d8276843d11a956ea00dc";
+  check("private pack: konzept-claude-fleet is a private-ops seed whose id is a konzept id and whose hash pins Sicht v2",
+    !!seed && seed.audience === "private-ops" && "privateSourceId" in seed && KONZEPT_ID_RE.test(seed.privateSourceId)
+      && seed.sourceHash === V2_SHA && !("sources" in seed && seed.sources !== undefined),
+    JSON.stringify(seed ?? null));
+  check("private pack: the verdict vocabulary is closed", PRIVATE_PACK_VERDICTS.join(",") === "match,drift,missing");
+
+  // The facts of a lane dispatch (server.ts#DISPATCH_CONTEXT_*) and of a Program-MAIN founding in the
+  // Fleet frame (server.ts#BOOTSTRAP_CONTEXT_TRIGGERS, FLEET_CONTROL_CONTEXT_CAPABILITIES), per harness.
+  const laneCaps = ["tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect",
+    "harness-adapter-read", "private-overlay-read"] as ContextPackCapability[];
+  const mainCaps = [...laneCaps, "task-queue-read", "deploy-observe"] as ContextPackCapability[];
+  const selectedFor = (harness: string, triggers: readonly ("always" | "verification" | "jev-use" | "landing")[],
+    capabilities: ContextPackCapability[], sourceTree: "fleet" | "foreign" = "fleet") =>
+    planContext({ sourceTree, harness, mode: "mutating", triggers: [...triggers], capabilities });
+  const harnessRows = ["claude", "codex", "pi"].map((harness) => ({ harness,
+    lane: selectedFor(harness, ["always", "verification", "jev-use"], laneCaps).selected.some((p) => p.id === "konzept-claude-fleet"),
+    main: selectedFor(harness, ["always", "verification"], mainCaps).selected.some((p) => p.id === "konzept-claude-fleet") }));
+  check("private pack: a claude, codex and pi lane AND MAIN of this tree each get konzept-claude-fleet selected",
+    harnessRows.every((row) => row.lane && row.main), JSON.stringify(harnessRows));
+  const boxed = selectedFor("container", ["always"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet");
+  const worker = selectedFor("claude", ["landing"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet");
+  const foreignTree = selectedFor("claude", ["always"], laneCaps, "foreign").omitted.find((p) => p.id === "konzept-claude-fleet");
+  check("private pack: a container session, the merge/repair worker and a foreign tree omit it by their own named rule",
+    boxed?.why === "harness-unsupported" && worker?.why === "trigger-not-matched" && foreignTree?.why === "source-unavailable",
+    JSON.stringify({ boxed, worker, foreignTree }));
+  check("private pack: the plan hands the renderer the bare id, never a path or a hash of its own",
+    JSON.stringify(selectedFor("claude", ["always"], laneCaps).selected.find((p) => p.id === "konzept-claude-fleet")?.sources)
+      === JSON.stringify({ privateSourceId: "k-claude-fleet" }));
+
+  // --- the fixture private root: two published fassungen, v2 current, a content marker in each
+  const root = mkdtempSync(join(tmpdir(), "fleet-e2e-private-root-"));
+  try {
+    const K = "k-claude-fleet";
+    const dir = join(root, K);
+    mkdirSync(dir);
+    const MARKER = "KONZEPT-FIXTURE-CONTENT-7f3e";
+    const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
+    const v1 = `# v1\n${MARKER} eins\n`;
+    const v2 = `# v2\n${MARKER} zwei\n`;
+    writeFileSync(join(dir, "v1.md"), v1);
+    writeFileSync(join(dir, "v2.md"), v2);
+    const row = (version: number, text: string): string =>
+      `${JSON.stringify({ konzept: K, version, vorgaenger: version > 1 ? version - 1 : null, sha256: sha(text), at: version })}\n`;
+    writeFileSync(join(dir, "versionen.jsonl"), row(1, v1) + row(2, v2));
+    const declared = sha(v2);
+    const resolve = (r: string | null = root) => resolvePrivatePack(r, K, declared);
+    const block = (r: ReturnType<typeof resolve>): string => renderPrivatePackLines(r).join("\n");
+
+    const matched = resolve();
+    const matchBlock = block(matched);
+    check("private pack (match): the current fassung v2 resolves to its readable local path with verdict match",
+      matched.verdict === "match" && matched.why === null && matched.version === 2 && matched.path === join(dir, "v2.md")
+        && readFileSync(matched.path, "utf8") === v2, JSON.stringify(matched));
+    check("private pack (match): the rendered lines carry path, id, version, verdict and the Anmerkung door for v2",
+      matchBlock.includes(`  ${join(dir, "v2.md")} | ${K} v2 `) && matchBlock.includes("hash match")
+        && matchBlock.includes(`POST /api/self/konzepte/${K}/anmerkungen {"version":2,`), matchBlock);
+    check("private pack: the content is never copied — no fixture byte of any fassung reaches the rendered lines",
+      !matchBlock.includes(MARKER), matchBlock);
+
+    // MUTATION 1 — the file is edited after it was published: drift, and back to match on undo
+    appendFileSync(join(dir, "v2.md"), "nachtraeglich\n");
+    const edited = resolve();
+    writeFileSync(join(dir, "v2.md"), v2);
+    const editedUndone = resolve();
+    check("private pack (drift, mutation 'v2.md edited after publication'): drift naming the versionen.jsonl row, match after undo",
+      edited.verdict === "drift" && edited.version === 2 && edited.path === join(dir, "v2.md")
+        && (edited.why ?? "").includes("versionen.jsonl") && block(edited).includes("hash drift")
+        && editedUndone.verdict === "match", JSON.stringify({ edited, editedUndone }));
+
+    // MUTATION 2 — a newer fassung v3 is published: the path follows the CURRENT version, the verdict
+    // says the pack pins another one; removing v3 restores the match
+    const v3 = `# v3\n${MARKER} drei\n`;
+    writeFileSync(join(dir, "v3.md"), v3);
+    appendFileSync(join(dir, "versionen.jsonl"), row(3, v3));
+    const newer = resolve();
+    unlinkSync(join(dir, "v3.md"));
+    writeFileSync(join(dir, "versionen.jsonl"), row(1, v1) + row(2, v2));
+    const newerUndone = resolve();
+    check("private pack (drift, mutation 'v3 published, pack still pins v2'): path to v3, drift, Anmerkung door on v3, match after undo",
+      newer.verdict === "drift" && newer.version === 3 && newer.path === join(dir, "v3.md")
+        && (newer.why ?? "").includes("declares") && block(newer).includes(`{"version":3,`)
+        && newerUndone.verdict === "match" && newerUndone.version === 2, JSON.stringify({ newer, newerUndone }));
+
+    // MUTATION 3 — the root is not set on the server: missing, by name, the id still delivered
+    const unset = resolve(null);
+    check("private pack (missing, mutation 'FLEET_KONZEPT_ROOT unset'): missing naming the env, no path, the id still in the lines",
+      unset.verdict === "missing" && unset.path === null && (unset.why ?? "").includes("FLEET_KONZEPT_ROOT")
+        && block(unset).includes(K) && block(unset).includes("hash missing") && !block(unset).includes("Anmerkung"),
+      JSON.stringify(unset));
+
+    // MUTATION 4 — the current file is gone: missing, the version still named so an Anmerkung can hang on it
+    unlinkSync(join(dir, "v2.md"));
+    const noFile = resolve();
+    writeFileSync(join(dir, "v2.md"), v2);
+    check("private pack (missing, mutation 'v2.md removed'): missing with version 2 and no path; match after restore",
+      noFile.verdict === "missing" && noFile.version === 2 && noFile.path === null && (noFile.why ?? "").includes("v2.md")
+        && resolve().verdict === "match", JSON.stringify(noFile));
+
+    // MUTATION 5 — no ledger line at all, and an opaque id: both missing, neither silently dropped
+    writeFileSync(join(dir, "versionen.jsonl"), "");
+    const unpublished = resolve();
+    writeFileSync(join(dir, "versionen.jsonl"), row(1, v1) + row(2, v2));
+    const opaque = resolvePrivatePack(root, "opaque-3f4c19d8a6e2b701", declared);
+    check("private pack (missing): an empty versionen.jsonl and an opaque id each render missing with their own reason",
+      unpublished.verdict === "missing" && (unpublished.why ?? "").includes("no published version")
+        && opaque.verdict === "missing" && (opaque.why ?? "").includes("opaque")
+        && block(opaque).includes("opaque-3f4c19d8a6e2b701") && resolve().verdict === "match",
+      JSON.stringify({ unpublished, opaque }));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 

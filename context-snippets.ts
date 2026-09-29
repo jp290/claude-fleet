@@ -1,5 +1,5 @@
 // THE LANE'S SOURCE PACKAGE — exact excerpts, from ONE immutable commit, of the symbols the
-// effective brief actually names.
+// effective brief actually names; complete pointers always, code only for short karted symbols.
 //
 // WHAT IT IS NOT. It is not a second data layer beside the anchors and the notes: nothing is
 // persisted here, nothing is registered, and no row is written. The anchor block says WHERE to look
@@ -25,15 +25,10 @@
 // success. The same rule the omission ladder in context-plan.ts follows: the FIRST rule a candidate
 // fails is the reason it is omitted.
 
-/** ±this many lines of context around every hit, budget permitting. */
-export const SNIPPET_CONTEXT_LINES = 20;
-/** The whole additional block, labels included. UTF-8 bytes, never characters. */
+/** The complete rendered block, labels included, in UTF-8 bytes. */
 export const SNIPPET_BLOCK_MAX_BYTES = 8192;
-/** A single excerpt's ceiling in lines. A longer body is cut and SAYS it was cut. */
-export const SNIPPET_HIT_MAX_LINES = 120;
-/** Context sizes pass two tries, widest first. Never below what pass one already placed. */
-export const SNIPPET_CONTEXT_LADDER = [SNIPPET_CONTEXT_LINES, 12, 6, 2] as const;
-/** The omission line's own ceiling inside the block: a long list is cut and says how much it cut. */
+/** Only complete, explicitly karted symbols up to this size may carry code. */
+export const SNIPPET_HIT_MAX_LINES = 60;
 export const SNIPPET_OMISSION_MAX_BYTES = 1024;
 
 // Source kinds whose definitions this module can locate. Anything else is refused by name:
@@ -63,6 +58,7 @@ export type SnippetOmissionReason = (typeof SNIPPET_OMISSION_REASONS)[number];
 export interface SnippetRow {
   readonly id: string;
   readonly files?: readonly string[];
+  readonly symbols?: readonly string[];
 }
 
 export interface SnippetRequest {
@@ -110,17 +106,13 @@ export interface SnippetFile {
 
 export interface SnippetHit {
   readonly path: string;
-  /** Every symbol whose span this excerpt covers, in selection order — merged ranges keep both. */
+  /** One symbol per pointer, in selection order. */
   readonly symbols: readonly string[];
-  /** 1-based, inclusive, context included. */
+  /** 1-based, inclusive, complete symbol span. */
   readonly from: number;
   readonly to: number;
   readonly text: string;
   readonly blob: string | null;
-  /** The body hit the line ceiling and is cut — rendered as such, never as a whole symbol. */
-  readonly incomplete: boolean;
-  /** Context lines actually granted; below SNIPPET_CONTEXT_LINES the budget trimmed them. */
-  readonly context: number;
   /** The lane rows whose surface holds this path. Attribution only a wave needs. */
   readonly taskIds: readonly string[];
 }
@@ -299,7 +291,7 @@ export function definitionLines(lines: readonly string[], symbol: string): numbe
  * unless that line itself opens the body (`): SnippetPackage {`), which is the multi-line signature
  * again and not an ending.
  */
-export function symbolSpan(lines: readonly string[], start: number, maxLines = SNIPPET_HIT_MAX_LINES): { to: number; incomplete: boolean } {
+export function symbolSpan(lines: readonly string[], start: number, maxLines = lines.length): { to: number; incomplete: boolean } {
   const code = (line: string): string => line.replace(/\/\/.*$/, "").trimEnd();
   const balance = (line: string): number => {
     let net = 0;
@@ -332,33 +324,21 @@ export function symbolSpan(lines: readonly string[], start: number, maxLines = S
       && /^\s*(?:export|function|class|interface|type|enum|const|let|var|\/\/|\/\*)\b/.test(line))
       return { to: i - 1, incomplete: false };
   }
-  return { to: ceiling, incomplete: ceiling < lines.length - 1 };
+  return { to: ceiling, incomplete: true };
 }
 
 const byteLength = (text: string): number => new TextEncoder().encode(text).byteLength;
 
-const labelFor = (hit: SnippetHit, showTasks: boolean): string => {
-  const version = hit.blob ? ` · blob ${hit.blob.slice(0, 12)}` : " · Quellversion unbekannt";
-  // The body was cut — by the line ceiling or by the half-block share. The label states the FACT
-  // (it goes on) and not a reason it would sometimes get wrong.
-  const cut = hit.incomplete ? " · GEKUERZT — das Symbol laeuft weiter" : "";
-  const context = hit.context < SNIPPET_CONTEXT_LINES ? ` · ±${hit.context} Kontext` : "";
+const labelFor = (hit: SnippetHit, showTasks: boolean, commit: string | null): string => {
+  const version = (commit ?? hit.blob)?.slice(0, 12) ?? "unknown";
   const tasks = showTasks && hit.taskIds.length ? ` · zu ${hit.taskIds.join(", ")}` : "";
-  return `- ${hit.path}#${hit.symbols.join("+")} · Zeilen ${hit.from}-${hit.to}`
-    + `${version}${context}${cut}${tasks}`;
+  return `- ${hit.path}#${hit.symbols[0]}@${version} Z. ${hit.from}-${hit.to}${tasks}`;
 };
 
-const renderHit = (hit: SnippetHit, showTasks: boolean): string =>
-  `${labelFor(hit, showTasks)}\n\`\`\`\n${hit.text}\n\`\`\``;
+const renderHit = (hit: SnippetHit, showTasks: boolean, commit: string | null): string =>
+  labelFor(hit, showTasks, commit) + (hit.text ? `\n\`\`\`\n${hit.text}\n\`\`\`` : "");
 
-/**
- * Phase 2: cut the excerpts under one byte budget.
- *
- * BUDGET RULE, stated because its opposite is the silent failure: a hit that does not fit is
- * omitted BY NAME and the loop continues, so a 4 KB function cannot displace three 300-byte ones
- * that come after it. Context lines are the first thing traded away (they are the cheap half of the
- * excerpt), and a trimmed hit says how much context it kept.
- */
+/** Complete pointers first; code only for short symbols named in the card's surface. */
 export function buildSnippetPackage(
   plan: SnippetPlan, files: readonly SnippetFile[],
   opts?: { readonly maxBytes?: number; readonly rows?: readonly SnippetRow[]; readonly commit?: string | null },
@@ -418,77 +398,25 @@ export function buildSnippetPackage(
   const draft = (): SnippetPackage => ({ shown, omitted,
     listed: listedWithin(orderedOmissions(omitted), listCap), bytes: 0, commit, showTasks });
   const fits = (): boolean => byteLength(renderSnippetBlock(draft())) <= maxBytes;
-  const linesOf = fileLines;
-  const hitFor = (entry: Resolved, context: number, lastLine?: number): SnippetHit => {
-    const lines = fileLines(entry.path);
-    const from = Math.max(0, entry.start - context);
-    const to = Math.min(lines.length - 1, lastLine ?? entry.to + context);
-    return { path: entry.path, symbols: [entry.symbol], from: from + 1, to: to + 1,
-      text: lines.slice(from, to + 1).join("\n"), blob: byPath.get(entry.path)!.blob ?? null,
-      incomplete: entry.incomplete || to < entry.to, context,
-      taskIds: rows.filter((row) => (row.files ?? []).includes(entry.path)).map((row) => row.id) };
-  };
-  // NO SINGLE HIT MAY TAKE MORE THAN HALF THE BLOCK. `briefAndSend` is 120 lines at its own line
-  // ceiling — about 7 KB — and placing it whole leaves four symbols the same brief named with
-  // nothing but a `budget-exhausted` line. A cut body still describes itself truthfully: `to` is the
-  // last line actually shown and `incomplete` says so. A cut NEIGHBOUR cannot say anything at all,
-  // because it is not there. The floor is the DEFINITION line: an excerpt that lost the line it is
-  // named after would be a label about a place, pointing somewhere else.
-  const share = Math.floor(maxBytes / 2);
-  const clipped = (entry: Resolved, context: number): SnippetHit => {
-    let hit = hitFor(entry, context);
-    while (byteLength(renderHit(hit, showTasks)) > share && hit.to - 1 > entry.start) {
-      const drop = Math.max(1, Math.floor((hit.to - 1 - entry.start) / 4));
-      hit = hitFor(entry, context, hit.to - 1 - drop);
-    }
-    return hit;
-  };
-
-  // TWO PASSES, AND COVERAGE COMES FIRST. Pass one places every symbol at its cheapest — the body
-  // alone — so whether a symbol the brief named appears at all never depends on how much context an
-  // earlier hit happened to want. Only pass two spends what is left on context, in the same order.
-  // Greedily taking ±20 up front cost two QUALIFIED refs on this module's own brief.
   for (const entry of resolved) {
-    shown.push(clipped(entry, 0));
+    const hit: SnippetHit = { path: entry.path, symbols: [entry.symbol],
+      from: entry.start + 1, to: entry.to + 1, text: "",
+      blob: byPath.get(entry.path)!.blob ?? null,
+      taskIds: rows.filter((row) => (row.files ?? []).includes(entry.path)).map((row) => row.id) };
+    shown.push(hit);
     if (fits()) continue;
     shown.pop();
     pushOmission(omitted, `${entry.path}#${entry.symbol}`, "budget-exhausted");
   }
+  // Optional code cannot displace a pointer, and is never clipped to fit.
   for (let i = 0; i < shown.length; i++) {
-    // A hit whose BODY is already cut buys no context: twenty lines of the comment above a function
-    // whose body stops mid-way is the budget spent on the wrong half of the excerpt.
-    if (shown[i]!.incomplete) continue;
-    const entry = resolved.find((candidate) => candidate.path === shown[i]!.path
-      && candidate.symbol === shown[i]!.symbols[0])!;
-    for (const context of SNIPPET_CONTEXT_LADDER) {
-      const previous = shown[i]!;
-      shown[i] = clipped(entry, context);
-      if (fits()) break;
-      shown[i] = previous;
-    }
-  }
-
-  // …and ONLY NOW are overlaps merged, once every range is final. Merging before the context was
-  // decided chained four symbols 210 lines apart into one entry, whose clipped excerpt then carried
-  // a label naming three symbols it did not contain — a false statement about a source, which is the
-  // one thing this module must never produce.
-  // OVERLAP IS SYMMETRIC, and `shown` is in the brief's order, not the file's. Testing only
-  // `later.from <= earlier.to + 1` fused `briefSourceOf` (9430-9447) into `briefAndSend`
-  // (9460-9506) because the second range started EARLIER — and the union then delivered the twelve
-  // lines between them that neither hit had selected, growing the block past its own cap.
-  for (let i = shown.length - 1; i > 0; i--) {
-    const later = shown[i]!;
-    const into = shown.findIndex((earlier, index) => index < i && earlier.path === later.path
-      && later.from <= earlier.to + 1 && earlier.from <= later.to + 1);
-    if (into < 0) continue;
-    const earlier = shown[into]!;
-    const from = Math.min(earlier.from, later.from);
-    const to = Math.max(earlier.to, later.to);
-    shown[into] = { path: later.path, symbols: [...earlier.symbols, ...later.symbols],
-      from, to, text: linesOf(later.path).slice(from - 1, to).join("\n"), blob: later.blob,
-      incomplete: earlier.incomplete || later.incomplete,
-      context: Math.min(earlier.context, later.context), taskIds: later.taskIds };
-    shown.splice(i, 1);
+    const hit = shown[i]!;
+    const entry = resolved.find((candidate) => candidate.path === hit.path
+      && candidate.symbol === hit.symbols[0])!;
+    const cardNames = rows.some((row) => row.symbols?.includes(`${entry.path}#${entry.symbol}`));
+    if (!cardNames || entry.incomplete || hit.to - hit.from + 1 > SNIPPET_HIT_MAX_LINES) continue;
+    shown[i] = { ...hit, text: fileLines(hit.path).slice(hit.from - 1, hit.to).join("\n") };
+    if (!fits()) shown[i] = hit;
   }
   // A drop LENGTHENS the omission line, so the last placements can be pushed back over the cap by
   // entries that came after them. Give the tail back, one hit at a time, each one named — the cap is
@@ -546,9 +474,9 @@ export function renderSnippetBlock(pkg: SnippetPackage): string {
   if (pkg.shown.length === 0 && !ordered.some(namedByBrief)) return "";
   const at = pkg.commit ? ` aus ${pkg.commit.slice(0, 12)}` : "";
   const lines = [pkg.shown.length > 0
-    ? `Quellpaket — exakte Ausschnitte${at} (deterministisch gewaehlt; Zeilennummern sind die dieses Stands):`
+    ? `Quellpaket — Symbolzeiger${at} (Code nur fuer kartierte Symbole bis 60 Zeilen):`
     : `Quellpaket — kein Ausschnitt${at}; im Brief genannt, aber nicht geliefert:`];
-  for (const hit of pkg.shown) lines.push(renderHit(hit, pkg.showTasks));
+  for (const hit of pkg.shown) lines.push(renderHit(hit, pkg.showTasks, pkg.commit));
   if (ordered.length > 0) lines.push(omissionLine(ordered, Math.min(pkg.listed, ordered.length)));
   return `\n\n${lines.join("\n")}`;
 }
@@ -556,7 +484,7 @@ export function renderSnippetBlock(pkg: SnippetPackage): string {
 export interface SnippetReceipt {
   /** UTF-8 bytes of the delivered block — 0 exactly when `renderSnippetBlock` delivers nothing. */
   readonly bytes: number;
-  /** Excerpts shown; a merged range covering two symbols is one. */
+  /** Symbol pointers shown, including those without code. */
   readonly hits: number;
   /** What the brief NAMED and did not get, in rendering order — prose tokens are not a request. */
   readonly omitted: readonly SnippetOmission[];

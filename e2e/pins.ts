@@ -4965,6 +4965,65 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 }
 
 {
+  const habits = readFileSync(join(ROOT, "fleet-gepflogenheiten.md"), "utf8");
+  const adapterDoc = readFileSync(join(ROOT, "docs/harness-adapter.md"), "utf8");
+  pin("Habits prompt: file is at most 2000 UTF-8 bytes and every non-empty line names its source",
+    Buffer.byteLength(habits) <= 2000 && habits.trim().length > 0
+    && habits.trim().split("\n").every((line) => /\[Quelle: [^\]]+\]$/.test(line)),
+    `bytes=${Buffer.byteLength(habits)}`);
+  const habitsRule = (src: string): string[] => {
+    const start = src.indexOf("const shellSingleQuote =");
+    const end = src.indexOf("const RULEBOOK_AB_VALUE =", start);
+    const ac = src.indexOf("function agentCmd(");
+    if (start < 0 || end <= start || ac < 0) return ["source anchor missing"];
+    const prelude = src.slice(start, end).replaceAll("import.meta.dir", JSON.stringify("/scratch/it's a repo"));
+    const body = src.slice(ac, src.indexOf("\n}\n", ac) + 3)
+      .replaceAll("import.meta.dir", JSON.stringify("/scratch/it's a repo"));
+    const transpiler = new Bun.Transpiler({ loader: "ts" });
+    const bad: string[] = [];
+    for (const harness of ["claude", "codex", "pi"]) {
+      for (const value of [undefined, "1", "true", "on", "yes", "0", "false", "off", "no", "typo", "", " TRUE "]) {
+        const logs: string[] = [];
+        try {
+          const code = transpiler.transformSync(`const BASE_CMD = ${JSON.stringify(harness)};
+            const DEFAULT_MODEL = "default";
+            const RULEBOOK_AB_ENABLED = false;
+            const RULEBOOK_AB_RENDERS = null;
+            const HARNESS_MODEL_FLAG = "--model";
+            ${prelude}\n${body}\nreturn agentCmd("00000000-0000-4000-8000-000000000000", false, "chosen", "low");`);
+          const cmd: unknown = new Function("process", "console", code)(
+            { env: { FLEET_HABITS_PROMPT: value } }, { error: (line: string) => logs.push(line) });
+          if (typeof cmd !== "string") { bad.push("command is not a string"); continue; }
+          const on = value !== undefined && ["1", "true", "on", "yes"].includes(value.trim().toLowerCase());
+          const invalid = value !== undefined && !["1", "true", "on", "yes", "0", "false", "off", "no"].includes(value.trim().toLowerCase());
+          const expected = harness === "claude" && on;
+          const flag = " --append-system-prompt-file ";
+          if (cmd.includes(flag) !== expected) bad.push(`${harness}/${value}: argument presence`);
+          if (expected && !cmd.includes(flag + "'/scratch/it'\\''s a repo/fleet-gepflogenheiten.md'"))
+            bad.push(`${harness}/${value}: path quoting`);
+          if (logs.length !== Number(invalid)) bad.push(`${harness}/${value}: invalid-value log`);
+        } catch (error) { bad.push(`${harness}/${value}: ${String(error).slice(0, 120)}`); }
+      }
+    }
+    return bad;
+  };
+  const found = habitsRule(server);
+  pin("Habits prompt: default/off means no argument; only claude gets a single-quoted absolute path; unknown logs once and stays off",
+    found.length === 0 && adapterDoc.includes("FLEET_HABITS_PROMPT"), found.join(" | "));
+  const mutations: [string, string, string][] = [
+    ["default on", 'HABITS_PROMPT_VALUE ?? ""', 'HABITS_PROMPT_VALUE ?? "1"'],
+    ["enable guard removed", 'if (HABITS_PROMPT_ENABLED) cmd +=', 'cmd +='],
+    ["unquoted path", '${shellSingleQuote(HABITS_PROMPT_PATH)}', '${HABITS_PROMPT_PATH}'],
+    ["relative path", '`${import.meta.dir}/fleet-gepflogenheiten.md`', '"fleet-gepflogenheiten.md"'],
+    ["all harnesses", 'if (claude) {\n    if (HABITS_PROMPT_ENABLED)', 'if (true) {\n    if (HABITS_PROMPT_ENABLED)'],
+  ];
+  const missed = mutations.flatMap(([name, from, to]) => !server.includes(from)
+    ? [`${name}: anchor missing`] : habitsRule(server.replace(from, to)).length === 0 ? [`${name}: not caught`] : []);
+  pin("Habits prompt mutation probe: default, enable guard, claude-only, absolute path and quoting mutants all fail the same rule",
+    missed.length === 0, missed.join(" | "));
+}
+
+{
   // REMOTE CONTROL (Slot.remote, 2026-09-28): the owner reaches a Fleet session from the Claude app.
   // Two promises, both string concatenation on a shell line and so invisible to tsc: the name is
   // SINGLE-QUOTED and cannot break out of its quotes, and ONLY the claude adapter ever puts the flag

@@ -72,6 +72,40 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   entscheidet über den Origin-Vergleich, welcher Eintrag „you are here" ist. Der Kopfzeilen-Chip
   zeigt den eigenen `instance.name`; ohne Namen UND ohne Liste ist die Kopfzeile unverändert.
 
+## Optionaler Gepflogenheiten-Systemprompt
+
+`FLEET_HABITS_PROMPT` ist standardmaessig aus. `1/true/on/yes` schalten ein,
+`0/false/off/no` aus (Gross-/Kleinschreibung und Rand-Leerraum werden normalisiert).
+Unerkannte Werte erzeugen eine Logzeile und bleiben aus; der Wert selbst wird nicht geloggt.
+`server.ts#agentCmd` haengt nur beim Claude-Harness `--append-system-prompt-file` an,
+mit dem absoluten, single-quoted Pfad zu `fleet-gepflogenheiten.md` neben dem Server.
+Die Datei ist auf 2000 UTF-8 Bytes begrenzt und jede Zeile nennt ihre Quelle.
+Sie ergaenzt den Systemprompt; Brief, ContextPlan-Anker, Notizen und Quellpaket-Receipt
+werden davon nicht veraendert. Eine Freigabe des Inhalts schaltet den Default nicht um.
+
+Das Quellpaket (`context-snippets.ts#buildSnippetPackage`) nennt jeden aufgeloesten
+Treffer als `datei#symbol@<sha12> Z. a-b`, mit dem Commit der Lane und der kompletten
+Symbolspanne. Nur ein exakt so benanntes Symbol in `card.surface.symbols` darf Code
+tragen, und nur bei einer vollstaendigen Spanne von hoechstens 60 Zeilen. Kein Kontext
+und kein angeschnittener Code; reicht das Bytebudget nicht, bleibt der Zeiger ohne Code.
+Auch Zeiger und optionale Codebloecke zaehlen voll in den Kontext-Receipt.
+
+Messung 2026-09-29, Claude Code 2.1.285, eine Scratch-tmux-Pane, Haiku 4.5,
+`--effort low`, ohne Tools/MCP und mit eigener Scratch-Konfiguration: Kontrollantwort
+"Groesse und diff pruefen; Archivkarte f2282eba." (im Terminal mit Umlauten).
+Start mit `--session-id` und Wiederaufnahme derselben Session mit `--resume` akzeptieren
+jeweils `--model`, `--effort` und den Dateianhang. Im selben Resume mit
+`--system-prompt-snapshot off` meldet `/context` woertlich
+„[Zitat entfernt]“ ohne Datei und
+"System prompt: 6.7k tokens (3.3%)" mit Datei: rund 400 zusaetzliche Tokens.
+Das ist die gerundete CLI-Schaetzung, keine exakte Tokenabrechnung.
+
+Gegenstuecke, nur erhoben: Pi bietet laut `pi --help` `--append-system-prompt <text>`
+und akzeptiert dort auch Dateiinhalte. Codex hat keinen gleichnamigen CLI-Schalter;
+`developer_instructions` ergaenzt die Session per Konfiguration, waehrend
+`model_instructions_file` die eingebauten Instruktionen ersetzt ([Konfigurationsreferenz](https://learn.chatgpt.com/docs/config-file/config-reference)).
+Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
+
 ## Tool-Scoping
 
 - **Agenten-Tool-Scoping: `--allowedTools` ist ADDITIV zur Allow-Liste in `~/.claude/settings.json`.** Ein

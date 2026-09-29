@@ -5136,7 +5136,6 @@ export async function run(ctx: Ctx): Promise<void> {
     gitRoot("add", "snippet-probe");
     const snipCommitted = gitRoot("commit", "-qm", "snippet probe fixture (the lane's commit)").status === 0;
     const snipLaneSha = gitRoot("rev-parse", "HEAD").stdout.trim();
-    const snipLaneBlob = gitRoot("rev-parse", `${snipLaneSha}:${SNIP_PATH}`).stdout.trim();
     const snipLinkMode = gitRoot("ls-tree", snipLaneSha, "snippet-probe/link.ts").stdout.split(" ")[0];
     check("(d3) fixture: the snippet source and its symlink are committed at the lane's future fork point",
       snipCommitted && /^[0-9a-f]{40}$/.test(snipLaneSha) && snipLinkMode === "120000",
@@ -5162,26 +5161,26 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.sleep(500);
     }
     const fHead = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-    // THE EXCERPT, read back out of the delivered bytes by the label's OWN line numbers and compared
-    // with the lane commit's blob at exactly those lines. The block sits between the brief and the
+    // THE POINTER, resolved by its own commit and line numbers against the lane source. The block sits between the brief and the
     // anchors, so the anchor check below finds its block by position rather than by prefix.
-    const snipLabelRe = new RegExp(`^- ${SNIP_PATH.replace(/[./]/g, "\\$&")}#snippetProbeTarget · Zeilen (\\d+)-(\\d+) · blob ([0-9a-f]{12})`);
+    const snipLabelRe = new RegExp(`^- ${SNIP_PATH.replace(/[./]/g, "\\$&")}#snippetProbeTarget@([0-9a-f]{12}) Z. (\\d+)-(\\d+)`);
     const fLines = fPrompt.split("\n");
     const snipLabelAt = fLines.findIndex((line) => snipLabelRe.test(line));
     const snipLabel = snipLabelAt >= 0 ? snipLabelRe.exec(fLines[snipLabelAt]!) : null;
-    const snipFrom = Number(snipLabel?.[1] ?? 0);
-    const snipTo = Number(snipLabel?.[2] ?? 0);
-    const snipShown = snipLabelAt >= 0 ? fLines.slice(snipLabelAt + 2, snipLabelAt + 2 + snipTo - snipFrom + 1).join("\n") : null;
+    const snipFrom = Number(snipLabel?.[2] ?? 0);
+    const snipTo = Number(snipLabel?.[3] ?? 0);
+    const snipShown = snipLabelAt >= 0 ? fLines[snipLabelAt + 1] : null;
     const snipAtLane = gitRoot("show", `${snipLaneSha}:${SNIP_PATH}`).stdout.split("\n").slice(snipFrom - 1, snipTo).join("\n");
     const snipAtMain = snipMainText.split("\n").slice(snipFrom - 1, snipTo).join("\n");
     const snipOmitted = fLines.find((line) => line.startsWith("ausgelassen: ")) ?? "";
-    check("(d3) the delivered brief carries the named symbol's excerpt BYTE-IDENTICAL from the lane's commit, though main moved before the brief was cut",
+    check("(d3) the delivered brief carries the named symbol's complete pointer from the lane's commit, though main moved before the brief was cut",
       snipMoved && fHead !== snipLaneSha && fReceipt?.head === fHead
-      && fPrompt.includes(`\n\nQuellpaket — exakte Ausschnitte aus ${snipLaneSha.slice(0, 12)} `)
-      && snipLabel !== null && snipLabel[3] === snipLaneBlob.slice(0, 12)
+      && fPrompt.includes(`\n\nQuellpaket — Symbolzeiger aus ${snipLaneSha.slice(0, 12)} `)
+      && snipLabel !== null && snipLabel[1] === snipLaneSha.slice(0, 12)
       && snipFrom > 1 && snipTo > snipFrom
-      && fLines[snipLabelAt + 1] === "```" && fLines[snipLabelAt + 2 + snipTo - snipFrom + 1] === "```"
-      && snipShown === snipAtLane && snipShown !== snipAtMain && snipShown.includes("lane-commit:")
+      && snipShown !== "```" && snipTo - snipFrom + 1 === 3
+      && snipAtLane !== snipAtMain && snipAtLane.startsWith("export function snippetProbeTarget(")
+      && snipAtLane.includes("lane-commit:")
       && snipOmitted.includes(`${SNIP_PATH}#snippetProbeAbsent (symbol-not-found)`)
       && snipOmitted.includes("snippet-probe/link.ts#snippetProbeTarget (not-a-regular-file)")
       && fPrompt.indexOf("\n\nQuellpaket") < fPrompt.indexOf("\n\nContextPlan v2 anchors"),
@@ -5194,7 +5193,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const snipBlockBytes = fPrompt.includes("\n\nQuellpaket")
       ? new TextEncoder().encode(fPrompt.slice(fPrompt.indexOf("\n\nQuellpaket"), fPrompt.indexOf("\n\nContextPlan v2 anchors"))).byteLength
       : -1;
-    check("(d3) the receipt counts the source package it delivered: block bytes, excerpts shown, and the named refs it omitted",
+    check("(d3) the receipt counts the source package it delivered: block bytes, pointers shown, and the named refs it omitted",
       !!fReceipt?.snippet && snipBlockBytes > 0 && fReceipt.snippet.bytes === snipBlockBytes
       && fReceipt.snippet.hits === 1
       && fReceipt.snippet.omitted.some((entry) => entry.ref === `${SNIP_PATH}#snippetProbeAbsent` && entry.why === "symbol-not-found")

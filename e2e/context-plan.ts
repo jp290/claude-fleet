@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, observedSourceHash, planRepoContext,
   readContextManifest, stampObservedSourceHashes } from "../context-manifest";
-import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_CONTEXT_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
+import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_HIT_MAX_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
   planSnippets, renderSnippetBlock, snippetPathRefusal, symbolSpan,
   type SnippetFile, type SnippetRow } from "../context-snippets";
 
@@ -389,7 +389,8 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   const filler = (tag: string) => Array.from({ length: 40 }, (_, i) => `// ${tag} ${i}`);
   const paddedLines = [...filler("head"), ...alpha.split("\n"), ...filler("tail")];
   const padded = paddedLines.join("\n");
-  const snipRows: SnippetRow[] = [{ id: "t1", files: ["alpha.ts"] }];
+  const snipRows: SnippetRow[] = [{ id: "t1", files: ["alpha.ts"],
+    symbols: ["alpha.ts#alphaOne", "alpha.ts#alphaTwo", "alpha.ts#alphaWide", "alpha.ts#wide", "alpha.ts#tiny", "alpha.ts#huge"] }];
   const paddedFile: SnippetFile[] = [{ path: "alpha.ts", text: padded, blob: "blob-alpha.ts" }];
   const pack = (brief: string, rows = snipRows, files = snipFiles("alpha.ts"), maxBytes?: number) => {
     const plan = planSnippets({ briefText: brief, rows, tracked: snipTracked });
@@ -520,91 +521,78 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     clarified.refs.length === 0 && clarified.reads.length === 0 && clarified.omitted.length === 0,
     JSON.stringify(clarified));
 
-  // (6) THE DELIVERED EXCERPT IS THE SOURCE, exactly — and it names the version it was cut from.
   const exact = pack("lies alpha.ts#alphaOne", snipRows, paddedFile);
-  // alphaOne's definition is line 42 of the padded file and its body ends on 44; the window is
-  // exactly ±SNIPPET_CONTEXT_LINES around that span, and the text is the file's own bytes for it.
-  check("snippets: the excerpt is the file's own bytes for the named span ±20, labelled with path, symbol, lines and blob",
-    exact.built.shown.length === 1
-    && exact.built.shown[0]!.from === 42 - SNIPPET_CONTEXT_LINES
-    && exact.built.shown[0]!.to === 44 + SNIPPET_CONTEXT_LINES
-    && exact.built.shown[0]!.text === paddedLines.slice(42 - SNIPPET_CONTEXT_LINES - 1, 44 + SNIPPET_CONTEXT_LINES).join("\n")
-    && exact.built.shown[0]!.context === SNIPPET_CONTEXT_LINES
-    && !exact.built.shown[0]!.incomplete
-    && exact.block.includes(`- alpha.ts#alphaOne · Zeilen ${42 - SNIPPET_CONTEXT_LINES}-${44 + SNIPPET_CONTEXT_LINES} · blob ${"blob-alpha.ts".slice(0, 12)}`)
-    && exact.block.includes("aus c0ffee0c0ffe"),
-    JSON.stringify({ from: exact.built.shown[0]?.from, to: exact.built.shown[0]?.to,
-      block: exact.block.slice(0, 180) }));
-
-  // (7) A WAVE SHARES ONE CAP and says which row a source belongs to. The same symbol named by two
-  // rows is ONE excerpt — delivering identical lines twice spends the budget on agreement.
+  check("snippets: a karted short symbol carries its complete exact body, with a commit pointer and no context",
+    exact.built.shown.length === 1 && exact.built.shown[0]!.from === 42
+    && exact.built.shown[0]!.to === 44
+    && exact.built.shown[0]!.text === paddedLines.slice(41, 44).join("\n")
+    && exact.block.includes("- alpha.ts#alphaOne@c0ffee0c0ffe Z. 42-44")
+    && !exact.block.includes("GEKUERZT"), exact.block);
+  const unkarted = pack("lies alpha.ts#alphaOne und `alphaTwo`",
+    [{ id: "t1", files: ["alpha.ts"] }], paddedFile);
+  check("snippets: references in prose alone carry pointers, without code",
+    unkarted.built.shown.length === 2 && unkarted.built.shown.every((hit) => hit.text === "")
+    && !unkarted.block.includes("```"), unkarted.block);
+  const cardElsewhere = pack("lies alpha.ts#alphaOne",
+    [{ id: "t1", files: ["alpha.ts"], symbols: ["beta.ts#alphaOne"] }], paddedFile);
+  check("snippets: a same-named symbol in another card file grants no code",
+    cardElsewhere.built.shown[0]?.text === "", cardElsewhere.block);
   const wave = pack("lies alpha.ts#alphaOne und noch einmal alpha.ts#alphaOne",
-    [{ id: "t1", files: ["alpha.ts"] }, { id: "t2", files: ["alpha.ts"] }], paddedFile);
-  // counted on the LABEL lines only — the excerpt text naturally contains the symbol's own name, and
-  // the first version of this probe counted those and called one excerpt two.
+    [{ id: "t1", files: ["alpha.ts"], symbols: ["alpha.ts#alphaOne"] },
+      { id: "t2", files: ["alpha.ts"] }], paddedFile);
   const waveLabels = wave.block.split("\n").filter((line) => line.startsWith("- alpha.ts#"));
-  check("snippets: a wave delivers a twice-named symbol once, carrying both rows",
+  check("snippets: a wave shares one pointer for a twice-named symbol and carries both rows",
     wave.built.shown.length === 1 && wave.built.shown[0]!.taskIds.join(",") === "t1,t2"
-    && waveLabels.length === 1 && waveLabels[0]!.includes("zu t1, t2"),
-    JSON.stringify({ shown: wave.built.shown.map((hit) => hit.symbols), labels: waveLabels }));
-  check("snippets: a single-task lane carries no row attribution at all",
-    !exact.block.includes("zu t1"), exact.block.slice(0, 160));
+    && waveLabels.length === 1 && waveLabels[0]!.includes("zu t1, t2"), wave.block);
+  check("snippets: a single-task lane carries no row attribution", !exact.block.includes("zu t1"), exact.block);
 
-  // (8) THE BUDGET IS UTF-8 BYTES AND IT IS HARD. A two-byte character must count twice, or a block
-  // of umlauts passes a character check and overruns the cap it claims to respect.
+  const boundary = (count: number): SnippetFile[] => [{ path: "alpha.ts", blob: "blob-alpha.ts",
+    text: ["export function wide(): string {", ...Array.from({ length: count - 3 }, () => "  // ü"),
+      '  return "x";', "}"].join("\n") }];
+  const sixty = pack("lies alpha.ts#wide", snipRows, boundary(60));
+  const sixtyOne = pack("lies alpha.ts#wide", snipRows, boundary(61));
+  check("snippets: 60 complete lines carry code; 61 carry only the full pointer span",
+    sixty.built.shown[0]?.text.split("\n").length === 60
+    && sixtyOne.built.shown[0]?.from === 1 && sixtyOne.built.shown[0]?.to === 61
+    && sixtyOne.built.shown[0]?.text === "" && !sixtyOne.block.includes("```"),
+    JSON.stringify([sixty.built.shown, sixtyOne.built.shown]));
+  const unclosed = pack("lies alpha.ts#wide", snipRows,
+    [{ path: "alpha.ts", text: "export function wide() {\n  return 1;", blob: "blob-alpha.ts" }]);
+  check("snippets: an unclosed short declaration grants no partial code",
+    unclosed.built.shown[0]?.text === "" && !unclosed.block.includes("```"), unclosed.block);
   const wideLines = ["export function wide(): string {",
-    ...Array.from({ length: 200 }, (_, i) => `  // ${"ü".repeat(60)} ${i}`), "  return \"x\";", "}"];
+    ...Array.from({ length: 200 }, (_, i) => `  // ${"ü".repeat(60)} ${i}`), '  return "x";', "}"];
   const wideFile: SnippetFile[] = [{ path: "alpha.ts", text: wideLines.join("\n"), blob: "blob-alpha.ts" }];
   const wide = pack("lies alpha.ts#wide", snipRows, wideFile);
-  check("snippets: the block never exceeds the byte cap, and a 2-byte character costs 2 — not 1",
-    new TextEncoder().encode(wide.block).byteLength <= SNIPPET_BLOCK_MAX_BYTES
-    && wide.block.length < new TextEncoder().encode(wide.block).byteLength
-    && wide.built.bytes === new TextEncoder().encode(wide.block).byteLength,
-    `chars=${wide.block.length} bytes=${new TextEncoder().encode(wide.block).byteLength}`);
-  check("snippets: a body cut to fit says it was cut and reports the lines it ACTUALLY shows",
-    wide.built.shown.length === 1 && wide.built.shown[0]!.incomplete
-    && wide.built.shown[0]!.to < wideLines.length
-    && wide.block.includes("GEKUERZT")
-    && wide.built.shown[0]!.text.split("\n").length === wide.built.shown[0]!.to - wide.built.shown[0]!.from + 1,
-    JSON.stringify({ to: wide.built.shown[0]?.to, incomplete: wide.built.shown[0]?.incomplete }));
-
-  // (9) NO SILENT DISPLACEMENT — and the module has TWO mechanisms for it, so this asserts both.
-  // First: a hit too large for its half of the block is CUT, not dropped, and the small hit after it
-  // still arrives. Second: when even the definition line cannot fit, the hit is omitted BY NAME and
-  // the loop goes on. The first version of this probe asserted only the second and read as a defect
-  // when the first one did its job.
+  check("snippets: long bodies are never clipped; the pointer names the complete span without code",
+    wide.built.shown.length === 1 && wide.built.shown[0]!.from === 1
+    && wide.built.shown[0]!.to === wideLines.length && wide.built.shown[0]!.text === ""
+    && !wide.block.includes("GEKUERZT") && !wide.block.includes("```"), wide.block);
+  const multibyte = pack("lies alpha.ts#wide", snipRows, boundary(60));
+  check("snippets: rendered accounting counts UTF-8 bytes including optional code",
+    multibyte.built.bytes === new TextEncoder().encode(multibyte.block).byteLength
+    && multibyte.built.bytes > multibyte.block.length && multibyte.built.bytes <= SNIPPET_BLOCK_MAX_BYTES,
+    `bytes=${multibyte.built.bytes} chars=${multibyte.block.length}`);
   const bigThenSmall: SnippetFile[] = [{ path: "alpha.ts",
     text: [...wideLines, "", "export const tiny = 1;"].join("\n"), blob: "blob-alpha.ts" }];
   const crowded = pack("lies alpha.ts#wide und alpha.ts#tiny", snipRows, bigThenSmall, 700);
-  check("snippets: an oversized hit is CUT rather than dropped, and the smaller later hit still arrives",
-    crowded.built.shown.map((hit) => hit.symbols.join("+")).join(",") === "wide,tiny"
-    && crowded.built.shown[0]!.incomplete
-    && new TextEncoder().encode(crowded.block).byteLength <= 700,
-    JSON.stringify({ shown: crowded.built.shown.map((h) => [h.symbols, h.from, h.to]),
-      bytes: new TextEncoder().encode(crowded.block).byteLength }));
-  // a definition line wider than the whole budget: nothing can be cut away, so it must be NAMED
-  const unfittable: SnippetFile[] = [{ path: "alpha.ts",
-    text: [`export function huge(${"a".repeat(400)}: string) {`, "  return 1;", "}", "",
-      "export const tiny = 1;"].join("\n"), blob: "blob-alpha.ts" }];
-  const named = pack("lies alpha.ts#huge und alpha.ts#tiny", snipRows, unfittable, 320);
-  check("snippets: a hit that cannot fit even at one line is omitted BY NAME, and the later hit is delivered",
-    named.built.shown.map((hit) => hit.symbols.join("+")).join(",") === "tiny"
-    && named.built.omitted.some((entry) => entry.ref === "alpha.ts#huge" && entry.why === "budget-exhausted")
-    && named.block.includes("budget-exhausted")
-    && new TextEncoder().encode(named.block).byteLength <= 320,
-    JSON.stringify({ shown: named.built.shown.map((h) => h.symbols), omitted: named.built.omitted,
-      bytes: new TextEncoder().encode(named.block).byteLength }));
-
-  // (10) OVERLAPS MERGE, and the merged label may only name symbols the excerpt really contains.
+  check("snippets: a long body leaves room for every pointer and a later short body",
+    crowded.built.shown.map((hit) => hit.symbols[0]).join(",") === "wide,tiny"
+    && crowded.built.shown[0]!.text === "" && crowded.built.shown[1]!.text === "export const tiny = 1;"
+    && crowded.built.bytes <= 700, crowded.block);
+  const budgetBody: SnippetFile[] = [{ path: "alpha.ts", blob: "blob-alpha.ts",
+    text: ['export function huge() {', `  return "${"ü".repeat(400)}";`, "}", "export const tiny = 1;"].join("\n") }];
+  const named = pack("lies alpha.ts#huge und alpha.ts#tiny", snipRows, budgetBody, 320);
+  check("snippets: optional code exceeding the budget is withheld whole, with both pointers retained",
+    named.built.shown.map((hit) => hit.symbols[0]).join(",") === "huge,tiny"
+    && named.built.shown[0]!.text === "" && named.built.shown[1]!.text === "export const tiny = 1;"
+    && named.built.bytes <= 320, named.block);
   const neighbours = pack("lies alpha.ts#alphaOne und alpha.ts#alphaTwo", snipRows, paddedFile);
-  check("snippets: two symbols whose windows overlap become ONE excerpt naming both, spanning both definitions",
-    neighbours.built.shown.length === 1
-    && neighbours.built.shown[0]!.symbols.join("+") === "alphaOne+alphaTwo"
-    && neighbours.built.shown[0]!.from === 42 - SNIPPET_CONTEXT_LINES
-    && neighbours.built.shown[0]!.to === 46 + SNIPPET_CONTEXT_LINES
-    && neighbours.built.shown[0]!.text.includes("export function alphaOne")
-    && neighbours.built.shown[0]!.text.includes("export const alphaTwo"),
-    JSON.stringify(neighbours.built.shown.map((hit) => [hit.symbols, hit.from, hit.to])));
+  check("snippets: neighbouring symbols each have an exact pointer and their own complete code",
+    neighbours.built.shown.length === 2
+    && neighbours.built.shown[0]!.from === 42 && neighbours.built.shown[0]!.to === 44
+    && neighbours.built.shown[1]!.from === 46 && neighbours.built.shown[1]!.to === 46,
+    neighbours.block);
 
   // (11) SAME INPUT, SAME BLOCK — the property a receipt asserting the delivered bytes stands on.
   const once = pack("lies alpha.ts#alphaWide und `alphaTwo` und alpha.ts#ghostSymbol");
@@ -634,9 +622,9 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     [{ id: "t1", files: ["alpha.ts", "notes.md", "logo.png"] }], tracked: snipTracked });
   check("snippets: only files a symbol was asked for are readable — no repo-wide load",
     scoped.reads.join(",") === "beta.ts", JSON.stringify(scoped.reads));
-  check("snippets: ±context is the declared constant, not a literal buried in the renderer",
-    SNIPPET_CONTEXT_LINES === 20 && definitionLines(alpha.split("\n"), "alphaTwo").join(",") === "5",
-    `${SNIPPET_CONTEXT_LINES} ${definitionLines(alpha.split("\n"), "alphaTwo")}`);
+  check("snippets: the code ceiling is the declared 60 lines, and the index retains exact declaration positions",
+    SNIPPET_HIT_MAX_LINES === 60 && definitionLines(alpha.split("\n"), "alphaTwo").join(",") === "5",
+    `${SNIPPET_HIT_MAX_LINES} ${definitionLines(alpha.split("\n"), "alphaTwo")}`);
 
   privatePackChecks(check);
 

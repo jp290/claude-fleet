@@ -274,6 +274,12 @@ const SHELL = process.env.SHELL ?? "/bin/sh";
 const PATH_EXPORT = process.env.PATH ? `export PATH='${process.env.PATH.replaceAll("'", "'\\''")}'; ` : "";
 const BASE_CMD = process.env.FLEET_CMD ?? "claude";
 const shellSingleQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+const HABITS_PROMPT_VALUE = process.env.FLEET_HABITS_PROMPT?.trim().toLowerCase();
+const HABITS_PROMPT_ENABLED = ["1", "true", "on", "yes"].includes(HABITS_PROMPT_VALUE ?? "");
+if (HABITS_PROMPT_VALUE !== undefined && !HABITS_PROMPT_ENABLED
+    && !["0", "false", "off", "no"].includes(HABITS_PROMPT_VALUE))
+  console.error("[fleet] FLEET_HABITS_PROMPT is invalid; habits prompt remains off");
+const HABITS_PROMPT_PATH = `${import.meta.dir}/fleet-gepflogenheiten.md`;
 const RULEBOOK_AB_VALUE = process.env.FLEET_RULEBOOK_AB?.toLowerCase();
 const RULEBOOK_AB_ENABLED = ["1", "true", "on", "yes"].includes(RULEBOOK_AB_VALUE ?? "");
 if (RULEBOOK_AB_VALUE !== undefined && !RULEBOOK_AB_ENABLED
@@ -302,6 +308,7 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
   // the owner's ambient /model default. Single-quoted: `claude-opus-5[1m]` is an unmatched glob
   // and zsh (tmux default-shell) aborts the pane on it; MODEL_RE forbids `'`, so the wrap is closed.
   if (claude) {
+    if (HABITS_PROMPT_ENABLED) cmd += ` --append-system-prompt-file ${shellSingleQuote(HABITS_PROMPT_PATH)}`;
     cmd += ` --model '${model ?? DEFAULT_MODEL}'`;
     // `--effort <level>` only when the slot pins one — with no flag claude keeps its own default.
     // Single-quoted for the same discipline as the model; the real boundary is upstream (effortOf
@@ -17035,7 +17042,8 @@ async function laneSnippetBlock(lanePath: string, head: string,
   const commit = rev.out;
   const listing = commit === head ? { ok: true, ...headListing } : await treeListingAt(lanePath, commit);
   if (!listing.ok) throw new Error("could not list the lane commit for the source package");
-  const snipRows = rows.map((row) => ({ id: row.id, files: taskView(row).files ?? [] }));
+  const snipRows = rows.map((row) => ({ id: row.id, files: taskView(row).files ?? [],
+    symbols: row.card?.surface.symbols ?? [] }));
   const plan = planSnippets({ briefText: brief, tracked: listing.blobModes, rows: snipRows });
   const files: SnippetFile[] = [];
   for (const path of plan.reads) {

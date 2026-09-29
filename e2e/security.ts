@@ -364,6 +364,16 @@ const PRE_AUTH_ROUTES = [
   // /api/helper/bundle route, which is why the helper perimeter below is unchanged by this feature.
   '= /api/self/suite-offer',
   '= /api/self/suite-offer/withdraw',
+  // …and the MAIN's proxy door onto the SAME anlage (2026-09-29, server.ts#laneSuiteOfferDoor): a
+  // bound Program-MAIN offers, or reads, the preview of one of its OWN program's live lanes. Same
+  // session principal and flat 401; then 409 for a lane as caller, 409 for a session without a
+  // Program binding (boundProgramForMain), 409 unless the target slot is a live lane whose
+  // programId IS the caller's program, 404 for a slot that does not exist. The body is the lane
+  // door's — `modules` alone, validated before any row exists — and the tree, repo, branch, cwd,
+  // slot and openedAt come from the TARGET lane's row, never from the caller: a MAIN can choose
+  // WHICH of its lanes, never WHICH tree. It starts nothing, writes into no pane, and the job it
+  // mints is the lane's own (one open offer per slot, whichever door minted it).
+  String.raw`~ /^\/api\/self\/lanes\/(\d+)\/suite-offer$/`,
   // W3, 2026-09-07 · THE SELF-SPLIT of a land wave. Lane-only, in the drift/gate/criterion
   // direction and for the same reason: the answer is about rows the CALLER'S OWN lane is holding.
   // What bounds it, and why it is on this list rather than behind the owner token: the door

@@ -2397,7 +2397,9 @@ curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   http://<fleet-host>:<port>/api/self/jobs/<jobId>        # Zustand + Quittung
 ```
 
-**Eine MAIN gibt ihre Vorschau über diese Tür an den Helfer** — `suite-offer` ist lane-only, also
+**Eine MAIN gibt ihre EIGENE Vorschau über diese Tür an den Helfer** — `suite-offer` ist lane-only
+(den Baum einer LANE ihres Programs bietet sie über `POST /api/self/lanes/:slot/suite-offer` an,
+§suite-offer „Stellvertreter-Türen"), also
 `{"cmd":"./e2e-isolated.sh","timeoutMs":2700000}` und danach eine `job`-Watch statt Polling
 (§watch). Der Default von 15 min würgte einen vollen Lauf ab (gemessen 2 120 s,
 `suite-modules.ts`); mehr als 2 700 000 kauft nichts, weil der Claim nach
@@ -2742,6 +2744,42 @@ ist `unknown`, nie `gone`.
 `lapsed` · `reaped`. Keiner dieser Ausgänge schreibt je ein `result`, und die Mint-Stelle ist aus
 genau einem Aufrufer erreichbar — die Abwesenheit ist strukturell, kein Filter, den jemand
 mitpflegen muss.
+
+### Stellvertreter-Türen — der Owner und die Program-MAIN bieten den Baum einer LEBENDEN Lane an (seit 2026-09-29)
+
+Anlass (Owner 2026-09-29): neun lokale e2e-Läufe standen bis zu 2 h vor dem Mutex dieser Maschine,
+während der Workhorse leer war. Zwei Fälle hatten keine Tür: eine Lane, deren Harness kein
+Kontingent mehr hat, kann nicht selbst anbieten, und eine MAIN, die den Baum ihrer Lane vor dem Land
+messen will, konnte über `jobs` nur ihren EIGENEN Baum weitergeben. Zwei Türen schließen das:
+
+```
+curl -s -X POST -H "Authorization: Bearer <owner-token>" -H 'content-type: application/json' \
+  -d '{"modules":["lane-suite"]}' http://<fleet-host>:<port>/api/slots/<lane-slot>/suite-offer
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{}' http://<fleet-host>:<port>/api/self/lanes/<lane-slot>/suite-offer
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/lanes/<lane-slot>/suite-offer      # Zustand + Verdikt
+```
+
+- **Eine Anlage, drei Türen.** Beide rufen dieselbe Funktion wie die Lane-Tür
+  (`server.ts#laneSuiteOfferDoor`): Slot und `slotOpenedAt` der Lane, Repo und Branch aus ihrem
+  `worktree`, der Baum aus ihrem `cwd`, `modules` als einziges Body-Feld mit derselben Prüfung
+  (`suite-modules.ts#moduleListFrom`, unbekannter Name → **400**). Kein neuer Job-Typ, kein Feld
+  nominiert einen Baum. Die Tür steht nur im Audit-Trail (`offered by owner` /
+  `offered by MAIN slot N of <program>`), nicht auf dem Job — der Job gehört der Lane.
+- **Das Verdikt ist das der Lane.** Es landet auf ihrem Job und in ihrer Pane wie bei einem eigenen
+  Angebot; die Lane liest es auf `GET /api/self/suite-offer`, der Owner auf
+  `GET /api/slots/:id/suite-offer`, die MAIN auf `GET /api/self/lanes/:slot/suite-offer` (eine
+  Self-Credential passiert das Owner-Gate nicht, daher die GET-Hälfte der MAIN-Tür). Solange das
+  Angebot offen oder geclaimt ist, bindet es die Lane wie ihr eigenes: kein lokaler Lauf, Rückzug
+  über ihre `withdraw`-Tür.
+- **Ein offenes Angebot pro Slot, nicht pro Tür.** Ein zweites POST — auf welcher der drei Türen
+  auch immer — gibt das bestehende mit `existing: true` zurück.
+- **Ablehnungen, alle 409 mit Satz:** ein Slot ohne lebende Lane (kein `worktree`, kein `cwd`, der
+  Steward) auf beiden Türen; auf der MAIN-Tür zuerst eine LANE als Aufruferin (auch für ihren eigenen
+  Slot — die eigene Tür ist `/api/self/suite-offer`), dann eine Session ohne Program-Bindung
+  (`server.ts#boundProgramForMain`, dessen Wortlaut), dann eine Lane, deren `programId` nicht das
+  Program der MAIN ist. Ein unbekannter Slot ist **404**. Belegt in `e2e/lane-suite.ts` (LS.12).
 
 
 ## fleet-report — `POST /api/self/fleet-report`, `GET /api/self/fleet-report`

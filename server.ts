@@ -27036,6 +27036,107 @@ function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
       : j.result,
   };
 }
+// THE ONE ANLAGE OF A LANE-SUITE JOB, read and mint, behind all three doors that may hand a lane's
+// tree to the portal: the lane's own (POST /api/self/suite-offer), the owner's
+// (POST /api/slots/:id/suite-offer) and its program MAIN's (POST /api/self/lanes/:slot/suite-offer).
+// The doors decide WHO may ask for WHICH lane and nothing else; everything the job is made of comes
+// from the lane's row here — slot + openedAt, repo/branch from s.worktree, the tree from s.cwd — so a
+// proxy door cannot name a tree either, and a verdict it caused lands on the lane's job exactly as
+// one the lane caused. `by` is null on the lane's own door (its trail line stays as it was) and
+// names the proxy otherwise, for the trail only: the job carries no field for it, because the job
+// is the lane's and answers to the lane.
+async function laneSuiteOfferDoor(s: Slot, wt: NonNullable<Slot["worktree"]>, req: Request,
+  by: string | null): Promise<Response> {
+  expireHelperClaims();
+  const existing = laneSuiteOfferOf(s);
+  // THE READ HALF: state, and on a settled offer the verdict WITH provenance. `waitPolicy` and
+  // `suiteLock` travel with it because they decide how long waiting is worth (§5.2).
+  if (req.method === "GET") {
+    // a settled offer is still readable by the lane that made it — the verdict outlives the
+    // offer, or a lane that asked one second too late could never learn its own answer
+    const last = existing ?? [...laneSuiteJobs.values()]
+      .filter((j) => j.slot === s.id && j.slotOpenedAt === s.openedAt)
+      .sort((a, b) => b.offeredAt - a.offeredAt)[0] ?? null;
+    return json({
+      offer: last ? laneSuiteView(last) : null,
+      waitPolicy: suiteOfferWait(existing?.offeredAt),
+      suiteLock: suiteLockView(),
+      helper: helperPresence(), // …and WHO could take it, same reading as /api/self/gate's
+    });
+  }
+  // THE ONE BODY FIELD: `modules`, the narrowed preview (`FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`
+  // — what /api/self/gate's localProof.modules recommends). Validated FIRST, before the existing
+  // branch and before a row can exist, through the runner's own decision
+  // (suite-modules.ts#moduleListFrom): known module names only, so nothing but a list of words
+  // from that table can ever reach the helper's env. Absent — including a POST with no JSON body
+  // at all, which is every caller from before this field — is the full run, unchanged.
+  const offerBody = await readJson(req);
+  let modules: string[] | undefined;
+  if (offerBody?.modules !== undefined) {
+    const m = moduleListFrom(offerBody.modules);
+    if (!m.ok) return json({ error: m.error }, 400);
+    modules = m.modules;
+  }
+  // ONE OPEN OFFER PER SLOT. A second POST returns the first with `existing: true` rather than
+  // minting a rival — the same idempotent shape createWatchForSlot uses, and for the same
+  // reason: a caller that retries must not end up holding two of anything. It is returned AS IT
+  // IS, modules or none: the lane reads `offer.modules` to see which run it is waiting on.
+  // `waitPolicy` rides on BOTH minting answers too: "how long is this offer worth waiting for" is
+  // decided in the same instant the offer is, and the saturated reason is what a lane would
+  // otherwise only learn by polling GET — which is the loop the report rail exists to end.
+  // One offer per SLOT, not per door: an offer the owner or the MAIN made is the lane's open offer.
+  if (existing) return json({ offer: laneSuiteView(existing), existing: true, helper: helperPresence(),
+    waitPolicy: suiteOfferWait(existing.offeredAt) });
+  // NO OFFER WITHOUT A MACHINE THAT COULD TAKE IT. Before this, a lane in a fleet where nothing
+  // was beating still got an open job back and then waited SUITE_OFFER_WAIT_FREE_MS (180 s) for
+  // a claim that could not arrive — pure delay on the lane's own preview, and invisible from
+  // inside, because the register is the owner's panel. The rulebook's rule („[Zitat entfernt]“
+  // ) is now answerable in ONE round trip: `offer: null` with a reason.
+  // 200, not an error: nothing went wrong, and a 4xx would send a lane looking for a fault.
+  // ORDER MATTERS. The existing-offer branch above runs FIRST and unconditionally — a lane must
+  // always be able to find its own open offer again, and a helper going quiet after the offer
+  // was minted does not un-mint it. This gate stands in front of MINTING and nothing else.
+  // And it is presence, not claimability: a device that is beating but `quiet` still gets the
+  // offer, because `quiet` is a state its next heartbeat can leave. `helper.mode` rides in the
+  // answer so the lane can read that for itself rather than be judged by a boolean.
+  const presence = helperPresence();
+  if (!presence.online)
+    return json({ offer: null, reason: "no helper online", helper: presence,
+      waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
+  // …and the same refusal, one question narrower: a NARROWED offer is only ever shown to a device
+  // that declared LANE_SUITE_MODULES_FEATURE, so with none of those beating it would wait out the
+  // budget for a claim that cannot come. Same 200, same shape, its own reason — the lane runs the
+  // narrowed preview locally now, or offers the full run instead.
+  if (modules && !presence.takesModules)
+    return json({ offer: null, reason: "no helper online takes a narrowed preview", helper: presence,
+      waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
+  const job: LaneSuiteJob = {
+    id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
+    repo: wt.repo, cwd: s.cwd!, branch: wt.branch,
+    programId: s.programId, ...(modules ? { modules } : {}), offeredAt: Date.now(),
+    state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
+  };
+  laneSuiteJobs.set(job.id, job);
+  audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`
+    + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}${by ? ` (offered by ${by})` : ""}`);
+  await saveStateNow();
+  return json({ offer: laneSuiteView(job), existing: false, helper: presence,
+    waitPolicy: suiteOfferWait(job.offeredAt) });
+}
+// THE TARGET OF A PROXY OFFER: a LIVE lane. A slot without a worktree is not a lane (a plain
+// session, a MAIN, an empty place), and a worktree slot without a cwd has no tree to take — both
+// answer 409 in one sentence, since either way there is no lane tree on that place to hand over.
+// The steward carries a worktree but is a standing role, not a lane, exactly as the self doors
+// that exclude it say.
+function laneSuiteProxyTarget(raw: string):
+  { ok: true; lane: Slot; wt: NonNullable<Slot["worktree"]> } | { ok: false; response: Response } {
+  const id = Number(raw);
+  const t = Number.isInteger(id) && id >= 1 ? slots[id - 1] : undefined;
+  if (!t) return { ok: false, response: json({ error: `no slot ${raw}` }, 404) };
+  if (!t.worktree || !t.cwd || t.label === STEWARD_LABEL)
+    return { ok: false, response: json({ error: `slot ${t.id} is not a live lane — a suite offer hands over a lane's own working tree` }, 409) };
+  return { ok: true, lane: t, wt: t.worktree };
+}
 // The one way anything OUTSIDE the land path restarts the drain. `schedulePostLandAudit` owns the
 // land path's own kick; this is for the two moments a job becomes drainable again without a land:
 // a claim lapsed, or a helper reported and left a fresh cover behind.
@@ -41443,80 +41544,33 @@ Bun.serve<WSData>({
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — a suite offer hands over a lane's own working tree" }, 409);
-      expireHelperClaims();
-      const existing = laneSuiteOfferOf(s);
-      // THE READ HALF: state, and on a settled offer the verdict WITH provenance. `waitPolicy` and
-      // `suiteLock` travel with it because they decide how long waiting is worth (§5.2).
-      if (req.method === "GET") {
-        // a settled offer is still readable by the lane that made it — the verdict outlives the
-        // offer, or a lane that asked one second too late could never learn its own answer
-        const last = existing ?? [...laneSuiteJobs.values()]
-          .filter((j) => j.slot === s.id && j.slotOpenedAt === s.openedAt)
-          .sort((a, b) => b.offeredAt - a.offeredAt)[0] ?? null;
-        return json({
-          offer: last ? laneSuiteView(last) : null,
-          waitPolicy: suiteOfferWait(existing?.offeredAt),
-          suiteLock: suiteLockView(),
-          helper: helperPresence(), // …and WHO could take it, same reading as /api/self/gate's
-        });
-      }
-      // THE ONE BODY FIELD: `modules`, the narrowed preview (`FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`
-      // — what /api/self/gate's localProof.modules recommends). Validated FIRST, before the existing
-      // branch and before a row can exist, through the runner's own decision
-      // (suite-modules.ts#moduleListFrom): known module names only, so nothing but a list of words
-      // from that table can ever reach the helper's env. Absent — including a POST with no JSON body
-      // at all, which is every caller from before this field — is the full run, unchanged.
-      const offerBody = await readJson(req);
-      let modules: string[] | undefined;
-      if (offerBody?.modules !== undefined) {
-        const m = moduleListFrom(offerBody.modules);
-        if (!m.ok) return json({ error: m.error }, 400);
-        modules = m.modules;
-      }
-      // ONE OPEN OFFER PER SLOT. A second POST returns the first with `existing: true` rather than
-      // minting a rival — the same idempotent shape createWatchForSlot uses, and for the same
-      // reason: a caller that retries must not end up holding two of anything. It is returned AS IT
-      // IS, modules or none: the lane reads `offer.modules` to see which run it is waiting on.
-      // `waitPolicy` rides on BOTH minting answers too: "how long is this offer worth waiting for" is
-      // decided in the same instant the offer is, and the saturated reason is what a lane would
-      // otherwise only learn by polling GET — which is the loop the report rail exists to end.
-      if (existing) return json({ offer: laneSuiteView(existing), existing: true, helper: helperPresence(),
-        waitPolicy: suiteOfferWait(existing.offeredAt) });
-      // NO OFFER WITHOUT A MACHINE THAT COULD TAKE IT. Before this, a lane in a fleet where nothing
-      // was beating still got an open job back and then waited SUITE_OFFER_WAIT_FREE_MS (180 s) for
-      // a claim that could not arrive — pure delay on the lane's own preview, and invisible from
-      // inside, because the register is the owner's panel. The rulebook's rule („[Zitat entfernt]“
-      // ) is now answerable in ONE round trip: `offer: null` with a reason.
-      // 200, not an error: nothing went wrong, and a 4xx would send a lane looking for a fault.
-      // ORDER MATTERS. The existing-offer branch above runs FIRST and unconditionally — a lane must
-      // always be able to find its own open offer again, and a helper going quiet after the offer
-      // was minted does not un-mint it. This gate stands in front of MINTING and nothing else.
-      // And it is presence, not claimability: a device that is beating but `quiet` still gets the
-      // offer, because `quiet` is a state its next heartbeat can leave. `helper.mode` rides in the
-      // answer so the lane can read that for itself rather than be judged by a boolean.
-      const presence = helperPresence();
-      if (!presence.online)
-        return json({ offer: null, reason: "no helper online", helper: presence,
-          waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
-      // …and the same refusal, one question narrower: a NARROWED offer is only ever shown to a device
-      // that declared LANE_SUITE_MODULES_FEATURE, so with none of those beating it would wait out the
-      // budget for a claim that cannot come. Same 200, same shape, its own reason — the lane runs the
-      // narrowed preview locally now, or offers the full run instead.
-      if (modules && !presence.takesModules)
-        return json({ offer: null, reason: "no helper online takes a narrowed preview", helper: presence,
-          waitPolicy: suiteOfferWait(), suiteLock: suiteLockView() });
-      const job: LaneSuiteJob = {
-        id: randomBytes(6).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
-        repo: s.worktree.repo, cwd: s.cwd!, branch: s.worktree.branch,
-        programId: s.programId, ...(modules ? { modules } : {}), offeredAt: Date.now(),
-        state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
-      };
-      laneSuiteJobs.set(job.id, job);
-      audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`
-        + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}`);
-      await saveStateNow();
-      return json({ offer: laneSuiteView(job), existing: false, helper: presence,
-        waitPolicy: suiteOfferWait(job.offeredAt) });
+      return laneSuiteOfferDoor(s, s.worktree, req, null);
+    }
+
+    // THE MAIN'S OFFER DOOR — a bound program MAIN hands the preview of one of ITS OWN lanes to the
+    // portal, for a lane that cannot ask itself (its harness has no quota left) or that the MAIN
+    // wants measured before it lands it. The same anlage as the lane's door (laneSuiteOfferDoor):
+    // the tree, repo and branch come from the LANE's row, the body carries `modules` and nothing
+    // else, and the job, its verdict and its delivery are the lane's. GET reads the lane's offer the
+    // way the lane reads it. The scope is the program bracket, checked in this order: a lane as
+    // caller is refused first (a lane offers its own tree on its own door, never a sibling's), then
+    // the binding answers in boundProgramForMain's own words, then the target must be a live lane
+    // whose programId IS the caller's program. 409 throughout, never 401: the token is right, the
+    // question is not askable from where the caller stands.
+    const mainLaneOffer = /^\/api\/self\/lanes\/(\d+)\/suite-offer$/.exec(url.pathname);
+    if (mainLaneOffer && (req.method === "GET" || req.method === "POST")) {
+      const p = resolvePrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not offer another lane's tree — a lane offers its own on POST /api/self/suite-offer" }, 409);
+      const bound = boundProgramForMain(s);
+      if (!bound.ok) return json({ error: bound.error }, 409);
+      const target = laneSuiteProxyTarget(mainLaneOffer[1]!);
+      if (!target.ok) return target.response;
+      if (target.lane.programId !== bound.program.id)
+        return json({ error: `slot ${target.lane.id} is not a lane of program ${bound.program.id} — a MAIN offers the trees of its own program's lanes only` }, 409);
+      return laneSuiteOfferDoor(target.lane, target.wt, req, `MAIN slot ${s.id} of ${bound.program.id}`);
     }
 
     // THE COMMAND DOOR — a session hands another machine a TREE AND A COMMAND, and gets a receipt.
@@ -44959,6 +45013,16 @@ Bun.serve<WSData>({
       saveState();
       audit("autos_quiet", undefined, quietHours ? `${quietHours.start}-${quietHours.end}` : "off");
       return json({ ok: true, quietHours });
+    }
+    // THE OWNER'S OFFER DOOR — the owner hands a live lane's preview to the portal, e.g. for a lane
+    // whose harness cannot ask any more. The same anlage as the lane's own door and its MAIN's
+    // (laneSuiteOfferDoor): tree, repo and branch from the lane's row, `modules` the only body
+    // field, the job and its verdict the lane's. GET reads the lane's offer as the lane reads it.
+    const ownerLaneOffer = /^\/api\/slots\/(\d+)\/suite-offer$/.exec(url.pathname);
+    if (ownerLaneOffer && (req.method === "GET" || req.method === "POST")) {
+      const target = laneSuiteProxyTarget(ownerLaneOffer[1]!);
+      if (!target.ok) return target.response;
+      return laneSuiteOfferDoor(target.lane, target.wt, req, "owner");
     }
     const autoCreate = /^\/api\/slots\/(\d+)\/autos$/.exec(url.pathname);
     if (req.method === "POST" && autoCreate) {

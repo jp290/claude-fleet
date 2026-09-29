@@ -8838,7 +8838,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && /j\.state === "open" && \(!j\.modules \|\| helperTakesModules\(deviceId\)\)/.test(wakeFn!),
     `list=${/modulesCapable/.test(listFn!)} claim@${claimLs!.indexOf("helperTakesModules(deviceId)")}<bundle@${claimLs!.indexOf("buildLaneSuiteBundle(")}`
     + ` wake=${/helperTakesModules\(deviceId\)/.test(wakeFn!)}`);
-  const offerDoor = serverU.span('/api/self/suite-offer" && (req.method === "GET"', "laneSuiteJobs.set(job.id, job)")?.text ?? null;
+  const offerDoor = serverU.span("async function laneSuiteOfferDoor(", "laneSuiteJobs.set(job.id, job)")?.text ?? null;
   const restore = serverU.span("persisted as { laneSuiteJobs?: unknown }).laneSuiteJobs", "persisted as { commandJobs?: unknown }")?.text ?? null;
   pin(`${RULE_MOD} — (c) the offer door validates with the runner's own decision before any row, and refuses to mint what nobody takes`,
     offerDoor !== null && /const m = moduleListFrom\(offerBody\.modules\);/.test(offerDoor)
@@ -8991,7 +8991,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // THE DOOR. The refusal has to stand in front of MINTING and behind the idempotent
   // existing-offer branch, or a lane loses track of an offer it already made the moment its helper
   // goes quiet. Order asserted by position, the same shape §S10 uses on the jobs door.
-  const offerDoor = serverU.span('/api/self/suite-offer" && (req.method === "GET"', "laneSuiteJobs.set(job.id, job)")?.text ?? null;
+  const offerDoor = serverU.span("async function laneSuiteOfferDoor(", "laneSuiteJobs.set(job.id, job)")?.text ?? null;
   pin(`${RULE_ONLINE} — the offer door refuses to MINT while nothing is beating, after the existing-offer branch`,
     offerDoor !== null && /helperPresence\(\)/.test(offerDoor)
       && /reason: "no helper online"/.test(offerDoor)

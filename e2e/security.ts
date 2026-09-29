@@ -232,6 +232,7 @@ const PRE_AUTH_ROUTES = [
   // note/hours are the closed body, and mintReviewCandidate keeps the owner's admission rules.
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/park$/`,
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/spawn$/`,
   // Schnitt 3 (2026-09-14) · THE HOLD, the counter-act to a program's release policy. REVIEWED: same
   // principal and same derivation as the release door beside it — non-lane only (409), the program
   // from the exact MAIN binding, the repo from the caller's checkout, and of the body ONE field, the

@@ -517,8 +517,8 @@ export async function run(): Promise<void> {
       await post(`/api/slots/${vacant}/kill`, {});
       rmSync(fakeDir, { recursive: true, force: true });
     }
-    const reportTask = (await (await post("/api/tasks", { text: `${marker} predecessor report lane`,
-      repo: REPO2, queue: false })).json() as { task: { id: string } }).task.id;
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2", FLEET_AUTOS_TICK_MS: "10000" });
+    const reportTask = (await (await post("/api/tasks", { text: `${marker} predecessor report lane`, repo: REPO2, queue: false, harness: "pi" })).json() as { task: { id: string } }).task.id;
     let successorTask = "";
     let reportSlot = 0;
     try {
@@ -545,6 +545,7 @@ export async function run(): Promise<void> {
       await tmuxOut("send-keys", "-l", "-t", `s${reportSlot}`, draft);
       await until(async () => (await paneText(`s${reportSlot}`)).includes(draft) || null,
         { timeoutMs: 5_000, what: "predecessor composer holds a draft" });
+      await Bun.sleep(3_500);
       const reportAuditAt = auditRows().length;
       const accepted = await post(`/api/fleet-report/${reportId}/accept`, { reason: `${marker} accepted` });
       check("report bundle fixture: owner accepts while predecessor composer is occupied", accepted.ok,
@@ -553,19 +554,17 @@ export async function run(): Promise<void> {
         r.event === "delivery_bundle_refused" && r.slot === reportSlot
         && r.detail?.includes("composer occupied")) ?? null,
       { timeoutMs: 12_000, what: "report decision remains bundled after composer refusal" });
+      const successorFiled = await post("/api/tasks", { text: `${marker} successor dispatch brief`, repo: REPO2, queue: false });
+      successorTask = ((await successorFiled.json()) as { task: { id: string } }).task.id;
       await post(`/api/slots/${reportSlot}/kill`, {});
       await post(`/api/tasks/${reportTask}/delete`, {});
-      const successorFiled = await post("/api/tasks", { text: `${marker} successor dispatch brief`,
-        repo: REPO2, queue: false });
-      successorTask = ((await successorFiled.json()) as { task: { id: string } }).task.id;
       const dispatchAt = auditRows().length;
       const successorDispatch = await post(`/api/tasks/${successorTask}/dispatch`, {});
       const successorSlot = ((await successorDispatch.json()) as { slot?: number }).slot ?? 0;
       await until(() => auditRows().slice(dispatchAt).find((r) =>
         r.event === "send" && r.path === "brief" && r.slot === successorSlot) ?? null,
       { timeoutMs: 12_000, what: "successor founding brief is typed" });
-      const ownerOnly = `${marker} owner text for successor alone`;
-      const ownerSend = await post("/send", { slot: successorSlot, text: ownerOnly });
+      const ownerOnly = `${marker} owner text for successor alone`, ownerSend = await post("/send", { slot: successorSlot, text: ownerOnly });
       const dropped = await until(() => auditRows().slice(reportAuditAt).find((r) =>
         r.event === "delivery_bundle_dropped" && r.path === "report-decision"
         && r.detail?.includes(`slot:${reportSlot}`)) ?? null,
@@ -578,24 +577,26 @@ export async function run(): Promise<void> {
       const successorHistory = successorSlot ? ((await (await get(`/api/slots/${successorSlot}/history`)).json()) as
         { history: { text: string }[] }).history : [];
       const tailAudit = auditRows().slice(dispatchAt);
-      check("recycled slot drops the predecessor report; only successor brief and owner text arrive",
-        successorDispatch.ok && successorSlot === reportSlot && ownerSend.ok
-          && successorPane.includes(ownerOnly) && successorPane.includes(successorTask)
-          && !successorPane.includes("YOUR REPORT WAS")
+      const noReroute = !tailAudit.some((r) => r.event === "delivery_bundle_rerouted" && r.detail?.includes(`slot:${reportSlot}`));
+      check("recycled slot drops its queued report decision without showing it to the successor",
+        !successorPane.includes("YOUR REPORT WAS")
           && !successorHistory.some((h) => h.text.includes("YOUR REPORT WAS"))
           && report.decisionDelivery?.reason?.includes(String(oldOpenedAt)) === true
-          && dropped.detail?.includes("slot occupant ended") === true
-          && !tailAudit.some((r) => r.event === "delivery_bundle_rerouted" && r.detail?.includes(`slot:${reportSlot}`))
+          && dropped.detail?.includes("ended") === true && noReroute,
+        `drop=${dropped.detail} state=${report.decisionDelivery?.state}`);
+      check("successor dispatch delivers its brief and owner text alone without requeue or old verdict",
+        successorDispatch.ok && successorSlot === reportSlot && ownerSend.ok && successorPane.includes(ownerOnly)
+          && tailAudit.some((r) => r.event === "send" && r.path === "brief" && r.slot === successorSlot) && noReroute
           && !tailAudit.some((r) => r.event === "dispatch_requeued" && r.detail?.includes(successorTask))
           && !tailAudit.some((r) => r.event === "fleet_report_decision_delivered" && r.detail?.includes(reportId)),
-        `dispatch=${successorDispatch.status} owner=${ownerSend.status} state=${report.decisionDelivery?.state}`);
+        `dispatch=${successorDispatch.status} owner=${ownerSend.status}`);
     } finally {
       if (reportSlot) await post(`/api/slots/${reportSlot}/kill`, {});
       for (const id of [reportTask, successorTask]) if (id) await post(`/api/tasks/${id}/delete`, {});
     }
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2", FLEET_AUTOS_TICK_MS: String(AUTOS_TICK_MS) });
     const emptyOpen = await post(`/api/slots/${vacant}/open`, { cwd: REPO, harness: "pi" });
-    const emptyToken = emptyOpen.ok ? currentSelfToken(vacant) : "";
-    const emptyDeployId = (Date.now() >>> 0).toString(16).padStart(8, "0");
+    const emptyToken = emptyOpen.ok ? currentSelfToken(vacant) : "", emptyDeployId = (Date.now() >>> 0).toString(16).padStart(8, "0");
     appendFileSync(`${ROOT}/deploys.jsonl`, `${JSON.stringify({ at: Date.now(), id: emptyDeployId,
       by: "owner", stage: "boot", ok: true, target: "1".repeat(40), bootHead: "1".repeat(40),
       head: "1".repeat(40), hitTarget: true, bundleStale: false })}\n`);
@@ -656,7 +657,7 @@ export async function run(): Promise<void> {
         && (await (await get("/api/events")).json() as
           { events: { id: string; status: string }[] }).events.find((r) => r.id === event.id)?.status === "pending",
       refused.detail ?? "");
-    const killed = await post(`/api/slots/${vacant}/kill`, {});
+    const killed = await post(`/api/slots/${vacant}/kill`, {}), afterKill = (await eventRows()).find((row) => row.id === event.id)?.status;
     const successor = await post(`/api/slots/${vacant}/open`, { cwd: REPO });
     check("watch reroute fixture: the old slot occupant ends and a new one opens",
       killed.ok && successor.ok, `${killed.status}/${successor.status}`);
@@ -667,7 +668,7 @@ export async function run(): Promise<void> {
       return row?.status === "receiver-gone" ? row : null;
     }, { timeoutMs: 12_000, what: "queued slot watch ends with its original receiver" });
     check("an unattempted subscribed slot watch ends receiver-gone without rerouting to a replacement",
-      gone.receiverOpenedAt === event.receiverOpenedAt
+      afterKill === "receiver-gone" && gone.receiverOpenedAt === event.receiverOpenedAt
         && !auditRows().some((r) => r.event === "delivery_bundle_rerouted"
           && r.slot === vacant && r.detail?.includes(event.id)),
       `${event.receiverOpenedAt} -> ${gone.receiverOpenedAt}`);

@@ -13193,10 +13193,18 @@ exit 0
     }
     const m1New = m1Rows.slice(m1AuditBefore);
     const m1Denial = m1New.filter((r) => r.waitedOut === true);
+    const m1MainOpenedAt = ffrMainSlot === null ? null : readState().slots?.[String(ffrMainSlot)]?.openedAt ?? null;
+    const m1FromMain = (r: Record<string, unknown>): boolean => {
+      const actor = r.actor;
+      if (typeof actor !== "object" || actor === null) return false;
+      const p = actor as Record<string, unknown>;
+      return p.kind === "session" && p.role === "main"
+        && p.slot === ffrMainSlot && p.openedAt === m1MainOpenedAt;
+    };
     if (m1DFired) check("(vii) M1: every merge verdict leaves EXACTLY ONE machine-readable ledger row — the denial is one of them, and it names why in fields rather than prose",
       m1New.length === 1 && m1Denial.length === 1
         && m1Denial[0]?.status === "resolved" && m1Denial[0]?.landed === false
-        && m1Denial[0]?.actor === "main" && typeof m1Denial[0]?.detail === "string"
+        && m1FromMain(m1Denial[0]) && typeof m1Denial[0]?.detail === "string"
         && typeof m1Denial[0]?.slot === "number" && typeof m1Denial[0]?.ms === "number"
         && typeof m1Denial[0]?.waitMs === "number" && m1Denial[0]?.errorReason === undefined,
       JSON.stringify({ before: m1AuditBefore, new: m1New }));
@@ -13208,15 +13216,15 @@ exit 0
     // than only of the sentence. These two forms were minted in (8e), i.e. BEFORE the baseline
     // above, so they cannot be read out of `m1New` and the whole file has to be filtered instead —
     // and the whole file is not this section's. Every row of this section comes through the
-    // Program-MAIN self-land door (`actor: "main"`); an ffRounds land driven from the BOARD is a
+    // Program-MAIN self-land door (session Principal bound to ffrMainSlot); an ffRounds land driven from the BOARD is a
     // different form from a different section, and counting it here read as "the ledger merged two
     // rows". Measured on 2026-09-12, when e2e/merge.ts (C3b) began minting exactly such a row:
-    // `{slot:4, actor:"owner", ffRounds:1}` made `m1Landed.length === 2` and failed a check about
+    // `{slot:4, actor:{kind:"owner"}, ffRounds:1}` made `m1Landed.length === 2` and failed a check about
     // separation with two perfectly separate rows.
     const m1Landed = m1Rows.filter((r) => r.status === "merged" && r.landed === true
-      && r.ffRounds === 1 && r.actor === "main");
+      && r.ffRounds === 1 && m1FromMain(r));
     const m1RedGate = m1Rows.filter((r) => r.status === "resolved" && r.landed === false
-      && r.ffRounds === 1 && r.waitedOut === undefined && r.actor === "main");
+      && r.ffRounds === 1 && r.waitedOut === undefined && m1FromMain(r));
     if (m1DFired) check("(vii) M1: the ledger separates the three forms this section produced — one land (with its round count), one red retry gate, one denial — and never merges them into one row",
       m1Landed.length === 1 && m1RedGate.length === 1 && m1Denial.length === 1
         && m1Landed[0]?.event === "merge_verdict" && m1Landed[0]?.errorReason === undefined,

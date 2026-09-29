@@ -1903,7 +1903,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // whole-line comments stripped first: a claim about CODE must not be satisfied by prose
   const foundCode = foundSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
   check("founding window: the free slot opens src/founding.ts — client.ts keeps only the import and the call",
-    clientOnly.includes('import { closeFounding, openPicker } from "./founding";')
+    // a regex, not the import as a string: e2e-stage.sh scans this file's TEXT for relative from-clauses
+    // and would stage the probe's own anchor as an import of this suite (run 732ecc8718c5)
+    /import \{ closeFounding, openPicker \} from "\.\/founding";/.test(clientOnly)
     && /row\.onclick = \(\) => openPicker\(s\.id\)/.test(clientOnly)
     && foundCode.includes("export function openPicker(slotId: number)")
     && foundCode.includes("export function closeFounding()")

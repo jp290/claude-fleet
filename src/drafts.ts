@@ -34,3 +34,10 @@ export class DraftBook<A> {
     this.book.set(slot, d);
   }
 }
+
+export interface HistoryEntry { text: string; ts: number; source?: string }
+
+export function historySource(entry: Pick<HistoryEntry, "text" | "source">): "owner" | "fleet" | "unknown" {
+  if (entry.source === "owner" || entry.source === "fleet") return entry.source;
+  return entry.text.startsWith("[fleet") ? "fleet" : "unknown";
+}

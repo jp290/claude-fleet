@@ -15,7 +15,7 @@ import { Flakes } from "./flakes";
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
 import type { ModelEntry, ModelAvailability } from "../model-register";
-import { DraftBook } from "./drafts";
+import { DraftBook, historySource, type HistoryEntry } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { closeEntityCard, hideEntityCard, showEntityCard } from "./entcard";
 import { loadChatSizes, onChatSize, sizePanel, stepChatSizes } from "./chatsize";
@@ -9612,7 +9612,7 @@ $("autobtn").onclick = () => {
 // --- prompt history: composed sends recorded server-side per slot; recalled via the
 // 🕘 popover or ArrowUp/ArrowDown cycling in an (empty) compose box ---
 const hist = $("hist"), histList = $("histlist"), histTitle = $("histtitle");
-interface HistEntry { text: string; ts: number }
+type HistEntry = HistoryEntry;
 
 async function fetchHistory(slot: number): Promise<HistEntry[]> {
   const res = await api(`/api/slots/${slot}/history`);
@@ -9642,9 +9642,10 @@ let histAll = prefBool("fleet.histall");
 
 // one row per prompt; meta = timestamp, plus origin session in the directory view.
 // click loads the prompt into the compose box for editing — it never auto-sends
-function histRow(text: string, meta: string): HTMLElement {
+function histRow(text: string, meta: string, source: string | undefined): HTMLElement {
+  const origin = historySource({ text, source });
   const row = el("div", "histrow");
-  row.append(el("div", "histtext", text), el("span", "histts", meta));
+  row.append(el("div", "histtext", text), el("span", "histts", `${origin} · ${meta}`));
   const copy = el("span", "histcopy", "⧉");
   copy.title = "copy prompt";
   copy.onclick = (e) => {
@@ -9654,7 +9655,12 @@ function histRow(text: string, meta: string): HTMLElement {
     setTimeout(() => { copy.textContent = "⧉"; }, 800);
   };
   row.appendChild(copy);
+  row.title = origin === "owner" ? "Eigene Nachricht zum Bearbeiten laden"
+    : origin === "fleet" ? "Fleet-Zustellung; nur Kopieren, nicht ins Eingabefeld laden"
+    : "Herkunft unbekannt; nur Kopieren, nicht ins Eingabefeld laden";
   row.onclick = () => {
+    if (origin !== "owner") return;
+    cyc = null;
     ta.value = text;
     updateChips();
     closeHist();
@@ -9686,13 +9692,15 @@ async function renderHist() {
     if (!data.prompts.length) histList.appendChild(el("div", "histnone", "no prompts recorded yet"));
     for (const p of data.prompts) {
       const origin = p.label ?? (p.cwd ? baseName(p.cwd) : `slot ${p.slot}`);
-      histList.appendChild(histRow(p.text, `${origin} · ${fmtTs(p.ts)}`));
+      histList.appendChild(histRow(p.text, `${origin} · ${fmtTs(p.ts)}`,
+        p.text.startsWith("[fleet") ? "fleet" : p.source === "terminal" ? "owner"
+          : ["auto", "steward", "supervisor"].includes(p.source) ? "fleet" : p.source));
     }
   } else {
     const items = await fetchHistory(slot);
     histList.replaceChildren(tabs);
     if (!items.length) histList.appendChild(el("div", "histnone", "nothing sent to this session yet"));
-    for (const h of [...items].reverse()) histList.appendChild(histRow(h.text, fmtTs(h.ts)));
+    for (const h of [...items].reverse()) histList.appendChild(histRow(h.text, fmtTs(h.ts), h.source));
   }
 }
 
@@ -9709,9 +9717,10 @@ async function cycleHist(dir: number) {
   const slot = panes[focused]?.slot;
   if (!slot) return;
   if (!cyc || cyc.slot !== slot) {
-    const items = (await fetchHistory(slot)).map((h) => h.text);
-    if (!items.length) return;
-    cyc = { slot, items, idx: items.length, draft: ta.value };
+    const draft = ta.value;
+    const items = (await fetchHistory(slot)).filter((h) => historySource(h) === "owner").map((h) => h.text);
+    if (!items.length || panes[focused]?.slot !== slot || ta.value !== draft) return;
+    cyc = { slot, items, idx: items.length, draft };
   }
   const next = cyc.idx + dir;
   if (next < 0 || next > cyc.items.length) return;

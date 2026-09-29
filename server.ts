@@ -1,3 +1,4 @@
+import { historySource } from "./src/drafts";
 import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
 import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
@@ -10613,7 +10614,7 @@ async function resendSuccessionDebt(id: string): Promise<Response> {
       return json({ error: `brief still not delivered: ${e instanceof Error ? e.message : e} — the debt stays`, debt: id }, 409);
     }
     const sentAt = Date.now();
-    s.history = [...s.history, { text: debt.brief, ts: sentAt }].slice(-MAX_HISTORY);
+    s.history = [...s.history, { text: debt.brief, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(s);
     logPrompt(s, debt.brief, "auto", sentAt);
     successionDebts = successionDebts.filter((d) => d.id !== id);
@@ -11217,7 +11218,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
       return failed(e instanceof Error ? e.message : String(e));
     }
     const now = Date.now();
-    s.history = [...s.history, { text: brief, ts: now }].slice(-MAX_HISTORY);
+    s.history = [...s.history, { text: brief, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(s);
     logPrompt(s, brief, "auto", now);
     audit("lane_succession", s.id, `${ref.branch} session=${session} successions=${successions}`);
@@ -11448,7 +11449,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
         return await failed(`brief failed: ${e instanceof Error ? e.message : e}`);
       }
       const now = Date.now();
-      s.history = [...s.history, { text: brief, ts: now }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: brief, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, brief, "auto", now);
       if (orchCtx?.ok) await appendOrchestratorReceipt(s, orchCtx.value, brief, now);
@@ -11588,7 +11589,7 @@ function refuseClarification(c: ClarificationRequest, reason: string, at = Date.
     worker.awaiting = null;
     const line = `[fleet] clarification ${c.id} was refused: ${reason}. No reply will come from this request.`;
     void sendText(worker, line, true, { path: "clarification-reply", requireAgent: true }).then(() => {
-      worker.history = [...worker.history, { text: line, ts: Date.now() }].slice(-MAX_HISTORY);
+      worker.history = [...worker.history, { text: line, ts: Date.now(), source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(worker);
     }).catch((e: unknown) => logError("clarificationRefusalDelivery", e));
   }
@@ -11824,7 +11825,7 @@ async function notifyOrchestratorOfProgramLoss(key: string, programId: string, m
     });
     programEventNotified.add(key);
     const at = Date.now();
-    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(receiver);
     logPrompt(receiver, message, "auto", at, undefined, acceptance);
   } catch (e) {
@@ -12126,7 +12127,7 @@ async function tickOrphanReports(): Promise<void> {
       } });
     orphanReportNotified.add(report.id);
     const at = Date.now();
-    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(receiver);
     logPrompt(receiver, message, "auto", at, undefined, acceptance);
   } catch (e) {
@@ -12595,7 +12596,7 @@ async function replyClarification(s: Slot, id: string, body: Record<string, unkn
       status: "send-uncertain" }, 409);
   }
   const at = Date.now();
-  worker.history = [...worker.history, { text, ts: at }].slice(-MAX_HISTORY);
+  worker.history = [...worker.history, { text, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(worker);
   logPrompt(worker, text, "auto", at);
   request.status = "answered";
@@ -12820,7 +12821,7 @@ async function deliverFleetReportDecision(report: FleetReport): Promise<void> {
           await saveStateNow();
         } });
       const at = Date.now();
-      recipient.history = [...recipient.history, { text, ts: at }].slice(-MAX_HISTORY);
+      recipient.history = [...recipient.history, { text, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(recipient);
       logPrompt(recipient, text, "auto", at);
       stamp("delivered", recipient.sessionId !== report.worker.sessionId
@@ -15446,7 +15447,7 @@ async function hintAttentionOrchestrator(a: AttentionRequest, receiver: Slot): P
           throw new DeliveryCancelled(`attention ${a.id} changed before paste`);
       } });
     const at = Date.now();
-    receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+    receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(receiver);
     logPrompt(receiver, message, "auto", at, undefined, acceptance);
   } catch (e) {
@@ -15965,7 +15966,7 @@ async function tickAutos(): Promise<void> {
             recipient = current;
           } });
           const sentAt = Date.now();
-          recipient.history = [...recipient.history, { text: a.text, ts: sentAt }].slice(-MAX_HISTORY);
+          recipient.history = [...recipient.history, { text: a.text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(recipient);
           logPrompt(recipient, a.text, "auto", sentAt);
           a.lastRun = sentAt;
@@ -19867,7 +19868,7 @@ async function tickHarvest(): Promise<void> {
           if (!t || t.startsWith("<command-") || t.startsWith("<local-command")) continue;
           if (composed.some((c) => c.text === t.slice(0, 5000))) continue;
           const ts = (e.ts && Date.parse(e.ts)) || Date.now();
-          s.history = [...s.history, { text: t, ts }].slice(-MAX_HISTORY);
+          s.history = [...s.history, { text: t, ts, source: t.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
           logPrompt(s, t, "terminal", ts);
           dirty = true;
         }
@@ -21550,7 +21551,7 @@ async function tickAuditPing(): Promise<void> {
       // Await the marker: ordinary saveState is fire-and-forget, but this marker is what prevents
       // a new session after a deploy from receiving an already-delivered EVENT again.
       await saveStateNow();
-      s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, text, "auto", sentAt, undefined, acceptance);
       return; // at most ONE receiver, and only one audit event, per tick
@@ -21630,7 +21631,7 @@ async function tickFastProgramInbox(): Promise<void> {
           });
           fastInboxNotified.add(entry.id);
           const at = Date.now();
-          receiver.history = [...receiver.history, { text: message, ts: at }].slice(-MAX_HISTORY);
+          receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(receiver);
           logPrompt(receiver, message, "auto", at, undefined, acceptance);
         } catch (e) {
@@ -21704,7 +21705,7 @@ async function tickInboxNudge(): Promise<void> {
                 : acceptance === "not-observed"
                   ? { outcome: "not-accepted", at: sentAt, failure: "SendNotAccepted", reason: "acceptance not observed" }
                   : { outcome: "unobserved", at: sentAt, acceptance } } });
-          recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          recipient.history = [...recipient.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(recipient);
           logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
         } catch (e) {
@@ -21764,7 +21765,7 @@ async function tickMessageNudge(): Promise<void> {
             } });
           const sentAt = Date.now();
           messageNudgeTried.set(recipient.id, { key, lastAt: sentAt });
-          recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          recipient.history = [...recipient.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(recipient);
           logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
         } catch (e) {
@@ -21841,7 +21842,7 @@ async function tickBacklogNudge(): Promise<void> {
             const sentAt = Date.now();
             backlogNudgeTried.set(recipient.id, { session: backlogSessionKey(recipient), openKey, lastAt: sentAt,
               count: count + 1 });
-            recipient.history = [...recipient.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+            recipient.history = [...recipient.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
             saveHistory(recipient);
             logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
           } catch (e) {
@@ -22200,7 +22201,7 @@ async function tickMigrate(): Promise<void> {
             attempt.gaveUp = true;
             audit("migrate_gave_up", s.id, `gave up session=${attempt.sessionId} after ${attempt.nudges} delivered nudges`);
           }
-          s.history = [...s.history, { text, ts: sentAt }].slice(-MAX_HISTORY);
+          s.history = [...s.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(s);
           logPrompt(s, text, "auto", sentAt, undefined, acceptance);
         } catch (e) {
@@ -22318,7 +22319,7 @@ async function tickParkedSends(): Promise<void> {
       try {
         const { acceptance } = await sendText(s, p.text, p.submit, { path: "owner", requireAgent: true });
         const ts = Date.now();
-        s.history = [...s.history, { text: p.text, ts }].slice(-MAX_HISTORY);
+        s.history = [...s.history, { text: p.text, ts, source: p.text.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
         saveHistory(s);
         logPrompt(s, p.text, "owner", ts, p.sendId, acceptance === "unobservable" ? "unobserved" : "sent");
         settleParked(p, "delivered", "the composer was free and Fleet typed into it", acceptance);
@@ -22510,7 +22511,7 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
   }
   clearComposerHold(event.id, event.receiverSlot, "hold ended — delivered to the bound receiver occupant");
   const deliveredAt = Date.now();
-  receiver.history = [...receiver.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
+  receiver.history = [...receiver.history, { text, ts: deliveredAt, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(receiver);
   logPrompt(receiver, text, "auto", deliveredAt);
   event.status = "delivered";
@@ -22596,7 +22597,7 @@ async function deliverFleetEventBundle(s: Slot, events: FleetEvent[]): Promise<v
     return;
   }
   const deliveredAt = Date.now();
-  deliveredTo.history = [...deliveredTo.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
+  deliveredTo.history = [...deliveredTo.history, { text, ts: deliveredAt, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(deliveredTo);
   logPrompt(deliveredTo, text, "auto", deliveredAt);
   for (const event of events) {
@@ -22976,7 +22977,7 @@ async function tickWatches(): Promise<void> {
         continue;
       }
       const deliveredAt = Date.now();
-      s.history = [...s.history, { text: message, ts: deliveredAt }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: message, ts: deliveredAt, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       // source "auto", not a sixth vocabulary word: the prompt log's "auto" already means "the machine
       // typed this, unattended"; the audit trail below is where a watch is told apart.
@@ -30854,7 +30855,7 @@ async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
   // the alternative (omitting the brief) would leave a prompt the SERVER typed into a pane off the
   // one journal that records such things, which is the worse trade.
   const now = Date.now();
-  s.history = [...s.history, { text: prompt, ts: now }].slice(-MAX_HISTORY);
+  s.history = [...s.history, { text: prompt, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(s);
   logPrompt(s, prompt, "auto", now);
   audit("merge_wake_author", s.id, `${branch}: ${conflicted.length} conflict${conflicted.length === 1 ? "" : "s"}`);
@@ -32388,7 +32389,7 @@ async function deliverMergeVerdict(s: Slot, cwd: string, branch: string,
   // such things) is the worse trade, exactly as it was there. The coupling does not follow the
   // MAIN receiver anywhere: laneOwnerPrompts reads LANES, and a MAIN is not one.
   const now = Date.now();
-  target.history = [...target.history, { text, ts: now }].slice(-MAX_HISTORY);
+  target.history = [...target.history, { text, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(target);
   logPrompt(target, text, "auto", now, undefined, acceptance);
   await mark(true);
@@ -34618,7 +34619,7 @@ async function deliverOrchestratorSpawnCard(s: Slot): Promise<Record<string, unk
     return { delivered: false, reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
   }
   const at = Date.now();
-  s.history = [...s.history, { text: brief, ts: at }].slice(-MAX_HISTORY);
+  s.history = [...s.history, { text: brief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(s);
   logPrompt(s, brief, "auto", at);
   if (ctx.ok) await appendOrchestratorReceipt(s, ctx.value, brief, at);
@@ -34678,7 +34679,7 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
     snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
     briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
   });
-  s.history = [...s.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
+  s.history = [...s.history, { text: deliveredBrief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(s);
   logPrompt(s, deliveredBrief, "auto", at);
   await saveStateNow();
@@ -34770,7 +34771,7 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
         snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
-      s.history = [...s.history, { text: deliveredBrief, ts: sentAt }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: deliveredBrief, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, deliveredBrief, "auto", sentAt);
       // the pane's session id may have been learned during boot; the binding names the conversation
@@ -34893,7 +34894,7 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
         snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
-      free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
+      free.history = [...free.history, { text: deliveredBrief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
       await saveStateNow();
@@ -34985,7 +34986,7 @@ async function bindSupervisor(body: Record<string, unknown> | null): Promise<Res
     if (replaced)
       audit("supervisor_rebound", target.id,
         `replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
-    target.history = [...target.history, { text: delivered, ts: at }].slice(-MAX_HISTORY);
+    target.history = [...target.history, { text: delivered, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(target);
     logPrompt(target, delivered, "auto", at);
     await saveStateNow();
@@ -35476,7 +35477,7 @@ async function supervisorNudge(s: Slot, body: Record<string, unknown> | null): P
       receipt: { sendId: nudgeId, at, delivery: "uncertain", receiver } }, 409);
   }
   const ts = Date.now();
-  live.history = [...live.history, { text: delivered, ts }].slice(-MAX_HISTORY);
+  live.history = [...live.history, { text: delivered, ts, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(live);
   logPrompt(live, delivered, "supervisor", ts, nudgeId, acceptance === "unobservable" ? "unobserved" : "sent");
   audit("supervisor_nudge", receiver.slot, `${nudgeId} program:${program.id}`); // never the text
@@ -35775,7 +35776,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         receipt = false;
         audit("main_succession", s.id, `program ${program.id} receipt persistence failed: ${e instanceof Error ? e.message : e}`);
       }
-      s.history = [...s.history, { text: deliveredBrief, ts: sentAt }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: deliveredBrief, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, deliveredBrief, "auto", sentAt);
       // the pane's session id may have been learned during boot; the binding names the conversation
@@ -35996,7 +35997,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         audit("program_main_rebound", free.id, `${program.id} replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
       if (!sameSuccessionOccupant(free, candidateIdentity))
         return json({ error: "Program-MAIN slot changed after binding persistence" }, 409);
-      free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
+      free.history = [...free.history, { text: deliveredBrief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
       return json({ ok: true, slot: free.id, program: publicProgram(program), ...(replaced ? { replaced } : {}) });
@@ -38401,7 +38402,7 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
     return json({ error: e instanceof Error ? e.message : "send failed" }, 502);
   }
   const ts = Date.now();
-  s.history = [...s.history, { text: rendered.text, ts }].slice(-MAX_HISTORY);
+  s.history = [...s.history, { text: rendered.text, ts, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(s);
   logPrompt(s, rendered.text, "steward", ts);
   audit("steward_send", s.id, `${kind}:${ref}`);
@@ -42626,7 +42627,7 @@ Bun.serve<WSData>({
     if (req.method === "GET" && histMatch) {
       const s = slotFrom(histMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
-      return json({ history: s.history });
+      return json({ history: s.history.map((h) => ({ ...h, source: historySource(h) })) });
     }
     // the global prompt directory: every composed send ever, across slots and slot
     // lifetimes, straight from the append-only prompts.jsonl. Sorted by ts (newest
@@ -45618,7 +45619,7 @@ Bun.serve<WSData>({
           receipt: { sendId, at, delivery: "uncertain", ...(acceptance ? { acceptance } : {}), receiver } }, 409);
       }
       const ts = Date.now();
-      s.history = [...s.history, { text: body.text, ts }].slice(-MAX_HISTORY);
+      s.history = [...s.history, { text: body.text, ts, source: body.text.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, body.text, "owner", ts, sendId, acceptance === "unobservable" ? "unobserved" : "sent");
       // RECEIPT ANATOMY (ACP-25): `submitted` is gone because it only ever echoed the request flag.

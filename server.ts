@@ -4915,19 +4915,47 @@ function trackedSnapshotFor(repoRaw: string): TrackedSnapshot | null {
     return null;
   }
 }
+// The BASE half of the same fact: a row's tree is its effective base (Task.base, else the repo's
+// integration branch), and it is read per row per poll just as often (taskDigest, the start plan,
+// the land wave). So the REF resolves behind a stamp exactly like the index above: the loose ref
+// file and packed-refs in the common git dir (git replaces a ref by lock + rename, so a move or a
+// delete changes ino/mtime) plus the primary's HEAD file when no base is named. A hit costs stats
+// and no git process — three sync spawns per row measured 83 ms under load, which starved the
+// event loop. An unresolvable base caches as null behind the same stamp: unknown, never main.
 const taskBaseTreeCache = new Map<string, TrackedSnapshot>();
+const taskBaseRefCache = new Map<string, { stamp: string; commit: string | null }>();
+const taskBaseGitDirs = new Map<string, { gitDir: string; commonDir: string }>();
+const taskBaseFileStamp = (path: string): string => {
+  try { const s = statSync(path); return `${s.ino}:${s.mtimeMs}:${s.size}`; } catch { return "-"; }
+};
 function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapshot | null {
   const repo = repoCanon(repoRaw);
   const run = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args],
     { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  let dirs = taskBaseGitDirs.get(repo);
+  if (!dirs) {
+    const found = run("rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir");
+    const [gitDir, commonDir] = found.success ? found.stdout.toString().trim().split("\n") : [];
+    if (!gitDir || !commonDir) return null;
+    dirs = { gitDir, commonDir };
+    taskBaseGitDirs.set(repo, dirs);
+  }
   const current = requested ?? repoBases[repo] ?? (() => {
-    const branch = run("rev-parse", "--abbrev-ref", "HEAD");
-    return branch.success ? branch.stdout.toString().trim() : "";
+    try { return /^ref: refs\/heads\/(.+)$/.exec(readFileSync(resolve(dirs.gitDir, "HEAD"), "utf8").trim())?.[1] ?? ""; }
+    catch { return ""; }
   })();
-  if (!current || current === "HEAD" || !run("check-ref-format", "--branch", current).success) return null;
-  const ref = run("rev-parse", "--verify", "--quiet", `refs/heads/${current}^{commit}`);
-  if (!ref.success) return null;
-  const commit = ref.stdout.toString().trim();
+  if (!current) return null;
+  const stamp = `${taskBaseFileStamp(resolve(dirs.commonDir, "refs/heads", current))}\0${taskBaseFileStamp(resolve(dirs.commonDir, "packed-refs"))}`;
+  const refKey = `${repo}\0${current}`;
+  let resolved = taskBaseRefCache.get(refKey);
+  if (resolved?.stamp !== stamp) {
+    const ref = run("check-ref-format", "--branch", current).success
+      ? run("rev-parse", "--verify", "--quiet", `refs/heads/${current}^{commit}`) : null;
+    resolved = { stamp, commit: ref?.success ? ref.stdout.toString().trim() : null };
+    taskBaseRefCache.set(refKey, resolved);
+  }
+  const commit = resolved.commit;
+  if (!commit) return null;
   const key = `${repo}\0${commit}`;
   const cached = taskBaseTreeCache.get(key);
   if (cached) return cached;

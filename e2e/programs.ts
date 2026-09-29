@@ -4992,7 +4992,7 @@ export async function run(ctx: Ctx): Promise<void> {
   writeFileSync(b4OutcomeFile, readFileSync(b4OutcomeFile, "utf8").split("\n")
     .filter((line) => !line.includes('"branch":"fleet/b4-')).join("\n"), { mode: 0o600 });
   await restartSrv();
-  const orphanCompleteResult = await programPost(orphanProgram.id, "complete");
+  const orphanCompleteResult = await programPost(orphanProgram.id, "complete", { force: true });
   const orphanWithoutOrchestrator = await (await get("/api/sessions")).json() as { reportsAwaitingOwner?: number };
   check("Program orphan without Orchestrator: the undecided rows remain in reportsAwaitingOwner",
     orphanCompleteResult.ok && (orphanWithoutOrchestrator.reportsAwaitingOwner ?? 0) >= 2,

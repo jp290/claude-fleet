@@ -4406,9 +4406,12 @@ export async function run(): Promise<void> {
     // BREAKS IF: openFleetReport branches on programId presence rather than ACTIVE status.
     await stopSrv();
     const d1Inactive = JSON.parse(readFileSync(d1Path, "utf8")) as
-      { programs?: { id?: string; status?: string }[] };
+      { programs?: { id?: string; status?: string; completedAt?: number }[] };
     const inactiveProgram = d1Inactive.programs?.find((p) => p.id === d1ProgramId);
-    if (inactiveProgram) inactiveProgram.status = "complete";
+    if (inactiveProgram) {
+      inactiveProgram.status = "complete";
+      inactiveProgram.completedAt = Date.now();
+    }
     writeFileSync(d1Path, JSON.stringify(d1Inactive, null, 2), { mode: 0o600 });
     await restartSrv();
     const inactiveReport = await selfFleetReport(terminalTok,

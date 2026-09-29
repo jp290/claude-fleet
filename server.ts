@@ -5391,9 +5391,10 @@ async function observeTmuxSlots(): Promise<SlotEnumeration> {
     for (const line of listed.out.split("\n")) {
       if (!line) continue;
       const tab = line.indexOf("\t");
-      if (tab < 1) return { known: false, sessions: new Map(), detail: "tmux enumeration returned an unreadable row" };
+      const end = line.lastIndexOf("\t");
+      if (tab < 1 || end === tab) return { known: false, sessions: new Map(), detail: "tmux enumeration returned an unreadable row" };
       const name = line.slice(0, tab);
-      const cwd = line.slice(tab + 1);
+      const cwd = line.slice(tab + 1, end);
       if (name === ignored) continue;
       if (!isAbsolute(cwd)) {
         unknownSessions.add(name);
@@ -5404,13 +5405,14 @@ async function observeTmuxSlots(): Promise<SlotEnumeration> {
     return { known: true, sessions, unknownSessions, detail: unknownSessions.size
       ? `tmux sessions ${[...unknownSessions].join(", ")} returned no absolute pane path` : "successful enumeration" };
   };
-  const direct = await tmux("list-sessions", "-F", "#{session_name}\t#{pane_current_path}");
+  const format = "#{session_name}\t#{pane_current_path}\t#{session_id}";
+  const direct = await tmux("list-sessions", "-F", format);
   if (direct.code === 0) return readEnumeration(direct, null);
   const probe = `fleet-observe-${process.pid}`;
   const started = await tmuxNewSession("-d", "-s", probe, "-c", import.meta.dir, "sleep 30");
   if (started.code !== 0)
     return { known: false, sessions: new Map(), detail: `probe create exited ${started.code}: ${started.err || started.out}` };
-  const listed = await tmux("list-sessions", "-F", "#{session_name}\t#{pane_current_path}");
+  const listed = await tmux("list-sessions", "-F", format);
   const stopped = await tmux("kill-session", "-t", sessTarget(probe));
   if (listed.code !== 0 || stopped.code !== 0)
     return { known: false, sessions: new Map(),

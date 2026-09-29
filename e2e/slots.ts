@@ -450,7 +450,7 @@ export async function run(): Promise<void> {
     rmSync(fakeBin, { recursive: true, force: true });
     rmSync(marker, { force: true });
     mkdirSync(fakeBin, { recursive: true });
-    writeFileSync(fakeTmux, `#!/bin/sh\nif [ -e '${marker}' ]; then\n  case " $* " in\n    *" list-sessions "*) printf 'unreadable-row\\n'; exit 0 ;;\n  esac\nfi\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
+    writeFileSync(fakeTmux, `#!/bin/sh\nif [ -e '${marker}' ]; then\n  case " $* " in\n    *" list-sessions "*)\n      if [ "$(cat '${marker}')" = named ]; then\n        '${realTmux}' "$@"\n        printf 's3\\t\\t$99\\n'\n      else\n        printf 'unreadable-row\\n'\n      fi\n      exit 0 ;;\n  esac\nfi\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
     chmodSync(fakeTmux, 0o700);
     check("unknown-presence fixture: the real tmux binary and executable enumeration shim exist",
       realTmux.startsWith("/") && await exists(fakeTmux), JSON.stringify({ realTmux, fakeTmux }));
@@ -468,6 +468,13 @@ export async function run(): Promise<void> {
         refused.status === 503 && body.availability === "unknown"
           && body.error === `slot 3 pane availability is unknown: ${detail}`,
         `${refused.status} ${JSON.stringify(body)}`);
+      writeFileSync(marker, "named\n", { mode: 0o600 });
+      const named = await post("/api/slots/3/open", { cwd: "~" });
+      const namedBody = await named.json() as { error?: string; availability?: string };
+      check("a named slot without a pane path stays unknown, never absent, even on the last trimmed row",
+        named.status === 503 && namedBody.availability === "unknown"
+          && namedBody.error === "slot 3 pane availability is unknown: tmux sessions s3 returned no absolute pane path",
+        `${named.status} ${JSON.stringify(namedBody)}`);
     } finally {
       rmSync(marker, { force: true });
       await restartSrv();

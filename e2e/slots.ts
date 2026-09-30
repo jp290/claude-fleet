@@ -2041,6 +2041,30 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && foundCss.includes(":where(#shell-found button)"),
     "btn/renderList/openPicker in src/founding.ts");
 
+  try {
+    const focusCases = await runFoundingFocusDom(sourceRoot);
+    for (const result of focusCases) {
+      const atWidth = `${result.width}x${result.height}`;
+      check(`founding DOM ${atWidth}: packs default off, unrelated switch remains off`,
+        result.defaultOff && result.states.every(x => x.beta === "false"), JSON.stringify(result));
+      check(`founding DOM ${atWidth}: two native Enters toggle the same focused switch on then off`,
+        result.states.length === 2 && result.states.every(x => x.same && x.active === "BUTTON")
+        && result.states[0].checked === "true" && result.states[1].checked === "false", JSON.stringify(result.states));
+      check(`founding DOM ${atWidth} — should-reject: toggling never starts a session`,
+        result.states.every(x => x.requests === 0), JSON.stringify(result.states));
+      check(`founding DOM ${atWidth}: explicit Enter on Start sends one request with exactly the UI's packs`,
+        result.explicit.length === 1 && result.explicit[0].url === "/api/slots/2/open"
+        && result.explicit[0].body.cwd === "/fixture/repo"
+        && JSON.stringify(result.selected) === '["fixture-alpha"]'
+        && JSON.stringify(result.explicit[0].body.packs) === JSON.stringify(result.selected), JSON.stringify(result.explicit));
+      check(`founding DOM ${atWidth} — should-reject: Escape closes without a start request`,
+        result.cancel.closed && result.cancel.requests === 0, JSON.stringify(result.cancel));
+    }
+  } catch (error) {
+    check("founding focus DOM — PROBE: Chromium runs the isolated fixture", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the
   // sections and one fold. Nothing else in the suite would notice a re-sort
@@ -4542,4 +4566,138 @@ function sessionMarkChecks(): void {
     !/Math\.(random|sin|cos)\b/.test(code), (code.match(/Math\.(random|sin|cos)\b/g) ?? []).join(","));
   check("session mark: one project identity — client.ts takes projectHue from src/marks.ts and defines none",
     /import \{[^}]*\bprojectHue\b[^}]*\} from "\.\/marks"/.test(client) && !/function projectHue\b|PROJECT_HUES\s*=/.test(client));
+}
+
+// Real browser DOM with native keyboard input; only client API/spawn boundaries are stubbed.
+interface FoundingFocusDomResult {
+  width: number; height: number;
+  states: { same: boolean; active: string; checked: string; requests: number; beta: string }[];
+  defaultOff: boolean;
+  selected: string[];
+  explicit: { url: string; body: { cwd: string; packs?: string[] } }[];
+  cancel: { closed: boolean; requests: number };
+}
+
+export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string): Promise<FoundingFocusDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-founding-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const stub = `
+    export const fleet = [{ id: 1, cwd: '/fixture/repo', label: 'Fixture' }];
+    export const harnesses = [{ id: 'codex', default: true, supports: {}, effortLevels: [] }];
+    export const defaultModel = '', containerDefaults = null, SKEW_NOTE = 'fixture skew';
+    export const agentHarnesses = () => harnesses;
+    export const isMobile = () => matchMedia('(max-width: 700px)').matches;
+    export const el = (tag, cls, text) => { const e = document.createElement(tag); e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+    export const baseName = p => p.split('/').pop();
+    export const laneBandNames = () => new Map();
+    export const stacksOf = () => [];
+    export const fmtTs = () => '', modelNotice = () => '';
+    export const setDrawer = () => {}, loadHarnesses = async () => {};
+    export const api = async path => {
+      if (path.startsWith('/api/dirinfo?')) return Response.json({ git: true, branch: 'fixture', dirty: 0 });
+      if (path.startsWith('/api/founding-plan?')) return Response.json({ selected: [
+        { id: 'fixture-alpha', bytes: 1024, source: 'repo', useWhen: 'Erstes Test-Pack' },
+        { id: 'fixture-beta', bytes: 2048, source: 'repo', useWhen: 'Zweites Test-Pack' }
+      ], omitted: [{ id: 'fixture-omitted', reason: 'harness-unsupported' }] });
+      throw new Error('unexpected fixture API: ' + path);
+    };
+    export const post = async (url, body) => { window.fixtureRequests.push({ url, body }); return Response.json({}); };
+    export const startSession = async (cwd, label, onError, via) => post('/api/slots/' + via.slot + '/open', { cwd, ...via.body });
+    export const startWorktree = async () => { throw new Error('unexpected worktree spawn'); };
+    export const revealStartedSlot = async () => { throw new Error('unexpected slot reveal'); };
+  `;
+  const built = await Bun.build({
+    entrypoints: [resolve(sourceRoot, 'src/founding.ts')], target: 'browser', format: 'iife',
+    plugins: [{ name: 'founding-dom-boundary', setup(build) {
+      build.onResolve({ filter: /^\.\/client$/ }, () => ({ path: 'fixture-client', namespace: 'fixture' }));
+      build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: stub, loader: 'js' }));
+      build.onLoad({ filter: /\/src\/founding\.ts$/ }, args => ({
+        contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free').onclick = window.fixtureOpen; window.fixtureReady = true;`, loader: 'ts'
+      }));
+    } }]
+  });
+  if (!built.success) throw new Error(built.logs.join('\n'));
+  const css = [...readFileSync(resolve(sourceRoot, 'public/index.html'), 'utf8').matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
+  writeFileSync(resolve(scratch, 'fixture.html'), `<!doctype html><meta charset="utf-8"><style>${css}</style><button id="fixture-free">Freier Slot 2</button><script>window.fetch = () => { throw new Error('network forbidden in DOM fixture'); };</script><script>${await built.outputs[0].text()}</script>`);
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which('chromium') ?? Bun.which('chromium-browser') ?? Bun.which('google-chrome') ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error('DOM probe needs Chromium (FLEET_E2E_BROWSER): ' + executable); }
+  const browser = Bun.spawn([executable, '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${scratch}/profile`, 'about:blank'], { stdout: 'ignore', stderr: 'pipe' });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    const endpoint = await Promise.race([
+      (async () => { let log = ''; for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error('browser exited before CDP endpoint: ' + log); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error('browser CDP startup timeout')), 15000); })
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((resolve, reject) => { socket!.onopen = () => resolve(); socket!.onerror = () => reject(new Error('CDP connection failed')); });
+    let serial = 0, sessionId: string | undefined;
+    const pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
+    socket.onmessage = event => {
+      const msg = JSON.parse(String(event.data)) as { id: number; error?: unknown; result: Record<string, unknown> };
+      const waiting = pending.get(msg.id); if (!waiting) return;
+      pending.delete(msg.id);
+      if (msg.error) waiting.reject(new Error(JSON.stringify(msg.error))); else waiting.resolve(msg.result);
+    };
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((resolve, reject) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); reject(new Error('CDP timeout: ' + method)); }, 10000);
+      pending.set(id, { resolve: value => { clearTimeout(timeout); resolve(value); }, reject: error => { clearTimeout(timeout); reject(error); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const target = await send('Target.createTarget', { url: 'about:blank' });
+    const attached = await send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+    sessionId = String(attached.sessionId);
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
+      return (r.result as { value: T }).value;
+    };
+    const key = async (name: string) => {
+      const code = name === 'Enter' ? 13 : name === 'Tab' ? 9 : 27;
+      await send('Input.dispatchKeyEvent', { type: name === 'Enter' ? 'keyDown' : 'rawKeyDown', key: name, code: name, windowsVirtualKeyCode: code, ...(name === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name, windowsVirtualKeyCode: code });
+    };
+    const results: FoundingFocusDomResult[] = [];
+    for (const [width, height] of [[1200, 900], [390, 844]]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await send('Page.navigate', { url: `file://${scratch}/fixture.html` });
+      await evaluate(`new Promise((resolve, reject) => { const until = Date.now() + 5000; const ready = () => { if (window.fixtureReady) return resolve(true); if (Date.now() > until) return reject(new Error('fixture not ready')); requestAnimationFrame(ready); }; ready(); })`);
+      const open = async () => {
+        await evaluate(`document.querySelector('#fixture-free').click(); new Promise((resolve, reject) => { const until = Date.now() + 5000; const ready = () => { if (document.querySelectorAll('.fdpack').length === 2) { document.querySelector('.fdrow').click(); return resolve(true); } if (Date.now() > until) return reject(new Error('packs not ready')); requestAnimationFrame(ready); }; ready(); })`);
+        await evaluate(`document.querySelector('.fdtabs button').focus()`);
+        for (let i = 0; i < 12; i++) {
+          if (await evaluate(`document.activeElement === document.querySelector('.fdpack')`)) break;
+          await key('Tab');
+        }
+        await evaluate(`window.fixtureSwitch = document.querySelector('.fdpack'); if (document.activeElement !== window.fixtureSwitch) throw new Error('Tab did not reach pack switch');`);
+      };
+      const shot = async (stage: string) => {
+        if (!artifacts) return;
+        const png = await send('Page.captureScreenshot', { format: 'png' });
+        writeFileSync(resolve(artifacts, `${width}-${stage}.png`), Buffer.from(String(png.data), 'base64'));
+      };
+      await open(); await shot('before');
+      const defaultOff = await evaluate<boolean>(`document.querySelectorAll('.fdpack[aria-checked="false"]').length === 2 && window.fixtureRequests.length === 0`);
+      const states: FoundingFocusDomResult['states'] = [];
+      for (let i = 0; i < 2; i++) {
+        await key('Enter');
+        states.push(await evaluate<FoundingFocusDomResult['states'][number]>(`({ same: document.activeElement === window.fixtureSwitch, active: document.activeElement.tagName, checked: document.querySelector('.fdpack').getAttribute('aria-checked'), requests: window.fixtureRequests.length, beta: document.querySelectorAll('.fdpack')[1].getAttribute('aria-checked') })`));
+        await shot(`enter-${i + 1}`);
+      }
+      // Reset the fixture after a broken toggle sequence so explicit-start and cancel stay independently measurable.
+      await evaluate(`window.fixtureRequests = []; window.fixtureOpen()`); await open();
+      await key('Enter');
+      const selected = await evaluate<string[]>(`Array.from(document.querySelectorAll('.fdpack[aria-checked="true"] .fdpid'), e => e.textContent)`);
+      await evaluate(`document.querySelector('.fdgo').focus()`); await key('Enter');
+      const explicit = await evaluate<FoundingFocusDomResult['explicit']>(`window.fixtureRequests`);
+      await evaluate(`window.fixtureRequests = []`); await open();
+      await key('Enter'); await key('Enter'); await key('Escape'); await key('Escape');
+      const cancel = await evaluate<FoundingFocusDomResult['cancel']>(`({ closed: !document.querySelector('#shell-found'), requests: window.fixtureRequests.length })`);
+      results.push({ width, height, defaultOff, states, selected, explicit, cancel });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
 }

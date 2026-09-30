@@ -635,7 +635,13 @@ function renderDetail() {
           + " · Klick schaltet, ob das Pack beim Start zugestellt wird.";
         b.append(el("span", "fdsw"), el("span", "fdpid", p.id), el("span", "fdpuse", p.useWhen ?? ""),
           el("span", "fdpkb", kb(p.bytes)));
-        b.onclick = () => { if (s.packs.has(p.id)) s.packs.delete(p.id); else s.packs.add(p.id); renderDetail(); renderFoot(); };
+        b.onclick = () => {
+          if (s.packs.has(p.id)) s.packs.delete(p.id); else s.packs.add(p.id);
+          const checked = s.packs.has(p.id);
+          b.classList.toggle("on", checked);
+          b.setAttribute("aria-checked", String(checked));
+          renderFoot();
+        };
         sec.append(b);
       }
       if (locked && s.plan.selected.length)

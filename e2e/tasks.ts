@@ -12248,14 +12248,24 @@ export async function run(ctx: Ctx): Promise<void> {
           { file: "branch-only.ts", symbol: "branchOnly", startLine: 2, endLine: 3 }])
         && only?.card?.valid === true && JSON.stringify(only.card.surface.ranges) === JSON.stringify(only.surface?.ranges),
         JSON.stringify(only));
-      const sweptId = await create("branch", undefined,
-        `ZIEL: Basis-Symbol bearbeiten\nFLAECHE: ${file}#known\nDONE: Symbol ist bearbeitet\nVERIFY: bun e2e/pins.ts\nVERBOTEN: kein Dispatch`);
+      const sweepText = [
+        "ROLLE: codex/gpt-6.1-sol/high", "GROESSE: klein", `FLAECHE: ${file}#known`,
+        "DONE: Symbol ist bearbeitet", "VERIFY: bun e2e/pins.ts", "VERBOTEN: kein Dispatch",
+        "", "Basis-Symbol bearbeiten",
+      ].join("\n");
+      const sweepParsed = parseFormattedCard(sweepText);
+      check("(base-symbols) fixture: the complete deterministic header parses with its prose goal and exact symbol",
+        sweepParsed?.ziel === "Basis-Symbol bearbeiten"
+        && JSON.stringify(sweepParsed.surface?.symbols) === JSON.stringify([`${file}#known`]), JSON.stringify(sweepParsed));
+      const sweptId = await create("branch", undefined, sweepText);
       let swept: BaseRow | undefined;
+      let sweepTimedOut = false;
       await until(async () => { swept = await read(sweptId); return swept?.card?.model === "format"; },
         { timeoutMs: 20_000, stepMs: 100, what: "base-symbol formatted card sweep" })
-        .catch((e: unknown) => { if (!(e instanceof UntilTimeout)) throw e; });
+        .catch((e: unknown) => { if (!(e instanceof UntilTimeout)) throw e; sweepTimedOut = true; });
       check("(base-symbols) the card sweep uses the same explicit base coordinates as author validation and projection",
-        swept?.card?.valid === true && JSON.stringify(swept.card.surface.ranges) === wanted(4, 6), JSON.stringify(swept));
+        !sweepTimedOut && swept?.card?.model === "format" && swept.card.valid === true
+        && JSON.stringify(swept.card.surface.ranges) === wanted(4, 6), JSON.stringify({ sweepTimedOut, swept }));
 
       const source = readFileSync(`${ROOT}/server.ts`, "utf8");
       const cacheCode = source.slice(source.indexOf("const taskBaseTreeCache ="), source.indexOf("// WHY THE SURFACE IS STORED"));

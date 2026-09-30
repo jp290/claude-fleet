@@ -260,14 +260,28 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   stdout-Events `type:"error"`, ersatzweise die eines `item.completed` mit `item.type:"error"`,
   danach stderr und stdout. Fehlende strukturierte Fehler fallen auf stderr/stdout zurück.
 - Rückfall je Rolle: Nur der exakte Wert `claude` an `FLEET_WORKER_ROUTE_SUMMARY`,
-  `_COMMITMSG`, `_ENHANCE`, `_DIGEST`, `_REVIEW`, `_CLEANREVIEW`, `_REFINE` oder `_CARD`
+  `_COMMITMSG`, `_ENHANCE`, `_DIGEST`, `_REVIEW`, `_CLEANREVIEW`, `_REFINE`, `_CARD`,
+  `_MERGE` oder `_REPAIR`
   wählt den bisherigen Claude-Session-Pfad mit dessen unverändertem Toolprofil und Modell.
   Die Brief-Gegenlese teilt `_REFINE`. Fehlende, `codex-exec` und ungültige Werte wählen Codex;
   `FLEET_*_CMD` und Repo-Worker-Kommandos behalten Vorrang vor der Route.
   `FLEET_SUMMARY_MODEL` gilt für den Claude-Rückfall der allgemeinen Worker,
   `FLEET_CARD_MODEL`/`CARD_MODEL` für card und `FLEET_REFINE_MODEL`/`REFINE_MODEL` für refine
   samt Brief-Gegenlese. Diese Claude-Modellschlüssel überschreiben das Codex-Modell nicht.
-- `merge` und `repair` bleiben unverändert auf Claude mit `SUMMARY_MODEL`/`FLEET_SUMMARY_MODEL`.
+- `merge` und `repair` laufen ebenfalls über `codex exec` mit `MODEL_DEFAULTS.worker.id` und
+  Effort `medium`, aber mit `-s workspace-write` und `approval_policy="never"`. `cwd` ist die Lane;
+  `git rev-parse --absolute-git-dir` bestimmt deren private Git-Metadaten, `--git-common-dir` die
+  gemeinsame Basis. Zusätzliche `sandbox_workspace_write.writable_roots` sind bei einem verknüpften
+  Worktree nur dessen privates Git-Verzeichnis und `objects`, `refs`, `logs` unter der gemeinsamen
+  Basis: Index/HEAD/Rebase-Zustand sowie neue Commit-Objekte, Branch-Refs und Reflogs. Der gemeinsame
+  `.git`-Wurzelpfad mit den Metadaten anderer Worktrees wird nicht freigegeben. Bei einer Lane als
+  eigenständigem Klon ist das private Git-Verzeichnis zugleich die gemeinsame Basis.
+  Die Liste überschreibt zusätzliche konfigurierte Roots; `/tmp` und `$TMPDIR` sind explizit
+  ausgeschlossen, Sandbox-Netzwerkzugriff ist aus. `--ephemeral` bleibt auf beiden Routen gesetzt.
+  `FLEET_WORKER_ROUTE_MERGE=claude` bzw. `FLEET_WORKER_ROUTE_REPAIR=claude` stellt den bisherigen
+  Claude-Weg mit unverändertem `MERGE_TOOLS` und `SUMMARY_MODEL`/`FLEET_SUMMARY_MODEL` wieder her.
+  Wire/Server und Tests: apply (Route, Spawn und Resolver-Beobachtung); Client/reverse-state:
+  not-applicable (bestehende optionale `model`/`backend`-Felder, keine neue Session-Identität).
 - Modellregister (`model-register.ts#MODEL_REGISTER`): Sonnet 5.5 (`claude-sonnet-5-5[1m]`, `claude-sonnet-5-5`)
   ist `current`, Sonnet 5 `superseded` mit Nachfolger `claude-sonnet-5-5[1m]`; die Kurzformen `sonnet`,
   `sonnet 5.5` und `claude sonnet 5.5` lösen auf `claude-sonnet-5-5` auf. `MODEL_DEFAULTS.summary`

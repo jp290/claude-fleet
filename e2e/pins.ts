@@ -4409,28 +4409,47 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const codexRoutes = [...routesBody.matchAll(/^  (\w+): codexWorkerRoute\(process\.env\.(FLEET_WORKER_ROUTE_[A-Z]+)\),$/gm)]
     .map((m) => `${m[1]}:${m[2]}`).sort();
   const claudeRoutes = [...routesBody.matchAll(/^  (\w+): \{ route: "claude" \},$/gm)].map((m) => m[1]).sort();
-  pin("all reading workers own an explicit Claude rollback key",
+  pin("all workers own an explicit Claude rollback key",
     JSON.stringify(codexRoutes) === JSON.stringify([
       "card:FLEET_WORKER_ROUTE_CARD",
       "cleanReview:FLEET_WORKER_ROUTE_CLEANREVIEW",
       "commitMsg:FLEET_WORKER_ROUTE_COMMITMSG",
       "digest:FLEET_WORKER_ROUTE_DIGEST",
       "enhance:FLEET_WORKER_ROUTE_ENHANCE",
+      "merge:FLEET_WORKER_ROUTE_MERGE",
       "refine:FLEET_WORKER_ROUTE_REFINE",
+      "repair:FLEET_WORKER_ROUTE_REPAIR",
       "review:FLEET_WORKER_ROUTE_REVIEW",
       "summary:FLEET_WORKER_ROUTE_SUMMARY",
     ]), codexRoutes.join(" | ") || "no Codex routes parsed");
-  pin("merge and repair keep their unchanged Claude routes",
-    JSON.stringify(claudeRoutes) === JSON.stringify(["merge", "repair"]),
+  pin("no worker stays pinned to the Claude route",
+    claudeRoutes.length === 0,
     claudeRoutes.join(" | ") || "no Claude routes parsed");
   const routeStart = server.indexOf("const codexWorkerRoute =");
   const routeCode = server.slice(routeStart, routesStart).split("\n")
     .filter((l) => !l.trim().startsWith("//")).join("\n");
-  pin("reading workers use the register model with medium effort; only literal claude rolls back",
+  pin("workers use the register model with medium effort; only literal claude rolls back",
     routeStart > 0 && routeCode.includes('configured === "claude"')
       && routeCode.includes('? { route: "claude" }')
       && routeCode.includes(': { route: "codex-exec", model: MODEL_DEFAULTS.worker.id, effort: "medium" }')
       && !server.includes("gpt-5.3-codex-spark"), routeCode);
+  pin("only merge and repair can request Codex workspace-write; reading roles stay read-only",
+    cxCode.includes('const writes = opts.worker === "merge" || opts.worker === "repair";')
+      && cxCode.includes('"-s", writes ? "workspace-write" : "read-only"')
+      && cxCode.includes('sandboxArgs.push("-c", \'approval_policy="never"\'')
+      && cxCode.includes('sandbox_workspace_write.exclude_tmpdir_env_var=true')
+      && cxCode.includes('sandbox_workspace_write.exclude_slash_tmp=true')
+      && cxCode.includes('sandbox_workspace_write.network_access=false')
+      && !cxCode.includes("danger-full-access") && !cxCode.includes("bypass"),
+    "closed writer set, read-only default, no escalation or temporary-directory roots");
+  for (const worker of ["merge", "repair"]) {
+    const start = server.indexOf(`async function run${worker === "merge" ? "Merge" : "Repair"}(`);
+    const code = server.slice(start, server.indexOf("\n}\n", start)).split("\n")
+      .filter((l) => !l.trim().startsWith("//")).join("\n");
+    pin(`${worker} keeps the existing Claude MERGE_TOOLS profile and subprocess precedence`,
+      start > 0 && code.includes(`worker: "${worker}", cmd: MERGE_CMD, tools: MERGE_TOOLS`),
+      code.match(/worker: [^\n]+/)?.[0] ?? "worker call absent");
+  }
 
   // This file used to hold TWO spawn implementations: slotCmd/agentCmd (which the registry covers,
   // and which the sibling pin above states "names no harness" for the dispatcher) and

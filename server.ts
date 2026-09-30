@@ -19997,10 +19997,11 @@ function codexExecUsage(stdout: string): CodexExecUsage | "unknown" {
 }
 
 // The headless Codex transport is deliberately NOT a Harness adapter: it owns no tmux session,
-// no resumable identity and no host transcript. Its only authority is the fixed read-only sandbox
-// below, and its answer is the CLI's last-message file.
+// no resumable identity and no host transcript. Reading roles stay read-only; only merge/repair
+// may write their worktree and the Git directories needed for rebase/commit. The answer is the
+// CLI's last-message file.
 async function workerViaCodexExec(prompt: string, cwd: string,
-  opts: { model: string; effort: string; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
+  opts: { worker: WorkerName; model: string; effort: string; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
   const dir = await mkdtemp(`${tmpdir()}/fleet-codex-worker-`);
   const tmpOut = resolve(dir, "last-message.txt");
   const binOverride = process.env.FLEET_CODEX_EXEC_BIN;
@@ -20014,7 +20015,26 @@ async function workerViaCodexExec(prompt: string, cwd: string,
   let killer: ReturnType<typeof setTimeout> | null = null;
   let timedOut = false;
   try {
-    p = Bun.spawn([bin, "exec", "--ephemeral", "-s", "read-only", "--skip-git-repo-check",
+    const writes = opts.worker === "merge" || opts.worker === "repair";
+    const sandboxArgs: string[] = ["-s", writes ? "workspace-write" : "read-only"];
+    if (writes) {
+      const gd = await git(cwd, "rev-parse", "--absolute-git-dir");
+      const cd = await git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir");
+      if (gd.code !== 0 || cd.code !== 0 || !gd.out || !cd.out)
+        throw new Error("writing Codex worker cannot resolve its Git directories");
+      const gitDir = realpathSync(gd.out);
+      const commonDir = realpathSync(cd.out);
+      // The private directory holds index, HEAD and rebase state. Shared objects, refs and
+      // reflogs receive commits; the common .git root (including other worktrees) stays read-only.
+      const roots = gitDir === commonDir ? [gitDir]
+        : [gitDir, ...["objects", "refs", "logs"].map((d) => resolve(commonDir, d))];
+      sandboxArgs.push("-c", 'approval_policy="never"',
+        "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`,
+        "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+        "-c", "sandbox_workspace_write.network_access=false");
+    }
+    p = Bun.spawn([bin, "exec", "--ephemeral", ...sandboxArgs, "--skip-git-repo-check",
       "--color", "never", "--json", "-o", tmpOut, "-m", opts.model,
       "-c", `model_reasoning_effort="${opts.effort}"`, "-"], {
       cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe",
@@ -20230,8 +20250,8 @@ const WORKER_ROUTES = {
   review: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REVIEW),
   commitMsg: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_COMMITMSG),
   enhance: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_ENHANCE),
-  merge: { route: "claude" },
-  repair: { route: "claude" },
+  merge: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_MERGE),
+  repair: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REPAIR),
   cleanReview: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CLEANREVIEW),
   digest: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
   refine: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REFINE),
@@ -20256,10 +20276,10 @@ async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise
   } else {
     const route = workerRouteFor(spec.worker);
     if (route.route === "codex-exec") {
-      // ToolProfile is intentionally unused here: `-s read-only` plus `--ephemeral` is this
-      // transport's act-authority, and no Claude tool profile can widen or describe it.
+      // The Codex sandbox derives write authority from the closed worker name, independently
+      // of Claude's ToolProfile. Only merge and repair receive workspace-write.
       const result = await workerViaCodexExec(prompt, cwd, {
-        model: route.model, effort: route.effort, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
+        worker: spec.worker, model: route.model, effort: route.effort, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
       });
       text = result.text;
       observed = { model: route.model, backend: "codex-exec",
@@ -23978,11 +23998,8 @@ const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTo
 // `conflictedFiles` is a COUNT, not the list: the list is already on the note once (`conflicted`)
 // and is the SAME set for every round of one job, so a per-round copy would be the same bytes N
 // times over. The count is what makes a round's ms and status readable next to its difficulty.
-// `model` on an `error` row is the model that WOULD have run (SUMMARY_MODEL, or the FLEET_*_MODEL
-// override): both mutating workers are pinned to the claude route in WORKER_ROUTES and pass no
-// per-call model, so summaryViaSession's own `opts.model ?? SUMMARY_MODEL` resolves to exactly
-// this value. That is a derivation, not a guess — but it is the only field here not read back off
-// a completed run, and it is stated so nobody reads an error row as an observation.
+// `model`/`backend` on an `error` row describe the selected route, not a completed observation.
+// A subprocess override retains SUMMARY_MODEL; Claude rollback uses the same default as before.
 interface ResolverRun {
   worker: "merge" | "repair";
   model: string;
@@ -30750,12 +30767,10 @@ function scheduleMainGraphRebuild(repo: string, main: string): void {
 // substring — and renderContextAnchorBlock returns "" on an empty selection, so a foreign tree
 // (whose Fleet-owned anchors cannot resolve) simply gets nothing, with no special case here.
 //
-// `harness` is the literal "claude" and that is a fact, not a shortcut: this path runs over
-// WORKER_HARNESS.worker, whose command line starts `claude` whatever FLEET_CMD says. Passing a
-// foreign FLEET_CMD through would omit `land-mechanics` as `harness-unsupported` for a session
-// that is in fact Claude — the anchors would vanish for the wrong reason. `root` is the SOURCE
-// repository, never the lane worktree: a linked worktree has its own git toplevel, so classifying
-// `cwd` would call every lane foreign and empty the block on exactly the path that needs it.
+// The existing Claude anchor profile supplies the same landing pointers on both worker routes;
+// execution authority comes from the selected transport, never this advisory context profile.
+// `root` is the SOURCE repository, never the lane worktree: a linked worktree has its own git
+// toplevel, so classifying `cwd` would empty the block on exactly the path that needs it.
 // Manifest-declared packs deliberately do NOT reach this seam: a merge worker gets no receipt and
 // no named commit here, and an anchor nobody receipts at a stated HEAD is a pointer into no tree.
 // No receipt is written: context-receipts.jsonl rows are session-shaped (slot, branch, taskId) and
@@ -30807,7 +30822,9 @@ async function runMerge(cwd: string, root: string, branch: string, main: string,
   // machine, not the model's work, and folding them into `ms` would inflate every resolver run by
   // a cost no model paid.
   const anchored = `${prompt}${await landingAnchorBlock(root)}`;
-  let observed: WorkerRunObservation = { model: SUMMARY_MODEL };
+  const route = workerRouteFor("merge");
+  let observed: WorkerRunObservation = !MERGE_CMD && route.route === "codex-exec"
+    ? { model: route.model, backend: "codex-exec" } : { model: SUMMARY_MODEL };
   const startedAt = Date.now();
   const emit = (status: ResolverRun["status"]): void => onRun({ worker: "merge", model: observed.model,
     ...(observed.backend ? { backend: observed.backend } : {}),
@@ -30923,7 +30940,9 @@ async function runRepair(cwd: string, root: string, branch: string, main: string
   onRun: (r: ResolverRun) => void): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
   const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted, graphs });
   const anchored = `${prompt}${await landingAnchorBlock(root)}`;
-  let observed: WorkerRunObservation = { model: SUMMARY_MODEL };
+  const route = workerRouteFor("repair");
+  let observed: WorkerRunObservation = !MERGE_CMD && route.route === "codex-exec"
+    ? { model: route.model, backend: "codex-exec" } : { model: SUMMARY_MODEL };
   const startedAt = Date.now();
   const emit = (status: ResolverRun["status"]): void => onRun({ worker: "repair", model: observed.model,
     ...(observed.backend ? { backend: observed.backend } : {}),

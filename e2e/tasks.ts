@@ -9451,7 +9451,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(jt) setup: the worker's `claude` lookup resolves to the stand-in and nothing else",
       !!cat && resolved === `${trustBin}/claude`, `cat=${cat} resolved=${resolved}`);
     if (cat && resolved === `${trustBin}/claude`) {
-      await restartSrv({ FLEET_DISPATCH_REPO: REPO, PATH: trustPath });
+      await restartSrv({ FLEET_DISPATCH_REPO: REPO, FLEET_WORKER_ROUTE_REFINE: "claude", PATH: trustPath });
       const jtT = (await (await post("/api/tasks", { text: "trust probe: a worker in a never-trusted repo", queue: false, repo: REPO })).json()) as { task: { id: string; repo?: string } };
       const jtStart = Date.now();
       const jtR = await post(`/api/tasks/${jtT.task.id}/refine`, {});
@@ -9518,7 +9518,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(jb) setup: the worker's `claude` lookup resolves to the stand-in and nothing else",
       !!cat && resolved === `${bkBin}/claude`, `cat=${cat} resolved=${resolved}`);
     if (cat && resolved === `${bkBin}/claude`) {
-      await restartSrv({ FLEET_DISPATCH_REPO: REPO, PATH: bkPath });
+      await restartSrv({ FLEET_DISPATCH_REPO: REPO, FLEET_WORKER_ROUTE_REFINE: "claude", PATH: bkPath });
       const refineOnce = async (mode: "dark" | "lit"): Promise<{ id: string; took: number; note: string; pasted: string | null }> => {
         await Bun.write(bkMode, mode);
         rmSync(bkPasted, { force: true });

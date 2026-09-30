@@ -12254,9 +12254,12 @@ export async function run(ctx: Ctx): Promise<void> {
         "", "Basis-Symbol bearbeiten",
       ].join("\n");
       const sweepParsed = parseFormattedCard(sweepText);
+      const parsedSurface: unknown = sweepParsed?.surface;
+      const parsedSymbols = typeof parsedSurface === "object" && parsedSurface !== null && "symbols" in parsedSurface
+        ? parsedSurface.symbols : undefined;
       check("(base-symbols) fixture: the complete deterministic header parses with its prose goal and exact symbol",
         sweepParsed?.ziel === "Basis-Symbol bearbeiten"
-        && JSON.stringify(sweepParsed.surface?.symbols) === JSON.stringify([`${file}#known`]), JSON.stringify(sweepParsed));
+        && JSON.stringify(parsedSymbols) === JSON.stringify([`${file}#known`]), JSON.stringify(sweepParsed));
       const sweptId = await create("branch", undefined, sweepText);
       let swept: BaseRow | undefined;
       let sweepTimedOut = false;

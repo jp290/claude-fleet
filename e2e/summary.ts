@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { buildEnhancePrompt } from "../enhance-prompt";
 import { HARVEST_LINE_MAX_BYTES, HARVEST_TICK_BYTES, TRANSCRIPT_TAIL_READ_BYTES, harvestStep, readTranscriptTail,
   tailCutMark, transcriptTailText, type HarvestCursor, type HarvestDrop, type TailView } from "../server/transcript-read";
+import { MODEL_DEFAULTS } from "../model-register";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
 
@@ -236,9 +237,26 @@ export async function run(): Promise<void> {
     FLEET_COMMIT_CMD: "",
     FLEET_ENHANCE_CMD: "",
     FLEET_DIGEST_CMD: "",
+    FLEET_REVIEW_CMD: "",
+    FLEET_SUMMARY_MODEL: MODEL_DEFAULTS.summary.id,
     FLEET_CODEX_EXEC_BIN: fakeCodex,
     FLEET_CODEX_EXEC_TIMEOUT_MS: "1500",
   };
+  const originalCodex = readFileSync(fakeCodex, "utf8");
+  writeFileSync(fakeCodex, originalCodex.replace('  malformed)', `  review)
+    printf '%s' '{"findings":[],"notes":"codex review of the lane"}' > "$out"
+    ;;
+  event-error)
+    printf '%s\\n' 'rmcp::transport::worker AuthRequired for figma' >&2
+    printf '%s\\n' 'not JSON' '{"type":"item.completed","item":{"type":"error","message":"item error before terminal event"}}' '{"type":"error","message":"controlled model rejection from stdout"}'
+    exit 23
+    ;;
+  item-error)
+    printf '%s\\n' 'rmcp::transport::worker AuthRequired for figma' >&2
+    printf '%s\\n' '{"type":"item.completed","item":{"type":"error","message":"controlled item rejection from stdout"}}'
+    exit 23
+    ;;
+  malformed)`));
   const runs = (): number => {
     try { return readFileSync(runsFile, "utf8").split("\n").filter(Boolean).length; } catch { return 0; }
   };
@@ -264,7 +282,7 @@ export async function run(): Promise<void> {
       cached?: boolean; raw?: boolean };
     check("codex summary parses the -o last message and exposes its actual backend/model/observed usage",
       cx1res.ok && cx1.summary === "codex summary of the session" && cx1.raw === false
-      && cx1.model === "gpt-5.3-codex-spark" && cx1.backend === "codex-exec"
+      && cx1.model === MODEL_DEFAULTS.worker.id && cx1.backend === "codex-exec"
       && cx1.usage?.input === 17 && cx1.usage?.output === 5,
       JSON.stringify(cx1).slice(0, 240));
 
@@ -274,7 +292,7 @@ export async function run(): Promise<void> {
       return at >= 0 && argv[at + 1] === value && argv.lastIndexOf(flag) === at;
     };
     check("codex summary argv pins the exact model, read-only sandbox and ephemeral headless protocol",
-      argv[0] === "exec" && pair("-m", "gpt-5.3-codex-spark") && pair("-s", "read-only")
+      argv[0] === "exec" && pair("-m", MODEL_DEFAULTS.worker.id) && pair("-c", 'model_reasoning_effort="medium"') && pair("-s", "read-only")
       && argv.includes("--ephemeral") && argv.includes("--skip-git-repo-check")
       && pair("--color", "never") && argv.includes("--json") && argv.includes("-o")
       && argv[argv.length - 1] === "-" && !argv.some((a) => a.startsWith("--dangerously")), argv.join(" "));
@@ -297,8 +315,23 @@ export async function run(): Promise<void> {
     const unknown = (await unknownRes.json()) as { summary?: string; model?: string; backend?: string; usage?: unknown };
     check("an invalid summary route fails toward Codex, while unobserved usage stays absent (never estimated)",
       unknownRes.ok && unknown.summary === "codex summary without usage"
-      && unknown.model === "gpt-5.3-codex-spark" && unknown.backend === "codex-exec"
+      && unknown.model === MODEL_DEFAULTS.worker.id && unknown.backend === "codex-exec"
       && unknown.usage === undefined, JSON.stringify(unknown));
+
+    for (const [mode, message] of [
+      ["event-error", "controlled model rejection from stdout"],
+      ["item-error", "controlled item rejection from stdout"],
+    ] as const) {
+      await setMode(mode);
+      await restartSrv(codexEnv);
+      const errorRes = await post("/api/slots/1/summary", {});
+      const error = (await errorRes.json()) as { error?: string };
+      check(`codex ${mode} puts the JSON rejection before unrelated stderr`,
+        errorRes.status === 500
+        && error.error?.startsWith(`worker via codex exec exited 23: ${message}\nrmcp::transport::worker AuthRequired for figma`) === true,
+        `${errorRes.status} ${error.error ?? ""}`);
+      check(`codex worker removes its fresh tmp directory after ${mode}`, tmpGone());
+    }
 
     await setMode("nonzero");
     await restartSrv(codexEnv);
@@ -381,8 +414,9 @@ export async function run(): Promise<void> {
       check("Codex enhance preserves its wrapped-JSON fallback and exact response contract",
         enh.brief?.text === "codex enhanced prompt. own your work! /sharpen3" && enh.brief.edited === false
         && runs() === beforeEnhance + 1, `${JSON.stringify(enh)} codexRuns=${runs()}/${beforeEnhance}`);
-      check("Codex enhance pins Spark/read-only/ephemeral and receives the complete marked prompt only on stdin",
-        enhanceArgv[enhanceArgv.indexOf("-m") + 1] === "gpt-5.3-codex-spark"
+      check("Codex enhance pins the register model/medium/read-only/ephemeral and receives the complete marked prompt only on stdin",
+        enhanceArgv[enhanceArgv.indexOf("-m") + 1] === MODEL_DEFAULTS.worker.id
+        && enhanceArgv[enhanceArgv.indexOf("-c") + 1] === 'model_reasoning_effort="medium"'
         && enhanceArgv[enhanceArgv.indexOf("-s") + 1] === "read-only" && enhanceArgv.includes("--ephemeral")
         && enhancePrompt === buildEnhancePrompt(enhanceDraft, facts)
         && enhancePrompt.includes(WORKER_CONTRACTS.enhance.mark)
@@ -448,8 +482,9 @@ export async function run(): Promise<void> {
           check("Codex commitMsg preserves sanitizeCommitMsg and the caller's commit response contract",
             commitRes.ok && committed.committed === true && committed.subject === "feat(worker): codex spark commit message"
             && committed.messageFallback === undefined, `${commitRes.status} ${JSON.stringify(committed)}`);
-          check("Codex commitMsg pins Spark/read-only/ephemeral and receives its complete marked diff prompt only on stdin",
-            commitArgv[commitArgv.indexOf("-m") + 1] === "gpt-5.3-codex-spark"
+          check("Codex commitMsg pins the register model/medium/read-only/ephemeral and receives its complete marked diff prompt only on stdin",
+            commitArgv[commitArgv.indexOf("-m") + 1] === MODEL_DEFAULTS.worker.id
+            && commitArgv[commitArgv.indexOf("-c") + 1] === 'model_reasoning_effort="medium"'
             && commitArgv[commitArgv.indexOf("-s") + 1] === "read-only" && commitArgv.includes("--ephemeral")
             && commitPrompt.includes(WORKER_CONTRACTS.commitMsg.mark)
             && commitPrompt.includes("## shortstat") && commitPrompt.includes("## per-file stat")
@@ -457,6 +492,29 @@ export async function run(): Promise<void> {
             && !commitArgv.some((a) => a.includes(WORKER_CONTRACTS.commitMsg.mark)) && await noSumSession(),
             `argv=${commitArgv.join(" ")} bytes=${Buffer.byteLength(commitPrompt)}`);
           check("codex worker removes its fresh tmp directory after commitMsg success", tmpGone());
+
+          await setMode("review");
+          const beforeReview = runs();
+          const reviewRes = await post("/api/slots/5/review", {});
+          const review = (await reviewRes.json()) as { findings?: unknown[]; notes?: string; raw?: boolean; model?: string };
+          const reviewArgv = latestArgv();
+          const reviewPrompt = readFileSync(`${ROOT}/codex-prompt`, "utf8");
+          check("previously Claude-routed review defaults to Codex with the register model and medium effort",
+            reviewRes.ok && review.raw === false && review.findings?.length === 0
+            && review.notes === "codex review of the lane" && review.model === MODEL_DEFAULTS.worker.id && runs() === beforeReview + 1
+            && reviewArgv[0] === "exec" && reviewArgv[reviewArgv.indexOf("-m") + 1] === MODEL_DEFAULTS.worker.id
+            && reviewArgv[reviewArgv.indexOf("-c") + 1] === 'model_reasoning_effort="medium"'
+            && reviewArgv[reviewArgv.indexOf("-s") + 1] === "read-only"
+            && reviewArgv.includes("--ephemeral") && reviewPrompt.includes(WORKER_CONTRACTS.review.mark)
+            && await noSumSession(), `${reviewRes.status} ${JSON.stringify(review)} argv=${reviewArgv.join(" ")}`);
+          const beforeReviewRollback = runs();
+          await restartSrv({ ...codexEnv, FLEET_WORKER_ROUTE_REVIEW: "claude", FLEET_WORKER_HARNESS: "codex" });
+          const reviewBackRes = await post("/api/slots/5/review", {});
+          const reviewBack = (await reviewBackRes.json()) as { error?: string };
+          check("FLEET_WORKER_ROUTE_REVIEW=claude restores the old session route without Codex fallback",
+            reviewBackRes.status === 500 && reviewBack.error?.includes('harness "codex" cannot host a worker session') === true
+            && runs() === beforeReviewRollback, `${reviewBackRes.status} ${JSON.stringify(reviewBack)}`);
+          await restartSrv(codexEnv);
 
           await setMode("malformed");
           await Bun.write(`${commitCwd}/codex-worker-probe.txt`, "codex commit probe one\nmalformed answer\n");
@@ -513,9 +571,10 @@ export async function run(): Promise<void> {
     const back = (await backRes.json()) as { summary?: string; model?: string; backend?: string; usage?: unknown };
     check("FLEET_SUMMARY_CMD remains first and preserves the old summary response defaults",
       backRes.ok && back.summary === "fake summary of the session" && back.backend === undefined
-      && back.usage === undefined && back.model !== "gpt-5.3-codex-spark" && runs() === beforeSummaryRollback,
+      && back.usage === undefined && back.model !== MODEL_DEFAULTS.worker.id && runs() === beforeSummaryRollback,
       `${JSON.stringify(back)} codexRuns=${runs()}/${beforeSummaryRollback}`);
   } finally {
+    writeFileSync(fakeCodex, originalCodex);
     // The wrapper's initial srv command prepends ROOT solely so the later Watch family's fake
     // `pi` is observable. Our new early restarts would otherwise be the first ones to drop that
     // prerequisite. PATH_EXPORT is frozen from the SERVER process env at boot, so this must be an

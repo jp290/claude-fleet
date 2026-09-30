@@ -250,17 +250,28 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   `gpt-6.1-sol`. Die Aliase `sol`, `sol 6.1` und `gpt-6.1 sol` folgen dem Worker-Default.
   Das angezeigte Kontextfenster von Sol 6.1 ist 258 400 Tokens, gemessen als `model_context_window`
   im Rollout einer gpt-6.1-sol-Session vom 2026-09-29.
-- Modell-Tiers: `DEFAULT_MODEL` (`server.ts`, override `FLEET_MODEL`) = Sessions/Lanes ohne eigenen Pin;
-  `SUMMARY_MODEL` (override `FLEET_SUMMARY_MODEL`) = alle Wegwerf-Worker (summarize, Commit-Msg, enhance,
-  Merge-Resolver, ② review, digest). Beide werden gegen `MODEL_RE` validiert.
+- Modell-Tiers: `DEFAULT_MODEL` (`server.ts`, override `FLEET_MODEL`) bleibt der Default für
+  Sessions/Lanes ohne eigenen Pin. Die lesenden Wegwerf-Worker `summary`, `commitMsg`, `enhance`,
+  `digest`, `review`, `cleanReview`, `refine`, Brief-Gegenlese und `card` laufen standardmäßig über
+  `codex exec` mit `MODEL_DEFAULTS.worker.id` und explizitem Effort `medium`
+  (`-c model_reasoning_effort="medium"`), unabhängig vom Slot-Effort `high` des Registers.
+  Der Transport bleibt `--ephemeral -s read-only --json -o <last-message>`; stdout liefert
+  Beobachtungen, die Datei die Antwort. Bei Exit ungleich 0 steht zuerst die `message` des
+  stdout-Events `type:"error"`, ersatzweise die eines `item.completed` mit `item.type:"error"`,
+  danach stderr und stdout. Fehlende strukturierte Fehler fallen auf stderr/stdout zurück.
+- Rückfall je Rolle: Nur der exakte Wert `claude` an `FLEET_WORKER_ROUTE_SUMMARY`,
+  `_COMMITMSG`, `_ENHANCE`, `_DIGEST`, `_REVIEW`, `_CLEANREVIEW`, `_REFINE` oder `_CARD`
+  wählt den bisherigen Claude-Session-Pfad mit dessen unverändertem Toolprofil und Modell.
+  Die Brief-Gegenlese teilt `_REFINE`. Fehlende, `codex-exec` und ungültige Werte wählen Codex;
+  `FLEET_*_CMD` und Repo-Worker-Kommandos behalten Vorrang vor der Route.
+  `FLEET_SUMMARY_MODEL` gilt für den Claude-Rückfall der allgemeinen Worker,
+  `FLEET_CARD_MODEL`/`CARD_MODEL` für card und `FLEET_REFINE_MODEL`/`REFINE_MODEL` für refine
+  samt Brief-Gegenlese. Diese Claude-Modellschlüssel überschreiben das Codex-Modell nicht.
+- `merge` und `repair` bleiben unverändert auf Claude mit `SUMMARY_MODEL`/`FLEET_SUMMARY_MODEL`.
 - Modellregister (`model-register.ts#MODEL_REGISTER`): Sonnet 5.5 (`claude-sonnet-5-5[1m]`, `claude-sonnet-5-5`)
   ist `current`, Sonnet 5 `superseded` mit Nachfolger `claude-sonnet-5-5[1m]`; die Kurzformen `sonnet`,
-  `sonnet 5.5` und `claude sonnet 5.5` loesen auf `claude-sonnet-5-5` auf, `sonnet 5` bleibt lesbar und
-  loest auf die abgeloeste Id auf. `MODEL_DEFAULTS.summary` (Fallback von `SUMMARY_MODEL`, wenn
-  `FLEET_SUMMARY_MODEL` fehlt) ist `claude-sonnet-5-5[1m]`. Der Live-Wert bleibt Opus 5.5: dasselbe
-  `FLEET_SUMMARY_MODEL` treibt `server.ts#runMerge` und `server.ts#runRepair` (Land-Pfad), und ein
-  Wechsel dort waere eine eigene Entscheidung; `FLEET_CARD_MODEL` und `FLEET_REFINE_MODEL` stehen seit
-  2026-09-28 in `.env` auf `claude-sonnet-5-5[1m]`.
+  `sonnet 5.5` und `claude sonnet 5.5` lösen auf `claude-sonnet-5-5` auf. `MODEL_DEFAULTS.summary`
+  ist der Claude-Fallback von `SUMMARY_MODEL`, wenn `FLEET_SUMMARY_MODEL` fehlt.
 - Ein lebender Slot wechselt sein Modell/Effort im DATENSATZ über `POST /api/slots/:id/model` (Owner,
   kein Respawn; `docs/self-api.md` §model) — Heal, `↻ restart` und Nachfolge spawnen danach damit. Die
   Nachfolge (`POST /api/self/succeed`) nimmt dasselbe Paar optional als Override. Beides wird nach der

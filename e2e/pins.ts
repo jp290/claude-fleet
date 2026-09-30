@@ -4406,28 +4406,31 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 
   const routesStart = server.indexOf("const WORKER_ROUTES = {");
   const routesBody = routesStart < 0 ? "" : server.slice(routesStart, server.indexOf("} satisfies Record<WorkerName, WorkerRouteConfig>;", routesStart));
-  const sparkRoutes = [...routesBody.matchAll(/^  (\w+): codexSparkRoute\(process\.env\.(FLEET_WORKER_ROUTE_[A-Z]+)\),$/gm)]
+  const codexRoutes = [...routesBody.matchAll(/^  (\w+): codexWorkerRoute\(process\.env\.(FLEET_WORKER_ROUTE_[A-Z]+)\),$/gm)]
     .map((m) => `${m[1]}:${m[2]}`).sort();
   const claudeRoutes = [...routesBody.matchAll(/^  (\w+): \{ route: "claude" \},$/gm)].map((m) => m[1]).sort();
-  pin("the complete worker route table sends only the four migrated workers to their own Spark rollback keys",
-    JSON.stringify(sparkRoutes) === JSON.stringify([
+  pin("all reading workers own an explicit Claude rollback key",
+    JSON.stringify(codexRoutes) === JSON.stringify([
+      "card:FLEET_WORKER_ROUTE_CARD",
+      "cleanReview:FLEET_WORKER_ROUTE_CLEANREVIEW",
       "commitMsg:FLEET_WORKER_ROUTE_COMMITMSG",
       "digest:FLEET_WORKER_ROUTE_DIGEST",
       "enhance:FLEET_WORKER_ROUTE_ENHANCE",
+      "refine:FLEET_WORKER_ROUTE_REFINE",
+      "review:FLEET_WORKER_ROUTE_REVIEW",
       "summary:FLEET_WORKER_ROUTE_SUMMARY",
-    ]), sparkRoutes.join(" | ") || "no Spark routes parsed");
-  // `card` joined the Claude side in 2026-09 and is NOT an unmigrated straggler: it is the one
-  // worker whose model is chosen at the call site (CARD_MODEL, a Haiku), and the codex-exec route
-  // cannot express a per-call model. Named here so the six read as two different reasons.
-  pin("the complete worker route table leaves the five unmigrated workers, plus the per-call card, on Claude",
-    JSON.stringify(claudeRoutes) === JSON.stringify([
-      "card", "cleanReview", "merge", "refine", "repair", "review",
-    ]), claudeRoutes.join(" | ") || "no Claude routes parsed");
-  pin("all migrated worker routes share the one exact Codex Spark model value",
-    /const CODEX_SPARK_MODEL = "gpt-5\.3-codex-spark";/.test(server)
-      && /\{ route: "codex-exec", model: CODEX_SPARK_MODEL \}/.test(server)
-      && !server.includes("CODEX_SUMMARY_MODEL"),
-    server.match(/const CODEX_[A-Z_]+_MODEL = "[^"]+";/g)?.join(" | ") ?? "Spark model constant absent");
+    ]), codexRoutes.join(" | ") || "no Codex routes parsed");
+  pin("merge and repair keep their unchanged Claude routes",
+    JSON.stringify(claudeRoutes) === JSON.stringify(["merge", "repair"]),
+    claudeRoutes.join(" | ") || "no Claude routes parsed");
+  const routeStart = server.indexOf("const codexWorkerRoute =");
+  const routeCode = server.slice(routeStart, routesStart).split("\n")
+    .filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("reading workers use the register model with medium effort; only literal claude rolls back",
+    routeStart > 0 && routeCode.includes('configured === "claude"')
+      && routeCode.includes('? { route: "claude" }')
+      && routeCode.includes(': { route: "codex-exec", model: MODEL_DEFAULTS.worker.id, effort: "medium" }')
+      && !server.includes("gpt-5.3-codex-spark"), routeCode);
 
   // This file used to hold TWO spawn implementations: slotCmd/agentCmd (which the registry covers,
   // and which the sibling pin above states "names no harness" for the dispatcher) and

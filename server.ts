@@ -17893,9 +17893,11 @@ function normRefine(r: TaskRefine | undefined): TaskRefine | undefined {
 // retry loop — the owner clicks again if they want another try.
 async function runRefineJob(t: Task, repo: string): Promise<void> {
   try {
-    const out = await runWorker({ worker: "refine", cmd: REFINE_CMD, tools: REVIEW_TOOLS, model: REFINE_MODEL },
+    let model = REFINE_MODEL;
+    const out = await runWorker({ worker: "refine", cmd: REFINE_CMD, tools: REVIEW_TOOLS, model: REFINE_MODEL,
+      observe: (run) => { model = run.model; } },
       buildRefinePrompt(repo, t.text, MAX_REFINE_CHILDREN), repo);
-    t.refine = { at: Date.now(), model: REFINE_MODEL, proposal: parseRefineAnswer(out) };
+    t.refine = { at: Date.now(), model, proposal: parseRefineAnswer(out) };
     // clear ONLY a previous refine failure — the note is a shared display line (the dispatcher
     // writes "lane fleet/…" and its waiting reasons there), and a compile that succeeded while
     // the row was being started elsewhere must not wipe what that other path put on it
@@ -17943,8 +17945,10 @@ function briefReviewKick(t: Task): void {
   if (!briefReviewEligible(size)) return;
   const arm = briefReviewArm(t.id);
   const repo = resolve(expandCwd(t.repo ?? DISPATCH_REPO));
+  const route = workerRouteFor("refine");
+  const model = !BRIEF_REVIEW_CMD && route.route === "codex-exec" ? route.model : REFINE_MODEL;
   t.briefReview = { arm, at: Date.now(), size,
-    ...(arm === "reviewed" ? { state: "running" as const, model: REFINE_MODEL } : {}) };
+    ...(arm === "reviewed" ? { state: "running" as const, model } : {}) };
   audit("task_brief_review", undefined, `${t.id} arm=${arm} size=${size}`);
   saveState();
   if (arm !== "reviewed") return;
@@ -19996,7 +20000,7 @@ function codexExecUsage(stdout: string): CodexExecUsage | "unknown" {
 // no resumable identity and no host transcript. Its only authority is the fixed read-only sandbox
 // below, and its answer is the CLI's last-message file.
 async function workerViaCodexExec(prompt: string, cwd: string,
-  opts: { model: string; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
+  opts: { model: string; effort: string; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
   const dir = await mkdtemp(`${tmpdir()}/fleet-codex-worker-`);
   const tmpOut = resolve(dir, "last-message.txt");
   const binOverride = process.env.FLEET_CODEX_EXEC_BIN;
@@ -20011,7 +20015,8 @@ async function workerViaCodexExec(prompt: string, cwd: string,
   let timedOut = false;
   try {
     p = Bun.spawn([bin, "exec", "--ephemeral", "-s", "read-only", "--skip-git-repo-check",
-      "--color", "never", "--json", "-o", tmpOut, "-m", opts.model, "-"], {
+      "--color", "never", "--json", "-o", tmpOut, "-m", opts.model,
+      "-c", `model_reasoning_effort="${opts.effort}"`, "-"], {
       cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe",
     });
     const outP = new Response(p.stdout).text();
@@ -20034,7 +20039,22 @@ async function workerViaCodexExec(prompt: string, cwd: string,
     const [out, err] = await Promise.all([outP, errP]);
     if (timedOut) throw new Error(`worker via codex exec timed out after ${timeoutMs}ms`);
     if (code !== 0) {
-      const excerpt = [err, out].filter(Boolean).join("\n").slice(0, 300);
+      let eventMessage: string | undefined;
+      let itemMessage: string | undefined;
+      for (const line of out.split("\n")) {
+        try {
+          const event: unknown = JSON.parse(line);
+          if (!event || typeof event !== "object") continue;
+          const e = event as { type?: unknown; message?: unknown; item?: { type?: unknown; message?: unknown } };
+          if (e.type === "error" && typeof e.message === "string" && e.message.trim()) {
+            eventMessage = e.message;
+            break;
+          }
+          if (e.type === "item.completed" && e.item?.type === "error"
+              && typeof e.item.message === "string" && e.item.message.trim()) itemMessage ??= e.item.message;
+        } catch { /* a non-JSON log line carries no structured error */ }
+      }
+      const excerpt = [eventMessage ?? itemMessage, err, out].filter(Boolean).join("\n").slice(0, 300);
       throw new Error(`worker via codex exec exited ${code}: ${excerpt}`);
     }
     if (stdinError) throw new Error(`worker via codex exec failed to write prompt: ${String(stdinError).slice(0, 300)}`);
@@ -20194,32 +20214,28 @@ interface WorkerSpec {
   model?: string;          // omitted → SUMMARY_MODEL; MODEL_RE-validated at the const it comes from
   observe?: (run: WorkerRunObservation) => void; // additive response facts; only summary exposes them
 }
-type WorkerRouteConfig = { route: "claude" } | { route: "codex-exec"; model: string };
+type WorkerRouteConfig = { route: "claude" } | { route: "codex-exec"; model: string; effort: string };
 interface WorkerRunObservation {
   model: string;
   backend?: "codex-exec";
   usage?: CodexExecUsage;
 }
-const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
 // Each migrated worker owns one explicit rollback key. Absence, codex-exec, and invalid values
 // all fail toward the cheaper default; only the literal `claude` can authorize Claude spend.
-const codexSparkRoute = (configured: string | undefined): WorkerRouteConfig => configured === "claude"
+const codexWorkerRoute = (configured: string | undefined): WorkerRouteConfig => configured === "claude"
   ? { route: "claude" }
-  : { route: "codex-exec", model: CODEX_SPARK_MODEL };
+  : { route: "codex-exec", model: MODEL_DEFAULTS.worker.id, effort: "medium" };
 const WORKER_ROUTES = {
-  summary: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_SUMMARY),
-  review: { route: "claude" },
-  commitMsg: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_COMMITMSG),
-  enhance: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_ENHANCE),
+  summary: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_SUMMARY),
+  review: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REVIEW),
+  commitMsg: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_COMMITMSG),
+  enhance: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_ENHANCE),
   merge: { route: "claude" },
   repair: { route: "claude" },
-  cleanReview: { route: "claude" },
-  digest: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
-  refine: { route: "claude" },
-  // The one worker in this table whose model is chosen at the CALL SITE (CARD_MODEL, a Haiku) and
-  // not by the route: it is pinned to the claude route because the transport must accept a
-  // per-call `model`, which the codex-exec route cannot express.
-  card: { route: "claude" },
+  cleanReview: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CLEANREVIEW),
+  digest: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
+  refine: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REFINE),
+  card: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CARD),
 } satisfies Record<WorkerName, WorkerRouteConfig>;
 function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
   return WORKER_ROUTES[worker];
@@ -20243,7 +20259,7 @@ async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise
       // ToolProfile is intentionally unused here: `-s read-only` plus `--ephemeral` is this
       // transport's act-authority, and no Claude tool profile can widen or describe it.
       const result = await workerViaCodexExec(prompt, cwd, {
-        model: route.model, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
+        model: route.model, effort: route.effort, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
       });
       text = result.text;
       observed = { model: route.model, backend: "codex-exec",
@@ -20666,7 +20682,8 @@ async function reviewDiffs(cwd: string,
     "- An empty findings array is a valid and good answer. Never invent a finding to fill the list.",
   ].join("\n");
   const text = await runWorker(
-    { worker: "review", cmd: REVIEW_CMD, tools: TEXT_ONLY_TOOLS, timeoutMs: REVIEW_TIMEOUT_MS },
+    { worker: "review", cmd: REVIEW_CMD, tools: TEXT_ONLY_TOOLS, timeoutMs: REVIEW_TIMEOUT_MS,
+      observe: (run) => { meta.model = run.model; } },
     prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // fail-soft exactly like runSummary: an off-contract answer degrades to notes, never a 500

@@ -11178,7 +11178,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     JSON.stringify(bindings.map((m) => m[1]).sort()) === JSON.stringify(roles)
       && bindings.every((m) => m[1] === m[2] && [m[2], ...(m[4] ? [m[4]] : [])].every((role) => {
         const d = MODEL_DEFAULTS[role as keyof typeof MODEL_DEFAULTS];
-        return d && !!d.effort && modelEntry(d.harness, d.id)?.status === "current";
+        return d && "effort" in d && modelEntry(d.harness, d.id)?.status === "current";
       })), bindings.map((m) => `${m[1]}:${m[2]}:${m[4] ?? "session"}`).join(" | "));
   pin("worker model aliases cannot reintroduce a literal fallback",
     ["CARD", "REFINE", "SUMMARY"].every((key) =>
@@ -11248,16 +11248,43 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin("every worker transport receives the resolved model and effort",
     executable.includes("const selection = WORKER_MODELS[spec.role ?? spec.worker];")
       && executable.includes('summaryViaSubprocess(spec.cmd, prompt, cwd, selection, spec.timeoutMs)')
-      && executable.includes('"--model", selection.model, "--effort", selection.effort')
+      && executable.includes('...(selection.effort ? ["--effort", selection.effort] : [])')
       && executable.includes('model: selection.model, effort: selection.effort, timeoutMs:')
       && executable.includes('model: selection.model, effort: selection.effort });')
       && executable.includes('model_reasoning_effort=${opts.effort}')
       && executable.includes("--effort '${o.effort}'")
       && executable.includes('worker: "refine", role: "briefReview"'),
     "stand-in, Claude and Codex carry effort; brief review owns its model role");
-  pin("merge and repair register fallbacks retain the Opus tier",
-    MODEL_DEFAULTS.merge.id === MODEL_DEFAULTS.main.id && MODEL_DEFAULTS.repair.id === MODEL_DEFAULTS.main.id
-      && MODEL_DEFAULTS.merge.effort === "high" && MODEL_DEFAULTS.repair.effort === "high",
+  let effortArgvProved = false;
+  try {
+    const claudeExpression = executable.match(/worker: \(o\) => \(\{\s+cmd: ([^\n]+),/)?.[1];
+    const subprocessExpression = executable.match(/const p = Bun\.spawn\((\[[^\n]+\]), \{ cwd, stdin:/)?.[1];
+    const codexStart = executable.indexOf('p = Bun.spawn([bin, "exec"');
+    const codexEnd = executable.indexOf('], {', codexStart);
+    const codexExpression = codexStart < 0 || codexEnd < 0 ? "" : executable.slice(codexStart + "p = Bun.spawn(".length, codexEnd + 1);
+    if (claudeExpression && subprocessExpression && codexExpression) {
+      const claude = (effort: string | null): string => new Function("PATH_EXPORT", "o", `return ${claudeExpression};`)(
+        "", { sessionId: "synthetic", model: MODEL_DEFAULTS.card.id, effort, tools: "--tools none" });
+      const subprocess = (effort: string | null): string[] => new Function("cmd", "selection", `return ${subprocessExpression};`)(
+        "stand-in", { model: MODEL_DEFAULTS.card.id, effort });
+      const codex = (effort: string | null): string[] => new Function("bin", "tmpOut", "opts", `return ${codexExpression};`)(
+        "codex", "/synthetic/answer", { model: MODEL_DEFAULTS.summaryExec.id, effort });
+      const cx = codex("high"), sp = subprocess("high");
+      effortArgvProved = !claude(null).includes("--effort") && claude("high").includes("--effort 'high'")
+        && JSON.stringify(subprocess(null)) === JSON.stringify(["stand-in", "--model", MODEL_DEFAULTS.card.id])
+        && sp[2] === MODEL_DEFAULTS.card.id && sp[3] === "--effort" && sp[4] === "high"
+        && !codex(null).includes("-c") && cx[cx.indexOf("-c") + 1] === "model_reasoning_effort=high";
+    }
+  } catch { /* a missing or unexecutable command expression fails its own check */ }
+  pin("worker command expressions preserve implicit effort and pass only explicit effort overrides",
+    effortArgvProved, "Claude, Codex and subprocess argv with null and high effort");
+  pin("all worker register efforts preserve the previously implicit CLI default",
+    roles.every((role) => MODEL_DEFAULTS[role as FleetWorkerRole].effort === null)
+      && bindings.filter((binding) => binding[4]).every((binding) => MODEL_DEFAULTS[binding[4] as keyof typeof MODEL_DEFAULTS].effort === null),
+    "null means omitted CLI flag; the effective harness default remains unknown");
+  pin("merge and repair retain the existing Sonnet worker tier and implicit CLI effort",
+    MODEL_DEFAULTS.merge.id === MODEL_DEFAULTS.summary.id && MODEL_DEFAULTS.repair.id === MODEL_DEFAULTS.summary.id
+      && MODEL_DEFAULTS.merge.effort === null && MODEL_DEFAULTS.repair.effort === null,
     JSON.stringify({ merge: MODEL_DEFAULTS.merge, repair: MODEL_DEFAULTS.repair }));
 }
 
@@ -11300,7 +11327,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         const e = modelEntry("claude", id);
         return e?.status === "superseded" && e.supersededBy === "claude-sonnet-5-5[1m]";
       })
-      && MODEL_DEFAULTS.summary.id === "claude-sonnet-5-5[1m]" && MODEL_DEFAULTS.summary.effort === "medium"
+      && MODEL_DEFAULTS.summary.id === "claude-sonnet-5-5[1m]" && MODEL_DEFAULTS.summary.effort === null
       && ["sonnet", "sonnet 5.5", "claude sonnet 5.5"].every((k) => MODEL_ALIASES[k] === "claude-sonnet-5-5")
       && MODEL_ALIASES["sonnet 5"] === "claude-sonnet-5"
       && modelLabel("claude-sonnet-5-5[1m]") === "Sonnet 5.5 · 1M" && modelLabel("claude-sonnet-5-5") === "Sonnet 5.5 · 1M"

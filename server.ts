@@ -488,7 +488,7 @@ interface Harness {
   // refuses by name before pasting instead of waiting out its timeout.
   // `accept` rides along for the same reason again: the frame that says THIS binary has drawn its
   // TUI and keeps input. null = no measured marker, and the worker falls back to a fixed settle.
-  worker(o: { sessionId: string; model: string; effort: string; tools: ToolProfile }):
+  worker(o: { sessionId: string; model: string; effort: string | null; tools: ToolProfile }):
     { cmd: string; comms: string[]; blocks: readonly ScreenBlock[]; accept: RegExp | null } | null;
   // A context reader is deliberately separate from `supports.transcript`: the latter promises a
   // CLAUDE-CODE conversation that viewEntry can parse, while this narrower adapter hook promises
@@ -718,7 +718,7 @@ const CLAUDE_HARNESS: Harness = {
   // literal now lives: the probe follows the line it belongs to instead of sitting a thousand lines
   // away from it, so an adapter whose worker runs something else cannot forget to move it.
   worker: (o) => ({
-    cmd: `${PATH_EXPORT}claude --session-id ${o.sessionId} --model '${o.model}' --effort '${o.effort}' ${o.tools}`,
+    cmd: `${PATH_EXPORT}claude --session-id ${o.sessionId} --model '${o.model}'${o.effort ? ` --effort '${o.effort}'` : ""} ${o.tools}`,
     comms: ["claude"],
     blocks: [CLAUDE_TRUST_DIALOG],
     // NOT behind IS_CLAUDE, unlike `readiness.accept` below: this line runs the claude binary
@@ -20114,7 +20114,7 @@ function transcriptTail(s: Slot, maxEntries: number, maxChars: number): string {
 // test hook: FLEET_SUMMARY_CMD points at a stand-in answering in a {"result": …}
 // envelope on stdout — lets e2e exercise gather→deliver→parse→cache without claude
 async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string, selection: ReturnType<typeof resolveWorkerModel>, timeoutMs = SUMMARY_TIMEOUT_MS): Promise<string> {
-  const p = Bun.spawn([cmd, "--model", selection.model, "--effort", selection.effort], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn([cmd, "--model", selection.model, ...(selection.effort ? ["--effort", selection.effort] : [])], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   p.stdin.write(prompt);
   await p.stdin.end();
   const killer = setTimeout(() => p.kill(), timeoutMs);
@@ -20165,7 +20165,7 @@ function codexExecUsage(stdout: string): CodexExecUsage | "unknown" {
 // no resumable identity and no host transcript. Its only authority is the fixed read-only sandbox
 // below, and its answer is the CLI's last-message file.
 async function workerViaCodexExec(prompt: string, cwd: string,
-  opts: { model: string; effort: string; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
+  opts: { model: string; effort: string | null; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
   const dir = await mkdtemp(`${tmpdir()}/fleet-codex-worker-`);
   const tmpOut = resolve(dir, "last-message.txt");
   const binOverride = process.env.FLEET_CODEX_EXEC_BIN;
@@ -20180,7 +20180,7 @@ async function workerViaCodexExec(prompt: string, cwd: string,
   let timedOut = false;
   try {
     p = Bun.spawn([bin, "exec", "--ephemeral", "-s", "read-only", "--skip-git-repo-check",
-      "--color", "never", "--json", "-o", tmpOut, "-m", opts.model, "-c", `model_reasoning_effort=${opts.effort}`, "-"], {
+      "--color", "never", "--json", "-o", tmpOut, "-m", opts.model, ...(opts.effort ? ["-c", `model_reasoning_effort=${opts.effort}`] : []), "-"], {
       cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe",
     });
     const outP = new Response(p.stdout).text();
@@ -20244,7 +20244,7 @@ type ToolProfile = typeof TEXT_ONLY_TOOLS | typeof MERGE_TOOLS | typeof REVIEW_T
 // pinned (same trick as slotCmd) so the transcript path is known; the answer is
 // read from that JSONL with the transcript view's own parser.
 async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
-  opts: { tools: ToolProfile; timeoutMs?: number; model: string; effort: string }): Promise<string> {
+  opts: { tools: ToolProfile; timeoutMs?: number; model: string; effort: string | null }): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? SUMMARY_TIMEOUT_MS;
   const sid = crypto.randomUUID();
   summarizerSids.add(sid);
@@ -38267,7 +38267,7 @@ try {
   workerCodexCache = JSON.parse(readFileSync(resolve(process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), "models_cache.json"), "utf8"));
 } catch { /* unavailable sensor stays unknown */ }
 for (const [role, selection] of Object.entries(WORKER_MODELS)) {
-  console.log(`[fleet] worker ${role} model=${selection.model} effort=${selection.effort} source=${selection.modelSource} effortSource=${selection.effortSource}`);
+  console.log(`[fleet] worker ${role} model=${selection.model} effort=${selection.effort ?? "cli-default(unknown)"} source=${selection.modelSource} effortSource=${selection.effortSource}`);
   for (const warning of workerModelWarnings(selection, workerCodexCache))
     console.warn(`[fleet] WORKER MODEL ${role} model=${selection.model}: ${warning}`);
 }

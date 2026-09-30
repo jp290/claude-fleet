@@ -1,6 +1,7 @@
 // The ⏫ merge/land paths: the agent verdicts (blocked / lying / resolved / prose), the server's
 // own conflict-free script pre-pass, identity-bound confirm-land, the V1 deterministic
 // verify gate, and the orphan reattach / remove / discard flows.
+import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
@@ -307,7 +308,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   const resolvedRuns = landNoteRuns("main");
   check("the land note of an agent-resolved conflict names the resolver's model, verdict, cost and difficulty",
     (resolvedRuns ?? []).length === 1 && resolvedRuns?.[0]?.worker === "merge"
-      && resolvedRuns[0].status === "rebased" && resolvedRuns[0].model === "claude-sonnet-5-5[1m]"
+      && resolvedRuns[0].status === "rebased" && resolvedRuns[0].model === MODEL_DEFAULTS.merge.id
       && resolvedRuns[0].conflictedFiles === 1 && typeof resolvedRuns[0].ms === "number"
       && (resolvedRuns[0].ms ?? -1) >= 0 && resolvedRuns[0].backend === undefined,
     JSON.stringify(resolvedRuns ?? null));
@@ -441,7 +442,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   const proseRuns = landNoteRuns("main"); // the ff just made this lane's tip the integration tip
   check("an off-contract resolver answer is counted AS unparseable on the land note, not folded into blocked",
     (proseRuns ?? []).length === 1 && proseRuns?.[0]?.worker === "merge"
-      && proseRuns[0].status === "unparseable" && proseRuns[0].model === "claude-sonnet-5-5[1m]"
+      && proseRuns[0].status === "unparseable" && proseRuns[0].model === MODEL_DEFAULTS.merge.id
       && proseRuns[0].conflictedFiles === 1,
     JSON.stringify(proseRuns ?? null));
   check("the prose land's outcome row counts the same unparseable run",

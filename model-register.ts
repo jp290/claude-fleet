@@ -12,27 +12,27 @@ export interface ModelEntry {
   displayWindow?: number;
 }
 
-export const MODEL_DEFAULTS: Readonly<Record<ModelRole, { harness: ModelHarness; id: string; effort: string }>> = {
+export const MODEL_DEFAULTS = {
   orchestrator: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
   main: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
   worker: { harness: "codex", id: "gpt-6.1-sol", effort: "high" },
   denk: { harness: "codex", id: "gpt-6-astra", effort: "medium" },
-  summary: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
-  commitMsg: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
-  enhance: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
-  digest: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
-  review: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
-  merge: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
-  repair: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
-  cleanReview: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
-  refine: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
-  briefReview: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
-  card: { harness: "claude", id: "claude-haiku-4-5-20251001", effort: "low" },
-  summaryExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: "low" },
-  commitMsgExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: "low" },
-  enhanceExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: "low" },
-  digestExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: "low" },
-};
+  summary: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  commitMsg: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  enhance: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  digest: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  review: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  merge: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  repair: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  cleanReview: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  refine: { harness: "claude", id: "claude-opus-5-5[1m]", effort: null },
+  briefReview: { harness: "claude", id: "claude-opus-5-5[1m]", effort: null },
+  card: { harness: "claude", id: "claude-haiku-4-5-20251001", effort: null },
+  summaryExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: null },
+  commitMsgExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: null },
+  enhanceExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: null },
+  digestExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: null },
+} as const satisfies Readonly<Record<ModelRole, { harness: ModelHarness; id: string; effort: string | null }>>;
 
 export const MODEL_REGISTER: readonly ModelEntry[] = [
   { harness: "claude", id: "claude-opus-5-5[1m]", status: "current", displayWindow: 1_000_000 },

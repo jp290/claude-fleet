@@ -290,11 +290,15 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   commitMsg, enhance, digest, review, merge, repair, cleanReview, refine, briefReview und card.
   Brief-Gegenlese teilt nur den Prompt-Vertrag mit refine, hat eine eigene Modellauswahl.
 - Die vier bestehenden Headless-Routen summary, commitMsg, enhance und digest bleiben auf
-  ihren `*Exec`-Defaults (Codex Spark, low). `FLEET_WORKER_ROUTE_SUMMARY|COMMITMSG|ENHANCE|DIGEST=claude`
+  ihren `*Exec`-Defaults (Codex Spark). `FLEET_WORKER_ROUTE_SUMMARY|COMMITMSG|ENHANCE|DIGEST=claude`
   wählt weiterhin die Claude-Rückfallroute. Deren Defaults sowie review und cleanReview sind
-  Sonnet 5.5/medium; refine und briefReview Opus 5.5/high, card Haiku 4.5/low.
-  Merge und repair behalten Opus 5.5/high als Register-Fallback; eine Verkleinerung des
+  Sonnet 5.5; merge und repair behalten denselben bisherigen Sonnet-Default. Nur der
+  abgelöste Opus-5-Fallback von refine/briefReview wird durch Opus 5.5 ersetzt; card bleibt
+  bei Haiku 4.5. Bestehende Env-Overrides bleiben maßgeblich. Ein Modellwechsel des
   Konfliktlösers braucht eine eigene Entscheidung nach Messung.
+  Alle Worker-Defaults tragen `effort: null`: Der bisherige CLI-Default bleibt erhalten,
+  ohne neuen Effort-Flag. Sein effektiver Wert ist unbekannt; konkrete Werte kommen nur
+  über einen validierten Effort-Override.
 - Worker-Overrides heißen `FLEET_<KEY>_MODEL` und `FLEET_<KEY>_EFFORT`, mit den Keys SUMMARY,
   COMMITMSG, ENHANCE, DIGEST, REVIEW, MERGE, REPAIR, CLEAN_REVIEW, REFINE, BRIEF_REVIEW und CARD.
   Auf Headless-Routen heißen sie `FLEET_<KEY>_CODEX_MODEL|EFFORT`; die bisherigen Claude-Keys
@@ -305,11 +309,13 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   Unbekannte oder harnessfremde Modelle und ungültige Efforts werden laut zurückgewiesen;
   der jeweilige Register-Fallback greift. Registrierte `superseded`-Overrides bleiben lesbar,
   lösen aber eine Warnung aus. Jede Boot-Zeile nennt Rolle, Modell, Effort, `source=register|env`
-  und `effortSource=register|env`. Codex-Verfügbarkeit kommt aus `models_cache.json` über
+  und `effortSource=register|env`; `effort=cli-default(unknown)` bezeichnet `null`.
+  Codex-Verfügbarkeit kommt aus `models_cache.json` über
   `codexAvailability`: `unavailable` wird laut genannt, ein fehlender Sensor bleibt `unknown`.
   Eine Warnung wechselt weder Modell noch Route automatisch.
-- Claude erhält `--effort`, Codex `-c model_reasoning_effort=...`; auch die Subprozess-Stellvertreter
-  erhalten Modell und Effort. Die Register- und Quellen-Pins prüfen jede Worker-Rolle auf
+- Bei explizitem Effort erhält Claude `--effort`, Codex `-c model_reasoning_effort=...`;
+  die Subprozess-Stellvertreter erhalten ebenfalls den gewählten Wert. `null` lässt den Flag weg.
+  Die Register- und Quellen-Pins prüfen jede Worker-Rolle auf
   `current` und verhindern Modell-Literale als Rückfall in `server.ts`.
 - Ein lebender Slot wechselt sein Modell/Effort im DATENSATZ über `POST /api/slots/:id/model` (Owner,
   kein Respawn; `docs/self-api.md` §model) — Heal, `↻ restart` und Nachfolge spawnen danach damit. Die

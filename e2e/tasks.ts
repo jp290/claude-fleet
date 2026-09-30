@@ -1,5 +1,6 @@
 // The task queue (owner CRUD + dispatch availability) and the Tier-0 gates: the master stop and
 // quiet hours reach the DISPATCHER too, proven against a positive control.
+import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -9869,7 +9870,7 @@ export async function run(ctx: Ctx): Promise<void> {
       surface: { files: ["fleet-e2e.ts"], symbols: [] },
       done: "die Zeile steht in fleet-e2e.ts", verify: "bun e2e/pins.ts", verboten: [],
     } });
-    await Bun.write(FAKECARD, `#!/bin/sh\ncat >/dev/null\ncat <<'JSON'\n${cardAnswer}\nJSON\n`);
+    await Bun.write(FAKECARD, `#!/bin/sh\n[ "$1" = "--model" ] && [ "$2" = "${MODEL_DEFAULTS.card.id}" ] || exit 17\ncat >/dev/null\ncat <<'JSON'\n${cardAnswer}\nJSON\n`);
     spawnSync("chmod", ["+x", FAKECARD]);
 
     interface CRow { id: string; card?: { ziel: string; done: string; model: string; ms: number; valid: boolean;
@@ -9897,15 +9898,10 @@ export async function run(ctx: Ctx): Promise<void> {
       cCard?.ziel === "fleet-e2e.ts bekommt eine Zeile" && cCard.valid === true
       && JSON.stringify(cCard.gaps) === "[]" && cCard.surface.files.join(" ") === "fleet-e2e.ts",
       JSON.stringify(cCard));
-    // (2) THE MODEL THAT RAN, not the constant the call site meant. The brief compiler stamps
-    // SUMMARY_MODEL on every brief no matter which route answered it; this field is read back from
-    // the worker observation, so a stand-in run says so instead of claiming a Haiku ran.
-    // The DISCRIMINATING form, not a literal: under a stand-in runWorker observes SUMMARY_MODEL,
-    // so a card that named the call site's own CARD_MODEL could only have been stamped from the
-    // constant. Asserting the summary model by name would instead pin an operator's environment.
-    check("(j2) card.model carries the model that RAN, not the tier constant the call site named",
-      typeof cCard?.model === "string" && !!cCard.model
-      && cCard.model !== "claude-haiku-4-5-20251001"
+    // The stand-in refuses argv carrying a different model; a valid card therefore proves both
+    // the transport's selected model and the persisted worker observation agree with the register.
+    check("(j2) card.model names the resolved card model passed to the stand-in",
+      cCard?.model === MODEL_DEFAULTS.card.id
       && typeof cCard.ms === "number" && cCard.ms >= 0,
       JSON.stringify({ model: cCard?.model, ms: cCard?.ms }));
     // (6) THE CARD'S ROLE ADOPTS (2026-09-20, live rows 75c28778/fe2bf284/8bd19aac): a row that

@@ -5014,21 +5014,23 @@ function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapsh
 // reason: it is a REPOSITORY fact shared by every row, and re-reading a 10 000-node graph per row
 // per 2 s poll is not a projection, it is a load. `null` is the lane's honest answer — graphify-out/
 // is gitignored and lives only in the main checkout.
-// The cache is keyed on the graph file's own stamp, and it caches the FAILURES too. It has to: a
+// The cache is keyed on repo + resolved commit with the graph file stamp, including FAILURES: a
 // graph.json that exists but does not parse reads null forever, and a cache that only remembered
 // successes would re-read ten megabytes per row per 2 s poll for as long as the file stayed broken.
 // A failure is retried after 5 s, the same grace the tracked snapshot above gives an unreadable index.
 type SymbolIndexCache = { snapshot: SymbolIndexSnapshot | null; stamp: string | null; checkedAt: number };
 const symbolIndexCache = new Map<string, SymbolIndexCache>();
-function symbolIndexFor(repoRaw: string): SymbolIndexSnapshot | null {
-  const repo = repoCanon(repoRaw);
+function symbolIndexFor(tree: TrackedSnapshot | null): SymbolIndexSnapshot | null {
+  if (!tree?.indexStamp || tree.indexPath) return null;
+  const repo = tree.repo;
+  const key = `${repo}\0${tree.indexStamp}`;
   const now = Date.now();
   const stamp = symbolGraphStamp(repo);
-  const hit = symbolIndexCache.get(repo);
+  const hit = symbolIndexCache.get(key);
   // same file as last time: a successful read stands until the file moves, a failed one for 5 s
   if (hit && hit.stamp === stamp && (hit.snapshot || now - hit.checkedAt < 5000)) return hit.snapshot;
-  const snapshot = readSymbolIndexSnapshot(repo);
-  symbolIndexCache.set(repo, { snapshot, stamp, checkedAt: now });
+  const snapshot = readSymbolIndexSnapshot(repo, tree);
+  symbolIndexCache.set(key, { snapshot, stamp, checkedAt: now });
   return snapshot;
 }
 
@@ -5045,7 +5047,7 @@ function symbolIndexFor(repoRaw: string): SymbolIndexSnapshot | null {
 // `at` is the stamp of the DERIVATION, not of a write.
 function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null, project: string | null, repoRoot: string | null): TaskSurface | null {
-  if (!snapshot) return null;
+  if (!snapshot) { t.surface = undefined; return null; }
   // THE TWO READINGS COME OFF THE GROUP FOR A VARIANT (E4, variantSourceOf) — the same exception
   // cardDue already makes one door earlier, drawn here because this is the second reader of them.
   // A variant carries neither by construction: the card sweep writes it none, and the brief door
@@ -5102,7 +5104,7 @@ function taskView(t: Task): Task & { absorbed?: string[] } {
   const snapshot = repoRaw ? taskBaseSnapshotFor(repoRaw, t.base) : null;
   const project = snapshot?.project ?? (repoRaw ? basename(repoCanon(repoRaw)).replace(/\.git$/, "") : null);
   const repoRoot = snapshot?.repo ?? (repoRaw ? repoCanon(repoRaw) : null);
-  const surface = taskSurfaceOf(t, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null, project, repoRoot);
+  const surface = taskSurfaceOf(t, snapshot, symbolIndexFor(snapshot), project, repoRoot);
   // The cluster stays a pure projection of the files and is NOT stored: its process map moves with
   // the code, and a stored one would be the one field here that can be wrong about a tree that
   // never changed.
@@ -17552,7 +17554,7 @@ async function tickCardSweep(): Promise<void> {
       console.log(`card extractor: base unavailable, leaving ${batch.length} row(s) unread: ${base ?? "integration branch"}`);
       return;
     }
-    const index = symbolIndexFor(repo);
+    const index = symbolIndexFor(snapshot);
     await cardForeignVerifyCommand(repo);
     let wrote = false;
     for (const t of batch) {
@@ -17812,7 +17814,7 @@ async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null
   const foreignVerifyCommand = await cardForeignVerifyCommand(snapshot.repo);
   const checked = validateCard({ ...c, ...(programId ? { program: programId } : {}) },
     // an author's size is its own declaration, exactly like the surface line beside it
-    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}`, snapshot, repoRaw ? symbolIndexFor(repoRaw) : null, foreignVerifyCommand));
+    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}`, snapshot, symbolIndexFor(snapshot), foreignVerifyCommand));
   if (!checked.valid) return { ok: false, status: 400, error: `card rejected, nothing filed: ${checked.gaps.join("; ")}` };
   return { ok: true, card: { ...checked.body, model: "author", at: now, ms: 0, valid: true, surfaceValid: true,
     validatorVersion: CARD_VALIDATOR_VERSION, gaps: [] } };
@@ -43927,11 +43929,11 @@ Bun.serve<WSData>({
       // (refine-validate.ts). It does NOT gate — a proposal with hallucinated paths still promotes if the
       // owner says so — but the ledger records that he could see it and confirmed anyway.
       const rRepoRaw = t.repo ?? (DISPATCH_REPO || null);
-      const rSnapshot = rRepoRaw ? trackedSnapshotFor(rRepoRaw) : null;
+      const rSnapshot = rRepoRaw ? taskBaseSnapshotFor(rRepoRaw, t.base) : null;
       const rValidation = refineValidationFor(t, rSnapshot).validation ?? null;
       const now = Date.now();
       const originId = t.originId ?? t.id;
-      const rSymbols = rRepoRaw ? symbolIndexFor(rRepoRaw) : null;
+      const rSymbols = symbolIndexFor(rSnapshot);
       const foreignVerifyCommand = rRepoRaw ? await cardForeignVerifyCommand(rRepoRaw) : null;
       if (!tasks.includes(t) || t.refine?.proposal !== proposal || (t.status !== "pending" && t.status !== "queued")
         || refineInflight.has(t.id))

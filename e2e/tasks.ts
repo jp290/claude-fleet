@@ -3,7 +3,7 @@
 import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
@@ -14,7 +14,7 @@ import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, dec
 import { renderWaveBrief, renderCardHead, renderRowComments, withCardHead, CARD_HEAD_MARK, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES, BRIEF_REVIEW_MARK } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
 import { classify as laneModelClass } from "../lane-context-cost";
-import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations,
+import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations, symbolGraphStamp,
   type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
@@ -12172,6 +12172,136 @@ export async function run(ctx: Ctx): Promise<void> {
       && new TextEncoder().encode(s3CappedBlock).byteLength <= ROW_COMMENTS_MAX_BYTES + 256
       && !s3CappedBlock.includes("branch-geheim"),
       `${new TextEncoder().encode(s3CappedBlock).byteLength} bytes · ${s3CappedBlock.slice(-100)}`);
+  }
+
+  // Base coordinates are immutable commit facts, while the graph remains an unchanged vocabulary.
+  {
+    type BaseRange = { file: string; symbol: string; startLine: number; endLine: number };
+    interface BaseRow { id: string; files?: string[]; surface?: { ranges: BaseRange[] | null; sha: string };
+      card?: { model: string; valid: boolean; surface: { ranges: BaseRange[] | null } } }
+    const repo = mkdtempSync(join(tmpdir(), "fleet-base-symbols-"));
+    const ids: string[] = [];
+    const git = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    const commit = () => {
+      if (git("add", ".").status !== 0) throw new Error("base-symbol fixture add failed");
+      const result = git("-c", "user.name=e2e", "-c", "user.email=e2e@localhost", "commit", "-qm", "base symbols");
+      if (result.status !== 0) throw new Error(`base-symbol fixture commit: ${result.stderr}`);
+    };
+    const read = async (id: string): Promise<BaseRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: BaseRow[] }).tasks.find((t) => t.id === id);
+    const file = "symbols.ts";
+    const wanted = (line: number, endLine: number): string =>
+      JSON.stringify([{ file, symbol: "known", startLine: line, endLine }]);
+    const shape = (row: BaseRow | undefined): string => JSON.stringify(row?.surface?.ranges);
+    const card = { ziel: "Basis-Symbol bearbeiten", surface: { files: [file], symbols: [`${file}#known`] },
+      done: "Symbol ist bearbeitet", verify: "bun e2e/pins.ts", verboten: ["kein Dispatch"] };
+    const create = async (base?: string, author?: typeof card, text = `${file}#known`): Promise<string> => {
+      const result = await post("/api/tasks", { text, queue: false, repo, ...(base ? { base } : {}),
+        ...(author ? { card: author } : {}) });
+      const body = (await result.json()) as { task?: { id: string }; error?: string };
+      check("(base-symbols) fixture filing succeeds before its projection is measured",
+        result.ok && !!body.task?.id, JSON.stringify({ status: result.status, body }));
+      const id = body.task?.id ?? "";
+      if (id) ids.push(id);
+      return id;
+    };
+    try {
+      if (git("init", "-q", "-b", "main").status !== 0) throw new Error("base-symbol fixture init failed");
+      writeFileSync(join(repo, ".gitignore"), "graphify-out/\n");
+      writeFileSync(join(repo, file), "export const known = 1;\n\nexport const tail = 2;\n");
+      commit();
+      mkdirSync(join(repo, "graphify-out"));
+      writeFileSync(join(repo, "graphify-out/graph.json"), JSON.stringify({ nodes: [
+        { file_type: "code", source_file: file, label: "known", source_location: "L99" },
+        { file_type: "code", source_file: file, label: "gone", source_location: "L200" },
+      ] }));
+      if (git("checkout", "-q", "-b", "branch").status !== 0) throw new Error("base-symbol fixture branch failed");
+      writeFileSync(join(repo, file), "\n\n\nexport const known = 1;\n\n\nexport const tail = 2;\n");
+      writeFileSync(join(repo, "branch-only.ts"), "\nexport function branchOnly() {}\n");
+      commit();
+      if (git("checkout", "-q", "main").status !== 0) throw new Error("base-symbol fixture checkout failed");
+      const defaultId = await create();
+      const explicitId = await create("branch", card);
+      const branchOnlyId = await create("branch", { ...card,
+        surface: { files: ["branch-only.ts"], symbols: ["branch-only.ts#branchOnly"] } });
+      const main = await read(defaultId);
+      const switched = await post("/api/repo-base", { repo, branch: "branch" });
+      const branch = await read(defaultId);
+      const returned = await post("/api/repo-base", { repo, branch: "main" });
+      const mainAgain = await read(defaultId);
+      const explicit = await read(explicitId);
+      check("(base-symbols) main -> branch -> main relocates graph-known coordinates exactly and isolates an explicit base",
+        switched.ok && returned.ok && shape(main) === wanted(1, 2) && shape(branch) === wanted(4, 6)
+        && shape(mainAgain) === wanted(1, 2) && shape(explicit) === wanted(4, 6)
+        && main?.surface?.sha === mainAgain?.surface?.sha && main?.surface?.sha !== branch?.surface?.sha
+        && JSON.stringify(explicit?.card?.surface.ranges) === wanted(4, 6),
+        JSON.stringify({ main, branch, mainAgain, explicit }));
+      const only = await read(branchOnlyId);
+      check("(base-symbols) a branch-only declaration in a graph-absent file gains exact author and reader ranges",
+        JSON.stringify(only?.surface?.ranges) === JSON.stringify([
+          { file: "branch-only.ts", symbol: "branchOnly", startLine: 2, endLine: 3 }])
+        && only?.card?.valid === true && JSON.stringify(only.card.surface.ranges) === JSON.stringify(only.surface?.ranges),
+        JSON.stringify(only));
+      const sweptId = await create("branch", undefined,
+        `ZIEL: Basis-Symbol bearbeiten\nFLAECHE: ${file}#known\nDONE: Symbol ist bearbeitet\nVERIFY: bun e2e/pins.ts\nVERBOTEN: kein Dispatch`);
+      let swept: BaseRow | undefined;
+      await until(async () => { swept = await read(sweptId); return swept?.card?.model === "format"; },
+        { timeoutMs: 20_000, stepMs: 100, what: "base-symbol formatted card sweep" });
+      check("(base-symbols) the card sweep uses the same explicit base coordinates as author validation and projection",
+        swept?.card?.valid === true && JSON.stringify(swept.card.surface.ranges) === wanted(4, 6), JSON.stringify(swept));
+
+      const source = readFileSync(`${ROOT}/server.ts`, "utf8");
+      const cacheCode = source.slice(source.indexOf("const taskBaseTreeCache ="), source.indexOf("// WHY THE SURFACE IS STORED"));
+      const makeResolver = (code: string): { base: (repo: string, base: string) => import("../task-metadata").TrackedSnapshot | null;
+        symbols: (tree: import("../task-metadata").TrackedSnapshot | null) => ReturnType<typeof readSymbolIndexSnapshot> } =>
+        new Function("Bun", "repoCanon", "repoBases", "statSync", "readFileSync", "resolve", "basename", "symbolGraphStamp", "readSymbolIndexSnapshot",
+          new Bun.Transpiler({ loader: "ts" }).transformSync(code) + "\nreturn {base: taskBaseSnapshotFor, symbols: symbolIndexFor};")
+          (Bun, realpathSync, {}, statSync, readFileSync, resolve, basename, symbolGraphStamp, readSymbolIndexSnapshot);
+      const resolver = makeResolver(cacheCode);
+      const mutantCode = cacheCode.replace('const key = `${repo}\\0${tree.indexStamp}`;', 'const key = repo;');
+      const mutant = makeResolver(mutantCode);
+      const coordinates = (r: typeof resolver, base: string): string =>
+        JSON.stringify(r.symbols(r.base(repo, base))?.index.get(file)?.filter((s) => s.symbol === "known"));
+      const exactSwitch = (r: typeof resolver): boolean => coordinates(r, "main") === wanted(1, 2)
+        && coordinates(r, "branch") === wanted(4, 6) && coordinates(r, "main") === wanted(1, 2);
+      check("(base-symbols) mutation: removing resolvedCommit from the production cache key makes the exact main/branch/main claim fail",
+        mutantCode !== cacheCode && exactSwitch(resolver) && !exactSwitch(mutant),
+        JSON.stringify({ normal: coordinates(resolver, "branch"), mutant: coordinates(mutant, "branch") }));
+
+      if (git("checkout", "-q", "branch").status !== 0) throw new Error("base-symbol fixture branch advance failed");
+      writeFileSync(join(repo, file), "\n\n\n\n\nexport const known = 1;\n\n\n\nexport const tail = 2;\n");
+      commit();
+      if (git("checkout", "-q", "main").status !== 0) throw new Error("base-symbol fixture main return failed");
+      const advanced = await read(explicitId);
+      check("(base-symbols) another branch commit invalidates both ref and symbol caches and the stored surface sha",
+        shape(advanced) === wanted(6, 9) && advanced?.surface?.sha !== explicit?.surface?.sha
+        && coordinates(resolver, "branch") === wanted(6, 9), JSON.stringify(advanced));
+      const missing = await post("/api/tasks", { text: `${file}#gone`, repo, base: "branch", queue: false,
+        card: { ...card, surface: { files: [file], symbols: [`${file}#gone`] } } });
+      const missingText = await missing.text();
+      const unresolvedId = await create("branch", undefined, `${file}#gone`);
+      const unresolved = await read(unresolvedId);
+      const ranges = unresolved?.surface?.ranges ?? null;
+      const plan = projectLandWaves({ tasks: [
+        { id: "unresolved", repo, programId: "base-symbols", filesOrigin: "confirmed", files: [file], ranges, created: 1, status: "queued", kind: "auftrag" },
+        { id: "distant", repo, programId: "base-symbols", filesOrigin: "confirmed", files: [file], ranges: [{ file, symbol: "distant", startLine: 5000, endLine: 5001 }], created: 2, status: "queued", kind: "auftrag" },
+      ], costs: LAND_WAVE_COSTS_2026_09 });
+      check("(base-symbols) a graph-known symbol missing in the chosen tree is refused and its unresolved projection collides as a whole file",
+        missing.status === 400 && missingText.includes('"symbols.ts#gone" does not resolve')
+        && JSON.stringify(ranges) === "[]" && JSON.stringify(plan.repos[0]?.waves[0]?.ids) === JSON.stringify(["unresolved", "distant"]),
+        JSON.stringify({ status: missing.status, missingText, unresolved, plan }));
+      if (git("branch", "-D", "branch").status !== 0) throw new Error("base-symbol fixture delete failed");
+      const deleted = await read(explicitId);
+      const digest = ((await (await get("/api/sessions")).json()) as { tasks: BaseRow[] }).tasks.find((t) => t.id === explicitId);
+      check("(base-symbols) a deleted explicit base is UNKNOWN in Full and Digest with no cached surface or main coordinates",
+        !!deleted && !!digest && deleted.files === undefined && deleted.surface === undefined && digest.files === undefined
+        && resolver.base(repo, "branch") === null && resolver.symbols(null) === null,
+        JSON.stringify({ deleted, digest }));
+    } finally {
+      for (const id of ids) await post(`/api/tasks/${id}/delete`, {});
+      await post("/api/repo-base", { repo, branch: "" });
+      rmSync(repo, { recursive: true, force: true });
+    }
   }
 
   // --- S6 (queue row 08ec67c0) THE AUTHOR'S CARD. Whoever files a row may hand its card along; it

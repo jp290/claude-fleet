@@ -23,7 +23,8 @@ import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, p
 import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
-import { pendingSettledBy, sendFailureMessage, splitDeliveryHeader } from "./pendingsend";
+import { pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
+import { sendFailureMessage } from "./pendingsend";
 import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";

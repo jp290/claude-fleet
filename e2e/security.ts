@@ -90,23 +90,6 @@ const PRE_AUTH_ROUTES = [
   // the `v<N>.md` the writer placed under that konzept, to hash it. It sends into no pane, starts,
   // releases, lands and deploys nothing.
   String.raw`~ /^\/api\/self\/konzepte\/([^/]+)\/(.+)$/`,
-  // The Supervisor's two Cut-2 channels, on this list for the same reason as their neighbours (the
-  // self principal IS the boundary) and narrower than any of them: both answer 409 to every session
-  // but the one the OWNER bound as Supervisor. The view is read-only and mutates nothing (pinned as
-  // a source rule). The nudge writes into a pane, and that is bounded structurally: the receiver is
-  // DERIVED from the named program's bound Program-MAIN and no body field can nominate a slot
-  // (pinned), it refuses a program that is not active, a stale/absent binding, an owner debt on the
-  // receiver, and a pane with no agent behind it.
-  '= /api/self/supervisor-view',
-  '= /api/self/nudge',
-  // STN-1, the Supervisor's second voice and the one that PERSISTS: it completes exactly one
-  // transition watch a non-lane Controller registered, minting one FleetEvent onto the existing
-  // transport. Same 401 rail and same occupancy 409 as its two neighbours. What bounds it: the
-  // watch id comes from the path and the receiver from that watch's registrant occupant
-  // (re-resolved at completion, never from the body — `text` is the only field read, pinned in
-  // e2e/security.ts §STN-1), once-only through spendWatch, expiry refused, and a lane can never
-  // be the receiver because a lane can never register (the /api/self/watch lane rule, unchanged).
-  String.raw`~ /^\/api\/self\/supervisor-watch\/([a-z0-9]+)\/complete$/`,
   '= /api/self/main-direct', // scoped non-lane provenance view; both git heads are server-read
   '= /api/self/main-direct/preflight',
   '= /api/self/main-direct/finalize',
@@ -144,23 +127,6 @@ const PRE_AUTH_ROUTES = [
   // never overwrites an existing receipt, mints nothing, sends into no pane and moves no status.
   '= /api/self/inbox',
   String.raw`~ /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/`,
-  // ACP-18 · THE ADDRESSED MESSAGE RAIL, and it is broader than the inbox above in exactly one
-  // respect that had to be reviewed rather than assumed: its caller need not be the MAIN of a
-  // Program at all — the bound Supervisor is a principal here too. That is the POINT of the cut (a
-  // role outlives the occupant holding it), so what bounds it is stated rather than inherited:
-  //   · NON-LANE only, and the sender is DERIVED from the caller's own binding — a Program-MAIN
-  //     sends as its Program, the bound Supervisor as `role:supervisor`. The body is closed to
-  //     {to, payload, idempotencyKey, replyTo}; a `from` key is a named 400, so no request can
-  //     claim an address. A session holding BOTH bindings is refused as ambiguous rather than
-  //     silently attributed.
-  //   · It reaches NO pane and NO tick: there is no sendText, no FleetEvent, no Watch, no auto.
-  //     The rail is PULL-only, so the worst a caller can do to another principal is put bounded
-  //     text (2000 chars, the nudge's own cap) into a capped record it must come and read.
-  //   · It confers NOTHING: no owner, release, land or deploy authority travels with a message,
-  //     and no route anywhere reads one as an instruction.
-  //   · Reads and receipts are ADDRESS-scoped: a caller sees only rows addressed to or from an
-  //     address it currently holds, so a recycled occupant reaches no record at all. The receipt
-  //     is the addressee's and never overwrites an existing one.
   '= /api/self/messages',
   String.raw`~ /^\/api\/self\/messages\/([0-9a-f]{24})\/read$/`,
   // …and the door that JUDGES one of those rows, deliberately its own route rather than a fold
@@ -332,7 +298,7 @@ const PRE_AUTH_ROUTES = [
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)$/', // same credential, READ only: the receiver's own event + its rendered text (c14fcd75); another occupant 409
   '= /api/self/succeed',  // one successor for the caller's own session, never a named target. For a
   // MAIN: a free slot in the same cwd, caller retires on grace; the committed HANDOFF gate still
-  // holds the unbound, Supervisor and game-maker rails, while a Standard Program-MAIN hands over the
+  // holds the unbound and game-maker rails, while a Standard Program-MAIN hands over the
   // Program's own measured record in the founding brief instead (2026-09-08). For a LANE (2026-09-12,
   // succeedLane): a fresh session in the SAME slot on the SAME worktree and branch, which is why it
   // is no longer a 409 here — what bounds it is that it moves NOTHING: no land, no merge (a running
@@ -480,19 +446,8 @@ const PRE_AUTH_ROUTES = [
   // and the handler sits before the steward interceptor only so a steward credential meets the same
   // tokenGate 401 as any other non-owner credential.
   String.raw`~ /^\/api\/studios(?:\/[^/]+)?$/`,
-  // Same placement and same reason as the Programs regex above, one bracket higher: the Supervisor
-  // is cross-program owner identity, so the handler sits before the steward interceptor only so a
-  // steward credential meets the same tokenGate 401 as any other non-owner credential. The route
-  // calls tokenGate inline before it can mint anything, and it never reads a self-token header —
-  // both are pinned as source rules in e2e/pins.ts.
-  '= /api/supervisor/bootstrap',
-  // …and the SECOND appointment door, added 2026-09-07: it binds an ALREADY RUNNING session as
-  // Supervisor by explicit slot. Same placement and same reasons as its neighbour one line up, and
-  // REVIEWED rather than merely widened: the block's FIRST statement is the owner tokenGate, it
-  // reads no self-token header (both pinned as source rules in e2e/pins.ts), and the body is closed
-  // to a single `slot` — no label match, no "first idle session", no wildcard, so nothing in the
-  // request can make the route pick a session the caller did not name.
-  '= /api/supervisor/bind',
+
+
   '= /favicon.ico',
   '= /intake',            // its own secret (FLEET_INTAKE_SECRET), never the owner token
   String.raw`~ /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/`,
@@ -1068,73 +1023,31 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     live.ok && !!liveJ.auto, `${live.status} ${JSON.stringify(liveJ)}`);
   if (liveJ.auto) await post(`/api/autos/${liveJ.auto.id}/delete`, {});
 
-  // ===== §STN-1 the transition rail's perimeter: nobody impersonates the Supervisor, nobody
-  // nominates a receiver, and no Supervisor text can reach a lane =====
+  // Removed self doors follow the same principal perimeter as an unknown path.
   {
-    const completeUrl = `${BASE}/api/self/supervisor-watch/deadbeef/complete`;
-    const completeAs = (headers: Record<string, string>): Promise<Response> =>
-      fetch(completeUrl, { method: "POST", headers: { "content-type": "application/json", ...headers },
-        body: JSON.stringify({ text: "perimeter probe" }) });
-    const [noCred, ownerTok, stewardTok, guestCookie, plainSession, laneSession] = await Promise.all([
-      completeAs({}),
-      completeAs({ authorization: `Bearer ${TOKEN}` }),
-      completeAs({ authorization: `Bearer ${sc.token}` }),
-      completeAs({ cookie: ctx.shICookie }),
-      completeAs({ "x-fleet-self-token": plainSelf }),
-      completeAs({ "x-fleet-self-token": selfTok }),
-    ]);
-    check("§STN-1 the completion door is a self-principal door: owner, steward, guest and no credential are all 401",
-      noCred.status === 401 && ownerTok.status === 401 && stewardTok.status === 401 && guestCookie.status === 401,
-      `${noCred.status}/${ownerTok.status}/${stewardTok.status}/${guestCookie.status}`);
-    // WHAT THIS CHECK IS ABOUT IS THE STATUS, and that is asserted first and unchanged: a
-    // recognized self principal meets 409, never a 401, so nothing here sends anyone looking for a
-    // better credential. The SENTENCE moved on 2026-09-07, when the occupancy stage learned to name
-    // which of its three states it is in (server.ts#supervisorRefusal) — and this suite runs AFTER
-    // e2e/supervisor.ts, which leaves a dead binding behind, so the honest answer here is "the role
-    // is unfilled", not "you are not it". Read the state from the owner side rather than hard-coding
-    // one: a fixed sentence is what made this check fall on a change it was never about, and a bare
-    // `.includes("bound Supervisor")` would pass on all three and assert nothing.
-    const svOccupancy = ((await (await get("/api/programs")).json()) as
-      { supervisorHealth: { occupancy: string } }).supervisorHealth.occupancy;
-    const expectedRefusal = svOccupancy === "unbound" ? "no Supervisor binding exists"
-      : svOccupancy === "stale" ? "the Supervisor binding is STALE"
-      : "not the bound Supervisor";
-    const plainText = await plainSession.text();
-    check("§STN-1 a recognized self principal that is not the bound Supervisor is 409 (plain and lane alike) — no token hunt, and the refusal names the occupancy state the fleet is actually in",
-      plainSession.status === 409 && laneSession.status === 409
-        && !/unauthorized/i.test(plainText) && plainText.includes(expectedRefusal),
-      `${plainSession.status}/${laneSession.status} occupancy=${svOccupancy} expected="${expectedRefusal}" got=${plainText}`);
-    const register = (tok: string, body: unknown): Promise<Response> =>
-      fetch(`${BASE}/api/self/watch`, { method: "POST",
-        headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
-    const base = { kind: "transition", idleSec: 60, deadlineSec: 600, awaiting: "perimeter" };
-    const [laneRegisters, nominatesTarget, nominatesSlot, asksInbox] = await Promise.all([
-      register(selfTok, base),
-      register(plainSelf, { ...base, target: ln.slot }),
-      register(plainSelf, { ...base, slot: ln.slot }),
-      register(plainSelf, { ...base, delivery: "inbox" }),
-    ]);
-    const [tTarget, tSlot, tInbox] = await Promise.all([nominatesTarget, nominatesSlot, asksInbox].map((r) => r.text()));
-    check("§STN-1 a lane never registers a transition watch, so Supervisor text can structurally never reach a lane pane (409)",
-      laneRegisters.status === 409 && (await laneRegisters.text()).includes("a lane may not subscribe"),
-      String(laneRegisters.status));
-    check("§STN-1 no caller nominates a receiver anywhere: target and slot are refused by name at registration (400)",
-      nominatesTarget.status === 400 && tTarget.includes("[target] is not read")
-        && nominatesSlot.status === 400 && tSlot.includes("[slot] is not read"),
-      `${nominatesTarget.status}:${tTarget} | ${nominatesSlot.status}:${tSlot}`);
-    check("§STN-1 the owner operations inbox is not a Controller's: delivery is refused by name for a transition watch (400)",
-      asksInbox.status === 400 && tInbox.includes("[delivery] is not read"), `${asksInbox.status}:${tInbox}`);
-    // the source rule behind the two refusals above: the completion handler reads `text` and
-    // nothing else from the body, and the receiver comes from the WATCH's slot.
-    const srv = readFileSync(`${ROOT}/server.ts`, "utf8");
-    const handlerAt = srv.indexOf("async function completeTransitionWatch(");
-    const handlerEnd = srv.indexOf("\n}\n", handlerAt);
-    const handler = handlerAt < 0 ? "" : srv.slice(handlerAt, handlerEnd);
-    check("§STN-1 source: completeTransitionWatch reads only `text` from the body and derives the receiver from the watch's own slot",
-      handler.includes('Object.keys(body).filter((k) => k !== "text")')
-        && handler.includes("const receiver = slotFrom(w.slot);")
-        && !/body\.(slot|target|receiver|programId|delivery)/.test(handler),
-      `${handlerAt}:${handlerEnd}`);
+    const credentials: Record<string, string>[] = [
+      {}, { authorization: `Bearer ${TOKEN}` }, { authorization: `Bearer ${sc.token}` },
+      { cookie: ctx.shICookie }, { "x-fleet-self-token": plainSelf },
+      { "x-fleet-self-token": selfTok },
+    ];
+    const removed = [
+      { method: "GET", path: "/api/self/supervisor-view" },
+      { method: "POST", path: "/api/self/nudge" },
+      { method: "POST", path: "/api/self/supervisor-watch/deadbeef/complete" },
+    ];
+    for (const door of removed) {
+      const observations = await Promise.all(credentials.map(async (headers) => {
+        const init = { method: door.method, headers };
+        const old = await fetch(BASE + door.path, init);
+        const unknown = await fetch(BASE + "/api/self/d5-unknown-path", init);
+        return { status: old.status, expected: unknown.status,
+          body: await old.text(), expectedBody: await unknown.text() };
+      }));
+      check(`D5 removed self door ${door.method} ${door.path} answers exactly like an unknown path for every principal`,
+        observations.every((r) => r.status === r.expected && r.body === r.expectedBody)
+          && observations[1]?.status === 404,
+        JSON.stringify(observations));
+    }
   }
 
   // ===== §4 no secret reaches a non-owner-readable payload =====

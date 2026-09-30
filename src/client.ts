@@ -489,23 +489,6 @@ export function harnessEntry(slot: number): HarnessInfo | null {
   return harnesses.find((h) => h.id === s.harness) ?? (s.harness ? null : harnesses.find((h) => h.default) ?? null);
 }
 
-// A live slot's model/effort has TWO halves and neither writes the other (CLAUDE.md, supervisor
-// section, measured 2026-09-02): POST /api/slots/:id/model moves the RECORD and never touches the
-// pane, `/model <id>` in the pane moves the agent and never touches the record. So the move is
-// always a pair, record first — and if the record refuses the value (the adapter's modelRe), the
-// pane is deliberately NOT typed into: a rejected value must not reach the agent by the back door.
-//
-// Claude Code takes `/model <id>` and `/effort <level>` as commands. Measured in the fifteenth
-// cut against real panes: codex has no such command, so the typed line went to the model as a
-// PROMPT; pi opens its own picker on a bare id ("No matching models") and waits. pi-zai does take
-// `/model zai/<id>` and `/thinking <level>` — WITH the provider prefix — in-session and without the
-// picker: measured in the sixteenth cut at slot 6 (pi 0.85.0), pasted as /send pastes (bracketed)
-// plus one Enter, footer `glm-5.3 • low` after, `model_change` / `thinking_level_change` in the
-// session file. Typed key by key the first Enter only closes pi's slash autocomplete — the paste is
-// what makes one Enter enough. Plain pi stays on the restart: its model names are free provider/id
-// patterns, and none was measured. For every other harness the pane half is therefore a RESTART
-// (POST /api/slots/:id/restart), which respawns the pane from the record and resumes the pinned
-// conversation. The owner is asked first (it stops running work).
 export function paneCommand(h: HarnessInfo | null, field: "model" | "effort", value: string): string | null {
   if (h?.id === "claude") return `/${field} ${value}`;
   if (h?.id === "pi-zai") return field === "model" ? `/model zai/${value}` : `/thinking ${value}`;
@@ -8050,7 +8033,7 @@ async function renderHist() {
       const origin = p.label ?? (p.cwd ? baseName(p.cwd) : `slot ${p.slot}`);
       histList.appendChild(histRow(p.text, `${origin} · ${fmtTs(p.ts)}`,
         p.text.startsWith("[fleet") ? "fleet" : p.source === "terminal" ? "owner"
-          : ["auto", "steward", "supervisor"].includes(p.source) ? "fleet" : p.source));
+          : ["auto", "steward"].includes(p.source) ? "fleet" : p.source));
     }
   } else {
     const items = await fetchHistory(slot);

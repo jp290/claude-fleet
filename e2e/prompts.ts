@@ -1052,10 +1052,6 @@ export async function run(): Promise<void> {
       && contextWindowFor("claude-sonnet-5") === CONTEXT_WINDOW_1M
       && contextWindowFor("claude-haiku-4-5") === CONTEXT_WINDOW_BASE,
       JSON.stringify([contextWindowFor("claude-opus-5"), contextWindowFor("claude-sonnet-5"), contextWindowFor("claude-haiku-4-5")]));
-    // the bare-alias DECISION, written out: `fable` is carried literally by the standing supervisor
-    // slot and is named, because an alias resolves inside ONE family and every Fable is 1M. The
-    // other bare aliases are NOT named, because their families hold both windows and the alias says
-    // nothing about which one the pane got — this asymmetry is the decision, not an oversight.
     check("context window: bare `fable` is 1M by decision, while bare opus/sonnet/haiku stay null",
       contextWindowFor("fable") === CONTEXT_WINDOW_1M && contextWindowFor("opus") === null
       && contextWindowFor("sonnet") === null && contextWindowFor("haiku") === null,

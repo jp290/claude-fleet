@@ -1,6 +1,6 @@
 // --- WHERE A PROGRAM ROW SITS ON THE RAIL, as a pure function over facts Fleet already holds.
 //
-// Today a MAIN or the Supervisor answers "where is this task" by reading panes and sessions: the
+// Today a MAIN answers "where is this task" by reading panes and sessions: the
 // 24-h measurement in docs/worktrail-B/B1-sharpener-2026-08-23.md counted 88 "read slot/session"
 // bash calls against 106 decisions. Every input that answer needs is already a persisted or live
 // server fact, so the answer belongs here — computed once, on request, from a closed input list.

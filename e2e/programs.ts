@@ -152,7 +152,6 @@ interface Studio {
   gates: { criticBeforeTaste: boolean; programLint: boolean; completeNeedsProof: boolean };
 }
 interface FleetState {
-  supervisor?: Record<string, unknown> | null;
   programs?: Program[];
   studios?: Record<string, unknown>[];
   attentionRequests?: Record<string, unknown>[];
@@ -265,7 +264,7 @@ const canonical = (value: unknown): unknown => Array.isArray(value)
     : value;
 // THE OWNER LIST ROW is not the full Program: server.ts#publicProgramListRow drops the four bodies
 // the list has no renderer for and sends `evidence` as `evidenceCount`. The full six survive on
-// /api/self/programs, where a pane reads the content itself (e2e/supervisor.ts).
+// /api/self/programs, where a pane reads the content itself (e2e/programs.ts).
 type OwnerProgramRow = Omit<Program, "nonGoals" | "decisions" | "evidence" | "openQuestions">
   & { evidenceCount: number };
 const ownerPrograms = async (): Promise<OwnerProgramRow[]> =>
@@ -1409,7 +1408,7 @@ export async function run(ctx: Ctx): Promise<void> {
   if (fleetSuccessionBody.slot) await post(`/api/slots/${fleetSuccessionBody.slot}/kill`, {});
   await programPost(fleetProgram.id, "complete");
   // The probe manifest leaves the instance checkout again. Every LATER module founding or
-  // dispatching into ROOT (e2e/supervisor.ts, e2e/tasks.ts (d3)) reasons about the SEED plan, and
+  // dispatching into ROOT (e2e/tasks.ts (d3)) reasons about the SEED plan, and
   // a fixture that quietly stays committed would make those modules depend on this one's leftovers.
   gitIn(ROOT, "rm", "-q", ".fleet/context-packs.json");
   const fleetManifestRemoved = gitIn(ROOT, "commit", "-qm", "remove the fleet-frame carrier probe");
@@ -3417,7 +3416,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const msgConflict = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
     payload: { kind: "text", text: `${msgOutText} — but different` }, idempotencyKey: msgOutKey });
   const msgConflictText = await msgConflict.text();
-  const msgConflictTo = await selfSend(msgAToken, { to: { kind: "role", role: "supervisor" },
+  const msgConflictTo = await selfSend(msgAToken, { to: { kind: "role", role: "orchestrator" },
     payload: { kind: "text", text: msgOutText }, idempotencyKey: msgOutKey });
   const msgCountAfterReplay = (readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1;
   check("message rail idempotency: the same key replays the SAME message, and the same key with a different body or receiver is a named 409 that appends nothing",
@@ -4176,9 +4175,6 @@ export async function run(ctx: Ctx): Promise<void> {
 
   await selfMessageRead(msgOrchToken, directBody.message?.id ?? "");
 
-  const supervisorEscalated = await selfSend(slotToken(successorSlot), { to: { kind: "role", role: "supervisor" },
-    payload: { kind: "text", text: "Supervisor has no live binding" }, idempotencyKey: "escalate-supervisor" });
-  const supervisorBody = await supervisorEscalated.json() as { escalatedTo?: string; message?: { id?: string } };
   const programEscalated = await selfSend(slotToken(successorSlot), { to: { kind: "program", id: msgUnheldProgram.id },
     payload: { kind: "text", text: "Program has no live MAIN" }, idempotencyKey: "escalate-program" });
   const programBody = await programEscalated.json() as { escalatedTo?: string; message?: { id?: string } };
@@ -4186,14 +4182,36 @@ export async function run(ctx: Ctx): Promise<void> {
   const escalatedPosition = (await (await fetch(`${BASE}/api/self`,
     { headers: { "x-fleet-self-token": msgOrchToken } })).json()) as {
       position?: { waitingOnMe?: { kind: string; id: string; slot: number }[] } };
-  check("message escalation: unbound Supervisor and Program keep their original addresses and become visible to the Orchestrator",
-    supervisorEscalated.ok && programEscalated.ok
-      && supervisorBody.escalatedTo === "orchestrator" && programBody.escalatedTo === "orchestrator"
-      && escalatedView.view?.entries.some((m) => m.id === supervisorBody.message?.id && m.to.role === "supervisor") === true
+  check("message escalation: unbound Program keeps its original address and becomes visible to the Orchestrator",
+    programEscalated.ok && programBody.escalatedTo === "orchestrator"
       && escalatedView.view?.entries.some((m) => m.id === programBody.message?.id && m.to.id === msgUnheldProgram.id) === true
       && escalatedPosition.position?.waitingOnMe?.some((w) => w.kind === "message"
         && w.id === programBody.message?.id && w.slot === orchFree) === true,
-    `supervisor=${supervisorEscalated.status}/${supervisorBody.escalatedTo} program=${programEscalated.status}/${programBody.escalatedTo}`);
+    `${programEscalated.status}/${programBody.escalatedTo}`);
+
+  const retiredDestination = await selfSend(slotToken(successorSlot), {
+    to: { kind: "role", role: "supervisor" }, payload: { kind: "text", text: "retired role" },
+    idempotencyKey: "retired-role-rejected",
+  });
+  check("D5 new messages reject the retired supervisor address", retiredDestination.status === 400,
+    `${retiredDestination.status} ${await retiredDestination.text()}`);
+  await stopSrv();
+  const legacyState = readState();
+  const legacyMessageId = "d5".repeat(12);
+  const legacyMessages = legacyState.messages as { v: number; entries: MessageRow[]; dropped: number };
+  legacyMessages.entries.push({ id: legacyMessageId,
+    from: { kind: "role", role: "supervisor" }, to: { kind: "role", role: "supervisor" },
+    at: Date.now(), payload: { kind: "text", text: "legacy supervisor message" },
+    idempotencyKey: "legacy-supervisor-message", replyTo: null, readBy: null, readAt: null });
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(legacyState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const migratedView = await (await get("/api/messages")).json() as { view?: { entries: MessageRow[] } };
+  const migratedMessage = migratedView.view?.entries.find((m) => m.id === legacyMessageId);
+  check("D5 legacy supervisor message keeps its sender and unread state and is redirected to the Orchestrator",
+    migratedMessage?.from.kind === "role" && migratedMessage.from.role === "supervisor"
+      && migratedMessage.to.kind === "role" && migratedMessage.to.role === "orchestrator"
+      && migratedMessage.readBy === null,
+    JSON.stringify(migratedMessage));
 
   const clarificationLaneOpen = await post("/api/lanes", { repo: REPO });
   const clarificationLaneSlot = (await clarificationLaneOpen.json() as { slot?: number }).slot ?? 0;
@@ -4730,7 +4748,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // Everything above proves the BOUND rail: succeedProgramMain holds the boot grace, the delivery
   // gate and the bounded readiness wait before it pastes. The generic branch of
   // POST /api/self/succeed (server.ts#handleSelfSucceed, the branch a session that is neither
-  // Program-MAIN nor Supervisor takes) went from openSlot straight into sendText, and that is
+  // Program-MAIN takes) went from openSlot straight into sendText, and that is
   // where all four live failures of 2026-09-03 happened — `prompt not accepted — composer still
   // holds 98 chars after 3000ms`, with the agent measured alive only ~6 s after the open. A
   // fixture that probed either bound rail would have proven nothing about it: both had the gate.
@@ -4774,7 +4792,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // Program-MAIN" about a session that had just been opened.
   const unboundMainBindings = (await ownerPrograms()).filter((p) => p.status === "active"
     && p.main?.slot === unboundFreeSlot && p.main.openedAt === unboundPredRow?.openedAt);
-  check("unbound succession setup: a codex session that is neither Program-MAIN nor Supervisor is open",
+  check("unbound succession setup: a codex session that is not Program-MAIN is open",
     !!unboundOpen?.ok && unboundFreeSlot > 0 && unboundPredRow?.cwd === unboundRepo
       && unboundMainBindings.length === 0
       && unboundPredRow?.harness === "codex",
@@ -4884,18 +4902,6 @@ export async function run(ctx: Ctx): Promise<void> {
   await post(`/api/slots/${unboundFreeSlot}/kill`, {});
   rmSync(unboundRepo, { recursive: true, force: true });
 
-  // --- THE ORCHESTRATOR ROLE CARD — spawn and succession, both receipted. ---------------------
-  // THE GAP THIS CLOSES, read off the live ledger on 2026-09-17: `context-receipts.jsonl` carried a
-  // founding row for every Program-MAIN and for the Supervisor, and NONE for the session that holds
-  // the portfolio. It was opened as an ordinary labelled slot and told nothing, so every rule it
-  // worked by lived in the owner's chat or in its predecessor's head — which is what the owner asked
-  // to end („[Zitat entfernt]“,
-  // 2026-09-14, in conversation with the Orchestrator in slot 4).
-  //
-  // TWO PROPERTIES, and they are not the same one: that the card is DELIVERED at both doors — the
-  // owner's `POST /api/slots/:id/open` and the role's own `POST /api/self/succeed` — and that each
-  // delivery leaves a RECEIPT. `programId: null` on that receipt is the SCOPE (an Orchestrator sits
-  // across the programs), never a missing attribution, so it is asserted rather than tolerated.
   const CARD_BLOCKS = ["--- ROLLE ---", "--- DU ENTSCHEIDEST ---", "--- DER OWNER ENTSCHEIDET ---",
     "--- DEINE TUEREN ---", "--- DER LOOP ---", "--- UEBERGABE ---"] as const;
   const orchCard = (prompt: string): string[] => CARD_BLOCKS.filter((b) => !prompt.includes(b));
@@ -7653,34 +7659,13 @@ export async function run(ctx: Ctx): Promise<void> {
     restoredHealth?.occupancy === "live" && restoredHealth.sessionIdMatch === "unknown",
     JSON.stringify(restoredHealth));
 
-  // === V1b · THE RETURN PATH, IN BOTH SIGHTS AT ONCE ===========================================
-  // The slice's own subject. A MAIN whose FleetEvent delivery budget is FULL has closed the way
-  // back to itself: every fleet report and every clarification from its lanes is refused, and until
-  // this cut that fact lived only inside the 409 the lane got. So the owner's board and the
-  // Supervisor's senses must not merely both mention it — they must carry the SAME projection and
-  // the SAME sentence, because two renderings of one fact are how two views of it start disagreeing.
-  //
-  // PLANTED, not driven: five armed watches IS the cap, and minting them live would cost five lanes
-  // to say nothing more. That these five numbers are the ones the doors actually spend is proven
-  // where it belongs — driven, against the real refusal, in e2e/watch.ts.
-  const svSlotId = (await sessions()).slots.find((x) => !x.cwd)?.id ?? null;
-  const svOpen = svSlotId === null ? null
-    : await post(`/api/slots/${svSlotId}/open`, { cwd: ROOT, label: "v1b-supervisor" });
-  const svToken = readState().slots?.[String(svSlotId)]?.selfToken ?? "";
-  // FIXTURE PRECONDITION, its own check: without a live bound Supervisor the view below answers 409
-  // and the comparison would read as "the two sights agree" while nothing was ever compared.
-  check("V1b fixture: a plain slot is open to be bound as Supervisor and carries its own credential",
-    !!svOpen?.ok && /^[0-9a-f]{32}$/.test(svToken), `${svSlotId} ${svOpen?.status}`);
   await stopSrv();
   const closedState = readState();
-  const svSlotRow = closedState.slots?.[String(svSlotId)];
-  closedState.supervisor = { slot: svSlotId, openedAt: svSlotRow?.openedAt,
-    sessionId: svSlotRow?.sessionId ?? null, boundAt: Date.now() };
   const plantedWatchIds = ["b1b0", "b1b1", "b1b2", "b1b3", "b1b4"];
   closedState.watches = [...(closedState.watches ?? []), ...plantedWatchIds.map((id) => ({
-    id, kind: "transition", slot: successorSlot, slotOpenedAt: transferredBinding?.openedAt,
+    id, kind: "audit", slot: successorSlot, slotOpenedAt: transferredBinding?.openedAt,
     idleSec: 60, armed: true, created: Date.now(), firedAt: null, lastResult: null,
-    awaiting: "a transition that holds one delivery place", deadlineAt: Date.now() + 3_600_000,
+    repo: REPO, mainAfter: "e".repeat(40),
   }))];
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(closedState, null, 2), { mode: 0o600 });
   await restartSrv();
@@ -7694,64 +7679,17 @@ export async function run(ctx: Ctx): Promise<void> {
   const eventsBeforeReads = (readState().events ?? [])
     .filter((e) => e.receiverSlot === successorSlot).length;
   const ownerClosed = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
-  const svRes = await fetch(`${BASE}/api/self/supervisor-view`, { headers: { "x-fleet-self-token": svToken } });
-  const svBody = await svRes.json() as { portfolio?: (Record<string, unknown> & { program: { id: string };
-    health?: Program["health"]; promotion?: unknown;
-    deliveryBudget?: Program["deliveryBudget"]; deliveryBudgetNote?: string })[] };
-  const svClosed = (svBody.portfolio ?? []).find((r) => r.program.id === mainProgram.id);
-  check("V1b: at ZERO free places both sights carry the same projection and the same sentence, and it names the refusal",
-    svRes.ok && ownerClosed?.deliveryBudget?.state === "known"
+  check("V1b: the owner sight names ZERO free places and the refusal when five armed watches fill the cap",
+    ownerClosed?.deliveryBudget?.state === "known"
       && ownerClosed.deliveryBudget.free === 0 && ownerClosed.deliveryBudget.cap === 5
       && ownerClosed.deliveryBudget.armedReservations === 5
-      && JSON.stringify(svClosed?.deliveryBudget) === JSON.stringify(ownerClosed.deliveryBudget)
-      && svClosed?.deliveryBudgetNote === ownerClosed.deliveryBudgetNote
       && (ownerClosed.deliveryBudgetNote ?? "").includes(`return path CLOSED at slot ${successorSlot}`)
       && (ownerClosed.deliveryBudgetNote ?? "").includes('refused with "receiver has no FleetEvent delivery budget"'),
-    JSON.stringify({ status: svRes.status, owner: ownerClosed?.deliveryBudget,
-      supervisor: svClosed?.deliveryBudget, note: ownerClosed?.deliveryBudgetNote,
-      svNote: svClosed?.deliveryBudgetNote }));
-  // …and not only for the one program the fixture aimed at. Every row the Supervisor can see must
-  // match the owner's row for the same program, or the two lists disagree about SOME receiver.
-  const ownerAll = await ownerPrograms();
-  const mismatched = (svBody.portfolio ?? []).filter((r) => {
-    const own = ownerAll.find((p) => p.id === r.program.id);
-    return JSON.stringify(own?.deliveryBudget) !== JSON.stringify(r.deliveryBudget)
-      || (own?.deliveryBudgetNote ?? null) !== (r.deliveryBudgetNote ?? null);
-  });
-  check("V1b: every program in the Supervisor portfolio carries byte-identical budget and sentence to the owner's row",
-    (svBody.portfolio ?? []).length > 0 && mismatched.length === 0,
-    JSON.stringify({ rows: (svBody.portfolio ?? []).length,
-      mismatched: mismatched.map((r) => [r.program.id, r.deliveryBudget]) }));
-  // V1a · THE SAME PROOF FOR THE OTHER SHARED HELPER, on the same paired read. `health` is the one
-  // fact both sights derive about the same MAIN, so a row where they differ is a row on which the
-  // owner and the Supervisor would act differently about one occupant.
-  const healthMismatched = (svBody.portfolio ?? []).filter((r) => {
-    const own = ownerAll.find((p) => p.id === r.program.id);
-    return JSON.stringify(own?.health) !== JSON.stringify(r.health);
-  });
-  check("V1a: every program in the Supervisor portfolio carries byte-identical health to the owner's row",
-    (svBody.portfolio ?? []).length > 0 && healthMismatched.length === 0
-      && (svBody.portfolio ?? []).every((r) => typeof r.health?.occupancy === "string"
-        && typeof r.health.sessionIdMatch === "string"),
-    JSON.stringify({ rows: (svBody.portfolio ?? []).length,
-      mismatched: healthMismatched.map((r) => [r.program.id, r.health]) }));
-  // …and the RAW promotion record, `null` where there is none. None of these fixtures was ever
-  // promoted, so `null` is the right answer for every row — and it must be an explicit null rather
-  // than a missing key, because a reader that cannot tell "no permission" from "this projection
-  // does not carry permissions" learns nothing from either. `waitingOn` is asserted ABSENT on the
-  // same rows: `promotion:null` is not an owner door, and inventing one here would be the exact
-  // claim the owner's policy of 2026-08-23 reserves for a REVIEWABLE row with no usable policy.
-  check("V1a: the portfolio carries the raw promotion record as an explicit null, and claims nothing about the owner waiting",
-    (svBody.portfolio ?? []).length > 0
-      && (svBody.portfolio ?? []).every((r) => "promotion" in r && r.promotion === null)
-      && (svBody.portfolio ?? []).every((r) => !("waitingOn" in r)),
-    JSON.stringify((svBody.portfolio ?? []).map((r) => [r.program.id.slice(-4),
-      "promotion" in r ? r.promotion : "MISSING", "waitingOn" in r])));
+    JSON.stringify({ budget: ownerClosed?.deliveryBudget, note: ownerClosed?.deliveryBudgetNote }));
   // THE SIGHT IS A READ. Three more reads across both routes may not acknowledge an event, disarm a
   // watch, move a cap or mint anything — a projection that spent the budget it describes would be
   // the one failure this shape must never have.
   await ownerPrograms();
-  await fetch(`${BASE}/api/self/supervisor-view`, { headers: { "x-fleet-self-token": svToken } });
   const afterReads = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
   const afterState = readState();
   check("V1b: reading the sight changes nothing — same five armed watches, no event minted, no debt, same numbers",
@@ -7762,21 +7700,16 @@ export async function run(ctx: Ctx): Promise<void> {
       && afterReads?.deliveryBudgetNote === ownerClosed?.deliveryBudgetNote,
     JSON.stringify({ after: afterReads?.deliveryBudget, eventsBeforeReads,
       eventsAfter: (afterState.events ?? []).filter((e) => e.receiverSlot === successorSlot).length }));
-  // Put it back exactly: the planted watches and the planted binding both go, because the sections
-  // below run on this same MAIN and e2e/supervisor.ts opens on the fact that no Supervisor is bound.
   await stopSrv();
   const v1bCleanup = readState();
-  v1bCleanup.supervisor = null;
   v1bCleanup.watches = (v1bCleanup.watches ?? []).filter((w) => !plantedWatchIds.includes(String(w.id)));
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(v1bCleanup, null, 2), { mode: 0o600 });
   await restartSrv();
-  if (svSlotId !== null) await post(`/api/slots/${svSlotId}/kill`, {});
   const restored = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
-  check("V1b cleanup: no Supervisor is bound, the planted watches are gone and the return path reads open again",
-    (readState().supervisor ?? null) === null
-      && (readState().watches ?? []).every((w) => !plantedWatchIds.includes(String(w.id)))
+  check("V1b cleanup: the planted watches are gone and the return path reads open again",
+    (readState().watches ?? []).every((w) => !plantedWatchIds.includes(String(w.id)))
       && restored?.deliveryBudget?.state === "known" && restored.deliveryBudget.free === 5,
-    JSON.stringify({ supervisor: readState().supervisor ?? null, budget: restored?.deliveryBudget }));
+    JSON.stringify({ budget: restored?.deliveryBudget }));
 
   // === ACP-16 · THE PROGRAM-MAIN RELEASE DOOR ==================================================
   // Runs on the binding the cleanup above just restored: mainProgram is ACTIVE and bound LIVE to
@@ -14535,7 +14468,6 @@ exit 0
     k2AllHeld.length === 103 && [k2Held, k2Free, k2MalformedHeld].every((id) => k2AllHeld.includes(id)),
     `total=${k2AllHeld.length} kept=${[k2Held, k2Free, k2MalformedHeld].filter((id) => k2AllHeld.includes(id)).length}`);
 
-  // Restore the registry the sections after this one read (supervisor.run() binds across it).
   await stopSrv();
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(k2Snapshot, null, 2), { mode: 0o600 });
   await restartSrv();

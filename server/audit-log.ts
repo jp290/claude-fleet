@@ -355,7 +355,7 @@ type AuditEvent =
   // slot id is recycled and the count is the only thing that says a lane spanned n sessions —
   // sessionMs on the outcome row measures the LAST one alone.
   | "lane_succession"
-  // A MAIN LINE HANDED OVER IN PLACE (server.ts#respawnInPlace): the generic, Supervisor and
+  // A MAIN LINE HANDED OVER IN PLACE (server.ts#respawnInPlace): the generic and
   // Program-MAIN rails end the predecessor and open the successor on the SAME slot, like the lane
   // baton. The detail names the rail and, when it did not go through, the reason and what the slot
   // holds now — the predecessor is already gone at that point, so this row is the only account.
@@ -380,38 +380,11 @@ type AuditEvent =
   // an owner-capable send exhausted the bounded fresh-pane readiness wait and was delivered
   // anyway. The row makes the possible loss visible without turning it into a refusal.
   | "send_boot_timeout"
-  // the cross-program Supervisor spoke to one Program-MAIN. Detail carries the nudge id and the
-  // program, never the text — the same hygiene rule slot_shelve's note follows.
-  | "supervisor_nudge"
-  // STN-1: the Supervisor completed a Controller's transition watch and one FleetEvent was
-  // minted. Detail carries watch id, event id and the Supervisor's slot — never the text.
-  | "supervisor_transition"
-  // STN-1: a transition watch passed its deadline unanswered and was disarmed by the tick (or at
-  // a late completion attempt). No pane text accompanies this row by design.
-  | "watch_expire"
   // a bootstrap call overwrote a STALE Program-MAIN binding. The one row that separates "this
   // Program was rebound" from "it was bootstrapped for the first time" after the fact — the
   // response says it once, to one caller. Detail names the program and the REPLACED occupation
   // (slot + openedAt), never a line of the Program's content or of the founding brief.
   | "program_main_rebound"
-  // the same act on the Supervisor rail: a bootstrap overwrote a STALE Supervisor binding whose
-  // slot no longer carries the (id, openedAt) it was bound to. Before this row the route REFUSED
-  // such a binding, which left the fleet unable to appoint a Supervisor at all. Detail names the
-  // REPLACED occupation (slot + openedAt) and nothing else — never a line of the founding brief.
-  | "supervisor_rebound"
-  // the owner bound an ALREADY LIVING session as Supervisor (POST /api/supervisor/bind). Its own
-  // word beside the two rebind rows because it is a different act: a bootstrap OPENS the session it
-  // appoints, this one appoints a session that was already working and keeps its context. Detail
-  // names the bound occupation (slot + openedAt) and nothing else — never a line of the brief.
-  | "supervisor_bound"
-  // BOOT read a persisted Supervisor binding whose slot no longer carries the (id, openedAt) it was
-  // bound to. The record is kept, never repaired here: "no Supervisor was ever appointed" and "the
-  // one appointed is gone" are two different facts, and deleting the record would erase the second.
-  // Until this row existed a dead binding was rehydrated SILENTLY and stayed authoritative — every
-  // route it gates answered the same 409 a non-Supervisor gets, so the role was unfilled and
-  // nothing anywhere said so (measured 2026-09-07: slot 5 openedAt 1787497726285, bound 21.08.,
-  // against a slot recycled into a lane). Detail names the dead occupation only.
-  | "supervisor_binding_stale"
   // THE PORTFOLIO READ GRANT (memory M4, server.ts#patchMemoryGrant / #transferMemoryGrant): the
   // owner set or revoked a grant on one occupant, a generic succession carried it (same or narrower)
   // to the successor, or a set failed to reach disk and was rolled back. Detail names grant id,

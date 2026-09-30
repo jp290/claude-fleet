@@ -19,7 +19,7 @@ weiter ihren eigenen Self-Token, auch wenn daneben eine Owner-Credential mitgesc
 (Helper-Credential), oder `guest` (Share-Cookie). Ohne erkannte Credential liefert er `null`;
 `machine{why:tick|sensor|policy|boot}` ist der interne Arm des Typs und wird aus keinem HTTP-Request
 abgeleitet. Die Session-Rolle verwendet dieselbe Positionsableitung wie `GET /api/self`;
-Supervisor- und Orchestrator-Labels verleihen hier keine zusätzliche Berechtigung. Das Helper-Token
+Orchestrator-Labels verleihen hier keine zusätzliche Berechtigung. Das Helper-Token
 identifiziert keine einzelne Hardware: `deviceId:"helper-token"` benennt nur die gemeinsame
 Credential, keine verifizierte Geräte-ID.
 
@@ -42,8 +42,8 @@ Jede Session liest mit ihrem eigenen `FLEET_SELF_TOKEN` ihr Lagebild. Die bisher
 `GET /api/self` bleiben erhalten. `position` ergänzt `role`, `taskId`, `programId`,
 `receiver`, `harness`, `model` und `waitingOnMe`.
 
-`role` ist `lane`, `program-main`, `supervisor`, `orchestrator` oder `generic`.
-Program-MAIN und Supervisor beruhen auf der Bindung der aktuellen Occupation; `orchestrator`
+`role` ist `lane`, `program-main`, `orchestrator` oder `generic`.
+Program-MAIN beruht auf der Bindung der aktuellen Occupation; `orchestrator`
 beruht derzeit nur auf dem Slot-Label und verleiht keine Rechte. Für eine Program-Lane ist
 `receiver: {role:"program-main",slot,openedAt}` die lebende gebundene MAIN. Für eine MAIN
 ist es die eindeutig gelabelte lebende Orchestratorin. Ohne eindeutig auflösbare Occupation
@@ -322,78 +322,11 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   eigenen Command-Job geweckt werden, muss der Owner den Watch über `POST /api/slots/:id/watch`
   setzen — oder die Lane liest `GET /api/self/jobs/:id`.
 
-### transition — `{kind:"transition"}` (STN-1, Program b1c4a497)
-
-Die vierte Art auf derselben Route, und die einzige, deren Auslöser kein Level des Ticks ist, sondern
-ein Akt des gebundenen Supervisors. Ein non-lane Fleet-Controller registriert WAS für einen Übergang er
-erwartet; der Supervisor vollendet den Watch genau einmal (unten); die Nachricht kommt über den
-bestehenden FleetEvent-Transport in deine Pane, **wenn du zur Ruhe kommst** (`idleSec`).
-
-```
-curl -X POST http://<fleet-host>:<port>/api/self/watch \
-  -H "content-type: application/json" \
-  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
-  -d '{"kind":"transition","idleSec":60,"deadlineSec":3600,"awaiting":"Program X wird aktiv und seine MAIN hat einmal berichtet"}'
-```
-
-- **Geschlossene Menge:** `kind` · `idleSec` (bestehende Semantik) · `deadlineSec` (Zahl in
-  `[60, 86400]`, Default 3600 — `TRANSITION_DEADLINE_*` in `server.ts`) · `awaiting` (Pflicht,
-  ≤ 500 Zeichen, `TRANSITION_AWAITING_MAX`). **Jedes weitere Feld wird namentlich verweigert (400)**:
-  `target`, `slot`, `programId`, `delivery`, … — der Empfänger bist DU (Token-Occupant), der Vollender
-  ist der gebundene Supervisor, die Zustellung ist pane-only (die Inbox ist die Owner-Operations-Inbox).
-- Deckel: derselbe geteilte (`WATCH_MAX_PER_SLOT` / `FLEET_EVENT_MAX_OPEN_PER_SLOT`); keine zweite Zahl.
-  Dieselbe noch armed Frage gibt `existing:true` zurück.
-- Ablehnungen: als LANE 409 · über die Owner-Route `POST /api/slots/:id/watch` 409 (STN-2: die Frage stellt nur die empfangende Session selbst — sonst liefe der Owner um die Lane-Regel herum) · `no bound Supervisor exists` (409) · `the bound Supervisor occupant is
-  gone or was replaced` (409) · der Supervisor selbst 409 (er ist Vollender, nicht Empfänger).
-- **Ablauf:** verstreicht `deadlineSec`, entwaffnet der Tick den Watch mit `lastResult` `expired …`
-  (+ Audit `watch_expire`) — **ohne Pane-Text**. Ein Watch trägt höchstens EINE Notification, und die
-  ist der Übergang. Den Ablauf liest du in `GET /api/self` (`watches`).
-- Der Transport ist unverändert: `pending → send-uncertain (vor tmux persistiert) → delivered` nur
-  bei beobachteter Annahme; Kill-Switch/Alive-Gates; toter Empfänger → `receiver-gone`; toter
-  SUBJEKT-Lifecycle → `subject-gone` (terminal, nie gepastet, nie ackbar, kostet kein Budget); Ack
-  über `POST /api/self/events/:id/ack`.
-
-## supervisor-watch complete — `POST /api/self/supervisor-watch/:id/complete`
-
-Die Vollendungs-Tür, **nur für den gebundenen Supervisor** (`isBoundSupervisor`, slot+openedAt). Body:
-`{"text": "..."}` (≤ 2000 Zeichen, `MAX_SUPERVISOR_NUDGE_TEXT`), geschlossene Menge.
-
-```
-curl -X POST http://<fleet-host>:<port>/api/self/supervisor-watch/<watchId>/complete \
-  -H "content-type: application/json" \
-  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
-  -d '{"text":"Program X ist seit 14:02 aktiv; seine MAIN hat einen fleet-report (complete) abgelegt."}'
-```
-
-- **Das 409 der Occupancy-Stufe nennt seit 2026-09-07 seinen Zustand** (`server.ts#supervisorRefusal`,
-  gemeinsame Stufe aller drei Supervisor-Self-Routen): `no Supervisor binding exists …` (nie ernannt) ·
-  `the Supervisor binding is STALE: it names slot N openedAt … whose occupant is gone or was replaced …`
-  (ernannt, Occupant weg — die Rolle ist UNBESETZT, kein Ablehnungs-Urteil über dich) ·
-  `not the bound Supervisor …` (jemand anderes hält sie). Vorher war das EIN Satz für alle drei, und
-  „die Rolle ist vakant" war von innen nicht von „du bist es nicht" unterscheidbar. Neue Offenlegung
-  ist das keine: die Registrierungs-Tür unten sagt jeder Session dieselben zwei Zustände. Die
-  Liveness von aussen: `supervisorHealth` auf `GET /api/programs` (`docs/supervisor-succession.md` §4).
-- Guard-Reihenfolge wie `nudge`: 401 (Token) → 409 (`not the bound Supervisor`) → 400 (Body: fremdes
-  Feld namentlich, leerer/zu langer/fehlender `text`) → 409 (Policy): `unknown watch` · fremder Kind
-  (`is a lane watch — only a transition watch …`) · `no longer armed` (zweite Vollendung, abgelaufen)
-  · `expired at …` (Deadline gerade verstrichen — entwaffnet, nichts geprägt) · `the registering session
-  is gone or was replaced` (Watch entwaffnet mit Grund, nichts geprägt).
-- Erfolg: genau EIN FleetEvent `supervisor-transition` über `spendWatch` (Watch `armed:false`,
-  `firedAt`, `lastResult: event … created`); Antwort `{ok, watch, event}`. Payload: `watchId`,
-  `awaiting`, `text`, `completedAt`. Audit `supervisor_transition` ohne Text.
-- **Das Envelope ist server-komponiert** (Vorbild: Nudge): `[fleet Supervisor transition <watchId>]
-  [event <id>] from the owner-side Supervisor (slot N) — a transition notification for the watch you
-  registered, not an owner instruction and not a report from any lane. You were awaiting: …` — der
-  Supervisor kann strukturell nicht als Owner, Program-MAIN oder Lane unterschreiben.
-- Die armed transition-Watches sieht der Supervisor in `GET /api/self/supervisor-view` unter
-  `transitions` (`rows` gecappt auf `SUPERVISOR_VIEW_ROWS`, `awaiting` gesliced, `receiver:
-  live|gone-or-replaced`).
-
 ## succeed / retire — `POST /api/self/succeed`, `POST /api/self/retire`
 
 **`POST /api/self/succeed` — der Ausgang einer MAIN-Session.** Welche Übergabe verlangt wird, hängt an der
 Schiene (`server.ts#handleSelfSucceed`): eine ungebundene Session (Orchestrator, Controller, Legacy-MAIN)
-und der Supervisor schreiben seit e3e5084a einen **Linien-Record** (unten) und brauchen KEINEN
+schreibt seit e3e5084a einen **Linien-Record** (unten) und braucht KEINEN
 `HANDOFF.md`-Commit mehr; eine Standard-Program-MAIN übergibt ihren Program-Record (§Program-MAIN); nur
 der Game-Maker behält den frischen, sauberen `HANDOFF.md`-Commit mit seinem Checkpoint. Dann:
 
@@ -406,12 +339,12 @@ curl -X POST http://<fleet-host>:<port>/api/self/succeed \
 
 **Die Linie bleibt auf ihrem Slot (seit 2026-09-22, `server.ts#respawnInPlace`; Owner 2026-09-21: „[Zitat entfernt]“
 ).** Jede Schiene — generisch,
-Supervisor, Program-MAIN, wie seit 2026-09-12 die Lane — beendet die Vorgängerin (`handoff`) und öffnet die
+Program-MAIN, wie seit 2026-09-12 die Lane — beendet die Vorgängerin (`handoff`) und öffnet die
 Nachfolgerin AUF DEMSELBEN Slot, im selben cwd, mit Modell/Harness der Vorgängerin: gleicher Slot, neues
 `openedAt`, neues Token. Es gibt keine Grace-Frist mehr, in der beide leben, und „kein freier Slot" ist kein
 Ablehnungsgrund mehr. Der Preis ist die Überlappung: alles, was die Nachfolge braucht — Brief, Plan,
 Handover-Erfassung, Linien-Entwurf — wird gebaut, SOLANGE die Vorgängerin noch steht; jede Ablehnung bis
-dahin lässt sie stehen. Nach dem Open wandert die Bindung (Linien-Record, `supervisor`, `Program.main`)
+dahin lässt sie stehen. Nach dem Open wandert die Bindung (Linien-Record, `Program.main`)
 sofort auf die Nachfolgerin, erst danach laufen Boot-Grace, Delivery-Gate, Readiness und der Brief.
 Scheitert die Zustellung, bleibt die Nachfolgerin gebunden stehen (500, `delivered:false`, Audit
 `main_succession … brief-undelivered`) — sie wird nie wieder abgeräumt. Scheitert der Respawn selbst nach
@@ -421,8 +354,8 @@ Program-Bindung ist dann stale und wird per Bootstrap neu gegründet.
 
 **Beide Fälle hinterlassen eine Nachfolge-Schuld (seit 2026-09-22, `server.ts#recordSuccessionDebt`).** Die
 Antwort erreicht die Vorgängerin nicht mehr (ihre Pane ist beendet), also hält der Server fest, was noch
-geschuldet ist: den Brief, wie er gebaut wurde, und bei gescheitertem Respawn auf der generischen und der
-Supervisor-Schiene den Linien-Record, den die Nachfolge geschrieben hätte. Dazu kommt eine Zeile in der
+geschuldet ist: den Brief, wie er gebaut wurde, und bei gescheitertem Respawn auf der
+generischen Schiene den Linien-Record, den die Nachfolge geschrieben hätte. Dazu kommt eine Zeile in der
 Owner-Inbox (FleetEvent `succession-debt`, `respawned` true/false), die ein lebender Leser sieht, und bei
 gescheitertem Respawn eine Narbe auf der Linie (`lineageHandoverLosses`). Die Antwort nennt die Schuld als
 `debt`. Die Owner-Türen dazu:
@@ -436,10 +369,7 @@ denn die meisten MAINs sitzen im selben Haupt-Checkout. Der gehaltene Record wir
 adressiert (die Linie zeigt eine Session mehr), und danach kann der Brief nachgesendet werden. Eine Schuld,
 die niemand mehr bezahlen kann, wird als verwaist erledigt: die Inbox-Zeile wird quittiert, und das Audit
 `succession_debt … settled as orphaned` nennt den Grund. Das trifft eine Nachfolgerin, die nicht mehr
-steht, eine generische Linie nach dem Fenster, eine Supervisor-Bindung, die die Vorgängerin nicht mehr
-nennt, und ein re-gegründetes oder inaktives Program. Einen gescheiterten Supervisor-Respawn übernimmt `bootstrapSupervisor`,
-sobald er genau die tote Bindung ersetzt: der Record wandert mit, der Brief ist durch das eigene
-Gründungs-Briefing ersetzt. Ein Program-MAIN re-gründet über den Bootstrap, denn der Program-Record trägt
+steht, eine generische Linie nach dem Fenster, ein re-gegründetes oder inaktives Program. Ein Program-MAIN re-gründet über den Bootstrap, denn der Program-Record trägt
 seine Zeilen. Solange eine Nachfolge oder Gründung läuft, verweigert `POST /api/deploy` den srv-Restart
 (`server.ts#deployBlocker`). Genauso bricht eine Nachfolge ab, deren Vorgängerin gerade von einem anderen
 Akt beendet oder neu gestartet wird: 409, nichts wird wieder geöffnet. `carry` ist optional und auf 500 Zeichen
@@ -448,7 +378,7 @@ abwesend = wörtliche Vererbung aus dem Datensatz der Vorgängerin; vorhanden = 
 geöffnet, validiert exakt wie `open`/`dispatch` gegen die geerbte Harness (`MODEL_RE` bzw.
 `HARNESS_MODEL_RE`, Effort aus `effortLevels` des Adapters), ungültig = 400 und KEIN Slot geöffnet;
 ein vorhandenes `null`/`""` löscht (Modell → Fleet-Default, Effort → kein Flag). Die Harness selbst ist
-nicht überschreibbar. Gilt für alle drei Nachfolge-Pfade (generisch, Supervisor, Program-MAIN). Der Anlass:
+nicht überschreibbar. Gilt für beide MAIN-Nachfolge-Pfade (generisch, Program-MAIN). Der Anlass:
 eine MAIN, die per `/model` in der Pane gewechselt hat, bekam ihren Nachfolger auf dem Spawn-Wert des
 Datensatzes — den korrigiert für einen LEBENDEN Slot die Owner-Route unten (§model). `POST /api/self/retire`
 räumt den eigenen Slot sofort, ohne Nachfolgerin. Während `succeed` läuft, antwortet `retire` für exakt
@@ -466,13 +396,12 @@ ungetrackte oder leere Datei gilt als fehlend. Fehlt sie, gibt es einen neutrale
 dann der oberste Abschnitt von `HANDOFF.md`, dann `README.md` bzw. `AGENTS.md`, beides „falls vorhanden“.
 Er nennt kein Skript und kein Fleet-Board. Anlass war Slot 14 in `~/[privates Owner-Repo]` am 2026-09-13: Der
 Brief schickte die Nachfolgerin zu `./state.sh` und `./register.sh`, die es dort nicht gibt. claude-fleet
-trägt seine vier Schritte in `.fleet/init.md`. Die `carry`-Zeile bleibt, wie sie war. Supervisor und
-Program-MAIN haben eigene Briefe; für sie gilt dieser Absatz nicht.
+trägt seine vier Schritte in `.fleet/init.md`. Die `carry`-Zeile bleibt, wie sie war. Program-MAIN haben eigene Briefe; für sie gilt dieser Absatz nicht.
 
 ### Der Linien-Record — `GET /api/self` → `lineage` (seit e3e5084a)
 
-Eine **Linie** ist eine stabile ID je Rolle: `Slot.lineageId`, geprägt von der ersten generischen oder
-Supervisor-Nachfolge, geerbt von jeder Nachfolgerin (für eine Program-MAIN ist die Linie die Program-ID,
+Eine **Linie** ist eine stabile ID je Rolle: `Slot.lineageId`, geprägt von der ersten
+generischen Nachfolge, geerbt von jeder Nachfolgerin (für eine Program-MAIN ist die Linie die Program-ID,
 und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
 (`server/types.ts#LineageHandover`), persistiert in `fleet.json` unter `lineageHandovers`:
 
@@ -578,7 +507,7 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   Übergabeband gilt nur für claude. Die MAIN-Nachricht trägt die Nachfolge-Schiene
   (`server.ts#migrateRailOf`, dieselbe Bindung wie `handleSelfSucceed`): eine gebundene Standard-
   Program-MAIN wird nicht mehr zu einem HANDOFF-Commit aufgefordert, ein Game-Maker zum Checkpoint
-  ohne `carry`, eine ungebundene Session (und der Supervisor) seit e3e5084a zum Linien-Record mit
+  ohne `carry`, eine ungebundene Session seit e3e5084a zum Linien-Record mit
   optionalem `intent` ODER `pointer`. Die Lane-Nachricht ist unverändert.
 - **Dieselben vier Zahlen sind seit 2026-09-20 LESBAR, nicht nur wirksam:** `GET /api/slots/:id/brief`
   trägt `succession` (`server.ts#successionFacts`, nur lesend), und die rechte Spalte zeichnet sie
@@ -608,7 +537,7 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   `GET /api/slots/:id/succession/:n/transcript?after=` antwortet wie `/transcript` (`entries`,
   `total`, `source`) plus `{session, startedAt, handedAt, report, assigned, ctx}`
   (`server.ts#pastTranscript`). Die Identität ist `sessionId` + `cwd`, die die Nachfolge selbst im
-  Moment der Übergabe schreibt (Lane: `Slot.laneSeats`; MAIN/Supervisor: `from` des Linien-Records,
+  Moment der Übergabe schreibt (Lane: `Slot.laneSeats`; MAIN: `from` des Linien-Records,
   `server/types.ts#LineageSeat`), sonst `worker.sessionId` + `worker.cwd` des `handoff`-Reports.
   Nennt keins von beiden eine Session (ein Record von vor 2026-09-21 kennt nur Slot + `openedAt`;
   ein Harness ohne Session-Kennung schreibt `null`), kommt `assigned: false` mit `reason`
@@ -854,7 +783,7 @@ HEAD), und jeder Wert nennt seinen Träger als `basis`. Anlass und Zielbild:
 | jede andere Session (Steward, ungebundene, recycelter Occupant) | nichts | 409 `no-scope` |
 
 Das gilt für `work`, `sources`, `evidence` und `observations`; `view=portfolio` hat seine eigene
-Reichweite (Supervisor oder Owner-Grant, Tabelle unten). `task=<id>` und `program=<id>` VERENGEN nur. Nach dem letzten Await wird der Occupant erneut geprüft:
+Reichweite (Owner-Grant, Tabelle unten). `task=<id>` und `program=<id>` VERENGEN nur. Nach dem letzten Await wird der Occupant erneut geprüft:
 ein währenddessen recycelter Slot bekommt 409 `occupant-changed`, nie das Slice des Nachfolgers.
 Ein Owner-Token ist hier 401 wie überall in der Self-Familie — es gibt keinen Owner-Rückfall.
 
@@ -943,7 +872,6 @@ gespeichert; gefaltet wird bei jedem Request aus den Trägern von M1/M3.
 
 | Prinzipal | faltet | Ablehnung |
 |---|---|---|
-| gebundener Supervisor (`supervisor`-Binding, slot + openedAt) | jedes Projekt, das der Server kennt (bestehende Reichweite) | — |
 | Occupant mit einem vom Owner gesetzten Read-Grant | genau `grant.projectKeys` × `grant.views` | `project=` außerhalb: 409 `foreign-project` |
 | jede andere Session, auch mit Label „Orchestrator" oder einem Modellnamen, auch eine gebundene MAIN | nichts | 409 `no-grant` |
 | Lane | nichts | 409 `lane-scope` |
@@ -978,8 +906,7 @@ wirksame neue Grants). Jeder Set/Revoke/Transfer und jeder gescheiterte Schreibv
 und die Linie zurück, die er nennt, nie auf eine Lane; alles andere wird mit Bootzeile verworfen.
 **Nachfolge:** allein die generische Schiene (Orchestratorin, jede ungebundene Linie) trägt den
 Grant — ganz oder per `POST /api/self/succeed` mit `"memoryGrant":{"projectKeys"?,"views"?}`
-verengt; ein Schlüssel oder View außerhalb ist 409 `scope-growth`, bevor etwas endet. Supervisor-
-und Program-MAIN-Schiene tragen keinen (409 `no-carry` bei gesetztem Feld); ihre Reichweite ist ihr
+verengt; ein Schlüssel oder View außerhalb ist 409 `scope-growth`, bevor etwas endet. Die Program-MAIN-Schiene trägt keinen (409 `no-carry` bei gesetztem Feld); ihre Reichweite ist ihr
 Binding. Ein recycelter Slot erbt nichts.
 
 **Der Startpointer.** Der Program-MAIN-Rail (`server.ts#memoryPointer("main")`, in `RAIL_HEAD`) und
@@ -997,7 +924,7 @@ Prüfung M3/M4: `e2e/state-snapshot.ts` §f (zwei Belegungen eines Slots gegen d
 beobachteten Fenster, Altzeilen, Reboot mit Bootbasis, fremder Task, 0 Geheimnisse im Ledger),
 `e2e/self-token.ts#memoryPortfolio` (Label/Modell/Lane/MAIN ohne Grant, Self-Token und falsche
 Revision beim PATCH, gescheiterter Schreibschritt, Faltung mit rückführbaren Summen, fremdes Projekt,
-Cursor nach Revoke, Supervisor-Reichweite, Boot, Projekt ohne Fakten, recycelter Occupant),
+Cursor nach Revoke, Boot, Projekt ohne Fakten, recycelter Occupant),
 `e2e/programs.ts` (Orchestratorin: Weitern bei Nachfolge verweigert, verengter Transfer, Pointer).
 
 Prüfung: `e2e/self-token.ts#memoryDoor` (eigene Scratch-Instanz, drei Repos × Lane/MAIN, vier
@@ -1027,7 +954,7 @@ Report, Attention-Antwort); ihn nennt der Schreiber.
 **Wer:** die Self-Tuer ist offen fuer eine **Lane** und fuer die **gebundene MAIN eines aktiven
 Programs** (`boundProgramForMain`); jede andere Session bekommt **409** `a konzept is read and written by a
 lane or by the bound MAIN of an active Program — this session is neither (role <role>)` — auch
-Supervisor und Orchestratorin (Rolle `generic` im Principal). Ohne erkannte Credential 401 nach 400 ms.
+Orchestratorin (Rolle `generic` im Principal). Ohne erkannte Credential 401 nach 400 ms.
 Nach dem Body-Lesen wird der Occupant erneut geprueft; ein recycelter Slot bekommt 409 und nichts wird
 geschrieben.
 
@@ -1341,9 +1268,7 @@ bleibt, kann `done-looking` strukturell nicht erfüllen und bleibt `RUNNING`. Di
 dann `idle ≥ threshold, dirty>0, ahead=0 — not reviewable by predicate` an `phaseBasis` — als
 Basis-Zeile, nicht als Phase: ein `STALLED` zu erfinden wäre eine Qualitätsaussage.
 
-**Supervisor** (`GET /api/self/supervisor-view`) bekommt davon **nur Zahlen**: `tasks.phases` ist ein
-Histogramm `{Phase: count}` je Program, keine Zeilen-Bodies. Die Bodies stehen in der View der
-gebundenen MAIN.
+
 
 ### Die Program-Retention haelt fest, was eine offene Zeile nennt (K2)
 
@@ -2286,6 +2211,11 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 
 ## messages — `GET /api/self/messages`, `POST /api/self/messages`, `POST /api/self/messages/:id/read`
 
+Alte `role:supervisor`-Empfänger werden beim Laden an `role:orchestrator` umgeleitet;
+Absender, IDs, Reply-Kanten und Lesestatus bleiben erhalten. Neue Supervisor-Adressen werden
+abgelehnt. Das alte Supervisor-Bindungsfeld in `fleet.json` wird ignoriert.
+
+
 Die **adressierte Nachricht zwischen Prinzipalen** und ihre Antwort — die andere Hälfte dessen, was
 `inbox` nicht kann. Ein Inbox-Eintrag ist ein ZEIGER, der EINEM Program gehört, keinen Absender
 nennt und keinen Rumpf trägt; eine Nachricht hat zwei Enden, einen Text und eine Antwortkante.
@@ -2313,12 +2243,11 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 ```
 
 - **Scope: Prinzipal-gebunden, Nicht-Lane.** Absender ist, wer die Session IST — aus der Bindung
-  abgeleitet, nie aus dem Body. Eine gebundene Program-MAIN sendet als `{kind:"program",id}`, der
-  exakt gebundene Supervisor (`isBoundSupervisor`) als `{kind:"role",role:"supervisor"}`.
+  abgeleitet, nie aus dem Body. Eine gebundene Program-MAIN sendet als `{kind:"program",id}`.
   Die einzige lebende Session mit Orchestratorin-Label sendet als
   `{kind:"role",role:"orchestrator"}`; das Label gewährt keine weiteren Rechte.
 - **Adress-Union, geschlossen:** `{kind:"program", id}` | `{kind:"role", role}` mit
-  `role ∈ {supervisor, orchestrator, controller, owner}`. `owner` ist ausschließlich Absender;
+  `role ∈ {orchestrator, controller, owner}`. `owner` ist ausschließlich Absender;
   als Ziel wird es mit benannter **409** abgelehnt. Auch der Record-Loader lehnt `to: owner` ab.
 - **`role:"controller"` ist BENANNT, aber nicht auflösbar** — 409, und **nichts wird gespeichert**.
   Der Controller ist Scope und hält keine Bindung (`docs/controller.md`). Wer ihn heute erreichen
@@ -2348,7 +2277,7 @@ DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, 
 | Fall | Antwort | Gespeichert? |
 |---|---|---|
 | Unbekannte Program-Id · `role:"controller"` | 409, benannt | **nein** |
-| Gültige Adresse ohne lebenden Halter (Program oder Supervisor) | 200 mit `note`, `escalatedTo:"orchestrator"`, `holder` = Orchestratorin; ohne genau eine lebende Orchestratorin `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse — der nächste Halter liest sie weiter |
+| Gültige Adresse ohne lebenden Halter (Program) | 200 mit `note`, `escalatedTo:"orchestrator"`, `holder` = Orchestratorin; ohne genau eine lebende Orchestratorin `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse — der nächste Halter liest sie weiter |
 | `role:"orchestrator"` ohne genau eine lebende Orchestratorin | 200 mit `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse |
 | Gültige Adresse mit lebendem Halter | 200, `holder:{slot,openedAt}` | ja |
 
@@ -2404,9 +2333,8 @@ noch von einer eigenen Adresse ist, bekommt dieselbe **404 `unknown message`** (
 | Situation | Code | Satz |
 |---|---|---|
 | Lane (kein Steward) | 409 | `a lane does not address principals — a lane files its result, and its MAIN speaks for the program` |
-| Weder gebundene MAIN noch Supervisor | 409 | der Satz von `boundProgramForMain` |
-| Gebundener Supervisor **und** gebundene MAIN | 409 | `ambiguous sender: …` — der Owner trennt die Rollen, die Route rät nicht |
-| GET/read ohne jede Adresse | 409 | `not a principal with an address — this rail answers a bound Program-MAIN or the bound Supervisor` |
+| Weder gebundene MAIN noch Orchestratorin | 409 | der Satz von `boundProgramForMain` |
+| GET/read ohne jede Adresse | 409 | `not a principal with an address — this rail answers a bound Program-MAIN or the unique live Orchestrator` |
 | Fremder Body-Schlüssel | 400 | `body reads only to, payload, idempotencyKey, replyTo — […] is not read: the SENDER is derived from this session's binding and can never be named in a body` |
 | `payload.kind` unbekannt | 400 | `payload kind must be one of text` |
 | `payload.text` leer/über 2000 | 400 | `payload text must be a non-empty string of at most 2000 chars` |
@@ -2440,7 +2368,7 @@ umdatieren, die längst weg waren.
 Beide Routen benötigen das **Owner-Token**; ein Self-Token gewährt keinen Zugriff.
 `GET /api/messages` liefert alle behaltenen Einträge neuestzuerst und verändert weder `readBy`
 noch `readAt`. Optional filtert `unread=true` auf unquittierte, `unread=false` auf quittierte
-Einträge; `to=program:<24-hex>` oder `to=role:supervisor|orchestrator|controller` filtert die
+Einträge; `to=program:<24-hex>` oder `to=role:orchestrator|controller` filtert die
 Zieladresse. Beide Filter sind kombinierbar. Ungültige Filter antworten **400**.
 
 Die Antwort enthält `{entries, unread, droppedFleetWide, unknown}`; `unread` zählt fleetweit vor
@@ -2972,7 +2900,7 @@ Fehlt beides, geht der Report daher in die **bestehende Owner-Operations-Inbox (
   wie auf dem `FleetEvent` gemeinsam `null` (halb-null ist malformed, nicht „Transportwahl").
   **DREI Felder tragen denselben Fakt „an wen wurde das gefilet", und jedes ist im Reverse-State
   einzeln an den Empfänger gebunden** — `delivery` (wie die Zeile reist), `payload.basis` (was
-  Board und Supervisor-Projektion lesen) und `FleetReport.basis` (die Zeile selbst). Ein
+  Board liest) und `FleetReport.basis` (die Zeile selbst). Ein
   ungebundenes davon scheitert nicht laut: es hydriert und LÜGT dann die Sicht an, die es liest.
   Dazu die vierte Klausel: der Owner-Prinzipal existiert nur für `kind: „[Zitat entfernt]“` — ein
   Null-Tripel auf einer Watch-Completion nennt niemanden, wäre nie zustellbar und würde trotzdem
@@ -3066,13 +2994,12 @@ Diese Ablehnung war bis 2026-08-25 von außen unsichtbar: sie stand nur im 409 d
 bekam — fünfmal an einem Tag live belegt. Dieselbe Summe, die die drei Türen ausgeben
 (`slotDeliveryBudget` in `server.ts`: offene, nicht-terminale FleetEvents + armed Watches gegen
 `FLEET_EVENT_MAX_OPEN_PER_SLOT`), projiziert jetzt EIN gemeinsamer reiner Helfer
-(`programReturnPath`) auf die beiden vorhandenen Sichten — **`GET /api/programs` (Owner) und
-`GET /api/self/supervisor-view` → `portfolio[]` (Supervisor)**, je Program als zwei additive Felder:
+(`programReturnPath`) auf die vorhandene Sicht — **`GET /api/programs` (Owner)**, je Program als zwei additive Felder:
 
 - `deliveryBudget` — `{state:"known", deliveryDebts, armedReservations, cap, free}` oder
   `{state:"unknown", reason}`. **`free === 0` ist exakt die Ablehnungsbedingung** der drei Türen,
   nicht eine Näherung daran.
-- `deliveryBudgetNote` — EIN Satz, wörtlich derselbe in beiden Sichten. Bei `free === 0` nennt er
+- `deliveryBudgetNote` — EIN Satz, vom Server berechnet. Bei `free === 0` nennt er
   den Slot, die Zerlegung (`N open events + M armed watches`) und die Ablehnung, die als nächstes
   kommt.
 
@@ -3379,9 +3306,9 @@ POST /api/self/fleet-report/<id>/delegate/escalate {"reason":"warum das deine En
   nur noch eskalierte wartende Zeilen, `reportsAwaitingDelegate` den Rest (bei 0 weggelassen). Ohne
   Delegierten ist beides byte-gleich zum Stand davor: das neue Feld erscheint nie, und keine Zeile
   trägt `escalation`.
-- **Nachfolge:** die generische Schiene (`POST /api/self/succeed` ohne Program-/Supervisor-Bindung)
+- **Nachfolge:** die generische Schiene (`POST /api/self/succeed` ohne Program-Bindung)
   trägt die Delegation ganz zur Nachfolgerin derselben Linie (`issuedBy:"succession"`,
-  `transferredFrom`); Program-MAIN- und Supervisor-Schiene beenden sie. Ein Widerruf wirkt sofort,
+  `transferredFrom`); die Program-MAIN-Schiene beendet sie. Ein Widerruf wirkt sofort,
   schon während er geschrieben wird.
 - **Kein Tick, kein Automat** ruft die Delegierten-Tür — sie ist ein Session-Akt wie die anderen beiden.
 
@@ -3602,7 +3529,7 @@ behält, was der Prune löscht.
   dieses Ledgers.
 
 **`context-receipts.jsonl`** (lesbar über `GET /api/context-receipts`, Owner) trägt zwei neue
-Felder an allen fünf Schreibern (Lane-Dispatch, zwei Supervisor-, zwei Program-MAIN-Gründungen):
+Felder an allen drei Schreibern (Lane-Dispatch, zwei Program-MAIN-Gründungen):
 
 - `model` ist **nie `null`**. Aufgelöst wird beim Schreiben (`server.ts#receiptModel`), mit
   `modelOrigin`:
@@ -4080,8 +4007,8 @@ Sprosse 2 oben ist die einzige, die eine Session **an ihrer Identität** abweist
 Zustand war von außen unsichtbar. Beide Program-Sichten zeigten `occupancy: "live"` (die Pane hält
 den gebundenen Slot ja), während jedes Self-Land derselben MAIN bereits abgelehnt wurde; die
 Ablehnung stand nur in ihrer eigenen Pane. Seit V1a projiziert EIN gemeinsamer reiner Helfer
-(`server.ts#programHealth`) beide Hälften auf die **zwei vorhandenen** Sichten —
-**`GET /api/programs` (Owner) und `GET /api/self/supervisor-view` → `portfolio[]` (Supervisor)** —
+(`server.ts#programHealth`) beide Hälften auf die vorhandene Owner-Sicht —
+**`GET /api/programs` (Owner)** —
 als EIN additives Feld je Program:
 
 - `health.occupancy` — `live` · `stale` · `unbound`. **Hier wohnt seit V1a die frühere Top-Level-
@@ -4103,22 +4030,11 @@ zwei Programme auf derselben Okkupation: das Zustellbudget (V1b) wird dort `unkn
 NICHT — ein Budget gehört einem Occupant und lässt sich nicht teilen, ein Identitätsvergleich ist
 pro Bindung wohldefiniert, und was die Mehrdeutigkeit kostet, lehnt die Tür selbst ab.
 
-**Dazu trägt `portfolio[]` seit V1a den rohen `promotion`-Record** (sonst `null`) — bis dahin trug
-es ihn gar nicht, so dass „der Owner hat nein gesagt", „[Zitat entfernt]“ und „[Zitat entfernt]“
- für den Supervisor EIN Schweigen waren, während das Owner-Board
-alle drei unterscheidet. Verbatim, ohne Übersetzung: die fünf angezeigten Zustände
-(`absent|off|green-only|guarded|unreadable`) sind das Vokabular des Client-Helfers
-`src/client.ts#promotionState`, und ein zweiter Übersetzer wäre ein zweites Vokabular. Der
-Owner-GET behält seinen vorhandenen Top-Level-Record unverändert. **`promotion: null` behauptet
-nichts über ein Warten auf den Owner** — die Owner-Policy vom 2026-08-23 reserviert diese Tür für
-eine konkret REVIEWABLE Zeile ohne nutzbare Policy, und diese Projektion sieht keine Zeile an.
-
 **Reine PROJEKTION:** nichts wird geschrieben, nichts persistiert, pro Request neu gerechnet — wie
 `occupancy` und das Rückweg-Budget daneben, weil der Occupant zwischen zwei Reads sterben kann.
 Beweise: `e2e/programs.ts` (alle drei Arme an der vorhandenen Divergenz-Fixture — `divergent` ist
 dasselbe Wort, das die Tür meldet —, die Twin-Fixture, der stale-Arm, und die Byte-Gleichheit von
-`health` zwischen beiden Sichten) und `e2e/supervisor.ts` (beide Hälften im Portfolio, der
-HELD-aber-nicht-gebundene Slot, der rohe Promotion-Record und die Abwesenheit jedes `waitingOn`).
+`health` auf der Owner-Sicht).
 Auf dem Board zeigt `src/client.ts#programHealthState` die Identitätshälfte auf JEDER Zeile
 dauerhaft — vier Zustände, `unreadable` als vierter, weil eine Zeile ohne lesbaren Record kein
 Treffer ist.

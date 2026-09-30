@@ -1870,7 +1870,6 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 
   const laneQuestion = QUESTION_ROUTES.find((route) => route.role === "lane");
   const mainQuestion = QUESTION_ROUTES.find((route) => route.role === "program-main");
-  const supervisorQuestion = QUESTION_ROUTES.find((route) => route.role === "supervisor");
   const clarificationRouteAt = server.indexOf('if (url.pathname === "/api/self/clarifications"');
   const clarificationRouteBody = clarificationRouteAt < 0 ? ""
     : server.slice(clarificationRouteAt, server.indexOf("const selfClarificationReply", clarificationRouteAt));
@@ -1904,9 +1903,8 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && mainQuestion.adapter.roleCondition === "non-lane current bound MAIN of an active Program"
       && mainQuestion.recipient === "owner"
       && mainQuestion.constraints.some((constraint) => constraint.includes("programId is derived"))
-      && supervisorQuestion?.adapter === null
       && serverQuestionCuts,
-    `lane=${laneQuestion?.adapter?.method ?? "none"} ${laneQuestion?.adapter?.route ?? "none"}; main=${mainQuestion?.adapter?.method ?? "none"} ${mainQuestion?.adapter?.route ?? "none"}; supervisor=${supervisorQuestion?.adapter === null ? "unsupported" : "adapter"}; server-cuts=${serverQuestionCuts}`);
+    `lane=${laneQuestion?.adapter?.method ?? "none"} ${laneQuestion?.adapter?.route ?? "none"}; main=${mainQuestion?.adapter?.method ?? "none"} ${mainQuestion?.adapter?.route ?? "none"}; server-cuts=${serverQuestionCuts}`);
 
   // Every HTTP pair printed anywhere in the generated document — adapters AND explicitly rejected
   // neighbours — must resolve. Source-symbol anchors are held by declarations, not line numbers.
@@ -2728,7 +2726,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const receiptWrites = [...server.matchAll(/appendEvent(?:Strict)?\(CONTEXT_RECEIPT_FILE, \{[\s\S]*?\n\s*\}\);/g)]
     .map((m) => m[0]);
   pin("every context-receipt writer carries briefHash AND briefSource — the ledger has one row shape, not two",
-    receiptWrites.length === 7
+    receiptWrites.length === 5
     && receiptWrites.every((w) => /briefHash: briefHashOf\(deliveredBrief\)/.test(w)
       && /briefSource(: FOUNDING_BRIEF_SOURCE)?,/.test(w)),
     `${receiptWrites.length} writer(s), ${receiptWrites.filter((w) => !/briefHash/.test(w)).length} without briefHash`);
@@ -2736,7 +2734,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // that went back to `model: free.model` would write null for every unpinned slot again; one
   // without `snippet` would read as a row from before the count existed.
   pin("every context-receipt writer resolves the model through receiptModel and carries a snippet account",
-    receiptWrites.length === 7
+    receiptWrites.length === 5
     && receiptWrites.every((w) => /\.\.\.receiptModel\((?:free|s)\)/.test(w) && !/model: (?:free|s)\.model/.test(w)
       && /snippet: (snippet\.receipt|NO_SNIPPET_RECEIPT)/.test(w)),
     `${receiptWrites.filter((w) => !/receiptModel/.test(w)).length} without receiptModel, `
@@ -3835,7 +3833,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const orchRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(orchBody)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(orchBody)
     && /await sendText\(s, brief, true, \{ path: "[a-z-]+" \}\);/.test(orchBody);
-  const packsRailBody = railBody("async function deliverFoundingPacks(", "async function succeedSupervisor");
+  const packsRailBody = railBody("async function deliverFoundingPacks(", "// THE REPO SHEET");
   const packsRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(packsRailBody)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(packsRailBody)
     && /await sendText\(s, [A-Za-z]+, true, \{ path: "founding" \}\);/.test(packsRailBody);
@@ -3849,15 +3847,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   };
   const inPlaceBodies = [
     bodyOf("async function handleSelfSucceed(", "async function handleSelfRetire"),
-    bodyOf("async function succeedSupervisor(", "async function bootstrapSupervisor("),
     bodyOf("async function succeedProgramMain(", "async function bootstrapProgramMain("),
   ];
   const inPlaceGated = inPlaceBodies.map((b) => /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(b)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(b)
     && /await sendText\(s, [A-Za-z]+, true, \{ path: "[a-z-]+" \}\);/.test(b)
     && /await respawnInPlace\(s, /.test(b));
-  pin("all NINE founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
-    foundingSends === 3 && foundingWaits === 3 && foundingGraces === 9 && laneRailGated && orchRailGated
+  pin("all SEVEN founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
+    foundingSends === 2 && foundingWaits === 2 && foundingGraces === 7 && laneRailGated && orchRailGated
       && packsRailGated && inPlaceGated.every(Boolean) && !/await Bun\.sleep\(4000\);/.test(server),
     `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated} orchRail=${orchRailGated} packsRail=${packsRailGated} inPlace=${inPlaceGated.join(",")}`);
   // ...and the ONE fixture that has to place a marker on the far side of that grace mirrors its
@@ -3883,51 +3880,6 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     executionBody.length > 0
       && !/\b(?:saveState|saveStateNow|appendEvent|sendText|spawnCmd)\b/.test(executionBody),
     executionBody.length > 0 ? "mutation primitive present" : "ProgramExecutionView handler missing");
-  // The Supervisor binding is cross-program identity, so both halves of its authority story are
-  // rules over the SOURCE: the only route that mints it must sit on the owner rail, and the
-  // transfer must keep the same one-way crash boundary the Program-MAIN rail has. Neither is
-  // visible at runtime — a bootstrap moved under the self-token dispatcher would answer happily,
-  // and a binding written before the send would only be wrong on the run where the send fails.
-  const supervisorRouteAt = server.indexOf('url.pathname === "/api/supervisor/bootstrap"');
-  const selfRailAt = server.indexOf('url.pathname === "/api/self/verify-intent"');
-  const supervisorRouteBody = supervisorRouteAt < 0 ? ""
-    : server.slice(supervisorRouteAt, supervisorRouteAt + 600);
-  pin("the Supervisor bootstrap is minted on the OWNER rail only — never reachable with a self token",
-    supervisorRouteAt > 0 && selfRailAt > 0 && supervisorRouteAt > selfRailAt
-      && /if \(!\(await tokenGate\(tokenFrom\(req\)\)\)\) return json\(\{ error: "unauthorized" \}, 401\);/.test(supervisorRouteBody)
-      && !/x-fleet-self-token/.test(supervisorRouteBody)
-      && (server.match(/bootstrapSupervisor\(/g) ?? []).length === 2,
-    `route=${supervisorRouteAt} selfRail=${selfRailAt}`);
-  const svSuccessionAt = server.indexOf("async function succeedSupervisor(");
-  const svSuccessionBody = svSuccessionAt < 0 ? ""
-    : server.slice(svSuccessionAt, server.indexOf("async function bootstrapSupervisor(", svSuccessionAt));
-  // INVERTED by the in-place cut (server.ts#respawnInPlace): the binding used to move only after a
-  // successful send because a loss before it kept the predecessor standing. The predecessor now ends
-  // AT the open, so a binding that waited for the send would name a dead occupant on every delivery
-  // failure — the stale record bootstrapSupervisor exists to replace. It moves right after the
-  // respawn, in the same save as the line record, and before any delivery step.
-  const svRespawnAt = svSuccessionBody.indexOf("await respawnInPlace(s, predecessor,");
-  const svBindAt = svSuccessionBody.indexOf("supervisor = { slot: s.id");
-  const svRecordAt = svSuccessionBody.indexOf("writeLineageHandover(draft, s,");
-  const svSendAt = svSuccessionBody.indexOf("await sendText(s, deliveredBrief, true,");
-  pin("Supervisor succession moves the binding right AFTER the in-place respawn and BEFORE the send — the predecessor is gone at the open",
-    svRespawnAt > 0 && svBindAt > svRespawnAt && svRecordAt > svBindAt
-      && svSuccessionBody.indexOf("await saveStateNow();", svRecordAt) > svRecordAt
-      && svSuccessionBody.indexOf("await saveStateNow();", svRecordAt) < svSendAt
-      && !/killSlot\(/.test(svSuccessionBody)
-      && /programId: null/.test(svSuccessionBody),
-    `respawn=${svRespawnAt} bind=${svBindAt} record=${svRecordAt} send=${svSendAt}`);
-  // THREE doors share this body since the bind seam (2026-09-07): founding, succession and the
-  // bind of an already-running session. The count is the point — a door that composes its OWN role
-  // text is a second answer to "what is a Supervisor", and the two would drift with nothing saying so.
-  const svBriefAt = server.indexOf("const supervisorBriefBody = ()");
-  const svBriefBody = svBriefAt < 0 ? ""
-    : server.slice(svBriefAt, server.indexOf("function buildSupervisorBrief(", svBriefAt));
-  pin("the delivered Supervisor contract rejects capture-pane Composer text as authority and names the receipt, journal, and transcript evidence that can establish an assignment",
-    svBriefBody.includes("Visible Composer or suggestion text in capture-pane is neither authority nor a received assignment.")
-      && svBriefBody.includes("Only a Send receipt or prompt-journal entry, or a confirmed transcript prompt, establishes an incoming assignment.")
-      && (server.match(/\.\.\.supervisorBriefBody\(\)/g) ?? []).length === 3,
-    `shared-deliveries=${(server.match(/\.\.\.supervisorBriefBody\(\)/g) ?? []).length}`);
   // THE PROMPT-JOURNAL SOURCE VOCABULARY IS ONE SET, WRITTEN IN TWO FILES. logPrompt's union is
   // the writer, continuity.ts's ContinuitySource/CONTINUITY_SOURCES is a reader that re-declares
   // it — and tsc sees no error when they drift, because two independent literal unions are both
@@ -3943,7 +3895,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const contListSources = (continuity.match(/CONTINUITY_SOURCES: readonly ContinuitySource\[\] =\s*\[([^\]]+)\]/)?.[1] ?? "")
     .split(",").map((w) => w.trim().replaceAll('"', "")).filter(Boolean).sort();
   pin("logPrompt's source union and continuity's live-source set are the SAME set — a new source is never silently out-of-scope",
-    promptSources.length >= 6 && JSON.stringify(promptSources) === JSON.stringify(contTypeSources)
+    promptSources.length === 5 && JSON.stringify(promptSources) === JSON.stringify(contTypeSources)
       && JSON.stringify(promptSources) === JSON.stringify(contListSources),
     `logPrompt=${promptSources.join(",")} type=${contTypeSources.join(",")} list=${contListSources.join(",")}`);
 
@@ -3951,152 +3903,6 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // visible at runtime. A nudge that read a slot off the body would answer happily on every request
   // whose body happens not to carry one, and a view that mutated would only be wrong on the state
   // it silently changed.
-  const svNudgeAt = server.indexOf("async function supervisorNudge(");
-  const svNudgeBody = svNudgeAt < 0 ? ""
-    : server.slice(svNudgeAt, server.indexOf("\n}\n", svNudgeAt));
-  pin("the Supervisor nudge DERIVES its receiver from the named program's binding — it never reads a slot off the body",
-    svNudgeBody.length > 0
-      && /programs\.find\(\(p\) => p\.id === body\.programId\)/.test(svNudgeBody)
-      && /slotFrom\(main\.slot\)/.test(svNudgeBody)
-      && !/body\.(?:slot|receiver|target|receiverSlot)\b/.test(svNudgeBody)
-      && !/slotFrom\(body/.test(svNudgeBody),
-    svNudgeBody.length > 0 ? "receiver derivation" : "supervisorNudge handler missing");
-  const svViewAt = server.indexOf("async function supervisorView(");
-  const svViewBody = svViewAt < 0 ? "" : server.slice(svViewAt, server.indexOf("\n}\n", svViewAt));
-  const svViewRouteAt = server.indexOf('url.pathname === "/api/self/supervisor-view"');
-  const svViewRouteBody = svViewRouteAt < 0 ? "" : server.slice(svViewRouteAt, svViewRouteAt + 600);
-  pin("SupervisorExecutionView is registered on the self rail and holds no mutation primitive in its handler",
-    svViewBody.length > 0 && svViewRouteAt > 0
-      && /x-fleet-self-token/.test(svViewRouteBody)
-      && /const refusal = supervisorRefusal\(s\);\s*\n\s*if \(refusal\) return json\(\{ error: refusal \}, 409\);/.test(svViewRouteBody)
-      && !/\b(?:saveState|saveStateNow|appendEvent|audit|sendText|spawnCmd|logPrompt)\s*\(/.test(svViewBody),
-    svViewBody.length > 0 ? "mutation primitive present" : "supervisorView handler missing");
-  // WHO MAY READ isBoundSupervisor — the SET of its readers is the rule, and it is named here.
-  // The predicate was written as a LOCAL rule of the two Cut-2 routes; the comment over its
-  // definition still calls it "the whole authorization story of both routes below", and it is the
-  // ONLY authorization condition those routes have. fa69586 gave it a THIRD reader, a disjunct in
-  // the programs list far below that block, and nothing recorded that the sentence had stopped
-  // being true. Every further reader widens what a bound Supervisor may reach, and it costs one
-  // line that reads like reuse: no compiler, no review diff and no suite makes that visible.
-  //
-  // IDENTIFIED, NOT COUNTED. A `=== 3` would fall on a correctly moved call or a renamed slot
-  // variable and then say nothing useful, while three readers that are the WRONG three would pass
-  // it. So each call names itself by the ROUTE it sits in (nearest preceding url.pathname literal —
-  // a reader outside the dispatcher gets no route name and fails) plus its SHAPE: `gate` refuses a
-  // non-Supervisor with NOT_SUPERVISOR/409, `widening` is a disjunct that hands the Supervisor
-  // something a plain session would not see. Compared as a MULTISET, so the order of the three in
-  // the file stays free, while a gate quietly turned into a disjunct — or a second reader inside an
-  // already-named route — is a different set and falls.
-  const SV_READERS_ALLOWED = [
-    "/api/self/programs [widening]",     // GET-filter disjunct — the Supervisor reads every Program's content
-    // STN-1: the one reader OUTSIDE the dispatcher, and it NARROWS rather than widens — the
-    // Supervisor may not register a transition watch on itself (it is the completer). Named by
-    // its enclosing function and the `exclusion` shape: `if (isBoundSupervisor(s))` → 409.
-    "createWatchForSlot [exclusion]",
-    // 2026-09-07: the three ROUTE gates collapsed into ONE reader. They used to hold three copies
-    // of `!isBoundSupervisor(s) → NOT_SUPERVISOR/409`, which answered a session the same sentence
-    // whether someone else held the role or the binding had died with its occupant — a fleet-level
-    // fault that was, from inside a pane, indistinguishable from ordinary refusal. supervisorRefusal
-    // reads the predicate ONCE and returns the SENTENCE; the routes turn it into the 409, and the
-    // pin below keeps that half honest. `refusal` is its own shape: not a gate (it decides nothing
-    // by itself) and emphatically not a widening.
-    "supervisorRefusal [refusal]",
-    // ACP-18 · the addressed message rail's TWO readers, both OUTSIDE the dispatcher and both of a
-    // shape none of the four above describes: they neither gate a route nor widen a query, they
-    // DERIVE THE CALLER'S OWN ADDRESS — "is this session the principal `role:supervisor`?" — so the
-    // Supervisor can send and be sent to under a name that survives its own succession. Their own
-    // shape (`principal`) rather than `unclassified`, because two entries parked in the catch-all
-    // would blunt exactly the distinction this pin exists to keep.
-    "messageSenderFor [principal]",
-    "messageAddressesFor [principal]",
-  ];
-  // literal routes AND regex routes, both by position: a regex route between two literals would
-  // otherwise be named after the literal above it, which is a different door.
-  const svRoutesAt = [
-    ...[...server.matchAll(/url\.pathname === "([^"]+)"/g)].map((m) => ({ at: m.index, path: m[1] ?? "" })),
-    ...[...server.matchAll(/(\/\^[^\n]*?\/)\.exec\(url\.pathname\)/g)].map((m) => ({ at: m.index, path: m[1] ?? "" })),
-  ].sort((a, b) => a.at - b.at);
-  const svFunctionsAt = [...server.matchAll(/^(?:async )?function ([A-Za-z0-9_]+)\(/gm)]
-    .map((m) => ({ at: m.index, name: m[1] ?? "" }));
-  const svDispatcherAt = server.indexOf("async function handle(");
-  const svReadersFound = [...server.matchAll(/isBoundSupervisor\s*\(/g)].map((m) => {
-    const at = m.index;
-    const before = server.slice(Math.max(0, at - 120), at);
-    const after = server.slice(at, at + 200);
-    const kind = /!\s*isBoundSupervisor\s*\($/.test(`${before}isBoundSupervisor(`)
-        && /NOT_SUPERVISOR/.test(after) && /\b409\b/.test(after) ? "gate"
-      : /(?:\|\||&&)\s*$/.test(before) ? "widening"
-      : /if \($/.test(before) && /^isBoundSupervisor\(s\)\)\s*\n\s*return json\(\{ error: "[^"]*" \}, 409\)/.test(after) ? "exclusion"
-      : /^isBoundSupervisor\(s\) \? null : NOT_SUPERVISOR;/.test(after) ? "refusal"
-      // ACP-18: the caller's own address, not a route decision. Both forms are spelled out so a
-      // reader of a DIFFERENT shape cannot drift into this bucket; the function name in the entry
-      // keeps the same line appearing elsewhere from passing as one of these two.
-      : /^isBoundSupervisor\(s\)\) out\.push\(\{ kind: "role", role: "supervisor" \}\);/.test(after) ? "principal"
-      : /const sup = $/.test(before) ? "principal"
-      : "unclassified";
-    let route = "OUTSIDE THE ROUTE DISPATCHER";
-    if (svDispatcherAt >= 0 && at > svDispatcherAt) {
-      for (const r of svRoutesAt) { if (r.at < at) route = r.path; else break; }
-    } else {
-      for (const f of svFunctionsAt) { if (f.at < at) route = f.name; else break; }
-    }
-    return `${route} [${kind}]`;
-  }).sort();
-  const svMissingFrom = (a: string[], b: string[]): string[] => {
-    const rest = [...b], out: string[] = [];
-    for (const x of a) { const i = rest.indexOf(x); if (i < 0) out.push(x); else rest.splice(i, 1); }
-    return out;
-  };
-  const svUnnamed = svMissingFrom(svReadersFound, SV_READERS_ALLOWED);
-  const svVanished = svMissingFrom(SV_READERS_ALLOWED, svReadersFound);
-  pin("every reader of isBoundSupervisor is named here — a reader not in this list widens the Supervisor's reach, so name it here or take it back",
-    svUnnamed.length === 0 && svVanished.length === 0,
-    svUnnamed.length > 0 || svVanished.length > 0
-      ? `unnamed=[${svUnnamed.join(" · ")}] no-longer-there=[${svVanished.join(" · ")}] found=[${svReadersFound.join(" · ")}]`
-      : svReadersFound.join(" · "));
-  // THE OTHER HALF OF THE COLLAPSE. supervisorRefusal returns a SENTENCE and refuses nothing on its
-  // own, so the pin above can no longer see that the three doors are gated at all — a route that
-  // dropped its two lines would read as "one fewer reader" and pass. Named, not counted, on the same
-  // discipline: each call site is the nearest preceding route literal, and each must turn the
-  // sentence into the 409 immediately, before the handler is entered.
-  const SV_REFUSAL_ROUTES = [
-    "/api/self/nudge",                                                // the one bounded VOICE
-    "/api/self/supervisor-view",                                      // the SENSES
-    "/^\\/api\\/self\\/supervisor-watch\\/([a-z0-9]+)\\/complete$/", // STN-1, the SECOND voice
-  ];
-  const svRefusalFound = [...server.matchAll(/const refusal = supervisorRefusal\(s\);\s*\n\s*if \(refusal\) return json\(\{ error: refusal \}, 409\);/g)]
-    .map((m) => {
-      let route = "OUTSIDE THE ROUTE DISPATCHER";
-      const at = m.index;
-      if (svDispatcherAt >= 0 && at > svDispatcherAt)
-        for (const r of svRoutesAt) { if (r.at < at) route = r.path; else break; }
-      return route;
-    }).sort();
-  const svRefusalCalls = (server.match(/supervisorRefusal\(s\)/g) ?? []).length;
-  pin("supervisorRefusal is read by EXACTLY the three Supervisor self routes, each turning the sentence straight into a 409",
-    JSON.stringify(svRefusalFound) === JSON.stringify([...SV_REFUSAL_ROUTES].sort())
-      && svRefusalCalls === SV_REFUSAL_ROUTES.length,
-    `found=[${svRefusalFound.join(" · ")}] calls=${svRefusalCalls}`);
-  // The bind door is the SECOND way the cross-program binding is ever written, so it carries both
-  // rules its neighbours carry, for their reason: neither is visible at runtime. A bind reachable
-  // with a self token would let a session appoint itself, and a binding written before the send
-  // would only be wrong on the run where the send fails — appointing a Supervisor that was never
-  // told it holds the role, which is the exact silence this whole seam exists to end.
-  const svBindRouteAt = server.indexOf('url.pathname === "/api/supervisor/bind"');
-  const svBindRouteBody = svBindRouteAt < 0 ? "" : server.slice(svBindRouteAt, svBindRouteAt + 600);
-  const svBindAtFn = server.indexOf("async function bindSupervisor(");
-  const svBindBody = svBindAtFn < 0 ? "" : server.slice(svBindAtFn, server.indexOf("\n}\n", svBindAtFn));
-  const svBindSendAt = svBindBody.indexOf("await sendText(target, delivered, true,");
-  const svBindWriteAt = svBindBody.indexOf("supervisor = {");
-  pin("the Supervisor bind is minted on the OWNER rail only, names its slot explicitly, and writes the binding only AFTER a successful send",
-    svBindRouteAt > 0 && selfRailAt > 0 && svBindRouteAt > selfRailAt
-      && /if \(!\(await tokenGate\(tokenFrom\(req\)\)\)\) return json\(\{ error: "unauthorized" \}, 401\);/.test(svBindRouteBody)
-      && !/x-fleet-self-token/.test(svBindRouteBody)
-      && svBindSendAt > 0 && svBindWriteAt > svBindSendAt
-      // no label match, no "first idle", no wildcard: the target comes from body.slot and nothing else
-      && /const target = slotFrom\(body\.slot as number\);/.test(svBindBody)
-      && !/slots\.find\(/.test(svBindBody) && !/\.label\b/.test(svBindBody),
-    `route=${svBindRouteAt} send=${svBindSendAt} write=${svBindWriteAt}`);
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",
@@ -5957,7 +5763,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const body = (name: string): string =>
     server.match(new RegExp(`async function ${name}\\(s: Slot\\): Promise<Response> \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
   const execBody = body("programExecutionView");
-  const supBody = body("supervisorView");
   const callsIn = (text: string): number => text.split("phaseOf(").length - 1;
   // the honesty arm is part of the TYPE, so a build that dropped it could not compile a caller
   // that handles it — this pin catches the edit that removes it from the union instead.
@@ -5965,10 +5770,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_PHASE} — Phase keeps its UNKNOWN arm and the reducer exports phaseOf`,
     /"UNKNOWN"/.test(phaseUnion) && /export function phaseOf\(/.test(reducer),
     `union=[${phaseUnion.trim()}]`);
-  pin(`${RULE_PHASE} — server.ts calls phaseOf in exactly the two view functions and nowhere else`,
-    execBody !== "" && supBody !== "" && callsIn(execBody) === 1 && callsIn(supBody) === 1
-      && callsIn(server) === 2,
-    `exec=${callsIn(execBody)} supervisor=${callsIn(supBody)} server=${callsIn(server)}`);
+  pin(`${RULE_PHASE} — server.ts calls phaseOf in exactly the execution view function and nowhere else`,
+    execBody !== "" && callsIn(execBody) === 1 && callsIn(server) === 1,
+    `exec=${callsIn(execBody)} server=${callsIn(server)}`);
   // Condition 1 of the review: a pruned input (fleetReports, terminal attention rows) or a git
   // spawn would make the same row project differently between two GETs with no fact change.
   // comments STRIPPED first: the file's header names these very tokens to say it must not read
@@ -5983,13 +5787,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // rows enter, so its filter must carry the open-status guard rather than counting pruned rows.
   const inputBuilder = server.match(/function programPhaseInput\([\s\S]*?\n\}/)?.[0] ?? "";
   const attentionFilters = server.split("attentionRequests.filter(").length - 1;
-  // Falsifier §10.6: the Supervisor rollup is the one place a projection could leak row bodies onto
-  // the largest Supervisor payload. A histogram is under 100 B per program; per-row bases are not.
-  const rollup = supBody.match(/tasks: \{[^}]*phases[^}]*\}/)?.[0] ?? "";
-  pin(`${RULE_PHASE} — the Supervisor rollup carries phase COUNTS, never row bodies`,
-    rollup !== "" && !/phaseBasis|candidate|rows:/.test(rollup)
-      && /phases\[derived\.phase\] = \(phases\[derived\.phase\] \?\? 0\) \+ 1;/.test(supBody),
-    rollup === "" ? "no phases rollup found in supervisorView" : rollup.trim());
   // …and the POINTER that rides beside the phase. `nextAction` is a projection like `phase` and
   // inherits its one hard rule: it says WHERE a row sits and WHICH door is next, never whether the
   // work is good. A grading word here would smuggle a judgement into a mechanism that must not
@@ -6281,7 +6078,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_KINDS = "the FleetEvent kind set is closed";
   const expected = ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit",
     "deploy-terminal", "command-job", "lane-suite", "clarification-request", "fleet-report",
-    "supervisor-transition", "harness-block", "lane-review", "succession-debt", "message"].sort();
+    "harness-block", "lane-review", "succession-debt", "message"].sort();
   const signals = read("lane-signals.ts");
   const laneKinds = (signals.match(/export type LaneWatchEventKind =([^;\n]+)/)?.[1] ?? "")
     .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
@@ -7756,7 +7553,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const succeedBody = succeedAt < 0 ? "" : server.slice(succeedAt, bootstrapAt);
   const programLoadAt = server.indexOf("const loaded: Program[] = [];");
   const programLoadBody = programLoadAt < 0 ? "" : server.slice(programLoadAt,
-    server.indexOf("// The Supervisor binding", programLoadAt));
+    server.indexOf("// THE LINE RECORDS,", programLoadAt));
   const completeAt = server.indexOf('if (action[2] === "complete")');
   const completeBody = completeAt < 0 ? "" : server.slice(completeAt, server.indexOf('if (program.status !== "proposed")', completeAt));
   const selfSucceedAt = server.indexOf("async function handleSelfSucceed(");
@@ -9833,18 +9630,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && !/body\.(from|sender|slot)\b/.test(msgSend),
     msgSend === "" ? "sendMessageFor not found in the server universe"
       : `derived=${msgSend.includes("messageSenderFor(s)")} closed=${msgSend.includes('["to", "payload", "idempotencyKey", "replyTo"]')}`);
-  // M3 — ONE PREDICATE FOR THE ROLE. A second copy of the Supervisor rule is how the view and the
-  // delivery start disagreeing about who holds the role; both message readers go through the one
-  // predicate, and the reader-set pin above additionally names them.
-  const msgSender = server.match(/function messageSenderFor\([\s\S]*?\n\}/)?.[0] ?? "";
-  const msgAddrs = server.match(/function messageAddressesFor\([\s\S]*?\n\}/)?.[0] ?? "";
-  pin(`${RULE_MESSAGES} — both principal derivations resolve the role through isBoundSupervisor and never through a label or a slot number`,
-    msgSender !== "" && msgAddrs !== ""
-      && msgSender.includes("isBoundSupervisor(s)") && msgAddrs.includes("isBoundSupervisor(s)")
-      && !/supervisor\.slot\s*===/.test(msgSender) && !/supervisor\.slot\s*===/.test(msgAddrs)
-      && !/SUPERVISOR_LABEL/.test(msgSender) && !/SUPERVISOR_LABEL/.test(msgAddrs),
-    msgSender === "" || msgAddrs === "" ? "messageSenderFor or messageAddressesFor not found in the server universe"
-      : `sender=${msgSender.includes("isBoundSupervisor(s)")} reader=${msgAddrs.includes("isBoundSupervisor(s)")}`);
   // M4 — THE ONE WRITER, counted like the inbox's: `dropped` is only a true number while a single
   // function maintains it, so a second assignment anywhere in the universe is the violation.
   const msgWriters = (server.match(/\bmessages = \{/g) ?? []).length;

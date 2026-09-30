@@ -102,14 +102,13 @@ import {
 import { opsPollRow, opsPollVisible } from "./src/opsevents";
 // the persisted domain model and its parsers — P4 Slice 1 moved them out whole; see server/types.ts
 import {
-  MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
-  TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
+  MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventFrom, clarificationFrom, fleetReportFrom, attentionFrom,
   MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT, MAX_ATTENTION_TEXT,
   FLEET_REPORT_DISPOSITIONS, FLEET_REPORT_FULFILLED, MAX_FLEET_REPORT_DECISION_REASON,
   MAX_FLEET_REPORT_DELIVERY_REASON,
   MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT, ATTENTION_CANDIDATE_SHA_RE,
-  validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind, loadTaskKindChanges, TASK_REVIEW_MODES,
+  validAttentionBranch, MAX_MESSAGE_TEXT, TASK_KINDS, isTaskKind, loadTaskKind, loadTaskKindChanges, TASK_REVIEW_MODES,
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, loadPromotionRequest, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
   PROGRAM_INBOX_MAX, loadProgramInbox, type ProgramRecordLoss, loadProgramRecordLoss,
@@ -135,11 +134,11 @@ import {
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
   type StudioBriefAudience,
   type BoxPin, type WSData, type Share, type ShareComment, type Auto, type WatchBase, type MergeWatch,
-  type TransitionWatch, type Watch, type FleetEventStatus, type FleetEventRecoveryState,
+  type Watch, type FleetEventStatus, type FleetEventRecoveryState,
   HELPER_CMD_ALLOW, helperCmdCheck, helperArtifactGlobsFrom, helperArtifactsFrom, HELPER_ARTIFACT_MAX,
   type LaneFleetEvent, type MergeFleetEvent, type AuditFleetEvent, type DeployFleetEvent,
   type CommandJobFleetEvent,
-  type ClarificationFleetEvent, type FleetReportFleetEvent, type SupervisorTransitionFleetEvent,
+  type ClarificationFleetEvent, type FleetReportFleetEvent,
   type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportFulfilled, type FleetReportDecision,
   type AttentionKind,
   type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type SuccessionDebtFleetEvent, type MessageFleetEvent, type SuccessionDebt,
@@ -157,7 +156,7 @@ import {
   type ProgramInboxKind, type ProgramInboxEntry, type ProgramInbox,
   type ProgramFoundingMode, type ProgramFoundingProfileKind, type ProgramFoundingIdentity,
   type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
-  type ProgramValidation, type SupervisorBinding, type ProgramDigest, type DispatchSpawn, type SlotContext,
+  type ProgramValidation, type ProgramDigest, type DispatchSpawn, type SlotContext,
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
   loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
@@ -2507,25 +2506,16 @@ const sameProgramSession = (p: Program, s: Slot): boolean => p.proposedBy.kind =
   && p.proposedBy.slot === s.id && p.proposedBy.openedAt === s.openedAt
   && p.proposedBy.sessionId === s.sessionId;
 let programs: Program[] = [];
-// The studio inventory — a SHARED source several Programs may bind, so it lives beside `programs`
-// rather than inside one of them, exactly as the Supervisor binding does for the same reason.
-// The cap is HARD and evicts nothing: capPrograms may drop rows because a COMPLETE Program is a
-// prunable candidate (since K2, one no open task still names), and a studio never becomes complete
-// — an eviction here would have no candidate but the owner's own act. Overflow is refused AT THE
-// DOOR (409), never lost in silence.
 let studios: Studio[] = [];
 const programBootstrapInflight = new Set<string>();
 let startupStateRefusal: string | null = null;
 
-let supervisor: SupervisorBinding | null = null;
 // the role-lineage handover records (server/types.ts#LineageHandover) and the scars of the ones the
 // loader refused; both persisted, both bounded, neither ever repaired field by field
 let lineageHandovers: LineageHandover[] = [];
 let lineageHandoverLosses: LineageHandoverLoss[] = [];
 // what an in-place succession still owes after its predecessor ended (server.ts#recordSuccessionDebt)
 let successionDebts: SuccessionDebt[] = [];
-let supervisorBootstrapInflight = false;
-const SUPERVISOR_LABEL = "🧿 Supervisor";
 const MAX_PROGRAMS = 100;
 // K2: A PROGRAM AN OPEN ROW NAMES IS NOT SPARE CAPACITY — the same bargain capTasks struck for a
 // held source, read in the other direction. A COMPLETE Program is prunable because nothing is owed
@@ -2580,7 +2570,7 @@ const publicProgram = (program: Program): Record<string, unknown> => ({ ...progr
 // `evidence` becomes a COUNT rather than vanishing: no renderer hangs off it, but probes do, and a
 // number keeps their intent ("the full row is fat") sharper than an `Array.isArray` ever did.
 // This is the LIST only. Every other publicProgram callsite keeps the full shape by design —
-// /api/self/programs above all, where a pane reads the content itself (e2e/supervisor.ts).
+// /api/self/programs above all, where a pane reads the content itself (e2e/programs.ts).
 const publicProgramListRow = (program: Program): Record<string, unknown> => {
   const { nonGoals: _nonGoals, decisions: _decisions, evidence: _evidence,
     openQuestions: _openQuestions, ...rest } = publicProgram(program);
@@ -2594,16 +2584,6 @@ const foundingUnavailableResponse = (founding: ProgramFounding,
     error, availability: "unknown", recovery, affected: foundingAffected(founding),
   }, 503);
 
-// --- the ONE assembly point for the phase reducer's inputs (program-phase.ts, brief §2 I1–I6).
-// Both readers of `phase` go through this, so the Program view and the Supervisor rollup can never
-// be looking at differently-assembled facts — the same argument laneSignalView makes for the
-// done-looking predicate one bracket lower.
-//
-// It READS ONLY: no map is mutated, no ledger written, no subprocess spawned (a git spawn inside a
-// view is forbidden — the sessions poll must never block on one). The open-status guard on the
-// attention filter lives HERE rather than at the callers, because terminal attention rows are
-// pruned (ATTENTION_KEEP_TERMINAL) and a projection over prunable rows would drift with age
-// instead of with facts.
 function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFacts | null,
   now: number): PhaseInput {
   // I2, the exact triple: a slot that merely shares the cwd is not this row's lane, and a slot
@@ -3630,20 +3610,6 @@ async function memoryObservationsView(s: Slot, scope: Extract<MemoryScope, { ok:
   });
 }
 
-// --- M4: THE PORTFOLIO (view=portfolio; task 41641179) ---------------------------------------
-// The project memories FOLDED: one bounded projection per project the reader may see, and totals
-// whose every value names the project slices it sums and each slice's source version. No project
-// memory is copied anywhere — the fold is computed from the carriers M1/M3 read, on each request.
-//
-// WHO MAY FOLD WHAT. The bound Supervisor keeps its existing cross-program reach (every project this
-// server knows). Anyone else needs a READ GRANT the owner set on its exact occupant and line
-// (MemoryGrant; PATCH /api/slots/:id/memory-grant): the grant names the projectKeys and projections.
-// A label ("Orchestrator"), a model or a lane grants nothing — no-grant / lane-scope 409. The grant
-// is read permission only: no write, dispatch or land path consults it.
-//
-// A PROJECT WITHOUT FACTS IS UNKNOWN, NOT EMPTY: a granted key no carrier names now is listed with
-// state "unknown" and left out of every total (`partial: true`); an unreadable source marks the
-// projects it feeds `coverage: "incomplete"` and never shrinks or grows the scope.
 const MEMORY_PORTFOLIO_PAGE_MAX = 10;
 const MEMORY_PORTFOLIO_SNAPSHOT_SCAN = 256 * 1024;
 // the projects this server can name now: the dispatch repo, every live row's repo, every lane's repo
@@ -3668,16 +3634,14 @@ function effectiveGrant(s: Slot): MemoryGrant | null {
     && g.lineageId === s.lineageId ? g : null;
 }
 type PortfolioScope =
-  | { ok: true; principal: "supervisor" | "grant"; keys: string[]; views: MemoryGrantView[]; grant: MemoryGrant | null }
+  | { ok: true; principal: "grant"; keys: string[]; views: MemoryGrantView[]; grant: MemoryGrant | null }
   | { ok: false; response: Response };
 function memoryPortfolioScope(s: Slot, url: URL): PortfolioScope {
   if (s.worktree)
-    return memoryRefusal("lane-scope", "a lane reads its own task only — the portfolio is folded for the Supervisor or an owner-granted occupant");
-  const isSupervisor = !!supervisor && supervisor.slot === s.id && supervisor.openedAt === s.openedAt;
+    return memoryRefusal("lane-scope", "a lane reads its own task only — the portfolio is folded for an owner-granted occupant");
   const grant = effectiveGrant(s);
   let scope: Extract<PortfolioScope, { ok: true }>;
-  if (isSupervisor) scope = { ok: true, principal: "supervisor", keys: [...knownProjects().keys()].sort(), views: [...MEMORY_GRANT_VIEWS], grant: null };
-  else if (grant) scope = { ok: true, principal: "grant", keys: [...grant.projectKeys], views: [...grant.views], grant };
+  if (grant) scope = { ok: true, principal: "grant", keys: [...grant.projectKeys], views: [...grant.views], grant };
   else return memoryRefusal("no-grant", `no read grant is in force on this occupant (slot ${s.id}, openedAt ${s.openedAt})`
     + `${isOrchestratorLabel(s.label) ? " — a role label grants nothing" : ""}; the owner sets one with PATCH /api/slots/${s.id}/memory-grant`);
   const want = url.searchParams.get("project");
@@ -3904,7 +3868,7 @@ function memoryGrantView(s: Slot): Response {
 // THE SUCCESSION CARRY (generic rail only — the Orchestrator's and every unbound line's). A grant
 // in force moves to the successor of the SAME line, either whole or narrowed by the succeed body's
 // `memoryGrant: {projectKeys?, views?}`; a key or view outside it is scope growth and refused before
-// anything ends. The Supervisor and Program-MAIN rails carry no grant: those roles hold their reach
+// anything ends. The Program-MAIN rail carries no grant: those roles hold their reach
 // from their binding, and a grant set on such an occupant ends with it.
 function memoryGrantCarry(s: Slot, raw: unknown):
   { ok: true; carry: MemoryGrant | null } | { ok: false; status: number; refusal: string; error: string } {
@@ -4011,7 +3975,7 @@ function reportDelegateView(s: Slot): Response {
     inForce: effectiveDelegate(s) !== null, holder: holder ? { slot: holder.id, openedAt: holder.openedAt } : null });
 }
 // the generic succession rail's carry, called in the SAME synchronous step that writes the line
-// record onto the successor — the delegation moves whole; the Supervisor and Program-MAIN rails end it
+// record onto the successor — the delegation moves whole; the Program-MAIN rail ends it
 function transferReportDelegate(successor: Slot, carry: ReportDelegate, from: { slot: number; openedAt: number }): void {
   successor.reportDelegate = { ...carry, revision: carry.revision + 1, issuedBy: "succession", issuedAt: Date.now(),
     lineageId: successor.lineageId, occupant: { slot: successor.id, openedAt: successor.openedAt },
@@ -5417,14 +5381,7 @@ function noteComposed(slotId: number, text: string): void {
   list.push({ text: text.trim().slice(0, 5000), ts: Date.now() });
   recentComposed.set(slotId, list);
 }
-// `sendId`/`delivery` are the OPTIONAL half: only a surface that mints a delivery identity (today
-// the owner /send receipt) passes them, and an absent one stays absent from the line rather than
-// being written as null — every reader of this journal parses optional fields, so "absent" and
-// "this surface has no send identity" must stay the same thing.
-// "supervisor" is its own word, additively: attributing a cross-program nudge to "owner" would make
-// the journal say a human typed it, and "auto" would say a tick did. Neither is true, and the
-// attribution is the point of writing the line at all.
-function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal" | "steward" | "supervisor", ts: number,
+function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal" | "steward", ts: number,
   sendId?: string, delivery?: PromptDelivery): void {
   if (source !== "terminal") noteComposed(s.id, text);
   // The six original fields keep their names AND their order (readers only ever add optional keys).
@@ -5536,7 +5493,7 @@ function stateSnapshot(): string {
     slots: active, recents, pins, shares, autos, watches,
     events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, studios,
     messages, ...(messagesLost ? { messagesLost } : {}),
-    supervisor, lineageHandovers, lineageHandoverLosses,
+    lineageHandovers, lineageHandoverLosses,
     ...(successionDebts.length ? { successionDebts } : {}),
     ...(laneSucceedCounts.size ? { laneSucceedCounts: Object.fromEntries(laneSucceedCounts) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
@@ -8837,7 +8794,7 @@ type SendPath =
   | "bundle"            // full texts from one receiver's held delivery window
   | "owner"             // POST /send — the owner typing into a pane
   | "brief"             // a task's founding brief into a fresh lane (briefAndSend)
-  | "founding"          // a Program-MAIN / Supervisor / orchestrator founding or bind brief
+  | "founding"          // a Program-MAIN / orchestrator founding or bind brief
   | "succession"        // the successor's founding brief on POST /api/self/succeed
   | "auto"              // a scheduled check-in firing (tickAutos)
   | "steward"           // the steward's own send door
@@ -8847,7 +8804,6 @@ type SendPath =
   | "model-push"       // the owner model route opting into /model on the live pane
   | "merge-author"      // the conflict author prompt into the lane that owns the branch
   | "merge-verdict"     // the terminal merge verdict typed back into that lane
-  | "supervisor-nudge"  // the Supervisor nudging a bound Program-MAIN
   | "audit-ping"        // a post-land audit red offered to an eligible main session
   | "inbox-nudge"       // "your program's inbox has unread entries"
   | "report-orphan"     // an undecided Program report lost its MAIN
@@ -8888,7 +8844,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "bundle": "gebuendelte Fleet-Zustellungen",
   "owner": "Owner-Credential",
   "brief": "Gruendungs-Brief einer Lane",
-  "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Supervisor, Orchestratorin)",
+  "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Orchestratorin)",
   "succession": "Nachfolge-Brief (POST /api/self/succeed)",
   "auto": "geplanter Check-in",
   "steward": "Steward-Sendetuer",
@@ -8898,7 +8854,6 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "model-push": null,
   "merge-author": "Konfliktauftrag des Merge-Pfads",
   "merge-verdict": "Merge-Urteil",
-  "supervisor-nudge": "Supervisor-Hinweis",
   "audit-ping": "Post-Land-Audit-Hinweis",
   "inbox-nudge": "Inbox-Hinweis",
   "report-orphan": "Hinweis auf verwaisten Program-Report",
@@ -8922,7 +8877,6 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "report-decision": "naechster Schritt: beachte die Entscheidung zum Report · Grenze: kein Land durch die Lane",
   "merge-author": "naechster Schritt: loese den benannten Konflikt · Grenze: dein Branch und Auftrag",
   "merge-verdict": "naechster Schritt: fuehre aus, was das Urteil nennt (Rebase, Reparatur, Warten) · Grenze: der benannte Branch",
-  "supervisor-nudge": "naechster Schritt: pruefe den benannten Stillstand · Grenze: dein Program",
   "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
   "inbox-nudge": "naechster Schritt: lies die ungelesenen Program-Eintraege · Grenze: dein Program",
   "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
@@ -9985,30 +9939,8 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
   const b = body ?? {};
   const kind = b.kind === undefined ? "lane" : b.kind;
   if (kind !== "lane" && kind !== "merge" && kind !== "audit" && kind !== "deploy"
-    && kind !== "transition" && kind !== "job")
-    return json({ error: "kind must be 'lane', 'merge', 'audit', 'deploy', 'transition', or 'job'" }, 400);
-  // STN-1 registration: a CLOSED body. Receiver is `s`, completer is the bound Supervisor — neither
-  // is a body fact, so foreign fields are refused BY NAME rather than ignored (a silently dropped
-  // field reads to its author as honoured). `delivery` too: the inbox is the owner's, not a Controller's.
-  if (kind === "transition") {
-    const TRANSITION_FIELDS = ["kind", "idleSec", "deadlineSec", "awaiting"];
-    const extra = Object.keys(b).filter((k) => !TRANSITION_FIELDS.includes(k));
-    if (extra.length)
-      return json({ error: `a transition watch reads kind, idleSec, deadlineSec and awaiting only — [${extra.join(", ")}] is not read: the receiver is this session, the completer is the bound Supervisor, and delivery is pane-only` }, 400);
-    if (typeof b.awaiting !== "string" || !b.awaiting.trim())
-      return json({ error: "awaiting must be a non-empty string naming the transition you expect" }, 400);
-    if (b.awaiting.length > TRANSITION_AWAITING_MAX)
-      return json({ error: `awaiting must be at most ${TRANSITION_AWAITING_MAX} chars` }, 400);
-    if (b.deadlineSec !== undefined && (typeof b.deadlineSec !== "number" || !Number.isFinite(b.deadlineSec)
-      || b.deadlineSec < TRANSITION_DEADLINE_MIN_SEC || b.deadlineSec > TRANSITION_DEADLINE_MAX_SEC))
-      return json({ error: `deadlineSec must be a number in [${TRANSITION_DEADLINE_MIN_SEC}, ${TRANSITION_DEADLINE_MAX_SEC}]` }, 400);
-    if (!supervisor) return json({ error: "no bound Supervisor exists — this watch could never be completed" }, 409);
-    const sv = slotFrom(supervisor.slot);
-    if (!(sv?.cwd && sv.openedAt === supervisor.openedAt))
-      return json({ error: "the bound Supervisor occupant is gone or was replaced — this watch could never be completed" }, 409);
-    if (isBoundSupervisor(s))
-      return json({ error: "the Supervisor cannot register a transition watch on itself — it is the completer, not a receiver" }, 409);
-  }
+    && kind !== "job")
+    return json({ error: "kind must be 'lane', 'merge', 'audit', 'deploy', or 'job'" }, 400);
   // WHERE the completion goes is a subscription fact, named by the subscriber. Absent stays absent
   // (legacy pane); anything else is refused by name rather than defaulted, because guessing the
   // transport is exactly the failure this field exists to remove.
@@ -10116,10 +10048,6 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     // NEW question, and level-triggering answers it at once from the persisted verdict.
     if (kind === "job") return watchKind(w) === "job" && "jobId" in w
       && w.jobId === jobIdentity!.job.id && w.armed;
-    // a transition watch is a question the Controller asks in its own words; the same words,
-    // still armed, are the same question. A spent one is never returned as existing — a new
-    // registration after a completion or an expiry is a NEW question.
-    if (kind === "transition") return "awaiting" in w && w.armed && w.awaiting === String(b.awaiting);
     // A merge duplicate is the same subscription only while armed. Once fired, the terminal/inflight
     // distinction below decides whether this is a stale repeat or a subscription to a newer run.
     // A lane duplicate is the armed watch, or the spent one whose lane end still stands (above).
@@ -10155,9 +10083,6 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     ? { ...common, kind: "deploy", deployId: deployIdentity!.deployId }
     : kind === "job"
     ? { ...common, kind: "job", jobId: jobIdentity!.job.id }
-    : kind === "transition"
-    ? { ...common, kind: "transition", awaiting: String(b.awaiting),
-      deadlineAt: common.created + 1000 * (typeof b.deadlineSec === "number" ? b.deadlineSec : TRANSITION_DEADLINE_DEFAULT_SEC) }
     : { ...common, kind, target: identity!.t.id, targetCwd: identity!.cwd, targetBranch: identity!.branch };
   watches = [...watches, w];
   pruneSpentWatches(s.id);
@@ -10417,7 +10342,7 @@ function scheduleSuccessionRetirement(s: Slot, pending: SuccessionRetirement): v
 
 // THE LINE STAYS ON ITS SLOT (owner 2026-09-21, after the Anfrage line wandered from slot 2 to 6:
 // „[Zitat entfernt]“). Until then
-// only the lane baton respawned in place; the generic, Supervisor and Program-MAIN rails opened the
+// only the lane baton respawned in place; the generic and Program-MAIN rails opened the
 // FIRST FREE slot, let the predecessor live through MIGRATE_GRACE_MS and retired it afterwards — so
 // a MAIN line hopped slots on every succession (the orchestrator: 10,6,7,6,7,11,13), its band was
 // never where the owner last saw it, and a full fleet refused the handover with „[Zitat entfernt]“.
@@ -10591,16 +10516,6 @@ function recordSuccessionDebt(s: Slot, rail: string, predecessor: SuccessionPred
   return debt;
 }
 
-// A generic line whose respawn failed is picked up by the next OWNER open of that slot on that cwd —
-// the act the failure's own sentence asks for („[Zitat entfernt]“). The record is addressed to the
-// new occupant and the debt now names it, so the held brief can be resent. The Supervisor and the
-// Program-MAIN rails re-found through their own bootstrap and are not adopted by a plain open.
-//
-// SLOT AND CWD ARE NOT A LINE: most MAINs, the orchestrator among them, sit in the one main checkout,
-// so any later, unrelated open of that slot there would silently take a dead line's record — and a
-// resend would paste its old brief into a stranger. Adoption therefore also asks for the successor's
-// LABEL and a short window after the failure; outside it the debt is settled as orphaned
-// (settleSuccessionDebts), never handed to whoever comes next.
 const SUCCESSION_DEBT_ADOPT_MS = Math.max(0, Number(process.env.FLEET_SUCCESSION_DEBT_ADOPT_MS ?? 30 * 60_000) | 0);
 const debtAdoptable = (d: SuccessionDebt, now: number): boolean =>
   d.successorOpenedAt === null && d.rail === "generic" && now - d.at <= SUCCESSION_DEBT_ADOPT_MS;
@@ -10616,26 +10531,6 @@ function adoptSuccessionDebt(s: Slot): SuccessionDebt | null {
   return adopted;
 }
 
-// …and the Supervisor's twin: a bootstrap that replaces the exact dead binding a failed Supervisor
-// succession left takes over its line record. The held brief is superseded by the bootstrap's own
-// founding brief, so the debt closes here instead of waiting for a resend.
-function adoptSupervisorDebt(replaced: SupervisorBinding | null, s: Slot): SuccessionDebt | null {
-  if (!replaced) return null;
-  const debt = successionDebts.findLast((d) => d.rail === "supervisor" && d.successorOpenedAt === null
-    && d.slot === replaced.slot && d.predecessorOpenedAt === replaced.openedAt);
-  if (!debt) return null;
-  if (debt.draft) writeLineageHandover(debt.draft, s, Date.now());
-  successionDebts = successionDebts.filter((d) => d.id !== debt.id);
-  closeSuccessionDebtEvent(debt);
-  audit("succession_debt", s.id, `${debt.id} closed by the Supervisor bootstrap (openedAt ${s.openedAt})${debt.draft ? `, line ${debt.draft.lineageId} record written` : ""}`);
-  return debt;
-}
-
-// A DEBT NOBODY CAN PAY ANY MORE is settled instead of standing in the owner inbox for good: a
-// successor that is gone, a generic line past its adoption window, a Supervisor binding that no longer
-// names the dead predecessor, a Program re-founded or no longer active. The debt goes, its inbox row
-// is acknowledged, and the audit row says why — the brief itself stays in that debt's first audit row
-// only by length, never by text.
 function successionDebtOrphaned(d: SuccessionDebt, now: number): string | null {
   if (d.successorOpenedAt !== null) {
     const s = slotFrom(d.slot);
@@ -10644,9 +10539,6 @@ function successionDebtOrphaned(d: SuccessionDebt, now: number): string | null {
   }
   if (d.rail === "generic")
     return debtAdoptable(d, now) ? null : `no owner open adopted it within ${SUCCESSION_DEBT_ADOPT_MS}ms`;
-  if (d.rail === "supervisor")
-    return supervisor?.slot === d.slot && supervisor.openedAt === d.predecessorOpenedAt ? null
-      : "the Supervisor binding no longer names the ended predecessor";
   const programId = d.rail.startsWith("program ") ? d.rail.slice("program ".length) : null;
   const program = programId ? programs.find((p) => p.id === programId) : undefined;
   return program?.status === "active" && program.main?.slot === d.slot && program.main.openedAt === d.predecessorOpenedAt
@@ -10764,7 +10656,7 @@ async function buildSuccessionBrief(cwd: string, carry: string | null, lineage: 
   ].join("\n");
 }
 
-// --- THE ROLE-LINEAGE HANDOVER: the generic and the Supervisor rail (server/types.ts#LineageHandover)
+// --- THE ROLE-LINEAGE HANDOVER: the generic rail (server/types.ts#LineageHandover)
 // What the successor's brief may say about the record: the line, the count, which channel carries
 // the predecessor's intent. Never the obligations or the intent themselves — those are read at the door.
 interface LineageBriefFacts { lineageId: string; obligations: number; intent: boolean; pointer: string | null }
@@ -10870,16 +10762,6 @@ function writeLineageHandover(draft: LineageHandover, successor: Slot, at: numbe
   return record;
 }
 
-// THE ONE DERIVATION OF A LINE, read by both sights of it. `lost` is said, never inferred away: a
-// slot carries a line id only because a succession wrote it a record, so a line id with no record
-// addressed to this occupant is a lost handover — and so is any scar on the line — never "nothing
-// was owed".
-//
-// `role` is part of the derivation and not of either caller, because the two roles are NOT
-// interchangeable on a line: a generic succession line carried into the Supervisor role by a bind
-// records no Supervisor appointment, and a reader that could not tell it from a Supervisor line
-// would report an appointment history nobody ever wrote. Read from the record addressed to this
-// occupant, else from the newest record the line still has, else `null` — there is nothing to say.
 interface LineageState {
   lineageId: string;
   state: "present" | "lost";
@@ -11360,11 +11242,6 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     const channel = parsedChannel.channel;
     const namesChannel = channel.intent !== null || channel.pointer !== null;
 
-    // THE LANE RAIL, decided before every question below it — a lane is never a Program-MAIN, never
-    // the Supervisor and never a game-maker, so none of the classification that follows has an
-    // answer for it. `carry` is refused rather than ignored for the game-maker rail's reason: the
-    // `handoff` report IS this rail's one handover channel, and a second, unpersisted one could
-    // disagree with it with no way to tell which the successor obeyed.
     if (s.worktree) {
       if (namesChannel)
         return json({ error: "a lane succession takes no intent or pointer — its `handoff` fleet-report is the one handover channel, and the successor is shown exactly that" }, 409);
@@ -11376,7 +11253,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     // WHICH RAIL THIS IS, resolved BEFORE the handover gate rather than after it. The ambiguity
     // refusals never needed a git read to answer, and what a succession must PROVE turns out to be
     // a property of the rail: a game-maker MAIN hands over a checkpoint only it can write, the
-    // unbound and Supervisor rails hand over prose or nothing, and a Standard Program-MAIN hands
+    // unbound rails hand over prose or nothing, and a Standard Program-MAIN hands
     // over a record this server already owns. Joined on the CAPTURED identity rather than on `s`,
     // so a recycle during the body read cannot re-answer the question at all — which is what used
     // to make the recheck below load-bearing against a silent downgrade to the generic path. It
@@ -11385,28 +11262,6 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       && p.main.slot === predecessorIdentity.slot && p.main.openedAt === predecessorIdentity.openedAt);
     if (bound.length > 1)
       return json({ error: `ambiguous succession: this session is Program-MAIN of ${bound.length} active programs` }, 409);
-    // Two authorities on one session have no defined order of transfer, and inventing one here
-    // would silently pick a winner. Same refusal shape as the >1-programs rule above.
-    const isSupervisor = !!supervisor && supervisor.slot === predecessorIdentity.slot
-      && supervisor.openedAt === predecessorIdentity.openedAt;
-    if (isSupervisor && bound.length === 1)
-      return json({ error: `ambiguous succession: this session is both the Supervisor and Program-MAIN of ${bound.length} active program` }, 409);
-
-    // THE COMMITTED FILE IS NO LONGER THE STANDARD RAIL'S PROOF. The gate's own sentence says why
-    // it existed — "otherwise the successor would have nothing to read" — and for a Standard
-    // Program-MAIN that premise is simply false: succeedProgramMain measures the Program's open
-    // rows, its inbox and the obligations dying with the predecessor and DELIVERS them in the
-    // founding brief (standardHandoverLines), which is receipted over the bytes actually sent. So
-    // the requirement is dropped exactly here and nowhere wider: game-maker keeps its checkpoint,
-    // the Supervisor keeps its file, the unbound rail keeps its file. `null` means "not asked",
-    // and only an explicit `false` refuses — a three-valued read so that a rail added later cannot
-    // inherit the permissive answer by forgetting to ask.
-    //
-    // AND SINCE e3e5084a THE FILE IS NO LONGER THE UNBOUND OR THE SUPERVISOR RAIL'S PROOF EITHER. Both
-    // now write a role-lineage record (LineageHandover) that names what dies with the predecessor by
-    // id, and carries its intent or a pointer to a committed, dated section — the successor reads that
-    // record at GET /api/self. Game-maker alone keeps the committed file, because its checkpoint IS
-    // that file. A Program-MAIN never reaches the lineage record: its line is its Program id.
     const gameMaker = bound.length === 1 && isGameMaker(bound[0]!);
     const handoffReady = gameMaker ? await handoffCommittedAfterOpen(s) : null;
     const pointerCommitted = bound.length === 0 && channel.pointer !== null
@@ -11451,16 +11306,11 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     // loader BEFORE a slot opens; the record is written only once the founding brief was delivered
     // `from` names the leaving conversation too (LineageSeat), read here while the occupant is
     // still the one the preflight just re-proved — it is what makes the band's past session readable
-    const draft = lineageDraft(isSupervisor ? "supervisor" : "generic", s.lineageId ?? randomBytes(12).toString("hex"),
+    const draft = lineageDraft("generic", s.lineageId ?? randomBytes(12).toString("hex"),
       { slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt,
         sessionId: seatSessionId(s.sessionId), cwd: predecessorIdentity.cwd },
       captureLineageObligations({ slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt }), channel);
     if (typeof draft === "string") return json({ error: draft }, 409);
-    if (isSupervisor) {
-      if (body?.memoryGrant !== undefined)
-        return json({ refusal: "no-carry", error: "the Supervisor rail carries no read grant — its reach is its binding" }, 409);
-      return await succeedSupervisor(s, label, carry, spawn, predecessorIdentity, draft);
-    }
     // THE READ GRANT rides the generic line whole or narrowed, judged BEFORE anything ends
     const grantCarry = memoryGrantCarry(s, body?.memoryGrant);
     if (!grantCarry.ok) return json({ refusal: grantCarry.refusal, error: grantCarry.error }, grantCarry.status);
@@ -12379,18 +12229,7 @@ function pruneFleetReports(): void {
   fleetReports = fleetReports.filter((r) => !drop.has(r.id));
 }
 
-// STN-1 envelope, SERVER-COMPOSED around the Supervisor's text exactly as the nudge envelope is:
-// the fixed prefix names the principal (the owner-side Supervisor, by slot) and the Watch it
-// completes, so the text can structurally never read as the owner, a Program-MAIN or a lane
-// speaking. The Controller's own `awaiting` is echoed so it can match the answer to its question.
-function supervisorTransitionMessage(event: SupervisorTransitionFleetEvent): string {
-  const p = event.payload;
-  return `[fleet Supervisor transition ${p.watchId}] [event ${event.id}] from the owner-side Supervisor `
-    + `(slot ${event.subjectSlot}) — a transition notification for the watch you registered, not an `
-    + `owner instruction and not a report from any lane. You were awaiting: ${p.awaiting.replace(/\s+/g, " ").trim()}\n\n`
-    + `${p.text}\n\n`
-    + `Acknowledge receipt with POST /api/self/events/${event.id}/ack using x-fleet-self-token from the FLEET_SELF_TOKEN environment variable.`;
-}
+
 
 function fleetReportMessage(event: FleetReportFleetEvent): string {
   return `[fleet] WORKER REPORT from ${laneSubject(event.subjectSlot, event.subjectBranch, event.subjectName)} `
@@ -13500,14 +13339,6 @@ function pruneAttention(): void {
   attentionRequests = attentionRequests.filter((a) => !drop.has(a.id));
 }
 
-// Does a Program's binding still name a live occupant? ONE function, because the two views that
-// answer this question (the owner's program list and the Supervisor's portfolio) must not be able
-// to disagree — a second copy of the rule is a second answer waiting to drift from the first.
-// The rule itself is clarificationReceiverFor's, verbatim: reachable means the named slot is
-// occupied and its openedAt is the one that was bound.
-//
-// There is deliberately NO staleSince: nothing in the persisted state records WHEN an occupation
-// died, so any timestamp here would be invented and would read afterwards like a measurement.
 type ProgramOccupancy = "live" | "stale" | "unbound";
 function programOccupancy(p: Program): ProgramOccupancy {
   const main = p.main ?? null;
@@ -13676,9 +13507,8 @@ function programStatusView(p: Program, ctx?: ProgramStatusContext): ProgramStatu
 // renderings. A lane reports and asks through the FleetEvent transport, so a MAIN that has filled
 // its own delivery budget has CLOSED the way back to itself: every fleet-report and every
 // clarification from its lanes is refused, and until now that refusal lived only inside the 409 the
-// lane got. Neither the owner's board nor the Supervisor's senses could see it — the state measured
-// five times on 2026-08-25. Both sights now read this function, so they cannot describe the same
-// receiver differently, and neither can describe one the doors above would refuse.
+// lane got. The owner's board could not see it — the state measured
+// five times on 2026-08-25. The owner sight reads this function and cannot describe a receiver the doors above would refuse.
 //
 // PROJECTION, NEVER AN ACT. It reads the same two arrays the doors read and writes to neither: no
 // event is acknowledged, no watch disarmed, no cap moved, no retry scheduled, nothing persisted.
@@ -13716,9 +13546,6 @@ function programDeliveryBudget(p: Program): DeliveryBudget {
   return slotDeliveryBudget(live.id);
 }
 
-// ONE SENTENCE, BOTH SIGHTS. The owner's board and the Supervisor's senses show the same words
-// because they are given the same words — a second phrasing of the same numbers is how two views
-// of one fact start disagreeing about it.
 function deliveryBudgetNote(b: DeliveryBudget, slot: number | null): string {
   if (b.state === "unknown") return `return path unknown: ${b.reason}`;
   return b.free === 0
@@ -14061,14 +13888,7 @@ type MessageSender = { ok: true; from: MessageAddress } | { ok: false; response:
 function messageSenderFor(s: Slot): MessageSender {
   if (s.worktree && s.label !== STEWARD_LABEL)
     return { ok: false, response: json({ error: "a lane does not address principals — a lane files its result, and its MAIN speaks for the program" }, 409) };
-  const sup = isBoundSupervisor(s);
   const bound = boundProgramForMain(s);
-  // BOTH is an ambiguous principal, and picking one silently is how a message gets attributed to a
-  // sender that never sent it. Named instead — boundProgramForMain's own ambiguity answer, verbatim
-  // in spirit: the owner separates the roles, this route does not guess.
-  if (sup && bound.ok)
-    return { ok: false, response: json({ error: `ambiguous sender: this session is the bound Supervisor AND the bound MAIN of program ${bound.program.id} — the owner must separate the two before it addresses anyone` }, 409) };
-  if (sup) return { ok: true, from: { kind: "role", role: "supervisor" } };
   if (bound.ok) return { ok: true, from: { kind: "program", id: bound.program.id } };
   if (deliveryRecipient({ kind: "orchestrator" }) === s)
     return { ok: true, from: { kind: "role", role: "orchestrator" } };
@@ -14082,7 +13902,6 @@ function messageSenderFor(s: Slot): MessageSender {
 function messageAddressesFor(s: Slot): MessageAddress[] {
   if (s.worktree && s.label !== STEWARD_LABEL) return [];
   const out: MessageAddress[] = [];
-  if (isBoundSupervisor(s)) out.push({ kind: "role", role: "supervisor" });
   const bound = boundProgramForMain(s);
   if (bound.ok) out.push({ kind: "program", id: bound.program.id });
   if (!bound.ok && deliveryRecipient({ kind: "orchestrator" }) === s)
@@ -14090,14 +13909,6 @@ function messageAddressesFor(s: Slot): MessageAddress[] {
   return out;
 }
 
-// THE RESOLVER, and it answers THREE things that must never collapse into one:
-//   · NOT AN ADDRESS AT ALL (unknown program id, a role nobody can ever hold) → 409, NOTHING is
-//     stored. Storing here would be inventing a mailbox.
-//   · A REAL ADDRESS NOBODY HOLDS RIGHT NOW (no bound MAIN, dead occupant, no Supervisor bound) →
-//     the message IS stored and the answer NAMES that nobody holds it; the next holder reads it.
-//     This case is the entire point of addressing a principal instead of a pane: a succession is
-//     exactly the window in which an address is momentarily unheld.
-//   · A REAL ADDRESS WITH A LIVE HOLDER → stored, holder named.
 type AddressResolution =
   | { ok: true; holder: Slot | null; note: string | null; escalatedTo: "orchestrator" | "owner" | null }
   | { ok: false; error: string };
@@ -14121,12 +13932,8 @@ function resolveMessageAddress(a: MessageAddress): AddressResolution {
       return holder ? { ok: true, holder, note: null, escalatedTo: null }
         : { ok: true, holder: null, note: "no unique live Orchestrator", escalatedTo: "owner" };
     }
-    if (!supervisor)
-      return escalateMessage("no Supervisor is bound right now — the message is stored, and the next bound Supervisor reads it");
-    const live = slotFrom(supervisor.slot);
-    const held = !!(live?.cwd && live.openedAt === supervisor.openedAt);
-    return held ? { ok: true, holder: live!, note: null, escalatedTo: null }
-      : escalateMessage("the bound Supervisor occupant is gone or was replaced — the message is stored, and the next bound Supervisor reads it");
+
+    return { ok: false, error: "unknown message role" };
   }
   const program = programs.find((p) => p.id === a.id);
   if (!program) return { ok: false, error: `unknown program ${a.id}` };
@@ -14141,7 +13948,7 @@ function resolveMessageAddress(a: MessageAddress): AddressResolution {
     : escalateMessage(`the bound MAIN of program ${a.id} is gone or was replaced — the message is stored, and the next bound MAIN reads it`);
 }
 
-const NO_MESSAGE_ADDRESS = "not a principal with an address — this rail answers a bound Program-MAIN, the bound Supervisor, or the unique live Orchestrator";
+const NO_MESSAGE_ADDRESS = "not a principal with an address — this rail answers a bound Program-MAIN or the unique live Orchestrator";
 function messageInboundFor(s: Slot, m: Message, mine = messageAddressesFor(s)): boolean {
   if (mine.some((a) => sameAddress(a, m.to))) return true;
   const reached = resolveMessageAddress(m.to);
@@ -14261,8 +14068,8 @@ function ownerMessageView(url: URL): Response {
     return json({ error: "unread must be true or false" }, 400);
   const to = url.searchParams.get("to");
   if (to !== null && !/^program:[0-9a-f]{24}$/.test(to)
-    && !["supervisor", "orchestrator", "controller"].some((role) => to === `role:${role}`))
-    return json({ error: "to must be program:<24-hex> or role:supervisor|orchestrator|controller" }, 400);
+    && !["orchestrator", "controller"].some((role) => to === `role:${role}`))
+    return json({ error: "to must be program:<24-hex> or role:orchestrator|controller" }, 400);
   const unknown: string[] = [];
   if (messagesLost)
     unknown.push(`the message record was unreadable at ${new Date(messagesLost.at).toISOString()} (${messagesLost.error}) and loaded as empty; every message written before then is gone.`);
@@ -16690,7 +16497,7 @@ async function dispatchSourceTree(repo: string): Promise<"fleet" | "foreign"> {
 //   raw      — no brief on the row: the draft text itself was delivered
 //   clarify  — buildClarifyBrief's deterministic frame; NOT folded into "raw" (a clarify lane
 //              produces no commits by design, so it would read as a raw-brief abort every time it works)
-//   founding — a server-built Program-MAIN/Supervisor founding template; no task text is involved
+//   founding — a server-built Program-MAIN founding template; no task text is involved
 //   card     — the row carries a VALID card, so the brief opened with its KARTE head (wave-brief.ts
 //              #renderCardHead) in front of whatever prose followed. It outranks the brief's author
 //              because it is the fact that changed the first bytes the lane read; the prose behind
@@ -16723,9 +16530,8 @@ const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";
 // all that differs; everything else stays a single text so the two cannot drift.
 const LANE_EXIT_HANDOFF_EXIT = "file it, then POST /api/self/succeed";
 const LANE_EXIT_HANDOFF_EXIT_CODEX = "your report IS the handover — a codex session compacts itself, and no baton door follows it";
-function positionRole(s: Slot, bound = boundProgramForMain(s)): "supervisor" | "program-main" | "lane" | "orchestrator" | "generic" {
-  return supervisor?.slot === s.id && supervisor.openedAt === s.openedAt ? "supervisor"
-    : bound.ok ? "program-main"
+function positionRole(s: Slot, bound = boundProgramForMain(s)): "program-main" | "lane" | "orchestrator" | "generic" {
+  return bound.ok ? "program-main"
     : s.worktree ? "lane"
     : isOrchestratorLabel(s.label) ? "orchestrator" : "generic";
 }
@@ -22091,12 +21897,6 @@ interface MigrateAttempt { sessionId: string; nudges: number; lastAt: number; ga
 const migrateTried = new Map<number, MigrateAttempt>();
 const MIGRATE_MAX_NUDGES = 3;
 
-// WHICH SUCCESSION RAIL a non-lane slot is on, answered by the SAME bracket handleSelfSucceed
-// classifies by — so the nudge names the gate the succeed call will actually apply. Until
-// 2026-09-13 every main was told "HANDOFF.md schreiben UND committen", which for a Standard
-// Program-MAIN is a gate that does not exist (its handover is the Program record the server already
-// owns) and for a game-maker names the right file but the wrong content. Unbound, ambiguous and the
-// Supervisor keep the HANDOFF rail: that is where handleSelfSucceed still demands the commit.
 type MigrateRail = "standard-main" | "game-maker-main" | "handoff";
 function migrateRailOf(s: Slot): MigrateRail {
   const bound = boundProgramForMain(s);
@@ -22849,8 +22649,6 @@ function fleetEventMessage(event: FleetEvent): string {
     ? commandJobWatchMessage(event.subjectJobId, event)
     : event.kind === "lane-suite"
     ? laneSuiteWatchMessage(event.subjectJobId, event)
-    : event.kind === "supervisor-transition"
-    ? supervisorTransitionMessage(event)
     : event.kind === "harness-block"
     ? harnessBlockMessage(event.subjectSlot, event.subjectBranch, event)
     : event.kind === "lane-review"
@@ -22963,18 +22761,6 @@ async function tickWatches(): Promise<void> {
           continue;
         }
         if (job.result) await mintCommandJobEvents(job);
-        continue;
-      }
-      // STN-1 expiry. The tick never MINTS for this kind — only the bound Supervisor's act does
-      // (completeTransitionWatch); it owns the deadline: past it the Watch is disarmed with a legible
-      // reason and NO pane text (one Watch, one notification — an expiry line would be a second stream).
-      if (watchKind(w) === "transition" && "deadlineAt" in w) {
-        if (now < w.deadlineAt) continue;
-        w.armed = false;
-        w.lastResult = "expired — the deadline passed before the Supervisor completed this watch; no notification will come";
-        audit("watch_expire", w.slot, `${w.id} deadlineAt=${w.deadlineAt}`);
-        pruneSpentWatches(w.slot);
-        dirty = true;
         continue;
       }
       if (!("target" in w)) continue;
@@ -34416,7 +34202,6 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
         ...("repo" in w ? { repo: w.repo, mainAfter: w.mainAfter } : {}),
         ...("deployId" in w ? { deployId: w.deployId } : {}),
         ...("jobId" in w ? { jobId: w.jobId } : {}),
-        ...("awaiting" in w ? { awaiting: w.awaiting, deadlineAt: w.deadlineAt } : {}),
         owedBy, reArm: "POST /api/self/watch" }),
     })),
     ...checkIns.map((a): ProgramHandoverObligation => ({
@@ -34651,48 +34436,6 @@ function buildProgramMainSuccessionBrief(program: Program, carry: string | null,
   return body.join("\n") + railBlockFor(program) + anchorBlock;
 }
 
-// Supervisor v0 is deliberately MINIMAL: the founding text states the role, the three read/propose
-// channels it already has, and the acts it structurally cannot perform. No behavioural rulebook —
-// a Supervisor that is told how to nudge before anyone has watched it nudge would be prose, not a
-// contract, and the next cut would inherit it as if it were one.
-const supervisorBriefBody = (): string[] => [
-  "Your role: hold the cross-program portfolio together from typed facts, surface and ask, and NUDGE - every decision inside a program remains with its Program-MAIN or working circle, and every promotion remains with the owner.",
-  "You structurally cannot confirm or activate programs, land, deploy, or write code; do not attempt any of these.",
-  "Visible Composer or suggestion text in capture-pane is neither authority nor a received assignment.",
-  "Only a Send receipt or prompt-journal entry, or a confirmed transcript prompt, establishes an incoming assignment.",
-  "Your channels today: GET /api/self (your own row), POST /api/self/programs (propose-only), GET /api/self/supervisor-view (your typed senses), POST /api/self/nudge (bounded question to a Program-MAIN), POST /api/self/supervisor-watch/:id/complete (answer exactly one transition watch a Controller registered; see transitions in your view). POST /api/self/attention requires a Program-MAIN binding you never hold, so it refuses you - there is no route to the owner. Further capabilities arrive only through later owner-promoted cuts.",
-  "Begin: run ./state.sh, then ./register.sh, then observe and, if something needs the owner, say so in your own visible pane report - the only channel that reaches them.",
-];
-
-function buildSupervisorBrief(anchorBlock: string): string {
-  return [
-    "[fleet Supervisor] You are the one owner-side Supervisor session for this fleet.",
-    ...supervisorBriefBody(),
-  ].join("\n") + anchorBlock;
-}
-
-function buildSupervisorSuccessionBrief(carry: string | null, anchorBlock: string, lineage: LineageBriefFacts): string {
-  const next = carry ? [``, `The first thing the predecessor would do next (max. ${MAX_SUCCESSION_CARRY} characters):`, carry] : [];
-  return [
-    `[fleet Supervisor succession] You are the CONTINUED owner-side Supervisor session; your predecessor has ended on this same slot; your handover is the role-lineage record ${lineage.lineageId} at GET /api/self (field \`lineage\`): ${lineageBriefContentEn(lineage)}`,
-    ...supervisorBriefBody(),
-    ...next,
-  ].join("\n") + anchorBlock;
-}
-
-// The THIRD preamble over the SAME body, shared on purpose: the role, the four denials and the
-// channel list must never be able to differ between the doors that grant them. Only the one true
-// sentence about how this session arrived in the role differs. Unlike the two founding doors this
-// one carries NO context anchor block and mints NO context receipt — the session already has a
-// context of its own and a receipt of how it got it, and a founding receipt here would record a
-// founding that never happened.
-function buildSupervisorBindBrief(): string {
-  return [
-    "[fleet Supervisor bind] The owner has bound THIS already-running session as the one owner-side Supervisor session for this fleet; your working directory, your context and the work you were doing stay yours.",
-    ...supervisorBriefBody(),
-  ].join("\n");
-}
-
 // --- ROLE CARDS — verbatim from docs/rollenkarten.md -------------------------------------------
 const MAIN_ROLE_CARD = `--- ROLLE --- Program-MAIN: fuehrt genau ein Program. Du briefst, beurteilst und landest; was eine Lane bauen kann, baut eine Lane. Je Projekt eine MAIN; was frueher eigene Programs am selben Repo waren, sind Straenge darin.
 --- DEIN EMPFAENGER --- die Orchestratorin: Rueckfragen, Ausnahmen, Program-Abschluss. Eine Frage an den Owner geht ueber sie, nie direkt. Deine Lanes melden an dich.
@@ -34763,11 +34506,6 @@ function buildOrchestratorSuccessionBrief(steps: readonly string[], carry: strin
   ].join("\n") + anchorBlock;
 }
 
-// THE CONTEXT PLAN FOR AN ORCHESTRATOR FOUNDING, read exactly the way the Supervisor's two founding
-// doors read theirs: the repository's own declared packs at the commit the receipt will name. It is
-// allowed to FAIL — an Orchestrator may be opened in a directory that is not a git repository at
-// all, and the answer then is a named unknown, never an invented head. The caller still delivers
-// the card; what it loses is the anchor block and the receipt, and it says so.
 type OrchestratorFoundingContext = {
   readonly anchorBlock: string;
   readonly preflight: ProgramMainPreflight;
@@ -34787,9 +34525,6 @@ async function orchestratorFoundingContext(cwd: string, harness: string | null):
     facts, selected: contextReceiptSelections(plan.selected), omitted: plan.omitted.map((entry) => ({ ...entry })) } };
 }
 
-// …and the receipt over the bytes actually sent. Same row shape and same `hash` chain as the
-// Supervisor's founding receipt, and `programId: null` means the same thing there as here: an
-// Orchestrator sits ACROSS programs, so naming one would be a false attribution, not a missing one.
 async function appendOrchestratorReceipt(s: Slot, ctx: OrchestratorFoundingContext,
   deliveredBrief: string, at: number): Promise<void> {
   const hash = createHash("sha256").update(JSON.stringify({
@@ -34808,16 +34543,6 @@ async function appendOrchestratorReceipt(s: Slot, ctx: OrchestratorFoundingConte
   });
 }
 
-// THE SPAWN SEAM. `POST /api/slots/:id/open` opens a session and has never delivered a word into
-// it; that stays true for every label but this one. Three properties are deliberate:
-//  * THE OPEN IS NOT AT RISK. The owner asked for a session and gets one whatever happens here. A
-//    card that cannot be delivered is REPORTED in the response and never healed by killing the
-//    pane — the opposite of the Supervisor's founding doors, whose whole product is the appointment
-//    and which therefore clean up after a failed delivery.
-//  * THE SAME THREE FOUNDING STEPS as every other founding paste (boot grace, delivery gate,
-//    bounded readiness). The four live failures of 2026-09-03 were all a founding text typed into a
-//    pane whose agent was not drawn yet; a card pasted straight after openSlot would join them.
-//  * IT COSTS THE CALLER THE FOUNDING BUDGET, in wall clock, and only for this label.
 async function deliverOrchestratorSpawnCard(s: Slot): Promise<Record<string, unknown>> {
   const openedAt = s.openedAt;
   const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
@@ -34835,7 +34560,7 @@ async function deliverOrchestratorSpawnCard(s: Slot): Promise<Record<string, unk
   try {
     await sendText(s, brief, true, { path: "founding" });
   } catch (e) {
-    // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — bindSupervisor's rule,
+    // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — the founding delivery rule,
     // and the journal line is mandatory for exactly the same reason.
     logPrompt(s, brief, "auto", Date.now(), undefined, "uncertain");
     return { delivered: false, reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
@@ -34877,7 +34602,7 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
   try {
     await sendText(s, deliveredBrief, true, { path: "founding" });
   } catch (e) {
-    // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — bindSupervisor's
+    // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — the founding delivery
     // rule, and the journal line is mandatory for exactly the same reason.
     logPrompt(s, deliveredBrief, "auto", Date.now(), undefined, "uncertain");
     return { packsDelivered: false,
@@ -34908,631 +34633,6 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
   return { packsDelivered: true };
 }
 
-async function succeedSupervisor(s: Slot, label: string | null, carry: string | null,
-  spawn: SuccessionSpawn, predecessor: SuccessionPredecessorIdentity, draft: LineageHandover): Promise<Response> {
-  if (supervisorBootstrapInflight) return json({ error: "Supervisor bootstrap already in flight" }, 409);
-  supervisorBootstrapInflight = true; // synchronous reservation before any transfer await
-  try {
-    const preflight = await preflightProgramMain(predecessor.cwd);
-    if (!preflight.ok) return json({ error: preflight.error }, 400);
-    // THE BRIEF AND ITS PLAN ARE BUILT WHILE THE PREDECESSOR STILL STANDS (respawnInPlace): the
-    // plan reads the checkout and the successor's harness, which is the predecessor's by inheritance.
-    const harness = s.harness;
-    const planFacts = programMainContextFacts(preflight.value.frame, harness);
-    // The Supervisor lives in a real checkout with an honest root and head (preflight proved
-    // both), so it reads that repository's declared packs like every other founding seam.
-    const plan = await programMainContextPlan(preflight.value, planFacts);
-    const anchorBlock = renderContextAnchorBlock(plan);
-    const deliveredBrief = buildSupervisorSuccessionBrief(carry, anchorBlock, { lineageId: draft.lineageId,
-      obligations: draft.obligations.length, intent: draft.intent !== null, pointer: draft.pointer });
-    const selected = contextReceiptSelections(plan.selected);
-    const omitted = plan.omitted.map((entry) => ({ ...entry }));
-    const box: BoxPin = { container: s.container, containerContext: s.containerContext };
-    const binding = supervisor;
-    laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
-    try {
-      const respawned = await respawnInPlace(s, predecessor, "supervisor",
-        { brief: deliveredBrief, path: "founding", draft, label },
-        () => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box),
-        async () => {});
-      if (!respawned.ok) return respawned.response;
-
-      // THE BINDING FOLLOWS THE OPEN, not the send. Until the in-place cut the binding moved only
-      // after a successful send, because a loss before it kept the predecessor standing; now the
-      // predecessor is gone at the open, and a binding left behind would name a dead occupant —
-      // the stale record bootstrapSupervisor exists to replace. The record moves in the same save.
-      const at = Date.now();
-      const openedAt = s.openedAt;
-      if (supervisor === binding)
-        supervisor = { slot: s.id, openedAt, sessionId: s.sessionId ?? null, boundAt: at };
-      const record = writeLineageHandover(draft, s, at);
-      try {
-        await saveStateNow();
-      } catch (e) {
-        audit("main_succession", s.id, `supervisor binding persistence failed: ${e instanceof Error ? e.message : e}`);
-      }
-
-      const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
-      // NO CLEANUP KILL — the successor is the Supervisor now; see the generic rail
-      const failed = async (reason: string): Promise<Response> => {
-        audit("main_succession", s.id, `supervisor brief-undelivered: ${reason}`);
-        const debt = recordSuccessionDebt(s, "supervisor", predecessor, openedAt, reason,
-          { brief: deliveredBrief, path: "founding", draft: null, label: s.label });
-        await saveStateNow().catch((e: unknown) => logError("successionDebt", e));
-        return json({ error: `Supervisor successor stands on slot ${s.id} but its founding brief was not delivered (${reason}) — `
-          + `held as succession debt ${debt.id}: POST /api/succession-debts/${debt.id}/resend`,
-        slot: s.id, delivered: false, supervisor, debt: debt.id }, 500);
-      };
-      await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
-      if (!stillCurrent()) return await failed("successor slot changed during boot");
-      const gate = await canDeliver(s, { now: Date.now(), idleMs: 0,
-        killSwitch: false, quietHours: false, harness: false });
-      if (!gate.ok) return await failed(`delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})`);
-      const readiness = await waitForFoundingReadiness(s, stillCurrent);
-      if (!readiness.ok) return await failed(readiness.reason);
-      if (!stillCurrent()) return await failed("successor slot changed before founding delivery");
-      try {
-        await sendText(s, deliveredBrief, true, { path: "founding" });
-      } catch (e) {
-        return await failed(`founding brief failed: ${e instanceof Error ? e.message : e}`);
-      }
-
-      const sentAt = Date.now();
-      const hash = createHash("sha256").update(JSON.stringify({
-        anchorBlock,
-        planFacts: { harness: s.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
-      })).digest("hex");
-      await appendEvent(CONTEXT_RECEIPT_FILE, {
-        id: randomBytes(16).toString("hex"), hash, at: sentAt, repo: s.cwd!, head: preflight.value.head,
-        // A Supervisor sits ACROSS programs, so its receipt names none: programId:null is the
-        // cross-program scope, not a missing attribution.
-        taskId: null, originId: null, programId: null, slot: s.id, branch: preflight.value.branch,
-        harness: s.harness, ...receiptModel(s), effort: s.effort,
-        mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
-        deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
-        snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
-        briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
-      });
-      s.history = [...s.history, { text: deliveredBrief, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
-      saveHistory(s);
-      logPrompt(s, deliveredBrief, "auto", sentAt);
-      // the pane's session id may have been learned during boot; the binding names the conversation
-      if (supervisor?.slot === s.id && supervisor.openedAt === openedAt && supervisor.sessionId === null && s.sessionId)
-        supervisor = { ...supervisor, sessionId: s.sessionId };
-      await saveStateNow();
-      return json({ ok: true, slot: s.id, label: s.label, supervisor,
-        lineage: { lineageId: record.lineageId, obligations: record.obligations.length } });
-    } finally {
-      laneSpawn.delete(s.id);
-    }
-  } finally {
-    supervisorBootstrapInflight = false;
-  }
-}
-
-async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Response> {
-  const ho = harnessIdOf(body);
-  if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
-  const hh = harnessOf(ho.harness);
-  const mo = modelOf(body, hh);
-  if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
-  const eo = effortOf(body, hh);
-  if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
-  if (typeof body.cwd !== "string" || !body.cwd.trim()) return json({ error: "cwd is required" }, 400);
-  if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
-    return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
-
-  // A binding is LIVE only while its slot still carries the same (id, openedAt) it was bound to;
-  // anything else — the slot emptied, or recycled into a different occupant — is a record of a
-  // session that no longer exists, and the authority it names is unreachable. The old refusal
-  // ("stale Supervisor binding: slot 5 openedAt 1787497726285") left the fleet with NO way to
-  // appoint a Supervisor again: the route it would use is the one the dead record blocks, and the
-  // record outlives every restart. Program-MAIN bootstrap has answered this the other way since
-  // its own rebind seam — a dead binding is overwritten, and the success response NAMES what it
-  // replaced. Same rule here, same visibility: `replaced` in the body, an audit row, never silent.
-  let replacedSupervisor: SupervisorBinding | null = null;
-  if (supervisor) {
-    const occupant = slotFrom(supervisor.slot);
-    if (occupant?.cwd && occupant.openedAt === supervisor.openedAt)
-      return json({ ok: true, existing: true, supervisor });
-    replacedSupervisor = { ...supervisor };
-  }
-  if (supervisorBootstrapInflight) return json({ error: "Supervisor bootstrap already in flight" }, 409);
-
-  supervisorBootstrapInflight = true; // synchronous reservation before any slot await
-  try {
-    const preflight = await preflightProgramMain(body.cwd);
-    if (!preflight.ok) return json({ error: preflight.error }, 400);
-    const free = freeSessionSlot("main");
-    if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free MAIN band" : "no free slot") }, 409);
-    laneSpawn.add(free.id);
-    try {
-      const label = typeof body.label === "string"
-        ? body.label.trim() || null
-        : SUPERVISOR_LABEL;
-      try {
-        await openSlot(free, body.cwd, null, mo.model, label, ho.harness, eo.effort);
-      } catch (e) {
-        return json({ error: `Supervisor open failed: ${e instanceof Error ? e.message : e}` },
-          e instanceof GameMakerTreeConflict ? 409 : 500);
-      }
-
-      const openedAt = free.openedAt;
-      const stillCurrent = (): boolean => !!free.cwd && free.openedAt === openedAt;
-      const cleanup = async (): Promise<void> => {
-        if (stillCurrent()) await killSlot(free, "reopen");
-      };
-      await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
-      if (!stillCurrent()) return json({ error: "Supervisor slot changed during boot" }, 500);
-      const gate = await canDeliver(free, { now: Date.now(), idleMs: 0,
-        killSwitch: false, quietHours: false, harness: false });
-      if (!gate.ok) {
-        await cleanup();
-        return json({ error: `Supervisor delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 500);
-      }
-      const readiness = await waitForFoundingReadiness(free, stillCurrent);
-      if (!readiness.ok) {
-        await cleanup();
-        return json({ error: `Supervisor ${readiness.reason}` }, 500);
-      }
-
-      const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
-      // Same honest root+head as the succession seam above — preflightProgramMain named both.
-      const plan = await programMainContextPlan(preflight.value, planFacts);
-      const anchorBlock = renderContextAnchorBlock(plan);
-      const deliveredBrief = buildSupervisorBrief(anchorBlock);
-      const selected = contextReceiptSelections(plan.selected);
-      const omitted = plan.omitted.map((entry) => ({ ...entry }));
-      const repo = free.cwd!;
-      if (!stillCurrent()) return json({ error: "Supervisor slot changed before founding delivery" }, 500);
-      try {
-        await sendText(free, deliveredBrief, true, { path: "founding" });
-      } catch (e) {
-        await cleanup();
-        return json({ error: `Supervisor founding brief failed: ${e instanceof Error ? e.message : e}` }, 500);
-      }
-
-      const at = Date.now();
-      supervisor = { slot: free.id, openedAt: free.openedAt,
-        sessionId: free.sessionId ?? null, boundAt: at };
-      // a failed Supervisor succession left exactly this dead binding: its line record moves here
-      adoptSupervisorDebt(replacedSupervisor, free);
-      // AFTER the successful send, like every other authority cut on this rail: a bootstrap that
-      // overwrote the dead record and then failed to deliver would have destroyed the only trace
-      // of the previous appointment for nothing.
-      if (replacedSupervisor)
-        audit("supervisor_rebound", free.id,
-          `replaced slot:${replacedSupervisor.slot} openedAt:${replacedSupervisor.openedAt}`);
-      const hash = createHash("sha256").update(JSON.stringify({
-        anchorBlock,
-        planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
-      })).digest("hex");
-      await appendEvent(CONTEXT_RECEIPT_FILE, {
-        id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
-        taskId: null, originId: null, programId: null, slot: free.id, branch: preflight.value.branch,
-        harness: free.harness, ...receiptModel(free), effort: free.effort,
-        mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
-        deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
-        snippet: NO_SNIPPET_RECEIPT, renderer: CONTEXT_ANCHOR_RENDERER,
-        briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
-      });
-      free.history = [...free.history, { text: deliveredBrief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
-      saveHistory(free);
-      logPrompt(free, deliveredBrief, "auto", at);
-      await saveStateNow();
-      return json({ ok: true, slot: free.id, supervisor,
-        ...(replacedSupervisor ? { replaced: replacedSupervisor } : {}) });
-    } finally {
-      laneSpawn.delete(free.id);
-    }
-  } finally {
-    supervisorBootstrapInflight = false;
-  }
-}
-
-// THE SECOND APPOINTMENT DOOR, and the only one that appoints a session that already exists.
-// bootstrapSupervisor OPENS the pane it appoints, which is right for an empty fleet and wrong for
-// every case where the owner wants a session that is already working — a running controller, a
-// steward, the session reading this — to hold the role: today that costs an extra pane and the
-// role lands on a session with no context. This door binds an EXPLICIT slot and nothing else. No
-// label match, no "the first idle session", no wildcard: an appointment the caller did not name
-// exactly is an appointment the owner did not make, and a role that can find its own holder is not
-// an authorization. Everything ELSE is bootstrapSupervisor's rule, deliberately unchanged — a LIVE
-// binding is never displaced, a DEAD one is overwritten and NAMED (response + trail row), and the
-// appointment is written only AFTER the session has been told it holds the role.
-async function bindSupervisor(body: Record<string, unknown> | null): Promise<Response> {
-  // A CLOSED body, for the reason the STN-1 completion door has one: the whole point of this route
-  // is that the slot is named and derived from nothing, and a body that silently ignores extra keys
-  // is where a `label` or a `mode` shortcut grows in later without anyone deciding to add it.
-  const extra = Object.keys(body ?? {}).filter((k) => k !== "slot");
-  if (extra.length)
-    return json({ error: `a bind names a slot and nothing else — [${extra.join(", ")}] is not read` }, 400);
-  if (!body || !Number.isInteger(body.slot))
-    return json({ error: "slot must be an integer — the session to bind is named explicitly, never matched" }, 400);
-  const target = slotFrom(body.slot as number);
-  if (!target) return json({ error: `unknown slot ${body.slot as number}` }, 409);
-  if (!target.cwd)
-    return json({ error: `slot ${target.id} carries no session — a Supervisor is bound to an occupant, not to a slot` }, 409);
-  // The invariant isBoundSupervisor's comment states, kept true by the door rather than by the
-  // absence of a door: a lane executes ONE task inside ONE worktree, and the Supervisor sits across
-  // every program. Without this line the "a lane is never the Supervisor" reasoning that carries
-  // the lane twin of every Cut-2 route would simply stop holding.
-  if (target.worktree)
-    return json({ error: `slot ${target.id} is a lane — a lane executes one task in one worktree and is never the Supervisor` }, 409);
-
-  let replaced: SupervisorBinding | null = null;
-  if (supervisor) {
-    if (supervisorHealth().occupancy === "live")
-      return supervisor.slot === target.id && supervisor.openedAt === target.openedAt
-        ? json({ ok: true, existing: true, supervisor })
-        : json({ error: `a LIVE Supervisor binding is never displaced: slot ${supervisor.slot} `
-          + `openedAt ${supervisor.openedAt} still carries it — that session succeeds or retires first` }, 409);
-    replaced = { ...supervisor };
-  }
-  if (supervisorBootstrapInflight) return json({ error: "Supervisor bootstrap already in flight" }, 409);
-
-  supervisorBootstrapInflight = true; // the same reservation bootstrap and succession take
-  try {
-    // The attended waiver supervisorNudge takes, for its reason: this is a principal's deliberate
-    // act and not a tick, and `alive` is NOT waived — pasting into an agent-less pane types prose
-    // into a shell and would appoint a Supervisor that was told nothing.
-    const gate = await canDeliver(target, { now: Date.now(), idleMs: 0,
-      killSwitch: false, quietHours: false, harness: false });
-    if (!gate.ok)
-      return json({ error: `Supervisor bind delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 409);
-
-    const openedAt = target.openedAt;
-    const stillCurrent = (): boolean => !!target.cwd && target.openedAt === openedAt;
-    const delivered = buildSupervisorBindBrief();
-    try {
-      await sendText(target, delivered, true, { path: "founding" });
-    } catch (e) {
-      if (e instanceof SendRefused) return json({ error: e.message }, 409);
-      // Neither delivered nor failed is an OBSERVED fact once tmux has thrown — the truth rule the
-      // nudge and the clarification transport follow. The journal line is mandatory, the binding is
-      // NOT written: an appointment nobody can prove arrived is not an appointment.
-      logPrompt(target, delivered, "auto", Date.now(), undefined, "uncertain");
-      return json({ error: `Supervisor bind outcome uncertain, the binding is unchanged: `
-        + String(e instanceof Error ? e.message : e).slice(0, 160) }, 409);
-    }
-    if (!stillCurrent())
-      return json({ error: "the session changed during the bind delivery — the binding is unchanged" }, 409);
-
-    const at = Date.now();
-    supervisor = { slot: target.id, openedAt: target.openedAt,
-      sessionId: target.sessionId ?? null, boundAt: at };
-    // Booked only after the appointment is real, exactly as the bootstrap books its own: a bind
-    // that overwrote the dead record and then failed to deliver would have destroyed the only trace
-    // of the previous appointment for nothing.
-    audit("supervisor_bound", target.id, `bound slot:${target.id} openedAt:${target.openedAt}`);
-    if (replaced)
-      audit("supervisor_rebound", target.id,
-        `replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
-    target.history = [...target.history, { text: delivered, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
-    saveHistory(target);
-    logPrompt(target, delivered, "auto", at);
-    await saveStateNow();
-    return json({ ok: true, slot: target.id, supervisor, ...(replaced ? { replaced } : {}) });
-  } finally {
-    supervisorBootstrapInflight = false;
-  }
-}
-
-// --- the Supervisor's SENSES and its one VOICE --------------------------------------------------
-// Cut 1 bound an identity that could read only its own row. These two routes are what that identity
-// perceives and the single bounded thing it may say, and they are deliberately asymmetric: the view
-// aggregates five fact groups and mutates NOTHING, the nudge writes exactly one paste into exactly
-// one derived pane and persists nothing beyond the receipt and the journal line.
-
-// The occupant rule, and it is the whole authorization story of the routes below — read once, in
-// supervisorRefusal. slot+openedAt is the only occupant identity Fleet trusts, so a recycled slot
-// can never inherit the binding. A lane is covered by this alone because a lane is never the
-// Supervisor, and since bindSupervisor that is no longer true merely by accident: THREE doors write
-// the binding now (bootstrap and succession open a plain session; the bind door refuses a
-// `worktree` outright), so the sentence holds by construction rather than by there being no door.
-const isBoundSupervisor = (s: Slot): boolean => !!supervisor
-  && supervisor.slot === s.id && supervisor.openedAt === s.openedAt;
-const NOT_SUPERVISOR = "not the bound Supervisor — this view answers only its occupant";
-
-// THE OCCUPANT RULE, READ AS A FACT INSTEAD OF A VERDICT. programOccupancy answers exactly this
-// question for a Program's MAIN; the Supervisor's binding has no Program row to carry it, so it
-// got no answer at all — the record was readable from outside (`supervisor` on /api/programs) while
-// its LIVENESS was not, and a record naming a slot recycled weeks ago looked identical to a working
-// appointment. DERIVED per read like programHealth, never persisted: the occupant it describes can
-// die between two calls.
-function supervisorHealth(): ProgramHealth {
-  const b = supervisor;
-  if (!b) return { occupancy: "unbound", sessionIdMatch: "unknown" };
-  const live = slotFrom(b.slot);
-  if (!(live?.cwd && live.openedAt === b.openedAt)) return { occupancy: "stale", sessionIdMatch: "unknown" };
-  return { occupancy: "live", sessionIdMatch: sessionIdMatchOf(b.sessionId, live.sessionId) };
-}
-
-// THE REFUSAL, AND WHY IT NOW HAS THREE WORDS INSTEAD OF ONE. `not the bound Supervisor` is a true
-// sentence in all three cases and a useful one in only the third: a session reading it could not
-// tell "someone else holds the role" from "the role is unfilled because the binding died", and the
-// second is a fleet-level fault nobody could see from inside. It discloses nothing new — the STN-1
-// registration door already tells any session both of those states in these words. Returns null
-// EXACTLY when isBoundSupervisor holds for `s`: the route resolved it by cwd+selfToken, so an `s` that
-// matches the binding's (slot, openedAt) is that binding's live occupant by construction.
-function supervisorRefusal(s: Slot): string | null {
-  if (!supervisor)
-    return "no Supervisor binding exists — the role is unfilled and only the owner can appoint one";
-  if (supervisorHealth().occupancy === "stale")
-    return `the Supervisor binding is STALE: it names slot ${supervisor.slot} openedAt `
-      + `${supervisor.openedAt}, whose occupant is gone or was replaced — the role is unfilled `
-      + "until the owner bootstraps or binds one";
-  return isBoundSupervisor(s) ? null : NOT_SUPERVISOR;
-}
-
-// Every list is capped and every free text is sliced. A Supervisor reads this on demand from a
-// pane, so the payload is bounded for the same reason programExecutionView's is: an unbounded
-// projection of ledgers that only grow becomes unreadable exactly when the fleet is busiest.
-const SUPERVISOR_VIEW_PROGRAMS = 50;
-const SUPERVISOR_VIEW_ROWS = 20;
-const SUPERVISOR_VIEW_INTEGRATION_ROWS = 5;
-const SUPERVISOR_VIEW_TEXT = 200;
-
-// WHAT THE SUPERVISOR'S OWN LINE ACTUALLY SAYS — derived from the records that exist, never
-// asserted. Until this cut the view pushed ONE CONSTANT sentence, "no persisted Supervisor lineage
-// exists; earlier bound Supervisor sessions are not reconstructible", and that sentence had been
-// false since succeedSupervisor began calling writeLineageHandover: a Supervisor that arrived BY
-// SUCCESSION read a flat denial of the very record its own founding brief had just named.
-//
-// What is still TRUE is narrower, and is now said branch by branch instead of over all of them:
-// bootstrap and bind write no record at all, so neither reconstructs an earlier appointment; a
-// generic line carried into the role by a bind records no Supervisor appointment either; and even
-// a real Supervisor line reaches back only as far as its oldest surviving record. Every one of
-// those is an `unknown` line, because the honesty rule this view follows is that a gap is NAMED
-// where it exists and claimed nowhere else — the same rule the Program-MAIN lineage gap follows.
-//
-// TEXT-FREE ON PURPOSE, and this session's OWN line only. The record's `intent`/`pointer` body is
-// the occupant's to read at GET /api/self (lineageSelfView), and no other line is projected here at
-// all: a cross-program view must not become a second place a handover's prose lives.
-function supervisorLineageView(s: Slot, unknown: string[]): Record<string, unknown> {
-  const l = lineageStateOf(s);
-  const seat = (o: LineageOccupant): LineageOccupant => ({ slot: o.slot, openedAt: o.openedAt });
-  if (!l) {
-    unknown.push("1 lineage gap: this Supervisor session holds no role line — it was bootstrapped or bound rather than succeeded into, so no record of this fleet names an earlier Supervisor appointment.");
-    return { lineageId: null, state: "none", role: null, record: null, records: 0, losses: 0,
-      oldestRecordAt: null };
-  }
-  const oldest = l.line[0] ?? null;
-  if (l.state === "lost")
-    unknown.push(`1 lineage gap: this Supervisor session carries role line ${l.lineageId}, but no record addressed to this occupant survives — the handover was lost, which is never the same fact as nothing having been owed.`);
-  else if (l.role === "supervisor")
-    unknown.push(`1 lineage gap: Supervisor role line ${l.lineageId} reaches back only to its oldest surviving record at ${oldest?.at ?? l.record?.at ?? 0}; appointments before it, and any appointment made on another line, are not reconstructible.`);
-  else
-    unknown.push(`1 lineage gap: role line ${l.lineageId} is a ${l.role ?? "roleless"} succession line carried into the Supervisor role rather than a Supervisor line — it records no Supervisor appointment, and the bind that brought it here copied none onto it.`);
-  if (l.losses.length > 0)
-    unknown.push(`${l.losses.length} lineage handover records on this line were unreadable at load and are kept only as scars; what they named is not reconstructible.`);
-  return {
-    lineageId: l.lineageId, state: l.state, role: l.role,
-    // the channel is NAMED, never quoted: which of the two a predecessor used is a fact about the
-    // handover, its text is the successor's own to read.
-    record: l.record ? { at: l.record.at, from: seat(l.record.from), to: seat(l.record.to),
-      obligations: l.record.obligations.length,
-      channel: l.record.intent !== null ? "intent" : l.record.pointer !== null ? "pointer" : null,
-      supersededBy: l.record.supersededBy ? seat(l.record.supersededBy) : null } : null,
-    records: l.line.length, losses: l.losses.length, oldestRecordAt: oldest ? oldest.at : null,
-  };
-}
-
-// SupervisorExecutionView v0: a READ-ONLY cross-program projection, never a second lifecycle model
-// and never a pane capture. It joins facts that already exist — the Program brackets, the lane
-// outcome and receipt ledgers, the transport events, the deploy/audit ledgers, the attention
-// inbox — and leaves every gap as an explicit `unknown` line, the same honesty rule its
-// one-bracket-lower sibling programExecutionView follows.
-//
-// ON DEMAND, NEVER ON THE 2 s POLL. /api/sessions is the largest payload this server sends and its
-// size budget has bytes of headroom, so nothing here may become a retained field on that route.
-async function supervisorView(s: Slot): Promise<Response> {
-  const [outcomeLedger, receiptLedger, deployLedger, auditLedger, judged] = await Promise.all([
-    readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE),
-    readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE),
-    readLedger<Record<string, unknown>>(DEPLOY_FILE),
-    readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE),
-    adjudicationsByAudit(),
-  ]);
-  const num = (v: unknown): number => typeof v === "number" ? v : 0;
-  const str = (v: unknown): string | null => typeof v === "string" ? v : null;
-  const unknown: string[] = [];
-
-  // --- portfolio: every Program, its binding, and whether that binding still names a live
-  // occupant. The liveness rule is programOccupancy's — the SAME function GET /api/programs
-  // answers with, so a view can never report a receiver an actual send would refuse, and the two
-  // program lists can never disagree about the same binding.
-  const now = Date.now();
-  // I6 for the rollup, built ONCE off the whole ledger newest-first — the same derivation the
-  // Program view does per program, so the two brackets cannot disagree about the same row.
-  const phaseOutcomes = phaseOutcomeIndex([...outcomeLedger.rows].sort((a, b) => num(b.ts) - num(a.ts)));
-  const ordered = [...programs].sort((a, b) => b.createdAt - a.createdAt);
-  const portfolio = ordered.slice(0, SUPERVISOR_VIEW_PROGRAMS).map((p) => {
-    const main = p.main ?? null;
-    const health = programHealth(p);
-    const programTasks = tasks.filter((t) => t.programId === p.id);
-    const byStatus: Record<string, number> = {};
-    for (const t of programTasks) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
-    // COUNTS ONLY, never row bodies. This route already carries the largest Supervisor payload and
-    // the Controller reads it on a turn; a phase histogram is under 100 B per program, a list of
-    // per-row bases would not be. The Program-MAIN's own view carries the bodies.
-    const phases: Partial<Record<Phase, number>> = {};
-    let unknownPhased = 0;
-    for (const t of programTasks) {
-      const derived = phaseOf(programPhaseInput(t, p.id, programPhaseOutcome(t, phaseOutcomes), now));
-      phases[derived.phase] = (phases[derived.phase] ?? 0) + 1;
-      if (derived.phase === "UNKNOWN") unknownPhased++;
-    }
-    if (unknownPhased > 0)
-      unknown.push(`${unknownPhased} tasks of program ${p.id} project as phase UNKNOWN; the bound MAIN's program-execution view names each missing input.`);
-    return {
-      program: {
-        id: p.id, status: p.status, title: p.title.slice(0, SUPERVISOR_VIEW_TEXT),
-        createdAt: p.createdAt, confirmedAt: p.confirmedAt ?? null,
-        activatedAt: p.activatedAt ?? null, completedAt: p.completedAt ?? null,
-      },
-      main: main ? { slot: main.slot, openedAt: main.openedAt, sessionId: main.sessionId,
-        boundAt: main.boundAt } : null,
-      // the SAME projection GET /api/programs answers with, for the reason the return path below
-      // repeats: two sights of one MAIN may not say different things about whether it is still
-      // there and still the one that was bound.
-      health,
-      // THE OWNER'S RECORD, RAW AND UNTRANSLATED — `null` where there is none. The Supervisor is
-      // the one reader that must be able to see WHY a program's routine lands still come to the
-      // owner, and it could not: the portfolio carried no promotion at all, so "the owner said no"
-      // and "the owner never said" were equally invisible here while the board distinguishes them.
-      // Shipped as the stored record and nothing else: the five displayed states are the client
-      // helper `promotionState`'s to name, and a second translator on this route would be a second
-      // vocabulary for one permission. `promotion: null` is NOT a claim that anyone is waiting on
-      // the owner — the owner's policy of 2026-08-23 reserves that door for a REVIEWABLE row with
-      // no usable policy, and this projection never looks at a row.
-      promotion: p.promotion ?? null,
-      // the SAME projection GET /api/programs answers with, for the same reason `health` above is:
-      // two sights of one receiver may not say different things about its return path.
-      ...programReturnPath(p),
-      tasks: { total: programTasks.length, byStatus, phases },
-    };
-  });
-  if (ordered.length > portfolio.length)
-    unknown.push(`${ordered.length - portfolio.length} programs beyond the newest ${SUPERVISOR_VIEW_PROGRAMS} are not in this projection.`);
-
-  // --- operations: what lanes finished, and what transport debt is still open. The inbox rows are
-  // REPORTED and not spendable: their acknowledgement belongs to the owner (ownerAcknowledgeFleetEvent),
-  // and a Supervisor that could close them would be answering in the owner's stead.
-  const outcomeRows = [...outcomeLedger.rows].sort((a, b) => num(b.ts) - num(a.ts));
-  const openEvents = fleetEvents
-    .filter((e) => !FLEET_EVENT_TERMINAL.includes(e.status))
-    .sort((a, b) => b.createdAt - a.createdAt);
-  const operations = {
-    outcomes: {
-      rows: outcomeRows.slice(0, SUPERVISOR_VIEW_ROWS).map((row) => ({
-        ts: row.ts, branch: str(row.branch), disposition: row.disposition,
-        programId: str(row.programId), taskId: str(row.taskId),
-        verified: row.verified, mainAfter: str(row.mainAfter), repo: str(row.repo),
-      })),
-      total: outcomeRows.length,
-      malformed: outcomeLedger.malformed,
-    },
-    debts: {
-      rows: openEvents.slice(0, SUPERVISOR_VIEW_ROWS).map((e) => ({
-        id: e.id, kind: e.kind, status: e.status, receiverSlot: e.receiverSlot,
-        delivery: e.delivery ?? "pane", createdAt: e.createdAt, attempts: e.attempts,
-      })),
-      total: openEvents.length,
-      // The owner's to spend, not the Supervisor's — stated as a number so the debt is visible
-      // without a capability being implied.
-      ownerAckOnly: openEvents.filter((e) => e.delivery === "inbox").length,
-    },
-  };
-  const unattributedOutcomes = outcomeRows.filter((row) => typeof row.programId !== "string").length;
-  if (unattributedOutcomes > 0)
-    unknown.push(`${unattributedOutcomes} lane outcome rows carry no programId and cannot be attributed to a program.`);
-  if (outcomeLedger.malformed > 0)
-    unknown.push(`${outcomeLedger.malformed} malformed lane outcome rows make the operations picture incomplete.`);
-
-  // --- integration: what was deployed, what the post-land audits said, and how far the running
-  // process is behind the tree. deployFacts is the SAME cached pair /api/sessions serves (git tick,
-  // ~10 s) — reading it here adds no subprocess and cannot disagree with the owner's board.
-  const deployRows = [...deployLedger.rows].sort((a, b) => num(b.at) - num(a.at));
-  const auditRows = [...auditLedger.rows].sort((a, b) => num(b.at) - num(a.at));
-  const redUnadjudicated = auditRows.filter((row) => row.result === "red"
-    && typeof row.at === "number" && !judged.has(row.at)).length;
-  const integration = {
-    deploys: {
-      rows: deployRows.slice(0, SUPERVISOR_VIEW_INTEGRATION_ROWS).map((row) => ({
-        at: row.at, id: str(row.id), by: str(row.by), stage: str(row.stage), ok: row.ok ?? null,
-        target: str(row.target), bootHead: str(row.bootHead), head: str(row.head),
-        hitTarget: row.hitTarget ?? null, bundleStale: row.bundleStale ?? null,
-      })),
-      total: deployRows.length,
-      malformed: deployLedger.malformed,
-    },
-    audits: {
-      rows: auditRows.slice(0, SUPERVISOR_VIEW_INTEGRATION_ROWS).map((row) => ({
-        at: row.at, result: str(row.result), ms: typeof row.ms === "number" ? row.ms : null,
-        repo: str(row.repo), main: str(row.main), mainSha: str(row.mainSha),
-        adjudicated: typeof row.at === "number" && judged.has(row.at),
-      })),
-      total: auditRows.length,
-      malformed: auditLedger.malformed,
-      redUnadjudicated,
-    },
-    // null until the git tick has run once — an honest "not measured yet", never an all-clear.
-    deployGap: deployFacts ? deployFacts.gap : null,
-    bundle: deployFacts ? deployFacts.bundle : null,
-    // same number, same name as on /api/sessions: when the two facts above were measured. A pair
-    // with an hours-old `at` is a STOPPED tick, not an all-clear (see refreshDeployFacts).
-    deployFactsAt: deployFacts ? deployFacts.at : null,
-  };
-  if (!deployFacts)
-    unknown.push("the deploy-gap and bundle facts have not been measured yet; deployGap and bundle are null, which is not an all-clear.");
-  // A reading that STOPPED refreshing is the same wrong answer as a missing one, only quieter: it
-  // keeps asserting whatever was true when the tick last carried. Ten ticks of silence is far past
-  // any scheduling jitter and is the shape refreshDeployFacts' two silent paths produce.
-  else if (Date.now() - deployFacts.at > GIT_TICK_MS * 10)
-    unknown.push(`the deploy-gap and bundle facts were last measured ${Math.round((Date.now() - deployFacts.at) / 1000)}s ago and have stopped refreshing; they describe that moment, not now.`);
-  if (deployLedger.malformed > 0)
-    unknown.push(`${deployLedger.malformed} malformed deploy ledger rows make the integration picture incomplete.`);
-  if (auditLedger.malformed > 0)
-    unknown.push(`${auditLedger.malformed} malformed post-land audit rows make the integration picture incomplete.`);
-
-  // --- attention: what a Program-MAIN has raised and the owner has not closed. Same ordering rule
-  // as attentionOwnerView (open first, then newest), without its owner-side join.
-  const openAttention = attentionRequests
-    .filter((a) => a.status === "open" || a.status === "send-uncertain")
-    .sort((x, y) => y.raisedAt - x.raisedAt);
-  const attention = {
-    rows: openAttention.slice(0, SUPERVISOR_VIEW_ROWS).map((a) => ({
-      id: a.id, kind: a.kind, slot: a.requester.slot, createdAt: a.raisedAt,
-      programId: a.programId, status: a.status, text: a.text.slice(0, SUPERVISOR_VIEW_TEXT),
-    })),
-    total: openAttention.length,
-  };
-
-  // --- provenance: what context was actually delivered, including this Supervisor's own
-  // programId:null rows — cross-program scope, not a missing attribution.
-  const receiptRows = [...receiptLedger.rows].sort((a, b) => num(b.at) - num(a.at));
-  const provenance = {
-    rows: receiptRows.slice(0, SUPERVISOR_VIEW_ROWS).map((row) => ({
-      id: str(row.id), at: row.at, programId: str(row.programId), taskId: str(row.taskId),
-      slot: row.slot, mode: str(row.mode), deliveredBytes: row.deliveredBytes,
-    })),
-    total: receiptRows.length,
-    malformed: receiptLedger.malformed,
-  };
-  if (receiptLedger.malformed > 0)
-    unknown.push(`${receiptLedger.malformed} malformed context receipt rows make the provenance picture incomplete.`);
-  // DERIVED, never constant — supervisorLineageView pushes the gap its branch actually has.
-  const lineage = supervisorLineageView(s, unknown);
-
-  // --- transitions (STN-1): the armed questions Controllers have asked this Supervisor to answer.
-  // Derived from the SAME watch rows the transport reads, capped and sliced like every group
-  // above; `receiver` states whether the registrant still occupies its slot, by the same
-  // slot+openedAt rule the completion route will apply — so the view never lists a watch as
-  // completable that the route would refuse.
-  const armedTransitions = watches
-    .filter((w): w is TransitionWatch => watchKind(w) === "transition" && "deadlineAt" in w && w.armed)
-    .sort((a, b) => a.deadlineAt - b.deadlineAt);
-  const transitions = {
-    rows: armedTransitions.slice(0, SUPERVISOR_VIEW_ROWS).map((w) => {
-      const r = slotFrom(w.slot);
-      const live = !!(r?.cwd && w.slotOpenedAt !== undefined && r.openedAt === w.slotOpenedAt);
-      return {
-        id: w.id, slot: w.slot, awaiting: w.awaiting.slice(0, SUPERVISOR_VIEW_TEXT),
-        created: w.created, deadlineAt: w.deadlineAt,
-        receiver: live ? "live" : "gone-or-replaced",
-      };
-    }),
-    total: armedTransitions.length,
-  };
-
-  return json({
-    at: Date.now(),
-    session: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
-    portfolio, operations, integration, attention, provenance, lineage, transitions, unknown,
-  });
-}
-
 // THE REPO SHEET (Karte K2, Messung 2026-09-23 §5) — ONE owner reading per CANONICAL repo, over
 // the layers that carry their repo key and had no sight: open lanes (L3, straight off the slots),
 // the queue rows that target it (L2, the null rows joined through FLEET_DISPATCH_REPO), the newest
@@ -35541,7 +34641,7 @@ async function supervisorView(s: Slot): Promise<Response> {
 // the same deployCellFor programStatusView answers with) — and the repo's lane cap with its
 // source. Each layer names its source in its own `quelle`, so a reader never has to guess which
 // store a row came from; the lands layer names its truncation instead of silently slicing.
-// ON DEMAND, NEVER ON THE POLL (the D2 doctrine supervisorView states too): every ledger here is
+// ON DEMAND, NEVER ON THE POLL (the D2 doctrine): every ledger here is
 // opened by THIS request and closed with it — /api/sessions and /api/programs stay memory-only —
 // and the route writes nothing anywhere: read-only by construction, not by discipline.
 const REPO_SHEET_LANDS = 10;
@@ -35629,142 +34729,6 @@ async function repoSheetView(rawRepo: string): Promise<Response> {
     },
     unknown,
   });
-}
-
-// The Supervisor's ONE voice, and every bound on it is structural rather than advisory.
-//
-// THE RECEIVER IS DERIVED, NEVER NOMINATED. No body field names a slot: the caller states which
-// PROGRAM it is speaking to, and the receiver is that program's bound Program-MAIN occupant under
-// the "program-main" rule clarificationReceiverFor uses. A nudge is therefore incapable of reaching
-// a pane the portfolio does not already name — which is what makes it safe to hand a session at all.
-//
-// WHAT IT IS NOT: no persistence, no FleetEvent, no watch, no tick, no retry. The receipt the caller
-// gets back and the one journal line are the whole record. A second message bus for a channel
-// nobody has watched work yet would be a contract written before its first observation.
-async function supervisorNudge(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
-  // Guard order is handleStewardSend's: an INVALID request is answered as invalid (400) even when
-  // the program or the receiver would refuse it, so a malformed nudge is never reported as a
-  // policy state it never reached.
-  if (!body || typeof body.programId !== "string" || !body.programId)
-    return json({ error: "programId must be a non-empty string" }, 400);
-  if (typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
-  const text = body.text.trim();
-  if (!text) return json({ error: "text must not be empty" }, 400);
-  if (text.length > MAX_SUPERVISOR_NUDGE_TEXT)
-    return json({ error: `text must be at most ${MAX_SUPERVISOR_NUDGE_TEXT} chars` }, 400);
-
-  const program = programs.find((p) => p.id === body.programId);
-  if (!program) return json({ error: "unknown program" }, 409);
-  if (program.status !== "active")
-    return json({ error: `program is ${program.status}, not active — a nudge reaches an executing program only` }, 409);
-  const main = program.main;
-  if (!main) return json({ error: "program has no bound Program-MAIN to nudge" }, 409);
-  const live = slotFrom(main.slot);
-  if (!(live?.cwd && live.id === main.slot && live.openedAt === main.openedAt))
-    return json({ error: "the bound Program-MAIN occupant is gone or was replaced — nothing to nudge" }, 409);
-  // An owner debt is never talked past: exactly handleStewardSend's stance, for exactly its reason.
-  // The wait exists to hold everything but the owner back, and a Supervisor is not the owner.
-  if (live.awaiting === "owner")
-    return json({ error: "the Program-MAIN is waiting on the owner — escalate, never nudge past it" }, 409);
-  // The attended waiver set the founding rails take (this is a principal's deliberate act, not a
-  // tick), minus nothing on `alive`: pasting into an agent-less pane types prose into a shell.
-  const gate = await canDeliver(live, { now: Date.now(), idleMs: 0,
-    killSwitch: false, quietHours: false, harness: false });
-  if (!gate.ok)
-    return json({ error: `nudge delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 409);
-
-  // THE DELIVERY IDENTITY, minted before the transport is touched so both outcomes carry the SAME
-  // id — the owner /send receipt anatomy exactly, because a second anatomy for the same act would
-  // make the journal two half-joinable trails.
-  const nudgeId = randomBytes(12).toString("hex");
-  const receiver = { slot: live.id, openedAt: live.openedAt, sessionId: live.sessionId };
-  const delivered = [
-    `[fleet Supervisor nudge ${nudgeId}] from the owner-side Supervisor (slot ${s.id}).`
-    + " A nudge is information plus a question — the decision remains with you as Program-MAIN.",
-    "",
-    text,
-  ].join("\n");
-  let acceptance: Acceptance;
-  try {
-    ({ acceptance } = await sendText(live, delivered, true, { path: "supervisor-nudge" }));
-  } catch (e) {
-    if (e instanceof SendRefused)
-      return json({ error: e.message, receipt: { sendId: nudgeId, at: Date.now(), delivery: "refused", receiver } }, 409);
-    // Neither "failed" nor "delivered" is an observed fact once tmux has thrown — the same truth
-    // rule the owner send and the clarification transport follow. The journal write is MANDATORY;
-    // history deliberately is not, because a history entry reads as "this text is in that pane".
-    const at = Date.now();
-    logPrompt(live, delivered, "supervisor", at, nudgeId, "uncertain");
-    return json({ error: `nudge outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
-      receipt: { sendId: nudgeId, at, delivery: "uncertain", receiver } }, 409);
-  }
-  const ts = Date.now();
-  live.history = [...live.history, { text: delivered, ts, source: "fleet" as const }].slice(-MAX_HISTORY);
-  saveHistory(live);
-  logPrompt(live, delivered, "supervisor", ts, nudgeId, acceptance === "unobservable" ? "unobserved" : "sent");
-  audit("supervisor_nudge", receiver.slot, `${nudgeId} program:${program.id}`); // never the text
-  return json({ ok: true, receipt: { sendId: nudgeId, at: ts, submitRequested: true, acceptance, receiver } });
-}
-
-// STN-1 · the Supervisor's SECOND voice, and it differs from the nudge in exactly one way: it
-// persists. A nudge is a paste with a receipt; a transition completion MINTS one FleetEvent onto
-// a Watch a Controller registered, and from there the existing transport owns everything — the
-// idle gate, the kill-switch and alive gates, send-uncertain before tmux, receiver-gone, the Ack.
-//
-// THE RECEIVER IS THE WATCH'S, NEVER THE BODY'S. The Supervisor names a watch id and says its
-// text; the pane that text reaches is the occupant that registered the watch (slot+openedAt),
-// re-resolved NOW — a replaced occupant is refused with the watch disarmed, never re-targeted.
-// Exactly once: spendWatch's watchId uniqueness is the lock, and every other outcome below is a
-// 409 that mints nothing. Guard order is supervisorNudge's: 401/409 at the route, then 400 for
-// an invalid REQUEST, then 409 for every policy state.
-async function completeTransitionWatch(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
-  if (!body) return json({ error: "invalid json" }, 400);
-  const extra = Object.keys(body).filter((k) => k !== "text");
-  if (extra.length)
-    return json({ error: `this door reads text only — [${extra.join(", ")}] is not read: the receiver is the watch's registrant and the watch is named in the path` }, 400);
-  if (typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
-  const text = body.text.trim();
-  if (!text) return json({ error: "text must not be empty" }, 400);
-  if (text.length > MAX_SUPERVISOR_NUDGE_TEXT)
-    return json({ error: `text must be at most ${MAX_SUPERVISOR_NUDGE_TEXT} chars` }, 400);
-
-  const w = watches.find((x) => x.id === id);
-  if (!w) return json({ error: "unknown watch" }, 409);
-  if (watchKind(w) !== "transition" || !("deadlineAt" in w))
-    return json({ error: `watch ${id} is a ${watchKind(w)} watch — only a transition watch is completed by the Supervisor` }, 409);
-  if (!w.armed)
-    return json({ error: `watch ${id} is no longer armed (${w.lastResult ?? "spent"}) — a transition is notified at most once` }, 409);
-  const now = Date.now();
-  if (now >= w.deadlineAt) {
-    w.armed = false;
-    w.lastResult = "expired — the deadline passed before the Supervisor completed this watch; no notification will come";
-    audit("watch_expire", w.slot, `${w.id} deadlineAt=${w.deadlineAt} at-completion`);
-    pruneSpentWatches(w.slot);
-    await saveStateNow();
-    return json({ error: `watch ${id} expired at ${new Date(w.deadlineAt).toISOString()} — nothing was minted` }, 409);
-  }
-  const receiver = slotFrom(w.slot);
-  if (!(receiver?.cwd && w.slotOpenedAt !== undefined && receiver.openedAt === w.slotOpenedAt)) {
-    w.armed = false;
-    w.lastResult = "receiver session gone or replaced — no notification will come";
-    audit("watch_skip", w.slot, `${w.id} ${w.lastResult}`);
-    pruneSpentWatches(w.slot);
-    await saveStateNow();
-    return json({ error: "the registering session is gone or was replaced — the watch is disarmed and nothing was minted" }, 409);
-  }
-  const event: SupervisorTransitionFleetEvent = {
-    id: randomBytes(12).toString("hex"), watchId: w.id,
-    receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
-    receiverIdleSec: w.idleSec, subjectSlot: s.id, subjectOpenedAt: s.openedAt,
-    kind: "supervisor-transition",
-    payload: { watchId: w.id, awaiting: w.awaiting, text, completedAt: now },
-    createdAt: now, ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
-  };
-  if (!spendWatch(w, event))
-    return json({ error: `watch ${id} already minted its event — a transition is notified at most once` }, 409);
-  audit("supervisor_transition", receiver.id, `${w.id} event=${event.id} by=${s.id}`); // never the text
-  await saveStateNow();
-  return json({ ok: true, watch: w, event });
 }
 
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
@@ -36232,23 +35196,12 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
 }
 
 async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response> {
-  // additive proof read: the cross-program binding has no list of its own, and the client reads
-  // .programs, so it stays compatible by construction. `health` and the return path beside it are
-  // the same additive shape and the same computations the Supervisor portfolio uses — DERIVED
-  // fields, never persisted: they are recomputed per request because the occupant they describe can
-  // die between two of them. The row itself is `publicProgramListRow`, not `publicProgram`: the four
-  // unrendered bodies are dropped here and `evidence` travels as `evidenceCount` (see there for the
-  // measurement). `health.occupancy` is where the former top-level `occupancy` lives
-  // since V1a: it and `sessionIdMatch` are two halves of one question ("is the bound MAIN still
-  // there, and is it still the one that was bound"), and splitting them across the row invited a
-  // reader to answer the first and forget the second. The owner's own top-level `promotion` record
-  // rides along in that spread untouched — this cut adds no second rendering of it.
   if (url.pathname === "/api/programs" && req.method === "GET")
     return json({ programs: programs.map((p) => ({ ...publicProgramListRow(p), health: programHealth(p),
       ...programReturnPath(p),
       // `status` is already Program.status (the lifecycle state). D2 therefore uses an additive,
       // non-colliding owner-list name while the self execution row can use its requested `status`.
-      executionStatus: programStatusView(p) })), supervisor, supervisorHealth: supervisorHealth() });
+      executionStatus: programStatusView(p) })) });
   if (url.pathname === "/api/programs" && req.method === "POST") {
     const valid = validateProgramContent(await readJson(req));
     if (!valid.ok) return json({ error: valid.error }, 400);
@@ -37494,17 +36447,6 @@ if (existsSync(STATE_FILE)) {
         audit("program_handover_loss_unreadable", undefined, `${id} ${error}`);
       }
     }
-    // The Supervisor binding: absent OR malformed loads as null, never as a half-binding — every
-    // consumer joins on slot+openedAt, so half of it is a different fact, not a weaker one.
-    const sv = (persisted as { supervisor?: unknown }).supervisor;
-    if (sv && typeof sv === "object" && !Array.isArray(sv)) {
-      const b = sv as Record<string, unknown>;
-      if (Number.isInteger(b.slot) && typeof b.openedAt === "number" && Number.isFinite(b.openedAt)
-        && (b.sessionId === null || typeof b.sessionId === "string")
-        && typeof b.boundAt === "number" && Number.isFinite(b.boundAt))
-        supervisor = { slot: b.slot as number, openedAt: b.openedAt,
-          sessionId: b.sessionId as string | null, boundAt: b.boundAt };
-    }
     // THE LINE RECORDS, closed per row: a row the loader refuses is not a shorter record, it is a
     // LOST one, and the scar names its line so that line's reader says `handoverLost` instead of
     // `nothing owed`. Old scars come back verbatim; a malformed scar is dropped (it proves nothing).
@@ -37720,31 +36662,7 @@ if (existsSync(STATE_FILE)) {
     // THE SIXTH SITE: anchors orphaned by an in-place succession the rail did not rebind (above
     // respawnInPlace). Needs the slots, the programs and the role lines, so it runs after all three.
     healLaneAnchorsOnLoad();
-    // THE FIFTH SITE, and it repairs NOTHING — it only says a fact out loud. The binding above was
-    // rehydrated from its FORM alone, and it had to be: this loader runs before the slot loop, so
-    // at that point no slot carries a cwd yet and no liveness question can be asked. By here the
-    // slots are back, so the question CAN be asked, and the answer belongs in the log and on the
-    // trail rather than nowhere. Measured 2026-09-07: `supervisor` named slot 5 openedAt
-    // 1787497726285 (bound 21.08.) while slot 5 had long since been recycled into a lane — every
-    // route the binding gates answered the same 409 a non-Supervisor gets, so the role was unfilled
-    // across every restart and nothing anywhere said so.
-    //
-    // THE RECORD IS KEPT. Clearing it here would be a repair nobody asked for and would erase the
-    // only distinction that matters: "no Supervisor was ever appointed" (`supervisor: null`) and
-    // "the one appointed is gone" (a stale record) are two different states of the fleet, and only
-    // the second tells the owner that an appointment ended without a succession. The doors that
-    // overwrite it are owner acts (bootstrap, bind), never a boot.
-    //
-    // Through supervisorHealth, not a second comparison of its own: two readings of the same
-    // liveness are two answers waiting to drift, which is the exact shape of the fault this block
-    // exists to report.
-    if (supervisor && supervisorHealth().occupancy === "stale") {
-      console.error(`[supervisor] STALE binding restored: slot ${supervisor.slot} openedAt `
-        + `${supervisor.openedAt} no longer carries that occupation — the role is UNFILLED until `
-        + `the owner bootstraps or binds one; the record is kept, not cleared`);
-      audit("supervisor_binding_stale", supervisor.slot,
-        `dead slot:${supervisor.slot} openedAt:${supervisor.openedAt}`);
-    }
+
     // dispatcher toggle survives deploys — queued tasks persist, so the thing that drains them must too
     const prb = (persisted as { repoBases?: unknown }).repoBases;
     if (typeof prb === "object" && prb !== null && !Array.isArray(prb))
@@ -37978,9 +36896,7 @@ autos = autos.filter((a) => slotFrom(a.slot)?.cwd);
 watches = watches.filter((w) => {
   const s = slotFrom(w.slot);
   if (!s?.cwd) return false;
-  // STN-1: a transition watch has no target slot — its other party is the bound Supervisor,
-  // re-resolved at completion — so a receiver that came back is all it needs to stay.
-  if (watchKind(w) === "audit" || watchKind(w) === "deploy" || watchKind(w) === "transition") return true;
+  if (watchKind(w) === "audit" || watchKind(w) === "deploy") return true;
   if (!("target" in w)) return false;
   const t = slotFrom(w.target);
   // Merge subscriptions stay when the target vanished: the land site minted their durable event,
@@ -40058,7 +38974,6 @@ function deployBlocker(): string | null {
   const inflight = [
     ...successionSlots.map((id) => `slot ${id}`),
     ...[...programBootstrapInflight].map((id) => `Program ${id}`),
-    ...(supervisorBootstrapInflight ? ["the Supervisor"] : []),
   ];
   if (successionInflight.size || inflight.length)
     blockers.push(`a succession or founding is in flight (${inflight.join(", ") || `${successionInflight.size} session(s)`}) — restarting srv now could end a line between its predecessor's kill and its successor's binding`);
@@ -41042,11 +39957,8 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot propose or read them as its own" }, 409);
-      // The bound Supervisor reads every Program's CONTENT, not just its own (it holds the portfolio
-      // together); the disjunct is the SAME occupancy-derived predicate its other senses use, so the
-      // reach follows the binding through succession. Narrativ: server-narrativ-archiv.md#fetch-apiselfprograms
       if (req.method === "GET") return json({ programs: programs.filter((p) => sameProgramSession(p, s)
-        || (p.main?.slot === s.id && p.main.openedAt === s.openedAt) || isBoundSupervisor(s))
+        || (p.main?.slot === s.id && p.main.openedAt === s.openedAt))
         .map(publicProgram) });
       const valid = validateProgramContent(await readJson(req));
       if (!valid.ok) return json({ error: valid.error }, 400);
@@ -41174,38 +40086,7 @@ Bun.serve<WSData>({
       return json({ ok: true, contextPacks: program.contextPacks ?? [], head });
     }
 
-    // The Supervisor's two Cut-2 channels: same every-session rail, same flat-cost 401. What separates
-    // them is the OCCUPANCY gate — only the session the owner bound as Supervisor; a lane is never the
-    // Supervisor, so the same check covers it. Narrativ: server-narrativ-archiv.md#fetch-supervisor-self-routes
-    if (url.pathname === "/api/self/supervisor-view" && req.method === "GET") {
-      // resolvePrincipal authenticates this route's x-fleet-self-token before the scope refusal.
-      const p = resolveSelfPrincipal(req);
-      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
-      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      const refusal = supervisorRefusal(s);
-      if (refusal) return json({ error: refusal }, 409);
-      return supervisorView(s);
-    }
-    if (url.pathname === "/api/self/nudge" && req.method === "POST") {
-      const p = resolveSelfPrincipal(req);
-      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
-      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      const refusal = supervisorRefusal(s);
-      if (refusal) return json({ error: refusal }, 409);
-      return supervisorNudge(s, await readJson(req));
-    }
-    // STN-1 · the Supervisor completes ONE transition watch a Controller registered. Same
-    // credential rail, same occupancy gate as the two routes above; the watch id comes from the
-    // path and the receiver from the watch, so the body can name nothing but the text.
-    const supervisorComplete = /^\/api\/self\/supervisor-watch\/([a-z0-9]+)\/complete$/.exec(url.pathname);
-    if (supervisorComplete && req.method === "POST") {
-      const p = resolveSelfPrincipal(req);
-      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
-      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      const refusal = supervisorRefusal(s);
-      if (refusal) return json({ error: refusal }, 409);
-      return completeTransitionWatch(s, supervisorComplete[1], await readJson(req));
-    }
+
 
     // MAIN-direct provenance is an explicit two-step report by THIS non-lane session. Git supplies
     // both heads; the body can only state the expected final head and the verification it ran.
@@ -42225,21 +41106,7 @@ Bun.serve<WSData>({
       return handleOwnerStudioRoute(req, url);
     }
 
-    // The Supervisor is an owner bracket above the Programs, same owner gate for the same reason: a
-    // self token is not a credential here (401), a steward token a plain owner-auth failure.
-    if (url.pathname === "/api/supervisor/bootstrap") {
-      if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
-      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
-      return bootstrapSupervisor(await readJson(req) ?? {});
-    }
-    // …and the door that appoints a session that ALREADY EXISTS. Same owner gate for the same
-    // reason as its neighbour: appointing the one cross-program identity is an owner act, and a
-    // self token is not a credential here.
-    if (url.pathname === "/api/supervisor/bind") {
-      if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
-      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
-      return bindSupervisor(await readJson(req));
-    }
+
 
     // steward principal: AFTER the SHARE_HOSTS gate (unreachable from the tunnel), BEFORE the owner
     // gate. An out-of-scope path with a valid-but-wrong-scope credential is 403, told apart from
@@ -45487,8 +44354,7 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       // STN-2: a transition watch is the receiver's OWN question, and the self route carries the not-a-lane
       // rule; the owner's wider reach would route around it — refused by name, never silently rebound.
-      if (body?.kind === "transition")
-        return json({ error: "a transition watch is registered by the receiving session itself via POST /api/self/watch — the owner route does not register one on a session's behalf" }, 409);
+
       return await createWatchForSlot(s, body);
     }
     const watchAct = /^\/api\/watches\/([a-z0-9]+)\/delete$/.exec(url.pathname);

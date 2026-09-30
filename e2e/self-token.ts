@@ -1627,9 +1627,7 @@ async function memoryDoor(): Promise<void> {
     if (!up) return;
     const repos = [rA, rB, rC];
     for (const [n, r] of repos.entries()) await opost(`/api/slots/${n + 1}/open`, { cwd: r, label: `mem-main-${"ABC"[n]}` });
-    // M4: slot 4 becomes the bound Supervisor (planted below), slot 5 carries the Orchestrator LABEL
-    // and a model name — renamed after the open, so no role card is founded into it
-    await opost("/api/slots/4/open", { cwd: rA, label: "mem-supervisor" });
+    await opost("/api/slots/4/open", { cwd: rA, label: "mem-legacy-binding" });
     await opost("/api/slots/5/open", { cwd: rA, label: "mem-orch", model: "claude-opus-5[1m]" });
     await opost("/api/slots/5/rename", { label: "🎛 Orchestrator (mem)" });
     let rows: MemSlotRow[] = [];
@@ -2010,16 +2008,6 @@ async function memoryDoor(): Promise<void> {
   }
 }
 
-// --- M4 · view=portfolio and the owner's read grant (task 41641179), on memoryDoor's instance ---
-// Slot 4 is the bound Supervisor, slot 5 an Orchestrator by LABEL (and model) only; the three
-// repositories are the three projects. What each group can turn red, stated as the mutation:
-//   label/model/lane/MAIN — grant portfolio reach from a label, a model, a lane or a Program binding.
-//   admin ×2 — let a self credential through the owner gate, or ignore expectedRevision.
-//   fold — sum a total that does not equal its parts, or drop a part's sourceVersion.
-//   foreign project / cursor — serve a key outside the grant, or honour a cursor after a revoke.
-//   persistence — keep a grant in force whose write failed.
-//   boot — rehydrate a grant onto another occupant, or read an unknown project as empty.
-//   recycle — let a new occupant of the slot inherit the grant.
 async function memoryPortfolio(i: MemInstance, dir: string, repos: string[], mainTok: string[], laneTok: string[], X: string[]): Promise<void> {
   const H2 = { "content-type": "application/json", authorization: `Bearer ${MEM_TOKEN}` };
   const owner = (method: string, path: string, body?: unknown, headers: Record<string, string> = H2) =>
@@ -2159,11 +2147,10 @@ async function memoryPortfolio(i: MemInstance, dir: string, repos: string[], mai
     regrant.ok && (await grantOf(5)).grant?.revision === 4 && staleAfter.status === 409 && staleAfter.body.refusal === "cursor-stale",
     `regrant=${regrant.status} stale=${staleAfter.status}:${staleAfter.body.refusal}`);
 
-  // --- the Supervisor keeps its existing reach, without any grant ---
-  const S = await port(supTok);
-  check("memory portfolio (Supervisor): the bound Supervisor folds every known project from its existing reach, no grant set",
-    S.status === 200 && S.body.scope?.principal === "supervisor" && [kA, kB, kC].every((k) => (S.body.scope?.projectKeys ?? []).includes(k)),
-    `${S.status} ${JSON.stringify(S.body.scope ?? S.body)}`.slice(0, 300));
+  const legacyReader = await port(supTok);
+  check("D5 legacy fleet.json loads its old supervisor field without granting portfolio reach",
+    legacyReader.status === 409 && legacyReader.body.refusal === "no-grant",
+    `${legacyReader.status}:${legacyReader.body.refusal}`);
 
   // --- boot: only a grant naming its exact occupant and line comes back ---
   await memStop(i);

@@ -30,7 +30,7 @@
 //   - A lane with no `taskId` (hand-opened, or pre-field) cannot name the delivery that founded it.
 //     Excluded and counted; §4's own instruction, and the funnel it comes from put most of the
 //     empty dead on hand-opened slots.
-//   - `founding` receipts (Program-MAIN and Supervisor, bootstrap and succession) carry `taskId:
+//   - `founding` receipts (Program-MAIN, bootstrap and succession) carry `taskId:
 //     null` and describe no lane at all. They can join nothing by construction — but the count is
 //     reported anyway, because a structural impossibility that nobody prints is indistinguishable
 //     from a bug that eats rows.
@@ -55,7 +55,7 @@ import { readLedger } from "./server/persist";
 /** where the delivered text came from — server.ts's BriefSource, the seven values a receipt carries */
 export const BRIEF_SOURCES = ["compiled", "owner", "main", "raw", "clarify", "founding", "card"] as const;
 export type BriefSource = (typeof BRIEF_SOURCES)[number];
-/** the six a LANE can be founded by. `founding` describes a Program-MAIN/Supervisor, never a lane. */
+/** the six a LANE can be founded by. `founding` describes a Program-MAIN, never a lane. */
 export type LaneBriefSource = Exclude<BriefSource, "founding">;
 
 /** the five terminal shapes of a lane — LaneOutcome.disposition, NOT DispositionVerdict */
@@ -151,7 +151,7 @@ export interface BriefStatsSummary {
     /** rows from before 735aa45 — no briefSource at all */
     preP2: number;
     unknownSource: number;
-    /** taskId null (a founding/Supervisor delivery) or no branch: indexable by nothing */
+    /** taskId null (a founding delivery) or no branch: indexable by nothing */
     noLaneKey: number;
     /** `selected` is not an array: a delivery that names no packs (a row from before the plan rail) */
     noSelected: number;

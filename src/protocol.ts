@@ -498,10 +498,7 @@ export interface CapabilityDimensionGap {
   readonly gap: string;
 }
 
-// Question transports are role policy, not a fourth stable Fleet function: `ask_question` remains
-// future vocabulary. Keeping the current rail beside the capability rows still lets a reader learn
-// where a question goes without repeating the Supervisor brief's false attention promise.
-export type QuestionRole = "lane" | "program-main" | "supervisor" | "other-session";
+export type QuestionRole = "lane" | "program-main" | "other-session";
 export interface QuestionRoute {
   readonly role: QuestionRole;
   readonly recipient: string;

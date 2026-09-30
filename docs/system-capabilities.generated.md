@@ -108,17 +108,6 @@ These transports describe today's role policy; they are not additional stable fu
 - Gaps:
 - none
 
-### supervisor
-
-- Recipient: unsupported
-- Adapter: `unsupported`
-- Credential: none
-- Role condition: none; no adapter exists
-- Constraints:
-- none
-- Gaps:
-- No owner question adapter exists for this role today; the attention transport requires a current bound MAIN of an active Program.
-
 ### other-session
 
 - Recipient: unsupported

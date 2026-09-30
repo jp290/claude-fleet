@@ -134,13 +134,6 @@ export const QUESTION_ROUTES = [
     gaps: [],
   },
   {
-    role: "supervisor",
-    recipient: "unsupported",
-    adapter: null,
-    constraints: [],
-    gaps: ["No owner question adapter exists for this role today; the attention transport requires a current bound MAIN of an active Program."],
-  },
-  {
     role: "other-session",
     recipient: "unsupported",
     adapter: null,

@@ -307,7 +307,8 @@ export async function run(): Promise<void> {
         && row?.letzte?.version === 11 && row.versionen === 11
         && JSON.stringify(row.anmerkungen) === '{"offen":8,"eingearbeitet":2,"verworfen":1}'
         && idxBody.konzepte?.find((k) => k.konzept === "k-e2e-leer")?.letzte === null
-        && !JSON.stringify(idx.body).includes("# Konzept") && idxSelf.status === 401 && idxBoth.status === 409,
+        && !JSON.stringify(idx.body).includes("# Konzept") && idxSelf.status === 401 && idxBoth.status === 200
+        && JSON.stringify(idxBoth.body) === JSON.stringify(idx.body),
       `${idx.status} self=${idxSelf.status} both=${idxBoth.status} ${JSON.stringify(idx.body).slice(0, 500)}`);
 
     // ---- scope: a plain session is 409 on read and write, no token 401

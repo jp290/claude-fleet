@@ -9338,9 +9338,15 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       return;
     }
+    if (immediate && (immediate.slot.openedAt !== immediate.origin.openedAt
+      || s.id !== immediate.origin.slot || s.openedAt !== immediate.origin.openedAt)) {
+      scheduleDeliveryBundle(key, bundle);
+      throw new DeliveryCancelled("slot occupant changed before immediate delivery");
+    }
     const entries = bundle.entries.splice(0);
     if (!entries.length && !immediate) { deliveryBundles.delete(key); return; }
     const recipientOpenedAt = s.openedAt;
+    let ownerGateBlocked = false;
     if (!immediate) {
       bundle.entries.unshift(...entries);
       const next = bundleDeadline(bundle, s, Date.now());
@@ -9395,6 +9401,10 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       if (!gate.ok && entries.length) {
         const reason = `gate=${gate.gate}${gate.detail ? `: ${gate.detail}` : ""} — nothing typed`;
+        if (immediate?.options.path === "owner") {
+          ownerGateBlocked = true;
+          throw new SendRefused(reason);
+        }
         if (gate.gate === "not-alive") {
           const agent = await paneAgentAt(sess(s.id), commsFor(s));
           throw new DeliveryGateDropped(`gate=${agent === "no-pane" ? "no-pane" : "no-agent"} — nothing typed`);
@@ -9441,7 +9451,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
           try { await entry.options.onRefused?.(s); }
           catch (rollbackError) { logError("bundleRefusalRollback", rollbackError); }
         }
-        if (immediate) await immediate.options.onRefused?.(s);
+        if (immediate && !ownerGateBlocked) await immediate.options.onRefused?.(s);
         if (Number.isFinite(bundle.dueAt)) bundle.dueAt = bundle.retryAt;
         audit("delivery_bundle_refused", s.id, `${key} ${error.message}`,
           { count: entries.length, reason: error.message, deliveryClass: immediate ? "sofort" : "buendelbar",
@@ -9455,6 +9465,12 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       if (immediate) {
         if (bundle.entries.length) scheduleDeliveryBundle(key, bundle);
+        if (ownerGateBlocked) {
+          if (immediate.slot.openedAt !== immediate.origin.openedAt)
+            throw new DeliveryCancelled("slot occupant changed before immediate delivery");
+          return sendText(immediate.slot, immediate.text, immediate.submit,
+            { ...immediate.options, bypassQueue: true });
+        }
         throw error;
       }
     }
@@ -9541,6 +9557,12 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       throw new SendRefused("slot pane unavailable or changed before send — nothing typed");
     const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms, bootSettleMs };
     const observes = !!bound.composer;
+    if (options.path === "owner") {
+      const readiness = await paneReadiness(s);
+      if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed during send readiness probe — nothing typed");
+      if (readiness?.state === "blocked")
+        throw new SendRefused(`gate=blocked-screen: ${readiness.why} — nothing typed`);
+    }
     if (observes) {
       // Fleet's own delivery header identifies an unsent previous paste. Submit that residue once
       // before the next paste; every other occupied composer remains untouched.
@@ -45675,7 +45697,7 @@ Bun.serve<WSData>({
             receipt: { sendId, at, delivery: "refused", receiver } }, 409);
           return json({ ok: true, receipt: parkedReceipt(sendId) }, 202);
         }
-        if (e instanceof SendRefused)
+        if (e instanceof SendRefused || e instanceof DeliveryCancelled)
           return json({ error: e.message, ...(e instanceof SendAgentNotAlive ? { agent: e.agent } : {}),
             receipt: { sendId, at: Date.now(), delivery: "refused", receiver } }, 409);
         // tmux may have accepted part of the paste, or the composer was OBSERVED still holding the text

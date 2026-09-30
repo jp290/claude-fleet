@@ -27,7 +27,8 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 // the terminal status words, taken from the one place that defines them rather than re-listed here:
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
-import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv as restartSrvRaw, results, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
+import { sendFailureMessage } from "../src/pendingsend";
+import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, results, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 
 // A plain `cat` in the pane for the deliveries a check reads back off the screen: the tty echoes what
 // was typed as it arrived, where the shell's line editor redraws a long multibyte line and overwrote
@@ -416,6 +417,7 @@ const programBudget = async (id: string): Promise<ProgramBudgetRow | undefined> 
   (((await (await get("/api/programs")).json()) as { programs: ProgramBudgetRow[] }).programs)
     .find((p) => p.id === id);
 interface AuditRow { event?: string; slot?: number; detail?: string; ts?: number;
+  path?: string; bytes?: number; reason?: string;
   // the machine-readable half `audit()` offers beside the prose detail. `fleet_event_held` uses it
   // for the hold backoff (server.ts#noteComposerHold): which phase this row is, how many refusals
   // this row/occupant pair has collected, the silence the server just promised itself, and how
@@ -2130,6 +2132,213 @@ export async function run(): Promise<void> {
     else rmSync(auditFile, { force: true });
     await post(`/api/slots/${uTgt.slot}/kill`, {});
     await post(`/api/slots/${uId}/kill`, {});
+  }
+
+  // Owner sends and machine bundles share transport, but each keeps its own safety gates.
+  {
+    const modeFile = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+    const stateFile = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
+    const turnsFile = `${stateFile}.turns`;
+    const latch = `${ROOT}/owner-send-before-paste.latch`;
+    const fixtureEnv = { PATH: `${ROOT}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      FLEET_E2E_COMPOSER_MODE: modeFile, FLEET_E2E_COMPOSER_STATE: stateFile,
+      FLEET_DELIVERY_BUNDLE_SEC: "60", FLEET_HARNESS_AUTOMATION: "1",
+      FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch };
+    writeFileSync(modeFile, "normal\n");
+    await restartSrv(fixtureEnv);
+    const slot = await freeSlot();
+    const open = await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-unfenced" });
+    check("owner send fixture: scratch Pi opens without a provider turn", open.ok, String(open.status));
+    const stateText = (): string => readFileSync(stateFile, "utf8").split("\n").slice(1).join("\n");
+    const turns = (): string => existsSync(turnsFile) ? readFileSync(turnsFile, "utf8") : "";
+    const count = (text: string): number => turns().split(text).length - 1;
+    await until(async () => {
+      const body = await (await get("/api/sessions")).json() as { slots: { id: number; agent: string }[] };
+      return body.slots.find((s) => s.id === slot)?.agent === "alive" && stateText() === "";
+    }, { timeoutMs: 8000, what: "owner fixture's live agent and empty composer" });
+
+    const client = readFileSync(resolve(realpathSync(`${ROOT}/node_modules`), "..", "src", "client.ts"), "utf8");
+    const deliverSource = client.slice(client.indexOf("export async function deliver("), client.indexOf("async function doSend()"));
+    const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(deliverSource.replace("export ", ""));
+    const replay = async (response: Response, expected: string | null,
+      formatter: typeof sendFailureMessage = sendFailureMessage): Promise<boolean> => {
+      let calls = 0;
+      let flashes = 0;
+      const notices: string[] = [];
+      const deliver = new Function("post", "toast", "flashSendError", "sendFailureMessage",
+        `${compiled}; return deliver;`)(async () => { calls++; return response.clone(); },
+        (text: string) => notices.push(text), () => { flashes++; }, formatter) as
+        (slot: number, text: string) => Promise<boolean>;
+      const outgoing = "local text retained on rejection";
+      let localText = outgoing;
+      const sent = await deliver(slot, localText);
+      if (sent) localText = "";
+      return calls === 1 && sent === response.ok && flashes === (response.ok ? 0 : 1)
+        && localText === (response.ok ? "" : outgoing)
+        && JSON.stringify(notices) === JSON.stringify(expected === null ? [] : [expected]);
+    };
+    const zeroBytes = (since: number): boolean => {
+      const rows = auditRows().slice(since).filter((r) => r.event === "send" && r.slot === slot && r.path === "owner");
+      return rows.length === 1 && rows[0]!.bytes === 0;
+    };
+    const queuedAuto = async (text: string, recurring = false): Promise<string> => {
+      const start = auditRows().length;
+      const response = await post(`/api/slots/${slot}/autos`, {
+        text, inSec: 1, idleSec: recurring ? 0 : 1, ...(recurring ? { everySec: 60, runs: 1 } : {}),
+      });
+      const body = await response.json() as { auto?: { id: string } };
+      check("owner send fixture: a machine auto is accepted", response.ok && !!body.auto?.id, String(response.status));
+      await until(() => auditRows().slice(start).some((r) => r.event === "delivery_bundle_queued" && r.slot === slot),
+        { timeoutMs: 8000, what: `machine bundle queued for ${text}` });
+      return body.auto!.id;
+    };
+
+    const machine = "owner-send-machine-busy-once";
+    const autoId = await queuedAuto(machine);
+    let keepBusy = true;
+    const keeper = (async () => {
+      while (keepBusy) { await tmuxOut("send-keys", "-t", `s${slot}`, "BSpace"); await Bun.sleep(50); }
+    })();
+    await until(async () => {
+      const body = await (await get("/api/sessions")).json() as { slots: { id: number; idleMs: number }[] };
+      return body.slots.some((s) => s.id === slot && s.idleMs < 500) && stateText() === "";
+    }, { timeoutMs: 3000, what: "machine busy gate with an empty owner composer" });
+    const busyStart = auditRows().length;
+    const ownerText = "owner-send-safe-busy-once";
+    let ownerResponse: Response;
+    try { ownerResponse = await post("/send", { slot, text: ownerText }); }
+    finally { keepBusy = false; await keeper; }
+    const busyReason = auditRows().slice(busyStart).find((r) => r.event === "delivery_bundle_refused" && r.slot === slot)?.reason;
+    check("owner send: busy machine stays queued, safe owner is typed exactly once",
+      ownerResponse.ok && count(ownerText) === 1 && count(machine) === 0
+      && busyReason === "gate=busy — nothing typed" && await replay(ownerResponse, null),
+      JSON.stringify({ http: ownerResponse.status, owner: count(ownerText), machine: count(machine), reason: busyReason }));
+    await until(() => count(machine) === 1, { timeoutMs: 15000, what: "the same machine bundle after the busy gate opens" });
+    await Bun.sleep(AUTOS_TICK_MS * 3);
+    check("owner send: gate release delivers the retained machine exactly once, never repastes the owner",
+      count(machine) === 1 && count(ownerText) === 1, JSON.stringify({ owner: count(ownerText), machine: count(machine) }));
+    await post(`/api/autos/${autoId}/delete`, {});
+    const busyBody = { error: busyReason, receipt: { delivery: "refused" } };
+    check("owner formatter: observed busy reason is a gate, never a draft",
+      sendFailureMessage(409, busyBody) === "send refused — delivery gate=busy; nothing was typed");
+
+    for (const gate of ["quiet-hours", "kill-switch"] as const) {
+      const pending = `owner-send-machine-${gate}-once`;
+      const id = await queuedAuto(pending, true);
+      if (gate === "quiet-hours") {
+        const hour = new Date().getHours();
+        await post("/api/autos/quiet", { start: hour, end: (hour + 1) % 24 });
+      } else await post("/api/autos/toggle", { on: false });
+      const before = auditRows().length;
+      const text = `owner-send-safe-${gate}-once`;
+      const response = await post("/send", { slot, text });
+      check(`owner send: ${gate} retains the machine and delivers only the safe owner`,
+        response.ok && count(text) === 1 && count(pending) === 0
+          && auditRows().slice(before).some((r) => r.event === "delivery_bundle_refused" && r.reason === `gate=${gate} — nothing typed`),
+        JSON.stringify({ http: response.status, owner: count(text), machine: count(pending) }));
+      if (gate === "quiet-hours") await post("/api/autos/quiet", { start: null });
+      else await post("/api/autos/toggle", { on: true });
+      await until(() => count(pending) === 1, { timeoutMs: 15000, what: `${gate} release delivers the retained machine` });
+      check(`owner send: ${gate} release preserves exact-once delivery`, count(text) === 1 && count(pending) === 1);
+      await post(`/api/autos/${id}/delete`, {});
+    }
+
+    const draft = "\nowner draft on the second visual row";
+    await tmuxOut("send-keys", "-t", `s${slot}`, "-l", draft);
+    await until(() => stateText() === draft, { timeoutMs: 3000, what: "a real second-row owner draft" });
+    let start = auditRows().length;
+    const draftResponse = await post("/send", { slot, text: "must-not-overwrite-draft" });
+    const draftBody: unknown = await draftResponse.clone().json();
+    const draftMessage = "send refused — the composer already holds a draft; nothing was typed";
+    check("owner send: a real second-row draft refuses with zero bytes and survives unchanged",
+      draftResponse.status === 409 && zeroBytes(start) && stateText() === draft && count("must-not-overwrite-draft") === 0
+        && sendFailureMessage(409, draftBody) === draftMessage && await replay(draftResponse, draftMessage),
+      JSON.stringify({ http: draftResponse.status, zeroBytes: zeroBytes(start), intact: stateText() === draft }));
+    await tmuxOut("send-keys", "-t", `s${slot}`, "-N", String([...draft].length), "BSpace");
+    await until(() => stateText() === "", { timeoutMs: 3000, what: "fixture draft removed by its author" });
+    writeFileSync(modeFile, "hold\n");
+    const notObserved = await post("/send", { slot, text: "owner-send-not-observed-once" });
+    const notObservedBody = await notObserved.clone().json() as { receipt?: { delivery: string; acceptance?: string } };
+    check("owner send: acceptance not-observed stays distinct, local text stays, client never retries",
+      notObserved.status === 409 && notObservedBody.receipt?.delivery === "uncertain"
+        && notObservedBody.receipt?.acceptance === "not-observed"
+        && stateText().split("owner-send-not-observed-once").length - 1 === 1
+        && await replay(notObserved, "prompt acceptance not observed — check the pane; do not paste again"),
+      JSON.stringify(notObservedBody.receipt));
+    await post(`/api/slots/${slot}/kill`, {});
+    writeFileSync(modeFile, "normal\n");
+    await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-unfenced" });
+    await tmuxOut("respawn-pane", "-k", "-t", `s${slot}`, "exec cat");
+    start = auditRows().length;
+    const noAgent = await post("/send", { slot, text: "must-not-type-to-no-agent" });
+    const noAgentBody = await noAgent.clone().json() as { agent?: string; receipt?: { delivery: string } };
+    const noAgentMessage = "send refused — no live agent in the pane; nothing was typed";
+    const legacy = (_status: number, _body: unknown): string => draftMessage;
+    check("owner send: no-agent refuses zero bytes and the old refused-to-draft formatter fails",
+      noAgent.status === 409 && noAgentBody.agent === "no-agent" && noAgentBody.receipt?.delivery === "refused"
+        && zeroBytes(start) && await replay(noAgent, noAgentMessage) && !await replay(noAgent, noAgentMessage, legacy),
+      JSON.stringify({ http: noAgent.status, agent: noAgentBody.agent, zeroBytes: zeroBytes(start) }));
+    await post(`/api/slots/${slot}/kill`, {});
+    await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-unfenced" });
+
+    writeFileSync(latch, "owner-send-recycle-before-paste");
+    start = auditRows().length;
+    const recycledSend = post("/send", { slot, text: "owner-send-recycle-before-paste" });
+    await until(() => existsSync(`${latch}.reached`), { timeoutMs: 5000, what: "owner bound identity before paste" });
+    await post(`/api/slots/${slot}/kill`, {});
+    await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-unfenced" });
+    writeFileSync(`${latch}.release`, "release");
+    const recycled = await recycledSend;
+    const recycledBody = await recycled.clone().json() as { receipt?: { delivery: string } };
+    check("owner send: recycle across an await refuses zero bytes to the new occupant",
+      recycled.status === 409 && recycledBody.receipt?.delivery === "refused" && zeroBytes(start)
+        && count("owner-send-recycle-before-paste") === 0
+        && await replay(recycled, "send refused — slot occupant changed or unavailable; nothing was typed"),
+      JSON.stringify({ http: recycled.status, delivery: recycledBody.receipt?.delivery, zeroBytes: zeroBytes(start) }));
+    const occupantResponse = await post("/send", { slot, openedAt: 1, text: "must-not-type-wrong-occupant" });
+    check("owner formatter: the receipt-less occupant response names identity, never a draft",
+      occupantResponse.status === 409 && count("must-not-type-wrong-occupant") === 0
+        && await replay(occupantResponse, "send refused — slot occupant changed; nothing was typed"));
+
+    const afterLatch = `${ROOT}/owner-send-after-paste.latch`;
+    await restartSrv({ ...fixtureEnv, FLEET_TEST_SEND_AFTER_PASTE_LATCH: afterLatch });
+    writeFileSync(afterLatch, "owner-send-uncertain-once");
+    const uncertainSend = post("/send", { slot, text: "owner-send-uncertain-once" });
+    await until(() => existsSync(`${afterLatch}.reached`), { timeoutMs: 5000, what: "owner paste before uncertain transport failure" });
+    await post(`/api/slots/${slot}/kill`, {});
+    await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-unfenced" });
+    writeFileSync(`${afterLatch}.release`, "release");
+    const uncertain = await uncertainSend;
+    const uncertainBody = await uncertain.clone().json() as { receipt?: { delivery: string; acceptance?: string } };
+    check("owner send: post-paste recycle stays plain uncertain, client keeps text and does not paste again",
+      uncertain.status === 409 && uncertainBody.receipt?.delivery === "uncertain"
+        && uncertainBody.receipt.acceptance === undefined && stateText() === ""
+        && await replay(uncertain, "send outcome uncertain — check the pane; do not paste again"),
+      JSON.stringify(uncertainBody.receipt));
+    for (const raw of ["{broken", "null", "{}", '{"receipt":"refused"}', '{"receipt":{"acceptance":"not-observed"}}',
+      '{"error":"SECRET=credential/raw log","receipt":{"delivery":"refused"}}']) {
+      const response = new Response(raw, { status: 409 });
+      const expected = raw.includes("SECRET=") ? "send refused — nothing was typed; reason unavailable"
+        : "send rejected (HTTP 409) — delivery not confirmed; text kept";
+      check("owner formatter: missing/malformed response cannot invent a draft, success or expose raw logs",
+        await replay(response, expected), raw.includes("SECRET=") ? "unrecognized reason redacted" : raw);
+    }
+    check("owner formatter: non-409 rejection keeps text and reports the HTTP boundary",
+      await replay(new Response("{}", { status: 503 }), "send rejected (HTTP 503) — delivery not confirmed; text kept"));
+    await post(`/api/slots/${slot}/kill`, {});
+    await post(`/api/slots/${slot}/open`, { cwd: REPO });
+    const blockedAuto = await queuedAuto("owner-send-machine-blocked-screen");
+    await plantScreen(slot, "Accessing workspace:\n❯ Yes, I trust this folder\nEnter to confirm · Esc to cancel", "owner readiness fixture");
+    start = auditRows().length;
+    const blocked = await post("/send", { slot, text: "must-not-type-to-blocked-screen" });
+    check("owner send: blocked machine never bypasses the owner's own readiness refusal",
+      blocked.status === 409 && zeroBytes(start)
+        && auditRows().slice(start).some((r) => r.event === "delivery_bundle_refused" && r.reason?.startsWith("gate=blocked-screen:"))
+        && await replay(blocked, "send refused — delivery gate=blocked-screen; nothing was typed"),
+      JSON.stringify({ http: blocked.status, zeroBytes: zeroBytes(start) }));
+    await post(`/api/autos/${blockedAuto}/delete`, {});
+    await post(`/api/slots/${slot}/kill`, {});
+    await restartSrv();
   }
 
   // === CLARIFICATION-CHANNEL-V1 ================================================================

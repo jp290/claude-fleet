@@ -4697,6 +4697,12 @@ Eine abgewiesene Zustellung an den lebenden Insassen bleibt im Buendel. Ein bere
 `send` im Audit nennt
 `deliveryClass`, `ttlSec`, `ttlQuelle` (`1h`, `5m`, `codex`, `unknown`) und `cache` (`warm` oder
 `kalt`); `delivery_bundle_*` trennt Queue, Send, Abweisung, Umleitung und Drop.
+
+Ein sofortiger Owner-Send übernimmt keine Sperre eines wartenden Maschinenbündels. Verweigert
+dessen Gate die gemeinsame Zustellung, bleiben die Maschinenentries mit ihren Promises und
+Empfängerbindungen im bestehenden Retrypfad; nur der Ownerpayload geht separat durch `sendText`.
+Draft-, Agent-, Occupant- und Readinessprüfungen gelten dabei weiterhin. Ein sendbares Bündel
+benutzt weiterhin die gemeinsame Zustellung. Der Owner-Send hebt keine Automatikgate auf.
 Der Flush prueft die Gates fuer den aktuellen Empfaenger erneut, mit der strengsten Policy aller
 enthaltenen Eintraege, und verlangt bei etablierter Pane einen frischen Agenten-Nachweis vor dem
 Paste. Busy, Kill-Switch und Quiet Hours halten das Buendel fuer einen spaeteren Versuch.
@@ -4704,6 +4710,16 @@ No-Agent, No-Pane und Blockschirm verwerfen es vor dem Paste; `delivery_bundle_d
 das Gate und die Aufrufer erhalten den bestehenden Reject.
 
 ## send whenFree — `POST /send` (OWNER-Route, nicht `/api/self/*`)
+
+Die beiden Chat-Eingaben verwenden denselben `deliver`-Pfad und behalten bei Ablehnung ihren
+lokalen Text. `receipt.delivery:"refused"` belegt null getippte Bytes, keinen Draftgrund:
+die Anzeige unterscheidet belegtes `error:"composer occupied (…) — nothing typed"`, No-Agent,
+`gate=…` und einen Occupantwechsel. Unbekannte Gründe und fehlende/kaputte Receipts behaupten
+weder Draft noch Erfolg; die Meldung gibt keine Rohfehlermeldung oder Credentials aus.
+`delivery:"uncertain"` mit `acceptance:"not-observed"` heißt ausdrücklich nicht beobachtete
+Annahme; plain `uncertain` bezeichnet den ungewissen Transportausgang. Beide bleiben getrennt,
+ohne erneuten Paste oder automatische Wiederholung. Ein Occupantwechsel vor dem Paste ist
+eine Verweigerung, ein Wechsel nach dem Paste bleibt uncertain.
 
 Anlass (2026-09-19, Orchestratorin Slot 4): ein `/send` an Slot 3 kam mit
 `409 composer occupied (2 chars) — nothing typed` zurück, weil „Ok" ungesendet im Eingabefeld stand;

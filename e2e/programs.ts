@@ -4205,13 +4205,14 @@ export async function run(ctx: Ctx): Promise<void> {
     idempotencyKey: "legacy-supervisor-message", replyTo: null, readBy: null, readAt: null });
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(legacyState, null, 2), { mode: 0o600 });
   await restartSrv();
-  const migratedView = await (await get("/api/messages")).json() as { view?: { entries: MessageRow[] } };
-  const migratedMessage = migratedView.view?.entries.find((m) => m.id === legacyMessageId);
+  const migratedResponse = await get("/api/messages");
+  const migratedView = await migratedResponse.json() as { entries?: MessageRow[] };
+  const migratedMessage = migratedView.entries?.find((m) => m.id === legacyMessageId);
   check("D5 legacy supervisor message keeps its sender and unread state and is redirected to the Orchestrator",
-    migratedMessage?.from.kind === "role" && migratedMessage.from.role === "supervisor"
+    migratedResponse.ok && migratedMessage?.from.kind === "role" && migratedMessage.from.role === "supervisor"
       && migratedMessage.to.kind === "role" && migratedMessage.to.role === "orchestrator"
       && migratedMessage.readBy === null,
-    JSON.stringify(migratedMessage));
+    `status=${migratedResponse.status} message=${JSON.stringify(migratedMessage)}`);
 
   const clarificationLaneOpen = await post("/api/lanes", { repo: REPO });
   const clarificationLaneSlot = (await clarificationLaneOpen.json() as { slot?: number }).slot ?? 0;

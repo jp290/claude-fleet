@@ -12299,6 +12299,10 @@ export async function run(ctx: Ctx): Promise<void> {
       const missing = await post("/api/tasks", { text: `${file}#gone`, repo, base: "branch", queue: false,
         card: { ...card, surface: { files: [file], symbols: [`${file}#gone`] } } });
       const missingText = await missing.text();
+      let missingBody: unknown;
+      try { missingBody = JSON.parse(missingText); } catch { missingBody = null; }
+      const missingError = typeof missingBody === "object" && missingBody !== null && "error" in missingBody
+        && typeof missingBody.error === "string" ? missingBody.error : null;
       const unresolvedId = await create("branch", undefined, `${file}#gone`);
       const unresolved = await read(unresolvedId);
       const ranges = unresolved?.surface?.ranges ?? null;
@@ -12307,9 +12311,9 @@ export async function run(ctx: Ctx): Promise<void> {
         { id: "distant", repo, programId: "base-symbols", filesOrigin: "confirmed", files: [file], ranges: [{ file, symbol: "distant", startLine: 5000, endLine: 5001 }], created: 2, status: "queued", kind: "auftrag" },
       ], costs: LAND_WAVE_COSTS_2026_09 });
       check("(base-symbols) a graph-known symbol missing in the chosen tree is refused and its unresolved projection collides as a whole file",
-        missing.status === 400 && missingText.includes('"symbols.ts#gone" does not resolve')
+        missing.status === 400 && missingError !== null && missingError.includes('"symbols.ts#gone" does not resolve')
         && JSON.stringify(ranges) === "[]" && JSON.stringify(plan.repos[0]?.waves[0]?.ids) === JSON.stringify(["unresolved", "distant"]),
-        JSON.stringify({ status: missing.status, missingText, unresolved, plan }));
+        JSON.stringify({ status: missing.status, missingText, missingError, unresolved, plan }));
       if (git("branch", "-D", "branch").status !== 0) throw new Error("base-symbol fixture delete failed");
       const deleted = await read(explicitId);
       const digest = ((await (await get("/api/sessions")).json()) as { tasks: BaseRow[] }).tasks.find((t) => t.id === explicitId);

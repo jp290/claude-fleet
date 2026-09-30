@@ -9859,7 +9859,10 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
     autos = autos.filter((x) => !drop.has(x.id));
   }
   saveState();
-  return json({ ok: true, auto: a });
+  return json({ ok: true, auto: a, delivery: {
+    class: "buendelbar", maxDelaySec: DELIVERY_BUNDLE_SEC,
+    flushedBy: "sofort-Zustellung oder Cache-Kante",
+  } });
 }
 
 // THE DELIVERY BUDGET, IN ONE PLACE — the arithmetic three doors spend and two sights read: open

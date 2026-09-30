@@ -59,8 +59,14 @@ export async function run(ctx: Ctx): Promise<void> {
     body: JSON.stringify(opts.body ?? { text: "x", inSec: 60 }),
   });
   const okRes = await selfAuto({ token: selfTok, body: { text: "self-scheduled check-in", inSec: 3600, slot: 2 } });
-  const okJ = (await okRes.json()) as { ok?: boolean; auto?: { id: string; slot: number } };
+  const okJ = (await okRes.json()) as { ok?: boolean; auto?: { id: string; slot: number };
+    delivery?: { class: string; maxDelaySec: number; flushedBy: string } };
   check("POST /api/self/autos succeeds with a valid selfToken", okRes.ok && !!okJ.auto, JSON.stringify(okJ));
+  const bundleSec = Math.max(0, Number(process.env.FLEET_DELIVERY_BUNDLE_SEC ?? 900) | 0);
+  check("POST /api/self/autos declares its delivery bundle and the instance's configured delay",
+    okJ.delivery?.class === "buendelbar" && okJ.delivery.maxDelaySec === bundleSec
+      && okJ.delivery.flushedBy === "sofort-Zustellung oder Cache-Kante",
+    `delivery=${JSON.stringify(okJ.delivery)} expected maxDelaySec=${bundleSec}`);
   check("a spoofed `slot` field in the body is ignored — the auto lands on the token's OWN slot",
     okJ.auto?.slot === lnTok.slot, JSON.stringify(okJ.auto));
   const ownerOnSelf = await selfAuto({ token: TOKEN });

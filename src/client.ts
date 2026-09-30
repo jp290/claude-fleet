@@ -1073,7 +1073,7 @@ class Pane {
       const box = this.chatEl.getBoundingClientRect();
       const kids = this.chatKids();
       let last: HTMLElement | null = null;
-      for (let i = kids.length - 1; i >= 0 && !last; i--) if (kids[i] !== this.workEl && kids[i].offsetHeight) last = kids[i];
+      for (let i = kids.length - 1; i >= 0 && !last; i--) if (kids[i].offsetHeight) last = kids[i];
       const lastBottom = last ? last.getBoundingClientRect().bottom : box.top;
       const sel = window.getSelection();
       if (chatClickToComposer(e, { top: box.top, height: box.height }, lastBottom, !!sel && !sel.isCollapsed)) ta.focus();
@@ -1472,7 +1472,7 @@ class Pane {
     if (!this.slot || this.pastN !== null || (!this.chatTotal && this.chatSource === null)) { this.resetChat(); return; }
     const anchor = this.chatMemo ?? (this.view === "chat" ? this.chatPosition() : null);
     chatShelf.delete(this.slot);
-    chatShelf.set(this.slot, { nodes: [...this.chatEl.childNodes].filter((n) => n !== this.workEl),
+    chatShelf.set(this.slot, { nodes: [...this.chatEl.childNodes],
       total: this.chatTotal, source: this.chatSource, lastTurnAt: this.lastTurnAt, cacheTtl: this.cacheTtl, cacheTtlSec: this.cacheTtlSec,
       model: this.observedModel, effort: this.observedEffort, toolGroup: this.toolGroup, notifGroup: this.notifGroup,
       pending: this.pending, openAgents: this.openAgents, hover: this.hoverOn, anchor });
@@ -1525,37 +1525,22 @@ class Pane {
     return this.chatStuck ? "end" : chatAnchor(this.chatEl, this.chatKids());
   }
 
-  // --- THE WORK INDICATOR (Grammatik G2.3: one status line in the surface of the thing it is
-  // about — here: the chat view of a session that is producing output right now). The state is
-  // the same sessionActive() fact the sidebar dot reads; the HIDE side is precise: a one-shot
-  // timer re-checks exactly at the RECENT_MS boundary after the newest output, so the line is
-  // gone at latest RECENT_MS (+ timer jitter) after the agent stopped — without a new poll.
-  private readonly workEl = (() => {
-    const w = el("div", "chatwork");
-    w.append(el("span", "trundot"), "working …");
-    w.hidden = true;
-    return w;
-  })();
+  // The focused session paints its working state in the composer; the expiry stays a one-shot.
   private workTimer: ReturnType<typeof setTimeout> | undefined;
-  // every new node of the chat goes in ABOVE the work line: appending below it made updateWork move
-  // the line back to the end on every poll that brought something (a remove + re-add each time,
-  // restarting its dot's animation — measured 2026-09-29, 40× in 120 s)
   private chatAdd(node: Node): void {
     if (this.chatFresh && node instanceof HTMLElement) node.classList.add("fresh");
-    this.chatEl.insertBefore(node, this.workEl.parentNode === this.chatEl ? this.workEl : null);
+    this.chatEl.appendChild(node);
   }
 
   private updateWork(): void {
     clearTimeout(this.workTimer);
     const slot = this.slot;
-    const active = !!slot && this.pastN === null && this.view === "chat" && sessionActive(slot);
-    // keep the line the last child in EVERY state: content appends must never push it out of
-    // place, and a rebuilt chatEl (reset/source change) gets it back on the next poll
-    if (this.chatEl.lastChild !== this.workEl) this.chatEl.appendChild(this.workEl);
-    this.workEl.hidden = !active;
+    const active = !!slot && this.pastN === null && this.view === "chat" && sessionActive(slot)
+      && serverClock() - (fleet[slot - 1]?.lastOutput ?? 0) < RECENT_MS;
+    if (panes[focused] === this) tickCacheAge();
     if (active) {
       const s = fleet[slot - 1]!;
-      const left = RECENT_MS - (serverNow - s.lastOutput);
+      const left = RECENT_MS - (serverClock() - s.lastOutput);
       this.workTimer = setTimeout(() => { if (this.slot === slot) this.updateWork(); }, Math.max(left, 0));
     }
   }
@@ -1855,9 +1840,9 @@ class Pane {
           if (at > this.lastTurnAt) this.lastTurnAt = at;
         }
         // what has not arrived yet stays below what has
-        // (a pending bubble already right above the work line stays put — no remove + re-add)
+        // (a pending bubble already at the end stays put — no remove + re-add)
         this.chatFresh = false;
-        for (const p of this.pending) if (p.el.nextSibling !== (this.workEl.parentNode ? this.workEl : null)) this.chatAdd(p.el);
+        for (const p of this.pending) if (p.el.nextSibling !== null) this.chatAdd(p.el);
         tickCacheAge();
         this.chatGrew(this.chatEl.childElementCount - before, first);
       }

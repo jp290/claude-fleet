@@ -126,3 +126,9 @@ export function harnessMark(id: string): Element | null {
   if (id === "pi" || id.startsWith("pi-")) return wordMark("pi", "pimark");
   return null;
 }
+
+export const MASCOT_MOTIONS: Keyframe[][] = [
+  [{ transform: "translateY(0)" }, { transform: "translateY(-4px)", offset: 0.4 }, { transform: "translateY(0)" }],
+  [{ transform: "scaleY(1)" }, { transform: "scaleY(0.2)", offset: 0.45 }, { transform: "scaleY(1)" }],
+  [{ transform: "rotate(0)" }, { transform: "rotate(-14deg)" }, { transform: "rotate(14deg)" }, { transform: "rotate(-8deg)" }, { transform: "rotate(0)" }],
+];

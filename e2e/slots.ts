@@ -12,6 +12,7 @@ import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
 import { MarkStage, markFacts, markShape, paintMark, type MarkEnv, type MarkFacts } from "../src/marks";
 import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
+import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 import { composerResidue } from "../composer";
@@ -1471,7 +1472,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       const endBtn: FakeBtn = { title: "", classList: { on: new Set<string>(), toggle(c: string, v: boolean) { if (v) this.on.add(c); else this.on.delete(c); } },
         setAttribute: (k: string, v: string) => { endAttrs.set(k, v); }, getAttribute: (k: string) => endAttrs.get(k) ?? null };
       const p = Object.assign(PaneClass ? new PaneClass() : {}, {
-        slot: 0, view: "chat", pastN: null, hoverOn: false, chatEl, workEl: kid("work", 0),
+        slot: 0, view: "chat", pastN: null, hoverOn: false, chatEl,
         chatStuck: true, chatUnseen: 0, chatLastTop: 0, chatFresh: false, followTimer: undefined, cacheTtlSec: null,
         endBtn, endCount: { textContent: "" },
         term: { reset() {} }, ws: null, gen: 0, retries: 0, held: "", dropped: 0, fit: { fit() {} },
@@ -1667,6 +1668,41 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && /if \(chatClickToComposer\(e, \{ top: box\.top, height: box\.height \}, lastBottom, !!sel && !sel\.isCollapsed\)\) ta\.focus\(\);/.test(cliSrc),
       clickErr || got.join(","));
   }
+  // t (age ms) | event | exclusive owner: idle cache ring; TTL=300000
+  // 0 empty | 145000 half | 290000 full/blink | 290800 grey | 300000 expired/grey
+  {
+    const source = /\nexport function cacheRingState\([\s\S]*?\n\}/.exec(cliSrc)?.[0] ?? "";
+    let ringError = "";
+    const got: { fill: number; phase: string; dim: boolean }[] = [];
+    try {
+      const ring = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(source.replace("export ", ""))
+        + "\nreturn cacheRingState;")() as (age: number, ttl: number) => { fill: number; phase: string; dim: boolean };
+      for (const ttl of [300_000, 900_000, 3_600_000]) {
+        const edge = ttl - 10_000;
+        for (const age of [-1, 0, edge / 2, edge - 1, edge, edge + 199, edge + 200, edge + 400, edge + 600, edge + 799, edge + 800, ttl, ttl * 2])
+          got.push(ring(age, ttl));
+      }
+    } catch (e) { ringError = e instanceof Error ? e.message : String(e); }
+    const phases = "warm,warm,warm,warm,blink,blink,blink,blink,blink,blink,cold,cold,cold";
+    check("cache circle: exact half at (TTL−10s)/2; blink only for 800ms at full; then grey forever (5m/15m/1h)",
+      !ringError && got.length === 39 && [0, 13, 26].every((offset) => {
+        const states = got.slice(offset, offset + 13);
+        return states.map((v) => v.phase).join(",") === phases
+          && states[0]!.fill === 0 && states[1]!.fill === 0 && states[2]!.fill === 0.5
+          && states[3]!.fill < 1 && states.slice(4).every((v) => v.fill === 1)
+          && states.map((v) => Number(v.dim)).join(",") === "0,0,0,0,1,1,0,1,0,0,0,0,0";
+      }), ringError || JSON.stringify(got));
+    const motionCode = cliSrc.replace(/^[ \t]*\/\/.*$/gm, "");
+    check("composer mascot: three distinct transform-only gestures; 15–60s random gap; one at once; hidden/reduced motion cancel",
+      MASCOT_MOTIONS.length >= 3 && new Set(MASCOT_MOTIONS.map((v) => JSON.stringify(v))).size >= 3
+        && MASCOT_MOTIONS.every((frames) => frames.every((f) => Object.keys(f).every((k) => k === "transform" || k === "offset")))
+        && motionCode.includes("15_000 + Math.random() * 45_000")
+        && motionCode.includes("mascotTimer !== undefined || mascotAnimation")
+        && motionCode.includes("mascotAnimation?.cancel();")
+        && motionCode.includes('if (document.hidden) { stopMascot(); clearTimeout(ringTimer); }')
+        && motionCode.includes('reduceMotion.addEventListener("change", tickCacheAge);'),
+      `${MASCOT_MOTIONS.length} gestures · single animation/timer guards and cancellation`);
+  }
   // (E) the cache counter of a claude pane reads the tier from the server: transcriptPayload carries
   // ttlSec from deliveryCacheState (live slot only), pollChat takes it, and the warning comes
   // min(300, ttlSec/5) s before the edge; codex/pi (no tier named) keep the 20 s lead
@@ -1683,7 +1719,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     const payload = /const tier = harnessOf\(s\.harness\)\.id === "claude" && slots\[s\.id - 1\] === s \? \{ ttlSec: deliveryCacheState\(s\)\.ttlSec \} : \{\};/.test(srv)
       && /return \{ entries, total: lines\.length, source: file\.split\("\/"\)\.pop\(\) \?\? null, model, effort, \.\.\.tier \};/.test(srv);
     const taken = /if \(data\.cache === undefined && typeof data\.ttlSec === "number"[^\n]*\n\s*this\.cacheTtlSec = data\.ttlSec;\n\s*this\.cacheTtl = data\.ttlSec \* 1000;/.test(cliSrc);
-    const used = /const cold = ms >= ttl - cacheLeadMs\(panes\[focused\]\?\.cacheTtlSec \?\? null\);/.test(cliSrc);
+    const used = /const cold = ms >= ttl - cacheLeadMs\(pane\?\.cacheTtlSec \?\? null\);/.test(cliSrc);
     check("cache counter (E): a claude pane measures against the server's tier and warns min(300, ttlSec/5) s before the edge; codex/pi keep 20 s",
       !leadErr && leads.join(",") === "300000,60000,20000" && payload && taken && used,
       leadErr || `leads 1h/5m/none ${leads.join(",")} · payload ${payload} · pollChat ${taken} · tickCacheAge ${used}`);
@@ -3185,13 +3221,15 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
           && cliSrc.includes("this.openAgents.delete(b.ref)")
           && /background: var\(--q-live\)/.test(cssBody(".trundot")),
         JSON.stringify({ dot: cssBody(".trundot"), run: cssBody(".trun") }));
-      check("chat: the work indicator rides sessionActive and hides at the RECENT_MS boundary by timer, not by a new poll",
-        cliSrc.includes("private readonly workEl = (() => {")
+      check("chat: work lives in the composer and expires at RECENT_MS without adding transcript nodes",
+        !cliSrc.includes("workEl")
+          && cliSrc.includes('if (panes[focused] === this) tickCacheAge();')
           && cliSrc.includes("this.workTimer = setTimeout(() => { if (this.slot === slot) this.updateWork(); }, Math.max(left, 0));")
-          && /const left = RECENT_MS - \(serverNow - s\.lastOutput\);/.test(cliSrc)
-          && cliSrc.includes("if (past === null) this.updateWork();")
-          && /display: none/.test(cssBody(".chatwork[hidden]")),
-        JSON.stringify({ work: cssBody(".chatwork") }));
+          && cliSrc.includes("const left = RECENT_MS - (serverClock() - s.lastOutput);")
+          && cliSrc.includes('const activity = el("span", "compactivity");')
+          && /width: 28px; height: 24px/.test(cssBody(".compactivity"))
+          && /display: none/.test(cssBody(".compmascot[hidden], .optage[hidden]")),
+        JSON.stringify({ activity: cssBody(".compactivity") }));
       // b3dc378b: more hoverable ids — the ENT net widens to 7-12 hex, the KIND is the caller's
       // answer asked in precedence order (task → program → sha), and an unknown string stays
       // text: every branch is gated on the same entityOk answer the task path always used

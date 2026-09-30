@@ -1,5 +1,6 @@
-import { $, el, ta, send, panes, focused, fleet, isMobile, parkedSendLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, type HarnessInfo } from "./client";
-import { icon, harnessMark, type IconName } from "./icons";
+import { $, el, ta, send, panes, focused, fleet, isMobile, parkedSendLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, type HarnessInfo } from "./client";
+import { icon, harnessMark, MASCOT_MOTIONS, type IconName } from "./icons";
+import { sessionActive } from "./board";
 import { modelLabel } from "./modelname";
 import { prefBool, prefSetBool } from "./prefs";
 import { popover } from "./popover";
@@ -160,6 +161,39 @@ export function cacheTtlFor(provider: string): number | null {
 const CACHE_BUSY_MS = 4000;
 const fmtTtl = (ms: number): string => (ms >= 3_600_000 ? `${ms / 3_600_000} h` : `${ms / 60_000} min`);
 let ageEl: HTMLElement | null = null;
+let mascotEl: HTMLElement | null = null;
+let mascotTimer: ReturnType<typeof setTimeout> | undefined;
+let ringTimer: ReturnType<typeof setTimeout> | undefined;
+let mascotAnimation: Animation | null = null;
+let mascotWorking = false;
+function stopMascot(): void {
+  clearTimeout(mascotTimer);
+  mascotTimer = undefined;
+  mascotAnimation?.cancel();
+  mascotAnimation = null;
+}
+function queueMascot(): void {
+  if (!mascotWorking || !mascotEl?.isConnected || document.hidden || reduceMotion.matches
+    || mascotTimer !== undefined || mascotAnimation) return;
+  mascotTimer = setTimeout(() => {
+    mascotTimer = undefined;
+    if (!mascotWorking || !mascotEl?.isConnected || document.hidden || reduceMotion.matches) return;
+    const mark = mascotEl.firstElementChild;
+    if (!mark) return;
+    mascotAnimation = mark.animate(MASCOT_MOTIONS[Math.floor(Math.random() * MASCOT_MOTIONS.length)]!,
+      { duration: 750, easing: "ease-in-out" });
+    mascotAnimation.onfinish = () => { mascotAnimation = null; queueMascot(); };
+  }, 15_000 + Math.random() * 45_000);
+}
+export function cacheRingState(ageMs: number, ttlMs: number): { fill: number; phase: "warm" | "blink" | "cold"; dim: boolean } {
+  const fullAt = Math.max(1, ttlMs - 10_000);
+  const sinceFull = ageMs - fullAt;
+  return {
+    fill: Math.min(1, Math.max(0, ageMs / fullAt)),
+    phase: sinceFull < 0 ? "warm" : sinceFull < 800 ? "blink" : "cold",
+    dim: sinceFull >= 0 && sinceFull < 800 && Math.floor(sinceFull / 200) % 2 === 0,
+  };
+}
 const fmtAge = (ms: number): string => {
   const s = Math.floor(ms / 1000);
   if (s >= 3600) return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
@@ -179,19 +213,39 @@ export function cacheAge(): number | null {
   return at ? Math.max(0, serverClock() - at) : null;
 }
 export function tickCacheAge(): void {
+  clearTimeout(ringTimer);
+  const pane = panes[focused];
+  const active = !!pane?.slot && pane.isChat && pane.pastN === null && sessionActive(pane.slot)
+    && serverClock() - (fleet.find((s) => s.id === pane.slot)?.lastOutput ?? 0) < RECENT_MS;
+  mascotWorking = active;
+  if (mascotEl) mascotEl.hidden = !active;
+  if (!active || document.hidden || reduceMotion.matches) stopMascot();
+  else queueMascot();
   if (!ageEl?.isConnected) return;
-  const ms = cacheAge();
+  const ms = pane?.pastN === null && !active ? cacheAge() : null;
   ageEl.hidden = ms === null;
   if (ms === null) return;
-  const ttl = panes[focused]?.cacheTtl ?? CACHE_TTL_MS;
-  const cold = ms >= ttl - cacheLeadMs(panes[focused]?.cacheTtlSec ?? null);
-  ageEl.textContent = fmtAge(ms);
-  ageEl.classList.toggle("cold", cold);
+  const ttl = pane?.cacheTtl ?? CACHE_TTL_MS;
+  const state = cacheRingState(ms, ttl);
+  const cold = ms >= ttl - cacheLeadMs(pane?.cacheTtlSec ?? null);
+  ageEl.style.setProperty("--cache-fill", String(state.fill));
+  ageEl.classList.toggle("cold", state.phase === "cold");
+  ageEl.classList.toggle("blink", state.phase === "blink" && state.dim && !reduceMotion.matches && !document.hidden);
   ageEl.title = cold
     ? `last request ${fmtAge(ms)} ago — ${ms >= ttl ? "the prompt cache is probably cold" : "the prompt cache expires shortly"} (${fmtTtl(ttl)} TTL)`
     : `last request ${fmtAge(ms)} ago — the prompt cache is probably still warm (${fmtTtl(ttl)} TTL)`;
+  ageEl.setAttribute("aria-label", ageEl.title);
+  if (!document.hidden && !reduceMotion.matches && state.phase !== "cold") {
+    const untilFull = Math.max(1, ttl - 10_000) - ms;
+    ringTimer = setTimeout(tickCacheAge, state.phase === "blink" ? 100 : Math.min(1000, Math.max(1, untilFull)));
+  }
 }
 setInterval(() => { if (!document.hidden) tickCacheAge(); }, 1000);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { stopMascot(); clearTimeout(ringTimer); }
+  else tickCacheAge();
+});
+reduceMotion.addEventListener("change", tickCacheAge);
 
 export function renderComposerOpts(force: boolean): void {
   const pane = panes[focused];
@@ -202,25 +256,34 @@ export function renderComposerOpts(force: boolean): void {
   const h = slot ? harnessEntry(slot) : null;
   const s = fleet.find((x) => x.id === slot);
   const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? "", pane?.observedModel ?? "", pane?.observedEffort ?? ""].join("|");
-  if (!force && key === optsKey) return;
+  if (!force && key === optsKey) { tickCacheAge(); return; }
   optsKey = key;
   // a pick staged for one session must never be applied to the next one the focus lands on
   if (slot !== optsSlot) { optsSlot = slot; optOpen = null; optStaged = {}; optMsg = {}; optConfirm = false; }
+  stopMascot();
   compOpts.replaceChildren();
+  ageEl = mascotEl = null;
   if (!h || !slot) return;
+  const activity = el("span", "compactivity");
+  mascotEl = el("span", "compmascot");
+  mascotEl.title = "working …";
+  mascotEl.setAttribute("role", "status");
+  mascotEl.setAttribute("aria-label", "working …");
+  const mascot = harnessMark(h.id);
+  if (mascot) mascotEl.appendChild(mascot);
+  ageEl = el("span", "optage");
+  ageEl.setAttribute("role", "img");
+  activity.append(mascotEl, ageEl);
+  compOpts.appendChild(activity);
+  tickCacheAge();
   if (h.supports.model) {
-    ageEl = el("span", "optage");
-    ageEl.hidden = true;
-    compOpts.appendChild(ageEl);
-    tickCacheAge();
     // the model the transcript's newest turn actually ran on wins over the record
     // (src/running.ts#runningModel — a /model typed in the pane never reaches the record); an
     // unpinned slot with no file yet runs the fleet default only where the server bakes it in (the
     // default harness, server.ts#DEFAULT_MODEL); elsewhere the harness picks, and the client cannot know
     const current = runningModel(s?.model, pane?.observedModel);
     const shown = current || (h.default && defaultModel ? defaultModel : "—");
-    const mark = harnessMark(h.id);
-    compOpts.appendChild(optSwitch("model", slot, current, shown, mark ? [el("span", "optmark")] : [], (stage) => {
+    compOpts.appendChild(optSwitch("model", slot, current, shown, [], (stage) => {
       const input = document.createElement("input");
       input.className = "cmdinput";
       input.value = optStaged.model ?? current;
@@ -263,7 +326,7 @@ export function renderComposerOpts(force: boolean): void {
     // on a phone the switch carries the name alone — with the counter, the mark and the effort
     // beside it, "GPT-5.5 · 272K" ellipsized to "GP…" at 390px (seventeenth cut); the popover
     // list keeps the window
-    }, mark, (v) => {
+    }, null, (v) => {
       const name = isMobile() ? modelLabel(v).split(" · ")[0] : modelLabel(v);
       const notice = modelNotice(h.id, v);
       return notice ? `${name} · ${notice}` : name;

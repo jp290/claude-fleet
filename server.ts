@@ -9468,8 +9468,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
         if (ownerGateBlocked) {
           if (immediate.slot.openedAt !== immediate.origin.openedAt)
             throw new DeliveryCancelled("slot occupant changed before immediate delivery");
-          return sendText(immediate.slot, immediate.text, immediate.submit,
-            { ...immediate.options, bypassQueue: true });
+          return;
         }
         throw error;
       }

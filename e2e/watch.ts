@@ -2238,18 +2238,54 @@ export async function run(): Promise<void> {
 
       const machine = "owner-send-machine-busy-once";
       const autoId = await queuedAuto(machine);
+      const busyPane = (await tmuxOut("display-message", "-p", "-t", `s${slot}`, "#{pane_id}")).out.trim();
+      const busySnapshot = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number }[];
+      };
+      const busyOpenedAt = busySnapshot.slots.find((s) => s.id === slot)?.openedAt;
+      const busyBound = /^%\d+$/.test(busyPane) && typeof busyOpenedAt === "number" && busyOpenedAt > 0;
+      check("owner send fixture: the busy keeper is bound to an observed pane and occupant", busyBound,
+        JSON.stringify({ pane: busyPane, openedAt: busyOpenedAt }));
+      if (!busyBound) throw new Error("owner send fixture has no observed busy pane identity");
       let keepBusy = true;
+      let keeperCode: number | null = null;
       const keeper = (async () => {
-        while (keepBusy) { await tmuxOut("send-keys", "-t", `s${slot}`, "BSpace"); await Bun.sleep(50); }
+        while (keepBusy) {
+          keeperCode = (await tmuxOut("send-keys", "-t", busyPane, "BSpace")).code;
+          await Bun.sleep(50);
+        }
       })();
-      await until(async () => {
-        const body = await (await get("/api/sessions")).json() as { slots: { id: number; idleMs: number }[] };
-        return body.slots.some((s) => s.id === slot && s.idleMs < 500) && stateText() === "";
-      }, { timeoutMs: 3000, what: "machine busy gate with an empty owner composer" });
-      const busyStart = auditRows().length;
+      let busyObserved = "busy state not yet observed";
+      let busyStart = 0;
       const ownerText = "owner-send-safe-busy-once";
       let ownerResponse: Response;
-      try { ownerResponse = await post("/send", { slot, text: ownerText }); }
+      try {
+        try {
+          await until(async () => {
+            const body = await (await get("/api/sessions")).json() as {
+              now?: number; slots: { id: number; openedAt: number; lastOutput?: number }[];
+            };
+            const recipient = body.slots.find((s) => s.id === slot);
+            const pane = await tmuxOut("display-message", "-p", "-t", `s${slot}`, "#{pane_id}");
+            const composer = stateText();
+            busyObserved = JSON.stringify({ now: body.now, lastOutput: recipient?.lastOutput, composer,
+              pane: pane.out.trim(), boundPane: busyPane, openedAt: recipient?.openedAt,
+              boundOpenedAt: busyOpenedAt, paneCode: pane.code, keeperCode });
+            return typeof body.now === "number" && typeof recipient?.lastOutput === "number"
+              && recipient.lastOutput > 0 && body.now - recipient.lastOutput >= 0
+              && body.now - recipient.lastOutput < 500 && composer === ""
+              && recipient.openedAt === busyOpenedAt && pane.code === 0
+              && pane.out.trim() === busyPane && keeperCode === 0;
+          }, { timeoutMs: 3000, what: "machine busy gate with an empty owner composer", last: () => busyObserved });
+        } catch (error) {
+          if (!(error instanceof UntilTimeout)) throw error;
+          check("owner send fixture: the bound busy pane has observed output and an empty composer", false, error.last);
+          throw error;
+        }
+        check("owner send fixture: the bound busy pane has observed output and an empty composer", true, busyObserved);
+        busyStart = auditRows().length;
+        ownerResponse = await post("/send", { slot, text: ownerText });
+      }
       finally { keepBusy = false; await keeper; }
       const busyReason = auditRows().slice(busyStart).find((r) => r.event === "delivery_bundle_refused" && r.slot === slot)?.reason;
       check("owner send: busy machine stays queued, safe owner is typed exactly once",

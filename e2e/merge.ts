@@ -112,7 +112,8 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
   const env = { FLEET_MERGE_CMD: "", FLEET_CODEX_EXEC_BIN: bin, FLEET_CODEX_EXEC_TIMEOUT_MS: "5000",
     FLEET_MERGE_REPAIR_ROUNDS: "2", FLEET_WORKER_ROUTE_MERGE: "", FLEET_WORKER_ROUTE_REPAIR: "",
     FLEET_WORKER_HARNESS: "codex" };
-  let lane: { slot: number; cwd: string; branch: string } | null = null;
+  type WriteLane = { slot: number; cwd: string; branch: string };
+  let lane: WriteLane | null = null;
   try {
     for (const mode of ["default", "invalid", "merge-rollback", "repair-rollback", "merge-error", "repair-error"]) {
       rmSync(runsFile, { force: true });
@@ -121,7 +122,7 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
         FLEET_WORKER_ROUTE_MERGE: mode === "merge-rollback" ? "claude" : mode === "invalid" ? "invalid" : "",
         FLEET_WORKER_ROUTE_REPAIR: mode === "repair-rollback" ? "claude" : mode === "invalid" ? "invalid" : "",
       });
-      lane = (await (await post("/api/lanes", { repo })).json()) as typeof lane;
+      lane = (await (await post("/api/lanes", { repo })).json()) as WriteLane;
       if (!lane?.slot || !lane.cwd) throw new Error("Codex write fixture lane did not open");
       writeFileSync(`${lane.cwd}/code.txt`, `root\nlane-${mode}\n`);
       git(lane.cwd, "commit", "-am", `lane ${mode}`);

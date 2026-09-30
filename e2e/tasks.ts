@@ -6,7 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
+import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, srvEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt, buildBriefReviewPrompt } from "../refine-prompt";
 import { briefReviewArm } from "../refine-validate";
@@ -12180,6 +12180,7 @@ export async function run(ctx: Ctx): Promise<void> {
     interface BaseRow { id: string; files?: string[]; surface?: { ranges: BaseRange[] | null; sha: string };
       card?: { model: string; valid: boolean; surface: { ranges: BaseRange[] | null } } }
     const repo = mkdtempSync(join(tmpdir(), "fleet-base-symbols-"));
+    const fakeCard = `${ROOT}/fakecard-base-symbols`;
     const ids: string[] = [];
     const git = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
     const commit = () => {
@@ -12206,6 +12207,11 @@ export async function run(ctx: Ctx): Promise<void> {
       return id;
     };
     try {
+      writeFileSync(fakeCard, "#!/bin/sh\ncat >/dev/null\necho '{}'\n", { mode: 0o700 });
+      await restartSrv({ FLEET_CARD_MS: "100", FLEET_CARD_CMD: fakeCard });
+      const tickEnv = await srvEnv("FLEET_CARD_MS");
+      check("(base-symbols) fixture: the isolated card sweep is explicitly armed with its stand-in",
+        tickEnv.readable && tickEnv.value === "100", JSON.stringify(tickEnv));
       if (git("init", "-q", "-b", "main").status !== 0) throw new Error("base-symbol fixture init failed");
       writeFileSync(join(repo, ".gitignore"), "graphify-out/\n");
       writeFileSync(join(repo, file), "export const known = 1;\n\nexport const tail = 2;\n");
@@ -12246,7 +12252,8 @@ export async function run(ctx: Ctx): Promise<void> {
         `ZIEL: Basis-Symbol bearbeiten\nFLAECHE: ${file}#known\nDONE: Symbol ist bearbeitet\nVERIFY: bun e2e/pins.ts\nVERBOTEN: kein Dispatch`);
       let swept: BaseRow | undefined;
       await until(async () => { swept = await read(sweptId); return swept?.card?.model === "format"; },
-        { timeoutMs: 20_000, stepMs: 100, what: "base-symbol formatted card sweep" });
+        { timeoutMs: 20_000, stepMs: 100, what: "base-symbol formatted card sweep" })
+        .catch((e: unknown) => { if (!(e instanceof UntilTimeout)) throw e; });
       check("(base-symbols) the card sweep uses the same explicit base coordinates as author validation and projection",
         swept?.card?.valid === true && JSON.stringify(swept.card.surface.ranges) === wanted(4, 6), JSON.stringify(swept));
 
@@ -12300,6 +12307,8 @@ export async function run(ctx: Ctx): Promise<void> {
     } finally {
       for (const id of ids) await post(`/api/tasks/${id}/delete`, {});
       await post("/api/repo-base", { repo, branch: "" });
+      await restartSrv();
+      rmSync(fakeCard, { force: true });
       rmSync(repo, { recursive: true, force: true });
     }
   }

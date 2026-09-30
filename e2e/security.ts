@@ -26,7 +26,7 @@ import type { Ctx, StewardCtx } from "./ctx";
 interface FleetState {
   token?: string;
   stewardToken?: string;
-  slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number }>;
+  slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number; label?: string | null }>;
   shares?: { id: string; secret: string }[];
 }
 const readState = (): FleetState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as FleetState;
@@ -601,10 +601,12 @@ const pathAliases = (src: string): string[] => [
 // scratch instance with the suite's FLEET_DISPATCH_REPO set (without it, the task dispatch probe
 // answers 400 "no target repo" instead of 409).
 // /api/dispatch is the one exclusion: it reads `body.on` with no validation (server.ts ~5393).
-interface Probe { path: string; method: "GET" | "POST"; body?: unknown; owner?: 200 | 400 | 409 }
+interface Probe { path: string; method: "GET" | "POST"; body?: unknown; owner?: 200 | 400 | 404 | 409 | 503 }
 const dangerous = (slot: number): Probe[] => [
   { path: "/send", method: "POST", body: { slot, text: "x" }, owner: 400 },
   { path: `/api/slots/${slot}/kill`, method: "POST", body: {}, owner: 200 },
+  { path: `/api/slots/${slot}/restart`, method: "POST", body: {}, owner: 400 },
+  { path: `/api/slots/${slot}/transcript?after=0`, method: "GET", owner: 400 },
   { path: `/api/slots/${slot}/open`, method: "POST", body: { model: "not a model!" }, owner: 400 },
   { path: `/api/slots/${slot}/open-worktree`, method: "POST", body: {}, owner: 400 },
   { path: `/api/slots/${slot}/share`, method: "POST", body: { password: "short" }, owner: 400 },
@@ -734,7 +736,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§1 the owner gate is still the last line of fetch()'s chain (the whole pin rests on it)",
     gate > 0 && preAuth.length > 1000 && src.slice(gate, gate + 200).includes("tokenGate"), `gate@${gate}`);
   const authSrc = await readText(`${ROOT}/server/auth.ts`);
-  const resolverAt = authSrc.indexOf("export function resolvePrincipal(req: Request)");
+  const resolverAt = authSrc.indexOf("export function resolveSelfPrincipal(req: Request)");
   const resolverBody = resolverAt < 0 ? "" : authSrc.slice(resolverAt, authSrc.indexOf("\n}\n", resolverAt));
   check("§1 the self credential has one resolver with a live-slot and secret comparison",
     resolverBody.includes('req.headers.get("x-fleet-self-token")')
@@ -744,8 +746,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const selfAuth = preAuth.slice(preAuth.indexOf('url.pathname === "/api/self"'));
   const inlineSelf = /const s = given \? slots\.find\(\(x\) => x\.cwd && x\.selfToken && secretEq\(given, x\.selfToken\)\)/;
   check("§1 self routes call the resolver rather than copy the credential comparison",
-    selfAuth.includes("resolvePrincipal(req)") && !inlineSelf.test(selfAuth),
-    `resolver=${selfAuth.includes("resolvePrincipal(req)")} inline=${inlineSelf.test(selfAuth)}`);
+    selfAuth.includes("resolveSelfPrincipal(req)") && !inlineSelf.test(selfAuth),
+    `resolver=${selfAuth.includes("resolveSelfPrincipal(req)")} inline=${inlineSelf.test(selfAuth)}`);
   check("§1 the inline-self detector rejects a reintroduced credential comparison",
     inlineSelf.test(selfAuth + '\nconst s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;'));
   const stray = unrecognized(preAuth);
@@ -936,10 +938,37 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     check(`§2 control guard: an injected ${code} on every owner probe is rejected, never read as admission`,
       ownerProbes.length > 0 && injected.length === ownerProbes.length, `${injected.length}/${ownerProbes.length} rejected`);
   }
-  const ownerRes = await Promise.all(ownerProbes.map(async (probe) => ({ probe, status: (await fire(probe, H)).status })));
-  const missed = ownerMisses(ownerRes);
-  check(`§2 control: the owner gets each probe's expected status on all ${ownerProbes.length} of them (so the denials above are about auth, not missing or crashing routes)`,
-    missed.length === 0, missed.map((r) => `${r.probe.path}:${r.status}≠${r.probe.owner}`).join(" "));
+  const parityProbes: Probe[] = [...ownerProbes,
+    { path: "/api/dispositions", method: "GET", owner: 200 },
+    { path: "/api/machine-settings", method: "GET", owner: 200 },
+    { path: "/api/harnesses", method: "GET", owner: 200 },
+    { path: "/api/konzepte", method: "GET", owner: 503 },
+    { path: "/api/tasks/authprobe/done", method: "POST", body: {}, owner: 404 },
+    { path: "/api/tasks/authprobe/delete", method: "POST", body: {}, owner: 404 },
+    { path: "/api/autos/authprobe/delete", method: "POST", body: {}, owner: 404 },
+  ];
+  const ownerCredentials: { name: string; headers: Record<string, string> }[] = [
+    { name: "Cookie", headers: { cookie: `fleet=${TOKEN}` } },
+    { name: "Bearer", headers: H },
+    { name: "Bearer plus Self-Token", headers: { ...H, "x-fleet-self-token": plainSelf } },
+  ];
+  const routeKey = (method: string, path: string): string => `${method} ${path.split("?")[0]!
+    .replace(/\$\{[^}]+\}/g, ":id")
+    .replace(/(\/api\/(?:slots|tasks|autos|repos)\/)[^/]+(?=\/)/g, "$1:id")}`;
+  const covered = new Set(parityProbes.map((p) => routeKey(p.method, p.path)));
+  const suiteOwnerCalls = [...(await readText(import.meta.path)).matchAll(/(?<!\.)\b(post|get)\((["`])(\/api\/[^"`]+)\2/g)];
+  const uncovered = suiteOwnerCalls.map((m) => routeKey(m[1] === "post" ? "POST" : "GET", m[3]!))
+    .filter((key) => !covered.has(key) && !(key === "POST /api/file/:id"
+      && ["write", "create", "move", "delete"].every((op) => covered.has(`POST /api/file/${op}`))));
+  check("§2 owner parity covers every Owner-route called by this security family",
+    suiteOwnerCalls.length > 0 && uncovered.length === 0, [...new Set(uncovered)].join(" "));
+  for (const credential of ownerCredentials) {
+    for (const probe of parityProbes) {
+      const response = await fire(probe, credential.headers);
+      check(`§2 owner parity: ${credential.name} ${probe.method} ${probe.path}`,
+        response.status === probe.owner, `${response.status} expected=${probe.owner}`);
+    }
+  }
   await post(`/api/tasks/${fixT.task.id}/delete`, {}); // the task-surface fixture, retired
 
   if (!REPO) return; // §3–§5 need a lane; the lane sections of the suite are repo-gated too
@@ -959,7 +988,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const tickAuto = await selfAuto(selfTok, 1, 0);
   check("§3 actor fixture: a one-shot auto is scheduled for the tick", tickAuto.ok, String(tickAuto.status));
   const tickAutoId = ((await tickAuto.json()) as { auto?: { id?: string } }).auto?.id;
-  type AuditActor = { kind: string; via?: string; slot?: number; openedAt?: number; role?: string; why?: string };
+  type AuditActor = { kind: string; via?: string; slot?: number; openedAt?: number; role?: string; label?: string; why?: string };
   type ActorRow = { ts?: number; event?: string; slot?: number; detail?: string; actor?: AuditActor };
   const actorRows = async (): Promise<ActorRow[]> => {
     const raw = (await readText(ctx.auditPath)) + (await readText(`${ctx.auditPath}.1`));
@@ -982,8 +1011,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     if (ownerRow && selfRow && tickRow) break;
     await Bun.sleep(50);
   }
-  check("§3 owner Bearer action is audited with owner via bearer",
-    ownerRow?.actor?.kind === "owner" && ownerRow.actor.via === "bearer", JSON.stringify(ownerRow?.actor));
+  check("§3 owner Bearer without Self-Token is audited as unknown",
+    JSON.stringify(ownerRow?.actor) === JSON.stringify({ kind: "unknown" }), JSON.stringify(ownerRow?.actor));
   check("§3 self-token action is audited with its session slot, openedAt and lane role",
     selfRow?.actor?.kind === "session" && selfRow.actor.slot === ln.slot
       && typeof openedAt === "number" && selfRow.actor.openedAt === openedAt && selfRow.actor.role === "lane",
@@ -993,6 +1022,45 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§3 self and tick actions never claim owner without an owner credential",
     selfRow?.actor?.kind !== "owner" && tickRow?.actor?.kind !== "owner"
       && !!selfRow?.actor && !!tickRow?.actor);
+  const actorLabel = "🎛 Orchestratorin · Klartext";
+  const rename = await post(`/api/slots/${ln.slot}/rename`, { label: actorLabel });
+  check("§3 actor fixture: a readable slot label is set", rename.ok, String(rename.status));
+  const ownerActors = [];
+  const actorCredentials: { name: string; headers: Record<string, string> }[] = [
+    { name: "cookie", headers: { cookie: `fleet=${TOKEN}`, "x-fleet-self-token": selfTok } },
+    { name: "query", headers: { "x-fleet-self-token": selfTok } },
+    { name: "bearer", headers: H },
+    { name: "bearer-self", headers: { ...H, "x-fleet-self-token": selfTok } },
+    { name: "bearer-invalid-self", headers: { ...H, "x-fleet-self-token": "not-a-live-self-token" } },
+  ];
+  for (const credential of actorCredentials) {
+    const before = (await actorRows()).filter((r) => r.event === "slot_model" && r.slot === ln.slot).length;
+    const response = await fire({ path: `/api/slots/${ln.slot}/model${credential.name === "query" ? `?token=${TOKEN}` : ""}`,
+      method: "POST", body: { effort: "low" } }, credential.headers);
+    let row: ActorRow | undefined;
+    for (let i = 0; i < 100; i++) {
+      const rows = (await actorRows()).filter((r) => r.event === "slot_model" && r.slot === ln.slot);
+      if (rows.length > before) { row = rows[rows.length - 1]; break; }
+      await Bun.sleep(20);
+    }
+    check(`§3 owner actor fixture: ${credential.name} reaches the same owner action`, response.status === 200, String(response.status));
+    ownerActors.push({ name: credential.name, actor: row?.actor });
+  }
+  for (const name of ["cookie", "query"]) {
+    const actor = ownerActors.find((r) => r.name === name)?.actor;
+    check(`§3 owner ${name} is audited as owner even beside a Self-Token`,
+      JSON.stringify(actor) === JSON.stringify({ kind: "owner" }), JSON.stringify(actor));
+  }
+  for (const name of ["bearer", "bearer-invalid-self"]) {
+    const actor = ownerActors.find((r) => r.name === name)?.actor;
+    check(`§3 owner ${name} is audited as unknown`,
+      JSON.stringify(actor) === JSON.stringify({ kind: "unknown" }), JSON.stringify(actor));
+  }
+  const joined = ownerActors.find((r) => r.name === "bearer-self")?.actor;
+  check("§3 owner Bearer plus Self-Token actor joins the live slot snapshot",
+    joined?.kind === "session" && joined.slot === ln.slot && joined.openedAt === openedAt
+      && joined.role === "lane" && joined.label === actorLabel && joined.via === "owner-bearer"
+      && Object.keys(joined).length === 6, JSON.stringify(joined));
   if (tickAutoId) await post(`/api/autos/${tickAutoId}/delete`, {});
   const live = await selfAuto(selfTok);
   const liveJ = (await live.json()) as { auto?: { id: string } };

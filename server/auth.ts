@@ -40,7 +40,7 @@ export function secretEq(a: string, b: string): boolean {
 }
 
 export type Principal =
-  | { kind: "owner"; via: "cookie" | "bearer" | "query" }
+  | { kind: "owner"; via: "cookie" | "bearer" | "query"; session?: Extract<Principal, { kind: "session" }> & { label: string } }
   | { kind: "unknown"; why: "no-credential" }
   | { kind: "session"; slot: number; openedAt: number; role: "lane" | "main" | "generic" }
   | { kind: "device"; deviceId: string }
@@ -57,17 +57,33 @@ type PrincipalState = {
 let principalState: PrincipalState | null = null;
 export function setPrincipalState(state: PrincipalState): void { principalState = state; }
 
-export function resolvePrincipal(req: Request): Principal | null {
+export type AuditActor =
+  | Exclude<Principal, { kind: "owner" }>
+  | { kind: "owner" }
+  | { kind: "unknown" }
+  | (Extract<Principal, { kind: "session" }> & { label: string; via: "owner-bearer" });
+
+export function resolveSelfPrincipal(req: Request): Extract<Principal, { kind: "session" }> | null {
   const state = principalState;
   if (!state) return null;
   const given = req.headers.get("x-fleet-self-token") ?? "";
   const slot = given ? state.slots().find((s) => s.cwd && s.selfToken && secretEq(given, s.selfToken)) : undefined;
-  if (slot) return { kind: "session", slot: slot.id, openedAt: slot.openedAt, role: state.sessionRole(slot) };
+  return slot ? { kind: "session", slot: slot.id, openedAt: slot.openedAt, role: state.sessionRole(slot) } : null;
+}
+
+export function resolvePrincipal(req: Request): Principal | null {
+  const state = principalState;
+  if (!state) return null;
   const offered = tokenFrom(req);
   if (offered && secretEq(offered, state.ownerToken())) {
     const auth = req.headers.get("authorization");
-    return { kind: "owner", via: auth?.startsWith("Bearer ") ? "bearer" : cookieToken(req) ? "cookie" : "query" };
+    const via = auth?.startsWith("Bearer ") ? "bearer" : cookieToken(req) ? "cookie" : "query";
+    const self = via === "bearer" ? resolveSelfPrincipal(req) : null;
+    const slot = self ? state.slots().find((s) => s.id === self.slot && s.openedAt === self.openedAt) : undefined;
+    return { kind: "owner", via, ...(self && slot ? { session: { ...self, label: slot.label ?? "" } } : {}) };
   }
+  const self = resolveSelfPrincipal(req);
+  if (self) return self;
   const helper = req.headers.get("x-fleet-helper-token") ?? "";
   if (helper && state.helperToken() && secretEq(helper, state.helperToken()!))
     return { kind: "device", deviceId: "helper-token" };
@@ -77,6 +93,13 @@ export function resolvePrincipal(req: Request): Principal | null {
     return !!match && secretEq(match[1], sh.secret);
   });
   return share ? { kind: "guest", shareId: share.id } : null;
+}
+
+export function actorFromPrincipal(principal: Principal | null): AuditActor {
+  if (!principal) return { kind: "unknown", why: "no-credential" };
+  if (principal.kind !== "owner") return principal;
+  if (principal.via !== "bearer") return { kind: "owner" };
+  return principal.session ? { ...principal.session, via: "owner-bearer" } : { kind: "unknown" };
 }
 
 // --- share auth: per-share cookie, brute-force throttled (public-facing) ---

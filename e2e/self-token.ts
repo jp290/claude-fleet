@@ -27,6 +27,28 @@ export async function run(ctx: Ctx): Promise<void> {
   check("FLEET_SELF_TOKEN + FLEET_SELF_SLOT present in a lane slot's spawn env",
     /^[0-9a-f]{32}$/.test(laneTok ?? "") && Number(laneSlot) === lnTok.slot, `tok=[${laneTok}] slot=[${laneSlot}]`);
   const selfTok = laneTok ?? "";
+  const ctlHeaders: { owner: boolean; self: boolean; hasSelf: boolean }[] = [];
+  const ctlServer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+    ctlHeaders.push({ owner: req.headers.get("authorization") === "Bearer ctl-owner-fixture",
+      self: req.headers.get("x-fleet-self-token") === selfTok, hasSelf: req.headers.has("x-fleet-self-token") });
+    return Response.json({ slots: [] });
+  } });
+  try {
+    for (const withSelf of [true, false]) {
+      const proc = Bun.spawn(["sh", `${ROOT}/ctl.sh`, "get", "/api/sessions", "--json"], {
+        env: { ...process.env, FLEET_CTL_URL: String(ctlServer.url), FLEET_CTL_HOME: ROOT,
+          FLEET_CTL_TOKEN: "ctl-owner-fixture", FLEET_SELF_TOKEN: withSelf ? selfTok : "" },
+        stdout: "ignore", stderr: "pipe",
+      });
+      const err = await new Response(proc.stderr).text();
+      const code = await proc.exited;
+      const seen = ctlHeaders.pop();
+      check(`ctl.sh owner verb ${withSelf ? "includes" : "omits"} the optional Self-Token`,
+        code === 0 && seen?.owner === true && (withSelf ? seen.self : !seen.hasSelf),
+        `exit=${code} request=${JSON.stringify(seen)} stderr=${err.slice(0, 200)}`);
+    }
+  } finally { ctlServer.stop(true); }
+
   // The other half — and the decision this file records. A PLAIN (non-lane) slot's pane carries
   // the credential TOO. This check asserted the opposite until 2026-08-07, when the export stopped
   // being keyed on `s.worktree`: that carve-out was never a security boundary, only a withheld
@@ -69,6 +91,12 @@ export async function run(ctx: Ctx): Promise<void> {
     `delivery=${JSON.stringify(okJ.delivery)} expected maxDelaySec=${bundleSec}`);
   check("a spoofed `slot` field in the body is ignored — the auto lands on the token's OWN slot",
     okJ.auto?.slot === lnTok.slot, JSON.stringify(okJ.auto));
+  const bothOnSelf = await fetch(BASE + "/api/self", {
+    headers: { authorization: `Bearer ${TOKEN}`, "x-fleet-self-token": selfTok },
+  });
+  const bothSelfRow = await bothOnSelf.json() as { slot?: number };
+  check("Owner-Bearer beside a valid Self-Token preserves the self door's session scope",
+    bothOnSelf.status === 200 && bothSelfRow.slot === lnTok.slot, `${bothOnSelf.status} slot=${bothSelfRow.slot}`);
   const ownerOnSelf = await selfAuto({ token: TOKEN });
   check("the owner token does not substitute for a selfToken on this route", ownerOnSelf.status === 401);
   const wrongSelf = await selfAuto({ token: "0".repeat(32) });

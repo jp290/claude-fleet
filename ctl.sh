@@ -155,7 +155,8 @@ const HOME = process.env.CTL_HOME, URL_ = process.env.CTL_URL;
 const JSONOUT = process.env.CTL_JSON === "1";
 const fs = require("fs");
 const readState = () => JSON.parse(fs.readFileSync(HOME + "/fleet.json", "utf8"));
-const ownerH = () => ({ "content-type": "application/json", authorization: "Bearer " + process.env.CTL_TOKEN });
+const ownerH = () => ({ "content-type": "application/json", authorization: "Bearer " + process.env.CTL_TOKEN,
+  ...(process.env.FLEET_SELF_TOKEN ? { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } : {}) });
 const selfH = () => ({ "content-type": "application/json", "x-fleet-self-token": process.env.CTL_SELF });
 const api = async (path, opts = {}) => {
   const r = await fetch(URL_ + path, opts);

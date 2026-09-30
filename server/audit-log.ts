@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { appendEvent } from "./persist";
-import type { Principal } from "./auth";
+import type { AuditActor } from "./auth";
 
 // this module sits one level below the repo root, so the ledger path is anchored explicitly
 // rather than on import.meta.dir — it is the same absolute string as before, when the constant
@@ -498,8 +498,8 @@ type AuditEvent =
 // prose `detail` every other event uses. Identity keys are RESERVED: a caller cannot
 // overwrite what row this is, which is why they are filtered rather than merely documented.
 const AUDIT_RESERVED = new Set(["ts", "event", "slot", "detail", "actor"]);
-export const auditActorScope = new AsyncLocalStorage<Principal>();
-export function withAuditActor<T>(actor: Principal, fn: () => T): T {
+export const auditActorScope = new AsyncLocalStorage<AuditActor>();
+export function withAuditActor<T>(actor: AuditActor, fn: () => T): T {
   return auditActorScope.run(actor, fn);
 }
 export function audit(event: AuditEvent, slot?: number, detail?: string,

@@ -21,6 +21,8 @@ bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN no
 
 **Controller / gewöhnliche Nicht-Lane-Session**
 
+Bei rohem `curl` mit Owner-Bearer schickt die Orchestratorin auch `x-fleet-self-token: $FLEET_SELF_TOKEN`; sonst steht sie im Ledger als `unknown` — `ctl.sh` ergänzt den Header bei Owner-Verben automatisch, wenn die Variable gesetzt ist.
+
 - `GET|POST /api/self/programs`: GET liefert Vorschläge derselben Session und Programs dieses
   MAIN-Occupants; nur der Supervisor sieht alle Inhalte. POST erzeugt nur `proposed`; bestätigen,
   aktivieren und binden bleiben Owner-Akte.

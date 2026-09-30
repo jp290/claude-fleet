@@ -5,6 +5,13 @@ Prinzipal-/Scope-Regeln (wer welche Route bekommt, 409-Semantik) und die Diszipl
 `CLAUDE.md`; hier liegen Feldformen, Deckel, Ablehnungen und die curl-Beispiele. Bei Widerspruch
 gilt der Code.
 
+Owner-Credentials behalten ihre Berechtigung unabhängig vom Audit-Actor: Cookie oder `?token=`
+werden als `{kind:"owner"}` erfasst; ein Owner-Bearer mit gültigem `x-fleet-self-token` derselben
+Anfrage als `{kind:"session",slot,openedAt,role,label,via:"owner-bearer"}`. `label` ist der Klartext
+zum Zeitpunkt der Anfrage, `role` bleibt `lane|main|generic`. Ohne gültigen Self-Token steht der
+Owner-Bearer als `{kind:„[Zitat entfernt]“}` im Ledger und bleibt voll berechtigt. Die Self-Türen prüfen
+weiter ihren eigenen Self-Token, auch wenn daneben eine Owner-Credential mitgeschickt wird.
+
 ## Credential-Auflösung
 
 `server/auth.ts#resolvePrincipal` benennt eine erkannte Credential als `owner` (mit Kanal
@@ -16,15 +23,15 @@ Supervisor- und Orchestrator-Labels verleihen hier keine zusätzliche Berechtigu
 identifiziert keine einzelne Hardware: `deviceId:"helper-token"` benennt nur die gemeinsame
 Credential, keine verifizierte Geräte-ID.
 
-Die Self-Routen lösen ausschließlich den Header `x-fleet-self-token` als Session auf. Sie behalten
+`server/auth.ts#resolveSelfPrincipal` löst für Self-Routen ausschließlich den Header `x-fleet-self-token` als Session auf. Sie behalten
 ihre eigenen 401-Antworten mit 400 ms Verzögerung und ihre fachlichen 409-Verweigerungen; der
 Resolver erteilt selbst keinen Grant. Owner-, Helper-, Steward-, Share- und Intake-Türen behalten
 ihre eigenen Reihenfolgen und Fehlerpfade. Eine Kombination mehrerer Credentials auf einem Request
 ändert damit keine Türentscheidung.
 
 `audit.jsonl` trägt auf jeder neuen Zeile `actor`. `server/audit-log.ts#audit` schreibt den
-Principal aus dem asynchronen Kontext; `server.ts#fetch` bindet ihn beim Request-Eingang über
-`resolvePrincipal(req)`. Ohne erkannte Credential steht `{kind:"unknown",why:"no-credential"}`.
+Actor aus dem asynchronen Kontext; `server.ts#fetch` bindet ihn beim Request-Eingang über
+`actorFromPrincipal(resolvePrincipal(req))`. Ohne erkannte Credential steht `{kind:"unknown",why:"no-credential"}`.
 Scheduler-Ticks tragen `{kind:"machine",why:"tick"}`, Boot-Arbeit
 `{kind:"machine",why:"boot"}`. Ein `audit()`-Aufrufer kann `actor` über `fields` nicht überschreiben.
 Das Feld enthält nur die vom Resolver benannten Identitätsmerkmale, keine Token oder Header-Werte.

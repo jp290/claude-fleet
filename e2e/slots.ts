@@ -3,7 +3,7 @@
 // regression).
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
@@ -110,6 +110,47 @@ export async function run(): Promise<void> {
     check("switch off restores the exact 16-row slot board",
       legacy.slots.length === 16 && legacy.slots.every((s, i) => s.id === i + 1),
       JSON.stringify(legacy.slots.map((s) => s.id)));
+  }
+
+  {
+    const deadSlot = 1;
+    let lane: { slot?: number; cwd?: string } | null = null;
+    try {
+      const opened = await post(`/api/slots/${deadSlot}/open`, { cwd: REPO });
+      check("tmux enumeration setup: the dead-pane fixture opened", opened.ok, `${opened.status}`);
+      const retained = await tmuxOut("set", "-w", "-t", `s${deadSlot}`, "remain-on-exit", "on");
+      const exited = await tmuxOut("respawn-pane", "-k", "-t", `s${deadSlot}`, "exit 0");
+      check("tmux enumeration setup: remain-on-exit and the immediate-exit pane command succeeded",
+        retained.code === 0 && exited.code === 0, JSON.stringify({ retained, exited }));
+      let dead = await tmuxOut("display-message", "-p", "-t", `s${deadSlot}`,
+        "#{pane_dead}\t#{pane_current_path}");
+      for (let i = 0; i < 100 && !(dead.code === 0 && dead.out.trimEnd() === "1"); i++) {
+        await Bun.sleep(50);
+        dead = await tmuxOut("display-message", "-p", "-t", `s${deadSlot}`,
+          "#{pane_dead}\t#{pane_current_path}");
+      }
+      check("tmux enumeration setup: remain-on-exit leaves a dead pane without an absolute path",
+        dead.code === 0 && dead.out.trimEnd() === "1", JSON.stringify(dead));
+      await restartSrv();
+      const response = await post("/api/lanes", { repo: REPO });
+      const body = await response.json() as { slot?: number; cwd?: string; error?: string };
+      if (response.ok) lane = body;
+      check("tmux enumeration: an unknown pane path does not block a lane on another slot",
+        response.ok && typeof body.slot === "number" && body.slot !== deadSlot,
+        `${response.status} ${JSON.stringify(body)}`);
+      const occupied = await (await get("/api/sessions")).json() as
+        { slots: { id: number; cwd: string | null }[] };
+      const stillDead = await tmuxOut("display-message", "-p", "-t", `s${deadSlot}`,
+        "#{pane_dead}\t#{pane_current_path}");
+      check("tmux enumeration: the unknown dead slot stays occupied and its pane is never recycled",
+        resolve(occupied.slots.find((s) => s.id === deadSlot)?.cwd ?? "") === resolve(REPO)
+          && stillDead.code === 0 && stillDead.out.trimEnd() === "1",
+        JSON.stringify({ slot: occupied.slots.find((s) => s.id === deadSlot), pane: stillDead }));
+    } finally {
+      if (lane?.slot) await post(`/api/slots/${lane.slot}/kill`, {});
+      if (lane?.cwd) spawnSync("git", ["worktree", "remove", "--force", lane.cwd], { cwd: REPO });
+      await post(`/api/slots/${deadSlot}/kill`, {});
+    }
   }
 
   // --- the harness catalogue's commands field (the ⌘-overlay's fact layer, 2026-09-19). The card's
@@ -412,7 +453,7 @@ export async function run(): Promise<void> {
     rmSync(fakeBin, { recursive: true, force: true });
     rmSync(marker, { force: true });
     mkdirSync(fakeBin, { recursive: true });
-    writeFileSync(fakeTmux, `#!/bin/sh\nif [ -e '${marker}' ]; then\n  case " $* " in\n    *" list-sessions "*) printf 'unreadable-row\\n'; exit 0 ;;\n  esac\nfi\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
+    writeFileSync(fakeTmux, `#!/bin/sh\nif [ -e '${marker}' ]; then\n  case " $* " in\n    *" list-sessions "*)\n      if [ "$(cat '${marker}')" = named ]; then\n        '${realTmux}' "$@"\n        printf 's3\\t\\t$99\\n'\n      else\n        printf 'unreadable-row\\n'\n      fi\n      exit 0 ;;\n  esac\nfi\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
     chmodSync(fakeTmux, 0o700);
     check("unknown-presence fixture: the real tmux binary and executable enumeration shim exist",
       realTmux.startsWith("/") && await exists(fakeTmux), JSON.stringify({ realTmux, fakeTmux }));
@@ -430,6 +471,13 @@ export async function run(): Promise<void> {
         refused.status === 503 && body.availability === "unknown"
           && body.error === `slot 3 pane availability is unknown: ${detail}`,
         `${refused.status} ${JSON.stringify(body)}`);
+      writeFileSync(marker, "named\n", { mode: 0o600 });
+      const named = await post("/api/slots/3/open", { cwd: "~" });
+      const namedBody = await named.json() as { error?: string; availability?: string };
+      check("a named slot without a pane path stays unknown, never absent, even on the last trimmed row",
+        named.status === 503 && namedBody.availability === "unknown"
+          && namedBody.error === "slot 3 pane availability is unknown: tmux sessions s3 returned no absolute pane path",
+        `${named.status} ${JSON.stringify(namedBody)}`);
     } finally {
       rmSync(marker, { force: true });
       await restartSrv();

@@ -115,6 +115,12 @@ route hard-binds to whichever slot your token belongs to, so this can never be p
 Same guard rails as the owner route apply: max 5 active schedules per slot, minimum 10s interval, mandatory
 run cap.
 
+Die Antwort enthält `delivery: {class:"buendelbar", maxDelaySec:<FLEET_DELIVERY_BUNDLE_SEC>,
+flushedBy:"sofort-Zustellung oder Cache-Kante"}`. `auto.nextAt` ist der Fälligkeitszeitpunkt;
+die Paste kann durch die Bündelung bis zu `delivery.maxDelaySec` Sekunden später kommen
+(Default 900, Bündelung d6d75307, `server.ts#deliveryClass`). Eine sofort-Zustellung an denselben
+Slot oder die Cache-Kante spült das Bündel früher; `idleSec:0` hebt dieses Bündelfenster nicht auf.
+
 
 ## watch — `POST /api/self/watch`
 

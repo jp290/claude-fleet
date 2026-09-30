@@ -14094,71 +14094,87 @@ exit 0
     // not as the rule. Restored to "blocked" after the arm, the mode the section above left.
     await setMergeMode("do");
     const cffBoot = await beginBootstrap(cffProgram.id, { cwd: REPO2, label: "selfland-cfflost-main" });
-    const cffMainSlot = (await cffBoot.json() as { slot?: number }).slot ?? null;
+    const cffMainSlot = cffBoot.ok ? (await cffBoot.json() as { slot?: number }).slot ?? null : null;
     const cffTok = cffMainSlot === null ? "" : readState().slots?.[String(cffMainSlot)]?.selfToken ?? "";
     if (cffMainSlot !== null) landFixtureMains.push(cffMainSlot);
     await setPromotion(cffProgram.id, { v: 1, selfLand: "guarded" });
     const cffRowId = await makeTask({ text: "confirm lost-ff row", programId: cffProgram.id, repo: REPO2 });
     const cffLane = await conflictLane(cffRowId);
-    if (cffLane.cwd) {
-      writeFileSync(`${cffLane.cwd}/cff.txt`, "lane side of the confirm conflict\n");
-      spawnSync("git", ["-C", cffLane.cwd, "add", "cff.txt"]);
-      spawnSync("git", ["-C", cffLane.cwd, "commit", "-qm", "confirm conflict lane side"]);
-    }
-    writeFileSync(`${REPO2}/cff.txt`, "main side of the confirm conflict\n");
-    spawnSync("git", ["-C", REPO2, "add", "cff.txt"]);
-    spawnSync("git", ["-C", REPO2, "commit", "-qm", "confirm conflict main side"]);
-    const cffReady = cffLane.slot === null ? false : await waitDoneLooking(cffLane.slot, cffLane.cwd);
-    const cffFirst = await selfLand(cffTok, cffRowId);
-    type CffVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
-      conflicted?: string[]; resolvedBy?: string; candidateSha?: string };
-    let cffResolved: CffVerdict | null = null;
-    for (let i = 0; i < 240 && cffResolved === null; i++) {
-      await Bun.sleep(250);
-      const mg = (await (await get(`/api/slots/${cffLane.slot}/merge`)).json()) as
-        { running?: boolean; last?: CffVerdict | null };
-      if (mg.running === false && mg.last) cffResolved = mg.last;
-    }
-    check("confirm lost-ff fixture prerequisite: the conflict path produced a RESOLVED verdict holding an agent resolution, on a lane the door calls done",
-      cffReady && cffFirst.ok && cffResolved?.status === "resolved" && cffResolved.landed === false
-        && (cffResolved.conflicted?.length ?? 0) > 0 && !!cffResolved.resolvedBy
-        && /^[0-9a-f]{40,64}$/.test(cffResolved.candidateSha ?? ""),
-      JSON.stringify({ ready: cffReady, first: cffFirst.status, verdict: cffResolved }));
+    check("confirm lost-ff setup: dispatch opens a lane and bootstrap supplies its MAIN token",
+      cffLane.slot !== null && !!cffLane.cwd && !!cffTok,
+      JSON.stringify({ slot: cffLane.slot, cwd: cffLane.cwd, bootstrap: cffBoot.status, dispatch: cffLane.dispatch }));
+    if (cffLane.slot !== null && cffLane.cwd && cffTok) {
+      if (cffLane.cwd) {
+        writeFileSync(`${cffLane.cwd}/cff.txt`, "lane side of the confirm conflict\n");
+        spawnSync("git", ["-C", cffLane.cwd, "add", "cff.txt"]);
+        spawnSync("git", ["-C", cffLane.cwd, "commit", "-qm", "confirm conflict lane side"]);
+      }
+      writeFileSync(`${REPO2}/cff.txt`, "main side of the confirm conflict\n");
+      spawnSync("git", ["-C", REPO2, "add", "cff.txt"]);
+      spawnSync("git", ["-C", REPO2, "commit", "-qm", "confirm conflict main side"]);
+      const cffReady = cffLane.slot === null ? false : await waitDoneLooking(cffLane.slot, cffLane.cwd);
+      const cffFirst = await selfLand(cffTok, cffRowId);
+      type CffVerdict = { status?: string; landed?: boolean; errorReason?: string; detail?: string;
+        conflicted?: string[]; resolvedBy?: string; candidateSha?: string };
+      let cffResolved: CffVerdict | null = null;
+      for (let i = 0; i < 240 && cffResolved === null; i++) {
+        await Bun.sleep(250);
+        const res = await get(`/api/slots/${cffLane.slot}/merge`);
+        if (!res.ok) {
+          check("confirm lost-ff setup: merge observation answers successfully", false,
+            `${res.status} ${(await res.text()).slice(0, 300)}`);
+          break;
+        }
+        const mg = await res.json() as { running?: boolean; last?: CffVerdict | null };
+        if (mg.running === false && mg.last) cffResolved = mg.last;
+      }
+      check("confirm lost-ff fixture prerequisite: the conflict path produced a RESOLVED verdict holding an agent resolution, on a lane the door calls done",
+        cffReady && cffFirst.ok && cffResolved?.status === "resolved" && cffResolved.landed === false
+          && (cffResolved.conflicted?.length ?? 0) > 0 && !!cffResolved.resolvedBy
+          && /^[0-9a-f]{40,64}$/.test(cffResolved.candidateSha ?? ""),
+        JSON.stringify({ ready: cffReady, first: cffFirst.status, verdict: cffResolved }));
 
-    writeFileSync(cffLatch, "armed\n", { mode: 0o600 });
-    await restartSrv({ FLEET_TEST_LAND_FF_LATCH: cffLatch });
-    const cffReady2 = cffLane.slot === null ? false : await waitDoneLooking(cffLane.slot, cffLane.cwd);
-    const cffMainBefore = main2Of();
-    const cffConfirm = await selfLand(cffTok, cffRowId);
-    let cffReached = false;
-    for (let i = 0; i < 400 && !cffReached; i++) {
-      cffReached = existsSync(`${cffLatch}.reached`);
-      if (!cffReached) await Bun.sleep(100);
+      writeFileSync(cffLatch, "armed\n", { mode: 0o600 });
+      await restartSrv({ FLEET_TEST_LAND_FF_LATCH: cffLatch });
+      const cffReady2 = cffLane.slot === null ? false : await waitDoneLooking(cffLane.slot, cffLane.cwd);
+      const cffMainBefore = main2Of();
+      const cffConfirm = await selfLand(cffTok, cffRowId);
+      let cffReached = false;
+      for (let i = 0; i < 400 && !cffReached; i++) {
+        cffReached = existsSync(`${cffLatch}.reached`);
+        if (!cffReached) await Bun.sleep(100);
+      }
+      writeFileSync(`${REPO2}/cff-intruder.txt`, "a commit that stole the confirm's fast-forward\n");
+      spawnSync("git", ["-C", REPO2, "add", "cff-intruder.txt"]);
+      spawnSync("git", ["-C", REPO2, "commit", "-qm", "intruder stole the confirm ff"]);
+      const cffIntruder = main2Of();
+      writeFileSync(`${cffLatch}.release`, "go\n", { mode: 0o600 });
+      let cffVerdict: CffVerdict | null = null;
+      for (let i = 0; i < 480 && cffVerdict === null; i++) {
+        await Bun.sleep(250);
+        const res = await get(`/api/slots/${cffLane.slot}/merge`);
+        if (!res.ok) {
+          check("confirm lost-ff setup: merge observation answers successfully", false,
+            `${res.status} ${(await res.text()).slice(0, 300)}`);
+          break;
+        }
+        const mg = await res.json() as { running?: boolean; last?: CffVerdict | null };
+        if (mg.running === false && mg.last) cffVerdict = mg.last;
+      }
+      const cffRowAfter = await slRow(cffRowId);
+      check("(8j) a guarded confirm that loses the fast-forward reads as its OWN reason — error + typed ff-lost, never resolved, with the resolution's guard halves intact, main unmoved and the row unlanded",
+        cffReady2 && cffConfirm.ok && cffReached && cffIntruder !== cffMainBefore
+          && cffVerdict?.status === "error" && cffVerdict.landed === false
+          && cffVerdict.errorReason === "ff-lost"
+          && (cffVerdict.conflicted?.length ?? 0) > 0 && !!cffVerdict.resolvedBy
+          && /^[0-9a-f]{40,64}$/.test(cffVerdict.candidateSha ?? "")
+          && (cffVerdict.detail ?? "").includes("fast-forwarding")
+          && main2Of() === cffIntruder && cffRowAfter?.status === "sent",
+        JSON.stringify({ ready: cffReady2, confirm: cffConfirm.status, reached: cffReached,
+          verdict: cffVerdict, before: cffMainBefore.slice(0, 8), intruder: cffIntruder.slice(0, 8),
+          now: main2Of().slice(0, 8), row: cffRowAfter?.status }));
+
     }
-    writeFileSync(`${REPO2}/cff-intruder.txt`, "a commit that stole the confirm's fast-forward\n");
-    spawnSync("git", ["-C", REPO2, "add", "cff-intruder.txt"]);
-    spawnSync("git", ["-C", REPO2, "commit", "-qm", "intruder stole the confirm ff"]);
-    const cffIntruder = main2Of();
-    writeFileSync(`${cffLatch}.release`, "go\n", { mode: 0o600 });
-    let cffVerdict: CffVerdict | null = null;
-    for (let i = 0; i < 480 && cffVerdict === null; i++) {
-      await Bun.sleep(250);
-      const mg = (await (await get(`/api/slots/${cffLane.slot}/merge`)).json()) as
-        { running?: boolean; last?: CffVerdict | null };
-      if (mg.running === false && mg.last) cffVerdict = mg.last;
-    }
-    const cffRowAfter = await slRow(cffRowId);
-    check("(8j) a guarded confirm that loses the fast-forward reads as its OWN reason — error + typed ff-lost, never resolved, with the resolution's guard halves intact, main unmoved and the row unlanded",
-      cffReady2 && cffConfirm.ok && cffReached && cffIntruder !== cffMainBefore
-        && cffVerdict?.status === "error" && cffVerdict.landed === false
-        && cffVerdict.errorReason === "ff-lost"
-        && (cffVerdict.conflicted?.length ?? 0) > 0 && !!cffVerdict.resolvedBy
-        && /^[0-9a-f]{40,64}$/.test(cffVerdict.candidateSha ?? "")
-        && (cffVerdict.detail ?? "").includes("fast-forwarding")
-        && main2Of() === cffIntruder && cffRowAfter?.status === "sent",
-      JSON.stringify({ ready: cffReady2, confirm: cffConfirm.status, reached: cffReached,
-        verdict: cffVerdict, before: cffMainBefore.slice(0, 8), intruder: cffIntruder.slice(0, 8),
-        now: main2Of().slice(0, 8), row: cffRowAfter?.status }));
 
     for (const f of [cffLatch, `${cffLatch}.reached`, `${cffLatch}.release`]) try { rmSync(f); } catch { /* spent */ }
     await setMergeMode("blocked");

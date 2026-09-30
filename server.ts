@@ -5418,8 +5418,9 @@ function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "
     .catch((e: unknown) => logError("promptLog", e));
 }
 
-const tmuxSlotObservation = (observed: TmuxSlotObservations, slot: number): TmuxSlotObservation => {
-  if (!observed.known) return { presence: "unknown", root: null };
+type SlotEnumeration = TmuxSlotObservations & { unknownSessions?: ReadonlySet<string> };
+const tmuxSlotObservation = (observed: SlotEnumeration, slot: number): TmuxSlotObservation => {
+  if (!observed.known || observed.unknownSessions?.has(sess(slot))) return { presence: "unknown", root: null };
   const root = observed.sessions.get(sess(slot));
   return root === undefined ? { presence: "absent", root: null } : { presence: "present", root };
 };
@@ -5427,31 +5428,37 @@ const tmuxSlotObservation = (observed: TmuxSlotObservations, slot: number): Tmux
 // tmux's missing-session and unavailable-server diagnostics share failure-shaped exits. A
 // temporary, non-slot session makes list-sessions return a successful complete enumeration even
 // when Fleet has no live panes, so absence never depends on an English stderr string.
-async function observeTmuxSlots(): Promise<TmuxSlotObservations> {
-  const readEnumeration = (listed: TmuxResult, ignored: string | null): TmuxSlotObservations => {
+async function observeTmuxSlots(): Promise<SlotEnumeration> {
+  const readEnumeration = (listed: TmuxResult, ignored: string | null): SlotEnumeration => {
     if (listed.code !== 0)
       return { known: false, sessions: new Map(), detail: `enumeration exited ${listed.code}: ${listed.err || listed.out}` };
     const sessions = new Map<string, string>();
+    const unknownSessions = new Set<string>();
     for (const line of listed.out.split("\n")) {
       if (!line) continue;
       const tab = line.indexOf("\t");
-      if (tab < 1) return { known: false, sessions: new Map(), detail: "tmux enumeration returned an unreadable row" };
+      const end = line.lastIndexOf("\t");
+      if (tab < 1 || end === tab) return { known: false, sessions: new Map(), detail: "tmux enumeration returned an unreadable row" };
       const name = line.slice(0, tab);
-      const cwd = line.slice(tab + 1);
+      const cwd = line.slice(tab + 1, end);
       if (name === ignored) continue;
-      if (!isAbsolute(cwd))
-        return { known: false, sessions: new Map(), detail: `tmux session ${name} returned no absolute pane path` };
+      if (!isAbsolute(cwd)) {
+        unknownSessions.add(name);
+        continue;
+      }
       sessions.set(name, repoCanon(cwd));
     }
-    return { known: true, sessions, detail: "successful enumeration" };
+    return { known: true, sessions, unknownSessions, detail: unknownSessions.size
+      ? `tmux sessions ${[...unknownSessions].join(", ")} returned no absolute pane path` : "successful enumeration" };
   };
-  const direct = await tmux("list-sessions", "-F", "#{session_name}\t#{pane_current_path}");
+  const format = "#{session_name}\t#{pane_current_path}\t#{session_id}";
+  const direct = await tmux("list-sessions", "-F", format);
   if (direct.code === 0) return readEnumeration(direct, null);
   const probe = `fleet-observe-${process.pid}`;
   const started = await tmuxNewSession("-d", "-s", probe, "-c", import.meta.dir, "sleep 30");
   if (started.code !== 0)
     return { known: false, sessions: new Map(), detail: `probe create exited ${started.code}: ${started.err || started.out}` };
-  const listed = await tmux("list-sessions", "-F", "#{session_name}\t#{pane_current_path}");
+  const listed = await tmux("list-sessions", "-F", format);
   const stopped = await tmux("kill-session", "-t", sessTarget(probe));
   if (listed.code !== 0 || stopped.code !== 0)
     return { known: false, sessions: new Map(),
@@ -8581,8 +8588,8 @@ function assertNoFoundingSlotOccupant(program: Program, founding: ProgramFoundin
 }
 
 function assertNoFoundingTreeOccupant(program: Program, founding: ProgramFounding,
-  observed: TmuxSlotObservations): void {
-  if (!observed.known)
+  observed: SlotEnumeration): void {
+  if (!observed.known || observed.unknownSessions?.size)
     throw new Error(`REFUSING TO START: Program ${program.id} founding ${founding.attemptId} cannot prove its protected tree empty because tmux state is unknown: ${observed.detail}`);
   // A restored cwd row is a pending self-heal even with no pane today. Clear the marker only when
   // neither the observed tmux world nor the persisted world can create a second writer.
@@ -9905,7 +9912,10 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
     autos = autos.filter((x) => !drop.has(x.id));
   }
   saveState();
-  return json({ ok: true, auto: a });
+  return json({ ok: true, auto: a, delivery: {
+    class: "buendelbar", maxDelaySec: DELIVERY_BUNDLE_SEC,
+    flushedBy: "sofort-Zustellung oder Cache-Kante",
+  } });
 }
 
 // THE DELIVERY BUDGET, IN ONE PLACE — the arithmetic three doors spend and two sights read: open
@@ -18221,8 +18231,9 @@ const programDispatchStopped = (t: Pick<Task, "programId">): boolean => {
 };
 const dispatchStoppedNote = (reason: string, previous: string | null | undefined): string => {
   const prior = previous?.replace(/^waiting: (?:dispatcher stopped|program dispatch off) — /, "");
-  const requeued = prior && / — requeued(?:; lane kept.*)?$/.test(prior) ? prior : null;
-  return `waiting: ${reason}${requeued ? ` — ${requeued}` : ""}`;
+  const retained = prior && (/ — requeued(?:; lane kept.*)?$/.test(prior)
+    || prior.startsWith("handed back by the wave lane ")) ? prior : null;
+  return `waiting: ${reason}${retained ? ` — ${retained}` : ""}`;
 };
 const programDispatchOn = (t: Task): ProgramDispatch | undefined => {
   const p = t.programId ? programs.find((x) => x.id === t.programId) : undefined;
@@ -21945,12 +21956,17 @@ async function tickMessageNudge(): Promise<void> {
 }
 
 let backlogNudgeBusy = false;
-const pendingBacklogNudges = new Set<string>();
+const pendingBacklogNudges = new Map<string, { openKey: string; sending: boolean }>();
 async function tickBacklogNudge(): Promise<void> {
   // The normal case is deliberately process-only: no open executable row means no liveness probe,
   // no tmux and no ps. Advisory categories never enter this set, whatever their status.
   const open = tasks.filter((t) => t.kind === "auftrag" && (t.status === "pending" || t.status === "queued"));
-  if (!open.length) return;
+  if (!open.length) {
+    for (const [repo, marker] of pendingBacklogNudges) {
+      if (!marker.sending) pendingBacklogNudges.delete(repo);
+    }
+    return;
+  }
   if (backlogNudgeBusy) return;
   backlogNudgeBusy = true;
   try {
@@ -21967,9 +21983,13 @@ async function tickBacklogNudge(): Promise<void> {
       const list = byRepo.get(repo);
       if (list) list.push(t); else byRepo.set(repo, [t]);
     }
+    for (const [repo, marker] of pendingBacklogNudges) {
+      if (!marker.sending && !byRepo.has(repo)) pendingBacklogNudges.delete(repo);
+    }
     for (const [repo, mine] of byRepo) {
-      if (pendingBacklogNudges.has(repo)) continue;
       const openKey = mine.map((t) => t.id).sort().join(",");
+      const marker = pendingBacklogNudges.get(repo);
+      if (marker?.sending || marker?.openKey === openKey) continue;
       // Ascending lastOutput means longest-idle first among observed panes. A rejected oldest
       // candidate does not starve the next deliverable one, but one successful send ends the
       // whole round — this tick never fans one backlog out to several panes at once.
@@ -21992,7 +22012,8 @@ async function tickBacklogNudge(): Promise<void> {
         if (!s.cwd || s.worktree !== null || s.label === STEWARD_LABEL || s.awaiting === "owner"
           || backlogSessionKey(s) !== session || (await repoKeyOf(s)) !== repo) continue;
         const text = backlogNudgeMessage(mine, repo);
-        pendingBacklogNudges.add(repo);
+        const reservation = { openKey, sending: true };
+        pendingBacklogNudges.set(repo, reservation);
         void (async () => {
           let recipient = s;
           try {
@@ -22010,12 +22031,13 @@ async function tickBacklogNudge(): Promise<void> {
             saveHistory(recipient);
             logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
           } catch (e) {
+            pendingBacklogNudges.delete(repo);
             if (!(e instanceof DeliveryCancelled)) {
               logError("backlogNudgeSend", e);
               logPrompt(recipient, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
               backlogNudgeTried.set(recipient.id, { session, openKey: "", lastAt: Date.now(), count });
             }
-          } finally { pendingBacklogNudges.delete(repo); }
+          } finally { reservation.sending = false; }
         })();
         return; // one send ends the round — never fanned out across panes or repos
       }

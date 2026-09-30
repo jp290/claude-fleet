@@ -2211,9 +2211,10 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 
 ## messages — `GET /api/self/messages`, `POST /api/self/messages`, `POST /api/self/messages/:id/read`
 
-Alte `role:supervisor`-Empfänger werden beim Laden an `role:orchestrator` umgeleitet;
-Absender, IDs, Reply-Kanten und Lesestatus bleiben erhalten. Neue Supervisor-Adressen werden
-abgelehnt. Das alte Supervisor-Bindungsfeld in `fleet.json` wird ignoriert.
+Alte Nachrichten mit `role:supervisor` behalten ihre historischen Absender, Empfänger, IDs,
+Reply-Kanten und Lesestatus. Der bestehende Eskalationsresolver macht sie für die Orchestratorin
+sichtbar; ohne eindeutige Orchestratorin nennt er die Owner-Eskalation. Neue Supervisor-Adressen
+werden abgelehnt. Das alte Supervisor-Bindungsfeld in `fleet.json` wird ignoriert.
 
 
 Die **adressierte Nachricht zwischen Prinzipalen** und ihre Antwort — die andere Hälfte dessen, was

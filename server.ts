@@ -13922,6 +13922,8 @@ function resolveMessageAddress(a: MessageAddress): AddressResolution {
   if (a.kind === "role") {
     if (a.role === "owner")
       return { ok: false, error: 'role "owner" is sender-only, never a message destination — questions to the Owner use the clarification chain' };
+    if (a.role === "supervisor")
+      return escalateMessage("retired Supervisor address — the historical recipient is preserved and the message is escalated");
     // The one named-but-unresolvable member. It documents the dead end instead of hiding it, and a
     // later owner-promoted Controller binding turns this branch into a resolution — a resolver
     // change, never a record migration, because the address shape already carries it.
@@ -14109,6 +14111,8 @@ async function replyToMessageAsOwner(id: string, body: Record<string, unknown> |
   const parent = messages.entries.find((m) => m.id === id);
   if (!parent) return json({ error: "no retained message with this id" }, 404);
   const to = parent.from;
+  if (to.kind === "role" && to.role === "supervisor")
+    return json({ error: 'role "supervisor" is retired — no new message can address it' }, 409);
   const resolved = resolveMessageAddress(to);
   if (!resolved.ok) return json({ error: resolved.error }, 409);
   const entry = appendMessage(from, to, payload, body.idempotencyKey, parent.id);

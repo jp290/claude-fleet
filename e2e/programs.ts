@@ -4199,20 +4199,43 @@ export async function run(ctx: Ctx): Promise<void> {
   const legacyState = readState();
   const legacyMessageId = "d5".repeat(12);
   const legacyMessages = legacyState.messages as { v: number; entries: MessageRow[]; dropped: number };
-  legacyMessages.entries.push({ id: legacyMessageId,
+  const legacyUnreadMessage: MessageRow = { id: legacyMessageId,
     from: { kind: "role", role: "supervisor" }, to: { kind: "role", role: "supervisor" },
     at: Date.now(), payload: { kind: "text", text: "legacy supervisor message" },
-    idempotencyKey: "legacy-supervisor-message", replyTo: null, readBy: null, readAt: null });
+    idempotencyKey: "legacy-supervisor-message", replyTo: null, readBy: null, readAt: null };
+  const legacyReadMessage: MessageRow = { ...legacyUnreadMessage, id: "d6".repeat(12),
+    idempotencyKey: "legacy-supervisor-message-read", replyTo: legacyMessageId,
+    readBy: { slot: orchFree, openedAt: legacyState.slots?.[String(orchFree)]?.openedAt ?? 0,
+      sessionId: legacyState.slots?.[String(orchFree)]?.sessionId ?? null }, readAt: Date.now() };
+  const legacyFixtures = [legacyUnreadMessage, legacyReadMessage];
+  legacyMessages.entries.push(...legacyFixtures);
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(legacyState, null, 2), { mode: 0o600 });
   await restartSrv();
   const migratedResponse = await get("/api/messages");
   const migratedView = await migratedResponse.json() as { entries?: MessageRow[] };
-  const migratedMessage = migratedView.entries?.find((m) => m.id === legacyMessageId);
-  check("D5 legacy supervisor message keeps its sender and unread state and is redirected to the Orchestrator",
-    migratedResponse.ok && migratedMessage?.from.kind === "role" && migratedMessage.from.role === "supervisor"
-      && migratedMessage.to.kind === "role" && migratedMessage.to.role === "orchestrator"
-      && migratedMessage.readBy === null,
-    `status=${migratedResponse.status} message=${JSON.stringify(migratedMessage)}`);
+  const legacyObserved = legacyFixtures.map((fixture) => migratedView.entries?.find((m) => m.id === fixture.id));
+  const legacyStored = (readState().messages as { entries: MessageRow[] }).entries;
+  check("D5 legacy supervisor messages preserve every historical fact in the Owner view and persisted record",
+    migratedResponse.ok && legacyFixtures.every((fixture, i) =>
+      JSON.stringify(canonical({ ...legacyObserved[i], resolution: undefined })) === JSON.stringify(canonical(fixture))
+      && JSON.stringify(canonical(legacyStored.find((m) => m.id === fixture.id))) === JSON.stringify(canonical(fixture))),
+    `status=${migratedResponse.status} expected=${JSON.stringify(legacyFixtures)} observed=${JSON.stringify(legacyObserved)} stored=${JSON.stringify(legacyStored.filter((m) => legacyFixtures.some((f) => f.id === m.id)))}`);
+  const legacyOrchView = await selfMessages(msgOrchToken);
+  const legacyOrchPosition = await (await fetch(`${BASE}/api/self`,
+    { headers: { "x-fleet-self-token": msgOrchToken } })).json() as {
+      position?: { waitingOnMe?: { kind: string; id: string; slot: number }[] } };
+  const legacyOrchRow = legacyOrchView.view?.entries.find((m) => m.id === legacyMessageId);
+  check("D5 legacy unread supervisor message reaches the Orchestrator through escalation with its original recipient",
+    legacyOrchView.response.ok && JSON.stringify(canonical(legacyOrchRow)) === JSON.stringify(canonical(legacyUnreadMessage))
+      && legacyOrchPosition.position?.waitingOnMe?.some((w) => w.kind === "message"
+        && w.id === legacyMessageId && w.slot === orchFree) === true,
+    `status=${legacyOrchView.response.status} error=${legacyOrchView.error} message=${JSON.stringify(legacyOrchRow)} waiting=${JSON.stringify(legacyOrchPosition.position?.waitingOnMe)}`);
+  const legacyOwnerReply = await post(`/api/messages/${legacyMessageId}/reply`, {
+    payload: { kind: "text", text: "reply to retired sender" }, idempotencyKey: "legacy-supervisor-reply-rejected" });
+  check("D5 Owner replies cannot create a new message addressed to a historical Supervisor sender",
+    legacyOwnerReply.status === 409 && !(readState().messages as { entries: MessageRow[] }).entries
+      .some((m) => m.idempotencyKey === "legacy-supervisor-reply-rejected"),
+    `status=${legacyOwnerReply.status} body=${await legacyOwnerReply.text()}`);
 
   const clarificationLaneOpen = await post("/api/lanes", { repo: REPO });
   const clarificationLaneSlot = (await clarificationLaneOpen.json() as { slot?: number }).slot ?? 0;

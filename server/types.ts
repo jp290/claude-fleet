@@ -2860,9 +2860,7 @@ const loadMessageEntry = (value: unknown, index: number): Message | string => {
     return `entry ${index} id must be 24 hex characters`;
   const from = loadMessageAddress(r.from, `entry ${index} from`, true);
   if (typeof from === "string") return from;
-  const address = loadMessageAddress(r.to, `entry ${index} to`, true);
-  const to = typeof address !== "string" && address.kind === "role" && address.role === "supervisor"
-    ? { kind: "role" as const, role: "orchestrator" as const } : address;
+  const to = loadMessageAddress(r.to, `entry ${index} to`, true);
   if (typeof to === "string") return to;
   if (to.kind === "role" && to.role === "owner") return `entry ${index} to: owner is sender-only, never a message destination`;
   if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)

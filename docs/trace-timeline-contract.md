@@ -177,7 +177,7 @@ Adapter muss beide Gegenbeispiele zurückweisen und mit `ALL PASS` schließen.
 |---|---|---|
 | Wire/API | `not-applicable`: keine neue Route; typed pure Input/Output ist ausgeführt | C2: autorisierte Sourceübergabe, kleine Sichten, Detailresolver, Cursor/Index |
 | Server | `not-applicable`: vorhandene Ledger-Trace bleibt erhalten | C2: native API-Einbindung und Frische/Version/unknown |
-| Client | `apply`: importierbare synthetische Events und redigierte Detailfixtures | U1: tatsächliche Visualisierung; U2: API-/UI-Abnahme |
+| Client | `apply`: importierbare synthetische Events und redigierte Detailfixtures | U1: tatsächliche Visualisierung ([Scratch-Entwurf](design/zeitleiste-entwurf.html)); U2: API-/UI-Abnahme |
 | Reverse-state | `not-applicable`: keine neue Bindung, Registrierung oder Retention geschrieben | Belegreceipts müssen später autorisiert bereitgestellt werden |
 | Quellen/Docs | `apply`: Formatvertrag, Lücken, konkrete unsupported-Grenzen und Fixturebytes | Heutige repräsentative Produktionskosten und Sourceabdeckung ungemessen |
 | Probes | `apply`: reine Produktionsproben im vorhandenen Trace-Modul | Weitere C2/U1/U2-Proben sind noch nicht erbracht |

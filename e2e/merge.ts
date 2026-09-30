@@ -100,15 +100,21 @@ mode = pathlib.Path(${JSON.stringify(modeFile)}).read_text().strip()
 if mode == worker + "-error":
     print(json.dumps({"type": "error", "message": "controlled " + worker + " rejection"}))
     sys.exit(23)
-def git(*a):
-    r = subprocess.run(["git", *a], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+def git(*a, expected=0):
+    r = subprocess.run(["git", *a], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                        env={**os.environ, "GIT_EDITOR": "true"})
-    if r.returncode:
+    if r.returncode != expected:
         with open(${JSON.stringify(gitErrors)}, "a") as f:
             f.write(json.dumps({"worker": worker, "args": a, "exitCode": r.returncode, "stderr": r.stderr}) + "\n")
-        print(json.dumps({"type": "error", "message": "fixture git " + " ".join(a) + ": " + r.stderr.strip()}))
-        sys.exit(r.returncode)
+        print(json.dumps({"type": "error", "message": "fixture git " + " ".join(a) +
+                          ": exit " + str(r.returncode) + ", expected " + str(expected) + ": " + r.stderr.strip()}))
+        sys.exit(1)
+    return r.stdout.strip()
 if worker == "merge":
+    git("rebase", "main", expected=1)
+    if git("diff", "--name-only", "--diff-filter=U") != "code.txt":
+        print(json.dumps({"type": "error", "message": "fixture rebase did not produce the code.txt conflict"}))
+        sys.exit(1)
     pathlib.Path("code.txt").write_text("root\nmain\nlane\nVERIFYBAD\n")
     git("add", "code.txt")
     git("rebase", "--continue")

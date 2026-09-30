@@ -67,6 +67,7 @@ async function codexWritingWorkers(): Promise<void> {
   const bin = `${ROOT}/codex-write-worker`;
   const runsFile = `${ROOT}/codex-write-runs.jsonl`;
   const modeFile = `${ROOT}/codex-write-mode`;
+  const verify = `${ROOT}/codex-write-verify`;
   mkdirSync(repo, { recursive: true });
   const git = (cwd: string, ...args: string[]): string => {
     const r = spawnSync("git", ["-C", cwd, ...args]);
@@ -80,6 +81,13 @@ async function codexWritingWorkers(): Promise<void> {
   writeFileSync(`${repo}/code.txt`, "root\n");
   git(repo, "add", "code.txt");
   git(repo, "commit", "-m", "base");
+  writeFileSync(verify, `#!/bin/sh
+if grep -qx VERIFYBAD code.txt; then
+  echo 'verify FAIL: writing worker marker remains'
+  exit 1
+fi
+echo 'ALL PASS'
+`, { mode: 0o755 });
   writeFileSync(bin, String.raw`#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
@@ -110,6 +118,7 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
   const runs = (): Run[] => existsSync(runsFile)
     ? readFileSync(runsFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Run) : [];
   const env = { FLEET_MERGE_CMD: "", FLEET_CODEX_EXEC_BIN: bin, FLEET_CODEX_EXEC_TIMEOUT_MS: "5000",
+    FLEET_VERIFY_CMD: verify, FLEET_VERIFY_CMD_REPOS: JSON.stringify({ [repo]: verify }),
     FLEET_MERGE_REPAIR_ROUNDS: "2", FLEET_WORKER_ROUTE_MERGE: "", FLEET_WORKER_ROUTE_REPAIR: "",
     FLEET_WORKER_HARNESS: "codex" };
   type WriteLane = { slot: number; cwd: string; branch: string };

@@ -58,15 +58,48 @@ export async function scratchReapChecks(check: CheckFn): Promise<void> {
   // in for the instance. Both are expired by their state files; one reap run decides both.
   const TI_FOREIGN = `${FIXROOT}/fleet-testinstanz-e2efix-foreign`;
   const TI_OURS = `${FIXROOT}/fleet-testinstanz-e2efix-ours`;
-  const TI_PORT_FREE = 8943; // bound by nobody — the sleep's port on paper only
-  const TI_PORT_OURS = 8944; // bound by the stand-in below
   const tiState = (dir: string, pid: string, port: number): string =>
     `src=${dir}\nport=${port}\nsock=fleettie2efix\ndir=${dir}\npid=${pid}\nstarted=1\n` +
     `ttlMin=1\nexpiresAt=${Math.floor(Date.now() / 1000) - 3600}\n`;
   const sleepChild = spawn("sleep", ["120"]);
-  const holdChild = spawn("python3", ["-c",
-    "import socket,time,sys; s=socket.socket(); s.bind(('127.0.0.1', int(sys.argv[1]))); s.listen(1); time.sleep(120)",
-    String(TI_PORT_OURS)]);
+  const holdChild = spawn("python3", ["-u", "-c", `import socket,time
+def allocate():
+    for _ in range(100):
+        s = socket.socket()
+        s.bind(('127.0.0.1', 0))
+        if not 8900 <= s.getsockname()[1] <= 8999:
+            return s
+        s.close()
+    raise RuntimeError('no ephemeral port outside testinstanz range')
+held = allocate()
+held.listen(1)
+free = allocate()
+free_port = free.getsockname()[1]
+free.close()
+print(held.getsockname()[1], free_port, flush=True)
+time.sleep(120)
+`]);
+  const portLine = await new Promise<string>((res) => {
+    let output = "";
+    const finish = (line: string) => {
+      clearTimeout(timer);
+      holdChild.stdout?.off("data", onData);
+      res(line);
+    };
+    const onData = (chunk: Buffer) => {
+      output += chunk.toString();
+      if (output.includes("\n")) finish(output.split("\n")[0]);
+    };
+    const timer = setTimeout(() => finish(""), 2000);
+    holdChild.stdout?.on("data", onData);
+    holdChild.once("error", () => finish(""));
+    holdChild.once("exit", () => finish(""));
+  });
+  const ports = portLine.match(/^(\d+) (\d+)$/);
+  const TI_PORT_OURS = Number(ports?.[1] ?? -1);
+  const TI_PORT_FREE = Number(ports?.[2] ?? -1);
+  const validPort = (port: number) => port > 0 && port <= 65535 && (port < 8900 || port > 8999);
+  const portsReady = validPort(TI_PORT_OURS) && validPort(TI_PORT_FREE) && TI_PORT_OURS !== TI_PORT_FREE;
   mkdirSync(TI_FOREIGN, { recursive: true });
   mkdirSync(TI_OURS, { recursive: true });
   writeFileSync(`${TI_FOREIGN}/testinstanz.state`, tiState(TI_FOREIGN, String(sleepChild.pid), TI_PORT_FREE));
@@ -76,13 +109,16 @@ export async function scratchReapChecks(check: CheckFn): Promise<void> {
   // the §e7 precondition: the stand-in really LISTENS before the reap runs — a probe that could
   // not come up must fail AS ITSELF, never as a green row about the gate
   let holderReady = false;
-  if (hasLsof && holdChild.pid) {
+  if (hasLsof && holdChild.pid && portsReady) {
     holderReady = spawnSync("sh", ["-c",
       `for i in 1 2 3 4 5 6 7 8 9 10; do [ "$(lsof -nP -iTCP:${TI_PORT_OURS} -sTCP:LISTEN -t 2>/dev/null)" = "${holdChild.pid}" ] && exit 0; sleep 0.2; done; exit 1`],
       { encoding: "utf8" }).status === 0;
   }
+  const freePortReady = portsReady && (!hasLsof
+    || spawnSync("lsof", ["-nP", `-iTCP:${TI_PORT_FREE}`, "-sTCP:LISTEN", "-t"]).status === 1);
   check("host-hygiene §e7 probe could come up: the stand-in holds its port before the reap",
-    !hasLsof || holderReady, `lsof=${hasLsof} holder pid=${holdChild.pid} port=${TI_PORT_OURS}`);
+    freePortReady && (!hasLsof || holderReady),
+    `lsof=${hasLsof} holder pid=${holdChild.pid} port=${TI_PORT_OURS} freePort=${TI_PORT_FREE} unbound=${freePortReady}`);
 
   const r = spawnSync(reaper, [FIXROOT], {
     encoding: "utf8",

@@ -1,3 +1,4 @@
+// Native trace projection from explicitly supplied, identity-bound JSONL bytes; no source discovery or detail reader.
 import type { SourceHorizon, TraceDetailRef, TraceEvent, TraceRefs } from "./trace-index";
 
 export type NativeFormat = "claude-jsonl" | "codex-rollout-jsonl" | "pi-session-jsonl";

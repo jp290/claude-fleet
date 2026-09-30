@@ -2158,7 +2158,7 @@ export async function run(): Promise<void> {
     if (!configObserved) throw new Error("owner send fixture cannot restore unobserved settings");
     const fixtureEnv = { PATH: fixturePath, FLEET_PI_OX_AGENT_DIR: `${ROOT}/owner-send-pi-ox-agent`,
       FLEET_E2E_COMPOSER_MODE: modeFile, FLEET_E2E_COMPOSER_STATE: stateFile,
-      FLEET_DELIVERY_BUNDLE_SEC: "60", FLEET_HARNESS_AUTOMATION: "1",
+      FLEET_DELIVERY_BUNDLE_SEC: "5", FLEET_HARNESS_AUTOMATION: "1",
       FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch };
     const ownedAutos: string[] = [];
     let slot = 0;
@@ -2235,6 +2235,28 @@ export async function run(): Promise<void> {
         }
         return body.auto!.id;
       };
+      const machineRelease = async (text: string, since: number, what: string): Promise<void> => {
+        let observed = "release state not yet observed";
+        try {
+          await until(async () => {
+            const current = await (await get("/api/sessions")).json() as {
+              now: number; autosOn: boolean; quietHours: unknown;
+              slots: { id: number; openedAt: number; lastOutput: number }[];
+            };
+            const recipient = current.slots.find((s) => s.id === slot);
+            observed = JSON.stringify({ now: current.now, autosOn: current.autosOn, quietHours: current.quietHours,
+              recipient: { id: recipient?.id, openedAt: recipient?.openedAt, lastOutput: recipient?.lastOutput }, machine: count(text),
+              audit: auditRows().slice(since).filter((r) => r.slot === slot).slice(-6)
+                .map((r) => ({ event: r.event, path: r.path, bytes: r.bytes,
+                  gate: /^gate=[a-z-]+/.exec(r.reason ?? "")?.[0] })) });
+            return count(text) === 1;
+          }, { timeoutMs: 15000, what, last: () => observed });
+        } catch (error) {
+          if (!(error instanceof UntilTimeout)) throw error;
+          check(`owner send fixture: ${what}`, false, error.last);
+          throw error;
+        }
+      };
 
       const machine = "owner-send-machine-busy-once";
       const autoId = await queuedAuto(machine);
@@ -2258,7 +2280,9 @@ export async function run(): Promise<void> {
       let busyObserved = "busy state not yet observed";
       let busyStart = 0;
       const ownerText = "owner-send-safe-busy-once";
-      let ownerResponse: Response;
+      let ownerSend: Promise<Response> | null = null;
+      let ownerResponse: Response | null = null;
+      let busyError: unknown = null;
       try {
         try {
           await until(async () => {
@@ -2284,15 +2308,70 @@ export async function run(): Promise<void> {
         }
         check("owner send fixture: the bound busy pane has observed output and an empty composer", true, busyObserved);
         busyStart = auditRows().length;
-        ownerResponse = await post("/send", { slot, text: ownerText });
+        rmSync(`${latch}.reached`, { force: true });
+        rmSync(`${latch}.release`, { force: true });
+        writeFileSync(latch, ownerText);
+        ownerSend = post("/send", { slot, text: ownerText });
+        await until(() => existsSync(`${latch}.reached`), {
+          timeoutMs: 5000, what: "the single busy owner request reaches the pre-paste latch",
+          last: () => JSON.stringify({ owner: count(ownerText), machine: count(machine),
+            reason: auditRows().slice(busyStart).find((r) => r.event === "delivery_bundle_refused" && r.slot === slot)?.reason }),
+        });
+        const reached = JSON.parse(readFileSync(`${latch}.reached`, "utf8")) as {
+          phase: string; slot: number; openedAt: number; paneId: string;
+        };
+        const beforePaste = auditRows().slice(busyStart).filter((r) => r.event === "send" && r.slot === slot && r.path === "owner");
+        const heldSafely = reached.phase === "before-paste" && reached.slot === slot
+          && reached.openedAt === busyOpenedAt && reached.paneId === busyPane
+          && auditRows().slice(busyStart).some((r) => r.event === "delivery_bundle_refused" && r.slot === slot
+            && r.reason === "gate=busy — nothing typed")
+          && beforePaste.length === 0 && stateText() === "" && count(ownerText) === 0 && count(machine) === 0;
+        check("owner send fixture: the single owner request is held before any paste after the real busy gate", heldSafely,
+          JSON.stringify({ reached, ownerAuditRows: beforePaste.length, composerBytes: stateText().length,
+            owner: count(ownerText), machine: count(machine) }));
+        if (!heldSafely) throw new Error("owner send fixture: the pre-paste latch did not hold the bound empty pane");
+      } catch (error) {
+        busyError = error;
+        if (error instanceof UntilTimeout && error.what !== "machine busy gate with an empty owner composer")
+          check("owner send fixture: the single busy owner request reaches the pre-paste latch", false, error.last);
+      } finally {
+        keepBusy = false;
+        try { await keeper; } catch (error) { busyError ??= error; }
+        if (ownerSend) {
+          try { writeFileSync(`${latch}.release`, "release"); } catch (error) { busyError ??= error; }
+          try { ownerResponse = await ownerSend; } catch (error) { busyError ??= error; }
+          finally {
+            rmSync(latch, { force: true });
+            rmSync(`${latch}.reached`, { force: true });
+            rmSync(`${latch}.release`, { force: true });
+          }
+        }
       }
-      finally { keepBusy = false; await keeper; }
+      const ownerBody = ownerResponse ? await ownerResponse.clone().json().catch(() => null) as {
+        error?: unknown; receipt?: { delivery?: unknown; acceptance?: unknown };
+      } | null : null;
+      const ownerError = typeof ownerBody?.error === "string"
+        ? /^(?:composer occupied \(\d+ chars\) — nothing typed|no agent alive in the pane \(agent=(?:no-agent|no-pane)\) — nothing typed|send outcome uncertain: prompt not accepted — composer still holds \d+ chars after \d+ms)/.exec(ownerBody.error)?.[0]
+          ?? "unrecognized error redacted" : null;
+      const ownerDetail = { http: ownerResponse?.status, error: ownerError,
+        delivery: ["refused", "uncertain"].includes(String(ownerBody?.receipt?.delivery)) ? ownerBody?.receipt?.delivery : null,
+        acceptance: ["observed", "not-observed", "unobservable", "not-applicable"].includes(String(ownerBody?.receipt?.acceptance))
+          ? ownerBody?.receipt?.acceptance : null,
+        message: ownerResponse && !ownerResponse.ok ? sendFailureMessage(ownerResponse.status, ownerBody) : null,
+        owner: count(ownerText), machine: count(machine),
+        ownerBytes: auditRows().slice(busyStart).filter((r) => r.event === "send" && r.slot === slot && r.path === "owner")
+          .map((r) => r.bytes) };
+      if (busyError !== null) {
+        check("owner send fixture: the single busy request finishes with its actual outcome", false, JSON.stringify(ownerDetail));
+        throw busyError;
+      }
+      if (!ownerResponse) throw new Error("owner send fixture: no response for the single busy request");
       const busyReason = auditRows().slice(busyStart).find((r) => r.event === "delivery_bundle_refused" && r.slot === slot)?.reason;
       check("owner send: busy machine stays queued, safe owner is typed exactly once",
         ownerResponse.ok && count(ownerText) === 1 && count(machine) === 0
         && busyReason === "gate=busy — nothing typed" && await replay(ownerResponse, null),
-        JSON.stringify({ http: ownerResponse.status, owner: count(ownerText), machine: count(machine), reason: busyReason }));
-      await until(() => count(machine) === 1, { timeoutMs: 15000, what: "the same machine bundle after the busy gate opens" });
+        JSON.stringify({ ...ownerDetail, reason: busyReason }));
+      await machineRelease(machine, busyStart, "the same machine bundle after the busy gate opens");
       await Bun.sleep(AUTOS_TICK_MS * 3);
       check("owner send: gate release delivers the retained machine exactly once, never repastes the owner",
         count(machine) === 1 && count(ownerText) === 1, JSON.stringify({ owner: count(ownerText), machine: count(machine) }));
@@ -2331,7 +2410,7 @@ export async function run(): Promise<void> {
           check("owner send fixture: kill-switch release is proven by the real response",
             response.ok && (await response.json() as { autosOn?: boolean }).autosOn === true);
         }
-        await until(() => count(pending) === 1, { timeoutMs: 15000, what: `${gate} release delivers the retained machine` });
+        await machineRelease(pending, before, `${gate} release delivers the retained machine`);
         check(`owner send: ${gate} release preserves exact-once delivery`, count(text) === 1 && count(pending) === 1);
         await post(`/api/autos/${id}/delete`, {});
       }
@@ -2382,10 +2461,33 @@ export async function run(): Promise<void> {
       await post(`/api/slots/${slot}/kill`, {});
       await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
 
+      rmSync(latch, { force: true });
+      rmSync(`${latch}.reached`, { force: true });
+      rmSync(`${latch}.release`, { force: true });
+      await restartSrv(fixtureEnv);
+      const identitySnapshot = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number; agent: string }[];
+      };
+      const identityOccupant = identitySnapshot.slots.find((s) => s.id === slot);
+      const identityPane = await tmuxOut("display-message", "-p", "-t", `s${slot}`, "#{pane_id}");
+      const identityBound = typeof identityOccupant?.openedAt === "number" && identityOccupant.openedAt > 0
+        && identityOccupant.agent === "alive" && identityPane.code === 0 && /^%\d+$/.test(identityPane.out.trim())
+        && stateText() === "";
+      check("owner send fixture: identity is freshly observed after resetting the one-shot latch", identityBound,
+        JSON.stringify({ openedAt: identityOccupant?.openedAt, agent: identityOccupant?.agent,
+          pane: identityPane.out.trim(), paneCode: identityPane.code, composerBytes: stateText().length }));
+      if (!identityBound) throw new Error("owner send fixture: identity latch has no freshly observed occupant");
       writeFileSync(latch, "owner-send-recycle-before-paste");
       start = auditRows().length;
       const recycledSend = post("/send", { slot, text: "owner-send-recycle-before-paste" });
       await until(() => existsSync(`${latch}.reached`), { timeoutMs: 5000, what: "owner bound identity before paste" });
+      const identityReached = JSON.parse(readFileSync(`${latch}.reached`, "utf8")) as {
+        phase: string; slot: number; openedAt: number; paneId: string;
+      };
+      check("owner send fixture: the identity latch holds the freshly observed occupant before paste",
+        identityReached.phase === "before-paste" && identityReached.slot === slot
+          && identityReached.openedAt === identityOccupant?.openedAt && identityReached.paneId === identityPane.out.trim(),
+        JSON.stringify(identityReached));
       await post(`/api/slots/${slot}/kill`, {});
       await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
       writeFileSync(`${latch}.release`, "release");

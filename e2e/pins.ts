@@ -66,8 +66,8 @@ import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatom
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 import { DraftBook } from "../src/drafts";
 import { runningEffort, runningModel } from "../src/running";
-import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness } from "../model-register";
-import { FLEET_DEFAULT_MODEL } from "../src/protocol";
+import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole } from "../model-register";
+import { FLEET_DEFAULT_MODEL, WORKER_CONTRACTS } from "../src/protocol";
 import { modelLabel, modelWindow } from "../src/modelname";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
@@ -2172,7 +2172,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // analyst's own compile step was the second. A third would be a new producer of the bytes a lane
   // is founded on, which is the one thing this rule exists to make visible.
   pin("exactly one site writes a machine-compiled brief, and one sweep goes through it",
-    [...executableServer.matchAll(/\.brief = \{ text, at: Date\.now\(\), model: SUMMARY_MODEL, edited: false \}/g)].length === 1
+    [...executableServer.matchAll(/\.brief = \{ text, at: Date\.now\(\), model: WORKER_MODELS\.enhance\.model, edited: false \}/g)].length === 1
       && [...executableServer.matchAll(/await compileBriefs\(/g)].length === 1);
   pin("the owner poll carries the compiler mode as its own fact, omitted at zero",
     /\.\.\.\(BRIEF_ON \? \{ briefCompiler: \{ on: true \} \} : \{\}\),/.test(executableServer)
@@ -4416,18 +4416,15 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       "enhance:FLEET_WORKER_ROUTE_ENHANCE",
       "summary:FLEET_WORKER_ROUTE_SUMMARY",
     ]), sparkRoutes.join(" | ") || "no Spark routes parsed");
-  // `card` joined the Claude side in 2026-09 and is NOT an unmigrated straggler: it is the one
-  // worker whose model is chosen at the call site (CARD_MODEL, a Haiku), and the codex-exec route
-  // cannot express a per-call model. Named here so the six read as two different reasons.
-  pin("the complete worker route table leaves the five unmigrated workers, plus the per-call card, on Claude",
+  pin("the complete worker route table keeps all six session workers on Claude",
     JSON.stringify(claudeRoutes) === JSON.stringify([
       "card", "cleanReview", "merge", "refine", "repair", "review",
     ]), claudeRoutes.join(" | ") || "no Claude routes parsed");
-  pin("all migrated worker routes share the one exact Codex Spark model value",
-    /const CODEX_SPARK_MODEL = "gpt-5\.3-codex-spark";/.test(server)
-      && /\{ route: "codex-exec", model: CODEX_SPARK_MODEL \}/.test(server)
-      && !server.includes("CODEX_SUMMARY_MODEL"),
-    server.match(/const CODEX_[A-Z_]+_MODEL = "[^"]+";/g)?.join(" | ") ?? "Spark model constant absent");
+  pin("worker routes select transport only; model and effort belong to MODEL_DEFAULTS",
+    /type WorkerRouteConfig = \{ route: "claude" \| "codex-exec" \};/.test(server)
+      && /: \{ route: "codex-exec" \};/.test(server)
+      && !server.includes("const CODEX_SPARK_MODEL"),
+    "closed transport configuration without model literals");
 
   // This file used to hold TWO spawn implementations: slotCmd/agentCmd (which the registry covers,
   // and which the sibling pin above states "names no harness" for the dispatcher) and
@@ -10412,7 +10409,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     cardAssign && cardFallback, `validated=${cardAssign} unreadable=${cardFallback}`);
   // the contrast, and it is the reason the rule exists. If this ever stops matching, the brief
   // compiler was fixed — delete this half, do not widen it.
-  const briefAssign = /t\.brief = \{ text, at: Date\.now\(\), model: SUMMARY_MODEL, edited: false \}/.test(srv);
+  const briefAssign = /t\.brief = \{ text, at: Date\.now\(\), model: WORKER_MODELS\.enhance\.model, edited: false \}/.test(srv);
   pin(`${RULE_CARD} — the brief compiler still stamps the CONSTANT, which is why the card may not`,
     briefAssign, `briefStampsConstant=${briefAssign}`);
   // DEFAULT OFF means no timer, not a guarded one — the property that makes a suite unable to spawn
@@ -11168,6 +11165,100 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const precedence = ruleDoc.slice(ruleDoc.indexOf("## Welches Modell läuft"), ruleDoc.indexOf("## Die Faktschicht"));
   pin("the model precedence rule is described in docs/harness-adapter.md as file before footer before record, named at src/running.ts",
     precedence.includes("Session-Datei vor Footer vor Slot-Datensatz") && precedence.includes("src/running.ts#runningModel"));
+}
+
+{
+  const executable = read("server.ts").split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+  const start = executable.indexOf("function fleetWorkerModel(");
+  const end = executable.indexOf("} satisfies Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>;", start);
+  const source = start < 0 || end < 0 ? "" : executable.slice(start, end + "} satisfies Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>;".length);
+  const roles = [...Object.keys(WORKER_CONTRACTS), "briefReview"].sort();
+  const bindings = [...source.matchAll(/^  (\w+): fleetWorkerModel\("(\w+)", "([A-Z_]+)"(?:, "(\w+)")?/gm)];
+  pin("worker model sources cover every contract and brief review with current register defaults",
+    JSON.stringify(bindings.map((m) => m[1]).sort()) === JSON.stringify(roles)
+      && bindings.every((m) => m[1] === m[2] && [m[2], ...(m[4] ? [m[4]] : [])].every((role) => {
+        const d = MODEL_DEFAULTS[role as keyof typeof MODEL_DEFAULTS];
+        return d && !!d.effort && modelEntry(d.harness, d.id)?.status === "current";
+      })), bindings.map((m) => `${m[1]}:${m[2]}:${m[4] ?? "session"}`).join(" | "));
+  pin("worker model aliases cannot reintroduce a literal fallback",
+    ["CARD", "REFINE", "SUMMARY"].every((key) =>
+      executable.includes(`const ${key}_MODEL = WORKER_MODELS.${key.toLowerCase()}.model;`))
+      && !/["'](?:claude-(?:opus|sonnet|haiku)|gpt-\d)[^"'\n]*["']/.test(executable),
+    "CARD_MODEL, REFINE_MODEL and SUMMARY_MODEL must read WORKER_MODELS");
+  let select: ((env: Record<string, string>) => Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>) | null = null;
+  try {
+    const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source + "\nreturn WORKER_MODELS;");
+    select = (env) => new Function("process", "resolveWorkerModel", code)({ env }, resolveWorkerModel);
+  } catch { /* missing or malformed source fails under its own pin */ }
+  const selected = select?.({});
+  pin("worker source selection executes with model AND effort from register on both routes",
+    !!selected && roles.every((role) => {
+      const config = selected[role as FleetWorkerRole];
+      const binding = bindings.find((m) => m[1] === role);
+      const d = binding ? MODEL_DEFAULTS[(binding[4] || binding[2]) as keyof typeof MODEL_DEFAULTS] : undefined;
+      return !!config && !!d && config.model === d.id && config.effort === d.effort
+        && config.modelSource === "register" && config.effortSource === "register";
+    }), JSON.stringify(selected ?? "selection source could not run"));
+  const rollback = select?.({ FLEET_WORKER_ROUTE_SUMMARY: "claude", FLEET_SUMMARY_MODEL: MODEL_DEFAULTS.merge.id,
+    FLEET_SUMMARY_EFFORT: "high", FLEET_CARD_EFFORT: "medium", FLEET_REFINE_MODEL: MODEL_DEFAULTS.summary.id });
+  const overridden = select?.({ FLEET_COMMITMSG_CODEX_MODEL: MODEL_DEFAULTS.worker.id, FLEET_COMMITMSG_CODEX_EFFORT: "high" });
+  pin("worker env overrides preserve rollback, legacy keys and independent model/effort sources",
+    rollback?.summary.model === MODEL_DEFAULTS.merge.id && rollback.summary.modelSource === "env"
+      && rollback.summary.effort === "high" && rollback.summary.effortSource === "env"
+      && rollback.card.modelSource === "register" && rollback.card.effort === "medium" && rollback.card.effortSource === "env"
+      && rollback.refine.model === MODEL_DEFAULTS.summary.id && rollback.briefReview.model === rollback.refine.model
+      && overridden?.commitMsg.model === MODEL_DEFAULTS.worker.id && overridden.commitMsg.effort === "high",
+    JSON.stringify({ rollback, overridden }));
+  const rejected = resolveWorkerModel("card", "unlisted-model", "unsafe-effort");
+  const wrongHarness = resolveWorkerModel("card", MODEL_DEFAULTS.worker.id);
+  const old = MODEL_REGISTER.find((entry) => entry.harness === "claude" && entry.status === "superseded");
+  const superseded = resolveWorkerModel("refine", old?.id);
+  pin("worker boot diagnostics reject invalid overrides and name superseded/unavailable/unknown selections",
+    rejected.model === MODEL_DEFAULTS.card.id && rejected.effort === MODEL_DEFAULTS.card.effort
+      && rejected.warnings.length === 2 && wrongHarness.modelSource === "register"
+      && workerModelWarnings(superseded, null).some((warning) => warning.startsWith("superseded model"))
+      && workerModelWarnings(resolveWorkerModel("summaryExec"), { models: [] }).includes("codexAvailability=unavailable")
+      && workerModelWarnings(resolveWorkerModel("summaryExec"), null).includes("codexAvailability=unknown")
+      && executable.includes("Object.entries(WORKER_MODELS)")
+      && executable.includes("source=${selection.modelSource} effortSource=${selection.effortSource}")
+      && executable.includes("console.warn(`[fleet] WORKER MODEL ${role}"),
+    JSON.stringify({ rejected, wrongHarness, superseded }));
+  const bootStart = executable.indexOf("let workerCodexCache: unknown = null;");
+  const bootEnd = executable.indexOf("console.log(`[fleet] card extractor", bootStart);
+  const bootLines: string[] = [], warningLines: string[] = [];
+  let bootRan = false;
+  try {
+    if (bootStart >= 0 && bootEnd > bootStart && selected) {
+      const code = new Bun.Transpiler({ loader: "ts" }).transformSync(executable.slice(bootStart, bootEnd));
+      new Function("WORKER_MODELS", "workerModelWarnings", "readFileSync", "resolve", "homedir", "process", "console", code)(
+        { ...selected, refine: superseded, card: rejected }, workerModelWarnings,
+        () => JSON.stringify({ models: [] }), resolve, () => "/synthetic", { env: {} },
+        { log: (line: string) => bootLines.push(line), warn: (line: string) => warningLines.push(line) });
+      bootRan = true;
+    }
+  } catch { /* the boot diagnostic source must execute, not merely contain a log string */ }
+  pin("actual boot diagnostics print eleven model/effort/source rows and loud rejected/superseded/unavailable warnings",
+    bootRan && bootLines.length === roles.length
+      && roles.every((role) => bootLines.some((line) => line.startsWith(`[fleet] worker ${role} model=`)
+        && line.includes(" effort=") && / source=(register|env) effortSource=(register|env)$/.test(line)))
+      && warningLines.some((line) => line.includes("WORKER MODEL summary") && line.includes("codexAvailability=unavailable"))
+      && warningLines.some((line) => line.includes("WORKER MODEL refine") && line.includes("superseded model"))
+      && warningLines.some((line) => line.includes("WORKER MODEL card") && line.includes("override rejected")),
+    JSON.stringify({ bootLines, warningLines, bootRan }));
+  pin("every worker transport receives the resolved model and effort",
+    executable.includes("const selection = WORKER_MODELS[spec.role ?? spec.worker];")
+      && executable.includes('summaryViaSubprocess(spec.cmd, prompt, cwd, selection, spec.timeoutMs)')
+      && executable.includes('"--model", selection.model, "--effort", selection.effort')
+      && executable.includes('model: selection.model, effort: selection.effort, timeoutMs:')
+      && executable.includes('model: selection.model, effort: selection.effort });')
+      && executable.includes('model_reasoning_effort=${opts.effort}')
+      && executable.includes("--effort '${o.effort}'")
+      && executable.includes('worker: "refine", role: "briefReview"'),
+    "stand-in, Claude and Codex carry effort; brief review owns its model role");
+  pin("merge and repair register fallbacks retain the Opus tier",
+    MODEL_DEFAULTS.merge.id === MODEL_DEFAULTS.main.id && MODEL_DEFAULTS.repair.id === MODEL_DEFAULTS.main.id
+      && MODEL_DEFAULTS.merge.effort === "high" && MODEL_DEFAULTS.repair.effort === "high",
+    JSON.stringify({ merge: MODEL_DEFAULTS.merge, repair: MODEL_DEFAULTS.repair }));
 }
 
 {

@@ -3,7 +3,7 @@ import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
 import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel } from "./model-register";
+import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelRole } from "./model-register";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServerWebSocket } from "bun";
@@ -488,7 +488,7 @@ interface Harness {
   // refuses by name before pasting instead of waiting out its timeout.
   // `accept` rides along for the same reason again: the frame that says THIS binary has drawn its
   // TUI and keeps input. null = no measured marker, and the worker falls back to a fixed settle.
-  worker(o: { sessionId: string; model: string; tools: ToolProfile }):
+  worker(o: { sessionId: string; model: string; effort: string; tools: ToolProfile }):
     { cmd: string; comms: string[]; blocks: readonly ScreenBlock[]; accept: RegExp | null } | null;
   // A context reader is deliberately separate from `supports.transcript`: the latter promises a
   // CLAUDE-CODE conversation that viewEntry can parse, while this narrower adapter hook promises
@@ -718,7 +718,7 @@ const CLAUDE_HARNESS: Harness = {
   // literal now lives: the probe follows the line it belongs to instead of sitting a thousand lines
   // away from it, so an adapter whose worker runs something else cannot forget to move it.
   worker: (o) => ({
-    cmd: `${PATH_EXPORT}claude --session-id ${o.sessionId} --model '${o.model}' ${o.tools}`,
+    cmd: `${PATH_EXPORT}claude --session-id ${o.sessionId} --model '${o.model}' --effort '${o.effort}' ${o.tools}`,
     comms: ["claude"],
     blocks: [CLAUDE_TRUST_DIALOG],
     // NOT behind IS_CLAUDE, unlike `readiness.accept` below: this line runs the claude binary
@@ -1672,6 +1672,27 @@ const harnessOf = (id: string | null | undefined): Harness =>
 // named refusal, loudly and immediately, rather than silently. Unknown id → the default, same
 // fail-toward-safe rule as harnessOf.
 const WORKER_HARNESS: Harness = harnessOf(process.env.FLEET_WORKER_HARNESS ?? null);
+
+function fleetWorkerModel(role: FleetWorkerRole, key: string, execRole?: ModelRole, legacy = "SUMMARY") {
+  const useExec = execRole && process.env[`FLEET_WORKER_ROUTE_${key}`] !== "claude";
+  const prefix = useExec ? `${key}_CODEX` : key;
+  return resolveWorkerModel(useExec ? execRole : role,
+    process.env[`FLEET_${prefix}_MODEL`] ?? (useExec ? undefined : process.env[`FLEET_${legacy}_MODEL`]),
+    process.env[`FLEET_${prefix}_EFFORT`] ?? (useExec ? undefined : process.env[`FLEET_${legacy}_EFFORT`]));
+}
+const WORKER_MODELS = {
+  summary: fleetWorkerModel("summary", "SUMMARY", "summaryExec"),
+  commitMsg: fleetWorkerModel("commitMsg", "COMMITMSG", "commitMsgExec"),
+  enhance: fleetWorkerModel("enhance", "ENHANCE", "enhanceExec"),
+  digest: fleetWorkerModel("digest", "DIGEST", "digestExec"),
+  review: fleetWorkerModel("review", "REVIEW"),
+  merge: fleetWorkerModel("merge", "MERGE"),
+  repair: fleetWorkerModel("repair", "REPAIR"),
+  cleanReview: fleetWorkerModel("cleanReview", "CLEAN_REVIEW"),
+  refine: fleetWorkerModel("refine", "REFINE", undefined, "REFINE"),
+  briefReview: fleetWorkerModel("briefReview", "BRIEF_REVIEW", undefined, "REFINE"),
+  card: fleetWorkerModel("card", "CARD", undefined, "CARD"),
+} satisfies Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>;
 
 // which harness a request asked for. Absent → null (the default), which is what every caller that
 // predates this field sends and must keep meaning.
@@ -4482,7 +4503,7 @@ async function startCandidateReview(candidateId: string): Promise<CandidateRevie
         + (atHead ? "" : "; no full files (the worktree is no longer exactly that head)"),
       committed: cd.out, uncommitted: "", log: lg.code === 0 ? lg.out : "",
       context: () => (atHead ? reviewContextBlocks(path, base) : Promise.resolve([])),
-    }, { model: SUMMARY_MODEL, at: Date.now(), head: c.head, dirty: 0, patchId });
+    }, { model: WORKER_MODELS.review.model, at: Date.now(), head: c.head, dirty: 0, patchId });
     Object.assign(rec, { state: "filed", at: Date.now(), model: result.model, scope: result.scope,
       notes: result.notes, raw: result.raw, findings: result.findings });
     audit("candidate_review", undefined, `filed candidate:${c.id} review:${rec.id} findings:${result.findings.length}${result.raw ? " raw" : ""}`);
@@ -17316,12 +17337,12 @@ async function compileBriefs(rows: Task[], repo: string, laneBase: string | null
         if (raced) {
           const kept = t.brief ? briefAuthorOf(t.brief) : "none";
           audit("brief_compile_discarded", undefined,
-            `${t.id} kept=${kept} discarded=${SUMMARY_MODEL} reason=${raced}`,
-            { taskId: t.id, reason: raced, kept, discarded: SUMMARY_MODEL });
+            `${t.id} kept=${kept} discarded=${WORKER_MODELS.enhance.model} reason=${raced}`,
+            { taskId: t.id, reason: raced, kept, discarded: WORKER_MODELS.enhance.model });
           console.log(`brief compiler: compile for ${t.id} discarded (${raced}) — the row's own brief stands`);
           return;
         }
-        t.brief = { text, at: Date.now(), model: SUMMARY_MODEL, edited: false };
+        t.brief = { text, at: Date.now(), model: WORKER_MODELS.enhance.model, edited: false };
       } catch (e) {
         // no brief is a legitimate state — the lane gets the raw draft. Both records, because they
         // answer different questions and neither replaces the other: the line names WHICH draft
@@ -17404,8 +17425,7 @@ const CARD_CMD = process.env.FLEET_CARD_CMD ?? null; // tests: subprocess stand-
 // The extractor is the CHEAPEST tier in this file and says so by name. It reads one string and
 // writes one JSON object; nothing about that work improves with a bigger model, and the
 // deterministic validator behind it is what carries the correctness, not the model.
-const CARD_MODEL = process.env.FLEET_CARD_MODEL && MODEL_RE.test(process.env.FLEET_CARD_MODEL)
-  ? process.env.FLEET_CARD_MODEL : "claude-haiku-4-5-20251001";
+const CARD_MODEL = WORKER_MODELS.card.model;
 const CARD_BATCH_CAP = 4;      // one tick extracts at most this many
 const CARD_MAX_ATTEMPTS = 3;   // consecutive failures before a row stops retrying itself
 const CARD_BACKOFF_MS = 60_000;
@@ -17635,7 +17655,7 @@ async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | nu
   const answer = await runWorker({
     // TEXT_ONLY is the contract, not a setting: the whole design rests on the extractor having no
     // repository to read, so that nothing it says can be anything but a claim about the text.
-    worker: "card", cmd: CARD_CMD, tools: TEXT_ONLY_TOOLS, timeoutMs: CARD_TIMEOUT_MS, model: CARD_MODEL,
+    worker: "card", cmd: CARD_CMD, tools: TEXT_ONLY_TOOLS, timeoutMs: CARD_TIMEOUT_MS,
     observe: (run) => { observed = run; },
   }, buildCardPrompt(source, harnessOf(null).effortLevels), repo);
   answered(answer);
@@ -17779,8 +17799,7 @@ async function tickCardSweep(): Promise<void> {
 const REFINE_CMD = process.env.FLEET_REFINE_CMD ?? null; // tests: subprocess stand-in
 // the refiner runs on the interactive tier rather than the summary one: it reads a repository and
 // writes the text a fresh session will be founded on
-const REFINE_MODEL = process.env.FLEET_REFINE_MODEL && MODEL_RE.test(process.env.FLEET_REFINE_MODEL)
-  ? process.env.FLEET_REFINE_MODEL : "claude-opus-5";
+const REFINE_MODEL = WORKER_MODELS.refine.model;
 // refines currently running, by task id. Keyed on the task rather than a slot (there is no slot —
 // nothing is spawned): the route refuses a second run for the same row, and taskDigest reads it so
 // the owner sees „[Zitat entfernt]“ instead of a button that appears to do nothing for three minutes.
@@ -18048,7 +18067,7 @@ function normRefine(r: TaskRefine | undefined): TaskRefine | undefined {
 // retry loop — the owner clicks again if they want another try.
 async function runRefineJob(t: Task, repo: string): Promise<void> {
   try {
-    const out = await runWorker({ worker: "refine", cmd: REFINE_CMD, tools: REVIEW_TOOLS, model: REFINE_MODEL },
+    const out = await runWorker({ worker: "refine", cmd: REFINE_CMD, tools: REVIEW_TOOLS },
       buildRefinePrompt(repo, t.text, MAX_REFINE_CHILDREN), repo);
     t.refine = { at: Date.now(), model: REFINE_MODEL, proposal: parseRefineAnswer(out) };
     // clear ONLY a previous refine failure — the note is a shared display line (the dispatcher
@@ -18076,8 +18095,7 @@ async function runRefineJob(t: Task, repo: string): Promise<void> {
 //   · HALF IS CONTROL — every eligible row gets an arm (refine-validate.ts#briefReviewArm), and the
 //     control half is recorded as such, so the evaluation compares two populations of the same
 //     sizes in the same weeks instead of a before and an after.
-// The model is REFINE_MODEL: the register's `urteil` class does not exist yet, and a knob of its own
-// here would be a second place to keep in step once it does.
+// Brief review owns a register role; absent its own override it inherits the refine env keys.
 const BRIEF_REVIEW_ON = process.env.FLEET_BRIEF_REVIEW === "1";
 const BRIEF_REVIEW_CMD = process.env.FLEET_BRIEF_REVIEW_CMD ?? null; // tests: subprocess stand-in
 // THE NAMED BUDGET: how long a start may wait for its row's review, counted from the review's start.
@@ -18099,7 +18117,7 @@ function briefReviewKick(t: Task): void {
   const arm = briefReviewArm(t.id);
   const repo = resolve(expandCwd(t.repo ?? DISPATCH_REPO));
   t.briefReview = { arm, at: Date.now(), size,
-    ...(arm === "reviewed" ? { state: "running" as const, model: REFINE_MODEL } : {}) };
+    ...(arm === "reviewed" ? { state: "running" as const, model: WORKER_MODELS.briefReview.model } : {}) };
   audit("task_brief_review", undefined, `${t.id} arm=${arm} size=${size}`);
   saveState();
   if (arm !== "reviewed") return;
@@ -18166,7 +18184,7 @@ function normBriefReviewFindings(raw: unknown[]): BriefReviewFinding[] {
 // writes ONLY its own record — on success and on failure alike.
 async function runBriefReviewJob(t: Task, repo: string): Promise<void> {
   try {
-    const out = await runWorker({ worker: "refine", cmd: BRIEF_REVIEW_CMD, tools: REVIEW_TOOLS, model: REFINE_MODEL },
+    const out = await runWorker({ worker: "refine", role: "briefReview", cmd: BRIEF_REVIEW_CMD, tools: REVIEW_TOOLS },
       buildBriefReviewPrompt(repo, t.brief?.text ?? t.text), repo);
     const answer = parseBriefReviewAnswer(out);
     if (t.briefReview) t.briefReview = { ...t.briefReview, state: "done", doneAt: Date.now(), ...answer };
@@ -20064,12 +20082,8 @@ async function tickHarvest(): Promise<void> {
 // transport's explicit channel (-o for Codex, transcript JSONL for Claude), never TUI scraping.
 // FLEET_SUMMARY_CMD (tests only) switches to a plain subprocess stand-in.
 const SUMMARY_CMD = process.env.FLEET_SUMMARY_CMD ?? null;
-// Claude worker tier for the throwaway agents (summary rollback, commit message, enhance, merge
-// resolver, ② clean review, digest). Bracket = the 1M context variant; it reaches a tmux shell
-// line in summaryViaSession, so it is single-quoted there — see the MODEL_RE note.
-const SUMMARY_MODEL =
-  process.env.FLEET_SUMMARY_MODEL && MODEL_RE.test(process.env.FLEET_SUMMARY_MODEL)
-    ? process.env.FLEET_SUMMARY_MODEL : MODEL_DEFAULTS.summary.id;
+// The summary response names its resolved route model; other workers own separate selections.
+const SUMMARY_MODEL = WORKER_MODELS.summary.model;
 const SUMMARY_TIMEOUT_MS = 180_000;
 interface SummaryResult {
   summary: string; openThreads: string[]; verification: string;
@@ -20099,8 +20113,8 @@ function transcriptTail(s: Slot, maxEntries: number, maxChars: number): string {
 
 // test hook: FLEET_SUMMARY_CMD points at a stand-in answering in a {"result": …}
 // envelope on stdout — lets e2e exercise gather→deliver→parse→cache without claude
-async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string, timeoutMs = SUMMARY_TIMEOUT_MS): Promise<string> {
-  const p = Bun.spawn([cmd, "--model", SUMMARY_MODEL], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string, selection: ReturnType<typeof resolveWorkerModel>, timeoutMs = SUMMARY_TIMEOUT_MS): Promise<string> {
+  const p = Bun.spawn([cmd, "--model", selection.model, "--effort", selection.effort], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   p.stdin.write(prompt);
   await p.stdin.end();
   const killer = setTimeout(() => p.kill(), timeoutMs);
@@ -20151,7 +20165,7 @@ function codexExecUsage(stdout: string): CodexExecUsage | "unknown" {
 // no resumable identity and no host transcript. Its only authority is the fixed read-only sandbox
 // below, and its answer is the CLI's last-message file.
 async function workerViaCodexExec(prompt: string, cwd: string,
-  opts: { model: string; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
+  opts: { model: string; effort: string; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
   const dir = await mkdtemp(`${tmpdir()}/fleet-codex-worker-`);
   const tmpOut = resolve(dir, "last-message.txt");
   const binOverride = process.env.FLEET_CODEX_EXEC_BIN;
@@ -20166,7 +20180,7 @@ async function workerViaCodexExec(prompt: string, cwd: string,
   let timedOut = false;
   try {
     p = Bun.spawn([bin, "exec", "--ephemeral", "-s", "read-only", "--skip-git-repo-check",
-      "--color", "never", "--json", "-o", tmpOut, "-m", opts.model, "-"], {
+      "--color", "never", "--json", "-o", tmpOut, "-m", opts.model, "-c", `model_reasoning_effort=${opts.effort}`, "-"], {
       cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe",
     });
     const outP = new Response(p.stdout).text();
@@ -20230,7 +20244,7 @@ type ToolProfile = typeof TEXT_ONLY_TOOLS | typeof MERGE_TOOLS | typeof REVIEW_T
 // pinned (same trick as slotCmd) so the transcript path is known; the answer is
 // read from that JSONL with the transcript view's own parser.
 async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
-  opts: { tools: ToolProfile; timeoutMs?: number; model?: string }): Promise<string> {
+  opts: { tools: ToolProfile; timeoutMs?: number; model: string; effort: string }): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? SUMMARY_TIMEOUT_MS;
   const sid = crypto.randomUUID();
   summarizerSids.add(sid);
@@ -20239,11 +20253,9 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
   // The spawn line comes from the WORKER_HARNESS adapter — this function no longer names an agent
   // binary, a session flag or a model flag of its own, which is the point: there were two spawn
   // implementations in this file and the harness registry covered one.
-  // opts.model: a MODEL_RE-validated override for the workers whose judgment the owner priced
-  // above the summary tier (today: refine → REFINE_MODEL). It is
-  // single-quoted inside the adapter, like every model interpolation (the [1m] variants glob
-  // under zsh) — MODEL_RE forbids `'`, so the quote wrap stays closed.
-  const w = WORKER_HARNESS.worker({ sessionId: sid, model: opts.model ?? SUMMARY_MODEL, tools: opts.tools });
+  // Model and effort are resolved against the register before any worker starts.
+  // The adapter quotes them because the registered [1m] variants glob under zsh.
+  const w = WORKER_HARNESS.worker({ sessionId: sid, model: opts.model, effort: opts.effort, tools: opts.tools });
   // A refusal, not a timeout, and it must stay that way: the alternative is spawning a real agent
   // (a real spend) and then polling for a transcript that cannot appear until SUMMARY_TIMEOUT_MS.
   // Thrown before the session exists, so there is nothing to clean up on this path.
@@ -20346,21 +20358,20 @@ interface WorkerSpec {
   cmd: string | null;      // FLEET_*_CMD stand-in; null → the worker's closed production route
   tools: ToolProfile;      // capability floor for the Claude session path (see ToolProfile)
   timeoutMs?: number;      // omitted → SUMMARY_TIMEOUT_MS on every transport, same as before
-  model?: string;          // omitted → SUMMARY_MODEL; MODEL_RE-validated at the const it comes from
+  role?: "briefReview"; // omitted → the named worker; briefReview shares the refine prompt contract
   observe?: (run: WorkerRunObservation) => void; // additive response facts; only summary exposes them
 }
-type WorkerRouteConfig = { route: "claude" } | { route: "codex-exec"; model: string };
+type WorkerRouteConfig = { route: "claude" | "codex-exec" };
 interface WorkerRunObservation {
   model: string;
   backend?: "codex-exec";
   usage?: CodexExecUsage;
 }
-const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
 // Each migrated worker owns one explicit rollback key. Absence, codex-exec, and invalid values
 // all fail toward the cheaper default; only the literal `claude` can authorize Claude spend.
 const codexSparkRoute = (configured: string | undefined): WorkerRouteConfig => configured === "claude"
   ? { route: "claude" }
-  : { route: "codex-exec", model: CODEX_SPARK_MODEL };
+  : { route: "codex-exec" };
 const WORKER_ROUTES = {
   summary: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_SUMMARY),
   review: { route: "claude" },
@@ -20371,9 +20382,7 @@ const WORKER_ROUTES = {
   cleanReview: { route: "claude" },
   digest: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
   refine: { route: "claude" },
-  // The one worker in this table whose model is chosen at the CALL SITE (CARD_MODEL, a Haiku) and
-  // not by the route: it is pinned to the claude route because the transport must accept a
-  // per-call `model`, which the codex-exec route cannot express.
+  // The card extractor keeps its session transport and its own register selection.
   card: { route: "claude" },
 } satisfies Record<WorkerName, WorkerRouteConfig>;
 function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
@@ -20387,25 +20396,26 @@ async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise
   // fails closed) instead of a stray transcript quietly served as a slot's own conversation.
   if (!prompt.includes(contract.mark))
     throw new Error(`worker "${spec.worker}": prompt does not carry its background mark`);
+  const selection = WORKER_MODELS[spec.role ?? spec.worker];
   let text: string;
   let observed: WorkerRunObservation;
   if (spec.cmd) {
-    text = await summaryViaSubprocess(spec.cmd, prompt, cwd, spec.timeoutMs);
-    observed = { model: SUMMARY_MODEL };
+    text = await summaryViaSubprocess(spec.cmd, prompt, cwd, selection, spec.timeoutMs);
+    observed = { model: selection.model };
   } else {
     const route = workerRouteFor(spec.worker);
     if (route.route === "codex-exec") {
       // ToolProfile is intentionally unused here: `-s read-only` plus `--ephemeral` is this
       // transport's act-authority, and no Claude tool profile can widen or describe it.
       const result = await workerViaCodexExec(prompt, cwd, {
-        model: route.model, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
+        model: selection.model, effort: selection.effort, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
       });
       text = result.text;
-      observed = { model: route.model, backend: "codex-exec",
+      observed = { model: selection.model, backend: "codex-exec",
         ...(result.usage === "unknown" ? {} : { usage: result.usage }) };
     } else {
-      text = await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs, model: spec.model });
-      observed = { model: spec.model ?? SUMMARY_MODEL };
+      text = await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs, model: selection.model, effort: selection.effort });
+      observed = { model: selection.model };
     }
   }
   spec.observe?.(observed);
@@ -20756,7 +20766,7 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
   // the id of the diff text BELOW, taken HERE and stored with the findings: an owner click on a
   // dirty tree reviews uncommitted work that no later read can reconstruct, so the relation the
   // outcome row records is only honest if it is frozen at review time
-  const meta = { model: SUMMARY_MODEL, at: Date.now(), head, dirty,
+  const meta = { model: WORKER_MODELS.review.model, at: Date.now(), head, dirty,
     patchId: await patchIdOf(cwd, committed, uncommitted) };
   // context AFTER the subject freeze: patchId above is taken of exactly the diff strings, and
   // these reads happen moments later — on a still-moving tree the context may lag the subject by
@@ -24116,11 +24126,7 @@ const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTo
 // `conflictedFiles` is a COUNT, not the list: the list is already on the note once (`conflicted`)
 // and is the SAME set for every round of one job, so a per-round copy would be the same bytes N
 // times over. The count is what makes a round's ms and status readable next to its difficulty.
-// `model` on an `error` row is the model that WOULD have run (SUMMARY_MODEL, or the FLEET_*_MODEL
-// override): both mutating workers are pinned to the claude route in WORKER_ROUTES and pass no
-// per-call model, so summaryViaSession's own `opts.model ?? SUMMARY_MODEL` resolves to exactly
-// this value. That is a derivation, not a guess — but it is the only field here not read back off
-// a completed run, and it is stated so nobody reads an error row as an observation.
+// Error rows name the resolved merge/repair model even when transport failed before observation.
 interface ResolverRun {
   worker: "merge" | "repair";
   model: string;
@@ -30945,7 +30951,7 @@ async function runMerge(cwd: string, root: string, branch: string, main: string,
   // machine, not the model's work, and folding them into `ms` would inflate every resolver run by
   // a cost no model paid.
   const anchored = `${prompt}${await landingAnchorBlock(root)}`;
-  let observed: WorkerRunObservation = { model: SUMMARY_MODEL };
+  let observed: WorkerRunObservation = { model: WORKER_MODELS.merge.model };
   const startedAt = Date.now();
   const emit = (status: ResolverRun["status"]): void => onRun({ worker: "merge", model: observed.model,
     ...(observed.backend ? { backend: observed.backend } : {}),
@@ -31061,7 +31067,7 @@ async function runRepair(cwd: string, root: string, branch: string, main: string
   onRun: (r: ResolverRun) => void): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
   const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted, graphs });
   const anchored = `${prompt}${await landingAnchorBlock(root)}`;
-  let observed: WorkerRunObservation = { model: SUMMARY_MODEL };
+  let observed: WorkerRunObservation = { model: WORKER_MODELS.repair.model };
   const startedAt = Date.now();
   const emit = (status: ResolverRun["status"]): void => onRun({ worker: "repair", model: observed.model,
     ...(observed.backend ? { backend: observed.backend } : {}),
@@ -31996,7 +32002,7 @@ async function runCleanReview(cwd: string, root: string, branch: string, main: s
 function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean; answer: string }): CleanReviewShadow {
   return {
     verdict: r.raw ? null : r.verdict === "ok" ? "pass" : "would_stop",
-    at: Date.now(), model: SUMMARY_MODEL, raw: r.raw,
+    at: Date.now(), model: WORKER_MODELS.cleanReview.model, raw: r.raw,
     ...(r.raw ? { rawAnswer: r.answer.slice(0, SHADOW_RAW_ANSWER_MAX) } : {}),
     // the reason strings are written for the GATE ("— stopping for a human look"); in shadow nothing
     // stopped, so that tail would misdescribe the row the owner reads. Drop it, keep the substance.
@@ -38256,6 +38262,15 @@ if (BRIEF_ON) setInterval(() => void tickBriefSweep().catch((e: unknown) => logE
 // the process and not of a guard inside the sweep. The log line exists because the opposite
 // mistake — believing it armed when it is not — is the one that costs a week of silence.
 if (CARD_ON) setInterval(() => void tickCardSweep().catch((e: unknown) => logError("tickCardSweep", e)), CARD_TICK_MS);
+let workerCodexCache: unknown = null;
+try {
+  workerCodexCache = JSON.parse(readFileSync(resolve(process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), "models_cache.json"), "utf8"));
+} catch { /* unavailable sensor stays unknown */ }
+for (const [role, selection] of Object.entries(WORKER_MODELS)) {
+  console.log(`[fleet] worker ${role} model=${selection.model} effort=${selection.effort} source=${selection.modelSource} effortSource=${selection.effortSource}`);
+  for (const warning of workerModelWarnings(selection, workerCodexCache))
+    console.warn(`[fleet] WORKER MODEL ${role} model=${selection.model}: ${warning}`);
+}
 console.log(`[fleet] card extractor ${CARD_ON ? `armed: FLEET_CARD_MS=${CARD_TICK_MS} model=${CARD_MODEL}` : "off (FLEET_CARD_MS unset or 0) — no tick registered"}`);
 setInterval(() => {
   void tickHarvest().catch((e: unknown) => logError("tickHarvest", e));
@@ -40361,7 +40376,7 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
   } catch (e) {
     error = e instanceof Error ? e.message.slice(0, 300) : "digest worker failed";
   }
-  return { digest, model: SUMMARY_MODEL, error, computedAt: now, slotCwd: home.cwd! };
+  return { digest, model: WORKER_MODELS.digest.model, error, computedAt: now, slotCwd: home.cwd! };
 }
 // concurrent pulses share one worker run (the beat is hours apart; a double-fire must not
 // spawn two agents). On completion the run WRITES the cache, then nulls inflight.
@@ -40684,7 +40699,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       digestAge: digestAt !== null ? now - digestAt : null,
       digestStatus,
       waitMs,
-      model: snapshot?.model ?? SUMMARY_MODEL,
+      model: snapshot?.model ?? WORKER_MODELS.digest.model,
       ...(snapshot?.error ? { error: snapshot.error } : {}),
     });
   }

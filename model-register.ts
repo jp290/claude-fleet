@@ -1,7 +1,9 @@
 // model-register.ts — the model policy, defaults, aliases and display windows for Fleet harnesses.
 export type ModelHarness = "claude" | "codex" | "pi-zai";
 export type ModelStatus = "current" | "superseded";
-export type ModelRole = "orchestrator" | "main" | "worker" | "denk" | "summary";
+export type FleetWorkerRole = "summary" | "commitMsg" | "enhance" | "digest" | "review" | "merge" | "repair" | "cleanReview" | "refine" | "briefReview" | "card";
+export type ModelRole = "orchestrator" | "main" | "worker" | "denk" | FleetWorkerRole
+  | "summaryExec" | "commitMsgExec" | "enhanceExec" | "digestExec";
 export interface ModelEntry {
   harness: ModelHarness;
   id: string;
@@ -16,6 +18,20 @@ export const MODEL_DEFAULTS: Readonly<Record<ModelRole, { harness: ModelHarness;
   worker: { harness: "codex", id: "gpt-6.1-sol", effort: "high" },
   denk: { harness: "codex", id: "gpt-6-astra", effort: "medium" },
   summary: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
+  commitMsg: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
+  enhance: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
+  digest: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
+  review: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
+  merge: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
+  repair: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
+  cleanReview: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: "medium" },
+  refine: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
+  briefReview: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
+  card: { harness: "claude", id: "claude-haiku-4-5-20251001", effort: "low" },
+  summaryExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: "low" },
+  commitMsgExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: "low" },
+  enhanceExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: "low" },
+  digestExec: { harness: "codex", id: "gpt-5.3-codex-spark", effort: "low" },
 };
 
 export const MODEL_REGISTER: readonly ModelEntry[] = [
@@ -74,4 +90,33 @@ export function codexAvailability(cache: unknown, id: string): ModelAvailability
   if (!cache || typeof cache !== "object" || !("models" in cache) || !Array.isArray(cache.models)) return "unknown";
   if (!cache.models.every((model: unknown) => model && typeof model === "object" && "slug" in model && typeof model.slug === "string")) return "unknown";
   return cache.models.some((model: { slug: string }) => model.slug === id) ? "available" : "unavailable";
+}
+
+export function resolveWorkerModel(role: ModelRole, envModel?: string, envEffort?: string) {
+  const fallback = MODEL_DEFAULTS[role];
+  const entry = envModel ? modelEntry(fallback.harness, envModel) : undefined;
+  const levels = fallback.harness === "claude"
+    ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max", "ultra"];
+  const validEffort = !!envEffort && levels.includes(envEffort);
+  return {
+    harness: fallback.harness, model: entry?.id ?? fallback.id,
+    effort: validEffort ? envEffort : fallback.effort,
+    modelSource: entry ? "env" as const : "register" as const,
+    effortSource: validEffort ? "env" as const : "register" as const,
+    warnings: [
+      ...(envModel && !entry ? ["unregistered or wrong-harness model override rejected"] : []),
+      ...(envEffort && !validEffort ? ["invalid effort override rejected"] : []),
+    ],
+  };
+}
+
+export function workerModelWarnings(selection: ReturnType<typeof resolveWorkerModel>, cache: unknown): string[] {
+  const entry = modelEntry(selection.harness, selection.model);
+  return [
+    ...selection.warnings,
+    ...(!entry ? ["model absent from MODEL_REGISTER"] : []),
+    ...(entry?.status === "superseded" ? [`superseded model; successor=${entry.supersededBy ?? "unknown"}`] : []),
+    ...(selection.harness === "codex" && codexAvailability(cache, selection.model) !== "available"
+      ? [`codexAvailability=${codexAvailability(cache, selection.model)}`] : []),
+  ];
 }

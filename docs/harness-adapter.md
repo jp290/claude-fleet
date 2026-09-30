@@ -284,17 +284,33 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   `gpt-6.1-sol`. Die Aliase `sol`, `sol 6.1` und `gpt-6.1 sol` folgen dem Worker-Default.
   Das angezeigte Kontextfenster von Sol 6.1 ist 258 400 Tokens, gemessen als `model_context_window`
   im Rollout einer gpt-6.1-sol-Session vom 2026-09-29.
-- Modell-Tiers: `DEFAULT_MODEL` (`server.ts`, override `FLEET_MODEL`) = Sessions/Lanes ohne eigenen Pin;
-  `SUMMARY_MODEL` (override `FLEET_SUMMARY_MODEL`) = alle Wegwerf-Worker (summarize, Commit-Msg, enhance,
-  Merge-Resolver, ② review, digest). Beide werden gegen `MODEL_RE` validiert.
-- Modellregister (`model-register.ts#MODEL_REGISTER`): Sonnet 5.5 (`claude-sonnet-5-5[1m]`, `claude-sonnet-5-5`)
-  ist `current`, Sonnet 5 `superseded` mit Nachfolger `claude-sonnet-5-5[1m]`; die Kurzformen `sonnet`,
-  `sonnet 5.5` und `claude sonnet 5.5` loesen auf `claude-sonnet-5-5` auf, `sonnet 5` bleibt lesbar und
-  loest auf die abgeloeste Id auf. `MODEL_DEFAULTS.summary` (Fallback von `SUMMARY_MODEL`, wenn
-  `FLEET_SUMMARY_MODEL` fehlt) ist `claude-sonnet-5-5[1m]`. Der Live-Wert bleibt Opus 5.5: dasselbe
-  `FLEET_SUMMARY_MODEL` treibt `server.ts#runMerge` und `server.ts#runRepair` (Land-Pfad), und ein
-  Wechsel dort waere eine eigene Entscheidung; `FLEET_CARD_MODEL` und `FLEET_REFINE_MODEL` stehen seit
-  2026-09-28 in `.env` auf `claude-sonnet-5-5[1m]`.
+- `DEFAULT_MODEL` (`server.ts`, Override `FLEET_MODEL`) bleibt die Auswahl für Sessions/Lanes.
+  Fleet-eigene Worker beziehen Modell **und Effort** aus `model-register.ts#MODEL_DEFAULTS`;
+  `server.ts#WORKER_MODELS` löst die Auswahl einmal beim Boot auf. Elf Rollen: summary,
+  commitMsg, enhance, digest, review, merge, repair, cleanReview, refine, briefReview und card.
+  Brief-Gegenlese teilt nur den Prompt-Vertrag mit refine, hat eine eigene Modellauswahl.
+- Die vier bestehenden Headless-Routen summary, commitMsg, enhance und digest bleiben auf
+  ihren `*Exec`-Defaults (Codex Spark, low). `FLEET_WORKER_ROUTE_SUMMARY|COMMITMSG|ENHANCE|DIGEST=claude`
+  wählt weiterhin die Claude-Rückfallroute. Deren Defaults sowie review und cleanReview sind
+  Sonnet 5.5/medium; refine und briefReview Opus 5.5/high, card Haiku 4.5/low.
+  Merge und repair behalten Opus 5.5/high als Register-Fallback; eine Verkleinerung des
+  Konfliktlösers braucht eine eigene Entscheidung nach Messung.
+- Worker-Overrides heißen `FLEET_<KEY>_MODEL` und `FLEET_<KEY>_EFFORT`, mit den Keys SUMMARY,
+  COMMITMSG, ENHANCE, DIGEST, REVIEW, MERGE, REPAIR, CLEAN_REVIEW, REFINE, BRIEF_REVIEW und CARD.
+  Auf Headless-Routen heißen sie `FLEET_<KEY>_CODEX_MODEL|EFFORT`; die bisherigen Claude-Keys
+  ändern diese Routen weiterhin nicht. Ohne rollenbezogenen Override gelten für Claude die
+  bisherigen `FLEET_SUMMARY_MODEL|EFFORT`, für Brief-Gegenlese `FLEET_REFINE_MODEL|EFFORT`.
+  Card und refine haben eigene Keys. Modell und Effort können unabhängig überschrieben werden.
+- Beim Boot werden Overrides gegen `MODEL_REGISTER` und die Effort-Stufen der Harness geprüft.
+  Unbekannte oder harnessfremde Modelle und ungültige Efforts werden laut zurückgewiesen;
+  der jeweilige Register-Fallback greift. Registrierte `superseded`-Overrides bleiben lesbar,
+  lösen aber eine Warnung aus. Jede Boot-Zeile nennt Rolle, Modell, Effort, `source=register|env`
+  und `effortSource=register|env`. Codex-Verfügbarkeit kommt aus `models_cache.json` über
+  `codexAvailability`: `unavailable` wird laut genannt, ein fehlender Sensor bleibt `unknown`.
+  Eine Warnung wechselt weder Modell noch Route automatisch.
+- Claude erhält `--effort`, Codex `-c model_reasoning_effort=...`; auch die Subprozess-Stellvertreter
+  erhalten Modell und Effort. Die Register- und Quellen-Pins prüfen jede Worker-Rolle auf
+  `current` und verhindern Modell-Literale als Rückfall in `server.ts`.
 - Ein lebender Slot wechselt sein Modell/Effort im DATENSATZ über `POST /api/slots/:id/model` (Owner,
   kein Respawn; `docs/self-api.md` §model) — Heal, `↻ restart` und Nachfolge spawnen danach damit. Die
   Nachfolge (`POST /api/self/succeed`) nimmt dasselbe Paar optional als Override. Beides wird nach der

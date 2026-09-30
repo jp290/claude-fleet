@@ -8735,9 +8735,12 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(w3) setup: the stopped dispatcher has inspected the split row",
         w3BackRow?.note?.startsWith("waiting: dispatcher stopped") === true, JSON.stringify(w3BackRow));
       const w3KeptRow = await wDigest(w3Head);
-      check("(w3) the returned row is `queued` — not `pending` — and carries the lane's reason in its note",
-        w3BackRow?.status === "queued" && (w3BackRow as { slot?: number | null }).slot == null
-        && (w3BackRow?.note ?? "").includes(W3REASON),
+      check("(w3) the returned row is `queued` — not `pending` — and detached from the lane",
+        w3BackRow?.status === "queued" && (w3BackRow as { slot?: number | null }).slot == null,
+        JSON.stringify(w3BackRow));
+      check("(w3-stop) after a stopped dispatch tick the returned row retains the wave lane's split reason",
+        /^waiting: dispatcher stopped — handed back by the wave lane [^:]+: /.test(w3BackRow?.note ?? "")
+        && w3BackRow?.note?.endsWith(`: ${W3REASON}`) === true,
         JSON.stringify(w3BackRow));
       check("(w3) the kept row is untouched — still `sent`, still on the lane",
         w3KeptRow?.status === "sent" && (w3KeptRow as { slot?: number }).slot === w3Slot,

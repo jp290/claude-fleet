@@ -68,6 +68,7 @@ async function codexWritingWorkers(): Promise<void> {
   const runsFile = `${ROOT}/codex-write-runs.jsonl`;
   const modeFile = `${ROOT}/codex-write-mode`;
   const verify = `${ROOT}/codex-write-verify`;
+  const gitErrors = `${ROOT}/codex-write-git-errors.jsonl`;
   mkdirSync(repo, { recursive: true });
   const git = (cwd: string, ...args: string[]): string => {
     const r = spawnSync("git", ["-C", cwd, ...args]);
@@ -100,8 +101,13 @@ if mode == worker + "-error":
     print(json.dumps({"type": "error", "message": "controlled " + worker + " rejection"}))
     sys.exit(23)
 def git(*a):
-    subprocess.run(["git", *a], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                   env={**os.environ, "GIT_EDITOR": "true"})
+    r = subprocess.run(["git", *a], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                       env={**os.environ, "GIT_EDITOR": "true"})
+    if r.returncode:
+        with open(${JSON.stringify(gitErrors)}, "a") as f:
+            f.write(json.dumps({"worker": worker, "args": a, "exitCode": r.returncode, "stderr": r.stderr}) + "\n")
+        print(json.dumps({"type": "error", "message": "fixture git " + " ".join(a) + ": " + r.stderr.strip()}))
+        sys.exit(r.returncode)
 if worker == "merge":
     pathlib.Path("code.txt").write_text("root\nmain\nlane\nVERIFYBAD\n")
     git("add", "code.txt")

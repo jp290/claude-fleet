@@ -323,6 +323,18 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   Harness des Slots validiert: `supports.model`/`supports.effort` + `effortLevels` des Adapters (codex
   übersetzt Effort in `--thinking`, siehe §Harness-Adapter), nie nach dem Server-Env.
 
+`server.ts#runWorker` schreibt pro Aufruf genau eine Zeile in den gitignorierten
+`worker-runs.jsonl`-Ledger über `server/persist.ts#appendEvent`, auch bei Fehlern.
+Die Zeile trägt `at` (Startzeit), `worker`, `role` (einschließlich briefReview),
+`route` (`cmd`, `claude` oder `codex-exec`), die konfigurierte Auswahl `model` und
+`effort` (`null` heißt weiterhin CLI-Default unbekannt), `ms` und `ok`.
+Bei Fehlern kommt `error` hinzu: höchstens 300 Zeichen der ersten Diagnosezeile,
+ohne bekannte Promptanteile, Pfade oder JSON-Ausgaben. Prompt, Antwort und
+Arbeitsverzeichnis sind keine Ledger-Felder. Der ursprüngliche Fehler wird unverändert
+weitergeworfen; der Ledger ändert weder Route noch Modell noch Effort. Wie bei
+`cards.jsonl` ist der Append best effort mit Rotation nach `.1` und `.archive`;
+ein Schreibfehler wird durch den bestehenden Persistenz-Logger gemeldet.
+
 ## Provider-Sperren beim Gruenden — ein Wort im Brief, und die Session kommt nie hoch
 
 - **Das englische Wort fuer „gegnerisch", zusammen mit Merge-/Deploy-Code im selben Brief, loest bei

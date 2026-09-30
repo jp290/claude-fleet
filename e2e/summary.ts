@@ -1,7 +1,7 @@
 // The ✨ summary agent behind its FLEET_SUMMARY_CMD stand-in: gather → spawn → parse → cache.
 // Plus the byte budgets of the two transcript readers (the summary's transcript tail and the
 // terminal-prompt harvester), checked on scratch fixtures — never on a real ~/.claude transcript.
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildEnhancePrompt } from "../enhance-prompt";
@@ -202,11 +202,28 @@ function transcriptBudgets(): void {
 
 export async function run(): Promise<void> {
   transcriptBudgets();
+  const workerRuns = (): Record<string, unknown>[] => {
+    try {
+      return readFileSync(`${ROOT}/worker-runs.jsonl`, "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.worker === "summary");
+    } catch (e) {
+      if ((e as { code?: string }).code === "ENOENT") return [];
+      throw e;
+    }
+  };
+  const validWorkerRun = (row: Record<string, unknown> | undefined, started: number, ok: boolean, route: string): boolean =>
+    !!row && row.worker === "summary" && row.role === "summary" && row.route === route && row.ok === ok
+    && row.model === "gpt-5.3-codex-spark" && row.effort === null
+    && typeof row.at === "number" && row.at >= started && row.at <= Date.now()
+    && typeof row.ms === "number" && Number.isInteger(row.ms) && row.ms >= 0 && row.ms <= Date.now() - started
+    && Object.keys(row).sort().join(",") === (ok ? "at,effort,model,ms,ok,role,route,worker" : "at,effort,error,model,ms,ok,role,route,worker");
 
   // --- ✨ summary agent (FLEET_SUMMARY_CMD points at a stand-in that answers in
   // claude -p's json envelope — tests the real gather→spawn→parse→cache pipeline) ---
   const sm0 = (await (await get("/api/slots/1/summary")).json()) as { cached: boolean; summary?: string };
   check("summary GET before any run → cache miss, no spawn", sm0.cached === false && sm0.summary === undefined);
+  const cmdRunsBefore = workerRuns().length;
+  const cmdStarted = Date.now();
   const sm1res = await post("/api/slots/1/summary", {});
   const sm1 = (await sm1res.json()) as { summary: string; openThreads: string[]; verification: string;
     cached: boolean; raw: boolean; head: string | null };
@@ -217,11 +234,15 @@ export async function run(): Promise<void> {
     sm1.openThreads.length === 1 && sm1.openThreads[0] === "thread-a" && sm1.verification === "none seen");
   check("summary pins the git state it ran on", typeof sm1.head === "string" && /^[0-9a-f]{40}$/.test(sm1.head ?? ""));
   check("summary first run is uncached", sm1.cached === false);
+  const cmdRows = workerRuns().slice(cmdRunsBefore);
+  check("worker ledger records exactly one successful CMD run with metadata only",
+    cmdRows.length === 1 && validWorkerRun(cmdRows[0], cmdStarted, true, "cmd"), JSON.stringify(cmdRows));
   const sm2 = (await (await post("/api/slots/1/summary", {})).json()) as { cached: boolean; summary: string };
   check("summary cache hit on unchanged git state", sm2.cached === true && sm2.summary === sm1.summary);
   const sm3 = (await (await get("/api/slots/1/summary")).json()) as { cached: boolean; stale: boolean };
   check("summary GET now serves the cache", sm3.cached === true && sm3.stale === false);
   check("summary rejects inactive slot", (await post("/api/slots/4/summary", {})).status === 400);
+  check("worker ledger does not count cache reads or rejected inactive slots as runs", workerRuns().length === cmdRunsBefore + 1);
 
   // --- per-worker Codex exec route ------------------------------------------------------------
   // The wrapper deliberately sets FLEET_SUMMARY_CMD for every ordinary check above. Precedence 1
@@ -258,6 +279,8 @@ export async function run(): Promise<void> {
     rmSync(runsFile, { force: true });
     await setMode("success");
     await restartSrv(codexEnv);
+    const cxRunsBefore = workerRuns().length;
+    const cxStarted = Date.now();
     const cx1res = await post("/api/slots/1/summary", {});
     const cx1 = (await cx1res.json()) as { summary?: string; openThreads?: string[];
       verification?: string; model?: string; backend?: string; usage?: { input?: number; output?: number };
@@ -267,6 +290,9 @@ export async function run(): Promise<void> {
       && cx1.model === "gpt-5.3-codex-spark" && cx1.backend === "codex-exec"
       && cx1.usage?.input === 17 && cx1.usage?.output === 5,
       JSON.stringify(cx1).slice(0, 240));
+    const cxRows = workerRuns().slice(cxRunsBefore);
+    check("worker ledger records exactly one successful codex-exec run with metadata only",
+      cxRows.length === 1 && validWorkerRun(cxRows[0], cxStarted, true, "codex-exec"), JSON.stringify(cxRows));
 
     const argv = readFileSync(`${ROOT}/codex-argv`, "utf8").split("\n").filter(Boolean);
     const pair = (flag: string, value: string): boolean => {
@@ -311,6 +337,26 @@ export async function run(): Promise<void> {
       && !sessionsAfterNz.some((name) => name.startsWith("sum-")),
       `${nzRes.status} ${nz.error ?? ""} sessions=${sessionsAfterNz.join(",")}`);
     check("codex worker removes its fresh tmp directory after a nonzero error", tmpGone());
+
+    const failingCodex = `${ROOT}/fakecodex-exit1`;
+    const failureText = "controlled codex exit-one failure";
+    await Bun.write(failingCodex, `#!/bin/sh\ncat >/dev/null\nprintf '%s %s %s' '${failureText}' "$PWD/private-worker.txt" '${"x".repeat(400)}' >&2\nprintf '\\n{"answer":"private response"}\\n'\nexit 1\n`);
+    chmodSync(failingCodex, 0o755);
+    await restartSrv({ ...codexEnv, FLEET_CODEX_EXEC_BIN: failingCodex });
+    const failedRunsBefore = workerRuns().length;
+    const failedStarted = Date.now();
+    const failRes = await post("/api/slots/1/summary", {});
+    const fail = (await failRes.json()) as { error?: string };
+    const failRows = workerRuns().slice(failedRunsBefore);
+    const failedRow = failRows[0];
+    check("worker ledger records exactly one failed codex-exec exit-1 run and its bounded diagnostic",
+      failRes.status === 500 && fail.error?.startsWith(`worker via codex exec exited 1: ${failureText}`) === true
+      && fail.error.includes("/private-worker.txt")
+      && failRows.length === 1 && validWorkerRun(failedRow, failedStarted, false, "codex-exec")
+      && typeof failedRow?.error === "string" && failedRow.error.length > 0 && failedRow.error.length <= 300
+      && failedRow.error.startsWith(`worker via codex exec exited 1: ${failureText}`)
+      && !failedRow.error.includes("/") && !failedRow.error.includes("private response")
+      && !JSON.stringify(failedRow).includes(WORKER_CONTRACTS.summary.mark), JSON.stringify(failRows));
 
     await setMode("timeout");
     await restartSrv(codexEnv);

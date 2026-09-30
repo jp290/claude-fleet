@@ -255,6 +255,7 @@ const HELPER_ARTIFACT_FILE = `${import.meta.dir}/helper-artifacts.jsonl`;
 // "the extractor has been returning gaps for a week" are the same observation. Same appendEvent
 // discipline/rotation as the trails above.
 const CARD_FILE = `${import.meta.dir}/cards.jsonl`;
+const WORKER_RUN_FILE = `${import.meta.dir}/worker-runs.jsonl`;
 // THE STATE SNAPSHOT TRAIL — one row per STATE_SNAPSHOT_MS with the operating state a tick would
 // choose from (docs/messungen/2026-09-22-jev-treiber-schatten-label.md §e). Every other trail here
 // records an EVENT; this one records the STATE between them, which cannot be rebuilt afterwards.
@@ -20389,43 +20390,68 @@ function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
   return WORKER_ROUTES[worker];
 }
 async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise<string> {
-  const contract = WORKER_CONTRACTS[spec.worker];
-  // the last hole tsc cannot close: the contract is named here, the mark is interpolated over in the
-  // prompt builder, and nothing types the two together. Checked before the spawn, so the cost of a
-  // prompt that lost its mark is a loud failure of THIS worker (every caller either reports it or
-  // fails closed) instead of a stray transcript quietly served as a slot's own conversation.
-  if (!prompt.includes(contract.mark))
-    throw new Error(`worker "${spec.worker}": prompt does not carry its background mark`);
+  const started = Date.now();
+  const role = spec.role ?? spec.worker;
   const selection = WORKER_MODELS[spec.role ?? spec.worker];
-  let text: string;
-  let observed: WorkerRunObservation;
-  if (spec.cmd) {
-    text = await summaryViaSubprocess(spec.cmd, prompt, cwd, selection, spec.timeoutMs);
-    observed = { model: selection.model };
-  } else {
-    const route = workerRouteFor(spec.worker);
-    if (route.route === "codex-exec") {
-      // ToolProfile is intentionally unused here: `-s read-only` plus `--ephemeral` is this
-      // transport's act-authority, and no Claude tool profile can widen or describe it.
-      const result = await workerViaCodexExec(prompt, cwd, {
-        model: selection.model, effort: selection.effort, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
-      });
-      text = result.text;
-      observed = { model: selection.model, backend: "codex-exec",
-        ...(result.usage === "unknown" ? {} : { usage: result.usage }) };
-    } else {
-      text = await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs, model: selection.model, effort: selection.effort });
-      observed = { model: selection.model };
-    }
-  }
-  spec.observe?.(observed);
-  // the test stand-in answers in a {"result": "..."} envelope — unwrap it; no contract JSON in
-  // this file has a string `result`, so this is a no-op for real runs
+  const route = spec.cmd ? "cmd" : workerRouteFor(spec.worker).route;
+  let ok = false;
+  let error: string | undefined;
   try {
-    const env = JSON.parse(text) as { result?: unknown };
-    if (typeof env.result === "string") return env.result.trim();
-  } catch { /* not an envelope — treat as the answer itself */ }
-  return text;
+    const contract = WORKER_CONTRACTS[spec.worker];
+    // the last hole tsc cannot close: the contract is named here, the mark is interpolated over in the
+    // prompt builder, and nothing types the two together. Checked before the spawn, so the cost of a
+    // prompt that lost its mark is a loud failure of THIS worker (every caller either reports it or
+    // fails closed) instead of a stray transcript quietly served as a slot's own conversation.
+    if (!prompt.includes(contract.mark))
+      throw new Error(`worker "${spec.worker}": prompt does not carry its background mark`);
+    let text: string;
+    let observed: WorkerRunObservation;
+    if (spec.cmd) {
+      text = await summaryViaSubprocess(spec.cmd, prompt, cwd, selection, spec.timeoutMs);
+      observed = { model: selection.model };
+    } else {
+      if (route === "codex-exec") {
+        // ToolProfile is intentionally unused here: `-s read-only` plus `--ephemeral` is this
+        // transport's act-authority, and no Claude tool profile can widen or describe it.
+        const result = await workerViaCodexExec(prompt, cwd, {
+          model: selection.model, effort: selection.effort, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
+        });
+        text = result.text;
+        observed = { model: selection.model, backend: "codex-exec",
+          ...(result.usage === "unknown" ? {} : { usage: result.usage }) };
+      } else {
+        text = await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs, model: selection.model, effort: selection.effort });
+        observed = { model: selection.model };
+      }
+    }
+    ok = true;
+    spec.observe?.(observed);
+    // the test stand-in answers in a {"result": "..."} envelope — unwrap it; no contract JSON in
+    // this file has a string `result`, so this is a no-op for real runs
+    try {
+      const env = JSON.parse(text) as { result?: unknown };
+      if (typeof env.result === "string") return env.result.trim();
+    } catch { /* not an envelope — treat as the answer itself */ }
+    return text;
+  } catch (e) {
+    ok = false;
+    let message = e instanceof Error ? e.message : "worker failed";
+    message = message.split(prompt).join("[prompt omitted]");
+    for (const line of prompt.split("\n")) {
+      if (line.trim().length >= 8) message = message.split(line.trim()).join("[prompt omitted]");
+    }
+    for (const path of [cwd, spec.cmd]) {
+      if (path) message = message.split(path).join("[path omitted]");
+    }
+    error = message.split("\n", 1)[0]!
+      .replace(/(?:[A-Za-z]:[\\/]|~?\/|\.\.?\/)[^\s"'<>]+/g, "[path omitted]")
+      .replace(/\{.*$/, "[output omitted]").slice(0, 300);
+    throw e;
+  } finally {
+    await appendEvent(WORKER_RUN_FILE, { at: started, worker: spec.worker, role, route,
+      model: selection.model, effort: selection.effort, ms: Date.now() - started, ok,
+      ...(error === undefined ? {} : { error }) });
+  }
 }
 
 // the summary contract, shared by the owner sideboard and the guest info tab:

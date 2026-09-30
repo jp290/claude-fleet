@@ -31,6 +31,8 @@ helper-artifacts.jsonl
 helper-artifacts.jsonl.1
 cards.jsonl
 cards.jsonl.1
+worker-runs.jsonl
+worker-runs.jsonl.1
 post-land-audit-queue.json
 post-land-audit-queue.json.tmp
 deploys.jsonl

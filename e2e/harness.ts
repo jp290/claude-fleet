@@ -131,10 +131,10 @@ async function stopSrvUntimed(): Promise<void> {
   for (let i = 0; i < 200 && alive(); i++) await Bun.sleep(25);
 }
 
-export function restartSrv(extra: Record<string, string> = {}): Promise<void> {
-  return timed("boot", () => restartSrvUntimed(extra));
+export function restartSrv(extra: Record<string, string> = {}, readiness?: BoundAgentWait): Promise<void> {
+  return timed("boot", () => restartSrvUntimed(extra, readiness));
 }
-async function restartSrvUntimed(extra: Record<string, string>): Promise<void> {
+async function restartSrvUntimed(extra: Record<string, string>, readiness?: BoundAgentWait): Promise<void> {
   await stopSrv();
   const own = new Set(["FLEET_HOST", "FLEET_PORT", "FLEET_SOCK", "FLEET_TOKEN"]);
   const env = Object.entries(process.env)
@@ -147,7 +147,10 @@ async function restartSrvUntimed(extra: Record<string, string>): Promise<void> {
   // of the wait
   for (let i = 0; i < 800; i++) {
     const ok = await get("/api/sessions").then((r) => r.ok).catch(() => false);
-    if (ok) return;
+    if (ok) {
+      if (readiness) await waitForBoundAgent(readiness);
+      return;
+    }
     await Bun.sleep(50);
   }
   throw new Error("srv never came back after restartSrv — the rest of this run would be meaningless");
@@ -181,6 +184,91 @@ export async function until<T>(pred: () => T | Promise<T>,
     if (v) return v as NonNullable<T>;
     if (Date.now() >= deadline) throw new UntilTimeout(opts.what, opts.timeoutMs, opts.last?.() ?? "");
     await Bun.sleep(Math.min(step, Math.max(0, deadline - Date.now())));
+  }
+}
+
+export interface AgentBinding {
+  slot: number;
+  openedAt: number;
+  pane: string;
+}
+export interface BoundAgentObservation extends AgentBinding {
+  agent: "alive" | "no-agent" | "no-pane" | "unprobed" | null;
+}
+export interface BoundAgentWait {
+  binding: AgentBinding;
+  timeoutMs: number;
+  stepMs?: number;
+  readSessions?: () => Promise<unknown>;
+  readPane?: () => Promise<{ out: string; code: number }>;
+  observe?: (actual: BoundAgentObservation) => void;
+}
+export class BoundAgentError extends Error {
+  constructor(readonly reason: "probe-start" | "probe-read" | "occupant-changed" | "pane-changed" | "no-agent",
+    readonly actual: string) {
+    super(`bound agent readiness: ${reason} — ${actual}`);
+    this.name = "BoundAgentError";
+  }
+}
+
+// Test-only observation of one bound occupant; HTTP reachability remains restartSrv's default.
+export async function waitForBoundAgent(opts: BoundAgentWait): Promise<BoundAgentObservation> {
+  const binding = { ...opts.binding };
+  if (!Number.isInteger(binding.slot) || binding.slot < 1 || !Number.isFinite(binding.openedAt)
+    || binding.openedAt <= 0 || !/^%\d+$/.test(binding.pane)
+    || !Number.isFinite(opts.timeoutMs) || opts.timeoutMs <= 0)
+    throw new BoundAgentError("probe-start", "invalid binding or budget");
+  let last = "not observed";
+  const fail = (reason: BoundAgentError["reason"]): never => { throw new BoundAgentError(reason, last); };
+  const readSessions = opts.readSessions ?? (async (): Promise<unknown> => {
+    const response = await get("/api/sessions");
+    if (response.status !== 200) {
+      last = `http=${response.status}`;
+      return fail("probe-read");
+    }
+    return response.json();
+  });
+  const readPane = opts.readPane ?? (() => tmuxOut("display-message", "-p", "-t", `=s${binding.slot}:`, "#{pane_id}"));
+  const session = async (): Promise<BoundAgentObservation["agent"]> => {
+    const body = await readSessions();
+    if (!body || typeof body !== "object" || !("slots" in body) || !Array.isArray(body.slots)) {
+      last = "sessions=invalid";
+      return fail("probe-read");
+    }
+    const rows = body.slots.filter((s): s is Record<string, unknown> =>
+      !!s && typeof s === "object" && "id" in s && s.id === binding.slot);
+    const row = rows.length === 1 ? rows[0] : undefined;
+    const openedAt = typeof row?.openedAt === "number" && Number.isFinite(row.openedAt) ? row.openedAt : null;
+    const agent = row?.agent === null || ["alive", "no-agent", "no-pane", "unprobed"].includes(String(row?.agent))
+      ? row?.agent as BoundAgentObservation["agent"] : undefined;
+    last = JSON.stringify({ slot: binding.slot, openedAt, agent: agent === undefined ? "invalid" : agent });
+    if (!row || openedAt !== binding.openedAt) return fail("occupant-changed");
+    if (agent === undefined) return fail("probe-read");
+    if (agent === "no-agent") return fail("no-agent");
+    if (agent === "no-pane") return fail("pane-changed");
+    return agent;
+  };
+  const pane = async (): Promise<void> => {
+    const actual = await readPane();
+    const id = /^%\d+$/.test(actual.out.trim()) ? actual.out.trim() : null;
+    last = `${last}; ${JSON.stringify({ pane: id, paneCode: actual.code })}`;
+    if (actual.code !== 0 || id !== binding.pane) fail("pane-changed");
+  };
+  try {
+    return await until(async () => {
+      // Bracket both external readers: a sessions await may recycle the pane, and a tmux await
+      // may replace the occupant. No cached answer from before either await grants readiness.
+      const before = await session();
+      await pane();
+      const agent = await session();
+      await pane();
+      const actual = { ...binding, agent };
+      opts.observe?.(actual);
+      return before === "alive" && agent === "alive" ? actual : null;
+    }, { timeoutMs: opts.timeoutMs, stepMs: opts.stepMs, what: `bound agent readiness slot ${binding.slot}`, last: () => last });
+  } catch (error) {
+    if (error instanceof BoundAgentError || error instanceof UntilTimeout) throw error;
+    return fail("probe-read");
   }
 }
 

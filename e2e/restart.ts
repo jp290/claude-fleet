@@ -5,7 +5,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { BASE, IP, PORT, ROOT, SOCK, TOKEN, check, get, plogRead, post, readText, restartSrv, tmuxOut, wsUrl } from "./harness";
+import { BASE, IP, PORT, ROOT, SOCK, TOKEN, BoundAgentError, UntilTimeout, check, get, plogRead, post, readText, restartSrv, tmuxOut, until, waitForBoundAgent, wsUrl } from "./harness";
+import type { AgentBinding, BoundAgentObservation, BoundAgentWait } from "./harness";
 import type { Ctx } from "./ctx";
 import { MERGE_IDLE_MS, settleForMerge } from "./lane-helpers";
 
@@ -91,7 +92,131 @@ const codexTokenCount = (total: number, window: number | null): string => JSON.s
  */
 export const newPlantedSid = (): string => crypto.randomUUID();
 
+export async function boundRestartReadiness(): Promise<void> {
+  const binding = { slot: 16, openedAt: 123456, pane: "%123" };
+  const view = (agent: BoundAgentObservation["agent"], openedAt = binding.openedAt): unknown =>
+    ({ slots: [{ id: binding.slot, openedAt, agent }] });
+  const pane = async (): Promise<{ out: string; code: number }> => ({ out: binding.pane, code: 0 });
+  const budget = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_000) | 0);
+  const reject = async (name: string, reason: BoundAgentError["reason"] | "timeout", opts: BoundAgentWait): Promise<void> => {
+    let actual = "resolved";
+    let correct = false;
+    try { await waitForBoundAgent(opts); } catch (error) {
+      correct = reason === "timeout"
+        ? error instanceof UntilTimeout && error.what === `bound agent readiness slot ${binding.slot}`
+        : error instanceof BoundAgentError && error.reason === reason;
+      actual = error instanceof UntilTimeout ? `${error.what}; ${error.last}`
+        : error instanceof BoundAgentError ? `${error.reason}; ${error.actual}` : "unexpected error";
+    }
+    check(`bound agent readiness: ${name}`, correct, actual);
+  };
+  let reads = 0;
+  const seen: (BoundAgentObservation["agent"])[] = [];
+  const observed = await waitForBoundAgent({ binding, timeoutMs: 1000, stepMs: 10,
+    readSessions: async () => { reads++; return view(reads <= 2 ? null : reads <= 4 ? "unprobed" : "alive"); },
+    readPane: pane, observe: (actual) => seen.push(actual.agent) });
+  check("bound agent readiness: HTTP-shaped null and unknown never complete before observed alive",
+    reads === 6 && seen.join(",") === ",unprobed,alive" && observed.agent === "alive",
+    JSON.stringify({ reads, seen, agent: observed.agent }));
+  const base = { binding, timeoutMs: 1000, stepMs: 10, readPane: pane };
+  await reject("no-agent rejects without waiting for a cache tick", "no-agent",
+    { ...base, readSessions: async () => view("no-agent") });
+  await reject("a different openedAt rejects the foreign occupant", "occupant-changed",
+    { ...base, readSessions: async () => view("alive", binding.openedAt + 1) });
+  await reject("a missing slot rejects the absent occupant", "occupant-changed",
+    { ...base, readSessions: async () => ({ slots: [] }) });
+  let currentOpenedAt = binding.openedAt;
+  await reject("occupant replacement during the tmux await rejects", "occupant-changed", { ...base,
+    readSessions: async () => view("alive", currentOpenedAt),
+    readPane: async () => { await Promise.resolve(); currentOpenedAt++; return pane(); } });
+  let currentPane = binding.pane;
+  await reject("pane recycle during the sessions await rejects", "pane-changed", { ...base,
+    readSessions: async () => { await Promise.resolve(); currentPane = "%124"; return view("alive"); },
+    readPane: async () => ({ out: currentPane, code: 0 }) });
+  let paneReads = 0;
+  await reject("pane change on the second bracket rejects", "pane-changed", { ...base,
+    readSessions: async () => view("alive"),
+    readPane: async () => ({ out: ++paneReads === 1 ? binding.pane : "%124", code: 0 }) });
+  await reject("null expires under its own named timeout", "timeout",
+    { ...base, timeoutMs: 20, readSessions: async () => view(null) });
+  await reject("a failed external reader is a sanitized probe-read failure", "probe-read",
+    { ...base, readSessions: async () => { throw new Error("private reader data"); } });
+  await reject("a missing binding is its own probe-start failure", "probe-start",
+    { ...base, binding: { ...binding, pane: "" }, readSessions: async () => view("alive") });
+
+  let own: AgentBinding | null = null;
+  let openedSlot: number | null = null;
+  let started = false;
+  const external = async (): Promise<{ status: number; slots: { id: number; cwd: string | null; openedAt: number;
+    agent: BoundAgentObservation["agent"] }[] }> => {
+    const response = await get("/api/sessions");
+    const body = await response.json() as { slots: { id: number; cwd: string | null; openedAt: number;
+      agent: BoundAgentObservation["agent"] }[] };
+    return { status: response.status, slots: body.slots };
+  };
+  try {
+    if (!existsSync(`${ROOT}/pi`)) throw new BoundAgentError("probe-start", "local compiled pi absent");
+    const empty = (await external()).slots.filter((s) => !s.cwd).at(-1);
+    if (!empty) throw new BoundAgentError("probe-start", "no isolated empty slot");
+    const open = await post(`/api/slots/${empty.id}/open`, { cwd: ROOT, harness: "pi-zai" });
+    if (!open.ok) throw new BoundAgentError("probe-start", `slot=${empty.id}; http=${open.status}`);
+    openedSlot = empty.id;
+    const opened = (await external()).slots.find((s) => s.id === empty.id);
+    if (opened?.cwd !== ROOT || !Number.isFinite(opened.openedAt) || opened.openedAt <= 0)
+      throw new BoundAgentError("probe-start", `slot=${empty.id}; occupant=unbound`);
+    own = { slot: empty.id, openedAt: opened.openedAt, pane: "" };
+    const bound = await until(async () => {
+      const row = (await external()).slots.find((s) => s.id === empty.id);
+      if (row?.openedAt !== own?.openedAt)
+        throw new BoundAgentError("occupant-changed", `slot=${empty.id}; openedAt=${row?.openedAt ?? null}`);
+      const exact = await tmuxOut("display-message", "-p", "-t", `=s${empty.id}:`, "#{pane_id}");
+      const again = (await external()).slots.find((s) => s.id === empty.id);
+      return row?.cwd === ROOT && row.agent === "alive" && again?.openedAt === row.openedAt
+        && exact.code === 0 && /^%\d+$/.test(exact.out.trim())
+        ? { slot: empty.id, openedAt: row.openedAt, pane: exact.out.trim() } : null;
+    }, { timeoutMs: budget * 3 + 1500, what: "bound agent readiness probe-start" });
+    own = bound;
+    started = true;
+    const states: { http: number; openedAt: number | null; agent: BoundAgentObservation["agent"] | undefined }[] = [];
+    await restartSrv({}, { binding: bound, timeoutMs: budget * 3 + 1500, stepMs: Math.min(100, budget),
+      readSessions: async () => {
+        const actual = await external();
+        const row = actual.slots.find((s) => s.id === bound.slot);
+        states.push({ http: actual.status, openedAt: row?.openedAt ?? null, agent: row?.agent });
+        return actual;
+      } });
+    const after = await external();
+    const row = after.slots.find((s) => s.id === bound.slot);
+    const exact = await tmuxOut("display-message", "-p", "-t", `=s${bound.slot}:`, "#{pane_id}");
+    const final = (await external()).slots.find((s) => s.id === bound.slot);
+    const first = states[0];
+    check("bound agent readiness: real restart separates HTTP 200/null from the same occupant alive",
+      first?.http === 200 && first.agent === null && first.openedAt === bound.openedAt
+        && states.some((s) => s.agent === "alive") && states.every((s) => s.http === 200 && s.openedAt === bound.openedAt)
+        && row?.agent === "alive" && final?.agent === "alive" && final.openedAt === bound.openedAt
+        && exact.code === 0 && exact.out.trim() === bound.pane,
+      JSON.stringify({ bound, first, last: states.at(-1), reads: states.length,
+        outer: { http: after.status, openedAt: final?.openedAt ?? null, agent: final?.agent ?? null,
+          pane: /^%\d+$/.test(exact.out.trim()) ? exact.out.trim() : null, paneCode: exact.code } }));
+  } catch (error) {
+    check(`bound agent readiness: ${started ? "real restart observation" : "probe-start"}`, false,
+      error instanceof UntilTimeout ? `${error.what}; ${error.last}`
+        : error instanceof BoundAgentError ? `${error.reason}; ${error.actual}` : "external probe failed");
+  } finally {
+    if (openedSlot !== null) {
+      const row = (await external()).slots.find((s) => s.id === openedSlot);
+      const same = row?.cwd === ROOT && own !== null && row.openedAt === own.openedAt;
+      const cleanup = same ? await post(`/api/slots/${openedSlot}/kill`, {}) : null;
+      const restored = (await external()).slots.find((s) => s.id === openedSlot)?.cwd === null;
+      check("bound agent readiness: finally removes only its isolated fixture occupant",
+        same && cleanup?.ok === true && restored,
+        `slot=${openedSlot}; same=${same}; http=${cleanup?.status ?? null}; empty=${restored}`);
+    }
+  }
+}
+
 export async function run(ctx: Ctx): Promise<void> {
+  await boundRestartReadiness();
   let persistedCodex: { anchor: number; disconnectSeenAt: number; id: string } | null = null;
   // --- file permissions ---
   const statePath = `${ROOT}/fleet.json`;

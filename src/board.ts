@@ -2,9 +2,10 @@ import { $, el, RECENT_MS, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseN
 import { openQueue, programsPoll } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool } from "./prefs";
 import { popover } from "./popover";
+import { openLaneFounding } from "./founding";
 import { askRisk } from "./dialog";
 import { Shell, openShell } from "./shell";
-import { LaneAnchor, PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow } from "./protocol";
+import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow } from "./protocol";
 import { METER_STATIONS, MeterBall, MeterStation, laneTail, meterKind, meterLine, mmss, suiteMeter } from "./suitemeter";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
 import { porcelainPath } from "./gitpath";
@@ -684,24 +685,6 @@ export async function doCommitMain(slot: number, mode: "quick" | "agent", files:
   const ok = await showCommitPreview(`Commit ${tracked.length} tracked file${tracked.length === 1 ? "" : "s"} in ${baseName(fleet[slot - 1]?.cwd ?? "")}?`, tracked, untracked, sessionActive(slot));
   if (ok) await doCommit(slot, mode, true); // the preview already carried the mid-run warning
 }
-
-export async function newLane(repo: string, parent?: LaneAnchor): Promise<void> {
-  if (laneReqBusy) return;
-  laneReqBusy = true;
-  try {
-    // The server still picks the first free slot. A main-row click additionally names the exact
-    // SESSION OCCUPANT it came from; generic board/repo-header creation omits `parent` and lets the
-    // server make its one-time fallback choice. Never send a slot alone — slots recycle.
-    const r = await post("/api/lanes", { repo, ...(parent ? { parent } : {}) });
-    const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
-    if (!r.ok) { alert(`Lane failed: ${j.error ?? "?"}`); return; }
-    await refresh();
-    if (j.slot) showSlot(j.slot);
-  } finally {
-    laneReqBusy = false;
-  }
-}
-
 
 // THE INFO COLUMN ON THE PHONE (owner 2026-09-22: „[Zitat entfernt]“
 // ). ℹ moves the REAL #board element into a fullscreen window (G6.3) — the same live
@@ -2421,8 +2404,8 @@ export async function renderBoard() {
           }
         }
         const nb = el("button", "bbtn quiet", "New lane") as HTMLButtonElement;
-        nb.title = `fresh worktree lane off ${wts.main}, session opens in the first free slot — one click`;
-        nb.onclick = () => { nb.disabled = true; void newLane(wts.repo); };
+        nb.title = `Neue Lane von ${wts.main} — Name, Profil und Kontext im Gründungsfenster`;
+        nb.onclick = () => { openLaneFounding(wts.repo); };
         sec.appendChild(nb);
         nodes.push(lsec);
       }

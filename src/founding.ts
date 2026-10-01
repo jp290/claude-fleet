@@ -1,53 +1,78 @@
-// THE FOUNDING WINDOW — what a click on a free place in the bar opens (Neuentwurf 2026-09-29,
-// Program Oberflaeche 0d51b4d4). The owner rejected the three-step comic page of 2026-09-22 as a
-// whole („[Zitat entfernt]“); this is the replacement, not a repair of it.
+// THE FOUNDING WINDOW — what a click on a free place in the bar opens, and what ⎇+ on a session
+// opens (Neuentwurf 2026-10-01 with the owner, Program Oberflaeche 0d51b4d4: „[Zitat entfernt]“
+// ). It replaces the place-list window of 2026-09-29.
 //
-// ONE PAGE, ONE SIZE. Every decision a founding takes is on screen at once, in the order you read
-// it: WHO (the role tabs), WHERE (the list on the left, the chosen place in full on the right, what
-// it hands the agent below it), HOW (the foot's option switches, the composer's own grammar, G4.3),
-// and the one primary button. Nothing changes the window's size, nothing replaces the page — a
-// state change repaints a part of it. The fast path is Enter: a role and a place are always
-// preselected, so the window opened and Enter pressed is today's plain founding in the busiest repo.
+// ONE COLUMN, FOUR FIELDS, read top to bottom: ORT (the repo, or the worktree a lane gets — named
+// or auto-named), ROLLE (Leer, Lane, Orchestratorin, Steward), PROFIL (agent, model, effort,
+// container) and KONTEXT (what the agent is handed). The foot says in one sentence what will start
+// and holds the one button. Nothing replaces the page: a state change repaints its field.
 //
-// It is a src/shell.ts#openShell window (G6.3): the shell brings the dimmed backdrop, Esc/✕/click
-// beside closing, the list's arrow keys and the mobile list→detail push. This module brings only
-// what a founding is — and the ordinary rows of the shell stay ordinary: Enter on the selected
-// place STARTS, the way Enter sends in the composer.
+// THE ROLE PRESELECTS THE CONTEXT, VISIBLY. Each role carries a preset over the founding plan
+// (all fitting packs, none, or none plus a few). Choosing a role applies it, and the packs that
+// arrive light up while the ones that leave strike through, with one line naming the difference.
+// "Rollen vergleichen" lays the presets side by side and lets the owner redraw them.
 //
-// "ANDERER ORDNER" STAYS IN THE WINDOW. The list turns into a folder browser over the existing
-// /api/dirs route (one level at a time, a server search below it for two letters and more, the
-// flat-hit rule of src/filetree.ts#matchTree), so a repo without a running session is chosen in
-// the same place, with the same profile, as one with — never a jump into a second window.
+// A LANE IS A WORKTREE. The Lane role and the "Neuer Worktree"/"Worktree fortsetzen" places are
+// one choice seen from two fields: picking one moves the other, and the window says so.
 //
-// No server route or field is new: /api/dirs, /api/dirinfo, /api/founding-plan, the two /open doors
-// and /api/lanes attach are what the founding used before, with the same bodies.
+// It is a src/shell.ts#openShell window without a list (the #shell-idee precedent): the shell
+// brings the dimmed backdrop and Esc/✕/click-beside closing. Enter outside a control starts; the
+// start button holds the focus when the window opens, so "open, Enter" is a plain founding.
+//
+// Doors, all existing: /api/dirs, /api/dirinfo, /api/founding-plan, POST /api/slots/:id/open and
+// /open-worktree for a clicked free place, POST /api/lanes for ⎇+ (with its parent) and for an
+// attach.
 import {
-  agentHarnesses, api, baseName, containerDefaults, defaultModel, el, fleet, fmtTs, harnesses,
-  isMobile, laneBandNames, loadHarnesses, modelNotice, post, revealStartedSlot, setDrawer, SKEW_NOTE,
-  showSlot, stacksOf, startSession, startWorktree, type StartResult, type DirInfoResp, type HarnessInfo, type SlotInfo, type SpawnBody,
+  agentHarnesses, api, baseName, containerDefaults, defaultModel, el, fleet, harnesses, isMobile,
+  laneBandNames, loadHarnesses, modelNotice, post, revealStartedSlot, setDrawer, showSlot, SKEW_NOTE, stacksOf,
+  startSession, startWorktree, type DirInfoResp, type HarnessInfo, type SlotInfo, type SpawnBody, type StartResult,
 } from "./client";
 import { matchTree } from "./filetree";
+import { Flakes } from "./flakes";
 import { icon } from "./icons";
 import { projectHue } from "./marks";
 import { modelLabel } from "./modelname";
-import { openShell, type Shell, type ShellRow } from "./shell";
+import type { LaneAnchor } from "./protocol";
+import { openShell, type Shell } from "./shell";
 
-type FoundRole = "plain" | "wt-new" | "wt-old" | "orch" | "steward";
+type Role = "leer" | "lane" | "orch" | "steward";
+type Mode = "repo" | "new" | "old";
 
-// the roles as tabs (G3.1), plain first: it is today's founding and the preselection. `say` is the
-// one sentence under the tabs — what this founding makes, in the owner's language (G0.5).
-const ROLES: { id: FoundRole; name: string; say: string }[] = [
-  { id: "plain", name: "Session", say: "Ein Agent in einem Ordner — ohne Rolle und ohne Lane." },
-  { id: "wt-new", name: "Lane", say: "Eigener Worktree auf frischem Branch: arbeitet, beweist, wird gelandet." },
-  { id: "wt-old", name: "Lane fortsetzen", say: "Setzt einen liegengebliebenen Worktree wieder auf diesen Slot — die Arbeit darauf bleibt." },
-  { id: "orch", name: "Orchestrator", say: "Hält das Portfolio, schärft Aufträge und verteilt Arbeit — landet nicht selbst. Bekommt beim Start ihre Rollenkarte." },
-  { id: "steward", name: "Steward", say: "Beobachtet die Fleet, meldet Stillstand und Widerspruch — nie eine zweite Owner-Stimme." },
+// `say` is the card's sentence (G0.5, owner words); `why` is the compare table's last row
+const ROLES: { id: Role; name: string; glyph: string; say: string; why: string }[] = [
+  { id: "leer", name: "Leer", glyph: "○", say: "Ohne Rolle. Nur Ort, Agent und was du selbst mitgibst.",
+    why: "Nichts vorgewählt." },
+  { id: "lane", name: "Lane", glyph: "⎇", say: "Arbeitet einen Auftrag im eigenen Worktree ab und beweist ihn.",
+    why: "Alles, was zu diesem Start passt." },
+  { id: "orch", name: "Orchestratorin", glyph: "◎", say: "Hält das Portfolio, schärft Aufträge, verteilt Arbeit. Landet nicht selbst.",
+    why: "Ihre Rollenkarte trägt die Zeiger — Packs wären doppelt." },
+  { id: "steward", name: "Steward", glyph: "⚙", say: "Beobachtet die Fleet, meldet Stillstand und Widerspruch.",
+    why: "Regeln, Queue und Land-Mechanik — was er beobachtet." },
 ];
 
 // the label the server keys a role off: isOrchestratorLabel (word boundary) and STEWARD_LABEL
-const roleLabel = (r: FoundRole): string | undefined =>
+const roleLabel = (r: Role): string | undefined =>
   r === "orch" ? "Orchestrator" : r === "steward" ? "⚙ steward" : undefined;
-const isLane = (r: FoundRole): boolean => r === "wt-new" || r === "wt-old";
+
+// A ROLE'S PRESET over the founding plan. `base` decides what an unknown pack does — a repo with
+// packs of its own gets them under "all" without anyone naming them — and plus/minus are the
+// named exceptions. Read against the plan of THIS start, so an id the plan omits never switches on.
+interface Preset { base: "all" | "none"; plus: string[]; minus: string[] }
+const PRESET_DEFAULT: Record<Role, Preset> = {
+  leer: { base: "none", plus: [], minus: [] },
+  lane: { base: "all", plus: [], minus: [] },
+  orch: { base: "none", plus: [], minus: [] },
+  steward: { base: "none", plus: ["portable-core", "task-queue", "land-mechanics"], minus: [] },
+};
+let presets: Record<Role, Preset> = clonePresets(PRESET_DEFAULT);
+function clonePresets(p: Record<Role, Preset>): Record<Role, Preset> {
+  const out = {} as Record<Role, Preset>;
+  for (const r of ROLES) out[r.id] = { base: p[r.id].base, plus: [...p[r.id].plus], minus: [...p[r.id].minus] };
+  return out;
+}
+function presetHas(p: Preset, id: string): boolean {
+  return p.base === "all" ? !p.minus.includes(id) : p.plus.includes(id);
+}
 
 // the founding plan's omission reasons are a closed vocabulary (context-plan.ts
 // CONTEXT_PLAN_OMISSION_REASONS); the window says each in owner words and keeps the raw one behind
@@ -63,41 +88,55 @@ const OMIT_SAY: Record<string, string> = {
   "program-complete": "sein Program ist abgeschlossen",
 };
 
+// where the window was opened from: a clicked free place, or ⎇+ on a session (its repo and the
+// session occupant the lane hangs under — never the slot alone, slots recycle)
+type Entry = { kind: "slot"; slot: number } | { kind: "lane"; repo: string; parent?: LaneAnchor; from: string };
+
 interface Repo { repo: string; name: string; slots: SlotInfo[] }
 interface PlanPack { id: string; bytes: number; source: string; useWhen?: string }
 interface Plan { selected: PlanPack[]; omitted: { id: string; reason: string }[] }
 interface DirList { path: string; parent: string | null; dirs: string[]; repos?: string[]; capped?: boolean; total?: number }
 interface FindHit { path: string; name: string; repo: boolean }
-type Pop = "harness" | "model" | "effort" | "container";
+type Pop = "place" | "harness" | "model" | "effort" | "container" | "add";
 
 interface State {
   shell: Shell;
-  slot: number;
-  role: FoundRole;
-  view: "repos" | "folders";
+  flakes: Flakes;
+  entry: Entry;
+  role: Role;
+  mode: Mode;
+  name: string;                         // the worktree's name; empty = the server names it
+  note: string | null;                  // what a coupled choice moved, said under the place
   repos: Repo[];
-  place: string | null;                 // the folder this founding would start in
+  view: "repos" | "folders";
+  place: string | null;
   info: DirInfoResp | null; infoErr: string | null; infoSeq: number;
   plan: Plan | null; planErr: string | null; planFor: string | null; planSeq: number;
-  packs: Set<string>;                   // switched-on pack ids — empty IS today's founding
-  omitOpen: boolean;
-  packOpen: Set<string>;
-  orphan: string | null;                // the seatless worktree "Lane fortsetzen" seats
+  packs: Set<string>;                   // switched-on pack ids — empty sends no packs at all
+  touched: Map<string, boolean>;        // the owner's own switches against the role's preset
+  presetDue: boolean;                   // a role change waits for the plan it applies to
+  fresh: Set<string>; gone: string[];   // the last change, for one paint of light and strike
+  delta: { plus: string[]; minus: string[]; why: string } | null;
+  compare: boolean;
+  listOpen: boolean;                    // every pack of this start as a row, on demand
+  orphan: string | null;
   harness: string | null; model: string; effort: string; container: string; containerContext: string;
   dir: string; list: DirList | null; listErr: string | null; listSeq: number;
   find: string; hits: FindHit[] | null; findPartial: boolean; findSeq: number;
   findTimer: ReturnType<typeof setTimeout> | null;
-  error: string | null;                 // a refused founding, said next to the button
+  paintFolders: (() => void) | null;    // the open folder list repaints alone, so typing keeps focus
+  error: string | null;
   busy: boolean;
   proof: StartProof | null;
   pop: Pop | null;
   restore: HTMLElement | null;
   teardown: () => void;
+  // the four fields and the foot, each repainted on its own
+  fPlace: HTMLElement; fRole: HTMLElement; fProfile: HTMLElement; fContext: HTMLElement;
 }
 let S: State | null = null;
 
-// every button in this window activates on its own Enter. The shell consumes Enter in the capture
-// phase for the selected row (here: start); a focused tab, switch or option must keep its own.
+// every button in this window activates on its own Enter; the window's Enter-to-start reads it
 function btn(cls: string, text?: string): HTMLButtonElement {
   const b = el("button", cls, text) as HTMLButtonElement;
   b.type = "button";
@@ -105,12 +144,8 @@ function btn(cls: string, text?: string): HTMLButtonElement {
   return b;
 }
 const tilde = (p: string): string => p.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~");
-const kb = (n: number): string =>
-  `${n >= 10000 ? String(Math.round(n / 1000)) : (n / 1000).toFixed(1).replace(".", ",")} KB`;
 
 // the repos of the running fleet, busiest first, grouped by the canonical toplevel (SlotInfo.repo)
-// so a MAIN in a subdir and its lanes land on one row. A repo with no session is not here — that is
-// what the folder browser is for.
 function repoList(): Repo[] {
   const by = new Map<string, Repo>();
   for (const s of fleet) {
@@ -133,8 +168,21 @@ function chosenHarness(): HarnessInfo | null {
   return harnesses.find((h) => h.id === S?.harness) ?? agents.find((h) => h.default) ?? null;
 }
 
-// what this founding sends. Absent fields are the door's defaults; `packs` only as an explicit
-// choice, so with no switch on the body is byte-identical to a founding without packs.
+const isLaneEntry = (s: State): boolean => s.entry.kind === "lane";
+
+// the branch a typed name becomes: the server's own prefix and day stamp, the name as a slug.
+// Empty stays empty — the server then names the lane itself (createWorktree).
+function branchFor(name: string): string {
+  const slug = name.trim().toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .replace(/ß/g, "ss").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+  if (!slug) return "";
+  const d = new Date();
+  const stamp = `${String(d.getFullYear() % 100).padStart(2, "0")}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  return `fleet/${stamp}-${slug}`;
+}
+
+// what this founding sends. Absent fields are the door's defaults; `packs` only when at least one
+// is on, so a founding without packs is byte-identical to one from before packs existed.
 function foundingBody(): SpawnBody {
   const s = S!;
   return {
@@ -152,17 +200,17 @@ function foundingBody(): SpawnBody {
 function blocker(): string | null {
   const s = S!;
   if (!s.place) return "Wähle, wo die Session laufen soll.";
-  if (isLane(s.role)) {
-    if (s.info && !s.info.git) return "Eine Lane braucht ein Git-Repo.";
+  if (s.mode !== "repo") {
+    if (s.info && !s.info.git) return "Ein Worktree braucht ein Git-Repo.";
     if (chosenHarness()?.allowsLanes === false) return `${chosenHarness()!.id} läuft nur als Haupt-Session, nicht als Lane.`;
   }
-  if (s.role === "wt-old" && !s.orphan) return "Wähle den Worktree, der weiterlaufen soll.";
+  if (s.mode === "new" && s.name.trim() && !branchFor(s.name)) return "Der Name braucht mindestens einen Buchstaben oder eine Ziffer.";
+  if (s.mode === "old" && !s.orphan) return "Wähle den Worktree, der weiterlaufen soll.";
   if (s.packs.size) {
     if (s.planErr) return "Die gewählten Packs können nicht geprüft werden: " + s.planErr;
-    if (!s.plan) return "Die gewählten Packs warten auf den Plan für diesen Start.";
-    if (s.planFor !== planKey()) return "Der Plan der gewählten Packs gehört zu einem anderen Start.";
+    if (!s.plan || s.planFor !== planKey()) return "Der Plan für diesen Start wird gelesen …";
     if ([...s.packs].some((id) => !s.plan!.selected.some((p) => p.id === id)))
-      return "Ein gewähltes Pack passt nicht mehr zu diesem Start. Wähle ohne Packs oder prüfe die Auswahl.";
+      return "Ein gewähltes Pack passt nicht mehr zu diesem Start.";
   }
   return null;
 }
@@ -170,70 +218,88 @@ function blocker(): string | null {
 // --- open / close --------------------------------------------------------------------------------
 
 export function openPicker(slotId: number) {
+  open({ kind: "slot", slot: slotId });
+}
+
+// ⎇+ on a session (or the board's "New lane"): the same window, the repo and the lane preset
+export function openLaneFounding(repo: string, parent?: LaneAnchor) {
+  const names = barNames();
+  const from = parent ? fleet.find((x) => x.id === parent.slot) : undefined;
+  open({ kind: "lane", repo, parent, from: from ? barName(names, from) : "" });
+}
+
+function open(entry: Entry) {
   setDrawer(false);
   closeFounding();
   const restore = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const laneEntry = entry.kind === "lane";
   const shell = openShell({
     id: "found",
-    title: "Neue Session",
-    subtitle: `Slot ${slotId}`,
-    listWidth: 300,
-    // the keyboard moved the selection: the detail follows the cursor
-    onSelect: (row) => { const p = row.el.dataset.path; if (p) choosePlace(p, false); },
+    title: laneEntry ? "Neue Lane" : "Neue Session",
+    subtitle: entry.kind === "lane"
+      ? `${entry.from ? `von ${entry.from} · ` : ""}${baseName(entry.repo)} · nächster freier Platz`
+      : `Slot ${entry.slot} · frei`,
     onClose: () => {
       const s = S;
       S = null;
       if (!s) return;
       s.teardown();
+      s.flakes.dispose();
       if (s.findTimer) clearTimeout(s.findTimer);
       s.restore?.focus?.();
     },
   });
   shell.root.querySelector(".shellclose")?.replaceChildren(icon("x"));
+  const flakes = new Flakes();
+  shell.root.querySelector(".shellwin")?.prepend(flakes.canvas);
+  flakes.setActive(true);
+  const fPlace = el("section", "fdsec"), fRole = el("section", "fdsec"),
+    fProfile = el("section", "fdsec"), fContext = el("section", "fdsec");
+  shell.detail.replaceChildren(fPlace, fRole, fProfile, fContext);
   const repos = repoList();
   S = {
-    shell, slot: slotId, role: "plain", view: repos.length ? "repos" : "folders", repos, place: null,
+    shell, flakes, entry, role: laneEntry ? "lane" : "leer", mode: laneEntry ? "new" : "repo", name: "", note: null,
+    repos, view: repos.length ? "repos" : "folders", place: null,
     info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0,
-    packs: new Set(), omitOpen: false, packOpen: new Set(), orphan: null,
-    harness: null, model: "", effort: "", container: "", containerContext: "",
+    packs: new Set(), touched: new Map(), presetDue: true, fresh: new Set(), gone: [], delta: null, compare: false, listOpen: false,
+    orphan: null, harness: null, model: "", effort: "", container: "", containerContext: "",
     dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
-    findTimer: null, error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
+    findTimer: null, paintFolders: null, error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
+    fPlace, fRole, fProfile, fContext,
   };
-  // the option popovers (G4.1) own Escape, the arrows and Enter while one is open. WINDOW capture
-  // runs before the shell's document-capture handler, so an Escape here closes the popover and
-  // never the window, and an arrow walks the popover's rows instead of the place list.
+  // the popovers own Escape, the arrows and Enter while one is open. WINDOW capture runs before
+  // the shell's document-capture handler, so an Escape here closes the popover and never the window.
   const onKey = (e: KeyboardEvent) => {
     const s = S;
     if (!s?.pop) return;
-    const pop = s.shell.foot.querySelector<HTMLElement>(".fdpop");
+    const pop = s.shell.root.querySelector<HTMLElement>(".fdpop");
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closePop(true); return; }
     if (!pop || !(e.target instanceof Node) || !pop.contains(e.target)) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      if (e.target instanceof HTMLInputElement) return;
       e.preventDefault(); e.stopPropagation();
-      const rows = [...pop.querySelectorAll<HTMLElement>(".fdprow")];
+      const rows = [...pop.querySelectorAll<HTMLElement>(".fdprow:not(:disabled)")];
       const i = rows.indexOf(document.activeElement as HTMLElement);
       rows[e.key === "ArrowDown" ? Math.min(i + 1, rows.length - 1) : Math.max(i - 1, 0)]?.focus();
     } else if (e.key === "Enter") {
-      // a button activates natively; the free-text field applies its value
+      // a button activates natively; a free-text field applies its value
       e.stopPropagation();
-      if (e.target instanceof HTMLInputElement) { e.preventDefault(); e.target.dispatchEvent(new Event("change")); }
+      if (e.target instanceof HTMLInputElement && e.target.dataset.apply === "1") { e.preventDefault(); e.target.dispatchEvent(new Event("change")); }
     }
   };
   const onDown = (e: PointerEvent) => {
     const s = S;
     if (!s?.pop || !(e.target instanceof Node)) return;
-    const pop = s.shell.foot.querySelector(".fdpop");
-    const sw = s.shell.foot.querySelector(`.fdopt[data-pop="${s.pop}"]`);
+    const pop = s.shell.root.querySelector(".fdpop");
+    const sw = s.shell.root.querySelector(`[data-pop="${s.pop}"]`);
     if (pop?.contains(e.target) || sw?.contains(e.target)) return;
     closePop(false);
   };
-  // the arrows' two other jobs in the folder browser: → opens the selected folder, ← goes up. Only
-  // outside a text field with content, where they move the caret.
-  const onNav = (e: KeyboardEvent) => {
+  // Enter outside a control starts — the composer's grammar; ⌘/Ctrl+Enter starts from anywhere.
+  // Tab stays inside the window: past the last control it wraps to the first, and back.
+  const onWinKey = (e: KeyboardEvent) => {
     const s = S;
-    // a modal keeps Tab inside itself: past the last control it wraps to the first, and back
-    if (s && e.key === "Tab") {
+    if (!s) return;
+    if (e.key === "Tab") {
       const all = [...s.shell.root.querySelectorAll<HTMLElement>("button:not(:disabled), input, [tabindex='0']")]
         .filter((x) => x.offsetParent !== null && x.tabIndex >= 0);
       const first = all[0], last = all[all.length - 1];
@@ -241,175 +307,232 @@ export function openPicker(slotId: number) {
       else if (first && last && !e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
       return;
     }
-    if (!s || s.pop || s.view !== "folders" || (e.key !== "ArrowRight" && e.key !== "ArrowLeft")) return;
-    const t = e.target;
-    if (t instanceof HTMLInputElement && t.value) return;
-    if (t instanceof HTMLElement && t.closest(".fdtabs, .shellfoot")) return;
+    if (e.key !== "Enter" || e.defaultPrevented || s.pop) return;
+    const t = e.target instanceof HTMLElement ? e.target : null;
+    const inControl = !!t?.closest("button, input, select, textarea, [contenteditable]");
+    if (inControl && !(e.metaKey || e.ctrlKey)) return;
     e.preventDefault();
-    if (e.key === "ArrowLeft") { if (s.list?.parent) enterDir(s.list.parent); return; }
-    const row = s.shell.list.querySelector<HTMLElement>(".fdrow.sel");
-    if (row?.dataset.path && !s.hits) enterDir(row.dataset.path);
+    void start();
   };
   window.addEventListener("keydown", onKey, true);
   shell.root.addEventListener("pointerdown", onDown, true);
-  shell.root.addEventListener("keydown", onNav);
-  S.teardown = () => {
-    window.removeEventListener("keydown", onKey, true);
-  };
-  renderTools();
-  renderFoot();
-  if (repos.length) {
-    renderList();
-    choosePlace(repos[0]!.repo, false);
-  } else {
-    void loadDir("~");
-  }
+  shell.root.addEventListener("keydown", onWinKey);
+  // the pack line folds against its width, so a resized window refits it
+  const onResize = () => { const line = S?.fContext.querySelector<HTMLElement>(".fdctx:not(.all)"); if (line) fitLine(line); };
+  window.addEventListener("resize", onResize);
+  S.teardown = () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("resize", onResize); };
+  if (entry.kind === "lane") choosePlace(entry.repo);
+  else if (repos.length) choosePlace(repos[0]!.repo);
+  else { renderAll(); void loadDir("~"); }
   // fetch-once: the catalogue is needed exactly when a founding is being composed
-  void loadHarnesses().then(() => { if (S) { renderFoot(); renderDetail(); } });
-  focusList();
+  void loadHarnesses().then(() => { if (S) { renderProfile(); renderContext(); renderFoot(); } });
+  if (!isMobile()) S.shell.foot.querySelector<HTMLElement>(".fdgo")?.focus({ preventScroll: true });
 }
 
 export function closeFounding() {
   S?.shell.close();
 }
 
-function focusList() {
-  if (!S || isMobile()) return;
-  S.shell.list.focus({ preventScroll: true });
+function renderAll() {
+  // after a start the window shows its receipt; the four fields are no longer on screen
+  if (S?.proof) { renderProof(); return; }
+  renderPlace();
+  renderRole();
+  renderProfile();
+  renderContext();
+  renderFoot();
 }
 
-// --- the role tabs ---------------------------------------------------------------------------------
+function fieldHead(sec: HTMLElement, title: string, hint: string) {
+  const h = el("div", "fdlab");
+  h.append(el("span", "fdlabt", title), el("span", "fdlabh", hint));
+  sec.append(h);
+}
 
-function renderTools() {
+// --- ORT ------------------------------------------------------------------------------------------
+
+function renderPlace() {
   const s = S;
   if (!s) return;
-  const tabs = el("div", "fdtabs");
-  tabs.setAttribute("role", "group");
-  tabs.setAttribute("aria-label", "Rolle");
-  for (const r of ROLES) {
-    const on = r.id === s.role;
-    const b = btn(`fdtab${on ? " on" : ""}`, r.name);
-    b.setAttribute("aria-pressed", String(on));
-    b.title = r.say;
-    b.onclick = () => {
-      if (s.role === r.id) return;
-      s.role = r.id;
-      s.error = null;
-      if (r.id === "wt-old") s.packs.clear();
-      s.packOpen.clear();
-      s.orphan = null;
-      renderTools();
-      renderDetail();
-      renderFoot();
-    };
-    tabs.append(b);
-  }
-  const say = el("div", "fdsay", ROLES.find((r) => r.id === s.role)!.say);
-  s.shell.tools.replaceChildren(tabs, say);
-}
+  const sec = s.fPlace;
+  sec.replaceChildren();
+  fieldHead(sec, "Ort", "Wo der Agent arbeitet.");
+  const body = el("div", "fdbody");
+  sec.append(body);
+  const laneEntry = isLaneEntry(s);
 
-// --- the list: repos of the fleet, or the folder browser ------------------------------------------
-
-function placeRow(path: string, name: string, sub: string, right: string, hue: number | null, folder: boolean): HTMLElement {
-  const row = el("div", "fdrow");
-  row.dataset.path = path;
-  if (hue !== null) {
-    const dot = el("i", "fddot");
-    dot.style.setProperty("--proj-h", String(hue));
-    row.append(dot);
-  } else if (folder) {
-    const f = el("span", "fdfico");
-    f.append(icon("folder"));
-    row.append(f);
-  }
-  const main = el("div", "fdrmain");
-  main.append(el("div", "fdrname", name));
-  if (sub) main.append(el("div", "fdrsub", sub));
-  row.append(main);
-  if (right) row.append(el("span", "fdrright", right));
-  row.onclick = () => { choosePlace(path, true); };
-  return row;
-}
-
-function renderList() {
-  const s = S;
-  if (!s) return;
-  const list = s.shell.list;
-  list.tabIndex = 0;
-  list.setAttribute("aria-label", "Ort der Session — Pfeiltasten wählen, Enter startet");
-  list.replaceChildren();
-  const rows: ShellRow[] = [];
-  const open = () => { void start(); };
-  if (s.view === "repos") {
-    list.append(el("div", "fdsec", "Repos mit Sessions"));
-    const names = barNames();
-    for (const r of s.repos) {
-      const who = r.slots.map((x) => barName(names, x));
-      const right = who.length > 4 ? `${who.slice(0, 4).join(" ")} +${who.length - 4}` : who.join(" ");
-      const row = placeRow(r.repo, r.name, tilde(r.repo), right, projectHue(r.repo), false);
-      row.title = `${r.slots.length} Session${r.slots.length === 1 ? "" : "s"} in ${tilde(r.repo)}`;
-      list.append(row);
-      rows.push({ el: row, open });
-    }
-    const other = btn("fdother");
-    other.append(icon("folder"), el("span", "", "Anderer Ordner …"));
-    other.title = "Jeden Ordner auf diesem Rechner wählen — auch ein Repo ohne laufende Session.";
-    other.onclick = () => { s.view = "folders"; void loadDir(s.dir); };
-    list.append(other);
-  } else {
-    const nav = el("div", "fdnav");
-    if (s.repos.length) {
-      const back = btn("fdup", "‹ Repos");
-      back.title = "Zurück zu den Repos mit laufenden Sessions.";
-      back.onclick = () => { s.view = "repos"; s.find = ""; s.hits = null; renderList(); choosePlace(s.repos[0]!.repo, false); };
-      nav.append(back);
-    }
-    const up = btn("fdup", "↑");
-    up.title = "Eine Ebene höher (←).";
-    up.disabled = !s.list?.parent;
-    up.onclick = () => { if (s.list?.parent) enterDir(s.list.parent); };
-    nav.append(up, el("span", "fdcwd", tilde(s.list?.path ?? s.dir)));
-    const find = el("input", "fdfind") as HTMLInputElement;
-    find.type = "text";
-    find.placeholder = "Ordner suchen …";
-    find.spellcheck = false;
-    find.autocomplete = "off";
-    find.value = s.find;
-    find.oninput = () => { s.find = find.value; scheduleFind(); renderFolderRows(); };
-    list.append(nav, find);
-    const body = el("div", "fdfolders");
-    list.append(body);
-    renderFolderRows();
-    return;
-  }
-  s.shell.setRows(rows);
-  markSelected();
-}
-
-// the folder rows only — the nav and the search field above them stay, so typing keeps its focus
-function renderFolderRows() {
-  const s = S;
-  if (!s) return;
-  const body = s.shell.list.querySelector<HTMLElement>(".fdfolders");
-  if (!body) return;
-  body.replaceChildren();
-  const rows: ShellRow[] = [];
-  const open = () => { void start(); };
-  const add = (path: string, name: string, sub: string, repo: boolean) => {
-    const row = placeRow(path, name, sub, repo ? "git" : "", null, true);
-    row.ondblclick = () => enterDir(path);
-    const into = btn("fdinto");
-    into.tabIndex = -1;
-    into.append(icon("chevron"));
-    into.title = "Ordner öffnen (→ oder Doppelklick)";
-    into.onclick = (e) => { e.stopPropagation(); enterDir(path); };
-    row.append(into);
-    body.append(row);
-    rows.push({ el: row, open });
-  };
-  if (s.listErr) body.append(el("div", "fdnote warn", s.listErr));
-  else if (!s.list) body.append(el("div", "fdnote", "liest …"));
+  const card = btn("fdplace");
+  card.dataset.pop = "place";
+  card.setAttribute("aria-expanded", String(s.pop === "place"));
+  card.disabled = laneEntry;
+  card.title = laneEntry ? "Das ⎇+ startet die Lane im Repo der Session, an der es hängt." : "Ort wechseln — Repos mit Sessions oder jeder Ordner auf diesem Rechner.";
+  const dot = el("i", "fddot");
+  if (s.place) dot.style.setProperty("--proj-h", String(projectHue(s.place)));
+  const names = el("span", "fdpn");
+  names.append(el("span", "fdpname", s.place ? baseName(s.place) || s.place : "Ort wählen"),
+    el("span", "fdppath", s.place ? tilde(s.place) : "noch nichts gewählt"));
+  const facts = el("span", "fdpfacts");
+  const info = s.info;
+  if (s.infoErr) facts.append(el("span", "warn", "nicht lesbar"));
+  else if (!info) facts.append(el("span", "", s.place ? "liest …" : ""));
+  else if (!info.git) facts.append(el("span", "", "kein Git-Repo"));
   else {
+    facts.append(el("span", "mono", info.branch ?? "ohne Branch"));
+    facts.append(info.dirty ? el("span", "warn", `${info.dirty} ungesichert`) : el("span", "ok", "sauber"));
+    if (typeof info.ahead === "number" && typeof info.behind === "number" && (info.ahead || info.behind))
+      facts.append(el("span", "mono", `↑${info.ahead} ↓${info.behind}`));
+  }
+  if (!laneEntry) facts.append(icon("chevron"));
+  card.append(dot, names, facts);
+  card.onclick = () => togglePop("place");
+  body.append(card);
+  if (s.pop === "place") body.append(placePop());
+  if (s.infoErr) body.append(el("div", "fdnote warn", s.infoErr));
+
+  // who works here, by their names in the bar
+  const here = s.place ? fleet.filter((x) => x.cwd && (x.repo ?? x.cwd) === s.place) : [];
+  if (here.length) {
+    const row = el("div", "fdhere");
+    row.append(el("span", "", "Hier arbeiten"));
+    const bn = barNames();
+    for (const x of here.slice(0, 10)) {
+      const chip = el("span", "fdchip mono", barName(bn, x));
+      const meta = [x.model ? modelLabel(x.model) : "", x.effort ?? ""].filter(Boolean).join(" · ");
+      chip.title = `${x.label || baseName(x.cwd || "")}${meta ? ` — ${meta}` : ""}`;
+      row.append(chip);
+    }
+    if (here.length > 10) row.append(el("span", "", `+${here.length - 10}`));
+    body.append(row);
+  }
+
+  if (!laneEntry) {
+    const seg = el("div", "fdseg");
+    seg.setAttribute("role", "radiogroup");
+    seg.setAttribute("aria-label", "Arbeitsort");
+    const noGit = !!info && !info.git;
+    for (const [m, label, tip] of [
+      ["repo", "Direkt im Repo", "Der Agent arbeitet im Ordner selbst."],
+      ["new", "Neuer Worktree", "Eine Lane: eigener Worktree auf frischem Branch, wird später gelandet."],
+      ["old", "Worktree fortsetzen", "Setzt einen liegengebliebenen Worktree auf diesen Slot — die Arbeit darauf bleibt."],
+    ] as [Mode, string, string][]) {
+      const b = btn(`fdsegb${s.mode === m ? " on" : ""}`, label);
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(s.mode === m));
+      b.disabled = m !== "repo" && noGit;
+      b.title = b.disabled ? "Ein Worktree braucht ein Git-Repo." : tip;
+      b.onclick = () => setMode(m);
+      seg.append(b);
+    }
+    body.append(seg);
+  }
+  if (s.note) body.append(el("div", "fdcouple", s.note));
+
+  if (s.mode === "new") {
+    const field = el("label", "fdname");
+    field.append(el("span", "", "Name"));
+    const inp = el("input", "") as HTMLInputElement;
+    inp.type = "text";
+    inp.spellcheck = false;
+    inp.autocomplete = "off";
+    inp.value = s.name;
+    inp.placeholder = "leer lassen = automatischer Name";
+    inp.oninput = () => { s.name = inp.value; paintBranch(); renderFoot(); };
+    field.append(inp);
+    const branch = el("div", "fdbranch mono");
+    const paintBranch = () => {
+      const b = branchFor(s.name);
+      branch.textContent = s.name.trim() && !b ? "Dieser Name ergibt keinen Branch."
+        : `Branch ${b || "fleet/<Datum>-<Zufall>, automatisch"}${info?.branch ? ` · zweigt vom Integrationsbranch ab` : ""}`;
+    };
+    paintBranch();
+    body.append(field, branch);
+  }
+  if (s.mode === "old" && info?.git) {
+    const list = el("div", "fdorphans");
+    const orphans = info.orphans ?? [];
+    if (!orphans.length) list.append(el("div", "fdnote", "Keine — jeder Worktree dieses Repos hat einen Slot."));
+    for (const o of orphans) {
+      const on = s.orphan === o.path;
+      const b = btn(`fdorph${on ? " on" : ""}`);
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(on));
+      b.append(el("i", "fdradio"), el("span", "mono", baseName(o.path)), el("span", "fdmeta", o.branch || "ohne Branch"));
+      b.title = s.entry.kind === "slot" ? `Diesen Worktree auf Slot ${s.entry.slot} setzen.` : "";
+      b.onclick = () => { s.orphan = on ? null : o.path; renderPlace(); renderFoot(); };
+      list.append(b);
+    }
+    body.append(list);
+  }
+}
+
+// the place popover: the fleet's repos, or the folder browser over /api/dirs — the same field,
+// never a second window
+function placePop(): HTMLElement {
+  const s = S!;
+  const pop = el("div", "fdpop fdplacepop");
+  if (s.view === "repos") {
+    const bn = barNames();
+    for (const r of s.repos) {
+      const row = btn(`fdprow${r.repo === s.place ? " on" : ""}`);
+      const dot = el("i", "fddot");
+      dot.style.setProperty("--proj-h", String(projectHue(r.repo)));
+      const who = r.slots.map((x) => barName(bn, x));
+      row.append(dot, el("span", "fdprn", r.name), el("span", "fdmeta", tilde(r.repo)),
+        el("span", "fdprr mono", who.length > 4 ? `${who.slice(0, 4).join(" ")} +${who.length - 4}` : who.join(" ")));
+      row.title = `${r.slots.length} Session${r.slots.length === 1 ? "" : "s"} in ${tilde(r.repo)}`;
+      row.onclick = () => { closePop(false); choosePlace(r.repo); };
+      pop.append(row);
+    }
+    const other = btn("fdprow fdother");
+    other.append(icon("folder"), el("span", "", "Anderer Ordner …"), el("span", "fdmeta", "jeder Ordner auf diesem Rechner"));
+    other.onclick = () => { s.view = "folders"; void loadDir(s.dir); };
+    pop.append(other);
+    return pop;
+  }
+  const nav = el("div", "fdnav");
+  if (s.repos.length) {
+    const back = btn("fdnavb", "‹ Repos");
+    back.title = "Zurück zu den Repos mit laufenden Sessions.";
+    back.onclick = () => { s.view = "repos"; s.find = ""; s.hits = null; renderPlace(); focusPop(); };
+    nav.append(back);
+  }
+  const up = btn("fdnavb", "↑");
+  up.title = "Eine Ebene höher.";
+  up.disabled = !s.list?.parent;
+  up.onclick = () => { if (s.list?.parent) void loadDir(s.list.parent); };
+  nav.append(up, el("span", "fdcwd mono", tilde(s.list?.path ?? s.dir)));
+  if (s.list) {
+    const here = btn("fdnavb fdhereb", "Hier");
+    here.title = `Diesen Ordner wählen: ${tilde(s.list.path)}`;
+    here.onclick = () => { const p = s.list!.path; closePop(false); choosePlace(p); };
+    nav.append(here);
+  }
+  const find = el("input", "fdfind") as HTMLInputElement;
+  find.type = "text";
+  find.placeholder = "Ordner suchen …";
+  find.spellcheck = false;
+  find.autocomplete = "off";
+  find.value = s.find;
+  find.oninput = () => { s.find = find.value; scheduleFind(); paintFolders(); };
+  const rows = el("div", "fdfolders");
+  pop.append(nav, find, rows);
+  const add = (path: string, name: string, sub: string, repo: boolean) => {
+    const row = btn(`fdprow${path === s.place ? " on" : ""}`);
+    row.append(icon("folder"), el("span", "fdprn", name), el("span", "fdmeta", sub), el("span", "fdprr mono", repo ? "git" : ""));
+    row.title = `${tilde(path)} wählen`;
+    row.onclick = () => { closePop(false); choosePlace(path); };
+    const into = btn("fdinto");
+    into.append(icon("chevron"));
+    into.title = "Ordner öffnen";
+    into.onclick = (e) => { e.stopPropagation(); void loadDir(path); };
+    const wrap = el("div", "fdfrow");
+    wrap.append(row, into);
+    rows.append(wrap);
+  };
+  const paintFolders = () => {
+    rows.replaceChildren();
+    if (s.listErr) { rows.append(el("div", "fdnote warn", s.listErr)); return; }
+    if (!s.list) { rows.append(el("div", "fdnote", "liest …")); return; }
     const base = s.list.path;
     const repoSet = new Set(s.list.repos ?? []);
     const q = s.find.trim();
@@ -421,25 +544,24 @@ function renderFolderRows() {
         const h = byRel.get(r)!;
         add(h.path, h.name, r === h.name ? "" : r, h.repo);
       }
-      if (!s.hits.length) body.append(el("div", "fdnote", "Kein Ordner mit diesem Namen hier drunter."));
-      if (s.findPartial) body.append(el("div", "fdnote", "Die Suche hat nicht jeden Ordner gelesen — tiefer liegende Treffer können fehlen."));
+      if (!s.hits.length) rows.append(el("div", "fdnote", "Kein Ordner mit diesem Namen hier drunter."));
+      if (s.findPartial) rows.append(el("div", "fdnote", "Die Suche hat nicht jeden Ordner gelesen — tiefer liegende Treffer können fehlen."));
     } else {
       const names = q ? matchTree(s.list.dirs, q) : s.list.dirs;
       for (const d of names) add(`${base}/${d}`.replace("//", "/"), d, "", repoSet.has(d));
-      if (!names.length) body.append(el("div", "fdnote", q ? "Hier kein passender Ordner." : "Dieser Ordner hat keine Unterordner."));
-      if (!q && s.list.capped) body.append(el("div", "fdnote", `${s.list.dirs.length} von ${s.list.total} Ordnern gezeigt — suche, um die übrigen zu finden.`));
+      if (!names.length) rows.append(el("div", "fdnote", q ? "Hier kein passender Ordner." : "Dieser Ordner hat keine Unterordner."));
+      if (!q && s.list.capped) rows.append(el("div", "fdnote", `${s.list.dirs.length} von ${s.list.total} Ordnern gezeigt — suche, um die übrigen zu finden.`));
     }
-  }
-  s.shell.setRows(rows);
-  markSelected();
+  };
+  paintFolders();
+  s.paintFolders = paintFolders;
+  return pop;
 }
 
-function markSelected() {
+function focusPop() {
   const s = S;
   if (!s) return;
-  const rows = [...s.shell.list.querySelectorAll<HTMLElement>(".fdrow")];
-  const i = rows.findIndex((r) => r.dataset.path === s.place);
-  if (i >= 0) s.shell.select(i, true, false);
+  s.shell.root.querySelector<HTMLElement>(".fdpop input.fdfind, .fdpop .fdprow.on, .fdpop .fdprow, .fdpop input")?.focus({ preventScroll: true });
 }
 
 async function loadDir(path: string) {
@@ -451,24 +573,17 @@ async function loadDir(path: string) {
   s.listErr = null;
   s.find = "";
   s.hits = null;
-  renderList();
+  s.pop = "place";
+  renderPlace();
+  focusPop();
   const res = await api(`/api/dirs?path=${encodeURIComponent(path)}`);
   if (S !== s || seq !== s.listSeq) return;
   const j = (await res.json().catch(() => null)) as (DirList & { error?: string }) | null;
   if (S !== s || seq !== s.listSeq) return;
-  if (!res.ok || !j || !Array.isArray(j.dirs)) {
-    s.listErr = j?.error ?? `Der Server antwortete ${res.status} für diesen Ordner.`;
-  } else {
-    s.list = j;
-    s.dir = j.path;
-  }
-  renderList();
-  // the folder you are IN is the first choice: Enter founds here, a row below narrows it
-  if (s.list) choosePlace(s.list.path, false);
-  s.shell.list.querySelector<HTMLInputElement>(".fdfind")?.focus({ preventScroll: true });
+  if (!res.ok || !j || !Array.isArray(j.dirs)) s.listErr = j?.error ?? `Der Server antwortete ${res.status} für diesen Ordner.`;
+  else { s.list = j; s.dir = j.path; }
+  if (s.pop === "place") { renderPlace(); focusPop(); }
 }
-
-function enterDir(path: string) { void loadDir(path); }
 
 // two letters and more search BELOW the current folder on the server (findDirs: one walk, one
 // budget, `truncated` said out loud); one letter only filters the level on screen
@@ -485,13 +600,11 @@ function scheduleFind() {
     if (S !== s || seq !== s.findSeq || s.find.trim() !== q) return;
     s.hits = res.ok && j && Array.isArray(j.hits) ? j.hits : [];
     s.findPartial = !!j?.truncated;
-    renderFolderRows();
+    s.paintFolders?.();
   }, 220);
 }
 
-// --- the chosen place -----------------------------------------------------------------------------
-
-function choosePlace(path: string, byClick: boolean) {
+function choosePlace(path: string) {
   const s = S;
   if (!s) return;
   if (s.place !== path) {
@@ -502,16 +615,14 @@ function choosePlace(path: string, byClick: boolean) {
     s.planErr = null;
     s.planFor = null;
     s.packs = new Set();
+    s.touched.clear();
+    s.presetDue = true;
+    s.delta = null;
     s.orphan = null;
-    s.omitOpen = false;
-    s.packOpen.clear();
     s.error = null;
     void loadInfo();
   }
-  markSelected();
-  renderDetail();
-  renderFoot();
-  if (byClick && isMobile()) s.shell.showDetail(true);
+  renderAll();
 }
 
 async function loadInfo() {
@@ -521,280 +632,156 @@ async function loadInfo() {
   const path = s.place;
   const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`);
   if (S !== s || seq !== s.infoSeq || s.place !== path) return; // latest-wins
-  if (res.status === 404) { s.infoErr = SKEW_NOTE; renderDetail(); return; }
+  if (res.status === 404) { s.infoErr = SKEW_NOTE; renderAll(); return; }
   const info = (await res.json().catch(() => null)) as DirInfoResp | null;
   if (S !== s || seq !== s.infoSeq || s.place !== path) return;
-  if (!res.ok || !info) { s.infoErr = info?.error ?? `Der Server antwortete ${res.status} für diesen Ordner.`; renderDetail(); return; }
+  if (!res.ok || !info) { s.infoErr = info?.error ?? `Der Server antwortete ${res.status} für diesen Ordner.`; renderAll(); return; }
   s.info = info;
-  renderDetail();
-  renderFoot();
+  // a folder without git has no worktree to found and no plan to read
+  if (!info.git && s.mode !== "repo" && !isLaneEntry(s)) { s.mode = "repo"; if (s.role === "lane") s.role = "leer"; }
+  renderAll();
 }
 
-// the plan hangs off (place, harness, mode); a change of any of the three reads it again
-function planKey(): string {
-  const s = S!;
-  return `${s.place ?? ""}|${s.harness ?? harnesses.find((h) => h.default)?.id ?? ""}|${isLane(s.role) ? "lane" : "main"}|${s.role}|${s.model}`;
-}
+// --- ROLLE ----------------------------------------------------------------------------------------
 
-async function loadPlan() {
+function renderRole() {
   const s = S;
-  if (!s?.place) return;
-  const seq = ++s.planSeq;
-  const path = s.place;
-  const key = planKey();
-  s.planFor = key;
-  s.plan = null;
-  s.planErr = null;
-  s.packOpen.clear();
-  const harness = s.harness ?? harnesses.find((h) => h.default)?.id ?? "";
-  const mode = isLane(s.role) ? "lane" : "main";
-  try {
-    const res = await api(`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`);
-    if (S !== s || seq !== s.planSeq || s.place !== path) return; // latest-wins
-    if (key !== planKey()) return;
-    if (res.status === 404) { s.planErr = SKEW_NOTE; renderDetail(); return; }
-    const j: unknown = await res.json().catch(() => null);
-    if (S !== s || seq !== s.planSeq || s.place !== path || key !== planKey()) return;
-    if (!res.ok || !validPlan(j)) {
-      s.planErr = `Der Plan für diesen Start ist nicht lesbar (Antwort ${res.status}).`;
-    } else s.plan = j;
-  } catch {
-    if (S !== s || seq !== s.planSeq || key !== planKey()) return;
-    s.planErr = "Der Plan für diesen Start konnte nicht geladen werden.";
-  } finally {
-    if (S === s && seq === s.planSeq) { renderDetail(); renderFoot(); }
-  }
-}
-
-function validPlan(j: unknown): j is Plan {
-  if (!j || typeof j !== "object" || !("selected" in j) || !("omitted" in j)) return false;
-  return Array.isArray(j.selected) && Array.isArray(j.omitted)
-    && j.selected.every((p: unknown) => !!p && typeof p === "object"
-      && "id" in p && typeof p.id === "string" && "bytes" in p && typeof p.bytes === "number"
-      && Number.isFinite(p.bytes) && p.bytes >= 0 && "source" in p
-      && (p.source === "fleet-seed" || p.source === "repo-manifest")
-      && (!("useWhen" in p) || p.useWhen === undefined || typeof p.useWhen === "string"))
-    && j.omitted.every((p: unknown) => !!p && typeof p === "object"
-      && "id" in p && typeof p.id === "string" && "reason" in p && typeof p.reason === "string");
-}
-
-function renderDetail() {
-  const s = S;
-  if (s?.proof) { renderProof(); return; }
   if (!s) return;
-  const d = s.shell.detail;
-  d.replaceChildren();
-  if (!s.place) {
-    d.append(el("div", "fdnote", "Wähle, wo die Session laufen soll."));
-    return;
+  const sec = s.fRole;
+  sec.replaceChildren();
+  fieldHead(sec, "Rolle", "Wählt den Kontext vor — du kannst alles ändern.");
+  const grid = el("div", "fdroles");
+  grid.setAttribute("role", "radiogroup");
+  grid.setAttribute("aria-label", "Rolle");
+  for (const r of ROLES) {
+    const on = s.role === r.id;
+    const b = btn(`fdrole${on ? " on" : ""}`);
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(on));
+    b.disabled = isLaneEntry(s) && r.id !== "lane";
+    b.title = b.disabled ? "⎇+ startet eine Lane — andere Rollen über einen freien Slot." : r.say;
+    const head = el("span", "fdrn");
+    head.append(el("span", "fdglyph", r.glyph), el("span", "", r.name));
+    b.append(head, el("span", "fdrs", r.say), el("span", "fdrk mono", roleBrings(r.id)));
+    b.onclick = () => setRole(r.id);
+    grid.append(b);
   }
-  const head = el("div", "fdhead");
-  head.append(el("div", "fdname", baseName(s.place) || s.place), el("div", "fdpath", tilde(s.place)));
-  d.append(head);
-  if (s.infoErr) { d.append(el("div", "fdnote warn", s.infoErr)); return; }
-  const info = s.info;
-  if (!info) { d.append(el("div", "fdnote", "liest …")); return; }
-
-  // the state line: branch, the working tree, the upstream — each only where git answered
-  if (info.git) {
-    const facts = el("div", "fdfacts");
-    facts.append(el("span", "mono", info.branch ?? "ohne Branch"));
-    facts.append(info.dirty
-      ? el("span", "warn", `${info.dirty} ungesichert`)
-      : el("span", "ok", "sauber"));
-    if (typeof info.ahead === "number" && typeof info.behind === "number")
-      facts.append(el("span", "mono", `↑${info.ahead} ↓${info.behind}`));
-    if (info.worktree) facts.append(el("span", "", "Worktree"));
-    d.append(facts);
-  } else {
-    d.append(el("div", "fdnote", "Kein Git-Repo — hier startet eine Session, keine Lane."));
-  }
-
-  // who works here, by their names in the bar; model and effort only where the slot knows them
-  const here = fleet.filter((x) => x.cwd && (x.repo ?? x.cwd) === s.place);
-  if (here.length) {
-    const sec = el("div", "fdsecd");
-    sec.append(el("div", "fdh", "Hier arbeiten"));
-    const names = barNames();
-    for (const x of here.slice(0, 8)) {
-      const row = el("div", "fdwho");
-      const meta = [x.model ? modelLabel(x.model) : "", x.effort ?? ""].filter(Boolean).join(" · ");
-      row.append(el("span", "fdbar", barName(names, x)), el("span", "fdlbl", x.label || baseName(x.cwd || "")),
-        el("span", "fdmeta", meta));
-      sec.append(row);
-    }
-    if (here.length > 8) sec.append(el("div", "fdnote", `und ${here.length - 8} weitere`));
-    d.append(sec);
-  }
-
-  // "Lane fortsetzen": the repo's worktrees no slot holds, one to pick (G4.4)
-  if (s.role === "wt-old" && info.git) {
-    const sec = el("div", "fdsecd");
-    sec.append(el("div", "fdh", "Liegengebliebene Worktrees"));
-    const orphans = info.orphans ?? [];
-    if (!orphans.length) sec.append(el("div", "fdnote", "Keine — jeder Worktree dieses Repos hat einen Slot."));
-    for (const o of orphans) {
-      const on = s.orphan === o.path;
-      const b = btn(`fdpick${on ? " on" : ""}`);
-      b.setAttribute("aria-pressed", String(on));
-      b.append(el("span", "mono", baseName(o.path)), el("span", "fdmeta", o.branch || "ohne Branch"));
-      b.title = `Diesen Worktree auf Slot ${s.slot} setzen.`;
-      b.onclick = () => { s.orphan = on ? null : o.path; renderDetail(); renderFoot(); };
-      sec.append(b);
-    }
-    d.append(sec);
-  }
-
-  // what the founding hands the agent: each deliverable pack a switch (default off), the rest
-  // behind one fold with their reasons
-  if (info.git) {
-    if (s.planFor !== planKey()) void loadPlan();
-    renderFoot();
-    const sec = el("div", "fdsecd");
-    sec.append(el("div", "fdh", "Mitgeben"));
-    if (s.planErr) sec.append(el("div", "fdnote warn", s.planErr));
-    else if (!s.plan) sec.append(el("div", "fdnote", "liest …"));
-    else {
-      const locked = s.role === "wt-old";
-      for (const p of s.plan.selected) {
-        const row = el("div", "fdpackrow");
-        const b = btn("fdpack");
-        b.setAttribute("role", "switch");
-        b.disabled = locked;
-        b.title = "Mitgeben — Klick schaltet, ob dieses Pack beim Start mitgeht.";
-        b.append(el("span", "fdsw"), el("span", "fdpid", p.id), el("span", "fdpuse", p.useWhen ?? ""),
-          el("span", "fdpkb", kb(p.bytes)));
-        const detail = el("div", "fdpackdetail");
-        detail.id = `fdpack-${s.plan.selected.indexOf(p)}`;
-        const state = el("div", "fdpackstate");
-        const sw = btn("fdpack fdpackchoice", "Mitgeben");
-        sw.setAttribute("role", "switch");
-        sw.disabled = locked;
-        const update = () => {
-          const on = s.packs.has(p.id);
-          for (const control of [b, sw]) {
-            control.classList.toggle("on", on);
-            control.setAttribute("aria-checked", String(on));
-          }
-          detail.classList.toggle("preview", !on || locked);
-          state.textContent = locked ? "Nicht mitgegeben: vorhandener Worktree"
-            : on ? "Beim Start mitgegeben" : "Vorschau: würde beim Auswählen mitgegeben";
-        };
-        const toggle = () => {
-          if (s.packs.has(p.id)) s.packs.delete(p.id); else s.packs.add(p.id);
-          update();
-          renderFoot();
-        };
-        b.onclick = toggle;
-        sw.onclick = toggle;
-        detail.append(state, el("div", "", `Zweck: ${p.useWhen ?? "im Plan nicht angegeben"}`),
-          el("div", "", `Herkunft: ${p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"}`),
-          el("div", "", `Größe: ${kb(p.bytes)}`), sw,
-          el("div", "fdnote", "Verweise, Fassung und Hash stehen erst im Startbeleg nach dem Start."));
-        update();
-        const fold = packFold(p.id, detail);
-        row.append(b, fold, detail);
-        sec.append(row);
-      }
-      if (locked && s.plan.selected.length)
-        sec.append(el("div", "fdnote", "Ein vorhandener Worktree bekommt keine Packs — sie gehen nur bei einer frischen Gründung mit."));
-      if (!s.plan.selected.length && !s.plan.omitted.length)
-        sec.append(el("div", "fdnote", "Dieses Repo erklärt keine Packs."));
-      const om = s.plan.omitted;
-      if (om.length) {
-        const fold = btn(`fdfold${s.omitOpen ? " open" : ""}`);
-        fold.setAttribute("aria-expanded", String(s.omitOpen));
-        // "weitere" only next to switches; alone, the fold is the whole answer
-        const n = s.plan.selected.length
-          ? `${om.length} ${om.length === 1 ? "weiteres passt" : "weitere passen"}`
-          : `${om.length} ${om.length === 1 ? "Pack passt" : "Packs passen"}`;
-        fold.append(el("span", "", `${n} nicht zu diesem Start`), icon("chevron"));
-        fold.onclick = () => { s.omitOpen = !s.omitOpen; renderDetail(); };
-        sec.append(fold);
-        if (s.omitOpen) for (const o of om) {
-          const row = el("div", "fdomit");
-          row.title = `intern: ${o.reason}`;
-          row.append(el("span", "fdpid", o.id), el("span", "fdpuse", OMIT_SAY[o.reason] ?? o.reason));
-          const detail = el("div", "fdpackdetail preview");
-          detail.id = `fdomit-${om.indexOf(o)}`;
-          detail.append(el("div", "fdpackstate", `Nicht mitgegeben: ${OMIT_SAY[o.reason] ?? o.reason}`),
-            el("div", "", "Zweck, Herkunft und Größe: im Plan für ausgelassene Packs nicht angegeben."),
-            el("div", "fdnote", "Verweise, Fassung und Hash stehen erst im Startbeleg nach dem Start."));
-          row.append(packFold(o.id, detail), detail);
-          sec.append(row);
-        }
-      }
-    }
-    d.append(sec);
-  }
-
-  if (info.recent?.length) {
-    const sec = el("div", "fdsecd");
-    sec.append(el("div", "fdh", "Zuletzt"));
-    for (const c of info.recent.slice(0, 3)) {
-      const row = el("div", "fdcommit");
-      row.append(el("span", "mono", c.hash), el("span", "fdcs", c.subject), el("span", "fdmeta", fmtTs(c.ts)));
-      sec.append(row);
-    }
-    d.append(sec);
-  }
+  sec.append(grid);
 }
 
-function packFold(id: string, detail: HTMLElement): HTMLButtonElement {
+// the card's foot: what the role hands over HERE, counted against this start's plan
+function roleBrings(r: Role): string {
   const s = S!;
-  const fold = btn("fdfold fdpackfold", "Details");
-  fold.append(icon("chevron"));
-  fold.setAttribute("aria-controls", detail.id);
-  fold.setAttribute("aria-label", `Details zu ${id}`);
-  const update = () => {
-    const open = s.packOpen.has(id);
-    fold.setAttribute("aria-expanded", String(open));
-    fold.classList.toggle("open", open);
-    detail.hidden = !open;
-  };
-  fold.onclick = () => {
-    if (s.packOpen.has(id)) s.packOpen.delete(id); else s.packOpen.add(id);
-    update();
-  };
-  update();
-  return fold;
+  if (r === "orch") return "Rollenkarte";
+  const p = presets[r];
+  if (!s.plan) return p.base === "all" ? "alle passenden Packs" : p.plus.length ? `${p.plus.length} Packs` : "keine Packs";
+  const n = s.plan.selected.filter((x) => presetHas(p, x.id)).length;
+  return n ? `${n} ${n === 1 ? "Pack" : "Packs"}` : "keine Packs";
 }
 
-// --- the foot: how it runs, and the one button -------------------------------------------------
-
-function closePop(refocus: boolean) {
+function setRole(r: Role, why?: string) {
   const s = S;
-  if (!s?.pop) return;
-  const which = s.pop;
-  s.pop = null;
-  renderFoot();
-  if (refocus) s.shell.foot.querySelector<HTMLElement>(`.fdopt[data-pop="${which}"]`)?.focus();
+  if (!s || (s.role === r && why === undefined)) return;
+  const prev = s.role;
+  s.role = r;
+  s.error = null;
+  s.touched.clear();
+  s.note = why ?? null;
+  // the lane role and a worktree are one choice: choosing one moves the other, said out loud
+  if (r === "lane" && s.mode === "repo") { s.mode = "new"; s.note = "Ort → Neuer Worktree: eine Lane arbeitet im eigenen Worktree."; }
+  if (r !== "lane" && s.mode !== "repo") { s.mode = "repo"; s.note = "Ort → Direkt im Repo: nur eine Lane bekommt einen Worktree."; }
+  applyPreset(`${ROLES.find((x) => x.id === r)!.name} statt ${ROLES.find((x) => x.id === prev)!.name}`);
+  renderAll();
+}
+
+function setMode(m: Mode) {
+  const s = S;
+  if (!s || s.mode === m) return;
+  s.mode = m;
+  s.error = null;
+  if (m !== "repo" && s.role !== "lane") { setRole("lane", "Rolle → Lane: ein Worktree ist eine Lane."); return; }
+  if (m === "repo" && s.role === "lane") { setRole("leer", "Rolle → Leer: direkt im Repo läuft keine Lane."); return; }
+  s.note = null;
+  if (m === "old") { s.touched.clear(); applyPreset(""); }
+  renderAll();
+}
+
+// THE PRESET MEETS THE PLAN. With the plan of this start at hand, the switches become the role's
+// preset plus the owner's own touches, and the change is kept for one paint (light in, strike
+// out). Without it, the preset waits for loadPlan — nothing switches against a plan nobody read.
+function applyPreset(why: string) {
+  const s = S!;
+  if (!s.plan || s.planFor !== planKey()) { s.presetDue = true; s.delta = why ? { plus: [], minus: [], why } : null; return; }
+  s.presetDue = false;
+  const before = s.packs;
+  const next = new Set<string>();
+  if (s.mode !== "old") {
+    for (const p of s.plan.selected) {
+      const on = s.touched.get(p.id) ?? presetHas(presets[s.role], p.id);
+      if (on) next.add(p.id);
+    }
+  }
+  s.packs = next;
+  const plus = [...next].filter((x) => !before.has(x));
+  const minus = [...before].filter((x) => !next.has(x));
+  s.fresh = new Set(plus);
+  s.gone = minus;
+  const label = why || s.delta?.why || "";
+  s.delta = plus.length || minus.length ? { plus, minus, why: label } : null;
+}
+
+// --- PROFIL ---------------------------------------------------------------------------------------
+
+function renderProfile() {
+  const s = S;
+  if (!s) return;
+  const sec = s.fProfile;
+  sec.replaceChildren();
+  fieldHead(sec, "Profil", "Wie der Agent läuft.");
+  const body = el("div", "fdbody");
+  const row = el("div", "fdprof");
+  const h = chosenHarness();
+  if (h) {
+    row.append(profField("harness", "Agent", h.id, false, agentHarnesses().length < 2,
+      agentHarnesses().length < 2 ? "Auf diesem Rechner ist nur dieser Agent eingerichtet." : "Welcher Agent in dieser Session läuft."));
+    if (h.supports.model)
+      row.append(profField("model", "Modell", s.model ? modelLabel(s.model) : modelShown(h), !s.model, false,
+        s.model ? `Modell ${s.model}` : "Ohne Angabe startet der Adapter sein eigenes."));
+    if (h.supports.effort && h.effortLevels.length)
+      row.append(profField("effort", "Effort", s.effort || "Adapter wählt", !s.effort, false,
+        "Wie gründlich der Agent denkt — ohne Angabe wählt der Adapter."));
+    if (h.supports.container)
+      row.append(profField("container", "Container", s.container || containerDefaults?.container || "Fleet-Standard", !s.container, false,
+        "Container und Docker-Daemon dieser Session — leer heißt der Fleet-Standard."));
+  } else row.append(el("div", "fdnote", "Agenten werden gelesen …"));
+  body.append(row, el("div", "fdpmeta", "Ausführungsrechte: Fleet-Standard, hier nicht wählbar."));
+  sec.append(body);
+}
+
+function profField(which: Pop, label: string, value: string, dim: boolean, fixed: boolean, tip: string): HTMLElement {
+  const s = S!;
+  const wrap = el("div", "fdpfw");
+  const b = btn(`fdpf${dim ? " dim" : ""}${s.pop === which ? " open" : ""}`);
+  b.dataset.pop = which;
+  b.setAttribute("aria-expanded", String(s.pop === which));
+  b.disabled = fixed;
+  b.title = tip;
+  const v = el("span", "fdpfv");
+  v.append(el("span", "", value));
+  if (!fixed) v.append(icon("chevron"));
+  b.append(el("span", "fdpfl", label), v);
+  b.onclick = () => togglePop(which);
+  wrap.append(b);
+  if (s.pop === which) wrap.append(popBody(which));
+  return wrap;
 }
 
 function popRow(label: string, sub: string, on: boolean, pick: () => void): HTMLButtonElement {
   const r = btn(`fdprow${on ? " on" : ""}`);
-  r.append(el("span", "", label));
+  r.append(el("span", "fdprn", label));
   if (sub) r.append(el("span", "fdmeta", sub));
-  r.onclick = () => { pick(); closePop(true); renderDetail(); };
+  r.onclick = () => { pick(); closePop(true); renderAll(); };
   return r;
-}
-
-function optSwitch(which: Pop, value: string, dim: boolean, tip: string): HTMLElement {
-  const s = S!;
-  const wrap = el("div", "fdoptw");
-  const b = btn(`fdopt${dim ? " dim" : ""}${s.pop === which ? " open" : ""}`);
-  b.dataset.pop = which;
-  b.setAttribute("aria-expanded", String(s.pop === which));
-  b.title = tip;
-  b.append(el("span", "", value), icon("chevron"));
-  b.onclick = () => {
-    s.pop = s.pop === which ? null : which;
-    renderFoot();
-    s.shell.foot.querySelector<HTMLElement>(".fdpop .fdprow.on, .fdpop .fdprow, .fdpop input")?.focus();
-  };
-  wrap.append(b);
-  if (s.pop === which) wrap.append(popBody(which));
-  return wrap;
 }
 
 function popBody(which: Pop): HTMLElement {
@@ -816,23 +803,22 @@ function popBody(which: Pop): HTMLElement {
   } else if (which === "model" && h) {
     pop.append(popRow(modelShown(h), "ohne Angabe", s.model === "", () => { s.model = ""; }));
     for (const m of h.models ?? []) if (m) {
-      const notice = modelNotice(h.id, m);
-      // two ids can share a display name (the 1M window is a property of the entry, not the id), so
-      // the row carries the id itself under the name; "superseded" is said as the owner reads it
-      const said = notice.replace(/^superseded/, "abgelöst");
+      // two ids can share a display name, so the row carries the id under the name
+      const said = modelNotice(h.id, m).replace(/^superseded/, "abgelöst");
       pop.append(popRow(modelLabel(m), said ? `${m} · ${said}` : m, s.model === m, () => { s.model = m; }));
     }
-    const inWrap = el("label", "fdpin");
-    inWrap.append(el("span", "", "Eigener Wert"));
+    const w = el("label", "fdpin");
+    w.append(el("span", "", "Eigener Wert"));
     const inp = el("input", "") as HTMLInputElement;
     inp.type = "text";
     inp.spellcheck = false;
     inp.autocomplete = "off";
     inp.value = s.model;
     inp.placeholder = "genau so, wie der Adapter ihn liest";
-    inp.onchange = () => { s.model = inp.value.trim(); closePop(true); renderDetail(); };
-    inWrap.append(inp);
-    pop.append(inWrap);
+    inp.dataset.apply = "1";
+    inp.onchange = () => { s.model = inp.value.trim(); closePop(true); renderAll(); };
+    w.append(inp);
+    pop.append(w);
   } else if (which === "effort" && h) {
     pop.append(popRow("Adapter wählt", "ohne Angabe", s.effort === "", () => { s.effort = ""; }));
     for (const lv of h.effortLevels) pop.append(popRow(lv, "", s.effort === lv, () => { s.effort = lv; }));
@@ -847,7 +833,7 @@ function popBody(which: Pop): HTMLElement {
       inp.value = v;
       inp.placeholder = ph;
       inp.title = tip;
-      inp.oninput = () => set(inp.value.trim());
+      inp.oninput = () => { set(inp.value.trim()); renderFoot(); };
       w.append(inp);
       return w;
     };
@@ -862,11 +848,323 @@ function popBody(which: Pop): HTMLElement {
 }
 
 // the model a founding without a model value gets: the catalogue names it for the default adapter
-// only (server.ts DEFAULT_MODEL); elsewhere the adapter decides, and the switch says who
+// only (server.ts DEFAULT_MODEL); elsewhere the adapter decides, and the field says who
 function modelShown(h: HarnessInfo): string {
   if (h.default && defaultModel) return modelLabel(defaultModel);
   return "Adapter wählt";
 }
+
+function togglePop(which: Pop) {
+  const s = S;
+  if (!s) return;
+  s.pop = s.pop === which ? null : which;
+  if (which === "place" && s.pop) s.view = s.view === "folders" && s.list ? "folders" : s.repos.length ? "repos" : "folders";
+  renderAll();
+  if (s.pop) focusPop();
+}
+
+function closePop(refocus: boolean) {
+  const s = S;
+  if (!s?.pop) return;
+  const which = s.pop;
+  s.pop = null;
+  renderAll();
+  if (refocus) s.shell.root.querySelector<HTMLElement>(`[data-pop="${which}"]`)?.focus();
+}
+
+// --- KONTEXT --------------------------------------------------------------------------------------
+
+// the plan hangs off (place, harness, mode); a change of any of the three reads it again
+function planKey(): string {
+  const s = S!;
+  return `${s.place ?? ""}|${s.harness ?? harnesses.find((h) => h.default)?.id ?? ""}|${s.mode === "repo" ? "main" : "lane"}`;
+}
+
+async function loadPlan() {
+  const s = S;
+  if (!s?.place) return;
+  const seq = ++s.planSeq;
+  const path = s.place;
+  const key = planKey();
+  s.planFor = key;
+  s.plan = null;
+  s.planErr = null;
+  const harness = s.harness ?? harnesses.find((h) => h.default)?.id ?? "";
+  const mode = s.mode === "repo" ? "main" : "lane";
+  try {
+    const res = await api(`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`);
+    if (S !== s || seq !== s.planSeq || s.place !== path || key !== planKey()) return; // latest-wins
+    if (res.status === 404) { s.planErr = SKEW_NOTE; return; }
+    const j: unknown = await res.json().catch(() => null);
+    if (S !== s || seq !== s.planSeq || s.place !== path || key !== planKey()) return;
+    if (!res.ok || !validPlan(j)) s.planErr = `Der Plan für diesen Start ist nicht lesbar (Antwort ${res.status}).`;
+    else s.plan = j;
+  } catch {
+    if (S !== s || seq !== s.planSeq || key !== planKey()) return;
+    s.planErr = "Der Plan für diesen Start konnte nicht geladen werden.";
+  } finally {
+    if (S === s && seq === s.planSeq) {
+      // a plan that cannot be read switches everything off: the start then carries no packs
+      if (s.planErr) { s.packs = new Set(); s.presetDue = true; }
+      else if (s.plan) applyPreset("");
+      renderRole(); renderContext(); renderFoot();
+    }
+  }
+}
+
+function validPlan(j: unknown): j is Plan {
+  if (!j || typeof j !== "object" || !("selected" in j) || !("omitted" in j)) return false;
+  return Array.isArray(j.selected) && Array.isArray(j.omitted)
+    && j.selected.every((p: unknown) => !!p && typeof p === "object"
+      && "id" in p && typeof p.id === "string" && "bytes" in p && typeof p.bytes === "number"
+      && Number.isFinite(p.bytes) && p.bytes >= 0 && "source" in p
+      && (p.source === "fleet-seed" || p.source === "repo-manifest")
+      && (!("useWhen" in p) || p.useWhen === undefined || typeof p.useWhen === "string"))
+    && j.omitted.every((p: unknown) => !!p && typeof p === "object"
+      && "id" in p && typeof p.id === "string" && "reason" in p && typeof p.reason === "string");
+}
+
+function renderContext() {
+  const s = S;
+  if (!s) return;
+  const sec = s.fContext;
+  sec.replaceChildren();
+  fieldHead(sec, "Kontext", "Was der Agent beim Start mitbekommt.");
+  const body = el("div", "fdbody");
+  sec.append(body);
+  if (!s.info?.git) {
+    body.append(el("div", "fdnote", s.info ? "Kein Git-Repo — hier gibt es keine Packs." : "Wird gelesen, sobald der Ort feststeht."));
+    return;
+  }
+  if (s.planFor !== planKey()) void loadPlan();
+  const line = el("div", "fdctx");
+  if (s.role === "orch") {
+    const card = el("span", "fdcx fix srv", "Rollenkarte");
+    card.title = "Der Server stellt der Orchestratorin beim Start ihre Karte mit Kontext-Ankern zu.";
+    line.append(card);
+  }
+  if (s.planErr) { body.append(line, el("div", "fdnote warn", `${s.planErr} Der Start geht dann ohne Packs.`)); return; }
+  if (!s.plan || s.planFor !== planKey()) { line.append(el("span", "fdnote", "Plan wird gelesen …")); body.append(line); return; }
+  const plan = s.plan;
+  if (s.mode === "old") {
+    body.append(line, el("div", "fdnote", "Ein fortgesetzter Worktree bekommt keine Packs — sie gehen nur bei einer frischen Gründung mit."));
+    return;
+  }
+  const byId = new Map(plan.selected.map((p) => [p.id, p]));
+  for (const id of [...s.packs]) {
+    const p = byId.get(id);
+    if (!p) continue;
+    const mine = s.touched.has(id);
+    const chip = el("span", `fdcx${s.fresh.has(id) ? " in" : ""}${mine ? " mine" : ""}`);
+    chip.title = `${p.useWhen ?? "Zweck im Plan nicht angegeben."}\n${p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"}${mine ? " · von dir dazugenommen" : ""}`;
+    chip.append(el("span", "fdcxid mono", id));
+    const rm = btn("fdcxrm");
+    rm.append(icon("x"));
+    rm.setAttribute("aria-label", `${id} weglassen`);
+    rm.onclick = () => togglePack(id, false);
+    chip.append(rm);
+    line.append(chip);
+  }
+  for (const id of s.gone) line.append(el("span", "fdcx out mono", id));
+  // ONE LINE, however many packs: what does not fit folds into "+N", which opens the list
+  const more = btn("fdmore mono");
+  more.hidden = true;
+  more.title = "Alle Packs dieses Starts zeigen";
+  more.onclick = () => { s.listOpen = true; renderContext(); };
+  if (!s.listOpen) line.append(more);
+  const rest = plan.selected.length - s.packs.size;
+  const add = btn(`fdadd${s.pop === "add" ? " open" : ""}`);
+  add.dataset.pop = "add";
+  add.setAttribute("aria-expanded", String(s.pop === "add"));
+  add.append(icon("plus"), el("span", "", "Pack"));
+  if (rest) add.append(el("span", "fdaddn", String(rest)));
+  add.title = rest ? `${rest} weitere passen zu diesem Start` : "Alle passenden Packs sind schon dabei.";
+  add.onclick = () => togglePop("add");
+  line.append(add);
+  if (!plan.selected.length && !s.packs.size) line.append(el("span", "fdnote", "Dieses Repo erklärt keine Packs, die hier passen."));
+  body.append(line);
+  if (s.listOpen) line.classList.add("all"); else fitLine(line);
+  if (s.pop === "add") body.append(addPop(plan));
+
+  const foot = el("div", "fdctxfoot");
+  const d = el("div", "fddelta mono");
+  if (s.delta) {
+    // a few names are said by name; more than three by their number, the names in the tooltip
+    if (s.delta.why) d.append(el("span", "", `${s.delta.why}: `));
+    const said = (xs: string[], sign: string, cls: string) => {
+      if (xs.length > 3) { const n = el("span", cls, `${sign}${xs.length} Packs `); n.title = xs.join(", "); d.append(n); }
+      else for (const x of xs) d.append(el("span", cls, `${sign}${x} `));
+    };
+    said(s.delta.plus, "+", "add");
+    said(s.delta.minus, "−", "del");
+  }
+  const list = btn("fdghost", s.listOpen ? "Liste schließen" : "Alle Packs");
+  list.setAttribute("aria-expanded", String(s.listOpen));
+  list.onclick = () => { s.listOpen = !s.listOpen; renderContext(); };
+  const cmp = btn("fdghost", s.compare ? "Vergleich schließen" : "Rollen vergleichen");
+  cmp.setAttribute("aria-expanded", String(s.compare));
+  cmp.onclick = () => { s.compare = !s.compare; renderContext(); };
+  foot.append(d, list, cmp);
+  body.append(foot);
+  if (s.listOpen) body.append(packList(plan));
+  if (s.compare) body.append(compareTable(plan));
+  // light and strike are one paint long
+  if (s.fresh.size || s.gone.length) {
+    const fresh = s.fresh, gone = s.gone;
+    setTimeout(() => {
+      if (S !== s || s.fresh !== fresh || s.gone !== gone) return;
+      s.fresh = new Set();
+      s.gone = [];
+      renderContext();
+    }, 1400);
+  }
+}
+
+// hide chips from the end until the line fits; the "+N" counts what it took in
+function fitLine(line: HTMLElement) {
+  const more = line.querySelector<HTMLElement>(".fdmore");
+  if (!more) return;
+  const chips = [...line.querySelectorAll<HTMLElement>(".fdcx:not(.fix)")];
+  for (const c of chips) c.hidden = false;
+  more.hidden = true;
+  if (line.scrollWidth <= line.clientWidth) return;
+  more.hidden = false;
+  let folded = 0;
+  for (let i = chips.length - 1; i >= 0 && line.scrollWidth > line.clientWidth; i--) {
+    chips[i]!.hidden = true;
+    folded++;
+    more.textContent = `+${folded}`;
+  }
+  more.setAttribute("aria-label", `${folded} weitere Packs zeigen`);
+}
+
+// THE LIST — every pack of this start as one row with its switch, its purpose and where it comes
+// from; on demand only, the line above stays the resting state
+function packList(plan: Plan): HTMLElement {
+  const s = S!;
+  const box = el("div", "fdlist");
+  for (const p of plan.selected) {
+    const on = s.packs.has(p.id);
+    const row = el("div", `fdlrow${on ? " on" : ""}`);
+    const sw = btn(`fdsw${on ? " on" : ""}`);
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-checked", String(on));
+    sw.setAttribute("aria-label", `${p.id} mitgeben`);
+    sw.onclick = () => togglePack(p.id, !on);
+    const t = el("div", "fdlt");
+    const head = el("div", "fdlh");
+    head.append(el("span", "mono", p.id), el("span", "fdlsrc", p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"));
+    if (s.touched.has(p.id)) head.append(el("span", "fdlmine", on ? "von dir dazu" : "von dir weggelassen"));
+    else if (presetHas(presets[s.role], p.id)) head.append(el("span", "fdlrole", ROLES.find((r) => r.id === s.role)!.name));
+    t.append(head, el("div", "fdluse", p.useWhen ?? "Zweck im Plan nicht angegeben."));
+    row.append(sw, t);
+    box.append(row);
+  }
+  for (const o of plan.omitted) {
+    const row = el("div", "fdlrow off");
+    row.title = `intern: ${o.reason}`;
+    const t = el("div", "fdlt");
+    const head = el("div", "fdlh");
+    head.append(el("span", "mono", o.id));
+    t.append(head, el("div", "fdluse", `Nicht dabei: ${OMIT_SAY[o.reason] ?? o.reason}`));
+    row.append(el("span", "fdsw off"), t);
+    box.append(row);
+  }
+  return box;
+}
+
+function addPop(plan: Plan): HTMLElement {
+  const s = S!;
+  const pop = el("div", "fdpop fdaddpop");
+  const off = plan.selected.filter((p) => !s.packs.has(p.id));
+  for (const p of off) {
+    const r = btn("fdprow");
+    r.append(el("span", "fdprn mono", p.id), el("span", "fdmeta", p.useWhen ?? ""));
+    r.title = `${p.useWhen ?? ""}\n${p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"}`;
+    r.onclick = () => { togglePack(p.id, true); if (S) { S.pop = plan.selected.length - S.packs.size ? "add" : null; renderContext(); focusPop(); } };
+    pop.append(r);
+  }
+  if (!off.length) pop.append(el("div", "fdnote", "Alle passenden Packs sind dabei."));
+  if (plan.omitted.length) {
+    pop.append(el("div", "fdpopsep", "Passen nicht zu diesem Start"));
+    for (const o of plan.omitted) {
+      const row = el("div", "fdprow off");
+      row.title = `intern: ${o.reason}`;
+      row.append(el("span", "fdprn mono", o.id), el("span", "fdmeta", OMIT_SAY[o.reason] ?? o.reason));
+      pop.append(row);
+    }
+  }
+  return pop;
+}
+
+function togglePack(id: string, on: boolean) {
+  const s = S;
+  if (!s) return;
+  const preset = presetHas(presets[s.role], id);
+  if (on === preset) s.touched.delete(id); else s.touched.set(id, on);
+  const before = new Set(s.packs);
+  if (on) s.packs.add(id); else s.packs.delete(id);
+  s.fresh = on && !before.has(id) ? new Set([id]) : new Set();
+  s.gone = !on && before.has(id) ? [id] : [];
+  s.delta = { plus: on ? [id] : [], minus: on ? [] : [id], why: on ? "von dir dazu" : "von dir weggelassen" };
+  s.error = null;
+  renderRole();
+  renderContext();
+  renderFoot();
+}
+
+// THE ROLES SIDE BY SIDE, over the packs of THIS start: a dot is a role's preset, a click redraws
+// it. The column of the chosen role re-applies at once, so the switches above follow the table.
+function compareTable(plan: Plan): HTMLElement {
+  const s = S!;
+  const box = el("div", "fdcmp");
+  const t = el("table", "");
+  const head = el("tr", "");
+  head.append(el("th", "", "Pack"));
+  for (const r of ROLES) head.append(el("th", r.id === s.role ? "cur" : "", r.name));
+  t.append(head);
+  for (const p of plan.selected) {
+    const tr = el("tr", "");
+    const name = el("td", "mono", p.id);
+    name.title = p.useWhen ?? "";
+    tr.append(name);
+    for (const r of ROLES) {
+      const td = el("td", r.id === s.role ? "cur" : "");
+      if (r.id === "orch") { td.append(el("span", "fdcmpx", "—")); td.title = "Die Rollenkarte trägt ihre Zeiger."; tr.append(td); continue; }
+      const on = presetHas(presets[r.id], p.id);
+      const pip = btn(`fdpip${on ? " on" : ""}`);
+      pip.setAttribute("role", "switch");
+      pip.setAttribute("aria-checked", String(on));
+      pip.setAttribute("aria-label", `${p.id} für ${r.name}`);
+      pip.onclick = () => { redrawPreset(r.id, p.id, !on); };
+      td.append(pip);
+      tr.append(td);
+    }
+    t.append(tr);
+  }
+  const why = el("tr", "fdcmpwhy");
+  why.append(el("td", "", "Wozu"));
+  for (const r of ROLES) why.append(el("td", r.id === s.role ? "cur" : "", r.why));
+  t.append(why);
+  box.append(t, el("div", "fdcmpfoot", "Ein Punkt ist die Vorauswahl einer Rolle — ein Klick ändert sie."));
+  return box;
+}
+
+function redrawPreset(r: Role, id: string, on: boolean) {
+  const s = S;
+  if (!s) return;
+  const p = presets[r];
+  const list = p.base === "all" ? p.minus : p.plus;
+  const want = p.base === "all" ? !on : on;
+  const next = want ? [...new Set([...list, id])] : list.filter((x) => x !== id);
+  presets = { ...presets, [r]: p.base === "all" ? { ...p, minus: next } : { ...p, plus: next } };
+  if (r === s.role) { s.touched.delete(id); applyPreset(`Vorauswahl ${ROLES.find((x) => x.id === r)!.name}`); }
+  renderRole();
+  renderContext();
+  renderFoot();
+}
+
+// --- the foot: one sentence, and the one button ---------------------------------------------------
 
 function renderFoot() {
   const s = S;
@@ -874,58 +1172,30 @@ function renderFoot() {
   if (s.proof) { renderProof(); return; }
   const foot = s.shell.foot;
   foot.replaceChildren();
-  const opts = el("div", "fdopts");
+  const say = el("div", "fdsay");
+  const who = { leer: "Eine Session ohne Rolle", lane: "Eine Lane", orch: "Eine Orchestratorin", steward: "Ein Steward" }[s.role];
+  const repo = s.place ? baseName(s.place) : "…";
+  const where = s.mode === "new" ? `in einem neuen Worktree${branchFor(s.name) ? ` „${s.name.trim()}“` : ""} von ${repo}`
+    : s.mode === "old" ? `in ${s.orphan ? baseName(s.orphan) : "einem liegengebliebenen Worktree"}` : `in ${repo}`;
   const h = chosenHarness();
-  if (agentHarnesses().length >= 2 && h)
-    opts.append(optSwitch("harness", h.id, false, "Welcher Agent in dieser Session läuft."));
-  if (h?.supports.model)
-    opts.append(optSwitch("model", s.model ? modelLabel(s.model) : modelShown(h), !s.model,
-      s.model ? `Modell ${s.model}` : "Modell — ohne Angabe startet der Adapter sein eigenes."));
-  if (h?.supports.effort && h.effortLevels.length)
-    opts.append(optSwitch("effort", s.effort ? `Effort ${s.effort}` : "Effort", !s.effort,
-      "Wie gründlich der Agent denkt — ohne Angabe wählt der Adapter."));
-  if (h?.supports.container)
-    opts.append(optSwitch("container", s.container || "Container", !s.container,
-      "Container und Docker-Daemon dieser Session — leer heißt der Fleet-Standard."));
+  const body = foundingBody();
+  const prof = [body.harness ?? h?.id ?? "", body.model ? modelLabel(body.model) : h ? modelShown(h) : "", body.effort ?? ""].filter(Boolean).join(" · ");
+  const ctx = s.packs.size ? `${s.packs.size} ${s.packs.size === 1 ? "Pack" : "Packs"}` : "ohne Packs";
+  say.append(el("b", "", who), document.createTextNode(` ${where}`), el("span", "fdsaym", ` · ${prof} · ${ctx}${s.role === "orch" ? " · Rollenkarte" : ""}`));
   const why = s.error ?? blocker();
   const note = el("div", `fdfootnote${s.error ? " warn" : ""}`, why ?? "");
   const go = btn("fdgo");
-  const label = s.busy ? "Packs werden zugestellt …"
-    : s.role === "wt-new" ? "Start lane" : s.role === "wt-old" ? "Attach lane" : "Start session";
+  const label = s.busy ? (s.packs.size ? "Packs werden zugestellt …" : "Startet …")
+    : s.mode === "old" ? "Fortsetzen" : s.mode === "new" ? "Lane starten" : "Starten";
   go.append(el("span", "", label));
   if (!s.busy) go.append(el("kbd", "", "⏎"));
   go.disabled = s.busy || blocker() !== null;
-  go.title = s.place ? `${label} in ${tilde(s.place)} auf Slot ${s.slot} (Enter)` : label;
+  go.title = s.place ? `${label}: ${tilde(s.place)} (Enter)` : label;
   go.onclick = () => { void start(); };
-  const body = foundingBody();
-  const summary = el("div", "fdsummary");
-  const field = (name: string, value: string) => {
-    const part = el("span", "", `${name}: ${value}`);
-    part.dataset.field = name;
-    summary.append(part);
-  };
-  field("Rolle", roleLabel(s.role) ?? ROLES.find((r) => r.id === s.role)!.name);
-  const place = s.place ? `${baseName(s.place)} (${tilde(s.place)})` : "noch nicht gewählt";
-  const git = s.info?.git ? `${s.info.branch ?? "ohne Branch"}, ${s.info.dirty ? `${s.info.dirty} ungesichert` : "sauber"}`
-    : s.infoErr ?? (s.info ? "kein Git-Repo" : "Ordner wird gelesen");
-  field("Ort", `${place} · ${git}`);
-  field("Agent", body.harness ?? `${h?.id ?? "Adapter wählt"} (Fleet-Standard)`);
-  field("Modell", body.model ?? "Adapter wählt");
-  field("Effort", body.effort ?? "Adapter wählt");
-  field("Kontext", body.packs?.length ? `${body.packs.length} Packs: ${body.packs.join(", ")}`
-    : !s.plan || s.planErr || s.planFor !== planKey() ? "Plan nicht lesbar, Start ohne Packs" : "kein Pack");
-  if (body.container) field("Container", body.container);
-  if (body.containerContext) field("Docker-Daemon", body.containerContext);
-  field("Ausführungsrechte", "Fleet-Standard, hier nicht wählbar");
-  const actions = el("div", "fdstartrow");
-  actions.append(opts, note);
-  if (s.packs.size && blocker()) {
-    const clear = btn("fdfold", "Ohne Packs");
-    clear.onclick = () => { s.packs.clear(); renderDetail(); renderFoot(); };
-    actions.append(clear);
-  }
-  actions.append(go);
-  foot.append(summary, actions);
+  const text = el("div", "fdsaycol");
+  text.append(say);
+  if (why) text.append(note);
+  foot.append(text, go);
 }
 
 // --- starting ----------------------------------------------------------------------------------------
@@ -940,30 +1210,41 @@ async function start() {
   renderFoot();
   try {
     const body = foundingBody();
+    const branch = s.mode === "new" ? branchFor(s.name) : "";
+    // the start receipt (552958ea): what was asked, read back at the occupant the start produced
     const before = new Map(fleet.map((row) => [row.id, row.openedAt]));
-    const requestedRole = s.role;
-    const requestedPlace = s.role === "wt-old" ? s.orphan! : s.place;
+    const requestedRole = s.role, requestedMode = s.mode;
+    const requestedPlace = s.mode === "old" ? s.orphan! : s.place;
     let result: StartResult;
-    if (s.role === "wt-new") {
-      result = await startWorktree(s.place, onError, { slot: s.slot, body });
-    } else if (s.role === "wt-old") {
+    if (s.entry.kind === "lane") {
+      // ⎇+: the server picks the next free place and hangs the lane under the session it came from
+      const res = await post("/api/lanes", { repo: s.place, ...(s.entry.parent ? { parent: s.entry.parent } : {}), branch, ...body });
+      const j = (await res.json().catch(() => ({}))) as { slot?: number; error?: string; packsDelivered?: boolean; reason?: string };
+      if (!res.ok) { onError(j.error ?? `Der Server antwortete ${res.status}.`); return; }
+      // the lane stands; the delivery refusal stays visible in its start receipt
+      if (j.packsDelivered === false) onError(j.reason ?? "Die Lane steht, aber die Packs kamen nicht an.");
+      if (!j.slot || !await revealStartedSlot(j.slot)) { onError(`Die Lane steht, aber ihr Slot erschien nicht binnen 5 Sekunden.`); return; }
+      result = { ok: true, slot: j.slot, packsDelivered: j.packsDelivered, reason: j.reason };
+    } else if (s.mode === "new") {
+      result = await startWorktree(s.place, onError, { slot: s.entry.slot, body: { ...body, ...(branch ? { branch } : {}) } });
+    } else if (s.mode === "old") {
       // the clicked place: the lane is seated exactly here, or refused naming who sits there. An
       // attach never carries packs — the door refuses a packs list for a worktree it did not found.
       const { packs: _packs, ...attach } = body;
-      const res = await post("/api/lanes", { repo: s.place, attach: s.orphan, slot: s.slot, ...attach });
+      const res = await post("/api/lanes", { repo: s.place, attach: s.orphan, slot: s.entry.slot, ...attach });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: string };
         onError(err.error ?? `Der Server antwortete ${res.status}.`);
         return;
       }
       const j = (await res.json().catch(() => ({}))) as { slot?: number };
-      const shown = j.slot ?? s.slot;
+      const shown = j.slot ?? s.entry.slot;
       if (!await revealStartedSlot(shown)) { onError(`Die Lane sitzt, aber Slot ${shown} erschien nicht binnen 5 Sekunden.`); return; }
       result = { ok: true, slot: shown };
     } else {
-      result = await startSession(s.place, roleLabel(s.role), onError, { slot: s.slot, body });
+      result = await startSession(s.place, roleLabel(s.role), onError, { slot: s.entry.slot, body });
     }
-    if (result.ok && S === s) await captureProof(s, body, before.get(result.slot), result, requestedRole, requestedPlace);
+    if (result.ok && S === s) await captureProof(s, body, before.get(result.slot), result, requestedRole, requestedMode, requestedPlace);
   } finally {
     if (S === s) { s.busy = false; renderFoot(); }
   }
@@ -976,17 +1257,17 @@ interface ReceiptPack {
 }
 interface StartProof {
   result: Extract<StartResult, { ok: true }>;
-  body: SpawnBody; role: FoundRole; place: string;
+  body: SpawnBody; role: Role; mode: Mode; place: string;
   occupant: SlotInfo | null;
   receipt: { slot: number; at: number; selected: ReceiptPack[] } | null;
   receiptCount: number; receiptError: string | null; stale: boolean;
 }
 
-async function captureProof(s: State, body: SpawnBody, before: number | undefined, result: Extract<StartResult, { ok: true }>, role: FoundRole, place: string) {
+async function captureProof(s: State, body: SpawnBody, before: number | undefined, result: Extract<StartResult, { ok: true }>, role: Role, mode: Mode, place: string) {
   const row = fleet.find((r) => r.id === result.slot);
   const occupant = row?.cwd && Number.isFinite(row.openedAt) && row.openedAt! > 0 && row.openedAt !== before
     ? structuredClone(row) : null;
-  const proof: StartProof = { result, body, role, place, occupant,
+  const proof: StartProof = { result, body, role, mode, place, occupant,
     receipt: null, receiptCount: 0, receiptError: null, stale: false };
   s.proof = proof;
   closePop(false);
@@ -1059,11 +1340,11 @@ function renderProof() {
     table.append(r);
     return actual;
   };
-  const requestedRole = isLane(p.role) ? "Lane" : p.role === "orch" ? "Orchestrator" : p.role === "steward" ? "Steward" : "Session";
+  const requestedRole = p.role === "lane" ? "Lane" : p.role === "orch" ? "Orchestrator" : p.role === "steward" ? "Steward" : "Session";
   const observedRole = !row ? undefined : row.worktree ? "Lane" : /\borchestrator\b/i.test(row.label ?? "") ? "Orchestrator"
     : row.label === "⚙ steward" ? "Steward" : "Session";
   field("Rolle", requestedRole, observedRole);
-  const place = field("Ort", p.place, row?.cwd ?? undefined, true, true, p.role === "wt-new" ? row?.worktree?.repo ?? row?.cwd ?? undefined : row?.cwd ?? undefined);
+  const place = field("Ort", p.place, row?.cwd ?? undefined, true, true, p.mode === "new" ? row?.worktree?.repo ?? row?.cwd ?? undefined : row?.cwd ?? undefined);
   if (row?.worktree) place.append(el("div", "mono", `Branch: ${row.worktree.branch ?? "nicht gemeldet"}`));
   field("Agent", p.body.harness, row ? row.harness ?? harnesses.find((h) => h.default)?.id : undefined, true);
   field("Modell", p.body.model, row?.model ?? undefined, true);

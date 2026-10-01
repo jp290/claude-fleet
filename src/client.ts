@@ -1,5 +1,5 @@
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
-import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, newLane, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
+import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, fitTextarea, growComposer, reshapeSurface, mountComposer, renderParkHint, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
@@ -51,7 +51,7 @@ import {
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
-import { closeFounding, openPicker } from "./founding";
+import { closeFounding, openLaneFounding, openPicker } from "./founding";
 import { runningEffort, runningModel } from "./running";
 
 export const $ = (id: string) => document.getElementById(id)!;
@@ -3880,7 +3880,8 @@ export function labelled(text: string, control: HTMLElement): HTMLElement {
 
 // the options a founding sends with the slot's /open door. Absent fields mean "the default", which
 // is exactly what the server reads them as. src/founding.ts builds it.
-export interface SpawnBody { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[] }
+// `branch` only on the worktree doors (/open-worktree, /api/lanes): the owner's named lane
+export interface SpawnBody { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[]; branch?: string }
 
 // --- the file view: one renderer for every file list in the app ---------------------------------
 //
@@ -4928,10 +4929,12 @@ function repoHeaderRow(g: Stack, open: boolean): HTMLElement {
   return row;
 }
 
+// ⎇+ opens the founding window as a lane founding (owner 2026-10-01): the repo and the lane preset
+// are set, the name, profile and packs are still the owner's — the one-click lane had none of them
 function quickLaneChip(repo: string, parent?: LaneAnchor): HTMLElement {
   const q = el("span", "quicklane", "⎇+");
-  q.title = `new lane in ${baseName(repo)} — one click, no picker`;
-  q.onclick = (e) => { e.stopPropagation(); void newLane(repo, parent); };
+  q.title = `Neue Lane in ${baseName(repo)} — Name, Profil und Kontext im Gründungsfenster`;
+  q.onclick = (e) => { e.stopPropagation(); openLaneFounding(repo, parent); };
   return q;
 }
 

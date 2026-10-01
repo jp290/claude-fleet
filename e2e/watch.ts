@@ -2142,10 +2142,67 @@ export async function run(): Promise<void> {
     const latch = `${ROOT}/owner-send-before-paste.latch`;
     const fixturePath = `${ROOT}:${process.env.PATH ?? "/usr/bin:/bin"}`;
     const pi = Bun.which("pi", { PATH: fixturePath });
+    const { relative, isAbsolute, sep, basename } = await import("node:path");
+    const { statSync, mkdtempSync, symlinkSync } = await import("node:fs");
+    const composerFileIsolation = (file: string, root: string = ROOT): { ok: boolean; reason: string } => {
+      if (!file) return { ok: false, reason: "empty" };
+      try {
+        const canonicalRoot = realpathSync(root);
+        const canonicalFile = realpathSync(file);
+        const descendant = relative(canonicalRoot, canonicalFile);
+        if (!descendant) return { ok: false, reason: "root-itself" };
+        if (isAbsolute(descendant) || descendant === ".." || descendant.startsWith(`..${sep}`))
+          return { ok: false, reason: "outside" };
+        if (!statSync(canonicalFile).isFile()) return { ok: false, reason: "not-file" };
+        return { ok: true, reason: "inside" };
+      } catch (error) {
+        const code = error !== null && typeof error === "object" && "code" in error
+          && typeof error.code === "string" && /^[A-Z0-9_]{1,20}$/.test(error.code) ? error.code : "unknown";
+        return { ok: false, reason: `realpath-or-stat-error:${code}` };
+      }
+    };
+    const pathProbeDir = mkdtempSync(`${ROOT}/owner-composer-path-probes-`);
+    try {
+      const scope = `${pathProbeDir}/root`;
+      mkdirSync(scope);
+      const inside = `${scope}/composer`;
+      const outside = `${pathProbeDir}/outside`;
+      const sibling = `${pathProbeDir}/root-sibling`;
+      writeFileSync(inside, "isolated path probe");
+      writeFileSync(outside, "isolated outside-root probe");
+      writeFileSync(sibling, "isolated sibling probe");
+      symlinkSync(scope, `${pathProbeDir}/alias`, "dir");
+      symlinkSync(outside, `${scope}/escape`, "file");
+      symlinkSync(process.execPath, `${pathProbeDir}/external-escape`, "file");
+      const aliases = [`${pathProbeDir}/alias/composer`, `${pathProbeDir}/./root/composer`];
+      for (const file of aliases) {
+        const actual = composerFileIsolation(file, scope);
+        check("owner composer isolation: existing scratch aliases are accepted by the fixture guard", actual.ok,
+          JSON.stringify({ alias: file.includes("/alias/") ? "symlink" : "lexical-dot", reason: actual.reason }));
+      }
+      for (const [kind, file] of [["empty", ""], ["root", scope], ["missing", `${scope}/missing`],
+        ["outside", outside], ["parent-escape", `${scope}/../outside`], ["sibling-prefix", sibling],
+        ["symlink-escape", `${scope}/escape`]] as const) {
+        const actual = composerFileIsolation(file, scope);
+        check(`owner composer isolation: ${kind} is rejected by the fixture guard`, !actual.ok, actual.reason);
+      }
+      for (const file of [process.execPath, `${pathProbeDir}/external-escape`]) {
+        const actual = composerFileIsolation(file);
+        check("owner composer isolation: a real outer file and symlink escape cannot enter ROOT", !actual.ok, actual.reason);
+      }
+      for (const file of [modeFile, stateFile, `${dirname(ROOT)}/./${basename(ROOT)}/${basename(modeFile)}`]) {
+        const actual = composerFileIsolation(file);
+        check("owner composer isolation: actual composer files and their portable alias stay inside canonical ROOT", actual.ok,
+          actual.reason);
+      }
+    } finally { rmSync(pathProbeDir, { recursive: true, force: true }); }
+    const modeIsolation = composerFileIsolation(modeFile);
+    const stateIsolation = composerFileIsolation(stateFile);
     const fixtureSafe = existsSync(`${ROOT}/pi`) && pi !== null
       && realpathSync(pi) === realpathSync(`${ROOT}/pi`)
-      && modeFile.startsWith(`${ROOT}/`) && stateFile.startsWith(`${ROOT}/`);
-    check("owner send fixture: PATH resolves the existing scratch Pi and composer files stay isolated", fixtureSafe);
+      && modeIsolation.ok && stateIsolation.ok;
+    check("owner send fixture: PATH resolves the existing scratch Pi and composer files stay isolated", fixtureSafe,
+      JSON.stringify({ mode: modeIsolation.reason, state: stateIsolation.reason }));
     if (!fixtureSafe) throw new Error("owner send fixture has no isolated Pi stand-in — no slot opened");
     const original = await (await get("/api/sessions")).json() as {
       autosOn?: boolean; quietHours?: { start: number; end: number } | null;

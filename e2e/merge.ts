@@ -255,9 +255,25 @@ exec '${realGit}' "$@"
   const wait = (slot: number, requireVerdict = false): Promise<{ gone: boolean; last: Verdict | null }> =>
     waitMerge(slot, { requireVerdict });
   const open = async (): Promise<Lane> => {
-    const r = await post("/api/lanes", { repo, base: "overhaul" });
+    const selectedR = await post("/api/repo-base", { repo, branch: "overhaul" });
+    const selected = await selectedR.json() as { ok?: boolean; repo?: string; base?: string };
+    const selectedOk = selectedR.ok && selected.ok === true
+      && selected.repo === realpathSync(repo) && selected.base === "overhaul";
+    check("merge preservation setup: the isolated repo-base door selects overhaul", selectedOk, JSON.stringify(selected));
+    if (!selectedOk) throw new Error("merge preservation setup: integration target selection failed");
+    const r = await post("/api/lanes", { repo });
     const l = await r.json() as Lane;
     if (!r.ok || !l.slot || !l.cwd) throw new Error(`merge preservation lane: ${JSON.stringify(l)}`);
+    lane = l;
+    const sessions = await (await get("/api/sessions")).json() as
+      { slots: { id: number; worktree?: { base?: string; baseSha?: string } }[] };
+    const recorded = sessions.slots.find((s) => s.id === l.slot)?.worktree;
+    const target = git(repo, "rev-parse", "overhaul");
+    const forkOk = recorded?.base === "overhaul" && recorded.baseSha === target
+      && git(l.cwd, "rev-parse", "HEAD") === target;
+    check("merge preservation setup: recorded base and exact fork match overhaul before any merge or gate",
+      forkOk, JSON.stringify({ recorded, target }));
+    if (!forkOk) throw new Error("merge preservation setup: the lane's integration binding or fork is wrong");
     return l;
   };
   const gates = (): string => existsSync(gateLog) ? readFileSync(gateLog, "utf8") : "";
@@ -267,9 +283,9 @@ exec '${realGit}' "$@"
     await setMergeMode("blocked");
     lane = await open();
     const merge = spawnSync(realGit, ["-C", lane.cwd, "merge", "--no-ff", "side", "-m", "real merge"]);
-    check("merge preservation setup: the two parents require an actual conflict resolution",
-      merge.status === 1 && git(lane.cwd, "diff", "--name-only", "--diff-filter=U") === "code.txt",
-      merge.stderr.toString());
+    const conflictSetup = merge.status === 1 && git(lane.cwd, "diff", "--name-only", "--diff-filter=U") === "code.txt";
+    check("merge preservation setup: the two parents require an actual conflict resolution", conflictSetup, merge.stderr.toString());
+    if (!conflictSetup) throw new Error("merge preservation setup: no actual conflict to resolve");
     writeFileSync(`${lane.cwd}/code.txt`, "integration and side resolved\n");
     git(lane.cwd, "add", "code.txt");
     git(lane.cwd, "commit", "-m", "resolved real merge");
@@ -278,6 +294,7 @@ exec '${realGit}' "$@"
     const parents = git(lane.cwd, "show", "-s", "--format=%P", "HEAD");
     check("merge preservation setup: exact integration and side parents are present",
       parents === `${integration} ${side}`, parents);
+    if (parents !== `${integration} ${side}`) throw new Error("merge preservation setup: the real merge parents are missing");
     await settleForMerge(lane.slot);
     const request = await post(`/api/slots/${lane.slot}/merge`, {});
     const verdict = await wait(lane.slot);
@@ -345,6 +362,11 @@ exec '${realGit}' "$@"
   } finally {
     rmSync(errorMode, { force: true });
     if (lane) await post(`/api/slots/${lane.slot}/kill`, {});
+    const clearedR = await post("/api/repo-base", { repo, branch: "" });
+    const cleared = await clearedR.json() as { ok?: boolean; repo?: string; base?: string | null };
+    check("merge preservation cleanup: only the scratch repo's integration configuration is cleared",
+      clearedR.ok && cleared.ok === true && cleared.repo === realpathSync(repo) && cleared.base === null,
+      JSON.stringify(cleared));
     await restartSrv();
   }
 }

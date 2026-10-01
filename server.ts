@@ -22832,7 +22832,8 @@ async function tickWatches(): Promise<void> {
       if (queuedFleetEvents.has(event.id)) continue;
       const probePath = WATCH_TICK_TEST_LATCH ? `${WATCH_TICK_TEST_LATCH}.succession` : null;
       const probe = probePath && existsSync(probePath) ? readFileSync(probePath, "utf8").trim() : "";
-      const probeProgram = programs.find((p) => p.main?.slot === event.receiverSlot);
+      const probeProgram = programs.find((p) => p.status === "active"
+        && p.main?.slot === event.receiverSlot && p.main.openedAt === event.receiverOpenedAt);
       const probePhase = probeProgram?.founding?.mode === "succession" ? "before-bind"
         : probeProgram && programBootstrapInflight.has(probeProgram.id) ? "bound-starting" : "settled";
       try {

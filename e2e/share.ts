@@ -1,5 +1,7 @@
 // Session sharing: guest auth, mode enforcement, guest comments, the in-place mode flip and the
 // regression that a share must not outlive its session. Hands its shares on via Ctx.
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { BASE, IP, PORT, check, get, plogRead, post, tmuxOut, wsWithHeaders } from "./harness";
 import type { Ctx } from "./ctx";
 
@@ -189,6 +191,55 @@ export async function run(ctx: Ctx): Promise<void> {
   const sess3Api = (await (await get("/api/sessions")).json()) as { slots: { id: number; share: unknown }[] };
   check("reopened slot reports no share", sess3Api.slots.find((x) => x.id === 3)?.share === null);
   await post("/api/slots/3/kill", {}); // restore slot 3 to inactive for the rest of the suite
+
+  // --- the guest wire for a session in a folder WITHOUT git (server.ts#cwdGitBody, guest form) ---
+  // A plain folder is an ordinary session: the guest brief says git:"none" and keeps only the start
+  // time; a folder that vanished is git:"gone", never "no git here". Neither body may carry the
+  // folder's path (the guest wire has no private paths) or a git fact. Own folder, own slot 3.
+  {
+    const plain = `${tmpdir()}/fleet-e2e-share-nogit-${process.pid}`;
+    rmSync(plain, { recursive: true, force: true });
+    mkdirSync(plain, { recursive: true });
+    try {
+      const opened = await post("/api/slots/3/open", { cwd: plain });
+      const shN = (await (await post("/api/slots/3/share", { mode: "view", password: "nogitpass1" })).json()) as { id?: string };
+      const authN = await post(`/s/${shN.id ?? "x"}/auth`, { password: "nogitpass1" });
+      const ckN = (authN.headers.get("set-cookie") ?? "").split(";")[0];
+      const guest = async (what: string) => {
+        const r = await fetch(BASE + `/s/${shN.id ?? "x"}/${what}`, { headers: { cookie: ckN } });
+        const text = await r.text();
+        return { status: r.status, text, body: (() => { try { return JSON.parse(text) as Record<string, unknown>; } catch { return {}; } })() };
+      };
+      const gitFacts = ["branch", "head", "uncommitted", "commits", "files", "shortstat", "diff", "status"];
+      check("guest no-git fixture: slot 3 opens on a plain folder and shares", opened.ok && authN.ok && !!ckN,
+        `open=${opened.status} auth=${authN.status}`);
+      const b = await guest("brief"), d = await guest("diff");
+      check("guest: a plain folder's brief and diff say git:none, keep the start time, invent no git fact, name no path",
+        b.status === 400 && b.body.git === "none" && "sessionStart" in b.body && !("setup" in b.body)
+          && d.status === 400 && d.body.git === "none"
+          && gitFacts.every((k) => !(k in b.body) && !(k in d.body))
+          && !b.text.includes(plain) && !d.text.includes(plain),
+        JSON.stringify({ brief: b.text, diff: d.text }));
+      rmSync(plain, { recursive: true, force: true });
+      const bg = await guest("brief"), dg = await guest("diff");
+      check("guest: a folder removed under the shared session is git:gone, never git:none, and names no path",
+        bg.status === 400 && bg.body.git === "gone" && dg.status === 400 && dg.body.git === "gone"
+          && !("sessionStart" in bg.body) && !bg.text.includes(plain) && !dg.text.includes(plain),
+        JSON.stringify({ brief: bg.text, diff: dg.text }));
+      await post("/api/slots/3/kill", {});
+      // the unreachable session: its share dies with it, so the guest gets no git kind at all
+      const after = await guest("brief");
+      check("guest: a killed session's brief is the share's 404, not a git state",
+        after.status === 404 && !("git" in after.body), after.text.slice(0, 200));
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+    const shareSrc = await Bun.file(`${import.meta.dir}/../src/share.ts`).text();
+    check("guest client: only git:none reads as `no git in this folder`; any other failed read shows the server's sentence",
+      /if \(e\?\.git !== "none"\) \{/.test(shareSrc) && /empty\(body, e\?\.error \?\? "session overview unavailable"\);/.test(shareSrc)
+        && !/this session is not inside a git repository/.test(shareSrc) && /if \(data\.git === "none"\) \{/.test(shareSrc),
+      "loadBrief/loadChanges in src/share.ts");
+  }
 
   ctx.shViewId = shView.id;
   ctx.shCookie = shCookie;

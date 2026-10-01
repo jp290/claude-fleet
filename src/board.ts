@@ -32,6 +32,10 @@ export interface BriefInfo { branch: string | null; head: string | null; worktre
   // fill is "cannot measure", a null thresholdPct comes with the reason no threshold applies, and
   // a null cap means no lid exists to spend — none of the three is ever a zero.
   succession?: BriefSuccession }
+// the brief route's answer for a session in a plain folder (server.ts#cwdGitBody): a 400 that is
+// NOT a failure — the git half is not-applicable, the non-git half is still this session's
+export interface BriefNoGit { error: string; git: "none" | "gone" | "unreadable" | "error";
+  sessionStart?: number | null; setup?: BriefSetup; succession?: BriefSuccession }
 export interface BriefSuccession {
   rail: "lane" | "standard-main" | "game-maker-main" | "handoff";
   fill: { usedTokens: number; windowTokens: number; pct: number } | null;
@@ -1385,15 +1389,20 @@ export async function renderBoard() {
       s.worktree ? api(`/api/slots/${slot}/merge`) : Promise.resolve(null),
     ]);
     const { prompts, err: outlineErr } = outlineRes;
-    const brief = briefRes.ok ? ((await briefRes.json()) as BriefInfo) : null;
+    const briefBody = (await briefRes.json().catch(() => null)) as (BriefInfo & BriefNoGit) | null;
+    const brief = briefRes.ok ? briefBody : null;
+    // a plain folder without git is an ordinary session, not a failed read: the server says which
+    // with `git: "none"` (server.ts#cwdGitBody) and still serves the session's non-git half
+    const noGit = !briefRes.ok && briefBody?.git === "none" ? briefBody : null;
+    // what the head and the setup block read, git or not — never a git fact
+    const facts: Pick<BriefInfo, "sessionStart" | "setup" | "succession"> | null = brief ?? noGit;
     // the brief is one of the two places the board SEES commit shas — remember them so transcript
     // text citing a prefix of any of these can hover (the other source is fleet[].taskHead, live)
     if (brief) rememberShas(brief.head, ...(brief.commits ?? []).map((c) => c.hash),
       ...(brief.repoCommits ?? []).map((c) => c.hash));
     // WHY it is null, kept for the reader: a failed read used to remove Changes, History and Lanes
     // with no word at all, which is indistinguishable from a session that has done nothing.
-    const briefErr = briefRes.ok ? null
-      : ((await briefRes.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${briefRes.status}`;
+    const briefErr = briefRes.ok || noGit ? null : briefBody?.error ?? `HTTP ${briefRes.status}`;
     const wts = wtRes?.ok ? ((await wtRes.json()) as WtInfo) : null;
     const wtErr = !wtRes || wtRes.ok ? null
       : ((await wtRes.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${wtRes.status}`;
@@ -1442,10 +1451,10 @@ export async function renderBoard() {
       // and in the board they read as a second copy (owner, 2026-09-19 — „[Zitat entfernt]“
       // ). What the head adds is the one thing the row cannot: how long the
       // session has been quiet.
-      const bits = [`${working ? "Working" : "Idle"} · ${brief?.worktree ? "lane" : "repo session"} in slot ${slot}`];
+      const bits = [`${working ? "Working" : "Idle"} · ${brief?.worktree ? "lane" : noGit ? "folder session" : brief ? "repo session" : "session"} in slot ${slot}`];
       if (!working && s.lastOutput > 0) bits.push(`quiet ${gateAge(Date.now() - s.lastOutput)}`);
       meta.appendChild(document.createTextNode(bits.join(" · ")));
-      const since = brief?.sessionStart ?? s.openedAt ?? null;
+      const since = facts?.sessionStart ?? s.openedAt ?? null;
       if (since) meta.title = `session since ${new Date(since).toLocaleString()}`;
       idsec.appendChild(meta);
     }
@@ -1487,8 +1496,8 @@ export async function renderBoard() {
     // row's ctx chip is the sidebar's job and a second copy of it is what the owner cut on
     // 2026-09-19. Here the fill is the number the threshold is compared against, and it is never
     // drawn without it.
-    if (brief?.succession) {
-      const sc = brief.succession;
+    if (facts?.succession) {
+      const sc = facts.succession;
       let nth = 0;
       const srow = (label: string, value: string, title: string) => {
         const r = el("div", `bsrow bsucc${nth++ === 0 ? " bsucctop" : ""}`);
@@ -1660,7 +1669,7 @@ export async function renderBoard() {
         if (title) r.title = title;
         su.appendChild(r);
       };
-      const setup = brief?.setup;
+      const setup = facts?.setup;
       // WHAT KIND OF SESSION THIS IS. The owner's seat for the session kinds still to come
       // (2026-09-19: „[Zitat entfernt]“
       // ). Until they exist, this row says only what is
@@ -1718,7 +1727,7 @@ export async function renderBoard() {
       // no row for "no packs": a session without them is the ordinary case, and a row saying `none`
       // cost a line on every session to answer a question only a packed one raises. The hover on
       // the section's own head still says what the block is. (space cut, 2026-09-20)
-      const since = brief?.sessionStart ?? s.openedAt ?? null;
+      const since = facts?.sessionStart ?? s.openedAt ?? null;
       const foot: string[] = [];
       if (since) foot.push(`open ${gateAge(Date.now() - since)}`);
       if (s.inbound) foot.push(`${s.inbound.sends} send${s.inbound.sends === 1 ? "" : "s"} today`);
@@ -1745,12 +1754,23 @@ export async function renderBoard() {
         nodes.push(noteSec);
       }
     }
+    if (noGit) {
+      // NOT-APPLICABLE, drawn once and quietly: no fail styling, no "keeps trying" — nothing is
+      // wrong, the folder simply has no repository for Changes, History, Files or Lanes to read
+      const ng = el("div", "bsec");
+      ng.appendChild(boardHead("Changes", "session"));
+      const e = el("div", "bempty", "No git in this folder — changes, history and lanes apply only to a repository.");
+      e.title = `${s.cwd} is a plain folder; the session, its prompts and its setup are read as usual`;
+      ng.appendChild(e);
+      nodes.push(ng);
+    }
     if (briefErr) {
       const fail = el("div", "bsec bfail");
       fail.appendChild(boardHead("Changes, history and lanes are missing", "session"));
       fail.appendChild(el("div", "bstate", `The session brief could not be read — ${briefErr}.`));
-      fail.appendChild(el("div", "bempty", "This is a failed read, not an empty session. The column keeps "
-        + "trying; if it persists, the session's working directory may be gone."));
+      // the server names the cause (folder gone, unreadable, git error — server.ts#cwdGitBody), so
+      // the sentence no longer guesses at it; a plain folder never reaches here (noGit above)
+      fail.appendChild(el("div", "bempty", "This is a failed read, not an empty session. The column keeps trying."));
       nodes.push(fail);
     }
     if (brief) {

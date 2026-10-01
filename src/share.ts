@@ -23,6 +23,9 @@ interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blo
 interface ShareComment { id: string; ts: number; name: string; text: string; from?: "owner" }
 interface Brief { branch: string | null; sessionStart: number | null; uncommitted: number;
   files: string[]; shortstat: string; commits: { hash: string; ts: number; subject: string }[] }
+// a failed brief/diff read (server.ts#cwdGitBody): `git: "none"` is a plain folder — an ordinary
+// session whose git half is not-applicable — every other value is a real failure. Never a path.
+interface NoGit { error?: string; git?: "none" | "gone" | "unreadable" | "error"; sessionStart?: number | null }
 
 const FONT_KEY = "fleetShareFont";
 const NAME_KEY = "fleetShareName";
@@ -239,8 +242,22 @@ async function loadBrief() {
   const res = await fetch(`/s/${shareId}/brief`);
   const body = $("briefwrap");
   if (!res.ok) {
+    const e = (await res.json().catch(() => null)) as NoGit | null;
     body.replaceChildren();
-    empty(body, res.status === 400 ? "this session is not inside a git repository" : "session overview unavailable");
+    if (e?.git !== "none") {
+      // a gone or unreadable folder is NOT "no git here" — say what the server said, or nothing
+      empty(body, e?.error ?? "session overview unavailable");
+      return;
+    }
+    sessionStart = e.sessionStart ?? null;
+    $("tbranch").textContent = "";
+    tickUp();
+    if (lastInfo) {
+      kv(body, "session", lastInfo.slotLabel ?? "shared session");
+      kv(body, "access", "view only");
+    }
+    if (sessionStart) kv(body, "started", fmtAgo(sessionStart));
+    empty(body, "no git in this folder — commits and changed files do not apply");
     return;
   }
   const b = (await res.json()) as Brief;
@@ -405,7 +422,12 @@ async function loadChanges() {
   dstat.textContent = "loading…";
   const res = await fetch(`/s/${shareId}/diff`);
   const data = (await res.json().catch(() => ({}))) as
-    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean; error?: string };
+    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean } & NoGit;
+  if (data.git === "none") {
+    dstat.textContent = "no git in this folder";
+    dtxt.textContent = "this session works in a plain folder — there is no diff to show";
+    return;
+  }
   if (!res.ok || data.error) {
     dstat.textContent = data.error ?? "diff unavailable";
     dtxt.replaceChildren();

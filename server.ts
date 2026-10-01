@@ -1,6 +1,6 @@
 import { historySource } from "./src/drafts";
-import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
-import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
+import { stat, rm, readdir, appendFile, mkdtemp, access } from "node:fs/promises";
+import { constants as fsConstants, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel } from "./model-register";
@@ -6010,7 +6010,8 @@ async function diffPayload(cwd: string, base: string | null): Promise<{ branch: 
 
 // the deterministic session overview — recent commits, changed files, uncommitted
 // summary — shared by the owner sideboard and the guest info tab. Fresh git output per
-// request (never cached) so neither view can drift from reality. null = not a git repo.
+// request (never cached) so neither view can drift from reality. null = the git read failed — a
+// plain folder, a gone/unreadable one or a git error; cwdGitState tells the routes which.
 // THE COUNTS ARE THE TRUE ONES, the lists are the capped ones — and the two are separate fields
 // for exactly that reason. `uncommitted` used to be the length of the ALREADY CAPPED list, so a
 // tree with 300 changed files reported "200 uncommitted files" and no reader could tell (the
@@ -6031,6 +6032,44 @@ async function repoRecentCommits(cwd: string, ref: string | null): Promise<Commi
   if (!ref) return [];
   const lg = await git(cwd, "log", "--no-color", ref, "--format=%h%x09%ct%x09%s", "-10");
   return lg.code === 0 ? parseCommitLog(lg.out) : [];
+}
+// WHY a git read of a session's folder came back empty-handed — asked only AFTER the read failed,
+// so a healthy repo never pays for it. Four answers, and only the first is a normal state: a plain
+// folder without git (an ordinary session the owner opened anywhere) has no changes, history or
+// lanes, and that is not-applicable, not a failure. A folder that is gone or cannot be read, and a
+// git that fails inside a real repo, stay errors — none of them may pass for "no git here".
+// `detail` is git's own first stderr line and can name a path, so it is for the OWNER's wire only.
+type CwdGit = { kind: "none" } | { kind: "gone" } | { kind: "unreadable" } | { kind: "error"; detail: string };
+async function cwdGitState(cwd: string): Promise<CwdGit> {
+  try {
+    if (!(await stat(cwd)).isDirectory()) return { kind: "gone" };
+  } catch {
+    return { kind: "gone" };
+  }
+  try {
+    await access(cwd, fsConstants.R_OK | fsConstants.X_OK);
+  } catch {
+    return { kind: "unreadable" };
+  }
+  const r = await gitRead(cwd, "rev-parse", "--git-dir");
+  // DISCOVERY found nothing — "not a git repository (or any of the parent directories)" / "(or any
+  // parent up to mount point …)". A `.git` file pointing nowhere (a worktree whose repo moved) says
+  // "not a git repository: <path>" instead: that is a broken repo, an error, never a plain folder.
+  if (r.code !== 0 && /not a git repository \(or any /i.test(r.err)) return { kind: "none" };
+  // rev-parse found a repo (the status read failed for another reason), or failed some other way
+  return { kind: "error", detail: (r.code === 0 ? "git status failed" : r.err.split("\n")[0]) || `git exited ${r.code}` };
+}
+// the one body every brief/diff route answers when briefPayload/diffPayload came back null.
+// `git` is the discriminator a reader branches on; `error` is the sentence it may print. The
+// status stays 400 for all four so every reader that branches on `res.ok` keeps treating the
+// git half as absent — `git: "none"` is what tells it the absence is the normal kind.
+// guest = true drops `detail` (git's stderr names the folder; the guest wire carries no paths).
+function cwdGitBody(g: CwdGit, guest: boolean): { error: string; git: CwdGit["kind"] } {
+  const error = g.kind === "none" ? "not a git repository"
+    : g.kind === "gone" ? "the session's folder no longer exists"
+    : g.kind === "unreadable" ? "the session's folder cannot be read"
+    : guest ? "git could not read the session's folder" : `git could not read the session's folder: ${g.detail}`;
+  return { error, git: g.kind };
 }
 async function briefPayload(s: Slot): Promise<BriefPayload | null> {
   const st = await statusLines(s.cwd!); // column-preserving — see statusLines
@@ -40651,7 +40690,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     const s = slotFrom(briefMatch[1]);
     if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
     const p = await briefPayload(s);
-    if (!p) return json({ error: "not a git repository" }, 400);
+    if (!p) return json(cwdGitBody(await cwdGitState(s.cwd), false), 400);
     return json({ ...p, worktree: s.worktree, merge: stewardMergeView(s.id), task: stewardTaskView(s.id) });
   }
   const trMatch = /^\/api\/steward\/slots\/(\d+)\/transcript$/.exec(url.pathname);
@@ -42203,7 +42242,7 @@ Bun.serve<WSData>({
         // because it types nothing into the pty, PR-review feel without repo access
         if (!s.cwd) return json({ error: "session gone" }, 404);
         const p = await diffPayload(s.cwd, await slotBase(s));
-        if (!p) return json({ error: "not a git repository" }, 400);
+        if (!p) return json(cwdGitBody(await cwdGitState(s.cwd), true), 400);
         return json({ ...p, commits: await sessionCommits(s) });
       }
       if (shareApi[2] === "brief") {
@@ -42211,7 +42250,12 @@ Bun.serve<WSData>({
         // document minus local filesystem details (worktree/repo paths stay private)
         if (!s.cwd) return json({ error: "session gone" }, 404);
         const p = await briefPayload(s);
-        if (!p) return json({ error: "not a git repository" }, 400);
+        if (!p) {
+          // a plain folder keeps the one non-git fact the guest tab shows (how long the session
+          // runs); a gone/unreadable folder or a git error stays an error, its path never named
+          const g = await cwdGitState(s.cwd);
+          return json({ ...cwdGitBody(g, true), ...(g.kind === "none" ? { sessionStart: sessionStart(s) } : {}) }, 400);
+        }
         // repoCommits is the OWNER's board field (§F4's second commit subhead): the base branch's
         // recent history. A guest is shared into ONE session — handing them main's last ten commit
         // subjects would widen the share to work they were never shown. Dropped here, not merely
@@ -43076,7 +43120,7 @@ Bun.serve<WSData>({
       const s = slotFrom(diffMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       const p = await diffPayload(s.cwd, await slotBase(s));
-      if (!p) return json({ error: "not a git repository" }, 400);
+      if (!p) return json(cwdGitBody(await cwdGitState(s.cwd), false), 400);
       return json({ ...p, worktree: s.worktree });
     }
     // guest comments, owner side: read the thread, reply into it, delete single comments
@@ -43113,7 +43157,15 @@ Bun.serve<WSData>({
       const s = slotFrom(briefMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       const p = await briefPayload(s);
-      if (!p) return json({ error: "not a git repository" }, 400);
+      if (!p) {
+        // a plain folder without git is an ORDINARY session: the git half is not-applicable, and
+        // the non-git half (setup, succession, start) is still this session's and still served.
+        // Still a 400, so every `res.ok` reader keeps the git half absent (cwdGitBody).
+        const g = await cwdGitState(s.cwd);
+        if (g.kind !== "none") return json(cwdGitBody(g, false), 400);
+        return json({ ...cwdGitBody(g, false), sessionStart: sessionStart(s),
+          setup: await sessionSetup(s, null), succession: successionFacts(s) }, 400);
+      }
       // …and the non-git half: what this session was BUILT from (profile + delivered packs), plus
       // what the succession rail has already done with it (successionFacts — read-only).
       return json({ ...p, worktree: s.worktree, setup: await sessionSetup(s, p.branch),

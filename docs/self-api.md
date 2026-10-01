@@ -593,6 +593,18 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   nicht feuern kann. Die Stups-Zahl ist prozesslokal wie `migrateTried`: nach einem Neustart steht
   dort 0, während das Prompt-Ledger den Stups behält. Gemessen in `e2e/watch.ts` an derselben
   Fixture, an der der Tick selbst gemessen wird.
+- **Eine Session in einem Ordner OHNE git ist ein normaler Zustand, kein Lesefehler** (seit 2026-10-02):
+  scheitert der git-Teil von `GET /api/slots/:id/brief`, `…/diff`, `/api/steward/slots/:id/brief` oder
+  der Gast-Routen `/s/:id/brief` und `/s/:id/diff`, fragt `server.ts#cwdGitState` nach dem GRUND, und
+  die Antwort trägt ihn als `git` (`server.ts#cwdGitBody`, weiter Status 400, damit jeder `res.ok`-Leser
+  die git-Hälfte abwesend lässt): `none` = der Ordner existiert, hat aber kein Repo — nicht anwendbar;
+  `gone` = Ordner weg; `unreadable` = nicht lesbar; `error` = git scheitert in einem Repo (auch ein
+  `.git`-Verweis ins Leere). Nur `none` ist normal; die drei anderen bleiben Fehler und gelten NIE als
+  „kein git". Zu `none` liefert die Owner-Brief-Route die nicht-git Hälfte weiter (`sessionStart`,
+  `setup`, `succession`), der Gast nur `sessionStart`; keine Antwort trägt ein git-Faktum (kein
+  `branch`, kein `uncommitted: 0`). Der Gast-Wortlaut nennt nie einen Pfad (gits stderr bleibt beim
+  Owner). Der Puls bleibt ohne git-Fakten aus (`renderStewardMessage`, kein Modellturn). Gemessen in
+  `e2e/slots.ts` (Owner + Steward, sechs eigene Ordner-Fixtures + inaktiver Slot) und `e2e/share.ts`.
 - **Die Linie Session für Session** (Owner-Route, seit 2026-09-21, für das Zieh-Band der Leiste):
   `GET /api/slots/:id/succession` antwortet `{session, taken, cap, past}` — `past` hat genau
   `session - 1` Einträge `{session, startedAt, handedAt, report, ctx}` (`server.ts#successionChain`;

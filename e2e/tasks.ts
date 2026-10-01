@@ -2687,8 +2687,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const sendSource = sendStart >= 0 && sendEnd > sendStart ? taskServerSource.slice(sendStart, sendEnd) : "";
     check("delivery residue fixture: sendText and its recovery helper are readable", !!sendSource,
       `start=${sendStart} end=${sendEnd}`);
-    type SendTrace = { events: string[]; acceptance?: string; error?: string };
-    const exerciseSend = async (source: string, before: string, afterResidue: string): Promise<SendTrace> => {
+    type SendTrace = { events: string[]; acceptance?: string; error?: string; refused?: boolean };
+    const exerciseSend = async (source: string, before: string, afterResidue: string,
+      readiness: { state: "ready" | "blocked"; why?: string } | null = { state: "ready" }): Promise<SendTrace> => {
       const events: string[] = [];
       let composerReads = 0;
       class Refused extends Error {}
@@ -2706,6 +2707,7 @@ export async function run(ctx: Ctx): Promise<void> {
         wakeSlot: async () => ({ ok: true }), sameSlotStreamOccupant: () => true,
         existingTmuxTarget: async () => ({ paneId: "%1" }), sess: () => "s1",
         readComposer: async () => before, sameBoundPane: () => true,
+        paneReadiness: async () => readiness,
         DELIVERY_HEADER_PREFIX: "[fleet-zustellung · ",
         awaitComposer: async () => { composerReads++; events.push(composerReads === 1 ? "reread" : "accept-read");
           return composerReads === 1 ? afterResidue : ""; },
@@ -2731,7 +2733,7 @@ export async function run(ctx: Ctx): Promise<void> {
         const result = await send({ id: 1, inputChain: Promise.resolve(), sleeping: false }, "next payload", true,
           { path: "owner", bypassQueue: true });
         return { events, acceptance: result.acceptance };
-      } catch (e) { return { events, error: e instanceof Error ? e.message : String(e) }; }
+      } catch (e) { return { events, error: e instanceof Error ? e.message : String(e), refused: e instanceof Refused }; }
     };
     const fleetRest = "[fleet-zustellung · old path] [Pasted text #3]";
     const recovered = sendSource ? await exerciseSend(sendSource, fleetRest, "") : { events: [] };
@@ -2751,6 +2753,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const draft = sendSource ? await exerciseSend(sendSource, "owner draft", "") : { events: [] };
     check("(A) text without a Fleet head stays untouched and blocks the new paste",
       draft.events.length === 0 && /composer occupied/.test(draft.error ?? ""), JSON.stringify(draft));
+    const blocked = sendSource ? await exerciseSend(sendSource, "", "",
+      { state: "blocked", why: "fixture blocked screen" }) : { events: [] };
+    check("(A) a blocked readiness screen refuses before any pane action or acceptance",
+      blocked.refused === true && blocked.events.length === 0 && blocked.acceptance === undefined
+      && /gate=blocked-screen: fixture blocked screen — nothing typed/.test(blocked.error ?? ""),
+      JSON.stringify(blocked));
     const noRecognition = sendSource.replace("before?.startsWith(DELIVERY_HEADER_PREFIX)", "false");
     const noEnter = sendSource.replace("const afterResidue = await submitFleetResidue(s, bound);",
       'const afterResidue = "";');
@@ -2761,11 +2769,15 @@ export async function run(ctx: Ctx): Promise<void> {
     const mutatedOccupied = bypassOccupied !== sendSource
       ? await exerciseSend(bypassOccupied, fleetRest, "still occupied") : { events: [] };
     check("(A) literal mutation without Fleet-head recognition fails the recovery trace",
-      noRecognition !== sendSource && !recovers(mutatedRecognition), JSON.stringify(mutatedRecognition));
+      noRecognition !== sendSource && mutatedRecognition.refused === true
+      && /composer occupied/.test(mutatedRecognition.error ?? "") && !recovers(mutatedRecognition),
+      JSON.stringify(mutatedRecognition));
     check("(A) literal mutation skipping recovery Enter fails the recovery trace",
-      noEnter !== sendSource && !recovers(mutatedEnter), JSON.stringify(mutatedEnter));
+      noEnter !== sendSource && mutatedEnter.acceptance === "observed" && !recovers(mutatedEnter),
+      JSON.stringify(mutatedEnter));
     check("(A) literal mutation bypassing the occupied reread fails the held trace",
-      bypassOccupied !== sendSource && !staysHeld(mutatedOccupied), JSON.stringify(mutatedOccupied));
+      bypassOccupied !== sendSource && mutatedOccupied.acceptance === "observed" && !staysHeld(mutatedOccupied),
+      JSON.stringify(mutatedOccupied));
   }
 
   // --- comments: the owner's own text ON a row. Same two-tier rule as the prompt above (the poll

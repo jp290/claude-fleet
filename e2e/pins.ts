@@ -1194,7 +1194,10 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   // which drops type-only imports: that can only UNDER-count coverage (a false red, fixed by listing
   // the file), never claim a file tsc does not see. Measured equal to `tsc --listFilesOnly` on the
   // tree it replaced: the same seven files missing from both.
-  const TSC_EXEMPT = new Map<string, string>([]);
+  const TSC_EXEMPT = new Map<string, string>([
+    ["docs/design/zeitleiste-entwurf.ts", "Scratch-Prototyp U1 (docs/design), kein Produktentry; separat mit bunx tsc --noEmit --strict pruefbar"],
+    ["docs/design/zeitleiste-probe.ts", "Scratch-Prototyp U1 (docs/design), kein Produktentry; separat mit bunx tsc --noEmit --strict pruefbar"],
+  ]);
   const tscArgs = /--types bun ([^&]+?)(?:&&|$)/.exec(verifyCmd)?.[1]?.trim().split(/\s+/) ?? [];
   const lsTs = spawnSync("git", ["-C", ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.ts"],
     { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });

@@ -101,6 +101,7 @@ import {
   normalizeRolePresets, type RolePresets,
 } from "./src/protocol";
 import { opsPollRow, opsPollVisible } from "./src/opsevents";
+import { laneTitleOf } from "./src/suitemeter";
 // the persisted domain model and its parsers — P4 Slice 1 moved them out whole; see server/types.ts
 import {
   MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, watchFrom, FLEET_EVENT_TERMINAL,
@@ -27607,7 +27608,10 @@ function helperJobsView(forDevice?: string): {
 //   · `repo` is a basename, exactly like on the portal. A git toplevel is a path on this box and
 //     the panel has no use for one.
 // `claimedAt` is when the machine took it — the only start a helper-held run has on the wire.
-interface HelperDeviceClaimView { kind: "audit" | "lane-suite" | "daemon-update" | "command"; repo: string; ref: string; claimedAt: number; expiresAt: number }
+// `slot` and `cmd` ride on a `command` claim only: which session handed which gate script over, so the
+// board can name the run (src/suitemeter.ts#suiteMeter draws it at the helper station)
+interface HelperDeviceClaimView { kind: "audit" | "lane-suite" | "daemon-update" | "command"; repo: string; ref: string; claimedAt: number; expiresAt: number;
+  slot?: number; cmd?: string }
 interface HelperDeviceView {
   id: string; name: string; lastSeen: number;
   mode?: DeviceMode; load?: number; capabilities?: string[];
@@ -27681,7 +27685,8 @@ function heldClaimsByDevice(): Map<string, HelperDeviceClaimView[]> {
   for (const j of commandJobs.values()) {
     if (j.state !== "claimed") continue;
     const c = commandJobClaimOf(j);
-    if (c) push(c.deviceId, { kind: "command", repo: basename(j.repo), ref: j.branch, claimedAt: c.claimedAt, expiresAt: c.expiresAt });
+    if (c) push(c.deviceId, { kind: "command", repo: basename(j.repo), ref: j.branch, claimedAt: c.claimedAt, expiresAt: c.expiresAt,
+      slot: j.slot, cmd: j.cmd });
   }
   for (const u of helperUpdates.values()) {
     const c = helperUpdateClaimOf(u);
@@ -41599,7 +41604,14 @@ Bun.serve<WSData>({
             // /api/self all along, and the owner poll was the one reader that never got them
             ...(s.mission ? { mission: s.mission } : {}),
             ...(s.awaiting ? { awaiting: s.awaiting } : {}),
-            ...(s.cwd ? (() => { const t = foundingRowOf(s); return t ? { taskId: t.id, taskHead: t.text.split("\n")[0].slice(0, 160) } : {}; })() : {}),
+            // a task LANE's title, derived on this read from its founding card (src/suitemeter.ts#
+            // laneTitleOf) and never stored; omitted when there is nothing to derive it from
+            ...(s.cwd ? (() => {
+              const t = foundingRowOf(s);
+              if (!t) return {};
+              const title = s.worktree ? laneTitleOf(t.card?.ziel, t.text) : null;
+              return { taskId: t.id, taskHead: t.text.split("\n")[0].slice(0, 160), ...(title ? { taskTitle: title } : {}) };
+            })() : {}),
             ...(s.programId ? { programId: s.programId } : {}),
             // OMITTED when null (the common case) — this is the 2s poll (data-saver); absent reads as "the
             // default harness". What each harness SUPPORTS is static and rides GET /api/harnesses once.

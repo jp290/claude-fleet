@@ -40,6 +40,11 @@ export interface MeterBall {
   // the distribution of past runs of THIS kind, where one exists on the wire — null otherwise, and
   // then the row draws no expectation at all rather than a "~0:00" nobody measured
   expect: { n: number; p50: number; p90: number } | null;
+  // how many runs on a machine this ball stands for — absent is one. A sharded audit is ONE ball
+  // and several runs, and the helper station counts runs, the way the device's own `running` does.
+  runs?: number;
+  // the lane's full derived title, for the tooltip — the name carries only its cut
+  title?: string | null;
 }
 export type MeterLock = "free" | "held" | "overdue" | "parked" | "stale" | "unknown" | null;
 export interface Meter { balls: MeterBall[]; lock: MeterLock }
@@ -59,8 +64,12 @@ export interface MeterGate {
     // a server land row's suite ("security (2/3)") and its chain's past durations (server.ts#gateStats)
     stage?: string; stats?: { n: number; p50: number; p90: number } }[];
 }
-export interface MeterDevice { name: string; claims?: { kind?: string; repo: string; ref: string; claimedAt?: number; expiresAt: number }[] }
-export interface MeterSlot { id: number; label: string | null; branch: string | null; letter?: string | null }
+// a claim as server.ts#helperDevicesView serves it; a `command` claim (a gate script a session handed
+// to that machine) also names the offering slot and the script
+export interface MeterDevice { name: string; claims?: { kind?: string; repo: string; ref: string; claimedAt?: number; expiresAt: number;
+  slot?: number; cmd?: string }[] }
+// `title`: the lane's full derived title (laneTitleOf), absent or null when none could be derived
+export interface MeterSlot { id: number; label: string | null; branch: string | null; letter?: string | null; title?: string | null }
 export interface MeterInput {
   // what THIS fleet calls itself (FLEET_INSTANCE). null = the operator named none, and the meter
   // then says "this machine" rather than inventing a name two hosts could share.
@@ -79,6 +88,31 @@ export function laneTail(branch: string): string {
   return m ? m[1] : branch.replace(/^fleet\//, "");
 }
 
+// WHAT A TASK LANE IS FOR, in words (owner 2026-09-29, 37439a62: „[Zitat entfernt]“
+// ; cdf43028: „[Zitat entfernt]“).
+// DERIVED on every read from the founding task and never stored: the card's goal first — its leading
+// [TITEL] bracket when it opens with one, otherwise its first sentence — and only without a goal the
+// task text's own leading [TITEL]. null = nothing to derive from, and every reader then names the
+// lane exactly as before (the band name alone). The server ships the full title (server.ts, the
+// /api/sessions slot row `taskTitle`); the board cuts it with shortTitle.
+export const LANE_TITLE_MAX = 32;
+export function laneTitleOf(ziel: string | null | undefined, text: string | null | undefined): string | null {
+  const bracket = (s: string): string | null => /^\[([^\]\n]+)\]/.exec(s)?.[1]?.trim() || null;
+  const goal = (ziel ?? "").trim();
+  const title = goal
+    ? bracket(goal) ?? goal.split("\n")[0]!.split(/(?<=[.!?])\s/)[0]!.replace(/[.!?]$/, "").trim()
+    : bracket((text ?? "").trim());
+  return title ? title.slice(0, 160) : null;
+}
+// ~32 characters with an ellipsis; the full title stays in the tooltip
+export function shortTitle(title: string): string {
+  return title.length <= LANE_TITLE_MAX ? title : `${title.slice(0, LANE_TITLE_MAX - 1).trimEnd()}…`;
+}
+// "<Lane-Referenz> · <Kurztitel>", and the reference alone when no title could be derived
+export function laneDisplayName(ref: string, title: string | null | undefined): string {
+  return title ? `${ref} · ${shortTitle(title)}` : ref;
+}
+
 // m:ss — a clock someone is watching, so whole minutes would look frozen. Clamped: `at` is a server
 // timestamp against this device's clock, and a phone a few seconds ahead must read 0:00.
 export function mmss(ms: number): string {
@@ -92,12 +126,15 @@ export function meterKind(kind: string): { label: string; title: string } {
     case "preview": return { label: "Vorschau", title: "Prüft den aktuellen Stand einer Lane vor dem Land." };
     case "post-land check": return { label: "Nachprüfung", title: "Prüft main nach einem Land erneut." };
     case "queued check run": return { label: "Wartender Prüflauf", title: "Dieser Prüflauf wartet auf die gemeinsame Sperre." };
+    case "gate script": return { label: "Gate-Skript", title: "Ein Gate-Skript (clean-review, security, claude-gate), das eine Session an ein Helfer-Gerät abgegeben hat." };
     default: return { label: "Prüflauf", title: "Ein Prüflauf ohne näher gemeldete Art." };
   }
 }
 
-// THE ROW UNDER THE TUBE reads branch → state (including whom it waits behind) → clock → kind.
-// The renderer joins them into one ellipsised span, so a narrow board keeps the branch and state.
+// THE ROW UNDER THE TUBE reads branch → state (including whom it waits behind) → clock → kind. A
+// lane whose title could be derived is named by it (laneDisplayName), and then its branch's four hex
+// live in the tooltip only; every other ball still leads with its branch, as before. The renderer
+// joins the parts into one ellipsised span, so a narrow board keeps the state.
 // The clock is m:ss since
 // `at`, computed on each repaint; a finished run says how long ago, a run with no known start says
 // nothing. "/ ~p50" only where a distribution exists, and past its p90 the WORD, never a colour —
@@ -117,7 +154,7 @@ export function meterLine(b: MeterBall, now: number, german = false): string[] {
     if (b.what) parts.push(b.what);
     return parts;
   }
-  const parts: string[] = [b.branch ? laneTail(b.branch) : "Branch unbekannt"];
+  const parts: string[] = b.slot !== null && b.title ? [] : [b.branch ? laneTail(b.branch) : "Branch unbekannt"];
   const waitingOn = b.station === "wait" && (b.what.startsWith("wartet ") || b.what.startsWith("nach Land"));
   if (waitingOn) parts.push(b.what.split(" · ")[0]!);
   if (b.at > 0) {
@@ -134,13 +171,21 @@ export function meterLine(b: MeterBall, now: number, german = false): string[] {
   return parts;
 }
 
+// how many runs sit at a station: the helper station's number is the same count as the devices'
+// own `running` — a sharded audit counts each shard (MeterBall.runs)
+export function meterRuns(balls: readonly MeterBall[], station: MeterStation): number {
+  return balls.filter((b) => b.station === station).reduce((n, b) => n + (b.runs ?? 1), 0);
+}
+
 export function suiteMeter(inp: MeterInput): Meter {
   const balls: MeterBall[] = [];
   const here = inp.instance ?? "this machine";
   const nameOf = (slot: number | null, _label: string | null, _branch: string | null): string => {
     const s = slot === null ? undefined : inp.slots.find((x) => x.id === slot);
-    return slot === null ? "Fleet" : s?.letter || `Slot ${slot}`;
+    return slot === null ? "Fleet" : s?.letter ? laneDisplayName(s.letter, s.title) : `Slot ${slot}`;
   };
+  const titleOf = (slot: number | null): string | null =>
+    slot === null ? null : inp.slots.find((x) => x.id === slot)?.title ?? null;
   const branchOf = (slot: number | null, branch: string | null): string | null =>
     branch ?? (slot === null ? null : inp.slots.find((s) => s.id === slot)?.branch ?? null);
 
@@ -173,7 +218,7 @@ export function suiteMeter(inp: MeterInput): Meter {
     const what = r.phase === "failed" && r.exitCode !== null ? `${label} · exit ${r.exitCode}` : label;
     balls.push({ key: `gate:${r.origin ?? "lane"}:${r.slot ?? r.label ?? "-"}:${r.suite}`, station,
       slot: r.slot, name: nameOf(r.slot, r.label, r.branch ?? null), branch: branchOf(r.slot, r.branch ?? null), kind, what, where: here, tone, at: r.at,
-      expect: server ? r.stats ?? null : null });
+      expect: server ? r.stats ?? null : null, title: titleOf(r.slot) });
   }
 
   for (const o of inp.offers) {
@@ -186,7 +231,21 @@ export function suiteMeter(inp: MeterInput): Meter {
       // owner words (G0.5, owner 2026-09-22): „[Zitat entfernt]“ leaves the visible text; „[Zitat entfernt]“ is the
       // owner's word for an audit — this name derived by MAIN from that mapping (Slot 13)
       name: nameOf(o.slot, null, o.branch), branch: o.branch, kind: "preview", what: o.state === "open" ? "offered" : "",
-      where: o.state === "open" ? "unclaimed" : o.device ?? "helper", tone, at: o.at, expect: null });
+      where: o.state === "open" ? "unclaimed" : o.device ?? "helper", tone, at: o.at, expect: null, title: titleOf(o.slot) });
+  }
+
+  // GATE SCRIPTS ON A HELPER: a session handed ./e2e-clean-review.sh, ./e2e-security.sh or
+  // ./e2e-claude-gate.sh to another machine (server.ts, the command jobs). The device's claim list
+  // (server.ts#helperDevicesView) is the one place they are counted, and it is the same list whose
+  // runs the device reports as `running` — so each claimed one is a ball at `helper`, or the
+  // station says fewer runs than the machine is carrying (note 159df4c9: three drawn, five running).
+  for (const d of inp.devices) for (const c of d.claims ?? []) {
+    if (c.kind !== "command") continue;
+    const slot = c.slot ?? null;
+    balls.push({ key: `command:${d.name}:${c.ref}:${c.cmd ?? "?"}:${c.claimedAt ?? 0}`, station: "helper", slot,
+      name: slot === null ? c.ref : nameOf(slot, null, c.ref), branch: c.ref, kind: "gate script",
+      what: (c.cmd ?? "").replace(/^\.\//, ""), where: d.name, tone: "plain", at: c.claimedAt ?? 0, expect: null,
+      title: titleOf(slot) });
   }
 
   if (auditRuns) {
@@ -199,16 +258,19 @@ export function suiteMeter(inp: MeterInput): Meter {
       what: auditRuns.phase === "starting" && !auditHeld ? "starting"
         : auditHeld?.parts ? `${tree} · ${auditHeld.parts}` : tree,
       where: auditHeld ? auditHeld.device : here, tone: "plain", at: auditRuns.startedAt ?? 0,
-      expect: auditHeld ? null : inp.audit?.stats ?? null });
+      expect: auditHeld ? null : inp.audit?.stats ?? null, ...(auditHeld ? { runs: auditClaims.length } : {}) });
   } else if (auditHeld) {
     balls.push({ key: "audit:run", station: "helper", slot: null, name: "post-land check", branch: auditHeld.ref, kind: "post-land check",
       what: auditHeld.parts || auditHeld.ref, where: auditHeld.device, tone: "plain",
-      at: Number.isFinite(auditHeld.at) ? auditHeld.at : 0, expect: null });
+      at: Number.isFinite(auditHeld.at) ? auditHeld.at : 0, expect: null, runs: auditClaims.length });
   }
   for (const w of inp.audit?.waiting ?? []) {
     const landed = inp.slots.find((s) => s.branch === w.branch);
+    const tail = landed?.title ? "" : ` (${laneTail(w.branch)})`;
     balls.push({ key: `audit:wait:${w.branch}`, station: "wait", slot: null, name: "post-land check", branch: w.main,
-      kind: "post-land check", what: `nach Land von ${landed ? nameOf(landed.id, null, w.branch) : `Lane ${laneTail(w.branch)}`} (${laneTail(w.branch)})`,
+      // the landed lane by its name and title while its slot still holds it; without a title the
+      // four hex stay beside the name, as they always did
+      kind: "post-land check", what: `nach Land von ${landed ? nameOf(landed.id, null, w.branch) : `Lane ${laneTail(w.branch)}`}${tail}`,
       where: here, tone: "plain", at: w.at, expect: null });
   }
 
@@ -230,7 +292,7 @@ export function suiteMeter(inp: MeterInput): Meter {
       : t.owner?.branch === "main" ? "Fleet" : `Lauf ${t.pid}`;
     balls.push({ key: `queue:${t.n}.${t.pid}`, station: "wait", slot: t.owner?.slot ?? null, name,
       branch: t.owner?.branch ?? null,
-      kind: "queued check run", expect: null,
+      kind: "queued check run", expect: null, title: titleOf(t.owner?.slot ?? null),
       what: t.alive ? `${t.position === 1 && !lk ? "wartet auf Prüfsperre" : `wartet hinter ${ahead}`} · Platz ${t.position}/${inLine}`
         : `Ticket ${t.n} · Prozess weg`,
       where: here, tone: t.alive ? "plain" : "warn",
@@ -247,7 +309,7 @@ export function suiteMeter(inp: MeterInput): Meter {
   if ((lock === "held" || lock === "overdue" || lock === "unknown") && !holderReported) {
     balls.push({ key: "lock:holder", station: "run", slot: lk?.owner?.slot ?? null,
       name: lk?.owner ? holderName : "Fleet", branch: lk?.owner?.branch ?? null,
-      kind: "check run", expect: null,
+      kind: "check run", expect: null, title: titleOf(lk?.owner?.slot ?? null),
       what: lk?.pid === null || lk?.pid === undefined ? "pid unreadable" : `pid ${lk.pid}`,
       where: here, tone: lock === "overdue" ? "warn" : "plain", at: lk?.acquiredAt ?? 0 });
   }

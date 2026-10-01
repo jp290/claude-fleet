@@ -22,7 +22,7 @@ import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, UntilTimeout, until, check, get, post, restartSrv, stopSrv } from "./harness";
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
-import { suiteMeter, laneTail, meterKind, meterLine, type MeterInput } from "../src/suitemeter";
+import { suiteMeter, laneDisplayName, laneTail, laneTitleOf, meterKind, meterLine, shortTitle, type MeterInput } from "../src/suitemeter";
 import { DAEMON_FEATURES, modulesEnv } from "../helper-daemon/daemon";
 
 interface HelperJob {
@@ -227,6 +227,67 @@ export async function run(): Promise<void> {
       && laneTail("fleet/260918-aepfel-oel-und-strassen-abcd") === "abcd"
       && laneTail("feature/login") === "feature/login",
       `${laneTail("fleet/260918203940-4198")} ${laneTail("fleet/260918-aepfel-oel-und-strassen-abcd")} ${laneTail("feature/login")}`);
+    // === A TASK LANE'S NAME IN WORDS (owner 37439a62: „[Zitat entfernt]“; cdf43028: „[Zitat entfernt]“
+    // ). The title is DERIVED from the founding card on every read —
+    // its [TITEL] bracket, else its goal's first sentence, else the task text's own [TITEL] — and a
+    // lane with nothing to derive from is named exactly as before.
+    const longZiel = "[OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380] Owner woertlich: \"[Zitat entfernt]\".";
+    check("(LS.title) a card goal that opens with [TITEL] is titled by the bracket, not by its prose",
+      laneTitleOf(longZiel, "ROLLE: x") === "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380",
+      String(laneTitleOf(longZiel, "ROLLE: x")));
+    check("(LS.title) a plain card goal is titled by its first sentence",
+      laneTitleOf("Eine Session ohne Git hat eine Seitenleiste. Danach mehr.", "[ANDERS] x") === "Eine Session ohne Git hat eine Seitenleiste",
+      String(laneTitleOf("Eine Session ohne Git hat eine Seitenleiste. Danach mehr.", "[ANDERS] x")));
+    check("(LS.title) without a card goal the task text's leading [TITEL] is the fallback",
+      laneTitleOf(null, "[OWNER-AUFTRAG 30.09. · Native Terminalfragen]\nOwner hat …") === "OWNER-AUFTRAG 30.09. · Native Terminalfragen"
+        && laneTitleOf("", "[X]\n") === "X", String(laneTitleOf(null, "[OWNER-AUFTRAG 30.09. · Native Terminalfragen]\nOwner hat …")));
+    check("(LS.title) RUECKFALL: no goal and no leading [TITEL] derives nothing — never the 'ROLLE:' head",
+      laneTitleOf(null, "ROLLE: codex/gpt-6.1-sol/high\nZIEL: …") === null && laneTitleOf(undefined, undefined) === null
+        && laneTitleOf(null, "text with a later [bracket]") === null, String(laneTitleOf(null, "ROLLE: codex/gpt-6.1-sol/high")));
+    const cut = shortTitle("OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380");
+    check("(LS.title) the short title is ~32 characters with an ellipsis; a short one is untouched",
+      cut.length === 32 && cut.endsWith("…") && shortTitle("Kurz") === "Kurz", `${cut} (${cut.length})`);
+    check("(LS.title) the name is '<Lane-Referenz> · <Kurztitel>', and the reference alone without a title",
+      laneDisplayName("3A", "Kurz") === "3A · Kurz" && laneDisplayName("3A", null) === "3A", laneDisplayName("3A", "Kurz"));
+    const titled = suiteMeter({ ...base, slots: [{ id: 17, label: "⎇ task x-aaaa", branch: "fleet/261001-x-aaaa", letter: "3A",
+      title: "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE" }], gate: { lock: null, reports: [rep(17, "running")] },
+      offers: [{ slot: 17, branch: "fleet/261001-x-aaaa", state: "claimed", device: "workhorse", at: 1, result: null }] }).balls;
+    check("(LS.title) Checks rows name a titled lane '3A · <Kurztitel>' and carry the full title for the tooltip",
+      titled.length === 2 && titled.every((b) => b.name === "3A · OBERFLAECHE · I1 STUFE 1 + HELF…"
+        && b.title === "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE"), JSON.stringify(titled.map((b) => [b.name, b.title])));
+    check("(LS.title) …and the four hex leave the visible row (tooltip only) — but stay on an untitled lane, as before",
+      titled.every((b) => !meterLine(b, 1000, true).includes("aaaa")) && meterLine(referenced, 1000, true)[0] === "aaaa",
+      `${JSON.stringify(meterLine(titled[0]!, 1000, true))} / ${JSON.stringify(meterLine(referenced, 1000, true))}`);
+    const landedWait = (title: string | null) => suiteMeter({ ...base, slots: [{ id: 17, label: null, branch: "fleet/b-2222", letter: "3A", title }],
+      audit: { running: null, waiting: [{ repo: "r", main: "main", branch: "fleet/b-2222", mainAfter: "f00", at: 11 }], stats: null } }).balls[0]?.what;
+    check("(LS.title) a folded land names its lane by title; untitled it keeps the four hex beside the name",
+      landedWait("Kurz") === "nach Land von 3A · Kurz" && landedWait(null) === "nach Land von 3A (2222)",
+      `${landedWait("Kurz")} / ${landedWait(null)}`);
+    // the WIRE half: the server derives the title on the poll from the founding card and ships it;
+    // the sidebar swaps only a dispatcher-written ⎇ label for it, never a hand-given one
+    let titleWire = "", titleWireError = "";
+    try {
+      const src = dirname(realpathSync(`${ROOT}/node_modules`));
+      titleWire = readFileSync(`${src}/server.ts`, "utf8");
+      const cli = readFileSync(`${src}/src/client.ts`, "utf8");
+      const start = cli.indexOf("export function laneLabel(");
+      const end = cli.indexOf("\n}\n", start);
+      if (start < 0 || end < 0) throw new Error("laneLabel missing from src/client.ts");
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(cli.slice(start, end + 3).replace(/^export /, ""));
+      const laneLabel = new Function("shortTitle", "baseName", `${js}\nreturn laneLabel;`)(shortTitle,
+        (p: string) => p.split("/").pop() ?? p) as (s: Record<string, unknown>) => string;
+      const lane = { cwd: "/w/x", worktree: { branch: "fleet/261001-x-aaaa" }, taskTitle: "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE" };
+      const got = [laneLabel({ ...lane, label: "⎇ task x-aaaa" }), laneLabel({ ...lane, label: "Mein Name" }),
+        laneLabel({ ...lane, label: "⎇ task x-aaaa", taskTitle: undefined }), laneLabel({ ...lane, label: null })];
+      if (JSON.stringify(got) !== JSON.stringify(["OBERFLAECHE · I1 STUFE 1 + HELF…", "Mein Name", "⎇ task x-aaaa", "OBERFLAECHE · I1 STUFE 1 + HELF…"]))
+        titleWireError = `sidebar labels: ${JSON.stringify(got)}`;
+    } catch (e) { titleWireError = e instanceof Error ? e.message : String(e); }
+    check("(LS.title) the sidebar shows the short title in place of the ⎇ label, keeps a hand label and falls back without a title",
+      titleWireError === "", titleWireError || "laneLabel");
+    check("(LS.title) the poll derives taskTitle from the founding card for a lane (no stored title)",
+      /const title = s\.worktree \? laneTitleOf\(t\.card\?\.ziel, t\.text\) : null;/.test(titleWire)
+        && /\.\.\.\(title \? \{ taskTitle: title \} : \{\}\)/.test(titleWire), titleWireError || "server.ts slot row");
+
     const holder = suiteMeter({ ...base, gate: { lock: { pid: 4242, alive: true, state: "overdue" }, reports: [] } });
     check("(LS.meter) a HELD mutex nobody named still puts a ball in 'run' — an empty run station would say 'nothing runs'",
       holder.lock === "overdue" && at(holder) === "run:Fleet:warn"

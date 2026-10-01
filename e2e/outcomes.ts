@@ -7,7 +7,7 @@ import { BASE, REPO, ROOT, check, get, post, restartSrv, stopSrv } from "./harne
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { postLandAlarm } from "../src/plaudit";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
-import { meterLine, suiteMeter, type MeterInput } from "../src/suitemeter";
+import { meterKind, meterLine, meterRuns, suiteMeter, type MeterInput } from "../src/suitemeter";
 
 export async function run(): Promise<void> {
   // ===== THE SUITE STRIP'S ROW: KIND → CLOCK → STAGE (note 2026-09-22 §4) — no server, no DOM =====
@@ -62,6 +62,32 @@ export async function run(): Promise<void> {
     check("(meter-row) should NOT compare a helper-held check against THIS machine's audit distribution",
       !!heldLocal && heldLocal.expect === null && !meterLine(heldLocal, now).join(" ").includes("~"),
       JSON.stringify(heldLocal && meterLine(heldLocal, now)));
+
+    // (2b) THE HELPER STATION COUNTS WHAT THE DEVICE RUNS (note 159df4c9, 29.09.: „[Zitat entfernt]“
+    //  while the daemon reported running=5). The device's claim list
+    // (server.ts#helperDevicesView) is the one count; a gate script a session handed over is a
+    // `command` claim on it, and it used to be in no ball at all.
+    const cmdClaim = { kind: "command", repo: "claude-fleet", ref: "fleet/261001-x-aaaa", claimedAt: now - 90_000,
+      expiresAt: now + 60_000, slot: 7, cmd: "./e2e-security.sh" };
+    const cmdBall = suiteMeter({ ...base, slots: [{ id: 7, label: null, branch: "fleet/261001-x-aaaa", letter: "3A", title: "Kurz" }],
+      devices: [{ name: "workhorse", claims: [cmdClaim] }] }).balls.find((b) => b.kind === "gate script");
+    check("(meter-helper) a claimed command job is a ball at 'helper', on its device, named by its lane, saying its script",
+      cmdBall?.station === "helper" && cmdBall.where === "workhorse" && cmdBall.name === "3A · Kurz"
+        && cmdBall.what === "e2e-security.sh" && cmdBall.at === now - 90_000,
+      JSON.stringify(cmdBall ?? null));
+    const busy = suiteMeter({ ...base, slots: [],
+      offers: [{ slot: 5, branch: "fleet/y-bbbb", state: "claimed", device: "workhorse", at: now - 1_000, result: null }],
+      devices: [{ name: "workhorse", claims: [claim(now - 600_000), claim(now - 662_000), claim(now - 540_000),
+        { kind: "lane-suite", repo: "claude-fleet", ref: "fleet/y-bbbb", claimedAt: now - 1_000, expiresAt: now + 1 },
+        cmdClaim] }] });
+    // what the device reports as `running` for this load: three shards + one preview + one gate script
+    const running = 5;
+    check("(meter-helper) the helper station counts the SAME runs as the device's running: shards one by one, previews, gate scripts",
+      meterRuns(busy.balls, "helper") === running, `meterRuns=${meterRuns(busy.balls, "helper")} running=${running}`);
+    check("(meter-helper) each helper run says its kind: Vorschau, Gate-Skript, Nachprüfung (the audit)",
+      JSON.stringify(busy.balls.filter((b) => b.station === "helper").map((b) => meterKind(b.kind).label).sort())
+        === JSON.stringify(["Gate-Skript", "Nachprüfung", "Vorschau"]),
+      JSON.stringify(busy.balls.map((b) => [b.station, b.kind])));
 
     // (3) no distribution → no expectation drawn at all
     const bare = lineOf({ ...base, gate: { lock: null, reports: [land({ at: now - 12_000 })] } });

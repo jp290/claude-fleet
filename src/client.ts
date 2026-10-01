@@ -29,7 +29,7 @@ import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
-import { METER_STATIONS, laneTail, meterKind, meterLine, mmss, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
+import { METER_STATIONS, laneDisplayName, laneTail, meterKind, meterLine, mmss, shortTitle, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsSubject, opsSummary, type OpsPollRow } from "./opsevents";
 import {
   projectTaskWaves,
@@ -298,6 +298,9 @@ export interface SlotInfo {
   harness?: string; effort?: string;
   // what the session is for (server.ts, the /api/sessions slot row) — absent means none set
   mission?: string; awaiting?: "owner" | "main"; taskId?: string; taskHead?: string; programId?: string;
+  // a task lane's full title, derived by the server from its founding card on every poll
+  // (src/suitemeter.ts#laneTitleOf) — absent when there was nothing to derive it from
+  taskTitle?: string;
   // WHICH BOX and WHICH DAEMON this session's agent runs in. Present — RESOLVED, never null —
   // exactly when the slot's harness has a container concept, absent otherwise; that is the one
   // question the fleet-wide env could not answer per session.
@@ -4529,6 +4532,22 @@ export function laneBandNames(
   return out;
 }
 
+// WHAT A LANE IS CALLED IN WORDS. A task lane the server could derive a title for is called by that
+// title, cut to ~32 characters — in place of the label the dispatcher wrote from its branch
+// ("⎇ task <slug>-<hex>", "⎇ <repo> <hex>"), which the owner could not read (37439a62, cdf43028).
+// A label someone gave it by hand starts with no ⎇ and stays; a lane with no title stays as it was.
+export function laneLabel(s: SlotInfo): string {
+  const label = s.label ?? baseName(s.cwd ?? "");
+  return s.worktree && s.taskTitle && (!s.label || s.label.startsWith("⎇ ")) ? shortTitle(s.taskTitle) : label;
+}
+// a lane named from its BRANCH (a land, an undo): "<Lane-Referenz> · <Kurztitel>" while a slot still
+// holds that branch and has a title, otherwise the four hex as before
+export function laneNameOfBranch(branch: string): string {
+  const s = fleet.find((x) => x.cwd && x.worktree?.branch === branch);
+  const ref = s ? laneBandNames(stacksOf()).get(s.id) : undefined;
+  return ref && s?.taskTitle ? laneDisplayName(ref, s.taskTitle) : laneTail(branch);
+}
+
 // THE FOUR STATES A ROW MUST TELL APART WITHOUT COLOUR (owner, the left-bar card: working, resting,
 // asleep, broken). The shapes are in the CSS; what is decided here is which one a row is in, and the
 // order matters — a broken session that happens to be on screen is broken first. Resting and asleep
@@ -5291,7 +5310,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   // ROW: it overlays the row's right edge on hover, and on a phone it shares line 1's flex line.
   const r1 = el("div", "r1");
   {
-      const displayLabel = s.label ?? baseName(s.cwd);
+      const displayLabel = laneLabel(s);
       const lbl = el("span", "lbl", displayLabel);
       // THE SESSION MARK — Fassung B "Zweig", the owner's choice (src/marks.ts). The span only
       // reserves the geometry; the bar's one canvas draws into it (placeMarks, end of renderSlots),
@@ -5303,7 +5322,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // were line 2 and two chips; the board says all of them again, with actions.
       const facts: string[] = [];
       if (s.worktree) {
-        facts.push(`${refs.get(s.id) ?? "lane"} · ${displayLabel}`, s.worktree.branch);
+        facts.push(`${refs.get(s.id) ?? "lane"} · ${s.taskTitle ?? displayLabel}`, s.worktree.branch);
         if (s.git) {
           // lifecycle: editing (uncommitted) → ready (clean but commits to land) → clean — it was a
           // dot beside the state dot, a SECOND dot the resting row has no place for
@@ -5763,7 +5782,7 @@ export async function refresh() {
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
-      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.comments, s.mergePending,
+      data.slots.map((s) => [s.cwd, s.label, s.taskTitle, s.share?.id, s.share?.comments, s.mergePending,
         // the STATE GLYPH and the age beside it, both at the resolution the row paints them. The
         // glyph was a boolean here while it had two readings; it has four now, and `stalled`/`agent`
         // reach the row through nothing else — leaving them out would freeze a session at "resting"

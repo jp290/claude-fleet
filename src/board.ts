@@ -1,4 +1,4 @@
-import { $, el, RECENT_MS, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, landsEnabled, laneBandNames, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename } from "./client";
+import { $, el, RECENT_MS, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename } from "./client";
 import { openQueue, programsPoll } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool } from "./prefs";
 import { popover } from "./popover";
@@ -6,7 +6,7 @@ import { openLaneFounding } from "./founding";
 import { askRisk } from "./dialog";
 import { Shell, openShell } from "./shell";
 import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow } from "./protocol";
-import { METER_STATIONS, MeterBall, MeterStation, laneTail, meterKind, meterLine, mmss, suiteMeter } from "./suitemeter";
+import { METER_STATIONS, MeterBall, MeterStation, laneDisplayName, laneTail, meterKind, meterLine, meterRuns, mmss, suiteMeter } from "./suitemeter";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
 import { porcelainPath } from "./gitpath";
 import { icon } from "./icons";
@@ -879,9 +879,13 @@ export function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   // `pid null` is a lock file whose contents are not a pid — a lost holder either way, but
   // printing "pid null" would read as a bug in this line rather than as one on disk.
   const who = lk?.pid === null ? "unreadable pid file" : `pid ${lk?.pid}`;
+  const ownerSlotId = lk?.owner?.slot ?? null;
+  const ownerSlot = ownerSlotId ? fleet.find((x) => x.id === ownerSlotId) : undefined;
+  const ownerTitle = ownerSlot?.worktree ? ownerSlot.taskTitle ?? null : null;
   const ownerName = lk?.owner?.slot === null ? "Fleet" : lk?.owner?.slot
-    ? laneBandNames(stacksOf()).get(lk.owner.slot) ?? `Slot ${lk.owner.slot}` : "Fleet";
-  const owner = `${ownerName} · ${lk?.owner?.branch ? laneTail(lk.owner.branch) : "Branch unbekannt"}`;
+    ? laneDisplayName(laneBandNames(stacksOf()).get(lk.owner.slot) ?? `Slot ${lk.owner.slot}`, ownerTitle) : "Fleet";
+  // a lane with a title is named by it; its branch's four hex move to the tooltip below
+  const owner = ownerTitle ? ownerName : `${ownerName} · ${lk?.owner?.branch ? laneTail(lk.owner.branch) : "Branch unbekannt"}`;
   const age = gateAge(lk?.ageMs ?? lk?.heldMs ?? 0);
   const id = lk?.identityProven === true ? "identity proven"
     : lk?.identityProven === false ? "identity mismatch"
@@ -897,12 +901,13 @@ export function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
       // NEUTRAL on purpose: every finished run leaves its dir behind (release is implicit), so
       // this is what an idle machine looks like — it was a ⚠ for one day and shouted constantly.
       : `· check runs · none running · stale lock (${who}, ${id}, claimed ${age} ago)`);
-  head.title = state === "free" ? "Kein Check hält gerade die maschinenweite Sperre (intern: suite mutex)."
+  head.title = (ownerTitle && lk?.owner?.branch ? `${ownerTitle} — ${lk.owner.branch} · ` : "")
+    + (state === "free" ? "Kein Check hält gerade die maschinenweite Sperre (intern: suite mutex)."
     : lk?.reason || lk?.effect
       ? `Grund: ${lk.reason ?? "unknown"}; Nächstes: ${lk.nextAction ?? "unknown"}; Wirkung: ${lk.effect ?? "unknown"} (intern: lock reason/nextAction/effect)`
     : state === "stale" ? "Nichts läuft — ein beendeter Check lässt sein Sperr-Verzeichnis absichtlich zurück, der nächste räumt es weg (intern: stale lock)."
     : state === "overdue" ? "Der Halter lebt noch, hält aber viel länger als jeder Check auf dieser Maschine braucht — prüfe, ob er feststeckt (intern: overdue)."
-    : "Die maschinenweite Sperre, von der Platte gelesen — Fleet liest nur, das Aufräumen eines toten Halters ist Sache der Wrapper (intern: suite mutex).";
+    : "Die maschinenweite Sperre, von der Platte gelesen — Fleet liest nur, das Aufräumen eines toten Halters ist Sache der Wrapper (intern: suite mutex).");
   return head;
 }
 
@@ -935,7 +940,7 @@ export function meterModel() {
     gate: gateInfo, audit: postLandLive, offers: meterSuites, devices: helperDevicesInfo,
     slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label,
       branch: s.worktree?.branch ?? null,
-      letter: laneNames.get(s.id) ?? null })),
+      letter: laneNames.get(s.id) ?? null, title: s.worktree ? s.taskTitle ?? null : null })),
   });
 }
 export const METER_TITLE: Record<MeterStation, string> = {
@@ -1033,14 +1038,16 @@ export function renderSuiteMeter() {
       ball.style.left = meterX(i, (j - (here.length - 1) / 2) * 9);
       // only the leading ball of a crowd trails a streak — the rest would draw theirs across it
       ball.className = `smball tone-${b.tone}${b.slot !== null && b.slot === focusSlot ? " mine" : ""}${j > 0 ? " tail" : ""}`;
-      ball.title = `${b.name} — ${meterLine(b, serverClock()).join(" · ")}`;
+      ball.title = `${b.name} — ${b.title ? `${b.title} · ${b.branch ? laneTail(b.branch) : "Branch unbekannt"} · ` : ""}${meterLine(b, serverClock()).join(" · ")}`;
     });
   });
   for (const [key, ball] of meterBalls) if (!seen.has(key)) { ball.remove(); meterBalls.delete(key); }
 
   // stations: the four labels, each under its tick, with a count
   meterCols.replaceChildren(el("div", "smcol0"), ...METER_STATIONS.map((st) => {
-    const n = m.balls.filter((b) => b.station === st).length;
+    // RUNS, not balls: a sharded audit is one ball and several runs, and the helper station must say
+    // the number the devices themselves report as running (src/suitemeter.ts#meterRuns)
+    const n = meterRuns(m.balls, st);
     const lab = el("button", `smst${n ? " on" : ""}`, METER_WORD[st]) as HTMLButtonElement;
     if (n) lab.appendChild(el("span", "smstn", String(n)));
     lab.title = METER_TITLE[st];
@@ -1070,7 +1077,8 @@ export function renderSuiteMeter() {
     const name = b.kind === "post-land check" && b.slot === null ? "Fleet" : b.name;
     row.append(el("span", "smdot"), el("span", "smname", name), el("span", "smwhat", line),
       el("span", "smplace", b.where));
-    row.title = `${name} — ${b.branch ?? "Branch unbekannt"} · ${line} · ${b.where} · ${meterState(b)} · ${meterKind(b.kind).title}`
+    // the full title and the branch (with its four hex) live HERE, not in the row
+    row.title = `${name} — ${b.title ? `${b.title} · ` : ""}${b.branch ?? "Branch unbekannt"} · ${line} · ${b.where} · ${meterState(b)} · ${meterKind(b.kind).title}`
       + (b.expect ? ` · „~“ ist der Median früherer Läufe dieser Art (n=${b.expect.n}), „länger als üblich“ heißt: über ihrem 90. Perzentil` : "")
       + (b.kind === "land check" ? " · Die Uhr zählt das Warten auf die maschinenweite Sperre mit (intern: suite mutex)" : "")
       + (b.slot !== null ? " · Klick öffnet die Lane" : "");
@@ -1409,7 +1417,11 @@ export async function renderBoard() {
     // stay behind ⋯. The phone reaches this head through ℹ, and its drawer row through ⋯.
     const idsec = el("div", "bsec bhead");
     const top = el("div", "bheadtop");
-    top.appendChild(el("div", "bheadname", s.label ?? baseName(s.cwd)));
+    // a task lane is "<Lane-Referenz> · <Kurztitel>"; the full title and the branch on hover
+    const headRef = s.worktree && s.taskTitle ? laneBandNames(stacksOf()).get(s.id) : undefined;
+    const headName = el("div", "bheadname", headRef ? laneDisplayName(headRef, s.taskTitle) : laneLabel(s));
+    if (headRef && s.worktree) headName.title = `${s.taskTitle} — ${s.worktree.branch}`;
+    top.appendChild(headName);
     top.appendChild(scopeTag("session"));
     const mbtn = el("button", `bheadmenu${boardMenuOpen ? " on" : ""}`, "⋯") as HTMLButtonElement;
     mbtn.title = "Weitere Aktionen — Worktree-Pfad kopieren, die Session zurückholen";
@@ -1939,7 +1951,7 @@ export async function renderBoard() {
         // ↩ undo last land — only when the server still holds an undoable land for THIS repo
         // (main not moved since, not pushed). Reverses the one action that mutates main.
         if (mg?.undoable && brief.worktree.repo) {
-          const ub = el("button", "bbtn quiet", `Undo last land (${laneTail(mg.undoable.branch)})`) as HTMLButtonElement;
+          const ub = el("button", "bbtn quiet", `Undo last land (${laneNameOfBranch(mg.undoable.branch)})`) as HTMLButtonElement;
           ub.disabled = !!mg?.running;
           ub.title = "reset main back to before the last land in this repo — refuses if main moved since or the commit was pushed; the landed branch is kept, so the work is recoverable either way";
           const repo = brief.worktree.repo;
@@ -1980,7 +1992,7 @@ export async function renderBoard() {
             else landAlarmOpens.delete(alarmKey);
           });
           const kind = l.status === "blocked" ? "Land blockiert" : l.status === "interrupted" ? "Land unterbrochen" : "Land fehlgeschlagen";
-          note.appendChild(el("summary", "", `${kind} · ${laneTail(l.branch)}`));
+          note.appendChild(el("summary", "", `${kind} · ${laneNameOfBranch(l.branch)}`));
           note.appendChild(el("div", "bmergedetail", l.detail));
           note.appendChild(verifyBadge(l.verify));
           land.appendChild(note);

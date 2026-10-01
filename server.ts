@@ -30679,10 +30679,24 @@ function writeDisposition(body: Record<string, unknown> | null): Response {
 // Two changes: both calls go through gitRetry's index.lock backoff, and `halted` reports the two
 // outcomes that are NOT "a conflict for the agent to resolve" but used to be treated as one.
 async function tryScriptRebase(cwd: string, main: string): Promise<{ clean: boolean; conflicted: string[]; halted: string | null }> {
+  const st = await gitRead(cwd, "status", "--porcelain");
+  const gd = await gitRead(cwd, "rev-parse", "--absolute-git-dir");
+  if (st.code !== 0 || gd.code !== 0 || !gd.out)
+    return { clean: false, conflicted: [], halted: "the lane's clean Git state could not be read" };
+  if (st.out || ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
+    .some((f) => existsSync(resolve(gd.out, f))))
+    return { clean: false, conflicted: [], halted: "the lane is dirty or a Git operation is already in progress" };
+  const target = await gitRead(cwd, "rev-parse", "--verify", `${main}^{commit}`);
+  if (target.code !== 0 || !/^[0-9a-f]{40,64}$/.test(target.out))
+    return { clean: false, conflicted: [], halted: `the integration ref ${main} could not be resolved` };
+  const ancestry = await gitRead(cwd, "merge-base", "--is-ancestor", target.out, "HEAD");
+  if (ancestry.code === 0) return { clean: true, conflicted: [], halted: null };
+  if (ancestry.code !== 1)
+    return { clean: false, conflicted: [], halted: `ancestry of the integration ref ${main} could not be read` };
   // rerere.enabled would silently replay recorded resolutions and exit 0, landing an
   // unreviewed conflict resolution — disable it just for this pre-pass so exit 0 means
   // genuinely no conflicts to review.
-  const rb = await gitRetry(cwd, "-c", "rerere.enabled=false", "rebase", main);
+  const rb = await gitRetry(cwd, "-c", "rerere.enabled=false", "rebase", target.out);
   if (rb.code === 0) return { clean: true, conflicted: [], halted: null };
   const files = await gitRead(cwd, "diff", "--name-only", "--diff-filter=U"); // read WHILE mid-rebase
   const ab = await gitRetry(cwd, "rebase", "--abort");
@@ -32923,7 +32937,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       graphs.main = mainGraph;
     }
     const r = pre.clean
-      ? { status: "rebased" as const, detail: "clean rebase — no conflicts, agent not needed" }
+      ? { status: "rebased" as const, detail: "clean integration — no conflicts, agent not needed" }
       : await runMerge(cwd, root, branch, main, pre.conflicted, laneTask, graphs,
           (run) => resolverRuns.push(run));
     if (r.status === "blocked") {

@@ -229,25 +229,44 @@ export async function run(): Promise<void> {
   check("ctl usage: a bare ./ctl.sh prints the supported verbs and exits 0",
     usage.code === 0 && missing.length === 0, `exit ${usage.code} missing=[${missing.join(", ")}]`);
 
-  const inboxProgram = (await (await post("/api/programs", {
+  const inboxSpec = {
     title: "ctl inbox fixture", intent: "Exercise ctl writes", successCriterion: "Read receipt persisted",
     nonGoals: ["Dispatch"], decisions: ["Isolated fixture"], evidence: [], openQuestions: [],
-  })).json()) as { program?: { id: string } };
+  };
+  const inboxProgram = (await (await post("/api/programs", inboxSpec)).json()) as { program?: { id: string } };
+  const foreignProgram = (await (await post("/api/programs", { ...inboxSpec, title: "ctl foreign inbox fixture" })).json()) as
+    { program?: { id: string } };
   const programId = inboxProgram.program?.id ?? "";
-  check("ctl inbox setup: the isolated instance creates the fixture Program", !!programId, programId);
-  if (!programId) { unreached(entered, "no inbox Program fixture"); return; }
+  const foreignProgramId = foreignProgram.program?.id ?? "";
+  check("ctl inbox setup: the isolated instance creates both fixture Programs",
+    !!programId && !!foreignProgramId, `${programId} ${foreignProgramId}`);
+  if (!programId || !foreignProgramId) { unreached(entered, "missing inbox Program fixture"); return; }
   await post(`/api/programs/${programId}/confirm`, {});
   await post(`/api/programs/${programId}/activate`, {});
   await stopSrv();
   const inboxState = stateFile();
   const occupant = (inboxState.slots as Record<string, { openedAt: number; sessionId: string | null }>)[String(free)]!;
-  const programRows = inboxState.programs as { id: string; main?: unknown; inbox?: unknown }[];
+  const programRows = inboxState.programs as { id: string; main?: unknown;
+    inbox?: { v: number; dropped: number; entries: { id: string; kind: string; at: number; ref: string; readBy: unknown; readAt: number | null }[] } }[];
   const fixtureProgram = programRows.find((p) => p.id === programId)!;
   fixtureProgram.main = { slot: free, openedAt: occupant.openedAt, sessionId: occupant.sessionId, boundAt: Date.now() };
   const entryIds = ["a1".repeat(12), "a2".repeat(12)];
   fixtureProgram.inbox = { v: 1, dropped: 0, entries: entryIds.map((id, i) => ({
     id, kind: "fleet-report", at: Date.now() + i, ref: "ff".repeat(12), readBy: null, readAt: null,
   })) };
+  const usedInboxIds = new Set(programRows.flatMap((p) => (p.inbox?.entries ?? []).map((e) => e.id)));
+  let nextInboxId = 0n;
+  const unusedInboxId = (): string => {
+    while (usedInboxIds.has(nextInboxId.toString(16).padStart(24, "0"))) nextInboxId++;
+    const id = nextInboxId.toString(16).padStart(24, "0");
+    usedInboxIds.add(id);
+    return id;
+  };
+  const foreignInboxId = unusedInboxId();
+  const unknownInboxId = unusedInboxId();
+  programRows.find((p) => p.id === foreignProgramId)!.inbox = { v: 1, dropped: 0, entries: [{
+    id: foreignInboxId, kind: "fleet-report", at: Date.now(), ref: "ff".repeat(12), readBy: null, readAt: null,
+  }] };
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(inboxState, null, 2));
   await restartSrv();
   const readInbox = await ctl(["inbox", "--json"]);
@@ -263,9 +282,13 @@ export async function run(): Promise<void> {
     acknowledged.code === 0 && inboxAfter.unread === 1 && receipt?.readBy?.slot === free
       && receipt.readBy.openedAt === occupant.openedAt && typeof receipt.readAt === "number",
     `exit=${acknowledged.code} unread=${inboxAfter.unread} readAt=${receipt?.readAt}`);
-  const unknownInbox = await ctl(["inbox", "--ack", "00".repeat(12)]);
+  const unknownInbox = await ctl(["inbox", "--ack", unknownInboxId]);
   check("ctl inbox --ack: an unknown id preserves the real 404 refusal",
     unknownInbox.code === 1 && unknownInbox.err.includes("404 unknown inbox entry"), unknownInbox.err);
+  const foreignInbox = await ctl(["inbox", "--ack", foreignInboxId]);
+  check("ctl inbox --ack: a foreign entry preserves the distinct real 409 refusal",
+    foreignInbox.code === 1 && foreignInbox.err.trim()
+      === `inbox: 409 inbox entry belongs to another Program — this MAIN reads program ${programId}`, foreignInbox.err);
   const ackAll = await ctl(["inbox", "--ack-all", "--json"]);
   check("ctl inbox --ack-all: only the remaining unread entry is acknowledged",
     ackAll.code === 0 && (ackAll.json as { unread?: number }).unread === 0
@@ -274,7 +297,7 @@ export async function run(): Promise<void> {
   const cardFile = `${ROOT}/ctl-card.json`;
   const commentFile = `${ROOT}/ctl-comment.txt`;
   const sendFile = `${ROOT}/ctl-lane-message.txt`;
-  const payload = { text: "ctl valid card fixture", kind: "auftrag", repo: REPO, card: {
+  const payload = { text: "ctl valid card fixture", kind: "auftrag", card: {
     ziel: "Exercise filing", surface: { files: ["code.txt"], symbols: [] },
     rolle: { harness: "codex", model: "gpt-6.1-sol", effort: "high" },
     done: "A row exists", verify: "bun e2e/pins.ts", verboten: ["No dispatch"],
@@ -296,15 +319,20 @@ export async function run(): Promise<void> {
       && filedRow.card.rolle.effort === "high" && filedRow.card.surface.files.join() === "code.txt"
       && filedRow.card.surface.symbols.length === 0 && filedRow.card.verboten.join() === "No dispatch",
     `role=${JSON.stringify(filedRow?.card?.rolle)} files=${JSON.stringify(filedRow?.card?.surface.files)}`);
+  writeFileSync(cardFile, JSON.stringify({ ...payload, repo: REPO }));
   const ownerFiled = await ctl(["file", cardFile, "--json"], { FLEET_SELF_TOKEN: "" });
   const ownerFiledId = (ownerFiled.json as { task?: { id?: string } })?.task?.id ?? "";
   check("ctl file: without a Self credential the Owner door stores a valid card",
     ownerFiled.code === 0 && (await queueRows()).find((t) => t.id === ownerFiledId)?.card?.valid === true,
     `exit=${ownerFiled.code} id=${ownerFiledId} error=${ownerFiled.err}`);
+  const commentRow = (await queueRows()).find((t) => t.id === ownerFiledId);
+  check("ctl comment setup: a real Owner-filed row exists before comment assertions",
+    !!commentRow, `ownerFiledId=${ownerFiledId || "missing"}`);
+  if (!commentRow) { unreached(entered, "comment fixture row unavailable"); return; }
   writeFileSync(commentFile, "ctl comment keeps this exact sentence");
-  const commented = await ctl(["comment", filedId, commentFile, "--json"]);
+  const commented = await ctl(["comment", commentRow.id, commentFile, "--json"]);
   check("ctl comment: the exact text is appended to the isolated queue row",
-    commented.code === 0 && (await queueRows()).find((t) => t.id === filedId)?.comments?.at(-1)?.text
+    commented.code === 0 && (await queueRows()).find((t) => t.id === commentRow.id)?.comments?.at(-1)?.text
       === "ctl comment keeps this exact sentence", `exit=${commented.code} error=${commented.err}`);
 
   let writePosts = 0;
@@ -314,7 +342,7 @@ export async function run(): Promise<void> {
   } });
   const boundaryEnv = { FLEET_CTL_URL: `http://127.0.0.1:${boundary.port}` };
   writeFileSync(commentFile, "x".repeat(2001));
-  const longComment = await ctl(["comment", filedId, commentFile], boundaryEnv);
+  const longComment = await ctl(["comment", commentRow.id, commentFile], boundaryEnv);
   check("ctl comment: 2001 characters are rejected before any POST can truncate them",
     longComment.code === 2 && longComment.err.includes("1–2000 chars") && writePosts === 0,
     `exit=${longComment.code} posts=${writePosts}`);
@@ -357,7 +385,9 @@ export async function run(): Promise<void> {
       return Response.json(body);
     }
     pinPosts++;
-    const response = await fetch(BASE + url.pathname, { method: req.method, headers: req.headers, body: await req.text() });
+    const headers = new Headers(req.headers);
+    headers.delete("host");
+    const response = await fetch(BASE + url.pathname, { method: req.method, headers, body: await req.text() });
     pinError = ((await response.clone().json()) as { error: string }).error;
     return response;
   } });
@@ -369,14 +399,14 @@ export async function run(): Promise<void> {
       && recycledLane.err.includes(pinError), `exit=${recycledLane.code} posts=${pinPosts} error=${pinError}`);
   pinProxy.stop(true);
   check("ctl write verbs: no output exposes either resolved credential",
-    [readInbox, acknowledged, ackAll, unknownInbox, filedCard, ownerFiled, commented, longComment, malformedList, malformedVerboten, sentLane, nonLane, recycledLane]
+    [readInbox, acknowledged, ackAll, unknownInbox, foreignInbox, filedCard, ownerFiled, commented, longComment, malformedList, malformedVerboten, sentLane, nonLane, recycledLane]
       .every((r) => ![TOKEN, selfTok].some((token) => r.out.includes(token) || r.err.includes(token))), "credential strings absent");
   await post(`/api/slots/${sendProbe.slot}/kill`, {});
   for (const id of [filedId, ownerFiledId].filter(Boolean)) await post(`/api/tasks/${id}/delete`, {});
   for (const path of [cardFile, commentFile, sendFile]) rmSync(path, { force: true });
   await stopSrv();
   const cleanInboxState = stateFile();
-  cleanInboxState.programs = (cleanInboxState.programs as { id: string }[]).filter((p) => p.id !== programId);
+  cleanInboxState.programs = (cleanInboxState.programs as { id: string }[]).filter((p) => p.id !== programId && p.id !== foreignProgramId);
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(cleanInboxState, null, 2));
   await restartSrv();
   const bogus = await ctl(["nosuchverb"]);

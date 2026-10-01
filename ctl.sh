@@ -1356,7 +1356,11 @@ send)
       --orchestrator) [ -z "$mode" ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=orchestrator ;;
       --lane) [ -z "$mode" ] && [ $# -ge 2 ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=lane; shift; lane=$1 ;;
       --*) printf 'send: unknown flag %s\n' "$1" >&2; exit 2 ;;
-      *) [ -z "$textfile" ] || { printf 'send: too many arguments\n' >&2; exit 2; }; textfile=$1 ;;
+      *) [ -z "$textfile" ] || {
+           if [ -z "$mode" ]; then printf 'send: use send --main <programId> <textfile>, send --lane <slot> <textfile> or send --orchestrator <textfile>\n' >&2
+           else printf 'send: too many arguments\n' >&2; fi
+           exit 2;
+         }; textfile=$1 ;;
     esac
     shift
   done

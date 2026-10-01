@@ -32,10 +32,10 @@ import { Flakes } from "./flakes";
 import { icon } from "./icons";
 import { projectHue } from "./marks";
 import { modelLabel } from "./modelname";
-import type { LaneAnchor } from "./protocol";
+import { normalizeRolePresets, type FoundingRole, type LaneAnchor, type RolePreset } from "./protocol";
 import { openShell, type Shell } from "./shell";
 
-type Role = "leer" | "lane" | "orch" | "steward";
+type Role = FoundingRole;
 type Mode = "repo" | "new" | "old";
 
 // `say` is the card's sentence (G0.5, owner words); `why` is the compare table's last row
@@ -54,10 +54,10 @@ const ROLES: { id: Role; name: string; glyph: string; say: string; why: string }
 const roleLabel = (r: Role): string | undefined =>
   r === "orch" ? "Orchestrator" : r === "steward" ? "⚙ steward" : undefined;
 
-// A ROLE'S PRESET over the founding plan. `base` decides what an unknown pack does — a repo with
-// packs of its own gets them under "all" without anyone naming them — and plus/minus are the
-// named exceptions. Read against the plan of THIS start, so an id the plan omits never switches on.
-interface Preset { base: "all" | "none"; plus: string[]; minus: string[] }
+// A ROLE'S PRESET over the founding plan (shape: src/protocol.ts#RolePreset). These are the
+// built-in ones; the owner's redrawn ones come from GET /api/role-presets and win per role. Read
+// against the plan of THIS start, so an id the plan omits never switches on.
+type Preset = RolePreset;
 const PRESET_DEFAULT: Record<Role, Preset> = {
   leer: { base: "none", plus: [], minus: [] },
   lane: { base: "all", plus: [], minus: [] },
@@ -70,6 +70,9 @@ function clonePresets(p: Record<Role, Preset>): Record<Role, Preset> {
   for (const r of ROLES) out[r.id] = { base: p[r.id].base, plus: [...p[r.id].plus], minus: [...p[r.id].minus] };
   return out;
 }
+const samePreset = (a: Preset, b: Preset): boolean =>
+  a.base === b.base && [...a.plus].sort().join() === [...b.plus].sort().join() && [...a.minus].sort().join() === [...b.minus].sort().join();
+const customized = (r: Role): boolean => !samePreset(presets[r], PRESET_DEFAULT[r]);
 function presetHas(p: Preset, id: string): boolean {
   return p.base === "all" ? !p.minus.includes(id) : p.plus.includes(id);
 }
@@ -119,6 +122,8 @@ interface State {
   delta: { plus: string[]; minus: string[]; why: string } | null;
   compare: boolean;
   listOpen: boolean;                    // every pack of this start as a row, on demand
+  presetState: "idle" | "saving" | "saved" | "error";
+  presetNote: string | null;            // why the stored presets could not be read or written
   orphan: string | null;
   harness: string | null; model: string; effort: string; container: string; containerContext: string;
   dir: string; list: DirList | null; listErr: string | null; listSeq: number;
@@ -261,7 +266,7 @@ function open(entry: Entry) {
     shell, flakes, entry, role: laneEntry ? "lane" : "leer", mode: laneEntry ? "new" : "repo", name: "", note: null,
     repos, view: repos.length ? "repos" : "folders", place: null,
     info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0,
-    packs: new Set(), touched: new Map(), presetDue: true, fresh: new Set(), gone: [], delta: null, compare: false, listOpen: false,
+    packs: new Set(), touched: new Map(), presetDue: true, fresh: new Set(), gone: [], delta: null, compare: false, listOpen: false, presetState: "idle", presetNote: null,
     orphan: null, harness: null, model: "", effort: "", container: "", containerContext: "",
     dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
     findTimer: null, paintFolders: null, error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
@@ -324,6 +329,7 @@ function open(entry: Entry) {
   if (entry.kind === "lane") choosePlace(entry.repo);
   else if (repos.length) choosePlace(repos[0]!.repo);
   else { renderAll(); void loadDir("~"); }
+  void loadPresets();
   // fetch-once: the catalogue is needed exactly when a founding is being composed
   void loadHarnesses().then(() => { if (S) { renderProfile(); renderContext(); renderFoot(); } });
   if (!isMobile()) S.shell.foot.querySelector<HTMLElement>(".fdgo")?.focus({ preventScroll: true });
@@ -662,7 +668,7 @@ function renderRole() {
     b.title = b.disabled ? "⎇+ startet eine Lane — andere Rollen über einen freien Slot." : r.say;
     const head = el("span", "fdrn");
     head.append(el("span", "fdglyph", r.glyph), el("span", "", r.name));
-    b.append(head, el("span", "fdrs", r.say), el("span", "fdrk mono", roleBrings(r.id)));
+    b.append(head, el("span", "fdrs", r.say), el("span", "fdrk mono", `${roleBrings(r.id)}${customized(r.id) ? " · angepasst" : ""}`));
     b.onclick = () => setRole(r.id);
     grid.append(b);
   }
@@ -1146,7 +1152,18 @@ function compareTable(plan: Plan): HTMLElement {
   why.append(el("td", "", "Wozu"));
   for (const r of ROLES) why.append(el("td", r.id === s.role ? "cur" : "", r.why));
   t.append(why);
-  box.append(t, el("div", "fdcmpfoot", "Ein Punkt ist die Vorauswahl einer Rolle — ein Klick ändert sie."));
+  const foot = el("div", "fdcmpfoot");
+  const said = s.presetNote ?? (s.presetState === "saving" ? "Wird gesichert …"
+    : s.presetState === "saved" ? "Gesichert — gilt für alle künftigen Starts."
+    : "Ein Punkt ist die Vorauswahl einer Rolle — ein Klick ändert sie, für alle künftigen Starts.");
+  foot.append(el("span", s.presetNote ? "warn" : "", said));
+  if (ROLES.some((r) => customized(r.id))) {
+    const reset = btn("fdghost", "Auf Standard zurücksetzen");
+    reset.title = "Jede Rolle wieder auf ihre eingebaute Vorauswahl.";
+    reset.onclick = resetPresets;
+    foot.append(reset);
+  }
+  box.append(t, foot);
   return box;
 }
 
@@ -1162,6 +1179,61 @@ function redrawPreset(r: Role, id: string, on: boolean) {
   renderRole();
   renderContext();
   renderFoot();
+  void savePresets();
+}
+
+// THE STORE. Read once per window; a role the store does not name keeps its built-in preset. A
+// store that cannot be read is SAID next to the table — the built-in presets then apply, which is
+// never the same claim as "you changed nothing".
+async function loadPresets() {
+  const s = S;
+  if (!s) return;
+  try {
+    const res = await api("/api/role-presets");
+    if (S !== s) return;
+    if (res.status === 404) { s.presetNote = SKEW_NOTE; return; }
+    const j = (await res.json().catch(() => null)) as { presets?: unknown } | null;
+    if (S !== s) return;
+    const stored = res.ok && j ? (j.presets === null ? {} : normalizeRolePresets(j.presets)) : null;
+    if (!stored) { s.presetNote = `Die gesicherte Vorauswahl ist nicht lesbar (Antwort ${res.status}) — es gilt die eingebaute.`; return; }
+    presets = { ...clonePresets(PRESET_DEFAULT), ...stored };
+    applyPreset("");
+  } catch {
+    if (S === s) s.presetNote = "Die gesicherte Vorauswahl konnte nicht geladen werden — es gilt die eingebaute.";
+  } finally {
+    if (S === s) { renderRole(); renderContext(); renderFoot(); }
+  }
+}
+
+// only the roles the owner changed are stored, so a later change of a built-in preset still
+// reaches every role nobody redrew; none changed is the reset
+async function savePresets() {
+  const s = S;
+  if (!s) return;
+  const changed = Object.fromEntries(ROLES.filter((r) => customized(r.id)).map((r) => [r.id, presets[r.id]]));
+  s.presetState = "saving";
+  renderContext();
+  const res = await post("/api/role-presets", { presets: Object.keys(changed).length ? changed : null }).catch(() => null);
+  if (S !== s) return;
+  if (res?.ok) { s.presetState = "saved"; s.presetNote = null; }
+  else {
+    const j = res ? (await res.json().catch(() => null)) as { error?: string } | null : null;
+    s.presetState = "error";
+    s.presetNote = `Nicht gesichert: ${j?.error ?? (res ? `Antwort ${res.status}` : "der Server ist nicht erreichbar")}. Für dieses Fenster gilt die Änderung trotzdem.`;
+  }
+  renderContext();
+}
+
+function resetPresets() {
+  const s = S;
+  if (!s) return;
+  presets = clonePresets(PRESET_DEFAULT);
+  s.touched.clear();
+  applyPreset("Vorauswahl zurückgesetzt");
+  renderRole();
+  renderContext();
+  renderFoot();
+  void savePresets();
 }
 
 // --- the foot: one sentence, and the one button ---------------------------------------------------

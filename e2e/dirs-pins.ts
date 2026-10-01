@@ -44,6 +44,42 @@ export async function run(): Promise<void> {
   const pinDel = (await (await post("/api/pins", { path: pinPath, on: false })).json()) as { pins: string[] };
   check("unpin removes it", !pinDel.pins.includes(pinPath), JSON.stringify(pinDel.pins));
 
+  // --- the founding roles' presets (owner 2026-10-01: stored for every future start, with a reset) ---
+  type PresetsResp = { ok?: boolean; error?: string; presets: Record<string, { base: string; plus: string[]; minus: string[] }> | null };
+  const presetsRead = async () => (await (await get("/api/role-presets")).json()) as PresetsResp;
+  const fresh = await presetsRead();
+  check("role presets: an untouched fleet stores none — every role on its built-in preset", fresh.presets === null, JSON.stringify(fresh));
+  const lanePreset = { base: "all", plus: [], minus: ["fixture-alpha"] };
+  const stewardPreset = { base: "none", plus: ["portable-core", "portable-core", "task-queue"], minus: [] };
+  const saved = (await (await post("/api/role-presets", { presets: { lane: lanePreset, steward: stewardPreset } })).json()) as PresetsResp;
+  const reread = await presetsRead();
+  check("role presets: a stored set reads back exactly, a repeated id once",
+    saved.ok === true && JSON.stringify(reread.presets) === JSON.stringify({ lane: lanePreset, steward: { ...stewardPreset, plus: ["portable-core", "task-queue"] } }),
+    JSON.stringify(reread.presets));
+  const onDisk = (await Bun.file(`${ROOT}/fleet.json`).json()) as { rolePresets?: unknown };
+  check("role presets: the set is in fleet.json, so it outlives a restart",
+    JSON.stringify(onDisk.rolePresets) === JSON.stringify(reread.presets), JSON.stringify(onDisk.rolePresets ?? null));
+  const refusals: [string, unknown][] = [
+    ["an unknown role", { owner: lanePreset }],
+    ["a third base", { lane: { base: "some", plus: [], minus: [] } }],
+    ["an id with a space", { lane: { base: "none", plus: ["two words"], minus: [] } }],
+    ["a missing list", { lane: { base: "none", plus: [] } }],
+    ["more than 64 ids", { lane: { base: "none", plus: Array.from({ length: 65 }, (_, i) => `p${i}`), minus: [] } }],
+    ["a list instead of a map", [lanePreset]],
+  ];
+  for (const [what, presets] of refusals) {
+    const r = await post("/api/role-presets", { presets });
+    check(`role presets — should-reject: ${what} is a 400 and changes nothing`,
+      r.status === 400 && JSON.stringify((await presetsRead()).presets) === JSON.stringify(reread.presets), `status ${r.status}`);
+  }
+  const noKey = await post("/api/role-presets", {});
+  check("role presets — should-reject: a body without presets is a 400", noKey.status === 400, `status ${noKey.status}`);
+  const reset = (await (await post("/api/role-presets", { presets: null })).json()) as PresetsResp;
+  const afterReset = (await Bun.file(`${ROOT}/fleet.json`).json()) as { rolePresets?: unknown };
+  check("role presets: null resets every role and leaves no key in fleet.json",
+    reset.ok === true && reset.presets === null && (await presetsRead()).presets === null && !("rolePresets" in afterReset),
+    JSON.stringify({ reset, onDisk: afterReset.rolePresets ?? null }));
+
   // --- what the listing LEAVES OUT, and the search that reaches past one level ---
   // All three of these were silent before: a listing cut at 200 with no way to tell, dotfolders
   // filtered unconditionally, and a filter that could only ever match the rows already rendered.

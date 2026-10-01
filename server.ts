@@ -98,6 +98,7 @@ import {
   type GitInfo, type InstanceIdentity, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus, type SuiteOfferRow,
+  normalizeRolePresets, type RolePresets,
 } from "./src/protocol";
 import { opsPollRow, opsPollVisible } from "./src/opsevents";
 // the persisted domain model and its parsers — P4 Slice 1 moved them out whole; see server/types.ts
@@ -2247,6 +2248,8 @@ const freeLaneSlots = (n: number): Slot[] => sessionLimitError() || (SEPARATE_LA
     && (!SEPARATE_LANE_SLOTS || s.id > BAND_SLOTS)).slice(0, n);
 let recents: string[] = [];
 let pins: string[] = []; // owner-pinned project roots, surfaced first in the picker (persisted like recents)
+// the founding roles' presets as the owner redrew them; null = every role on the window's built-in one
+let rolePresets: RolePresets | null = null;
 // repo root → the branch lanes integrate into (rebase onto + land into). Unset for a repo
 // means "derive from the primary checkout's HEAD" — the legacy assumption that the primary
 // sits on the integration branch. Setting it lets the owner park the primary on a working
@@ -5492,7 +5495,7 @@ function stateSnapshot(): string {
     // running the suite while the lane's own GET said "no offer".
     laneSuiteJobs: [...laneSuiteJobs.values()],
     commandJobs: [...commandJobs.values()],
-    slots: active, recents, pins, shares, autos, watches,
+    slots: active, recents, pins, ...(rolePresets ? { rolePresets } : {}), shares, autos, watches,
     events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, studios,
     messages, ...(messagesLost ? { messagesLost } : {}),
     lineageHandovers, lineageHandoverLosses,
@@ -36110,6 +36113,8 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray(persisted.recents)) recents = persisted.recents.filter((r): r is string => typeof r === "string");
     if (Array.isArray((persisted as { pins?: unknown }).pins))
       pins = ((persisted as { pins: unknown[] }).pins).filter((r): r is string => typeof r === "string").slice(0, MAX_PINS);
+    // a hand-edited preset the normalizer refuses falls back to the built-in ones, never half-applied
+    rolePresets = normalizeRolePresets((persisted as { rolePresets?: unknown }).rolePresets) ?? null;
     // N3: how many task verdicts a hand-edited file carried past the cap. Counted, then said.
     let overCappedVerdicts = 0;
     if (stateOwner === null && Array.isArray((persisted as { tasks?: unknown }).tasks))
@@ -43513,6 +43518,25 @@ Bun.serve<WSData>({
       pins = body.on === false ? pins.filter((x) => x !== p) : [p, ...pins.filter((x) => x !== p)].slice(0, MAX_PINS);
       saveState();
       return json({ ok: true, pins });
+    }
+    // THE FOUNDING ROLES' PRESETS (owner 2026-10-01: dauerhaft, „[Zitat entfernt]“, with a
+    // visible way back). GET reads; POST { presets } replaces the whole set — the window sends every
+    // role it changed — and POST { presets: null } puts every role back on the built-in preset.
+    if (url.pathname === "/api/role-presets") {
+      if (req.method === "GET") return json({ presets: rolePresets });
+      if (req.method === "POST") {
+        const body = await readJson(req);
+        if (!body || !("presets" in body)) return json({ error: "expected { presets }" }, 400);
+        if (body.presets === null) rolePresets = null;
+        else {
+          const rp = normalizeRolePresets(body.presets);
+          if (!rp) return json({ error: "presets must be { leer|lane|orch|steward: { base: all|none, plus: [pack ids], minus: [pack ids] } }" }, 400);
+          rolePresets = Object.keys(rp).length ? rp : null;
+        }
+        // on disk before the answer: the window says "gesichert" on this 200
+        await saveStateNow();
+        return json({ ok: true, presets: rolePresets });
+      }
     }
     // --- the attention inbox (owner side). Full rows live here, /api/sessions carries only the COUNT
     // (docs/data-saver.md). An answer appends a Program-inbox pointer in the same durable state cut;

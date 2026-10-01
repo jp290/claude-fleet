@@ -3629,7 +3629,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     }
     // the board reads the kind, not the status: git:none draws a quiet not-applicable line, every
     // other failure keeps the named failed-read section
-    const boardSrc = readFileSync(`${ROOT}/src/board.ts`, "utf8");
+    // via sourceRoot: the staged instance carries server.ts but not src/ (see cliSrc above)
+    const boardSrc = readFileSync(`${sourceRoot}/src/board.ts`, "utf8");
     check("client: the board tells a plain folder (git:none) from a failed brief read",
       /const noGit = !briefRes\.ok && briefBody\?\.git === "none" \? briefBody : null;/.test(boardSrc)
         && /const briefErr = briefRes\.ok \|\| noGit \? null :/.test(boardSrc)

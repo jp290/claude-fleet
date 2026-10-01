@@ -1,8 +1,9 @@
 // Session sharing: guest auth, mode enforcement, guest comments, the in-place mode flip and the
 // regression that a share must not outlive its session. Hands its shares on via Ctx.
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { BASE, IP, PORT, check, get, plogRead, post, tmuxOut, wsWithHeaders } from "./harness";
+import { dirname } from "node:path";
+import { BASE, IP, PORT, ROOT, check, get, plogRead, post, tmuxOut, wsWithHeaders } from "./harness";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -234,8 +235,13 @@ export async function run(ctx: Ctx): Promise<void> {
     } finally {
       rmSync(plain, { recursive: true, force: true });
     }
-    const shareSrc = await Bun.file(`${import.meta.dir}/../src/share.ts`).text();
-    check("guest client: only git:none reads as `no git in this folder`; any other failed read shows the server's sentence",
+    // the staged instance carries no src/ — the real checkout is behind its node_modules symlink
+    // (the e2e/slots.ts sourceRoot pattern); an unreadable source fails as ITSELF, not as a mismatch
+    let shareSrc = "";
+    try {
+      shareSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/share.ts`, "utf8");
+    } catch (e) { check("precondition: node_modules exposes src/share.ts for the guest client check", false, String(e)); }
+    if (shareSrc) check("guest client: only git:none reads as `no git in this folder`; any other failed read shows the server's sentence",
       /if \(e\?\.git !== "none"\) \{/.test(shareSrc) && /empty\(body, e\?\.error \?\? "session overview unavailable"\);/.test(shareSrc)
         && !/this session is not inside a git repository/.test(shareSrc) && /if \(data\.git === "none"\) \{/.test(shareSrc),
       "loadBrief/loadChanges in src/share.ts");

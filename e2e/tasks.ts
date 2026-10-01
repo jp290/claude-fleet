@@ -9873,8 +9873,21 @@ export async function run(ctx: Ctx): Promise<void> {
       surface: { files: ["fleet-e2e.ts"], symbols: [] },
       done: "die Zeile steht in fleet-e2e.ts", verify: "bun e2e/pins.ts", verboten: [],
     } });
-    await Bun.write(FAKECARD, `#!/bin/sh\n[ "$1" = "--model" ] && [ "$2" = "${MODEL_DEFAULTS.card.id}" ] || exit 17\ncat >/dev/null\ncat <<'JSON'\n${cardAnswer}\nJSON\n`);
+    await Bun.write(FAKECARD, `#!/bin/sh\n[ "$1" = "--model" ] && [ "$2" = "${MODEL_DEFAULTS.cardExec.id}" ] && [ "$3" = "--effort" ] && [ "$4" = "${MODEL_DEFAULTS.cardExec.effort}" ] || exit 17\ncat >/dev/null\ncat <<'JSON'\n${cardAnswer}\nJSON\n`);
     spawnSync("chmod", ["+x", FAKECARD]);
+    const cardGuardOk = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.cardExec.id,
+      "--effort", MODEL_DEFAULTS.cardExec.effort], { input: "guard probe" });
+    check("(j2) card stand-in accepts the exact registered model and medium effort",
+      cardGuardOk.status === 0 && cardGuardOk.stdout.toString().trim() === cardAnswer,
+      `exit=${cardGuardOk.status} answer=${cardGuardOk.stdout.toString().trim()}`);
+    const cardGuardModel = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.card.id,
+      "--effort", MODEL_DEFAULTS.cardExec.effort], { input: "guard probe" });
+    check("(j2) card stand-in rejects the wrong model with exact Exit17",
+      cardGuardModel.status === 17, `exit=${cardGuardModel.status}`);
+    const cardGuardEffort = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.cardExec.id,
+      "--effort", "high"], { input: "guard probe" });
+    check("(j2) card stand-in rejects the wrong effort with exact Exit17",
+      cardGuardEffort.status === 17, `exit=${cardGuardEffort.status}`);
 
     interface CRow { id: string; card?: { ziel: string; done: string; model: string; ms: number; valid: boolean;
       at: number; verboten: string[];
@@ -9904,7 +9917,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // The stand-in refuses argv carrying a different model; a valid card therefore proves both
     // the transport's selected model and the persisted worker observation agree with the register.
     check("(j2) card.model names the resolved card model passed to the stand-in",
-      cCard?.model === MODEL_DEFAULTS.card.id
+      cCard?.model === MODEL_DEFAULTS.cardExec.id
       && typeof cCard.ms === "number" && cCard.ms >= 0,
       JSON.stringify({ model: cCard?.model, ms: cCard?.ms }));
     // (6) THE CARD'S ROLE ADOPTS (2026-09-20, live rows 75c28778/fe2bf284/8bd19aac): a row that

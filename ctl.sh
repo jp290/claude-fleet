@@ -45,6 +45,9 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
   watch lane|merge <slot> | audit <sha> [--repo <path>] [--idle <sec>] [--json]
                                    arm one self-watch; idleSec defaults to 0
   events [--ack] [--json]          your own FleetEvents; --ack closes the delivered ones
+  inbox [--ack <id>|--ack-all] [--json]   read your Program inbox; acknowledge one or the unread entries
+  comment <taskId> <textfile> [--json]    append an owner comment (1–2000 characters)
+  file <cardjson> [--json]         file a pending task with an author card; self credential when present
   land <slot> [--wait] [--json]    POST the land; --wait blocks to the verdict and arms the audit watch
   dispatch <taskId> [--force] [--json]   hand-start a queued row, refusing over the lane cap
   wait merge <slot> [--json]       block until that lane's merge is terminal
@@ -53,13 +56,15 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
                                    resolve the Program's bound MAIN slot NOW, refuse a lane/dead/recycled one, then /send
   send --orchestrator <textfile> [--json]
                                    address the Orchestrator through /api/self/messages with the self token
+  send --lane <slot> <textfile> [--json]
+                                   read the lane occupant now, then /send with its openedAt pin
   commit main -m <msgfile> [--budget <sec>] [--json]      (also typed commit-main)
                                    wait (bounded) for `merges` exit 0, git commit the staged index in the main
                                    checkout, then push it ff-only to FLEET_HUB_REMOTE if one is set
                                    (exit 3 = committed here, NOT on the hub; the line names the repair)
 
 <slot> is a slot number or a lane name like 4A (band + letter, the `name` GET /api/sessions serves);
-a name no lane holds exits 1 and says the name. `send` takes neither: it is addressed by Program.
+a name no lane holds exits 1 and says the name. `send --lane` accepts either form.
 
 Credentials (each verb names the one it is missing and exits 2):
   FLEET_CTL_URL    else FLEET_HOST from <home>/.env, port FLEET_PORT or 8790
@@ -220,6 +225,112 @@ CTL_JSON=0
 export CTL_JSON
 
 case "$verb" in
+
+inbox)
+  ack=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) CTL_JSON=1 ;;
+      --ack) [ -z "$ack" ] && [ $# -ge 2 ] || { printf 'inbox: give exactly one --ack <id> or --ack-all\n' >&2; exit 2; }; shift; ack=$1
+        printf '%s' "$ack" | grep -Eq '^[0-9a-f]{24}$' || { printf 'inbox: bad entry id\n' >&2; exit 2; } ;;
+      --ack-all) [ -z "$ack" ] || { printf 'inbox: give exactly one --ack <id> or --ack-all\n' >&2; exit 2; }; ack=all ;;
+      *) printf 'inbox: unknown argument %s\n' "$1" >&2; exit 2 ;;
+    esac
+    shift
+  done
+  need_self inbox
+  export CTL_ACK="$ack"
+  js_head
+  cat >> "$CTL_TMP" <<'EOF'
+const ack = process.env.CTL_ACK;
+const fail = (r) => { console.error(`inbox: ${r.status} ${r.body?.error ?? "refused"}`); process.exit(1); };
+let r;
+const acknowledged = [];
+if (ack && ack !== "all") {
+  r = await api(`/api/self/inbox/${ack}/read`, { method: "POST", headers: selfH() });
+  if (!r.ok) fail(r);
+  acknowledged.push(ack);
+}
+r = await api("/api/self/inbox", { headers: selfH() });
+if (!r.ok) fail(r);
+if (ack === "all") {
+  for (const entry of r.body.entries ?? []) {
+    if (entry.readBy !== null) continue;
+    const read = await api(`/api/self/inbox/${entry.id}/read`, { method: "POST", headers: selfH() });
+    if (!read.ok) fail(read);
+    acknowledged.push(entry.id);
+  }
+  r = await api("/api/self/inbox", { headers: selfH() });
+  if (!r.ok) fail(r);
+}
+out({ ...r.body, acknowledged }, [`inbox: unread=${r.body.unread} dropped=${r.body.dropped} acknowledged=${acknowledged.length}`,
+  ...(r.body.entries ?? []).map((e) => `${e.id} ${e.kind} ${e.readBy === null ? "unread" : "read"} ${e.ref}`),
+  ...(r.body.unknown ?? []).map((e) => `unknown: ${e}`)]);
+EOF
+  js_run
+  ;;
+
+comment|file)
+  target=""; input=""; auth=owner
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) CTL_JSON=1 ;;
+      --*) printf '%s: unknown flag %s\n' "$verb" "$1" >&2; exit 2 ;;
+      *) if [ "$verb" = "comment" ] && [ -z "$target" ]; then target=$1
+         elif [ -z "$input" ]; then input=$1
+         else printf '%s: too many arguments\n' "$verb" >&2; exit 2; fi ;;
+    esac
+    shift
+  done
+  [ -f "$input" ] && [ -r "$input" ] || { printf '%s: give a readable file\n' "$verb" >&2; exit 2; }
+  if [ "$verb" = "comment" ]; then
+    printf '%s' "$target" | grep -Eq '^[a-z0-9]+$' || { printf 'comment: bad task id\n' >&2; exit 2; }
+    need_owner comment
+  elif [ -n "${FLEET_SELF_TOKEN:-}" ]; then need_self file; auth=self
+  else need_owner file; fi
+  export CTL_INPUT="$input" CTL_TARGET="$target" CTL_WRITE_VERB="$verb" CTL_FILE_AUTH="$auth"
+  js_head
+  cat >> "$CTL_TMP" <<'EOF'
+const verb = process.env.CTL_WRITE_VERB;
+const reject = (why) => { console.error(`${verb}: ${why} — nothing sent`); process.exit(2); };
+let raw;
+try { raw = fs.readFileSync(process.env.CTL_INPUT, "utf8"); } catch { reject("cannot read input file"); }
+let path, body, headers;
+if (verb === "comment") {
+  if (!raw.trim() || raw.length > 2000) reject("comment must be 1–2000 chars");
+  path = `/api/tasks/${process.env.CTL_TARGET}/comment`; body = { text: raw }; headers = ownerH();
+} else {
+  try { body = JSON.parse(raw); } catch { reject("cardjson must be valid JSON"); }
+  const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  if (!object(body) || !object(body.card) || !object(body.card.surface)) reject("expected task body with card.surface object");
+  if (body.queue !== undefined && body.queue !== false) reject("file only creates pending rows; queue must be false");
+  if (typeof body.text !== "string" || !body.text.trim() || body.text.length > 20000) reject("text must be 1–20000 chars");
+  const list = (value, name, required = false) => {
+    if (value === undefined && !required) return;
+    if (!Array.isArray(value) || value.length > 20 || (required && !value.length)
+      || value.some((v) => typeof v !== "string" || !v.trim() || v.length > 300))
+      reject(`${name} must be an array of ${required ? "1" : "0"}–20 nonempty strings (max 300 chars each)`);
+  };
+  for (const key of ["ziel", "done", "verify"]) {
+    const value = body.card[key];
+    if (typeof value !== "string" || !value.trim() || value.length > 400) reject(`card.${key} must be 1–400 chars`);
+  }
+  for (const key of ["files", "symbols", "creates"]) list(body.card.surface[key], `card.surface.${key}`, key === "files");
+  list(body.card.verboten, "card.verboten", true);
+  list(body.card.after, "card.after");
+  list(body.files, "files");
+  path = process.env.CTL_FILE_AUTH === "self" ? "/api/self/tasks" : "/api/tasks";
+  headers = process.env.CTL_FILE_AUTH === "self" ? selfH() : ownerH();
+}
+const r = await api(path, { method: "POST", headers, body: JSON.stringify(body) });
+const error = r.ok ? null : (r.body?.error ?? "refused");
+if (!r.ok) console.error(`${verb}: ${r.status} ${error}`);
+out({ ok: r.ok, status: r.status, task: r.body?.task ?? null, comment: r.body?.comment ?? null, error },
+  [`${verb}: ${r.status} ${r.ok ? (r.body?.task?.id ?? r.body?.comment?.id ?? "ok") : error}`]);
+process.exit(r.ok ? 0 : 1);
+EOF
+  js_run
+  ;;
 
 # ================================================================================================
 get)
@@ -1236,17 +1347,47 @@ send)
 # re-occupied inside that window answers 409 naming its new occupant (server.ts, route POST /send).
 #
 # A bare `send <slot>` is refused on purpose: it is exactly the hand move this verb replaces.
-  mode=""; program=""; textfile=""
+  mode=""; program=""; textfile=""; lane=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) CTL_JSON=1 ;;
-      --main) mode=main; shift; program=${1:-} ;;
-      --orchestrator) mode=orchestrator ;;
+      --main) [ -z "$mode" ] && [ $# -ge 2 ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=main; shift; program=$1 ;;
+      --orchestrator) [ -z "$mode" ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=orchestrator ;;
+      --lane) [ -z "$mode" ] && [ $# -ge 2 ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=lane; shift; lane=$1 ;;
       --*) printf 'send: unknown flag %s\n' "$1" >&2; exit 2 ;;
-      *) textfile=$1 ;;
+      *) [ -z "$textfile" ] || { printf 'send: too many arguments\n' >&2; exit 2; }; textfile=$1 ;;
     esac
     shift
   done
+  if [ "$mode" = "lane" ]; then
+    [ -f "$textfile" ] && [ -s "$textfile" ] || { printf 'send --lane: give a nonempty text file\n' >&2; exit 2; }
+    slot_arg "send --lane" "$lane"
+    need_owner send
+    export CTL_TEXTFILE="$textfile"
+    js_head
+    cat >> "$CTL_TMP" <<'EOF'
+const reject = (why) => { console.error(`send --lane: ${why} — nothing sent`); process.exit(1); };
+let text;
+try { text = fs.readFileSync(process.env.CTL_TEXTFILE, "utf8"); } catch { reject("cannot read text file"); }
+if (!text.trim() || text.length > 1000000) reject("text must be 1–1000000 chars");
+const target = slotArg(process.env.CTL_SLOT, await sessionRows("send --lane"), "send --lane");
+const row = target.row;
+if (!row?.cwd || !row.worktree) reject(`${slotWord(target)} is not an active LANE`);
+if (!(typeof row.openedAt === "number" && row.openedAt > 0)) reject(`${slotWord(target)} has no openedAt pin`);
+if (row.agent !== "alive" && row.agent !== "unprobed") reject(`${slotWord(target)} has no agent alive (${row.agent ?? "unknown"})`);
+const r = await api("/send", { method: "POST", headers: ownerH(),
+  body: JSON.stringify({ slot: target.id, text, openedAt: row.openedAt }) });
+const receipt = r.body?.receipt ?? null;
+const pinned = receipt?.receiver?.slot === target.id && receipt?.receiver?.openedAt === row.openedAt;
+const error = !r.ok ? (r.body?.error ?? "refused") : !pinned ? "receipt does not match the openedAt pin" : null;
+if (error) console.error(`send --lane: ${r.status} ${error}`);
+out({ ok: r.ok && pinned, sent: r.ok, slot: target.id, openedAt: row.openedAt, status: r.status, receipt, error },
+  [`send --lane ${slotWord(target)}: ${r.status} ${error ?? `receipt ${receipt.sendId} acceptance=${receipt.acceptance}`}`]);
+process.exit(r.ok && pinned ? 0 : 1);
+EOF
+    js_run
+    exit $?
+  fi
   if [ "$mode" = "orchestrator" ]; then
     [ -n "$textfile" ] && [ -s "$textfile" ] || { printf 'send --orchestrator: give a nonempty text file\n' >&2; exit 2; }
     need_self send
@@ -1268,7 +1409,7 @@ EOF
     exit $?
   fi
   if [ "$mode" != "main" ]; then
-    printf 'send: only `send --main <programId> <textfile>` — a slot number typed by hand is the recycled-slot hazard this verb removes\n' >&2
+    printf 'send: choose `send --main <programId>`, `send --lane <slot>` or `send --orchestrator` and a text file\n' >&2
     exit 2
   fi
   [ -n "$program" ] || { printf 'send --main: give a program id\n' >&2; exit 2; }

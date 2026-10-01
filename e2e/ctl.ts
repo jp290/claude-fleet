@@ -30,7 +30,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { BASE, REPO, ROOT, TOKEN, check, get, post, results } from "./harness";
+import { BASE, REPO, ROOT, TOKEN, check, get, post, restartSrv, stopSrv, tmuxOut, results } from "./harness";
 import { openLane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { gitWorkTreeVerdict, probeSourceTree, type SourceTreeProbe } from "./trail-emit";
 
@@ -224,10 +224,144 @@ export async function run(): Promise<void> {
   // actually carry it — a pin over a list nothing prints would guard a doc against nothing.
   const usage = await ctl([]);
   const VERBS = ["get", "merges", "lock", "ctx", "report", "audits", "watch", "events", "land", "dispatch",
-    "wait merge", "wait change", "send", "commit main"];
+    "wait merge", "wait change", "send", "commit main", "inbox", "comment", "file"];
   const missing = VERBS.filter((v) => !usage.out.includes(`  ${v}`));
-  check("ctl usage: a bare ./ctl.sh prints all fourteen verbs and exits 0",
+  check("ctl usage: a bare ./ctl.sh prints the supported verbs and exits 0",
     usage.code === 0 && missing.length === 0, `exit ${usage.code} missing=[${missing.join(", ")}]`);
+
+  const inboxProgram = (await (await post("/api/programs", {
+    title: "ctl inbox fixture", intent: "Exercise ctl writes", successCriterion: "Read receipt persisted",
+    nonGoals: ["Dispatch"], decisions: ["Isolated fixture"], evidence: [], openQuestions: [],
+  })).json()) as { program?: { id: string } };
+  const programId = inboxProgram.program?.id ?? "";
+  check("ctl inbox setup: the isolated instance creates the fixture Program", !!programId, programId);
+  if (!programId) { unreached(entered, "no inbox Program fixture"); return; }
+  await post(`/api/programs/${programId}/confirm`, {});
+  await post(`/api/programs/${programId}/activate`, {});
+  await stopSrv();
+  const inboxState = stateFile();
+  const occupant = (inboxState.slots as Record<string, { openedAt: number; sessionId: string | null }>)[String(free)]!;
+  const programRows = inboxState.programs as { id: string; main?: unknown; inbox?: unknown }[];
+  const fixtureProgram = programRows.find((p) => p.id === programId)!;
+  fixtureProgram.main = { slot: free, openedAt: occupant.openedAt, sessionId: occupant.sessionId, boundAt: Date.now() };
+  const entryIds = ["a1".repeat(12), "a2".repeat(12)];
+  fixtureProgram.inbox = { v: 1, dropped: 0, entries: entryIds.map((id, i) => ({
+    id, kind: "fleet-report", at: Date.now() + i, ref: "ff".repeat(12), readBy: null, readAt: null,
+  })) };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(inboxState, null, 2));
+  await restartSrv();
+  const readInbox = await ctl(["inbox", "--json"]);
+  check("ctl inbox: reading the real Program inbox leaves both entries unread",
+    readInbox.code === 0 && (readInbox.json as { unread?: number })?.unread === 2,
+    `exit=${readInbox.code} unread=${(readInbox.json as { unread?: number })?.unread}`);
+  const acknowledged = await ctl(["inbox", "--ack", entryIds[0]!, "--json"]);
+  const inboxAfter = (await (await fetch(`${BASE}/api/self/inbox`, {
+    headers: { "x-fleet-self-token": selfTok },
+  })).json()) as { unread: number; entries: { id: string; readBy: { slot: number; openedAt: number } | null; readAt: number | null }[] };
+  const receipt = inboxAfter.entries.find((e) => e.id === entryIds[0]);
+  check("ctl inbox --ack: the real read receipt pins this MAIN occupant",
+    acknowledged.code === 0 && inboxAfter.unread === 1 && receipt?.readBy?.slot === free
+      && receipt.readBy.openedAt === occupant.openedAt && typeof receipt.readAt === "number",
+    `exit=${acknowledged.code} unread=${inboxAfter.unread} readAt=${receipt?.readAt}`);
+  const unknownInbox = await ctl(["inbox", "--ack", "00".repeat(12)]);
+  check("ctl inbox --ack: an unknown id preserves the real 404 refusal",
+    unknownInbox.code === 1 && unknownInbox.err.includes("404 unknown inbox entry"), unknownInbox.err);
+  const ackAll = await ctl(["inbox", "--ack-all", "--json"]);
+  check("ctl inbox --ack-all: only the remaining unread entry is acknowledged",
+    ackAll.code === 0 && (ackAll.json as { unread?: number }).unread === 0
+      && (ackAll.json as { acknowledged?: string[] }).acknowledged?.join() === entryIds[1], `exit=${ackAll.code}`);
+
+  const cardFile = `${ROOT}/ctl-card.json`;
+  const commentFile = `${ROOT}/ctl-comment.txt`;
+  const sendFile = `${ROOT}/ctl-lane-message.txt`;
+  const payload = { text: "ctl valid card fixture", kind: "auftrag", repo: REPO, card: {
+    ziel: "Exercise filing", surface: { files: ["code.txt"], symbols: [] },
+    done: "A row exists", verify: "bun e2e/pins.ts", verboten: ["No dispatch"],
+  } };
+  writeFileSync(cardFile, JSON.stringify(payload));
+  const filedCard = await ctl(["file", cardFile, "--json"]);
+  const filedId = (filedCard.json as { task?: { id?: string } })?.task?.id ?? "";
+  const queueRows = async (): Promise<{ id: string; status: string; source?: string; card?: { valid: boolean }; comments?: { text: string }[] }[]> =>
+    ((await (await get("/api/tasks")).json()) as { tasks: { id: string; status: string; source?: string; card?: { valid: boolean }; comments?: { text: string }[] }[] }).tasks;
+  const filedRow = (await queueRows()).find((t) => t.id === filedId);
+  check("ctl file: the Self door stores a pending row with a valid author card",
+    filedCard.code === 0 && !!filedId && filedRow?.card?.valid === true && filedRow.status === "pending"
+      && filedRow.source === "main", `exit=${filedCard.code} id=${filedId} status=${filedRow?.status} error=${filedCard.err}`);
+  const ownerFiled = await ctl(["file", cardFile, "--json"], { FLEET_SELF_TOKEN: "" });
+  const ownerFiledId = (ownerFiled.json as { task?: { id?: string } })?.task?.id ?? "";
+  check("ctl file: without a Self credential the Owner door stores a valid card",
+    ownerFiled.code === 0 && (await queueRows()).find((t) => t.id === ownerFiledId)?.card?.valid === true,
+    `exit=${ownerFiled.code} id=${ownerFiledId} error=${ownerFiled.err}`);
+  writeFileSync(commentFile, "ctl comment keeps this exact sentence");
+  const commented = await ctl(["comment", filedId, commentFile, "--json"]);
+  check("ctl comment: the exact text is appended to the isolated queue row",
+    commented.code === 0 && (await queueRows()).find((t) => t.id === filedId)?.comments?.at(-1)?.text
+      === "ctl comment keeps this exact sentence", `exit=${commented.code} error=${commented.err}`);
+
+  let writePosts = 0;
+  const boundary = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(req) {
+    if (req.method === "POST") writePosts++;
+    return Response.json({ error: "unexpected request" }, { status: 500 });
+  } });
+  const boundaryEnv = { FLEET_CTL_URL: `http://127.0.0.1:${boundary.port}` };
+  writeFileSync(commentFile, "x".repeat(2001));
+  const longComment = await ctl(["comment", filedId, commentFile], boundaryEnv);
+  check("ctl comment: 2001 characters are rejected before any POST can truncate them",
+    longComment.code === 2 && longComment.err.includes("1–2000 chars") && writePosts === 0,
+    `exit=${longComment.code} posts=${writePosts}`);
+  writeFileSync(cardFile, JSON.stringify({ ...payload, card: { ...payload.card, surface: { files: "code.txt", symbols: [] } } }));
+  const malformedList = await ctl(["file", cardFile], boundaryEnv);
+  check("ctl file: a string in the files list is refused before the request",
+    malformedList.code === 2 && malformedList.err.includes("card.surface.files must be an array") && writePosts === 0,
+    `exit=${malformedList.code} posts=${writePosts}`);
+  boundary.stop(true);
+
+  const sendProbe = await openLane(REPO, "ctlsendpin");
+  await settleForMerge(sendProbe.slot);
+  writeFileSync(sendFile, "ctl-lane-pinned-message-42");
+  const sentLane = await ctl(["send", "--lane", String(sendProbe.slot), sendFile, "--json"]);
+  const sentJson = sentLane.json as { openedAt?: number; receipt?: { receiver?: { slot: number; openedAt: number } } };
+  const lanePane = await tmuxOut("capture-pane", "-t", `s${sendProbe.slot}`, "-p", "-J");
+  check("ctl send --lane: the real pane contains the text and the receipt matches the fresh openedAt pin",
+    sentLane.code === 0 && lanePane.out.includes("ctl-lane-pinned-message-42")
+      && sentJson.receipt?.receiver?.slot === sendProbe.slot && sentJson.openedAt === sentJson.receipt.receiver.openedAt,
+    `exit=${sentLane.code} paneContains=${lanePane.out.includes("ctl-lane-pinned-message-42")} error=${sentLane.err}`);
+  const nonLane = await ctl(["send", "--lane", String(free), sendFile]);
+  check("ctl send --lane: an ordinary MAIN session is refused as a non-Lane",
+    nonLane.code === 1 && nonLane.err.includes("not an active LANE"), nonLane.err);
+  let pinPosts = 0;
+  let pinError = "";
+  const pinProxy = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname === "/api/sessions") {
+      const body = await (await get("/api/sessions")).json() as { slots: { id: number; openedAt: number }[] };
+      const row = body.slots.find((s) => s.id === sendProbe.slot)!;
+      row.openedAt -= 1;
+      return Response.json(body);
+    }
+    pinPosts++;
+    const response = await fetch(BASE + url.pathname, { method: req.method, headers: req.headers, body: await req.text() });
+    pinError = ((await response.clone().json()) as { error: string }).error;
+    return response;
+  } });
+  const recycledLane = await ctl(["send", "--lane", String(sendProbe.slot), sendFile, "--json"],
+    { FLEET_CTL_URL: `http://127.0.0.1:${pinProxy.port}` });
+  check("ctl send --lane: the real 409 for a stale pin is preserved verbatim",
+    recycledLane.code === 1 && pinPosts === 1 && (recycledLane.json as { status?: number; error?: string }).status === 409
+      && pinError.includes("nothing typed") && (recycledLane.json as { error?: string }).error === pinError
+      && recycledLane.err.includes(pinError), `exit=${recycledLane.code} posts=${pinPosts} error=${pinError}`);
+  pinProxy.stop(true);
+  check("ctl write verbs: no output exposes either resolved credential",
+    [readInbox, acknowledged, ackAll, unknownInbox, filedCard, ownerFiled, commented, longComment, malformedList, sentLane, nonLane, recycledLane]
+      .every((r) => ![TOKEN, selfTok].some((token) => r.out.includes(token) || r.err.includes(token))), "credential strings absent");
+  await post(`/api/slots/${sendProbe.slot}/kill`, {});
+  for (const id of [filedId, ownerFiledId].filter(Boolean)) await post(`/api/tasks/${id}/delete`, {});
+  for (const path of [cardFile, commentFile, sendFile]) rmSync(path, { force: true });
+  await stopSrv();
+  const cleanInboxState = stateFile();
+  cleanInboxState.programs = (cleanInboxState.programs as { id: string }[]).filter((p) => p.id !== programId);
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(cleanInboxState, null, 2));
+  await restartSrv();
   const bogus = await ctl(["nosuchverb"]);
   check("ctl usage: an unknown verb exits 2 and names itself",
     bogus.code === 2 && bogus.err.includes('unknown verb "nosuchverb"'), `exit ${bogus.code}`);

@@ -219,8 +219,11 @@ export const CONTEXT_PACKS = [
     // konzeptsicht, delivered to every lane and MAIN of this tree as a PRIVATE pointer. The id is the
     // konzept id of the ledger under FLEET_KONZEPT_ROOT, which is what lets the brief resolve it to the
     // current fassung's local path (context-plan.ts#resolvePrivatePack); the hash pins the Sicht v2
-    // named in docs/messungen/2026-09-26-s4-pilot-konzeptsicht-claude-fleet.md. `container` is left
-    // out: a boxed session does not see the host's private root, and a path it cannot open is no pointer.
+    // named in docs/messungen/2026-09-26-s4-pilot-konzeptsicht-claude-fleet.md. ONLY claude and codex
+    // (owner disposition 804bc34a, answer fde70070): the konzept release and the root it is read from
+    // hold for those two harnesses, NOT for GLM or any other Pi harness, so every pi-* founding omits
+    // it as harness-unsupported before a path or a verdict is rendered. `container` stays out too: a
+    // boxed session does not see the host's private root, and a path it cannot open is no pointer.
     id: "konzept-claude-fleet",
     useWhen: "Wenn eine Aufgabe verstehen muss, was Claude Fleet ist und nach welchen Prinzipien es arbeitet.",
     scope: "konzept",
@@ -231,7 +234,7 @@ export const CONTEXT_PACKS = [
     sourceHash: "a085430ef83f317157cfc613561c99a72317cf6e129d8276843d11a956ea00dc",
     observedAt: "2026-09-29T07:30:00Z",
     requiredCapabilities: ["private-overlay-read"],
-    harnesses: ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "codex"],
+    harnesses: ["claude", "codex"],
     modes: ALL_MODES,
     estimatedBytes: 86788,
     evidence: "private-content-hash",

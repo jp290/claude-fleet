@@ -968,6 +968,20 @@ Datei, den ein Absturz dazwischen zerreissen koennte.
 Konzept: gleichzeitige POSTs verlieren keine Zeile und vergeben kein N doppelt (`e2e/konzepte.ts`
 §concurrency, Mutationsprobe: ohne Kette bekamen acht POSTs alle N=4).
 
+**Im Brief: ein lesbarer Pfad, nie der Inhalt.** Der Fleet-Seed `konzept-claude-fleet` traegt das Konzept
+als privaten Pack (`privateSourceId: k-claude-fleet`, gepinnter `sourceHash`). Jede Gruendung, die ihn waehlt,
+loest ihn unter derselben Wurzel auf (`context-plan.ts#resolvePrivatePack`): die hoechste Version aus
+`<wurzel>/k-claude-fleet/versionen.jsonl`, ihre Datei `v<N>.md`, gehasht und verglichen. Die Ankerzeile
+(`context-plan.ts#renderPrivatePackLines`) nennt `<pfad> | k-claude-fleet v<N> · … · hash match|drift|missing`;
+der Pfad steht nur bei einer gelesenen Datei, der Receipt-Eintrag traegt Urteil und Version, nie den Pfad.
+Zwei Grenzen: (1) **nur `claude` und `codex`** — jede Pi-Gruendung (`pi`, `pi-zai`, `pi-ox`, `pi-unfenced`)
+und `container` lassen ihn als `harness-unsupported` aus, eine gewaehlte Pack-Liste ist dort **409** vor dem
+Spawn (Owner-Disposition 804bc34a); (2) **nur Seed-ids** — ein Konzept, das kein Fleet-Seed nennt, wird
+nie gelesen (`missing`, „[Zitat entfernt]“), und ein privater Pack im
+Repo-Manifest ist `manifest-invalid`. Ohne Wurzel, ohne veroeffentlichte Version oder ohne Datei ist das
+Urteil `missing` mit Grund und ohne Pfad. Beweis bis zur Dateilesung in der gespawnten Pane:
+`e2e/konzepte.ts#privatePackHandover`; die Lese-Regel des Empfaengers `e2e/context-plan.ts#readDelivered`.
+
 **Reihenfolge der Pruefungen** (Teil des Vertrags): Konzept-id (400) → Body (400) → Wurzel (503) → unter
 der Sperre der Zustand (404/409). Ein kaputter Body erfaehrt nie, ob ein Speicher existiert.
 

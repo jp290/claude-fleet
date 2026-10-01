@@ -1,6 +1,7 @@
 // Pure ContextPlan v1 family. Direct entry point: bun e2e/context-plan.ts
 import {
   CONTEXT_PACK_CAPABILITIES,
+  CONTEXT_PACK_HARNESSES,
   CONTEXT_PACKS,
   type ContextPackCapability,
 } from "../context-packs";
@@ -635,8 +636,26 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   }
 }
 
+// THE MECHANICAL RECEIVER of a private pack line (renderPrivatePackLines' format): null when no line
+// names the id at all (UNOBSERVED — never a refusal), else the path the line names, its verdict and the
+// bytes, which it reads ONLY under `hash match`. Exported for e2e/konzepte.ts, whose pane reader applies
+// this same rule to the bytes a founding pasted.
+export function readDelivered(lines: readonly string[], id: string):
+  { path: string | null; verdict: string | null; bytes: string | null } | null {
+  for (const line of lines) {
+    const m = /^ {2}(?:(\/.+?) \| )?(k-[a-z0-9-]+)(?: v\d+)? · privat, lesen statt kopieren · hash (match|drift|missing)\b/.exec(line);
+    if (!m || m[2] !== id) continue;
+    const path = m[1] ?? null;
+    const verdict = m[3]!;
+    let bytes: string | null = null;
+    if (path !== null && verdict === "match") { try { bytes = readFileSync(path, "utf8"); } catch { bytes = null; } }
+    return { path, verdict, bytes };
+  }
+  return null;
+}
+
 // --- PRIVATE PACKS (Program Konzeptgedaechtnis 31aa88ea, Schnitt 4). The konzept seed is selected for
-// every lane and MAIN harness of this tree, and its id resolves under a FIXTURE private root to the
+// claude and codex lanes and MAINs of this tree (never a Pi harness), and its id resolves under a FIXTURE private root to the
 // current fassung's path plus one of three hash verdicts. Each verdict is produced by a NAMED mutation
 // of the fixture and undone again, so a green verdict is shown to be caused, not merely observed.
 function privatePackChecks(check: ContextPlanCheck): void {
@@ -656,11 +675,20 @@ function privatePackChecks(check: ContextPlanCheck): void {
   const selectedFor = (harness: string, triggers: readonly ("always" | "verification" | "jev-use" | "landing")[],
     capabilities: ContextPackCapability[], sourceTree: "fleet" | "foreign" = "fleet") =>
     planContext({ sourceTree, harness, mode: "mutating", triggers: [...triggers], capabilities });
-  const harnessRows = ["claude", "codex", "pi"].map((harness) => ({ harness,
+  const harnessRows = ["claude", "codex"].map((harness) => ({ harness,
     lane: selectedFor(harness, ["always", "verification", "jev-use"], laneCaps).selected.some((p) => p.id === "konzept-claude-fleet"),
     main: selectedFor(harness, ["always", "verification"], mainCaps).selected.some((p) => p.id === "konzept-claude-fleet") }));
-  check("private pack: a claude, codex and pi lane AND MAIN of this tree each get konzept-claude-fleet selected",
+  check("private pack: a claude and a codex lane AND MAIN of this tree each get konzept-claude-fleet selected",
     harnessRows.every((row) => row.lane && row.main), JSON.stringify(harnessRows));
+  // OWNER DISPOSITION 804bc34a: the konzept release holds for claude and codex, NOT for GLM or any
+  // other Pi harness. Mutation: put any pi-* back on the seed → that harness turns this row red.
+  const piHarnesses = CONTEXT_PACK_HARNESSES.filter((harness) => harness.startsWith("pi"));
+  const piRows = piHarnesses.map((harness) => ({ harness,
+    lane: selectedFor(harness, ["always", "verification"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet")?.why ?? null,
+    main: selectedFor(harness, ["always", "verification"], mainCaps).omitted.find((p) => p.id === "konzept-claude-fleet")?.why ?? null }));
+  check("private pack: every Pi harness (pi, pi-zai, pi-ox, pi-unfenced) omits konzept-claude-fleet as harness-unsupported, lane and MAIN",
+    piHarnesses.length === 4 && piRows.every((row) => row.lane === "harness-unsupported" && row.main === "harness-unsupported")
+      && JSON.stringify(seed?.harnesses) === JSON.stringify(["claude", "codex"]), JSON.stringify(piRows));
   const boxed = selectedFor("container", ["always"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet");
   const worker = selectedFor("claude", ["landing"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet");
   const foreignTree = selectedFor("claude", ["always"], laneCaps, "foreign").omitted.find((p) => p.id === "konzept-claude-fleet");
@@ -750,6 +778,47 @@ function privatePackChecks(check: ContextPlanCheck): void {
         && opaque.verdict === "missing" && (opaque.why ?? "").includes("opaque")
         && block(opaque).includes("opaque-3f4c19d8a6e2b701") && resolve().verdict === "match",
       JSON.stringify({ unpublished, opaque }));
+
+    // THE RECEIVER'S HALF: a selected id, a receipt row or a `match` verdict says nothing about whether
+    // anything can be READ. readDelivered is a mechanical receiver over the delivered lines alone — it
+    // finds the pack's line, takes the path the line names, trusts it only under `hash match`, and reads
+    // the file. The server-backed twin (e2e/konzepte.ts#privatePackHandover) runs the same rule inside
+    // the pane the harness spawned. The claim checked is the BYTES, never a status.
+    const readClaim = (lines: string[]): boolean => readDelivered(lines, K)?.bytes === v2;
+    const delivered = readDelivered(renderPrivatePackLines(resolve()), K);
+    check("private pack (receiver): the delivered lines alone lead a mechanical reader to the fixture's v2 bytes, outside this checkout",
+      delivered !== null && delivered.verdict === "match" && delivered.bytes === v2 && delivered.bytes.includes(MARKER)
+        && delivered.path === join(dir, "v2.md") && !delivered.path.startsWith(`${join(import.meta.dir, "..")}/`),
+      JSON.stringify(delivered));
+    // the same claim under each named mutation must turn RED — and each mutation is observed (the
+    // reader saw the pack's line), so a reader that saw nothing can never pass as a refusal
+    const fremdDir = join(root, "k-fremd-projekt");
+    mkdirSync(fremdDir);
+    const fremdText = "# fremd\nFREMD-FIXTURE-CONTENT-91c2\n";
+    writeFileSync(join(fremdDir, "v1.md"), fremdText);
+    writeFileSync(join(fremdDir, "versionen.jsonl"),
+      `${JSON.stringify({ konzept: "k-fremd-projekt", version: 1, vorgaenger: null, sha256: sha(fremdText), at: 1 })}\n`);
+    const foreign = resolvePrivatePack(root, "k-fremd-projekt", sha(fremdText));
+    const foreignRead = readDelivered(renderPrivatePackLines(foreign), "k-fremd-projekt");
+    check("private pack (missing, foreign source): a konzept under the same root that no Fleet seed declares is never read, by name",
+      foreign.verdict === "missing" && foreign.path === null && (foreign.why ?? "").includes("no Fleet seed declares")
+        && foreignRead !== null && foreignRead.path === null && foreignRead.bytes === null
+        && !renderPrivatePackLines(foreign).join("\n").includes("FREMD-FIXTURE"),
+      JSON.stringify({ foreign, foreignRead }));
+    const mutations: Record<string, string[]> = {
+      "root not passed (FLEET_KONZEPT_ROOT unset)": renderPrivatePackLines(resolve(null)),
+      "privateSource only as an opaque id": renderPrivatePackLines(resolvePrivatePack(root, "opaque-3f4c19d8a6e2b701", declared))
+        .map((line) => line.replace("opaque-3f4c19d8a6e2b701", K)),
+      "pack pins another hash": renderPrivatePackLines(resolvePrivatePack(root, K, sha("eine andere Fassung"))),
+    };
+    unlinkSync(join(dir, "v2.md"));
+    mutations["v2.md removed"] = renderPrivatePackLines(resolve());
+    writeFileSync(join(dir, "v2.md"), v2);
+    const mutationRows = Object.entries(mutations).map(([name, lines]) =>
+      ({ name, observed: readDelivered(lines, K) !== null, claim: readClaim(lines) }));
+    check("private pack (receiver, mutations): root not passed, an opaque id, a pinned other hash and a removed file each turn the read claim red",
+      readClaim(renderPrivatePackLines(resolve())) && mutationRows.every((row) => row.observed && !row.claim),
+      JSON.stringify(mutationRows));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

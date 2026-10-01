@@ -276,17 +276,26 @@ export async function run(): Promise<void> {
   const sendFile = `${ROOT}/ctl-lane-message.txt`;
   const payload = { text: "ctl valid card fixture", kind: "auftrag", repo: REPO, card: {
     ziel: "Exercise filing", surface: { files: ["code.txt"], symbols: [] },
+    rolle: { harness: "codex", model: "gpt-6.1-sol", effort: "high" },
     done: "A row exists", verify: "bun e2e/pins.ts", verboten: ["No dispatch"],
   } };
   writeFileSync(cardFile, JSON.stringify(payload));
   const filedCard = await ctl(["file", cardFile, "--json"]);
   const filedId = (filedCard.json as { task?: { id?: string } })?.task?.id ?? "";
-  const queueRows = async (): Promise<{ id: string; status: string; source?: string; card?: { valid: boolean }; comments?: { text: string }[] }[]> =>
-    ((await (await get("/api/tasks")).json()) as { tasks: { id: string; status: string; source?: string; card?: { valid: boolean }; comments?: { text: string }[] }[] }).tasks;
+  interface FiledRow { id: string; status: string; source?: string;
+    card?: { valid: boolean; rolle: { harness: string; model: string; effort: string }; surface: { files: string[]; symbols: string[] }; verboten: string[] };
+    comments?: { text: string }[] }
+  const queueRows = async (): Promise<FiledRow[]> =>
+    ((await (await get("/api/tasks")).json()) as { tasks: FiledRow[] }).tasks;
   const filedRow = (await queueRows()).find((t) => t.id === filedId);
   check("ctl file: the Self door stores a pending row with a valid author card",
     filedCard.code === 0 && !!filedId && filedRow?.card?.valid === true && filedRow.status === "pending"
       && filedRow.source === "main", `exit=${filedCard.code} id=${filedId} status=${filedRow?.status} error=${filedCard.err}`);
+  check("ctl file: author role and array values survive the real filing unchanged",
+    filedRow?.card?.rolle.harness === "codex" && filedRow.card.rolle.model === "gpt-6.1-sol"
+      && filedRow.card.rolle.effort === "high" && filedRow.card.surface.files.join() === "code.txt"
+      && filedRow.card.surface.symbols.length === 0 && filedRow.card.verboten.join() === "No dispatch",
+    `role=${JSON.stringify(filedRow?.card?.rolle)} files=${JSON.stringify(filedRow?.card?.surface.files)}`);
   const ownerFiled = await ctl(["file", cardFile, "--json"], { FLEET_SELF_TOKEN: "" });
   const ownerFiledId = (ownerFiled.json as { task?: { id?: string } })?.task?.id ?? "";
   check("ctl file: without a Self credential the Owner door stores a valid card",
@@ -314,6 +323,14 @@ export async function run(): Promise<void> {
   check("ctl file: a string in the files list is refused before the request",
     malformedList.code === 2 && malformedList.err.includes("card.surface.files must be an array") && writePosts === 0,
     `exit=${malformedList.code} posts=${writePosts}`);
+  writeFileSync(cardFile, JSON.stringify({ ...payload, card: { ...payload.card, verboten: "kein Deploy" } }));
+  const rowsBeforeMalformed = (await queueRows()).map((t) => t.id).sort().join();
+  const malformedVerboten = await ctl(["file", cardFile], boundaryEnv);
+  check("ctl file: verboten as a string is named with its type before any POST, and no row appears",
+    malformedVerboten.code === 2 && malformedVerboten.err.includes("card.verboten must be an array")
+      && malformedVerboten.err.includes("got string") && writePosts === 0
+      && (await queueRows()).map((t) => t.id).sort().join() === rowsBeforeMalformed,
+    `exit=${malformedVerboten.code} posts=${writePosts} error=${malformedVerboten.err}`);
   boundary.stop(true);
 
   const sendProbe = await openLane(REPO, "ctlsendpin");
@@ -352,7 +369,7 @@ export async function run(): Promise<void> {
       && recycledLane.err.includes(pinError), `exit=${recycledLane.code} posts=${pinPosts} error=${pinError}`);
   pinProxy.stop(true);
   check("ctl write verbs: no output exposes either resolved credential",
-    [readInbox, acknowledged, ackAll, unknownInbox, filedCard, ownerFiled, commented, longComment, malformedList, sentLane, nonLane, recycledLane]
+    [readInbox, acknowledged, ackAll, unknownInbox, filedCard, ownerFiled, commented, longComment, malformedList, malformedVerboten, sentLane, nonLane, recycledLane]
       .every((r) => ![TOKEN, selfTok].some((token) => r.out.includes(token) || r.err.includes(token))), "credential strings absent");
   await post(`/api/slots/${sendProbe.slot}/kill`, {});
   for (const id of [filedId, ownerFiledId].filter(Boolean)) await post(`/api/tasks/${id}/delete`, {});

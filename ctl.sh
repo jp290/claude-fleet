@@ -24,7 +24,7 @@
 # CLI's space — `wait-merge` is typed `./ctl.sh wait merge 5`.
 set -u
 
-CTL_VERBS="get merges lock ctx report task audits watch events land dispatch wait-merge wait-change send commit-main"
+CTL_VERBS="get merges lock ctx report task audits watch events inbox comment file land dispatch wait-merge wait-change send commit-main"
 
 usage() {
   cat <<'USAGE'
@@ -309,16 +309,17 @@ if (verb === "comment") {
     if (value === undefined && !required) return;
     if (!Array.isArray(value) || value.length > 20 || (required && !value.length)
       || value.some((v) => typeof v !== "string" || !v.trim() || v.length > 300))
-      reject(`${name} must be an array of ${required ? "1" : "0"}–20 nonempty strings (max 300 chars each)`);
+      reject(`${name} must be an array of ${required ? "1" : "0"}–20 nonempty strings (max 300 chars each); got ${Array.isArray(value) ? "array with invalid entries or length" : typeof value}`);
   };
   for (const key of ["ziel", "done", "verify"]) {
     const value = body.card[key];
     if (typeof value !== "string" || !value.trim() || value.length > 400) reject(`card.${key} must be 1–400 chars`);
   }
   for (const key of ["files", "symbols", "creates"]) list(body.card.surface[key], `card.surface.${key}`, key === "files");
-  list(body.card.verboten, "card.verboten", true);
+  list(body.card.verboten, "card.verboten");
   list(body.card.after, "card.after");
   list(body.files, "files");
+  delete body.queue;
   path = process.env.CTL_FILE_AUTH === "self" ? "/api/self/tasks" : "/api/tasks";
   headers = process.env.CTL_FILE_AUTH === "self" ? selfH() : ownerH();
 }

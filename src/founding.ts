@@ -261,6 +261,8 @@ function open(entry: Entry) {
   const fPlace = el("section", "fdsec"), fRole = el("section", "fdsec"),
     fProfile = el("section", "fdsec"), fContext = el("section", "fdsec");
   shell.detail.replaceChildren(fPlace, fRole, fProfile, fContext);
+  // focusable without a tab stop: a click on empty space lands here, and Enter then starts
+  shell.detail.tabIndex = -1;
   const repos = repoList();
   S = {
     shell, flakes, entry, role: laneEntry ? "lane" : "leer", mode: laneEntry ? "new" : "repo", name: "", note: null,
@@ -314,18 +316,26 @@ function open(entry: Entry) {
     }
     if (e.key !== "Enter" || e.defaultPrevented || s.pop) return;
     const t = e.target instanceof HTMLElement ? e.target : null;
+    // the window is modal: an Enter with the focus nowhere (on body) is still its Enter
+    if (t && t !== document.body && !s.shell.root.contains(t)) return;
     const inControl = !!t?.closest("button, input, select, textarea, [contenteditable]");
     if (inControl && !(e.metaKey || e.ctrlKey)) return;
     e.preventDefault();
+    e.stopPropagation();
     void start();
   };
   window.addEventListener("keydown", onKey, true);
   shell.root.addEventListener("pointerdown", onDown, true);
-  shell.root.addEventListener("keydown", onWinKey);
+  // capture: the app's own keyboard (the composer, the panes) must not see an Enter this window took
+  window.addEventListener("keydown", onWinKey, true);
   // the pack line folds against its width, so a resized window refits it
   const onResize = () => { const line = S?.fContext.querySelector<HTMLElement>(".fdctx:not(.all)"); if (line) fitLine(line); };
   window.addEventListener("resize", onResize);
-  S.teardown = () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("resize", onResize); };
+  S.teardown = () => {
+    window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("keydown", onWinKey, true);
+    window.removeEventListener("resize", onResize);
+  };
   if (entry.kind === "lane") choosePlace(entry.repo);
   else if (repos.length) choosePlace(repos[0]!.repo);
   else { renderAll(); void loadDir("~"); }
@@ -662,6 +672,7 @@ function renderRole() {
   for (const r of ROLES) {
     const on = s.role === r.id;
     const b = btn(`fdrole${on ? " on" : ""}`);
+    b.dataset.role = r.id;
     b.setAttribute("role", "radio");
     b.setAttribute("aria-checked", String(on));
     b.disabled = isLaneEntry(s) && r.id !== "lane";
@@ -1056,7 +1067,12 @@ function packList(plan: Plan): HTMLElement {
     sw.setAttribute("role", "switch");
     sw.setAttribute("aria-checked", String(on));
     sw.setAttribute("aria-label", `${p.id} mitgeben`);
-    sw.onclick = () => togglePack(p.id, !on);
+    sw.dataset.pack = p.id;
+    // the list repaints on every switch; the switch that was pressed keeps the focus
+    sw.onclick = () => {
+      togglePack(p.id, !on);
+      S?.fContext.querySelector<HTMLElement>(`.fdsw[data-pack="${CSS.escape(p.id)}"]`)?.focus();
+    };
     const t = el("div", "fdlt");
     const head = el("div", "fdlh");
     head.append(el("span", "mono", p.id), el("span", "fdlsrc", p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"));
@@ -1243,6 +1259,8 @@ function renderFoot() {
   if (!s) return;
   if (s.proof) { renderProof(); return; }
   const foot = s.shell.foot;
+  // the button is rebuilt on every paint; if it held the focus, the new one takes it over
+  const hadGo = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("fdgo") && foot.contains(document.activeElement);
   foot.replaceChildren();
   const say = el("div", "fdsay");
   const who = { leer: "Eine Session ohne Rolle", lane: "Eine Lane", orch: "Eine Orchestratorin", steward: "Ein Steward" }[s.role];
@@ -1254,8 +1272,10 @@ function renderFoot() {
   const prof = [body.harness ?? h?.id ?? "", body.model ? modelLabel(body.model) : h ? modelShown(h) : "", body.effort ?? ""].filter(Boolean).join(" · ");
   const ctx = s.packs.size ? `${s.packs.size} ${s.packs.size === 1 ? "Pack" : "Packs"}` : "ohne Packs";
   say.append(el("b", "", who), document.createTextNode(` ${where}`), el("span", "fdsaym", ` · ${prof} · ${ctx}${s.role === "orch" ? " · Rollenkarte" : ""}`));
-  const why = s.error ?? blocker();
-  const note = el("div", `fdfootnote${s.error ? " warn" : ""}`, why ?? "");
+  // a plan nobody could read starts without packs — allowed, but never silently
+  const planGone = !!s.planErr && s.mode !== "old" && !!s.info?.git;
+  const why = s.error ?? blocker() ?? (planGone ? "Der Plan für diesen Start ist nicht lesbar — er startet ohne Packs." : null);
+  const note = el("div", `fdfootnote${s.error || planGone ? " warn" : ""}`, why ?? "");
   const go = btn("fdgo");
   const label = s.busy ? (s.packs.size ? "Packs werden zugestellt …" : "Startet …")
     : s.mode === "old" ? "Fortsetzen" : s.mode === "new" ? "Lane starten" : "Starten";
@@ -1268,6 +1288,7 @@ function renderFoot() {
   text.append(say);
   if (why) text.append(note);
   foot.append(text, go);
+  if (hadGo) go.focus({ preventScroll: true });
 }
 
 // --- starting ----------------------------------------------------------------------------------------
@@ -1318,6 +1339,8 @@ async function start() {
     }
     if (result.ok && S === s) await captureProof(s, body, before.get(result.slot), result, requestedRole, requestedMode, requestedPlace);
   } finally {
+    // a start answers seconds later (packs: boot grace plus readiness); by then the owner may have
+    // closed this window and opened the next — only the window that asked shows the receipt
     if (S === s) { s.busy = false; renderFoot(); }
   }
 }

@@ -51,7 +51,7 @@ import {
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
-import { closeFounding, openLaneFounding, openPicker } from "./founding";
+import { openLaneFounding, openPicker } from "./founding";
 import { runningEffort, runningModel } from "./running";
 
 export const $ = (id: string) => document.getElementById(id)!;
@@ -4123,7 +4123,8 @@ export async function revealStartedSlot(slot: number): Promise<boolean> {
 }
 
 // `via` is the founding window (src/founding.ts), the one caller: it names its own slot and sends
-// its own body, and every refusal is said through onError where the click was
+// its own body, and every refusal is said through onError where the click was. `ok` = the
+// session stands and shows; the window then shows its start receipt, if it is still the one that asked
 export interface SpawnVia { slot: number; body: SpawnBody }
 export type StartResult = { ok: true; slot: number; packsDelivered?: boolean; reason?: string } | { ok: false };
 export async function startSession(path: string, label: string | undefined, onError: (msg: string) => void, via: SpawnVia): Promise<StartResult> {

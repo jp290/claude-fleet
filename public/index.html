@@ -1822,6 +1822,7 @@
   #shell-found .shellsub { font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-faint); }
   #shell-found .shelllist, #shell-found .shelltools { display: none; }
   #shell-found .shelldetail { display: block; padding: 0; scrollbar-width: thin; scrollbar-color: var(--chat-edge) transparent; }
+  #shell-found .shelldetail:focus { outline: none; }
   /* the board page does not reset buttons; the id INSIDE :where keeps this at zero specificity,
      so every .fd* class below still wins (an id outside it would beat them all) */
   :where(#shell-found button) { appearance: none; border: 0; background: none; padding: 0; margin: 0;
@@ -2410,7 +2411,7 @@
     /* the founding window on a phone (G0.7): the shell's fullscreen, one column; touch heights
        40 px, fields 16 px (no iOS zoom), the button full width under its sentence */
     #shell-found .fdsegb, #shell-found .fdprow, #shell-found .fdnavb, #shell-found .fdghost, #shell-found .fdorph { min-height: 40px; }
-    #shell-found .fdcx, #shell-found .fdadd { height: 34px; }
+    #shell-found .fdcx, #shell-found .fdadd, #shell-found .fdmore { height: 34px; }
     #shell-found .fdcxrm { width: 28px; height: 28px; }
     #shell-found .fdfind, #shell-found .fdpin input, #shell-found .fdname input { font-size: 16px; }
     #shell-found .shellfoot { flex-wrap: wrap; }

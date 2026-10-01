@@ -4,7 +4,6 @@
 import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { MODEL_DEFAULTS } from "../model-register";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";

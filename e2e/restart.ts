@@ -114,11 +114,11 @@ export async function boundRestartReadiness(): Promise<void> {
   const seen: (BoundAgentObservation["agent"])[] = [];
   const observed = await waitForBoundAgent({ binding, timeoutMs: 1000, stepMs: 10,
     readSessions: async () => { reads++; return view(reads <= 2 ? null : reads <= 4 ? "unprobed" : "alive"); },
-    readPane: pane, observe: (actual) => seen.push(actual.agent) });
+    readPane: pane, readCurrent: () => binding, observe: (actual) => seen.push(actual.agent) });
   check("bound agent readiness: HTTP-shaped null and unknown never complete before observed alive",
     reads === 6 && seen.join(",") === ",unprobed,alive" && observed.agent === "alive",
     JSON.stringify({ reads, seen, agent: observed.agent }));
-  const base = { binding, timeoutMs: 1000, stepMs: 10, readPane: pane };
+  const base = { binding, timeoutMs: 1000, stepMs: 10, readPane: pane, readCurrent: () => binding };
   await reject("no-agent rejects without waiting for a cache tick", "no-agent",
     { ...base, readSessions: async () => view("no-agent") });
   await reject("a different openedAt rejects the foreign occupant", "occupant-changed",
@@ -128,15 +128,23 @@ export async function boundRestartReadiness(): Promise<void> {
   let currentOpenedAt = binding.openedAt;
   await reject("occupant replacement during the tmux await rejects", "occupant-changed", { ...base,
     readSessions: async () => view("alive", currentOpenedAt),
+    readCurrent: () => ({ ...binding, openedAt: currentOpenedAt }),
     readPane: async () => { await Promise.resolve(); currentOpenedAt++; return pane(); } });
   let currentPane = binding.pane;
   await reject("pane recycle during the sessions await rejects", "pane-changed", { ...base,
     readSessions: async () => { await Promise.resolve(); currentPane = "%124"; return view("alive"); },
+    readCurrent: () => ({ ...binding, pane: currentPane }),
     readPane: async () => ({ out: currentPane, code: 0 }) });
   let paneReads = 0;
   await reject("pane change on the second bracket rejects", "pane-changed", { ...base,
     readSessions: async () => view("alive"),
     readPane: async () => ({ out: ++paneReads === 1 ? binding.pane : "%124", code: 0 }) });
+  currentOpenedAt = binding.openedAt;
+  paneReads = 0;
+  await reject("occupant replacement in the final tmux await rejects", "occupant-changed", { ...base,
+    readSessions: async () => view("alive", currentOpenedAt),
+    readCurrent: () => ({ ...binding, openedAt: currentOpenedAt }),
+    readPane: async () => { await Promise.resolve(); if (++paneReads === 2) currentOpenedAt++; return pane(); } });
   await reject("null expires under its own named timeout", "timeout",
     { ...base, timeoutMs: 20, readSessions: async () => view(null) });
   await reject("a failed external reader is a sanitized probe-read failure", "probe-read",

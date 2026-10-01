@@ -201,6 +201,7 @@ export interface BoundAgentWait {
   stepMs?: number;
   readSessions?: () => Promise<unknown>;
   readPane?: () => Promise<{ out: string; code: number }>;
+  readCurrent?: () => AgentBinding | null;
   observe?: (actual: BoundAgentObservation) => void;
 }
 export class BoundAgentError extends Error {
@@ -220,6 +221,22 @@ export async function waitForBoundAgent(opts: BoundAgentWait): Promise<BoundAgen
     throw new BoundAgentError("probe-start", "invalid binding or budget");
   let last = "not observed";
   const fail = (reason: BoundAgentError["reason"]): never => { throw new BoundAgentError(reason, last); };
+  const readCurrent = opts.readCurrent ?? (() => {
+    const pane = Bun.spawnSync(["tmux", "-L", SOCK, "display-message", "-p", "-t", `=s${binding.slot}:`, "#{pane_id}"],
+      { stdout: "pipe", stderr: "pipe" });
+    const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { cwd?: unknown; openedAt?: unknown }> };
+    const row = state.slots?.[String(binding.slot)];
+    return row?.cwd && typeof row.openedAt === "number"
+      ? { slot: binding.slot, openedAt: row.openedAt, pane: pane.exitCode === 0 ? pane.stdout.toString().trim() : "" } : null;
+  });
+  const assertCurrent = (): void => {
+    const current = readCurrent();
+    last = `${last}; ${JSON.stringify({ currentSlot: current?.slot ?? null,
+      currentOpenedAt: current?.openedAt ?? null, currentPane: current && /^%\d+$/.test(current.pane) ? current.pane : null })}`;
+    if (!current || current.slot !== binding.slot || current.openedAt !== binding.openedAt) fail("occupant-changed");
+    if (current.pane !== binding.pane) fail("pane-changed");
+  };
   const readSessions = opts.readSessions ?? (async (): Promise<unknown> => {
     const response = await get("/api/sessions");
     if (response.status !== 200) {
@@ -231,6 +248,7 @@ export async function waitForBoundAgent(opts: BoundAgentWait): Promise<BoundAgen
   const readPane = opts.readPane ?? (() => tmuxOut("display-message", "-p", "-t", `=s${binding.slot}:`, "#{pane_id}"));
   const session = async (): Promise<BoundAgentObservation["agent"]> => {
     const body = await readSessions();
+    assertCurrent();
     if (!body || typeof body !== "object" || !("slots" in body) || !Array.isArray(body.slots)) {
       last = "sessions=invalid";
       return fail("probe-read");
@@ -250,12 +268,14 @@ export async function waitForBoundAgent(opts: BoundAgentWait): Promise<BoundAgen
   };
   const pane = async (): Promise<void> => {
     const actual = await readPane();
+    assertCurrent();
     const id = /^%\d+$/.test(actual.out.trim()) ? actual.out.trim() : null;
     last = `${last}; ${JSON.stringify({ pane: id, paneCode: actual.code })}`;
     if (actual.code !== 0 || id !== binding.pane) fail("pane-changed");
   };
   try {
-    return await until(async () => {
+    const ready = await until(async () => {
+      assertCurrent();
       // Bracket both external readers: a sessions await may recycle the pane, and a tmux await
       // may replace the occupant. No cached answer from before either await grants readiness.
       const before = await session();
@@ -266,6 +286,8 @@ export async function waitForBoundAgent(opts: BoundAgentWait): Promise<BoundAgen
       opts.observe?.(actual);
       return before === "alive" && agent === "alive" ? actual : null;
     }, { timeoutMs: opts.timeoutMs, stepMs: opts.stepMs, what: `bound agent readiness slot ${binding.slot}`, last: () => last });
+    assertCurrent();
+    return ready;
   } catch (error) {
     if (error instanceof BoundAgentError || error instanceof UntilTimeout) throw error;
     return fail("probe-read");

@@ -8169,7 +8169,39 @@ export async function run(): Promise<void> {
     const holdProgramId = "c0ffee".repeat(4);
     const holdMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
     const holdState = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
-    let holdBinding: { openedAt: number; sessionId: string | null } | null = null;
+    type HoldIdentity = { slot: number; cwd: string; openedAt: number; sessionId: string };
+    const holdRecord = (value: unknown): value is Record<string, unknown> =>
+      value !== null && typeof value === "object" && !Array.isArray(value);
+    const holdIdentityFrom = (image: unknown): HoldIdentity | null => {
+      if (!holdRecord(image) || !holdRecord(image.slots)) return null;
+      const row = image.slots[String(holdSlot)];
+      if (!holdRecord(row) || typeof row.cwd !== "string" || !row.cwd.trim()
+        || typeof row.openedAt !== "number" || !Number.isFinite(row.openedAt) || row.openedAt <= 0
+        || typeof row.sessionId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(row.sessionId)) return null;
+      return { slot: holdSlot, cwd: row.cwd, openedAt: row.openedAt, sessionId: row.sessionId };
+    };
+    const readHoldIdentity = (): HoldIdentity | null => {
+      try { return holdIdentityFrom(JSON.parse(readFileSync(holdStatePath, "utf8")) as unknown); }
+      catch { return null; }
+    };
+    const holdStateMatches = (actual: HoldIdentity | null, expected: HoldIdentity | null): boolean =>
+      actual !== null && expected !== null && actual.slot === expected.slot && actual.cwd === expected.cwd
+        && actual.openedAt === expected.openedAt && actual.sessionId === expected.sessionId;
+    const holdOccupantMatches = (actual: HoldIdentity | null, expected: HoldIdentity | null, poll: unknown): boolean => {
+      if (!holdStateMatches(actual, expected) || !expected || !holdRecord(poll) || !Array.isArray(poll.slots)) return false;
+      const row: unknown = poll.slots.find((r: unknown) => holdRecord(r) && r.id === expected.slot);
+      return holdRecord(row) && row.id === expected.slot && row.cwd === expected.cwd && row.openedAt === expected.openedAt;
+    };
+    let holdBinding: HoldIdentity | null = null;
+    const holdAssertState = (): void => {
+      const current = readHoldIdentity();
+      if (!holdStateMatches(current, holdBinding)) {
+        check("unattended-send fixture: persisted occupant identity remains exact after an await", false,
+          JSON.stringify({ expected: holdBinding, current }));
+        throw new Error("unattended-send fixture: persisted occupant identity is missing or changed");
+      }
+    };
     try {
       // `pi`, not `pi-unfenced`: this send goes through canDeliver's foreign-harness WORK-PROMPT gate
       // (tickInboxNudge waives nothing), and pi-unfenced is `automatable: false` FOREVER — the gate
@@ -8177,9 +8209,8 @@ export async function run(): Promise<void> {
       const holdOpen = holdSlot
         ? await post(`/api/slots/${holdSlot}/open`, { cwd: REPO, label: "inbox-hold-main", harness: "pi" }) : null;
       const holdRow = (await (await get("/api/sessions")).json() as
-        { slots: { id: number; openedAt: number; sessionId: string | null; harness?: string }[] })
+        { slots: { id: number; cwd: string | null; openedAt: number; harness?: string }[] })
         .slots.find((s) => s.id === holdSlot);
-      holdBinding = holdRow ? { openedAt: holdRow.openedAt, sessionId: holdRow.sessionId } : null;
       check("unattended-send fixture: a `pi` MAIN with a real stand-in composer is open",
         !!holdOpen?.ok && holdSlot > 0 && holdRow?.harness === "pi" && (holdRow?.openedAt ?? 0) > 0,
         JSON.stringify({ slot: holdSlot, status: holdOpen?.status, row: holdRow ?? null }));
@@ -8191,7 +8222,11 @@ export async function run(): Promise<void> {
       await stopSrv();
       const holdImage = JSON.parse(readFileSync(holdStatePath, "utf8")) as
         { slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[] };
-      const holdSlotRow = holdImage.slots[String(holdSlot)] ?? {};
+      holdBinding = holdIdentityFrom(holdImage);
+      const holdIdentityReady = holdOccupantMatches(holdBinding, holdBinding, { slots: holdRow ? [holdRow] : [] });
+      check("unattended-send fixture: persisted occupant identity is valid and matches the Sessions poll", holdIdentityReady,
+        JSON.stringify({ binding: holdBinding, poll: holdRow ? { id: holdRow.id, cwd: holdRow.cwd, openedAt: holdRow.openedAt } : null }));
+      if (!holdIdentityReady || !holdBinding) throw new Error("unattended-send fixture: no valid persisted occupant identity");
       const holdAt = Date.now() - 5000;
       holdImage.programs = [...(holdImage.programs ?? []), {
         id: holdProgramId, title: "Unattended send rollback fixture",
@@ -8200,7 +8235,7 @@ export async function run(): Promise<void> {
         nonGoals: [], decisions: [], evidence: [], openQuestions: [],
         status: "active", createdAt: holdAt - 1000, proposedBy: { kind: "owner" },
         confirmedAt: holdAt - 900, activatedAt: holdAt - 800,
-        main: { slot: holdSlot, openedAt: holdSlotRow.openedAt, sessionId: holdSlotRow.sessionId ?? null,
+        main: { slot: holdBinding.slot, openedAt: holdBinding.openedAt, sessionId: holdBinding.sessionId,
           boundAt: holdAt - 700 },
         inbox: { v: 1, dropped: 0, entries: [
           { id: "a".repeat(24), kind: "audit-red", at: holdAt - 600, ref: String(holdAt - 600), readBy: null, readAt: null },
@@ -8214,10 +8249,12 @@ export async function run(): Promise<void> {
       // observe more than one round of it.
       await restartSrv({ FLEET_HARNESS_AUTOMATION: "1", FLEET_INBOX_NUDGE_MS: "250",
         FLEET_BACKLOG_NUDGE_IDLE_MS: "300" });
+      holdAssertState();
       const holdProgramLive = ((await (await get("/api/programs")).json()) as
         { programs?: { id: string; status: string; health?: { occupancy?: string };
           executionStatus?: { inbox?: { unread?: number } } }[] })
         .programs?.find((p) => p.id === holdProgramId) ?? null;
+      holdAssertState();
       check("unattended-send fixture: the planted program loaded ACTIVE, bound live to that occupant, with two unread inbox entries",
         holdProgramLive?.status === "active" && holdProgramLive.health?.occupancy === "live"
           && holdProgramLive.executionStatus?.inbox?.unread === 2,
@@ -8225,18 +8262,22 @@ export async function run(): Promise<void> {
 
       // "hold" matches no branch of the stand-in's Enter handler, so its buffer survives the submit —
       // the deterministic form of the live "composer still holds N chars" non-acceptance.
+      holdAssertState();
       writeFileSync(holdMode, "hold\n");
       // The pane must have been OBSERVED (lastOutput !== 0 is a hard guard in tickInboxNudge, and
       // absence is never idleness), and then be idle past the shrunk gate. One Enter into an EMPTY
       // composer redraws it and types nothing.
+      holdAssertState();
       await tmuxOut("send-keys", "-t", `s${holdSlot}`, "Enter");
+      holdAssertState();
       await Bun.sleep(1200);
+      holdAssertState();
       const holdPrompts = async () => (await plogRead())
         .filter((e) => e.slot === holdSlot && e.ts >= (holdBinding?.openedAt ?? Infinity)
           && e.text.startsWith("[fleet inbox] "));
       let holdLines: Awaited<ReturnType<typeof holdPrompts>> = [];
       let holdBindingStatus = 0;
-      let holdCurrent: { openedAt: number; sessionId: string | null } | undefined;
+      let holdCurrent: HoldIdentity | null = null;
       let holdFixtureReason = "waiting-for-both-paths";
       const holdCounts = () => ({
         fast: holdLines.filter((l) => l.text.includes("attention-answer")).length,
@@ -8256,16 +8297,21 @@ export async function run(): Promise<void> {
       const holdFixtureName = "unattended-send fixture: both failed hint paths are observed once for the bound occupant before cooldown";
       try {
         await until(async () => {
+          holdCurrent = readHoldIdentity();
+          let stateStayed = holdStateMatches(holdCurrent, holdBinding);
           holdLines = await holdPrompts();
+          holdCurrent = readHoldIdentity();
+          stateStayed = stateStayed && holdStateMatches(holdCurrent, holdBinding);
           const response = await get("/api/sessions");
+          holdCurrent = readHoldIdentity();
+          stateStayed = stateStayed && holdStateMatches(holdCurrent, holdBinding);
           holdBindingStatus = response.status;
-          holdCurrent = response.ok ? ((await response.json()) as {
-            slots: { id: number; openedAt: number; sessionId: string | null }[];
-          }).slots.find((s) => s.id === holdSlot) : undefined;
+          const poll: unknown = response.ok ? await response.json() : null;
+          holdCurrent = readHoldIdentity();
           const counts = holdCounts();
           const binding = holdBinding;
-          if (!binding || !holdCurrent || holdCurrent.openedAt !== binding.openedAt
-            || holdCurrent.sessionId !== binding.sessionId) holdFixtureReason = "occupant-or-status-changed";
+          if (!binding || !stateStayed || !holdOccupantMatches(holdCurrent, binding, poll))
+            holdFixtureReason = "occupant-or-status-changed";
           else if (counts.fast > 1 || counts.general > 1 || counts.total > 2) holdFixtureReason = "multiple-path-attempts";
           else if (holdLines.some((l) => l.openedAt !== binding.openedAt || l.sessionId !== binding.sessionId
             || l.delivery !== "SendNotAccepted" || l.source !== "auto"
@@ -8280,6 +8326,7 @@ export async function run(): Promise<void> {
         check(holdFixtureName, false, holdFixtureDetail());
         throw error;
       }
+      holdAssertState();
       const holdFixtureReady = holdFixtureReason === "both-failed-once";
       check(holdFixtureName, holdFixtureReady, holdFixtureDetail());
       if (!holdFixtureReady) throw new Error("unattended-send fixture: failed hint paths were not both bound and observed once");
@@ -8295,6 +8342,7 @@ export async function run(): Promise<void> {
         if (holdPhase.startsWith("backspace:") && holdComposerBuf === "") break;
         await Bun.sleep(50);
       }
+      holdAssertState();
       check("an unattended send whose payload is NOT accepted rolls its own payload back out of the composer",
         holdLines.length >= 1 && holdPhase.startsWith("backspace:") && holdComposerBuf === "",
         JSON.stringify({ lines: holdLines.length, phase: holdPhase, residue: holdComposerBuf.slice(0, 120) }));
@@ -8305,22 +8353,30 @@ export async function run(): Promise<void> {
       // …and each FAILED path attempts only once: the general hint spends its cooldown, while the
       // fast entry keeps its own one-entry stamp. Ten ticks must paste neither one again.
       await Bun.sleep(250 * 10 + 500);
+      holdAssertState();
       const holdAfterTicks = await holdPrompts();
+      holdAssertState();
       check("…and failed fast and general hints are each STAMPED: ten further ticks paste neither one again",
         holdAfterTicks.filter((l) => l.text.includes("attention-answer")).length === 1
           && holdAfterTicks.filter((l) => l.text.includes("ungelesene Eintraege")).length === 1
-          && holdAfterTicks.length === 2,
+          && holdAfterTicks.length === 2
+          && holdAfterTicks.every((l) => l.openedAt === holdBinding?.openedAt && l.sessionId === holdBinding?.sessionId
+            && l.delivery === "SendNotAccepted" && l.source === "auto"),
         `${holdAfterTicks.length} attempt(s): ${JSON.stringify(holdAfterTicks.map((l) => l.delivery ?? null))}`);
 
     } finally {
       try {
         if (holdMode && existsSync(holdMode)) writeFileSync(holdMode, "normal\n");
         if (holdSlot && holdBinding) {
-          const current = ((await (await get("/api/sessions")).json()) as {
-            slots: { id: number; openedAt: number; sessionId: string | null }[];
-          }).slots.find((s) => s.id === holdSlot);
-          if (current?.openedAt === holdBinding.openedAt && current.sessionId === holdBinding.sessionId)
-            await post(`/api/slots/${holdSlot}/kill`, {});
+          const response = await get("/api/sessions");
+          let current = readHoldIdentity();
+          const stateStayed = holdStateMatches(current, holdBinding);
+          const poll: unknown = response.ok ? await response.json() : null;
+          current = readHoldIdentity();
+          const cleanupBound = stateStayed && holdOccupantMatches(current, holdBinding, poll);
+          check("unattended-send fixture: cleanup targets only the exact persisted occupant", cleanupBound,
+            JSON.stringify({ expected: holdBinding, current, status: response.status }));
+          if (cleanupBound) await post(`/api/slots/${holdSlot}/kill`, {});
         }
       } finally {
         await stopSrv();

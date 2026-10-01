@@ -3581,14 +3581,59 @@ export async function run(ctx: Ctx): Promise<void> {
   await stopSrv();
   const dutyPendingState = readState();
   const dutyEvent = dutyPendingState.events?.find((e) => e.id === dutyEventId);
+  const dutyForeignEventId = "d".repeat(24);
+  const dutyTerminalEventId = "e".repeat(24);
   if (dutyEvent) {
+    dutyPendingState.events!.push({ ...dutyEvent, id: dutyForeignEventId,
+      receiverOpenedAt: (s0PredecessorOpenedAt ?? 0) - 1, status: "pending", attempts: 0,
+      deliveredAt: null });
+    dutyPendingState.events!.push({ ...dutyEvent, id: dutyTerminalEventId,
+      status: "receiver-gone", attempts: 0, deliveredAt: null });
     dutyEvent.status = "pending";
     dutyEvent.receiverIdleSec = 3600;
     dutyEvent.attempts = 0;
     dutyEvent.deliveredAt = null;
   }
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(dutyPendingState, null, 2), { mode: 0o600 });
-  await restartSrv();
+  const dutyOpenLatch = `${ROOT}/duty-succession-after-open`;
+  const dutyTickProbe = `${ROOT}/watch-tick.latch.succession`;
+  for (const path of [dutyOpenLatch, `${dutyOpenLatch}.reached`, `${dutyOpenLatch}.release`,
+    dutyTickProbe, `${dutyTickProbe}.observed`]) rmSync(path, { force: true });
+  await restartSrv({ FLEET_TEST_SUCCESSION_AFTER_OPEN_LATCH: dutyOpenLatch });
+  // Original audit timeline (ms | event | exclusive owner):
+  // 1790825436983 | pending 8d808b8f7d28e8581c4df3b7 | predecessor 4@1790825405189
+  // 1790825439760 | predecessor kill; founding hold | successor candidate, no binding
+  // 1790825440029 | bind and event rebound | successor 4@1790825439737
+  // 1790825440101 | tick: no agent, receiver-gone, attempts=0 | same starting successor
+  // Regression timeline (barrier | event | exclusive owner):
+  // settled tick | pending, attempts=0 | exact predecessor
+  // after-open latch + tick | pending, attempts=0 | predecessor binding, successor candidate
+  // bound-starting tick, before screen | pending, attempts=0 | exact successor binding
+  // delivered -> read -> ack | same event ID | exact successor; old and foreign tokens refused
+  type DutyTick = { phase: string; id: string; status: string; receiverSlot: number;
+    receiverOpenedAt: number; receiverSessionId: string | null; attempts: number;
+    deliveredAt: number | null; main: { slot: number; openedAt: number } | null };
+  const observeDutyTick = async (phase: string): Promise<DutyTick | null> => {
+    rmSync(`${dutyTickProbe}.observed`, { force: true });
+    writeFileSync(dutyTickProbe, `${dutyEventId} ${phase}`, { mode: 0o600 });
+    try {
+      await until(() => existsSync(`${dutyTickProbe}.observed`),
+        { timeoutMs: 10_000, what: `Standard duty real tick ${phase}` });
+      return JSON.parse(readFileSync(`${dutyTickProbe}.observed`, "utf8")) as DutyTick;
+    } catch (e) {
+      if (!(e instanceof UntilTimeout)) throw e;
+      check(`Standard succession duty tick probe: ${phase} ran`, false, e.message);
+      return null;
+    } finally {
+      rmSync(dutyTickProbe, { force: true });
+    }
+  };
+  const dutyBeforeTick = await observeDutyTick("settled");
+  check("Standard succession duty: a forced tick before succession preserves the exact pending predecessor event",
+    dutyBeforeTick?.id === dutyEventId && dutyBeforeTick.status === "pending"
+      && dutyBeforeTick.receiverSlot === mainSlot && dutyBeforeTick.receiverOpenedAt === s0PredecessorOpenedAt
+      && dutyBeforeTick.attempts === 0 && dutyBeforeTick.deliveredAt === null,
+    JSON.stringify(dutyBeforeTick));
   check("Standard succession duty setup: a Program lane has one open question and one pending immediate FleetEvent for the predecessor",
     dutyQuestion.ok && dutyRequest?.basis === "program-main" && dutyBlock.ok && !!dutyEventId
       && dutyEvent?.kind === "harness-block" && dutyEvent.status === "pending"
@@ -3602,12 +3647,35 @@ export async function run(ctx: Ctx): Promise<void> {
   }
   const freeBeforeSuccession = (await sessions()).slots.filter((s) => !s.cwd).length;
   const predecessorOpenedAt = readState().slots?.[String(mainSlot)]?.openedAt;
+  writeFileSync(dutyOpenLatch, mainProgram.id, { mode: 0o600 });
   const successionPending = selfSucceed(mainSelfTokenAfterRestart, { label: successorLabel, carry });
+  await until(() => existsSync(`${dutyOpenLatch}.reached`),
+    { timeoutMs: 10_000, what: "Standard duty succession reached after-open barrier" });
+  const dutyHoldingTick = await observeDutyTick("before-bind");
+  check("Standard succession duty: a forced tick before binding retains the predecessor event without a delivery attempt",
+    dutyHoldingTick?.id === dutyEventId && dutyHoldingTick.status === "pending"
+      && dutyHoldingTick.receiverOpenedAt === s0PredecessorOpenedAt
+      && dutyHoldingTick.attempts === 0 && dutyHoldingTick.deliveredAt === null,
+    JSON.stringify(dutyHoldingTick));
+  writeFileSync(dutyTickProbe, `${dutyEventId} bound-starting`, { mode: 0o600 });
+  rmSync(`${dutyTickProbe}.observed`, { force: true });
+  writeFileSync(`${dutyOpenLatch}.release`, "release", { mode: 0o600 });
+  await until(() => existsSync(`${dutyTickProbe}.observed`),
+    { timeoutMs: 10_000, what: "Standard duty real tick on bound successor before harness screen" });
+  const dutyStartingTick = JSON.parse(readFileSync(`${dutyTickProbe}.observed`, "utf8")) as DutyTick;
+  check("Standard succession duty: a forced tick on the bound starting successor preserves event ID and exact occupation",
+    dutyStartingTick.phase === "bound-starting" && dutyStartingTick.id === dutyEventId
+      && dutyStartingTick.status === "pending" && dutyStartingTick.receiverSlot === mainSlot
+      && dutyStartingTick.receiverOpenedAt === dutyStartingTick.main?.openedAt
+      && dutyStartingTick.receiverOpenedAt !== s0PredecessorOpenedAt
+      && dutyStartingTick.receiverSessionId === null && dutyStartingTick.attempts === 0
+      && dutyStartingTick.deliveredAt === null,
+    JSON.stringify(dutyStartingTick));
+  rmSync(dutyTickProbe, { force: true });
   const successorSlot = await waitForLabel(successorLabel);
   check("Program-MAIN succession success setup: exactly one successor reservation became observable",
     successorSlot !== null, String(successorSlot));
   if (successorSlot !== null) {
-    await Bun.sleep(250); // keep ensureSlot from replacing the fixture pane after the ready marker is planted
     await respawnScreen(successorSlot, ">_ OpenAI Codex (v0.147.0)");
   }
   const successionResponse = await successionPending;
@@ -3648,7 +3716,8 @@ export async function run(ctx: Ctx): Promise<void> {
     receiver: { slot: number; openedAt: number } }[] };
   const dutyListedRequest = dutyListedBody.requests?.find((c) => c.id === dutyRequest?.id);
   const dutyReboundEvent = ((await (await get("/api/events")).json()) as { events: {
-    id: string; status: string; receiverSlot: number; receiverOpenedAt: number }[] }).events
+    id: string; status: string; receiverSlot: number; receiverOpenedAt: number;
+    receiverSessionId: string | null; attempts: number; deliveredAt: number | null }[] }).events
     .find((e) => e.id === dutyEventId);
   check("Standard succession duty: the successor lists the predecessor's open lane question on its exact occupation",
     dutyListed.ok && dutyListedRequest?.status === "open"
@@ -3667,9 +3736,23 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ id: lostDutyRequest?.id, disk: dutyHandover?.lost ?? null,
       view: dutyExecution?.lost ?? null }));
   check("Standard succession duty: a pending immediate FleetEvent moves to the successor instead of receiver-gone",
-    dutyReboundEvent?.status === "pending" && dutyReboundEvent.receiverSlot === successorSlot
-      && dutyReboundEvent.receiverOpenedAt === successorState?.openedAt,
+    dutyReboundEvent?.id === dutyEventId && dutyReboundEvent.status === "pending"
+      && dutyReboundEvent.receiverSlot === successorSlot
+      && dutyReboundEvent.receiverOpenedAt === successorState?.openedAt
+      && dutyReboundEvent.receiverSessionId === successorState?.sessionId
+      && dutyReboundEvent.attempts === 0 && dutyReboundEvent.deliveredAt === null,
     JSON.stringify(dutyReboundEvent ?? null));
+  const dutyCounterEvents = ((await (await get("/api/events")).json()) as {
+    events: { id: string; status: string; receiverOpenedAt: number }[] }).events;
+  const dutyOldAck = await selfPost(`/api/self/events/${dutyEventId}/ack`, mainSelfTokenAfterRestart, {});
+  const dutyForeignAck = await selfPost(`/api/self/events/${dutyEventId}/ack`, dutyLaneToken, {});
+  check("Standard succession duty: foreign and terminal occupations stay lost; predecessor and foreign tokens cannot ack the successor event",
+    dutyCounterEvents.find((e) => e.id === dutyForeignEventId)?.status === "receiver-gone"
+      && dutyCounterEvents.find((e) => e.id === dutyTerminalEventId)?.status === "receiver-gone"
+      && dutyOldAck.status === 401 && dutyForeignAck.status === 409,
+    JSON.stringify({ foreign: dutyCounterEvents.find((e) => e.id === dutyForeignEventId),
+      terminal: dutyCounterEvents.find((e) => e.id === dutyTerminalEventId),
+      oldAck: dutyOldAck.status, foreignAck: dutyForeignAck.status }));
   const dutyReply = dutyRequest?.id
     ? await selfPost(`/api/self/clarifications/${dutyRequest.id}/reply`, dutySuccessorToken,
       { text: "Finish the bounded task already assigned." })
@@ -3728,10 +3811,12 @@ export async function run(ctx: Ctx): Promise<void> {
   check("S0 load heal: an anchor naming the Program's previous MAIN on the same slot is re-anchored on the live occupant at boot, with an audit row naming the lineage",
     !!s0Heal && JSON.stringify(s0Live) === JSON.stringify({ slot: mainSlot, openedAt: transferredBinding?.openedAt }),
     `audit=${JSON.stringify(s0Heal ?? null)} live=${JSON.stringify(s0Live)}`);
-  let dutyDelivered: { status?: string; receiverSlot?: number } | undefined;
+  let dutyDelivered: { id: string; status: string; receiverSlot: number;
+    receiverOpenedAt: number; receiverSessionId: string | null } | undefined;
   for (let i = 0; i < 100; i++) {
     dutyDelivered = ((await (await get("/api/events")).json()) as { events: { id: string;
-      status: string; receiverSlot: number }[] }).events.find((e) => e.id === dutyEventId);
+      status: string; receiverSlot: number; receiverOpenedAt: number;
+      receiverSessionId: string | null }[] }).events.find((e) => e.id === dutyEventId);
     if (dutyDelivered?.status === "delivered" || dutyDelivered?.status === "send-uncertain") break;
     await Bun.sleep(100);
   }
@@ -3743,7 +3828,9 @@ export async function run(ctx: Ctx): Promise<void> {
     ? await selfPost(`/api/self/events/${dutyEventId}/ack`, dutySuccessorToken, {})
     : new Response(null, { status: 599 });
   check("Standard succession duty: the successor reads and acknowledges its immediate FleetEvent",
-    dutyDelivered?.receiverSlot === mainSlot
+    dutyDelivered?.id === dutyEventId && dutyDelivered.receiverSlot === mainSlot
+      && dutyDelivered.receiverOpenedAt === successorState?.openedAt
+      && dutyDelivered.receiverSessionId === successorState?.sessionId
       && (dutyDelivered.status === "delivered" || dutyDelivered.status === "send-uncertain")
       && dutyRead.status === 200 && dutyReadText.includes(dutyEventId) && dutyAck.status === 200,
     JSON.stringify({ event: dutyDelivered ?? null, read: dutyRead.status, ack: dutyAck.status }));

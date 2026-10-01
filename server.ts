@@ -11507,11 +11507,15 @@ function clarificationReceiverFor(lane: Slot): ClarificationReceiver | { error: 
   return { error: NO_RECEIVER_EVIDENCE };
 }
 
-function standardSuccessionHolding(slotId: number): Program | undefined {
+function standardSuccessionHolding(slotId: number, includeBoundSuccessor = false): Program | undefined {
   return programs.find((p) => p.status === "active" && !isGameMaker(p)
-    && p.main?.slot === slotId && p.founding?.mode === "succession"
-    && p.founding.predecessor?.slot === slotId
-    && p.founding.predecessor.openedAt === p.main.openedAt);
+    && p.main?.slot === slotId && ((p.founding?.mode === "succession"
+      && p.founding.predecessor?.slot === slotId
+      && p.founding.predecessor.openedAt === p.main.openedAt)
+      || (includeBoundSuccessor && !p.founding && programBootstrapInflight.has(p.id)
+        && p.handover?.from.slot === slotId && p.handover.to.slot === slotId
+        && p.handover.to.openedAt === p.main.openedAt
+        && slotFrom(slotId)?.cwd && slotFrom(slotId)?.openedAt === p.main.openedAt)));
 }
 
 function refuseClarification(c: ClarificationRequest, reason: string, at = Date.now()): void {
@@ -22826,8 +22830,17 @@ async function tickWatches(): Promise<void> {
     for (const event of fleetEvents) {
       if (event.status !== "pending") continue;
       if (queuedFleetEvents.has(event.id)) continue;
-      const holding = event.receiverSlot === null ? undefined : standardSuccessionHolding(event.receiverSlot);
+      const probePath = WATCH_TICK_TEST_LATCH ? `${WATCH_TICK_TEST_LATCH}.succession` : null;
+      const probe = probePath && existsSync(probePath) ? readFileSync(probePath, "utf8").trim() : "";
+      const probeProgram = programs.find((p) => p.main?.slot === event.receiverSlot);
+      const probePhase = probeProgram?.founding?.mode === "succession" ? "before-bind"
+        : probeProgram && programBootstrapInflight.has(probeProgram.id) ? "bound-starting" : "settled";
+      try {
+      // A bound successor is still starting until the succession releases its reservation.
+      // Only that exact occupation inherits the hold; a dead or replaced endpoint cannot.
+      const holding = event.receiverSlot === null ? undefined : standardSuccessionHolding(event.receiverSlot, true);
       if (holding && event.receiverOpenedAt === holding.main?.openedAt
+        && (holding.founding?.mode === "succession" || fleetEventReceiver(event) !== null)
         && fleetEventDeliveryClass(event) === "sofort") continue;
       const s = pendingFleetEventReceiver(event);
       if (!s) {
@@ -22875,9 +22888,16 @@ async function tickWatches(): Promise<void> {
       // foreign-harness WORK-PROMPT policy — the text is fixed server-generated facts after an
       // explicit subscription; the waiver belongs HERE, to that act, not to any adapter. Kill-switch,
       // agent-liveness and busy/observed gates remain: a dead pane's bare shell executes text.
+      const receiverOpenedAt = s.openedAt;
+      const receiverSessionId = s.sessionId;
       const verdict = await canDeliver(s, {
         now: Date.now(), harness: false, quietHours: false, idleMs: event.receiverIdleSec * 1000,
       });
+      if (event.status !== "pending" || s.openedAt !== receiverOpenedAt
+        || s.sessionId !== receiverSessionId || pendingFleetEventReceiver(event) !== s) continue;
+      const holdingAfterProbe = standardSuccessionHolding(s.id, true);
+      if (holdingAfterProbe && event.receiverOpenedAt === holdingAfterProbe.main?.openedAt
+        && fleetEventDeliveryClass(event) === "sofort") continue;
       if (!verdict.ok) {
         // busy/kill-switch keep the event pending. Only a dead endpoint is terminal.
         if (verdict.gate !== "not-alive") continue;
@@ -22910,6 +22930,14 @@ async function tickWatches(): Promise<void> {
       const group = offered.get(s.id);
       if (group) group.events.push(event);
       else offered.set(s.id, { s, events: [event] });
+      } finally {
+        if (probePath && probe === `${event.id} ${probePhase}`)
+          writeFileSync(`${probePath}.observed`, JSON.stringify({ phase: probePhase,
+            id: event.id, status: event.status, receiverSlot: event.receiverSlot,
+            receiverOpenedAt: event.receiverOpenedAt, receiverSessionId: event.receiverSessionId,
+            attempts: event.attempts, deliveredAt: event.deliveredAt,
+            main: probeProgram?.main ?? null }), { mode: 0o600 });
+      }
     }
 
     // ONE WAKE-UP PER RECEIVER AND TICK (c14fcd75). Every event above passed its own gates; what is

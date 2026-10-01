@@ -1489,11 +1489,21 @@ export async function run(): Promise<void> {
         command(cwd, "config", "commit.gpgsign", "false");
       };
       const attach = async (repo: string, base: string) => {
-        const lane = await bodyOf<Lane>(await post("/api/lanes", { repo, base }));
+        const selected = await bodyOf<{ ok?: boolean; repo?: string; base?: string }>(
+          await post("/api/repo-base", { repo, branch: base }));
+        check("(LP.api fixture) the isolated repo-base door accepts the intended integration target",
+          selected.ok === true && selected.repo === repo && selected.base === base, JSON.stringify(selected));
+        const lane = await bodyOf<Lane>(await post("/api/lanes", { repo }));
         check("(LP.api fixture) the lane is attached to its explicit integration target", !!lane.cwd && !!lane.slot,
           JSON.stringify({ slot: lane.slot, error: lane.error }));
         lanes.push(lane);
-        return { lane, token: await selfTokenOf(lane.slot) };
+        const token = await selfTokenOf(lane.slot);
+        const sessions = await bodyOf<{ slots?: { id: number; worktree?: { base?: string } }[] }>(
+          await get("/api/sessions"));
+        const bound = sessions.slots?.find((s) => s.id === lane.slot)?.worktree?.base;
+        check("(LP.api fixture) the newly recorded lane target matches the isolated repo-base selection",
+          bound === base, JSON.stringify({ expected: base, recorded: bound }));
+        return { lane, token };
       };
       try {
         seed(fixture);
@@ -1528,11 +1538,24 @@ export async function run(): Promise<void> {
         for (const [token, proof] of [[m.token, mainGate.localProof], [n.token, nonMainGate.localProof]] as const) {
           await beatAsDaemon();
           const minted = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", token, proof?.offerBody));
-          check("(LP.api offer) posting the ready default mints exactly the gate's module selection and tree",
-            !!minted.offer?.id && JSON.stringify(minted.offer.modules) === JSON.stringify(proof?.modules)
-              && minted.offer.treeSha === proof?.preview?.diff?.treeSha, JSON.stringify(minted.offer));
-          const withdrawn = await selfPost("/api/self/suite-offer/withdraw", token);
-          check("(LP.api offer) fixture offer is withdrawn before the next preview", withdrawn.ok);
+          check("(LP.api offer) posting the ready default mints its exact modules with tree provenance still unknown",
+            !!minted.offer?.id && minted.offer.state === "open"
+              && JSON.stringify(minted.offer.modules) === JSON.stringify(proof?.modules)
+              && minted.offer.commitSha === null && minted.offer.treeSha === null && minted.offer.untracked === null
+              && minted.offer.result === null, JSON.stringify(minted.offer));
+          const claimed = await bodyOf<{ job?: ClaimedJob }>(await hpost("/api/helper/claim",
+            { jobId: minted.offer?.id, deviceId: DEVICE }));
+          check("(LP.api claim) the actual helper claim freezes the gate's exact commit, tree and modules",
+            claimed.job?.id === minted.offer?.id && claimed.job?.kind === "lane-suite"
+              && claimed.job.mainSha === proof?.preview?.diff?.headSha
+              && claimed.job.treeSha === proof?.preview?.diff?.treeSha && claimed.job.untracked === 0
+              && JSON.stringify(claimed.job.modules) === JSON.stringify(proof?.modules), JSON.stringify(claimed.job));
+          const withdrawn = await selfPost("/api/self/suite-offer/withdraw", token, { abandon: true });
+          const ended = await offerOf(token);
+          check("(LP.api offer) fixture claim is abandoned without inventing a green measurement",
+            withdrawn.ok && ended.offer?.id === minted.offer?.id && ended.offer?.state === "abandoned"
+              && ended.offer.result === null && ended.offer.treeSha === proof?.preview?.diff?.treeSha,
+            JSON.stringify(ended.offer));
         }
         await beat();
         const incapable = await gateOf(n.token);
@@ -1581,7 +1604,15 @@ export async function run(): Promise<void> {
           JSON.stringify(foreignGate.localProof));
       } finally {
         for (const lane of lanes) if (lane.slot) await post(`/api/slots/${lane.slot}/kill`, {});
-        for (const repo of [fixture, foreign]) rmSync(repo, { recursive: true, force: true });
+        for (const repo of [fixture, foreign]) {
+          if (existsSync(`${repo}/.git`)) {
+            const cleared = await bodyOf<{ ok?: boolean; repo?: string; base?: string | null }>(
+              await post("/api/repo-base", { repo, branch: "" }));
+            check("(LP.api fixture) only the scratch repo's integration configuration is cleared",
+              cleared.ok === true && cleared.repo === repo && cleared.base === null, JSON.stringify(cleared));
+          }
+          rmSync(repo, { recursive: true, force: true });
+        }
       }
     }
 

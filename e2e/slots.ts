@@ -3614,6 +3614,19 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       try { chmodSync(`${base}/locked`, 0o755); } catch { /* never made */ }
       rmSync(base, { recursive: true, force: true });
     }
+    // git's "not a git repository" is LOCALIZED (the helper's German git turned every plain folder
+    // into git:error, preview adcd5badccd9): the classifier must decide `none` without reading
+    // stderr. Counted over the CODE lines of cwdGitState only — a comment naming r.err is no read.
+    {
+      const srvSrc = readFileSync(`${ROOT}/server.ts`, "utf8");
+      const fn = srvSrc.slice(srvSrc.indexOf("async function cwdGitState("), srvSrc.indexOf("function cwdGitBody("));
+      const code = fn.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+      const noneLine = code.split("\n").find((l) => /return \{ kind: "none" \}/.test(l)) ?? "";
+      check("no-git: `none` is decided structurally (no `.git` at or above the folder), never from git's localized stderr",
+        fn.length > 0 && /!gitEntryAbove\(cwd\)/.test(noneLine) && !/r\.err/.test(noneLine)
+          && !/not a git repository/i.test(code.replace(/"not a git repository"/g, "")),
+        noneLine.trim() || "(no `none` return found in cwdGitState)");
+    }
     // the board reads the kind, not the status: git:none draws a quiet not-applicable line, every
     // other failure keeps the named failed-read section
     const boardSrc = readFileSync(`${ROOT}/src/board.ts`, "utf8");

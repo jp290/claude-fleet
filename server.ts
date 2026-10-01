@@ -6039,6 +6039,13 @@ async function repoRecentCommits(cwd: string, ref: string | null): Promise<Commi
 // lanes, and that is not-applicable, not a failure. A folder that is gone or cannot be read, and a
 // git that fails inside a real repo, stay errors — none of them may pass for "no git here".
 // `detail` is git's own first stderr line and can name a path, so it is for the OWNER's wire only.
+// any `.git` (file, dir or dangling link) at `dir` or above — lstat, so a dangling link still counts
+function gitEntryAbove(dir: string): boolean {
+  for (let d = dir; ; d = dirname(d)) {
+    try { lstatSync(`${d}/.git`); return true; } catch { /* none at this level */ }
+    if (dirname(d) === d) return false;
+  }
+}
 type CwdGit = { kind: "none" } | { kind: "gone" } | { kind: "unreadable" } | { kind: "error"; detail: string };
 async function cwdGitState(cwd: string): Promise<CwdGit> {
   try {
@@ -6052,10 +6059,12 @@ async function cwdGitState(cwd: string): Promise<CwdGit> {
     return { kind: "unreadable" };
   }
   const r = await gitRead(cwd, "rev-parse", "--git-dir");
-  // DISCOVERY found nothing — "not a git repository (or any of the parent directories)" / "(or any
-  // parent up to mount point …)". A `.git` file pointing nowhere (a worktree whose repo moved) says
-  // "not a git repository: <path>" instead: that is a broken repo, an error, never a plain folder.
-  if (r.code !== 0 && /not a git repository \(or any /i.test(r.err)) return { kind: "none" };
+  // "No repo here" is decided STRUCTURALLY, never from git's stderr: that sentence is localized
+  // (measured on the helper: "Schwerwiegend: Kein Git-Repository …" matched no English pattern and
+  // turned every plain folder into an error). A failed read with no `.git` entry in this folder or
+  // any parent is a plain folder; with one (a `.git` file pointing nowhere, a worktree whose repo
+  // moved, a damaged repo) it is a broken repo — an error, never "no git here".
+  if (r.code !== 0 && !gitEntryAbove(cwd)) return { kind: "none" };
   // rev-parse found a repo (the status read failed for another reason), or failed some other way
   return { kind: "error", detail: (r.code === 0 ? "git status failed" : r.err.split("\n")[0]) || `git exited ${r.code}` };
 }

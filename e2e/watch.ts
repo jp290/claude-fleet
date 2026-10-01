@@ -2464,14 +2464,62 @@ export async function run(): Promise<void> {
       rmSync(latch, { force: true });
       rmSync(`${latch}.reached`, { force: true });
       rmSync(`${latch}.release`, { force: true });
-      await restartSrv(fixtureEnv);
+      const { BoundAgentError } = await import("./harness");
+      const identityBefore = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number }[];
+      };
+      const identityBeforeOccupant = identityBefore.slots.find((s) => s.id === slot);
+      const identityBeforePane = await tmuxOut("display-message", "-p", "-t", `=s${slot}:`, "#{pane_id}");
+      const identityBeforeAgain = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number }[];
+      };
+      const identityBinding = { slot, openedAt: identityBeforeOccupant?.openedAt ?? 0,
+        pane: identityBeforePane.out.trim() };
+      const identityBeforeBound = identityBinding.openedAt > 0 && identityBeforePane.code === 0
+        && /^%\d+$/.test(identityBinding.pane)
+        && identityBeforeAgain.slots.find((s) => s.id === slot)?.openedAt === identityBinding.openedAt;
+      check("owner send fixture: identity is bound before the readiness restart", identityBeforeBound,
+        JSON.stringify({ binding: identityBinding, paneCode: identityBeforePane.code }));
+      if (!identityBeforeBound) throw new Error("owner send fixture: readiness restart has no bound occupant");
+      const identityObserved: import("./harness").BoundAgentObservation[] = [];
+      const identityTickMs = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_000) | 0);
+      const identityReadiness: import("./harness").BoundAgentWait = {
+        binding: identityBinding, timeoutMs: identityTickMs * 3 + 1500, stepMs: Math.min(100, identityTickMs),
+        observe: (actual) => { identityObserved.push(actual); },
+      };
+      const identityRestartLabel = `restart #${++gateSeq}`;
+      await settleForGate(identityRestartLabel);
+      const identityLive = await gateSnapshot();
+      try {
+        await restartSrvRaw(fixtureEnv, identityReadiness);
+      } catch (error) {
+        check("owner send fixture: bound identity readiness completes without a probe refusal", false,
+          error instanceof BoundAgentError ? `${error.reason}; ${error.actual}`
+            : error instanceof UntilTimeout ? `${error.what}; ${error.last}` : "readiness probe failed without a bounded reason");
+        throw error;
+      } finally {
+        observeDebts.push({ label: identityRestartLabel, pre: identityLive.size ? identityLive : stopSnapshot ?? identityLive });
+        stopSnapshot = null;
+      }
+      const identityReady = identityObserved.at(-1);
+      const identityReadinessProven = identityReady?.agent === "alive" && identityObserved.every((s) =>
+        s.slot === identityBinding.slot && s.openedAt === identityBinding.openedAt && s.pane === identityBinding.pane);
+      check("owner send fixture: restart proves bound agent readiness instead of HTTP only", identityReadinessProven,
+        JSON.stringify({ binding: identityBinding, reads: identityObserved.length, last: identityReady ?? null }));
+      if (!identityReadinessProven) throw new Error("owner send fixture: HTTP-only restart did not prove bound agent readiness");
       const identitySnapshot = await (await get("/api/sessions")).json() as {
         slots: { id: number; openedAt: number; agent: string }[];
       };
       const identityOccupant = identitySnapshot.slots.find((s) => s.id === slot);
-      const identityPane = await tmuxOut("display-message", "-p", "-t", `s${slot}`, "#{pane_id}");
+      const identityPane = await tmuxOut("display-message", "-p", "-t", `=s${slot}:`, "#{pane_id}");
+      const identityAfter = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number; agent: string }[];
+      };
+      const identityAfterOccupant = identityAfter.slots.find((s) => s.id === slot);
       const identityBound = typeof identityOccupant?.openedAt === "number" && identityOccupant.openedAt > 0
         && identityOccupant.agent === "alive" && identityPane.code === 0 && /^%\d+$/.test(identityPane.out.trim())
+        && identityOccupant.openedAt === identityBinding.openedAt && identityPane.out.trim() === identityBinding.pane
+        && identityAfterOccupant?.openedAt === identityBinding.openedAt && identityAfterOccupant.agent === "alive"
         && stateText() === "";
       check("owner send fixture: identity is freshly observed after resetting the one-shot latch", identityBound,
         JSON.stringify({ openedAt: identityOccupant?.openedAt, agent: identityOccupant?.agent,

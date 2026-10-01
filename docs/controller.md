@@ -214,3 +214,25 @@ wie `handleSelfSucceed` bestimmt: gebundene Standard-Program-MAIN → offene Pfl
 dann `succeed` mit optionalem `carry`, kein HANDOFF-Commit · Game-Maker → Checkpoint committen,
 `succeed` ohne `carry` · ungebunden, mehrdeutig gebunden, Supervisor → Pflichten stehen lassen (sie gehen
 per ID in den Linien-Record), `succeed` mit optionalem `intent` ODER `pointer`. Der Hinweis ist ein Server-Prädikat, nicht das Gate; das Gate bleibt `handleSelfSucceed`.
+
+## Zwei Eigenarten, die eine Orchestratorin bezahlt hat (gemessen 2026-10-02)
+
+**Die Nachfolge-Schwelle ist die env, nicht eine Zahl auf der Karte.** Die Orchestratorin Slot 9
+übergab am 2026-10-02 ~00:50 bei gemessenen 30 %, weil ihre Rollenkarte („Entscheidung bei 25 %
+gemessen, keine neue Tiefenarbeit ab 30 %") das so sagte. `.env` sagt `FLEET_MIGRATE_PCT='40'`, und
+der Owner fand die frühe Nachfolge „[Zitat entfernt]“. Seit der Owner-Promotion am selben Tag gilt: Die
+Schwelle ist `FLEET_MIGRATE_PCT` (MAINs und Orchestratorin) bzw. `FLEET_LANE_MIGRATE_PCT` (Lanes).
+Darunter wird nicht übergeben, über 45 % wird die Nachfolge aktiv gefahren. Die Zahl liest man aus
+`.env` und den eigenen Füllstand misst man mit `./ctl.sh ctx`.
+
+**Fünf armierte Watches heißen: kein Report kann dich erreichen.** `server.ts#slotDeliveryBudget`
+rechnet `free = cap − offene Events − armierte Watches`, und `cap` ist
+`FLEET_EVENT_MAX_OPEN_PER_SLOT = WATCH_MAX_PER_SLOT = 5`. Wer fünf Watches armiert (gemessen: vier
+Lane-Watches + eine Merge-Watch nach einer Nachfolge), hat `free = 0`. Ein `fleet-report` einer
+handgegründeten Lane an diese Session bekommt dann 409 `fleet-report receiver has no FleetEvent
+delivery budget` — obwohl die Lane-Watch auf genau diese Lane der Empfängerbeleg ist, den der Report
+braucht. Eine Route zum Entfernen einer Watch gibt es nicht; eine Watch gibt ihr Budget erst frei,
+wenn sie feuert. Regel daraus: **höchstens vier Watches armieren, einen Platz für Zustellungen frei
+halten**, und Merge-/Audit-Ausgänge lieber über einen Hintergrund-Wächter auf
+`GET /api/slots/:id/merge` (`running:false`) lesen als über eine fünfte Watch. Offene Events mit
+`./ctl.sh events --ack` quittieren, sonst halten auch sie Budget.

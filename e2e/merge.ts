@@ -212,6 +212,7 @@ async function preserveMergeHistory(): Promise<void> {
   const gateLog = `${ROOT}/preserve-merge-gates`;
   const bin = `${ROOT}/preserve-merge-bin`;
   const errorMode = `${ROOT}/preserve-merge-error`;
+  const errorHit = `${ROOT}/preserve-merge-error-hit`;
   const realGit = spawnSync("which", ["git"]).stdout.toString().trim();
   const git = (cwd: string, ...args: string[]): string => {
     const r = spawnSync(realGit, ["-C", cwd, ...args]);
@@ -244,7 +245,9 @@ echo 'ALL PASS'
   writeFileSync(`${bin}/git`, `#!/bin/sh
 if [ -f '${errorMode}' ]; then
   case "$*" in
-    *"merge-base --is-ancestor "*" HEAD") echo 'controlled ancestry read failure' >&2; exit 128 ;;
+    *"merge-base --is-ancestor "*" HEAD")
+      printf '%s\\n' "$*" > '${errorHit}'
+      echo 'controlled ancestry read failure' >&2; exit 128 ;;
   esac
 fi
 exec '${realGit}' "$@"
@@ -319,18 +322,40 @@ exec '${realGit}' "$@"
       git(repo, "rev-parse", "main") === primary, git(repo, "rev-parse", "main"));
     if (!verdict.gone) await post(`/api/slots/${lane.slot}/kill`, {});
     lane = await open();
+    const beforeErrorBase = git(repo, "rev-parse", "overhaul");
+    writeFileSync(`${lane.cwd}/ancestry-error.txt`, "unintegrated candidate\n");
+    git(lane.cwd, "add", "ancestry-error.txt");
+    git(lane.cwd, "commit", "-m", "candidate for ancestry read failure");
     const beforeError = git(lane.cwd, "rev-parse", "HEAD");
+    const beforeErrorTree = git(lane.cwd, "rev-parse", "HEAD^{tree}");
+    const errorCandidateOk = beforeError !== beforeErrorBase
+      && git(lane.cwd, "rev-list", "--count", "overhaul..HEAD") === "1"
+      && git(lane.cwd, "status", "--porcelain") === ""
+      && git(repo, "rev-parse", "overhaul") === beforeErrorBase;
+    check("merge preservation error setup: a clean ahead candidate leaves the integration ref unchanged",
+      errorCandidateOk, JSON.stringify({ beforeError, beforeErrorBase, beforeErrorTree }));
+    if (!errorCandidateOk) throw new Error("merge preservation error setup: no clean unintegrated candidate");
     const beforeGates = gates();
     writeFileSync(errorMode, "error\n");
     await settleForMerge(lane.slot);
-    await post(`/api/slots/${lane.slot}/merge`, {});
+    const errorRequest = await post(`/api/slots/${lane.slot}/merge`, {});
+    const errorResponse = await errorRequest.json() as { running?: boolean };
+    const errorStarted = errorRequest.ok && errorResponse.running === true;
+    check("merge preservation error setup: the route actually accepts a merge job", errorStarted, JSON.stringify(errorResponse));
+    if (!errorStarted) throw new Error("merge preservation error setup: the prepass was not started");
     const error = await wait(lane.slot, true);
     rmSync(errorMode);
+    const hit = existsSync(errorHit) ? readFileSync(errorHit, "utf8").trim() : "";
+    const injected = hit === `-C ${lane.cwd} merge-base --is-ancestor ${beforeErrorBase} HEAD`;
+    check("merge preservation error setup: the server prepass consumes the controlled ancestry exit 128", injected, hit);
+    if (!injected) throw new Error("merge preservation error setup: controlled ancestry error was not injected");
     check("merge preservation: ancestry read error halts without a gate, resolver or ref change",
       error.last?.status === "error" && error.last.landed === false
         && error.last.detail.includes("ancestry of the integration ref overhaul could not be read")
         && !error.last.resolverRuns?.length && gates() === beforeGates
-        && git(lane.cwd, "rev-parse", "HEAD") === beforeError && git(repo, "rev-parse", "overhaul") === beforeError,
+        && git(lane.cwd, "rev-parse", "HEAD") === beforeError
+        && git(lane.cwd, "rev-parse", "HEAD^{tree}") === beforeErrorTree
+        && git(repo, "rev-parse", "overhaul") === beforeErrorBase,
       JSON.stringify(error));
     const gd = git(lane.cwd, "rev-parse", "--absolute-git-dir");
     writeFileSync(`${gd}/MERGE_HEAD`, `${side}\n`);
@@ -338,7 +363,7 @@ exec '${realGit}' "$@"
     const opBody = await op.json() as { status?: string; detail?: string };
     check("merge preservation: an existing Git operation cannot become a clean land",
       opBody.status === "blocked" && opBody.detail?.includes("in progress") === true
-        && gates() === beforeGates && git(repo, "rev-parse", "overhaul") === beforeError,
+        && gates() === beforeGates && git(repo, "rev-parse", "overhaul") === beforeErrorBase,
       JSON.stringify(opBody));
     rmSync(`${gd}/MERGE_HEAD`);
     writeFileSync(`${lane.cwd}/code.txt`, "divergent lane\n");

@@ -1965,6 +1965,20 @@
   .fdpin input { padding: 6px 8px; border-radius: var(--r1); font: 400 var(--chat-code-fs)/1.3 var(--chat-mono);
     color: var(--chat-ink); background: var(--chat-surface); border: 1px solid var(--chat-edge); }
   .fdpin input:focus { outline: none; border-color: var(--chat-mute); }
+  #shell-found.fdproved .shelltools, #shell-found.fdproved .shelllist,
+  #shell-found.fdproved .shellback { display: none; }
+  #shell-found.fdproved .shellbody { display: block; overflow-y: auto; }
+  #shell-found.fdproved .shelldetail { display: block; padding: 16px; }
+  #shell-found.fdproved .fdgo { align-self: flex-start; }
+  .fdproofstatus { margin-bottom: 16px; font-weight: 500; }
+  .fdproofrow { display: grid; grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 8px 0; }
+  .fdproofrow > * { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .fdproofkey, .fdproofhead, .fdproofnote { color: var(--chat-mute); font: 400 var(--chat-ui-fs)/1.4 var(--chat-sans); }
+  .fdproofhead { font-weight: 500; }
+  .fdproof .mono { font-family: var(--chat-mono); font-size: var(--chat-code-fs); }
+  .fdproofnote { display: block; margin-top: 4px; }
+  .fdproof .warn, .fdproofstatus.warn { color: var(--amber); }
+  .fdreceiptpack + .fdreceiptpack { margin-top: 12px; }
   /* end of THE FOUNDING WINDOW */
   .pkbtns { display: flex; justify-content: flex-end; gap: 8px; }
   .pkbtns button { padding: 9px 18px; border-radius: 9px; border: 1px solid var(--line); background: var(--raised);
@@ -2320,6 +2334,11 @@
     /* the founding window on a phone (G0.7): the shell's fullscreen, the list first and the chosen
        place pushed over it; touch heights 40 px, fields 16 px (no iOS zoom), the button full width */
     #shell-found .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh); border-radius: 0; }
+    #shell-found.fdproved .fdgo { align-self: stretch; flex: none; }
+    .fdproofrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+    .fdproofheadrow > span:first-child { display: none; }
+    .fdproofkey { grid-column: 1 / -1; }
+    #shell-found.fdproved .shelldetail { padding: 12px; }
     .fdtab, .fdrow, .fdopt, .fdother, .fdup, .fdpack, .fdprow, .fdpick, .fdpackfold { min-height: 40px; }
     .fdfind, .fdpin input { font-size: 16px; }
     #shell-found .shellfoot { flex-wrap: wrap; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }

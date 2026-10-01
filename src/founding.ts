@@ -24,7 +24,7 @@
 import {
   agentHarnesses, api, baseName, containerDefaults, defaultModel, el, fleet, fmtTs, harnesses,
   isMobile, laneBandNames, loadHarnesses, modelNotice, post, revealStartedSlot, setDrawer, SKEW_NOTE,
-  stacksOf, startSession, startWorktree, type DirInfoResp, type HarnessInfo, type SlotInfo, type SpawnBody,
+  showSlot, stacksOf, startSession, startWorktree, type StartResult, type DirInfoResp, type HarnessInfo, type SlotInfo, type SpawnBody,
 } from "./client";
 import { matchTree } from "./filetree";
 import { icon } from "./icons";
@@ -89,6 +89,7 @@ interface State {
   findTimer: ReturnType<typeof setTimeout> | null;
   error: string | null;                 // a refused founding, said next to the button
   busy: boolean;
+  proof: StartProof | null;
   pop: Pop | null;
   restore: HTMLElement | null;
   teardown: () => void;
@@ -196,7 +197,7 @@ export function openPicker(slotId: number) {
     packs: new Set(), omitOpen: false, packOpen: new Set(), orphan: null,
     harness: null, model: "", effort: "", container: "", containerContext: "",
     dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
-    findTimer: null, error: null, busy: false, pop: null, restore, teardown: () => {},
+    findTimer: null, error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
   };
   // the option popovers (G4.1) own Escape, the arrows and Enter while one is open. WINDOW capture
   // runs before the shell's document-capture handler, so an Escape here closes the popover and
@@ -579,6 +580,7 @@ function validPlan(j: unknown): j is Plan {
 
 function renderDetail() {
   const s = S;
+  if (s?.proof) { renderProof(); return; }
   if (!s) return;
   const d = s.shell.detail;
   d.replaceChildren();
@@ -869,6 +871,7 @@ function modelShown(h: HarnessInfo): string {
 function renderFoot() {
   const s = S;
   if (!s) return;
+  if (s.proof) { renderProof(); return; }
   const foot = s.shell.foot;
   foot.replaceChildren();
   const opts = el("div", "fdopts");
@@ -929,17 +932,20 @@ function renderFoot() {
 
 async function start() {
   const s = S;
-  if (!s || s.busy || blocker() !== null || !s.place) return;
+  if (!s || s.busy || s.proof || blocker() !== null || !s.place) return;
   s.error = null;
   const onError = (msg: string) => { if (S === s) { s.error = msg; renderFoot(); } };
-  // a founding WITH packs answers only after the door's boot grace plus readiness — the button
-  // says so instead of sitting silent; packsDelivered:false comes back as s.error, never as success
+  // The door answers after delivery; keep its refusal beside the resulting occupant.
   s.busy = true;
   renderFoot();
   try {
     const body = foundingBody();
+    const before = new Map(fleet.map((row) => [row.id, row.openedAt]));
+    const requestedRole = s.role;
+    const requestedPlace = s.role === "wt-old" ? s.orphan! : s.place;
+    let result: StartResult;
     if (s.role === "wt-new") {
-      await startWorktree(s.place, onError, { slot: s.slot, body });
+      result = await startWorktree(s.place, onError, { slot: s.slot, body });
     } else if (s.role === "wt-old") {
       // the clicked place: the lane is seated exactly here, or refused naming who sits there. An
       // attach never carries packs — the door refuses a packs list for a worktree it did not found.
@@ -953,11 +959,151 @@ async function start() {
       const j = (await res.json().catch(() => ({}))) as { slot?: number };
       const shown = j.slot ?? s.slot;
       if (!await revealStartedSlot(shown)) { onError(`Die Lane sitzt, aber Slot ${shown} erschien nicht binnen 5 Sekunden.`); return; }
-      closeFounding();
+      result = { ok: true, slot: shown };
     } else {
-      await startSession(s.place, roleLabel(s.role), onError, { slot: s.slot, body });
+      result = await startSession(s.place, roleLabel(s.role), onError, { slot: s.slot, body });
     }
+    if (result.ok && S === s) await captureProof(s, body, before.get(result.slot), result, requestedRole, requestedPlace);
   } finally {
     if (S === s) { s.busy = false; renderFoot(); }
   }
+}
+
+interface ReceiptPack {
+  id: string; useWhen?: string;
+  anchors: { path: string; anchor: string }[] | { privateSourceId: string };
+  sourceHash?: string; private?: { verdict: string; version: number | null };
+}
+interface StartProof {
+  result: Extract<StartResult, { ok: true }>;
+  body: SpawnBody; role: FoundRole; place: string;
+  occupant: SlotInfo | null;
+  receipt: { slot: number; at: number; selected: ReceiptPack[] } | null;
+  receiptCount: number; receiptError: string | null; stale: boolean;
+}
+
+async function captureProof(s: State, body: SpawnBody, before: number | undefined, result: Extract<StartResult, { ok: true }>, role: FoundRole, place: string) {
+  const row = fleet.find((r) => r.id === result.slot);
+  const occupant = row?.cwd && Number.isFinite(row.openedAt) && row.openedAt! > 0 && row.openedAt !== before
+    ? structuredClone(row) : null;
+  const proof: StartProof = { result, body, role, place, occupant,
+    receipt: null, receiptCount: 0, receiptError: null, stale: false };
+  s.proof = proof;
+  closePop(false);
+  s.shell.root.classList.add("fdproved");
+  s.shell.setRows([]);
+  s.shell.tools.replaceChildren();
+  s.shell.list.replaceChildren();
+  s.shell.detail.replaceChildren();
+  const watch = new MutationObserver(() => {
+    if (!proof.occupant || proof.stale) return;
+    const current = fleet.find((r) => r.id === result.slot);
+    if (!current?.cwd || current.openedAt !== proof.occupant.openedAt) {
+      proof.stale = true;
+      if (S === s) renderProof();
+    }
+  });
+  const slots = document.getElementById("slots");
+  if (slots) watch.observe(slots, { childList: true, subtree: true });
+  const teardown = s.teardown;
+  s.teardown = () => { watch.disconnect(); teardown(); };
+  renderProof();
+  if (body.packs?.length || role === "orch") {
+    try {
+      const response = await api("/api/context-receipts");
+      if (!response.ok) throw new Error(`Der Server antwortete ${response.status}.`);
+      const data: unknown = await response.json();
+      if (!data || typeof data !== "object" || !("receipts" in data) || !Array.isArray(data.receipts))
+        throw new Error("Receipt-Antwort nicht lesbar.");
+      const current = fleet.find((r) => r.id === result.slot);
+      if (occupant && (!current?.cwd || current.openedAt !== occupant.openedAt)) proof.stale = true;
+      if (occupant && !proof.stale) {
+        const matching = data.receipts.filter((r): r is NonNullable<StartProof["receipt"]> =>
+          !!r && typeof r === "object" && r.slot === result.slot && Number.isFinite(r.at)
+          && r.at >= occupant.openedAt! && Array.isArray(r.selected));
+        matching.sort((a, b) => b.at - a.at);
+        proof.receipt = matching[0] ?? null;
+        proof.receiptCount = matching.length;
+      }
+    } catch (error) { proof.receiptError = error instanceof Error ? error.message : String(error); }
+    if (S === s) renderProof();
+  }
+}
+
+function renderProof() {
+  const s = S;
+  if (!s?.proof) return;
+  const p = s.proof, row = p.occupant;
+  const detail = s.shell.detail;
+  detail.replaceChildren();
+  const status = p.stale ? "Veraltet — dieser Slot wurde neu belegt."
+    : !row ? "Kein neuer Occupant — kein wirksamer Startbeleg."
+    : `Slot ${p.result.slot} · geöffnet ${new Date(row.openedAt!).toLocaleTimeString("de-DE")}`;
+  detail.append(el("div", `fdproofstatus${p.stale || !row ? " warn" : ""}`, status));
+  const table = el("div", "fdproof");
+  table.setAttribute("role", "table");
+  const header = el("div", "fdproofrow fdproofheadrow");
+  header.append(el("span", ""), el("span", "fdproofhead", "angefragt"), el("span", "fdproofhead", "am Slot zurückgelesen"));
+  table.append(header);
+  const field = (name: string, requested: string | undefined, observed: string | undefined, mono = false, compare = true, comparedValue = observed) => {
+    const r = el("div", "fdproofrow"); r.dataset.field = name;
+    const missing = observed === undefined;
+    const differs = compare && requested !== undefined && !missing && requested !== comparedValue;
+    r.dataset.state = missing ? "missing" : differs ? "difference" : "same";
+    const actual = el("div", `fdactual${missing || differs ? " warn" : ""}${mono ? " mono" : ""}`,
+      observed ?? "nicht gemeldet");
+    if (differs) actual.append(el("span", "fdproofnote", "Abweichung"));
+    else if (missing) actual.append(el("span", "fdproofnote", "Beleg fehlt"));
+    else if (requested === undefined && compare) actual.append(el("span", "fdproofnote", "vom Adapter gewählt"));
+    r.append(el("span", "fdproofkey", name), el("div", `fdrequested${mono ? " mono" : ""}`, requested ?? "ohne Angabe"), actual);
+    table.append(r);
+    return actual;
+  };
+  const requestedRole = isLane(p.role) ? "Lane" : p.role === "orch" ? "Orchestrator" : p.role === "steward" ? "Steward" : "Session";
+  const observedRole = !row ? undefined : row.worktree ? "Lane" : /\borchestrator\b/i.test(row.label ?? "") ? "Orchestrator"
+    : row.label === "⚙ steward" ? "Steward" : "Session";
+  field("Rolle", requestedRole, observedRole);
+  const place = field("Ort", p.place, row?.cwd ?? undefined, true, true, p.role === "wt-new" ? row?.worktree?.repo ?? row?.cwd ?? undefined : row?.cwd ?? undefined);
+  if (row?.worktree) place.append(el("div", "mono", `Branch: ${row.worktree.branch ?? "nicht gemeldet"}`));
+  field("Agent", p.body.harness, row ? row.harness ?? harnesses.find((h) => h.default)?.id : undefined, true);
+  field("Modell", p.body.model, row?.model ?? undefined, true);
+  field("Effort", p.body.effort, row?.effort, true);
+  if (p.body.container || row?.container) field("Container", p.body.container, row?.container, true);
+  if (p.body.containerContext || row?.containerContext) field("Docker-Daemon", p.body.containerContext, row?.containerContext, true);
+  const needsReceipt = !!p.body.packs?.length || p.role === "orch";
+  const packCell = field("Packs", p.body.packs?.join("\n") ?? "keine",
+    p.result.packsDelivered === false ? `nicht zugestellt: ${p.result.reason ?? "the packs were not delivered"}`
+      : !needsReceipt ? "keine" : p.receipt ? p.receipt.selected.map((pack) => pack.id).join("\n") : undefined, true, false);
+  if (p.result.packsDelivered === false) packCell.classList.add("warn");
+  else if (p.receipt) {
+    packCell.replaceChildren();
+    for (const pack of p.receipt.selected) {
+      const item = el("div", "fdreceiptpack");
+      item.append(el("div", "mono", pack.id));
+      if (pack.useWhen) item.append(el("div", "fdproofnote", pack.useWhen));
+      const anchors = Array.isArray(pack.anchors) ? pack.anchors.map((a) => `${a.path} | ${a.anchor}`)
+        : pack.anchors?.privateSourceId ? [pack.anchors.privateSourceId] : [];
+      for (const anchor of anchors) item.append(el("div", "mono", anchor));
+      item.append(el("div", "mono", pack.sourceHash ? `Hash: ${pack.sourceHash.slice(0, 12)}` : "Hash: nicht gemeldet"));
+      if (!anchors.length || !pack.sourceHash) item.classList.add("warn");
+      if (pack.private) item.append(el("div", "fdproofnote", `Urteil: ${pack.private.verdict} · Fassung: ${pack.private.version ?? "nicht gemeldet"}`));
+      packCell.append(item);
+    }
+    const missing = p.body.packs?.filter((id) => !p.receipt!.selected.some((pack) => pack.id === id));
+    if (missing?.length) { packCell.append(el("div", "warn", `Beleg fehlt: ${missing.join(", ")}`)); packCell.classList.add("warn"); }
+    const extra = p.body.packs ? p.receipt.selected.filter((pack) => !p.body.packs!.includes(pack.id)) : [];
+    if (extra.length) { packCell.append(el("div", "warn", `Abweichung: zusätzliche Packs ${extra.map((pack) => pack.id).join(", ")}`)); packCell.classList.add("warn"); }
+    if (p.receiptCount > 1) packCell.append(el("div", "fdproofnote", `${p.receiptCount} Receipts — jüngstes verwendet.`));
+  }
+  if (p.receiptError) packCell.append(el("div", "fdproofnote", p.receiptError));
+  detail.append(table);
+  s.shell.foot.replaceChildren();
+  const go = btn("fdgo", "Zur Session");
+  go.disabled = p.stale || !row;
+  go.onclick = () => {
+    const current = fleet.find((r) => r.id === p.result.slot);
+    if (!row || current?.openedAt !== row.openedAt || !current?.cwd) { p.stale = true; renderProof(); return; }
+    closeFounding(); showSlot(p.result.slot);
+  };
+  s.shell.foot.append(go);
 }

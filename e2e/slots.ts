@@ -2030,8 +2030,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("founding window: a founding with packs waits visibly, and packsDelivered:false is said next to the button, never closed over as success",
     foundCode.includes('"Packs werden zugestellt …"') && foundCode.includes("go.disabled = s.busy || blocker() !== null;")
     && ssSrc.includes("if (j.packsDelivered === false)") && swSrc.includes("if (j.packsDelivered === false)")
-    && ssSrc.indexOf("packsDelivered === false") < ssSrc.indexOf("closeFounding();")
-    && swSrc.indexOf("packsDelivered === false") < swSrc.indexOf("closeFounding();")
+    && !ssSrc.includes("closeFounding();") && !swSrc.includes("closeFounding();")
+    && ssSrc.includes("return { ok: true, slot,") && swSrc.includes("return { ok: true, slot,")
     && ssSrc.includes("...via.body });") && swSrc.includes("const { slot, body } = via;"),
     "start in src/founding.ts + startSession/startWorktree in src/client.ts");
   check("founding window: the keyboard — Enter on the chosen place starts, every control keeps its own Enter, a popover owns Esc before the window",
@@ -2057,6 +2057,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && result.explicit[0].body.cwd === "/fixture/repo"
         && JSON.stringify(result.selected) === '["fixture-alpha"]'
         && JSON.stringify(result.explicit[0].body.packs) === JSON.stringify(result.selected), JSON.stringify(result.explicit));
+      for (const [claim, ok] of Object.entries(result.g2))
+        check(`founding G2 DOM ${atWidth}: ${claim}`, ok, claim);
       for (const [claim, ok] of Object.entries(result.g1))
         check(`founding G1 DOM ${atWidth}: ${claim}`, ok, claim);
       check(`founding DOM ${atWidth} — should-reject: Escape closes without a start request`,
@@ -4579,14 +4581,18 @@ interface FoundingFocusDomResult {
   explicit: { url: string; body: { cwd: string; packs?: string[] } }[];
   cancel: { closed: boolean; requests: number };
   g1: Record<string, boolean>;
+  g2: Record<string, boolean>;
+  receiptMetrics: { bytes: number; durationMs: number }[];
 }
 
 export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string): Promise<FoundingFocusDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-founding-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
+  const clientSource = readFileSync(resolve(sourceRoot, "src/client.ts"), "utf8");
+  const startFunctions = clientSource.slice(clientSource.indexOf("export type StartResult ="), clientSource.indexOf("// --- sidebar ---"));
   const stub = `
-    export const fleet = [{ id: 1, cwd: '/fixture/repo', label: 'Fixture' }];
-    export const harnesses = [{ id: 'codex', default: true, supports: { model: true, effort: true }, models: ['fixture-model'], effortLevels: ['high'] }, { id: 'other', supports: { model: true, effort: true }, models: ['other-model'], effortLevels: ['high'] }];
+    export let fleet = [{ id: 1, cwd: '/fixture/repo', label: 'Fixture' }];
+    export const harnesses = [{ id: 'codex', default: true, supports: { model: true, effort: true, container: true }, models: ['fixture-model'], effortLevels: ['high'] }, { id: 'other', supports: { model: true, effort: true }, models: ['other-model'], effortLevels: ['high'] }];
     export const defaultModel = '', containerDefaults = null, SKEW_NOTE = 'fixture skew';
     export const agentHarnesses = () => harnesses;
     export const isMobile = () => matchMedia('(max-width: 700px)').matches;
@@ -4597,7 +4603,27 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
     export const fmtTs = () => '', modelNotice = () => '';
     export const setDrawer = () => {}, loadHarnesses = async () => {};
     export const api = async path => {
-      if (path.startsWith('/api/dirinfo?')) return Response.json({ git: true, branch: 'fixture', dirty: 0 });
+      if (path.startsWith('/api/dirinfo?')) return Response.json({ git: true, branch: 'fixture', dirty: 0, orphans: [{path:'/fixture/lane', branch:'fleet/continued'}] });
+      if (path === '/api/sessions') return Response.json({ slots: window.fixtureSlots });
+      if (path === '/api/context-receipts') {
+        window.fixtureReceiptReads++;
+        if (window.fixtureReceiptHold) await new Promise(resolve => {window.fixtureReceiptRelease=resolve;});
+        const begun = performance.now();
+        const pack = { id: 'fixture-alpha', useWhen: 'Receipt purpose', anchors: [{ path: 'AGENTS.md', anchor: '## Portable operating contract' }], sourceHash: '1234567890abcdef' };
+        const receipt = { slot: 2, at: 2001, repo: '/fixture/repo', head:'fixture-head', branch:'fixture', harness:'codex', model:'fixture-model', effort:'high', selected:[pack] };
+        const mode = window.fixtureMode;
+        const receipts = mode === 'missing' ? [{...receipt, at:999}, {...receipt, slot:3}]
+          : mode === 'multiple' ? [receipt, {...receipt, at:2002, selected:[{...pack, sourceHash:'abcdef1234567890'}]}]
+          : mode === 'private' ? [{...receipt, selected:[{...pack, anchors:{privateSourceId:'k-private'}, private:{verdict:'match',version:2}}]}] : [receipt];
+        // Representative unfiltered ledger: irrelevant old occupants consume bytes but prove nothing.
+        receipts.push(...Array.from({length:10000}, (_, i) => ({...receipt, slot:3, at:i, head:'h'.repeat(40)})));
+        const text = JSON.stringify({receipts,total:receipts.length,malformed:0});
+        const response = new Response(text, {headers:{'content-type':'application/json'}});
+        const readJson=response.json.bind(response);
+        response.json=async () => {const data=await readJson();
+          window.fixtureReceiptMetrics.push({bytes:new TextEncoder().encode(text).length,durationMs:performance.now()-begun});return data;};
+        return response;
+      }
       if (path.startsWith('/api/founding-plan?')) {
         window.fixturePlanReads++;
         if (window.fixtureHold) await new Promise(resolve => window.fixtureReleases.push(resolve));
@@ -4611,20 +4637,44 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       }
       throw new Error('unexpected fixture API: ' + path);
     };
-    export const post = async (url, body) => { window.fixtureRequests.push({ url, body }); return Response.json({}); };
-    export const startSession = async (cwd, label, onError, via) => post('/api/slots/' + via.slot + '/open', { cwd, ...(label ? { label } : {}), ...via.body });
-    export const startWorktree = async () => { throw new Error('unexpected worktree spawn'); };
-    export const revealStartedSlot = async () => { throw new Error('unexpected slot reveal'); };
+    export const post = async (url, body) => {
+      window.fixtureRequests.push({url,body});
+      if (!window.fixtureMode) return Response.json({error:'G1 request captured'}, {status:503});
+      if (window.fixtureOpenHold) await new Promise(resolve => {window.fixtureOpenRelease=resolve;});
+      const lane = url.endsWith('open-worktree') || url === '/api/lanes';
+      const row = {id:2,cwd:lane ? '/fixture/lane' : body.cwd,label:body.label || null,
+        openedAt:window.fixtureMode === 'unchanged' ? 1000 : 2000,
+        model:window.fixtureMode === 'difference' ? 'observed-model' : body.model || 'fixture-model',
+        effort:body.effort || 'high', ...(body.harness ? {harness:body.harness} : {}),
+        ...(lane ? {worktree:{repo:'/fixture/repo',branch:url === '/api/lanes' ? 'fleet/continued' : 'fleet/fresh'}} : {}),
+        ...(body.container ? {container:body.container,containerContext:body.containerContext} : {})};
+      if (window.fixtureMode === 'unreported') {delete row.model; delete row.effort;}
+      window.fixtureSlots = [fleet[0],row];
+      return Response.json({ok:true,slot:2,cwd:row.cwd,label:row.label,
+        ...(window.fixtureMode === 'undelivered' ? {packsDelivered:false,reason:'fixture delivery refused'} : {})});
+    };
+    export const showSlot = slot => {window.fixtureShown=slot;return true;};
+    export const revealStartedSlot = async slot => {
+      fleet = (await (await api('/api/sessions')).json()).slots;
+      document.querySelector('#slots').replaceChildren(document.createElement('span'));
+      return showSlot(slot);
+    };
+    const closeFounding = () => window.fixtureClose();
+    ${startFunctions}
   `;
   const built = await Bun.build({
     entrypoints: [resolve(sourceRoot, 'src/founding.ts')], target: 'browser', format: 'iife',
     plugins: [{ name: 'founding-dom-boundary', setup(build) {
       build.onResolve({ filter: /^\.\/client$/ }, () => ({ path: 'fixture-client', namespace: 'fixture' }));
-      build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: stub, loader: 'js' }));
+      build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: stub, loader: 'ts' }));
       build.onLoad({ filter: /\/src\/founding\.ts$/ }, args => ({
         contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixtureReleases = []; window.fixturePlanReads = 0;
 const fixtureBody = foundingBody; foundingBody = () => ({ ...fixtureBody(), ...(window.fixtureWireModel ? { model: window.fixtureWireModel } : {}) });
 window.fixtureReload = () => { void loadPlan(); renderDetail(); renderFoot(); };
+window.fixturePlanReady = () => !!S?.plan && S.planFor === planKey();
+window.fixtureClose = closeFounding; window.fixtureSettled = () => !S?.busy;
+window.fixtureRecycle = () => { fleet.find(r => r.id === 2).openedAt = 3000; document.querySelector('#slots').replaceChildren(document.createElement('span')); };
+window.fixtureResetSlots = () => { fleet.splice(1); fleet.push({id:2,cwd:null,label:null,openedAt:1000}); };
 window.fixtureStale = () => { S.planFor = 'stale'; renderFoot(); };
 window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free').onclick = window.fixtureOpen; window.fixtureReady = true;`, loader: 'ts'
       }));
@@ -4632,16 +4682,18 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
   });
   if (!built.success) throw new Error(built.logs.join('\n'));
   const css = [...readFileSync(resolve(sourceRoot, 'public/index.html'), 'utf8').matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
-  writeFileSync(resolve(scratch, 'fixture.html'), `<!doctype html><meta charset="utf-8"><style>${css}</style><button id="fixture-free">Freier Slot 2</button><script>window.fetch = () => { throw new Error('network forbidden in DOM fixture'); };</script><script>${await built.outputs[0].text()}</script>`);
+  writeFileSync(resolve(scratch, 'fixture.html'), `<!doctype html><meta charset="utf-8"><style>${css}</style><div id="slots"></div><button id="fixture-free">Freier Slot 2</button><script>window.fetch = () => { throw new Error('network forbidden in DOM fixture'); };</script><script>${await built.outputs[0].text()}</script>`);
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which('chromium') ?? Bun.which('chromium-browser') ?? Bun.which('google-chrome') ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error('DOM probe needs Chromium (FLEET_E2E_BROWSER): ' + executable); }
   const browser = Bun.spawn([executable, '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${scratch}/profile`, 'about:blank'], { stdout: 'ignore', stderr: 'pipe' });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = '';
+    // Cold Chromium startup has a 45 s ceiling; no endpoint is a failed probe.
     const endpoint = await Promise.race([
-      (async () => { let log = ''; for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error('browser exited before CDP endpoint: ' + log); })(),
-      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error('browser CDP startup timeout')), 15000); })
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error('browser exited before CDP endpoint: ' + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error('browser CDP startup timeout: ' + startupLog)), 45000); })
     ]).finally(() => clearTimeout(startupTimer));
     socket = new WebSocket(endpoint);
     await new Promise<void>((resolve, reject) => { socket!.onopen = () => resolve(); socket!.onerror = () => reject(new Error('CDP connection failed')); });
@@ -4721,12 +4773,13 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const g1: Record<string, boolean> = {};
       const click = async (selector: string) => {
         const point = await evaluate<{ x: number; y: number }>(`(() => {
-          const e = document.querySelector(${JSON.stringify(selector)}); if (!e) throw new Error('missing click target');
+          const e = document.querySelector(${JSON.stringify(selector)}); if (!e) throw new Error('missing click target: ' + ${JSON.stringify(selector)});
           e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect();
           return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
         })()`);
         await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
         await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+        await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
       };
       const wait = async (condition: string) => evaluate(`new Promise((resolve, reject) => {
         const until = Date.now() + 5000; const ready = () => { if (${condition}) return resolve(true);
@@ -4832,8 +4885,93 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g1['500 plan without packs explains the permitted no-pack start'] = await evaluate<boolean>(`${field('Kontext')} === 'Kontext: Plan nicht lesbar, Start ohne Packs' && !document.querySelector('.fdgo').disabled`);
       await click('.fdgo');
       g1['500 plan without packs sends exactly one empty spawn body'] = await evaluate<boolean>(`window.fixtureRequests.length === 1 && JSON.stringify(window.fixtureRequests[0].body) === JSON.stringify({cwd:'/fixture/repo'})`);
+
+      const g2: Record<string, boolean> = {};
+      await evaluate(`window.fixtureReceiptMetrics=[];`);
+      const setup = async (mode: string, pack = false) => {
+        await evaluate(`window.fixtureMode=${JSON.stringify(mode)}; window.fixtureReceiptReads=0;
+          window.fixtureShown=null; window.fixtureResetSlots();`);
+        await reset();
+        if (pack) await click('.fdpackrow > .fdpack');
+      };
+      const finished = async () => wait(`window.fixtureSettled()`);
+      const text = () => evaluate<string>(`document.querySelector('#shell-found')?.textContent || ''`);
+      const actual = (name: string) => `document.querySelector('.fdproofrow[data-field="${name}"] .fdactual')`;
+      const plain = async () => {
+        await setup('equal');
+        await click('[data-pop="model"]'); await click('.fdprow:nth-child(2)');
+        await wait(`window.fixturePlanReady()`);
+        await click('[data-pop="effort"]'); await click('.fdprow:nth-child(2)');
+        await wait(`window.fixturePlanReady()`);
+        await click('.fdgo'); await finished();
+      };
+      await plain(); await shot('receipt-equal');
+      g2['equal readback rows, no packs and zero receipt reads'] = await evaluate<boolean>(`(() => {
+        const rows=Array.from(document.querySelectorAll('.fdproofrow[data-field]'));
+        return rows.length===6 && rows.every(r=>r.dataset.state==='same')
+          && ${actual('Rolle')}?.textContent==='Session' && ${actual('Ort')}?.textContent==='/fixture/repo'
+          && ${actual('Agent')}?.textContent.startsWith('codex') && ${actual('Modell')}?.textContent==='fixture-model'
+          && ${actual('Effort')}?.textContent==='high' && ${actual('Packs')}?.textContent==='keine'
+          && window.fixtureReceiptReads===0 && document.querySelector('.fdproofstatus').textContent.includes('geöffnet');
+      })()`);
+      g2['receipt columns fit viewport without horizontal clipping'] = await evaluate<boolean>(`(() => {
+        const t=document.querySelector('.fdproof'); if(!t) return false;
+        const r=t.getBoundingClientRect(); const heads=Array.from(document.querySelectorAll('.fdproofhead')).map(e=>e.getBoundingClientRect());
+        const request=t.querySelector('.fdrequested').getBoundingClientRect(), observed=t.querySelector('.fdactual').getBoundingClientRect();
+        return r.x>=0 && r.right<=innerWidth && t.scrollWidth<=t.clientWidth
+          && heads[0].x===request.x && heads[1].x===observed.x && heads[0].y===heads[1].y && request.y===observed.y;
+      })()`);
+      if (await evaluate<boolean>(`!!document.querySelector('.fdproved .fdgo')`)) {
+        await click('.fdgo');
+        g2['Zur Session closes and shows the exact slot'] = await evaluate<boolean>(`!document.querySelector('#shell-found') && window.fixtureShown===2`);
+      } else g2['Zur Session closes and shows the exact slot']=false;
+      await setup('difference'); await click('[data-pop="model"]'); await click('.fdprow:nth-child(2)');
+      await click('.fdgo'); await finished(); await shot('receipt-difference');
+      g2['requested model never fills readback; difference is marked'] = await evaluate<boolean>(`${actual('Modell')}?.textContent === 'observed-modelAbweichung' && document.querySelector('.fdproofrow[data-field="Modell"]')?.dataset.state==='difference' && document.querySelector('.fdrequested')!==null`);
+      await setup('equal',true); await click('.fdgo'); await finished(); await shot('receipt-packs');
+      g2['pack id, unchanged pointers and short hash come from exact occupant receipt, one read'] = await evaluate<boolean>(`${actual('Packs')}?.textContent.includes('fixture-alphaReceipt purposeAGENTS.md | ## Portable operating contractHash: 1234567890ab') && window.fixtureReceiptReads===1`);
+      await setup('missing',true); await click('.fdgo'); await finished(); await shot('receipt-missing');
+      g2['old occupant and other slot receipts are rejected as Beleg fehlt'] = await evaluate<boolean>(`${actual('Packs')}?.textContent.includes('Beleg fehlt') && !${actual('Packs')}?.textContent.includes('1234567890ab') && window.fixtureReceiptReads===1`);
+      await setup('undelivered',true); await click('.fdgo'); await finished(); await shot('receipt-undelivered');
+      g2['delivery false shows exact reason and never mitgegeben'] = (await text()).includes('nicht zugestellt: fixture delivery refused') && !(await text()).includes('mitgegeben');
+      await setup('unchanged'); await click('.fdgo'); await finished(); await shot('receipt-no-occupant');
+      g2['unchanged openedAt is no new occupant, all readbacks missing'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent.includes('Kein neuer Occupant') && Array.from(document.querySelectorAll('.fdactual')).slice(0,5).every(e=>e.textContent.includes('nicht gemeldet')) && document.querySelector('.fdproved .fdgo')?.disabled===true`);
+      await plain(); await evaluate(`window.fixtureRecycle()`); await finished(); await shot('receipt-stale');
+      g2['recycle marks frozen receipt stale and prevents session action'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent.includes('Veraltet') && ${actual('Modell')}?.textContent==='fixture-model' && document.querySelector('.fdproved .fdgo')?.disabled===true`);
+      await setup('equal',true); await evaluate(`window.fixtureReceiptHold=true`); await click('.fdgo');
+      if (await evaluate<boolean>(`window.fixtureReceiptReads===1`))
+        await evaluate(`window.fixtureRecycle(); window.fixtureReceiptHold=false; window.fixtureReceiptRelease()`);
+      else await evaluate(`window.fixtureReceiptHold=false`);
+      await finished();
+      g2['recycle during receipt read cannot fill stale proof with late receipt'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent.includes('Veraltet') && !${actual('Packs')}?.textContent.includes('Hash:') && window.fixtureReceiptReads===1`);
+      await setup('equal'); await rowEnter(); await finished();
+      g2['no-pack Enter fast path keeps one exact empty request and shows proof'] = await evaluate<boolean>(`window.fixtureRequests.length===1 && JSON.stringify(window.fixtureRequests[0].body)===JSON.stringify({cwd:'/fixture/repo'}) && !!document.querySelector('.fdproof') && window.fixtureReceiptReads===0`);
+      g2['unspecified values are adapter choices, not differences'] = await evaluate<boolean>(`${actual('Modell')}?.textContent==='fixture-modelvom Adapter gewählt' && document.querySelector('.fdproofrow[data-field="Modell"]')?.dataset.state==='same'`);
+      await setup('equal'); await evaluate(`window.fixtureOpenHold=true`); await click('.fdgo'); await click('.fdgo');
+      await evaluate(`window.fixtureOpenHold=false; window.fixtureOpenRelease()`); await finished();
+      g2['double click sends exactly one open'] = await evaluate<boolean>(`window.fixtureRequests.length===1 && !!document.querySelector('.fdproof')`);
+      await setup('equal'); await key('Escape'); await key('Escape');
+      g2['cancel before start sends nothing'] = await evaluate<boolean>(`!document.querySelector('#shell-found') && window.fixtureRequests.length===0`);
+      await setup('equal'); await click('.fdtab:nth-child(2)'); await click('.fdgo'); await finished();
+      g2['fresh Lane receipt shows observed branch'] = (await text()).includes('Branch: fleet/fresh');
+      await setup('equal'); await click('.fdtab:nth-child(3)'); await wait(`document.querySelector('.fdpick') !== null`); await click('.fdpick'); await click('.fdgo'); await finished();
+      g2['continued Lane gets same proof, observed branch and zero receipt reads'] = (await text()).includes('Branch: fleet/continued') && await evaluate<boolean>(`window.fixtureReceiptReads===0 && window.fixtureRequests.length===1 && window.fixtureRequests[0].url==='/api/lanes' && !('packs' in window.fixtureRequests[0].body)`);
+      await setup('equal'); await click('.fdtab:nth-child(4)'); await click('.fdgo'); await finished();
+      g2['Orchestrator without selected packs reads receipt once'] = await evaluate<boolean>(`window.fixtureReceiptReads===1 && ${actual('Rolle')}?.textContent==='Orchestrator' && ${actual('Packs')}?.textContent.includes('Hash: 1234567890ab')`);
+      await setup('multiple',true); await click('.fdgo'); await finished();
+      g2['multiple receipts use newest and disclose count'] = (await text()).includes('Hash: abcdef123456') && (await text()).includes('2 Receipts — jüngstes verwendet.');
+      await setup('private',true); await click('.fdgo'); await finished();
+      g2['private receipt shows source id verdict and version'] = (await text()).includes('k-privateHash: 1234567890abUrteil: match · Fassung: 2');
+      await setup('equal'); await click('[data-pop="container"]');
+      await click('.fdpin:first-child input'); await send('Input.insertText', {text:'fixture-box'});
+      await click('.fdpin:nth-child(2) input'); await send('Input.insertText', {text:'fixture-daemon'});
+      await key('Escape'); await click('.fdgo'); await finished();
+      g2['container and daemon are exact observed values'] = await evaluate<boolean>(`${actual('Container')}?.textContent==='fixture-box' && ${actual('Docker-Daemon')}?.textContent==='fixture-daemon'`);
+      await setup('unreported'); await click('[data-pop="model"]'); await click('.fdprow:nth-child(2)'); await click('.fdgo'); await finished();
+      g2['missing fields never fall back to request'] = await evaluate<boolean>(`${actual('Modell')}?.textContent==='nicht gemeldetBeleg fehlt' && ${actual('Effort')}?.textContent==='nicht gemeldetBeleg fehlt'`);
+      const receiptMetrics = await evaluate<FoundingFocusDomResult['receiptMetrics']>(`window.fixtureReceiptMetrics`);
       if (artifacts) { await send('Page.stopScreencast'); recordingWidth = null; }
-      results.push({ width, height, defaultOff, states, selected, explicit, cancel, g1 });
+      results.push({ width, height, defaultOff, states, selected, explicit, cancel, g1, g2, receiptMetrics });
     }
     return results;
   } finally {

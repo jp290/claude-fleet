@@ -4124,7 +4124,8 @@ export async function revealStartedSlot(slot: number): Promise<boolean> {
 // `via` is the founding window (src/founding.ts), the one caller: it names its own slot and sends
 // its own body, and every refusal is said through onError where the click was
 export interface SpawnVia { slot: number; body: SpawnBody }
-export async function startSession(path: string, label: string | undefined, onError: (msg: string) => void, via: SpawnVia) {
+export type StartResult = { ok: true; slot: number; packsDelivered?: boolean; reason?: string } | { ok: false };
+export async function startSession(path: string, label: string | undefined, onError: (msg: string) => void, via: SpawnVia): Promise<StartResult> {
   const slot = via.slot;
   // the label is the ROLE at founding time: the server keys its one role card and the steward
   // token export off exactly this string, so the founding window sends it here and nowhere else
@@ -4134,28 +4135,26 @@ export async function startSession(path: string, label: string | undefined, onEr
     // the options row can make this fail for a reason the folder is not at fault for (an unknown
     // harness, a model the chosen harness rejects) — say which
     onError(j.error ?? `the server answered ${res.status}`);
-    return;
+    return { ok: false };
   }
   if (j.packsDelivered === false) {
-    // B2b: the founding stands, the packs did not cross — said where the click was (the founding window's foot),
-    // and the window stays open: closing it would read the delivery as having succeeded
+    // The session stands; the delivery refusal stays visible in its start receipt.
     onError(j.reason ?? "the packs were not delivered");
-    return;
   }
   if (!await revealStartedSlot(slot)) {
     onError(`Session opened, but slot ${slot} did not appear within 5 seconds.`);
-    return;
+    return { ok: false };
   }
-  closeFounding();
+  return { ok: true, slot, packsDelivered: j.packsDelivered, reason: j.reason };
 }
 
-export async function startWorktree(repo: string, onError: (msg: string) => void, via: SpawnVia) {
+export async function startWorktree(repo: string, onError: (msg: string) => void, via: SpawnVia): Promise<StartResult> {
   const { slot, body } = via;
   const chosen = harnesses.find((h) => h.id === body.harness)
     ?? harnesses.find((h) => h.default);
   if (chosen?.allowsLanes === false) {
     onError(`${chosen.id} runs as a main session only, not as a lane.`);
-    return;
+    return { ok: false };
   }
   // branch names are plumbing, not something to type: the server auto-names the lane
   // (fleet/<stamp>-<rand>) and the slot label is what you actually rename
@@ -4163,19 +4162,17 @@ export async function startWorktree(repo: string, onError: (msg: string) => void
   const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
   if (!res.ok) {
     onError(j.error ?? `the server answered ${res.status}`);
-    return;
+    return { ok: false };
   }
   if (j.packsDelivered === false) {
-    // B2b: the lane stands, the packs did not cross — said where the click was (the founding window's foot),
-    // and the window stays open: closing it would read the delivery as having succeeded
+    // The lane stands; the delivery refusal stays visible in its start receipt.
     onError(j.reason ?? "the packs were not delivered");
-    return;
   }
   if (!await revealStartedSlot(slot)) {
     onError(`Lane opened, but slot ${slot} did not appear within 5 seconds.`);
-    return;
+    return { ok: false };
   }
-  closeFounding();
+  return { ok: true, slot, packsDelivered: j.packsDelivered, reason: j.reason };
 }
 
 // --- sidebar ---

@@ -4215,25 +4215,47 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 
   const routesStart = server.indexOf("const WORKER_ROUTES = {");
   const routesBody = routesStart < 0 ? "" : server.slice(routesStart, server.indexOf("} satisfies Record<WorkerName, WorkerRouteConfig>;", routesStart));
-  const sparkRoutes = [...routesBody.matchAll(/^  (\w+): codexSparkRoute\(process\.env\.(FLEET_WORKER_ROUTE_[A-Z]+)\),$/gm)]
+  const codexRoutes = [...routesBody.matchAll(/^  (\w+): codexWorkerRoute\(process\.env\.(FLEET_WORKER_ROUTE_[A-Z]+)\),$/gm)]
     .map((m) => `${m[1]}:${m[2]}`).sort();
   const claudeRoutes = [...routesBody.matchAll(/^  (\w+): \{ route: "claude" \},$/gm)].map((m) => m[1]).sort();
-  pin("the complete worker route table sends only the four migrated workers to their own Spark rollback keys",
-    JSON.stringify(sparkRoutes) === JSON.stringify([
+  pin("all workers own an explicit Claude rollback key",
+    JSON.stringify(codexRoutes) === JSON.stringify([
+      "card:FLEET_WORKER_ROUTE_CARD",
+      "cleanReview:FLEET_WORKER_ROUTE_CLEANREVIEW",
       "commitMsg:FLEET_WORKER_ROUTE_COMMITMSG",
       "digest:FLEET_WORKER_ROUTE_DIGEST",
       "enhance:FLEET_WORKER_ROUTE_ENHANCE",
+      "merge:FLEET_WORKER_ROUTE_MERGE",
+      "refine:FLEET_WORKER_ROUTE_REFINE",
+      "repair:FLEET_WORKER_ROUTE_REPAIR",
+      "review:FLEET_WORKER_ROUTE_REVIEW",
       "summary:FLEET_WORKER_ROUTE_SUMMARY",
-    ]), sparkRoutes.join(" | ") || "no Spark routes parsed");
-  pin("the complete worker route table keeps all six session workers on Claude",
-    JSON.stringify(claudeRoutes) === JSON.stringify([
-      "card", "cleanReview", "merge", "refine", "repair", "review",
-    ]), claudeRoutes.join(" | ") || "no Claude routes parsed");
+    ]), codexRoutes.join(" | ") || "no Codex routes parsed");
+  pin("no worker stays pinned to the Claude route",
+    claudeRoutes.length === 0,
+    claudeRoutes.join(" | ") || "no Claude routes parsed");
   pin("worker routes select transport only; model and effort belong to MODEL_DEFAULTS",
     /type WorkerRouteConfig = \{ route: "claude" \| "codex-exec" \};/.test(server)
       && /: \{ route: "codex-exec" \};/.test(server)
-      && !server.includes("const CODEX_SPARK_MODEL"),
+      && !server.includes("const CODEX_SPARK_MODEL") && !server.includes("gpt-5.3-codex-spark"),
     "closed transport configuration without model literals");
+  pin("only merge and repair can request Codex workspace-write; reading roles stay read-only",
+    cxCode.includes('const writes = opts.worker === "merge" || opts.worker === "repair";')
+      && cxCode.includes('"-s", writes ? "workspace-write" : "read-only"')
+      && cxCode.includes('sandboxArgs.push("-c", \'approval_policy="never"\'')
+      && cxCode.includes('sandbox_workspace_write.exclude_tmpdir_env_var=true')
+      && cxCode.includes('sandbox_workspace_write.exclude_slash_tmp=true')
+      && cxCode.includes('sandbox_workspace_write.network_access=false')
+      && !cxCode.includes("danger-full-access") && !cxCode.includes("bypass"),
+    "closed writer set, read-only default, no escalation or temporary-directory roots");
+  for (const worker of ["merge", "repair"]) {
+    const start = server.indexOf(`async function run${worker === "merge" ? "Merge" : "Repair"}(`);
+    const code = server.slice(start, server.indexOf("\n}\n", start)).split("\n")
+      .filter((l) => !l.trim().startsWith("//")).join("\n");
+    pin(`${worker} keeps the existing Claude MERGE_TOOLS profile and subprocess precedence`,
+      start > 0 && code.includes(`worker: "${worker}", cmd: MERGE_CMD, tools: MERGE_TOOLS`),
+      code.match(/worker: [^\n]+/)?.[0] ?? "worker call absent");
+  }
 
   // This file used to hold TWO spawn implementations: slotCmd/agentCmd (which the registry covers,
   // and which the sibling pin above states "names no harness" for the dispatcher) and
@@ -10987,7 +11009,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       return !!config && !!d && config.model === d.id && config.effort === d.effort
         && config.modelSource === "register" && config.effortSource === "register";
     }), JSON.stringify(selected ?? "selection source could not run"));
-  const rollback = select?.({ FLEET_WORKER_ROUTE_SUMMARY: "claude", FLEET_SUMMARY_MODEL: MODEL_DEFAULTS.merge.id,
+  const rollback = select?.({ FLEET_WORKER_ROUTE_SUMMARY: "claude", FLEET_WORKER_ROUTE_CARD: "claude",
+    FLEET_WORKER_ROUTE_REFINE: "claude", FLEET_SUMMARY_MODEL: MODEL_DEFAULTS.merge.id,
     FLEET_SUMMARY_EFFORT: "high", FLEET_CARD_EFFORT: "medium", FLEET_REFINE_MODEL: MODEL_DEFAULTS.summary.id });
   const overridden = select?.({ FLEET_COMMITMSG_CODEX_MODEL: MODEL_DEFAULTS.worker.id, FLEET_COMMITMSG_CODEX_EFFORT: "high" });
   pin("worker env overrides preserve rollback, legacy keys and independent model/effort sources",
@@ -10997,6 +11020,28 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && rollback.refine.model === MODEL_DEFAULTS.summary.id && rollback.briefReview.model === rollback.refine.model
       && overridden?.commitMsg.model === MODEL_DEFAULTS.worker.id && overridden.commitMsg.effort === "high",
     JSON.stringify({ rollback, overridden }));
+  for (const binding of bindings) {
+    const role = binding[1] as FleetWorkerRole;
+    const key = binding[3]!;
+    const routeKey = role === "briefReview" ? "REFINE" : role === "cleanReview" ? "CLEANREVIEW" : key;
+    const defaultSelection = selected?.[role];
+    const override = select?.({ [`FLEET_${key}_CODEX_MODEL`]: MODEL_DEFAULTS.denk.id,
+      [`FLEET_${key}_CODEX_EFFORT`]: "high" })?.[role];
+    const back = select?.({ [`FLEET_WORKER_ROUTE_${routeKey}`]: "claude" })?.[role];
+    const invalid = select?.({ [`FLEET_${key}_CODEX_MODEL`]: MODEL_DEFAULTS.card.id,
+      [`FLEET_${key}_CODEX_EFFORT`]: "unsafe-effort" })?.[role];
+    pin(`${role}: default Codex selection is Sol 6.1/medium and accepts valid independent overrides`,
+      defaultSelection?.harness === "codex" && defaultSelection.model === "gpt-6.1-sol"
+        && defaultSelection.effort === "medium" && override?.model === MODEL_DEFAULTS.denk.id
+        && override.effort === "high" && override.modelSource === "env" && override.effortSource === "env",
+      JSON.stringify({ defaultSelection, override }));
+    pin(`${role}: explicit Claude rollback preserves the role default; wrong-harness and invalid effort are rejected`,
+      back?.harness === "claude" && back.model === MODEL_DEFAULTS[role].id
+        && back.effort === MODEL_DEFAULTS[role].effort && invalid?.model === "gpt-6.1-sol"
+        && invalid.effort === "medium" && invalid.modelSource === "register"
+        && invalid.effortSource === "register" && invalid.warnings.length === 2,
+      JSON.stringify({ back, invalid }));
+  }
   const rejected = resolveWorkerModel("card", "unlisted-model", "unsafe-effort");
   const wrongHarness = resolveWorkerModel("card", MODEL_DEFAULTS.worker.id);
   const old = MODEL_REGISTER.find((entry) => entry.harness === "claude" && entry.status === "superseded");
@@ -11055,8 +11100,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         "", { sessionId: "synthetic", model: MODEL_DEFAULTS.card.id, effort, tools: "--tools none" });
       const subprocess = (effort: string | null): string[] => new Function("cmd", "selection", `return ${subprocessExpression};`)(
         "stand-in", { model: MODEL_DEFAULTS.card.id, effort });
-      const codex = (effort: string | null): string[] => new Function("bin", "tmpOut", "opts", `return ${codexExpression};`)(
-        "codex", "/synthetic/answer", { model: MODEL_DEFAULTS.summaryExec.id, effort });
+      const codex = (effort: string | null): string[] => new Function("bin", "tmpOut", "opts", "sandboxArgs", `return ${codexExpression};`)(
+        "codex", "/synthetic/answer", { model: MODEL_DEFAULTS.summaryExec.id, effort }, ["-s", "read-only"]);
       const cx = codex("high"), sp = subprocess("high");
       effortArgvProved = !claude(null).includes("--effort") && claude("high").includes("--effort 'high'")
         && JSON.stringify(subprocess(null)) === JSON.stringify(["stand-in", "--model", MODEL_DEFAULTS.card.id])
@@ -11066,10 +11111,11 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   } catch { /* a missing or unexecutable command expression fails its own check */ }
   pin("worker command expressions preserve implicit effort and pass only explicit effort overrides",
     effortArgvProved, "Claude, Codex and subprocess argv with null and high effort");
-  pin("all worker register efforts preserve the previously implicit CLI default",
+  pin("Claude fallback efforts remain implicit while every Codex default is Sol 6.1/medium",
     roles.every((role) => MODEL_DEFAULTS[role as FleetWorkerRole].effort === null)
-      && bindings.filter((binding) => binding[4]).every((binding) => MODEL_DEFAULTS[binding[4] as keyof typeof MODEL_DEFAULTS].effort === null),
-    "null means omitted CLI flag; the effective harness default remains unknown");
+      && bindings.filter((binding) => binding[4]).every((binding) => MODEL_DEFAULTS[binding[4] as keyof typeof MODEL_DEFAULTS].effort === "medium"
+        && MODEL_DEFAULTS[binding[4] as keyof typeof MODEL_DEFAULTS].id === "gpt-6.1-sol"),
+    "Claude null omits its flag; Codex defaults are explicit and register-owned");
   pin("merge and repair retain the existing Sonnet worker tier and implicit CLI effort",
     MODEL_DEFAULTS.merge.id === MODEL_DEFAULTS.summary.id && MODEL_DEFAULTS.repair.id === MODEL_DEFAULTS.summary.id
       && MODEL_DEFAULTS.merge.effort === null && MODEL_DEFAULTS.repair.effort === null,

@@ -286,37 +286,56 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   im Rollout einer gpt-6.1-sol-Session vom 2026-09-29.
 - `DEFAULT_MODEL` (`server.ts`, Override `FLEET_MODEL`) bleibt die Auswahl für Sessions/Lanes.
   Fleet-eigene Worker beziehen Modell **und Effort** aus `model-register.ts#MODEL_DEFAULTS`;
-  `server.ts#WORKER_MODELS` löst die Auswahl einmal beim Boot auf. Elf Rollen: summary,
+  `server.ts#WORKER_MODELS` löst die validierte Auswahl einmal beim Boot auf. Elf Rollen: summary,
   commitMsg, enhance, digest, review, merge, repair, cleanReview, refine, briefReview und card.
-  Brief-Gegenlese teilt nur den Prompt-Vertrag mit refine, hat eine eigene Modellauswahl.
-- Die vier bestehenden Headless-Routen summary, commitMsg, enhance und digest bleiben auf
-  ihren `*Exec`-Defaults (Codex Spark). `FLEET_WORKER_ROUTE_SUMMARY|COMMITMSG|ENHANCE|DIGEST=claude`
-  wählt weiterhin die Claude-Rückfallroute. Deren Defaults sowie review und cleanReview sind
-  Sonnet 5.5; merge und repair behalten denselben bisherigen Sonnet-Default. Nur der
-  abgelöste Opus-5-Fallback von refine/briefReview wird durch Opus 5.5 ersetzt; card bleibt
-  bei Haiku 4.5. Bestehende Env-Overrides bleiben maßgeblich. Ein Modellwechsel des
-  Konfliktlösers braucht eine eigene Entscheidung nach Messung.
-  Alle Worker-Defaults tragen `effort: null`: Der bisherige CLI-Default bleibt erhalten,
-  ohne neuen Effort-Flag. Sein effektiver Wert ist unbekannt; konkrete Werte kommen nur
-  über einen validierten Effort-Override.
+  Brief-Gegenlese teilt den Prompt-Vertrag und den Routenschalter mit refine, behält aber eine
+  eigene Modellauswahl und eigene Override-Schlüssel.
+- Alle zehn Worker-Routen laufen standardmäßig über `codex exec`. Die elf rollenbezogenen
+  `*Exec`-Defaults einschließlich `briefReviewExec` sind `codex/gpt-6.1-sol` mit Effort `medium`.
+  Der interaktive Worker-Default bleibt davon unabhängig auf `high`.
+  Nur der exakte Wert `claude` an `FLEET_WORKER_ROUTE_SUMMARY`, `_COMMITMSG`, `_ENHANCE`, `_DIGEST`,
+  `_REVIEW`, `_CLEANREVIEW`, `_REFINE`, `_CARD`, `_MERGE` oder `_REPAIR` wählt den bisherigen
+  Claude-Session-Pfad mit dessen unverändertem Toolprofil. Brief-Gegenlese teilt `_REFINE`.
+  Fehlende, `codex-exec` und ungültige Werte wählen Codex; `FLEET_*_CMD` und Repo-Worker-Kommandos
+  behalten Vorrang vor der Route.
+- Claude-Fallbackdefaults bleiben unverändert: summary, commitMsg, enhance, digest, review,
+  cleanReview, merge und repair verwenden Sonnet 5.5; refine und briefReview Opus 5.5;
+  card Haiku 4.5. Alle Claude-Defaults tragen `effort: null` und lassen den CLI-Effort-Flag weg.
+  Der effektive CLI-Default ist unbekannt. Modell und Effort können unabhängig überschrieben werden.
 - Worker-Overrides heißen `FLEET_<KEY>_MODEL` und `FLEET_<KEY>_EFFORT`, mit den Keys SUMMARY,
   COMMITMSG, ENHANCE, DIGEST, REVIEW, MERGE, REPAIR, CLEAN_REVIEW, REFINE, BRIEF_REVIEW und CARD.
   Auf Headless-Routen heißen sie `FLEET_<KEY>_CODEX_MODEL|EFFORT`; die bisherigen Claude-Keys
   ändern diese Routen weiterhin nicht. Ohne rollenbezogenen Override gelten für Claude die
   bisherigen `FLEET_SUMMARY_MODEL|EFFORT`, für Brief-Gegenlese `FLEET_REFINE_MODEL|EFFORT`.
-  Card und refine haben eigene Keys. Modell und Effort können unabhängig überschrieben werden.
+  Card und refine haben eigene Keys.
 - Beim Boot werden Overrides gegen `MODEL_REGISTER` und die Effort-Stufen der Harness geprüft.
   Unbekannte oder harnessfremde Modelle und ungültige Efforts werden laut zurückgewiesen;
   der jeweilige Register-Fallback greift. Registrierte `superseded`-Overrides bleiben lesbar,
   lösen aber eine Warnung aus. Jede Boot-Zeile nennt Rolle, Modell, Effort, `source=register|env`
   und `effortSource=register|env`; `effort=cli-default(unknown)` bezeichnet `null`.
-  Codex-Verfügbarkeit kommt aus `models_cache.json` über
-  `codexAvailability`: `unavailable` wird laut genannt, ein fehlender Sensor bleibt `unknown`.
-  Eine Warnung wechselt weder Modell noch Route automatisch.
-- Bei explizitem Effort erhält Claude `--effort`, Codex `-c model_reasoning_effort=...`;
-  die Subprozess-Stellvertreter erhalten ebenfalls den gewählten Wert. `null` lässt den Flag weg.
-  Die Register- und Quellen-Pins prüfen jede Worker-Rolle auf
-  `current` und verhindern Modell-Literale als Rückfall in `server.ts`.
+  Codex-Verfügbarkeit kommt aus `models_cache.json` über `codexAvailability`: `unavailable` wird
+  laut genannt, ein fehlender Sensor bleibt `unknown`. Eine Warnung wechselt weder Modell noch Route.
+- Spawn, Beobachtung und `worker-runs.jsonl` nennen dasselbe tatsächlich gewählte Modell;
+  das Ledger nennt auch Effort und Transport. Ein gültiger Override trägt deshalb kein festes
+  Sol-Etikett. Bei explizitem Effort erhält Claude `--effort`, Codex `-c model_reasoning_effort=...`;
+  die Subprozess-Stellvertreter erhalten ebenfalls die gewählten Werte. `null` lässt den Flag weg.
+- Lesende Worker bleiben `--ephemeral -s read-only --json -o <last-message>`; stdout liefert
+  Beobachtungen, die Datei die Antwort. Bei Exit ungleich 0 steht zuerst die `message` des
+  stdout-Events `type:"error"`, ersatzweise die eines `item.completed` mit `item.type:"error"`,
+  danach stderr und stdout. Fehlende strukturierte Fehler fallen auf stderr/stdout zurück.
+- Nur `merge` und `repair` erhalten `-s workspace-write` und `approval_policy="never"`. `cwd` ist
+  die Lane; `git rev-parse --absolute-git-dir` bestimmt deren private Git-Metadaten,
+  `--git-common-dir` die gemeinsame Basis. Zusätzliche `sandbox_workspace_write.writable_roots`
+  sind beim verknüpften Worktree nur dessen privates Git-Verzeichnis und `objects`, `refs`, `logs`
+  unter der gemeinsamen Basis. Der gemeinsame `.git`-Wurzelpfad mit den Metadaten anderer
+  Worktrees wird nicht freigegeben. Beim eigenständigen Klon ist das private Git-Verzeichnis
+  zugleich die gemeinsame Basis. Die Liste überschreibt zusätzliche konfigurierte Roots;
+  `/tmp` und `$TMPDIR` sind ausgeschlossen, Sandbox-Netzwerkzugriff ist aus.
+  `FLEET_WORKER_ROUTE_MERGE=claude` bzw. `FLEET_WORKER_ROUTE_REPAIR=claude` stellt den bisherigen
+  Claude-Weg mit unverändertem `MERGE_TOOLS` und validierter rollenbezogener Auswahl wieder her.
+  Wire/Server und Tests: apply (Route, Spawn, Registerauswahl und Resolver-Beobachtung);
+  Client/reverse-state: not-applicable (bestehende optionale `model`/`backend`-Felder,
+  keine neue Session-Identität). Docs: apply.
 - Ein lebender Slot wechselt sein Modell/Effort im DATENSATZ über `POST /api/slots/:id/model` (Owner,
   kein Respawn; `docs/self-api.md` §model) — Heal, `↻ restart` und Nachfolge spawnen danach damit. Die
   Nachfolge (`POST /api/self/succeed`) nimmt dasselbe Paar optional als Override. Beides wird nach der

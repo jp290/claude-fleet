@@ -3,7 +3,9 @@
 // verify gate, and the orphan reattach / remove / discard flows.
 import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { MODEL_DEFAULTS } from "../model-register";
+import { WORKER_CONTRACTS } from "../src/protocol";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { authorFallbackGates, exists, fakeClaudeInPane, serverLogMark, setMergeMode, settleForAuthorMerge,
@@ -60,6 +62,150 @@ const ackMergeEvent = (token: string, id: string): Promise<Response> =>
 const freeSlot = async (): Promise<number> =>
   ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
     .slots.find((s) => s.cwd === null)?.id ?? 0;
+
+async function codexWritingWorkers(): Promise<void> {
+  const repo = `${ROOT}/codex-write-repo`;
+  const bin = `${ROOT}/codex-write-worker`;
+  const runsFile = `${ROOT}/codex-write-runs.jsonl`;
+  const modeFile = `${ROOT}/codex-write-mode`;
+  const verify = `${ROOT}/codex-write-verify`;
+  const gitErrors = `${ROOT}/codex-write-git-errors.jsonl`;
+  mkdirSync(repo, { recursive: true });
+  const git = (cwd: string, ...args: string[]): string => {
+    const r = spawnSync("git", ["-C", cwd, ...args]);
+    if (r.status !== 0) throw new Error(`Codex write fixture git ${args[0]}: ${r.stderr.toString()}`);
+    return r.stdout.toString().trim();
+  };
+  git(repo, "init", "-b", "main");
+  git(repo, "config", "user.name", "E2E");
+  git(repo, "config", "user.email", "e2e@example.invalid");
+  git(repo, "config", "commit.gpgsign", "false");
+  writeFileSync(`${repo}/code.txt`, "root\n");
+  git(repo, "add", "code.txt");
+  git(repo, "commit", "-m", "base");
+  writeFileSync(verify, `#!/bin/sh
+if grep -qx VERIFYBAD code.txt; then
+  echo 'verify FAIL: writing worker marker remains'
+  exit 1
+fi
+echo 'ALL PASS'
+`, { mode: 0o755 });
+  writeFileSync(bin, String.raw`#!/usr/bin/env python3
+import json, os, pathlib, subprocess, sys
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+worker = "repair" if ${JSON.stringify(WORKER_CONTRACTS.repair.mark)} in prompt else "merge"
+with open(${JSON.stringify(runsFile)}, "a") as f:
+    f.write(json.dumps({"worker": worker, "cwd": os.getcwd(), "argv": args, "prompt": prompt}) + "\n")
+mode = pathlib.Path(${JSON.stringify(modeFile)}).read_text().strip()
+if mode == worker + "-error":
+    print(json.dumps({"type": "error", "message": "controlled " + worker + " rejection"}))
+    sys.exit(23)
+def git(*a, expected=0):
+    r = subprocess.run(["git", *a], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                       env={**os.environ, "GIT_EDITOR": "true"})
+    if r.returncode != expected:
+        with open(${JSON.stringify(gitErrors)}, "a") as f:
+            f.write(json.dumps({"worker": worker, "args": a, "exitCode": r.returncode, "stderr": r.stderr}) + "\n")
+        print(json.dumps({"type": "error", "message": "fixture git " + " ".join(a) +
+                          ": exit " + str(r.returncode) + ", expected " + str(expected) + ": " + r.stderr.strip()}))
+        sys.exit(1)
+    return r.stdout.strip()
+if worker == "merge":
+    git("rebase", "main", expected=1)
+    if git("diff", "--name-only", "--diff-filter=U") != "code.txt":
+        print(json.dumps({"type": "error", "message": "fixture rebase did not produce the code.txt conflict"}))
+        sys.exit(1)
+    pathlib.Path("code.txt").write_text("root\nmain\nlane\nVERIFYBAD\n")
+    git("add", "code.txt")
+    git("rebase", "--continue")
+    status = "rebased"
+else:
+    p = pathlib.Path("code.txt")
+    p.write_text(p.read_text().replace("VERIFYBAD\n", ""))
+    git("commit", "-am", "repair: remove marker")
+    status = "repaired"
+pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status, "detail": worker}))
+`, { mode: 0o755 });
+  type Run = { worker: "merge" | "repair"; cwd: string; argv: string[]; prompt: string };
+  const runs = (): Run[] => existsSync(runsFile)
+    ? readFileSync(runsFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Run) : [];
+  const env = { FLEET_MERGE_CMD: "", FLEET_CODEX_EXEC_BIN: bin, FLEET_CODEX_EXEC_TIMEOUT_MS: "5000",
+    FLEET_VERIFY_CMD: verify, FLEET_VERIFY_CMD_REPOS: JSON.stringify({ [repo]: verify }),
+    FLEET_MERGE_REPAIR_ROUNDS: "2", FLEET_WORKER_ROUTE_MERGE: "", FLEET_WORKER_ROUTE_REPAIR: "",
+    FLEET_WORKER_HARNESS: "codex" };
+  type WriteLane = { slot: number; cwd: string; branch: string };
+  let lane: WriteLane | null = null;
+  try {
+    for (const mode of ["default", "invalid", "merge-rollback", "repair-rollback", "merge-error", "repair-error"]) {
+      rmSync(runsFile, { force: true });
+      writeFileSync(modeFile, mode);
+      await restartSrv({ ...env,
+        FLEET_WORKER_ROUTE_MERGE: mode === "merge-rollback" ? "claude" : mode === "invalid" ? "invalid" : "",
+        FLEET_WORKER_ROUTE_REPAIR: mode === "repair-rollback" ? "claude" : mode === "invalid" ? "invalid" : "",
+      });
+      lane = (await (await post("/api/lanes", { repo })).json()) as WriteLane;
+      if (!lane?.slot || !lane.cwd) throw new Error("Codex write fixture lane did not open");
+      writeFileSync(`${lane.cwd}/code.txt`, `root\nlane-${mode}\n`);
+      git(lane.cwd, "commit", "-am", `lane ${mode}`);
+      writeFileSync(`${repo}/code.txt`, `root\nmain-${mode}\n`);
+      git(repo, "commit", "-am", `main ${mode}`);
+      await settleForMerge(lane.slot);
+      await post(`/api/slots/${lane.slot}/merge`, {});
+      const verdict = await waitMerge(lane.slot);
+      const observed = runs();
+      const expectedWorkers = mode === "merge-rollback" ? []
+        : mode === "merge-error" || mode === "repair-rollback" ? ["merge"] : ["merge", "repair"];
+      check(`Codex writing workers ${mode}: only the selected transports spawn`,
+        JSON.stringify(observed.map((r) => r.worker)) === JSON.stringify(expectedWorkers),
+        JSON.stringify(observed.map((r) => r.worker)));
+      if (mode === "default" || mode === "invalid") {
+        check(`Codex writing workers ${mode}: real conflict + red verify trigger one committed repair`,
+          verdict.last?.status === "resolved" && verdict.last.verify?.ok === true
+            && verdict.last.landed === false && verdict.last.repairRounds === 1
+            && git(lane.cwd, "log", "-1", "--format=%s") === "repair: remove marker"
+            && readFileSync(`${lane.cwd}/code.txt`, "utf8") === "root\nmain\nlane\n",
+          JSON.stringify(verdict.last));
+      } else if (mode.endsWith("rollback")) {
+        check(`${mode}: exact claude env value restores the session path without a Codex fallback`,
+          verdict.last?.status === "error"
+            && verdict.last.detail.includes('harness "codex" cannot host a worker session'),
+          JSON.stringify(verdict.last));
+      } else {
+        check(`${mode}: a nonzero writing worker fails closed with its exact rejection`,
+          verdict.last?.status === "error" && verdict.last.landed === false
+            && verdict.last.detail.includes(`worker via codex exec exited 23: controlled ${mode.replace("-error", "")} rejection`),
+          JSON.stringify(verdict.last));
+      }
+      const gd = realpathSync(git(lane.cwd, "rev-parse", "--absolute-git-dir"));
+      const cd = realpathSync(git(lane.cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"));
+      for (const r of observed) {
+        const pair = (flag: string, value: string): boolean => r.argv[r.argv.indexOf(flag) + 1] === value;
+        const configs = r.argv.filter((_, i) => r.argv[i - 1] === "-c");
+        check(`${mode} ${r.worker}: argv pins Sol 6.1, medium, workspace-write and the lane cwd`,
+          r.argv[0] === "exec" && pair("-m", "gpt-6.1-sol") && MODEL_DEFAULTS.worker.id === "gpt-6.1-sol"
+            && pair("-s", "workspace-write") && r.argv.includes("--ephemeral") && r.argv.at(-1) === "-"
+            && configs.includes('model_reasoning_effort=medium') && r.cwd === realpathSync(lane.cwd)
+            && r.prompt.includes(WORKER_CONTRACTS[r.worker].mark), JSON.stringify({ argv: r.argv, cwd: r.cwd }));
+        check(`${mode} ${r.worker}: only private Git state plus shared objects/refs/logs are added`,
+          configs.includes(`sandbox_workspace_write.writable_roots=${JSON.stringify([gd, `${cd}/objects`, `${cd}/refs`, `${cd}/logs`])}`)
+            && configs.includes('approval_policy="never"')
+            && configs.includes("sandbox_workspace_write.exclude_tmpdir_env_var=true")
+            && configs.includes("sandbox_workspace_write.exclude_slash_tmp=true")
+            && configs.includes("sandbox_workspace_write.network_access=false")
+            && !r.argv.includes("--add-dir") && !r.argv.includes("danger-full-access")
+            && !r.argv.some((a) => a.includes("bypass")), configs.join(" | "));
+      }
+      await post(`/api/slots/${lane.slot}/kill`, {});
+      git(repo, "worktree", "remove", "--force", lane.cwd);
+      git(repo, "branch", "-D", lane.branch);
+      lane = null;
+    }
+  } finally {
+    if (lane?.slot) await post(`/api/slots/${lane.slot}/kill`, {});
+    await restartSrv();
+  }
+}
 
 export async function run(lc: LaneCtx): Promise<void> {
   const receiverA = await freeSlot();
@@ -2498,4 +2644,5 @@ export async function run(lc: LaneCtx): Promise<void> {
   await post(`/api/slots/${probe.slot}/land`, {}); // clean up the probe lane too
   await post(`/api/slots/${receiverA}/kill`, {});
   await post(`/api/slots/${receiverB}/kill`, {});
+  await codexWritingWorkers();
 }

@@ -8738,9 +8738,12 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(w3) setup: the stopped dispatcher has inspected the split row",
         w3BackRow?.note?.startsWith("waiting: dispatcher stopped") === true, JSON.stringify(w3BackRow));
       const w3KeptRow = await wDigest(w3Head);
-      check("(w3) the returned row is `queued` — not `pending` — and carries the lane's reason in its note",
-        w3BackRow?.status === "queued" && (w3BackRow as { slot?: number | null }).slot == null
-        && (w3BackRow?.note ?? "").includes(W3REASON),
+      check("(w3) the returned row is `queued` — not `pending` — and detached from the lane",
+        w3BackRow?.status === "queued" && (w3BackRow as { slot?: number | null }).slot == null,
+        JSON.stringify(w3BackRow));
+      check("(w3-stop) after a stopped dispatch tick the returned row retains the wave lane's split reason",
+        /^waiting: dispatcher stopped — handed back by the wave lane [^:]+: /.test(w3BackRow?.note ?? "")
+        && w3BackRow?.note?.endsWith(`: ${W3REASON}`) === true,
         JSON.stringify(w3BackRow));
       check("(w3) the kept row is untouched — still `sent`, still on the lane",
         w3KeptRow?.status === "sent" && (w3KeptRow as { slot?: number }).slot === w3Slot,
@@ -9451,7 +9454,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(jt) setup: the worker's `claude` lookup resolves to the stand-in and nothing else",
       !!cat && resolved === `${trustBin}/claude`, `cat=${cat} resolved=${resolved}`);
     if (cat && resolved === `${trustBin}/claude`) {
-      await restartSrv({ FLEET_DISPATCH_REPO: REPO, PATH: trustPath });
+      await restartSrv({ FLEET_DISPATCH_REPO: REPO, FLEET_WORKER_ROUTE_REFINE: "claude", PATH: trustPath });
       const jtT = (await (await post("/api/tasks", { text: "trust probe: a worker in a never-trusted repo", queue: false, repo: REPO })).json()) as { task: { id: string; repo?: string } };
       const jtStart = Date.now();
       const jtR = await post(`/api/tasks/${jtT.task.id}/refine`, {});
@@ -9518,7 +9521,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(jb) setup: the worker's `claude` lookup resolves to the stand-in and nothing else",
       !!cat && resolved === `${bkBin}/claude`, `cat=${cat} resolved=${resolved}`);
     if (cat && resolved === `${bkBin}/claude`) {
-      await restartSrv({ FLEET_DISPATCH_REPO: REPO, PATH: bkPath });
+      await restartSrv({ FLEET_DISPATCH_REPO: REPO, FLEET_WORKER_ROUTE_REFINE: "claude", PATH: bkPath });
       const refineOnce = async (mode: "dark" | "lit"): Promise<{ id: string; took: number; note: string; pasted: string | null }> => {
         await Bun.write(bkMode, mode);
         rmSync(bkPasted, { force: true });

@@ -3,6 +3,7 @@
 // 403s, typed+capped sends across an audit rotation, the journal and the P3 digest.
 import { DONE_LOOKING_PROSE, STALLED_PROSE } from "../lane-signals";
 import { WORKER_CONTRACTS } from "../src/protocol";
+import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1420,8 +1421,9 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
       && codexDigest.digest?.changed?.[0] === "codex digest change"
       && Array.isArray(codexDigest.digest?.attention) && codexDigest.backend === undefined && codexDigest.usage === undefined,
       `${codexDigestRes.status} ${JSON.stringify(codexDigest).slice(0, 300)}`);
-    check("Codex digest pins Spark/read-only/ephemeral and receives its complete marked payload only on stdin",
-      digestArgv[digestArgv.indexOf("-m") + 1] === "gpt-5.3-codex-spark"
+    check("Codex digest pins the register model/medium/read-only/ephemeral and receives its complete marked payload only on stdin",
+      digestArgv[digestArgv.indexOf("-m") + 1] === MODEL_DEFAULTS.worker.id
+      && digestArgv[digestArgv.indexOf("-c") + 1] === 'model_reasoning_effort=medium'
       && digestArgv[digestArgv.indexOf("-s") + 1] === "read-only" && digestArgv.includes("--ephemeral")
       && digestPrompt.includes(WORKER_CONTRACTS.digest.mark)
       && digestPrompt.includes("## prior journal record") && digestPrompt.includes("## current slots")

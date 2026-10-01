@@ -1673,8 +1673,8 @@ const harnessOf = (id: string | null | undefined): Harness =>
 // fail-toward-safe rule as harnessOf.
 const WORKER_HARNESS: Harness = harnessOf(process.env.FLEET_WORKER_HARNESS ?? null);
 
-function fleetWorkerModel(role: FleetWorkerRole, key: string, execRole?: ModelRole, legacy = "SUMMARY") {
-  const useExec = execRole && process.env[`FLEET_WORKER_ROUTE_${key}`] !== "claude";
+function fleetWorkerModel(role: FleetWorkerRole, key: string, execRole?: ModelRole, legacy = "SUMMARY", routeKey = key) {
+  const useExec = execRole && process.env[`FLEET_WORKER_ROUTE_${routeKey}`] !== "claude";
   const prefix = useExec ? `${key}_CODEX` : key;
   return resolveWorkerModel(useExec ? execRole : role,
     process.env[`FLEET_${prefix}_MODEL`] ?? (useExec ? undefined : process.env[`FLEET_${legacy}_MODEL`]),
@@ -1685,13 +1685,13 @@ const WORKER_MODELS = {
   commitMsg: fleetWorkerModel("commitMsg", "COMMITMSG", "commitMsgExec"),
   enhance: fleetWorkerModel("enhance", "ENHANCE", "enhanceExec"),
   digest: fleetWorkerModel("digest", "DIGEST", "digestExec"),
-  review: fleetWorkerModel("review", "REVIEW"),
-  merge: fleetWorkerModel("merge", "MERGE"),
-  repair: fleetWorkerModel("repair", "REPAIR"),
-  cleanReview: fleetWorkerModel("cleanReview", "CLEAN_REVIEW"),
-  refine: fleetWorkerModel("refine", "REFINE", undefined, "REFINE"),
-  briefReview: fleetWorkerModel("briefReview", "BRIEF_REVIEW", undefined, "REFINE"),
-  card: fleetWorkerModel("card", "CARD", undefined, "CARD"),
+  review: fleetWorkerModel("review", "REVIEW", "reviewExec"),
+  merge: fleetWorkerModel("merge", "MERGE", "mergeExec"),
+  repair: fleetWorkerModel("repair", "REPAIR", "repairExec"),
+  cleanReview: fleetWorkerModel("cleanReview", "CLEAN_REVIEW", "cleanReviewExec", "SUMMARY", "CLEANREVIEW"),
+  refine: fleetWorkerModel("refine", "REFINE", "refineExec", "REFINE"),
+  briefReview: fleetWorkerModel("briefReview", "BRIEF_REVIEW", "briefReviewExec", "REFINE", "REFINE"),
+  card: fleetWorkerModel("card", "CARD", "cardExec", "CARD"),
 } satisfies Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>;
 
 // which harness a request asked for. Absent → null (the default), which is what every caller that
@@ -17465,7 +17465,7 @@ function formatCardOf(t: Task, snapshot: TrackedSnapshot | null, index: SymbolIn
 async function extractCard(t: Task, repo: string, snapshot: TrackedSnapshot | null,
   index: SymbolIndexSnapshot | null, answered: (answer: string) => void): Promise<TaskCard> {
   const started = Date.now();
-  let observed: WorkerRunObservation = { model: CARD_MODEL };
+  let observed: WorkerRunObservation = { model: CARD_MODEL, effort: WORKER_MODELS.card.effort };
   // The text is the WHOLE input — brief first when there is one, because that is the text a lane
   // would actually receive, with the raw draft behind it so nothing the owner wrote is dropped.
   const source = [t.brief?.text, t.text].filter((x): x is string => !!x).join("\n\n");
@@ -17884,9 +17884,11 @@ function normRefine(r: TaskRefine | undefined): TaskRefine | undefined {
 // retry loop — the owner clicks again if they want another try.
 async function runRefineJob(t: Task, repo: string): Promise<void> {
   try {
-    const out = await runWorker({ worker: "refine", cmd: REFINE_CMD, tools: REVIEW_TOOLS },
+    let model = REFINE_MODEL;
+    const out = await runWorker({ worker: "refine", cmd: REFINE_CMD, tools: REVIEW_TOOLS,
+      observe: (run) => { model = run.model; } },
       buildRefinePrompt(repo, t.text, MAX_REFINE_CHILDREN), repo);
-    t.refine = { at: Date.now(), model: REFINE_MODEL, proposal: parseRefineAnswer(out) };
+    t.refine = { at: Date.now(), model, proposal: parseRefineAnswer(out) };
     // clear ONLY a previous refine failure — the note is a shared display line (the dispatcher
     // writes "lane fleet/…" and its waiting reasons there), and a compile that succeeded while
     // the row was being started elsewhere must not wipe what that other path put on it
@@ -19979,10 +19981,11 @@ function codexExecUsage(stdout: string): CodexExecUsage | "unknown" {
 }
 
 // The headless Codex transport is deliberately NOT a Harness adapter: it owns no tmux session,
-// no resumable identity and no host transcript. Its only authority is the fixed read-only sandbox
-// below, and its answer is the CLI's last-message file.
+// no resumable identity and no host transcript. Reading roles stay read-only; only merge/repair
+// may write their worktree and the Git directories needed for rebase/commit. The answer is the
+// CLI's last-message file.
 async function workerViaCodexExec(prompt: string, cwd: string,
-  opts: { model: string; effort: string | null; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
+  opts: { worker: WorkerName; model: string; effort: string | null; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
   const dir = await mkdtemp(`${tmpdir()}/fleet-codex-worker-`);
   const tmpOut = resolve(dir, "last-message.txt");
   const binOverride = process.env.FLEET_CODEX_EXEC_BIN;
@@ -19996,8 +19999,28 @@ async function workerViaCodexExec(prompt: string, cwd: string,
   let killer: ReturnType<typeof setTimeout> | null = null;
   let timedOut = false;
   try {
-    p = Bun.spawn([bin, "exec", "--ephemeral", "-s", "read-only", "--skip-git-repo-check",
-      "--color", "never", "--json", "-o", tmpOut, "-m", opts.model, ...(opts.effort ? ["-c", `model_reasoning_effort=${opts.effort}`] : []), "-"], {
+    const writes = opts.worker === "merge" || opts.worker === "repair";
+    const sandboxArgs: string[] = ["-s", writes ? "workspace-write" : "read-only"];
+    if (writes) {
+      const gd = await git(cwd, "rev-parse", "--absolute-git-dir");
+      const cd = await git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir");
+      if (gd.code !== 0 || cd.code !== 0 || !gd.out || !cd.out)
+        throw new Error("writing Codex worker cannot resolve its Git directories");
+      const gitDir = realpathSync(gd.out);
+      const commonDir = realpathSync(cd.out);
+      // The private directory holds index, HEAD and rebase state. Shared objects, refs and
+      // reflogs receive commits; the common .git root (including other worktrees) stays read-only.
+      const roots = gitDir === commonDir ? [gitDir]
+        : [gitDir, ...["objects", "refs", "logs"].map((d) => resolve(commonDir, d))];
+      sandboxArgs.push("-c", 'approval_policy="never"',
+        "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`,
+        "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+        "-c", "sandbox_workspace_write.network_access=false");
+    }
+    p = Bun.spawn([bin, "exec", "--ephemeral", ...sandboxArgs, "--skip-git-repo-check",
+      "--color", "never", "--json", "-o", tmpOut, "-m", opts.model,
+      ...(opts.effort ? ["-c", `model_reasoning_effort=${opts.effort}`] : []), "-"], {
       cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe",
     });
     const outP = new Response(p.stdout).text();
@@ -20020,7 +20043,22 @@ async function workerViaCodexExec(prompt: string, cwd: string,
     const [out, err] = await Promise.all([outP, errP]);
     if (timedOut) throw new Error(`worker via codex exec timed out after ${timeoutMs}ms`);
     if (code !== 0) {
-      const excerpt = [err, out].filter(Boolean).join("\n").slice(0, 300);
+      let eventMessage: string | undefined;
+      let itemMessage: string | undefined;
+      for (const line of out.split("\n")) {
+        try {
+          const event: unknown = JSON.parse(line);
+          if (!event || typeof event !== "object") continue;
+          const e = event as { type?: unknown; message?: unknown; item?: { type?: unknown; message?: unknown } };
+          if (e.type === "error" && typeof e.message === "string" && e.message.trim()) {
+            eventMessage = e.message;
+            break;
+          }
+          if (e.type === "item.completed" && e.item?.type === "error"
+              && typeof e.item.message === "string" && e.item.message.trim()) itemMessage ??= e.item.message;
+        } catch { /* a non-JSON log line carries no structured error */ }
+      }
+      const excerpt = [eventMessage ?? itemMessage, err, out].filter(Boolean).join("\n").slice(0, 300);
       throw new Error(`worker via codex exec exited ${code}: ${excerpt}`);
     }
     if (stdinError) throw new Error(`worker via codex exec failed to write prompt: ${String(stdinError).slice(0, 300)}`);
@@ -20181,26 +20219,26 @@ interface WorkerSpec {
 type WorkerRouteConfig = { route: "claude" | "codex-exec" };
 interface WorkerRunObservation {
   model: string;
+  effort: string | null;
   backend?: "codex-exec";
   usage?: CodexExecUsage;
 }
 // Each migrated worker owns one explicit rollback key. Absence, codex-exec, and invalid values
 // all fail toward the cheaper default; only the literal `claude` can authorize Claude spend.
-const codexSparkRoute = (configured: string | undefined): WorkerRouteConfig => configured === "claude"
+const codexWorkerRoute = (configured: string | undefined): WorkerRouteConfig => configured === "claude"
   ? { route: "claude" }
   : { route: "codex-exec" };
 const WORKER_ROUTES = {
-  summary: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_SUMMARY),
-  review: { route: "claude" },
-  commitMsg: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_COMMITMSG),
-  enhance: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_ENHANCE),
-  merge: { route: "claude" },
-  repair: { route: "claude" },
-  cleanReview: { route: "claude" },
-  digest: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
-  refine: { route: "claude" },
-  // The card extractor keeps its session transport and its own register selection.
-  card: { route: "claude" },
+  summary: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_SUMMARY),
+  review: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REVIEW),
+  commitMsg: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_COMMITMSG),
+  enhance: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_ENHANCE),
+  merge: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_MERGE),
+  repair: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REPAIR),
+  cleanReview: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CLEANREVIEW),
+  digest: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
+  refine: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REFINE),
+  card: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CARD),
 } satisfies Record<WorkerName, WorkerRouteConfig>;
 function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
   return WORKER_ROUTES[worker];
@@ -20224,20 +20262,19 @@ async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise
     let observed: WorkerRunObservation;
     if (spec.cmd) {
       text = await summaryViaSubprocess(spec.cmd, prompt, cwd, selection, spec.timeoutMs);
-      observed = { model: selection.model };
+      observed = { model: selection.model, effort: selection.effort };
     } else {
       if (route === "codex-exec") {
-        // ToolProfile is intentionally unused here: `-s read-only` plus `--ephemeral` is this
-        // transport's act-authority, and no Claude tool profile can widen or describe it.
+        // The closed worker name selects Codex write authority independently of Claude tools.
         const result = await workerViaCodexExec(prompt, cwd, {
-          model: selection.model, effort: selection.effort, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
+          worker: spec.worker, model: selection.model, effort: selection.effort, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
         });
         text = result.text;
-        observed = { model: selection.model, backend: "codex-exec",
+        observed = { model: selection.model, effort: selection.effort, backend: "codex-exec",
           ...(result.usage === "unknown" ? {} : { usage: result.usage }) };
       } else {
         text = await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs, model: selection.model, effort: selection.effort });
-        observed = { model: selection.model };
+        observed = { model: selection.model, effort: selection.effort };
       }
     }
     ok = true;
@@ -20339,7 +20376,7 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     "- openThreads: things started or mentioned but not finished (empty array if none).",
     '- verification: which checks/tests/builds ran and their results, or "none seen".',
   ].join("\n");
-  let workerRun: WorkerRunObservation = { model: SUMMARY_MODEL };
+  let workerRun: WorkerRunObservation = { model: SUMMARY_MODEL, effort: WORKER_MODELS.summary.effort };
   const text = await runWorker(
     { worker: "summary", cmd: SUMMARY_CMD, tools: TEXT_ONLY_TOOLS,
       observe: (run) => { workerRun = run; } }, prompt, cwd);
@@ -20673,7 +20710,8 @@ async function reviewDiffs(cwd: string,
     "- An empty findings array is a valid and good answer. Never invent a finding to fill the list.",
   ].join("\n");
   const text = await runWorker(
-    { worker: "review", cmd: REVIEW_CMD, tools: TEXT_ONLY_TOOLS, timeoutMs: REVIEW_TIMEOUT_MS },
+    { worker: "review", cmd: REVIEW_CMD, tools: TEXT_ONLY_TOOLS, timeoutMs: REVIEW_TIMEOUT_MS,
+      observe: (run) => { meta.model = run.model; } },
     prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // fail-soft exactly like runSummary: an off-contract answer degrades to notes, never a 500
@@ -23973,7 +24011,7 @@ const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTo
 // `conflictedFiles` is a COUNT, not the list: the list is already on the note once (`conflicted`)
 // and is the SAME set for every round of one job, so a per-round copy would be the same bytes N
 // times over. The count is what makes a round's ms and status readable next to its difficulty.
-// Error rows name the resolved merge/repair model even when transport failed before observation.
+// Error rows name the resolved model and selected transport before any completed observation.
 interface ResolverRun {
   worker: "merge" | "repair";
   model: string;
@@ -30741,12 +30779,10 @@ function scheduleMainGraphRebuild(repo: string, main: string): void {
 // substring — and renderContextAnchorBlock returns "" on an empty selection, so a foreign tree
 // (whose Fleet-owned anchors cannot resolve) simply gets nothing, with no special case here.
 //
-// `harness` is the literal "claude" and that is a fact, not a shortcut: this path runs over
-// WORKER_HARNESS.worker, whose command line starts `claude` whatever FLEET_CMD says. Passing a
-// foreign FLEET_CMD through would omit `land-mechanics` as `harness-unsupported` for a session
-// that is in fact Claude — the anchors would vanish for the wrong reason. `root` is the SOURCE
-// repository, never the lane worktree: a linked worktree has its own git toplevel, so classifying
-// `cwd` would call every lane foreign and empty the block on exactly the path that needs it.
+// The existing Claude anchor profile supplies the same landing pointers on both worker routes;
+// execution authority comes from the selected transport, never this advisory context profile.
+// `root` is the SOURCE repository, never the lane worktree: a linked worktree has its own git
+// toplevel, so classifying `cwd` would empty the block on exactly the path that needs it.
 // Manifest-declared packs deliberately do NOT reach this seam: a merge worker gets no receipt and
 // no named commit here, and an anchor nobody receipts at a stated HEAD is a pointer into no tree.
 // No receipt is written: context-receipts.jsonl rows are session-shaped (slot, branch, taskId) and
@@ -30798,7 +30834,10 @@ async function runMerge(cwd: string, root: string, branch: string, main: string,
   // machine, not the model's work, and folding them into `ms` would inflate every resolver run by
   // a cost no model paid.
   const anchored = `${prompt}${await landingAnchorBlock(root)}`;
-  let observed: WorkerRunObservation = { model: WORKER_MODELS.merge.model };
+  const route = workerRouteFor("merge");
+  let observed: WorkerRunObservation = !MERGE_CMD && route.route === "codex-exec"
+    ? { model: WORKER_MODELS.merge.model, effort: WORKER_MODELS.merge.effort, backend: "codex-exec" }
+    : { model: WORKER_MODELS.merge.model, effort: WORKER_MODELS.merge.effort };
   const startedAt = Date.now();
   const emit = (status: ResolverRun["status"]): void => onRun({ worker: "merge", model: observed.model,
     ...(observed.backend ? { backend: observed.backend } : {}),
@@ -30914,7 +30953,10 @@ async function runRepair(cwd: string, root: string, branch: string, main: string
   onRun: (r: ResolverRun) => void): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
   const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted, graphs });
   const anchored = `${prompt}${await landingAnchorBlock(root)}`;
-  let observed: WorkerRunObservation = { model: WORKER_MODELS.repair.model };
+  const route = workerRouteFor("repair");
+  let observed: WorkerRunObservation = !MERGE_CMD && route.route === "codex-exec"
+    ? { model: WORKER_MODELS.repair.model, effort: WORKER_MODELS.repair.effort, backend: "codex-exec" }
+    : { model: WORKER_MODELS.repair.model, effort: WORKER_MODELS.repair.effort };
   const startedAt = Date.now();
   const emit = (status: ResolverRun["status"]): void => onRun({ worker: "repair", model: observed.model,
     ...(observed.backend ? { backend: observed.backend } : {}),

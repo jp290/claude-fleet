@@ -5266,13 +5266,56 @@ Karte, weil die Ableitung sie sieht, und erzeugen keine Kante.
 
 ### 16c. Was `GET /api/self/gate` davon liefert
 
-`localProof.modules` nennt die Module, um die der COMMITTETE Fußabdruck dieser Lane geht — und ist
-ABWESEND, sobald der Abdruck nicht vollständig aus Check-Modulen besteht: eine Datei, die die Karte
-nicht platzieren kann (`server.ts`, ein Wrapper, `e2e/harness.ts`, der Runner selbst) kann ändern,
-was JEDES Modul misst, und nimmt darum die ganze Suite mit. Abwesend heißt „keine Verengung", nie
-„keine Module beteiligt" — eine leere LISTE wird deshalb nie geliefert. Der Runner rechnet den
-Schluss aus derselben Tabelle noch einmal und druckt ihn, sodass die Empfehlung und der Lauf nicht
-auseinanderlaufen können.
+`localProof.preview` liefert den eingeschalteten Default samt Ziel-, Diff- und Coverage-Provenienz.
+Die Zielauflösung ist dieselbe `laneBaseRef`, die der Land-Pfad verwendet. Ihr validierter
+Branchname und aktueller Ref-SHA stehen in `preview.target`; `worktree.baseSha` bleibt Diffanker.
+Bei einer geschuldeten main-Preview ist der Default **voll**, also `offerBody: {}`. Auf einem
+Nicht-main-Integrationsziel wird ein vollständig belegter Diff automatisch **gezielt**:
+`localProof.modules` und `offerBody.modules` sind die identische transitive Fixture-Hülle aus
+`suite-modules.ts#modulePlanFor`. `preview.plan` nennt Writer-Kanten und gepflanzte Fixtures.
+Die dateibasierte lokale Schrittauswahl und die Pflicht zur Preview bleiben unverändert.
+
+Der bestehende Mapper `suite-modules.ts#modulesForPaths` hält alle Zuordnungen. Check-Modulpfade
+brauchen ausführbare Checks im fest gelesenen Candidate. Für `server.ts` werden die geänderten
+Zeilen beider Diffseiten vollständigen ausführbaren Funktionskörpern zugeordnet. Die erste
+belegte Symbolmenge ist `laneSuiteView` (LS.6 Wire-Shape), `withOfferBody` (LP.api main) und
+`laneLocalProof` (LP.api target), jeweils in `e2e/lane-suite.ts`. Source- und Checkanker stehen in
+`preview.coverage.anchors`; Kommentare allein genügen nicht. Fehlende/mehrdeutige Deklarationen,
+weitere Symbole, globale Seams, Wrapper und unaufgelöste Fixture-Kanten werden benannt und führen
+zum **vollen Fallback**. Auch ein fehlendes, widersprüchliches oder während der Lesung verändertes
+Land-Ziel bleibt **unknown** mit vollem Default. Ein SHA wird niemals als Nicht-main-Branch erfunden.
+
+Docs-only/keine geschuldete Preview und der eigene Fremdrepo-Verify bleiben unverändert.
+Die bestehende validierte MAIN-Modulabweichung bleibt mit sachlicher Begründung möglich; ein
+Brief muss den Normalfall nicht wiederholen. Ein Helfer ohne `takesModules` mintet kein gezieltes
+Offer: die bestehende Tür nennt den Grund; lokal gezielt oder begründet voll ist der Rückfall.
+Das gilt ausschließlich für Preview. Land-Gate und Post-Land-Audit bekommen keine Modulfilter,
+keinen Runtime-Schalter und keine neue Policy-Ausnahme (§6 und die bestehenden Pins).
+
+Wire/API, Server, Docs und Probes: apply. Rückwärtsfall ohne auflösbares Ziel: benannter voller
+Default. Client: nicht erforderlich; Consumer lesen das bestehende `localProof`/`offerBody`.
+
+### 16c.1 Vorherbestand je Land, Nachher unknown (2026-10-01)
+
+Messpfad: vorhandene `fleet.json:laneSuiteJobs`-Receipts (retained window),
+`lane-outcomes.jsonl` + `.1` und `git notes --ref=fleet/land show <mainAfter>`.
+Je Land zählt die letzte vorher abgeschlossene grüne Preview derselben Branch, nur wenn
+`result.treeSha` exakt dem gelandeten Git-Tree entspricht. `result.ms` ist Arbeitszeit,
+kein Mutex-Warten. Das Land-Ziel kommt aus der Land-Note `base`, nicht aus dem SHA-Feld
+`lane-outcomes.base`. Dieses begrenzte Fenster ist keine vollständige Historie.
+
+| Land | Ziel (Land-Note) | Preview-Receipt | Auswahl | identischer Tree | ms |
+| --- | --- | --- | --- | --- | ---: |
+| `925e5b59497e` | overhaul | `ddeca299804b` | voll | `7de618f9d2f2` | 2624294 |
+| `6ae00645df37` | overhaul | `9d04ebc46b4d` | voll | `f17c3fc3350d` | 2604780 |
+| `62532a3f9fd5` | overhaul | `ef82fa737de3` | voll | `0a56258ce063` | 2608032 |
+| `70355e23428c` | main | `68d3a7e371dd` | ctl,land-durability,tasks (Handauswahl) | `91e0d1ff400e` | 726306 |
+
+Median der vier belegten Lands: **2606406 ms**. Die drei vollen overhaul-Previews:
+**2608032 ms** Median. Die einzelne manuelle main-Auswahl ist kein Beweis für einen neuen
+Default und keine vergleichbare Nachhergruppe. Die älteren Vorherwerte stehen weiterhin in §16d.
+Nachherbestand für den automatischen Default und damit Gewinn je Land: **unknown**.
+Kein neuer Benchmarklauf, keine prognostizierte Ersparnis als Messung.
 
 ### 16d. Die erste Messung (2026-09-17) — und was die Vorschau NICHT finden konnte
 

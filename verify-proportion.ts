@@ -3,7 +3,7 @@
 // recommendation is advisory; the authoritative server gate uses this same classification for
 // its docs-only short chain and otherwise runs its full configured chain.
 
-import { modulesForPaths } from "./suite-modules";
+import { modulesForPaths, modulePlanFor, type FootprintEvidence, type FootprintCoverage, type ModulePlan } from "./suite-modules";
 
 export const LOCAL_PROOF_STEPS = [
   "install",
@@ -34,15 +34,11 @@ export interface LocalProof {
   // command selection asks). Absent therefore means "these steps are this repo's own", never
   // "no note was computed".
   note?: string;
-  // WHICH CHECK MODULES this footprint is about, for a lane that wants the isolated preview NARROWED
-  // (`FLEET_E2E_MODULES=<these>`; the runner adds the transitive fixture closure and prints it).
-  // Advisory, and present only where narrowing is honest: absent means "no narrowing", which is the
-  // answer for every footprint that is not entirely check modules — one file the map cannot place
-  // (server.ts, a wrapper, e2e/harness.ts) can change what any module measures.
-  // It never narrows the authoritative gate: the land gate's chain does not run that runner at all,
-  // and the post-land audit's child environment drops every FLEET_* variable (e2e/pins.ts holds
-  // both). A filtered run is a PREVIEW — docs/verify-tiering.md §16.
+  // File-only classification names check modules; gate context replaces that advice with the
+  // exact preview selection, including modulePlanFor's transitive fixture closure. Absent means
+  // the full suite or no owed preview. This never narrows the authoritative gate or audit.
   modules?: string[];
+  preview?: PreviewRecommendation;
 }
 
 export interface VerificationProportion extends LocalProof {
@@ -117,7 +113,52 @@ export function verificationProportionFor(files: string[]): VerificationProporti
   };
 }
 
-export function localProofFor(files: string[]): LocalProof {
+export type LandTarget =
+  | { state: "known"; branch: string; sha: string; via: "laneBaseRef" }
+  | { state: "unknown"; reason: string; via: "laneBaseRef" };
+export interface LocalProofContext {
+  target: LandTarget;
+  diff?: { baseSha: string; headSha: string; treeSha: string };
+  footprint: FootprintEvidence;
+}
+export interface PreviewRecommendation {
+  default: "none" | "full" | "modules";
+  reason: string;
+  target: LandTarget;
+  diff?: LocalProofContext["diff"];
+  coverage: FootprintCoverage;
+  plan?: ModulePlan;
+}
+
+export function localProofFor(files: string[], context?: LocalProofContext): LocalProof {
   const { proportional: _, ...proof } = verificationProportionFor(files);
-  return proof;
+  // File-only callers retain the classifier contract; the gate always supplies an explicit target,
+  // including unknown. No saved target metadata or environment switch grants narrowing.
+  if (!context) return proof;
+  const { modules: _modules, ...local } = proof;
+  const paths = files.filter((file) => proof.classifiedAs[file] !== DOC_RULE.label);
+  const coverage = modulesForPaths(paths, context.footprint);
+  const plan = coverage.state === "covered" ? modulePlanFor(coverage.named) : undefined;
+  const preview: PreviewRecommendation = {
+    default: "full", reason: "", target: context.target,
+    ...(context.diff ? { diff: context.diff } : {}), coverage,
+    ...(plan ? { plan } : {}),
+  };
+  if (proof.isolatedPreview === false) {
+    preview.default = "none";
+    preview.reason = "no isolated preview owed by this footprint";
+  } else if (context.target.state === "unknown") {
+    preview.reason = `unknown land target: ${context.target.reason}; full conservative fallback`;
+  } else if (context.target.branch === "main") {
+    preview.reason = "main-bound preview: full suite before promotion";
+  } else if (coverage.state !== "covered") {
+    preview.reason = `uncovered footprint: ${coverage.reasons.join("; ")}; full conservative fallback`;
+  } else if (!plan || plan.unknown.length || plan.unresolved.length || !plan.run.length) {
+    preview.reason = "fixture closure is unresolved; full conservative fallback";
+  } else {
+    preview.default = "modules";
+    preview.reason = `non-main target ${context.target.branch}: every changed source has a check anchor; transitive fixture closure applied`;
+    return { ...local, modules: plan.run, preview };
+  }
+  return { ...local, preview };
 }

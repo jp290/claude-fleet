@@ -5833,11 +5833,43 @@ async function laneLocalProof(s: Slot): Promise<LaneLocalProof | null> {
           : "verify = nothing is configured for this repo (`verify` is null above): name the proof you ran in your report"),
     };
   }
-  const base = s.worktree.baseSha ?? await laneBaseRef(s);
-  if (!base) return null;
-  const changed = await gitRead(s.cwd, "diff", "--no-renames", "--name-only", `${base}...HEAD`);
+  const targetRef = await laneBaseRef(s);
+  const targetTip = targetRef && targetRef !== s.worktree.branch
+    ? await gitRead(s.worktree.repo, "rev-parse", "--verify", `refs/heads/${targetRef}`) : null;
+  const head = await gitRead(s.cwd, "rev-parse", "HEAD");
+  const tree = await gitRead(s.cwd, "rev-parse", `${head.out}^{tree}`);
+  const base = s.worktree.baseSha ?? targetRef;
+  if (!base || head.code !== 0 || tree.code !== 0) return null;
+  const diffBase = await gitRead(s.cwd, "merge-base", base, head.out);
+  if (diffBase.code !== 0 || !diffBase.out) return null;
+  const range = `${diffBase.out}...${head.out}`;
+  const changed = await gitRead(s.cwd, "diff", "--no-renames", "--name-only", range);
   if (changed.code !== 0) return null;
-  return withOfferBody(localProofFor(changed.out.split("\n").filter(Boolean)));
+  const files = changed.out.split("\n").filter(Boolean);
+  const checks: Record<string, string> = {};
+  for (const file of new Set([...files.filter((f) => /^e2e\/[\w-]+\.ts$/.test(f)), "e2e/lane-suite.ts"])) {
+    const source = await gitRead(s.cwd, "show", `${head.out}:${file}`);
+    if (source.code === 0) checks[file] = source.out;
+  }
+  let server: NonNullable<Parameters<typeof localProofFor>[1]>["footprint"]["server"];
+  if (files.includes("server.ts")) {
+    const before = await gitRead(s.cwd, "show", `${diffBase.out}:server.ts`);
+    const after = await gitRead(s.cwd, "show", `${head.out}:server.ts`);
+    const patch = await gitRead(s.cwd, "diff", "--no-renames", "--unified=0", range, "--", "server.ts");
+    if (before.code === 0 && after.code === 0 && patch.code === 0)
+      server = { before: before.out, after: after.out, patch: patch.out };
+  }
+  const freshRef = await laneBaseRef(s);
+  const freshTip = freshRef ? await gitRead(s.worktree.repo, "rev-parse", "--verify", `refs/heads/${freshRef}`) : null;
+  const target: NonNullable<Parameters<typeof localProofFor>[1]>["target"] =
+    targetTip?.code === 0 && targetTip.out && freshRef === targetRef && freshTip?.code === 0 && freshTip.out === targetTip.out
+      ? { state: "known", branch: targetRef!, sha: targetTip.out, via: "laneBaseRef" }
+      : { state: "unknown", via: "laneBaseRef", reason: !targetRef ? "land resolution returned no target"
+        : targetRef === s.worktree.branch ? "land target contradicts lane branch"
+        : "land target is missing, unresolvable or changed during the reading" };
+  return withOfferBody(localProofFor(files, {
+    target, diff: { baseSha: diffBase.out, headSha: head.out, treeSha: tree.out }, footprint: { checks, ...(server ? { server } : {}) },
+  }));
 }
 // --- the slot's commits, for the review window's left column ---
 // ONE list, used twice: the client renders it, and the per-commit diff route checks a requested

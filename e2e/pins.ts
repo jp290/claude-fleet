@@ -41,7 +41,7 @@ import { SHARD_UNITS, shardPlan } from "./ctx";
 // the module filter's map is IMPORTED and RUN, never re-spelled: a pin holding a second copy of
 // the edges would pin the copy. What cannot be imported is the modules' own sources — those are
 // re-derived below and compared against the map.
-import { FIXTURES, MODULE_FIXTURES, moduleListFrom, modulePlanFor, modulesForPaths, selectModules } from "../suite-modules";
+import { FIXTURES, MODULE_FIXTURES, moduleListFrom, modulePlanFor, modulesForPaths, SERVER_MODULE_ANCHORS, selectModules } from "../suite-modules";
 // the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
@@ -10306,6 +10306,23 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && modulesForPaths([]) === null,
     JSON.stringify({ two: modulesForPaths(["e2e/tasks.ts", "e2e/slots.ts"]), mixed: modulesForPaths(["e2e/tasks.ts", "server.ts"]),
       plumbing: modulesForPaths(["e2e/harness.ts"]) }));
+
+  const anchorGaps = SERVER_MODULE_ANCHORS.filter((a) => {
+    const source = serverU.module("server.ts");
+    const checks = read(`e2e/${a.module}.ts`);
+    try {
+      const transpiler = new Bun.Transpiler({ loader: "ts" });
+      return !new RegExp(`^(?:async )?function ${a.symbol}\\(`, "m").test(transpiler.transformSync(source))
+        || !transpiler.transformSync(checks).includes(`check(${JSON.stringify(a.check)}`)
+        || !read("docs/verify-tiering.md").includes(`\`${a.symbol}\``);
+    } catch { return true; }
+  });
+  pin(`${RULE_MODULES} — server-symbol mappings have executable source/check anchors and documented scope`,
+    SERVER_MODULE_ANCHORS.length > 0 && anchorGaps.length === 0, JSON.stringify(anchorGaps));
+  const gateDoc = read("docs/self-api.md").split("\n## autos —")[0]!;
+  pin(`${RULE_MODULES} — gate docs name the main default, target provenance, unknown fallback and fixture plan`,
+    ["localProof.preview", "laneBaseRef", "baseSha", "modulePlanFor", "full|modules", "Unknown-Ziel", "Land-Gate"].every((word) => gateDoc.includes(word)),
+    "docs/self-api.md gate/preview default contract");
 
   // --- THE DOC SEAM. docs/verify-tiering.md §16 is where the record of reader/writer lives, and a
   // record missing a module is the one a lane would trust while planning a narrower run.

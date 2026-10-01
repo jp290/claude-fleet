@@ -15,7 +15,7 @@
 // see: THE TREE THAT LEAVES IS THE LANE'S WORKING TREE. A bundle of HEAD is the plausible wrong
 // implementation, and it fails SILENTLY: the suite runs, it passes, and it answers a question about
 // code the lane has not got. (LS.3) is that assertion.
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -24,6 +24,8 @@ import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
 import { suiteMeter, laneTail, meterKind, meterLine, type MeterInput } from "../src/suitemeter";
 import { DAEMON_FEATURES, modulesEnv } from "../helper-daemon/daemon";
+import { localProofFor, verificationProportionFor, type LocalProof, type LocalProofContext } from "../verify-proportion";
+import { modulePlanFor, SERVER_MODULE_ANCHORS } from "../suite-modules";
 
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
@@ -140,6 +142,61 @@ async function selfTokenOf(slot: number): Promise<string> {
 }
 
 export async function run(): Promise<void> {
+  {
+    const known = (branch: string): LocalProofContext["target"] =>
+      ({ state: "known", branch, sha: "a".repeat(40), via: "laneBaseRef" });
+    const checks = { "e2e/tasks.ts": 'export function run() { check("task spec", true); }' };
+    const context = (branch: string): LocalProofContext => ({ target: known(branch), footprint: { checks } });
+    const main = localProofFor(["e2e/tasks.ts"], context("main"));
+    const integration = localProofFor(["e2e/tasks.ts"], context("overhaul"));
+    check("(LP.spec main) the same covered diff on main defaults to a full preview",
+      main.preview?.default === "full" && main.modules === undefined && main.preview.reason.includes("main-bound"),
+      JSON.stringify(main));
+    check("(LP.spec closure) a non-main target defaults to the exact transitive fixture closure",
+      integration.preview?.default === "modules"
+        && JSON.stringify(integration.modules) === '["self-token","outcomes","tasks"]'
+        && JSON.stringify(integration.preview.plan) === JSON.stringify(modulePlanFor(["tasks"])), JSON.stringify(integration));
+    const before = "function laneSuiteView(j: {state:string}) {\n  return { state: j.state };\n}\n";
+    const after = before.replace("state: j.state", "state: String(j.state)");
+    const anchor = SERVER_MODULE_ANCHORS.find((a) => a.symbol === "laneSuiteView")!;
+    const source = (checkSource: string, beforeSource = before, afterSource = after, patch = "@@ -2 +2 @@"): LocalProofContext =>
+      ({ target: known("overhaul"), footprint: {
+        server: { before: beforeSource, after: afterSource, patch }, checks: { "e2e/lane-suite.ts": checkSource },
+      } });
+    const call = `export function run() { check(${JSON.stringify(anchor.check)}, true); }`;
+    const covered = localProofFor(["server.ts"], source(call));
+    check("(LP.spec symbol) a changed server symbol requires its executable source and named check anchor",
+      covered.preview?.coverage.state === "covered" && JSON.stringify(covered.modules) === '["lane-suite"]'
+        && covered.preview.coverage.anchors[0]?.source === "server.ts#laneSuiteView", JSON.stringify(covered));
+    const commented = localProofFor(["server.ts"], source(`// ${call}`));
+    check("(LP.spec comment) a check anchor present only in comments cannot prove coverage",
+      commented.preview?.default === "full" && commented.preview.coverage.state === "unknown"
+        && commented.preview.reason.includes("missing executable check anchor"), JSON.stringify(commented));
+    const unproven = localProofFor(["server.ts"], source(call,
+      before.replaceAll("laneSuiteView", "unproven"), after.replaceAll("laneSuiteView", "unproven")));
+    check("(LP.spec unknown symbol) an unmapped symbol is named in the full fallback",
+      unproven.preview?.default === "full" && unproven.preview.reason.includes("server.ts#unproven"), JSON.stringify(unproven));
+    const seam = localProofFor(["server.ts"], source(call, before + "const globalSeam = 1;\n",
+      after + "const globalSeam = 2;\n", "@@ -4 +4 @@"));
+    check("(LP.spec seam) changed globals cannot borrow an adjacent function's coverage",
+      seam.preview?.default === "full" && seam.preview.reason.includes("global or unrecognized"), JSON.stringify(seam));
+    const unknown = localProofFor(["e2e/tasks.ts"], { ...context("overhaul"),
+      target: { state: "unknown", via: "laneBaseRef", reason: "no target metadata" } });
+    check("(LP.spec unknown target) missing target provenance keeps a covered diff full",
+      unknown.preview?.default === "full" && unknown.modules === undefined && unknown.preview.reason.includes("no target metadata"),
+      JSON.stringify(unknown));
+    const wrapper = localProofFor(["e2e-isolated.sh"], context("overhaul"));
+    check("(LP.spec wrapper) a wrapper is a named full fallback even on a non-main target",
+      wrapper.preview?.default === "full" && wrapper.preview.reason.includes("e2e-isolated.sh"), JSON.stringify(wrapper));
+    const docs = localProofFor(["docs/guide.md"], context("main"));
+    check("(LP.spec docs) docs-only still owes install,pins and no preview",
+      docs.preview?.default === "none" && docs.isolatedPreview === false && docs.steps.join(",") === "install,pins", JSON.stringify(docs));
+    check("(LP.spec gates) preview selection never makes source work docs-proportional",
+      verificationProportionFor(["e2e/tasks.ts"]).proportional === false
+        && verificationProportionFor(["server.ts"]).proportional === false
+        && verificationProportionFor(["docs/guide.md"]).proportional === true);
+  }
+
   // ===== (LS.meter) THE SUITE METER'S STATION MODEL, RUN — no server, no DOM ====================
   // src/suitemeter.ts decides which station every suite row sits at on the board's thermometer and
   // how its lane is named. The rules are the owner's reading of the meter: one ball per wire row,
@@ -338,8 +395,8 @@ export async function run(): Promise<void> {
     fetch(BASE + path, { headers: { "x-fleet-self-token": token } });
   const offerOf = async (token: string): Promise<OfferPayload> =>
     await bodyOf<OfferPayload>(await selfGet("/api/self/suite-offer", token));
-  const gateOf = async (token: string): Promise<{ helper?: HelperPresenceView; error?: string }> =>
-    await bodyOf<{ helper?: HelperPresenceView }>(await selfGet("/api/self/gate", token));
+  const gateOf = async (token: string): Promise<{ helper?: HelperPresenceView; localProof?: LocalProof & { offerBody?: { modules?: string[] } }; verify?: { cmd: string } | null; error?: string }> =>
+    await bodyOf<{ helper?: HelperPresenceView; localProof?: LocalProof & { offerBody?: { modules?: string[] } }; verify?: { cmd: string } | null }>(await selfGet("/api/self/gate", token));
   // ONE heartbeat, sent immediately before an offer is MINTED. The offer door refuses to mint while
   // nothing is beating (LS.0), and the harness runs with a deliberately short online window
   // (FLEET_DEVICE_ONLINE_MS in e2e-isolated.sh) so that refusal is observable at all — which means
@@ -1412,6 +1469,121 @@ export async function run(): Promise<void> {
       modResult.ok && modRead.offer?.id === modJob && modRead.offer.state === "reported"
         && modRead.offer.result?.result === "green" && JSON.stringify(modRead.offer.modules) === '["lane-suite","security"]',
       JSON.stringify({ status: modResult.status, state: modRead.offer?.state, modules: modRead.offer?.modules, r: modRead.offer?.result?.result }));
+
+    {
+      const fixture = `${ROOT}/preview-default-repo`;
+      const foreign = `${ROOT}/preview-default-foreign`;
+      const lanes: Lane[] = [];
+      const command = (cwd: string, ...args: string[]) => spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+      const commit = (cwd: string) => {
+        const added = command(cwd, "add", "-A");
+        const committed = command(cwd, "commit", "-qm", "preview default fixture");
+        check("(LP.api fixture) fixture changes commit before the gate reads them", added.status === 0 && committed.status === 0,
+          committed.stderr.slice(0, 160));
+      };
+      const seed = (cwd: string) => {
+        mkdirSync(cwd, { recursive: true });
+        command(cwd, "init", "-q", "-b", "main");
+        command(cwd, "config", "user.name", "Fleet E2E");
+        command(cwd, "config", "user.email", "e2e@example.invalid");
+        command(cwd, "config", "commit.gpgsign", "false");
+      };
+      const attach = async (repo: string, base: string) => {
+        const lane = await bodyOf<Lane>(await post("/api/lanes", { repo, base }));
+        check("(LP.api fixture) the lane is attached to its explicit integration target", !!lane.cwd && !!lane.slot,
+          JSON.stringify({ slot: lane.slot, error: lane.error }));
+        lanes.push(lane);
+        return { lane, token: await selfTokenOf(lane.slot) };
+      };
+      try {
+        seed(fixture);
+        mkdirSync(`${fixture}/e2e`, { recursive: true });
+        writeFileSync(`${fixture}/fleet-e2e.ts`, "// Fleet chain sentinel\n");
+        writeFileSync(`${fixture}/e2e/tasks.ts`, 'export function run() { check("task spec", true); }\n');
+        writeFileSync(`${fixture}/e2e/lane-suite.ts`, readFileSync(`${ROOT}/e2e/lane-suite.ts`, "utf8"));
+        const source = "function laneSuiteView(j: {state:string}) {\n  return { state: j.state };\n}\n"
+          + "function unproven() {\n  return 1;\n}\n";
+        writeFileSync(`${fixture}/server.ts`, source);
+        commit(fixture);
+        command(fixture, "branch", "overhaul");
+        const m = await attach(fixture, "main");
+        const n = await attach(fixture, "overhaul");
+        for (const { lane } of [m, n]) {
+          writeFileSync(`${lane.cwd}/e2e/tasks.ts`, 'export function run() { check("task changed", true); }\n');
+          commit(lane.cwd);
+        }
+        const mainGate = await gateOf(m.token);
+        const nonMainGate = await gateOf(n.token);
+        check("(LP.api main) main-bound preview defaults to the full offer",
+          mainGate.localProof?.preview?.target.state === "known" && mainGate.localProof.preview.target.branch === "main"
+            && mainGate.localProof.preview.default === "full" && mainGate.localProof.modules === undefined
+            && JSON.stringify(mainGate.localProof.offerBody) === "{}", JSON.stringify(mainGate.localProof));
+        check("(LP.api target) the same committed diff on a non-main target defaults to its fixture closure",
+          nonMainGate.localProof?.preview?.target.state === "known" && nonMainGate.localProof.preview.target.branch === "overhaul"
+            && nonMainGate.localProof.preview.default === "modules"
+            && JSON.stringify(nonMainGate.localProof.modules) === '["self-token","outcomes","tasks"]'
+            && JSON.stringify(nonMainGate.localProof.offerBody) === '{"modules":["self-token","outcomes","tasks"]}'
+            && mainGate.localProof?.preview?.diff?.treeSha === nonMainGate.localProof.preview.diff?.treeSha,
+          JSON.stringify(nonMainGate.localProof));
+        for (const [token, proof] of [[m.token, mainGate.localProof], [n.token, nonMainGate.localProof]] as const) {
+          await beatAsDaemon();
+          const minted = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", token, proof?.offerBody));
+          check("(LP.api offer) posting the ready default mints exactly the gate's module selection and tree",
+            !!minted.offer?.id && JSON.stringify(minted.offer.modules) === JSON.stringify(proof?.modules)
+              && minted.offer.treeSha === proof?.preview?.diff?.treeSha, JSON.stringify(minted.offer));
+          const withdrawn = await selfPost("/api/self/suite-offer/withdraw", token);
+          check("(LP.api offer) fixture offer is withdrawn before the next preview", withdrawn.ok);
+        }
+        await beat();
+        const incapable = await gateOf(n.token);
+        const refused = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", n.token, incapable.localProof?.offerBody));
+        check("(LP.api helper) takesModules=false preserves the default and refuses its offer without minting",
+          incapable.helper?.takesModules === false && incapable.localProof?.preview?.default === "modules"
+            && refused.offer === null && refused.reason === "no helper online takes a narrowed preview", JSON.stringify(refused));
+        writeFileSync(`${n.lane.cwd}/server.ts`, source.replace("state: j.state", "state: String(j.state)"));
+        commit(n.lane.cwd);
+        const symbol = await gateOf(n.token);
+        check("(LP.api symbol) a real server diff is mapped by its source and executable check anchors",
+          symbol.localProof?.preview?.coverage.state === "covered"
+            && symbol.localProof.preview.coverage.anchors.some((a) => a.source === "server.ts#laneSuiteView")
+            && JSON.stringify(symbol.localProof.modules) === '["self-token","lane-suite","outcomes","tasks"]',
+          JSON.stringify(symbol.localProof));
+        writeFileSync(`${n.lane.cwd}/server.ts`, source.replace("return 1", "return 2"));
+        commit(n.lane.cwd);
+        const unmapped = await gateOf(n.token);
+        check("(LP.api unknown symbol) an uncovered real symbol yields a named full fallback",
+          unmapped.localProof?.preview?.default === "full" && unmapped.localProof.preview.reason.includes("server.ts#unproven")
+            && JSON.stringify(unmapped.localProof.offerBody) === "{}", JSON.stringify(unmapped.localProof));
+        command(fixture, "branch", "-m", "overhaul", "gone-overhaul");
+        const stale = await gateOf(n.token);
+        check("(LP.api unknown target) a stale branch target cannot borrow the lane's baseSha as a branch",
+          stale.localProof?.preview?.target.state === "unknown" && stale.localProof.preview.default === "full"
+            && stale.localProof.preview.reason.includes("unknown land target") && JSON.stringify(stale.localProof.offerBody) === "{}",
+          JSON.stringify(stale.localProof));
+        const docs = await attach(fixture, "main");
+        mkdirSync(`${docs.lane.cwd}/docs`, { recursive: true });
+        writeFileSync(`${docs.lane.cwd}/docs/guide.md`, "docs-only\n");
+        commit(docs.lane.cwd);
+        const docsGate = await gateOf(docs.token);
+        check("(LP.api docs) a real docs-only diff has no ready offer and still proves install,pins",
+          docsGate.localProof?.isolatedPreview === false && docsGate.localProof.steps.join(",") === "install,pins"
+            && docsGate.localProof.preview?.default === "none" && docsGate.localProof.offerBody === undefined,
+          JSON.stringify(docsGate.localProof));
+        seed(foreign);
+        writeFileSync(`${foreign}/seed.txt`, "foreign\n");
+        commit(foreign);
+        const f = await attach(foreign, "main");
+        const foreignGate = await gateOf(f.token);
+        check("(LP.api foreign) a foreign repo keeps its own verify contract and has no preview default",
+          foreignGate.localProof?.steps.length === 0 && foreignGate.localProof.isolatedPreview === false
+            && foreignGate.localProof.offerBody === undefined && foreignGate.localProof.preview === undefined
+            && (foreignGate.verify === null || !!foreignGate.localProof.note?.includes(foreignGate.verify?.cmd ?? "")),
+          JSON.stringify(foreignGate.localProof));
+      } finally {
+        for (const lane of lanes) if (lane.slot) await post(`/api/slots/${lane.slot}/kill`, {});
+        for (const repo of [fixture, foreign]) rmSync(repo, { recursive: true, force: true });
+      }
+    }
 
     // --- THE RESTORE: a narrowed row the table no longer admits is DROPPED at boot, never widened -----
     // Planted as THIS lane's own OPEN offer (its slot and openedAt), so that a restore which kept it

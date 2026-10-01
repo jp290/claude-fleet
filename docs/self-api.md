@@ -90,6 +90,21 @@ Rechnung. Er ist kein Urteil: ob der Lauf geschuldet ist, sagt `isolatedPreview`
 (auch in jedem Fremdrepo, `steps: []`) und mit `localProof: null`. Ein eingeengter Body braucht
 `helper.takesModules`, sonst antwortet die Tür `offer: null` (§suite-offer).
 
+**Automatischer Preview-Default (Land-Ziel + belegter Diff).** `localProof.preview` nennt
+`default: none|full|modules`, `reason`, `target` (`state: known|unknown`, `via: laneBaseRef`,
+bei known `branch`/`sha`, sonst `reason`), den fest gelesenen `diff{baseSha,headSha,treeSha}`
+und `coverage{state,named,anchors,reasons}`. `baseSha` ist nur Diffanker, kein Land-Ziel.
+Bei geschuldeter Preview nach `main` ist `offerBody` immer `{}`. Ein belegter Nicht-main-Diff
+bekommt automatisch die Module aus `suite-modules.ts`, einschließlich `modulePlanFor`-Fixture-Hülle
+(`preview.plan` benennt hinzugezogene Writer und gepflanzte Fixtures). Unknown-Ziel, unbekannte
+Symbole, globale Seams, Wrapper oder fehlende ausführbare Checkanker ergeben einen begründeten
+vollen Fallback. Fehlende alte Zielmetadaten erfinden kein Nicht-main-Ziel: die bestehende
+Land-Auflösung wird gefragt und ihr nicht auflösbares Ergebnis bleibt unknown.
+Docs-only/keine geschuldete Preview und Fremdrepo-Verify behalten ihren Vertrag. Die bestehende
+MAIN-Abweichung über validierte Modulnamen bleibt mit Begründung möglich; sie ändert weder
+Land-Gate noch Audit. `helper.takesModules:false` lässt die Empfehlung bestehen und die bestehende
+Offer-Tür verweigert deren Minting mit Grund; lokal gezielt laufen oder begründet voll anbieten.
+
 ## autos — `POST /api/self/autos`
 
 Use them to schedule a future check-in on yourself, e.g. right before you'd otherwise go idle waiting on

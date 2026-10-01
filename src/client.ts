@@ -41,6 +41,8 @@ import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_ROWS_MAX,
 // re-spelled so the wave evidence and the brief's note lines cut a row at the same place
 import { noteFirstSentence } from "../task-notes";
 import type { Task as ServerTask } from "../server/types";
+import type { StartPlan, StartPlanNext } from "../start-plan";
+import type { WaitRow } from "../waits";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
@@ -2258,18 +2260,31 @@ export let panes: Pane[] = [];
 export let focused = 0;
 let layout = 1;
 
-// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5): one gear top right, one window, four
-// sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
-// label, its control, its default and a way back (G5.1). "Schrift" is the size panel's ONE home
-// (G5.3) — the Aa corner button opens the window right there. "Fleet" holds the five server
-// switches whose routes already exist (G5.2, card D-3, fleetSection). "This machine" reads the fixed
-// class-2 allowlist and renders no control (card D-5). On the phone the sections become tabs (G3.1);
-// on the desktop all four stack. Esc, backdrop and ✕ come from openShell (G6.3); the focus returns to
-// the button that opened the window (G4).
+// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5+3e6342e2): one gear top right, one window,
+// four sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
+// label, its control and a way back (G5.1). "Schrift" is the size panel's ONE home (G5.3) — the Aa
+// corner button opens the window right there. "Fleet" holds the five server switches whose routes
+// already exist (G5.2, card D-3, fleetSection) and, beside them, what the parallelism really is right
+// now. "Diese Maschine" reads the fixed class-2 allowlist and renders no control (card D-5).
+// The four section targets stand at the top of the window at every width: on the phone each shows
+// its one section (G3.1), on the desktop all four stack and a target scrolls to its section. Esc,
+// backdrop and ✕ come from openShell (G6.3); the focus enters the window on open, Tab and Shift-Tab
+// stay among its visible controls, and the focus returns to the button that opened it (G4).
+// Every control is NAMED BY ITS VISIBLE LABEL through aria-labelledby (G5.3, UI-MAIN 30.09.): a
+// renamed label renames the control, nobody keeps a copied string in sync.
 let settingsShell: Shell | null = null;
 let settingsTab = "device";
-const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "This machine"]];
+const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "Diese Maschine"]];
 const SET_CHOICE_WORDS: Record<string, string> = { tree: "Baum", line: "Zeile", all: "alle" };
+const setOnOff = (on: boolean): string => on ? "an" : "aus";
+// one DOM id per label of the window — the window exists once, a key's dots become dashes
+const setId = (part: string): string => `set-${part.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+// what a keyboard can reach inside an element right now: enabled, rendered, not under [hidden]
+function visibleFocusables(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex='-1'])")]
+    .filter((e) => !(e as HTMLButtonElement).disabled && e.getClientRects().length > 0 && !e.closest("[hidden]")
+      && getComputedStyle(e).visibility !== "hidden");
+}
 
 // The live effect of a row beyond the write itself — the SAME setters the original surfaces
 // call, so a settings toggle can never mean something else than its own button (K2: Bedeutung
@@ -2310,37 +2325,58 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
   });
   settingsShell = shell;
   shell.root.classList.add("solo");
+  // the window is a modal dialog named by its own title; ✕ is named in words, not by its glyph
+  const win = shell.root.querySelector<HTMLElement>(".shellwin");
+  const title = shell.root.querySelector<HTMLElement>(".shelltitles h2");
+  if (win && title) {
+    title.id = setId("title");
+    win.setAttribute("role", "dialog");
+    win.setAttribute("aria-modal", "true");
+    win.setAttribute("aria-labelledby", title.id);
+  }
+  const closeBtn = shell.root.querySelector<HTMLButtonElement>(".shellclose");
+  if (closeBtn) { closeBtn.title = "Schließen (Esc)"; closeBtn.setAttribute("aria-label", "Einstellungen schließen"); }
 
-  const tabs = el("div", "settabs");
+  const tabs = el("nav", "settabs");
+  tabs.setAttribute("aria-label", "Abschnitte");
   const tabBtns = SET_TABS.map(([id, word]) => {
     const b = el("button", "settab", word) as HTMLButtonElement;
+    b.type = "button";
     b.dataset.settingsTab = id;
-    b.onclick = () => { settingsTab = id; syncTabs(); };
+    b.setAttribute("aria-controls", setId(`sec-${id}`));
+    b.onclick = () => { settingsTab = id; syncTabs(true); };
     tabs.appendChild(b);
     return b;
   });
+  const section = (id: string): HTMLElement => {
+    const sec = el("section", "setsec");
+    sec.id = setId(`sec-${id}`);
+    sec.dataset.sec = id;
+    const h = el("h3", "", SET_TABS.find(([x]) => x === id)?.[1] ?? id);
+    h.id = setId(`sec-${id}-h`);
+    sec.setAttribute("aria-labelledby", h.id);
+    sec.appendChild(h);
+    return sec;
+  };
 
-  const device = el("section", "setsec");
-  device.appendChild(el("h3", "", "Dieses Gerät"));
+  const device = section("device");
   for (const d of PREFS) {
     if (!d.row || (d.desktopOnly && MOBILE_MQ.matches)) continue;
     device.appendChild(settingsRow(d));
   }
-  const schrift = el("section", "setsec");
-  schrift.appendChild(el("h3", "", "Schrift"));
+  const schrift = section("schrift");
   schrift.appendChild(sizePanel()); // the ONE panel moves in here (G5.3, kein zweites Zuhause)
-  const fleetsec = el("section", "setsec");
-  fleetsec.appendChild(el("h3", "", "Fleet"));
-  const stagedCount = fleetSection(fleetsec);
-  const machine = el("section", "setsec");
-  machine.appendChild(el("h3", "", "This machine"));
+  const fleetsec = section("fleet");
+  const fleetState = fleetSection(fleetsec);
+  const machine = section("machine");
   machineSection(machine);
+  const sections: [string, HTMLElement][] = [["device", device], ["schrift", schrift], ["fleet", fleetsec], ["machine", machine]];
 
   shell.detail.append(tabs, device, schrift, fleetsec, machine);
   let discard: HTMLElement | null = null;
   let discardFocus: HTMLElement | null = null;
   shell.setCloseGuard(() => {
-    const n = stagedCount();
+    const n = fleetState.staged();
     if (!n) { discard?.remove(); discard = null; return false; }
     if (!discard) {
       discardFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -2351,7 +2387,14 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
       question.id = "settings-discard-question";
       const buttons = el("div", "riskbtns");
       const keep = el("button", "riskbtn", "Weiter bearbeiten") as HTMLButtonElement;
-      keep.onclick = () => { discard?.remove(); discard = null; discardFocus?.focus(); };
+      // back to the control the staged value lives in: the one the reader was on, if it is one of
+      // the Fleet section's; after ✕ or a backdrop click the first staged control
+      keep.onclick = () => {
+        discard?.remove(); discard = null;
+        const back = discardFocus?.isConnected && fleetsec.contains(discardFocus) ? discardFocus : fleetState.firstStaged();
+        settingsTab = "fleet"; syncTabs(false);
+        back?.focus();
+      };
       const drop = el("button", "riskbtn danger", "Verwerfen") as HTMLButtonElement;
       drop.onclick = () => { shell.setCloseGuard(null); shell.close(); };
       buttons.append(keep, drop);
@@ -2363,63 +2406,121 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
     shell.detail.scrollTop = 0;
     return true;
   });
-  syncTabs();
 
-  function syncTabs() {
+  // THE FOCUS TRAP, scoped to this window's own root: Tab after the last visible control goes to
+  // the first, Shift-Tab before the first to the last; every step in between is the browser's own.
+  // No document handler — a key typed anywhere else is none of this window's business.
+  shell.root.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
+    const ring = visibleFocusables(shell.root);
+    if (!ring.length) return;
+    const i = ring.indexOf(document.activeElement as HTMLElement);
+    const next = e.shiftKey ? (i === 0 ? ring[ring.length - 1] : null) : (i === ring.length - 1 ? ring[0] : null);
+    if (next) { e.preventDefault(); next.focus(); }
+  });
+  // on the desktop all four sections stack: the target of the section under the target row reads
+  // pressed while the reader scrolls (one frame per scroll burst, no timer)
+  let spy = 0;
+  shell.detail.addEventListener("scroll", () => {
+    if (MOBILE_MQ.matches || spy) return;
+    spy = requestAnimationFrame(() => {
+      spy = 0;
+      const top = tabs.getBoundingClientRect().bottom + 8;
+      const d = shell.detail;
+      const cur = sections.find(([id]) => id === settingsTab)?.[1];
+      // at the end of the scroll a short last section can never reach the top: a section the reader
+      // chose stays chosen while it is on screen
+      if (d.scrollTop + d.clientHeight >= d.scrollHeight - 2 && cur
+        && cur.getBoundingClientRect().top < d.getBoundingClientRect().bottom) return;
+      let pick = sections[0][0];
+      for (const [id, sec] of sections) if (sec.getBoundingClientRect().top <= top) pick = id;
+      if (pick !== settingsTab) { settingsTab = pick; syncTabs(false); }
+    });
+  }, { passive: true });
+  syncTabs(true);
+  tabBtns[Math.max(0, SET_TABS.findIndex(([id]) => id === settingsTab))].focus();
+
+  function syncTabs(scroll: boolean) {
     SET_TABS.forEach(([id], i) => {
       tabBtns[i].classList.toggle("on", settingsTab === id);
       tabBtns[i].setAttribute("aria-pressed", settingsTab === id ? "true" : "false");
     });
-    device.classList.toggle("on", settingsTab === "device");
-    schrift.classList.toggle("on", settingsTab === "schrift");
-    fleetsec.classList.toggle("on", settingsTab === "fleet");
-    machine.classList.toggle("on", settingsTab === "machine");
-    const section = settingsTab === "schrift" ? schrift : settingsTab === "fleet" ? fleetsec
-      : settingsTab === "machine" ? machine : device;
+    for (const [id, sec] of sections) sec.classList.toggle("on", settingsTab === id);
+    if (!scroll) return;
+    const sec = sections.find(([id]) => id === settingsTab)?.[1] ?? device;
     shell.detail.scrollTop = MOBILE_MQ.matches ? 0
-      : shell.detail.scrollTop + section.getBoundingClientRect().top - shell.detail.getBoundingClientRect().top - 2;
+      : shell.detail.scrollTop + sec.getBoundingClientRect().top - tabs.getBoundingClientRect().bottom - 2;
   }
 }
 
 // one registry row (G5.3): label left, control right, the value in mono, a hint under the row —
-// and the way back: "Standard" forgets the key, so the next read falls back to the default.
+// and the way back: "Standard" forgets the key, so the next read falls back to the default. The
+// control is named by the label element and described by the hint (aria-labelledby/-describedby);
+// a toggle carries its state as aria-pressed, a choice is one named group whose chosen option
+// alone reads pressed. "Standard" shows only while the row deviates, so the default needs no
+// second line beside a state that already says it.
 function settingsRow(d: PrefDef): HTMLElement {
   const row = el("div", "setrow");
   const main = el("div", "setmain");
-  main.appendChild(el("div", "setlabel", d.label));
-  const std = d.kind === "bool" ? (d.def === "1" ? "on" : "off")
-    : d.kind === "choice" ? SET_CHOICE_WORDS[d.def] ?? d.def : null;
-  main.appendChild(el("div", "hint setnote", [d.hint, std !== null ? `Standard: ${std}` : ""].filter(Boolean).join(" ")));
+  const label = el("div", "setlabel", d.label);
+  label.id = setId(`l-${d.key}`);
+  const hint = el("div", "hint setnote", d.hint ?? "");
+  hint.id = setId(`h-${d.key}`);
+  main.append(label, hint);
   row.appendChild(main);
+  const std = d.kind === "bool" ? setOnOff(d.def === "1")
+    : d.kind === "choice" ? SET_CHOICE_WORDS[d.def] ?? d.def : null;
+  const named = (c: HTMLElement) => { c.setAttribute("aria-labelledby", label.id); c.setAttribute("aria-describedby", hint.id); };
 
   const sync: (() => void)[] = [];
   let control: HTMLElement;
+  // where the focus goes when "Standard" hides itself under the reader's keyboard
+  let home: () => HTMLElement | null = () => null;
   if (d.row === "toggle") {
     const b = el("button", "settoggle") as HTMLButtonElement;
+    b.type = "button";
+    named(b);
     b.onclick = () => { prefSetBool(d.key, !prefBool(d.key)); PREF_APPLY[d.key]?.(); syncAll(); };
     sync.push(() => {
       const on = prefBool(d.key);
-      b.textContent = on ? "on" : "off";
+      b.textContent = setOnOff(on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
     });
     control = b;
+    home = () => b;
   } else if (d.row === "choice") {
     const wrap = el("div", "setchoice");
+    wrap.setAttribute("role", "group");
+    named(wrap);
     for (const v of d.values ?? []) {
       const b = el("button", "settab", SET_CHOICE_WORDS[v] ?? v) as HTMLButtonElement;
+      b.type = "button";
       b.onclick = () => { prefSet(d.key, v); PREF_APPLY[d.key]?.(); syncAll(); };
-      sync.push(() => b.classList.toggle("on", prefText(d.key) === v));
+      sync.push(() => {
+        const on = prefText(d.key) === v;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      });
       wrap.appendChild(b);
     }
     control = wrap;
+    home = () => wrap.querySelector<HTMLElement>('button[aria-pressed="true"]');
   } else {
     const val = el("span", "setval");
     sync.push(() => { val.textContent = SET_VALUE[d.key]?.() ?? prefText(d.key); });
     control = val;
   }
-  const reset = el("button", "setreset", "Reset") as HTMLButtonElement;
-  reset.title = `${d.label} auf den Standard zurücksetzen`;
-  reset.onclick = () => { prefSet(d.key, null); PREF_APPLY[d.key]?.(); syncAll(); };
+  const reset = el("button", "setreset", "Standard") as HTMLButtonElement;
+  reset.type = "button";
+  reset.id = setId(`r-${d.key}`);
+  reset.setAttribute("aria-labelledby", `${reset.id} ${label.id}`);
+  reset.title = std !== null ? `${d.label}: zurück auf den Standard (${std})` : `${d.label}: zurück auf den Standard`;
+  reset.onclick = () => {
+    const ring = visibleFocusables(row.closest<HTMLElement>(".shellwin") ?? document.body);
+    const at = ring.indexOf(reset);
+    prefSet(d.key, null); PREF_APPLY[d.key]?.(); syncAll();
+    (home() ?? ring[at + 1] ?? ring[at - 1])?.focus();
+  };
   row.append(control, reset);
   function syncAll() {
     for (const f of sync) f();
@@ -2437,11 +2538,13 @@ interface MachineSetting {
   how: ".env + Neustart" | "watchdog.sh + kickstart";
 }
 
-// THE "THIS MACHINE" SECTION (G5.3, card D-5): server-start values are observations, not form
+// THE "DIESE MASCHINE" SECTION (G5.3, card D-5): server-start values are observations, not form
 // state. Each row therefore has only the label, effective mono value and explanatory hint — no
-// input, toggle, Reset or Apply path. The route itself owns the security allowlist.
+// input, toggle, Reset or Apply path. The route itself owns the security allowlist. A row is a
+// group named by its label element, so the later rename of these labels renames it with them.
 function machineSection(sec: HTMLElement): void {
-  const status = el("div", "hint setnote", "Loading machine settings…");
+  const status = el("div", "hint setnote", "Lädt die Startwerte dieser Maschine …");
+  status.setAttribute("role", "status");
   status.title = "Lädt die wirksamen Startwerte dieses Servers.";
   sec.appendChild(status);
   void (async () => {
@@ -2455,143 +2558,345 @@ function machineSection(sec: HTMLElement): void {
         && (x.how === ".env + Neustart" || x.how === "watchdog.sh + kickstart");
     }) : [];
     if (!res?.ok || !body || settings.length === 0) {
-      status.textContent = "Machine settings unavailable.";
+      status.textContent = "Startwerte nicht lesbar.";
       status.title = "Die Startwerte konnten nicht vom Server gelesen werden.";
       return;
     }
     status.remove();
     for (const setting of settings) {
-      const row = el("div", "setrow fleetrow");
+      const row = el("div", "setrow machrow");
       row.title = "Zeigt den wirksamen Startwert dieses Servers und den Weg zu seiner Änderung.";
       const main = el("div", "setmain");
-      main.append(el("div", "setlabel", setting.name),
-        el("div", "hint setnote", `ändern: ${setting.how}; Standard: ${setting.default}`));
+      const label = el("div", "setlabel", setting.name);
+      label.id = setId(`m-${setting.name}`);
+      const hint = el("div", "hint setnote", `ändern: ${setting.how}; Standard: ${setting.default}`);
+      hint.id = setId(`m-${setting.name}-h`);
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-labelledby", label.id);
+      row.setAttribute("aria-describedby", hint.id);
+      main.append(label, hint);
       row.append(main, el("span", "setval", String(setting.value)));
       sec.appendChild(row);
     }
   })();
 }
 
-// THE "FLEET" SECTION (G5.2 + G4.4, card D-3): five server switches over routes that already
-// exist — nothing here is a value of this browser, every row changes the fleet for all devices
-// and sessions. A changed control is only STAGED (ink edge on the row); the one primary "Apply"
-// writes each staged row through its route, and the row then shows the value the SERVER answers
-// with — the poll for dispatcher/autos/quiet, GET /api/repo-lane-caps for the cap and the stored
-// bases, the route's own answer for the branch — never the typed one. A refusal (4xx) stays at its row as a hint and the
-// staged value stays. The dispatcher row reads the same `dispatch` the queue foot reads: no
-// second state lives in this window. Not here, on purpose: repoWorkers (a stored command),
-// .env/watchdog.sh values, and slot/program switches (they live at their thing).
-// e2e/tasks.ts pins the route set of this block — a sixth route is a new card, not a new row.
+// THE "FLEET" SECTION (G5.2 + G4.4, cards D-3 + 3e6342e2): five server switches over routes that
+// already exist — nothing here is a value of this browser, every row changes the fleet for all
+// devices and sessions. A changed control is only STAGED (ink edge on the row); the one primary
+// "Übernehmen" writes each staged row through its route, and the row then shows the value the
+// SERVER answers with — the poll for dispatcher/autos/quiet, GET /api/repo-lane-caps for the cap and
+// the stored bases, the route's own answer for the branch — never the typed one. A refusal (4xx)
+// stays at its row as a hint and the staged value stays. The dispatcher row reads the same
+// `dispatch` the queue foot reads: no second state lives in this window. Not here, on purpose:
+// repoWorkers (a stored command), .env/watchdog.sh values, and slot/program switches (they live
+// at their thing). e2e/tasks.ts pins the route set of this block — a sixth route is a new card.
+//
+// PARALLELISM IN ONE BLOCK (owner 30.09.): the master, the chosen repo's EFFECTIVE cap with its
+// source (machine default vs repo override, both numbers apart), the lanes busy there, the rows the
+// start plan would start now and why the others wait. Occupancy, startable rows and wait reasons
+// come from GET /api/start-plan — the same read the queue's Waves view makes on open — read ONCE
+// when the window opens and again after Übernehmen; no timer, no repaint reads it. A plan that
+// cannot be read says "unbekannt", never zero. "Startbar" is the PLAN's verdict: the master, the
+// kill switch and the quiet window still hold at the tick, and the row says which of them holds.
 interface FleetSetRow {
   row: HTMLElement; val: HTMLElement; err: HTMLElement;
+  // the control a staged value lives in — where "Weiter bearbeiten" and a refusal send the focus
+  focus: HTMLElement;
   staged(): boolean; write(): Promise<Response>; paint(): void; done(answer: unknown): void;
 }
-function fleetSection(sec: HTMLElement): () => number {
+interface FleetSection { staged(): number; firstStaged(): HTMLElement | null }
+type SetPlan = StartPlan & { waits?: WaitRow[] };
+type SetPlanWait = Exclude<StartPlanNext, "now">;
+// the wait kinds in the owner's words, one per step of start-plan.ts#projectStartPlan
+function setWaitKind(n: SetPlanWait): string {
+  if ("cap" in n) return /\bin program\b/.test(n.cap) ? "Program-Deckel voll" : "Repo-Deckel voll";
+  if ("after" in n) return n.missing ? "Reihenfolge, Ziel fehlt" : "Reihenfolge";
+  if ("unreleased" in n) return "nicht freigegeben";
+  if ("collides" in n) return "Überschneidung mit laufender Arbeit";
+  return "ungeprüft";
+}
+function fleetSection(sec: HTMLElement): FleetSection {
   let caps: Record<string, number> = {};
   let capDefault: number | null = null;
   let capMax = 99;
+  let capsRead: "unread" | "ok" | "fail" = "unread";
   // a repo's stored branch: filled from GET /api/repo-lane-caps (`bases`) and from each write's answer
   const bases = new Map<string, string | null>();
+  let plan: SetPlan | null = null;
+  let planRead: "unread" | "ok" | "fail" = "unread";
+  let planAt = 0;
   const repos = [...new Set([dispatch.repo, ...fleet.map((s) => s.cwd ? s.repo ?? s.worktree?.repo ?? "" : "")]
     .filter((r): r is string => !!r))].sort();
-  const onOff = (v: boolean | null) => v === null ? "?" : v ? "on" : "off";
+  const onOff = (v: boolean | null) => v === null ? "unbekannt" : setOnOff(v);
   const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
   const rows: FleetSetRow[] = [];
+  let seq = 0;
 
-  function shell(label: string, hint: string, tip: string): { row: HTMLElement; val: HTMLElement; err: HTMLElement; ctl: HTMLElement } {
+  function sub(word: string): void { sec.appendChild(el("h4", "setsub", word)); }
+  function shell(label: string, hint: string, tip: string, par?: string) {
     const row = el("div", "setrow fleetrow");
     row.title = tip;
+    if (par) row.dataset.par = par;
     const main = el("div", "setmain");
+    const lab = el("div", "setlabel", label);
+    lab.id = setId(`f-${++seq}`);
+    const note = el("div", "hint setnote", hint);
+    note.id = setId(`f-${seq}-h`);
     const err = el("div", "hint setnote seterr");
+    err.setAttribute("role", "status");
     err.hidden = true;
-    main.append(el("div", "setlabel", label), el("div", "hint setnote", hint), err);
+    main.append(lab, note, err);
     const val = el("span", "setval");
     val.title = "Wert, wie ihn der Server zuletzt gemeldet hat";
     const ctl = el("div", "setctl");
     row.append(main, val, ctl);
     sec.appendChild(row);
-    return { row, val, err, ctl };
+    const name = (c: HTMLElement, ...extra: string[]) => {
+      c.setAttribute("aria-labelledby", [...extra, lab.id].join(" "));
+      c.setAttribute("aria-describedby", note.id);
+    };
+    return { row, val, err, ctl, lab, note, name };
   }
   function toggle(): HTMLButtonElement {
-    return el("button", "settoggle") as HTMLButtonElement;
+    const b = el("button", "settoggle") as HTMLButtonElement;
+    b.type = "button";
+    return b;
   }
-  function repoPick(onPick: () => void): HTMLSelectElement {
-    const pick = el("select", "setin") as HTMLSelectElement;
-    for (const r of repos) {
-      const o = el("option", "", baseName(r)) as HTMLOptionElement;
-      o.value = r; o.title = r;
-      pick.appendChild(o);
-    }
-    pick.value = dispatch.repo && repos.includes(dispatch.repo) ? dispatch.repo : repos[0] ?? "";
-    pick.onchange = onPick;
-    return pick;
+  // ONE VALUE PER ROW: the control shows the value; the mono value beside it speaks only when it
+  // says something the control cannot — the server's word while a wish is staged ("Server: an"),
+  // or a state no control shows (unbekannt, nicht verfügbar, nicht gesetzt)
+  // a toggle that shows the staged wish, or the server's word — and "unbekannt" without a pressed
+  // state when the server never said, so an unknown can never read as a chosen "an"
+  function paintToggle(b: HTMLButtonElement, on: boolean | null, staged: boolean) {
+    b.textContent = onOff(on);
+    if (on === null) b.removeAttribute("aria-pressed"); else b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.classList.toggle("staged", staged);
+  }
+  // a small visible word in front of a control — what names it beside the row's label
+  function caption(word: string): HTMLElement {
+    const c = el("span", "setdash", word);
+    c.id = setId(`f-${++seq}-c`);
+    return c;
   }
 
-  // 1 · dispatcher
+  sub("Parallelität");
+  // 1 · dispatcher — the master
   {
-    const s = shell("Dispatcher",
-      "An: freigegebene Aufgaben starten ohne dich als Lanes, für alle Sessions dieser Fleet; aus: sie warten, bis du sie startest.",
-      "Schaltet den Dispatcher der ganzen Fleet — derselbe Schalter wie am Fuß der Queue.");
+    const s = shell("Master",
+      "An: freigegebene Zeilen dürfen ohne dich als Lane starten — für alle Repos und Sessions dieser Fleet. Startet nichts sofort: Reihenfolge, Freigabe, Karte, Deckel, Ruhezeit und Gate gelten weiter; Programs mit „darf starten: an“ starten auch bei aus.",
+      "Schaltet den Dispatcher der ganzen Fleet — derselbe Schalter wie am Fuß der Queue. intern: tickDispatch", "master");
     let want: boolean | null = null;
     const b = toggle();
+    s.name(b);
     b.disabled = !dispatch.available;
     b.onclick = () => { const cur = want ?? dispatch.on; want = !cur === dispatch.on ? null : !cur; sync(); };
     s.ctl.appendChild(b);
-    const r: FleetSetRow = { ...s,
+    const r: FleetSetRow = { ...s, focus: b,
       staged: () => want !== null,
       write: () => post("/api/dispatch", { on: want }),
-      paint: () => { s.val.textContent = dispatch.available ? onOff(dispatch.on) : "unavailable"; },
+      paint: () => {},
       done: () => { want = null; },
     };
     function sync() {
       const on = want ?? dispatch.on;
-      b.textContent = onOff(on);
-      b.setAttribute("aria-pressed", on ? "true" : "false");
-      b.classList.toggle("staged", want !== null);
+      paintToggle(b, on, want !== null);
+      s.val.textContent = !dispatch.available ? "nicht verfügbar" : want !== null ? `Server: ${onOff(dispatch.on)}` : "";
       syncStaged();
     }
     rows.push({ ...r, paint: () => { r.paint(); sync(); } });
   }
-  // 2 · automatic prompts (the kill-switch)
+  // the repo every row below the picker speaks about — one picker for cap, occupancy, waits, branch
+  const repoRow = shell("Repo", "Deckel, Belegung, Wartegründe und Branch darunter gelten für dieses Repo.",
+    "Wählt das Repo, über das die Zeilen darunter sprechen; schreibt nichts.", "repo");
+  const pick = el("select", "setin") as HTMLSelectElement;
+  repoRow.name(pick);
+  for (const r of repos) {
+    const o = el("option", "", baseName(r)) as HTMLOptionElement;
+    o.value = r; o.title = r;
+    pick.appendChild(o);
+  }
+  pick.value = dispatch.repo && repos.includes(dispatch.repo) ? dispatch.repo : repos[0] ?? "";
+  repoRow.ctl.appendChild(pick);
+  repoRow.val.title = "Pfad des gewählten Repos";
+  // two lists on purpose: a REPAINT keeps what the reader staged, a CHANGE of repo drops the staged
+  // cap and branch typed for the old repo (they would be written to the wrong one)
+  const repoPaints: (() => void)[] = [];
+  const repoChanged: (() => void)[] = [];
+  pick.onchange = () => { for (const f of repoChanged) f(); for (const f of repoPaints) f(); };
+  repoPaints.push(() => { repoRow.val.textContent = pick.value || "kein Repo"; });
+
+  // 2 · lane cap of the chosen repo: effective value, its source, the staged wish — three facts apart
+  const effectiveCap = (): { n: number; src: "repo" | "default" } | null => {
+    if (capsRead !== "ok" || !pick.value) return null;
+    const stored = caps[pick.value];
+    if (typeof stored === "number") return { n: stored, src: "repo" };
+    return capDefault !== null ? { n: capDefault, src: "default" } : null;
+  };
   {
-    const s = shell("Automatic prompts",
-      "Aus hält jeden geplanten Prompt in jeder Session an und startet auch keine Lane mehr, bis du sie wieder einschaltest; einmalige Handlungen von dir bleiben möglich.",
+    const s = shell("Lane-Deckel",
+      "Höchstens so viele Lanes startet die Fleet in diesem Repo ohne dich. Ein Deckel ist eine Obergrenze, keine Zusage; leer oder „Standard“ heißt Maschinen-Standard.",
+      "Setzt den Deckel für unbeaufsichtigte Lanes in einem Repo, für alle Sessions.", "cap");
+    const facts = el("div", "hint setnote setfacts");
+    facts.id = setId(`f-${++seq}-facts`);
+    s.note.after(facts);
+    const n = el("input", "setin setnum") as HTMLInputElement;
+    n.type = "number"; n.min = "0"; n.step = "1"; n.inputMode = "numeric";
+    s.name(n);
+    n.setAttribute("aria-describedby", `${facts.id} ${s.note.id}`);
+    let typed: string | null = null;
+    n.oninput = () => { typed = n.value.trim(); sync(); };
+    const std = el("button", "setreset", "Standard") as HTMLButtonElement;
+    std.type = "button";
+    std.id = setId(`f-${++seq}-std`);
+    std.setAttribute("aria-labelledby", `${std.id} ${s.lab.id}`);
+    std.title = "Repo-Override löschen (vormerken) — danach gilt der Maschinen-Standard";
+    std.onclick = () => { typed = ""; n.value = ""; sync(); n.focus(); };
+    s.ctl.append(n, std);
+    const stored = () => caps[pick.value] ?? null;
+    const staged = () => typed !== null && typed !== String(stored() ?? "");
+    function sync() {
+      n.classList.toggle("staged", staged());
+      const eff = effectiveCap();
+      const machineWord = capDefault !== null ? `Maschinen-Standard ${capDefault}` : "Maschinen-Standard unbekannt";
+      const parts = eff?.src === "repo" ? [`wirksam ${eff.n} — Repo-Override`, machineWord]
+        : eff ? [`wirksam ${eff.n} — Maschinen-Standard, kein Repo-Override`]
+        : [capsRead === "fail" ? "wirksam unbekannt — Deckel nicht lesbar" : !pick.value ? "kein Repo" : "wirksam unbekannt", machineWord];
+      if (staged()) parts.push(`vorgemerkt ${typed === "" ? "Maschinen-Standard" : typed}, gilt erst nach Übernehmen`);
+      facts.textContent = parts.join(" · ");
+      std.hidden = stored() === null || typed === "";
+      syncStaged();
+    }
+    function paintRow() {
+      n.max = String(capMax);
+      n.placeholder = capDefault !== null ? String(capDefault) : "";
+      if (!staged()) { typed = null; n.value = stored() !== null ? String(stored()) : ""; }
+      n.disabled = !pick.value;
+      sync();
+    }
+    repoChanged.push(() => { typed = null; paintRow(); });
+    rows.push({ ...s, focus: n, staged,
+      // empty → null (clear to the machine default); anything else goes as typed and the server judges it
+      write: () => post("/api/repo-lane-cap", { repo: pick.value, maxLanes: typed === "" ? null : Number(typed) }),
+      paint: paintRow,
+      done: () => { typed = null; },
+    });
+  }
+  // 3 · what the plan says about the chosen repo: occupancy, startable rows, wait reasons
+  const stat = (par: string, word: string) => {
+    const row = el("div", "setstat");
+    row.dataset.par = par;
+    const k = el("span", "setstatk", word);
+    const v = el("span", "setstatv");
+    const more = el("div", "setstatl");
+    row.append(k, v, more);
+    sec.appendChild(row);
+    return { v, more };
+  };
+  const load = stat("load", "Belegung");
+  const start = stat("start", "Startbar jetzt");
+  const waits = stat("wait", "Wartet");
+  const ids = (list: string[]): HTMLElement => el("span", "setids", list.join(" "));
+  function paintPlan() {
+    for (const x of [load, start, waits]) { x.v.textContent = ""; x.more.replaceChildren(); }
+    if (!pick.value) { for (const x of [load, start, waits]) x.v.textContent = "kein Repo"; return; }
+    if (planRead !== "ok" || !plan) {
+      const why = planRead === "fail" ? "unbekannt — Startplan nicht lesbar" : "wird gelesen …";
+      for (const x of [load, start, waits]) x.v.textContent = why;
+      return;
+    }
+    const at = `Startplan gelesen ${new Date(planAt).toLocaleTimeString("de-DE")}`;
+    // the plan keys a repo by the rows' own repo string; a picker path with another spelling of the
+    // same repo is matched by its unique base name, never guessed beyond that
+    const exact = plan.repos.find((r) => r.repo === pick.value);
+    const byName = plan.repos.filter((r) => baseName(r.repo) === baseName(pick.value));
+    const pr = exact ?? (byName.length === 1 ? byName[0] : null);
+    const eff = effectiveCap();
+    if (!pr) {
+      load.v.textContent = "unbekannt — der Startplan führt dieses Repo nicht (keine offene Zeile)";
+      start.v.textContent = "0";
+      start.more.textContent = "keine offene Zeile in diesem Repo";
+      waits.v.textContent = "0";
+      return;
+    }
+    load.v.textContent = `${pr.lanes} von ${eff?.n ?? pr.cap?.max ?? "?"} Lanes belegt`;
+    load.more.textContent = at;
+    const now = pr.waves.filter((w) => w.next === "now").flatMap((w) => w.ids);
+    start.v.textContent = String(now.length);
+    const holds = [!dispatch.on ? "Master aus" : "", autosOnSrv === false ? "Not-Aus" : "", dispatch.quiet ? "Ruhezeit" : ""].filter(Boolean);
+    if (now.length) start.more.append(ids(now), holds.length ? ` — hält gerade: ${holds.join(" · ")}` : " — der nächste Takt darf sie starten");
+    const waiting = pr.waves.filter((w): w is typeof w & { next: SetPlanWait } => w.next !== "now");
+    waits.v.textContent = String(waiting.reduce((n, w) => n + w.ids.length, 0));
+    const groups = new Map<string, string[]>();
+    for (const w of waiting) {
+      const kind = setWaitKind(w.next);
+      const tail = "after" in w.next ? ` nach ${w.next.after}` : "collides" in w.next ? ` · ${w.next.collides.file}` : "";
+      groups.set(kind, [...groups.get(kind) ?? [], ...w.ids.map((id) => id + tail)]);
+    }
+    for (const [kind, list] of groups) {
+      const line = el("div", "setwait");
+      line.append(`${kind}: `, ids(list));
+      waits.more.appendChild(line);
+    }
+    const why = (plan.waits ?? []).filter((w) => w.repo === pr.repo);
+    if (why.length) {
+      const det = el("details", "setwhy");
+      det.appendChild(el("summary", "", "Gründe je Zeile"));
+      for (const w of why) {
+        const line = el("div", "setwait");
+        line.append(ids([w.id]), ` ${w.grund} — wartet auf ${w.adressat}`);
+        det.appendChild(line);
+      }
+      waits.more.appendChild(det);
+    }
+    waits.more.appendChild(el("div", "hint setnote",
+      "Ein Program kann eine eigene, kleinere Grenze haben; sie steht am Program und erscheint hier als „Program-Deckel voll“."));
+  }
+  repoPaints.push(paintPlan);
+
+  sub("Automatik");
+  // 4 · automatic prompts (the kill-switch)
+  {
+    const s = shell("Automatik",
+      "Aus ist der Not-Aus: hält jeden geplanten Prompt in jeder Session an und startet keine Lane mehr, bis du sie wieder einschaltest; einmalige Handlungen von dir bleiben möglich.",
       "Not-Aus für alle geplanten Prompts und Lane-Starts der Fleet — auch Programs mit „darf starten: an“ halten.");
     let want: boolean | null = null;
     const b = toggle();
+    s.name(b);
     b.onclick = () => { const cur = want ?? autosOnSrv ?? true; want = !cur === autosOnSrv ? null : !cur; sync(); };
     s.ctl.appendChild(b);
-    const r: FleetSetRow = { ...s,
+    const r: FleetSetRow = { ...s, focus: b,
       staged: () => want !== null,
       write: () => post("/api/autos/switch", { on: want }),
-      paint: () => { s.val.textContent = onOff(autosOnSrv); },
+      paint: () => {},
       done: () => { want = null; },
     };
     function sync() {
-      const on = want ?? autosOnSrv ?? true;
-      b.textContent = onOff(on);
-      b.setAttribute("aria-pressed", on ? "true" : "false");
-      b.classList.toggle("staged", want !== null);
+      paintToggle(b, want ?? autosOnSrv, want !== null);
+      s.val.textContent = want !== null ? `Server: ${onOff(autosOnSrv)}` : "";
       syncStaged();
     }
     rows.push({ ...r, paint: () => { r.paint(); sync(); } });
   }
-  // 3 · quiet hours
+  // 5 · quiet hours
   {
-    const s = shell("Quiet hours",
+    const s = shell("Ruhezeit",
       "In diesem Fenster (Uhrzeit dieses Rechners) schickt die Fleet keiner Session wiederkehrende Prompts und startet keine Lane; einmalige Prompts bleiben.",
       "Setzt das Ruhefenster für wiederkehrende Prompts und Lane-Starts aller Sessions; ein Program mit „darf starten: an“ startet darin nur, was die Fleet selbst freigegeben hat.");
     const from = el("select", "setin") as HTMLSelectElement;
     const to = el("select", "setin") as HTMLSelectElement;
-    const off = el("option", "", "off") as HTMLOptionElement;
+    const fromWord = caption("von");
+    const dash = caption("bis");
+    s.name(from, fromWord.id);
+    s.name(to, dash.id);
+    const off = el("option", "", "aus") as HTMLOptionElement;
     off.value = "";
     from.appendChild(off);
     for (let h = 0; h < 24; h++) {
       const a = el("option", "", hh(h)) as HTMLOptionElement; a.value = String(h); from.appendChild(a);
       const z = el("option", "", hh(h)) as HTMLOptionElement; z.value = String(h); to.appendChild(z);
     }
-    const dash = el("span", "setdash", "–");
-    s.ctl.append(from, dash, to);
+    s.ctl.append(fromWord, from, dash, to);
     const cur = () => from.value === "" ? null : { start: Number(from.value), end: Number(to.value) };
     const same = (a: { start: number; end: number } | null, b: { start: number; end: number } | null) =>
       a === b || (!!a && !!b && a.start === b.start && a.end === b.end);
@@ -2603,12 +2908,12 @@ function fleetSection(sec: HTMLElement): () => number {
       dash.hidden = to.hidden = from.value === "";
       from.classList.toggle("staged", staged());
       to.classList.toggle("staged", staged());
+      s.val.textContent = staged() ? `Server: ${quietHoursSrv ? `${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}` : "aus"}` : "";
       syncStaged();
     }
-    rows.push({ ...s, staged,
+    rows.push({ ...s, focus: from, staged,
       write: () => post("/api/autos/quiet", cur() ?? { start: null }),
       paint: () => {
-        s.val.textContent = quietHoursSrv ? `${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}` : "off";
         if (!staged()) {
           touched = false;
           from.value = quietHoursSrv ? String(quietHoursSrv.start) : "";
@@ -2619,58 +2924,35 @@ function fleetSection(sec: HTMLElement): () => number {
       done: () => { touched = false; },
     });
   }
-  // 4 · lane cap per repo
+  // 6 · integration branch of the chosen repo
+  sub("Integration");
   {
-    const s = shell("Lane cap per repo",
-      "So viele Lanes startet die Fleet in diesem Repo höchstens ohne dich; leer heißt Standard der Maschine.",
-      "Setzt den Deckel für unbeaufsichtigte Lanes in einem Repo, für alle Sessions.");
-    const pick = repoPick(() => { typed = null; paintRow(); });
-    const n = el("input", "setin setnum") as HTMLInputElement;
-    n.type = "number"; n.min = "0"; n.step = "1"; n.inputMode = "numeric";
-    let typed: string | null = null;
-    n.oninput = () => { typed = n.value.trim(); sync(); };
-    s.ctl.append(pick, n);
-    const stored = () => caps[pick.value] ?? null;
-    const staged = () => typed !== null && typed !== String(stored() ?? "");
-    function sync() { n.classList.toggle("staged", staged()); syncStaged(); }
-    function paintRow() {
-      const v = stored();
-      s.val.textContent = !pick.value ? "no repo" : v !== null ? String(v) : `default ${capDefault ?? "?"}`;
-      n.max = String(capMax);
-      n.placeholder = capDefault !== null ? String(capDefault) : "";
-      if (!staged()) { typed = null; n.value = v !== null ? String(v) : ""; }
-      n.disabled = pick.disabled = !pick.value;
-      sync();
-    }
-    rows.push({ ...s, staged,
-      // empty → null (clear to the machine default); anything else goes as typed and the server judges it
-      write: () => post("/api/repo-lane-cap", { repo: pick.value, maxLanes: typed === "" ? null : Number(typed) }),
-      paint: paintRow,
-      done: () => { typed = null; },
-    });
-  }
-  // 5 · integration branch per repo
-  {
-    const s = shell("Integration branch per repo",
-      "In diesen Branch landen alle Lanes dieses Repos; leer heißt: der Branch, auf dem der Haupt-Checkout steht.",
-      "Setzt den Integrations-Branch eines Repos, für alle Sessions.");
-    const pick = repoPick(() => { typed = null; paintRow(); });
+    const s = shell("Integrations-Branch",
+      "In diesen Branch landen alle Lanes des oben gewählten Repos; leer heißt: der Branch, auf dem der Haupt-Checkout steht.",
+      "Setzt den Integrations-Branch eines Repos, für alle Sessions.", "branch");
     const t = el("input", "setin setbranch") as HTMLInputElement;
-    t.type = "text"; t.spellcheck = false; t.autocapitalize = "off"; t.placeholder = "branch";
+    t.type = "text"; t.spellcheck = false; t.autocapitalize = "off"; t.placeholder = "Branch";
+    s.name(t);
     let typed: string | null = null;
     t.oninput = () => { typed = t.value.trim(); sync(); };
-    s.ctl.append(pick, t);
+    s.ctl.append(t);
     const staged = () => typed !== null && (!bases.has(pick.value) || typed !== (bases.get(pick.value) ?? ""));
-    function sync() { t.classList.toggle("staged", staged()); syncStaged(); }
-    function paintRow() {
+    function sync() {
+      t.classList.toggle("staged", staged());
       const known = bases.has(pick.value);
       const v = bases.get(pick.value) ?? null;
-      s.val.textContent = !pick.value ? "no repo" : !known ? "?" : v ?? "not set";
+      s.val.textContent = !pick.value ? "kein Repo" : !known ? "unbekannt"
+        : staged() ? `Server: ${v ?? "nicht gesetzt"}` : v === null ? "nicht gesetzt" : "";
+      syncStaged();
+    }
+    function paintRow() {
+      const v = bases.get(pick.value) ?? null;
       if (!staged()) { typed = null; t.value = v ?? ""; }
-      t.disabled = pick.disabled = !pick.value;
+      t.disabled = !pick.value;
       sync();
     }
-    rows.push({ ...s, staged,
+    repoChanged.push(() => { typed = null; paintRow(); });
+    rows.push({ ...s, focus: t, staged,
       write: () => post("/api/repo-base", { repo: pick.value, branch: typed ?? "" }),
       paint: paintRow,
       done: (answer) => {
@@ -2683,7 +2965,9 @@ function fleetSection(sec: HTMLElement): () => number {
 
   const foot = el("div", "setfoot");
   const note = el("span", "hint setnote", "");
-  const apply = el("button", "cmdapply", "Apply") as HTMLButtonElement;
+  note.setAttribute("role", "status");
+  const apply = el("button", "cmdapply", "Übernehmen") as HTMLButtonElement;
+  apply.type = "button";
   apply.title = "Schreibt alle vorgemerkten Werte an den Server und zeigt danach, was er gespeichert hat.";
   foot.append(note, apply);
   sec.appendChild(foot);
@@ -2691,12 +2975,13 @@ function fleetSection(sec: HTMLElement): () => number {
     const n = rows.filter((r) => r.staged()).length;
     for (const r of rows) r.row.classList.toggle("staged", r.staged());
     apply.disabled = n === 0;
-    note.textContent = n ? `${n} vorgemerkt — gilt erst nach Apply` : "";
+    note.textContent = n ? `${n} vorgemerkt — gilt erst nach Übernehmen` : "";
   }
   async function readCaps() {
     const r = await api("/api/repo-lane-caps").catch(() => null);
     const j = r?.ok ? (await r.json().catch(() => null)) as { default?: number; max?: number; caps?: Record<string, number>; bases?: Record<string, string> } | null : null;
-    if (!j) return;
+    if (!j) { capsRead = "fail"; return; }
+    capsRead = "ok";
     caps = j.caps ?? {};
     // only a server that answers WITH the map may speak about branches: absence of the FIELD is an
     // old server (live is codeBehind), and an old answer must read as "?" — never as "not set" for
@@ -2712,9 +2997,17 @@ function fleetSection(sec: HTMLElement): () => number {
     capDefault = typeof j.default === "number" ? j.default : null;
     if (typeof j.max === "number") capMax = j.max;
   }
+  async function readPlan() {
+    const r = await api("/api/start-plan").catch(() => null);
+    const j = r?.ok ? (await r.json().catch(() => null)) as SetPlan | null : null;
+    if (j && Array.isArray(j.repos)) { plan = j; planRead = "ok"; planAt = Date.now(); } else planRead = "fail";
+  }
+  const paintAll = () => { for (const r of rows) r.paint(); for (const f of repoPaints) f(); };
   apply.onclick = async () => {
+    const written = rows.filter((x) => x.staged());
     apply.disabled = true;
-    for (const r of rows.filter((x) => x.staged())) {
+    let refused: FleetSetRow | null = null;
+    for (const r of written) {
       const res = await r.write().catch(() => null);
       const j = res ? await res.json().catch(() => null) as { error?: string } | null : null;
       if (res?.ok) {
@@ -2723,15 +3016,20 @@ function fleetSection(sec: HTMLElement): () => number {
       } else {
         r.err.hidden = false;
         r.err.textContent = `Server lehnt ab: ${j?.error ?? (res ? `HTTP ${res.status}` : "keine Verbindung")}`;
+        refused ??= r;
       }
     }
     await refresh();
     await readCaps();
-    for (const r of rows) r.paint();
+    await readPlan();
+    paintAll();
+    // the button the reader pressed is disabled now: the focus goes to the first refused control,
+    // else to the first control that was written — never to the page behind the window
+    (refused ?? written[0])?.focus.focus();
   };
-  for (const r of rows) r.paint();
-  void readCaps().then(() => { for (const r of rows) r.paint(); });
-  return () => rows.filter((r) => r.staged()).length;
+  paintAll();
+  void Promise.all([readCaps(), readPlan()]).then(paintAll);
+  return { staged: () => rows.filter((r) => r.staged()).length, firstStaged: () => rows.find((r) => r.staged())?.focus ?? null };
 }
 
 // --- the file explorer (§F5) --------------------------------------------------------------
@@ -3072,6 +3370,9 @@ export function fxTreeOf(paths: string[]): TreeNode {
   return root;
 }
 type FxWriteKind = "New file" | "Rename" | "Move" | "Delete";
+// the write DIALOG speaks German, one language per surface (card 1685d265 in 3e6342e2); the kind
+// stays the internal word that picks the route
+const FX_WRITE_WORD: Record<FxWriteKind, string> = { "New file": "Neue Datei", Rename: "Umbenennen", Move: "Verschieben", Delete: "Löschen" };
 interface FxWriteReply { ran?: string; afterwards?: string; sessionActive?: boolean; error?: string }
 function fxMoveDrop(slot: number, tracked: string[], folder: string, e: DragEvent): FxPathDrop | null {
   if (!e.dataTransfer || e.dataTransfer.types.includes("Files")) return null;
@@ -3087,13 +3388,13 @@ async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: stri
   const parent = path.slice(0, path.lastIndexOf("/") + 1);
   const body = el("div", "fxwritebody");
   if (sessionActive(slot)) body.appendChild(el("div", "ocwarn",
-    "this session is working right now — " + (create
-      ? "it may create this same path; an existing file will not be overwritten"
-      : remove ? "it may still read or write this file; deleting it does not stop the session"
-      : "it may still read or write the old path; imports and references will not follow this move")));
+    "Diese Session arbeitet gerade — " + (create
+      ? "sie kann denselben Pfad anlegen; eine bestehende Datei wird nicht überschrieben"
+      : remove ? "sie kann die Datei weiter lesen oder schreiben; Löschen hält die Session nicht an"
+      : "sie kann den alten Pfad weiter lesen oder schreiben; Importe und Verweise folgen nicht")));
   let input: HTMLInputElement | null = null;
   if (!remove) {
-    const label = el("label", "fxwritelabel", rename ? "New name" : "Path");
+    const label = el("label", "fxwritelabel", rename ? "Neuer Name" : "Pfad");
     input = el("input", "fxwriteinput") as HTMLInputElement;
     input.type = "text"; input.spellcheck = false; input.autocomplete = "off";
     input.dataset.ownEnter = "1";
@@ -3101,21 +3402,25 @@ async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: stri
     input.title = rename ? "Neuer Dateiname im selben Ordner" : "Relativer Dateipfad in dieser Session";
     label.appendChild(input); body.appendChild(label);
   }
-  const row = (label: string) => {
+  // a row's value is prose (Sans) unless it IS a command or a place (mono); a path or a command
+  // inside prose rides as its own mono span (G0.3)
+  const row = (label: string, mono = false) => {
     const r = el("div", "fxwriterow");
-    const value = el("span", "fxwritevalue");
+    const value = el("span", mono ? "fxwritevalue mono" : "fxwritevalue");
     r.append(el("span", "fxwritekey", label), value); body.appendChild(r);
     return value;
   };
-  const runs = row("Runs");
-  row("Where").textContent = `${root} · Slot ${slot}`;
-  const afterwards = row("Afterwards");
-  row("Not moved").textContent = create ? "Bestehende Dateien bleiben unverändert; kein git add und kein Commit."
+  const code = (text: string) => el("span", "fxcode", text);
+  const runs = row("Führt aus", true);
+  row("Wo", true).textContent = `${root} · Slot ${slot}`;
+  const afterwards = row("Danach");
+  row("Bleibt").textContent = create ? "Bestehende Dateien bleiben unverändert; kein git add und kein Commit."
     : remove ? "Verweise bleiben unverändert; die Session läuft weiter; kein Commit."
     : "Importe und Verweise bleiben am alten Pfad; die Session läuft weiter; kein Commit.";
-  row("Recovery").textContent = create ? "Die neue Datei löschen; ungetrackte Dateien blockieren das Land."
-    : remove ? "git restore --staged --worktree — eine gestagte Löschung braucht einen Commit."
-    : "git mv zurück — eine gestagte Umbenennung braucht einen Commit.";
+  const back = row("Rückweg");
+  if (create) back.textContent = "Die neue Datei löschen; ungetrackte Dateien blockieren das Land.";
+  else back.append(code(remove ? "git restore --staged --worktree" : "git mv"),
+    remove ? " — eine vorgemerkte Löschung braucht einen Commit." : " zurück — eine vorgemerkte Umbenennung braucht einen Commit.");
   const quote = (arg: string) => "'" + arg.replaceAll("'", "'\\''") + "'";
   let target = "";
   let valid = remove;
@@ -3128,19 +3433,19 @@ async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: stri
     const args = create ? ["-C", root, "rev-parse", "--is-inside-work-tree"]
       : ["-C", root, "--literal-pathspecs", remove ? "rm" : "mv", "--", path, ...(!remove ? [target] : [])];
     runs.textContent = `git ${args.map(quote).join(" ")}`;
-    afterwards.textContent = create ? `empty file at ${target || "…"}; not added to git`
-      : remove ? `${path} removed from the worktree; deletion staged in git`
-      : `${path} moved to ${target}; rename staged in git`;
+    afterwards.replaceChildren(...(create ? ["leere Datei unter ", code(target || "…"), "; nicht in git aufgenommen"]
+      : remove ? [code(path), " aus dem Arbeitsbaum entfernt; Löschung in git vorgemerkt"]
+      : [code(path), " liegt danach unter ", code(target), "; Umbenennung in git vorgemerkt"]));
     input?.setAttribute("aria-invalid", String(!valid));
     const button = body.closest(".panel")?.querySelector<HTMLButtonElement>(".riskbtn.primary, .riskbtn.danger");
     if (button) button.disabled = !valid;
   };
   update();
   if (input) input.oninput = update;
-  const answer = askRisk({ title: `${kind}${create ? "" : ` — ${path}`}`, body: [body],
+  const answer = askRisk({ title: `${FX_WRITE_WORD[kind]}${create ? "" : ` — ${path}`}`, body: [body],
     panelClass: "riskpanel fxwritepanel",
-    buttons: [{ label: "Cancel", value: false },
-      { label: kind, value: true, primary: !remove, danger: remove, disabled: !valid }] });
+    buttons: [{ label: "Abbrechen", value: false },
+      { label: FX_WRITE_WORD[kind], value: true, primary: !remove, danger: remove, disabled: !valid }] });
   const shield = (e: KeyboardEvent) => {
     e.stopPropagation();
     if (e.key === "Escape") body.closest(".panel")?.querySelector<HTMLButtonElement>(".riskbtn")?.click();
@@ -3154,8 +3459,8 @@ async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: stri
       { slot, path: create ? target : path, ...(!create && !remove ? { to: target } : {}) });
     const reply = await res.json().catch(() => null) as FxWriteReply | null;
     return res.ok && reply?.ran && reply.afterwards ? reply
-      : { error: reply?.error ?? `the server refused this change (${res.status})` };
-  } catch { return { error: "the change could not be confirmed — re-read the tree before retrying" }; }
+      : { error: reply?.error ?? `Der Server lehnt die Änderung ab (${res.status})` };
+  } catch { return { error: "Die Änderung ist nicht bestätigt — erst den Baum neu lesen, dann erneut versuchen" }; }
 }
 export async function loadTree(slot: number, cwd: string): Promise<void> {
   const res = await api(`/api/tree?slot=${slot}`).catch(() => null);

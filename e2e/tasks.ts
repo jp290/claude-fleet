@@ -424,11 +424,13 @@ export async function run(ctx: Ctx): Promise<void> {
   // D-3 (Grammatik G5.2 + G4.4): the settings window's "Fleet" section writes over EXACTLY the five
   // routes that existed before it — dispatcher, autos kill-switch, quiet hours, lane cap, integration
   // branch — each as one row's post(), and nothing reaches a route except through the section's Apply;
-  // the only other route the block names is the cap READ, whose answer also carries the stored
-  // integration branch per repo (`bases`, card D-3b). The dispatcher row reads the same `dispatch`
-  // the queue foot writes. Mutation probes: a sixth route (repo-worker, a slot or program switch), a
-  // dropped row, a post() fired from a control instead of from write(), or write() called outside
-  // apply.onclick — each turns this red.
+  // the only other routes the block names are two READS: the cap read, whose answer also carries the
+  // stored integration branch per repo (`bases`, card D-3b), and the start plan (card 3e6342e2:
+  // occupancy, startable rows, wait reasons) — read through api() on open and after Apply, never on
+  // a timer of its own. The dispatcher row reads the same `dispatch` the queue foot writes. Mutation
+  // probes: a sixth route (repo-worker, a slot or program switch), a dropped row, a post() fired from
+  // a control instead of from write(), write() called outside apply.onclick, or a poll series
+  // (setInterval/setTimeout) in the block — each turns this red.
   {
     const fsAt = taskClientSource.indexOf("function fleetSection(");
     const fsEnd = taskClientSource.indexOf("// --- the file explorer", fsAt);
@@ -451,11 +453,12 @@ export async function run(ctx: Ctx): Promise<void> {
     check("settings Fleet section: exactly the five existing routes, each written only through Apply",
       fsSrc.length > 0
         && JSON.stringify(posted) === JSON.stringify(FLEET_WRITES)
-        && JSON.stringify(named) === JSON.stringify([...FLEET_WRITES, "/api/repo-lane-caps"].sort())
+        && JSON.stringify(named) === JSON.stringify([...FLEET_WRITES, "/api/repo-lane-caps", "/api/start-plan"].sort())
+        && fsSrc.includes('api("/api/start-plan")') && !/\bset(?:Interval|Timeout)\(/.test(fsSrc)
         && (fsSrc.match(/\bpost\(/g) ?? []).length === 5
         && (fsSrc.match(/write: \(\) => post\(/g) ?? []).length === 5
         && writeCalls === 1 && applyBody.includes("r.write()")
-        && fsSrc.includes('el("button", "cmdapply", "Apply")')
+        && fsSrc.includes('el("button", "cmdapply", "Übernehmen")')
         && /const on = want \?\? dispatch\.on;/.test(fsSrc)
         && openQueueSource.includes('post("/api/dispatch", { on: !dispatch.on })')
         && readBases
@@ -505,7 +508,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && uiSrc.includes('`ändern: ${setting.how}; Standard: ${setting.default}`')
         && !/el\("(?:button|input|select)"/.test(uiSrc) && !/\.(?:onclick|oninput|onchange)\s*=/.test(uiSrc)
         && /machineSection\(machine\);/.test(taskClientSource)
-        && (taskClientSource.match(/["']This machine["']/g) ?? []).length >= 2,
+        && (taskClientSource.match(/["']Diese Maschine["']/g) ?? []).length >= 1,
       JSON.stringify({ found: uiSrc.length > 0, controls: [...uiSrc.matchAll(/el\("(button|input|select)"/g)].map((m) => m[1]) }));
   }
   check("task workbench source: Work is default and Programs + History are explicit selections",

@@ -1188,7 +1188,12 @@
   .qfoldmark { font-size: 10px; color: var(--faint); width: 8px; }
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
      a destructive click, not only after a refusal. Built dynamically, styled off .overlay/.panel */
-  .riskpanel { gap: 8px; }
+  /* G0.2/G0.3 for every askRisk question (card 3e6342e2): the dialog reads in Sans on the chat
+     tokens (the page body is mono), paths/commands/diffs keep their mono, and the keyboard ring is
+     the composer's neutral 1px --chat-mute instead of the browser's blue */
+  .riskpanel { gap: 8px; font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
+  .riskpanel h2 { font: 500 var(--chat-fs) var(--chat-sans); color: var(--chat-ink); }
+  .riskpanel :focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 2px; }
   /* THE EXPORT MENU (client.ts#openExportDlg): a segment for the content and one for the format
      (G3.1 — the chosen one on --c-hover with an inset edge), toggles for the conversation's parts
      (G1.3 — on = ink with a --chat-mute edge on --chat-surface), hints in the .hint base (G2.2) */
@@ -1211,15 +1216,15 @@
   /* explainer so the merge-preview diff isn't misread as unsaved work — committing doesn't clear it, landing does */
   .landhint { padding: 2px 0 4px; line-height: 1.45; }
   .riskempty { color: var(--add); font-size: 12.5px; padding: 6px 0; }
-  .riskhead { color: var(--amber); font-size: 11px; font-weight: 700; margin-top: 4px; }
+  .riskhead { color: var(--chat-mute); font-size: var(--chat-ui-fs); font-weight: 500; margin-top: 4px; } /* a heading, not a signal — G0.2 */
   /* "left alone" section of the commit preview — muted, so it reads as skipped, not committed */
-  .riskhead.skip { color: var(--faint); font-weight: 600; }
-  .riskfile.skip { color: var(--faint); }
-  .risklist { max-height: 180px; overflow-y: auto; background: #141414; border: 1px solid var(--line-soft);
-    border-radius: 8px; padding: 6px 9px; }
-  .riskfile, .riskcommit { font-size: 11.5px; color: var(--text); padding: 1px 0; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, Menlo, Consolas, monospace; }
-  .riskmore { font-size: 11px; color: var(--faint); padding-top: 2px; }
+  .riskhead.skip { color: var(--chat-faint); font-weight: 500; }
+  .riskfile.skip { color: var(--chat-faint); }
+  .risklist { max-height: 180px; overflow-y: auto; background: var(--chat-void); border: 1px solid var(--chat-edge-soft);
+    border-radius: var(--r2); padding: 6px 9px; }
+  .riskfile, .riskcommit { font-size: var(--chat-ui-fs); color: var(--chat-prose); padding: 1px 0; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; font-family: var(--chat-mono); }
+  .riskmore { font-size: var(--chat-ui-fs); color: var(--chat-faint); padding-top: 2px; }
   .riskbtns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
   .wordbtn, :is(.riskbtn, .shrbtn, .qbtn, .bbtn) { border: 1px solid var(--chat-edge);
     border-radius: var(--r1); background: var(--chat-surface); color: var(--chat-ink);
@@ -2241,13 +2246,17 @@
   .fxwritepanel { width: min(620px, 94vw); overflow-y: auto; }
   .fxwritepanel h2 { overflow-wrap: anywhere; }
   .fxwritebody { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-  .fxwritelabel { display: flex; flex-direction: column; gap: 5px; color: var(--chat-mute); }
+  .fxwritelabel { display: flex; flex-direction: column; gap: 5px; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
   .fxwriteinput { width: 100%; box-sizing: border-box; min-height: 36px; padding: 6px 8px;
     font: var(--chat-code-fs) var(--chat-mono); color: var(--chat-ink); background: var(--chat-surface);
     border: 1px solid var(--chat-edge); border-radius: var(--r1); }
-  .fxwriterow { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; }
+  .fxwriteinput:focus { outline: none; border-color: var(--chat-mute); }
+  .fxwriterow { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; font-size: var(--chat-ui-fs); }
   .fxwritekey { color: var(--chat-mute); font-family: var(--chat-sans); }
-  .fxwritevalue { overflow-wrap: anywhere; white-space: pre-wrap; font-family: var(--chat-mono); }
+  /* a row's prose is Sans; the command, the place and every path in it are mono (G0.3) */
+  .fxwritevalue { overflow-wrap: anywhere; white-space: pre-wrap; font-family: var(--chat-sans); color: var(--chat-prose); }
+  .fxwritevalue.mono, .fxwritevalue .fxcode { font-family: var(--chat-mono); }
+  .fxwritepanel .ocwarn { font: var(--chat-ui-fs)/1.45 var(--chat-sans); }
   .fxwritestate { flex: none; padding: 8px 14px; border-bottom: 1px solid var(--chat-edge-soft);
     font-size: var(--chat-ui-fs); overflow-wrap: anywhere; }
   .fxwritestate:empty { display: none; }
@@ -3275,58 +3284,79 @@
   .autostatusline { margin: 8px 0; color: var(--chat-mute); font: 400 var(--chat-ui-fs) var(--chat-sans); }
   .autostatusline .shrbtn { margin-top: 8px; }
 
-  /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8): three sections —
-     "Dieses Gerät" (the src/prefs.ts registry rows, G5.1), "Schrift" (the size panel's one home,
-     G5.3), "Fleet" (five server switches over existing routes, G5.2, card D-3 — a changed value
-     is staged with an ink edge until Apply, G4.4). Rows: label left, control right, value in
-     mono, hint under (G5.3). On the phone the sections become tabs (G3.1) — the
-     tab row and the one-section view exist only under MOBILE_MQ; the desktop stacks all three. */
+  /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8+3e6342e2): four
+     sections — "Dieses Gerät" (the src/prefs.ts registry rows, G5.1), "Schrift" (the size panel's
+     one home, G5.3), "Fleet" (five server switches over existing routes, G5.2, card D-3 — a changed
+     value is staged with an ink edge until Übernehmen, G4.4 — and the parallelism block), "Diese
+     Maschine" (read-only start values). Rows: label left, control right, value in mono, hint under
+     (G5.3). The window reads in Sans (G0.3: the page body is mono); values, paths and ids stay mono.
+     The four section targets stand at the top at every width and stick while the sections scroll;
+     on the phone each shows its one section (G3.1), on the desktop all four stack. */
+  #shell-settings .shellwin { font-family: var(--chat-sans); }
+  #shell-settings :focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 2px; } /* G0.2: the composer's ring */
+  #shell-settings .shellclose:focus-visible { outline: 1px solid var(--chat-mute); }
+  .settabs { position: sticky; top: -12px; z-index: 1; display: flex; gap: 4px; margin: -12px 0 4px; padding: 12px 0 8px;
+    background: var(--chat-surface); border-bottom: 1px solid var(--chat-edge-soft); }
   .settab { border: 1px solid transparent; background: none; color: var(--chat-mute); font: inherit;
     font-size: var(--chat-ui-fs); padding: 6px 10px; border-radius: var(--r1); cursor: pointer; }
   .settab:hover { color: var(--chat-ink); }
   .settab.on { background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); }
   .setsec h3 { margin: 14px 2px 6px; font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-ink); }
-  .setsec h3:first-child { margin-top: 2px; }
+  .setsec h3:first-child { margin-top: 10px; }
+  .setsub { margin: 14px 0 2px; font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-mute); }
   .setrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--chat-edge-soft); }
   .setrow:last-child { border-bottom: 0; }
   .setmain { flex: 1; min-width: 0; }
-  .setlabel { font-size: var(--chat-ui-fs); color: var(--chat-ink); }
-  .setnote { font-size: 11px; color: var(--chat-mute); line-height: 1.5; margin-top: 2px; }
+  .setlabel { font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-ink); }
+  .machrow .setlabel { font-family: var(--chat-mono); font-weight: 400; } /* the server's variable names are addresses, G0.3 */
+  .setnote { font-size: var(--chat-ui-fs); color: var(--chat-mute); line-height: 1.5; margin-top: 2px; }
+  .setfacts { color: var(--chat-prose); }
   .setval { flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-family: var(--chat-mono); font-size: 11px; color: var(--chat-mute); }
+    font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .setval:empty { display: none; }
   .settoggle { flex: none; min-width: 48px; padding: 4px 10px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
     background: var(--chat-raised); color: var(--chat-mute); font: inherit; font-size: var(--chat-ui-fs); cursor: pointer; }
   .settoggle:hover { color: var(--chat-ink); }
   .settoggle[aria-pressed="true"] { color: var(--chat-ink); border-color: var(--chat-mute); } /* "an" is ink, not blue — G1.3 */
   .setchoice { flex: none; display: flex; gap: 4px; }
-  .setreset { flex: none; font: inherit; font-size: 11px; color: var(--chat-mute); background: var(--chat-raised);
+  .setreset { flex: none; font: inherit; font-size: var(--chat-ui-fs); color: var(--chat-mute); background: var(--chat-raised);
     border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 4px 8px; cursor: pointer; }
   .setreset:hover { color: var(--chat-ink); }
   .setreset[hidden] { display: none; }
   .fleetrow { flex-wrap: wrap; }
-  .fleetrow .setlabel { font-family: var(--chat-sans); font-weight: 500; } /* label Sans, value Mono — G0.3 */
   .fleetrow.staged { box-shadow: inset 2px 0 0 var(--chat-ink); padding-left: 10px; } /* vorgemerkt = ink edge, G4.4 */
   .setctl { flex: none; display: flex; align-items: center; gap: 4px; }
-  .setin { font: 400 11px var(--chat-mono); color: var(--chat-ink); background: var(--chat-raised);
+  .setin { font: 400 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-ink); background: var(--chat-raised);
     border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 4px 6px; min-width: 0; }
   .setin:disabled { color: var(--chat-faint); }
   .setin.staged, .settoggle.staged { border-color: var(--chat-ink); color: var(--chat-ink); }
   .setnum { width: 5em; }
   .setbranch { width: 10em; }
-  .setdash { color: var(--chat-mute); }
+  .setdash { color: var(--chat-mute); font-size: var(--chat-ui-fs); }
   .setdash[hidden], .setin[hidden], .seterr[hidden] { display: none; }
+  /* the plan's three facts about the chosen repo: word, value, the ids in mono under it */
+  .setstat { display: grid; grid-template-columns: max-content 1fr; column-gap: 10px; row-gap: 2px; padding: 8px 0;
+    border-bottom: 1px solid var(--chat-edge-soft); font-size: var(--chat-ui-fs); }
+  .setstatk { font-weight: 500; color: var(--chat-ink); }
+  .setstatv { color: var(--chat-prose); }
+  .setstatl { grid-column: 1 / -1; color: var(--chat-mute); line-height: 1.5; }
+  .setstatl:empty { display: none; }
+  .setids { font-family: var(--chat-mono); color: var(--chat-prose); }
+  .setwhy summary { cursor: pointer; color: var(--chat-mute); }
+  .setwhy summary:hover { color: var(--chat-ink); }
   .setfoot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 0 2px; }
   .setfoot .setnote { flex: 1; margin: 0; }
-  .settabs { display: none; }
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
-    #shell-settings .settabs { display: flex; gap: 4px; padding: 2px 0 10px; }
+    #shell-settings .settabs { overflow-x: auto; }
+    #shell-settings .settab { flex: none; }
     #shell-settings .setsec { display: none; }
     #shell-settings .setsec.on { display: block; }
+    #shell-settings .setsec > h3 { display: none; } /* the pressed target already names the one section shown */
     .settoggle, .settab, .setreset, .setin, .setfoot .cmdapply, .setchoice .cmdlevel { min-height: 40px; } /* finger targets, G0.7 */
     .setin { font-size: 16px; } /* no iOS zoom, G0.7 */
     .fleetrow .setmain { flex-basis: 100%; }
     .fleetrow .setval { flex: 1; max-width: none; }
-    .fleetrow .setctl { flex-wrap: wrap; justify-content: flex-end; }
+    .fleetrow .setctl { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
     .setbranch { width: 8em; }
   }
 </style>

@@ -2065,6 +2065,21 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // THE SETTINGS WINDOW, measured in a real browser on the real client bundle (card 3e6342e2):
+  // every claim is its own line, so a dropped name, a wrong choice state or a focus that escapes
+  // the window turns exactly that line red. A browser that cannot run is the PROBE line — red,
+  // never a skip.
+  try {
+    for (const result of await runSettingsDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`settings DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("settings DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the
   // sections and one fold. Nothing else in the suite would notice a re-sort
@@ -4968,6 +4983,568 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g2['missing fields never fall back to request'] = await evaluate<boolean>(`${actual('Modell')}?.textContent==='nicht gemeldetBeleg fehlt' && ${actual('Effort')}?.textContent==='nicht gemeldetBeleg fehlt'`);
       const receiptMetrics = await evaluate<FoundingFocusDomResult['receiptMetrics']>(`window.fixtureReceiptMetrics`);
       results.push({ width, height, g, g2, detail, receiptMetrics });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE SETTINGS WINDOW IN A REAL BROWSER (card 3e6342e2). The REAL client bundle (src/client.ts,
+// built fresh) boots in headless Chromium behind a fixture origin that the probe answers itself
+// over CDP Fetch — every /api read is a synthetic fixture and every POST is recorded and answered
+// here, so no fleet setting is ever written. Input is native (Input.dispatchKeyEvent/MouseEvent),
+// names and states come from Chromium's accessibility tree, and storage is read back from the
+// page. The fixture is the brief's: machine default 1 without override (side repo), repo override
+// 2 at machine default 1 (main repo), master on with every main-repo row waiting, occupancy at the
+// cap, an unknown/old server (no plan, no `bases`, no autos flag), and a staged value the server
+// refuses. Each claim is a boolean so a mutation (a dropped name, a wrong choice state, a focus
+// that escapes the window) turns exactly its own line red.
+interface SettingsDomResult {
+  width: number; height: number;
+  claims: Record<string, boolean>;
+  facts: Record<string, unknown>;
+}
+type SettingsFixturePost = { url: string; body: unknown };
+export async function runSettingsDom(sourceRoot: string, artifacts?: string): Promise<SettingsDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-settings-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  const REPO_A = "/fixture/claude-fleet", REPO_B = "/fixture/side-repo";
+  const fx = {
+    caps: { default: 1, max: 8, caps: { [REPO_A]: 2 } as Record<string, number>, bases: { [REPO_A]: "overhaul" } as Record<string, string> | undefined },
+    capsStatus: 200, planStatus: 200, autosOn: true as boolean | undefined, dispatchOn: true,
+    refuseCap: false, posts: [] as SettingsFixturePost[], sessions: 0,
+    // the protocol of the run: every native input sent and every /api request the page made
+    inputs: [] as string[], requests: [] as string[],
+  };
+  const plan = () => ({
+    version: 1, budget: 5, unresolved: [],
+    repos: [
+      { repo: REPO_A, lanes: 2, cap: { max: fx.caps.caps[REPO_A] ?? fx.caps.default, source: fx.caps.caps[REPO_A] ? "repo" : "default" }, waves: [
+        { ids: ["a1a1a1a1"], klasse: "einzeln", units: 1, reasonAgainst: null, next: { cap: "2/2 lanes busy in claude-fleet (repo cap)" },
+          rows: [{ id: "a1a1a1a1", status: "queued", checks: null, release: null }] },
+        { ids: ["b2b2b2b2"], klasse: "einzeln", units: 1, reasonAgainst: null, next: { after: "c3c3c3c3" },
+          rows: [{ id: "b2b2b2b2", status: "queued", checks: null, release: null }] },
+        { ids: ["d4d4d4d4"], klasse: "einzeln", units: 1, reasonAgainst: null, next: { unreleased: ["d4d4d4d4"] },
+          rows: [{ id: "d4d4d4d4", status: "pending", checks: null, release: null }] },
+      ] },
+      { repo: REPO_B, lanes: 0, cap: { max: 1, source: "default" }, waves: [
+        { ids: ["e5e5e5e5"], klasse: "einzeln", units: 1, reasonAgainst: null, next: "now",
+          rows: [{ id: "e5e5e5e5", status: "queued", checks: null, release: null }] },
+      ] },
+    ],
+    waits: [
+      { repo: REPO_A, id: "a1a1a1a1", grund: "Repo-Deckel voll: 2/2 Lanes in claude-fleet", adressat: "owner", kette: [], wurzel: "Repo-Deckel voll", seit: null, freigegeben: true },
+      { repo: REPO_A, id: "b2b2b2b2", grund: "wartet auf c3c3c3c3 (nach)", adressat: "main:fixture", kette: ["row c3c3c3c3"], wurzel: "c3c3c3c3 nicht gelandet", seit: null, freigegeben: true },
+      { repo: REPO_A, id: "d4d4d4d4", grund: "nicht freigegeben", adressat: "owner", kette: [], wurzel: "Freigabe fehlt", seit: null, freigegeben: false },
+    ],
+    stau: null, buendel: { pairs: [] },
+  });
+  const sessions = () => ({
+    now: Date.now(), chips: [], slots: [
+      { id: 1, cwd: REPO_A, repo: REPO_A, label: "Fixture A", openedAt: 1000 },
+      { id: 2, cwd: REPO_B, repo: REPO_B, label: "Fixture B", openedAt: 1000 },
+      { id: 3, cwd: null },
+    ],
+    tasks: [], dispatch: { available: true, on: fx.dispatchOn, maxLanes: fx.caps.caps[REPO_A] ?? fx.caps.default, repo: REPO_A, lanes: 2, quiet: false },
+    ...(fx.autosOn === undefined ? {} : { autosOn: fx.autosOn }), quietHours: null,
+  });
+  const brief = { branch: "overhaul", head: "fixture", worktree: null, sessionStart: null, uncommitted: 0, uncommittedFiles: [],
+    files: [], filesTotal: 0, shortstat: "", commits: [], repoCommits: [], laneScoped: false, laneBase: null, commitsCap: 20, ahead: 0, behind: 0 };
+  const machine = { settings: [
+    { name: "FLEET_DISPATCH_MAX_LANES", value: 1, default: 1, how: ".env + Neustart" },
+    { name: "FLEET_MODEL", value: "claude-opus-5-5", default: "claude-opus-5-5", how: ".env + Neustart" },
+  ] };
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("settings DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let recording: string | null = null, frame = 0;
+    const frameTimes: number[] = [];
+    const nativeDialogs: string[] = [];
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const SETTINGS_WRITES = ["/api/dispatch", "/api/autos/switch", "/api/autos/quiet", "/api/repo-lane-cap", "/api/repo-base"];
+    const settingsWrites = (from = 0) => fx.posts.slice(from).filter((x) => SETTINGS_WRITES.includes(x.url));
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.screencastFrame" && msg.params) {
+        if (artifacts && recording) {
+          writeFileSync(resolve(artifacts, recording, `${String(frame++).padStart(5, "0")}.jpg`), Buffer.from(String(msg.params.data), "base64"));
+          frameTimes.push(Number((msg.params.metadata as { timestamp?: number })?.timestamp ?? Date.now() / 1000));
+        }
+        void send("Page.screencastFrameAck", { sessionId: msg.params.sessionId }).catch(() => undefined);
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      // a native alert/confirm would freeze every later evaluate — it is dismissed and counted
+      if (msg.method === "Page.javascriptDialogOpening") {
+        nativeDialogs.push(String((msg.params as { message?: string })?.message ?? ""));
+        void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined);
+        return;
+      }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
+      const url = new URL(request.url);
+      const p = url.pathname;
+      if (p.startsWith("/api/") && fx.requests.length < 2000) fx.requests.push(`${request.method} ${p}${url.search}`);
+      if (request.method === "POST") {
+        let body: unknown = null;
+        try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = request.postData ?? null; }
+        fx.posts.push({ url: p, body });
+        if (p === "/api/repo-lane-cap") {
+          const b = body as { repo?: string; maxLanes?: number | null };
+          if (fx.refuseCap) return void json(requestId, { error: "maxLanes über dem Deckel der Maschine (8)" }, 400);
+          if (b.repo) { if (b.maxLanes === null || b.maxLanes === undefined) delete fx.caps.caps[b.repo]; else fx.caps.caps[b.repo] = b.maxLanes; }
+          return void json(requestId, { ok: true, repo: b.repo, maxLanes: b.maxLanes ?? null });
+        }
+        if (p === "/api/dispatch") { fx.dispatchOn = !!(body as { on?: boolean })?.on; return void json(requestId, { ok: true, on: fx.dispatchOn }); }
+        return void json(requestId, { ok: true });
+      }
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, sessions()); }
+      if (p === "/api/repo-lane-caps") {
+        if (fx.capsStatus !== 200) return void json(requestId, { error: "fixture: caps unreadable" }, fx.capsStatus);
+        return void json(requestId, { default: fx.caps.default, max: fx.caps.max, caps: fx.caps.caps, ...(fx.caps.bases ? { bases: fx.caps.bases } : {}) });
+      }
+      if (p === "/api/start-plan") return void (fx.planStatus === 200 ? json(requestId, plan()) : json(requestId, { error: "fixture: plan unreadable" }, fx.planStatus));
+      if (p === "/api/machine-settings") return void json(requestId, machine);
+      // an empty catalogue, served: a refused /api/harnesses is re-asked on every render (loadHarnesses
+      // latches only on success) and would flood the request protocol of this run
+      if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
+      if (p === "/api/tree") return void json(requestId, { root: REPO_A, files: ["README.md", "src/client.ts"], total: 2, capped: false });
+      if (/^\/api\/slots\/\d+\/brief$/.test(p)) return void json(requestId, brief);
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    // ONE TARGET PER WIDTH: a headless page that ran a screencast stops answering evaluates on its
+    // next navigation (measured on this probe, 2026-10-02) — a fresh target has no such history
+    let targetId = "";
+    const freshTarget = async () => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      const target = await send("Target.createTarget", { url: "about:blank" });
+      targetId = String(target.targetId);
+      sessionId = undefined;
+      const attached = await send("Target.attachToTarget", { targetId, flatten: true });
+      sessionId = String(attached.sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable"); await send("Accessibility.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__fx = ${HELP}` });
+    };
+    // a click target or element that does not exist is a FACT of the run (it fails the claims that
+    // need it), never an abort — one missing control must not hide every other measurement
+    const missing: string[] = [];
+    // an expression that throws (its element is missing) answers null and is noted in `missing`
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    // the accessibility node of one element, as Chromium computes it: role, name and states
+    const ax = async (expression: string): Promise<Record<string, unknown> | null> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: false });
+      const objectId = (r.result as { objectId?: string; subtype?: string }).subtype === "node" ? (r.result as { objectId?: string }).objectId : undefined;
+      if (!objectId) return null;
+      const tree = await send("Accessibility.getPartialAXTree", { objectId, fetchRelatives: false }).catch(() => null);
+      if (!tree) return null;
+      const node = (tree.nodes as { ignored?: boolean; role?: { value?: string }; name?: { value?: string }; properties?: { name: string; value?: { value?: unknown } }[] }[])[0];
+      if (!node) return null;
+      return { role: node.role?.value ?? null, name: node.name?.value ?? null, ignored: !!node.ignored,
+        ...Object.fromEntries((node.properties ?? []).map((x) => [x.name, x.value?.value ?? null])) };
+    };
+    const KEY: Record<string, [number, string, string?]> = { Tab: [9, "Tab"], Enter: [13, "Enter", "\r"], Escape: [27, "Escape"], " ": [32, "Space", " "] };
+    const key = async (name: string, shift = false) => {
+      const [vk, code, text] = KEY[name];
+      const modifiers = shift ? 8 : 0;
+      fx.inputs.push(`key ${shift ? "Shift+" : ""}${name === " " ? "Space" : name}`);
+      await send("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", key: name, code, windowsVirtualKeyCode: vk, modifiers, ...(text ? { text, unmodifiedText: text } : {}) });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code, windowsVirtualKeyCode: vk, modifiers });
+      await evaluate("new Promise(r => setTimeout(r, 40))");
+    };
+    // a navigation is over when ITS load event fired — an evaluate before that runs in the old page
+    const navigate = async (url: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const typeText = async (text: string) => { fx.inputs.push(`type ${JSON.stringify(text)}`); await send("Input.insertText", { text }); await evaluate("new Promise(r => setTimeout(r, 20))"); };
+    const click = async (expression: string): Promise<boolean> => {
+      const point = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
+        e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (!point) { missing.push(expression.slice(0, 120)); return false; }
+      fx.inputs.push(`click ${Math.round(point.x)},${Math.round(point.y)}`);
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+      await evaluate("new Promise(r => setTimeout(r, 40))");
+      return true;
+    };
+    // timers, not requestAnimationFrame: a headless page stops painting frames after a screencast
+    // stopped, and a rAF-polled wait then never answers (measured on this probe, 2026-10-02)
+    const wait = async (condition: string, ms = 6000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    let shotIndex = 0;
+    const shot = async (width: number, stage: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${width}-${String(++shotIndex).padStart(2, "0")}-${stage}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // page-side helpers: the window, its visible focusables in DOM order, a readable descriptor
+    const HELP = `(() => {
+      const W = () => document.querySelector('#shell-settings');
+      const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && !e.closest('[hidden]');
+      const focusables = () => [...(W()?.querySelectorAll('button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex="-1"])') ?? [])]
+        .filter((e) => !e.disabled && shown(e));
+      const desc = (e) => !e ? 'none' : e === document.body ? 'body' : (e.tagName.toLowerCase() + (e.className ? '.' + String(e.className).split(' ').join('.') : '') + (e.textContent ? ':' + e.textContent.trim().slice(0, 24) : ''));
+      const inside = () => !!W() && W().contains(document.activeElement);
+      const row = (label) => [...(W()?.querySelectorAll('.setrow') ?? [])].find((r) => r.querySelector('.setlabel')?.textContent === label) ?? null;
+      const section = (word) => { const b = [...(W()?.querySelectorAll('[data-settings-tab]') ?? [])].find((x) => x.textContent === word); return b ? W().querySelector('.setsec[data-sec="' + b.dataset.settingsTab + '"]') ?? [...W().querySelectorAll('.setsec')][[...W().querySelectorAll('[data-settings-tab]')].indexOf(b)] : null; };
+      return { W, shown, focusables, desc, inside, row, section };
+    })()`;
+    const gear = `[...document.querySelectorAll('#mset, .panegear')].find((e) => window.__fx.shown(e))`;
+    const results: SettingsDomResult[] = [];
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      shotIndex = 0;
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      fx.caps = { default: 1, max: 8, caps: { [REPO_A]: 2 }, bases: { [REPO_A]: "overhaul" } };
+      fx.capsStatus = 200; fx.planStatus = 200; fx.autosOn = true; fx.dispatchOn = true; fx.refuseCap = false; fx.posts = [];
+      fx.inputs = []; fx.requests = [];
+      await freshTarget();
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`${gear}`, 12000);
+      if (!booted) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await evaluate("new Promise(r => setTimeout(r, 600))");
+      if (artifacts) {
+        recording = `video-${width}`; frame = 0; frameTimes.length = 0;
+        mkdirSync(resolve(artifacts, recording), { recursive: true });
+        await send("Page.startScreencast", { format: "jpeg", quality: 85, everyNthFrame: 1 });
+      }
+      const sinceOpen = fx.posts.length;
+
+      // --- 1. open: the focus enters the window and lands on the current section's target
+      await click(gear);
+      await wait("window.__fx.W()");
+      await shot(width, "open");
+      facts.openFocus = await evaluate<string>("window.__fx.desc(document.activeElement)");
+      claims["opening moves the focus into the window"] = await evaluate<boolean>("window.__fx.inside()");
+      const nav = await evaluate<{ word: string; shown: boolean }[]>(`[...window.__fx.W().querySelectorAll('[data-settings-tab]')].map((b) => ({ word: b.textContent, shown: window.__fx.shown(b) }))`);
+      facts.nav = nav;
+      claims["four section targets are visible, in the registry order"] = nav.length === 4 && nav.every((n) => n.shown);
+      const navAx: Record<string, unknown>[] = [];
+      for (let i = 0; i < nav.length; i++) navAx.push((await ax(`window.__fx.W().querySelectorAll('[data-settings-tab]')[${i}]`)) ?? {});
+      facts.navAx = navAx;
+      claims["every section target is named by its visible word"] = navAx.length === 4 && navAx.every((n, i) => n.name === nav[i].word && n.role === "button");
+      // each target reached with a native click: it reads pressed and its section is on screen
+      const reached: Record<string, unknown>[] = [];
+      for (let i = 0; i < nav.length; i++) {
+        await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[${i}]`);
+        const state = await ax(`window.__fx.W().querySelectorAll('[data-settings-tab]')[${i}]`);
+        const visible = await evaluate<boolean>(`(() => { const s = window.__fx.section(${JSON.stringify(nav[i].word)}); if (!s || !window.__fx.shown(s)) return false;
+          const d = window.__fx.W().querySelector('.shelldetail').getBoundingClientRect();
+          const navBottom = window.__fx.W().querySelector('[data-settings-tab]').parentElement.getBoundingClientRect().bottom;
+          const h = s.querySelector('h3'); const top = (window.__fx.shown(h) ? h : s).getBoundingClientRect().top;
+          return top >= Math.max(d.top, navBottom) - 2 && top < d.bottom - 20; })()`);
+        reached.push({ word: nav[i].word, pressed: state?.pressed ?? null, visible, focus: await evaluate<string>("window.__fx.desc(document.activeElement)") });
+        await shot(width, `section-${i + 1}`);
+      }
+      facts.reached = reached;
+      claims["each of the four targets shows its section and reads pressed"] = reached.length === 4 && reached.every((r) => r.visible && r.pressed === "true");
+      claims["switching sections keeps the focus on the target that was used"] = reached.every((r, i) => String(r.focus).includes(nav[i].word));
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[0]`);
+
+      // --- 2. the focus trap: Tab and Shift-Tab walk only visible controls of the window and wrap
+      const ring = await evaluate<number>("window.__fx.focusables().length");
+      const walk: { inside: boolean; shown: boolean; at: string }[] = [];
+      await evaluate("window.__fx.focusables()[0].focus()");
+      for (let i = 0; i < ring + 1; i++) {
+        await key("Tab");
+        walk.push(await evaluate(`({ inside: window.__fx.inside(), shown: window.__fx.shown(document.activeElement), at: window.__fx.desc(document.activeElement) })`));
+      }
+      const wrapped = await evaluate<boolean>("document.activeElement === window.__fx.focusables()[1] || document.activeElement === window.__fx.focusables()[0]");
+      await evaluate("window.__fx.focusables()[0].focus()");
+      await key("Tab", true);
+      const backToLast = await evaluate<boolean>("document.activeElement === window.__fx.focusables().at(-1)");
+      facts.ring = ring; facts.walk = walk.map((w) => w.at);
+      claims["Tab never leaves the window and never lands on an invisible control"] = walk.every((w) => w.inside && w.shown);
+      claims["Tab wraps from the last control to the first, Shift-Tab from the first to the last"] = wrapped && backToLast;
+
+      // --- 3. device rows: names bound to the visible label, native toggle/choice/Standard, storage readback
+      const firstToggle = await evaluate<string | null>(`(() => { const b = window.__fx.W().querySelector('.setsec .settoggle'); return b ? b.closest('.setrow').querySelector('.setlabel').textContent : null; })()`);
+      facts.firstToggle = firstToggle;
+      const toggleExpr = `window.__fx.W().querySelector('.setsec .settoggle')`;
+      const t0 = await ax(toggleExpr);
+      await evaluate(`${toggleExpr}.focus()`); await key(" ");
+      const t1 = await ax(toggleExpr);
+      const stored1 = await evaluate<string | null>("localStorage.getItem('fleet.datasaver')");
+      await key("Enter");
+      const t2 = await ax(toggleExpr);
+      const stored2 = await evaluate<string | null>("localStorage.getItem('fleet.datasaver')");
+      facts.toggle = { t0, t1, t2, stored1, stored2 };
+      claims["a toggle is named by its row label and reads its state"] = t0?.name === firstToggle && t0?.pressed === "false";
+      claims["Space and Enter flip the toggle natively and storage reads back each state"] = t1?.pressed === "true" && stored1 === "1"
+        && t2?.pressed === "false" && stored2 === "0";
+      // the Standard way back: a deviating row offers it, it forgets the key and keeps the focus in the row
+      await key(" ");
+      const stdExpr = `${toggleExpr}.closest('.setrow').querySelector('.setreset')`;
+      const std = await ax(stdExpr);
+      await evaluate(`${stdExpr}.focus()`); await key("Enter");
+      const afterStd = { stored: await evaluate<string | null>("localStorage.getItem('fleet.datasaver')"), state: await ax(toggleExpr),
+        focusInside: await evaluate<boolean>("window.__fx.inside() && window.__fx.shown(document.activeElement)"),
+        hidden: await evaluate<boolean>(`!window.__fx.shown(${stdExpr})`) };
+      facts.standard = { std, afterStd };
+      // the registry row's own setter (PREF_APPLY → setSaver) may write the default straight back:
+      // "Standard" means the default value, stored or absent — the semantics this card keeps
+      claims["Standard names its row, returns it to the default and leaves the focus on a visible control"] = typeof std?.name === "string"
+        && String(std.name).includes(String(firstToggle)) && (afterStd.stored === null || afterStd.stored === "0")
+        && afterStd.state?.pressed === "false" && afterStd.hidden && afterStd.focusInside;
+      // a choice row: one named group, exactly the stored option pressed
+      const choiceRow = `window.__fx.W().querySelector('.setchoice')`;
+      const groupAx = await ax(choiceRow);
+      const choiceLabel = await evaluate<string>(`${choiceRow}.closest('.setrow').querySelector('.setlabel').textContent`);
+      const choiceStates = async () => { const out: Record<string, unknown>[] = []; const n = await evaluate<number>(`${choiceRow}.querySelectorAll('button').length`);
+        for (let i = 0; i < n; i++) out.push((await ax(`${choiceRow}.querySelectorAll('button')[${i}]`)) ?? {}); return out; };
+      const before = await choiceStates();
+      await click(`${choiceRow}.querySelectorAll('button')[1]`);
+      const after = await choiceStates();
+      const choiceKey = await evaluate<string>(`(() => { const l = ${JSON.stringify(choiceLabel)}; return l; })()`);
+      const storedChoice = await evaluate<Record<string, string | null>>("({ band: localStorage.getItem('fleet.bandDepth'), queue: localStorage.getItem('fleet.queue.scope') })");
+      facts.choice = { label: choiceKey, groupAx, before, after, storedChoice };
+      claims["a choice row is one group named by its label"] = groupAx?.name === choiceLabel;
+      claims["exactly the chosen option reads pressed, before and after a native click, and storage holds it"] =
+        before.filter((b) => b.pressed === "true").length === 1 && before[0]?.pressed === "true"
+        && after.filter((b) => b.pressed === "true").length === 1 && after[1]?.pressed === "true"
+        && Object.values(storedChoice).some((v) => v !== null);
+      // G5.3 name binding: change the visible label in the DOM, the accessible name follows it
+      await evaluate(`${toggleExpr}.closest('.setrow').querySelector('.setlabel').textContent = 'Umbenannt im DOM'`);
+      const renamed = await ax(toggleExpr);
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[3]`);
+      await wait(`window.__fx.section(${JSON.stringify(nav[3]?.word ?? "")})?.querySelector('.setrow .setlabel')`, 4000);
+      const machineBefore = await evaluate<boolean>(`!!window.__fx.section(${JSON.stringify(nav[3]?.word ?? "")})?.querySelector('.setrow .setlabel')`);
+      let machineRenamed: Record<string, unknown> | null = null;
+      if (machineBefore) {
+        await evaluate(`window.__fx.section(${JSON.stringify(nav[3].word)}).querySelector('.setrow .setlabel').textContent = 'Lanes je Repo (Maschine)'`);
+        machineRenamed = await ax(`window.__fx.section(${JSON.stringify(nav[3].word)}).querySelector('.setrow')`);
+      }
+      facts.rename = { renamed, machineRenamed };
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[0]`);
+      claims["a renamed label renames the control's accessible name (aria-labelledby, not a copied string)"] = renamed?.name === "Umbenannt im DOM";
+      claims["a renamed machine row label renames that row's accessible name"] = machineRenamed?.name === "Lanes je Repo (Maschine)";
+      await shot(width, "device-rows");
+
+      // --- 4. the Fleet block: master, effective cap with source, occupancy, startable, wait reasons
+      const fleetWord = nav[2]?.word ?? "Fleet";
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
+      await wait(`window.__fx.section(${JSON.stringify(fleetWord)})?.querySelector('[data-par="cap"]')?.textContent?.length > 0`, 4000);
+      const fleetText = async () => evaluate<string>(`window.__fx.section(${JSON.stringify(fleetWord)})?.innerText ?? ''`);
+      const par = async () => (await evaluate<Record<string, string> | null>(`Object.fromEntries([...(window.__fx.W()?.querySelectorAll('[data-par]') ?? [])].map((e) => [e.dataset.par, e.innerText.replace(/\\s+/g, ' ').trim()]))`)) ?? {};
+      const parA = await par();
+      facts.parA = parA; facts.fleetTextA = await fleetText();
+      await shot(width, "fleet-override");
+      claims["master reads on, and its scope says it starts nothing by itself"] = /\ban\b/.test(parA.master ?? "") && /alle Repos/.test(parA.master ?? "") && /nichts sofort/.test(parA.master ?? "");
+      claims["repo override 2 at machine default 1: effective 2, source repo override, machine 1 shown apart"] =
+        /wirksam 2/.test(parA.cap ?? "") && /Repo-Override/.test(parA.cap ?? "") && /Maschinen-Standard 1/.test(parA.cap ?? "");
+      claims["occupancy at the cap reads 2 of 2 with the plan's read time"] = /2 von 2/.test(parA.load ?? "") && /gelesen/.test(parA.load ?? "");
+      claims["master on with every row waiting: 0 startable, three named wait reasons"] = /^Startbar jetzt 0\b/.test(parA.start ?? "")
+        && ["a1a1a1a1", "b2b2b2b2", "d4d4d4d4"].every((id) => (parA.wait ?? "").includes(id)) && /Deckel voll/.test(parA.wait ?? "")
+        && /Reihenfolge/.test(parA.wait ?? "") && /nicht freigegeben/.test(parA.wait ?? "");
+      const doubled = await evaluate<{ master: string; cap: string; std: number }>(`({
+        master: window.__fx.W().querySelector('[data-par="master"] .setval')?.textContent ?? 'missing',
+        cap: window.__fx.W().querySelector('[data-par="cap"] .setval')?.textContent ?? 'missing',
+        std: [...window.__fx.W().querySelectorAll('.setnote')].filter((n) => /Standard: (an|aus|on|off)\b/.test(n.textContent)).length })`);
+      facts.doubled = doubled;
+      claims["no row says its value twice: no server copy beside an unstaged control, no 'Standard: aus' beside a state"] =
+        doubled?.master === "" && doubled?.cap === "" && doubled?.std === 0;
+      const pickAx = await ax(`window.__fx.W().querySelector('[data-par="repo"] select')`);
+      const capAx = await ax(`window.__fx.W().querySelector('[data-par="cap"] input')`);
+      const masterAx = await ax(`window.__fx.W().querySelector('[data-par="master"] .settoggle')`);
+      facts.parAx = { pickAx, capAx, masterAx };
+      claims["repo picker, cap field and master switch are named, the switch reads its state"] = pickAx?.name === "Repo" && capAx?.name === "Lane-Deckel"
+        && masterAx?.name === "Master" && masterAx?.pressed === "true";
+      // the side repo: machine default 1, no override, one row startable
+      await evaluate(`(() => { const s = window.__fx.W().querySelector('[data-par="repo"] select'); s.focus(); })()`);
+      await evaluate(`(() => { const s = window.__fx.W().querySelector('[data-par="repo"] select'); s.value = ${JSON.stringify(REPO_B)}; s.dispatchEvent(new Event('change')); })()`);
+      const parB = await par();
+      facts.parB = parB;
+      await shot(width, "fleet-machine-default");
+      claims["machine default 1 without override: effective 1, source machine default, one row startable"] =
+        /wirksam 1/.test(parB.cap ?? "") && /Maschinen-Standard/.test(parB.cap ?? "") && !/Repo-Override 2/.test(parB.cap ?? "")
+        && /^Startbar jetzt 1\b/.test(parB.start ?? "") && (parB.start ?? "").includes("e5e5e5e5");
+      await evaluate(`(() => { const s = window.__fx.W().querySelector('[data-par="repo"] select'); s.value = ${JSON.stringify(REPO_A)}; s.dispatchEvent(new Event('change')); })()`);
+
+      // --- 5. staged vs readback, Cancel is a null write, Weiter bearbeiten returns to the control
+      const capInput = `window.__fx.W().querySelector('[data-par="cap"] input')`;
+      await evaluate(`${capInput}.focus(); ${capInput}.select()`);
+      await typeText("3");
+      const staged = await par();
+      facts.staged = staged;
+      claims["a staged 3 is shown apart from the server's effective 2"] = /wirksam 2/.test(staged.cap ?? "") && /vorgemerkt 3/.test(staged.cap ?? "");
+      await shot(width, "staged");
+      await key("Escape");
+      const discard = { open: await evaluate<boolean>(`!!window.__fx.W().querySelector('.setdiscard')`), focus: await evaluate<string>("window.__fx.desc(document.activeElement)") };
+      await shot(width, "discard-question");
+      await key("Enter"); // Weiter bearbeiten
+      const kept = { gone: await evaluate<boolean>(`!window.__fx.W().querySelector('.setdiscard')`), onCap: await evaluate<boolean>(`document.activeElement === ${capInput}`),
+        value: await evaluate<string>(`${capInput}.value`) };
+      facts.discard = { discard, kept };
+      claims["Escape with a staged value asks first and focuses Weiter bearbeiten"] = discard.open && /Weiter bearbeiten/.test(discard.focus);
+      claims["Weiter bearbeiten returns the focus to the staged control with its value"] = kept.gone && kept.onCap && kept.value === "3";
+      await click(`window.__fx.W().querySelector('.shellclose')`);
+      await evaluate(`[...window.__fx.W().querySelectorAll('.setdiscard button')].find((b) => /Verwerfen/.test(b.textContent)).focus()`);
+      await key("Enter");
+      const dropped = { closed: await evaluate<boolean>("!window.__fx.W()"), onGear: await evaluate<boolean>(`document.activeElement === ${gear}`),
+        writes: settingsWrites(sinceOpen).length };
+      facts.dropped = dropped;
+      claims["Verwerfen closes with zero writes and returns the focus to the opener"] = dropped.closed && dropped.onGear && dropped.writes === 0;
+
+      // --- 6. Apply: refused first (row keeps the staged value, server value unchanged), then written once
+      await click(gear); await wait("window.__fx.W()");
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
+      await wait(`window.__fx.W().querySelector('[data-par="cap"]')?.innerText.includes('wirksam')`, 4000);
+      await evaluate(`${capInput}.focus(); ${capInput}.select()`);
+      await typeText("9");
+      fx.refuseCap = true;
+      const applyBtn = `window.__fx.W().querySelector('.setfoot .cmdapply')`;
+      const applyAx = await ax(applyBtn);
+      const beforeApply = fx.posts.length;
+      await click(applyBtn);
+      await wait(`window.__fx.W().querySelector('.seterr:not([hidden])')`, 4000);
+      const refused = { posts: settingsWrites(beforeApply), par: await par(), err: await evaluate<string>(`window.__fx.W().querySelector('.seterr:not([hidden])')?.textContent ?? ''`) };
+      facts.refused = { applyAx, ...refused };
+      await shot(width, "apply-refused");
+      claims["Apply sends exactly the staged cap once; a refusal stays at its row and the effective value stays 2"] =
+        refused.posts.length === 1 && refused.posts[0].url === "/api/repo-lane-cap"
+        && JSON.stringify(refused.posts[0].body) === JSON.stringify({ repo: REPO_A, maxLanes: 9 })
+        && /Server lehnt ab/.test(refused.err) && /wirksam 2/.test(refused.par.cap ?? "") && /vorgemerkt 9/.test(refused.par.cap ?? "");
+      fx.refuseCap = false;
+      await evaluate(`${capInput}.focus(); ${capInput}.select()`);
+      await typeText("3");
+      const beforeOk = fx.posts.length;
+      await click(applyBtn);
+      await wait(`/wirksam 3/.test(window.__fx.W().querySelector('[data-par="cap"]')?.innerText ?? '')`, 4000);
+      const applied = { posts: settingsWrites(beforeOk), par: await par() };
+      facts.applied = applied;
+      await shot(width, "applied");
+      claims["after Apply the row shows the server's readback, nothing staged remains"] = applied.posts.length === 1
+        && JSON.stringify(applied.posts[0].body) === JSON.stringify({ repo: REPO_A, maxLanes: 3 })
+        && /wirksam 3/.test(applied.par.cap ?? "") && !/vorgemerkt/.test(applied.par.cap ?? "");
+
+      // --- 7. background repaint and repeated opening do not steal the focus
+      await evaluate(`${capInput}.focus()`);
+      const polls = fx.sessions;
+      await evaluate("new Promise(r => setTimeout(r, 4500))");
+      facts.repaint = { polls: fx.sessions - polls, focus: await evaluate<string>("window.__fx.desc(document.activeElement)") };
+      claims["two background polls later the focus is still on the same control"] = fx.sessions - polls >= 2 && await evaluate<boolean>(`document.activeElement === ${capInput}`);
+      await key("Escape");
+      claims["Escape without staged values closes and returns the focus to the opener"] = await evaluate<boolean>(`!window.__fx.W() && document.activeElement === ${gear}`);
+      await key("Enter"); // the opener is focused: Enter reopens through its native activation
+      await wait("window.__fx.W()");
+      claims["reopening by keyboard focuses the window again, one window only"] = await evaluate<boolean>("document.querySelectorAll('#shell-settings').length === 1 && window.__fx.inside()");
+
+      // --- 8. the unknown/old server: no plan, no `bases`, no autos flag → said, never guessed
+      await key("Escape");
+      fx.planStatus = 500; fx.caps.bases = undefined; fx.autosOn = undefined; fx.capsStatus = 200;
+      await evaluate("new Promise(r => setTimeout(r, 2300))");
+      await click(gear); await wait("window.__fx.W()");
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
+      await evaluate("new Promise(r => setTimeout(r, 400))");
+      const parU = await par();
+      const autosRow = await evaluate<string>(`[...window.__fx.W().querySelectorAll('.fleetrow')].find((r) => /Automatik/.test(r.innerText))?.innerText ?? ''`);
+      facts.unknown = { parU, autosRow };
+      await shot(width, "unknown");
+      claims["an unreadable plan reads unbekannt for occupancy, startable and waits"] = /unbekannt/.test(parU.load ?? "") && /unbekannt/.test(parU.start ?? "") && /unbekannt/.test(parU.wait ?? "");
+      claims["an unknown autos state reads unbekannt, never as the chosen 'an'"] = /unbekannt/.test(autosRow) && !/\ban\b\s*$/.test(autosRow.trim());
+      await key("Escape");
+      facts.posts = fx.posts.slice(sinceOpen);
+      claims["the whole run wrote only the two Apply requests"] = settingsWrites(sinceOpen).length === 2;
+
+      // --- 9. the explorer's write dialog: one language, sans prose, mono command, neutral focus
+      fx.planStatus = 200;
+      // the Info column is a desktop preference; on the phone ℹ opens it as a window of its own
+      if (width === 1200) await evaluate(`localStorage.setItem('fleet.board', '1')`);
+      await navigate("http://fleet.fixture/");
+      await wait(`${gear}`, 12000);
+      const openExplorerBtn = `[...document.querySelectorAll('button')].find((b) => /explorer/i.test(b.textContent) && window.__fx.shown(b))`;
+      if (!await wait(openExplorerBtn, 4000)) {
+        await click(`[...document.querySelectorAll('.boardtoggle')].find((b) => window.__fx.shown(b))`);
+      }
+      const explorerOpened = await wait(openExplorerBtn, 8000);
+      if (explorerOpened) {
+        await click(openExplorerBtn);
+        await wait(`document.querySelector('#shell-files .fxmore')`);
+        await click(`[...document.querySelectorAll('#shell-files .fxline')].find((l) => l.textContent.includes('README'))?.querySelector('.fxmore')`);
+        await click(`[...document.querySelectorAll('.fxmenuitem')].find((b) => /Rename|Umbenennen/.test(b.textContent))`);
+        await wait(`document.querySelector('.fxwritepanel')`);
+        await shot(width, "explorer-rename");
+        const dlg = (await evaluate<Record<string, unknown> | null>(`(() => { const p = document.querySelector('.fxwritepanel');
+          const cs = (e) => e ? getComputedStyle(e).fontFamily : null;
+          return { title: p.querySelector('h2').textContent, keys: [...p.querySelectorAll('.fxwritekey')].map((k) => k.textContent),
+            buttons: [...p.querySelectorAll('.riskbtn')].map((b) => b.textContent), label: p.querySelector('.fxwritelabel')?.firstChild?.textContent,
+            prose: cs(p.querySelector('.fxwriterow:nth-of-type(4) .fxwritevalue')), command: cs(p.querySelector('.fxwritevalue')),
+            pathInProse: cs(p.querySelector('.fxwritevalue .fxcode')),
+            heading: cs(p.querySelector('h2')), focus: window.__fx.desc(document.activeElement) }; })()`)) ?? {};
+        await key("Tab");
+        dlg.ring = await evaluate<string>(`(() => { const e = document.activeElement; const s = getComputedStyle(e); return s.outlineStyle + ' ' + s.outlineColor + ' ' + s.outlineWidth; })()`);
+        dlg.ringToken = await evaluate<string>(`(() => { const p = document.createElement('i'); p.style.color = 'var(--chat-mute)'; document.body.appendChild(p); const c = getComputedStyle(p).color; p.remove(); return c; })()`);
+        await shot(width, "explorer-focus");
+        await key("Escape");
+        dlg.cancelled = await evaluate<boolean>("!document.querySelector('.fxwritepanel')");
+        dlg.writes = fx.posts.filter((x) => x.url.startsWith("/api/file/")).length;
+        facts.explorer = dlg;
+        claims["the explorer rename dialog speaks German: title, rows, buttons"] = /^Umbenennen — /.test(String(dlg.title))
+          && JSON.stringify(dlg.keys) === JSON.stringify(["Führt aus", "Wo", "Danach", "Bleibt", "Rückweg"])
+          && JSON.stringify(dlg.buttons) === JSON.stringify(["Abbrechen", "Umbenennen"]);
+        claims["prose rows read in the sans face, the command and the paths inside prose in mono"] = !/mono|Menlo/i.test(String(dlg.prose))
+          && /mono|Menlo/i.test(String(dlg.command)) && /mono|Menlo/i.test(String(dlg.pathInProse));
+        claims["the dialog's keyboard focus ring is the neutral 1px --chat-mute"] = String(dlg.ring).startsWith("solid") && String(dlg.ring).includes(String(dlg.ringToken)) && String(dlg.ring).endsWith("1px");
+        claims["Escape cancels the dialog without a file write"] = dlg.cancelled === true && dlg.writes === 0;
+      } else {
+        await shot(width, "explorer-missing");
+        facts.explorerMissing = await evaluate<string>("document.body.innerText.replace(/\\s+/g, ' ').slice(0, 600)");
+        claims["the explorer opens from the Info column in the fixture"] = false;
+      }
+
+      if (artifacts) { await send("Page.stopScreencast"); writeFileSync(resolve(artifacts, `video-${width}`, "times.json"), JSON.stringify(frameTimes)); recording = null; }
+      facts.missing = missing.splice(0);
+      facts.inputs = fx.inputs; facts.requests = fx.requests; facts.allPosts = fx.posts;
+      facts.nativeDialogs = nativeDialogs.splice(0);
+      results.push({ width, height, claims, facts });
     }
     return results;
   } finally {

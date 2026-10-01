@@ -2008,14 +2008,14 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     foundCode.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`")
     && foundCode.includes("if (S !== s || seq !== s.planSeq || s.place !== path) return; // latest-wins")
     && foundCode.includes("if (s.planFor !== planKey()) void loadPlan();")
-    && foundCode.includes("s.packs = new Set(); // a fresh plan is a fresh choice"),
+    && foundCode.includes("s.packOpen.clear();"),
     "loadPlan/renderDetail in src/founding.ts");
   const omitCode = foundCode.slice(foundCode.indexOf("if (s.omitOpen) for (const o of om)"), foundCode.indexOf('if (info.recent?.length)'));
   check("founding window: a deliverable pack is a switch, default off — should-reject: an omitted pack shows its reason and is not switchable",
-    foundCode.includes('b.setAttribute("role", "switch");') && foundCode.includes('b.setAttribute("aria-checked", String(on));')
+    foundCode.includes('b.setAttribute("role", "switch");') && foundCode.includes('control.setAttribute("aria-checked", String(on));')
     && foundCode.includes("packs: new Set(),")
     && omitCode.includes('el("div", "fdomit")') && omitCode.includes("OMIT_SAY[o.reason]")
-    && !omitCode.includes("onclick") && !omitCode.includes("s.packs"),
+    && !omitCode.includes('setAttribute("role", "switch")') && !omitCode.includes("s.packs"),
     "renderDetail pack rows in src/founding.ts");
   check("founding window: a 404 of the plan or dirinfo route reads as SKEW_NOTE, never as a repo without packs",
     (foundCode.match(/if \(res\.status === 404\) \{ s\.(planErr|infoErr) = SKEW_NOTE; renderDetail\(\); return; \}/g) ?? []).length === 2,
@@ -2057,6 +2057,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && result.explicit[0].body.cwd === "/fixture/repo"
         && JSON.stringify(result.selected) === '["fixture-alpha"]'
         && JSON.stringify(result.explicit[0].body.packs) === JSON.stringify(result.selected), JSON.stringify(result.explicit));
+      for (const [claim, ok] of Object.entries(result.g1))
+        check(`founding G1 DOM ${atWidth}: ${claim}`, ok, claim);
       check(`founding DOM ${atWidth} — should-reject: Escape closes without a start request`,
         result.cancel.closed && result.cancel.requests === 0, JSON.stringify(result.cancel));
     }
@@ -4576,6 +4578,7 @@ interface FoundingFocusDomResult {
   selected: string[];
   explicit: { url: string; body: { cwd: string; packs?: string[] } }[];
   cancel: { closed: boolean; requests: number };
+  g1: Record<string, boolean>;
 }
 
 export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string): Promise<FoundingFocusDomResult[]> {
@@ -4583,7 +4586,7 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
   mkdirSync(scratch, { recursive: true });
   const stub = `
     export const fleet = [{ id: 1, cwd: '/fixture/repo', label: 'Fixture' }];
-    export const harnesses = [{ id: 'codex', default: true, supports: {}, effortLevels: [] }];
+    export const harnesses = [{ id: 'codex', default: true, supports: { model: true, effort: true }, models: ['fixture-model'], effortLevels: ['high'] }, { id: 'other', supports: { model: true, effort: true }, models: ['other-model'], effortLevels: ['high'] }];
     export const defaultModel = '', containerDefaults = null, SKEW_NOTE = 'fixture skew';
     export const agentHarnesses = () => harnesses;
     export const isMobile = () => matchMedia('(max-width: 700px)').matches;
@@ -4595,14 +4598,21 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
     export const setDrawer = () => {}, loadHarnesses = async () => {};
     export const api = async path => {
       if (path.startsWith('/api/dirinfo?')) return Response.json({ git: true, branch: 'fixture', dirty: 0 });
-      if (path.startsWith('/api/founding-plan?')) return Response.json({ selected: [
-        { id: 'fixture-alpha', bytes: 1024, source: 'repo', useWhen: 'Erstes Test-Pack' },
-        { id: 'fixture-beta', bytes: 2048, source: 'repo', useWhen: 'Zweites Test-Pack' }
-      ], omitted: [{ id: 'fixture-omitted', reason: 'harness-unsupported' }] });
+      if (path.startsWith('/api/founding-plan?')) {
+        window.fixturePlanReads++;
+        if (window.fixtureHold) await new Promise(resolve => window.fixtureReleases.push(resolve));
+        if (window.fixturePlan === 'network') throw new Error('fixture network refusal');
+        if (window.fixturePlan === '500') return Response.json({ error: 'fixture plan refusal' }, { status: 500 });
+        if (window.fixturePlan === 'malformed') return Response.json({ selected: [{ id: 'broken' }], omitted: [] });
+        return Response.json({ head: 'fixture-head', branch: 'fixture', selected: [
+          { id: 'fixture-alpha', bytes: 1024, source: 'repo-manifest', useWhen: 'Erstes Test-Pack: voller Zweck mit langem Text, der mobil lesbar umbricht.' },
+          { id: 'fixture-beta', bytes: 2048, source: 'fleet-seed', useWhen: 'Zweites Test-Pack' }
+        ].filter(p => window.fixturePlan !== 'missing-id' || p.id !== 'fixture-alpha'), omitted: [{ id: 'fixture-omitted', reason: 'harness-unsupported' }] });
+      }
       throw new Error('unexpected fixture API: ' + path);
     };
     export const post = async (url, body) => { window.fixtureRequests.push({ url, body }); return Response.json({}); };
-    export const startSession = async (cwd, label, onError, via) => post('/api/slots/' + via.slot + '/open', { cwd, ...via.body });
+    export const startSession = async (cwd, label, onError, via) => post('/api/slots/' + via.slot + '/open', { cwd, ...(label ? { label } : {}), ...via.body });
     export const startWorktree = async () => { throw new Error('unexpected worktree spawn'); };
     export const revealStartedSlot = async () => { throw new Error('unexpected slot reveal'); };
   `;
@@ -4612,7 +4622,11 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       build.onResolve({ filter: /^\.\/client$/ }, () => ({ path: 'fixture-client', namespace: 'fixture' }));
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: stub, loader: 'js' }));
       build.onLoad({ filter: /\/src\/founding\.ts$/ }, args => ({
-        contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free').onclick = window.fixtureOpen; window.fixtureReady = true;`, loader: 'ts'
+        contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixtureReleases = []; window.fixturePlanReads = 0;
+const fixtureBody = foundingBody; foundingBody = () => ({ ...fixtureBody(), ...(window.fixtureWireModel ? { model: window.fixtureWireModel } : {}) });
+window.fixtureReload = () => { void loadPlan(); renderDetail(); renderFoot(); };
+window.fixtureStale = () => { S.planFor = 'stale'; renderFoot(); };
+window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free').onclick = window.fixtureOpen; window.fixtureReady = true;`, loader: 'ts'
       }));
     } }]
   });
@@ -4632,9 +4646,19 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
     socket = new WebSocket(endpoint);
     await new Promise<void>((resolve, reject) => { socket!.onopen = () => resolve(); socket!.onerror = () => reject(new Error('CDP connection failed')); });
     let serial = 0, sessionId: string | undefined;
+    let recordingWidth: number | null = null, frame = 0;
     const pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
     socket.onmessage = event => {
       const msg = JSON.parse(String(event.data)) as { id: number; error?: unknown; result: Record<string, unknown> };
+      const eventMsg = JSON.parse(String(event.data)) as { method?: string; params?: { data: string; sessionId: number } };
+      if (eventMsg.method === 'Page.screencastFrame' && eventMsg.params) {
+        if (artifacts && recordingWidth !== null) {
+          const folder = resolve(artifacts, `frames-${recordingWidth}`);
+          writeFileSync(resolve(folder, `${String(frame++).padStart(5, '0')}.jpg`), Buffer.from(eventMsg.params.data, 'base64'));
+        }
+        socket!.send(JSON.stringify({ id: ++serial, method: 'Page.screencastFrameAck', params: { sessionId: eventMsg.params.sessionId }, sessionId }));
+        return;
+      }
       const waiting = pending.get(msg.id); if (!waiting) return;
       pending.delete(msg.id);
       if (msg.error) waiting.reject(new Error(JSON.stringify(msg.error))); else waiting.resolve(msg.result);
@@ -4664,10 +4688,10 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       await send('Page.navigate', { url: `file://${scratch}/fixture.html` });
       await evaluate(`new Promise((resolve, reject) => { const until = Date.now() + 5000; const ready = () => { if (window.fixtureReady) return resolve(true); if (Date.now() > until) return reject(new Error('fixture not ready')); requestAnimationFrame(ready); }; ready(); })`);
       const open = async () => {
-        await evaluate(`document.querySelector('#fixture-free').click(); new Promise((resolve, reject) => { const until = Date.now() + 5000; const ready = () => { if (document.querySelectorAll('.fdpack').length === 2) { document.querySelector('.fdrow').click(); return resolve(true); } if (Date.now() > until) return reject(new Error('packs not ready')); requestAnimationFrame(ready); }; ready(); })`);
+        await evaluate(`document.querySelector('#fixture-free').click(); new Promise((resolve, reject) => { const until = Date.now() + 5000; const ready = () => { if (document.querySelectorAll('.fdpackrow > .fdpack').length === 2) { document.querySelector('.fdrow').click(); return resolve(true); } if (Date.now() > until) return reject(new Error('packs not ready')); requestAnimationFrame(ready); }; ready(); })`);
         await evaluate(`document.querySelector('.fdtabs button').focus()`);
         for (let i = 0; i < 12; i++) {
-          if (await evaluate(`document.activeElement === document.querySelector('.fdpack')`)) break;
+          if (await evaluate(`document.activeElement === document.querySelector('.fdpackrow > .fdpack')`)) break;
           await key('Tab');
         }
         await evaluate(`window.fixtureSwitch = document.querySelector('.fdpack'); if (document.activeElement !== window.fixtureSwitch) throw new Error('Tab did not reach pack switch');`);
@@ -4678,23 +4702,138 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
         writeFileSync(resolve(artifacts, `${width}-${stage}.png`), Buffer.from(String(png.data), 'base64'));
       };
       await open(); await shot('before');
-      const defaultOff = await evaluate<boolean>(`document.querySelectorAll('.fdpack[aria-checked="false"]').length === 2 && window.fixtureRequests.length === 0`);
+      const defaultOff = await evaluate<boolean>(`document.querySelectorAll('.fdpackrow > .fdpack[aria-checked="false"]').length === 2 && window.fixtureRequests.length === 0`);
       const states: FoundingFocusDomResult['states'] = [];
       for (let i = 0; i < 2; i++) {
         await key('Enter');
-        states.push(await evaluate<FoundingFocusDomResult['states'][number]>(`({ same: document.activeElement === window.fixtureSwitch, active: document.activeElement.tagName, checked: document.querySelector('.fdpack').getAttribute('aria-checked'), requests: window.fixtureRequests.length, beta: document.querySelectorAll('.fdpack')[1].getAttribute('aria-checked') })`));
+        states.push(await evaluate<FoundingFocusDomResult['states'][number]>(`({ same: document.activeElement === window.fixtureSwitch, active: document.activeElement.tagName, checked: document.querySelector('.fdpack').getAttribute('aria-checked'), requests: window.fixtureRequests.length, beta: document.querySelectorAll('.fdpackrow > .fdpack')[1].getAttribute('aria-checked') })`));
         await shot(`enter-${i + 1}`);
       }
       // Reset the fixture after a broken toggle sequence so explicit-start and cancel stay independently measurable.
       await evaluate(`window.fixtureRequests = []; window.fixtureOpen()`); await open();
       await key('Enter');
-      const selected = await evaluate<string[]>(`Array.from(document.querySelectorAll('.fdpack[aria-checked="true"] .fdpid'), e => e.textContent)`);
+      const selected = await evaluate<string[]>(`Array.from(document.querySelectorAll('.fdpackrow > .fdpack[aria-checked="true"] .fdpid'), e => e.textContent)`);
       await evaluate(`document.querySelector('.fdgo').focus()`); await key('Enter');
       const explicit = await evaluate<FoundingFocusDomResult['explicit']>(`window.fixtureRequests`);
       await evaluate(`window.fixtureRequests = []`); await open();
       await key('Enter'); await key('Enter'); await key('Escape'); await key('Escape');
       const cancel = await evaluate<FoundingFocusDomResult['cancel']>(`({ closed: !document.querySelector('#shell-found'), requests: window.fixtureRequests.length })`);
-      results.push({ width, height, defaultOff, states, selected, explicit, cancel });
+      const g1: Record<string, boolean> = {};
+      const click = async (selector: string) => {
+        const point = await evaluate<{ x: number; y: number }>(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)}); if (!e) throw new Error('missing click target');
+          e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        })()`);
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+      };
+      const wait = async (condition: string) => evaluate(`new Promise((resolve, reject) => {
+        const until = Date.now() + 5000; const ready = () => { if (${condition}) return resolve(true);
+          if (Date.now() > until) return reject(new Error('condition timed out: ' + ${JSON.stringify(condition)})); requestAnimationFrame(ready); }; ready();
+      })`);
+      const reset = async () => {
+        await evaluate(`window.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixtureWireModel = '';`);
+        await open();
+      };
+      const field = (name: string) => `document.querySelector('.fdsummary [data-field="${name}"]').textContent`;
+      const rowEnter = async () => {
+        if (width === 390) await click('.shellback');
+        await evaluate(`(() => { const list = document.querySelector('.shelllist'); list.focus(); if (document.activeElement !== list || !list.offsetParent) throw new Error('place list is not focused and visible'); })()`);
+        await key('Enter');
+      };
+      const blocked = async () => {
+        await click('.fdgo');
+        await shot('blocked');
+        await rowEnter();
+        return evaluate<boolean>(`document.querySelector('.fdgo').disabled && document.querySelector('.fdfootnote').textContent.length > 0 && window.fixtureRequests.length === 0 && !Array.from(document.querySelectorAll('.fdpackdetail:not([hidden]) .fdpackstate')).some(e => e.textContent === 'Beim Start mitgegeben')`);
+      };
+      if (artifacts) {
+        mkdirSync(resolve(artifacts, `frames-${width}`), { recursive: true });
+        recordingWidth = width; frame = 0;
+        await send('Page.startScreencast', { format: 'jpeg', quality: 85, everyNthFrame: 1 });
+      }
+      await reset(); await shot('collapsed');
+      await click('.fdpackfold'); await shot('preview');
+      g1['preview shows full purpose, repo source, KB and dashed edge'] = await evaluate<boolean>(`(() => {
+        const d = document.querySelector('.fdpackdetail'); const t = d.textContent;
+        return document.querySelector('.fdpackfold').getAttribute('aria-expanded') === 'true'
+          && t.includes('Erstes Test-Pack: voller Zweck mit langem Text, der mobil lesbar umbricht.')
+          && t.includes('aus dem Repo') && t.includes('1,0 KB')
+          && d.querySelector('.fdpackstate').textContent === 'Vorschau: würde beim Auswählen mitgegeben'
+          && getComputedStyle(d).borderTopStyle === 'dashed'
+          && t.includes('Verweise, Fassung und Hash stehen erst im Startbeleg nach dem Start.');
+      })()`);
+      await click('.fdpackchoice'); await shot('selected');
+      g1['detail switch preserves focus, synchronizes row and sends zero open'] = await evaluate<boolean>(`document.activeElement === document.querySelector('.fdpackchoice') && document.querySelector('.fdpackrow > .fdpack').getAttribute('aria-checked') === 'true' && document.querySelector('.fdpackstate').textContent === 'Beim Start mitgegeben' && window.fixtureRequests.length === 0`);
+      await click('.fdpackrow > .fdpack');
+      g1['row switch synchronizes detail and preserves its focus'] = await evaluate<boolean>(`document.activeElement === document.querySelector('.fdpackrow > .fdpack') && document.querySelector('.fdpackchoice').getAttribute('aria-checked') === 'false' && document.querySelector('.fdpackstate').textContent.startsWith('Vorschau:') && window.fixtureRequests.length === 0`);
+      await click('.fdpackrow:nth-of-type(3) .fdpackfold');
+      g1['Fleet pack details show full purpose, Fleet source and KB'] = await evaluate<boolean>(`(() => { const d = document.querySelectorAll('.fdpackrow .fdpackdetail')[1]; return !d.hidden && d.textContent.includes('Zweites Test-Pack') && d.textContent.includes('aus der Fleet') && d.textContent.includes('2,0 KB'); })()`);
+      await click('.fdsecd > .fdfold'); await click('.fdomit .fdpackfold'); await shot('omitted');
+      g1['omitted pack explains reason, missing metadata and has no switch'] = await evaluate<boolean>(`(() => { const d = document.querySelector('.fdomit'); return d.textContent.includes('Nicht mitgegeben: nicht für diesen Agenten') && d.textContent.includes('im Plan für ausgelassene Packs nicht angegeben') && !d.querySelector('[role="switch"]'); })()`);
+      // A test-only body transform makes a state-reading summary observably wrong.
+      await reset();
+      await click('[data-pop="model"]'); await click('.fdprow:nth-child(2)');
+      await click('[data-pop="effort"]'); await click('.fdprow:nth-child(2)');
+      await wait(`document.querySelectorAll('.fdpackrow').length === 2`);
+      await evaluate(`window.fixtureWireModel = 'wire-model'; document.querySelector('.fdpackrow > .fdpack').click(); document.querySelector('.fdpackrow > .fdpack').click();`);
+      const summaryMatches = async () => evaluate<boolean>(`(() => {
+        const r = window.fixtureRequests[0]; const b = r.body;
+        return r.url === '/api/slots/2/open' && b.cwd === '/fixture/repo'
+          && ${field('Rolle')} === (b.label ? 'Rolle: ' + b.label : 'Rolle: Session')
+          && ${field('Ort')} === 'Ort: repo (/fixture/repo) · fixture, sauber'
+          && ${field('Agent')} === 'Agent: ' + (b.harness || 'codex (Fleet-Standard)')
+          && ${field('Modell')} === 'Modell: ' + (b.model || 'Adapter wählt')
+          && ${field('Effort')} === 'Effort: ' + (b.effort || 'Adapter wählt')
+          && ${field('Kontext')} === 'Kontext: ' + (b.packs ? b.packs.length + ' Packs: ' + b.packs.join(', ') : 'kein Pack')
+          && ${field('Ausführungsrechte')} === 'Ausführungsrechte: Fleet-Standard, hier nicht wählbar';
+      })()`);
+      await shot('summary'); await click('.fdgo');
+      g1['summary model comes from foundingBody, exact no-pack request fields'] = await summaryMatches()
+        && await evaluate<boolean>(`window.fixtureRequests.length === 1 && JSON.stringify(window.fixtureRequests[0].body) === JSON.stringify({cwd:'/fixture/repo', model:'wire-model', effort:'high'})`);
+      g1['summary and start fields fit without clipping'] = await evaluate<boolean>(`(() => {
+        const root = document.querySelector('.fdsummary'); const r = root.getBoundingClientRect();
+        return r.x >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && root.scrollWidth <= root.clientWidth
+          && Array.from(root.children).every(e => e.scrollWidth <= e.clientWidth);
+      })()`);
+      await reset(); await click('.fdpackrow > .fdpack'); await click('.fdgo');
+      g1['valid pack sends exactly one open with exact selected body'] = await summaryMatches()
+        && await evaluate<boolean>(`window.fixtureRequests.length === 1 && JSON.stringify(window.fixtureRequests[0].body) === JSON.stringify({cwd:'/fixture/repo', packs:['fixture-alpha']})`);
+      await reset(); await click('[data-pop="harness"]'); await click('.fdprow:nth-child(2)');
+      await click('.fdtab:nth-child(4)'); await wait(`document.querySelectorAll('.fdpackrow').length === 2`);
+      await click('.fdgo');
+      g1['role and chosen agent summary match the exact open body'] = await summaryMatches()
+        && await evaluate<boolean>(`window.fixtureRequests.length === 1 && JSON.stringify(window.fixtureRequests[0].body) === JSON.stringify({cwd:'/fixture/repo', label:'Orchestrator', harness:'other'})`);
+      await reset(); await rowEnter();
+      g1['no-pack row Enter keeps the original exact empty spawn body'] = await evaluate<boolean>(`window.fixtureRequests.length === 1 && JSON.stringify(window.fixtureRequests[0].body) === JSON.stringify({cwd:'/fixture/repo'})`);
+      for (const change of ['harness', 'role', 'model']) {
+        await reset(); await click('.fdpackfold'); await click('.fdpackchoice');
+        await evaluate(`window.fixtureHold = true;`);
+        if (change === 'harness') { await click('[data-pop="harness"]'); await click('.fdprow:nth-child(2)'); }
+        else if (change === 'role') await click('.fdtab:nth-child(4)');
+        else { await click('[data-pop="model"]'); await click('.fdprow:nth-child(2)'); }
+        await wait(`window.fixtureReleases.length > 0`);
+        g1[change + ' change blocks button and row Enter while plan is missing'] = await blocked();
+        await evaluate(`window.fixtureHold = false; window.fixtureReleases.splice(0).forEach(release => release());`);
+        await wait(`document.querySelectorAll('.fdpackrow').length === 2`);
+        g1[change + ' change closes stale delivered detail'] = await evaluate<boolean>(`document.querySelectorAll('.fdpackdetail:not([hidden])').length === 0 && !document.querySelector('.fdgo').disabled`);
+      }
+      for (const failure of ['500', 'malformed', 'network', 'missing-id']) {
+        await reset(); await click('.fdpackrow > .fdpack');
+        await evaluate(`window.fixturePlan = ${JSON.stringify(failure)}; window.fixtureReload();`);
+        await wait(failure === 'missing-id' ? `document.querySelectorAll('.fdpackrow').length === 1` : `document.querySelector('.fdnote.warn') !== null`);
+        g1[failure + ' plan with chosen pack blocks button and row Enter'] = await blocked();
+      }
+      await reset(); await click('.fdpackrow > .fdpack'); await evaluate(`window.fixtureStale()`);
+      g1['stale plan with selected pack blocks both start paths'] = await blocked();
+      await reset(); await evaluate(`window.fixturePlan = '500'; window.fixtureReload()`);
+      await wait(`document.querySelector('.fdnote.warn') !== null`);
+      g1['500 plan without packs explains the permitted no-pack start'] = await evaluate<boolean>(`${field('Kontext')} === 'Kontext: Plan nicht lesbar, Start ohne Packs' && !document.querySelector('.fdgo').disabled`);
+      await click('.fdgo');
+      g1['500 plan without packs sends exactly one empty spawn body'] = await evaluate<boolean>(`window.fixtureRequests.length === 1 && JSON.stringify(window.fixtureRequests[0].body) === JSON.stringify({cwd:'/fixture/repo'})`);
+      if (artifacts) { await send('Page.stopScreencast'); recordingWidth = null; }
+      results.push({ width, height, defaultOff, states, selected, explicit, cancel, g1 });
     }
     return results;
   } finally {

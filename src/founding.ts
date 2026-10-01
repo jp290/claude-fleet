@@ -81,6 +81,7 @@ interface State {
   plan: Plan | null; planErr: string | null; planFor: string | null; planSeq: number;
   packs: Set<string>;                   // switched-on pack ids — empty IS today's founding
   omitOpen: boolean;
+  packOpen: Set<string>;
   orphan: string | null;                // the seatless worktree "Lane fortsetzen" seats
   harness: string | null; model: string; effort: string; container: string; containerContext: string;
   dir: string; list: DirList | null; listErr: string | null; listSeq: number;
@@ -155,6 +156,13 @@ function blocker(): string | null {
     if (chosenHarness()?.allowsLanes === false) return `${chosenHarness()!.id} läuft nur als Haupt-Session, nicht als Lane.`;
   }
   if (s.role === "wt-old" && !s.orphan) return "Wähle den Worktree, der weiterlaufen soll.";
+  if (s.packs.size) {
+    if (s.planErr) return "Die gewählten Packs können nicht geprüft werden: " + s.planErr;
+    if (!s.plan) return "Die gewählten Packs warten auf den Plan für diesen Start.";
+    if (s.planFor !== planKey()) return "Der Plan der gewählten Packs gehört zu einem anderen Start.";
+    if ([...s.packs].some((id) => !s.plan!.selected.some((p) => p.id === id)))
+      return "Ein gewähltes Pack passt nicht mehr zu diesem Start. Wähle ohne Packs oder prüfe die Auswahl.";
+  }
   return null;
 }
 
@@ -185,7 +193,7 @@ export function openPicker(slotId: number) {
   S = {
     shell, slot: slotId, role: "plain", view: repos.length ? "repos" : "folders", repos, place: null,
     info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0,
-    packs: new Set(), omitOpen: false, orphan: null,
+    packs: new Set(), omitOpen: false, packOpen: new Set(), orphan: null,
     harness: null, model: "", effort: "", container: "", containerContext: "",
     dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
     findTimer: null, error: null, busy: false, pop: null, restore, teardown: () => {},
@@ -286,9 +294,8 @@ function renderTools() {
       if (s.role === r.id) return;
       s.role = r.id;
       s.error = null;
-      // a role is a different founding shape: the pack choice dies with it, and a lane plans
-      // through another mode, so the plan is read again
-      s.packs = new Set();
+      if (r.id === "wt-old") s.packs.clear();
+      s.packOpen.clear();
       s.orphan = null;
       renderTools();
       renderDetail();
@@ -496,6 +503,7 @@ function choosePlace(path: string, byClick: boolean) {
     s.packs = new Set();
     s.orphan = null;
     s.omitOpen = false;
+    s.packOpen.clear();
     s.error = null;
     void loadInfo();
   }
@@ -524,7 +532,7 @@ async function loadInfo() {
 // the plan hangs off (place, harness, mode); a change of any of the three reads it again
 function planKey(): string {
   const s = S!;
-  return `${s.place ?? ""}|${s.harness ?? harnesses.find((h) => h.default)?.id ?? ""}|${isLane(s.role) ? "lane" : "main"}`;
+  return `${s.place ?? ""}|${s.harness ?? harnesses.find((h) => h.default)?.id ?? ""}|${isLane(s.role) ? "lane" : "main"}|${s.role}|${s.model}`;
 }
 
 async function loadPlan() {
@@ -532,21 +540,41 @@ async function loadPlan() {
   if (!s?.place) return;
   const seq = ++s.planSeq;
   const path = s.place;
-  s.planFor = planKey();
+  const key = planKey();
+  s.planFor = key;
   s.plan = null;
   s.planErr = null;
-  s.packs = new Set(); // a fresh plan is a fresh choice — old switches never ride across
+  s.packOpen.clear();
   const harness = s.harness ?? harnesses.find((h) => h.default)?.id ?? "";
   const mode = isLane(s.role) ? "lane" : "main";
-  const res = await api(`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`);
-  if (S !== s || seq !== s.planSeq || s.place !== path) return; // latest-wins
-  if (res.status === 404) { s.planErr = SKEW_NOTE; renderDetail(); return; }
-  const j = (await res.json().catch(() => null)) as (Plan & { error?: string }) | null;
-  if (S !== s || seq !== s.planSeq || s.place !== path) return;
-  if (!res.ok || !j || !Array.isArray(j.selected) || !Array.isArray(j.omitted)) {
-    s.planErr = j?.error ?? `Der Server antwortete ${res.status} für den Plan dieser Gründung.`;
-  } else s.plan = j;
-  renderDetail();
+  try {
+    const res = await api(`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`);
+    if (S !== s || seq !== s.planSeq || s.place !== path) return; // latest-wins
+    if (key !== planKey()) return;
+    if (res.status === 404) { s.planErr = SKEW_NOTE; renderDetail(); return; }
+    const j: unknown = await res.json().catch(() => null);
+    if (S !== s || seq !== s.planSeq || s.place !== path || key !== planKey()) return;
+    if (!res.ok || !validPlan(j)) {
+      s.planErr = `Der Plan für diesen Start ist nicht lesbar (Antwort ${res.status}).`;
+    } else s.plan = j;
+  } catch {
+    if (S !== s || seq !== s.planSeq || key !== planKey()) return;
+    s.planErr = "Der Plan für diesen Start konnte nicht geladen werden.";
+  } finally {
+    if (S === s && seq === s.planSeq) { renderDetail(); renderFoot(); }
+  }
+}
+
+function validPlan(j: unknown): j is Plan {
+  if (!j || typeof j !== "object" || !("selected" in j) || !("omitted" in j)) return false;
+  return Array.isArray(j.selected) && Array.isArray(j.omitted)
+    && j.selected.every((p: unknown) => !!p && typeof p === "object"
+      && "id" in p && typeof p.id === "string" && "bytes" in p && typeof p.bytes === "number"
+      && Number.isFinite(p.bytes) && p.bytes >= 0 && "source" in p
+      && (p.source === "fleet-seed" || p.source === "repo-manifest")
+      && (!("useWhen" in p) || p.useWhen === undefined || typeof p.useWhen === "string"))
+    && j.omitted.every((p: unknown) => !!p && typeof p === "object"
+      && "id" in p && typeof p.id === "string" && "reason" in p && typeof p.reason === "string");
 }
 
 function renderDetail() {
@@ -619,6 +647,7 @@ function renderDetail() {
   // behind one fold with their reasons
   if (info.git) {
     if (s.planFor !== planKey()) void loadPlan();
+    renderFoot();
     const sec = el("div", "fdsecd");
     sec.append(el("div", "fdh", "Mitgeben"));
     if (s.planErr) sec.append(el("div", "fdnote warn", s.planErr));
@@ -626,23 +655,44 @@ function renderDetail() {
     else {
       const locked = s.role === "wt-old";
       for (const p of s.plan.selected) {
-        const on = s.packs.has(p.id);
-        const b = btn(`fdpack${on ? " on" : ""}`);
+        const row = el("div", "fdpackrow");
+        const b = btn("fdpack");
         b.setAttribute("role", "switch");
-        b.setAttribute("aria-checked", String(on));
         b.disabled = locked;
-        b.title = `${p.useWhen ? `${p.useWhen} — ` : ""}${p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"}`
-          + " · Klick schaltet, ob das Pack beim Start zugestellt wird.";
+        b.title = "Mitgeben — Klick schaltet, ob dieses Pack beim Start mitgeht.";
         b.append(el("span", "fdsw"), el("span", "fdpid", p.id), el("span", "fdpuse", p.useWhen ?? ""),
           el("span", "fdpkb", kb(p.bytes)));
-        b.onclick = () => {
+        const detail = el("div", "fdpackdetail");
+        detail.id = `fdpack-${s.plan.selected.indexOf(p)}`;
+        const state = el("div", "fdpackstate");
+        const sw = btn("fdpack fdpackchoice", "Mitgeben");
+        sw.setAttribute("role", "switch");
+        sw.disabled = locked;
+        const update = () => {
+          const on = s.packs.has(p.id);
+          for (const control of [b, sw]) {
+            control.classList.toggle("on", on);
+            control.setAttribute("aria-checked", String(on));
+          }
+          detail.classList.toggle("preview", !on || locked);
+          state.textContent = locked ? "Nicht mitgegeben: vorhandener Worktree"
+            : on ? "Beim Start mitgegeben" : "Vorschau: würde beim Auswählen mitgegeben";
+        };
+        const toggle = () => {
           if (s.packs.has(p.id)) s.packs.delete(p.id); else s.packs.add(p.id);
-          const checked = s.packs.has(p.id);
-          b.classList.toggle("on", checked);
-          b.setAttribute("aria-checked", String(checked));
+          update();
           renderFoot();
         };
-        sec.append(b);
+        b.onclick = toggle;
+        sw.onclick = toggle;
+        detail.append(state, el("div", "", `Zweck: ${p.useWhen ?? "im Plan nicht angegeben"}`),
+          el("div", "", `Herkunft: ${p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"}`),
+          el("div", "", `Größe: ${kb(p.bytes)}`), sw,
+          el("div", "fdnote", "Verweise, Fassung und Hash stehen erst im Startbeleg nach dem Start."));
+        update();
+        const fold = packFold(p.id, detail);
+        row.append(b, fold, detail);
+        sec.append(row);
       }
       if (locked && s.plan.selected.length)
         sec.append(el("div", "fdnote", "Ein vorhandener Worktree bekommt keine Packs — sie gehen nur bei einer frischen Gründung mit."));
@@ -663,6 +713,12 @@ function renderDetail() {
           const row = el("div", "fdomit");
           row.title = `intern: ${o.reason}`;
           row.append(el("span", "fdpid", o.id), el("span", "fdpuse", OMIT_SAY[o.reason] ?? o.reason));
+          const detail = el("div", "fdpackdetail preview");
+          detail.id = `fdomit-${om.indexOf(o)}`;
+          detail.append(el("div", "fdpackstate", `Nicht mitgegeben: ${OMIT_SAY[o.reason] ?? o.reason}`),
+            el("div", "", "Zweck, Herkunft und Größe: im Plan für ausgelassene Packs nicht angegeben."),
+            el("div", "fdnote", "Verweise, Fassung und Hash stehen erst im Startbeleg nach dem Start."));
+          row.append(packFold(o.id, detail), detail);
           sec.append(row);
         }
       }
@@ -680,6 +736,26 @@ function renderDetail() {
     }
     d.append(sec);
   }
+}
+
+function packFold(id: string, detail: HTMLElement): HTMLButtonElement {
+  const s = S!;
+  const fold = btn("fdfold fdpackfold", "Details");
+  fold.append(icon("chevron"));
+  fold.setAttribute("aria-controls", detail.id);
+  fold.setAttribute("aria-label", `Details zu ${id}`);
+  const update = () => {
+    const open = s.packOpen.has(id);
+    fold.setAttribute("aria-expanded", String(open));
+    fold.classList.toggle("open", open);
+    detail.hidden = !open;
+  };
+  fold.onclick = () => {
+    if (s.packOpen.has(id)) s.packOpen.delete(id); else s.packOpen.add(id);
+    update();
+  };
+  update();
+  return fold;
 }
 
 // --- the foot: how it runs, and the one button -------------------------------------------------
@@ -818,7 +894,35 @@ function renderFoot() {
   go.disabled = s.busy || blocker() !== null;
   go.title = s.place ? `${label} in ${tilde(s.place)} auf Slot ${s.slot} (Enter)` : label;
   go.onclick = () => { void start(); };
-  foot.append(opts, note, go);
+  const body = foundingBody();
+  const summary = el("div", "fdsummary");
+  const field = (name: string, value: string) => {
+    const part = el("span", "", `${name}: ${value}`);
+    part.dataset.field = name;
+    summary.append(part);
+  };
+  field("Rolle", roleLabel(s.role) ?? ROLES.find((r) => r.id === s.role)!.name);
+  const place = s.place ? `${baseName(s.place)} (${tilde(s.place)})` : "noch nicht gewählt";
+  const git = s.info?.git ? `${s.info.branch ?? "ohne Branch"}, ${s.info.dirty ? `${s.info.dirty} ungesichert` : "sauber"}`
+    : s.infoErr ?? (s.info ? "kein Git-Repo" : "Ordner wird gelesen");
+  field("Ort", `${place} · ${git}`);
+  field("Agent", body.harness ?? `${h?.id ?? "Adapter wählt"} (Fleet-Standard)`);
+  field("Modell", body.model ?? "Adapter wählt");
+  field("Effort", body.effort ?? "Adapter wählt");
+  field("Kontext", body.packs?.length ? `${body.packs.length} Packs: ${body.packs.join(", ")}`
+    : !s.plan || s.planErr || s.planFor !== planKey() ? "Plan nicht lesbar, Start ohne Packs" : "kein Pack");
+  if (body.container) field("Container", body.container);
+  if (body.containerContext) field("Docker-Daemon", body.containerContext);
+  field("Ausführungsrechte", "Fleet-Standard, hier nicht wählbar");
+  const actions = el("div", "fdstartrow");
+  actions.append(opts, note);
+  if (s.packs.size && blocker()) {
+    const clear = btn("fdfold", "Ohne Packs");
+    clear.onclick = () => { s.packs.clear(); renderDetail(); renderFoot(); };
+    actions.append(clear);
+  }
+  actions.append(go);
+  foot.append(summary, actions);
 }
 
 // --- starting ----------------------------------------------------------------------------------------

@@ -234,7 +234,7 @@ export async function waitForBoundAgent(opts: BoundAgentWait): Promise<BoundAgen
     const current = readCurrent();
     last = `${last}; ${JSON.stringify({ currentSlot: current?.slot ?? null,
       currentOpenedAt: current?.openedAt ?? null, currentPane: current && /^%\d+$/.test(current.pane) ? current.pane : null })}`;
-    if (!current || current.slot !== binding.slot || current.openedAt !== binding.openedAt) fail("occupant-changed");
+    if (!current || current.slot !== binding.slot || current.openedAt !== binding.openedAt) return fail("occupant-changed");
     if (current.pane !== binding.pane) fail("pane-changed");
   };
   const readSessions = opts.readSessions ?? (async (): Promise<unknown> => {

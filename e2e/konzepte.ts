@@ -34,7 +34,9 @@ import type { KonzeptAnmerkung, KonzeptVersion } from "../konzept-ledger";
 const FIX = `${process.env.TMPDIR ?? "/tmp"}/fleet-e2e-konzepte-${process.pid}`;
 const TOKEN = `konzepte-${randomBytes(8).toString("hex")}`;
 const OFF = 28; // PORT offsets 1, 23-27 are taken (restart.ts, state-snapshot.ts, self-token.ts, trace.ts)
-const SKIP = /^(\.git|node_modules|streams|e2e-trail|drops|fleet\.json.*|fleet\.pid|.*\.jsonl(\.\d+|\.archive)?|.*\.log|post-land-audit-queue\.json.*|deploy-inflight\.json.*)$/;
+// codex-home holds .tmp/plugins-clone-*/ — a Codex plugin sync's checkout with an unborn-HEAD .git;
+// copying it makes the fixture's git add -A die with "does not have a commit checked out"
+const SKIP = /^(\.git|node_modules|streams|e2e-trail|drops|codex-home|fleet\.json.*|fleet\.pid|.*\.jsonl(\.\d+|\.archive)?|.*\.log|post-land-audit-queue\.json.*|deploy-inflight\.json.*)$/;
 const K = "k-e2e-konzept";
 const PROGRAM = "c0ffee".repeat(4);
 const TASK = "k0nz3pt7a5k0";

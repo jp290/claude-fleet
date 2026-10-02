@@ -6328,8 +6328,11 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await settle();
     };
     const tap = async (expression: string): Promise<boolean> => {
+      // the element must be what a finger at its centre meets — a target scrolled or clipped out of
+      // its row is not tappable, whatever its box says
       const at = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e || !window.__fx.shown(e)) return null;
-        const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+        const r = e.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+        return e.contains(document.elementFromPoint(x, y)) ? { x, y } : null; })()`);
       if (!at) { missing.push("tap " + expression.slice(0, 100)); return false; }
       await tapAt(at, expression.slice(0, 60));
       return true;
@@ -6425,8 +6428,24 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         opened && ids.every((id) => !!b(id)) && b("#mslot")!.x < b("#mname")!.x && b("#mname")!.r <= b("#minfo")!.x
         && b("#mview")!.y >= b("#mname")!.b && b("#mview")!.x < b("#mhist")!.x && b("#mhist")!.x < b("#mauto")!.x && b("#mauto")!.x < b("#mmore")!.x
         && /Alpha/.test(op.name) && /Opus 5\.5 · high/.test(op.name) && op.view === "Konversation";
-      claims[`${tag}every target in the open island is at least 40 px high, the icon buttons 40 × 40`] = ids.every((id) => (b(id)?.h ?? 0) >= 40)
-        && ["#mslot", "#minfo", "#mmore"].every((id) => (b(id)?.w ?? 0) >= 40);
+      // …and a finger at each centre meets that button, at the default text size and at the largest
+      // Aa (24 px, src/chatsize.ts) — where the words of the tools row no longer fit
+      const hittable = () => evaluate<string[]>(`${JSON.stringify(ids)}.filter((id) => { const e = document.querySelector(id), r = e.getBoundingClientRect();
+        return !e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })`);
+      const missedAt14 = await hittable();
+      await evaluate("document.documentElement.style.setProperty('--chat-fs', '24px')");
+      await settle(100);
+      const missedAt24 = (await hittable()).filter((id) => id !== "#mview" && id !== "#mhist" && id !== "#mauto");
+      const moreAt24 = await box("#mmore");
+      await evaluate("document.documentElement.style.removeProperty('--chat-fs')");
+      await settle(100);
+      const sizeClaim = `${tag}every target in the open island is at least 40 px high, the icon buttons 40 × 40, each met by a finger at its centre`;
+      claims[sizeClaim] = ids.every((id) => (b(id)?.h ?? 0) >= 40) && ["#mslot", "#minfo", "#mmore"].every((id) => (b(id)?.w ?? 0) >= 40)
+        && missedAt14.length === 0;
+      detail[sizeClaim] = { boxes, missedAt14 };
+      const bigClaim = `${tag}at the largest text size ⋯, ℹ and the slot button stay on screen and tappable (the words scroll under ⋯)`;
+      claims[bigClaim] = missedAt24.length === 0 && !!moreAt24 && moreAt24.r <= W - 6;
+      detail[bigClaim] = { missedAt24, moreAt24 };
       claims[`${tag}the open island covers the top of the pane — the pane and the terminal do not move`] = JSON.stringify(op.pane) === JSON.stringify(st.pane)
         && JSON.stringify(op.term) === JSON.stringify(termBefore) && !!op.top && op.top.b > (termBefore?.y ?? 0);
       if (keyboard) claims[`${tag}opening the island keeps the field's focus and the keyboard`] = op.where === "#input" && await evaluate<boolean>("document.body.classList.contains('keyboard-open')");

@@ -3401,10 +3401,13 @@
       #mname .mrp { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         font-size: var(--chat-ui-fs); line-height: 1.2; color: var(--chat-faint); }
       #mname .mrp:empty { display: none; }
-      #mtools { grid-column: 2; grid-row: 2; display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+      /* the tools row runs on under ℹ, and ⋯ sticks to its right end: with a wide font or a large
+         Aa the words scroll under it, ⋯ itself never leaves the screen */
+      #mtools { grid-column: 2 / 4; grid-row: 2; display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
       #mtools button { flex: none; display: inline-flex; align-items: center; height: 40px; padding: 0 10px;
         border-radius: var(--r1); font-size: var(--chat-fs); white-space: nowrap; }
-      #mtools #mmore { width: 40px; justify-content: center; padding: 0; margin-left: auto; }
+      #mopen #mtools #mmore { position: sticky; right: 0; width: 40px; justify-content: center; padding: 0; margin-left: auto;
+        background: var(--chat-raised); }
       #mtools #mmore .ico { width: 18px; height: 18px; }
       #mtools [hidden], #minfo[hidden] { display: none; }
 

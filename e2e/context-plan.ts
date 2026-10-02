@@ -8,10 +8,10 @@ import { CONTEXT_PLAN_OMISSION_REASONS, PRIVATE_PACK_VERDICTS, PROGRAM_CONTEXT_P
   programContextPacksFrom, renderPrivatePackLines, resolvePrivatePack, validateProgramContextPacks } from "../context-plan";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, observedSourceHash, planRepoContext,
+import { dirname, join, resolve } from "node:path";
+import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, CONTEXT_MANIFEST_PATH, observedSourceHash, planRepoContext,
   readContextManifest, stampObservedSourceHashes } from "../context-manifest";
 import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_CONTEXT_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
   planSnippets, renderSnippetBlock, snippetPathRefusal, symbolSpan,
@@ -776,14 +776,46 @@ function privatePackChecks(check: ContextPlanCheck): void {
 // stay green while the manifest regressed to a dormant trigger, and the DORMANT pin would not
 // notice (a pack whose triggers are all dormant is never stranded). Facts mirror server.ts
 // (#BOOTSTRAP_CONTEXT_TRIGGERS + FLEET_CONTROL_CONTEXT_CAPABILITIES vs #DISPATCH_CONTEXT_*).
+//
+// WHERE THE REAL MANIFEST IS. A staged instance (e2e-stage.sh) carries no `.fleet/context-packs.json`
+// and none of the documents it points at — and must not: the staged server reads that manifest at its
+// own HEAD for the fleet-control frame, so staging it would change every founding brief in the suite.
+// So both trees are tried, the run's own and the node_modules pointer home (the tree e2e-stage.sh
+// staged FROM: a worktree, the helper's clone, or the post-land audit's git archive extract), and the first that yields the manifest AND every
+// source it references wins. Neither does → one SETUP row fails under its own name; the probes below
+// it are then unmeasured, never silently green, and the module no longer throws ENOENT out of its shard.
+function realManifestTree(): { root: string; manifest: ReturnType<typeof readContextManifest>;
+  sourceBytes: Map<string, string> } | { error: string } {
+  const here = resolve(import.meta.dir, "..");
+  const candidates = [here];
+  // ONE hop, not realpath: in the post-land audit the extract's own node_modules links on to the main
+  // checkout's, and a full realpath would read THAT tree's manifest instead of the landed one.
+  try { candidates.push(dirname(resolve(here, readlinkSync(join(here, "node_modules"))))); } catch { /* no pointer home */ }
+  const why: string[] = [];
+  for (const root of new Set(candidates)) {
+    let manifest: ReturnType<typeof readContextManifest>;
+    try { manifest = readContextManifest(readFileSync(join(root, CONTEXT_MANIFEST_PATH), "utf8")); }
+    catch { why.push(`${root}: no ${CONTEXT_MANIFEST_PATH}`); continue; }
+    if (manifest.kind !== "packs") { why.push(`${root}: ${CONTEXT_MANIFEST_PATH} is ${manifest.kind}`); continue; }
+    const sourceBytes = new Map<string, string>();
+    const unread = [...manifest.referencedPaths].filter((path) => {
+      try { sourceBytes.set(path, readFileSync(join(root, path), "utf8")); return false; } catch { return true; }
+    });
+    if (unread.length) { why.push(`${root}: unreadable source(s) ${unread.join(",")}`); continue; }
+    return { root, manifest, sourceBytes };
+  }
+  return { error: why.join("; ") };
+}
+
 function orchestrationTriggerChecks(check: ContextPlanCheck): void {
-  const root = resolve(import.meta.dir, "..");
-  const manifest = readContextManifest(readFileSync(join(root, ".fleet/context-packs.json"), "utf8"));
-  const paths = manifest.kind === "packs" ? [...manifest.referencedPaths] : [];
-  const repo = {
-    trackedPaths: new Set(paths),
-    sourceBytes: new Map(paths.map((path) => [path, readFileSync(join(root, path), "utf8")])),
-  };
+  const tree = realManifestTree();
+  check("orchestration trigger SETUP: the real tracked manifest and every source it references are read",
+    !("error" in tree),
+    "error" in tree ? tree.error
+      : `${tree.root} · ${[...tree.sourceBytes.keys()].join(",")}`);
+  if ("error" in tree) return;
+  const { manifest } = tree;
+  const repo = { trackedPaths: new Set(tree.sourceBytes.keys()), sourceBytes: tree.sourceBytes };
   const bootstrapFacts = {
     harness: "claude", mode: "mutating" as const,
     triggers: ["always", "verification", "orchestration"] as const,

@@ -4557,20 +4557,23 @@ function toolsSheet(): HTMLElement[] {
   body.appendChild(gear);
   return [head, body];
 }
+// what a built sheet shows, as one string: tags, attributes and text, read off the nodes (no HTML
+// serialiser — the client has no HTML sink, fleet-e2e-security.ts §7)
+const nodeSig = (n: Node): string => n instanceof Element
+  ? `<${n.tagName}${[...n.attributes].map((a) => ` ${a.name}=${a.value}`).join("")}>${[...n.childNodes].map(nodeSig).join("")}</>`
+  : n.textContent ?? "";
 // painted on open, after every press that stays, and on each poll (updateTitle) — but only when
 // what it shows moved, so a list under the finger is never rebuilt for nothing
 function renderSheet(): void {
   if (!sheetOpen) return;
   const parts = sheetOpen === "sessions" ? sessionsSheet() : toolsSheet();
-  const probe = el("div", "");
-  probe.append(...parts);
-  const key = sheetOpen + probe.innerHTML;
+  const key = sheetOpen + parts.map(nodeSig).join("");
   if (key === sheetKey) return;
   sheetKey = key;
   const scroll = mSheet.querySelector(".mshbody")?.scrollTop ?? 0;
   mSheet.dataset.sheet = sheetOpen;
   mSheet.setAttribute("aria-labelledby", "msheettitle");
-  mSheet.replaceChildren(...probe.childNodes);
+  mSheet.replaceChildren(...parts);
   const body = mSheet.querySelector(".mshbody");
   if (body) body.scrollTop = scroll;
 }

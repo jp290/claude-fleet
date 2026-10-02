@@ -2098,6 +2098,10 @@
   #shell-found.fdproved .shellbody { display: block; overflow-y: auto; }
   #shell-found.fdproved .shelldetail { display: block; padding: 16px; }
   #shell-found.fdproved .fdgo { align-self: flex-start; }
+  /* the receipt is short: the window ends where it does, up to the ceiling the form has */
+  #shell-found.fdproved .shellwin { height: auto; max-height: min(860px, calc(100vh - 32px)); }
+  #shell-found.fdproved .shellbody { flex: 0 1 auto; }
+  #shell-found.fdproved .shellfoot:empty { display: none; }
   .fdproofstatus { margin-bottom: 16px; font-weight: 500; }
   .fdproofrow { display: grid; grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 8px 0; }
   .fdproofrow > * { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -2477,6 +2481,8 @@
     .fdproofheadrow > span:first-child { display: none; }
     .fdproofkey { grid-column: 1 / -1; }
     #shell-found.fdproved .shelldetail { padding: 12px; }
+    #shell-found.fdproved .shellwin { height: 100dvh; height: var(--vvh, 100dvh); max-height: none; }
+    #shell-found.fdproved .shellbody { flex: 1 1 auto; }
   }
   .ocsub { font-size: 10.5px; color: var(--dim); margin-top: 5px; }
   .ocnote { font-size: 11px; color: #999; line-height: 1.45; margin-top: 4px; }

@@ -4661,7 +4661,7 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
         window.fixtureReceiptReads++;
         if (window.fixtureReceiptHold) await new Promise(resolve => {window.fixtureReceiptRelease=resolve;});
         const begun = performance.now();
-        const pack = { id: 'fixture-alpha', useWhen: 'Receipt purpose', anchors: [{ path: 'AGENTS.md', anchor: '## Portable operating contract' }], sourceHash: '1234567890abcdef' };
+        const pack = { id: 'fixture-alpha', useWhen: 'Zweck des Packs', anchors: [{ path: 'AGENTS.md', anchor: '## Portable operating contract' }], sourceHash: '1234567890abcdef' };
         const receipt = { slot: 2, at: 2001, repo: '/fixture/repo', head:'fixture-head', branch:'fixture', harness:'codex', model:'fixture-model', effort:'high', selected:[pack] };
         const mode = window.fixtureMode;
         const receipts = mode === 'missing' ? [{...receipt, at:999}, {...receipt, slot:3}]
@@ -5003,7 +5003,17 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
         await click('.fdadd'); await click('.fdaddpop .fdprow'); await key('Escape');
         await wait(`JSON.stringify(${chips}) === '["fixture-alpha"]' && !document.querySelector('.fdpop')`);
       };
-      const finished = async () => wait(`window.fixtureSettled()`);
+      // every receipt this run renders is read for the inner words the owner never sees (card 1c17)
+      const seen: string[] = [];
+      const finished = async () => { await wait(`window.fixtureSettled()`);
+        const shown = await evaluate<string>(`document.querySelector('#shell-found.fdproved')?.textContent || ''`); if (shown) seen.push(shown); };
+      // the receipt window ends at its content on a desktop and stays the phone's full screen (G0.7)
+      const fits = () => evaluate<boolean>(`(() => {
+        const win=document.querySelector('#shell-found .shellwin').getBoundingClientRect(), body=document.querySelector('#shell-found .shellbody').getBoundingClientRect();
+        const detail=document.querySelector('#shell-found .shelldetail').getBoundingClientRect();
+        return ${width === 1200} ? win.height < innerHeight - 32 - 1 && Math.abs(body.bottom - detail.bottom) <= 1
+          : Math.abs(win.height - innerHeight) <= 1;
+      })()`);
       const text = () => evaluate<string>(`document.querySelector('#shell-found')?.textContent || ''`);
       const actual = (name: string) => `document.querySelector('.fdproofrow[data-field="${name}"] .fdactual')`;
       const pick = async (pop: string) => { await click(`[data-pop="${pop}"]`); await click('.fdpop .fdprow:nth-child(2)'); };
@@ -5012,6 +5022,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
         await click('.fdgo'); await finished();
       };
       await plain(); await shot('receipt-equal');
+      g2['the receipt window fits its content, Zur Session offered'] = await fits() && await evaluate<boolean>(`document.querySelector('#shell-found.fdproved .fdgo')?.disabled===false`);
       g2['equal readback rows, no packs and zero receipt reads'] = await evaluate<boolean>(`(() => {
         const rows=Array.from(document.querySelectorAll('.fdproofrow[data-field]'));
         return rows.length===6 && rows.every(r=>r.dataset.state==='same')
@@ -5035,13 +5046,16 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await click('.fdgo'); await finished(); await shot('receipt-difference');
       g2['requested model never fills readback; difference is marked'] = await evaluate<boolean>(`${actual('Modell')}?.textContent === 'observed-modelAbweichung' && document.querySelector('.fdproofrow[data-field="Modell"]')?.dataset.state==='difference' && document.querySelector('.fdrequested')!==null`);
       await setup('equal', true); await click('.fdgo'); await finished(); await shot('receipt-packs');
-      g2['pack id, unchanged pointers and short hash come from exact occupant receipt, one read'] = await evaluate<boolean>(`${actual('Packs')}?.textContent.includes('fixture-alphaReceipt purposeAGENTS.md | ## Portable operating contractHash: 1234567890ab') && window.fixtureReceiptReads===1`);
+      g2['pack id, unchanged pointers and short hash come from exact occupant receipt, one read'] = await evaluate<boolean>(`${actual('Packs')}?.textContent.includes('fixture-alphaZweck des PacksAGENTS.md | ## Portable operating contractHash: 1234567890ab') && window.fixtureReceiptReads===1`);
       await setup('missing', true); await click('.fdgo'); await finished(); await shot('receipt-missing');
       g2['old occupant and other slot receipts are rejected as Beleg fehlt'] = await evaluate<boolean>(`${actual('Packs')}?.textContent.includes('Beleg fehlt') && !${actual('Packs')}?.textContent.includes('1234567890ab') && window.fixtureReceiptReads===1`);
       await setup('undelivered', true); await click('.fdgo'); await finished(); await shot('receipt-undelivered');
       g2['delivery false shows exact reason and never mitgegeben'] = (await text()).includes('nicht zugestellt: fixture delivery refused') && !(await text()).includes('mitgegeben');
       await setup('unchanged'); await click('.fdgo'); await finished(); await shot('receipt-no-occupant');
-      g2['unchanged openedAt is no new occupant, all readbacks missing'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent.includes('Kein neuer Occupant') && Array.from(document.querySelectorAll('.fdactual')).slice(0,5).every(e=>e.textContent.includes('nicht gemeldet')) && document.querySelector('.fdproved .fdgo')?.disabled===true`);
+      g2['unchanged openedAt is no new session, all readbacks missing'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent === 'Keine neue Session gestartet — kein Startbeleg.' && Array.from(document.querySelectorAll('.fdactual')).slice(0,5).every(e=>e.textContent.includes('nicht gemeldet'))`);
+      g2['should-reject: without a new session the Packs row says nicht gemeldet, never keine'] = await evaluate<boolean>(`${actual('Packs')}?.textContent==='nicht gemeldetBeleg fehlt' && ${actual('Packs')}?.classList.contains('warn')`);
+      g2['should-reject: without a new session there is no Zur Session, and the focus stays in the window'] = await evaluate<boolean>(`!document.querySelector('#shell-found .fdgo') && getComputedStyle(document.querySelector('#shell-found .shellfoot')).display==='none' && document.querySelector('#shell-found').contains(document.activeElement)`);
+      g2['the receipt without a new session fits its content'] = await fits();
       await plain(); await evaluate(`window.fixtureRecycle()`); await finished(); await shot('receipt-stale');
       g2['recycle marks frozen receipt stale and prevents session action'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent.includes('Veraltet') && ${actual('Modell')}?.textContent==='fixture-model' && document.querySelector('.fdproved .fdgo')?.disabled===true`);
       await setup('equal', true); await evaluate(`window.fixtureReceiptHold=true`); await click('.fdgo');
@@ -5052,7 +5066,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g2['recycle during receipt read cannot fill stale proof with late receipt'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent.includes('Veraltet') && !${actual('Packs')}?.textContent.includes('Hash:') && window.fixtureReceiptReads===1`);
       await setup('equal'); await evaluate(`document.querySelector('.shelldetail').focus()`); await key('Enter'); await finished();
       g2['no-pack Enter fast path keeps one exact empty request and shows proof'] = await evaluate<boolean>(`${starts}.length===1 && JSON.stringify(${starts}[0].body)===JSON.stringify({cwd:'/fixture/repo'}) && !!document.querySelector('.fdproof') && window.fixtureReceiptReads===0`);
-      g2['unspecified values are adapter choices, not differences'] = await evaluate<boolean>(`${actual('Modell')}?.textContent==='fixture-modelvom Adapter gewählt' && document.querySelector('.fdproofrow[data-field="Modell"]')?.dataset.state==='same'`);
+      g2['unspecified values are adapter choices, not differences'] = await evaluate<boolean>(`${actual('Modell')}?.textContent==='fixture-modelStandard, nicht angefragt' && document.querySelector('.fdproofrow[data-field="Modell"]')?.dataset.state==='same'`);
       await setup('equal'); await evaluate(`window.fixturePostHold=true`); await click('.fdgo'); await click('.fdgo');
       await evaluate(`window.fixturePostHold=false; window.fixtureReleases.splice(0).forEach(r => r())`); await finished();
       g2['double click sends exactly one open'] = await evaluate<boolean>(`${starts}.length===1 && !!document.querySelector('.fdproof')`);
@@ -5066,7 +5080,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await setup('equal'); await role('orch'); await click('.fdgo'); await finished();
       g2['Orchestrator without selected packs reads receipt once'] = await evaluate<boolean>(`window.fixtureReceiptReads===1 && ${actual('Rolle')}?.textContent==='Orchestrator' && ${actual('Packs')}?.textContent.includes('Hash: 1234567890ab')`);
       await setup('multiple', true); await click('.fdgo'); await finished();
-      g2['multiple receipts use newest and disclose count'] = (await text()).includes('Hash: abcdef123456') && (await text()).includes('2 Receipts — jüngstes verwendet.');
+      g2['multiple receipts use newest and disclose count'] = (await text()).includes('Hash: abcdef123456') && (await text()).includes('2 Startbelege — der jüngste gilt.');
       await setup('private', true); await click('.fdgo'); await finished();
       g2['private receipt shows source id verdict and version'] = (await text()).includes('k-privateHash: 1234567890abUrteil: match · Fassung: 2');
       await setup('equal'); await click('[data-pop="container"]');
@@ -5076,6 +5090,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g2['container and daemon are exact observed values'] = await evaluate<boolean>(`${actual('Container')}?.textContent==='fixture-box' && ${actual('Docker-Daemon')}?.textContent==='fixture-daemon'`);
       await setup('unreported'); await pick('model'); await click('.fdgo'); await finished();
       g2['missing fields never fall back to request'] = await evaluate<boolean>(`${actual('Modell')}?.textContent==='nicht gemeldetBeleg fehlt' && ${actual('Effort')}?.textContent==='nicht gemeldetBeleg fehlt'`);
+      g2['should-reject: no receipt shows inner words (Occupant, Receipt, Adapter)'] = seen.length >= 12 && seen.every(t => !/occupant|receipt|adapter/i.test(t));
       const receiptMetrics = await evaluate<FoundingFocusDomResult['receiptMetrics']>(`window.fixtureReceiptMetrics`);
       results.push({ width, height, g, g2, detail, receiptMetrics });
     }

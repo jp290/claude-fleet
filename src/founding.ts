@@ -1603,7 +1603,7 @@ async function captureProof(s: State, body: SpawnBody, before: number | undefine
       if (!response.ok) throw new Error(`Der Server antwortete ${response.status}.`);
       const data: unknown = await response.json();
       if (!data || typeof data !== "object" || !("receipts" in data) || !Array.isArray(data.receipts))
-        throw new Error("Receipt-Antwort nicht lesbar.");
+        throw new Error("Die Antwort mit den Startbelegen war nicht lesbar.");
       const current = fleet.find((r) => r.id === result.slot);
       if (occupant && (!current?.cwd || current.openedAt !== occupant.openedAt)) proof.stale = true;
       if (occupant && !proof.stale) {
@@ -1626,7 +1626,7 @@ function renderProof() {
   const detail = s.shell.detail;
   detail.replaceChildren();
   const status = p.stale ? "Veraltet — dieser Slot wurde neu belegt."
-    : !row ? "Kein neuer Occupant — kein wirksamer Startbeleg."
+    : !row ? "Keine neue Session gestartet — kein Startbeleg."
     : `Slot ${p.result.slot} · geöffnet ${new Date(row.openedAt!).toLocaleTimeString("de-DE")}`;
   detail.append(el("div", `fdproofstatus${p.stale || !row ? " warn" : ""}`, status));
   const table = el("div", "fdproof");
@@ -1643,7 +1643,7 @@ function renderProof() {
       observed ?? "nicht gemeldet");
     if (differs) actual.append(el("span", "fdproofnote", "Abweichung"));
     else if (missing) actual.append(el("span", "fdproofnote", "Beleg fehlt"));
-    else if (requested === undefined && compare) actual.append(el("span", "fdproofnote", "vom Adapter gewählt"));
+    else if (requested === undefined && compare) actual.append(el("span", "fdproofnote", "Standard, nicht angefragt"));
     r.append(el("span", "fdproofkey", name), el("div", `fdrequested${mono ? " mono" : ""}`, requested ?? "ohne Angabe"), actual);
     table.append(r);
     return actual;
@@ -1660,10 +1660,11 @@ function renderProof() {
   field("Effort", p.body.effort, row?.effort, true);
   if (p.body.container || row?.container) field("Container", p.body.container, row?.container, true);
   if (p.body.containerContext || row?.containerContext) field("Docker-Daemon", p.body.containerContext, row?.containerContext, true);
+  // without a new session nothing was read back, so "keine" would claim what nobody measured
   const needsReceipt = !!p.body.packs?.length || p.role === "orch" || p.role === "main";
   const packCell = field("Packs", p.body.packs?.join("\n") ?? (p.role === "main" ? "Gründungsbrief des Programs" : "keine"),
-    p.result.packsDelivered === false ? `nicht zugestellt: ${p.result.reason ?? "the packs were not delivered"}`
-      : !needsReceipt ? "keine" : p.receipt ? p.receipt.selected.map((pack) => pack.id).join("\n") : undefined, true, false);
+    p.result.packsDelivered === false ? `nicht zugestellt: ${p.result.reason ?? "Grund nicht gemeldet"}`
+      : !row ? undefined : !needsReceipt ? "keine" : p.receipt ? p.receipt.selected.map((pack) => pack.id).join("\n") : undefined, true, false);
   if (p.result.packsDelivered === false) packCell.classList.add("warn");
   else if (p.receipt) {
     packCell.replaceChildren();
@@ -1683,13 +1684,19 @@ function renderProof() {
     if (missing?.length) { packCell.append(el("div", "warn", `Beleg fehlt: ${missing.join(", ")}`)); packCell.classList.add("warn"); }
     const extra = p.body.packs ? p.receipt.selected.filter((pack) => !p.body.packs!.includes(pack.id)) : [];
     if (extra.length) { packCell.append(el("div", "warn", `Abweichung: zusätzliche Packs ${extra.map((pack) => pack.id).join(", ")}`)); packCell.classList.add("warn"); }
-    if (p.receiptCount > 1) packCell.append(el("div", "fdproofnote", `${p.receiptCount} Receipts — jüngstes verwendet.`));
+    if (p.receiptCount > 1) packCell.append(el("div", "fdproofnote", `${p.receiptCount} Startbelege — der jüngste gilt.`));
   }
   if (p.receiptError) packCell.append(el("div", "fdproofnote", p.receiptError));
   detail.append(table);
   s.shell.foot.replaceChildren();
+  // no session started: there is nothing to go to, so the button is not offered at all — and the
+  // focus it held stays inside the window
+  if (!row) {
+    if (!s.shell.root.contains(document.activeElement)) s.shell.detail.focus({ preventScroll: true });
+    return;
+  }
   const go = btn("fdgo", "Zur Session");
-  go.disabled = p.stale || !row;
+  go.disabled = p.stale;
   go.onclick = () => {
     const current = fleet.find((r) => r.id === p.result.slot);
     if (!row || current?.openedAt !== row.openedAt || !current?.cwd) { p.stale = true; renderProof(); return; }

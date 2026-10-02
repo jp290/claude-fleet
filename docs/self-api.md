@@ -1444,6 +1444,18 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
   trägt, die Text oder Brief als Reihenfolge nennen — eine `NACH:`-Kopfzeile ganz, inline
   `nach|after|wartet auf <8-hex>` (`waits.ts#namedAfterIds`; eine Sha in der Prosa, die keine
   Queue-Zeile ist, zählt nicht). Sonst 409 `a release needs a valid card — <welcher der vier>`.
+  **Welcher Text die Reihenfolge nennt, entscheidet die Urheberschaft des Briefs**
+  (`start-plan.ts#orderTextOf`, dieselbe Lesung an beiden Release-Türen und in beiden
+  Startplan-Buildern, Route und `bun start-plan.ts --state`): ein von Hand geschriebener Brief mit
+  `edited === true` und `by` genau `"main"` oder `"owner"` ist der aktuelle Auftrag und ERSETZT die
+  Reihenfolge des Originaltexts — ein `NACH`, das der Autor gestrichen hat, hält die Zeile nicht mehr
+  (Zeile 15d3c2a5: `afterMissing` nannte den alten Vorgänger unter einer frisch vom Brief gelesenen
+  Karte). Jede andere Form liest Text UND Brief: ein kompilierter Brief (`edited` nicht `true`) darf
+  kein Original-`NACH` verlieren, ein gepinnter Brief ohne `by` (vor 2026-09-11) bekommt keine
+  Autorschaft zugeschrieben, und ein fehlerhafter oder widersprüchlicher Stempel (`edited` kein
+  Boolean `true`, unbekanntes `by`, `by` ohne `edited`) zählt als kein Autor. Ein Inline-`NACH` des
+  wirksamen Briefs bleibt eine Reihenfolge, eine veraltete oder ungültige Karte bleibt ein 409, und
+  eine Variante liest Brief und Karte ihrer Gruppe.
   Die Autoren-Karte (`card{…}` beim Filen) kennt kein `after`; eine Zeile mit Reihenfolge wird mit
   der `NACH:`-Kopfzeile des Filing-Formats gefilet, die der Karten-Sweep ohne Modell liest. Geprüft
   NACH Harness-Gate und VOR dem Deckel; ein gehaltenes `queued` wird ohne Kartenprüfung entsperrt
@@ -1737,6 +1749,11 @@ Schärfung.
 Begründung `TaskNotePin.by`. `edited:true` bleibt, was es immer war: der PIN gegen den
 Brief-Sweep (`briefDue`); `by` ist die Urheberschaft. Die beiden Fakten ritten bis hierher auf einem
 Boolean.
+
+**Ein so gestempelter Brief ist auch die Reihenfolge der Zeile:** `edited:true` mit `by:"main"` (diese
+Tür) oder `by:"owner"` (die Owner-Tür) ersetzt die `NACH`-Angaben des Originaltexts an beiden
+Release-Türen und im Startplan (`start-plan.ts#orderTextOf`, Abschnitt `release` oben); ein Brief ohne
+`by` liest weiter Text und Brief zusammen.
 
 **ABWESENHEIT IST EIN DATUM, KEIN DRITTER AUTOR.** Ein Brief ohne `by` wurde geschrieben, bevor es
 das Feld gab; jede Renderstelle liest diese Abwesenheit exakt so, wie sie vorher `edited` allein las,

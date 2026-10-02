@@ -36,12 +36,13 @@ export interface StartPlanChecks {
   cardFiles: number | null;
   // the brief was rewritten after the card was read, so the card speaks about an older text
   cardStale: boolean;
-  // Queue rows the TEXT orders this row after (waits.ts#namedAfterIds over text and brief) that the
-  // card does not carry as `after` (Schnitt 1, docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md
-  // §c2). The plan reads a row's order from card.after ALONE — releaseVerdict refuses a card-valid
-  // start on this, and the two release doors refuse with the same sentence
-  // (waits.ts#afterOrderRefusal). [] = no uncarried order — or the caller handed no queueKnown and
-  // decided nothing; the release doors, which always know the queue, hold the line there.
+  // Queue rows the TEXT orders this row after (waits.ts#namedAfterIds over orderTextOf: text and
+  // brief, or an authored brief alone) that the card does not carry as `after` (Schnitt 1,
+  // docs/messungen/2026-09-21-dispatch-flaechen-buendeln.md §c2). The plan reads a row's order from
+  // card.after ALONE — releaseVerdict refuses a card-valid start on this, and the two release doors
+  // refuse with the same sentence (waits.ts#afterOrderRefusal). [] = no uncarried order — or the
+  // caller handed no queueKnown and decided nothing; the release doors, which always know the
+  // queue, hold the line there.
   afterMissing: string[];
 }
 
@@ -50,12 +51,36 @@ export interface StartPlanCardFacts {
   at?: unknown; surface?: { files?: unknown; creates?: unknown } | null; after?: unknown;
 }
 
+// WHICH BYTES NAME A ROW'S ORDER TODAY — the one reading the two release doors
+// (server.ts#namedAfterRefusal) and both start-plan builders (server.ts#startPlanRowOf, the CLI
+// below) share. A brief a NAMED author wrote by hand — `edited === true` and `by` exactly "main" or
+// "owner", the two values the two brief doors stamp — is the row's current work order, written to
+// replace the original request: its order is the brief's alone, so a NACH the original named and
+// the author dropped no longer holds the row (live 15d3c2a5: afterMissing kept naming the old
+// predecessor under a fresh card read off the brief). Every other shape keeps the union of both
+// texts: a compiled brief (`edited` not true) is a machine reading that must not drop an order the
+// request named; a pinned brief without `by` predates authorship and buys no author's authority;
+// and a malformed or contradictory stamp (`edited` not the boolean true, an unknown `by`) is no
+// author either — it reads as the union, never as a guessed authorization.
+export type BriefOrderAuthor = "main" | "owner";
+export interface BriefOrderFacts { text?: unknown; edited?: unknown; by?: unknown }
+export function briefOrderAuthor(brief: BriefOrderFacts | null | undefined): BriefOrderAuthor | null {
+  if (!brief || typeof brief.text !== "string" || brief.edited !== true) return null;
+  return brief.by === "main" || brief.by === "owner" ? brief.by : null;
+}
+export function orderTextOf(text: string, brief: BriefOrderFacts | null | undefined): string {
+  const briefText = typeof brief?.text === "string" ? brief.text : "";
+  return briefOrderAuthor(brief) ? briefText : `${text}\n${briefText}`;
+}
+
 /** The checks a row carries, read off its card and its source — the one reader for server and CLI. */
 export function startPlanChecks(row: {
   text: string; source: string; card?: StartPlanCardFacts | null; briefAt?: number | null;
   // the row's BRIEF text — namedAfterIds reads it beside the row text, the same reading
-  // server.ts#releaseCardRefusal makes (a NACH may stand in the brief; measured fa07734f)
+  // server.ts#releaseCardRefusal makes (a NACH may stand in the brief; measured fa07734f) — and
+  // the brief's authorship decides whether it REPLACES the row text there (orderTextOf above)
   briefText?: string | null;
+  briefEdited?: unknown; briefBy?: unknown;
   // WHO IS A QUEUE ROW, asked for every id the text names as an order — a commit sha in prose is
   // none (waits.ts#namedAfterIds leaves that decision to the caller). Absent = the caller decides
   // nothing: no id counts as an order and afterMissing stays [].
@@ -67,7 +92,8 @@ export function startPlanChecks(row: {
   const text1 = (v: unknown): string | null => typeof v === "string" && v.trim() ? v.trim() : null;
   const cardAfter = Array.isArray(card?.after) ? (card?.after as unknown[]).filter((x): x is string => typeof x === "string") : [];
   const afterMissing = row.queueKnown
-    ? namedAfterIds(`${row.text}\n${row.briefText ?? ""}`)
+    ? namedAfterIds(orderTextOf(row.text,
+      typeof row.briefText === "string" ? { text: row.briefText, edited: row.briefEdited, by: row.briefBy } : null))
       .filter((id) => id !== row.selfId && row.queueKnown!(id))
       .filter((id) => !cardAfter.includes(id))
     : [];
@@ -496,7 +522,7 @@ const argAfter = (name: string): string | null => {
 interface StateTask {
   id?: unknown; kind?: unknown; text?: unknown; source?: unknown; status?: unknown; slot?: unknown; programId?: unknown;
   base?: unknown; repo?: unknown;
-  card?: StartPlanCardFacts | null; brief?: { at?: unknown; text?: unknown } | null; hold?: unknown;
+  card?: StartPlanCardFacts | null; brief?: { at?: unknown; text?: unknown; edited?: unknown; by?: unknown } | null; hold?: unknown;
   variantOf?: unknown; variants?: unknown; criterion?: { proposedAt?: unknown; confirmedAt?: unknown } | null;
 }
 interface StateSlot { cwd?: unknown; worktree?: { repo?: unknown; base?: unknown; baseSha?: unknown } | null; programId?: unknown;
@@ -589,6 +615,9 @@ async function cli(): Promise<void> {
       checks: startPlanChecks({ text: typeof src.text === "string" ? src.text : "",
         source: typeof task.source === "string" ? task.source : "unknown", card: src.card ?? null,
         briefText: typeof src.brief?.text === "string" ? src.brief.text : null,
+        // passed RAW: orderTextOf decides which shapes name an author, so a malformed stamp in a
+        // state file reads exactly as the server reads the same stamp — the union, no authority
+        briefEdited: src.brief?.edited, briefBy: src.brief?.by,
         briefAt: typeof src.brief?.at === "number" ? src.brief.at : null,
         queueKnown: (id) => rowIds.has(id), selfId: task.id }),
       ...(policyOf(task) !== "manual" ? { release: policyOf(task) } : {}),

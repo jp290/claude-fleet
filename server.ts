@@ -82,7 +82,7 @@ import { isTaskCardSize, type TaskCardSize, type TaskWaveRange } from "./task-wa
 import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
 // The START PLAN: which land wave starts next, and what its rows passed. GET /api/start-plan shows it,
 // tickDispatch starts by it and the wave door resolves its ids in it (pinned in e2e/pins.ts).
-import { projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan,
+import { orderTextOf, projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan,
   type StartPlanLane, type StartPlanReleaseVerdict, type StartPlanRepoCaps, type StartPlanRow, type StartPlanWave } from "./start-plan";
 import { renderWaveBrief, withCardHead } from "./wave-brief";
 // THE WAIT REGISTER: which row waits on what and whose move it is — derived from the plan on every
@@ -14522,9 +14522,11 @@ function releaseCardRefusal(t: Task): string | null {
 // verdict (start-plan.ts#releaseVerdict through the one row builder). The plan reads a row's order
 // from card.after ALONE, so a text ordering the row after a queue row the card does not carry would
 // start out of order wherever the card is trusted — same sentence at every door
-// (waits.ts#afterOrderRefusal).
+// (waits.ts#afterOrderRefusal). WHICH text names the order is start-plan.ts#orderTextOf, the reading
+// both start-plan builders make: a brief the owner or a MAIN wrote by hand replaces the original
+// request's order, every other brief is read beside it.
 function namedAfterRefusal(t: Task): string | null {
-  const named = namedAfterIds([t.text, t.brief?.text ?? ""].join("\n"))
+  const named = namedAfterIds(orderTextOf(t.text, t.brief))
     .filter((id) => id !== t.id && tasks.some((x) => x.id === id));
   const missing = named.filter((id) => !(t.card?.after ?? []).includes(id));
   return missing.length ? afterOrderRefusal(missing, t.card?.after) : null;
@@ -16303,7 +16305,7 @@ const startPlanRowOf = (t: Task): StartPlanRow => {
   return { id: t.id, status: t.status, programId: t.programId ?? null, ...startPlanSurfaceOf(t),
     after: src.card?.after ?? [],
     checks: startPlanChecks({ text: src.text, source: t.source, card: src.card ?? null,
-      briefText: src.brief?.text ?? null, briefAt: src.brief?.at ?? null,
+      briefText: src.brief?.text ?? null, briefEdited: src.brief?.edited, briefBy: src.brief?.by, briefAt: src.brief?.at ?? null,
       queueKnown: (id) => tasks.some((x) => x.id === id), selfId: t.id }),
     // a PARKED row reads as `manual`: pending and waiting for a release, which is exactly what it does
     ...(policy !== "manual" && !dispatchParked(t) ? { release: policy } : {}), ...(t.hold ? { held: true } : {}),

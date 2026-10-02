@@ -34683,7 +34683,7 @@ const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: uebersetzt Owner-A
 --- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit Owner-Delegation) · deploy (Verdikt am naechsten Boot lesen).
 --- DER LOOP --- state.sh --brief → register.sh --brief → Board; kleinster Akt → Zeile im Format → Karte gueltig? → Rueckweg als Mechanismus legen, warten ohne Beobachten → ein Report ist eine Behauptung, bis Diff und Pruefung gelesen sind → naechster Akt.
 --- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
---- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Entscheidung bei 25 % gemessen, keine neue Tiefenarbeit ab 30 %.`;
+--- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Entscheidung an der Schwelle FLEET_MIGRATE_PCT (gemessen mit ctl.sh ctx), darunter keine Nachfolge, spaetestens bei 45 %.`;
 
 // WHICH LABEL IS THE ROLE. The owner names the role in the pane label and always has — the live
 // fleet carries „[Zitat entfernt]“, so an exact-equality test the way STEWARD_LABEL uses one

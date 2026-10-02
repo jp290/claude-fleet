@@ -1480,7 +1480,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         chatTotal: 0, chatSource: null, chatGen: 0, chatMemo: null, chatBusy: false, chatPinUntil: 0,
         lastTurnAt: 0, cacheTtl: null, observedModel: null, observedEffort: null, toolGroup: null, notifGroup: null,
         pending: [], openAgents: new Map(), grow: 0,
-        leavePast() {}, hideDown() {}, hideCopy() {}, syncHarnessAffordances() {}, connect() {}, focus() {},
+        leavePast() {}, closeSearch() {}, hideDown() {}, hideCopy() {}, syncHarnessAffordances() {}, connect() {}, focus() {},
         snapToBottom() {}, pinToBottom() {}, updateWork() {},
         // the network stand-in; what it does with the entries is the real pollChat's delta path
         // (first/before/chatFresh/chatAdd/chatGrew — pinned against the source below)

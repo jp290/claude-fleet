@@ -17,6 +17,8 @@ import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
+import { MODEL_DEFAULTS } from "../model-register";
+import { laneTitleOf, shortTitle } from "../src/suitemeter";
 
 export async function run(): Promise<void> {
   // --- slots ---
@@ -2237,10 +2239,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // does not — it is the half a truncated row used to lose. The STATE is not a column at all any
   // more; it rides the dot and the row's station class, because the tube above already draws it
   // twice (the ball's position, and the count under its station).
+  // Since 02.10. the NAME goes before the kind (owner: a titled lane „[Zitat entfernt]“ was cut to
+  // ~10 characters by a 38 % cap): no cap on the name, the kind column grows from zero and gives way
+  // first. What that buys in pixels is measured in the settings DOM run (the meter row at 264 px).
   check("client: a meter row draws the PLACE in its own span, and that span never shrinks",
     /el\("span", "smplace", b\.where\)/.test(cliSrc)
     && /\.smplace \{ flex: none; margin-left: auto;/.test(indexSrc)
-    && /\.smname \{ flex: 0 1 auto;/.test(indexSrc) && /\.smwhat \{ flex: 1 1 auto;/.test(indexSrc),
+    && /\.smname \{ flex: 0 1 auto; min-width: 40px; white-space/.test(indexSrc) && /\.smwhat \{ flex: 1 1 0;/.test(indexSrc),
     "the meter row + its CSS");
   check("client: the state is NOT a fourth column — it is the row's station class and its dot",
     /`smrow tone-\$\{b\.tone\} st-\$\{b\.station\}/.test(cliSrc)
@@ -4627,9 +4632,11 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
   const startFunctions = clientSource.slice(clientSource.indexOf("export type StartResult ="), clientSource.indexOf("// --- sidebar ---"));
   const stub = `
     export let fleet = [{ id: 1, cwd: '/fixture/repo', label: 'Fixture' }];
-    export const harnesses = [{ id: 'codex', default: true, supports: { model: true, effort: true, container: true }, models: ['fixture-model'], effortLevels: ['high'] }, { id: 'other', supports: { model: true, effort: true }, models: ['other-model'], effortLevels: ['high'] }];
+    export const harnesses = [{ id: 'codex', default: true, supports: { model: true, effort: true, container: true }, models: ['fixture-model'], effortLevels: ['high'] }, { id: 'other', supports: { model: true, effort: true }, models: ['other-model'], effortLevels: ['high'] },
+      // the model register's MAIN agent (model-register.ts#MODEL_DEFAULTS.main), whose default the MAIN card fills
+      { id: ${JSON.stringify(MODEL_DEFAULTS.main.harness)}, supports: { model: true, effort: true }, models: ['fixture-main-model'], effortLevels: ['low', 'medium', 'high', 'max'] }];
     export const defaultModel = '', containerDefaults = null, SKEW_NOTE = 'fixture skew';
-    export const agentHarnesses = () => harnesses;
+    export const agentHarnesses = () => window.fixtureNoMainAgent ? harnesses.slice(0, 2) : harnesses;
     export const isMobile = () => matchMedia('(max-width: 700px)').matches;
     export const el = (tag, cls, text) => { const e = document.createElement(tag); e.className = cls; if (text !== undefined) e.textContent = text; return e; };
     export const baseName = p => p.split('/').pop();
@@ -4732,7 +4739,7 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: stub, loader: 'ts' }));
       build.onLoad({ filter: /\/src\/founding\.ts$/ }, args => ({
         contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases = []; window.fixturePlanReads = 0; window.fixtureStored = null;
-window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null;
+window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false;
 window.fixtureReload = () => { void loadPlan(); renderAll(); };
 window.fixturePlanReady = () => !!S?.plan && S.planFor === planKey();
 window.fixtureClose = closeFounding; window.fixtureSettled = () => !S?.busy;
@@ -4832,7 +4839,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const reset = async (extra = '') => {
         await evaluate(`document.querySelector('#shell-found')?.remove(); window.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases.splice(0).forEach(r => r()); window.fixtureStored = null;
           window.fixtureMode = null; window.fixtureShown = null; window.fixtureReceiptReads = 0; window.fixtureReceiptHold = false; window.fixtureResetSlots();
-          window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; ${extra}`);
+          window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; ${extra}`);
         await evaluate(`window.fixtureOpen()`);
         await wait(ready);
       };
@@ -4879,6 +4886,10 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const progs = `Array.from(document.querySelectorAll('.fdprog'))`;
       const footSays = `(document.querySelector('.fdfootnote')?.textContent || '')`;
       const toMain = async () => { await click('.fdrole[data-role="main"]'); await wait(`${progs}.length > 0 || !!document.querySelector('.fdprogs .fdnote.warn')`); };
+      // the MAIN default of the model register, as the window must send it (read, never copied)
+      const mainDefault = { harness: MODEL_DEFAULTS.main.harness, model: MODEL_DEFAULTS.main.id, ...(MODEL_DEFAULTS.main.effort ? { effort: MODEL_DEFAULTS.main.effort } : {}) };
+      const profileShown = `({ agent: document.querySelector('.fdpf[data-pop="harness"] .fdpfv')?.textContent, model: document.querySelector('.fdpf[data-pop="model"]')?.title,
+        effort: document.querySelector('.fdpf[data-pop="effort"] .fdpfv')?.textContent })`;
       await reset();
       g['the role cards are exactly Leer, Lane, Orchestratorin, MAIN — no Steward is offered'] = await evaluate<boolean>(`Array.from(document.querySelectorAll('.fdrole'), b => b.dataset.role).join() === 'leer,lane,orch,main' && !document.querySelector('#shell-found').textContent.includes('Steward')`);
       await toMain(); await shot('main');
@@ -4888,6 +4899,21 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
         listed === JSON.stringify([['p-free', false, 'ohne MAIN'], ['p-stale', false, 'alte MAIN weg (Slot 5) — wird ersetzt'], ['p-live', true, 'MAIN lebt · Slot 1'],
           ['p-founding', true, 'Belegung unbekannt'], ['p-unknown', true, 'Belegung unbekannt']])
         && await evaluate<boolean>(`document.querySelector('.fdprogs').textContent.includes('1 weitere nicht aktiv') && window.fixtureProgramReads === 1`);
+      // (5) a living MAIN is a fact on a row nobody can choose: it reads in that row's muted ink
+      const ink = await evaluate<{ live: string; free: string; stale: string; green: string; disabled: boolean }>(`(() => {
+        const c = id => getComputedStyle(document.querySelector('.fdprog[data-program="' + id + '"] .fdpst')).color;
+        const g = document.createElement('i'); g.style.color = 'var(--q-live)'; document.querySelector('#shell-found').appendChild(g);
+        const green = getComputedStyle(g).color; g.remove();
+        return { live: c('p-live'), free: c('p-free'), stale: c('p-stale'), green, disabled: document.querySelector('.fdprog[data-program="p-live"]').disabled }; })()`);
+      detail['main-ink'] = JSON.stringify(ink);
+      g['"MAIN lebt · Slot 1" stands muted like its unchoosable row, never green; the stale warning stays apart'] =
+        ink.disabled && ink.live === ink.free && ink.live !== ink.green && ink.stale !== ink.live;
+      // (6) the role fills its own profile from model-register.ts#MODEL_DEFAULTS.main
+      const shownMain = await evaluate<{ agent: string; model: string; effort: string }>(profileShown);
+      detail['main-profile'] = JSON.stringify(shownMain);
+      g['MAIN fills Agent, Modell and Effort with the MAIN default of the model register — Effort is no longer "Adapter wählt"'] =
+        shownMain.agent === MODEL_DEFAULTS.main.harness && shownMain.model.startsWith(`Modell ${MODEL_DEFAULTS.main.id}`)
+        && shownMain.model.includes('MAIN-Standard') && shownMain.effort === (MODEL_DEFAULTS.main.effort ?? 'Adapter wählt');
       g['MAIN carries no packs: the Programs founding brief stands in Kontext, no pack button'] = await evaluate<boolean>(`${chips}.length === 0 && !document.querySelector('.fdadd') && document.querySelector('.fdcx.srv')?.textContent === 'Gründungsbrief des Programs'`);
       g['should-reject: MAIN without a chosen Program blocks the button and Enter'] = await blocked();
       await click('.fdprog[data-program="p-live"]');
@@ -4905,14 +4931,30 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
         detail[`main-${mode}`] = await evaluate<string>(footSays);
         g[`bootstrap-main answers ${mode}: the window shows it word for word, founds nothing and reads the Programs again`] =
           await evaluate<boolean>(`${footSays} === ${JSON.stringify(expect)} && !document.querySelector('#shell-found.fdproved')`)
-          && await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo' });
+          && await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo', ...mainDefault });
       }
+      // leaving the role takes back exactly what it filled; an agent this machine lacks fills nothing
+      await reset(); await toMain(); await role('leer');
+      const backToLeer = await evaluate<{ agent: string; model: string; effort: string }>(profileShown);
+      detail['main-left'] = JSON.stringify(backToLeer);
+      await click('.fdgo');
+      g['leaving MAIN takes its default back: Leer shows Adapter wählt again and starts with exactly { cwd }'] =
+        backToLeer.agent === 'codex' && backToLeer.effort === 'Adapter wählt' && await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo' });
+      await reset(); await toMain(); await click('[data-pop="effort"]'); await click('.fdpop .fdprow:nth-child(2)'); await role('leer');
+      g['should-reject: an Effort the owner picked under MAIN is not taken back when the role changes'] =
+        (await evaluate<{ effort: string }>(profileShown)).effort === 'low';
+      await reset(`window.fixtureNoMainAgent = true;`); await toMain(); await click('.fdprog[data-program="p-free"]');
+      const noAgent = await evaluate<{ agent: string; model: string; effort: string }>(profileShown);
+      detail['main-no-agent'] = JSON.stringify(noAgent);
+      await click('.fdgo'); await wait(`window.fixtureSettled()`);
+      g['should-reject: without the MAIN agent of the register on this machine nothing is filled — the door gets exactly { cwd }'] =
+        noAgent.agent === 'codex' && noAgent.effort === 'Adapter wählt'
+        && await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo' });
       await reset(`window.fixturePrograms = 'fail';`); await toMain();
       g['should-reject: Programs that cannot be read offer nothing, say so and block the start'] = await evaluate<boolean>(`${progs}.length === 0 && document.querySelector('.fdprogs .fdnote.warn').textContent.includes('Antwort 500')`) && await blocked();
       await reset(`window.fixtureMode = 'equal';`); await toMain(); await click('.fdprog[data-program="p-free"]');
-      await click('[data-pop="model"]'); await click('.fdpop .fdprow:nth-child(2)'); await click('[data-pop="effort"]'); await click('.fdpop .fdprow:nth-child(2)');
       await click('.fdgo'); await wait(`window.fixtureSettled() && !!document.querySelector('#shell-found.fdproved')`); await shot('main-receipt');
-      g['MAIN start: exactly one bootstrap-main with { cwd, model, effort } — no packs, no container, no label'] = await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo', model: 'fixture-model', effort: 'high' }); await said('main');
+      g['MAIN start: exactly one bootstrap-main with { cwd } plus the MAIN agent, model and effort of the register — no packs, no container, no label'] = await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo', ...mainDefault }); await said('main');
       g['the start receipt reads the MAIN back at the Programs binding'] = await evaluate<boolean>(`document.querySelector('.fdproofrow[data-field="Rolle"] .fdactual')?.textContent === 'MAIN' && document.querySelector('.fdproofrow[data-field="Rolle"]').dataset.state === 'same'`);
 
       await reset(); await role('lane'); await wait(`${chips}.length === 2`);
@@ -5022,11 +5064,17 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
         await click('.fdgo'); await finished();
       };
       await plain(); await shot('receipt-equal');
+      // (8) the receipt names the role with the window's own words, and its head never says "frei"
+      g2['the receipt names the role as the window does (Leer) and its head says Startbeleg, never "frei" beside "geöffnet"'] = await evaluate<boolean>(`(() => {
+        const sub = document.querySelector('#shell-found .shellsub')?.textContent ?? '';
+        return document.querySelector('.fdproofrow[data-field="Rolle"] .fdrequested')?.textContent === 'Leer' && sub === 'Startbeleg · Slot 2'
+          && !/frei/.test(sub) && document.querySelector('.fdproofstatus').textContent.includes('geöffnet');
+      })()`);
       g2['the receipt window fits its content, Zur Session offered'] = await fits() && await evaluate<boolean>(`document.querySelector('#shell-found.fdproved .fdgo')?.disabled===false`);
       g2['equal readback rows, no packs and zero receipt reads'] = await evaluate<boolean>(`(() => {
         const rows=Array.from(document.querySelectorAll('.fdproofrow[data-field]'));
         return rows.length===6 && rows.every(r=>r.dataset.state==='same')
-          && ${actual('Rolle')}?.textContent==='Session' && ${actual('Ort')}?.textContent==='/fixture/repo'
+          && ${actual('Rolle')}?.textContent==='Leer' && ${actual('Ort')}?.textContent==='/fixture/repo'
           && ${actual('Agent')}?.textContent.startsWith('codex') && ${actual('Modell')}?.textContent==='fixture-model'
           && ${actual('Effort')}?.textContent==='high' && ${actual('Packs')}?.textContent==='keine'
           && window.fixtureReceiptReads===0 && document.querySelector('.fdproofstatus').textContent.includes('geöffnet');
@@ -5052,8 +5100,17 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await setup('undelivered', true); await click('.fdgo'); await finished(); await shot('receipt-undelivered');
       g2['delivery false shows exact reason and never mitgegeben'] = (await text()).includes('nicht zugestellt: fixture delivery refused') && !(await text()).includes('mitgegeben');
       await setup('unchanged'); await click('.fdgo'); await finished(); await shot('receipt-no-occupant');
-      g2['unchanged openedAt is no new session, all readbacks missing'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent === 'Keine neue Session gestartet — kein Startbeleg.' && Array.from(document.querySelectorAll('.fdactual')).slice(0,5).every(e=>e.textContent.includes('nicht gemeldet'))`);
-      g2['should-reject: without a new session the Packs row says nicht gemeldet, never keine'] = await evaluate<boolean>(`${actual('Packs')}?.textContent==='nicht gemeldetBeleg fehlt' && ${actual('Packs')}?.classList.contains('warn')`);
+      // (7) without a new session the status line says it ONCE: the right column is a muted "—",
+      // never six orange "nicht gemeldet · Beleg fehlt"; orange is left for a real difference
+      g2['unchanged openedAt is no new session: the status line says it once, every readback is a muted —'] = await evaluate<boolean>(`(() => {
+        const cells = Array.from(document.querySelectorAll('.fdactual'));
+        return document.querySelector('.fdproofstatus')?.textContent === 'Keine neue Session gestartet — kein Startbeleg.'
+          && cells.length === 6 && cells.every(e => e.textContent === '—' && !e.classList.contains('warn'))
+          && Array.from(document.querySelectorAll('.fdproofrow[data-field]')).every(r => r.dataset.state === 'unread')
+          && document.querySelectorAll('#shell-found .warn').length === 1 && !document.querySelector('#shell-found').textContent.includes('Beleg fehlt')
+          && getComputedStyle(cells[0]).color !== getComputedStyle(document.querySelector('.fdproofstatus')).color;
+      })()`);
+      g2['should-reject: without a new session the Packs row says —, never keine'] = await evaluate<boolean>(`${actual('Packs')}?.textContent==='—' && !${actual('Packs')}?.classList.contains('warn')`);
       g2['should-reject: without a new session there is no Zur Session, and the focus stays in the window'] = await evaluate<boolean>(`!document.querySelector('#shell-found .fdgo') && getComputedStyle(document.querySelector('#shell-found .shellfoot')).display==='none' && document.querySelector('#shell-found').contains(document.activeElement)`);
       g2['the receipt without a new session fits its content'] = await fits();
       await plain(); await evaluate(`window.fixtureRecycle()`); await finished(); await shot('receipt-stale');
@@ -5078,7 +5135,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await click('.fdorph'); await click('.fdgo'); await finished();
       g2['continued Lane gets same proof, observed branch and zero receipt reads'] = (await text()).includes('Branch: fleet/continued') && await evaluate<boolean>(`window.fixtureReceiptReads===0 && ${starts}.length===1 && ${starts}[0].url==='/api/lanes' && !('packs' in ${starts}[0].body)`);
       await setup('equal'); await role('orch'); await click('.fdgo'); await finished();
-      g2['Orchestrator without selected packs reads receipt once'] = await evaluate<boolean>(`window.fixtureReceiptReads===1 && ${actual('Rolle')}?.textContent==='Orchestrator' && ${actual('Packs')}?.textContent.includes('Hash: 1234567890ab')`);
+      g2['Orchestrator without selected packs reads receipt once'] = await evaluate<boolean>(`window.fixtureReceiptReads===1 && ${actual('Rolle')}?.textContent==='Orchestratorin' && ${actual('Packs')}?.textContent.includes('Hash: 1234567890ab')`);
       await setup('multiple', true); await click('.fdgo'); await finished();
       g2['multiple receipts use newest and disclose count'] = (await text()).includes('Hash: abcdef123456') && (await text()).includes('2 Startbelege — der jüngste gilt.');
       await setup('private', true); await click('.fdgo'); await finished();
@@ -5130,6 +5187,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     caps: { default: 1, max: 8, caps: { [REPO_A]: 2 } as Record<string, number>, bases: { [REPO_A]: "overhaul" } as Record<string, string> | undefined },
     capsStatus: 200, planStatus: 200, autosOn: true as boolean | undefined, dispatchOn: true,
     refuseCap: false, posts: [] as SettingsFixturePost[], sessions: 0,
+    // a titled task lane with a running check, for the meter row's name at the board's real width
+    meterLane: false,
     // the protocol of the run: every native input sent and every /api request the page made
     inputs: [] as string[], requests: [] as string[],
   };
@@ -5156,13 +5215,28 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     ],
     stau: null, buendel: { pairs: [] },
   });
+  // THE ROWS BEHIND THE PLAN'S IDS, as GET /api/tasks serves them: a card goal opening with a
+  // shouted [TITEL], a plain goal, a task text's own [TITEL] — and d4d4d4d4 with nothing to derive
+  // from, which keeps its id. The poll's digest names the same ids, so the queue cache reads them.
+  const TASKS: { id: string; text: string; card?: { ziel: string } }[] = [
+    { id: "a1a1a1a1", text: "ROLLE: x\nZIEL: …", card: { ziel: "[OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380] Owner woertlich." } },
+    { id: "b2b2b2b2", text: "ROLLE: x\nZIEL: …", card: { ziel: "Die Warteschlange nennt Zeilen beim Namen. Danach mehr." } },
+    { id: "c3c3c3c3", text: "[VORGAENGER-ZEILE · LANDET ZUERST]\nText" },
+    { id: "d4d4d4d4", text: "ROLLE: x\nohne Titel" },
+  ];
+  const LANE_TITLE = "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380";
   const sessions = () => ({
     now: Date.now(), chips: [], slots: [
       { id: 1, cwd: REPO_A, repo: REPO_A, label: "Fixture A", openedAt: 1000 },
       { id: 2, cwd: REPO_B, repo: REPO_B, label: "Fixture B", openedAt: 1000 },
-      { id: 3, cwd: null },
+      fx.meterLane
+        ? { id: 3, cwd: `${REPO_A}-lane`, repo: REPO_A, label: "⎇ task oberflaeche-aaaa", openedAt: 1000,
+          worktree: { repo: REPO_A, branch: "fleet/261002-oberflaeche-aaaa", anchor: { slot: 1, openedAt: 1000 }, letter: "A" }, taskTitle: LANE_TITLE }
+        : { id: 3, cwd: null },
     ],
-    tasks: [], dispatch: { available: true, on: fx.dispatchOn, maxLanes: fx.caps.caps[REPO_A] ?? fx.caps.default, repo: REPO_A, lanes: 2, quiet: false },
+    ...(fx.meterLane ? { gate: { lock: { pid: 4242, alive: true, heldMs: 65_000, owner: { slot: 3, branch: "fleet/261002-oberflaeche-aaaa" } },
+      reports: [{ slot: 3, label: null, phase: "running", suite: "e2e-isolated", exitCode: null, at: Date.now() - 65_000, origin: "lane", branch: "fleet/261002-oberflaeche-aaaa" }] } } : {}),
+    tasks: TASKS.map((t) => ({ id: t.id, source: "owner", status: t.id === "d4d4d4d4" ? "pending" : "queued", created: 1000, repo: REPO_A })), dispatch: { available: true, on: fx.dispatchOn, maxLanes: fx.caps.caps[REPO_A] ?? fx.caps.default, repo: REPO_A, lanes: 2, quiet: false },
     ...(fx.autosOn === undefined ? {} : { autosOn: fx.autosOn }), quietHours: null,
   });
   const brief = { branch: "overhaul", head: "fixture", worktree: null, sessionStart: null, uncommitted: 0, uncommittedFiles: [],
@@ -5251,6 +5325,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         if (fx.capsStatus !== 200) return void json(requestId, { error: "fixture: caps unreadable" }, fx.capsStatus);
         return void json(requestId, { default: fx.caps.default, max: fx.caps.max, caps: fx.caps.caps, ...(fx.caps.bases ? { bases: fx.caps.bases } : {}) });
       }
+      if (p === "/api/tasks") return void json(requestId, { tasks: TASKS });
       if (p === "/api/start-plan") return void (fx.planStatus === 200 ? json(requestId, plan()) : json(requestId, { error: "fixture: plan unreadable" }, fx.planStatus));
       if (p === "/api/machine-settings") return void json(requestId, machine);
       // an empty catalogue, served: a refused /api/harnesses is re-asked on every render (loadHarnesses
@@ -5351,7 +5426,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const claims: Record<string, boolean> = {};
       const facts: Record<string, unknown> = {};
       fx.caps = { default: 1, max: 8, caps: { [REPO_A]: 2 }, bases: { [REPO_A]: "overhaul" } };
-      fx.capsStatus = 200; fx.planStatus = 200; fx.autosOn = true; fx.dispatchOn = true; fx.refuseCap = false; fx.posts = [];
+      fx.capsStatus = 200; fx.planStatus = 200; fx.autosOn = true; fx.dispatchOn = true; fx.refuseCap = false; fx.posts = []; fx.meterLane = false;
       fx.inputs = []; fx.requests = [];
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -5492,8 +5567,35 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         /wirksam 2/.test(parA.cap ?? "") && /Repo-Override/.test(parA.cap ?? "") && /Maschinen-Standard 1/.test(parA.cap ?? "");
       claims["occupancy at the cap reads 2 of 2 with the plan's read time"] = /2 von 2/.test(parA.load ?? "") && /gelesen/.test(parA.load ?? "");
       claims["master on with every row waiting: 0 startable, three named wait reasons"] = /^Startbar jetzt 0\b/.test(parA.start ?? "")
-        && ["a1a1a1a1", "b2b2b2b2", "d4d4d4d4"].every((id) => (parA.wait ?? "").includes(id)) && /Deckel voll/.test(parA.wait ?? "")
+        && /^Wartet 3\b/.test(parA.wait ?? "") && /Deckel voll/.test(parA.wait ?? "")
         && /Reihenfolge/.test(parA.wait ?? "") && /nicht freigegeben/.test(parA.wait ?? "");
+      // (3) "Wartet" names each row by its Kurztitel — the lane names' own derivation — and keeps
+      // the id for the tooltip; a row nothing can be derived from keeps its id
+      const named = (id: string): string => { const t = TASKS.find((x) => x.id === id)!; return shortTitle(laneTitleOf(t.card?.ziel, t.text)!); };
+      const waitRows = await evaluate<{ lines: string[]; names: [string, string][]; idsShown: string[] }>(`(() => {
+        const w = window.__fx.W().querySelector('[data-par="wait"] .setstatl');
+        const own = [...w.querySelectorAll(':scope > .setwait')];
+        return { lines: own.map((l) => l.innerText), names: own.flatMap((l) => [...l.querySelectorAll('.setname')].map((e) => [e.textContent, e.title])),
+          idsShown: own.flatMap((l) => [...l.querySelectorAll('.setids')].map((e) => e.textContent)) }; })()`);
+      facts.waitRows = waitRows;
+      claims["Wartet names each row by its Kurztitel ('Oberflaeche · I1 …'), the order target too, and the id only in the tooltip"] =
+        waitRows.lines.includes(`Repo-Deckel voll: ${named("a1a1a1a1")}`) && named("a1a1a1a1").startsWith("Oberflaeche · I1 ")
+        && waitRows.lines.includes(`Reihenfolge: ${named("b2b2b2b2")} nach ${named("c3c3c3c3")}`)
+        && ["a1a1a1a1", "b2b2b2b2", "c3c3c3c3"].every((id) => waitRows.names.some(([text, tip]) => text === named(id) && tip.startsWith(`${id} — `))
+          && !waitRows.lines.some((l) => l.includes(id)));
+      claims["should-reject: a row with nothing to derive a title from keeps its id — never an empty name"] =
+        waitRows.lines.includes("nicht freigegeben: d4d4d4d4") && JSON.stringify(waitRows.idsShown) === JSON.stringify(["d4d4d4d4"]);
+      // (4) one word per section head: the pressed target names the Fleet section, no head repeats it
+      const heads = await evaluate<{ fleetH3: string[]; firstSub: string | null; fleetWords: number; deviceH3: string | null }>(`(() => {
+        const sec = window.__fx.section(${JSON.stringify(fleetWord)});
+        return { fleetH3: [...sec.querySelectorAll('h3')].map((h) => h.textContent), firstSub: sec.querySelector('.setsub')?.textContent ?? null,
+          fleetWords: [...window.__fx.W().querySelectorAll('h3, h4, .settab')].filter((e) => window.__fx.shown(e) && e.textContent === ${JSON.stringify(fleetWord)}).length,
+          deviceH3: window.__fx.section(${JSON.stringify(nav[0]?.word ?? "")})?.querySelector('h3')?.textContent ?? null }; })()`);
+      const fleetSecAx = await ax(`window.__fx.section(${JSON.stringify(fleetWord)})`);
+      facts.heads = { ...heads, ax: fleetSecAx };
+      claims["the Fleet section says 'Fleet' once — the target names it, its first head is Parallelität; Dieses Gerät keeps its head"] =
+        heads.fleetH3.length === 0 && heads.firstSub === "Parallelität" && heads.fleetWords === 1 && fleetSecAx?.name === fleetWord
+        && heads.deviceH3 === nav[0]?.word;
       const doubled = await evaluate<{ master: string; cap: string; std: number }>(`({
         master: window.__fx.W().querySelector('[data-par="master"] .setval')?.textContent ?? 'missing',
         cap: window.__fx.W().querySelector('[data-par="cap"] .setval')?.textContent ?? 'missing',
@@ -5648,6 +5750,34 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         await shot(width, "explorer-missing");
         facts.explorerMissing = await evaluate<string>("document.body.innerText.replace(/\\s+/g, ' ').slice(0, 600)");
         claims["the explorer opens from the Info column in the fixture"] = false;
+      }
+
+      // --- 10. (1) the Checks row of a titled lane at the board's real width (264 px, the card's
+      // "~300"): the NAME goes first, at least 20 characters of the Kurztitel are on screen, the kind
+      // gives way and the place never moves. Desktop only — the phone shows the board as a window.
+      if (width === 1200) {
+        if (await evaluate<boolean>(`!!document.querySelector('#shell-files')`)) await key("Escape");
+        fx.meterLane = true;
+        const rowUp = await wait(`[...document.querySelectorAll('#boardsuites .smrow .smname')].some((n) => n.textContent.includes(' · '))`, 8000);
+        const meter = await evaluate<{ name: string; prefix: number; fit: number; board: number; row: number; what: number; placeInside: boolean } | null>(`(() => {
+          const n = [...document.querySelectorAll('#boardsuites .smrow .smname')].find((e) => e.textContent.includes(' · '));
+          if (!n || !n.firstChild) return null;
+          const row = n.parentElement, box = n.getBoundingClientRect(), len = n.textContent.length;
+          const probe = document.createElement('span'); probe.style.font = getComputedStyle(n).font; probe.textContent = '…';
+          document.body.appendChild(probe); const ell = probe.getBoundingClientRect().width; probe.remove();
+          let fit = len;
+          if (n.scrollWidth > n.clientWidth + 0.5) {
+            const r = document.createRange(); fit = 0;
+            for (let i = 1; i <= len; i++) { r.setStart(n.firstChild, 0); r.setEnd(n.firstChild, i); if (r.getBoundingClientRect().right <= box.right - ell + 0.5) fit = i; else break; }
+          }
+          return { name: n.textContent, prefix: n.textContent.indexOf(' · ') + 3, fit, board: document.querySelector('#board').getBoundingClientRect().width,
+            row: row.getBoundingClientRect().width, what: row.querySelector('.smwhat').getBoundingClientRect().width,
+            placeInside: row.querySelector('.smplace').getBoundingClientRect().right <= row.getBoundingClientRect().right + 0.5 }; })()`);
+        await shot(width, "meter-row");
+        facts.meter = { rowUp, ...meter };
+        claims["Checks at the board's real width (≤ 300 px): a titled lane shows at least 20 characters of its Kurztitel, in calm case, and the place stays in the row"] =
+          !!meter && meter.board <= 300 && meter.fit - meter.prefix >= 20 && /^\w+ · Oberflaeche · I1 /.test(meter.name) && meter.placeInside;
+        fx.meterLane = false;
       }
 
       if (artifacts) { await send("Page.stopScreencast"); writeFileSync(resolve(artifacts, `video-${width}`, "times.json"), JSON.stringify(frameTimes)); recording = null; }

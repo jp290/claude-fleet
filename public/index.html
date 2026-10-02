@@ -1948,8 +1948,9 @@
   #shell-found .fdprog.on .fdradio { border-color: var(--chat-ink); background: radial-gradient(var(--chat-ink) 0 3px, transparent 3.5px); }
   #shell-found .fdprog:disabled { opacity: .5; cursor: help; }
   #shell-found .fdprogt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* "MAIN lebt · Slot N" keeps the muted ink of the row it sits on: green read as "go" on a row
+     that cannot be chosen (owner 02.10.). Amber stays for what is not known. */
   #shell-found .fdpst { flex: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  #shell-found .fdpst.live { color: var(--q-live); }
   #shell-found .fdpst.stale, #shell-found .fdpst.unknown { color: var(--amber); }
 
   /* PROFIL — fields with their name above the value */
@@ -2110,6 +2111,7 @@
   .fdproof .mono { font-family: var(--chat-mono); font-size: var(--chat-code-fs); }
   .fdproofnote { display: block; margin-top: 4px; }
   .fdproof .warn, .fdproofstatus.warn { color: var(--amber); }
+  .fdproof .fdnone { color: var(--chat-faint); } /* nothing was read back — the status line says why, once */
   .fdreceiptpack + .fdreceiptpack { margin-top: 12px; }
   /* end of THE FOUNDING WINDOW */
   .pkbtns { display: flex; justify-content: flex-end; gap: 8px; }
@@ -2836,13 +2838,14 @@
   .tone-ok > .smdot { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--add); }
   .tone-red > .smdot { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--del); }
   .tone-unknown > .smdot, .tone-warn > .smdot { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--amber); }
-  /* THE NAME GIVES WAY FIRST. With the place in a column of its own the row is ~267px wide at the
-     column's real width, and a flex:none name plus a flex:none place squeezed the suite column to
-     13px — "suite offer" rendered as "suit…" beside 82px of "no helper yet". The name shrinks, the
-     suite keeps a floor, and the place (the half a truncated row used to lose) never moves. */
-  .smname { flex: 0 1 auto; min-width: 40px; max-width: 38%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* THE NAME GOES FIRST (owner 02.10.). A task lane is „[Zitat entfernt]“, and the old 38 % cap on
+     the name cut it to ~10 characters at the board's ~300 px. Now the name takes its own width, the
+     KIND column (branch · state · clock · kind — all of it also in the row's tooltip) grows from
+     zero and is what gives way, to nothing if it must, and the place (the half a truncated row
+     used to lose, 2026-09-20) still never moves. e2e/slots.ts measures it at the real width. */
+  .smname { flex: 0 1 auto; min-width: 40px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .smrow.mine .smname { color: var(--accent); font-weight: 600; }
-  .smwhat { flex: 1 1 auto; min-width: 54px; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3);
+  .smwhat { flex: 1 1 0; min-width: 0; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* WHERE it runs, and it is the LAST column: pushed right so the machines line up down the list,
      never shrinking, because the machine is the half a truncated row used to lose. */
@@ -3400,6 +3403,7 @@
   .setstatl { grid-column: 1 / -1; color: var(--chat-mute); line-height: 1.5; }
   .setstatl:empty { display: none; }
   .setids { font-family: var(--chat-mono); color: var(--chat-prose); }
+  .setname { color: var(--chat-prose); cursor: help; } /* a row by its Kurztitel; the id is in the tooltip */
   .setwhy summary { cursor: pointer; color: var(--chat-mute); }
   .setwhy summary:hover { color: var(--chat-ink); }
   .setfoot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 0 2px; }

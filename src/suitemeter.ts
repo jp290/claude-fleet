@@ -104,9 +104,39 @@ export function laneTitleOf(ziel: string | null | undefined, text: string | null
     : bracket((text ?? "").trim());
   return title ? title.slice(0, 160) : null;
 }
-// ~32 characters with an ellipsis; the full title stays in the tooltip
+// ~32 characters with an ellipsis, in calm case (calmCase); the full title, as written, stays in the tooltip
 export function shortTitle(title: string): string {
-  return title.length <= LANE_TITLE_MAX ? title : `${title.slice(0, LANE_TITLE_MAX - 1).trimEnd()}…`;
+  const calm = calmCase(title);
+  return calm.length <= LANE_TITLE_MAX ? calm : `${calm.slice(0, LANE_TITLE_MAX - 1).trimEnd()}…`;
+}
+
+// A SHOUTED [TITEL] IN SENTENCE CASE (owner 02.10.: „[Zitat entfernt]“ reads like shouting). Only a
+// word written in capitals is touched: it goes to lower case, and the first word of the title and of
+// every "·"/"—" part starts upper case again, as does a hyphen part behind an upper-case one
+// ("FLEET-BETRIEB" → "Fleet-Betrieb", "MAIN-WAHL" → "MAIN-Wahl"). Kept as written: any word with a
+// digit ("I1", "S5b-3p", "30.09.„[Zitat entfernt]“/" („[Zitat entfernt]“), and the short
+// abbreviations below. A mixed-case word ("ersetzt", "e7ded380", "Program") is never changed.
+// Display only, like the cut: the server's taskTitle stays the card's own words.
+const CALM_KEEP = new Set(["MAIN", "MAINS", "UI", "UX", "API", "CLI", "TUI", "PR", "CI", "SSH", "JSON", "HTTP", "URL",
+  "HTML", "CSS", "MCP", "GLM", "LLM", "ID", "IDS", "PID", "SHA", "DB", "OS", "PDF", "CPU", "GPU", "OK", "QA", "DOM", "CDP"]);
+export function calmCase(title: string): string {
+  let start = true;
+  return title.split(" ").map((word) => {
+    if (word === "") return word;
+    if (/^[·—–|]$/.test(word)) { start = true; return word; }
+    let upper = start;
+    const out = word.split("-").map((part, i) => {
+      const m = /^([(„"'“]*)(\p{Lu}[\p{Lu}ß]+)([)\],.;:!?"“”']*)$/u.exec(part);
+      const shouted = !!m && !CALM_KEEP.has(m[2]);
+      const first = i === 0 ? start : upper;
+      if (!shouted) { upper = /^[(„"'“]*(\p{Lu}|\d)/u.test(part); return part; }
+      const low = m[2].toLowerCase();
+      upper = first;
+      return `${m[1]}${first ? low.charAt(0).toUpperCase() + low.slice(1) : low}${m[3]}`;
+    }).join("-");
+    start = /:$/.test(word);
+    return out;
+  }).join(" ");
 }
 // "<Lane-Referenz> · <Kurztitel>", and the reference alone when no title could be derived
 export function laneDisplayName(ref: string, title: string | null | undefined): string {

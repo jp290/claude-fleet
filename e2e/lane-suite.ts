@@ -22,7 +22,7 @@ import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, UntilTimeout, until, check, get, post, restartSrv, stopSrv } from "./harness";
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
-import { suiteMeter, laneDisplayName, laneTail, laneTitleOf, meterKind, meterLine, shortTitle, type MeterInput } from "../src/suitemeter";
+import { suiteMeter, calmCase, laneDisplayName, laneTail, laneTitleOf, meterKind, meterLine, shortTitle, type MeterInput } from "../src/suitemeter";
 import { DAEMON_FEATURES, modulesEnv } from "../helper-daemon/daemon";
 
 interface HelperJob {
@@ -247,13 +247,33 @@ export async function run(): Promise<void> {
     const cut = shortTitle("OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380");
     check("(LS.title) the short title is ~32 characters with an ellipsis; a short one is untouched",
       cut.length === 32 && cut.endsWith("…") && shortTitle("Kurz") === "Kurz", `${cut} (${cut.length})`);
+    // === A SHOUTED [TITEL] READS IN SENTENCE CASE (owner 02.10.: „[Zitat entfernt]“ reads like
+    // shouting). Display only: the derivation the server ships stays the card's own words (above).
+    check("(LS.calm) a capitalised [TITEL] becomes 'Oberflaeche · I1 …' — abbreviations and words with digits stay",
+      cut === "Oberflaeche · I1 stufe 1 + helf…"
+        && calmCase("OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380") === "Oberflaeche · I1 stufe 1 + helfer-anzeige · ersetzt e7ded380",
+      `${cut} / ${calmCase("OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380")}`);
+    const calmCases: [string, string][] = [
+      ["FLEET-BETRIEB · MAIN-WAHL UND UI (KLEIN)", "Fleet-Betrieb · MAIN-Wahl und UI (klein)"],
+      ["DIE ZUSTELLUNG HÄLT, WAS DER KOPF SAGT · base overhaul", "Die zustellung hält, was der kopf sagt · base overhaul"],
+      ["A/B-REPLAY LUNA · example-project · S5b-3p · OWNER-AUFTRAG 30.09.", "A/B-Replay luna · example-project · S5b-3p · Owner-Auftrag 30.09."],
+    ];
+    check("(LS.calm) every '·' part starts upper case, a hyphen part follows its upper-case head, MAIN/UI/A/B/S5b-3p/30.09. stay",
+      calmCases.every(([a, b]) => calmCase(a) === b), JSON.stringify(calmCases.map(([a]) => calmCase(a))));
+    check("(LS.calm) should-reject: a title already in mixed case is never touched — sentence case is for shouting only",
+      ["Eine Session ohne Git hat eine Seitenleiste", "Demo 2 — (F1) Panel-Demo: Zeitstrahl unten", "Owner-Auftrag 30.09. · Native Terminalfragen"]
+        .every((t) => calmCase(t) === t),
+      calmCase("Demo 2 — (F1) Panel-Demo: Zeitstrahl unten"));
+    check("(LS.calm) should-reject: the derived title itself keeps the card's capitals — calm case is the display's, never stored",
+      laneTitleOf(longZiel, "ROLLE: x") === "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380",
+      String(laneTitleOf(longZiel, "ROLLE: x")));
     check("(LS.title) the name is '<Lane-Referenz> · <Kurztitel>', and the reference alone without a title",
       laneDisplayName("3A", "Kurz") === "3A · Kurz" && laneDisplayName("3A", null) === "3A", laneDisplayName("3A", "Kurz"));
     const titled = suiteMeter({ ...base, slots: [{ id: 17, label: "⎇ task x-aaaa", branch: "fleet/261001-x-aaaa", letter: "3A",
       title: "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE" }], gate: { lock: null, reports: [rep(17, "running")] },
       offers: [{ slot: 17, branch: "fleet/261001-x-aaaa", state: "claimed", device: "workhorse", at: 1, result: null }] }).balls;
     check("(LS.title) Checks rows name a titled lane '3A · <Kurztitel>' and carry the full title for the tooltip",
-      titled.length === 2 && titled.every((b) => b.name === "3A · OBERFLAECHE · I1 STUFE 1 + HELF…"
+      titled.length === 2 && titled.every((b) => b.name === "3A · Oberflaeche · I1 stufe 1 + helf…"
         && b.title === "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE"), JSON.stringify(titled.map((b) => [b.name, b.title])));
     check("(LS.title) …and the four hex leave the visible row (tooltip only) — but stay on an untitled lane, as before",
       titled.every((b) => !meterLine(b, 1000, true).includes("aaaa")) && meterLine(referenced, 1000, true)[0] === "aaaa",
@@ -279,7 +299,7 @@ export async function run(): Promise<void> {
       const lane = { cwd: "/w/x", worktree: { branch: "fleet/261001-x-aaaa" }, taskTitle: "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE" };
       const got = [laneLabel({ ...lane, label: "⎇ task x-aaaa" }), laneLabel({ ...lane, label: "Mein Name" }),
         laneLabel({ ...lane, label: "⎇ task x-aaaa", taskTitle: undefined }), laneLabel({ ...lane, label: null })];
-      if (JSON.stringify(got) !== JSON.stringify(["OBERFLAECHE · I1 STUFE 1 + HELF…", "Mein Name", "⎇ task x-aaaa", "OBERFLAECHE · I1 STUFE 1 + HELF…"]))
+      if (JSON.stringify(got) !== JSON.stringify(["Oberflaeche · I1 stufe 1 + helf…", "Mein Name", "⎇ task x-aaaa", "Oberflaeche · I1 stufe 1 + helf…"]))
         titleWireError = `sidebar labels: ${JSON.stringify(got)}`;
     } catch (e) { titleWireError = e instanceof Error ? e.message : String(e); }
     check("(LS.title) the sidebar shows the short title in place of the ⎇ label, keeps a hand label and falls back without a title",

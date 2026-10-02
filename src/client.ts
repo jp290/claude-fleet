@@ -30,7 +30,7 @@ import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
-import { METER_STATIONS, laneDisplayName, laneTail, meterKind, meterLine, mmss, shortTitle, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
+import { METER_STATIONS, laneDisplayName, laneTail, laneTitleOf, meterKind, meterLine, mmss, shortTitle, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsSubject, opsSummary, type OpsPollRow } from "./opsevents";
 import {
   projectTaskWaves,
@@ -2473,16 +2473,21 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
   const tabBtns = SET_TABS.map(([id, word]) => {
     const b = el("button", "settab", word) as HTMLButtonElement;
     b.type = "button";
+    b.id = setId(`tab-${id}`);
     b.dataset.settingsTab = id;
     b.setAttribute("aria-controls", setId(`sec-${id}`));
     b.onclick = () => { settingsTab = id; syncTabs(true); };
     tabs.appendChild(b);
     return b;
   });
-  const section = (id: string): HTMLElement => {
+  // ONE NAME PER SECTION HEAD. The Fleet section opens with its own sub-heads (Parallelität,
+  // Automatik …), so a head "Fleet" right under the pressed target "Fleet" said the word twice
+  // (owner 02.10.); it is named by its target instead. The other sections keep their head.
+  const section = (id: string, head = true): HTMLElement => {
     const sec = el("section", "setsec");
     sec.id = setId(`sec-${id}`);
     sec.dataset.sec = id;
+    if (!head) { sec.setAttribute("aria-labelledby", setId(`tab-${id}`)); return sec; }
     const h = el("h3", "", SET_TABS.find(([x]) => x === id)?.[1] ?? id);
     h.id = setId(`sec-${id}-h`);
     sec.setAttribute("aria-labelledby", h.id);
@@ -2497,7 +2502,7 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
   }
   const schrift = section("schrift");
   schrift.appendChild(sizePanel()); // the ONE panel moves in here (G5.3, kein zweites Zuhause)
-  const fleetsec = section("fleet");
+  const fleetsec = section("fleet", false);
   const fleetState = fleetSection(fleetsec);
   const machine = section("machine");
   machineSection(machine);
@@ -2927,7 +2932,21 @@ function fleetSection(sec: HTMLElement): FleetSection {
   const load = stat("load", "Belegung");
   const start = stat("start", "Startbar jetzt");
   const waits = stat("wait", "Wartet");
-  const ids = (list: string[]): HTMLElement => el("span", "setids", list.join(" "));
+  // A ROW BY ITS KURZTITEL (owner 02.10.: „[Zitat entfernt]“ named row ids): the derivation the lane names
+  // use — src/suitemeter.ts#laneTitleOf over the row's card goal or its own [TITEL], cut by
+  // shortTitle — read on every paint, never stored; the id rides in the tooltip. A row nothing can
+  // be derived from (or whose text this window has not read) keeps its id.
+  const rowName = (id: string): HTMLElement => {
+    const title = laneTitleOf(taskCardFull.get(id)?.ziel, taskText.get(id));
+    const e = el("span", title ? "setname" : "setids", title ? shortTitle(title) : id);
+    e.title = title ? `${id} — ${title}` : id;
+    return e;
+  };
+  const ids = (list: string[]): HTMLElement => {
+    const box = el("span", "setnames");
+    list.forEach((id, i) => box.append(...(i ? [" · "] : []), rowName(id)));
+    return box;
+  };
   function paintPlan() {
     for (const x of [load, start, waits]) { x.v.textContent = ""; x.more.replaceChildren(); }
     if (!pick.value) { for (const x of [load, start, waits]) x.v.textContent = "kein Repo"; return; }
@@ -2958,15 +2977,19 @@ function fleetSection(sec: HTMLElement): FleetSection {
     if (now.length) start.more.append(ids(now), holds.length ? ` — hält gerade: ${holds.join(" · ")}` : " — der nächste Takt darf sie starten");
     const waiting = pr.waves.filter((w): w is typeof w & { next: SetPlanWait } => w.next !== "now");
     waits.v.textContent = String(waiting.reduce((n, w) => n + w.ids.length, 0));
-    const groups = new Map<string, string[]>();
+    // one line per wait kind, one name per row; the order target is named the same way
+    const groups = new Map<string, (string | HTMLElement)[]>();
     for (const w of waiting) {
       const kind = setWaitKind(w.next);
-      const tail = "after" in w.next ? ` nach ${w.next.after}` : "collides" in w.next ? ` · ${w.next.collides.file}` : "";
-      groups.set(kind, [...groups.get(kind) ?? [], ...w.ids.map((id) => id + tail)]);
+      const tail = (): (string | HTMLElement)[] => "after" in w.next ? [" nach ", rowName(w.next.after)]
+        : "collides" in w.next ? [` · ${w.next.collides.file}`] : [];
+      const list = groups.get(kind) ?? [];
+      for (const id of w.ids) list.push(...(list.length ? [" · "] : []), rowName(id), ...tail());
+      groups.set(kind, list);
     }
     for (const [kind, list] of groups) {
       const line = el("div", "setwait");
-      line.append(`${kind}: `, ids(list));
+      line.append(`${kind}: `, ...list);
       waits.more.appendChild(line);
     }
     const why = (plan.waits ?? []).filter((w) => w.repo === pr.repo);
@@ -2975,7 +2998,7 @@ function fleetSection(sec: HTMLElement): FleetSection {
       det.appendChild(el("summary", "", "Gründe je Zeile"));
       for (const w of why) {
         const line = el("div", "setwait");
-        line.append(ids([w.id]), ` ${w.grund} — wartet auf ${w.adressat}`);
+        line.append(rowName(w.id), ` ${w.grund} — wartet auf ${w.adressat}`);
         det.appendChild(line);
       }
       waits.more.appendChild(det);
@@ -3133,6 +3156,12 @@ function fleetSection(sec: HTMLElement): FleetSection {
     const j = r?.ok ? (await r.json().catch(() => null)) as SetPlan | null : null;
     if (j && Array.isArray(j.repos)) { plan = j; planRead = "ok"; planAt = Date.now(); } else planRead = "fail";
   }
+  // the rows' texts and cards the names derive from: the queue's own cache (GET /api/tasks), read
+  // when it is stale and waited for when a read is already under way
+  async function readTexts() {
+    await loadTaskTexts();
+    if (taskTextBusy) await new Promise<void>((resolve) => taskTextWaiters.push(resolve));
+  }
   const paintAll = () => { for (const r of rows) r.paint(); for (const f of repoPaints) f(); };
   apply.onclick = async () => {
     const written = rows.filter((x) => x.staged());
@@ -3152,14 +3181,14 @@ function fleetSection(sec: HTMLElement): FleetSection {
     }
     await refresh();
     await readCaps();
-    await readPlan();
+    await Promise.all([readPlan(), readTexts()]);
     paintAll();
     // the button the reader pressed is disabled now: the focus goes to the first refused control,
     // else to the first control that was written — never to the page behind the window
     (refused ?? written[0])?.focus.focus();
   };
   paintAll();
-  void Promise.all([readCaps(), readPlan()]).then(paintAll);
+  void Promise.all([readCaps(), readPlan(), readTexts()]).then(paintAll);
   return { staged: () => rows.filter((r) => r.staged()).length, firstStaged: () => rows.find((r) => r.staged())?.focus ?? null };
 }
 

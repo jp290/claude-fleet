@@ -35,6 +35,7 @@ import {
   laneBandNames, loadHarnesses, modelNotice, post, revealStartedSlot, setDrawer, showSlot, SKEW_NOTE, stacksOf,
   startSession, startWorktree, type DirInfoResp, type HarnessInfo, type SlotInfo, type SpawnBody, type StartResult,
 } from "./client";
+import { MODEL_DEFAULTS } from "../model-register";
 import { matchTree } from "./filetree";
 import { Flakes } from "./flakes";
 import { icon } from "./icons";
@@ -60,6 +61,15 @@ const ROLES: { id: Role; name: string; glyph: string; say: string; why: string }
   { id: "main", name: "MAIN", glyph: "◆", say: "Führt ein aktives Program: schneidet Karten, treibt Lanes, landet.",
     why: "Der Server baut ihren Gründungsbrief — Packs gehen nicht mit." },
 ];
+
+// A ROLE'S OWN PROFILE (owner 02.10.: Effort stood on „[Zitat entfernt]“ for a MAIN). The MAIN card
+// fills Agent, Modell and Effort with the MAIN default of the model register
+// (model-register.ts#MODEL_DEFAULTS.main) — read from there, never copied into this window. Only
+// what the register's agent supports is filled, and an agent this machine does not run fills
+// nothing. Leaving the role takes back exactly what it filled, unless the owner changed it since.
+type RoleProfile = { readonly harness: string; readonly id: string; readonly effort: string | null };
+const ROLE_PROFILE: Partial<Record<Role, RoleProfile>> = { main: MODEL_DEFAULTS.main };
+type Profile = { harness: string | null; model: string; effort: string };
 
 // the label the server keys a role off: isOrchestratorLabel (word boundary). A MAIN gets hers
 // from bootstrap-main ("Program-MAIN: <title>"), never from this window.
@@ -147,6 +157,7 @@ interface State {
   progs: ProgRow[] | null; progOther: number; progErr: string | null; progSeq: number;
   program: string | null;               // the Program the MAIN is founded for
   harness: string | null; model: string; effort: string; container: string; containerContext: string;
+  profileFill: (Profile & { before: Profile }) | null; // what the role's own profile filled, and what stood before
   dir: string; list: DirList | null; listErr: string | null; listSeq: number;
   find: string; hits: FindHit[] | null; findPartial: boolean; findSeq: number;
   findTimer: ReturnType<typeof setTimeout> | null;
@@ -311,7 +322,7 @@ function open(entry: Entry) {
     info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0,
     packs: new Set(), touched: new Map(), presetDue: true, fresh: new Set(), gone: [], delta: null, compare: false, listOpen: false, presetState: "idle", presetNote: null,
     orphan: null, progs: null, progOther: 0, progErr: null, progSeq: 0, program: null, harness: null, model: "", effort: "", container: "", containerContext: "",
-    dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
+    profileFill: null, dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
     findTimer: null, paintFolders: null, error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
     fPlace, fRole, fProfile, fContext,
   };
@@ -859,8 +870,34 @@ function setRole(r: Role, why?: string) {
   if (r === "lane" && s.mode === "repo") { s.mode = "new"; s.note = "Ort → Neuer Worktree: eine Lane arbeitet im eigenen Worktree."; }
   if (r !== "lane" && s.mode !== "repo") { s.mode = "repo"; s.note = "Ort → Direkt im Repo: nur eine Lane bekommt einen Worktree."; }
   applyPreset(`${ROLES.find((x) => x.id === r)!.name} statt ${ROLES.find((x) => x.id === prev)!.name}`);
+  fillProfile();
   renderAll();
   if (r === "main") void loadProgs();
+}
+
+// the role's own profile (ROLE_PROFILE) over Agent, Modell and Effort; see there
+function fillProfile() {
+  const s = S!;
+  const f = s.profileFill;
+  if (f) {
+    if (s.harness === f.harness && s.model === f.model && s.effort === f.effort) {
+      s.harness = f.before.harness; s.model = f.before.model; s.effort = f.before.effort;
+    }
+    s.profileFill = null;
+  }
+  const want = ROLE_PROFILE[s.role];
+  const h = want ? agentHarnesses().find((a) => a.id === want.harness) : undefined;
+  if (!want || !h) return;
+  const before = { harness: s.harness, model: s.model, effort: s.effort };
+  s.harness = h.default ? null : h.id;
+  s.model = h.supports.model ? want.id : "";
+  s.effort = h.supports.effort && want.effort && h.effortLevels.includes(want.effort) ? want.effort : "";
+  s.profileFill = { harness: s.harness, model: s.model, effort: s.effort, before };
+}
+// "MAIN-Standard" where a profile field still holds what the role filled
+function filled(which: "model" | "effort"): boolean {
+  const s = S;
+  return !!s?.profileFill?.[which] && s[which] === s.profileFill[which];
 }
 
 function setMode(m: Mode) {
@@ -915,10 +952,10 @@ function renderProfile() {
       agentHarnesses().length < 2 ? "Auf diesem Rechner ist nur dieser Agent eingerichtet." : "Welcher Agent in dieser Session läuft."));
     if (h.supports.model)
       row.append(profField("model", "Modell", s.model ? modelLabel(s.model) : modelShown(h), !s.model, false,
-        s.model ? `Modell ${s.model}` : "Ohne Angabe startet der Adapter sein eigenes."));
+        s.model ? `Modell ${s.model}${filled("model") ? " — der MAIN-Standard aus dem Modellregister" : ""}` : "Ohne Angabe startet der Adapter sein eigenes."));
     if (h.supports.effort && h.effortLevels.length)
       row.append(profField("effort", "Effort", s.effort || "Adapter wählt", !s.effort, false,
-        "Wie gründlich der Agent denkt — ohne Angabe wählt der Adapter."));
+        filled("effort") ? "Der MAIN-Standard aus dem Modellregister — ein Klick ändert ihn." : "Wie gründlich der Agent denkt — ohne Angabe wählt der Adapter."));
     if (h.supports.container && s.role === "main")
       row.append(profField("container", "Container", "ohne", true, true,
         "Eine MAIN läuft ohne Container — bootstrap-main nimmt keinen."));
@@ -965,6 +1002,9 @@ function popBody(which: Pop): HTMLElement {
       const on = (s.harness ?? agentHarnesses().find((x) => x.default)?.id) === a.id;
       const facts = [a.allowsLanes === false ? "keine Lanes" : "", a.supports.container ? "im Container" : ""].filter(Boolean).join(" · ");
       pop.append(popRow(a.id, facts, on, () => {
+        // a model the role filled belongs to the role's agent, and never rides to another one
+        const pf = s.profileFill;
+        if (pf && filled("model") && (a.default ? null : a.id) !== pf.harness) s.model = "";
         s.harness = a.default ? null : a.id;
         // a value of the harness being left behind must not ride along
         if (!a.supports.effort || !a.effortLevels.includes(s.effort)) s.effort = "";
@@ -1629,13 +1669,26 @@ function renderProof() {
     : !row ? "Keine neue Session gestartet — kein Startbeleg."
     : `Slot ${p.result.slot} · geöffnet ${new Date(row.openedAt!).toLocaleTimeString("de-DE")}`;
   detail.append(el("div", `fdproofstatus${p.stale || !row ? " warn" : ""}`, status));
+  // the head names the window's content, never a slot state: "Slot 2 · frei" stood beside
+  // "geöffnet 01:00:02" (owner 02.10.) — the status line above is where the slot's state is said
+  s.shell.setSubtitle(`Startbeleg · Slot ${p.result.slot}`);
   const table = el("div", "fdproof");
   table.setAttribute("role", "table");
   const header = el("div", "fdproofrow fdproofheadrow");
   header.append(el("span", ""), el("span", "fdproofhead", "angefragt"), el("span", "fdproofhead", "am Slot zurückgelesen"));
   table.append(header);
+  // WITHOUT A NEW SESSION nothing was read back, and the status line says so once: the right column
+  // is a muted "—", never six orange "nicht gemeldet · Beleg fehlt" (owner 02.10.). Orange stays
+  // for a real gap — a session that started and did not report a field, or a value that differs.
   const field = (name: string, requested: string | undefined, observed: string | undefined, mono = false, compare = true, comparedValue = observed) => {
     const r = el("div", "fdproofrow"); r.dataset.field = name;
+    if (!row && observed === undefined) {
+      r.dataset.state = "unread";
+      const none = el("div", "fdactual fdnone", "—");
+      r.append(el("span", "fdproofkey", name), el("div", `fdrequested${mono ? " mono" : ""}`, requested ?? "ohne Angabe"), none);
+      table.append(r);
+      return none;
+    }
     const missing = observed === undefined;
     const differs = compare && requested !== undefined && !missing && requested !== comparedValue;
     r.dataset.state = missing ? "missing" : differs ? "difference" : "same";
@@ -1648,10 +1701,13 @@ function renderProof() {
     table.append(r);
     return actual;
   };
-  const requestedRole = p.role === "lane" ? "Lane" : p.role === "orch" ? "Orchestrator" : p.role === "main" ? "MAIN" : "Session";
+  // the role in the founding window's own words (ROLES): Leer, Lane, Orchestratorin, MAIN — read
+  // back from the slot by the same marks the server keys them off
+  const roleName = (r: Role): string => ROLES.find((x) => x.id === r)!.name;
+  const requestedRole = roleName(p.role);
   // a MAIN is read back at the Program's binding, not at a label: the door's answer names the slot it bound
-  const observedRole = !row ? undefined : p.role === "main" && p.bound === p.result.slot ? "MAIN"
-    : row.worktree ? "Lane" : /\borchestrator\b/i.test(row.label ?? "") ? "Orchestrator" : "Session";
+  const observedRole = !row ? undefined : roleName(p.role === "main" && p.bound === p.result.slot ? "main"
+    : row.worktree ? "lane" : /\borchestrator\b/i.test(row.label ?? "") ? "orch" : "leer");
   field("Rolle", requestedRole, observedRole);
   const place = field("Ort", p.place, row?.cwd ?? undefined, true, true, p.mode === "new" ? row?.worktree?.repo ?? row?.cwd ?? undefined : row?.cwd ?? undefined);
   if (row?.worktree) place.append(el("div", "mono", `Branch: ${row.worktree.branch ?? "nicht gemeldet"}`));

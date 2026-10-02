@@ -1,4 +1,4 @@
-import { $, el, ta, send, panes, focused, fleet, isMobile, parkedSendLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, type HarnessInfo } from "./client";
+import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, stacksOf, parkedSendLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, type HarnessInfo } from "./client";
 import { icon, harnessMark, MASCOT_MOTIONS, type IconName } from "./icons";
 import { sessionActive } from "./board";
 import { modelLabel } from "./modelname";
@@ -84,6 +84,40 @@ export function mountComposer(): void {
   setComposerSize(pane?.isChat ? "tall" : "bar");
   renderComposerOpts(false);
   renderParkHint();
+  renderTarget();
+}
+
+// THE SEND TARGET (Grammatik G2.4, card 929fdbe7): where the composer writes, on screen while the
+// field holds text — the placeholder that used to be the only place naming it vanishes with the
+// first character. The address is the one the bar writes (the slot number, a lane's band name),
+// the name the label or the folder. Both are read from the focused pane and its session's openedAt
+// — the two values the draft is bound to (src/drafts.ts) — synchronously, on every focus, draft and
+// poll change (mountComposer, src/client.ts#updateTitle), so no late await can paint an old target.
+// Nothing is guessed: without a session object the slot reads "unbekannt".
+let targetKey = "";
+export function renderTarget(): void {
+  const t = $("comptarget");
+  const pane = panes[focused];
+  const slot = pane?.slot ?? 0;
+  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
+  const lane = s?.cwd && s.worktree ? laneBandNames(stacksOf()).get(slot) : undefined;
+  const addr = !slot ? "—" : lane ?? String(slot);
+  const where = lane ? `Lane ${lane} (Slot ${slot})` : `Slot ${slot}`;
+  const [name, title] = !slot ? ["keine Session", "Diese Pane zeigt keine Session — eine Nachricht hat kein Ziel"]
+    : !s ? ["unbekannt", `${where}: die Belegung ist noch nicht gelesen`]
+    : !s.cwd ? ["leer", `${where} ist leer — keine laufende Session, die eine Nachricht annimmt`]
+    : pane?.pastN != null ? [`${s.label ?? baseName(s.cwd)} · liest nur`, `${where} zeigt Session ${pane.pastN} — sie liest nur, gesendet wird an die laufende`]
+    : [s.label ?? baseName(s.cwd), `Senden geht an ${where} · ${s.label ?? baseName(s.cwd)}`];
+  const openedAt = s?.cwd ? String(s.openedAt ?? "") : "";
+  const key = [slot, openedAt, addr, name, title].join("|");
+  if (key === targetKey) return;
+  targetKey = key;
+  t.dataset.slot = String(slot);
+  t.dataset.openedAt = openedAt;
+  t.title = title;
+  t.setAttribute("aria-label", `Sendeziel: ${addr} ${name}`);
+  t.classList.toggle("none", !s?.cwd || pane?.pastN != null);
+  t.replaceChildren(el("span", "ctaddr", addr), el("span", "ctname", name));
 }
 
 // the focused pane's parked sends (server.ts, THE PARKED SEND), one quiet line above the composer

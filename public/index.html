@@ -748,6 +748,19 @@
   #comp.bar #input { order: 0; }
   #comp.bar #send { order: 2; }
   #comp.bar #compspace { display: none; }
+  /* THE SEND TARGET (Grammatik G2.4, src/composer.ts#renderTarget): the session the composer writes
+     to, on screen while the field holds text. The address in the bar's own tile (.slot .n), the
+     name in Sans and shortened, never the address. A target that takes nothing (empty slot, a past
+     session, no session) reads faint. In the low bar it sits between the field and the send. */
+  #comptarget { flex: 0 1 auto; display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 34%;
+    font-family: var(--chat-sans); font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; }
+  #comptarget:empty { display: none; }
+  #comptarget .ctaddr { flex: none; padding: 1px 6px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+    background: var(--chat-surface); color: var(--chat-ink); font-family: var(--chat-mono); }
+  #comptarget .ctname { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #comptarget.none .ctaddr { color: var(--chat-faint); }
+  #comptarget.none .ctname { color: var(--chat-faint); }
+  #comp.bar #comptarget { order: 1; }
   .ico { display: block; flex: none; width: 16px; height: 16px; }
   .tricon { flex: none; display: grid; place-items: center; }
   #dropbtn { flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0;
@@ -3189,6 +3202,8 @@
     body.keyboard-open #comp #input { flex: 1 1 90px; order: 0; min-width: 0; min-height: 40px;
       max-height: 82px; padding: 6px 4px; }
     body.keyboard-open #comp #send { order: 3; width: 40px; height: 40px; }
+    /* with the keyboard up the target stays, right after the field (G2.4: the address never goes) */
+    body.keyboard-open #comp #comptarget { order: 1; max-width: 30%; }
     body.keyboard-open #mobmore { display: grid; place-items: center; order: 2; flex: none;
       width: 40px; height: 40px; padding: 0; border-radius: var(--r1);
       border: 1px solid var(--chat-edge); background: var(--chat-raised); color: var(--chat-ink);
@@ -3454,6 +3469,7 @@
             autocomplete="off"></textarea>
           <div id="comprow">
             <button id="dropbtn" title="attach files — drag&amp;drop and paste do the same thing"><span class="tricon"></span></button>
+            <span id="comptarget"></span>
             <div id="compspace"></div>
             <div id="compopts"></div>
             <button id="mobmore" type="button" title="Weitere Eingabeoptionen öffnen" aria-expanded="false"></button>

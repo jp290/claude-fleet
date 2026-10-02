@@ -2080,6 +2080,20 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // THE SEND TARGET AND THE TWO PANES' INPUTS (card 929fdbe7, Grammatik G2.4), same rig: two
+  // sessions in two panes (one pane and the drawer at 390), native clicks and typing, a fake socket
+  // per pane, /send intercepted. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runComposerTargetDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`send target DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("send target DOM — PROBE: Chromium runs the real client bundle with two panes behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the
   // sections and one fold. Nothing else in the suite would notice a re-sort
@@ -5545,6 +5559,351 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       facts.inputs = fx.inputs; facts.requests = fx.requests; facts.allPosts = fx.posts;
       facts.nativeDialogs = nativeDialogs.splice(0);
       results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE SEND TARGET AND THE TWO PANES' INPUTS, measured in a real browser on the real client bundle
+// (card 929fdbe7, Grammatik G2.4): two sessions in two panes, native clicks, native typing, a fake
+// socket per pane and an intercepted /send — nothing reaches a server. Every claim reads the DOM,
+// the socket bytes or the request the page sent, never the source. At 390 px the phone shows one
+// pane, so the same claims run over a slot switch from the drawer. Exported so a lane can drive it
+// with an artefact folder (screenshots + screencast frames) and against a mutated copy of the tree.
+interface ComposerTargetDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runComposerTargetDom(sourceRoot: string, artifacts?: string): Promise<ComposerTargetDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-target-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  type Row = { id: number; cwd: string | null; label?: string; openedAt?: number; repo?: string };
+  const fx = { slots: [] as Row[], sends: [] as { slot: number; text: string }[], sessions: 0, inputs: [] as string[] };
+  const fresh = (): Row[] => [
+    { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000 },
+    { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000 },
+    ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
+  ];
+  // one fake socket per pane: opens on the next tick, seeds one line, keeps every byte the page sends
+  const FAKE_WS = `(() => { window.__ws = [];
+    class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.sent = ''; this.binaryType = 'blob'; window.__ws.push(this);
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          const slot = (/\\/ws\\/(\\d+)/.exec(this.url) || [])[1];
+          this.onmessage?.({ data: new TextEncoder().encode('fixture slot ' + slot + '\\r\\n$ ').buffer }); }, 0); }
+      send(b) { this.sent += typeof b === 'string' ? b : new TextDecoder().decode(b); }
+      close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS; })()`;
+  const HELP = `(() => {
+    const T = () => document.querySelector('#comptarget');
+    const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && !e.closest('[hidden]');
+    const pane = (i) => document.querySelectorAll('#panes .pane')[i];
+    const focusedPane = () => [...document.querySelectorAll('#panes .pane')].findIndex((p) => p.classList.contains('focused'));
+    const where = () => { const a = document.activeElement; if (!a || a === document.body) return 'body'; if (a.id === 'input') return 'composer';
+      const p = a.closest('#panes .pane'); if (p && a.classList.contains('xterm-helper-textarea')) return 'terminal' + [...document.querySelectorAll('#panes .pane')].indexOf(p);
+      return a.tagName.toLowerCase() + '.' + String(a.className).split(' ').join('.'); };
+    const target = () => { const t = T(); return t ? { shown: shown(t), slot: t.dataset.slot ?? null, openedAt: t.dataset.openedAt ?? null, text: t.textContent.trim(), title: t.title } : null; };
+    const sent = (slot) => window.__ws.filter((w) => w.url.includes('/ws/' + slot + '?')).map((w) => w.sent).join('');
+    return { T, shown, pane, focusedPane, where, target, sent };
+  })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("target DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, recording: string | null = null, frame = 0;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.screencastFrame" && msg.params) {
+        if (artifacts && recording) writeFileSync(resolve(artifacts, recording, `${String(frame++).padStart(5, "0")}.jpg`), Buffer.from(String(msg.params.data), "base64"));
+        void send("Page.screencastFrameAck", { sessionId: msg.params.sessionId }).catch(() => undefined);
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") {
+        let body: { slot?: number; text?: string } | null = null;
+        try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
+        // the send is answered like the server answers a delivered prompt; nothing is typed anywhere
+        if (p === "/send") { fx.sends.push({ slot: Number(body?.slot), text: String(body?.text ?? "") }); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
+        return void json(requestId, { ok: true });
+      }
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: Date.now(), chips: [], slots: fx.slots, tasks: [] }); }
+      if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    let targetId = "";
+    const freshTarget = async () => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      const target = await send("Target.createTarget", { url: "about:blank" });
+      targetId = String(target.targetId);
+      sessionId = undefined;
+      const attached = await send("Target.attachToTarget", { targetId, flatten: true });
+      sessionId = String(attached.sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `${FAKE_WS}; window.__fx = ${HELP}` });
+    };
+    const missing: string[] = [];
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (url: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const KEY: Record<string, [number, string, string?]> = { Enter: [13, "Enter", "\r"], Escape: [27, "Escape"] };
+    const key = async (name: string) => {
+      const [vk, code, text] = KEY[name];
+      fx.inputs.push(`key ${name}`);
+      await send("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", key: name, code, windowsVirtualKeyCode: vk, ...(text ? { text, unmodifiedText: text } : {}) });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code, windowsVirtualKeyCode: vk });
+      await settle();
+    };
+    const typeText = async (text: string) => { fx.inputs.push(`type ${JSON.stringify(text)}`); await send("Input.insertText", { text }); await settle(); };
+    const point = (expression: string, fx_ = 0.5, fy = 0.5) => evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
+      const r = e.getBoundingClientRect(); return { x: r.x + r.width * ${fx_}, y: r.y + r.height * ${fy} }; })()`);
+    const mouse = async (type: string, at: { x: number; y: number }, extra: Record<string, unknown> = {}) =>
+      send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1, ...extra });
+    const click = async (expression: string, fx_ = 0.5, fy = 0.5): Promise<boolean> => {
+      const at = await point(expression, fx_, fy);
+      if (!at) { missing.push(expression.slice(0, 120)); return false; }
+      fx.inputs.push(`click ${Math.round(at.x)},${Math.round(at.y)} ${expression.slice(0, 60)}`);
+      await mouse("mouseMoved", at); await mouse("mousePressed", at); await mouse("mouseReleased", at);
+      await settle();
+      return true;
+    };
+    const wait = async (condition: string, ms = 6000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const polls = async (n: number) => { const at = fx.sessions; for (let i = 0; i < 200 && fx.sessions < at + n; i++) await settle(100); return fx.sessions >= at + n; };
+    let shotIndex = 0;
+    const shot = async (width: number, stage: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${width}-${String(++shotIndex).padStart(2, "0")}-${stage}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    type Target = { shown: boolean; slot: string | null; openedAt: string | null; text: string; title: string } | null;
+    const tgt = () => evaluate<Target>("window.__fx.target()");
+    const names = (t: Target, slot: number, openedAt: number, name: string) =>
+      !!t && t.shown && t.slot === String(slot) && t.openedAt === String(openedAt) && t.text.includes(String(slot)) && t.text.includes(name);
+    const results: ComposerTargetDomResult[] = [];
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      shotIndex = 0;
+      const phone = width < 700;
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      fx.slots = fresh(); fx.sends = []; fx.inputs = [];
+      await freshTarget();
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: ${phone ? 1 : 2}, panes: ${phone ? "[1]" : "[1, 2]"}, focused: 0 })); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelectorAll('#panes .pane .xterm').length >= ${phone ? 1 : 2} && window.__ws.filter((w) => w.readyState === 1).length >= ${phone ? 1 : 2}`, 12000);
+      if (!booted) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(500);
+      if (artifacts) { recording = `video-${width}`; frame = 0; mkdirSync(resolve(artifacts, recording), { recursive: true }); await send("Page.startScreencast", { format: "jpeg", quality: 85, everyNthFrame: 1 }); }
+      const sendsAt = () => fx.sends.length;
+
+      // --- 1. the target is on screen before and while text is in the field
+      facts.t0 = await tgt();
+      claims["the composer names its target: slot 1 · Alpha, bound to openedAt 1000"] = names(facts.t0 as Target, 1, 1000, "Alpha");
+      await click("document.querySelector('#input')");
+      await typeText("draft for alpha");
+      facts.t1 = await tgt();
+      claims["the target stays readable with text in the field"] = names(facts.t1 as Target, 1, 1000, "Alpha")
+        && await evaluate<string>("document.querySelector('#input').value") === "draft for alpha";
+      await shot(width, "target-with-text");
+
+      if (!phone) {
+        // --- 2. a click on the other pane's empty terminal: the keys go there, the target follows
+        await click("window.__fx.pane(1).querySelector('.xterm-screen')", 0.5, 0.8);
+        facts.afterTermClick = { where: await evaluate<string>("window.__fx.where()"), focused: await evaluate<number>("window.__fx.focusedPane()"),
+          draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a click on the other pane's terminal gives that terminal the keys"] = (facts.afterTermClick as { where: string }).where === "terminal1"
+          && (facts.afterTermClick as { focused: number }).focused === 1;
+        claims["the target follows the focus to slot 2 · Beta with Beta's own (empty) draft"] = names((facts.afterTermClick as { target: Target }).target, 2, 2000, "Beta")
+          && (facts.afterTermClick as { draft: string }).draft === "";
+        const before1 = await evaluate<string>("window.__fx.sent(1)");
+        await typeText("xyz");
+        facts.native = { slot1: await evaluate<string>("window.__fx.sent(1)"), slot2: await evaluate<string>("window.__fx.sent(2)"), draft: await evaluate<string>("document.querySelector('#input').value") };
+        claims["native typing in that terminal reaches only slot 2's socket, never the composer"] = (facts.native as { slot2: string }).slot2.includes("xyz")
+          && (facts.native as { slot1: string }).slot1 === before1 && (facts.native as { draft: string }).draft === "";
+        await shot(width, "terminal-2-focused");
+
+        // --- 3. Enter sends to the target on screen, and only there
+        await click("document.querySelector('#input')");
+        await typeText("draft for beta");
+        const shownAtEnter = await tgt();
+        const s0 = sendsAt();
+        await key("Enter");
+        await wait("document.querySelector('#input').value === ''", 3000);
+        facts.send1 = { shown: shownAtEnter, sent: fx.sends.slice(s0) };
+        claims["Enter sends Beta's text to slot 2 — the slot the target showed"] = fx.sends.length === s0 + 1
+          && fx.sends[s0]?.slot === 2 && fx.sends[s0]?.text === "draft for beta" && shownAtEnter?.slot === "2";
+        await typeText("beta second");
+        // --- 4. back to pane 1: its draft comes back, the target and the send go with it
+        await click("window.__fx.pane(0).querySelector('.xterm-screen')", 0.5, 0.8);
+        facts.back = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["each pane keeps its own draft across the swap"] = (facts.back as { draft: string }).draft === "draft for alpha"
+          && names((facts.back as { target: Target }).target, 1, 1000, "Alpha");
+        await click("document.querySelector('#input')");
+        const s1 = sendsAt();
+        await key("Enter");
+        await wait("document.querySelector('#input').value === ''", 3000);
+        claims["Enter after the swap sends Alpha's text to slot 1"] = fx.sends.length === s1 + 1 && fx.sends[s1]?.slot === 1 && fx.sends[s1]?.text === "draft for alpha";
+        await shot(width, "sent-to-1");
+
+        // --- 5. negatives on pane 1 (focused): wheel over pane 2, a drag selection, a corner switch, a dialog
+        const sN = sendsAt();
+        const wheelAt = await point("window.__fx.pane(1).querySelector('.xterm-screen')");
+        if (wheelAt) await send("Input.dispatchMouseEvent", { type: "mouseWheel", ...wheelAt, deltaX: 0, deltaY: -300 });
+        await settle(150);
+        facts.wheel = { focused: await evaluate<number>("window.__fx.focusedPane()"), where: await evaluate<string>("window.__fx.where()"), target: await tgt() };
+        claims["a wheel over the other pane moves neither the focus nor the target"] = (facts.wheel as { focused: number }).focused === 0
+          && (facts.wheel as { where: string }).where === "composer" && (facts.wheel as { target: Target }).target?.slot === "1";
+        await typeText("alpha kept");
+        const a = await point("window.__fx.pane(0).querySelector('.xterm-screen')", 0.05, 0.02), b = await point("window.__fx.pane(0).querySelector('.xterm-screen')", 0.4, 0.02);
+        if (a && b) { await mouse("mouseMoved", a); await mouse("mousePressed", a); await mouse("mouseMoved", b, { buttons: 1 }); await mouse("mouseReleased", b); }
+        await settle(100);
+        facts.drag = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a drag selection in the terminal keeps the draft and the target and sends nothing"] = (facts.drag as { draft: string }).draft === "alpha kept"
+          && (facts.drag as { target: Target }).target?.slot === "1" && fx.sends.length === sN;
+        await click("window.__fx.pane(0).querySelector('.panehover')");
+        facts.toggle = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a corner switch takes the keys into no input and leaves draft and target alone"] = !/^(composer|terminal)/.test((facts.toggle as { where: string }).where)
+          && (facts.toggle as { draft: string }).draft === "alpha kept" && (facts.toggle as { target: Target }).target?.slot === "1";
+        await click("window.__fx.pane(0).querySelector('.panehover')");
+        await click("window.__fx.pane(0).querySelector('.panegear')");
+        const opened = await wait("document.querySelector('#shell-settings')", 3000);
+        await key("Escape");
+        await wait("!document.querySelector('#shell-settings') || !window.__fx.shown(document.querySelector('#shell-settings'))", 3000);
+        facts.dialog = { opened, where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["the settings dialog's Esc returns the focus to its gear, draft and target unchanged"] = opened
+          && String((facts.dialog as { where: string }).where).includes("panegear") && (facts.dialog as { draft: string }).draft === "alpha kept"
+          && (facts.dialog as { target: Target }).target?.slot === "1" && fx.sends.length === sN;
+
+        // --- 6. slot 2's session is replaced (new openedAt): its old draft does not come back
+        fx.slots = fx.slots.map((r) => (r.id === 2 ? { ...r, openedAt: 3000, label: "Beta neu" } : r));
+        const polled = await polls(1);
+        await click("window.__fx.pane(1).querySelector('.xterm-screen')", 0.5, 0.8);
+        facts.recycled = { polled, draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a recycled slot shows the new session's openedAt and gets no old draft"] = polled && (facts.recycled as { draft: string }).draft === ""
+          && names((facts.recycled as { target: Target }).target, 2, 3000, "Beta neu");
+        // …and a new session in the slot that HAS the focus repaints the target on the poll alone
+        fx.slots = fx.slots.map((r) => (r.id === 2 ? { ...r, openedAt: 4000, label: "Beta drei" } : r));
+        const polledInPlace = await polls(1);
+        await settle(100);
+        facts.inPlace = { polled: polledInPlace, target: await tgt(), focused: await evaluate<number>("window.__fx.focusedPane()") };
+        claims["a new session in the focused slot repaints the target on the next poll, no click (openedAt 4000)"] = polledInPlace
+          && (facts.inPlace as { focused: number }).focused === 1 && names((facts.inPlace as { target: Target }).target, 2, 4000, "Beta drei");
+        // …and an ended one says so, with nothing carried over
+        await click("document.querySelector('#input')");
+        await typeText("beta third");
+        await click("window.__fx.pane(0).querySelector('.xterm-screen')", 0.5, 0.8);
+        fx.slots = fx.slots.map((r) => (r.id === 2 ? { id: 2, cwd: null } : r));
+        await polls(1);
+        await click("window.__fx.pane(1).querySelector('.xterm-screen')", 0.5, 0.8);
+        facts.ended = { draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        const ended = facts.ended as { draft: string; target: Target };
+        claims["an ended session: the target says leer and no draft carries over"] = ended.draft === ""
+          && !!ended.target && ended.target.shown && ended.target.slot === "2" && /leer/.test(ended.target.text);
+        await shot(width, "ended");
+
+        // --- 7. the conversation view: the switch keeps its own focus (a switch takes the keys into
+        // no input), the composer addresses the same slot, and a click in the view's free lower
+        // third is the way into the composer (src/client.ts#chatClickToComposer)
+        await click("window.__fx.pane(0).querySelector('.viewtoggle')");
+        await settle(200);
+        facts.chat = { where: await evaluate<string>("window.__fx.where()"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')"), target: await tgt() };
+        await click("window.__fx.pane(0).querySelector('.panechat')", 0.5, 0.9);
+        (facts.chat as Record<string, unknown>).afterFreeClick = await evaluate<string>("window.__fx.where()");
+        const chat = facts.chat as { where: string; tall: boolean; target: Target; afterFreeClick: string };
+        claims["switching pane 1 to its conversation: the switch keeps the keys, the tall composer still addresses slot 1"] =
+          chat.where === "button.viewtoggle" && chat.tall && chat.target?.slot === "1";
+        claims["a click in the conversation's free lower third puts the keys in the composer"] = chat.afterFreeClick === "composer";
+        await shot(width, "chat-view");
+        await click("window.__fx.pane(0).querySelector('.viewtoggle')");
+      } else {
+        // --- the phone: one pane, the slot switch comes from the drawer; the keyboard never opens by itself
+        await click("document.querySelector('#menu')");
+        // the drawer slides in: the row is clicked where it finally rests, not mid-flight
+        await wait("document.body.classList.contains('drawer') && document.querySelector('#slots .slot[data-slot=\"2\"]')?.getBoundingClientRect().left >= 0", 3000);
+        await settle(400);
+        await click("document.querySelector('#slots .slot[data-slot=\"2\"] .lbl') ?? document.querySelector('#slots .slot[data-slot=\"2\"]')");
+        await wait("document.querySelector('#comptarget')?.dataset.slot === '2'", 3000);
+        facts.switched = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a slot switch from the drawer moves the target to slot 2 · Beta with Beta's own draft"] = names((facts.switched as { target: Target }).target, 2, 2000, "Beta")
+          && (facts.switched as { draft: string }).draft === "";
+        claims["the switch opens no keyboard (the composer does not take the focus)"] = (facts.switched as { where: string }).where !== "composer";
+        // …and the drawer slides out before the next tap: a tap during the slide lands on a free row
+        // under the finger and opens the founding window (measured on this probe, 2026-10-02)
+        const drawerGone = await wait("!document.body.classList.contains('drawer') && document.querySelector('#side').getBoundingClientRect().right <= 0", 3000);
+        await settle(300);
+        claims["the slot switch closes the drawer"] = drawerGone;
+        await click("document.querySelector('#input')");
+        await typeText("phone beta");
+        const shownAtSend = await tgt();
+        const s0 = sendsAt();
+        await click("document.querySelector('#send')");
+        await wait("document.querySelector('#input').value === ''", 3000);
+        facts.send = { shown: shownAtSend, sent: fx.sends.slice(s0) };
+        claims["➤ sends to slot 2 — the slot the target showed"] = fx.sends.length === s0 + 1 && fx.sends[s0]?.slot === 2 && fx.sends[s0]?.text === "phone beta"
+          && names(shownAtSend, 2, 2000, "Beta");
+        claims["no window opened over the composer on the way"] = await evaluate<boolean>("!document.querySelector('#shell-found')");
+        await shot(width, "sent-to-2");
+        await evaluate("document.activeElement?.blur()");
+      }
+
+      // --- passive polls move no focus (on the phone: the keyboard stays closed)
+      const whereBefore = await evaluate<string>("window.__fx.where()");
+      await polls(2);
+      facts.polls = { before: whereBefore, after: await evaluate<string>("window.__fx.where()") };
+      claims["two passive polls leave the focus where it was"] = (facts.polls as { after: string }).after === whereBefore && whereBefore !== "composer";
+      facts.inputs = [...fx.inputs]; facts.sends = [...fx.sends]; facts.missing = [...missing];
+      if (artifacts) { await send("Page.stopScreencast"); recording = null; }
+      results.push({ width, height, claims, facts });
+      missing.length = 0;
     }
     return results;
   } finally {

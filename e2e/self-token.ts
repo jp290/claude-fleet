@@ -1689,6 +1689,20 @@ async function memoryDoor(): Promise<void> {
         && mainPosition.receiver?.role === "orchestrator" && mainPosition.receiver.slot === 5
         && mainPosition.receiver.openedAt === readState().slots["5"]?.openedAt,
       JSON.stringify(mainPosition));
+    const renamedLane = await opost(`/api/slots/${laneSlot[0]}/rename`, {
+      label: "⎇ task orchestratorinnen-karte-position",
+    });
+    const labelledLane = readState().slots[String(laneSlot[0])];
+    check("position fixture: an Orchestrator-labelled lane occupies a distinct live slot",
+      renamedLane.ok && !!labelledLane?.cwd && !!labelledLane.worktree && laneSlot[0] !== 5,
+      `rename=${renamedLane.status} slot=${laneSlot[0]}`);
+    const labelledLaneMainRes = await getPosition(mainTok[0]!);
+    const labelledLaneMain = ((await labelledLaneMainRes.json()) as { position: Position }).position;
+    check("GET /api/self position: an Orchestrator-labelled lane does not obscure the non-lane Orchestrator receiver",
+      labelledLaneMainRes.ok && labelledLaneMain.role === "program-main" && labelledLaneMain.programId === P[0]
+        && labelledLaneMain.receiver?.role === "orchestrator" && labelledLaneMain.receiver.slot === 5
+        && labelledLaneMain.receiver.openedAt === readState().slots["5"]?.openedAt,
+      JSON.stringify(labelledLaneMain));
     // wait for the founding brief of every lane (the receipt is appended right after the send)
     let prompts: { slot: number; text: string }[] = [];
     for (let k = 0; k < 100; k++) {
@@ -1736,10 +1750,14 @@ async function memoryDoor(): Promise<void> {
       !readState().slots["9"]?.cwd, JSON.stringify(readState().slots["9"] ?? null));
     const secondOrchestrator = await opost("/api/slots/9/open", { cwd: rA, label: "🎛 Orchestrator (second)" });
     check("position fixture: a second labelled Orchestrator occupies a distinct live slot",
-      secondOrchestrator.ok && !!readState().slots["9"]?.cwd, `open=${secondOrchestrator.status}`);
-    const ambiguousMain = ((await (await getPosition(mainTok[0]!)).json()) as { position: Position }).position;
-    check("GET /api/self position: two Orchestrator-labelled slots leave the MAIN receiver null",
-      ambiguousMain.role === "program-main" && ambiguousMain.receiver === null, JSON.stringify(ambiguousMain));
+      secondOrchestrator.ok && !!readState().slots["9"]?.cwd
+        && !readState().slots["9"]?.worktree && !readState().slots["5"]?.worktree,
+      `open=${secondOrchestrator.status}`);
+    const ambiguousMainRes = await getPosition(mainTok[0]!);
+    const ambiguousMain = ((await ambiguousMainRes.json()) as { position: Position }).position;
+    check("GET /api/self position: two non-lane Orchestrator-labelled slots leave the MAIN receiver null",
+      ambiguousMainRes.ok && ambiguousMain.role === "program-main" && ambiguousMain.receiver === null,
+      JSON.stringify(ambiguousMain));
     const removedSecondOrchestrator = await opost("/api/slots/9/kill", {});
     check("position fixture: second Orchestrator removed before memory assertions", removedSecondOrchestrator.ok,
       String(removedSecondOrchestrator.status));

@@ -16695,7 +16695,7 @@ function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
     if (live?.cwd && live.openedAt === main?.openedAt)
       receiver = { role: "program-main", slot: live.id, openedAt: live.openedAt };
   } else if (role === "program-main") {
-    const candidates = slots.filter((x) => x.cwd && x.id !== s.id && isOrchestratorLabel(x.label));
+    const candidates = slots.filter((x) => x.cwd && !x.worktree && x.id !== s.id && isOrchestratorLabel(x.label));
     if (candidates.length === 1) {
       const orchestrator = candidates[0]!;
       receiver = { role: "orchestrator", slot: orchestrator.id, openedAt: orchestrator.openedAt };

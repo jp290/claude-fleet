@@ -8028,7 +8028,12 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // BOTH transitions, and only from here. Every POST the client aims at a program route is
   // collected, so a second promote door built anywhere else fails this row instead of quietly
   // becoming a second surface onto an owner-only rail.
-  const posts = [...client.matchAll(/post\(`\/api\/programs\/\$\{[^}]+\}\//g)];
+  // The ONE exception is the exact bootstrap-main post: a founding is no lifecycle transition, and
+  // the founding window's second door onto it (src/founding.ts#foundMain) is pinned in e2e/slots.ts
+  // ("MAIN replaced the Steward card …": exactly one bootstrap-main post there). Every other
+  // program post outside renderProgramDetail still counts.
+  const posts = [...client.matchAll(/post\(`\/api\/programs\/\$\{[^}]+\}\//g)]
+    .filter((m) => !client.startsWith("bootstrap-main`", (m.index ?? 0) + m[0].length));
   const outside = posts.filter((m) => (m.index ?? -1) < from || (m.index ?? -1) >= from + detail.length);
   pin(`${RULE_PROMOTE} — renderProgramDetail posts confirm AND activate, and no other client code posts a program transition`,
     detail !== "" && block !== "" && outside.length === 0

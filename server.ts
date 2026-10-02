@@ -13478,8 +13478,7 @@ function reapLaneSuiteOffersFor(slotId: number): void {
     // lapse sweep already read; succeedLane's finally removes it, and a succession that fails
     // honestly re-opens this reaper then.
     if (laneSpawn.has(slotId)) continue;
-    if (j.claim) { try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ } }
-    j.claim = null;
+    releaseLaneSuiteClaims(j);
     j.state = "reaped";
   }
 }
@@ -25297,8 +25296,11 @@ let auditGraceTimer: ReturnType<typeof setTimeout> | null = null;
 // own. Nothing on THIS side changed to allow it: the daemon is a client of the same five routes a
 // browser uses, so "the server assigns nothing" is still true, literally, in the code below. The
 // other three non-goals are untouched and are stop lines, not negotiating room.
-// 45 minutes by default — the owner's number, and the right order of magnitude: a full
-// ./e2e-isolated.sh takes 5.8–9.8 min, plus a clone, an install and a human noticing. The floor is
+// 45 minutes by default — the owner's number. It was set when a full ./e2e-isolated.sh took
+// 5.8–9.8 min; MEASURED 2026-10-02 it takes 55–70 min on this box (docs/verify-tiering.md §14, "Die
+// volle Lane-Vorschau"), so ONE claim no longer covers a whole run. What this window covers now is
+// ONE SHARD: the post-land audit and the full lane preview (laneSuiteShardCount) both run as
+// FLEET_AUDIT_SHARDS jobs of 11–22 min each on the helper, every shard on its own claim. The floor is
 // a typo guard (a `0` or a NaN would make every claim dead on arrival), not a policy: the harness
 // runs this rail at a few seconds, because the property under test is the FALLBACK, not the wait.
 const HELPER_CLAIM_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_HELPER_CLAIM_TIMEOUT_MS ?? 2_700_000) | 0);
@@ -25854,6 +25856,34 @@ interface LaneSuiteJob {
   claimWas?: { deviceId: string; name: string; claimedAt: number; expiresAt: number };
   endedAt?: number;
   result: LaneSuiteResult | null;
+  // THE SHARDED PREVIEW (laneSuiteShardCount): present only on a FULL offer minted while
+  // FLEET_AUDIT_SHARDS > 1 and a shard-capable helper was beating. `claim` then stays null for the
+  // job's whole life — every claim lives on a shard — and `result` is the MERGE, written once, when
+  // the last shard is terminal. Absent is the unsharded job, byte for byte.
+  sharded?: LaneSuiteShardRun;
+}
+// WHY A FULL PREVIEW IS SHARDED, measured 2026-10-02 (docs/verify-tiering.md §14, "Die volle
+// Lane-Vorschau"): a full ./e2e-isolated.sh is 55–70 min on this box since 2026-09-26 (trail: lane 24
+// 59,7 min / 6 886 checks, lane 19 55,1 min / 6 750 checks), and the two helper claims of those same
+// previews lapsed at 2 702 s and 2 708 s with nothing reported — HELPER_CLAIM_TIMEOUT_MS is 45 min. The
+// post-land audit of the same suite runs on the same helper as three shards of 11–22 min each
+// (post-land-audits.jsonl, 2026-09-30 → 10-02). So the preview takes the audit's split: n shard jobs,
+// each claimed, run and reported on its own claim clock, merged into ONE verdict. No shard comes near
+// either limit, so neither the claim timeout nor the daemon's suiteTimeoutSec has to move.
+// THE MERGE is the audit's (shardedAuditRowOf): green only when all n shards reported green, red when
+// any did, `unknown` otherwise — a lapsed or never-run shard never lets n−1 greens speak for it.
+interface LaneSuiteShard {
+  k: number;
+  jobId: string;             // what the portal lists and the daemon claims, reports and downloads by
+  claim: { deviceId: string; name: string; claimedAt: number; expiresAt: number } | null;
+  result?: LaneSuiteResult;  // this shard's own verdict, the same shape the unsharded job carries
+  closed?: { at: number; why: "lapsed" | "unclaimed" | "sibling"; name?: string; claimedAt?: number };
+}
+interface LaneSuiteShardRun {
+  n: number;
+  bundle: string | null;     // ONE bundle for all n shards, built by the first claim — one tree
+  openUntil: number | null;  // first claim + HELPER_CLAIM_TIMEOUT_MS: the window an unclaimed shard has
+  shards: LaneSuiteShard[];
 }
 const laneSuiteJobs = new Map<string, LaneSuiteJob>(); // job id -> the offer
 // A settled offer stays readable so the lane that made it can still fetch its verdict after the
@@ -27138,6 +27168,13 @@ function expireHelperClaims(): boolean {
   // preview is NOT requeued anywhere. There is no drain behind it, so the only honest outcome is
   // to book the lapse (a helper that takes jobs and vanishes must stay visible) and close the job.
   for (const [id, j] of [...laneSuiteJobs]) {
+    // A SHARDED preview lapses SHARD BY SHARD, each on its own claim clock — that is the whole point
+    // of splitting it. The run's verdict is owed once every shard is terminal, and it goes down the
+    // same queue the whole job's lapse uses.
+    if (j.sharded && j.state === "claimed" && settleLaneSuiteShardRun(j, now)) {
+      changed = true;
+      if (j.state !== "claimed") { laneSuiteMintQueue.push(j); continue; }
+    }
     const c = j.claim;
     if (c && now >= c.expiresAt) {
       try { rmSync(c.bundle, { force: true }); } catch { /* already gone */ }
@@ -27172,8 +27209,7 @@ function expireHelperClaims(): boolean {
     // de-registered in its finally, and the next sweep reaps honestly then.
     const live = slots.some((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
     if (!live && !laneSpawn.has(j.slot) && (j.state === "open" || j.state === "claimed")) {
-      if (j.claim) { try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ } }
-      j.claim = null;
+      releaseLaneSuiteClaims(j);
       j.state = "reaped";
       audit("helper_claim_expired", j.slot,
         `the lane that offered the preview suite of ${basename(j.repo)} ${j.branch} is gone — offer reaped`);
@@ -27250,8 +27286,168 @@ function expireHelperClaims(): boolean {
 // A lane-suite job is CLAIMED only while its claim is still live — expired counts as absent here for
 // exactly the reason helperClaimOf gives on the audit side: the decision is the clock, the sweep is
 // only bookkeeping, so a late or dead sweep can never strand a job.
+// A SHARDED job answers with its OLDEST live shard claim, carrying the run's one bundle: every
+// reader of this function asks "is this preview somebody's work right now" (withdraw's 409, the
+// view's `claim`, the meter's device), and one live shard is enough to say yes.
 function laneSuiteClaimOf(j: LaneSuiteJob): LaneSuiteJob["claim"] {
+  if (j.sharded) {
+    const now = Date.now();
+    const bundle = j.sharded.bundle;
+    const live = j.sharded.shards.flatMap((s) => (s.claim && now < s.claim.expiresAt ? [s.claim] : []))
+      .sort((a, b) => a.claimedAt - b.claimedAt)[0];
+    return live && bundle ? { ...live, bundle } : null;
+  }
   return j.claim && Date.now() < j.claim.expiresAt ? j.claim : null;
+}
+// --- THE SHARDED PREVIEW (LaneSuiteShardRun) -----------------------------------------------------
+// HOW MANY SHARDS A NEW OFFER GETS, decided ONCE, at the offer door, and never changed afterwards —
+// the first claim freezes the tree, and a run whose n moved under it would merge shards of two
+// different splits. The count is the audit's own FLEET_AUDIT_SHARDS: it is this fleet's one measured
+// split of the same ./e2e-isolated.sh on the same helper, and a second knob would be a second number
+// for one fact. Three conditions, each a refusal to shard:
+//   · a NARROWED offer stays whole — it is minutes, not an hour, and FLEET_E2E_MODULES and
+//     FLEET_E2E_SHARD were never measured together;
+//   · n = 1 is today's job byte for byte (no `sharded` key, no shard ids anywhere);
+//   · no beating device declared AUDIT_SHARD_FEATURE — a daemon without helper-daemon/daemon.ts#shardEnv
+//     would run the whole suite under one shard's name, so the offer stays whole and every device
+//     still takes it.
+function laneSuiteShardCount(modules: string[] | undefined, now = Date.now()): number {
+  if (modules || AUDIT_SHARDS < 2) return 1;
+  for (const d of helperDevices.values())
+    if (now - d.lastSeen < DEVICE_ONLINE_MS && d.features?.includes(AUDIT_SHARD_FEATURE)) return AUDIT_SHARDS;
+  return 1;
+}
+const laneSuiteShardJobId = (jobId: string, k: number, n: number): string =>
+  createHash("sha256").update(`${jobId}\u0000lane-shard:${k}/${n}`).digest("hex").slice(0, 12);
+const laneShardTerminal = (s: LaneSuiteShard): boolean => !!s.result || !!s.closed;
+// Which preview and which shard a shard job id names. Resolved AFTER `laneSuiteJobs.get(id)` at
+// every door, the same lookup order the other id spaces keep.
+function laneSuiteShardOf(jobId: string): { job: LaneSuiteJob; shard: LaneSuiteShard } | null {
+  for (const job of laneSuiteJobs.values()) {
+    const shard = job.sharded?.shards.find((s) => s.jobId === jobId);
+    if (shard) return { job, shard };
+  }
+  return null;
+}
+// EVERY CLAIM AND THE BUNDLE GO, in one place, for every ending that is not a verdict (withdrawn,
+// abandoned, reaped) — the sharded job holds them on its shards, the whole one on `claim`.
+function releaseLaneSuiteClaims(j: LaneSuiteJob): void {
+  for (const b of [j.claim?.bundle, j.sharded?.bundle])
+    if (b) { try { rmSync(b, { force: true }); } catch { /* already gone */ } }
+  j.claim = null;
+  if (j.sharded) {
+    j.sharded.bundle = null;
+    for (const s of j.sharded.shards) s.claim = null;
+  }
+}
+// Close the shards nobody should start any more — the audit's closeOpenShards over a preview: every
+// unclaimed one once green is ruled out (a red, an unmeasured result or a lapse on a sibling), or
+// once the run's window has shut. Claimed ones are never closed here; they report or lapse.
+function closeOpenLaneShards(run: LaneSuiteShardRun, now: number): boolean {
+  const ruledOut = run.shards.some((s) => !!s.closed || (!!s.result && s.result.result !== "green"));
+  const shut = run.openUntil !== null && now >= run.openUntil;
+  if (!ruledOut && !shut) return false;
+  let changed = false;
+  for (const s of run.shards) {
+    if (laneShardTerminal(s) || s.claim) continue;
+    s.closed = { at: now, why: ruledOut ? "sibling" : "unclaimed" };
+    changed = true;
+  }
+  return changed;
+}
+// THE MERGE, shardedAuditRowOf's rule over a preview: green ONLY when all n shards reported green,
+// red when any did, otherwise `unknown` with every non-green shard named. The tail is the shards'
+// tails, each under its own header, greens first and reds LAST — the pane hint quotes the LAST line
+// (laneSuiteEventPayload), and on a red that line must be a red shard's.
+function laneSuiteShardMerge(j: LaneSuiteJob, run: LaneSuiteShardRun, now: number): LaneSuiteResult {
+  const n = run.n;
+  const reported = run.shards.flatMap((s) => (s.result ? [{ s, r: s.result }] : []));
+  const reds = reported.filter((x) => x.r.result === "red");
+  const allGreen = reported.length === n && reported.every((x) => x.r.result === "green");
+  const result: LaneSuiteResult["result"] = reds.length ? "red" : allGreen ? "green" : "unknown";
+  const why = (s: LaneSuiteShard): string =>
+    s.result ? `shard ${s.k}/${n} (${s.result.remote.name}): ${s.result.reason ?? s.result.result}`
+    : s.closed?.why === "lapsed" ? `shard ${s.k}/${n} lapsed — ${s.closed.name ?? "a helper"} held it past its claim deadline and reported nothing`
+    : s.closed?.why === "sibling" ? `shard ${s.k}/${n} was not run — a sibling had already ruled green out`
+    : `shard ${s.k}/${n} was never claimed`;
+  const reason = result === "unknown"
+    ? run.shards.filter((s) => s.result?.result !== "green").map(why).join("; ").slice(0, 600) : undefined;
+  const ordered = [...reported.filter((x) => x.r.result === "green"),
+    ...reported.filter((x) => x.r.result === "unknown"), ...reds];
+  const sections = ordered.map((x) =>
+    `── shard ${x.s.k}/${n} (${x.r.remote.name}) ${x.r.result} exit ${x.r.exitCode ?? "none"} ──\n${x.r.tail}`);
+  // an UNKNOWN merge ends on the sentence that says so, never on a green shard's ALL PASS
+  if (result === "unknown") sections.push(`── no verdict for the whole preview: ${reason} ──`);
+  const tail = retainRunOutput(sections.join("\n"), "", HELPER_TAIL_CAP).trim();
+  const fails = [...new Set([...reds, ...reported.filter((x) => x.r.result !== "red")]
+    .flatMap((x) => x.r.fails))].slice(0, HELPER_FAILS_KEEP);
+  const counted = reported.filter((x) => x.r.checks !== null);
+  const checks: PostLandAuditChecks | null = result === "unknown" || !counted.length ? null : {
+    ran: counted.reduce((a, x) => a + (x.r.checks?.ran ?? 0), 0),
+    failed: counted.reduce((a, x) => a + (x.r.checks?.failed ?? 0), 0),
+    ...(counted.length < n || counted.some((x) => x.r.checks?.ranIsLowerBound) ? { ranIsLowerBound: true as const } : {}),
+  };
+  const claimTimes = run.shards.flatMap((s) => (s.result ? [s.result.remote.claimedAt]
+    : s.closed?.claimedAt !== undefined ? [s.closed.claimedAt] : []));
+  const start = claimTimes.length ? Math.min(...claimTimes) : now;
+  const end = reported.length === n ? Math.max(...reported.map((x) => x.r.remote.reportedAt)) : now;
+  const names = [...new Set(run.shards.flatMap((s) => (s.result ? [s.result.remote.name] : s.closed?.name ? [s.closed.name] : [])))];
+  // a DIVERGENT clone sha wins, because the divergence is the fact a reader must not miss
+  const shas = reported.flatMap((x) => (x.r.remote.clonedSha ? [x.r.remote.clonedSha] : []));
+  const clonedSha = shas.find((s) => s !== j.commitSha) ?? shas[0];
+  const trail = (reds[0] ?? reported[0])?.r.trail;
+  // the no-measurement half: a lapse is a timeout at the claim deadline, exactly as the whole job's
+  // (laneSuiteLapseResult); otherwise the first unmeasured shard's own words
+  const lapsed = run.shards.some((s) => s.closed?.why === "lapsed");
+  const unmeasured = reported.find((x) => x.r.result === "unknown")?.r.remote;
+  const noMeasure: HelperNoMeasure = result !== "unknown" ? {}
+    : lapsed ? { reason: "timeout", timeoutMs: HELPER_CLAIM_TIMEOUT_MS }
+    : unmeasured?.reason ? { reason: unmeasured.reason, ...(unmeasured.timeoutMs ? { timeoutMs: unmeasured.timeoutMs } : {}) } : {};
+  return {
+    exitCode: result === "green" ? 0 : result === "red" ? reds[0]?.r.exitCode ?? null : null,
+    result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}), checks, fails,
+    remote: { name: names.length ? names.join(", ") : "(nobody claimed it)", claimedAt: start, reportedAt: now,
+      ...(clonedSha ? { clonedSha } : {}), ...noMeasure },
+    treeSha: j.treeSha ?? "", ms: end - start,
+  };
+}
+// THE RUN ENDS when every shard is terminal: the merge becomes the job's one verdict, the bundle
+// goes, and the state says which kind of ending it was — `lapsed` when nothing could be measured
+// because a shard was lost (the whole job's lapse word), `reported` for every measured verdict.
+// It mints nothing: the result door awaits the mint itself, the sweep queues it.
+function finishLaneSuiteShardRun(j: LaneSuiteJob, now: number): void {
+  const run = j.sharded!;
+  j.result = laneSuiteShardMerge(j, run, now);
+  j.state = j.result.result === "unknown"
+    && run.shards.some((s) => s.closed?.why === "lapsed" || s.closed?.why === "unclaimed") ? "lapsed" : "reported";
+  j.endedAt = now;
+  if (run.bundle) { try { rmSync(run.bundle, { force: true }); } catch { /* the helper has its copy */ } }
+  run.bundle = null;
+  audit("helper_result", j.slot,
+    `${j.result.result} sharded preview (${run.n} shards) of ${basename(j.repo)} ${j.branch}`
+    + ` tree ${(j.treeSha ?? "").slice(0, 8)} from ${j.result.remote.name}`
+    + `${j.result.reason ? ` — ${j.result.reason}` : ""}`.slice(0, 240));
+}
+// The sweep's half for one sharded job: book every lapsed shard, close what can no longer start,
+// and end the run once it is complete. Synchronous by construction, like the whole sweep.
+function settleLaneSuiteShardRun(j: LaneSuiteJob, now: number): boolean {
+  const run = j.sharded!;
+  let changed = false;
+  for (const s of run.shards) {
+    if (laneShardTerminal(s) || !s.claim || now < s.claim.expiresAt) continue;
+    const c = s.claim;
+    s.closed = { at: now, why: "lapsed", name: c.name, claimedAt: c.claimedAt };
+    s.claim = null;
+    helperLapses = [{ id: s.jobId, repo: j.repo, name: c.name, deviceId: c.deviceId,
+      claimedAt: c.claimedAt, expiredAt: now, covers: 0 }, ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
+    audit("helper_claim_expired", j.slot,
+      `${c.name} held shard ${s.k}/${run.n} of the preview suite of ${basename(j.repo)} ${j.branch} for `
+      + `${Math.round((now - c.claimedAt) / 1000)}s without a result — the preview's verdict will be unknown`);
+    changed = true;
+  }
+  if (closeOpenLaneShards(run, now)) changed = true;
+  if (run.shards.every(laneShardTerminal)) { finishLaneSuiteShardRun(j, now); changed = true; }
+  return changed;
 }
 // The one open offer of a slot. At most one exists by construction (the offer door returns the
 // existing one instead of minting a second), and this is where that is read back.
@@ -27271,11 +27467,14 @@ function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
   // (the rail is a side file; the verdict it belongs to is not rewritten). It rides on `remote`
   // because that is where the audit row carries it and where it belongs on either: the log is a
   // fact about the machine that ran the suite. ABSENT means no log arrived — never "there is none".
-  const art = j.result ? artifactViewFor(j.result.remote.reportedAt) : undefined;
+  // A SHARDED verdict has no log of its own — each shard filed its own under its own reportedAt, and
+  // they ride on `shards[]` below; joining the merge's key would hand one shard's log out as the run's.
+  const art = j.result && !j.sharded ? artifactViewFor(j.result.remote.reportedAt) : undefined;
   return {
     // an EXPIRED claim reads as lapsed here and not as "claimed", without waiting for the sweep —
-    // the same split as helperClaimOf: the clock decides, the sweep only books
-    id: j.id, state: j.state === "claimed" && !c ? "lapsed" : j.state, branch: j.branch, offeredAt: j.offeredAt,
+    // the same split as helperClaimOf: the clock decides, the sweep only books. A sharded run is
+    // still "claimed" between two shards' claims: the run is somebody's, the shard clocks decide.
+    id: j.id, state: j.state === "claimed" && !c && !j.sharded ? "lapsed" : j.state, branch: j.branch, offeredAt: j.offeredAt,
     // present on a NARROWED offer only — a full offer keeps its closed key set (e2e/lane-suite.ts
     // OFFER_WIRE_KEYS), and the verdict beside a list is a verdict about those modules alone
     ...(j.modules ? { modules: j.modules } : {}),
@@ -27284,7 +27483,26 @@ function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
     result: j.result && art
       ? { ...j.result, remote: { ...j.result.remote, artifact: art } }
       : j.result,
+    // …and on a SHARDED offer only, one row per shard: where each one stands, and on a reported one
+    // its own verdict in brief and its own log
+    ...(j.sharded ? { shards: laneSuiteShardsView(j.sharded) } : {}),
   };
+}
+function laneSuiteShardsView(run: LaneSuiteShardRun): Record<string, unknown>[] {
+  const now = Date.now();
+  return run.shards.map((s) => {
+    const live = s.claim && now < s.claim.expiresAt ? s.claim : null;
+    const art = s.result ? artifactViewFor(s.result.remote.reportedAt) : undefined;
+    return {
+      k: s.k, n: run.n, jobId: s.jobId,
+      state: s.result ? "reported" : s.closed ? s.closed.why : live ? "claimed" : s.claim ? "lapsed" : "open",
+      ...(live ? { claim: { name: live.name, claimedAt: live.claimedAt, expiresAt: live.expiresAt } } : {}),
+      ...(s.result ? { result: s.result.result, exitCode: s.result.exitCode, checks: s.result.checks,
+        fails: s.result.fails.length, name: s.result.remote.name, ms: s.result.ms,
+        ...(art ? { artifact: art } : {}) } : {}),
+      ...(s.closed?.name ? { name: s.closed.name } : {}),
+    };
+  });
 }
 // THE ONE ANLAGE OF A LANE-SUITE JOB, read and mint, behind all three doors that may hand a lane's
 // tree to the portal: the lane's own (POST /api/self/suite-offer), the owner's
@@ -27366,9 +27584,14 @@ async function laneSuiteOfferDoor(s: Slot, wt: NonNullable<Slot["worktree"]>, re
     programId: s.programId, ...(modules ? { modules } : {}), offeredAt: Date.now(),
     state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
   };
+  // THE SPLIT, decided here and frozen (laneSuiteShardCount): a full preview outlasts one claim
+  // window, n shards of it do not
+  const n = laneSuiteShardCount(modules);
+  if (n > 1) job.sharded = { n, bundle: null, openUntil: null,
+    shards: Array.from({ length: n }, (_, i) => ({ k: i + 1, jobId: laneSuiteShardJobId(job.id, i + 1, n), claim: null })) };
   laneSuiteJobs.set(job.id, job);
   audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`
-    + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}${by ? ` (offered by ${by})` : ""}`);
+    + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}${n > 1 ? ` as ${n} shards` : ""}${by ? ` (offered by ${by})` : ""}`);
   await saveStateNow();
   return json({ offer: laneSuiteView(job), existing: false, helper: presence,
     waitPolicy: suiteOfferWait(job.offeredAt) });
@@ -27630,6 +27853,12 @@ function helperJobsView(forDevice?: string): {
   for (const j of laneSuiteJobs.values()) {
     if (j.state !== "open" && j.state !== "claimed") continue;
     if (j.modules && !modulesCapable) continue;
+    // A SHARDED preview is listed as its shards, and to a shard-capable device only — the audit's
+    // shard handshake, unchanged: a device without the feature sees no job for this offer at all.
+    if (j.sharded) {
+      if (shardCapable) jobs.push(...laneSuiteShardJobViews(j, j.sharded));
+      continue;
+    }
     const c = laneSuiteClaimOf(j);
     if (!c && j.state === "claimed") continue; // lapsed but not yet swept — not offerable
     jobs.push({
@@ -27763,6 +27992,13 @@ function heldClaimsByDevice(): Map<string, HelperDeviceClaimView[]> {
   // a sentence about another machine's next 13 minutes, and it may not survive one forgotten null.
   for (const j of laneSuiteJobs.values()) {
     if (j.state !== "claimed") continue;
+    // ONE ROW PER LIVE SHARD CLAIM, as for the audit's shards: each is one suite on that machine
+    if (j.sharded) {
+      for (const s of j.sharded.shards)
+        if (s.claim && now < s.claim.expiresAt)
+          push(s.claim.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, claimedAt: s.claim.claimedAt, expiresAt: s.claim.expiresAt });
+      continue;
+    }
     const c = laneSuiteClaimOf(j);
     if (c) push(c.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, claimedAt: c.claimedAt, expiresAt: c.expiresAt });
   }
@@ -27848,8 +28084,17 @@ function helperWorkAwaitingClaim(deviceId: string): boolean {
     return true;
   }
   // a narrowed preview wakes only a machine that would be SHOWN it (helperJobsView's same guard)
-  for (const j of laneSuiteJobs.values())
+  for (const j of laneSuiteJobs.values()) {
+    // a SHARDED preview wakes only a machine its shards are shown to, and stays a reason to wake while
+    // a shard of a running run is still unclaimed inside the run's window
+    if (j.sharded) {
+      if (!helperDevices.get(deviceId)?.features?.includes(AUDIT_SHARD_FEATURE)) continue;
+      if (laneSuiteShardJobViews(j, j.sharded).some((v) => !v.claim)
+        && (j.state === "open" || j.state === "claimed")) return true;
+      continue;
+    }
     if (j.state === "open" && (!j.modules || helperTakesModules(deviceId))) return true;
+  }
   for (const j of commandJobs.values()) if (j.state === "open") return true;
   return helperUpdates.get(deviceId)?.state === "open";
 }
@@ -27895,6 +28140,10 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
     return json({ error: "the lane that offered this preview is gone — nothing to run it for" }, 404);
   if (j.state === "reported") return json({ error: "this preview was already reported" }, 404);
   if (j.state === "lapsed") return json({ error: "this preview offer lapsed and was not renewed" }, 404);
+  // the whole-suite id of a SHARDED offer is never claimable: a client that knows its shape must not
+  // run the tree whole beside, or instead of, its shards
+  if (j.sharded)
+    return json({ error: `this preview is offered as ${j.sharded.n} shards — claim a shard job, not the whole suite` }, 409);
   const held = laneSuiteClaimOf(j);
   if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
   // the same door rule as helperJobsView's, on the door and not only on the list: a device may POST
@@ -27952,6 +28201,106 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
     // validated module names, which it joins into FLEET_E2E_MODULES and nothing else
     ...(j.modules ? { modules: j.modules } : {}),
     claimedAt: now, expiresAt: j.claim.expiresAt, name: j.claim.name } });
+}
+// THE SHARDED PREVIEW ON THE PORTAL: one job per shard that could still be claimed or is claimed right
+// now. A terminal shard, one whose claim ran out but is not swept yet, and an unclaimed one past the
+// run's window are not offerable — the audit's three exclusions (auditShardJobViews), one kind over.
+function laneSuiteShardJobViews(j: LaneSuiteJob, run: LaneSuiteShardRun): HelperJobView[] {
+  const now = Date.now();
+  const out: HelperJobView[] = [];
+  for (const s of run.shards) {
+    if (laneShardTerminal(s)) continue;
+    const live = s.claim && now < s.claim.expiresAt ? s.claim : null;
+    if (s.claim && !live) continue;
+    if (!live && run.openUntil !== null && now >= run.openUntil) continue;
+    out.push({
+      id: s.jobId, kind: "lane-suite", repo: basename(j.repo), main: j.branch,
+      branches: [j.branch], covers: 0, oldestAt: j.offeredAt,
+      claim: live ? { name: live.name, claimedAt: live.claimedAt, expiresAt: live.expiresAt } : null,
+      localRunning: false,
+      ...(j.untracked !== null ? { untracked: j.untracked } : {}),
+      shard: `${s.k}/${run.n}`,
+    });
+  }
+  return out;
+}
+// THE FIRST SHARD CLAIM TAKES THE TREE, and takes it ONCE: a daemon with three free slots POSTs three
+// claims in one tick, and every claim that arrives while the bundle is being built waits on the same
+// build rather than taking a second, possibly different, tree (auditShardOpening, the same joint).
+const laneSuiteShardOpening = new Map<string, Promise<{ ok: true } | { error: string; status: number }>>();
+function openLaneSuiteShardRun(j: LaneSuiteJob): Promise<{ ok: true } | { error: string; status: number }> {
+  const opening = (async (): Promise<{ ok: true } | { error: string; status: number }> => {
+    const file = `${HELPER_BUNDLE_DIR}/${j.id}-${randomBytes(4).toString("hex")}.bundle`;
+    const built = await buildLaneSuiteBundle(j, file);
+    laneSuiteShardOpening.delete(j.id);
+    if ("error" in built) {
+      try { rmSync(file, { force: true }); } catch { /* never written */ }
+      return { error: built.error, status: 500 };
+    }
+    // RE-CHECKED after the await, as claimLaneSuite re-checks: the lane may have withdrawn meanwhile
+    if (j.state !== "open" || !j.sharded || j.sharded.bundle) {
+      try { rmSync(file, { force: true }); } catch { /* nothing to clean */ }
+      return { error: "the offer changed while the bundle was being built — try again", status: 409 };
+    }
+    const now = Date.now();
+    j.commitSha = built.commitSha;
+    j.treeSha = built.treeSha;
+    j.untracked = built.untracked;
+    j.state = "claimed";
+    j.sharded.bundle = file;
+    j.sharded.openUntil = now + HELPER_CLAIM_TIMEOUT_MS;
+    return { ok: true };
+  })();
+  laneSuiteShardOpening.set(j.id, opening);
+  return opening;
+}
+// One shard of a sharded preview. The refusals are claimLaneSuite's (the offer's own state, the lane's
+// liveness) plus the audit shard's (the device must declare the feature; a shard is claimed once and
+// never re-offered after a lapse — its verdict is then owed as unknown).
+async function claimLaneSuiteShard(j: LaneSuiteJob, shard: LaneSuiteShard, deviceId: string): Promise<Response> {
+  const run = j.sharded!;
+  if (j.state === "withdrawn" || j.state === "abandoned")
+    return json({ error: "the lane withdrew this preview offer — it is running the suite itself" }, 404);
+  if (j.state === "reaped")
+    return json({ error: "the lane that offered this preview is gone — nothing to run it for" }, 404);
+  if (j.state === "reported" || j.state === "lapsed") return json({ error: "this preview already has its verdict" }, 404);
+  if (!helperDevices.get(deviceId)?.features?.includes(AUDIT_SHARD_FEATURE))
+    return json({ error: `this preview is offered as ${run.n} shards, and this device's last heartbeat did not declare`
+      + ` "${AUDIT_SHARD_FEATURE}" — a daemon that cannot run one shard would run the whole suite under its name` }, 409);
+  const live = slots.find((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
+  if (!live) {
+    if (laneSpawn.has(j.slot))
+      return json({ error: "this preview's lane is handing the baton over — try again in a moment" }, 409);
+    return json({ error: "the lane that offered this preview is gone — nothing to run it for" }, 409);
+  }
+  if (!run.bundle) {
+    const opened = await (laneSuiteShardOpening.get(j.id) ?? openLaneSuiteShardRun(j));
+    if ("error" in opened) return json({ error: opened.error }, opened.status);
+  }
+  if (j.state !== "claimed" || !run.bundle) return json({ error: "the offer changed while the claim waited — try again" }, 409);
+  const now = Date.now();
+  closeOpenLaneShards(run, now);
+  const label = `${shard.k}/${run.n}`;
+  if (shard.result) return json({ error: `shard ${label} was already reported` }, 409);
+  if (shard.closed) return json({ error: `shard ${label} is closed (${shard.closed.why}) — the verdict is owed without it` }, 409);
+  if (shard.claim && now < shard.claim.expiresAt)
+    return json({ error: `shard ${label} is already claimed by ${shard.claim.name} — it expires ${new Date(shard.claim.expiresAt).toISOString()}` }, 409);
+  if (shard.claim) return json({ error: `shard ${label} lapsed and is being booked — it is not offered again` }, 409);
+  const name = helperDeviceName(deviceId);
+  shard.claim = { deviceId, name, claimedAt: now, expiresAt: now + HELPER_CLAIM_TIMEOUT_MS };
+  if (helperDevices.has(deviceId)) setHelperDevice(deviceId, name); // touch lastSeen
+  audit("helper_claim", j.slot,
+    `${name} claimed shard ${label} of the preview suite of ${basename(j.repo)} ${j.branch}`
+    + `@${(j.commitSha ?? "").slice(0, 8)} tree ${(j.treeSha ?? "").slice(0, 8)}`
+    + `${j.untracked ? ` (${j.untracked} untracked file(s) NOT included)` : ""}`);
+  await saveStateNow();
+  // the claim answer the daemon reads: the whole job's, plus `shard` — the one string it turns into
+  // FLEET_E2E_SHARD (helper-daemon/daemon.ts#shardEnv, already applied to every non-command kind).
+  // `branch` is the PARENT's clone branch: the bundle was built through the parent job's ref.
+  return json({ job: { id: shard.jobId, kind: "lane-suite", repo: basename(j.repo), main: j.branch,
+    mainSha: j.commitSha, treeSha: j.treeSha, untracked: j.untracked,
+    branch: laneSuiteBranch(j.id), branches: [j.branch], covers: 0, shard: label,
+    claimedAt: now, expiresAt: shard.claim.expiresAt, name } });
 }
 // THE VINTAGE MEASUREMENT, and the reason the presence of `daemonSha` was never the whole guard.
 // A sha PROVES the daemon measured its own tree; it does not prove that tree knows `kind`. Between
@@ -28116,6 +28465,8 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   // branch is the audit path, byte for byte as it was.
   const lane = laneSuiteJobs.get(jobId);
   if (lane) return await claimLaneSuite(lane, deviceId);
+  const laneShard = laneSuiteShardOf(jobId);
+  if (laneShard) return await claimLaneSuiteShard(laneShard.job, laneShard.shard, deviceId);
   const cmdJob = commandJobs.get(jobId);
   if (cmdJob) return await claimCommandJob(cmdJob, deviceId);
   const upd = helperUpdateById(jobId);
@@ -28220,44 +28571,10 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   // the lane has been told to stop waiting and may already be running the suite itself, so a late
   // verdict would be a second answer about a tree somebody is measuring right now.
   if (!claim) return json({ error: "no live claim for this preview — it lapsed, was withdrawn, or was already reported" }, 409);
-  const rawExit = body?.exitCode;
-  const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
-  const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
-  // TWO SOURCES FOR THE NAMES, in this order, and never merged:
-  //   · what the DAEMON parsed (helper-daemon/daemon.ts#failNamesOf) — read from the COMPLETE log
-  //     and, where the run wrote one, from the per-check trail jsonl. Strictly stronger than
-  //     anything derivable on this box, which holds only the tail.
-  //   · else the tail, through `localFailNames` — the SAME parser the local audit path uses
-  //     (server.ts#runPostLandAudit), so a preview and an audit name a failure identically and
-  //     there is one parser to keep right. It is what a pre-3974883 daemon, a hand-typed portal
-  //     report (src/helper.ts#doReport sends no `fails`) and any red whose FAIL lines happen to be
-  //     inside the retained window still yield.
-  // An EMPTY list from either source is kept as empty: `result` already says green or red, and
-  // inventing a name for a failure nobody could read would be worse than the absence.
-  const reportedFails = helperFailNames(body?.fails);
-  const fails = reportedFails ?? helperFailNames(localFailNames(tail)) ?? [];
-  const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
-  const { result, reason } = remoteVerdictOf(exitCode);
-  const measured = result !== "unknown";
   const now = Date.now();
-  // Same field, same reason as on the audit path, and here the pair it can be compared against is
-  // `commitSha` — the commit this server bundled out of the lane's `stash create`. The preview
-  // verdict is the one a lane quotes in its own report, so "which tree did that green describe?"
-  // has to be answerable from the job and not from the daemon's log on another machine.
-  const clonedSha = typeof body?.clonedSha === "string" && /^[0-9a-f]{40}$/.test(body.clonedSha)
-    ? body.clonedSha : undefined;
-  j.result = {
-    exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
-    // `reportedFails` and NOT the fallback list: this argument reconciles an "N FAILURES" summary
-    // against a tail that shows fewer FAIL lines, and only a list read from the COMPLETE log can
-    // do that. A tail-derived list has by construction exactly the lines the tail shows, so
-    // passing it here would answer the reconciliation with the very number it is checking.
-    checks: measured ? postLandAuditChecks(tail, exitCode as number, reportedFails) : null,
-    fails,
-    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
-      ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode) },
-    treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
-  };
+  const { verdict, fails, trail, clonedSha } = laneSuiteVerdictOf(j, claim, body, now);
+  const { result, reason } = verdict;
+  j.result = verdict;
   j.state = "reported";
   j.claim = null;
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
@@ -28280,6 +28597,85 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   // about a fact nobody can read back.
   await mintLaneSuiteEvents(j);
   return json({ ok: true, kind: "lane-suite", result, ...(reason ? { reason } : {}), artifactAt: now });
+}
+// ONE PREVIEW VERDICT out of one result body — the whole job's and each shard's, so a shard and a
+// whole run are classified, named and counted by the same lines.
+function laneSuiteVerdictOf(j: LaneSuiteJob, claim: { name: string; claimedAt: number },
+  body: Record<string, unknown> | null, now: number): { verdict: LaneSuiteResult; fails: string[];
+    trail: string | undefined; clonedSha: string | undefined } {
+  const rawExit = body?.exitCode;
+  const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
+  const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
+  // TWO SOURCES FOR THE NAMES, in this order, and never merged:
+  //   · what the DAEMON parsed (helper-daemon/daemon.ts#failNamesOf) — read from the COMPLETE log
+  //     and, where the run wrote one, from the per-check trail jsonl. Strictly stronger than
+  //     anything derivable on this box, which holds only the tail.
+  //   · else the tail, through `localFailNames` — the SAME parser the local audit path uses
+  //     (server.ts#runPostLandAudit), so a preview and an audit name a failure identically and
+  //     there is one parser to keep right. It is what a pre-3974883 daemon, a hand-typed portal
+  //     report (src/helper.ts#doReport sends no `fails`) and any red whose FAIL lines happen to be
+  //     inside the retained window still yield.
+  // An EMPTY list from either source is kept as empty: `result` already says green or red, and
+  // inventing a name for a failure nobody could read would be worse than the absence.
+  const reportedFails = helperFailNames(body?.fails);
+  const fails = reportedFails ?? helperFailNames(localFailNames(tail)) ?? [];
+  const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
+  const { result, reason } = remoteVerdictOf(exitCode);
+  const measured = result !== "unknown";
+  // Same field, same reason as on the audit path, and here the pair it can be compared against is
+  // `commitSha` — the commit this server bundled out of the lane's `stash create`. The preview
+  // verdict is the one a lane quotes in its own report, so "which tree did that green describe?"
+  // has to be answerable from the job and not from the daemon's log on another machine.
+  const clonedSha = typeof body?.clonedSha === "string" && /^[0-9a-f]{40}$/.test(body.clonedSha)
+    ? body.clonedSha : undefined;
+  const verdict: LaneSuiteResult = {
+    exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
+    // `reportedFails` and NOT the fallback list: this argument reconciles an "N FAILURES" summary
+    // against a tail that shows fewer FAIL lines, and only a list read from the COMPLETE log can
+    // do that. A tail-derived list has by construction exactly the lines the tail shows, so
+    // passing it here would answer the reconciliation with the very number it is checking.
+    checks: measured ? postLandAuditChecks(tail, exitCode as number, reportedFails) : null,
+    fails,
+    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
+      ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode) },
+    treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
+  };
+  return { verdict, fails, trail, clonedSha };
+}
+// ONE SHARD'S VERDICT. Classified by the same lines as a whole preview (laneSuiteVerdictOf), kept on
+// the shard, and turned into the job's verdict only when the last shard of the run is terminal. A
+// lapsed, closed or already-reported shard is refused for the whole job's reason: past its deadline
+// the shard is booked, and a late verdict would contradict a merge that may already be written.
+async function reportLaneSuiteShard(j: LaneSuiteJob, shard: LaneSuiteShard,
+  body: Record<string, unknown> | null): Promise<Response> {
+  const run = j.sharded!;
+  const c = shard.claim;
+  const now = Date.now();
+  if (j.state !== "claimed" || !c || now >= c.expiresAt || laneShardTerminal(shard))
+    return json({ error: "no live claim for this preview shard — it lapsed, was closed or withdrawn, or was already reported" }, 409);
+  const { verdict, fails, trail, clonedSha } = laneSuiteVerdictOf(j, c, body, now);
+  shard.result = verdict;
+  shard.claim = null;
+  const label = `${shard.k}/${run.n}`;
+  audit("helper_result", j.slot,
+    `${verdict.result} shard ${label} of the preview of ${basename(j.repo)} ${j.branch} tree ${(j.treeSha ?? "").slice(0, 8)} from ${c.name}`
+    + `${fails.length ? ` — ${fails.slice(0, 3).join(", ")}${fails.length > 3 ? ` +${fails.length - 3}` : ""}` : ""}`
+    + `${clonedSha ? ` (ran ${clonedSha.slice(0, 8)})` : " (the helper named no clone sha)"}`
+    + `${trail ? ` [${trail}]` : ""}${verdict.reason ? ` — ${verdict.reason}` : ""}`.slice(0, 240));
+  closeOpenLaneShards(run, now);
+  // `result` is THIS shard's verdict in every answer, and `artifactAt` this shard's own row key — each
+  // shard files its own suite.log, joined back on the offer's `shards[]`. `previewResult` is the
+  // merge, present only on the answer that wrote it.
+  if (run.shards.every(laneShardTerminal)) {
+    finishLaneSuiteShardRun(j, now);
+    await saveStateNow();
+    await mintLaneSuiteEvents(j); // after the save, for the reason reportLaneSuite gives
+    return json({ ok: true, kind: "lane-suite", result: verdict.result, ...(verdict.reason ? { reason: verdict.reason } : {}),
+      shard: label, previewResult: j.result?.result, artifactAt: now });
+  }
+  await saveStateNow();
+  return json({ ok: true, kind: "lane-suite", result: verdict.result, ...(verdict.reason ? { reason: verdict.reason } : {}),
+    shard: label, pending: run.shards.filter((s) => !laneShardTerminal(s)).length, artifactAt: now });
 }
 // The command verdict. Same shape and same rules as the preview's — it lands in the JOB, no ledger
 // row, no drain kick — plus the ONE thing this kind adds: THE ARTEFACT ROWS ARE VALIDATED, NEVER
@@ -28366,6 +28762,8 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   // kickAuditDrain) has run.
   const lane = laneSuiteJobs.get(jobId);
   if (lane) return await reportLaneSuite(lane, body);
+  const laneShard = laneSuiteShardOf(jobId);
+  if (laneShard) return await reportLaneSuiteShard(laneShard.job, laneShard.shard, body);
   const cmdJob = commandJobs.get(jobId);
   if (cmdJob) return await reportCommandJob(cmdJob, body);
   const shardHit = auditShardSlotOf(jobId);
@@ -28974,7 +29372,10 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       await drainBody(req);
       return json({ error: `suite.log is larger than the ${capMb} MB cap` }, 413);
     }
-    const lane = laneSuiteJobs.get(jobId);
+    // a SHARD of a sharded preview files its log under its OWN verdict — the shard's row key
+    const laneShardHit = laneSuiteShardOf(jobId);
+    const lane = laneSuiteJobs.get(jobId) ?? (laneShardHit
+      ? { result: laneShardHit.shard.result ?? null } : undefined);
     // `verdict` is the word echoed back at the end — the same confirmation the audit half returns,
     // and for the same reason: the caller sees that handing over a log did not move the result.
     let verdict: string;
@@ -29046,9 +29447,16 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
     // prevent.
     // BOTH KINDS come out of this one route — that is the point of the second source not having its
     // own perimeter (S7): the pre-auth surface e2e/security.ts §1 pins is unchanged by this feature.
-    const laneJob = laneSuiteJobs.get(bundle[1]!);
+    // A SHARD id downloads the run's ONE bundle, and only while that shard's own claim is live; the
+    // parent id of a sharded offer is never claimed, so it never has a bundle to hand out.
+    const laneShardHit = laneSuiteShardOf(bundle[1]!);
+    const laneJob = laneSuiteJobs.get(bundle[1]!) ?? laneShardHit?.job;
     if (laneJob) {
-      const lc = laneSuiteClaimOf(laneJob);
+      const sc = laneShardHit?.shard.claim;
+      const lc = laneShardHit
+        ? (sc && Date.now() < sc.expiresAt && laneJob.state === "claimed" && laneJob.sharded?.bundle
+          ? { ...sc, bundle: laneJob.sharded.bundle } : null)
+        : laneJob.sharded ? null : laneSuiteClaimOf(laneJob);
       if (!lc) return json({ error: "no live claim for this job" }, 409);
       if (!existsSync(lc.bundle)) return json({ error: "the bundle is gone — let the claim lapse and take it again" }, 410);
       return new Response(Bun.file(lc.bundle), {
@@ -31864,9 +32272,12 @@ function suiteOffersView(now: number): SuiteOfferRow[] {
   for (const j of laneSuiteJobs.values()) {
     const s = slots.find((x) => x.id === j.slot);
     if (!s?.cwd || s.openedAt !== j.slotOpenedAt) continue;
-    if (j.state === "open" || j.state === "claimed")
-      rows.push({ slot: j.slot, branch: j.branch, state: j.state, device: j.claim?.name ?? null,
-        at: j.claim?.claimedAt ?? j.offeredAt, result: null });
+    if (j.state === "open" || j.state === "claimed") {
+      // through laneSuiteClaimOf, so a SHARDED run (whose `claim` is always null) names its helper too
+      const c = j.sharded ? laneSuiteClaimOf(j) : j.claim;
+      rows.push({ slot: j.slot, branch: j.branch, state: j.state, device: c?.name ?? null,
+        at: c?.claimedAt ?? j.offeredAt, result: null });
+    }
     else if (j.state === "reported" && j.result) {
       // READ DEFENSIVELY: this view rides the 2 s owner poll, so it is the last place that may
       // throw on a shape. A verdict whose remote block is unreadable falls back to the job's own
@@ -36906,6 +37317,19 @@ if (existsSync(STATE_FILE)) {
           if (j.modules !== undefined) {
             const m = moduleListFrom(j.modules);
             if (!m.ok) { console.error(`lane-suite job ${j.id}: restored modules refused (${m.error.slice(0, 120)}) — row dropped`); continue; }
+          }
+          // …and a SHARDED row comes back whole or not at all: a run whose shards do not line up
+          // 1..n, or a shard verdict without its provenance, would merge into a verdict about shards
+          // nobody can name. A narrowed row is never sharded (laneSuiteShardCount), so both is foreign.
+          if (j.sharded !== undefined) {
+            const r = j.sharded as LaneSuiteShardRun | null;
+            const shardOk = !!r && j.modules === undefined && Number.isInteger(r.n) && r.n >= 2 && r.n <= AUDIT_SHARDS_MAX
+              && (r.bundle === null || typeof r.bundle === "string") && (r.openUntil === null || typeof r.openUntil === "number")
+              && Array.isArray(r.shards) && r.shards.length === r.n
+              && r.shards.every((s, i) => !!s && s.k === i + 1 && typeof s.jobId === "string" && /^[0-9a-f]{12}$/.test(s.jobId)
+                && (!s.result || (!!s.result.remote && typeof s.result.remote.reportedAt === "number"
+                  && typeof s.result.remote.name === "string")));
+            if (!shardOk) { console.error(`lane-suite job ${j.id}: restored shard run unreadable — row dropped`); continue; }
           }
           laneSuiteJobs.set(j.id, readable ? j : { ...j, result: null });
         }
@@ -41977,6 +42401,9 @@ Bun.serve<WSData>({
       }
       job.endedAt = Date.now();
       job.claim = null;
+      // …and a SHARDED run's claims, which `claim` never held: its shard jobs leave the portal list
+      // with the state below, which is what makes the daemon abort them (withdrawnRuns)
+      if (job.sharded) releaseLaneSuiteClaims(job);
       job.state = held ? "abandoned" : "withdrawn";
       audit("helper_result", s.id,
         `${held ? "abandoned" : "withdrew"} the preview offer of ${basename(job.repo)} ${job.branch}`

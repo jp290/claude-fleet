@@ -2461,6 +2461,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 (§watch). Der Default von 15 min würgte einen vollen Lauf ab (gemessen 2 120 s,
 `suite-modules.ts`); mehr als 2 700 000 kauft nichts, weil der Claim nach
 `server.ts#HELPER_CLAIM_TIMEOUT_MS` (45 min) verfällt und ein späteres Verdikt dann abgelehnt wird.
+**Ein voller Lauf passt seit 2026-09-26 nicht mehr hinein** (55–70 min, `docs/verify-tiering.md`
+§14.0) — anders als die Lane-Vorschau wird ein Command-Job NICHT geteilt; für die volle Suite einer
+MAIN ist das offen.
 Ein Gate-Suite-Lauf geht genauso: `{"cmd":"./e2e-claude-gate.sh"}` oder
 `{"cmd":"./e2e-clean-review.sh"}`.
 
@@ -2747,6 +2750,32 @@ terminal und bindet den Baum nicht mehr — die Lane entscheidet (lokal fahren, 
 liegen lassen). Ein später eintreffendes Verdikt des verlorenen Runners wird mit **409**
 `no live claim for this preview` abgelehnt; das gesettlte `unknown` bleibt die eine Wahrheit über
 diesen Baum. Beweis: `e2e/helper-portal.ts` (K12) in `./e2e-postland-audit.sh`.
+
+**DIE VOLLE VORSCHAU LÄUFT GETEILT (seit 2026-10-02).** Ein voller `./e2e-isolated.sh` dauert 55–70 min,
+eine Claim-Frist 45 min — jede volle Vorschau über den Helfer verfiel deshalb als `unknown`
+(gemessen: Lanes 24 und 19, Claims nach 2 702 s / 2 708 s verfallen; Zahlen in
+`docs/verify-tiering.md` §14.0). Ein Angebot OHNE `modules` wird darum beim Prägen in
+`FLEET_AUDIT_SHARDS` Shard-Jobs geteilt (`server.ts#laneSuiteShardCount`), sofern die Zahl > 1 ist
+und ein Gerät schlägt, das `audit-shard` erklärt — sonst bleibt es ganz, wie bisher. Was die Lane
+davon sieht:
+
+- `offer.shards[]` (nur auf einem geteilten Angebot; ein ganzes behält seine geschlossene
+  Schlüsselmenge): je Shard `k`, `n`, `jobId`, `state` (`open` · `claimed` · `reported` · `lapsed`
+  · `unclaimed` · `sibling`) und nach dem Bericht dessen Kurzverdikt samt eigenem `artifact`.
+- `offer.state` bleibt `claimed`, solange der Lauf jemandes ist — auch zwischen zwei Shard-Claims.
+  `offer.claim` nennt den ältesten live beanspruchten Shard; `withdraw` ohne `abandon` ist 409,
+  solange einer live beansprucht ist.
+- `offer.result` ist EIN Verdikt, geschrieben wenn der letzte Shard terminal ist: grün nur, wenn
+  alle grün meldeten; rot, wenn einer rot meldete; sonst `unknown` mit jedem nicht-grünen Shard
+  beim Namen (ein verfallener Shard: `state: "lapsed"`, `remote.reason: "timeout"`). `checks` ist
+  die Summe. Die Pane-Zeile kommt einmal, auf der Eltern-Job-ID.
+- Jeder Shard hat seine EIGENE Claim-Frist; die ganze Vorschau darf länger dauern als eine Frist.
+  Unbeanspruchte Shards haben ab dem ersten Claim eine Frist lang Zeit, dann schließen sie.
+
+Auf dem Portal erscheint ein geteiltes Angebot als n Jobs `kind: "lane-suite"` mit `shard: "k/n"` —
+nur für ein Gerät mit `audit-shard`; die Eltern-ID ist nicht beanspruchbar (409). Der Daemon braucht
+dafür nichts Neues (`helper-daemon/daemon.ts#shardEnv` gilt für jede Nicht-Command-Claim). Beweis:
+`e2e/lane-suite.ts` (LS.shard) in `./e2e-isolated.sh`.
 
 **UND EIN ROTES VERDIKT BEKOMMT EINEN ZWEITEN EMPFÄNGER: den Owner.** Dieselbe Mint-Stelle legt
 für `result: "red"` zusätzlich eine Zeile in den **Owner-Posteingang** (`receiverSlot: null`,

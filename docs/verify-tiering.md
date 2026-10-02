@@ -2877,7 +2877,8 @@ und die Nachbarfunktionen):
   (`server.ts#drainPostLandAudits`) und das Schreiben des Claims sind je in EINEM Turn atomar; die
   Gegenrichtung schließt `auditRunningRepo`, eine Marke, die synchron neben der Auswahl gesetzt
   wird. Ein Claim auf einen Baum, den der Drain schon angefangen hat, ist 409 — und umgekehrt.
-- **Der Claim VERFÄLLT** (`FLEET_HELPER_CLAIM_TIMEOUT_MS`, Default 45 min). Abgelaufen zählt
+- **Der Claim VERFÄLLT** (`FLEET_HELPER_CLAIM_TIMEOUT_MS`, Default 45 min — seit 2026-10-02 die Frist
+  EINES Shards, nicht eines ganzen Laufs, §14.0). Abgelaufen zählt
   überall sofort als abwesend (`helperClaimOf`), unabhängig davon, ob der Sweep
   (`FLEET_HELPER_SWEEP_MS`) die Verfallszeile schon gebucht hat. Die Fehlerrichtung ist gewählt:
   lieber einmal lokal zu viel als ein Baum, den niemand geprüft hat. Ein Ergebnis, das NACH dem
@@ -2993,6 +2994,60 @@ ER SELBST fallen. Ein `reason` mit „timed out" heißt „diese Sonde konnte ni
 „der Server hat falsch klassifiziert"; solange er beides gleich meldet, verschiebt jede Marge das
 Problem nur. Bis dahin gilt für einen Leser eines roten `./e2e-postland-audit.sh`: **dieses
 Quartett ist kein Urteil über den Baum** — erst das Register befragen, dann attribuieren.
+
+### 14.0 Die volle Lane-Vorschau: 55–70 min, also läuft sie geshardet (2026-10-02)
+
+**Die Zahl, die hier stand, ist veraltet.** Die 45-min-Claim-Frist (`server.ts#HELPER_CLAIM_TIMEOUT_MS`)
+wurde gesetzt, als ein voller `./e2e-isolated.sh` 5,8–9,8 min dauerte. Gemessen am Trail-Register
+(`<Haupt-Checkout>/e2e-trail/isolated-*.jsonl`, nur volle Läufe ≥ 6 000 Zeilen, Dauer = Startstempel
+im Dateinamen bis letzter `ts`) dauert er auf dem Mac seit dem 26.09. **55–70 min**:
+
+| Lauf | Prüfungen | Fails | Dauer |
+| --- | ---: | ---: | ---: |
+| `isolated-20260928T165836Z-5220` (overhaul) | 6 326 | 7 | 65,4 min |
+| `isolated-20260928T205539Z-98711` | 6 354 | 1 | 61,5 min |
+| `isolated-20260929T120701Z-34726` | 6 424 | 8 | 70,2 min |
+| `isolated-20261001T223240Z-36599` (Lane 24) | 6 886 | 0 | 59,7 min |
+| `isolated-20261002T010007Z-7629` (Lane 19) | 6 750 | 0 | 55,1 min |
+
+Die beiden letzten sind die LOKALEN Nachläufe zweier Vorschauen, die zuvor dem Helfer angeboten
+waren — und deren Claims verfielen (`audit.jsonl`, `helper_claim_expired`): „workhorse held the
+preview suite … for **2702s** / **2708s** without a result". Jede volle Vorschau über den Helfer
+endete also als `unknown — nothing was measured`, und die Lane hielt danach ~1 h den Suite-Mutex.
+Der Post-Land-Audit derselben Suite läuft auf demselben Helfer dagegen in `FLEET_AUDIT_SHARDS=3`
+Shards: **11–22 min je Shard** (Shard 2 21,1–22,0 min, Shards 1 und 3 11,2–13,6 min; 16 Remote-Zeilen
+`post-land-audits.jsonl` 30.09. 13:52 – 02.10. 01:22 UTC, 6 823–7 264 Prüfungen, Wand 21,1–22,0 min).
+
+**Die Wahl: Shards, nicht eine längere Frist.** Eine aus der Laufzeit abgeleitete Frist hätte ZWEI
+Grenzen verschieben müssen — die Claim-Frist hier und `suiteTimeoutSec` des Daemons (Default 3 600 s,
+ein Wert in der Workhorse-Konfiguration) — und brächte eine Vorschau, die eine Stunde lang dauert.
+Die Shards brauchen keine der beiden zu bewegen: jeder Shard läuft unter seiner EIGENEN Claim-Frist,
+und der längste misst ein Drittel der Frist. Der Daemon kennt `shard` schon für jede Nicht-Command-Claim
+(`helper-daemon/daemon.ts#shardEnv`); geändert ist nur die Server-Seite:
+
+- **Das Angebot wird beim Prägen geteilt** (`server.ts#laneSuiteShardCount`): eine VOLLE Vorschau (ohne
+  `modules`) wird bei `FLEET_AUDIT_SHARDS` > 1 in so viele Shard-Jobs geteilt, sofern ein Gerät schlägt,
+  das `audit-shard` erklärt. Eine eingeengte Vorschau bleibt ganz; ohne fähiges Gerät bleibt das Angebot
+  ganz, und jedes Gerät nimmt es wie bisher. Die Zahl ist die des Audits, keine zweite Stellschraube.
+- **Jeder Shard hat seine eigene Claim-Frist**, der erste Claim baut das EINE Bundle (ein Baum für alle
+  Shards); unbeanspruchte Shards haben ab dem ersten Claim eine Frist lang Zeit. Die ganze Vorschau
+  darf so länger dauern als eine Frist — kein Shard darf es.
+- **Die Zusammenführung ist die des Audits** (`server.ts#laneSuiteShardMerge`): grün nur, wenn alle n
+  grün meldeten; rot, wenn einer rot meldete; sonst `unknown` mit jedem nicht-grünen Shard beim Namen.
+  Ein verfallener Shard bleibt `unknown`, nie n−1 grün. Die Lane bekommt EIN Verdikt auf dem
+  Eltern-Job; jeder Shard legt sein eigenes `suite.log` ab (`offer.shards[].artifact`).
+- **Rückzug:** solange ein Shard live beansprucht ist, verweigert `withdraw` ohne `abandon` mit 409.
+
+**Beweis:** `e2e/lane-suite.ts` (LS.shard) im Hauptläufer, also in jedem `./e2e-isolated.sh`: mit
+8-s-Frist liegen erster Claim und letzter Bericht über eine Frist auseinander, jeder Shard darunter, und
+das Verdikt ist grün mit der Summe aller Shard-Prüfungen; ein verfallener Shard ergibt `unknown`, das
+ihn nennt, und die Lane wird in beiden Fällen benachrichtigt.
+
+**Was offen bleibt (benannt, nicht getan):** bei `FLEET_AUDIT_SHARDS` ≤ 1 bleibt eine volle Vorschau
+ganz und verfällt wie zuvor; ein voller Lauf über `POST /api/self/jobs` (`docs/self-api.md`, MAIN-eigene
+Vorschau, `timeoutMs` 2 700 000) ist nicht geshardet und verfällt ebenso; und
+`server.ts#SUITE_HOLD_OVERDUE_MS` (20 min) rechnet noch mit den alten 5,8–9,8 min, warnt bei einem
+lokalen vollen Lauf also immer.
 
 ### 14.1 Ein remote `unknown` mit exit 127 ist zuerst ein leerer Klon, nicht ein fehlendes Kommando (2026-08-29)
 

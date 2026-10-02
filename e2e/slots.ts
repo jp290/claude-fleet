@@ -4665,6 +4665,13 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       if (path.startsWith('/api/dirinfo?')) return Response.json({ git: true, branch: 'fixture', dirty: 0, orphans: [{path:'/fixture/lane', branch:'fleet/continued'}] });
       if (path === '/api/role-presets') return Response.json({ presets: window.fixtureStored });
       if (path === '/api/sessions') return Response.json({ slots: window.fixtureSlots });
+      // the start receipt reads the project views FRESH at the occupant the start produced
+      // (src/rights.ts#proofGrantRow): the server's answer for a session nobody assigned one to
+      if (path.startsWith('/api/slots/') && path.endsWith('/memory-grant')) {
+        window.fixtureGrantReads = (window.fixtureGrantReads || 0) + 1;
+        const row = (window.fixtureSlots || []).find(r => path === '/api/slots/' + r.id + '/memory-grant');
+        return Response.json({ slot: row ? row.id : 0, openedAt: row ? row.openedAt : null, grant: null, inForce: false, knownProjects: [] });
+      }
       // the Programs the MAIN card reads: one free, one stale, one living, two without a readable
       // occupancy (no health record; a founding marker), and one complete that is not offered
       if (path === '/api/programs') {
@@ -5089,7 +5096,8 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g2['the receipt window fits its content, Zur Session offered'] = await fits() && await evaluate<boolean>(`document.querySelector('#shell-found.fdproved .fdgo')?.disabled===false`);
       g2['equal readback rows, no packs and zero receipt reads'] = await evaluate<boolean>(`(() => {
         const rows=Array.from(document.querySelectorAll('.fdproofrow[data-field]'));
-        return rows.length===6 && rows.every(r=>r.dataset.state==='same')
+        return rows.length===7 && rows.every(r=>r.dataset.state==='same')
+          && ${actual('Projektsichten')}?.textContent.startsWith('keinefrisch gelesen') && window.fixtureGrantReads>0
           && ${actual('Rolle')}?.textContent==='Leer' && ${actual('Ort')}?.textContent==='/fixture/repo'
           && ${actual('Agent')}?.textContent.startsWith('codex') && ${actual('Modell')}?.textContent==='fixture-model'
           && ${actual('Effort')}?.textContent==='high' && ${actual('Packs')}?.textContent==='keine'

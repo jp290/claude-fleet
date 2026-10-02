@@ -25,8 +25,26 @@
 //
 // The board (src/board.ts#renderBoard) and the founding window (src/founding.ts) only hang these
 // in; the block keeps its state per slot and occupant here.
-import { api, el, fleet, tasksList, type SlotInfo } from "./client";
-import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
+import { api, el, fleet, type SlotInfo, type TaskInfo } from "./client";
+import type { ProgramDigest, ProgramInfo } from "./queue";
+
+// THE BOARD'S READS, handed in by src/board.ts (wireRights) instead of imported: the founding window
+// bundles this module against its client boundary alone (e2e/slots.ts#runFoundingFocusDom), and
+// src/queue.ts is no part of that boundary. The app always wires them (src/board.ts loads with the
+// client); unwired — only that probe's bundle — there is no Program list and no task list.
+export interface RightsBoard {
+  tasks(): TaskInfo[];
+  programs(): ProgramInfo[];
+  programsPoll(): ProgramDigest[];
+  programsRead(): "unread" | "ok" | "fail";
+  loadPrograms(): Promise<void>;
+  openSheet(repo: string): void;
+}
+let board: RightsBoard = {
+  tasks: () => [], programs: () => [], programsPoll: () => [], programsRead: () => "unread",
+  loadPrograms: async () => {}, openSheet: () => {},
+};
+export function wireRights(b: RightsBoard) { board = b; }
 
 type GrantView = "work" | "observations";
 interface Occupant { slot: number; openedAt: number }
@@ -213,7 +231,7 @@ function btn(cls: string, text: string, rk: string, on: () => void, title?: stri
 
 const isLaneRow = (r: SlotInfo | undefined): boolean => !!r?.worktree;
 function boundProgram(r: SlotInfo): { title: string; id: string } | null {
-  const p = programsList.find((x) => x.status === "active" && x.main && x.main.slot === r.id && x.main.openedAt === r.openedAt);
+  const p = board.programs().find((x) => x.status === "active" && x.main && x.main.slot === r.id && x.main.openedAt === r.openedAt);
   return p ? { title: p.title, id: p.id } : null;
 }
 const knownName = (d: GrantRead, key: string): string | null => {
@@ -539,7 +557,7 @@ function kv(key: string, value: HTMLElement | string): HTMLElement {
 // never "Keine" for a session that may be a MAIN.
 function ownWork(row: SlotInfo): HTMLElement {
   const v = el("span", "rgv");
-  const wave = tasksList.filter((t) => t.slot === row.id && t.status === "sent" && t.id !== row.taskId);
+  const wave = board.tasks().filter((t) => t.slot === row.id && t.status === "sent" && t.id !== row.taskId);
   if (row.worktree) {
     if (row.taskId) {
       const head = el("span", "rgval");
@@ -554,15 +572,15 @@ function ownWork(row: SlotInfo): HTMLElement {
   } else {
     const prog = boundProgram(row);
     if (prog) {
-      const open = tasksList.filter((t) => t.programId === prog.id && t.status !== "done" && t.status !== "archived").length;
+      const open = board.tasks().filter((t) => t.programId === prog.id && t.status !== "done" && t.status !== "archived").length;
       v.append(el("span", "rgval", `Ihr Program „${prog.title}“`),
         sub(`${open} ${open === 1 ? "offener Auftrag" : "offene Aufträge"} und ihre Lanes: Stand, Quellen, Belege, Beobachtung.`));
-    } else if (programsRead !== "ok" && programsPoll.some((x) => x.status === "active")) {
+    } else if (board.programsRead() !== "ok" && board.programsPoll().some((x) => x.status === "active")) {
       // the 2 s poll names the active Programs but not their MAIN binding; the full rows are read
       // on demand (a no-op inside loadPrograms' own floor) and the next paint has the answer
-      void loadPrograms();
+      void board.loadPrograms();
       v.append(el("span", "rgval", "Unbekannt"),
-        sub(programsRead === "fail" ? "Die Programs sind gerade nicht lesbar — ob sie eines führt, ist nicht gemessen."
+        sub(board.programsRead() === "fail" ? "Die Programs sind gerade nicht lesbar — ob sie eines führt, ist nicht gemessen."
           : "Die Programs werden gelesen — ob sie eines führt, steht gleich hier."));
     } else {
       v.append(el("span", "rgmute", "Keine"), sub(`An keinen Auftrag, kein Program gebunden.${/\borchestrator\b/i.test(row.label ?? "") ? " Die Rolle gibt kein Leserecht." : ""}`));
@@ -590,7 +608,7 @@ export function rightsSection(row: SlotInfo): HTMLElement {
   // E33: the owner's own view — the repo sheet, opened where it already lives (the queue)
   const repo = row.worktree?.repo ?? row.repo ?? row.cwd ?? "";
   const mine = el("span", "rgv");
-  const lk = btn("link", `Repo-Blatt ${repoName(repo)}`, "sheet", () => { openQueue(); qSelect(`repo:${repo}`); },
+  const lk = btn("link", `Repo-Blatt ${repoName(repo)}`, "sheet", () => board.openSheet(repo),
     "Öffnet das Repo-Blatt in der Aufgabenansicht — deine eigene, breite Sicht auf dieses Repo.");
   mine.append(lk, sub("Lanes, Queue, Lands, Check, Deploy, Lane-Grenze — das siehst du, nicht die Session."));
   sec.append(kv("Deine Sicht", mine));

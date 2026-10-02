@@ -1,5 +1,5 @@
-import { $, el, RECENT_MS, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename } from "./client";
-import { openQueue, programsPoll } from "./queue";
+import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename } from "./client";
+import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool } from "./prefs";
 import { popover } from "./popover";
 import { openLaneFounding } from "./founding";
@@ -12,7 +12,14 @@ import { porcelainPath } from "./gitpath";
 import { icon } from "./icons";
 import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./devices";
 import { serverClock } from "./composer";
-import { rightsHoldFocus, rightsSection } from "./rights";
+import { rightsHoldFocus, rightsSection, wireRights } from "./rights";
+
+// the rights block reads the queue's lists through the board, never by import (src/rights.ts#wireRights)
+wireRights({
+  tasks: () => tasksList, programs: () => programsList, programsPoll: () => programsPoll,
+  programsRead: () => programsRead, loadPrograms: () => loadPrograms(),
+  openSheet: (repo) => { openQueue(); qSelect(`repo:${repo}`); },
+});
 
 // --- right sideboard: session brief (desktop-only). Deterministic layers only —
 // git facts fetched fresh from /brief per render, and the prompt outline derived from

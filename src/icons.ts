@@ -53,6 +53,9 @@ const PATHS = {
   // and the pencil that brings the composer up. keys above is the band of terminal keys.
   menu: ["M4 7h16", "M4 12h16", "M4 17h16"],
   pencil: ["M16 4.5a2.1 2.1 0 0 1 3 3L8 18.5l-4 1 1-4z", "M14 6.5l3 3"],
+  // THE PHONE'S TOOLS SHEET (docs/design/mobil-insel-notiz.md §4): the loupe of "Referenzen erklären",
+  // which the corner group still draws as a CSS circle (.loupe) — here as a glyph of this set
+  search: ["M10.5 17a6.5 6.5 0 1 0 0-13a6.5 6.5 0 1 0 0 13z", "M15.5 15.5l4.5 4.5"],
 } as const;
 
 export type IconName = keyof typeof PATHS;

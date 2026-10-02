@@ -78,13 +78,26 @@ export function mountComposer(): void {
   // a past session on screen is read-only: the composer would address the RUNNING session
   const pastN = pane?.pastN ?? null;
   ta.disabled = pastN !== null;
-  if (pastN !== null) ta.placeholder = `Session ${pastN} liest nur — ↩ oder Esc auf der Zeile führt zur laufenden`;
-  else if (ta.placeholder.startsWith("Session "))
-    ta.placeholder = pane?.slot ? `Prompt for slot ${pane.slot}…${isMobile() ? "" : " (Enter sends)"}` : "Prompt… (no session in focused pane)";
+  ta.placeholder = promptPlaceholder();
   setComposerSize(pane?.isChat ? "tall" : "bar");
   renderComposerOpts(false);
   renderParkHint();
   renderTarget();
+}
+
+// THE PLACEHOLDER names the session by the name the pill and the target read (label, else the
+// folder), in every view the same words (card "Auf dem Telefon öffnen Sessions und Werkzeuge als
+// eigene Blätter", the sketch's "Prompt für ‹Name› …"); the desktop adds how to send. A past session
+// on screen reads only, and says so. Rewritten on focus, mount and every poll (src/client.ts#updateTitle),
+// so a rename or the first poll after boot reaches it.
+export function promptPlaceholder(): string {
+  const pane = panes[focused];
+  const slot = pane?.slot ?? 0;
+  if (pane?.pastN != null) return `Session ${pane.pastN} liest nur — ↩ oder Esc auf der Zeile führt zur laufenden`;
+  if (!slot) return "Prompt … (diese Pane zeigt keine Session)";
+  const s = fleet.find((x) => x.id === slot);
+  const name = s?.cwd ? s.label ?? baseName(s.cwd) : `Slot ${slot}`;
+  return `Prompt für ${name} …${isMobile() ? "" : " (Enter sendet)"}`;
 }
 
 // THE SEND TARGET (Grammatik G2.4, card 929fdbe7): where the composer writes, on screen while the
@@ -281,12 +294,29 @@ document.addEventListener("visibilitychange", () => {
 });
 reduceMotion.addEventListener("change", tickCacheAge);
 
+// the slot the switches address: the conversation view — or, for a harness that HAS none (pi-ox, the
+// container; since the sixteenth cut pi and codex have one), the terminal view, its only one
+function optSlot(): number {
+  const pane = panes[focused];
+  const sup = pane?.slot ? harnessEntry(pane.slot)?.supports : undefined;
+  return pane?.slot && (pane.isChat || (sup && !canChatOn(sup))) ? pane.slot : 0;
+}
+// one entry per NAME: claude-opus-5 and claude-opus-5[1m] read the same ("Opus 5 · 1M") and
+// resolve the same in Claude Code 2.1.278 (both native_1m), so two identical rows would only
+// ask the owner to pick between twins. The kept id is the slot's own if it is one of them,
+// else the adapter's first; the other stays reachable through the free-text field.
+function modelChoices(h: HarnessInfo, current: string): string[] {
+  const byName = new Map<string, string>();
+  for (const m of h.models ?? []) {
+    const name = modelLabel(m);
+    if (!byName.has(name) || m === current) byName.set(name, m);
+  }
+  return [...byName.values()];
+}
+
 export function renderComposerOpts(force: boolean): void {
   const pane = panes[focused];
-  // the switches live in the conversation view — or, for a harness that HAS none (pi-ox, the
-  // container; since the sixteenth cut pi and codex have one), in the terminal view, its only one
-  const sup = pane?.slot ? harnessEntry(pane.slot)?.supports : undefined;
-  const slot = pane?.slot && (pane.isChat || (sup && !canChatOn(sup))) ? pane.slot : 0;
+  const slot = optSlot();
   const h = slot ? harnessEntry(slot) : null;
   const s = fleet.find((x) => x.id === slot);
   const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? "", pane?.observedModel ?? "", pane?.observedEffort ?? ""].join("|");
@@ -330,16 +360,7 @@ export function renderComposerOpts(force: boolean): void {
       const markStaged = (v: string) => {
         for (const o of list.children) o.classList.toggle("staged", (o as HTMLElement).dataset.id === v && v !== current);
       };
-      // one entry per NAME: claude-opus-5 and claude-opus-5[1m] read the same ("Opus 5 · 1M") and
-      // resolve the same in Claude Code 2.1.278 (both native_1m), so two identical rows would only
-      // ask the owner to pick between twins. The kept id is the slot's own if it is one of them,
-      // else the adapter's first; the other stays reachable through the free-text field.
-      const byName = new Map<string, string>();
-      for (const m of h.models ?? []) {
-        const name = modelLabel(m);
-        if (!byName.has(name) || m === current) byName.set(name, m);
-      }
-      for (const m of byName.values()) {
+      for (const m of modelChoices(h, current)) {
         const notice = modelNotice(h.id, m);
         const b = el("button", "cmdmodel", `${modelLabel(m)}${notice ? ` · ${notice}` : ""}`) as HTMLButtonElement;
         b.dataset.id = m;
@@ -391,6 +412,44 @@ export function renderComposerOpts(force: boolean): void {
   // of staging. What the catalogue carries is everything this shows; an empty or absent list
   // renders nothing at all (no button), and no command name exists anywhere in this file.
   if (h.commands?.length) compOpts.appendChild(commandSwitch(slot, h));
+}
+
+// THE PHONE'S TOOLS SHEET (src/client.ts#renderSheet) shows the same two switches as segments: the
+// same values, the same staging, the same Apply. Nothing here writes on its own — stageOpt only marks
+// a pick (optStaged, which the switch then shows too) and applyOpt presses the switch's own Apply
+// inside its own popover, so the question, the restart warning and the verdict are today's.
+export interface OptChoice { field: "model" | "effort"; current: string; staged: string | null; values: { v: string; label: string; title: string }[] }
+export function optChoices(): OptChoice[] {
+  const slot = optSlot();
+  const h = slot ? harnessEntry(slot) : null;
+  if (!h) return [];
+  const pane = panes[focused], s = fleet.find((x) => x.id === slot);
+  const out: OptChoice[] = [];
+  if (h.supports.model) {
+    const current = runningModel(s?.model, pane?.observedModel);
+    const values = modelChoices(h, current).map((m) => {
+      const notice = modelNotice(h.id, m);
+      return { v: m, label: `${modelLabel(m).split(" · ")[0]}${notice ? ` · ${notice}` : ""}`, title: `${m}${notice ? ` · ${notice}` : ""}` };
+    });
+    if (values.length) out.push({ field: "model", current, staged: optStaged.model ?? null, values });
+  }
+  if (h.supports.effort && h.effortLevels.length) {
+    const current = runningEffort(s?.effort, pane?.observedEffort);
+    out.push({ field: "effort", current, staged: optStaged.effort ?? null, values: h.effortLevels.map((lv) => ({ v: lv, label: lv, title: `effort ${lv}` })) });
+  }
+  return out;
+}
+export function stageOpt(field: "model" | "effort", v: string): void {
+  optStaged = { ...optStaged, [field]: v };
+  optMsg = {};
+  renderComposerOpts(true);
+}
+export function applyOpt(field: "model" | "effort"): void {
+  optOpen = field;
+  optMsg = {};
+  optConfirm = false;
+  renderComposerOpts(true);
+  compOpts.querySelector<HTMLButtonElement>(`.optswrap.${field} .cmdapply`)?.click();
 }
 
 // The ⌘ switch: one row per documented command (name + the evidence line), click = deliver() —

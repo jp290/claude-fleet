@@ -17,7 +17,8 @@ import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
-import { MODEL_DEFAULTS } from "../model-register";
+import { MODEL_DEFAULTS, modelsForHarness } from "../model-register";
+import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
 
 export async function run(): Promise<void> {
@@ -2094,7 +2095,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   }
 
   // THE SEND TARGET AND THE TWO PANES' INPUTS (card 929fdbe7, Grammatik G2.4), same rig: two
-  // sessions in two panes (one pane and the drawer at 390), native clicks and typing, a fake socket
+  // sessions in two panes (one pane and the Sessions sheet at 390), native clicks and typing, a fake socket
   // per pane, /send intercepted. A browser that cannot run is the PROBE line — red, never a skip.
   try {
     for (const result of await runComposerTargetDom(sourceRoot)) {
@@ -5463,13 +5464,17 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const section = (word) => { const b = [...(W()?.querySelectorAll('[data-settings-tab]') ?? [])].find((x) => x.textContent === word); return b ? W().querySelector('.setsec[data-sec="' + b.dataset.settingsTab + '"]') ?? [...W().querySelectorAll('.setsec')][[...W().querySelectorAll('[data-settings-tab]')].indexOf(b)] : null; };
       return { W, shown, focusables, desc, inside, row, section };
     })()`;
-    const gear = `[...document.querySelectorAll('#mset, .panegear')].find((e) => window.__fx.shown(e))`;
-    // the phone upright keeps the gear behind the top island's ⋯ (index.html, the island block): the
-    // client is ready when either is drawn, and the gear is reached through pill → ⋯ there
-    const ready = `(${gear}) || window.__fx.shown(document.querySelector('#mpill'))`;
+    const deskGear = `[...document.querySelectorAll('#mset, .panegear')].find((e) => window.__fx.shown(e))`;
+    // the phone upright keeps the gear as the row "Einstellungen" of the tools sheet behind the top
+    // island's ⋯ (src/client.ts#renderSheet): the client is ready when the gear or the pill is drawn,
+    // the gear is reached through pill → ⋯ → the row, and the focus goes back to the pill
+    const gear = `((${deskGear}) ?? document.querySelector('#msheet [data-tool="settings"]'))`;
+    const opener = `((${deskGear}) ?? document.querySelector('#mpill'))`;
+    const ready = `(${deskGear}) || window.__fx.shown(document.querySelector('#mpill'))`;
     const toGear = async () => {
-      if (await evaluate<boolean>(`!!(${gear})`)) return;
+      if (await evaluate<boolean>(`!!(${deskGear})`)) return;
       await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#mmore')`);
+      await wait("document.body.classList.contains('msheet')");
     };
     const results: SettingsDomResult[] = [];
     for (const [width, height] of [[1200, 900], [390, 844]] as const) {
@@ -5692,7 +5697,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await click(`window.__fx.W().querySelector('.shellclose')`);
       await evaluate(`[...window.__fx.W().querySelectorAll('.setdiscard button')].find((b) => /Verwerfen/.test(b.textContent)).focus()`);
       await key("Enter");
-      const dropped = { closed: await evaluate<boolean>("!window.__fx.W()"), onGear: await evaluate<boolean>(`document.activeElement === ${gear}`),
+      const dropped = { closed: await evaluate<boolean>("!window.__fx.W()"), onGear: await evaluate<boolean>(`document.activeElement === ${opener}`),
         writes: settingsWrites(sinceOpen).length };
       facts.dropped = dropped;
       claims["Verwerfen closes with zero writes and returns the focus to the opener"] = dropped.closed && dropped.onGear && dropped.writes === 0;
@@ -5736,10 +5741,13 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       facts.repaint = { polls: fx.sessions - polls, focus: await evaluate<string>("window.__fx.desc(document.activeElement)") };
       claims["two background polls later the focus is still on the same control"] = fx.sessions - polls >= 2 && await evaluate<boolean>(`document.activeElement === ${capInput}`);
       await key("Escape");
-      claims["Escape without staged values closes and returns the focus to the opener"] = await evaluate<boolean>(`!window.__fx.W() && document.activeElement === ${gear}`);
-      await key("Enter"); // the opener is focused: Enter reopens through its native activation
+      claims["Escape without staged values closes and returns the focus to the opener"] = await evaluate<boolean>(`!window.__fx.W() && document.activeElement === ${opener}`);
+      // the opener is focused: at the desk Enter reopens through its native activation; upright the
+      // opener is the pill, and the window is one ⋯ and one row away again
+      if (await evaluate<boolean>(`!!(${deskGear})`)) await key("Enter");
+      else { await toGear(); await click(gear); }
       await wait("window.__fx.W()");
-      claims["reopening by keyboard focuses the window again, one window only"] = await evaluate<boolean>("document.querySelectorAll('#shell-settings').length === 1 && window.__fx.inside()");
+      claims["reopening (by keyboard at the desk, through the sheet upright) focuses the window again, one window only"] = await evaluate<boolean>("document.querySelectorAll('#shell-settings').length === 1 && window.__fx.inside()");
 
       // --- 8. the unknown/old server: no plan, no `bases`, no autos flag → said, never guessed
       await key("Escape");
@@ -5851,7 +5859,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
 // (card 929fdbe7, Grammatik G2.4): two sessions in two panes, native clicks, native typing, a fake
 // socket per pane and an intercepted /send — nothing reaches a server. Every claim reads the DOM,
 // the socket bytes or the request the page sent, never the source. At 390 px the phone shows one
-// pane, so the same claims run over a slot switch from the drawer. Exported so a lane can drive it
+// pane, so the same claims run over a slot switch from the Sessions sheet. Exported so a lane can drive it
 // with an artefact folder (screenshots + screencast frames) and against a mutated copy of the tree.
 interface ComposerTargetDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runComposerTargetDom(sourceRoot: string, artifacts?: string): Promise<ComposerTargetDomResult[]> {
@@ -6146,24 +6154,22 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         await shot(width, "chat-view");
         await click("window.__fx.pane(0).querySelector('.viewtoggle')");
       } else {
-        // --- the phone: one pane, the slot switch comes from the drawer; the keyboard never opens by itself
-        // the drawer opens from the top island: the pill opens it, its slot button hands over to ☰
+        // --- the phone: one pane, the slot switch comes from the Sessions sheet; the keyboard never opens by itself
+        // the sheet opens from the top island: the pill opens it, its slot button opens the sheet
         await click("document.querySelector('#mpill')");
         await click("document.querySelector('#mslot')");
-        // the drawer slides in: the row is clicked where it finally rests, not mid-flight
-        await wait("document.body.classList.contains('drawer') && document.querySelector('#slots .slot[data-slot=\"2\"]')?.getBoundingClientRect().left >= 0", 3000);
-        await settle(400);
-        await click("document.querySelector('#slots .slot[data-slot=\"2\"] .lbl') ?? document.querySelector('#slots .slot[data-slot=\"2\"]')");
+        await wait("document.body.classList.contains('msheet') && !!document.querySelector('#msheet .mshrow[data-slot=\"2\"]')", 3000);
+        await settle(200);
+        await click("document.querySelector('#msheet .mshrow[data-slot=\"2\"]')");
         await wait("document.querySelector('#comptarget')?.dataset.slot === '2'", 3000);
         facts.switched = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
-        claims["a slot switch from the drawer moves the target to slot 2 · Beta with Beta's own draft"] = names((facts.switched as { target: Target }).target, 2, 2000, "Beta")
+        claims["a slot switch from the Sessions sheet moves the target to slot 2 · Beta with Beta's own draft"] = names((facts.switched as { target: Target }).target, 2, 2000, "Beta")
           && (facts.switched as { draft: string }).draft === "";
         claims["the switch opens no keyboard (the composer does not take the focus)"] = (facts.switched as { where: string }).where !== "composer";
-        // …and the drawer slides out before the next tap: a tap during the slide lands on a free row
-        // under the finger and opens the founding window (measured on this probe, 2026-10-02)
-        const drawerGone = await wait("!document.body.classList.contains('drawer') && document.querySelector('#side').getBoundingClientRect().right <= 0", 3000);
+        // …and the sheet is gone before the next tap (it has no slide: nothing lands on a row mid-flight)
+        const sheetGone = await wait("!document.body.classList.contains('msheet') && !window.__fx.shown(document.querySelector('#msheetwrap'))", 3000);
         await settle(300);
-        claims["the slot switch closes the drawer"] = drawerGone;
+        claims["the slot switch closes the Sessions sheet"] = sheetGone;
         await click("document.querySelector('#input')");
         await typeText("phone beta");
         const shownAtSend = await tgt();
@@ -6201,7 +6207,10 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
 // that loses 336 px (iOS upright with the suggestion row) and fires its resize — so the real
 // sync path sets body.keyboard-open and --vvh. Every claim reads the DOM, the socket bytes or the
 // page's geometry, never the source. 1200 × 900 and the phone on its side (844 × 390, touch) only
-// claim that no island exists there; their pixels are compared before/after by the lane, not here.
+// claim that no island and no sheet exists there and what the field's placeholder reads; their pixels
+// are compared before/after by the lane, not here. Upright the slot button and ⋯ open the sheets
+// Sessions and Werkzeuge (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene Blätter"):
+// their place, words, 40-px targets, and that each row does what the board's own control does.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 // `detail` holds the facts one claim was judged on — the whole `facts` outgrows a check line
 interface PhoneIslandDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown>; detail: Record<string, unknown> }
@@ -6219,7 +6228,12 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
     { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, lastOutput: 0 },
     ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
   ];
-  const fx = { sessions: 0, inputs: [] as string[] };
+  const fx = { sessions: 0, inputs: [] as string[], posts: [] as { path: string; body: string }[] };
+  // one harness with the composer's two switches, so the tools sheet has model and effort to show —
+  // its pick list is the register's (model-register.ts), as the server hands it out
+  const HARNESSES = { harnesses: [{ id: "claude", default: true, note: null, effortLevels: ["low", "medium", "high", "xhigh"],
+    models: modelsForHarness("claude"),
+    supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }] };
   // the bytes the nine keys must send — src/client.ts KEYS, in the row's order (^C first)
   const KEY_BYTES = "\x03\x1b\t\x1b[Z\x1b[A\x1b[B\x1b[D\x1b[C\r";
   const FAKE = `(() => { window.__ws = [];
@@ -6287,14 +6301,14 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
       if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
       if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
-      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
       const p = new URL(request.url).pathname;
-      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (request.method === "POST") { fx.posts.push({ path: p, body: request.postData ?? "" }); return void json(requestId, { ok: true }); }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
       if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
       if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: 10 * 60_000, chips: ["/review", "/compact"], slots, tasks: [] }); }
-      if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
+      if (p === "/api/harnesses") return void json(requestId, HARNESSES);
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
     let targetId = "";
@@ -6370,6 +6384,10 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         side: await shown("#side"), bar: await box("#bar") };
       const seen = facts.seen as { mtop: boolean; grip: boolean; mhead: boolean; mread: boolean; side: boolean };
       claims["no island exists here: neither the top island nor the grip is drawn"] = !seen.mtop && !seen.grip;
+      facts.placeholder = await evaluate<string>("document.querySelector('#input').placeholder");
+      facts.sheet = await shown("#msheetwrap");
+      claims[`no sheet is drawn here, and the field reads "Prompt für Alpha …"${width === 1200 ? " (Enter sendet)" : ""}`] = !facts.sheet
+        && facts.placeholder === (width === 1200 ? "Prompt für Alpha … (Enter sendet)" : "Prompt für Alpha …");
       if (width === 1200) claims["the desktop keeps its sidebar and no phone head"] = seen.side && !seen.mhead && !seen.mread;
       else claims["the phone on its side keeps the reading mode (#mread) and no phone head"] = facts.coarse === true && seen.mread && !seen.mhead;
       await shot(`${width}-start`);
@@ -6471,30 +6489,231 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       };
       const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(400); };
       const actions: Record<string, { was: boolean; done: boolean; closed: boolean }> = {};
-      actions.slot = await act("#mslot", "document.body.classList.contains('drawer')", async () => { await escape(); await wait("!document.body.classList.contains('drawer')"); await settle(300); });
+      const sheetIs = (which: string) => `document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === '${which}'`;
+      const sheetGone = async () => { await escape(); await wait("!document.body.classList.contains('msheet')"); await settle(200); };
+      actions.slot = await act("#mslot", sheetIs("sessions"), sheetGone);
       actions.view = await act("#mview", "window.__fx.pane().classList.contains('chat')");
-      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').textContent"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')") };
+      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').textContent"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')"),
+        placeholder: await evaluate<string>("document.querySelector('#input').placeholder") };
       actions.viewBack = await act("#mview", "!window.__fx.pane().classList.contains('chat')");
       actions.info = await act("#minfo", "window.__fx.shown(document.querySelector('#shell-board'))", escape);
       actions.hist = await act("#mhist", "getComputedStyle(document.querySelector('#hist')).display === 'flex'", escape);
-      if (keyboard) { await tap("document.querySelector('#input')"); await wait("document.body.classList.contains('keyboard-open')", 2000); }
-      actions.more = await act("#mmore", "document.body.classList.contains('keyboard-options')");
-      await settle(300); // a keyboard that left with the focus would have folded the options away by now (sync)
-      // Live is a touch affordance (index.html: #comptray > #live only under any-pointer: coarse)
-      facts.more = { gear: await evaluate<boolean>("[...document.querySelectorAll('.panegear')].some((e) => window.__fx.shown(e))"),
-        live: await shown("#live"), still: await evaluate<boolean>("document.body.classList.contains('keyboard-options')"),
-        where: await evaluate<string>("window.__fx.where()"), anyCoarse: await evaluate<boolean>("matchMedia('(any-pointer: coarse)').matches"),
-        tools: await box("document.querySelector('#panes .pane .panetools')") };
-      await tapAt({ x: W / 2, y: Math.round((bottom - 60) * 0.6) }, "outside ⋯");
-      const moreClosed = await evaluate<boolean>("!document.body.classList.contains('keyboard-options')");
+      actions.more = await act("#mmore", sheetIs("tools"), sheetGone);
       facts.actions = actions;
-      const actionsClaim = `${tag}every action closes the island and does what the board's own control does (drawer, view, ℹ, History, ⋯)`;
+      const actionsClaim = `${tag}every action closes the island and does what it names (Sessions sheet, view, ℹ, History, tools sheet)`;
       claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
       detail[actionsClaim] = { actions, chatView: facts.chatView, missing: [...missing] };
-      const moreClaim = `${tag}⋯ brings the corner group's tools (with the gear) and, on a touch screen, Live; a tap outside folds them away`;
-      const more = facts.more as { gear: boolean; live: boolean; still: boolean; where: string; anyCoarse: boolean };
-      claims[moreClaim] = more.gear && more.still && more.live === more.anyCoarse && moreClosed && (!keyboard || more.where === "#input");
-      detail[moreClaim] = { ...more, moreClosed };
+      facts.placeholder = { term: await evaluate<string>("document.querySelector('#input').placeholder"), chat: (facts.chatView as { placeholder: string }).placeholder };
+      claims[`${tag}the field reads "Prompt für Alpha …" in the terminal and in the conversation`] =
+        (facts.placeholder as { term: string; chat: string }).term === "Prompt für Alpha …" && (facts.placeholder as { term: string; chat: string }).chat === "Prompt für Alpha …";
+
+      // THE TWO SHEETS (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene Blätter",
+      // docs/design/mobil-insel-notiz.md §1 and §3). With the keyboard up, the field holds it until a
+      // sheet opens; the simulated keyboard stays at 336 px, the case where it has not left yet.
+      const kbUp = async () => { if (!keyboard) return; await tap("document.querySelector('#input')"); await wait("document.body.classList.contains('keyboard-open')", 2000); await settle(200); };
+      const openVia = async (id: string, which: string) => { await tap("document.querySelector('#mpill')"); await tap(`document.querySelector('${id}')`); const ok = await wait(sheetIs(which), 3000); await settle(250); return ok; };
+      // the sheet as a finger meets it: boxes, its words, the targets under 40 px and those a finger
+      // at the centre misses (a target scrolled out of its own row or list is not counted — it scrolls in)
+      const SHEET = `(() => { const f = window.__fx, sh = document.querySelector('#msheet');
+        const btns = [...sh.querySelectorAll('button')].filter(f.shown);
+        // excused only along the axis its row or list scrolls: the tool rows and segments sideways,
+        // the list up and down — a row cut off sideways in the list is a fault, not a scroll
+        const inView = (b) => { const r = b.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+          const box = b.parentElement.closest('.mshtray, .mshbody, .mshsegs'); if (!box) return true;
+          const c = box.getBoundingClientRect();
+          return box.classList.contains('mshbody') ? y >= c.top && y <= c.bottom : x >= c.left && x <= c.right; };
+        const word = (b) => (b.querySelector('.mshw')?.textContent ?? b.textContent).trim();
+        const body = sh.querySelector('.mshbody');
+        return { sheet: f.box(sh), shade: f.box(document.querySelector('#msheetshade')), where: f.where(),
+          sideways: !!body && body.scrollWidth > body.clientWidth,
+          keyboardOpen: document.body.classList.contains('keyboard-open'), islandOpen: document.body.classList.contains('mopen'),
+          head: [...sh.querySelectorAll('.mshhead > *')].map((e) => e.textContent),
+          tray: [...sh.querySelectorAll('.mshtray > *')].filter(f.shown).map((b) => word(b) + (b.querySelector('.mshn')?.textContent ?? '') + (b.getAttribute('aria-pressed') === 'true' ? '*' : '')),
+          secs: [...sh.querySelectorAll('.mshsec')].map((e) => e.textContent),
+          rows: [...sh.querySelectorAll('.mshbody .mshrow')].filter(f.shown).map((b) => b.dataset.slot
+            ? { addr: b.querySelector('.maddr')?.textContent, name: b.querySelector('.mshname')?.textContent, shape: b.querySelector('.act')?.className ?? '', current: b.getAttribute('aria-current') === 'true' }
+            : { word: word(b), value: b.querySelector('.mshval')?.textContent ?? null, disabled: b.disabled }),
+          segs: [...sh.querySelectorAll('.mshseg')].map((r) => ({ field: r.dataset.field, values: [...r.querySelectorAll('.mshsegs button')].map((b) => b.textContent + (b.getAttribute('aria-pressed') === 'true' ? '*' : '') + (b.classList.contains('staged') ? '+' : '')),
+            apply: !r.querySelector('.mshapply').disabled })),
+          small: btns.filter((b) => b.getBoundingClientRect().height < 40).map(word),
+          missed: btns.filter((b) => inView(b) && (() => { const r = b.getBoundingClientRect(); return !b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })()).map(word) }; })()`;
+      type SheetRead = { sheet: Box; shade: Box; where: string; sideways: boolean; keyboardOpen: boolean; islandOpen: boolean; head: string[]; tray: string[]; secs: string[];
+        rows: { addr?: string; name?: string; shape?: string; current?: boolean; word?: string; value?: string | null; disabled?: boolean }[];
+        segs: { field: string; values: string[]; apply: boolean }[]; small: string[]; missed: string[] };
+      const readSheet = () => evaluate<SheetRead>(SHEET);
+      // a row of the open sheet by its word (or a session row by its slot), tapped where a finger meets it
+      const rowSel = (word: string) => `[...document.querySelectorAll('#msheet button')].find((b) => (b.querySelector('.mshw')?.textContent ?? b.textContent).trim() === ${JSON.stringify(word)})`;
+      // a word in the sideways tool row is first brought into view, as a finger would swipe it in
+      const tapRow = async (word: string) => { await evaluate(`${rowSel(word)}?.scrollIntoView({ inline: 'nearest', block: 'nearest' })`); await settle(100); return tap(rowSel(word)); };
+      const placed = (r: SheetRead) => !!r.sheet && !!r.shade && r.sheet.x === 0 && r.sheet.r === W && r.sheet.b === bottom
+        && r.shade.x === 0 && r.shade.y === 0 && r.shade.w === W && r.shade.b === bottom && !r.islandOpen;
+
+      // --- the Sessions sheet
+      await kbUp();
+      const sessOpened = await openVia("#mslot", "sessions");
+      const sess = await readSheet();
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-sessions`);
+      facts.sessions = sess;
+      const sessPlaced = `${tag}the slot button opens the sheet Sessions: full width, set at the foot of the visible screen, over a shade; the island closes`;
+      claims[sessPlaced] = sessOpened && placed(sess);
+      detail[sessPlaced] = { sheet: sess.sheet, shade: sess.shade, bottom, islandOpen: sess.islandOpen };
+      claims[`${tag}the sheet takes the focus — a keyboard goes with it`] = sess.where === "#msheet" && !sess.keyboardOpen;
+      const drawerHidden = await evaluate<boolean>("['attnbtn', 'opsbtn', 'devbtn'].every((id) => document.getElementById(id).style.display === 'none')");
+      const trayClaim = `${tag}its tools stand in words in the drawer's order, only those the drawer shows (Für dich, Eingang, Geräte hidden here), Datensparen off`;
+      claims[trayClaim] = drawerHidden && JSON.stringify(sess.tray) === JSON.stringify(["Tasks", "Lands", "Protokoll", "Datensparen"]);
+      detail[trayClaim] = { tray: sess.tray, drawerHidden };
+      const rowsClaim = `${tag}one row per session — address, name, state shape — the current one marked, and "Neue Session" last`;
+      const sr = sess.rows;
+      claims[rowsClaim] = sr.length === 3 && sr[0].addr === "1" && sr[0].name === "Alpha" && sr[0].current === true && /\bact (work|rest|sleep|bad)\b/.test(sr[0].shape ?? "")
+        && sr[1].addr === "2" && sr[1].name === "Beta" && sr[1].current === false && /\bact (work|rest|sleep|bad)\b/.test(sr[1].shape ?? "")
+        && sr[2].word === "Neue Session" && sr[2].disabled === false && sess.head[0] === "Sessions" && sess.head[1] === "2 offen";
+      detail[rowsClaim] = { rows: sr, head: sess.head };
+      const sessTargets = `${tag}every target in the Sessions sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      claims[sessTargets] = sess.small.length === 0 && sess.missed.length === 0 && !sess.sideways;
+      detail[sessTargets] = { small: sess.small, missed: sess.missed, sideways: sess.sideways };
+      // Escape closes and hands the focus to the pill; a tap on the shade closes too
+      await escape();
+      const escClosed = await evaluate<boolean>("!document.body.classList.contains('msheet')"), escWhere = await evaluate<string>("window.__fx.where()");
+      await openVia("#mslot", "sessions");
+      await tapAt({ x: W / 2, y: 40 }, "shade");
+      const shadeClosed = await evaluate<boolean>("!document.body.classList.contains('msheet')");
+      facts.sessClose = { escClosed, escWhere, shadeClosed };
+      claims[`${tag}Escape closes the sheet and gives the focus to the pill; a tap on the shade closes it too`] = escClosed && escWhere === "#mpill" && shadeClosed;
+      // each row does what the board's own control does: a session row switches (showSlot) …
+      await openVia("#mslot", "sessions");
+      await tap(`document.querySelector('#msheet .mshrow[data-slot="2"]')`);
+      const toBeta = await wait("document.querySelector('#comptarget')?.dataset.slot === '2' && document.querySelector('#mtitle').textContent === 'Beta'", 3000);
+      facts.toBeta = { toBeta, sheet: await shown("#msheetwrap"), placeholder: await evaluate<string>("document.querySelector('#input').placeholder") };
+      await openVia("#mslot", "sessions");
+      await tap(`document.querySelector('#msheet .mshrow[data-slot="1"]')`);
+      const toAlpha = await wait("document.querySelector('#comptarget')?.dataset.slot === '1' && document.querySelector('#mtitle').textContent === 'Alpha'", 3000);
+      await settle(300);
+      const tb = facts.toBeta as { toBeta: boolean; sheet: boolean; placeholder: string };
+      claims[`${tag}a session row switches the pane (showSlot), closes the sheet, and the field reads "Prompt für Beta …"`] = tb.toBeta && !tb.sheet && tb.placeholder === "Prompt für Beta …" && toAlpha;
+      // … Datensparen is the drawer's own switch …
+      await openVia("#mslot", "sessions");
+      await tapRow("Datensparen");
+      const saverOn = await evaluate<boolean>("document.querySelector('#saverbtn').classList.contains('active') && localStorage.getItem('fleet.datasaver') === '1' && !document.body.classList.contains('msheet')");
+      await openVia("#mslot", "sessions");
+      const pressed = (await readSheet()).tray;
+      await tapRow("Datensparen");
+      const saverOff = await evaluate<boolean>("!document.querySelector('#saverbtn').classList.contains('active')");
+      facts.saver = { saverOn, pressed, saverOff };
+      claims[`${tag}Datensparen switches the drawer's data saver and reads its state`] = saverOn && pressed.includes("Datensparen*") && saverOff;
+      // … and "Neue Session" opens the founding window on the first free place
+      await openVia("#mslot", "sessions");
+      await tap(rowSel("Neue Session"));
+      const founding = await wait("window.__fx.shown(document.querySelector('#shell-found'))", 3000);
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-neu`);
+      await escape();
+      await wait("!document.querySelector('#shell-found') || !window.__fx.shown(document.querySelector('#shell-found'))", 3000);
+      facts.founding = founding;
+      claims[`${tag}"Neue Session" opens the founding window`] = founding;
+
+      // --- the tools sheet, in the terminal
+      await kbUp();
+      const ws0 = await evaluate<number>("window.__ws.filter((w) => w.url.includes('/ws/1?')).length");
+      const toolsOpened = await openVia("#mmore", "tools");
+      const tt = await readSheet();
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-werkzeuge-terminal`);
+      facts.toolsTerm = tt;
+      const anyCoarse = await evaluate<boolean>("matchMedia('(any-pointer: coarse)').matches");
+      const termWords = ["History", "Schedule", ...(anyCoarse ? ["Live"] : []), "Referenzen erklären", "Neu verbinden", "Schrift und Spalte", "Einstellungen"];
+      const toolsPlaced = `${tag}⋯ opens the sheet Werkzeuge: full width, at the foot of the visible screen, over a shade; head address and name`;
+      claims[toolsPlaced] = toolsOpened && placed(tt) && tt.where === "#msheet" && tt.head[0] === "1" && tt.head[1] === "Alpha";
+      detail[toolsPlaced] = { sheet: tt.sheet, shade: tt.shade, bottom, head: tt.head, where: tt.where };
+      const termClaim = `${tag}in the terminal: Diese Session (History, Schedule, Live, Referenzen erklären, Neu verbinden) and Dieses Gerät (Schrift und Spalte, Einstellungen) — no model, no effort, no prompt jumps`;
+      claims[termClaim] = tt.segs.length === 0 && JSON.stringify(tt.secs) === JSON.stringify(["Diese Session", "Dieses Gerät"])
+        && JSON.stringify(tt.rows.map((r) => r.word)) === JSON.stringify(termWords);
+      detail[termClaim] = { rows: tt.rows, secs: tt.secs, segs: tt.segs, anyCoarse };
+      const termTargets = `${tag}every target in the tools sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      claims[termTargets] = tt.small.length === 0 && tt.missed.length === 0 && !tt.sideways;
+      detail[termTargets] = { small: tt.small, missed: tt.missed, sideways: tt.sideways };
+      // Neu verbinden is the pane's ↻ (a fresh socket for slot 1)
+      await tap(rowSel("Neu verbinden"));
+      const reconnected = await wait(`window.__ws.filter((w) => w.url.includes('/ws/1?')).length > ${ws0}`, 3000);
+      // Referenzen erklären is the pane's loupe; the sheet reads its state
+      await openVia("#mmore", "tools");
+      await tap(rowSel("Referenzen erklären"));
+      const hoverOn = await evaluate<boolean>("window.__fx.pane().querySelector('.panehover').getAttribute('aria-pressed') === 'true'");
+      await openVia("#mmore", "tools");
+      const hoverRead = (await readSheet()).rows.find((r) => r.word === "Referenzen erklären")?.value ?? null;
+      await tap(rowSel("Referenzen erklären"));
+      // Einstellungen opens the settings window; Escape gives the focus back to the pill
+      await openVia("#mmore", "tools");
+      await tap(rowSel("Einstellungen"));
+      const settingsOpen = await wait("window.__fx.shown(document.querySelector('#shell-settings'))", 3000);
+      await escape();
+      const settingsBack = await evaluate<string>("window.__fx.where()");
+      facts.termActs = { reconnected, hoverOn, hoverRead, settingsOpen, settingsBack, sheetAfter: await shown("#msheetwrap") };
+      const termActs = `${tag}its rows do what the board's own controls do: Neu verbinden reconnects, Referenzen erklären switches the loupe (and reads "an"), Einstellungen opens the settings`;
+      claims[termActs] = reconnected && hoverOn && hoverRead === "an" && settingsOpen && settingsBack === "#mpill" && !(facts.termActs as { sheetAfter: boolean }).sheetAfter;
+      detail[termActs] = facts.termActs;
+
+      // --- the tools sheet, in the conversation: model and effort as segments, a press only marks
+      await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
+      await wait("window.__fx.pane().classList.contains('chat')", 3000);
+      await kbUp();
+      await openVia("#mmore", "tools");
+      const tc = await readSheet();
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-werkzeuge-konversation`);
+      facts.toolsChat = tc;
+      const chatWords = ["History", "Schedule", ...(anyCoarse ? ["Live"] : []), "Voriger Prompt", "Nächster Prompt", "Referenzen erklären", "Schrift und Spalte", "Einstellungen"];
+      // one segment per model NAME of the adapter's list (the composer's rule), the slot's own pressed;
+      // a register notice after " · " is the switch's business, the name is what is compared here
+      const names = [...new Set(modelsForHarness("claude").map((m) => modelLabel(m).split(" · ")[0]))];
+      const segNames = (tc.segs[0]?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
+      const chatClaim = `${tag}in the conversation: Modell and Effort as segments (one per model name, the running one pressed), prompt jumps, no Neu verbinden`;
+      claims[chatClaim] = JSON.stringify(tc.secs) === JSON.stringify(["Modell", "Effort", "Diese Session", "Dieses Gerät"])
+        && tc.segs[0]?.field === "model" && tc.segs[0].apply === false && JSON.stringify(segNames) === JSON.stringify(names.map((n) => n === "Opus 5.5" ? "Opus 5.5*" : n))
+        && JSON.stringify(tc.segs[1]) === JSON.stringify({ field: "effort", values: ["low", "medium", "high*", "xhigh"], apply: false })
+        && JSON.stringify(tc.rows.map((r) => r.word)) === JSON.stringify(chatWords);
+      detail[chatClaim] = { secs: tc.secs, segs: tc.segs, names, rows: tc.rows };
+      const chatTargets = `${tag}every target in the conversation's tools sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      claims[chatTargets] = tc.small.length === 0 && tc.missed.length === 0 && !tc.sideways;
+      detail[chatTargets] = { small: tc.small, missed: tc.missed, sideways: tc.sideways };
+      const posts0 = fx.posts.length;
+      await tap(`document.querySelector('#msheet .mshseg[data-field="effort"] button[data-v="low"]')`);
+      const staged = await readSheet();
+      const postsAfterPress = fx.posts.length - posts0;
+      await tap(`document.querySelector('#msheet .mshseg[data-field="effort"] .mshapply')`);
+      await wait(`window.__fx.shown(document.querySelector('#compopts .optpop.effort.open'))`, 3000);
+      await settle(400);
+      const effortPosts = fx.posts.slice(posts0).filter((x) => x.path === "/api/slots/1/model").map((x) => x.body);
+      const effortPop = await box("document.querySelector('#compopts .optpop.effort.open')");
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-effort-uebernommen`);
+      await tapAt({ x: W / 2, y: Math.round(bottom * 0.4) }, "outside the effort popover"); // the verdict repaint took its focus
+      facts.effort = { staged: staged.segs, still: staged.where, postsAfterPress, effortPosts, effortPop,
+        popGone: await evaluate<boolean>("!document.querySelector('#compopts .optpop.open')") };
+      const effortClaim = `${tag}a press on an effort only marks it (ink edge, Übernehmen ready, nothing sent); Übernehmen closes the sheet and the switch's own Apply writes it`;
+      claims[effortClaim] = JSON.stringify(staged.segs[1]) === JSON.stringify({ field: "effort", values: ["low+", "medium", "high*", "xhigh"], apply: true })
+        && postsAfterPress === 0 && JSON.stringify(effortPosts) === JSON.stringify([JSON.stringify({ effort: "low" })]) && !!effortPop && effortPop.y >= 0 && effortPop.b <= bottom
+        && (facts.effort as { popGone: boolean }).popGone;
+      detail[effortClaim] = facts.effort;
+      // the model asks first, exactly as the switch at the field does — nothing goes out before the answer
+      await openVia("#mmore", "tools");
+      const posts1 = fx.posts.length;
+      // the model row scrolls sideways like the sketch's: the finger brings Sonnet 5.5 into view first
+      const sonnet = `[...document.querySelectorAll('#msheet .mshseg[data-field="model"] .mshsegs button')].find((b) => b.textContent.startsWith('Sonnet 5.5'))`;
+      await evaluate(`${sonnet}?.scrollIntoView({ inline: 'center', block: 'nearest' })`);
+      await settle(150);
+      await tap(sonnet);
+      const stagedModel = (await readSheet()).segs[0];
+      await tap(`document.querySelector('#msheet .mshseg[data-field="model"] .mshapply')`);
+      const asks = await wait("window.__fx.shown(document.querySelector('#compopts .optpop.model.open .optconfirm'))", 3000);
+      const askBox = await box("document.querySelector('#compopts .optpop.model.open .optconfirm')");
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-modell-fragt`);
+      const modelPosts = fx.posts.slice(posts1).filter((x) => x.path === "/api/slots/1/model").length;
+      await tap("document.querySelector('#compopts .optpop.model.open .cmdcancel')");
+      await escape();
+      const popGone = await evaluate<boolean>("!document.querySelector('#compopts .optpop.open')");
+      facts.model = { staged: stagedModel, asks, askBox, modelPosts, popGone, missing: [...missing] };
+      const modelClaim = `${tag}Übernehmen on a model asks first in the switch's own popover, on screen, and sends nothing before the answer`;
+      claims[modelClaim] = asks && modelPosts === 0 && !!askBox && askBox.y >= 0 && askBox.b <= bottom && popGone;
+      detail[modelClaim] = facts.model;
+      await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
+      await wait("!window.__fx.pane().classList.contains('chat')", 3000);
+      await settle(300);
       // 5. the terminal ends above the bottom island and its grip
       const term = await box("document.querySelector('.paneterm')"), grip = await box("#mgrip"), bar2 = await box("#bar");
       facts.terminal = { term, grip, bar: bar2 };

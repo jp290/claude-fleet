@@ -121,7 +121,7 @@ One line per doc — its *purpose*, not its contents, so this index points witho
   (*"the Controller discusses problems, AGENTS fix them"*), the harvest duty that belongs to
   nobody else, and the step order a successor follows. Read it instead of re-deriving the
   role from `HANDOFF.md` blocks.
-- **`supervisor-succession.md`** — the one question of how an owner-side Supervisor session is
+- **`attic/supervisor-succession.md`** — the one question of how an owner-side Supervisor session is
   created or handed over context-sparingly: what it mechanically receives, what that costs, and
   the three evidence labels the document holds itself to. Not a work register.
 

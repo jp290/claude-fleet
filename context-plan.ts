@@ -284,7 +284,8 @@ export function planProgramContext(input: ProgramContextPlanInput): ContextPlan 
 //  * drift   — the file is there and readable but one of the two comparisons fails: either the file
 //              changed after it was published, or the current fassung is not the one the pack pins.
 //  * missing — nothing readable to point at: no root on this server, no published version, no file,
-//              or an opaque id no resolver knows. Named, never a silent omission.
+//              an opaque id no resolver knows, or a konzept id no Fleet seed declares. Named, never a
+//              silent omission.
 // The path is the server's local fact and is never receipted; the verdict and the version are.
 export const PRIVATE_PACK_VERDICTS = ["match", "drift", "missing"] as const;
 export type PrivatePackVerdict = (typeof PRIVATE_PACK_VERDICTS)[number];
@@ -302,11 +303,20 @@ export interface PrivatePackResolution {
 
 const sha256Hex = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
+// THE ONLY IDS THIS RESOLVER READS: the private sources a Fleet seed declares. A repo manifest cannot
+// declare one (context-manifest.ts: manifest-invalid), and a konzept that merely sits under the same
+// root without a seed naming it belongs to another project — read it, and this would be a general
+// reader of everything the owner keeps there.
+const SEED_PRIVATE_SOURCE_IDS: ReadonlySet<string> = new Set(
+  CONTEXT_PACKS.flatMap((pack) => "privateSourceId" in pack ? [pack.privateSourceId] : []));
+
 /** Resolve one private pack against the private root. Reads two small files synchronously. */
 export function resolvePrivatePack(root: string | null, privateSourceId: string, declaredHash: string | undefined): PrivatePackResolution {
   const missing = (why: string, version: number | null = null): PrivatePackResolution =>
     ({ privateSourceId, verdict: "missing", why, version, path: null });
   if (!KONZEPT_ID_RE.test(privateSourceId)) return missing("an opaque id — no resolver on this server knows it");
+  if (!SEED_PRIVATE_SOURCE_IDS.has(privateSourceId))
+    return missing("no Fleet seed declares this private source — another konzept under the root is never read");
   if (!root) return missing(`${KONZEPT_ROOT_ENV} is not set on this server`);
   let raw: string;
   try { raw = readFileSync(`${root}/${privateSourceId}/versionen.jsonl`, "utf8"); }

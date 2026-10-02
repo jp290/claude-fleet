@@ -13,7 +13,8 @@ import { boardHead, gateAge, renderBoard } from "./board";
 // absent, which is what "no register" looks like), and a device that has never reported a mode has
 // no `mode` key. `mode` is typed as a plain string, not the closed set: a value this client does
 // not know must render as the text it is, never be silently mapped onto one this client does know.
-interface HelperDeviceClaim { kind?: string; repo: string; ref: string; claimedAt?: number; expiresAt: number }
+// `slot`/`cmd` ride on a `command` claim only (server.ts#heldClaimsByDevice)
+interface HelperDeviceClaim { kind?: string; repo: string; ref: string; claimedAt?: number; expiresAt: number; slot?: number; cmd?: string }
 interface HelperDeviceUpdate {
   state?: string; requestedAt?: number; mainSha?: string;
   result?: { ok?: boolean; exitCode?: number | null; mainSha?: string; note?: string };
@@ -117,7 +118,8 @@ function deviceCard(d: HelperDeviceInfo): HTMLElement {
   }
   box.appendChild(row);
   for (const c of d.claims ?? []) {
-    const what = c.kind === "lane-suite" ? "a lane preview" : c.kind === "audit" ? "an audit" : `a ${c.kind ?? "?"} job`;
+    const what = c.kind === "lane-suite" ? "a lane preview" : c.kind === "audit" ? "an audit"
+      : c.kind === "command" ? `a gate script${c.cmd ? ` (${c.cmd.replace(/^\.\//, "")})` : ""}` : `a ${c.kind ?? "?"} job`;
     const r = el("div", "bidmeta", `holds ${what} · ${c.repo} ${c.ref} · ${gateAge(Math.max(0, c.expiresAt - Date.now()))} left`);
     r.title = "Work this machine has taken off this box. The local drain skips it until the claim expires; past that it falls back here, whether or not the helper ever answers.";
     box.appendChild(r);

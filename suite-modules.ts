@@ -89,7 +89,7 @@ export const FIXTURES: readonly Fixture[] = [
       + "control four lane families measure against (`/api/slots/2/diff|land|shelve|risk|commit|merge` → 400)",
     synthesized: "the runner opens both before the first step with slots.ts's own two calls — the "
       + "shard base fixture, green since 2026-09-13 (K2: `--shard 2/4` failed `shelve rejects a "
-      + "non-worktree slot` without it; K4: supervisor needs any slot carrying a self credential)",
+      + "non-worktree slot` without it)",
   },
   {
     name: "server:slots-1-2-driven", origin: "server-state",
@@ -160,7 +160,6 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
     writes: ["ctx.restartSelfTok", "ctx.restartSelfSlot"] },
   { module: "lane-suite", lane: true },
   { module: "programs", lane: true, reads: ["ctx.restartSelfTok", "ctx.restartSelfSlot"] },
-  { module: "supervisor", lane: true, reads: ["server:slots-1-2-open"] },
   { module: "trailstats", lane: true, reads: ["ctx.restartSelfTok"] },
   { module: "ref-advance", lane: true },
   { module: "outcomes", lane: true, writes: ["server:program-confirmed"] },

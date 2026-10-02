@@ -35,9 +35,7 @@ Owner → Orchestratorin → MAIN → Lane. Each role's receiver, decisions, doo
 stand on its card in `docs/rollenkarten.md`, the doors themselves in `docs/self-api.md`. This file
 gives the LEVEL only: the role bootstrap gives concrete authority, the project's sources give domain
 reality, the brief gives the assignment. A session is judged on results, evidence and staying in
-bounds, not on a scripted workflow. The **Supervisor** is off the chain: it watches sessions and
-evidence, names stalls, and nudges a bound MAIN (`POST /api/self/nudge`) — never an owner voice.
-**Act Lead is not built**: `delegate_act` in `SYSTEM.md` has no implementation.
+bounds, not on a scripted workflow. **Act Lead is not built**: `delegate_act` in `SYSTEM.md` has no implementation.
 
 ### Hard invariants
 

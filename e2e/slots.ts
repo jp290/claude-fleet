@@ -3,18 +3,22 @@
 // regression).
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
+import { MarkStage, markFacts, markShape, paintMark, type MarkEnv, type MarkFacts } from "../src/marks";
 import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
+import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
+import { MODEL_DEFAULTS } from "../model-register";
+import { laneTitleOf, shortTitle } from "../src/suitemeter";
 
 export async function run(): Promise<void> {
   // --- slots ---
@@ -1197,6 +1201,7 @@ export async function run(): Promise<void> {
   check("reconnect backoff caps and stays capped", reconnectDelay(4) === RECONNECT_MAX_MS && reconnectDelay(50) === RECONNECT_MAX_MS,
     `${reconnectDelay(4)},${reconnectDelay(50)}`);
   check("reconnect backoff never returns 0 or a negative wait", reconnectDelay(-3) === 1500 && RECONNECT_MAX_MS > 1500);
+  sessionMarkChecks();
   // --- data-saver seed budget: ?seed=N caps the scrollback the server hands a reconnecting
   // client. Measured on the live fleet, the full 3000-line seed is 6.8–173 KB PER reconnect
   // and mobile reconnects a lot, so this is the switch's largest single item. Contract: a
@@ -1469,7 +1474,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       const endBtn: FakeBtn = { title: "", classList: { on: new Set<string>(), toggle(c: string, v: boolean) { if (v) this.on.add(c); else this.on.delete(c); } },
         setAttribute: (k: string, v: string) => { endAttrs.set(k, v); }, getAttribute: (k: string) => endAttrs.get(k) ?? null };
       const p = Object.assign(PaneClass ? new PaneClass() : {}, {
-        slot: 0, view: "chat", pastN: null, hoverOn: false, chatEl, workEl: kid("work", 0),
+        slot: 0, view: "chat", pastN: null, hoverOn: false, chatEl,
         chatStuck: true, chatUnseen: 0, chatLastTop: 0, chatFresh: false, followTimer: undefined, cacheTtlSec: null,
         endBtn, endCount: { textContent: "" },
         term: { reset() {} }, ws: null, gen: 0, retries: 0, held: "", dropped: 0, fit: { fit() {} },
@@ -1477,7 +1482,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         chatTotal: 0, chatSource: null, chatGen: 0, chatMemo: null, chatBusy: false, chatPinUntil: 0,
         lastTurnAt: 0, cacheTtl: null, observedModel: null, observedEffort: null, toolGroup: null, notifGroup: null,
         pending: [], openAgents: new Map(), grow: 0,
-        leavePast() {}, hideDown() {}, hideCopy() {}, syncHarnessAffordances() {}, connect() {}, focus() {},
+        leavePast() {}, closeSearch() {}, hideDown() {}, hideCopy() {}, syncHarnessAffordances() {}, connect() {}, focus() {},
         snapToBottom() {}, pinToBottom() {}, updateWork() {},
         // the network stand-in; what it does with the entries is the real pollChat's delta path
         // (first/before/chatFresh/chatAdd/chatGrew — pinned against the source below)
@@ -1665,6 +1670,41 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && /if \(chatClickToComposer\(e, \{ top: box\.top, height: box\.height \}, lastBottom, !!sel && !sel\.isCollapsed\)\) ta\.focus\(\);/.test(cliSrc),
       clickErr || got.join(","));
   }
+  // t (age ms) | event | exclusive owner: idle cache ring; TTL=300000
+  // 0 empty | 145000 half | 290000 full/blink | 290800 grey | 300000 expired/grey
+  {
+    const source = /\nexport function cacheRingState\([\s\S]*?\n\}/.exec(cliSrc)?.[0] ?? "";
+    let ringError = "";
+    const got: { fill: number; phase: string; dim: boolean }[] = [];
+    try {
+      const ring = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(source.replace("export ", ""))
+        + "\nreturn cacheRingState;")() as (age: number, ttl: number) => { fill: number; phase: string; dim: boolean };
+      for (const ttl of [300_000, 900_000, 3_600_000]) {
+        const edge = ttl - 10_000;
+        for (const age of [-1, 0, edge / 2, edge - 1, edge, edge + 199, edge + 200, edge + 400, edge + 600, edge + 799, edge + 800, ttl, ttl * 2])
+          got.push(ring(age, ttl));
+      }
+    } catch (e) { ringError = e instanceof Error ? e.message : String(e); }
+    const phases = "warm,warm,warm,warm,blink,blink,blink,blink,blink,blink,cold,cold,cold";
+    check("cache circle: exact half at (TTL−10s)/2; blink only for 800ms at full; then grey forever (5m/15m/1h)",
+      !ringError && got.length === 39 && [0, 13, 26].every((offset) => {
+        const states = got.slice(offset, offset + 13);
+        return states.map((v) => v.phase).join(",") === phases
+          && states[0]!.fill === 0 && states[1]!.fill === 0 && states[2]!.fill === 0.5
+          && states[3]!.fill < 1 && states.slice(4).every((v) => v.fill === 1)
+          && states.map((v) => Number(v.dim)).join(",") === "0,0,0,0,1,1,0,1,0,0,0,0,0";
+      }), ringError || JSON.stringify(got));
+    const motionCode = cliSrc.replace(/^[ \t]*\/\/.*$/gm, "");
+    check("composer mascot: three distinct transform-only gestures; 15–60s random gap; one at once; hidden/reduced motion cancel",
+      MASCOT_MOTIONS.length >= 3 && new Set(MASCOT_MOTIONS.map((v) => JSON.stringify(v))).size >= 3
+        && MASCOT_MOTIONS.every((frames) => frames.every((f) => Object.keys(f).every((k) => k === "transform" || k === "offset")))
+        && motionCode.includes("15_000 + Math.random() * 45_000")
+        && motionCode.includes("mascotTimer !== undefined || mascotAnimation")
+        && motionCode.includes("mascotAnimation?.cancel();")
+        && motionCode.includes('if (document.hidden) { stopMascot(); clearTimeout(ringTimer); }')
+        && motionCode.includes('reduceMotion.addEventListener("change", tickCacheAge);'),
+      `${MASCOT_MOTIONS.length} gestures · single animation/timer guards and cancellation`);
+  }
   // (E) the cache counter of a claude pane reads the tier from the server: transcriptPayload carries
   // ttlSec from deliveryCacheState (live slot only), pollChat takes it, and the warning comes
   // min(300, ttlSec/5) s before the edge; codex/pi (no tier named) keep the 20 s lead
@@ -1679,9 +1719,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       leads = [f(3600), f(300), f(null)];
     } catch (e) { leadErr ||= e instanceof Error ? e.message : String(e); }
     const payload = /const tier = harnessOf\(s\.harness\)\.id === "claude" && slots\[s\.id - 1\] === s \? \{ ttlSec: deliveryCacheState\(s\)\.ttlSec \} : \{\};/.test(srv)
-      && /return \{ entries, total: lines\.length, source: file\.split\("\/"\)\.pop\(\) \?\? null, model, effort, \.\.\.tier \};/.test(srv);
+      // `...tail` is the owner routes' native provenance (row 1e01b4f3) — absent for every other reader
+      && /return \{ entries, total: lines\.length, source: file\.split\("\/"\)\.pop\(\) \?\? null, model, effort, \.\.\.tier, \.\.\.tail \};/.test(srv);
     const taken = /if \(data\.cache === undefined && typeof data\.ttlSec === "number"[^\n]*\n\s*this\.cacheTtlSec = data\.ttlSec;\n\s*this\.cacheTtl = data\.ttlSec \* 1000;/.test(cliSrc);
-    const used = /const cold = ms >= ttl - cacheLeadMs\(panes\[focused\]\?\.cacheTtlSec \?\? null\);/.test(cliSrc);
+    const used = /const cold = ms >= ttl - cacheLeadMs\(pane\?\.cacheTtlSec \?\? null\);/.test(cliSrc);
     check("cache counter (E): a claude pane measures against the server's tier and warns min(300, ttlSec/5) s before the edge; codex/pi keep 20 s",
       !leadErr && leads.join(",") === "300000,60000,20000" && payload && taken && used,
       leadErr || `leads 1h/5m/none ${leads.join(",")} · payload ${payload} · pollChat ${taken} · tickCacheAge ${used}`);
@@ -1878,92 +1919,227 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     "slotact titles in src/client.ts");
   check("G0.5 tray and founding window: German tooltips, Fleet-English labels untouched",
     cliSrc.includes("Dateien an diese Session anhängen.") && !cliSrc.includes("attach files to this session")
-    && cliSrc.includes("Klick blendet die Worktree-Lanes aus") && !cliSrc.includes("worktree lanes hidden")
     && indexSrc.includes("Live-Mitschreiben") && indexSrc.includes("Prompt-Verlauf")
     && indexSrc.includes("Geplante Prompts für diese Session"),
     "tray titles in client.ts + public/index.html");
-  // --- THE FOUNDING WINDOW (Gruendungsfenster B1) at the empty slot: the click opens the comic
-  // page, the tree stays behind "Anderer Ordner". Anchors are the visible words themselves, the
-  // K9 way: role names and the German say-lines PRESENT, the old tree entry ABSENT from the
-  // empty row, the honest context sentence, the B3 facts on the card, and the F4 rename.
-  const gfSrc = cliSrc.slice(cliSrc.indexOf("THE FOUNDING WINDOW (Gruendungsfenster B1"),
-    cliSrc.indexOf("function openTreePicker(slotId: number) {"));
-  check("founding window: the empty slot opens the roles page, the tree only behind Anderer Ordner",
-    /row\.onclick = \(\) => openPicker\(s\.id\)/.test(cliSrc)
-    && gfSrc.includes('type GfRole = "orch" | "wt-new" | "wt-old" | "plain" | "steward"')
-    && ["Orchestrator", "auf neuem Worktree", "auf vorhandenem Worktree", "in einem Ordner", "Steward"]
-      .every((w) => gfSrc.includes(w))
-    && gfSrc.includes("Anderer Ordner …") && gfSrc.includes("closeFounding();\n    openTreePicker(slot);"),
-    "GF_ROLES + the tree handoff in src/client.ts");
-  check("founding window: the context column tells the truth about a founding by hand, no pack switches",
-    gfSrc.includes("Rollenkarte mit Ankern — beim Start stellt der Server der Orchestrator ihre Karte mit Kontext-Ankern zu.")
-    && gfSrc.includes("Keine Packs — eine Gründung von Hand bekommt keinen Brief zugestellt.")
-    // B2b made the pointer a real choice: the packs are chosen in step 3, after the repo — the
-    // sentence stays true because the default founding (no switch on) still delivers no brief
-    && gfSrc.includes("Packs wählst du in Schritt 3, nach der Repo-Wahl.")
-    // falsifiable, not vacuous: the context COLUMN renders no button at all, and the mockup's
-    // open "+ Pack zusammenstecken … (Form: Frage an dich)" row is B2, not this slice
-    && !gfSrc.slice(gfSrc.indexOf('"Kontext"'), gfSrc.indexOf("two.append(ctx);")).includes('el("button"')
-    && !gfSrc.includes("zusammenstecken"),
-    "the context column in src/client.ts");
-  check("founding window: the repo card carries the B3 facts, and the B2b switches replaced the read-only packs line",
-    // the read-only line is GONE, not joined: a broken manifest still speaks — as an omitted
-    // entry with its reason in the founding plan, which is what the switches render
-    !gfSrc.includes("Context-Packs des Repos") && !gfSrc.includes("info.packs.error")
-    && gfSrc.includes("info.orphans ?? []")
-    && gfSrc.includes('/api/lanes", { repo: gfRepo, attach: gfOrphan, slot, ...spawnBody() }')
-    && gfSrc.includes("Kontext-Packs — je Pack an/aus"),
-    "gfStep3 in src/client.ts");
-
-  // --- Gruendungsfenster B2b: the founding packs become switches. The plan hangs off the repo
-  // (foundingPlanOf reads one), the repo is only chosen in step 3 (F5), so the card's read-only
-  // line became the choice (F3, owner: je Pack an/aus bei der Gründung). One check per part of
-  // the act, source as the evidence — this suite has no DOM; the two should-rejects make the
-  // silent failures loud: an omitted pack that toggles, a body carrying a packs field nobody
-  // switched on.
-  check("founding B2b: choosing a repo loads its plan for the chosen profile, latest-wins, and a profile change refetches",
-    gfSrc.includes("gfPlan = null;\n  gfPlanErr = null;\n  void gfLoadDir();\n  void gfLoadPlan();")
-    && gfSrc.includes("if (seq !== gfPlanSeq || !gfWin || gfRepo !== path) return; // latest-wins, like gfLoadDir")
-    && gfSrc.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`")
-    && gfSrc.includes("if (gfRepo && gfPlanFor !== gfPlanKey()) void gfLoadPlan();"),
-    "gfChooseRepo/gfLoadPlan/gfStep3 in src/client.ts");
-  const omitSrc = gfSrc.slice(gfSrc.indexOf("for (const o of gfPlan.omitted)"),
-    gfSrc.indexOf("g(\"Kontext-Packs — je Pack an/aus\", pv);"));
-  check("founding B2b: each selected pack is a switch with bytes and source, default off — should-reject: an omitted pack shows its reason and is not switchable",
-    gfSrc.includes("el(\"span\", \"gfpn\", p.id), el(\"span\", \"gfpb\", kb(p.bytes)),")
-    && gfSrc.includes('b.setAttribute("aria-pressed", String(on));')
-    && gfSrc.includes("gfPacks = new Set();     // a fresh plan is a fresh choice — old switches never ride across")
-    && omitSrc.includes('el("div", "gfpack omit");') && omitSrc.includes("o.reason")
-    && !omitSrc.includes("onclick") && !omitSrc.includes("gfPacks"),
-    "gfStep3 pack rows in src/client.ts");
-  const spawnSrc = cliSrc.slice(cliSrc.indexOf("function spawnBody()"), cliSrc.indexOf("function renderDirDetail("));
-  // the count is a claim about CODE, so whole-line comments are stripped first (the §7 rule):
-  // a commented-out send would otherwise satisfy the anchor and the probe would prove nothing
-  const spawnCode = spawnSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
-  const closeSrc = gfSrc.slice(gfSrc.indexOf("function closeFounding()"), gfSrc.indexOf("// the repos of the running fleet"));
-  check("founding B2b — should-reject: with no switch on, the founding body stays byte-identical — exactly one packs key, and only inside the conditional",
-    (spawnCode.match(/packs:/g) ?? []).length === 1
-    && spawnCode.includes("...(gfPacks.size ? { packs: [...gfPacks] } : {})")
-    && closeSrc.includes("gfPacks = new Set();")
-    && closeSrc.includes("the pack choice dies with the window it was made in"),
-    "spawnBody + closeFounding in src/client.ts");
-  const ssSrc = cliSrc.slice(cliSrc.indexOf("async function startSession("), cliSrc.indexOf("async function startWorktree("));
-  const swSrc = cliSrc.slice(cliSrc.indexOf("async function startWorktree("), cliSrc.indexOf("// --- THE FOUNDING WINDOW (Gruendungsfenster B1"));
-  check("founding B2b: a founding with packs waits visibly, and packsDelivered:false is said where the click was, never closed over as success",
-    gfSrc.includes('"Packs werden zugestellt …"')
-    && gfSrc.includes('go.disabled = gfBusy || !gfRepo || (gfRole === "wt-old" && !gfOrphan);')
+  // --- THE FOUNDING WINDOW (Neuentwurf 2026-10-01 with the owner, src/founding.ts): one column of
+  // four fields — Ort, Rolle, Profil, Kontext — instead of tabs over a place list; the role applies
+  // a preset over the founding plan, stored fleet-wide; ⎇+ opens the same window. These checks hold
+  // the source to what the rendered window cannot show; runFoundingFocusDom below drives it.
+  let foundSrc = "", clientOnly = "", planSrc = "", prefsOnly = "", boardOnly = "", foundSrcError = "";
+  try {
+    foundSrc = readFileSync(`${sourceRoot}/src/founding.ts`, "utf8");
+    clientOnly = readFileSync(`${sourceRoot}/src/client.ts`, "utf8");
+    planSrc = readFileSync(`${sourceRoot}/context-plan.ts`, "utf8");
+    prefsOnly = readFileSync(`${sourceRoot}/src/prefs.ts`, "utf8");
+    boardOnly = readFileSync(`${sourceRoot}/src/board.ts`, "utf8");
+  } catch (e) { foundSrcError = e instanceof Error ? e.message : String(e); }
+  check("founding window — PROBE: src/founding.ts, src/client.ts, src/board.ts, src/prefs.ts and context-plan.ts are readable",
+    !!foundSrc && !!clientOnly && !!planSrc && !!prefsOnly && !!boardOnly, foundSrcError);
+  // whole-line comments stripped first: a claim about CODE must not be satisfied by prose
+  const strip = (src: string) => src.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  const foundCode = strip(foundSrc), clientCode = strip(clientOnly), boardCode = strip(boardOnly);
+  check("founding window: a free place, ⎇+ and the board's New lane all open src/founding.ts — no one-click lane is left",
+    // a regex, not the import as a string: e2e-stage.sh scans this file's TEXT for relative from-clauses
+    /import \{ openLaneFounding, openPicker \} from "\.\/founding";/.test(clientCode)
+    && /row\.onclick = \(\) => openPicker\(s\.id\)/.test(clientCode)
+    && /q\.onclick = \(e\) => \{ e\.stopPropagation\(\); openLaneFounding\(repo, parent\); \};/.test(clientCode)
+    && /nb\.onclick = \(\) => \{ openLaneFounding\(wts\.repo\); \};/.test(boardCode)
+    && foundCode.includes("export function openPicker(slotId: number)") && foundCode.includes("export function openLaneFounding(repo: string, parent?: LaneAnchor)")
+    // should-reject: the one-click lane without packs, and the rejected 2026-09-22 surface
+    && !/function newLane\(|newLane\(/.test(boardCode + clientCode)
+    && !/function openPicker\(|\bgfStep\b|\bGF_ROLES\b|\brenderGf\b|"gf-(orch|plain|steward|wt-new|wt-old)"/.test(clientCode),
+    "client.ts emptyRow + quickLaneChip, board.ts New lane, founding.ts exports");
+  const foundCss = (() => {
+    const at = indexSrc.indexOf("THE FOUNDING WINDOW (src/founding.ts");
+    const end = indexSrc.indexOf("/* end of THE FOUNDING WINDOW */", at);
+    return at < 0 || end < 0 ? "" : indexSrc.slice(at, end).replace(/\/\*[\s\S]*?\*\//g, "");
+  })();
+  check("founding window: ONE shell window of one size, no list — a state change never moves it",
+    foundCode.includes("openShell({") && foundCode.includes('id: "found",')
+    && foundCss.includes("#shell-found .shellwin { position: relative; width: min(880px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px));")
+    && foundCss.includes("#shell-found .shelllist, #shell-found .shelltools { display: none; }")
+    && !/\.style\.(width|height|left|top)\s*=/.test(foundCode) && !foundCode.includes("gfwin"),
+    foundCss.slice(0, 120) || "no #shell-found block in public/index.html");
+  check("founding window: its CSS is --chat-* tokens only — no hex or rgb literal, and no .gf rule is left anywhere",
+    foundCss.length > 0 && !/#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(foundCss.replace(/#shell-found/g, ""))
+    && !/\.gf[a-z]/.test(indexSrc),
+    (foundCss.replace(/#shell-found/g, "").match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) ?? []).join(" ") || "clean");
+  check("founding window: four fields in reading order — Ort, Rolle, Profil, Kontext",
+    /fieldHead\(sec, "Ort",[\s\S]*fieldHead\(sec, "Rolle",[\s\S]*fieldHead\(sec, "Profil",[\s\S]*fieldHead\(sec, "Kontext",/.test(foundCode)
+    && foundCode.includes("shell.detail.replaceChildren(fPlace, fRole, fProfile, fContext);"),
+    "renderPlace/renderRole/renderProfile/renderContext in src/founding.ts");
+  check("founding window: the four roles are radio cards with one sentence each, two across on a phone",
+    ['"Leer"', '"Lane"', '"Orchestratorin"', '"MAIN"'].every((w) => foundCode.includes(`name: ${w}`))
+    && foundCode.includes('b.setAttribute("role", "radio");') && foundCode.includes('b.setAttribute("aria-checked", String(on));')
+    && /#shell-found \.fdroles \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\);/.test(foundCss)
+    && foundCss.includes("#shell-found .fdroles { grid-template-columns: repeat(2, minmax(0, 1fr)); }"),
+    "ROLES + renderRole in src/founding.ts");
+  // MAIN STATT STEWARD (owner 2026-10-02: „[Zitat entfernt]“): the card founds over the
+  // existing owner door and nothing else — should-reject a Steward card, its label, or a second
+  // founding path for a MAIN (a slot open with a MAIN label would be a MAIN without a Program)
+  check("founding window: MAIN replaced the Steward card and founds only over POST /api/programs/:id/bootstrap-main",
+    !foundCode.includes('name: "Steward"') && !foundCode.includes("⚙ steward")
+    && foundCode.includes("post(`/api/programs/${encodeURIComponent(pid)}/bootstrap-main`, mainBody())")
+    && foundCode.includes('await api("/api/programs")')
+    && (foundCode.match(/bootstrap-main`/g) ?? []).length === 1
+    && foundCode.includes('const roleLabel = (r: Role): string | undefined => r === "orch" ? "Orchestrator" : undefined;'),
+    "ROLES/roleLabel/foundMain/loadProgs in src/founding.ts");
+  const presetSrc = /const PRESET_DEFAULT: Record<Role, Preset> = \{([\s\S]*?)\n\};/.exec(foundCode)?.[1] ?? "";
+  check("founding window: the built-in presets — Leer none, Lane every fitting pack, Orchestratorin none (her role card carries the pointers)",
+    presetSrc.includes('leer: { base: "none", plus: [], minus: [] },') && presetSrc.includes('lane: { base: "all", plus: [], minus: [] },')
+    && presetSrc.includes('orch: { base: "none", plus: [], minus: [] },'),
+    presetSrc || "no PRESET_DEFAULT in src/founding.ts");
+  check("founding window: the Lane role and a worktree are one choice — each moves the other and says so",
+    foundCode.includes('if (r === "lane" && s.mode === "repo") { s.mode = "new"; s.note = "Ort → Neuer Worktree: eine Lane arbeitet im eigenen Worktree."; }')
+    && foundCode.includes('if (m !== "repo" && s.role !== "lane") { setRole("lane", "Rolle → Lane: ein Worktree ist eine Lane."); return; }'),
+    "setRole/setMode in src/founding.ts");
+  check("founding window: another folder is chosen IN the window over /api/dirs — the tree window is never opened from it",
+    foundCode.includes("Anderer Ordner …") && foundCode.includes("`/api/dirs?path=${encodeURIComponent(path)}`")
+    && foundCode.includes("&find=${encodeURIComponent(q)}") && foundCode.includes("matchTree(")
+    && !foundCode.includes("openTreePicker"),
+    "placePop/loadDir/scheduleFind in src/founding.ts");
+  // THE OLD DIRECTORY WINDOW IS GONE (MAIN, 2026-09-29): its one entry was the founding window's
+  // "Anderer Ordner …", which now chooses inside itself, so openTreePicker left with its state, its
+  // icon table, its CSS family and its three device switches. should-reject: any of them back.
+  const treeLeft = [
+    ...(/openTreePicker|pickerSlot|PK_ICONS|function spawnBody\(|function browse\(|function paintPicker\(/.exec(clientOnly) ?? []),
+    ...(/\.pk(row|crumb|toggle|pathin|line2|guide|dent|dtree|pin|use|icon)\b/.exec(indexSrc) ?? []).slice(0, 1),
+    ...(/"fleet\.(hidewt|pkdot|pkdir)"/.exec(prefsOnly + clientOnly) ?? []).slice(0, 1),
+  ];
+  check("the directory tree window is deleted with what only it used — function, state, icon table, CSS rules, device switches",
+    treeLeft.length === 0, treeLeft.join(" ") || "none left");
+  check("founding window: sessions carry their bar names (2A/2B), and no value is shown as the word default",
+    foundCode.includes("laneBandNames(stacksOf())") && /barName\(\w+, x\)/.test(foundCode)
+    && !/["'`]default["'`]/.test(foundCode) && !foundCode.includes('"–"') && !foundCode.includes("Profil auf Standard"),
+    "barNames/renderPlace/placePop in src/founding.ts");
+  const reasons = [...(/CONTEXT_PLAN_OMISSION_REASONS = \[([\s\S]*?)\] as const/.exec(planSrc)?.[1] ?? "")
+    .matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  const omitSay = /const OMIT_SAY[\s\S]*?\n};/.exec(foundCode)?.[0] ?? "";
+  check("founding window: every omission reason of the plan is said in owner words, the raw one only behind intern:",
+    reasons.length >= 8 && reasons.every((r) => omitSay.includes(`"${r}":`))
+    && (foundCode.match(/row\.title = `intern: \$\{o\.reason\}`;/g) ?? []).length === 2,
+    `reasons=${reasons.join(",")} missing=${reasons.filter((r) => !omitSay.includes(`"${r}":`)).join(",")}`);
+  const bodySrc = foundCode.slice(foundCode.indexOf("function foundingBody()"), foundCode.indexOf("function blocker()"));
+  check("founding window — should-reject: with no pack on the body carries no packs — one packs key, only in the conditional, and client.ts builds no second spawn body",
+    (bodySrc.match(/packs:/g) ?? []).length === 1 && bodySrc.includes("...(s.packs.size ? { packs: [...s.packs] } : {}),")
+    && !/function spawnBody\(/.test(clientCode),
+    "foundingBody in src/founding.ts; no spawnBody in src/client.ts");
+  check("founding window: the plan is read for (place, harness, mode), latest-wins, and re-read when any of the three moves",
+    foundCode.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`")
+    && foundCode.includes("if (S !== s || seq !== s.planSeq || s.place !== path || key !== planKey()) return; // latest-wins")
+    && foundCode.includes("if (s.planFor !== planKey()) void loadPlan();"),
+    "loadPlan/renderContext in src/founding.ts");
+  check("founding window: a 404 of the plan, dirinfo or preset route reads as SKEW_NOTE, never as a repo without packs",
+    foundCode.includes("if (res.status === 404) { s.planErr = SKEW_NOTE; return; }")
+    && foundCode.includes("if (res.status === 404) { s.infoErr = SKEW_NOTE; renderAll(); return; }")
+    && foundCode.includes("if (res.status === 404) { s.presetNote = SKEW_NOTE; return; }"),
+    "loadPlan/loadInfo/loadPresets in src/founding.ts");
+  check("founding window: Worktree fortsetzen carries no packs and the attach body never does",
+    foundCode.includes('if (s.mode !== "old") {') && foundCode.includes("const { packs: _packs, ...attach } = body;")
+    && foundCode.includes('post("/api/lanes", { repo: s.place, attach: s.orphan, slot: s.entry.slot, ...attach })'),
+    "applyPreset + start in src/founding.ts");
+  const ssSrc = clientCode.slice(clientCode.indexOf("export async function startSession("), clientCode.indexOf("export async function startWorktree("));
+  const swSrc = clientCode.slice(clientCode.indexOf("export async function startWorktree("), clientCode.indexOf("// --- sidebar ---"));
+  check("founding window: a founding with packs waits visibly, packsDelivered:false stays visible in the start receipt, and only the window that asked shows it",
+    foundCode.includes('"Packs werden zugestellt …"') && foundCode.includes("go.disabled = s.busy || blocker() !== null;")
     && ssSrc.includes("if (j.packsDelivered === false)") && swSrc.includes("if (j.packsDelivered === false)")
-    && ssSrc.indexOf("packsDelivered === false") < ssSrc.indexOf("closeFounding();")
-    && swSrc.indexOf("packsDelivered === false") < swSrc.indexOf("closeFounding();"),
-    "gfStart + the step-3 foot + startSession/startWorktree in src/client.ts");
-  check("founding B2b: a 404 of the plan route reads as SKEW_NOTE, never as a repo without packs",
-    gfSrc.includes("if (res.status === 404) { gfPlanErr = SKEW_NOTE; renderGf(); return; }"),
-    "gfLoadPlan in src/client.ts");
-  check("founding B2b: wt-old locks the switches, with the door's own refusal as the reason",
-    gfSrc.includes('if (gfRole === "wt-old") b.disabled = true;')
-    && gfSrc.includes('if (gfRole === "wt-old" && gfPlan && gfPlan.selected.length)')
-    && gfSrc.includes("attach seats a worktree that predates this founding — packs delivers only at a fresh founding\"));"),
-    "gfStep3 in src/client.ts");
+    && foundCode.includes("if (j.packsDelivered === false) onError(")
+    && ssSrc.includes("return { ok: true, slot,") && swSrc.includes("return { ok: true, slot,")
+    && ssSrc.includes("...via.body });") && swSrc.includes("const { slot, body } = via;")
+    && foundCode.includes("if (result.ok && S === s) await captureProof(")
+    // should-reject: client.ts closing whichever founding window is open by then
+    && !clientCode.includes("closeFounding"),
+    "start in src/founding.ts + startSession/startWorktree in src/client.ts");
+  check("founding window: the keyboard — Enter outside a control starts, every control keeps its own Enter, a popover owns Esc before the window",
+    foundCode.includes('b.dataset.ownEnter = "1";') && foundCode.includes('window.addEventListener("keydown", onKey, true);')
+    && foundCode.includes('window.addEventListener("keydown", onWinKey, true);')
+    && foundCode.includes('if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closePop(true); return; }')
+    && foundCss.includes(":where(#shell-found button)"),
+    "open/btn in src/founding.ts");
+  check("founding window: the role presets live on the server for every device, stored only for the roles the owner changed",
+    foundCode.includes('await api("/api/role-presets")') && foundCode.includes('post("/api/role-presets", { presets: Object.keys(changed).length ? changed : null })')
+    && foundCode.includes('"Auf Standard zurücksetzen"')
+    // should-reject: a device-local copy of a fleet-wide value (G5.1/G5.2)
+    && !/rolePreset|role-preset/i.test(prefsOnly),
+    "loadPresets/savePresets/resetPresets in src/founding.ts");
+
+  try {
+    const focusCases = await runFoundingFocusDom(sourceRoot);
+    for (const result of focusCases) {
+      const atWidth = `${result.width}x${result.height}`;
+      for (const [claim, ok] of Object.entries(result.g))
+        check(`founding DOM ${atWidth}: ${claim}`, ok, JSON.stringify(result.detail).slice(0, 600));
+      for (const [claim, ok] of Object.entries(result.g2))
+        check(`founding G2 DOM ${atWidth}: ${claim}`, ok, claim);
+    }
+  } catch (error) {
+    check("founding focus DOM — PROBE: Chromium runs the isolated fixture", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // THE SETTINGS WINDOW, measured in a real browser on the real client bundle (card 3e6342e2):
+  // every claim is its own line, so a dropped name, a wrong choice state or a focus that escapes
+  // the window turns exactly that line red. A browser that cannot run is the PROBE line — red,
+  // never a skip.
+  try {
+    for (const result of await runSettingsDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`settings DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("settings DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // THE SEND TARGET AND THE TWO PANES' INPUTS (card 929fdbe7, Grammatik G2.4), same rig: two
+  // sessions in two panes (one pane and the drawer at 390), native clicks and typing, a fake socket
+  // per pane, /send intercepted. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runComposerTargetDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`send target DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("send target DOM — PROBE: Chromium runs the real client bundle with two panes behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // THE PHONE UPRIGHT'S TWO ISLANDS (card "Auf dem Telefon steht oben klein", docs/design/
+  // mobil-insel-notiz.md §1c), same rig: the two steps of the top island, closing by name, by a tap
+  // outside and by every action, the 40-px targets, the terminal above the bottom island, the grip's
+  // keys without focus loss and with #keys' bytes — at 390 × 844 with and without a simulated
+  // keyboard; at 1200 and on its side only that no island exists. A browser that cannot run is the
+  // PROBE line — red, never a skip.
+  try {
+    for (const result of await runPhoneIslandDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`phone island DOM ${result.width}x${result.height}: ${claim}`, ok,
+          claim in result.detail ? JSON.stringify(result.detail[claim]).slice(0, 1500) : facts);
+    }
+  } catch (error) {
+    check("phone island DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // THE RIGHTS OF A SESSION (card "der Owner sieht an jeder Session und beim Gruenden, was sie
+  // lesen darf"; docs/design/datenrechte-notiz.md): measured against THIS instance, not a fixture —
+  // real grants, real 409s, a really re-occupied slot. Every scenario is its own line, so a painted
+  // draft, a PATCH that should not have gone out or an "unbekannt" drawn as "keine" turns exactly
+  // that line red. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runRightsDom({ base: BASE, token: TOKEN, repo: REPO, sourceRoot })) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`rights DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("rights DOM — PROBE: Chromium runs the tree's client against the isolated instance", false,
+      error instanceof Error ? error.message : String(error));
+  }
 
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the
@@ -1979,9 +2155,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // `gsec` (the guest-console panel) left with the console itself, 2026-08-08, and `dsec1` (the
   // helper register) left for the meter's device count, 2026-09-19 — both absences are asserted,
   // so a re-added machine-level section has to state where it goes.
-  check("client: the board renders in the owner's order — alarms → head → setup → changes → checks → history → lanes → tools",
+  check("client: the board renders in the owner's order — alarms → head → setup → rights → changes → checks → history → lanes → tools",
     at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("idsec")
-    && at("idsec") < at("su") && at("su") < at("work")
+    && at("idsec") < at("su") && at("su") < at("rsec") && at("rsec") < at("work")
     && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("lsec") && at("lsec") < at("tsec")
     && at("gsec") === -1 && at("dsec1") === -1,
     JSON.stringify(pushOrder));
@@ -2098,10 +2274,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // does not — it is the half a truncated row used to lose. The STATE is not a column at all any
   // more; it rides the dot and the row's station class, because the tube above already draws it
   // twice (the ball's position, and the count under its station).
+  // Since 02.10. the NAME goes before the kind (owner: a titled lane „[Zitat entfernt]“ was cut to
+  // ~10 characters by a 38 % cap): no cap on the name, the kind column grows from zero and gives way
+  // first. What that buys in pixels is measured in the settings DOM run (the meter row at 264 px).
   check("client: a meter row draws the PLACE in its own span, and that span never shrinks",
     /el\("span", "smplace", b\.where\)/.test(cliSrc)
     && /\.smplace \{ flex: none; margin-left: auto;/.test(indexSrc)
-    && /\.smname \{ flex: 0 1 auto;/.test(indexSrc) && /\.smwhat \{ flex: 1 1 auto;/.test(indexSrc),
+    && /\.smname \{ flex: 0 1 auto; min-width: 40px; white-space/.test(indexSrc) && /\.smwhat \{ flex: 1 1 0;/.test(indexSrc),
     "the meter row + its CSS");
   check("client: the state is NOT a fourth column — it is the row's station class and its dot",
     /`smrow tone-\$\{b\.tone\} st-\$\{b\.station\}/.test(cliSrc)
@@ -2692,9 +2871,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && serverSrc.includes("const anchor = normalizeLaneAnchor((wt as { anchor?: unknown }).anchor);"),
       "normalizeLaneAnchor + fleet.json load wiring");
     check("client quick-lane wiring sends slot+openedAt only from a main row; generic calls may omit it",
-      cliSrc.includes("newLane(repo, parent)")
+      cliSrc.includes("openLaneFounding(repo, parent)")
         && cliSrc.includes("quickLaneChip(s.repo ?? s.cwd, parent ?? undefined)"),
-      "quickLaneChip → newLane parent");
+      "quickLaneChip → openLaneFounding parent");
     const renderSrc = cut("function renderSlots()", "function emptyRow(");
     const emptySrc = cut("function emptyRow(", "// The whole stack");
     const stackUiSrc = cut("function setStackOpen(", "function renderChips(");
@@ -2837,7 +3016,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     // so each state must change the GEOMETRY of the glyph — and resting and asleep must not be the
     // same means twice (two brightnesses of one dot is the failure this forbids).
     {
-      const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
+      // the phone's top island reads the same four shapes from the SAME rule (`, #mtop .act…`), so a
+      // second selector in that rule is allowed — a second rule of its own would not be found here
+      const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}(?:,\\s*#mtop \\.act${sel})?\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
       const base = glyph(""), rest = glyph("\\.rest"), sleep = glyph("\\.sleep"), bad = glyph("\\.bad");
       check("client: the four states differ in SHAPE, and resting and asleep differ from each other",
         /border-radius: 50%/.test(base) && /background: var\(/.test(base)
@@ -2867,12 +3048,15 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && /sinceShort\(serverNow - s\.lastOutput\)/.test(cliSrc)
         && !/serverNow - s\.lastOutput < RECENT_MS,\n/.test(cliSrc.slice(cliSrc.indexOf("const key = JSON.stringify"))),
       "the sidebar render key");
-    // THE PLACE FOR THE MARK IS PREPARED AND EMPTY. Build 2 of this card draws it; build 1 owes the
-    // geometry, so that landing the mark moves nothing. "Empty" is asserted too — a placeholder
-    // that paints something is a mark nobody chose.
+    // THE PLACE FOR THE MARK IS RESERVED AND EMPTY IN THE DOM. Build 1 owed the geometry, so that
+    // landing the mark moves nothing; build 2 (Fassung B, src/marks.ts) draws into it from the bar's
+    // ONE canvas and never into the span — so "empty" still holds: no content, no background, no
+    // border. The span is registered with its facts for placeMarks, which renderSlots calls.
     check("client: every row reserves the session mark's place, at one declared size, with nothing in it",
-      /r1\.appendChild\(el\("span", "mark"\)\)/.test(rowSrc)
-        && /el\("span", "mark"\)/.test(emptySrc)
+      /const mk = el\("span", "mark"\);\s*r1\.appendChild\(mk\)/.test(rowSrc)
+        && /markItems\.push\(\{ el: mk, facts: markFacts\(/.test(rowSrc)
+        && /el\("span", "mark"\)/.test(emptySrc) && /markItems\.push\(\{ el: mk, facts: null \}\)/.test(emptySrc)
+        && /placeMarks\(marks, slotsEl, markItems\)/.test(cliSrc)
         && /\.slot \.mark \{[^}]*width: var\(--mark-size, 26px\)[^}]*height: var\(--mark-size, 26px\)/.test(indexSrc)
         && /\.slot\.lane \{ --mark-size: 21px; \}/.test(indexSrc)
         // nothing is drawn into it: no content, no background, no border anywhere in the bar
@@ -3143,13 +3327,15 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
           && cliSrc.includes("this.openAgents.delete(b.ref)")
           && /background: var\(--q-live\)/.test(cssBody(".trundot")),
         JSON.stringify({ dot: cssBody(".trundot"), run: cssBody(".trun") }));
-      check("chat: the work indicator rides sessionActive and hides at the RECENT_MS boundary by timer, not by a new poll",
-        cliSrc.includes("private readonly workEl = (() => {")
+      check("chat: work lives in the composer and expires at RECENT_MS without adding transcript nodes",
+        !cliSrc.includes("workEl")
+          && cliSrc.includes('if (panes[focused] === this) tickCacheAge();')
           && cliSrc.includes("this.workTimer = setTimeout(() => { if (this.slot === slot) this.updateWork(); }, Math.max(left, 0));")
-          && /const left = RECENT_MS - \(serverNow - s\.lastOutput\);/.test(cliSrc)
-          && cliSrc.includes("if (past === null) this.updateWork();")
-          && /display: none/.test(cssBody(".chatwork[hidden]")),
-        JSON.stringify({ work: cssBody(".chatwork") }));
+          && cliSrc.includes("const left = RECENT_MS - (serverClock() - s.lastOutput);")
+          && cliSrc.includes('const activity = el("span", "compactivity");')
+          && /width: 28px; height: 24px/.test(cssBody(".compactivity"))
+          && /display: none/.test(cssBody(".compmascot[hidden], .optage[hidden]")),
+        JSON.stringify({ activity: cssBody(".compactivity") }));
       // b3dc378b: more hoverable ids — the ENT net widens to 7-12 hex, the KIND is the caller's
       // answer asked in precedence order (task → program → sha), and an unknown string stays
       // text: every branch is gated on the same entityOk answer the task path always used
@@ -4506,5 +4692,2433 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("…and that boot's save writes the field", legacySock === SOCK, JSON.stringify(legacySock));
     await post(`/api/slots/${F}/kill`, {});
     await tmuxOut("kill-session", "-t", `=${anchor}`);
+  }
+}
+
+// --- THE SESSION MARK (src/marks.ts, Fassung B "Zweig"). Derived, never stored: the same facts must
+// draw the same commands after a restart (a fresh derivation, a fresh stage) and after re-slotting
+// (the row placed elsewhere in the bar, beside other rows); reduced motion must stop every movement.
+// The canvas is a recorder — each drawing call and each style write becomes one line — and the
+// stage's world (reduced motion, hidden tab, rAF) is handed in, so no browser is needed. ---
+function sessionMarkChecks(): void {
+  const recorder = () => {
+    const log: string[] = [];
+    const pen = new Proxy({}, {
+      get: (_t, k) => (...a: unknown[]) => { log.push(`${String(k)}(${a.join(",")})`); },
+      set: (_t, k, v) => { log.push(`${String(k)}=${String(v)}`); return true; },
+    }) as unknown as CanvasRenderingContext2D;
+    const canvas = { className: "", width: 0, height: 0, style: {}, dataset: {} as Record<string, string>,
+      setAttribute: () => {}, getContext: () => pen } as unknown as HTMLCanvasElement;
+    return { log, pen, canvas };
+  };
+  const draw = (f: MarkFacts, size = 26, t = 0): string[] => {
+    const r = recorder();
+    paintMark(r.pen, markShape(f, size), t);
+    return r.log;
+  };
+  const A: MarkFacts = { repo: "/Users/o/claude-fleet", harness: "claude", role: "main", slot: 3, openedAt: 1789767300000, state: "rest" };
+  const same = (a: string[], b: string[]) => a.length > 0 && a.join("\n") === b.join("\n");
+
+  const first = draw(A), again = draw({ ...A });
+  check("session mark: the same facts draw the same commands after a restart (fresh derivation)",
+    first.length > 20 && same(first, again), `${first.length} vs ${again.length} commands`);
+  // …and the facts are what draws it: every fact changes the drawing, so the pin above is not vacuous
+  const changed = {
+    repo: draw({ ...A, repo: "/Users/o/example-b" }), slot: draw({ ...A, slot: 4 }), openedAt: draw({ ...A, openedAt: A.openedAt + 1 }),
+    role: draw({ ...A, role: "orch" }), harness: draw({ ...A, harness: "pi-zai" }), state: draw({ ...A, state: "sleep" }),
+  };
+  const unchanged = Object.entries(changed).filter(([, l]) => same(l, first)).map(([k]) => k);
+  check("session mark: repo, slot, openedAt, role, harness and state each change the drawing", !unchanged.length,
+    `draws the same despite: ${unchanged.join(",")}`);
+  // a derived mark carries no context fill: markFacts has no field for it, whatever the row says
+  const derived = markFacts({ id: 3, label: "Orchestrator", harness: "codex", openedAt: 5, awaiting: "owner",
+    ctx: { usedTokens: 1, windowTokens: 2, pct: 50 } } as Parameters<typeof markFacts>[0], "/r", "work");
+  check("session mark: derived from the row's facts (role from the label, waiting from awaiting), no context fill",
+    JSON.stringify(derived) === JSON.stringify({ repo: "/r", harness: "codex", role: "orch", slot: 3, openedAt: 5, state: "need" }),
+    JSON.stringify(derived));
+
+  // the stage: a fake world whose rAF only records, driven by hand
+  const world = (reduce: boolean, hidden = false) => {
+    const w = { reduce, hidden, rafs: 0, cafs: [] as number[], next: null as ((t: number) => void) | null, wake: () => {} };
+    const env: MarkEnv = {
+      reduce: () => w.reduce, hidden: () => w.hidden, now: () => 1000,
+      raf: (cb) => { w.rafs++; w.next = cb; return w.rafs; },
+      caf: (id) => { w.cafs.push(id); w.next = null; },
+      listen: (wake) => { w.wake = wake; },
+    };
+    return { w, env };
+  };
+  // the commands one cell drew: from its translate to its restore
+  const cellLog = (log: string[], x: number, y: number): string[] => {
+    const at = log.lastIndexOf(`translate(${x},${y})`);
+    const end = log.indexOf("restore()", at);
+    return at < 0 || end < 0 ? [] : log.slice(at + 1, end);
+  };
+  {
+    const r1 = recorder(), s1 = new MarkStage(r1.canvas, world(false).env);
+    s1.setRows([{ x: 3, y: 4, size: 26, facts: A }, { x: 3, y: 40, size: 26, facts: { ...A, slot: 4 } }], 40, 80);
+    const r2 = recorder(), s2 = new MarkStage(r2.canvas, world(false).env);
+    s2.setRows([{ x: 3, y: 4, size: 21, facts: { ...A, role: "lane", slot: 20 } }, { x: 1, y: 212, size: 26, facts: A }], 40, 260);
+    const inPlace = cellLog(r1.log, 3, 4), moved = cellLog(r2.log, 1, 212);
+    check("session mark: re-slotting (another place in the bar, other neighbours, a new stage) draws the same commands",
+      same(inPlace, moved) && same(inPlace, first), `${inPlace.length} / ${moved.length} / ${first.length}`);
+    s1.dispose(); s2.dispose();
+  }
+
+  // prefers-reduced-motion: 16 moving marks, and nothing moves
+  const sixteen = Array.from({ length: 16 }, (_, i) => ({ x: 3, y: 4 + i * 34, size: 26,
+    facts: { ...A, slot: i + 1, state: (i % 4 === 3 ? "need" : i % 8 === 5 ? "bad" : "work") as MarkFacts["state"] } }));
+  {
+    const { w, env } = world(true), rec = recorder(), st = new MarkStage(rec.canvas, env);
+    st.setRows(sixteen, 40, 560);
+    const still = rec.log.length;
+    w.wake(); // a visibility or preference event re-syncs: still no loop
+    check("session mark: under prefers-reduced-motion 16 working marks paint one still frame and ask for no frame",
+      w.rafs === 0 && st.moving === 0 && rec.canvas.dataset.moving === "0" && still > 16 * 20
+        && same(cellLog(rec.log, 3, 4), draw(sixteen[0]!.facts, 26, 0)),
+      `rafs=${w.rafs} moving=${st.moving} commands=${still}`);
+    // the same 16 without the preference DO move — the pin above is about the preference, not a dead stage
+    w.reduce = false; w.wake();
+    const before = cellLog(rec.log, 3, 4);
+    w.next?.(1016);
+    const after = cellLog(rec.log, 3, 4);
+    check("session mark: without the preference the same 16 marks run on ONE rAF and the drawing moves",
+      w.rafs === 2 && st.moving === 16 && rec.canvas.dataset.moving === "16" && before.length > 0 && !same(before, after),
+      `rafs=${w.rafs} moving=${st.moving}`);
+    // switching the preference on mid-run cancels the pending frame and stops for good
+    const rafs = w.rafs;
+    w.reduce = true; w.wake();
+    check("session mark: turning reduced motion on mid-run cancels the loop and asks for no further frame",
+      w.rafs === rafs && w.cafs.includes(rafs) && w.next === null && st.moving === 0, `rafs=${w.rafs} cafs=${w.cafs.join(",")}`);
+    st.dispose();
+  }
+  {
+    const { w, env } = world(false, true), rec = recorder(), st = new MarkStage(rec.canvas, env);
+    st.setRows(sixteen, 40, 560);
+    check("session mark: a hidden tab paints the still frame and runs no loop", w.rafs === 0 && rec.log.length > 0, `rafs=${w.rafs}`);
+    st.dispose();
+  }
+
+  // the forbidden means, read from the code (comments stripped): no Math.random/sin/cos, and the
+  // bar keeps ONE project identity — client.ts imports projectHue instead of carrying a second one
+  // read from the SOURCE checkout (node_modules links there): the staged instance copies only the
+  // import closure, and src/client.ts is not in it (e2e/history.ts reads it the same way)
+  const src = dirname(realpathSync(`${ROOT}/node_modules`));
+  const code = readFileSync(`${src}/src/marks.ts`, "utf8").split("\n")
+    .map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  const client = readFileSync(`${src}/src/client.ts`, "utf8");
+  check("session mark: src/marks.ts uses no Math.random, Math.sin or Math.cos",
+    !/Math\.(random|sin|cos)\b/.test(code), (code.match(/Math\.(random|sin|cos)\b/g) ?? []).join(","));
+  check("session mark: one project identity — client.ts takes projectHue from src/marks.ts and defines none",
+    /import \{[^}]*\bprojectHue\b[^}]*\} from "\.\/marks"/.test(client) && !/function projectHue\b|PROJECT_HUES\s*=/.test(client));
+}
+
+// Real browser DOM with native keyboard input; only client API/spawn boundaries are stubbed.
+// what the founding window does in a real browser, against a stub client: every claim is one
+// scenario read off the DOM and the requests the window sent (src/founding.ts, 2026-10-01)
+interface FoundingFocusDomResult {
+  width: number; height: number;
+  g: Record<string, boolean>;
+  // the start receipt (552958ea): what was asked, read back at the occupant the start produced
+  g2: Record<string, boolean>;
+  detail: Record<string, string>;
+  receiptMetrics: { bytes: number; durationMs: number }[];
+}
+
+export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string): Promise<FoundingFocusDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-founding-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const clientSource = readFileSync(resolve(sourceRoot, "src/client.ts"), "utf8");
+  const startFunctions = clientSource.slice(clientSource.indexOf("export type StartResult ="), clientSource.indexOf("// --- sidebar ---"));
+  const stub = `
+    export let fleet = [{ id: 1, cwd: '/fixture/repo', label: 'Fixture' }];
+    export const harnesses = [{ id: 'codex', default: true, supports: { model: true, effort: true, container: true }, models: ['fixture-model'], effortLevels: ['high'] }, { id: 'other', supports: { model: true, effort: true }, models: ['other-model'], effortLevels: ['high'] },
+      // the model register's MAIN agent (model-register.ts#MODEL_DEFAULTS.main), whose default the MAIN card fills
+      { id: ${JSON.stringify(MODEL_DEFAULTS.main.harness)}, supports: { model: true, effort: true }, models: ['fixture-main-model'], effortLevels: ['low', 'medium', 'high', 'max'] }];
+    export const defaultModel = '', containerDefaults = null, SKEW_NOTE = 'fixture skew';
+    export const agentHarnesses = () => window.fixtureNoMainAgent ? harnesses.slice(0, 2) : harnesses;
+    export const isMobile = () => matchMedia('(max-width: 700px)').matches;
+    export const el = (tag, cls, text) => { const e = document.createElement(tag); e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+    export const baseName = p => p.split('/').pop();
+    export const laneBandNames = () => new Map();
+    export const stacksOf = () => [];
+    export const fmtTs = () => '', modelNotice = () => '';
+    export const setDrawer = () => {}, loadHarnesses = async () => {};
+    const pack = (id, source, useWhen) => ({ id, bytes: 1024, source, useWhen });
+    export const api = async path => {
+      if (path.startsWith('/api/dirinfo?')) return Response.json({ git: true, branch: 'fixture', dirty: 0, orphans: [{path:'/fixture/lane', branch:'fleet/continued'}] });
+      if (path === '/api/role-presets') return Response.json({ presets: window.fixtureStored });
+      if (path === '/api/sessions') return Response.json({ slots: window.fixtureSlots });
+      // the start receipt reads the project views FRESH at the occupant the start produced
+      // (src/rights.ts#proofGrantRow): the server's answer for a session nobody assigned one to
+      if (path.startsWith('/api/slots/') && path.endsWith('/memory-grant')) {
+        window.fixtureGrantReads = (window.fixtureGrantReads || 0) + 1;
+        const row = (window.fixtureSlots || []).find(r => path === '/api/slots/' + r.id + '/memory-grant');
+        return Response.json({ slot: row ? row.id : 0, openedAt: row ? row.openedAt : null, grant: null, inForce: false, knownProjects: [] });
+      }
+      // the Programs the MAIN card reads: one free, one stale, one living, two without a readable
+      // occupancy (no health record; a founding marker), and one complete that is not offered
+      if (path === '/api/programs') {
+        window.fixtureProgramReads++;
+        if (window.fixturePrograms === 'fail') return Response.json({ error: 'fixture programs refusal' }, { status: 500 });
+        const h = occupancy => ({ occupancy, sessionIdMatch: occupancy === 'live' ? 'exact' : 'unknown' });
+        return Response.json({ programs: [
+          { id: 'p-live', title: 'Fixture Lebt', status: 'active', main: { slot: 1, openedAt: 100 }, health: h('live') },
+          { id: 'p-free', title: 'Fixture Frei', status: 'active', health: h('unbound') },
+          { id: 'p-stale', title: 'Fixture Alt', status: 'active', main: { slot: 5, openedAt: 50 }, health: h('stale') },
+          { id: 'p-unknown', title: 'Fixture Ohne Befund', status: 'active' },
+          { id: 'p-founding', title: 'Fixture Gruendet', status: 'active', founding: { v: 2 }, health: h('unbound') },
+          { id: 'p-done', title: 'Fixture Fertig', status: 'complete', health: h('unbound') },
+        ] });
+      }
+      if (path === '/api/context-receipts') {
+        window.fixtureReceiptReads++;
+        if (window.fixtureReceiptHold) await new Promise(resolve => {window.fixtureReceiptRelease=resolve;});
+        const begun = performance.now();
+        const pack = { id: 'fixture-alpha', useWhen: 'Zweck des Packs', anchors: [{ path: 'AGENTS.md', anchor: '## Portable operating contract' }], sourceHash: '1234567890abcdef' };
+        const receipt = { slot: 2, at: 2001, repo: '/fixture/repo', head:'fixture-head', branch:'fixture', harness:'codex', model:'fixture-model', effort:'high', selected:[pack] };
+        const mode = window.fixtureMode;
+        const receipts = mode === 'missing' ? [{...receipt, at:999}, {...receipt, slot:3}]
+          : mode === 'multiple' ? [receipt, {...receipt, at:2002, selected:[{...pack, sourceHash:'abcdef1234567890'}]}]
+          : mode === 'private' ? [{...receipt, selected:[{...pack, anchors:{privateSourceId:'k-private'}, private:{verdict:'match',version:2}}]}] : [receipt];
+        // Representative unfiltered ledger: irrelevant old occupants consume bytes but prove nothing.
+        receipts.push(...Array.from({length:10000}, (_, i) => ({...receipt, slot:3, at:i, head:'h'.repeat(40)})));
+        const text = JSON.stringify({receipts,total:receipts.length,malformed:0});
+        const response = new Response(text, {headers:{'content-type':'application/json'}});
+        const readJson=response.json.bind(response);
+        response.json=async () => {const data=await readJson();
+          window.fixtureReceiptMetrics.push({bytes:new TextEncoder().encode(text).length,durationMs:performance.now()-begun});return data;};
+        return response;
+      }
+      if (path.startsWith('/api/founding-plan?')) {
+        window.fixturePlanReads++;
+        if (window.fixtureHold) await new Promise(resolve => window.fixtureReleases.push(resolve));
+        if (window.fixturePlan === 'network') throw new Error('fixture network refusal');
+        if (window.fixturePlan === '500') return Response.json({ error: 'fixture plan refusal' }, { status: 500 });
+        if (window.fixturePlan === 'malformed') return Response.json({ selected: [{ id: 'broken' }], omitted: [] });
+        if (window.fixturePlan === 'many') return Response.json({ selected: Array.from({ length: 14 }, (_, i) => pack('fixture-pack-number-' + i, 'repo-manifest', 'Pack ' + i)), omitted: [] });
+        return Response.json({ head: 'fixture-head', branch: 'fixture', selected: [
+          pack('fixture-alpha', 'repo-manifest', 'Erstes Test-Pack: voller Zweck mit langem Text, der mobil lesbar umbricht.'),
+          pack('fixture-beta', 'fleet-seed', 'Zweites Test-Pack')
+        ].filter(p => window.fixturePlan !== 'missing-id' || p.id !== 'fixture-alpha'), omitted: [{ id: 'fixture-omitted', reason: 'harness-unsupported' }] });
+      }
+      throw new Error('unexpected fixture API: ' + path);
+    };
+    export const post = async (url, body) => {
+      window.fixtureRequests.push({ url, body });
+      if (window.fixturePostHold) await new Promise(resolve => window.fixtureReleases.push(resolve));
+      if (url === '/api/role-presets') { window.fixtureStored = body.presets; return Response.json({ ok: true }); }
+      // bootstrap-main's three answers that found nothing, word for word as server.ts writes them
+      const boot = url.endsWith('/bootstrap-main');
+      if (boot && window.fixtureBootstrap === 'existing') return Response.json({ ok: true, existing: true, program: { id: 'p-free', main: { slot: 1, openedAt: 100 } } });
+      if (boot && window.fixtureBootstrap === 'refuse') return Response.json({ error: 'cannot bootstrap Program-MAIN for a complete program' }, { status: 409 });
+      if (boot && window.fixtureBootstrap === 'pending') return Response.json({ error: 'Program-MAIN founding recovery is pending; retry did not open another slot', availability: 'unknown', recovery: 'pending', affected: { attemptId: 'a'.repeat(32), slot: 4, openedAt: 4000 } }, { status: 503 });
+      // without a receipt mode the door refuses: those scenarios read only the request the window sent
+      if (!window.fixtureMode) return Response.json({error:'fixture: request captured'}, {status:503});
+      const lane = url.endsWith('open-worktree') || url === '/api/lanes';
+      const row = {id:2,cwd:lane ? '/fixture/lane' : body.cwd,label:boot ? 'Program-MAIN: Fixture Frei' : body.label || null,
+        openedAt:window.fixtureMode === 'unchanged' ? 1000 : 2000,
+        model:window.fixtureMode === 'difference' ? 'observed-model' : body.model || 'fixture-model',
+        effort:body.effort || 'high', ...(body.harness ? {harness:body.harness} : {}),
+        ...(lane ? {worktree:{repo:'/fixture/repo',branch:body.attach ? 'fleet/continued' : 'fleet/fresh'}} : {}),
+        ...(body.container ? {container:body.container,containerContext:body.containerContext} : {})};
+      if (window.fixtureMode === 'unreported') {delete row.model; delete row.effort;}
+      window.fixtureSlots = [fleet[0],row];
+      if (boot) return Response.json({ok:true,slot:2,program:{id:'p-free',main:{slot:2,openedAt:2000}}});
+      return Response.json({ok:true,slot:2,cwd:row.cwd,label:row.label,
+        ...(window.fixtureMode === 'undelivered' ? {packsDelivered:false,reason:'fixture delivery refused'} : {})});
+    };
+    export const showSlot = slot => {window.fixtureShown=slot;return true;};
+    export const revealStartedSlot = async slot => {
+      fleet = (await (await api('/api/sessions')).json()).slots;
+      document.querySelector('#slots').replaceChildren(document.createElement('span'));
+      return showSlot(slot);
+    };
+    // the real startSession/startWorktree from src/client.ts: a closeFounding of theirs would close
+    // whichever window is open by then, so the stub routes it to the real one
+    const closeFounding = () => window.fixtureClose();
+    ${startFunctions}
+  `;
+  const built = await Bun.build({
+    entrypoints: [resolve(sourceRoot, 'src/founding.ts')], target: 'browser', format: 'iife',
+    plugins: [{ name: 'founding-dom-boundary', setup(build) {
+      build.onResolve({ filter: /^\.\/client$/ }, () => ({ path: 'fixture-client', namespace: 'fixture' }));
+      build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: stub, loader: 'ts' }));
+      build.onLoad({ filter: /\/src\/founding\.ts$/ }, args => ({
+        contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases = []; window.fixturePlanReads = 0; window.fixtureStored = null;
+window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false;
+window.fixtureReload = () => { void loadPlan(); renderAll(); };
+window.fixturePlanReady = () => !!S?.plan && S.planFor === planKey();
+window.fixtureClose = closeFounding; window.fixtureSettled = () => !S?.busy;
+window.fixtureRecycle = () => { fleet.find(r => r.id === 2).openedAt = 3000; document.querySelector('#slots').replaceChildren(document.createElement('span')); };
+window.fixtureResetSlots = () => { fleet.splice(1); fleet.push({id:2,cwd:null,label:null,openedAt:1000}); };
+window.fixtureStale = () => { S.planFor = 'stale'; renderFoot(); };
+window.fixtureLane = () => openLaneFounding('/fixture/repo', { slot: 1, openedAt: 100 });
+window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free').onclick = window.fixtureOpen; window.fixtureReady = true;`, loader: 'ts'
+      }));
+    } }]
+  });
+  if (!built.success) throw new Error(built.logs.join('\n'));
+  const css = [...readFileSync(resolve(sourceRoot, 'public/index.html'), 'utf8').matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
+  writeFileSync(resolve(scratch, 'fixture.html'), `<!doctype html><meta charset="utf-8"><style>${css}</style><div id="slots"></div><button id="fixture-free">Freier Slot 2</button><script>window.fetch = () => { throw new Error('network forbidden in DOM fixture'); };</script><script>${await built.outputs[0].text()}</script>`);
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which('chromium') ?? Bun.which('chromium-browser') ?? Bun.which('google-chrome') ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error('DOM probe needs Chromium (FLEET_E2E_BROWSER): ' + executable); }
+  const browser = Bun.spawn([executable, '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${scratch}/profile`, 'about:blank'], { stdout: 'ignore', stderr: 'pipe' });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = '';
+    // Cold Chromium startup has a 45 s ceiling; no endpoint is a failed probe.
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error('browser exited before CDP endpoint: ' + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error('browser CDP startup timeout: ' + startupLog)), 45000); })
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((resolve, reject) => { socket!.onopen = () => resolve(); socket!.onerror = () => reject(new Error('CDP connection failed')); });
+    let serial = 0, sessionId: string | undefined;
+    let recordingWidth: number | null = null, frame = 0;
+    const pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
+    socket.onmessage = event => {
+      const msg = JSON.parse(String(event.data)) as { id: number; error?: unknown; result: Record<string, unknown> };
+      const eventMsg = JSON.parse(String(event.data)) as { method?: string; params?: { data: string; sessionId: number } };
+      if (eventMsg.method === 'Page.screencastFrame' && eventMsg.params) {
+        if (artifacts && recordingWidth !== null) {
+          const folder = resolve(artifacts, `frames-${recordingWidth}`);
+          writeFileSync(resolve(folder, `${String(frame++).padStart(5, '0')}.jpg`), Buffer.from(eventMsg.params.data, 'base64'));
+        }
+        socket!.send(JSON.stringify({ id: ++serial, method: 'Page.screencastFrameAck', params: { sessionId: eventMsg.params.sessionId }, sessionId }));
+        return;
+      }
+      const waiting = pending.get(msg.id); if (!waiting) return;
+      pending.delete(msg.id);
+      if (msg.error) waiting.reject(new Error(JSON.stringify(msg.error))); else waiting.resolve(msg.result);
+    };
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((resolve, reject) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); reject(new Error('CDP timeout: ' + method)); }, 10000);
+      pending.set(id, { resolve: value => { clearTimeout(timeout); resolve(value); }, reject: error => { clearTimeout(timeout); reject(error); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const target = await send('Target.createTarget', { url: 'about:blank' });
+    const attached = await send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+    sessionId = String(attached.sessionId);
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
+      return (r.result as { value: T }).value;
+    };
+    const key = async (name: string) => {
+      const code = name === 'Enter' ? 13 : name === 'Tab' ? 9 : 27;
+      await send('Input.dispatchKeyEvent', { type: name === 'Enter' ? 'keyDown' : 'rawKeyDown', key: name, code: name, windowsVirtualKeyCode: code, ...(name === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name, windowsVirtualKeyCode: code });
+    };
+    const results: FoundingFocusDomResult[] = [];
+    for (const [width, height] of [[1200, 900], [390, 844]]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await send('Page.navigate', { url: `file://${scratch}/fixture.html` });
+      await evaluate(`new Promise((resolve, reject) => { const until = Date.now() + 5000; const ready = () => { if (window.fixtureReady) return resolve(true); if (Date.now() > until) return reject(new Error('fixture not ready')); requestAnimationFrame(ready); }; ready(); })`);
+      const g: Record<string, boolean> = {}, detail: Record<string, string> = {};
+      const shot = async (stage: string) => {
+        if (!artifacts) return;
+        const png = await send('Page.captureScreenshot', { format: 'png' });
+        writeFileSync(resolve(artifacts, `${width}-${stage}.png`), Buffer.from(String(png.data), 'base64'));
+      };
+      const click = async (selector: string) => {
+        const point = await evaluate<{ x: number; y: number }>(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)}); if (!e) throw new Error('missing click target: ' + ${JSON.stringify(selector)});
+          e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        })()`);
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+        await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      };
+      const wait = async (condition: string) => evaluate(`new Promise((resolve, reject) => {
+        const until = Date.now() + 5000; const ready = () => { if (${condition}) return resolve(true);
+          if (Date.now() > until) return reject(new Error('condition timed out: ' + ${JSON.stringify(condition)} + ' — the window showed: ' + (document.querySelector('#shell-found')?.innerText.replace(/\\s+/g, ' ').slice(-400) ?? 'no window'))); requestAnimationFrame(ready); }; ready();
+      })`);
+      // the requests that START something — a stored preset is not a start
+      const starts = `window.fixtureRequests.filter(r => r.url !== '/api/role-presets')`;
+      const onlyStart = (url: string, body: unknown) => evaluate<boolean>(`(() => { const s = ${starts}; return s.length === 1 && s[0].url === ${JSON.stringify(url)} && JSON.stringify(s[0].body) === ${JSON.stringify(JSON.stringify(body))}; })()`);
+      const said = async (name: string) => { detail[name] = await evaluate<string>(`JSON.stringify(window.fixtureRequests)`); };
+      const chips = `Array.from(document.querySelectorAll('.fdctx .fdcx:not(.out):not(.fix)'), e => e.querySelector('.fdcxid').textContent)`;
+      const ready = `document.querySelector('.fdadd') !== null && !document.querySelector('.fdctx .fdnote')`;
+      const reset = async (extra = '') => {
+        await evaluate(`document.querySelector('#shell-found')?.remove(); window.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases.splice(0).forEach(r => r()); window.fixtureStored = null;
+          window.fixtureMode = null; window.fixtureShown = null; window.fixtureReceiptReads = 0; window.fixtureReceiptHold = false; window.fixtureResetSlots();
+          window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; ${extra}`);
+        await evaluate(`window.fixtureOpen()`);
+        await wait(ready);
+      };
+      const role = async (name: string) => { await click(`.fdrole[data-role="${name}"]`); await wait(ready); };
+      const blocked = async () => {
+        await click('.fdgo');
+        await evaluate(`document.querySelector('.shelldetail').focus()`); await key('Enter');
+        return evaluate<boolean>(`document.querySelector('.fdgo').disabled && document.querySelector('.fdfootnote')?.textContent.length > 0 && ${starts}.length === 0`);
+      };
+
+      await reset(); await shot('leer');
+      if (width === 1200) g['desktop: the start button holds the focus when the window opens'] = await evaluate<boolean>(`document.activeElement === document.querySelector('.fdgo')`);
+      g['Leer: no pack is on and the foot says so'] = await evaluate<boolean>(`${chips}.length === 0 && document.querySelector('.fdsay').textContent.includes('ohne Packs')`);
+      await click('.fdgo');
+      g['Leer — should-reject a packs key: the start body is exactly { cwd }'] = await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo' }); await said('leer');
+
+      await reset(); await role('lane'); await wait(`${chips}.length === 2`); await shot('lane');
+      g['Lane applies its preset: every pack the plan offers lights up, the delta line names them'] = await evaluate<boolean>(`JSON.stringify(${chips}) === '["fixture-alpha","fixture-beta"]' && document.querySelector('.fddelta').textContent.includes('+fixture-alpha') && document.querySelectorAll('.fdcx.in').length === 2`);
+      g['Lane and worktree are one choice: the place moved to Neuer Worktree and says why'] = await evaluate<boolean>(`document.querySelector('.fdsegb.on').textContent === 'Neuer Worktree' && document.querySelector('.fdcouple').textContent.includes('Neuer Worktree')`);
+      await evaluate(`const i = document.querySelector('.fdname input'); i.value = 'Mein Test'; i.dispatchEvent(new Event('input'))`);
+      const stamp = await evaluate<string>(`(() => { const d = new Date(); return String(d.getFullYear() % 100).padStart(2, '0') + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0'); })()`);
+      await click('.fdgo');
+      g['Lane start: one open-worktree with the preset packs and the typed name as its branch'] = await onlyStart('/api/slots/2/open-worktree', { repo: '/fixture/repo', branch: `fleet/${stamp}-mein-test`, packs: ['fixture-alpha', 'fixture-beta'] }); await said('lane');
+
+      await reset(); await role('lane'); await wait(`${chips}.length === 2`);
+      await click('.fdctxfoot .fdghost'); await wait(`document.querySelector('.fdlist') !== null`);
+      await evaluate(`document.querySelector('.fdsw[data-pack="fixture-alpha"]').focus()`);
+      const toggles: string[] = [];
+      for (let i = 0; i < 2; i++) {
+        await key('Enter');
+        toggles.push(await evaluate<string>(`(() => { const a = document.activeElement; return (a?.dataset.pack ?? a?.tagName) + ':' + a?.getAttribute('aria-checked') + ':' + ${starts}.length; })()`));
+      }
+      g['a pack switch toggles on its own Enter, keeps the focus and never starts'] = JSON.stringify(toggles) === '["fixture-alpha:false:0","fixture-alpha:true:0"]';
+      detail['toggles'] = JSON.stringify(toggles);
+      await shot('list');
+
+      await reset(); await click('[data-pop="harness"]'); await click('.fdpop .fdprow:nth-child(2)'); await role('orch');
+      g['Orchestratorin shows her role card and carries no packs'] = await evaluate<boolean>(`document.querySelector('.fdcx.srv')?.textContent === 'Rollenkarte' && ${chips}.length === 0`);
+      await click('.fdgo');
+      g['Orchestratorin with another agent: exactly { cwd, label, harness }'] = await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo', label: 'Orchestrator', harness: 'other' }); await said('orch');
+
+      // MAIN STATT STEWARD (owner 2026-10-02): the card reads GET /api/programs and founds over
+      // POST /api/programs/:id/bootstrap-main — the only founding path a MAIN has
+      const progs = `Array.from(document.querySelectorAll('.fdprog'))`;
+      const footSays = `(document.querySelector('.fdfootnote')?.textContent || '')`;
+      const toMain = async () => { await click('.fdrole[data-role="main"]'); await wait(`${progs}.length > 0 || !!document.querySelector('.fdprogs .fdnote.warn')`); };
+      // the MAIN default of the model register, as the window must send it (read, never copied)
+      const mainDefault = { harness: MODEL_DEFAULTS.main.harness, model: MODEL_DEFAULTS.main.id, ...(MODEL_DEFAULTS.main.effort ? { effort: MODEL_DEFAULTS.main.effort } : {}) };
+      const profileShown = `({ agent: document.querySelector('.fdpf[data-pop="harness"] .fdpfv')?.textContent, model: document.querySelector('.fdpf[data-pop="model"]')?.title,
+        effort: document.querySelector('.fdpf[data-pop="effort"] .fdpfv')?.textContent })`;
+      await reset();
+      g['the role cards are exactly Leer, Lane, Orchestratorin, MAIN — no Steward is offered'] = await evaluate<boolean>(`Array.from(document.querySelectorAll('.fdrole'), b => b.dataset.role).join() === 'leer,lane,orch,main' && !document.querySelector('#shell-found').textContent.includes('Steward')`);
+      await toMain(); await shot('main');
+      const listed = await evaluate<string>(`JSON.stringify(${progs}.map(b => [b.dataset.program, b.disabled, b.querySelector('.fdpst').textContent]))`);
+      detail['main-programs'] = listed;
+      g['MAIN lists the active Programs, free first; a living MAIN is shown with its slot but not choosable, a missing fact reads unbekannt'] =
+        listed === JSON.stringify([['p-free', false, 'ohne MAIN'], ['p-stale', false, 'alte MAIN weg (Slot 5) — wird ersetzt'], ['p-live', true, 'MAIN lebt · Slot 1'],
+          ['p-founding', true, 'Belegung unbekannt'], ['p-unknown', true, 'Belegung unbekannt']])
+        && await evaluate<boolean>(`document.querySelector('.fdprogs').textContent.includes('1 weitere nicht aktiv') && window.fixtureProgramReads === 1`);
+      // (5) a living MAIN is a fact on a row nobody can choose: it reads in that row's muted ink
+      const ink = await evaluate<{ live: string; free: string; stale: string; green: string; disabled: boolean }>(`(() => {
+        const c = id => getComputedStyle(document.querySelector('.fdprog[data-program="' + id + '"] .fdpst')).color;
+        const g = document.createElement('i'); g.style.color = 'var(--q-live)'; document.querySelector('#shell-found').appendChild(g);
+        const green = getComputedStyle(g).color; g.remove();
+        return { live: c('p-live'), free: c('p-free'), stale: c('p-stale'), green, disabled: document.querySelector('.fdprog[data-program="p-live"]').disabled }; })()`);
+      detail['main-ink'] = JSON.stringify(ink);
+      g['"MAIN lebt · Slot 1" stands muted like its unchoosable row, never green; the stale warning stays apart'] =
+        ink.disabled && ink.live === ink.free && ink.live !== ink.green && ink.stale !== ink.live;
+      // (6) the role fills its own profile from model-register.ts#MODEL_DEFAULTS.main
+      const shownMain = await evaluate<{ agent: string; model: string; effort: string }>(profileShown);
+      detail['main-profile'] = JSON.stringify(shownMain);
+      g['MAIN fills Agent, Modell and Effort with the MAIN default of the model register — Effort is no longer "Adapter wählt"'] =
+        shownMain.agent === MODEL_DEFAULTS.main.harness && shownMain.model.startsWith(`Modell ${MODEL_DEFAULTS.main.id}`)
+        && shownMain.model.includes('MAIN-Standard') && shownMain.effort === (MODEL_DEFAULTS.main.effort ?? 'Adapter wählt');
+      g['MAIN carries no packs: the Programs founding brief stands in Kontext, no pack button'] = await evaluate<boolean>(`${chips}.length === 0 && !document.querySelector('.fdadd') && document.querySelector('.fdcx.srv')?.textContent === 'Gründungsbrief des Programs'`);
+      g['should-reject: MAIN without a chosen Program blocks the button and Enter'] = await blocked();
+      await click('.fdprog[data-program="p-live"]');
+      g['should-reject: a Program with a living MAIN cannot be chosen'] = await evaluate<boolean>(`document.querySelector('.fdprog[data-program="p-live"]').getAttribute('aria-checked') === 'false' && document.querySelector('.fdgo').disabled`);
+      await click('.fdprog[data-program="p-free"]'); await shot('main-chosen');
+      g['MAIN chosen: the foot names the Program and says the server picks the place'] = await evaluate<boolean>(`document.querySelector('.fdsay').textContent.includes('Eine MAIN für „Fixture Frei“ in repo') && ${footSays}.includes('nicht unbedingt Slot 2') && !document.querySelector('.fdgo').disabled`);
+      for (const [mode, expect] of [
+        ['existing', 'existing: true — das Program hat schon eine lebende MAIN auf Slot 1. Nichts wurde gegründet.'],
+        ['refuse', 'Abgelehnt (409): cannot bootstrap Program-MAIN for a complete program'],
+        ['pending', `Abgelehnt (503): Program-MAIN founding recovery is pending; retry did not open another slot {"availability":"unknown","recovery":"pending","affected":{"attemptId":"${'a'.repeat(32)}","slot":4,"openedAt":4000}}`],
+      ] as const) {
+        await reset(`window.fixtureBootstrap = ${JSON.stringify(mode)};`); await toMain(); await click('.fdprog[data-program="p-free"]');
+        await click('.fdgo'); await wait(`window.fixtureSettled() && window.fixtureProgramReads === 2`);
+        if (mode === 'refuse') await shot('main-refused');
+        detail[`main-${mode}`] = await evaluate<string>(footSays);
+        g[`bootstrap-main answers ${mode}: the window shows it word for word, founds nothing and reads the Programs again`] =
+          await evaluate<boolean>(`${footSays} === ${JSON.stringify(expect)} && !document.querySelector('#shell-found.fdproved')`)
+          && await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo', ...mainDefault });
+      }
+      // leaving the role takes back exactly what it filled; an agent this machine lacks fills nothing
+      await reset(); await toMain(); await role('leer');
+      const backToLeer = await evaluate<{ agent: string; model: string; effort: string }>(profileShown);
+      detail['main-left'] = JSON.stringify(backToLeer);
+      await click('.fdgo');
+      g['leaving MAIN takes its default back: Leer shows Adapter wählt again and starts with exactly { cwd }'] =
+        backToLeer.agent === 'codex' && backToLeer.effort === 'Adapter wählt' && await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo' });
+      await reset(); await toMain(); await click('[data-pop="effort"]'); await click('.fdpop .fdprow:nth-child(2)'); await role('leer');
+      g['should-reject: an Effort the owner picked under MAIN is not taken back when the role changes'] =
+        (await evaluate<{ effort: string }>(profileShown)).effort === 'low';
+      await reset(`window.fixtureNoMainAgent = true;`); await toMain(); await click('.fdprog[data-program="p-free"]');
+      const noAgent = await evaluate<{ agent: string; model: string; effort: string }>(profileShown);
+      detail['main-no-agent'] = JSON.stringify(noAgent);
+      await click('.fdgo'); await wait(`window.fixtureSettled()`);
+      g['should-reject: without the MAIN agent of the register on this machine nothing is filled — the door gets exactly { cwd }'] =
+        noAgent.agent === 'codex' && noAgent.effort === 'Adapter wählt'
+        && await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo' });
+      await reset(`window.fixturePrograms = 'fail';`); await toMain();
+      g['should-reject: Programs that cannot be read offer nothing, say so and block the start'] = await evaluate<boolean>(`${progs}.length === 0 && document.querySelector('.fdprogs .fdnote.warn').textContent.includes('Antwort 500')`) && await blocked();
+      await reset(`window.fixtureMode = 'equal';`); await toMain(); await click('.fdprog[data-program="p-free"]');
+      await click('.fdgo'); await wait(`window.fixtureSettled() && !!document.querySelector('#shell-found.fdproved')`); await shot('main-receipt');
+      g['MAIN start: exactly one bootstrap-main with { cwd } plus the MAIN agent, model and effort of the register — no packs, no container, no label'] = await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo', ...mainDefault }); await said('main');
+      g['the start receipt reads the MAIN back at the Programs binding'] = await evaluate<boolean>(`document.querySelector('.fdproofrow[data-field="Rolle"] .fdactual')?.textContent === 'MAIN' && document.querySelector('.fdproofrow[data-field="Rolle"]').dataset.state === 'same'`);
+
+      await reset(); await role('lane'); await wait(`${chips}.length === 2`);
+      await evaluate(`window.fixtureHold = true;`);
+      await click('[data-pop="harness"]'); await click('.fdpop .fdprow:nth-child(2)');
+      await wait(`window.fixtureReleases.length > 0`);
+      g['should-reject: while the plan of a changed start is missing, packs block the button and Enter'] = await blocked();
+      await evaluate(`window.fixtureHold = false; window.fixtureReleases.splice(0).forEach(r => r());`);
+      await wait(`${chips}.length === 2 && !document.querySelector('.fdgo').disabled`);
+      g['the plan arrives: the preset is back and the button frees'] = true;
+
+      for (const failure of ['500', 'malformed', 'network']) {
+        await reset(); await role('lane'); await wait(`${chips}.length === 2`);
+        await evaluate(`window.fixturePlan = ${JSON.stringify(failure)}; window.fixtureReload();`);
+        await wait(`document.querySelector('.fdbody .fdnote.warn') !== null`);
+        const sayPlan = await evaluate<boolean>(`${chips}.length === 0 && document.querySelector('.fdfootnote.warn')?.textContent.includes('ohne Packs')`);
+        await click('.fdgo');
+        g[`${failure} plan: the switches go off, the foot says it starts without packs, and the body carries none`] = sayPlan
+          && await onlyStart('/api/slots/2/open-worktree', { repo: '/fixture/repo', branch: '' });
+      }
+      await reset(); await role('lane'); await wait(`${chips}.length === 2`);
+      await evaluate(`window.fixturePlan = 'missing-id'; window.fixtureReload();`); await wait(`${chips}.length === 1`);
+      await click('.fdgo');
+      g['a pack the plan no longer offers drops out; the body carries only what the plan offers'] = await onlyStart('/api/slots/2/open-worktree', { repo: '/fixture/repo', branch: '', packs: ['fixture-beta'] });
+      await reset(); await role('lane'); await wait(`${chips}.length === 2`); await evaluate(`window.fixtureStale()`);
+      g['should-reject: a stale plan with packs blocks the button and Enter'] = await blocked();
+
+      await reset(); await click('[data-pop="model"]'); await key('Escape');
+      const popGone = await evaluate<boolean>(`!document.querySelector('.fdpop') && !!document.querySelector('#shell-found')`);
+      await key('Escape');
+      g['should-reject a start: Escape closes the popover first, then the window, and sends nothing'] = popGone
+        && await evaluate<boolean>(`!document.querySelector('#shell-found') && ${starts}.length === 0`);
+
+      await evaluate(`window.fixtureRequests = []; window.fixtureLane()`); await wait(`${chips}.length === 2`); await shot('quicklane');
+      g['⎇+ opens a lane founding: the other roles are not offered'] = await evaluate<boolean>(`Array.from(document.querySelectorAll('.fdrole')).filter(b => !b.disabled).map(b => b.dataset.role).join() === 'lane' && !document.querySelector('.fdseg')`);
+      await click('.fdgo');
+      g['⎇+ start: /api/lanes with its parent and the preset packs, never a slot'] = await onlyStart('/api/lanes', { repo: '/fixture/repo', parent: { slot: 1, openedAt: 100 }, branch: '', packs: ['fixture-alpha', 'fixture-beta'] }); await said('quicklane');
+
+      // a start answers seconds later; the owner closed its window and opened the next meanwhile.
+      // The door says yes, so a closeFounding in src/client.ts would close the new window
+      await reset(`window.fixturePostHold = true; window.fixtureMode = 'equal';`); await click('.fdgo'); await wait(`window.fixtureReleases.length > 0`);
+      await key('Escape'); await evaluate(`window.fixturePostHold = false; window.fixtureOpen()`); await wait(ready);
+      await evaluate(`window.fixtureReleases.splice(0).forEach(r => r())`); await wait(`window.fixtureReleases.length === 0`);
+      await evaluate(`new Promise(r => setTimeout(r, 200))`);
+      g['should-reject: a late answer to a closed window never closes the window opened after it'] = await evaluate<boolean>(`!!document.querySelector('#shell-found .fdgo') && !document.querySelector('#shell-found .fdgo').disabled && !document.querySelector('#shell-found.fdproved') && window.fixtureShown === 2`);
+
+      await reset(`window.fixtureStored = { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } };`);
+      await role('lane'); await wait(`${chips}.length === 1`);
+      g['a stored preset wins over the built-in one and the card says "angepasst"'] = await evaluate<boolean>(`JSON.stringify(${chips}) === '["fixture-alpha"]' && document.querySelector('.fdrole[data-role="lane"] .fdrk').textContent.includes('angepasst')`);
+      await reset(); await role('lane'); await wait(`${chips}.length === 2`);
+      await click('.fdctxfoot .fdghost:last-child'); await wait(`document.querySelector('.fdcmp') !== null`);
+      await click('.fdpip[aria-label="fixture-beta für Lane"]'); await wait(`${chips}.length === 1`);
+      const stored = await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`);
+      await click('.fdcmpfoot .fdghost'); await wait(`${chips}.length === 2`);
+      const afterReset = await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`);
+      g['redrawing a preset stores only that role; the reset stores null and brings the packs back'] =
+        stored === JSON.stringify([{ presets: { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }])
+        && afterReset === JSON.stringify([{ presets: { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }, { presets: null }]);
+      detail['presets'] = afterReset;
+      await shot('compare');
+      await reset(`window.fixtureStored = { steward: { base: 'none', plus: ['fixture-alpha'], minus: [] } };`); await role('lane'); await wait(`${chips}.length === 2`);
+      await click('.fdctxfoot .fdghost:last-child'); await wait(`document.querySelector('.fdcmp') !== null`);
+      await click('.fdpip[aria-label="fixture-beta für Lane"]'); await wait(`${chips}.length === 1`);
+      g['a stored Steward preset rides along unchanged when the window saves — dropping the card drops no stored choice'] =
+        await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`)
+        === JSON.stringify([{ presets: { steward: { base: 'none', plus: ['fixture-alpha'], minus: [] }, lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }]);
+
+      await reset(`window.fixturePlan = 'many';`); await role('lane'); await wait(`document.querySelectorAll('.fdctx .fdcx').length === 14`);
+      await wait(`document.querySelectorAll('.fdcx.in').length === 0`);
+      const line = await evaluate<{ rows: number; shown: number; more: string }>(`(() => {
+        const l = document.querySelector('.fdctx'); const shown = Array.from(l.querySelectorAll('.fdcx')).filter(c => !c.hidden);
+        // one line = every visible item on one vertical centre (items of different heights sit centred)
+        const centres = new Set(Array.from(l.children).filter(c => !c.hidden).map(c => { const r = c.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }));
+        const m = l.querySelector('.fdmore'); return { rows: centres.size, shown: shown.length, more: m.hidden ? '' : m.textContent };
+      })()`);
+      g['fourteen packs stay ONE line: what does not fit is counted in +N'] = line.rows === 1 && line.more === `+${14 - line.shown}` && line.shown >= 1;
+      detail['line'] = JSON.stringify(line);
+      await shot('many');
+      g['nothing in the window is wider than the screen'] = await evaluate<boolean>(`(() => { const w = document.querySelector('#shell-found .shellwin'); return w.getBoundingClientRect().right <= innerWidth + 0.5 && document.querySelector('#shell-found .shelldetail').scrollWidth <= document.querySelector('#shell-found .shelldetail').clientWidth; })()`);
+
+      // THE START RECEIPT (552958ea, ported to the four-field window): after a start the window
+      // shows what was asked next to what the slot reports, read off the occupant that start made
+      const g2: Record<string, boolean> = {};
+      await evaluate(`window.fixtureReceiptMetrics = [];`);
+      const setup = async (mode: string, pack = false) => {
+        await reset(`window.fixtureMode = ${JSON.stringify(mode)};`);
+        if (!pack) return;
+        await click('.fdadd'); await click('.fdaddpop .fdprow'); await key('Escape');
+        await wait(`JSON.stringify(${chips}) === '["fixture-alpha"]' && !document.querySelector('.fdpop')`);
+      };
+      // every receipt this run renders is read for the inner words the owner never sees (card 1c17)
+      const seen: string[] = [];
+      const finished = async () => { await wait(`window.fixtureSettled()`);
+        const shown = await evaluate<string>(`document.querySelector('#shell-found.fdproved')?.textContent || ''`); if (shown) seen.push(shown); };
+      // the receipt window ends at its content on a desktop and stays the phone's full screen (G0.7)
+      const fits = () => evaluate<boolean>(`(() => {
+        const win=document.querySelector('#shell-found .shellwin').getBoundingClientRect(), body=document.querySelector('#shell-found .shellbody').getBoundingClientRect();
+        const detail=document.querySelector('#shell-found .shelldetail').getBoundingClientRect();
+        return ${width === 1200} ? win.height < innerHeight - 32 - 1 && Math.abs(body.bottom - detail.bottom) <= 1
+          : Math.abs(win.height - innerHeight) <= 1;
+      })()`);
+      const text = () => evaluate<string>(`document.querySelector('#shell-found')?.textContent || ''`);
+      const actual = (name: string) => `document.querySelector('.fdproofrow[data-field="${name}"] .fdactual')`;
+      const pick = async (pop: string) => { await click(`[data-pop="${pop}"]`); await click('.fdpop .fdprow:nth-child(2)'); };
+      const plain = async () => {
+        await setup('equal'); await pick('model'); await pick('effort');
+        await click('.fdgo'); await finished();
+      };
+      await plain(); await shot('receipt-equal');
+      // (8) the receipt names the role with the window's own words, and its head never says "frei"
+      g2['the receipt names the role as the window does (Leer) and its head says Startbeleg, never "frei" beside "geöffnet"'] = await evaluate<boolean>(`(() => {
+        const sub = document.querySelector('#shell-found .shellsub')?.textContent ?? '';
+        return document.querySelector('.fdproofrow[data-field="Rolle"] .fdrequested')?.textContent === 'Leer' && sub === 'Startbeleg · Slot 2'
+          && !/frei/.test(sub) && document.querySelector('.fdproofstatus').textContent.includes('geöffnet');
+      })()`);
+      g2['the receipt window fits its content, Zur Session offered'] = await fits() && await evaluate<boolean>(`document.querySelector('#shell-found.fdproved .fdgo')?.disabled===false`);
+      g2['equal readback rows, no packs and zero receipt reads'] = await evaluate<boolean>(`(() => {
+        const rows=Array.from(document.querySelectorAll('.fdproofrow[data-field]'));
+        return rows.length===7 && rows.every(r=>r.dataset.state==='same')
+          && ${actual('Projektsichten')}?.textContent.startsWith('keinefrisch gelesen') && window.fixtureGrantReads>0
+          && ${actual('Rolle')}?.textContent==='Leer' && ${actual('Ort')}?.textContent==='/fixture/repo'
+          && ${actual('Agent')}?.textContent.startsWith('codex') && ${actual('Modell')}?.textContent==='fixture-model'
+          && ${actual('Effort')}?.textContent==='high' && ${actual('Packs')}?.textContent==='keine'
+          && window.fixtureReceiptReads===0 && document.querySelector('.fdproofstatus').textContent.includes('geöffnet');
+      })()`);
+      g2['receipt columns fit viewport without horizontal clipping'] = await evaluate<boolean>(`(() => {
+        const t=document.querySelector('.fdproof'); if(!t) return false;
+        const r=t.getBoundingClientRect(); const heads=Array.from(document.querySelectorAll('.fdproofhead')).map(e=>e.getBoundingClientRect());
+        const request=t.querySelector('.fdrequested').getBoundingClientRect(), observed=t.querySelector('.fdactual').getBoundingClientRect();
+        return r.x>=0 && r.right<=innerWidth && t.scrollWidth<=t.clientWidth
+          && heads[0].x===request.x && heads[1].x===observed.x && heads[0].y===heads[1].y && request.y===observed.y;
+      })()`);
+      if (await evaluate<boolean>(`!!document.querySelector('.fdproved .fdgo')`)) {
+        await click('.fdgo');
+        g2['Zur Session closes and shows the exact slot'] = await evaluate<boolean>(`!document.querySelector('#shell-found') && window.fixtureShown===2`);
+      } else g2['Zur Session closes and shows the exact slot'] = false;
+      await setup('difference'); await pick('model');
+      await click('.fdgo'); await finished(); await shot('receipt-difference');
+      g2['requested model never fills readback; difference is marked'] = await evaluate<boolean>(`${actual('Modell')}?.textContent === 'observed-modelAbweichung' && document.querySelector('.fdproofrow[data-field="Modell"]')?.dataset.state==='difference' && document.querySelector('.fdrequested')!==null`);
+      await setup('equal', true); await click('.fdgo'); await finished(); await shot('receipt-packs');
+      g2['pack id, unchanged pointers and short hash come from exact occupant receipt, one read'] = await evaluate<boolean>(`${actual('Packs')}?.textContent.includes('fixture-alphaZweck des PacksAGENTS.md | ## Portable operating contractHash: 1234567890ab') && window.fixtureReceiptReads===1`);
+      await setup('missing', true); await click('.fdgo'); await finished(); await shot('receipt-missing');
+      g2['old occupant and other slot receipts are rejected as Beleg fehlt'] = await evaluate<boolean>(`${actual('Packs')}?.textContent.includes('Beleg fehlt') && !${actual('Packs')}?.textContent.includes('1234567890ab') && window.fixtureReceiptReads===1`);
+      await setup('undelivered', true); await click('.fdgo'); await finished(); await shot('receipt-undelivered');
+      g2['delivery false shows exact reason and never mitgegeben'] = (await text()).includes('nicht zugestellt: fixture delivery refused') && !(await text()).includes('mitgegeben');
+      await setup('unchanged'); await click('.fdgo'); await finished(); await shot('receipt-no-occupant');
+      // (7) without a new session the status line says it ONCE: the right column is a muted "—",
+      // never six orange "nicht gemeldet · Beleg fehlt"; orange is left for a real difference
+      g2['unchanged openedAt is no new session: the status line says it once, every readback is a muted —'] = await evaluate<boolean>(`(() => {
+        const cells = Array.from(document.querySelectorAll('.fdactual'));
+        return document.querySelector('.fdproofstatus')?.textContent === 'Keine neue Session gestartet — kein Startbeleg.'
+          && cells.length === 6 && cells.every(e => e.textContent === '—' && !e.classList.contains('warn'))
+          && Array.from(document.querySelectorAll('.fdproofrow[data-field]')).every(r => r.dataset.state === 'unread')
+          && document.querySelectorAll('#shell-found .warn').length === 1 && !document.querySelector('#shell-found').textContent.includes('Beleg fehlt')
+          && getComputedStyle(cells[0]).color !== getComputedStyle(document.querySelector('.fdproofstatus')).color;
+      })()`);
+      g2['should-reject: without a new session the Packs row says —, never keine'] = await evaluate<boolean>(`${actual('Packs')}?.textContent==='—' && !${actual('Packs')}?.classList.contains('warn')`);
+      g2['should-reject: without a new session there is no Zur Session, and the focus stays in the window'] = await evaluate<boolean>(`!document.querySelector('#shell-found .fdgo') && getComputedStyle(document.querySelector('#shell-found .shellfoot')).display==='none' && document.querySelector('#shell-found').contains(document.activeElement)`);
+      g2['the receipt without a new session fits its content'] = await fits();
+      await plain(); await evaluate(`window.fixtureRecycle()`); await finished(); await shot('receipt-stale');
+      g2['recycle marks frozen receipt stale and prevents session action'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent.includes('Veraltet') && ${actual('Modell')}?.textContent==='fixture-model' && document.querySelector('.fdproved .fdgo')?.disabled===true`);
+      await setup('equal', true); await evaluate(`window.fixtureReceiptHold=true`); await click('.fdgo');
+      if (await evaluate<boolean>(`window.fixtureReceiptReads===1`))
+        await evaluate(`window.fixtureRecycle(); window.fixtureReceiptHold=false; window.fixtureReceiptRelease()`);
+      else await evaluate(`window.fixtureReceiptHold=false`);
+      await finished();
+      g2['recycle during receipt read cannot fill stale proof with late receipt'] = await evaluate<boolean>(`document.querySelector('.fdproofstatus')?.textContent.includes('Veraltet') && !${actual('Packs')}?.textContent.includes('Hash:') && window.fixtureReceiptReads===1`);
+      await setup('equal'); await evaluate(`document.querySelector('.shelldetail').focus()`); await key('Enter'); await finished();
+      g2['no-pack Enter fast path keeps one exact empty request and shows proof'] = await evaluate<boolean>(`${starts}.length===1 && JSON.stringify(${starts}[0].body)===JSON.stringify({cwd:'/fixture/repo'}) && !!document.querySelector('.fdproof') && window.fixtureReceiptReads===0`);
+      g2['unspecified values are adapter choices, not differences'] = await evaluate<boolean>(`${actual('Modell')}?.textContent==='fixture-modelStandard, nicht angefragt' && document.querySelector('.fdproofrow[data-field="Modell"]')?.dataset.state==='same'`);
+      await setup('equal'); await evaluate(`window.fixturePostHold=true`); await click('.fdgo'); await click('.fdgo');
+      await evaluate(`window.fixturePostHold=false; window.fixtureReleases.splice(0).forEach(r => r())`); await finished();
+      g2['double click sends exactly one open'] = await evaluate<boolean>(`${starts}.length===1 && !!document.querySelector('.fdproof')`);
+      await setup('equal'); await key('Escape'); await key('Escape');
+      g2['cancel before start sends nothing'] = await evaluate<boolean>(`!document.querySelector('#shell-found') && window.fixtureRequests.length===0`);
+      await setup('equal'); await role('lane'); await wait(`${chips}.length === 2`); await click('.fdgo'); await finished();
+      g2['fresh Lane receipt shows observed branch'] = (await text()).includes('Branch: fleet/fresh');
+      await setup('equal'); await click('.fdsegb:nth-child(3)'); await wait(`document.querySelector('.fdorph') !== null`);
+      await click('.fdorph'); await click('.fdgo'); await finished();
+      g2['continued Lane gets same proof, observed branch and zero receipt reads'] = (await text()).includes('Branch: fleet/continued') && await evaluate<boolean>(`window.fixtureReceiptReads===0 && ${starts}.length===1 && ${starts}[0].url==='/api/lanes' && !('packs' in ${starts}[0].body)`);
+      await setup('equal'); await role('orch'); await click('.fdgo'); await finished();
+      g2['Orchestrator without selected packs reads receipt once'] = await evaluate<boolean>(`window.fixtureReceiptReads===1 && ${actual('Rolle')}?.textContent==='Orchestratorin' && ${actual('Packs')}?.textContent.includes('Hash: 1234567890ab')`);
+      await setup('multiple', true); await click('.fdgo'); await finished();
+      g2['multiple receipts use newest and disclose count'] = (await text()).includes('Hash: abcdef123456') && (await text()).includes('2 Startbelege — der jüngste gilt.');
+      await setup('private', true); await click('.fdgo'); await finished();
+      g2['private receipt shows source id verdict and version'] = (await text()).includes('k-privateHash: 1234567890abUrteil: match · Fassung: 2');
+      await setup('equal'); await click('[data-pop="container"]');
+      await click('.fdpop .fdpin:first-child input'); await send('Input.insertText', {text:'fixture-box'});
+      await click('.fdpop .fdpin:nth-child(2) input'); await send('Input.insertText', {text:'fixture-daemon'});
+      await key('Escape'); await click('.fdgo'); await finished();
+      g2['container and daemon are exact observed values'] = await evaluate<boolean>(`${actual('Container')}?.textContent==='fixture-box' && ${actual('Docker-Daemon')}?.textContent==='fixture-daemon'`);
+      await setup('unreported'); await pick('model'); await click('.fdgo'); await finished();
+      g2['missing fields never fall back to request'] = await evaluate<boolean>(`${actual('Modell')}?.textContent==='nicht gemeldetBeleg fehlt' && ${actual('Effort')}?.textContent==='nicht gemeldetBeleg fehlt'`);
+      g2['should-reject: no receipt shows inner words (Occupant, Receipt, Adapter)'] = seen.length >= 12 && seen.every(t => !/occupant|receipt|adapter/i.test(t));
+      const receiptMetrics = await evaluate<FoundingFocusDomResult['receiptMetrics']>(`window.fixtureReceiptMetrics`);
+      results.push({ width, height, g, g2, detail, receiptMetrics });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE SETTINGS WINDOW IN A REAL BROWSER (card 3e6342e2). The REAL client bundle (src/client.ts,
+// built fresh) boots in headless Chromium behind a fixture origin that the probe answers itself
+// over CDP Fetch — every /api read is a synthetic fixture and every POST is recorded and answered
+// here, so no fleet setting is ever written. Input is native (Input.dispatchKeyEvent/MouseEvent),
+// names and states come from Chromium's accessibility tree, and storage is read back from the
+// page. The fixture is the brief's: machine default 1 without override (side repo), repo override
+// 2 at machine default 1 (main repo), master on with every main-repo row waiting, occupancy at the
+// cap, an unknown/old server (no plan, no `bases`, no autos flag), and a staged value the server
+// refuses. Each claim is a boolean so a mutation (a dropped name, a wrong choice state, a focus
+// that escapes the window) turns exactly its own line red.
+interface SettingsDomResult {
+  width: number; height: number;
+  claims: Record<string, boolean>;
+  facts: Record<string, unknown>;
+}
+type SettingsFixturePost = { url: string; body: unknown };
+export async function runSettingsDom(sourceRoot: string, artifacts?: string): Promise<SettingsDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-settings-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  const REPO_A = "/fixture/claude-fleet", REPO_B = "/fixture/side-repo";
+  const fx = {
+    caps: { default: 1, max: 8, caps: { [REPO_A]: 2 } as Record<string, number>, bases: { [REPO_A]: "overhaul" } as Record<string, string> | undefined },
+    capsStatus: 200, planStatus: 200, autosOn: true as boolean | undefined, dispatchOn: true,
+    refuseCap: false, posts: [] as SettingsFixturePost[], sessions: 0,
+    // a titled task lane with a running check, for the meter row's name at the board's real width
+    meterLane: false,
+    // the protocol of the run: every native input sent and every /api request the page made
+    inputs: [] as string[], requests: [] as string[],
+  };
+  const plan = () => ({
+    version: 1, budget: 5, unresolved: [],
+    repos: [
+      { repo: REPO_A, lanes: 2, cap: { max: fx.caps.caps[REPO_A] ?? fx.caps.default, source: fx.caps.caps[REPO_A] ? "repo" : "default" }, waves: [
+        { ids: ["a1a1a1a1"], klasse: "einzeln", units: 1, reasonAgainst: null, next: { cap: "2/2 lanes busy in claude-fleet (repo cap)" },
+          rows: [{ id: "a1a1a1a1", status: "queued", checks: null, release: null }] },
+        { ids: ["b2b2b2b2"], klasse: "einzeln", units: 1, reasonAgainst: null, next: { after: "c3c3c3c3" },
+          rows: [{ id: "b2b2b2b2", status: "queued", checks: null, release: null }] },
+        { ids: ["d4d4d4d4"], klasse: "einzeln", units: 1, reasonAgainst: null, next: { unreleased: ["d4d4d4d4"] },
+          rows: [{ id: "d4d4d4d4", status: "pending", checks: null, release: null }] },
+      ] },
+      { repo: REPO_B, lanes: 0, cap: { max: 1, source: "default" }, waves: [
+        { ids: ["e5e5e5e5"], klasse: "einzeln", units: 1, reasonAgainst: null, next: "now",
+          rows: [{ id: "e5e5e5e5", status: "queued", checks: null, release: null }] },
+      ] },
+    ],
+    waits: [
+      { repo: REPO_A, id: "a1a1a1a1", grund: "Repo-Deckel voll: 2/2 Lanes in claude-fleet", adressat: "owner", kette: [], wurzel: "Repo-Deckel voll", seit: null, freigegeben: true },
+      { repo: REPO_A, id: "b2b2b2b2", grund: "wartet auf c3c3c3c3 (nach)", adressat: "main:fixture", kette: ["row c3c3c3c3"], wurzel: "c3c3c3c3 nicht gelandet", seit: null, freigegeben: true },
+      { repo: REPO_A, id: "d4d4d4d4", grund: "nicht freigegeben", adressat: "owner", kette: [], wurzel: "Freigabe fehlt", seit: null, freigegeben: false },
+    ],
+    stau: null, buendel: { pairs: [] },
+  });
+  // THE ROWS BEHIND THE PLAN'S IDS, as GET /api/tasks serves them: a card goal opening with a
+  // shouted [TITEL], a plain goal, a task text's own [TITEL] — and d4d4d4d4 with nothing to derive
+  // from, which keeps its id. The poll's digest names the same ids, so the queue cache reads them.
+  const TASKS: { id: string; text: string; card?: { ziel: string } }[] = [
+    { id: "a1a1a1a1", text: "ROLLE: x\nZIEL: …", card: { ziel: "[OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380] Owner woertlich." } },
+    { id: "b2b2b2b2", text: "ROLLE: x\nZIEL: …", card: { ziel: "Die Warteschlange nennt Zeilen beim Namen. Danach mehr." } },
+    { id: "c3c3c3c3", text: "[VORGAENGER-ZEILE · LANDET ZUERST]\nText" },
+    { id: "d4d4d4d4", text: "ROLLE: x\nohne Titel" },
+  ];
+  const LANE_TITLE = "OBERFLAECHE · I1 STUFE 1 + HELFER-ANZEIGE · ersetzt e7ded380";
+  const sessions = () => ({
+    now: Date.now(), chips: [], slots: [
+      { id: 1, cwd: REPO_A, repo: REPO_A, label: "Fixture A", openedAt: 1000 },
+      { id: 2, cwd: REPO_B, repo: REPO_B, label: "Fixture B", openedAt: 1000 },
+      fx.meterLane
+        ? { id: 3, cwd: `${REPO_A}-lane`, repo: REPO_A, label: "⎇ task oberflaeche-aaaa", openedAt: 1000,
+          worktree: { repo: REPO_A, branch: "fleet/261002-oberflaeche-aaaa", anchor: { slot: 1, openedAt: 1000 }, letter: "A" }, taskTitle: LANE_TITLE }
+        : { id: 3, cwd: null },
+    ],
+    ...(fx.meterLane ? { gate: { lock: { pid: 4242, alive: true, heldMs: 65_000, owner: { slot: 3, branch: "fleet/261002-oberflaeche-aaaa" } },
+      reports: [{ slot: 3, label: null, phase: "running", suite: "e2e-isolated", exitCode: null, at: Date.now() - 65_000, origin: "lane", branch: "fleet/261002-oberflaeche-aaaa" }] } } : {}),
+    tasks: TASKS.map((t) => ({ id: t.id, source: "owner", status: t.id === "d4d4d4d4" ? "pending" : "queued", created: 1000, repo: REPO_A })), dispatch: { available: true, on: fx.dispatchOn, maxLanes: fx.caps.caps[REPO_A] ?? fx.caps.default, repo: REPO_A, lanes: 2, quiet: false },
+    ...(fx.autosOn === undefined ? {} : { autosOn: fx.autosOn }), quietHours: null,
+  });
+  const brief = { branch: "overhaul", head: "fixture", worktree: null, sessionStart: null, uncommitted: 0, uncommittedFiles: [],
+    files: [], filesTotal: 0, shortstat: "", commits: [], repoCommits: [], laneScoped: false, laneBase: null, commitsCap: 20, ahead: 0, behind: 0 };
+  const machine = { settings: [
+    { name: "FLEET_DISPATCH_MAX_LANES", value: 1, default: 1, how: ".env + Neustart" },
+    { name: "FLEET_MODEL", value: "claude-opus-5-5", default: "claude-opus-5-5", how: ".env + Neustart" },
+  ] };
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("settings DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let recording: string | null = null, frame = 0;
+    const frameTimes: number[] = [];
+    const nativeDialogs: string[] = [];
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const SETTINGS_WRITES = ["/api/dispatch", "/api/autos/switch", "/api/autos/quiet", "/api/repo-lane-cap", "/api/repo-base"];
+    const settingsWrites = (from = 0) => fx.posts.slice(from).filter((x) => SETTINGS_WRITES.includes(x.url));
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.screencastFrame" && msg.params) {
+        if (artifacts && recording) {
+          writeFileSync(resolve(artifacts, recording, `${String(frame++).padStart(5, "0")}.jpg`), Buffer.from(String(msg.params.data), "base64"));
+          frameTimes.push(Number((msg.params.metadata as { timestamp?: number })?.timestamp ?? Date.now() / 1000));
+        }
+        void send("Page.screencastFrameAck", { sessionId: msg.params.sessionId }).catch(() => undefined);
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      // a native alert/confirm would freeze every later evaluate — it is dismissed and counted
+      if (msg.method === "Page.javascriptDialogOpening") {
+        nativeDialogs.push(String((msg.params as { message?: string })?.message ?? ""));
+        void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined);
+        return;
+      }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
+      const url = new URL(request.url);
+      const p = url.pathname;
+      if (p.startsWith("/api/") && fx.requests.length < 2000) fx.requests.push(`${request.method} ${p}${url.search}`);
+      if (request.method === "POST") {
+        let body: unknown = null;
+        try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = request.postData ?? null; }
+        fx.posts.push({ url: p, body });
+        if (p === "/api/repo-lane-cap") {
+          const b = body as { repo?: string; maxLanes?: number | null };
+          if (fx.refuseCap) return void json(requestId, { error: "maxLanes über dem Deckel der Maschine (8)" }, 400);
+          if (b.repo) { if (b.maxLanes === null || b.maxLanes === undefined) delete fx.caps.caps[b.repo]; else fx.caps.caps[b.repo] = b.maxLanes; }
+          return void json(requestId, { ok: true, repo: b.repo, maxLanes: b.maxLanes ?? null });
+        }
+        if (p === "/api/dispatch") { fx.dispatchOn = !!(body as { on?: boolean })?.on; return void json(requestId, { ok: true, on: fx.dispatchOn }); }
+        return void json(requestId, { ok: true });
+      }
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, sessions()); }
+      if (p === "/api/repo-lane-caps") {
+        if (fx.capsStatus !== 200) return void json(requestId, { error: "fixture: caps unreadable" }, fx.capsStatus);
+        return void json(requestId, { default: fx.caps.default, max: fx.caps.max, caps: fx.caps.caps, ...(fx.caps.bases ? { bases: fx.caps.bases } : {}) });
+      }
+      if (p === "/api/tasks") return void json(requestId, { tasks: TASKS });
+      if (p === "/api/start-plan") return void (fx.planStatus === 200 ? json(requestId, plan()) : json(requestId, { error: "fixture: plan unreadable" }, fx.planStatus));
+      if (p === "/api/machine-settings") return void json(requestId, machine);
+      // an empty catalogue, served: a refused /api/harnesses is re-asked on every render (loadHarnesses
+      // latches only on success) and would flood the request protocol of this run
+      if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
+      if (p === "/api/tree") return void json(requestId, { root: REPO_A, files: ["README.md", "src/client.ts"], total: 2, capped: false });
+      if (/^\/api\/slots\/\d+\/brief$/.test(p)) return void json(requestId, brief);
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    // ONE TARGET PER WIDTH: a headless page that ran a screencast stops answering evaluates on its
+    // next navigation (measured on this probe, 2026-10-02) — a fresh target has no such history
+    let targetId = "";
+    const freshTarget = async () => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      const target = await send("Target.createTarget", { url: "about:blank" });
+      targetId = String(target.targetId);
+      sessionId = undefined;
+      const attached = await send("Target.attachToTarget", { targetId, flatten: true });
+      sessionId = String(attached.sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable"); await send("Accessibility.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__fx = ${HELP}` });
+    };
+    // a click target or element that does not exist is a FACT of the run (it fails the claims that
+    // need it), never an abort — one missing control must not hide every other measurement
+    const missing: string[] = [];
+    // an expression that throws (its element is missing) answers null and is noted in `missing`
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    // the accessibility node of one element, as Chromium computes it: role, name and states
+    const ax = async (expression: string): Promise<Record<string, unknown> | null> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: false });
+      const objectId = (r.result as { objectId?: string; subtype?: string }).subtype === "node" ? (r.result as { objectId?: string }).objectId : undefined;
+      if (!objectId) return null;
+      const tree = await send("Accessibility.getPartialAXTree", { objectId, fetchRelatives: false }).catch(() => null);
+      if (!tree) return null;
+      const node = (tree.nodes as { ignored?: boolean; role?: { value?: string }; name?: { value?: string }; properties?: { name: string; value?: { value?: unknown } }[] }[])[0];
+      if (!node) return null;
+      return { role: node.role?.value ?? null, name: node.name?.value ?? null, ignored: !!node.ignored,
+        ...Object.fromEntries((node.properties ?? []).map((x) => [x.name, x.value?.value ?? null])) };
+    };
+    const KEY: Record<string, [number, string, string?]> = { Tab: [9, "Tab"], Enter: [13, "Enter", "\r"], Escape: [27, "Escape"], " ": [32, "Space", " "] };
+    const key = async (name: string, shift = false) => {
+      const [vk, code, text] = KEY[name];
+      const modifiers = shift ? 8 : 0;
+      fx.inputs.push(`key ${shift ? "Shift+" : ""}${name === " " ? "Space" : name}`);
+      await send("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", key: name, code, windowsVirtualKeyCode: vk, modifiers, ...(text ? { text, unmodifiedText: text } : {}) });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code, windowsVirtualKeyCode: vk, modifiers });
+      await evaluate("new Promise(r => setTimeout(r, 40))");
+    };
+    // a navigation is over when ITS load event fired — an evaluate before that runs in the old page
+    const navigate = async (url: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const typeText = async (text: string) => { fx.inputs.push(`type ${JSON.stringify(text)}`); await send("Input.insertText", { text }); await evaluate("new Promise(r => setTimeout(r, 20))"); };
+    const click = async (expression: string): Promise<boolean> => {
+      const point = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
+        e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (!point) { missing.push(expression.slice(0, 120)); return false; }
+      fx.inputs.push(`click ${Math.round(point.x)},${Math.round(point.y)}`);
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+      await evaluate("new Promise(r => setTimeout(r, 40))");
+      return true;
+    };
+    // timers, not requestAnimationFrame: a headless page stops painting frames after a screencast
+    // stopped, and a rAF-polled wait then never answers (measured on this probe, 2026-10-02)
+    const wait = async (condition: string, ms = 6000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    let shotIndex = 0;
+    const shot = async (width: number, stage: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${width}-${String(++shotIndex).padStart(2, "0")}-${stage}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // page-side helpers: the window, its visible focusables in DOM order, a readable descriptor
+    const HELP = `(() => {
+      const W = () => document.querySelector('#shell-settings');
+      const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && !e.closest('[hidden]');
+      const focusables = () => [...(W()?.querySelectorAll('button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex="-1"])') ?? [])]
+        .filter((e) => !e.disabled && shown(e));
+      const desc = (e) => !e ? 'none' : e === document.body ? 'body' : (e.tagName.toLowerCase() + (e.className ? '.' + String(e.className).split(' ').join('.') : '') + (e.textContent ? ':' + e.textContent.trim().slice(0, 24) : ''));
+      const inside = () => !!W() && W().contains(document.activeElement);
+      const row = (label) => [...(W()?.querySelectorAll('.setrow') ?? [])].find((r) => r.querySelector('.setlabel')?.textContent === label) ?? null;
+      const section = (word) => { const b = [...(W()?.querySelectorAll('[data-settings-tab]') ?? [])].find((x) => x.textContent === word); return b ? W().querySelector('.setsec[data-sec="' + b.dataset.settingsTab + '"]') ?? [...W().querySelectorAll('.setsec')][[...W().querySelectorAll('[data-settings-tab]')].indexOf(b)] : null; };
+      return { W, shown, focusables, desc, inside, row, section };
+    })()`;
+    const gear = `[...document.querySelectorAll('#mset, .panegear')].find((e) => window.__fx.shown(e))`;
+    // the phone upright keeps the gear behind the top island's ⋯ (index.html, the island block): the
+    // client is ready when either is drawn, and the gear is reached through pill → ⋯ there
+    const ready = `(${gear}) || window.__fx.shown(document.querySelector('#mpill'))`;
+    const toGear = async () => {
+      if (await evaluate<boolean>(`!!(${gear})`)) return;
+      await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#mmore')`);
+    };
+    const results: SettingsDomResult[] = [];
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      shotIndex = 0;
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      fx.caps = { default: 1, max: 8, caps: { [REPO_A]: 2 }, bases: { [REPO_A]: "overhaul" } };
+      fx.capsStatus = 200; fx.planStatus = 200; fx.autosOn = true; fx.dispatchOn = true; fx.refuseCap = false; fx.posts = []; fx.meterLane = false;
+      fx.inputs = []; fx.requests = [];
+      await freshTarget();
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(ready, 12000);
+      if (!booted) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await evaluate("new Promise(r => setTimeout(r, 600))");
+      if (artifacts) {
+        recording = `video-${width}`; frame = 0; frameTimes.length = 0;
+        mkdirSync(resolve(artifacts, recording), { recursive: true });
+        await send("Page.startScreencast", { format: "jpeg", quality: 85, everyNthFrame: 1 });
+      }
+      const sinceOpen = fx.posts.length;
+
+      // --- 1. open: the focus enters the window and lands on the current section's target
+      await toGear();
+      await click(gear);
+      await wait("window.__fx.W()");
+      await shot(width, "open");
+      facts.openFocus = await evaluate<string>("window.__fx.desc(document.activeElement)");
+      claims["opening moves the focus into the window"] = await evaluate<boolean>("window.__fx.inside()");
+      const nav = await evaluate<{ word: string; shown: boolean }[]>(`[...window.__fx.W().querySelectorAll('[data-settings-tab]')].map((b) => ({ word: b.textContent, shown: window.__fx.shown(b) }))`);
+      facts.nav = nav;
+      claims["four section targets are visible, in the registry order"] = nav.length === 4 && nav.every((n) => n.shown);
+      const navAx: Record<string, unknown>[] = [];
+      for (let i = 0; i < nav.length; i++) navAx.push((await ax(`window.__fx.W().querySelectorAll('[data-settings-tab]')[${i}]`)) ?? {});
+      facts.navAx = navAx;
+      claims["every section target is named by its visible word"] = navAx.length === 4 && navAx.every((n, i) => n.name === nav[i].word && n.role === "button");
+      // each target reached with a native click: it reads pressed and its section is on screen
+      const reached: Record<string, unknown>[] = [];
+      for (let i = 0; i < nav.length; i++) {
+        await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[${i}]`);
+        const state = await ax(`window.__fx.W().querySelectorAll('[data-settings-tab]')[${i}]`);
+        const visible = await evaluate<boolean>(`(() => { const s = window.__fx.section(${JSON.stringify(nav[i].word)}); if (!s || !window.__fx.shown(s)) return false;
+          const d = window.__fx.W().querySelector('.shelldetail').getBoundingClientRect();
+          const navBottom = window.__fx.W().querySelector('[data-settings-tab]').parentElement.getBoundingClientRect().bottom;
+          const h = s.querySelector('h3'); const top = (window.__fx.shown(h) ? h : s).getBoundingClientRect().top;
+          return top >= Math.max(d.top, navBottom) - 2 && top < d.bottom - 20; })()`);
+        reached.push({ word: nav[i].word, pressed: state?.pressed ?? null, visible, focus: await evaluate<string>("window.__fx.desc(document.activeElement)") });
+        await shot(width, `section-${i + 1}`);
+      }
+      facts.reached = reached;
+      claims["each of the four targets shows its section and reads pressed"] = reached.length === 4 && reached.every((r) => r.visible && r.pressed === "true");
+      claims["switching sections keeps the focus on the target that was used"] = reached.every((r, i) => String(r.focus).includes(nav[i].word));
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[0]`);
+
+      // --- 2. the focus trap: Tab and Shift-Tab walk only visible controls of the window and wrap
+      const ring = await evaluate<number>("window.__fx.focusables().length");
+      const walk: { inside: boolean; shown: boolean; at: string }[] = [];
+      await evaluate("window.__fx.focusables()[0].focus()");
+      for (let i = 0; i < ring + 1; i++) {
+        await key("Tab");
+        walk.push(await evaluate(`({ inside: window.__fx.inside(), shown: window.__fx.shown(document.activeElement), at: window.__fx.desc(document.activeElement) })`));
+      }
+      const wrapped = await evaluate<boolean>("document.activeElement === window.__fx.focusables()[1] || document.activeElement === window.__fx.focusables()[0]");
+      await evaluate("window.__fx.focusables()[0].focus()");
+      await key("Tab", true);
+      const backToLast = await evaluate<boolean>("document.activeElement === window.__fx.focusables().at(-1)");
+      facts.ring = ring; facts.walk = walk.map((w) => w.at);
+      claims["Tab never leaves the window and never lands on an invisible control"] = walk.every((w) => w.inside && w.shown);
+      claims["Tab wraps from the last control to the first, Shift-Tab from the first to the last"] = wrapped && backToLast;
+
+      // --- 3. device rows: names bound to the visible label, native toggle/choice/Standard, storage readback
+      const firstToggle = await evaluate<string | null>(`(() => { const b = window.__fx.W().querySelector('.setsec .settoggle'); return b ? b.closest('.setrow').querySelector('.setlabel').textContent : null; })()`);
+      facts.firstToggle = firstToggle;
+      const toggleExpr = `window.__fx.W().querySelector('.setsec .settoggle')`;
+      const t0 = await ax(toggleExpr);
+      await evaluate(`${toggleExpr}.focus()`); await key(" ");
+      const t1 = await ax(toggleExpr);
+      const stored1 = await evaluate<string | null>("localStorage.getItem('fleet.datasaver')");
+      await key("Enter");
+      const t2 = await ax(toggleExpr);
+      const stored2 = await evaluate<string | null>("localStorage.getItem('fleet.datasaver')");
+      facts.toggle = { t0, t1, t2, stored1, stored2 };
+      claims["a toggle is named by its row label and reads its state"] = t0?.name === firstToggle && t0?.pressed === "false";
+      claims["Space and Enter flip the toggle natively and storage reads back each state"] = t1?.pressed === "true" && stored1 === "1"
+        && t2?.pressed === "false" && stored2 === "0";
+      // the Standard way back: a deviating row offers it, it forgets the key and keeps the focus in the row
+      await key(" ");
+      const stdExpr = `${toggleExpr}.closest('.setrow').querySelector('.setreset')`;
+      const std = await ax(stdExpr);
+      await evaluate(`${stdExpr}.focus()`); await key("Enter");
+      const afterStd = { stored: await evaluate<string | null>("localStorage.getItem('fleet.datasaver')"), state: await ax(toggleExpr),
+        focusInside: await evaluate<boolean>("window.__fx.inside() && window.__fx.shown(document.activeElement)"),
+        hidden: await evaluate<boolean>(`!window.__fx.shown(${stdExpr})`) };
+      facts.standard = { std, afterStd };
+      // the registry row's own setter (PREF_APPLY → setSaver) may write the default straight back:
+      // "Standard" means the default value, stored or absent — the semantics this card keeps
+      claims["Standard names its row, returns it to the default and leaves the focus on a visible control"] = typeof std?.name === "string"
+        && String(std.name).includes(String(firstToggle)) && (afterStd.stored === null || afterStd.stored === "0")
+        && afterStd.state?.pressed === "false" && afterStd.hidden && afterStd.focusInside;
+      // a choice row: one named group, exactly the stored option pressed
+      const choiceRow = `window.__fx.W().querySelector('.setchoice')`;
+      const groupAx = await ax(choiceRow);
+      const choiceLabel = await evaluate<string>(`${choiceRow}.closest('.setrow').querySelector('.setlabel').textContent`);
+      const choiceStates = async () => { const out: Record<string, unknown>[] = []; const n = await evaluate<number>(`${choiceRow}.querySelectorAll('button').length`);
+        for (let i = 0; i < n; i++) out.push((await ax(`${choiceRow}.querySelectorAll('button')[${i}]`)) ?? {}); return out; };
+      const before = await choiceStates();
+      await click(`${choiceRow}.querySelectorAll('button')[1]`);
+      const after = await choiceStates();
+      const choiceKey = await evaluate<string>(`(() => { const l = ${JSON.stringify(choiceLabel)}; return l; })()`);
+      const storedChoice = await evaluate<Record<string, string | null>>("({ band: localStorage.getItem('fleet.bandDepth'), queue: localStorage.getItem('fleet.queue.scope') })");
+      facts.choice = { label: choiceKey, groupAx, before, after, storedChoice };
+      claims["a choice row is one group named by its label"] = groupAx?.name === choiceLabel;
+      claims["exactly the chosen option reads pressed, before and after a native click, and storage holds it"] =
+        before.filter((b) => b.pressed === "true").length === 1 && before[0]?.pressed === "true"
+        && after.filter((b) => b.pressed === "true").length === 1 && after[1]?.pressed === "true"
+        && Object.values(storedChoice).some((v) => v !== null);
+      // G5.3 name binding: change the visible label in the DOM, the accessible name follows it
+      await evaluate(`${toggleExpr}.closest('.setrow').querySelector('.setlabel').textContent = 'Umbenannt im DOM'`);
+      const renamed = await ax(toggleExpr);
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[3]`);
+      await wait(`window.__fx.section(${JSON.stringify(nav[3]?.word ?? "")})?.querySelector('.setrow .setlabel')`, 4000);
+      const machineBefore = await evaluate<boolean>(`!!window.__fx.section(${JSON.stringify(nav[3]?.word ?? "")})?.querySelector('.setrow .setlabel')`);
+      let machineRenamed: Record<string, unknown> | null = null;
+      if (machineBefore) {
+        await evaluate(`window.__fx.section(${JSON.stringify(nav[3].word)}).querySelector('.setrow .setlabel').textContent = 'Lanes je Repo (Maschine)'`);
+        machineRenamed = await ax(`window.__fx.section(${JSON.stringify(nav[3].word)}).querySelector('.setrow')`);
+      }
+      facts.rename = { renamed, machineRenamed };
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[0]`);
+      claims["a renamed label renames the control's accessible name (aria-labelledby, not a copied string)"] = renamed?.name === "Umbenannt im DOM";
+      claims["a renamed machine row label renames that row's accessible name"] = machineRenamed?.name === "Lanes je Repo (Maschine)";
+      await shot(width, "device-rows");
+
+      // --- 4. the Fleet block: master, effective cap with source, occupancy, startable, wait reasons
+      const fleetWord = nav[2]?.word ?? "Fleet";
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
+      await wait(`window.__fx.section(${JSON.stringify(fleetWord)})?.querySelector('[data-par="cap"]')?.textContent?.length > 0`, 4000);
+      const fleetText = async () => evaluate<string>(`window.__fx.section(${JSON.stringify(fleetWord)})?.innerText ?? ''`);
+      const par = async () => (await evaluate<Record<string, string> | null>(`Object.fromEntries([...(window.__fx.W()?.querySelectorAll('[data-par]') ?? [])].map((e) => [e.dataset.par, e.innerText.replace(/\\s+/g, ' ').trim()]))`)) ?? {};
+      const parA = await par();
+      facts.parA = parA; facts.fleetTextA = await fleetText();
+      await shot(width, "fleet-override");
+      claims["master reads on, and its scope says it starts nothing by itself"] = /\ban\b/.test(parA.master ?? "") && /alle Repos/.test(parA.master ?? "") && /nichts sofort/.test(parA.master ?? "");
+      claims["repo override 2 at machine default 1: effective 2, source repo override, machine 1 shown apart"] =
+        /wirksam 2/.test(parA.cap ?? "") && /Repo-Override/.test(parA.cap ?? "") && /Maschinen-Standard 1/.test(parA.cap ?? "");
+      claims["occupancy at the cap reads 2 of 2 with the plan's read time"] = /2 von 2/.test(parA.load ?? "") && /gelesen/.test(parA.load ?? "");
+      claims["master on with every row waiting: 0 startable, three named wait reasons"] = /^Startbar jetzt 0\b/.test(parA.start ?? "")
+        && /^Wartet 3\b/.test(parA.wait ?? "") && /Deckel voll/.test(parA.wait ?? "")
+        && /Reihenfolge/.test(parA.wait ?? "") && /nicht freigegeben/.test(parA.wait ?? "");
+      // (3) "Wartet" names each row by its Kurztitel — the lane names' own derivation — and keeps
+      // the id for the tooltip; a row nothing can be derived from keeps its id
+      const named = (id: string): string => { const t = TASKS.find((x) => x.id === id)!; return shortTitle(laneTitleOf(t.card?.ziel, t.text)!); };
+      const waitRows = await evaluate<{ lines: string[]; names: [string, string][]; idsShown: string[] }>(`(() => {
+        const w = window.__fx.W().querySelector('[data-par="wait"] .setstatl');
+        const own = [...w.querySelectorAll(':scope > .setwait')];
+        return { lines: own.map((l) => l.innerText), names: own.flatMap((l) => [...l.querySelectorAll('.setname')].map((e) => [e.textContent, e.title])),
+          idsShown: own.flatMap((l) => [...l.querySelectorAll('.setids')].map((e) => e.textContent)) }; })()`);
+      facts.waitRows = waitRows;
+      claims["Wartet names each row by its Kurztitel ('Oberflaeche · I1 …'), the order target too, and the id only in the tooltip"] =
+        waitRows.lines.includes(`Repo-Deckel voll: ${named("a1a1a1a1")}`) && named("a1a1a1a1").startsWith("Oberflaeche · I1 ")
+        && waitRows.lines.includes(`Reihenfolge: ${named("b2b2b2b2")} nach ${named("c3c3c3c3")}`)
+        && ["a1a1a1a1", "b2b2b2b2", "c3c3c3c3"].every((id) => waitRows.names.some(([text, tip]) => text === named(id) && tip.startsWith(`${id} — `))
+          && !waitRows.lines.some((l) => l.includes(id)));
+      claims["should-reject: a row with nothing to derive a title from keeps its id — never an empty name"] =
+        waitRows.lines.includes("nicht freigegeben: d4d4d4d4") && JSON.stringify(waitRows.idsShown) === JSON.stringify(["d4d4d4d4"]);
+      // (4) one word per section head: the pressed target names the Fleet section, no head repeats it
+      const heads = await evaluate<{ fleetH3: string[]; firstSub: string | null; fleetWords: number; deviceH3: string | null }>(`(() => {
+        const sec = window.__fx.section(${JSON.stringify(fleetWord)});
+        return { fleetH3: [...sec.querySelectorAll('h3')].map((h) => h.textContent), firstSub: sec.querySelector('.setsub')?.textContent ?? null,
+          fleetWords: [...window.__fx.W().querySelectorAll('h3, h4, .settab')].filter((e) => window.__fx.shown(e) && e.textContent === ${JSON.stringify(fleetWord)}).length,
+          deviceH3: window.__fx.section(${JSON.stringify(nav[0]?.word ?? "")})?.querySelector('h3')?.textContent ?? null }; })()`);
+      const fleetSecAx = await ax(`window.__fx.section(${JSON.stringify(fleetWord)})`);
+      facts.heads = { ...heads, ax: fleetSecAx };
+      claims["the Fleet section says 'Fleet' once — the target names it, its first head is Parallelität; Dieses Gerät keeps its head"] =
+        heads.fleetH3.length === 0 && heads.firstSub === "Parallelität" && heads.fleetWords === 1 && fleetSecAx?.name === fleetWord
+        && heads.deviceH3 === nav[0]?.word;
+      const doubled = await evaluate<{ master: string; cap: string; std: number }>(`({
+        master: window.__fx.W().querySelector('[data-par="master"] .setval')?.textContent ?? 'missing',
+        cap: window.__fx.W().querySelector('[data-par="cap"] .setval')?.textContent ?? 'missing',
+        std: [...window.__fx.W().querySelectorAll('.setnote')].filter((n) => /Standard: (an|aus|on|off)\b/.test(n.textContent)).length })`);
+      facts.doubled = doubled;
+      claims["no row says its value twice: no server copy beside an unstaged control, no 'Standard: aus' beside a state"] =
+        doubled?.master === "" && doubled?.cap === "" && doubled?.std === 0;
+      const pickAx = await ax(`window.__fx.W().querySelector('[data-par="repo"] select')`);
+      const capAx = await ax(`window.__fx.W().querySelector('[data-par="cap"] input')`);
+      const masterAx = await ax(`window.__fx.W().querySelector('[data-par="master"] .settoggle')`);
+      facts.parAx = { pickAx, capAx, masterAx };
+      claims["repo picker, cap field and master switch are named, the switch reads its state"] = pickAx?.name === "Repo" && capAx?.name === "Lane-Deckel"
+        && masterAx?.name === "Master" && masterAx?.pressed === "true";
+      // the side repo: machine default 1, no override, one row startable
+      await evaluate(`(() => { const s = window.__fx.W().querySelector('[data-par="repo"] select'); s.focus(); })()`);
+      await evaluate(`(() => { const s = window.__fx.W().querySelector('[data-par="repo"] select'); s.value = ${JSON.stringify(REPO_B)}; s.dispatchEvent(new Event('change')); })()`);
+      const parB = await par();
+      facts.parB = parB;
+      await shot(width, "fleet-machine-default");
+      claims["machine default 1 without override: effective 1, source machine default, one row startable"] =
+        /wirksam 1/.test(parB.cap ?? "") && /Maschinen-Standard/.test(parB.cap ?? "") && !/Repo-Override 2/.test(parB.cap ?? "")
+        && /^Startbar jetzt 1\b/.test(parB.start ?? "") && (parB.start ?? "").includes("e5e5e5e5");
+      await evaluate(`(() => { const s = window.__fx.W().querySelector('[data-par="repo"] select'); s.value = ${JSON.stringify(REPO_A)}; s.dispatchEvent(new Event('change')); })()`);
+
+      // --- 5. staged vs readback, Cancel is a null write, Weiter bearbeiten returns to the control
+      const capInput = `window.__fx.W().querySelector('[data-par="cap"] input')`;
+      await evaluate(`${capInput}.focus(); ${capInput}.select()`);
+      await typeText("3");
+      const staged = await par();
+      facts.staged = staged;
+      claims["a staged 3 is shown apart from the server's effective 2"] = /wirksam 2/.test(staged.cap ?? "") && /vorgemerkt 3/.test(staged.cap ?? "");
+      await shot(width, "staged");
+      await key("Escape");
+      const discard = { open: await evaluate<boolean>(`!!window.__fx.W().querySelector('.setdiscard')`), focus: await evaluate<string>("window.__fx.desc(document.activeElement)") };
+      await shot(width, "discard-question");
+      await key("Enter"); // Weiter bearbeiten
+      const kept = { gone: await evaluate<boolean>(`!window.__fx.W().querySelector('.setdiscard')`), onCap: await evaluate<boolean>(`document.activeElement === ${capInput}`),
+        value: await evaluate<string>(`${capInput}.value`) };
+      facts.discard = { discard, kept };
+      claims["Escape with a staged value asks first and focuses Weiter bearbeiten"] = discard.open && /Weiter bearbeiten/.test(discard.focus);
+      claims["Weiter bearbeiten returns the focus to the staged control with its value"] = kept.gone && kept.onCap && kept.value === "3";
+      await click(`window.__fx.W().querySelector('.shellclose')`);
+      await evaluate(`[...window.__fx.W().querySelectorAll('.setdiscard button')].find((b) => /Verwerfen/.test(b.textContent)).focus()`);
+      await key("Enter");
+      const dropped = { closed: await evaluate<boolean>("!window.__fx.W()"), onGear: await evaluate<boolean>(`document.activeElement === ${gear}`),
+        writes: settingsWrites(sinceOpen).length };
+      facts.dropped = dropped;
+      claims["Verwerfen closes with zero writes and returns the focus to the opener"] = dropped.closed && dropped.onGear && dropped.writes === 0;
+
+      // --- 6. Apply: refused first (row keeps the staged value, server value unchanged), then written once
+      await toGear(); await click(gear); await wait("window.__fx.W()");
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
+      await wait(`window.__fx.W().querySelector('[data-par="cap"]')?.innerText.includes('wirksam')`, 4000);
+      await evaluate(`${capInput}.focus(); ${capInput}.select()`);
+      await typeText("9");
+      fx.refuseCap = true;
+      const applyBtn = `window.__fx.W().querySelector('.setfoot .cmdapply')`;
+      const applyAx = await ax(applyBtn);
+      const beforeApply = fx.posts.length;
+      await click(applyBtn);
+      await wait(`window.__fx.W().querySelector('.seterr:not([hidden])')`, 4000);
+      const refused = { posts: settingsWrites(beforeApply), par: await par(), err: await evaluate<string>(`window.__fx.W().querySelector('.seterr:not([hidden])')?.textContent ?? ''`) };
+      facts.refused = { applyAx, ...refused };
+      await shot(width, "apply-refused");
+      claims["Apply sends exactly the staged cap once; a refusal stays at its row and the effective value stays 2"] =
+        refused.posts.length === 1 && refused.posts[0].url === "/api/repo-lane-cap"
+        && JSON.stringify(refused.posts[0].body) === JSON.stringify({ repo: REPO_A, maxLanes: 9 })
+        && /Server lehnt ab/.test(refused.err) && /wirksam 2/.test(refused.par.cap ?? "") && /vorgemerkt 9/.test(refused.par.cap ?? "");
+      fx.refuseCap = false;
+      await evaluate(`${capInput}.focus(); ${capInput}.select()`);
+      await typeText("3");
+      const beforeOk = fx.posts.length;
+      await click(applyBtn);
+      await wait(`/wirksam 3/.test(window.__fx.W().querySelector('[data-par="cap"]')?.innerText ?? '')`, 4000);
+      const applied = { posts: settingsWrites(beforeOk), par: await par() };
+      facts.applied = applied;
+      await shot(width, "applied");
+      claims["after Apply the row shows the server's readback, nothing staged remains"] = applied.posts.length === 1
+        && JSON.stringify(applied.posts[0].body) === JSON.stringify({ repo: REPO_A, maxLanes: 3 })
+        && /wirksam 3/.test(applied.par.cap ?? "") && !/vorgemerkt/.test(applied.par.cap ?? "");
+
+      // --- 7. background repaint and repeated opening do not steal the focus
+      await evaluate(`${capInput}.focus()`);
+      const polls = fx.sessions;
+      await evaluate("new Promise(r => setTimeout(r, 4500))");
+      facts.repaint = { polls: fx.sessions - polls, focus: await evaluate<string>("window.__fx.desc(document.activeElement)") };
+      claims["two background polls later the focus is still on the same control"] = fx.sessions - polls >= 2 && await evaluate<boolean>(`document.activeElement === ${capInput}`);
+      await key("Escape");
+      claims["Escape without staged values closes and returns the focus to the opener"] = await evaluate<boolean>(`!window.__fx.W() && document.activeElement === ${gear}`);
+      await key("Enter"); // the opener is focused: Enter reopens through its native activation
+      await wait("window.__fx.W()");
+      claims["reopening by keyboard focuses the window again, one window only"] = await evaluate<boolean>("document.querySelectorAll('#shell-settings').length === 1 && window.__fx.inside()");
+
+      // --- 8. the unknown/old server: no plan, no `bases`, no autos flag → said, never guessed
+      await key("Escape");
+      fx.planStatus = 500; fx.caps.bases = undefined; fx.autosOn = undefined; fx.capsStatus = 200;
+      await evaluate("new Promise(r => setTimeout(r, 2300))");
+      await toGear(); await click(gear); await wait("window.__fx.W()");
+      await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
+      await evaluate("new Promise(r => setTimeout(r, 400))");
+      const parU = await par();
+      const autosRow = await evaluate<string>(`[...window.__fx.W().querySelectorAll('.fleetrow')].find((r) => /Automatik/.test(r.innerText))?.innerText ?? ''`);
+      facts.unknown = { parU, autosRow };
+      await shot(width, "unknown");
+      claims["an unreadable plan reads unbekannt for occupancy, startable and waits"] = /unbekannt/.test(parU.load ?? "") && /unbekannt/.test(parU.start ?? "") && /unbekannt/.test(parU.wait ?? "");
+      claims["an unknown autos state reads unbekannt, never as the chosen 'an'"] = /unbekannt/.test(autosRow) && !/\ban\b\s*$/.test(autosRow.trim());
+      await key("Escape");
+      facts.posts = fx.posts.slice(sinceOpen);
+      claims["the whole run wrote only the two Apply requests"] = settingsWrites(sinceOpen).length === 2;
+
+      // --- 9. the explorer's write dialog: one language, sans prose, mono command, neutral focus
+      fx.planStatus = 200;
+      // the Info column is a desktop preference; on the phone ℹ opens it as a window of its own
+      if (width === 1200) await evaluate(`localStorage.setItem('fleet.board', '1')`);
+      await navigate("http://fleet.fixture/");
+      await wait(ready, 12000);
+      const openExplorerBtn = `[...document.querySelectorAll('button')].find((b) => /explorer/i.test(b.textContent) && window.__fx.shown(b))`;
+      if (!await wait(openExplorerBtn, 4000)) {
+        // ℹ: the pane's corner button, or on the phone upright the open island's
+        const cornerInfo = `[...document.querySelectorAll('.boardtoggle')].find((b) => window.__fx.shown(b))`;
+        if (await evaluate<boolean>(`!!(${cornerInfo})`)) await click(cornerInfo);
+        else { await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#minfo')`); }
+      }
+      const explorerOpened = await wait(openExplorerBtn, 8000);
+      if (explorerOpened) {
+        await click(openExplorerBtn);
+        await wait(`document.querySelector('#shell-files .fxmore')`);
+        await click(`[...document.querySelectorAll('#shell-files .fxline')].find((l) => l.textContent.includes('README'))?.querySelector('.fxmore')`);
+        await click(`[...document.querySelectorAll('.fxmenuitem')].find((b) => /Rename|Umbenennen/.test(b.textContent))`);
+        await wait(`document.querySelector('.fxwritepanel')`);
+        await shot(width, "explorer-rename");
+        const dlg = (await evaluate<Record<string, unknown> | null>(`(() => { const p = document.querySelector('.fxwritepanel');
+          const cs = (e) => e ? getComputedStyle(e).fontFamily : null;
+          return { title: p.querySelector('h2').textContent, keys: [...p.querySelectorAll('.fxwritekey')].map((k) => k.textContent),
+            buttons: [...p.querySelectorAll('.riskbtn')].map((b) => b.textContent), label: p.querySelector('.fxwritelabel')?.firstChild?.textContent,
+            prose: cs(p.querySelector('.fxwriterow:nth-of-type(4) .fxwritevalue')), command: cs(p.querySelector('.fxwritevalue')),
+            pathInProse: cs(p.querySelector('.fxwritevalue .fxcode')),
+            heading: cs(p.querySelector('h2')), focus: window.__fx.desc(document.activeElement) }; })()`)) ?? {};
+        await key("Tab");
+        dlg.ring = await evaluate<string>(`(() => { const e = document.activeElement; const s = getComputedStyle(e); return s.outlineStyle + ' ' + s.outlineColor + ' ' + s.outlineWidth; })()`);
+        dlg.ringToken = await evaluate<string>(`(() => { const p = document.createElement('i'); p.style.color = 'var(--chat-mute)'; document.body.appendChild(p); const c = getComputedStyle(p).color; p.remove(); return c; })()`);
+        await shot(width, "explorer-focus");
+        await key("Escape");
+        dlg.cancelled = await evaluate<boolean>("!document.querySelector('.fxwritepanel')");
+        dlg.writes = fx.posts.filter((x) => x.url.startsWith("/api/file/")).length;
+        facts.explorer = dlg;
+        claims["the explorer rename dialog speaks German: title, rows, buttons"] = /^Umbenennen — /.test(String(dlg.title))
+          && JSON.stringify(dlg.keys) === JSON.stringify(["Führt aus", "Wo", "Danach", "Bleibt", "Rückweg"])
+          && JSON.stringify(dlg.buttons) === JSON.stringify(["Abbrechen", "Umbenennen"]);
+        claims["prose rows read in the sans face, the command and the paths inside prose in mono"] = !/mono|Menlo/i.test(String(dlg.prose))
+          && /mono|Menlo/i.test(String(dlg.command)) && /mono|Menlo/i.test(String(dlg.pathInProse));
+        claims["the dialog's keyboard focus ring is the neutral 1px --chat-mute"] = String(dlg.ring).startsWith("solid") && String(dlg.ring).includes(String(dlg.ringToken)) && String(dlg.ring).endsWith("1px");
+        claims["Escape cancels the dialog without a file write"] = dlg.cancelled === true && dlg.writes === 0;
+      } else {
+        await shot(width, "explorer-missing");
+        facts.explorerMissing = await evaluate<string>("document.body.innerText.replace(/\\s+/g, ' ').slice(0, 600)");
+        claims["the explorer opens from the Info column in the fixture"] = false;
+      }
+
+      // --- 10. (1) the Checks row of a titled lane at the board's real width (264 px, the card's
+      // "~300"): the NAME goes first, at least 20 characters of the Kurztitel are on screen, the kind
+      // gives way and the place never moves. Desktop only — the phone shows the board as a window.
+      if (width === 1200) {
+        if (await evaluate<boolean>(`!!document.querySelector('#shell-files')`)) await key("Escape");
+        fx.meterLane = true;
+        const rowUp = await wait(`[...document.querySelectorAll('#boardsuites .smrow .smname')].some((n) => n.textContent.includes(' · '))`, 8000);
+        const meter = await evaluate<{ name: string; prefix: number; fit: number; board: number; row: number; what: number; placeInside: boolean } | null>(`(() => {
+          const n = [...document.querySelectorAll('#boardsuites .smrow .smname')].find((e) => e.textContent.includes(' · '));
+          if (!n || !n.firstChild) return null;
+          const row = n.parentElement, box = n.getBoundingClientRect(), len = n.textContent.length;
+          const probe = document.createElement('span'); probe.style.font = getComputedStyle(n).font; probe.textContent = '…';
+          document.body.appendChild(probe); const ell = probe.getBoundingClientRect().width; probe.remove();
+          let fit = len;
+          if (n.scrollWidth > n.clientWidth + 0.5) {
+            const r = document.createRange(); fit = 0;
+            for (let i = 1; i <= len; i++) { r.setStart(n.firstChild, 0); r.setEnd(n.firstChild, i); if (r.getBoundingClientRect().right <= box.right - ell + 0.5) fit = i; else break; }
+          }
+          return { name: n.textContent, prefix: n.textContent.indexOf(' · ') + 3, fit, board: document.querySelector('#board').getBoundingClientRect().width,
+            row: row.getBoundingClientRect().width, what: row.querySelector('.smwhat').getBoundingClientRect().width,
+            placeInside: row.querySelector('.smplace').getBoundingClientRect().right <= row.getBoundingClientRect().right + 0.5 }; })()`);
+        await shot(width, "meter-row");
+        facts.meter = { rowUp, ...meter };
+        claims["Checks at the board's real width (≤ 300 px): a titled lane shows at least 20 characters of its Kurztitel, in calm case, and the place stays in the row"] =
+          !!meter && meter.board <= 300 && meter.fit - meter.prefix >= 20 && /^\w+ · Oberflaeche · I1 /.test(meter.name) && meter.placeInside;
+        fx.meterLane = false;
+      }
+
+      if (artifacts) { await send("Page.stopScreencast"); writeFileSync(resolve(artifacts, `video-${width}`, "times.json"), JSON.stringify(frameTimes)); recording = null; }
+      facts.missing = missing.splice(0);
+      facts.inputs = fx.inputs; facts.requests = fx.requests; facts.allPosts = fx.posts;
+      facts.nativeDialogs = nativeDialogs.splice(0);
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE SEND TARGET AND THE TWO PANES' INPUTS, measured in a real browser on the real client bundle
+// (card 929fdbe7, Grammatik G2.4): two sessions in two panes, native clicks, native typing, a fake
+// socket per pane and an intercepted /send — nothing reaches a server. Every claim reads the DOM,
+// the socket bytes or the request the page sent, never the source. At 390 px the phone shows one
+// pane, so the same claims run over a slot switch from the drawer. Exported so a lane can drive it
+// with an artefact folder (screenshots + screencast frames) and against a mutated copy of the tree.
+interface ComposerTargetDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runComposerTargetDom(sourceRoot: string, artifacts?: string): Promise<ComposerTargetDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-target-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  type Row = { id: number; cwd: string | null; label?: string; openedAt?: number; repo?: string };
+  const fx = { slots: [] as Row[], sends: [] as { slot: number; text: string }[], sessions: 0, inputs: [] as string[] };
+  const fresh = (): Row[] => [
+    { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000 },
+    { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000 },
+    ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
+  ];
+  // one fake socket per pane: opens on the next tick, seeds one line, keeps every byte the page sends
+  const FAKE_WS = `(() => { window.__ws = [];
+    class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.sent = ''; this.binaryType = 'blob'; window.__ws.push(this);
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          const slot = (/\\/ws\\/(\\d+)/.exec(this.url) || [])[1];
+          this.onmessage?.({ data: new TextEncoder().encode('fixture slot ' + slot + '\\r\\n$ ').buffer }); }, 0); }
+      send(b) { this.sent += typeof b === 'string' ? b : new TextDecoder().decode(b); }
+      close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS; })()`;
+  const HELP = `(() => {
+    const T = () => document.querySelector('#comptarget');
+    const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && !e.closest('[hidden]');
+    const pane = (i) => document.querySelectorAll('#panes .pane')[i];
+    const focusedPane = () => [...document.querySelectorAll('#panes .pane')].findIndex((p) => p.classList.contains('focused'));
+    const where = () => { const a = document.activeElement; if (!a || a === document.body) return 'body'; if (a.id === 'input') return 'composer';
+      const p = a.closest('#panes .pane'); if (p && a.classList.contains('xterm-helper-textarea')) return 'terminal' + [...document.querySelectorAll('#panes .pane')].indexOf(p);
+      return a.tagName.toLowerCase() + '.' + String(a.className).split(' ').join('.'); };
+    const target = () => { const t = T(); return t ? { shown: shown(t), slot: t.dataset.slot ?? null, openedAt: t.dataset.openedAt ?? null, text: t.textContent.trim(), title: t.title } : null; };
+    const sent = (slot) => window.__ws.filter((w) => w.url.includes('/ws/' + slot + '?')).map((w) => w.sent).join('');
+    return { T, shown, pane, focusedPane, where, target, sent };
+  })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("target DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, recording: string | null = null, frame = 0;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.screencastFrame" && msg.params) {
+        if (artifacts && recording) writeFileSync(resolve(artifacts, recording, `${String(frame++).padStart(5, "0")}.jpg`), Buffer.from(String(msg.params.data), "base64"));
+        void send("Page.screencastFrameAck", { sessionId: msg.params.sessionId }).catch(() => undefined);
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") {
+        let body: { slot?: number; text?: string } | null = null;
+        try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
+        // the send is answered like the server answers a delivered prompt; nothing is typed anywhere
+        if (p === "/send") { fx.sends.push({ slot: Number(body?.slot), text: String(body?.text ?? "") }); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
+        return void json(requestId, { ok: true });
+      }
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: Date.now(), chips: [], slots: fx.slots, tasks: [] }); }
+      if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    let targetId = "";
+    const freshTarget = async () => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      const target = await send("Target.createTarget", { url: "about:blank" });
+      targetId = String(target.targetId);
+      sessionId = undefined;
+      const attached = await send("Target.attachToTarget", { targetId, flatten: true });
+      sessionId = String(attached.sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `${FAKE_WS}; window.__fx = ${HELP}` });
+    };
+    const missing: string[] = [];
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (url: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const KEY: Record<string, [number, string, string?]> = { Enter: [13, "Enter", "\r"], Escape: [27, "Escape"] };
+    const key = async (name: string) => {
+      const [vk, code, text] = KEY[name];
+      fx.inputs.push(`key ${name}`);
+      await send("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", key: name, code, windowsVirtualKeyCode: vk, ...(text ? { text, unmodifiedText: text } : {}) });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code, windowsVirtualKeyCode: vk });
+      await settle();
+    };
+    const typeText = async (text: string) => { fx.inputs.push(`type ${JSON.stringify(text)}`); await send("Input.insertText", { text }); await settle(); };
+    const point = (expression: string, fx_ = 0.5, fy = 0.5) => evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
+      const r = e.getBoundingClientRect(); return { x: r.x + r.width * ${fx_}, y: r.y + r.height * ${fy} }; })()`);
+    const mouse = async (type: string, at: { x: number; y: number }, extra: Record<string, unknown> = {}) =>
+      send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1, ...extra });
+    const click = async (expression: string, fx_ = 0.5, fy = 0.5): Promise<boolean> => {
+      const at = await point(expression, fx_, fy);
+      if (!at) { missing.push(expression.slice(0, 120)); return false; }
+      fx.inputs.push(`click ${Math.round(at.x)},${Math.round(at.y)} ${expression.slice(0, 60)}`);
+      await mouse("mouseMoved", at); await mouse("mousePressed", at); await mouse("mouseReleased", at);
+      await settle();
+      return true;
+    };
+    const wait = async (condition: string, ms = 6000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const polls = async (n: number) => { const at = fx.sessions; for (let i = 0; i < 200 && fx.sessions < at + n; i++) await settle(100); return fx.sessions >= at + n; };
+    let shotIndex = 0;
+    const shot = async (width: number, stage: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${width}-${String(++shotIndex).padStart(2, "0")}-${stage}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    type Target = { shown: boolean; slot: string | null; openedAt: string | null; text: string; title: string } | null;
+    const tgt = () => evaluate<Target>("window.__fx.target()");
+    const names = (t: Target, slot: number, openedAt: number, name: string) =>
+      !!t && t.shown && t.slot === String(slot) && t.openedAt === String(openedAt) && t.text.includes(String(slot)) && t.text.includes(name);
+    const results: ComposerTargetDomResult[] = [];
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      shotIndex = 0;
+      const phone = width < 700;
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      fx.slots = fresh(); fx.sends = []; fx.inputs = [];
+      await freshTarget();
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: ${phone ? 1 : 2}, panes: ${phone ? "[1]" : "[1, 2]"}, focused: 0 })); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelectorAll('#panes .pane .xterm').length >= ${phone ? 1 : 2} && window.__ws.filter((w) => w.readyState === 1).length >= ${phone ? 1 : 2}`, 12000);
+      if (!booted) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(500);
+      if (artifacts) { recording = `video-${width}`; frame = 0; mkdirSync(resolve(artifacts, recording), { recursive: true }); await send("Page.startScreencast", { format: "jpeg", quality: 85, everyNthFrame: 1 }); }
+      const sendsAt = () => fx.sends.length;
+
+      // --- 1. the target is on screen before and while text is in the field
+      facts.t0 = await tgt();
+      claims["the composer names its target: slot 1 · Alpha, bound to openedAt 1000"] = names(facts.t0 as Target, 1, 1000, "Alpha");
+      await click("document.querySelector('#input')");
+      await typeText("draft for alpha");
+      facts.t1 = await tgt();
+      claims["the target stays readable with text in the field"] = names(facts.t1 as Target, 1, 1000, "Alpha")
+        && await evaluate<string>("document.querySelector('#input').value") === "draft for alpha";
+      await shot(width, "target-with-text");
+
+      if (!phone) {
+        // --- 2. a click on the other pane's empty terminal: the keys go there, the target follows
+        await click("window.__fx.pane(1).querySelector('.xterm-screen')", 0.5, 0.8);
+        facts.afterTermClick = { where: await evaluate<string>("window.__fx.where()"), focused: await evaluate<number>("window.__fx.focusedPane()"),
+          draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a click on the other pane's terminal gives that terminal the keys"] = (facts.afterTermClick as { where: string }).where === "terminal1"
+          && (facts.afterTermClick as { focused: number }).focused === 1;
+        claims["the target follows the focus to slot 2 · Beta with Beta's own (empty) draft"] = names((facts.afterTermClick as { target: Target }).target, 2, 2000, "Beta")
+          && (facts.afterTermClick as { draft: string }).draft === "";
+        const before1 = await evaluate<string>("window.__fx.sent(1)");
+        await typeText("xyz");
+        facts.native = { slot1: await evaluate<string>("window.__fx.sent(1)"), slot2: await evaluate<string>("window.__fx.sent(2)"), draft: await evaluate<string>("document.querySelector('#input').value") };
+        claims["native typing in that terminal reaches only slot 2's socket, never the composer"] = (facts.native as { slot2: string }).slot2.includes("xyz")
+          && (facts.native as { slot1: string }).slot1 === before1 && (facts.native as { draft: string }).draft === "";
+        await shot(width, "terminal-2-focused");
+
+        // --- 3. Enter sends to the target on screen, and only there
+        await click("document.querySelector('#input')");
+        await typeText("draft for beta");
+        const shownAtEnter = await tgt();
+        const s0 = sendsAt();
+        await key("Enter");
+        await wait("document.querySelector('#input').value === ''", 3000);
+        facts.send1 = { shown: shownAtEnter, sent: fx.sends.slice(s0) };
+        claims["Enter sends Beta's text to slot 2 — the slot the target showed"] = fx.sends.length === s0 + 1
+          && fx.sends[s0]?.slot === 2 && fx.sends[s0]?.text === "draft for beta" && shownAtEnter?.slot === "2";
+        await typeText("beta second");
+        // --- 4. back to pane 1: its draft comes back, the target and the send go with it
+        await click("window.__fx.pane(0).querySelector('.xterm-screen')", 0.5, 0.8);
+        facts.back = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["each pane keeps its own draft across the swap"] = (facts.back as { draft: string }).draft === "draft for alpha"
+          && names((facts.back as { target: Target }).target, 1, 1000, "Alpha");
+        await click("document.querySelector('#input')");
+        const s1 = sendsAt();
+        await key("Enter");
+        await wait("document.querySelector('#input').value === ''", 3000);
+        claims["Enter after the swap sends Alpha's text to slot 1"] = fx.sends.length === s1 + 1 && fx.sends[s1]?.slot === 1 && fx.sends[s1]?.text === "draft for alpha";
+        await shot(width, "sent-to-1");
+
+        // --- 5. negatives on pane 1 (focused): wheel over pane 2, a drag selection, a corner switch, a dialog
+        const sN = sendsAt();
+        const wheelAt = await point("window.__fx.pane(1).querySelector('.xterm-screen')");
+        if (wheelAt) await send("Input.dispatchMouseEvent", { type: "mouseWheel", ...wheelAt, deltaX: 0, deltaY: -300 });
+        await settle(150);
+        facts.wheel = { focused: await evaluate<number>("window.__fx.focusedPane()"), where: await evaluate<string>("window.__fx.where()"), target: await tgt() };
+        claims["a wheel over the other pane moves neither the focus nor the target"] = (facts.wheel as { focused: number }).focused === 0
+          && (facts.wheel as { where: string }).where === "composer" && (facts.wheel as { target: Target }).target?.slot === "1";
+        await typeText("alpha kept");
+        const a = await point("window.__fx.pane(0).querySelector('.xterm-screen')", 0.05, 0.02), b = await point("window.__fx.pane(0).querySelector('.xterm-screen')", 0.4, 0.02);
+        if (a && b) { await mouse("mouseMoved", a); await mouse("mousePressed", a); await mouse("mouseMoved", b, { buttons: 1 }); await mouse("mouseReleased", b); }
+        await settle(100);
+        facts.drag = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a drag selection in the terminal keeps the draft and the target and sends nothing"] = (facts.drag as { draft: string }).draft === "alpha kept"
+          && (facts.drag as { target: Target }).target?.slot === "1" && fx.sends.length === sN;
+        await click("window.__fx.pane(0).querySelector('.panehover')");
+        facts.toggle = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a corner switch takes the keys into no input and leaves draft and target alone"] = !/^(composer|terminal)/.test((facts.toggle as { where: string }).where)
+          && (facts.toggle as { draft: string }).draft === "alpha kept" && (facts.toggle as { target: Target }).target?.slot === "1";
+        await click("window.__fx.pane(0).querySelector('.panehover')");
+        await click("window.__fx.pane(0).querySelector('.panegear')");
+        const opened = await wait("document.querySelector('#shell-settings')", 3000);
+        await key("Escape");
+        await wait("!document.querySelector('#shell-settings') || !window.__fx.shown(document.querySelector('#shell-settings'))", 3000);
+        facts.dialog = { opened, where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["the settings dialog's Esc returns the focus to its gear, draft and target unchanged"] = opened
+          && String((facts.dialog as { where: string }).where).includes("panegear") && (facts.dialog as { draft: string }).draft === "alpha kept"
+          && (facts.dialog as { target: Target }).target?.slot === "1" && fx.sends.length === sN;
+
+        // --- 6. slot 2's session is replaced (new openedAt): its old draft does not come back
+        fx.slots = fx.slots.map((r) => (r.id === 2 ? { ...r, openedAt: 3000, label: "Beta neu" } : r));
+        const polled = await polls(1);
+        await click("window.__fx.pane(1).querySelector('.xterm-screen')", 0.5, 0.8);
+        facts.recycled = { polled, draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a recycled slot shows the new session's openedAt and gets no old draft"] = polled && (facts.recycled as { draft: string }).draft === ""
+          && names((facts.recycled as { target: Target }).target, 2, 3000, "Beta neu");
+        // …and a new session in the slot that HAS the focus repaints the target on the poll alone
+        fx.slots = fx.slots.map((r) => (r.id === 2 ? { ...r, openedAt: 4000, label: "Beta drei" } : r));
+        const polledInPlace = await polls(1);
+        await settle(100);
+        facts.inPlace = { polled: polledInPlace, target: await tgt(), focused: await evaluate<number>("window.__fx.focusedPane()") };
+        claims["a new session in the focused slot repaints the target on the next poll, no click (openedAt 4000)"] = polledInPlace
+          && (facts.inPlace as { focused: number }).focused === 1 && names((facts.inPlace as { target: Target }).target, 2, 4000, "Beta drei");
+        // …and an ended one says so, with nothing carried over
+        await click("document.querySelector('#input')");
+        await typeText("beta third");
+        await click("window.__fx.pane(0).querySelector('.xterm-screen')", 0.5, 0.8);
+        fx.slots = fx.slots.map((r) => (r.id === 2 ? { id: 2, cwd: null } : r));
+        await polls(1);
+        await click("window.__fx.pane(1).querySelector('.xterm-screen')", 0.5, 0.8);
+        facts.ended = { draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        const ended = facts.ended as { draft: string; target: Target };
+        claims["an ended session: the target says leer and no draft carries over"] = ended.draft === ""
+          && !!ended.target && ended.target.shown && ended.target.slot === "2" && /leer/.test(ended.target.text);
+        await shot(width, "ended");
+
+        // --- 7. the conversation view: the switch keeps its own focus (a switch takes the keys into
+        // no input), the composer addresses the same slot, and a click in the view's free lower
+        // third is the way into the composer (src/client.ts#chatClickToComposer)
+        await click("window.__fx.pane(0).querySelector('.viewtoggle')");
+        await settle(200);
+        facts.chat = { where: await evaluate<string>("window.__fx.where()"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')"), target: await tgt() };
+        await click("window.__fx.pane(0).querySelector('.panechat')", 0.5, 0.9);
+        (facts.chat as Record<string, unknown>).afterFreeClick = await evaluate<string>("window.__fx.where()");
+        const chat = facts.chat as { where: string; tall: boolean; target: Target; afterFreeClick: string };
+        claims["switching pane 1 to its conversation: the switch keeps the keys, the tall composer still addresses slot 1"] =
+          chat.where === "button.viewtoggle" && chat.tall && chat.target?.slot === "1";
+        claims["a click in the conversation's free lower third puts the keys in the composer"] = chat.afterFreeClick === "composer";
+        await shot(width, "chat-view");
+        await click("window.__fx.pane(0).querySelector('.viewtoggle')");
+      } else {
+        // --- the phone: one pane, the slot switch comes from the drawer; the keyboard never opens by itself
+        // the drawer opens from the top island: the pill opens it, its slot button hands over to ☰
+        await click("document.querySelector('#mpill')");
+        await click("document.querySelector('#mslot')");
+        // the drawer slides in: the row is clicked where it finally rests, not mid-flight
+        await wait("document.body.classList.contains('drawer') && document.querySelector('#slots .slot[data-slot=\"2\"]')?.getBoundingClientRect().left >= 0", 3000);
+        await settle(400);
+        await click("document.querySelector('#slots .slot[data-slot=\"2\"] .lbl') ?? document.querySelector('#slots .slot[data-slot=\"2\"]')");
+        await wait("document.querySelector('#comptarget')?.dataset.slot === '2'", 3000);
+        facts.switched = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
+        claims["a slot switch from the drawer moves the target to slot 2 · Beta with Beta's own draft"] = names((facts.switched as { target: Target }).target, 2, 2000, "Beta")
+          && (facts.switched as { draft: string }).draft === "";
+        claims["the switch opens no keyboard (the composer does not take the focus)"] = (facts.switched as { where: string }).where !== "composer";
+        // …and the drawer slides out before the next tap: a tap during the slide lands on a free row
+        // under the finger and opens the founding window (measured on this probe, 2026-10-02)
+        const drawerGone = await wait("!document.body.classList.contains('drawer') && document.querySelector('#side').getBoundingClientRect().right <= 0", 3000);
+        await settle(300);
+        claims["the slot switch closes the drawer"] = drawerGone;
+        await click("document.querySelector('#input')");
+        await typeText("phone beta");
+        const shownAtSend = await tgt();
+        const s0 = sendsAt();
+        await click("document.querySelector('#send')");
+        await wait("document.querySelector('#input').value === ''", 3000);
+        facts.send = { shown: shownAtSend, sent: fx.sends.slice(s0) };
+        claims["➤ sends to slot 2 — the slot the target showed"] = fx.sends.length === s0 + 1 && fx.sends[s0]?.slot === 2 && fx.sends[s0]?.text === "phone beta"
+          && names(shownAtSend, 2, 2000, "Beta");
+        claims["no window opened over the composer on the way"] = await evaluate<boolean>("!document.querySelector('#shell-found')");
+        await shot(width, "sent-to-2");
+        await evaluate("document.activeElement?.blur()");
+      }
+
+      // --- passive polls move no focus (on the phone: the keyboard stays closed)
+      const whereBefore = await evaluate<string>("window.__fx.where()");
+      await polls(2);
+      facts.polls = { before: whereBefore, after: await evaluate<string>("window.__fx.where()") };
+      claims["two passive polls leave the focus where it was"] = (facts.polls as { after: string }).after === whereBefore && whereBefore !== "composer";
+      facts.inputs = [...fx.inputs]; facts.sends = [...fx.sends]; facts.missing = [...missing];
+      if (artifacts) { await send("Page.stopScreencast"); recording = null; }
+      results.push({ width, height, claims, facts });
+      missing.length = 0;
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE PHONE UPRIGHT'S TWO ISLANDS, measured in a real browser on the real client bundle (card "Auf
+// dem Telefon steht oben klein, mit wem man spricht", docs/design/mobil-insel-notiz.md §1b/§1c),
+// same rig as the send target probe: a fixture origin, a fake socket per pane that keeps every byte,
+// native clicks. The on-screen keyboard is simulated where the client reads it — a visualViewport
+// that loses 336 px (iOS upright with the suggestion row) and fires its resize — so the real
+// sync path sets body.keyboard-open and --vvh. Every claim reads the DOM, the socket bytes or the
+// page's geometry, never the source. 1200 × 900 and the phone on its side (844 × 390, touch) only
+// claim that no island exists there; their pixels are compared before/after by the lane, not here.
+// Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
+// `detail` holds the facts one claim was judged on — the whole `facts` outgrows a check line
+interface PhoneIslandDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown>; detail: Record<string, unknown> }
+export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string): Promise<PhoneIslandDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-island-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  const slots = [
+    { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000, model: "claude-opus-5-5", effort: "high", lastOutput: 0 },
+    { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, lastOutput: 0 },
+    ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
+  ];
+  const fx = { sessions: 0, inputs: [] as string[] };
+  // the bytes the nine keys must send — src/client.ts KEYS, in the row's order (^C first)
+  const KEY_BYTES = "\x03\x1b\t\x1b[Z\x1b[A\x1b[B\x1b[D\x1b[C\r";
+  const FAKE = `(() => { window.__ws = [];
+    class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.sent = ''; this.binaryType = 'blob'; window.__ws.push(this);
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          this.onmessage?.({ data: new TextEncoder().encode('fixture\\r\\n$ ').buffer }); }, 0); }
+      send(b) { this.sent += typeof b === 'string' ? b : new TextDecoder().decode(b); }
+      close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS;
+    const vv = new EventTarget(); let kbd = 0;
+    for (const [k, f] of Object.entries({ height: () => window.innerHeight - kbd, width: () => window.innerWidth, offsetTop: () => 0, offsetLeft: () => 0, pageTop: () => 0, pageLeft: () => 0, scale: () => 1 }))
+      Object.defineProperty(vv, k, { get: f });
+    Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => vv });
+    window.__keyboard = (px) => { kbd = px; vv.dispatchEvent(new Event('resize')); }; })()`;
+  const HELP = `(() => {
+    const q = (s) => document.querySelector(s);
+    const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none' && !e.closest('[hidden]');
+    const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), r: Math.round(r.right), b: Math.round(r.bottom) }; };
+    const pane = () => q('#panes .pane');
+    const where = () => { const a = document.activeElement; return !a || a === document.body ? 'body' : a.id ? '#' + a.id : a.tagName.toLowerCase() + '.' + String(a.className).split(' ').join('.'); };
+    const hits = (sel, x, y) => !!document.elementFromPoint(x, y)?.closest(sel);
+    const sent = () => window.__ws.filter((w) => w.url.includes('/ws/1?')).map((w) => w.sent).join('');
+    return { q, shown, box, pane, where, hits, sent };
+  })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("island DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, recording: string | null = null, frame = 0;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.screencastFrame" && msg.params) {
+        if (artifacts && recording) writeFileSync(resolve(artifacts, recording, `${String(frame++).padStart(5, "0")}.jpg`), Buffer.from(String(msg.params.data), "base64"));
+        void send("Page.screencastFrameAck", { sessionId: msg.params.sessionId }).catch(() => undefined);
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: 10 * 60_000, chips: ["/review", "/compact"], slots, tasks: [] }); }
+      if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    let targetId = "";
+    const freshTarget = async () => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      const target = await send("Target.createTarget", { url: "about:blank" });
+      targetId = String(target.targetId);
+      sessionId = undefined;
+      const attached = await send("Target.attachToTarget", { targetId, flatten: true });
+      sessionId = String(attached.sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `${FAKE}; window.__fx = ${HELP}` });
+    };
+    const missing: string[] = [];
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 80) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (url: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const mouse = async (type: string, at: { x: number; y: number }) => send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1 });
+    const tapAt = async (at: { x: number; y: number }, label: string) => {
+      fx.inputs.push(`tap ${Math.round(at.x)},${Math.round(at.y)} ${label}`);
+      await mouse("mouseMoved", at); await mouse("mousePressed", at); await mouse("mouseReleased", at);
+      await settle();
+    };
+    const tap = async (expression: string): Promise<boolean> => {
+      // the element must be what a finger at its centre meets — a target scrolled or clipped out of
+      // its row is not tappable, whatever its box says
+      const at = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e || !window.__fx.shown(e)) return null;
+        const r = e.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+        return e.contains(document.elementFromPoint(x, y)) ? { x, y } : null; })()`);
+      if (!at) { missing.push("tap " + expression.slice(0, 100)); return false; }
+      await tapAt(at, expression.slice(0, 60));
+      return true;
+    };
+    const wait = async (condition: string, ms = 4000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    type Box = { x: number; y: number; w: number; h: number; r: number; b: number } | null;
+    const box = (sel: string) => evaluate<Box>(`window.__fx.box(${sel.startsWith("window.") || sel.startsWith("document.") ? sel : `document.querySelector(${JSON.stringify(sel)})`})`);
+    const shown = (sel: string) => evaluate<boolean>(`window.__fx.shown(document.querySelector(${JSON.stringify(sel)}))`);
+    const isOpen = () => evaluate<boolean>("document.body.classList.contains('mopen')");
+    const boot = async (width: number, height: number, touch: boolean) => {
+      await freshTarget();
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await send("Emulation.setTouchEmulationEnabled", touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelector('#panes .pane .xterm') && window.__ws.some((w) => w.readyState === 1) && document.querySelector('#mtitle').textContent === 'Alpha'`, 12000);
+      if (!booted) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(500);
+    };
+    const results: PhoneIslandDomResult[] = [];
+
+    // --- the desktop and the phone on its side: no island, the heads they had
+    for (const [width, height, touch] of [[1200, 900, false], [844, 390, true]] as const) {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
+      await boot(width, height, touch);
+      facts.coarse = await evaluate<boolean>("matchMedia('(pointer: coarse)').matches");
+      facts.seen = { mtop: await shown("#mtop"), grip: await shown("#mgrip"), mhead: await shown("#mhead"), mread: await shown("#mread"),
+        side: await shown("#side"), bar: await box("#bar") };
+      const seen = facts.seen as { mtop: boolean; grip: boolean; mhead: boolean; mread: boolean; side: boolean };
+      claims["no island exists here: neither the top island nor the grip is drawn"] = !seen.mtop && !seen.grip;
+      if (width === 1200) claims["the desktop keeps its sidebar and no phone head"] = seen.side && !seen.mhead && !seen.mread;
+      else claims["the phone on its side keeps the reading mode (#mread) and no phone head"] = facts.coarse === true && seen.mread && !seen.mhead;
+      await shot(`${width}-start`);
+      facts.missing = [...missing]; missing.length = 0;
+      results.push({ width, height, claims, facts, detail });
+    }
+
+    // --- the phone upright, 390 × 844: without and with the on-screen keyboard
+    const W = 390, H = 844;
+    for (const keyboard of [false, true]) {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
+      fx.inputs = [];
+      await boot(W, H, true);
+      if (artifacts) { recording = `video-${W}${keyboard ? "-tastatur" : ""}`; frame = 0; mkdirSync(resolve(artifacts, recording), { recursive: true }); await send("Page.startScreencast", { format: "jpeg", quality: 85, everyNthFrame: 1 }); }
+      const tag = keyboard ? "Tastatur · " : "";
+      if (keyboard) {
+        await tap("document.querySelector('#input')");
+        await evaluate("window.__keyboard(336)");
+        await wait("document.body.classList.contains('keyboard-open')", 2000);
+        await settle(400);
+        facts.keyboard = { open: await evaluate<boolean>("document.body.classList.contains('keyboard-open')"), app: await box("#app"), where: await evaluate<string>("window.__fx.where()") };
+        claims[`${tag}the simulated keyboard is up: keyboard-open, the app 508 px tall, the field focused`] =
+          (facts.keyboard as { open: boolean }).open && (facts.keyboard as { app: Box }).app?.h === H - 336 && (facts.keyboard as { where: string }).where === "#input";
+      }
+      const bottom = keyboard ? H - 336 : H;
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-zu`);
+      // 1. no head, no fixed foot: the bottom island floats 6 px from the edges
+      const bar = await box("#bar");
+      facts.start = { mhead: await shown("#mhead"), keys: await shown("#keys"), bar, pill: await box("#mpill"), pane: await box("window.__fx.pane()"),
+        pillText: await evaluate<string>("document.querySelector('#mpill').textContent"), pillShape: await evaluate<string>("document.querySelector('#mpill .act')?.className ?? ''"),
+        open: await isOpen(), mopen: await shown("#mopen") };
+      const st = facts.start as { mhead: boolean; keys: boolean; bar: Box; pill: Box; pane: Box; pillText: string; pillShape: string; open: boolean; mopen: boolean };
+      claims[`${tag}no head and no fixed foot: #mhead is gone, the keys are folded, the bottom island floats 6 px from the edges`] =
+        !st.mhead && !st.keys && !!bar && bar.x === 6 && bar.r === W - 6 && bar.b === bottom - 6;
+      // 2. the start is the closed pill: centred, state shape + name, 32 px seen and 40 px to hit
+      const pill = st.pill;
+      const hitTop = pill ? await evaluate<boolean>(`window.__fx.hits('#mpill', ${pill.x + pill.w / 2}, ${pill.y - 3})`) : false;
+      const hitBottom = pill ? await evaluate<boolean>(`window.__fx.hits('#mpill', ${pill.x + pill.w / 2}, ${pill.b + 3})`) : false;
+      facts.pillHit = { hitTop, hitBottom };
+      claims[`${tag}the start is the closed pill: centred, state shape and the session's name, nothing else`] = !st.open && !st.mopen && !!pill
+        && Math.abs(pill.x + pill.w / 2 - W / 2) <= 1 && pill.y === 6 && st.pillText === "Alpha" && /\bact (work|rest|sleep|bad)\b/.test(st.pillShape);
+      claims[`${tag}the pill is 32 px seen and hits 40 px (4 px above and below it still open it)`] = !!pill && pill.h === 32 && hitTop && hitBottom;
+      // 3. a tap on the pill opens; the open island covers the pane without moving it
+      const termBefore = await box("document.querySelector('.paneterm')");
+      await tap("document.querySelector('#mpill')");
+      const opened = await isOpen();
+      const ids = ["#mslot", "#mname", "#minfo", "#mview", "#mhist", "#mauto", "#mmore"];
+      const boxes: Record<string, Box> = {};
+      for (const id of ids) boxes[id] = (await shown(id)) ? await box(id) : null;
+      facts.open = { opened, boxes, name: await evaluate<string>("document.querySelector('#mname').innerText"), view: await evaluate<string>("document.querySelector('#mview').textContent"),
+        term: await box("document.querySelector('.paneterm')"), pane: await box("window.__fx.pane()"), top: await box("#mtop"), where: await evaluate<string>("window.__fx.where()") };
+      const op = facts.open as { opened: boolean; name: string; view: string; term: Box; pane: Box; top: Box; where: string };
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-auf`);
+      const b = (id: string) => boxes[id];
+      claims[`${tag}a tap on the pill opens the island: slot button left, name with model · effort, ℹ right; view, History, Schedule, ⋯ under the name`] =
+        opened && ids.every((id) => !!b(id)) && b("#mslot")!.x < b("#mname")!.x && b("#mname")!.r <= b("#minfo")!.x
+        && b("#mview")!.y >= b("#mname")!.b && b("#mview")!.x < b("#mhist")!.x && b("#mhist")!.x < b("#mauto")!.x && b("#mauto")!.x < b("#mmore")!.x
+        && /Alpha/.test(op.name) && /Opus 5\.5 · high/.test(op.name) && op.view === "Konversation";
+      // …and a finger at each centre meets that button, at the default text size and at the largest
+      // Aa (24 px, src/chatsize.ts) — where the words of the tools row no longer fit
+      const hittable = () => evaluate<string[]>(`${JSON.stringify(ids)}.filter((id) => { const e = document.querySelector(id), r = e.getBoundingClientRect();
+        return !e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })`);
+      const missedAt14 = await hittable();
+      await evaluate("document.documentElement.style.setProperty('--chat-fs', '24px')");
+      await settle(100);
+      const missedAt24 = (await hittable()).filter((id) => id !== "#mview" && id !== "#mhist" && id !== "#mauto");
+      const moreAt24 = await box("#mmore");
+      await evaluate("document.documentElement.style.removeProperty('--chat-fs')");
+      await settle(100);
+      const sizeClaim = `${tag}every target in the open island is at least 40 px high, the icon buttons 40 × 40, each met by a finger at its centre`;
+      claims[sizeClaim] = ids.every((id) => (b(id)?.h ?? 0) >= 40) && ["#mslot", "#minfo", "#mmore"].every((id) => (b(id)?.w ?? 0) >= 40)
+        && missedAt14.length === 0;
+      detail[sizeClaim] = { boxes, missedAt14 };
+      const bigClaim = `${tag}at the largest text size ⋯, ℹ and the slot button stay on screen and tappable (the words scroll under ⋯)`;
+      claims[bigClaim] = missedAt24.length === 0 && !!moreAt24 && moreAt24.r <= W - 6;
+      detail[bigClaim] = { missedAt24, moreAt24 };
+      claims[`${tag}the open island covers the top of the pane — the pane and the terminal do not move`] = JSON.stringify(op.pane) === JSON.stringify(st.pane)
+        && JSON.stringify(op.term) === JSON.stringify(termBefore) && !!op.top && op.top.b > (termBefore?.y ?? 0);
+      if (keyboard) claims[`${tag}opening the island keeps the field's focus and the keyboard`] = op.where === "#input" && await evaluate<boolean>("document.body.classList.contains('keyboard-open')");
+      // 4. closing: a tap on the name, a tap outside, and every action
+      await tap("document.querySelector('#mname')");
+      const byName = !await isOpen();
+      await tap("document.querySelector('#mpill')");
+      const reopened = await isOpen();
+      await tapAt({ x: W / 2, y: Math.round((bottom - 60) * 0.55) }, "outside");
+      const byOutside = !await isOpen();
+      facts.close = { byName, reopened, byOutside };
+      claims[`${tag}a tap on the name closes the island, a tap outside closes it too`] = byName && reopened && byOutside;
+      // the actions, each handing over to the board's own control
+      const act = async (id: string, effect: string, undo?: () => Promise<unknown>) => {
+        await tap("document.querySelector('#mpill')");
+        const was = await isOpen();
+        await tap(`document.querySelector('${id}')`);
+        const done = await wait(effect, 3000);
+        const closed = !await isOpen();
+        await shot(`${W}${keyboard ? "-tastatur" : ""}-${id.slice(2)}`);
+        if (undo) await undo();
+        return { was, done, closed };
+      };
+      const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(400); };
+      const actions: Record<string, { was: boolean; done: boolean; closed: boolean }> = {};
+      actions.slot = await act("#mslot", "document.body.classList.contains('drawer')", async () => { await escape(); await wait("!document.body.classList.contains('drawer')"); await settle(300); });
+      actions.view = await act("#mview", "window.__fx.pane().classList.contains('chat')");
+      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').textContent"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')") };
+      actions.viewBack = await act("#mview", "!window.__fx.pane().classList.contains('chat')");
+      actions.info = await act("#minfo", "window.__fx.shown(document.querySelector('#shell-board'))", escape);
+      actions.hist = await act("#mhist", "getComputedStyle(document.querySelector('#hist')).display === 'flex'", escape);
+      if (keyboard) { await tap("document.querySelector('#input')"); await wait("document.body.classList.contains('keyboard-open')", 2000); }
+      actions.more = await act("#mmore", "document.body.classList.contains('keyboard-options')");
+      await settle(300); // a keyboard that left with the focus would have folded the options away by now (sync)
+      // Live is a touch affordance (index.html: #comptray > #live only under any-pointer: coarse)
+      facts.more = { gear: await evaluate<boolean>("[...document.querySelectorAll('.panegear')].some((e) => window.__fx.shown(e))"),
+        live: await shown("#live"), still: await evaluate<boolean>("document.body.classList.contains('keyboard-options')"),
+        where: await evaluate<string>("window.__fx.where()"), anyCoarse: await evaluate<boolean>("matchMedia('(any-pointer: coarse)').matches"),
+        tools: await box("document.querySelector('#panes .pane .panetools')") };
+      await tapAt({ x: W / 2, y: Math.round((bottom - 60) * 0.6) }, "outside ⋯");
+      const moreClosed = await evaluate<boolean>("!document.body.classList.contains('keyboard-options')");
+      facts.actions = actions;
+      const actionsClaim = `${tag}every action closes the island and does what the board's own control does (drawer, view, ℹ, History, ⋯)`;
+      claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
+      detail[actionsClaim] = { actions, chatView: facts.chatView, missing: [...missing] };
+      const moreClaim = `${tag}⋯ brings the corner group's tools (with the gear) and, on a touch screen, Live; a tap outside folds them away`;
+      const more = facts.more as { gear: boolean; live: boolean; still: boolean; where: string; anyCoarse: boolean };
+      claims[moreClaim] = more.gear && more.still && more.live === more.anyCoarse && moreClosed && (!keyboard || more.where === "#input");
+      detail[moreClaim] = { ...more, moreClosed };
+      // 5. the terminal ends above the bottom island and its grip
+      const term = await box("document.querySelector('.paneterm')"), grip = await box("#mgrip"), bar2 = await box("#bar");
+      facts.terminal = { term, grip, bar: bar2 };
+      claims[`${tag}the terminal ends above the bottom island and its grip`] = !!term && !!grip && !!bar2 && term.b <= grip.y && grip.y < bar2.y && term.y >= (pill?.b ?? 99);
+      // 6. the grip: chips and the nine keys fold in, 40 px each, no focus lost, the #keys bytes
+      // the view switch above gave the terminal the keys; the field takes them back first
+      await tap("document.querySelector('#input')");
+      if (keyboard) await wait("document.body.classList.contains('keyboard-open')", 2000);
+      const focusBefore = await evaluate<string>("window.__fx.where()");
+      await tap("document.querySelector('#mgrip')");
+      await settle(400);
+      const keys = await evaluate<Box[]>("[...document.querySelectorAll('#keys button')].map((k) => window.__fx.shown(k) ? window.__fx.box(k) : null)");
+      const chips = await evaluate<number>("[...document.querySelectorAll('#chips .chip')].filter((c) => window.__fx.shown(c)).length");
+      const sentBefore = await evaluate<string>("window.__fx.sent()");
+      for (let i = 0; i < 9; i++) await tap(`document.querySelectorAll('#keys button')[${i}]`);
+      await settle(200);
+      const sentAfter = await evaluate<string>("window.__fx.sent()");
+      const term2 = await box("document.querySelector('.paneterm')"), grip2 = await box("#mgrip");
+      facts.grip = { focusBefore, focusAfter: await evaluate<string>("window.__fx.where()"), keys, chips, bytes: JSON.stringify(sentAfter.slice(sentBefore.length)),
+        keyboardStill: await evaluate<boolean>("document.body.classList.contains('keyboard-open')"), term2, grip2, expanded: await evaluate<string>("document.querySelector('#mgrip').getAttribute('aria-expanded')") };
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-griff`);
+      const g = facts.grip as { focusBefore: string; focusAfter: string; keyboardStill: boolean; expanded: string };
+      claims[`${tag}the grip folds in the owner's chips and the nine keys, each key at least 40 × 40`] = g.expanded === "true" && chips === 2
+        && keys.length === 9 && keys.every((k) => !!k && k.w >= 40 && k.h >= 40);
+      claims[`${tag}grip and keys leave the focus in the field${keyboard ? " and the keyboard up" : ""}`] = g.focusBefore === "#input" && g.focusAfter === "#input"
+        && (!keyboard || g.keyboardStill);
+      claims[`${tag}the nine keys send exactly the bytes of #keys (^C esc tab ⇧tab ↑ ↓ ← → ⏎) to the focused slot`] = sentAfter.slice(sentBefore.length) === KEY_BYTES;
+      claims[`${tag}with the keys folded in, the terminal still ends above the island`] = !!term2 && !!grip2 && term2.b <= grip2.y;
+      await tap("document.querySelector('#mgrip')");
+      if (artifacts) { await send("Page.stopScreencast"); recording = null; }
+      facts.inputs = [...fx.inputs]; facts.missing = [...missing]; missing.length = 0;
+      results.push({ width: W, height: keyboard ? H - 336 : H, claims, facts, detail });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE RIGHTS OF A SESSION against a REAL isolated instance (card "Der Owner sieht an jeder Session
+// und beim Gruenden, was sie lesen darf", docs/design/datenrechte-notiz.md E1–E39). Unlike the
+// fixture probes above, nothing here is stubbed: the staged server answers every request, the
+// grants are real records behind PATCH /api/slots/:id/memory-grant, and the owner's out-of-band
+// moves (a revoke from „[Zitat entfernt]“, a re-occupied slot, a project that leaves) go through the
+// same owner doors. Two things are the probe's own, and both are named: the client bundle is built
+// from `sourceRoot` and handed to the page in place of the served /app.js (so a mutant tree can be
+// measured against the same server), and ONE read — slot D's first GET — is answered 502 inside the
+// page, because a real server cannot be made to fail exactly one read. Every claim is read off the
+// DOM, the page's own request log and the server's state afterwards.
+export interface RightsDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+
+export async function runRightsDom(o: { base: string; token: string; repo: string; sourceRoot: string; artifacts?: string }): Promise<RightsDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-rights-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(o.sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const OH = { "content-type": "application/json", authorization: `Bearer ${o.token}` };
+  const own = (method: string, path: string, body?: unknown) =>
+    fetch(o.base + path, { method, headers: OH, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  type Row = { id: number; cwd: string | null; openedAt?: number; worktree?: { repo: string } | null };
+  type GrantRec = { revision: number; projectKeys: string[]; views: string[]; revokedAt: number | null };
+  type GrantGet = { openedAt: number | null; grant: GrantRec | null; inForce: boolean; knownProjects: { projectKey: string; repo: string }[] };
+  const rows = async (): Promise<Row[]> => ((await (await own("GET", "/api/sessions")).json()) as { slots: Row[] }).slots;
+  const grantOf = async (slot: number): Promise<GrantGet> => (await (await own("GET", `/api/slots/${slot}/memory-grant`)).json()) as GrantGet;
+  const taken = new Set<number>();
+  const lanes: { slot: number; cwd: string; repo: string }[] = [];
+  const openPlain = async (label: string): Promise<{ slot: number; openedAt: number }> => {
+    const free = (await rows()).find((r) => r.id <= 16 && !r.cwd && !taken.has(r.id));
+    if (!free) throw new Error("rights DOM: no free band slot for " + label);
+    taken.add(free.id);
+    const r = await own("POST", `/api/slots/${free.id}/open`, { cwd: o.repo, label });
+    if (!r.ok) throw new Error(`rights DOM: open ${free.id} → ${r.status} ${await r.text()}`);
+    const row = (await rows()).find((x) => x.id === free.id);
+    return { slot: free.id, openedAt: row?.openedAt ?? 0 };
+  };
+  const openLane = async (repo: string): Promise<{ slot: number; cwd: string }> => {
+    const r = await own("POST", "/api/lanes", { repo });
+    const j = (await r.json()) as { slot?: number; cwd?: string; error?: string };
+    if (!r.ok || !j.slot || !j.cwd) throw new Error(`rights DOM: lane on ${repo} → ${r.status} ${j.error ?? ""}`);
+    taken.add(j.slot);
+    lanes.push({ slot: j.slot, cwd: j.cwd, repo });
+    return { slot: j.slot, cwd: j.cwd };
+  };
+  const closeLane = async (slot: number) => {
+    const l = lanes.find((x) => x.slot === slot);
+    await own("POST", `/api/slots/${slot}/kill`, {});
+    if (l) { spawnSync("git", ["worktree", "remove", "--force", l.cwd], { cwd: l.repo }); lanes.splice(lanes.indexOf(l), 1); }
+    taken.delete(slot);
+  };
+  const cleanup = async () => {
+    for (const l of [...lanes]) await closeLane(l.slot);
+    for (const s of [...taken]) await own("POST", `/api/slots/${s}/kill`, {});
+    taken.clear();
+  };
+  // a throwaway repository: known while its one lane lives, unknown once the lane ends
+  const goneRepo = resolve(scratch, "gone-project");
+  mkdirSync(goneRepo, { recursive: true });
+  for (const args of [["init", "-q", "-b", "main"], ["-c", "user.email=p@x", "-c", "user.name=p", "commit", "-q", "--allow-empty", "-m", "init"]])
+    spawnSync("git", args, { cwd: goneRepo });
+  const canon = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+
+  // the page's own request log for the grant door and the start doors, and the one injected failure
+  const NET = `(() => { window.__net = []; const f0 = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input.url; const m = String(init?.method || 'GET').toUpperCase();
+      const g = /\\/api\\/slots\\/(\\d+)\\/(memory-grant|open|open-worktree)$/.exec(new URL(url, location.href).pathname);
+      if (!g) return f0(input, init);
+      let body = null; try { body = init?.body ? JSON.parse(init.body) : null; } catch {}
+      const row = { m, slot: Number(g[1]), door: g[2], body, at: performance.now(), status: null };
+      window.__net.push(row);
+      const fail = Number(localStorage.getItem('probe.failGrant') || 0);
+      if (g[2] === 'memory-grant' && m === 'GET' && fail === row.slot) {
+        localStorage.removeItem('probe.failGrant'); row.status = 502;
+        return new Response(JSON.stringify({ error: 'probe: one injected failure' }), { status: 502, headers: { 'content-type': 'application/json' } });
+      }
+      const res = await f0(input, init); row.status = res.status; return res; }; })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("rights DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, recording: string | null = null, frame = 0;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.screencastFrame" && msg.params) {
+        if (o.artifacts && recording) writeFileSync(resolve(o.artifacts, recording, `${String(frame++).padStart(5, "0")}.jpg`), Buffer.from(String(msg.params.data), "base64"));
+        void send("Page.screencastFrameAck", { sessionId: msg.params.sessionId }).catch(() => undefined);
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      // the one substituted response: the bundle of the tree under test instead of the served one
+      if (msg.method === "Fetch.requestPaused" && msg.params) {
+        const { requestId } = msg.params as { requestId: string };
+        void send("Fetch.fulfillRequest", { requestId, responseCode: 200, responseHeaders: [{ name: "content-type", value: "text/javascript" }],
+          body: Buffer.from(appJs).toString("base64") }).catch(() => undefined);
+      }
+    };
+    let targetId = "";
+    const freshTarget = async () => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      const target = await send("Target.createTarget", { url: "about:blank" });
+      targetId = String(target.targetId);
+      sessionId = undefined;
+      const attached = await send("Target.attachToTarget", { targetId, flatten: true });
+      sessionId = String(attached.sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: `${o.base}/app.js*` }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: NET });
+    };
+    const missing: string[] = [];
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 80) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (url: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 40); }; tick(); })`);
+    const click = async (expression: string): Promise<boolean> => {
+      const at = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
+        e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (!at) { missing.push(expression.slice(0, 120)); return false; }
+      for (const type of ["mouseMoved", "mousePressed", "mouseReleased"])
+        await send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1 });
+      await settle();
+      return true;
+    };
+    const shot = async (width: number, stage: string) => {
+      if (!o.artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(o.artifacts, `rechte-${stage}-${width}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // the rights block and its parts, wherever the Info lives (the column, or the phone's window)
+    const RB = `document.querySelector('#board .brights')`;
+    const GR = `${RB}?.querySelector('.rggrant')`;
+    const rk = (k: string, root = RB) => `${root}?.querySelector('[data-rk="${k}"]')`;
+    const grantText = () => evaluate<string>(`${GR}?.innerText ?? ''`);
+    const net = <T = { m: string; slot: number; door: string; body: Record<string, unknown> | null; status: number | null }[]>() => evaluate<T>(`window.__net`);
+    const patches = async (slot: number) => (await net()).filter((r) => r.door === "memory-grant" && r.m === "PATCH" && r.slot === slot);
+    // the page opened on ONE session, with the Info shown: the column at 1200, the ℹ window at 390
+    const openOn = async (width: number, height: number, slot: number, failFirstRead = false) => {
+      await freshTarget();
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
+      const phone = width < 700;
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${slot}], focused: 0 }));
+        localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); ${failFirstRead ? `localStorage.setItem('probe.failGrant', '${slot}');` : ""} })()`);
+      await navigate(`${o.base}/`);
+      if (!await wait(`document.querySelector('#panes .pane .xterm')`, 15000))
+        throw new Error("client did not boot against the instance: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      // the phone upright: ℹ sits in the top island (pill → ℹ), the pane's corner button is folded away
+      if (phone) { await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#minfo')`); }
+      return wait(`${RB}`, 10000);
+    };
+    const startVideo = async (name: string) => {
+      if (!o.artifacts) return;
+      recording = `video-${name}`; frame = 0;
+      mkdirSync(resolve(o.artifacts, recording), { recursive: true });
+      await send("Page.startScreencast", { format: "jpeg", quality: 80, everyNthFrame: 1 });
+    };
+    const stopVideo = async () => { if (recording) await send("Page.stopScreencast").catch(() => undefined); recording = null; };
+
+    const results: RightsDomResult[] = [];
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      try {
+        // --- the instance: four plain sessions, a lane on the fixture repo, a lane on a throwaway repo
+        const A = await openPlain("Rechte A");
+        const lane = await openLane(o.repo);
+        const laneG = await openLane(goneRepo);
+        const C = await openPlain("Rechte C");
+        const D = await openPlain("Rechte D");
+        const B = await openPlain("Rechte B");
+        const known0 = (await grantOf(A.slot)).knownProjects;
+        const kRepo = known0.find((p) => canon(p.repo) === canon(o.repo))?.projectKey ?? "";
+        const kGone = known0.find((p) => canon(p.repo) === canon(goneRepo))?.projectKey ?? "";
+        facts.known0 = known0;
+        claims["PROBE: the fixture repo and the throwaway repo are two known projects while their lanes live"] = !!kRepo && !!kGone && kRepo !== kGone;
+        // slot C holds a grant on the throwaway project, set over the owner door; then its only lane ends
+        const setC = await own("PATCH", `/api/slots/${C.slot}/memory-grant`, { expectedOpenedAt: C.openedAt, expectedRevision: 0, projectKeys: [kGone], views: ["work"] });
+        await closeLane(laneG.slot);
+        const knownC = (await grantOf(C.slot)).knownProjects;
+        claims["PROBE: slot C holds a grant on the throwaway project, and that project left the known set when its lane ended"] =
+          setC.ok && !knownC.some((p) => p.projectKey === kGone);
+
+        // --- the founding window: rights in the profile field, no grant field in the start, a fresh read after it
+        const F = (await rows()).find((r) => r.id <= 16 && !r.cwd && !taken.has(r.id));
+        if (!F) throw new Error("rights DOM: no free band slot for the founding");
+        taken.add(F.id); // the founding opens it — killed with the rest
+        await freshTarget();
+        await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+        await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
+        await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${A.slot}], focused: 0 })); localStorage.setItem('fleet.board', '0'); })()`);
+        await navigate(`${o.base}/`);
+        await wait(`document.querySelector('#slots .slot.empty[data-slot="${F.id}"]')`, 15000);
+        await startVideo(`${width}-gruendung`);
+        // the phone keeps the bar in its drawer; the row's own handler opens the same window
+        if (width < 700) await evaluate(`document.querySelector('#slots .slot.empty[data-slot="${F.id}"]').click()`);
+        else await click(`document.querySelector('#slots .slot.empty[data-slot="${F.id}"]')`);
+        const profile = `document.querySelector('#shell-found .fdrights')`;
+        const profTxt = () => evaluate<string>(`${profile}?.innerText ?? ''`);
+        const fdReady = await wait(`${profile} && document.querySelector('#shell-found .fdgo') && !document.querySelector('#shell-found .fdgo').disabled`, 10000);
+        const leerTxt = await profTxt();
+        claims["founding: the profile field names Ausführung, Eigene Arbeit and Projektsichten — none at the start, assigned after it"] = fdReady
+          && /Ausführung[\s\S]*Fleet-Standard/.test(leerTxt) && /Eigene Arbeit[\s\S]*Keine/.test(leerTxt)
+          && /Projektsichten[\s\S]*Keine beim Start\. Du weist sie danach zu/.test(leerTxt);
+        claims["founding: the foot says the start goes out without a project view"] =
+          (await evaluate<string>(`document.querySelector('#shell-found .fdsay')?.textContent ?? ''`)).includes("ohne Projektsicht");
+        await click(`document.querySelector('#shell-found .fdrole[data-role="lane"]')`);
+        const laneTxt = await profTxt();
+        await click(`document.querySelector('#shell-found .fdrole[data-role="orch"]')`);
+        const orchTxt = await profTxt();
+        await click(`document.querySelector('#shell-found .fdrole[data-role="leer"]')`);
+        await wait(`${profile}?.innerText.includes('Keine beim Start. Du weist')`);
+        claims["founding: the rows follow the role — Lane: \"Nicht für Lanes\", Orchestratorin: the role gives none"] =
+          /Projektsichten[\s\S]*Nicht für Lanes/.test(laneTxt) && /die Rolle gibt keine/.test(orchTxt);
+        facts.founding = { leerTxt, laneTxt, orchTxt };
+        await shot(width, "gruendung");
+        await click(`document.querySelector('#shell-found .fdgo')`);
+        const proofRow = `document.querySelector('#shell-found .fdproofrow[data-field="Projektsichten"]')`;
+        const proofOk = await wait(`${proofRow}?.innerText.includes('frisch gelesen')`, 15000);
+        const proofTxt = await evaluate<string>(`${proofRow}?.innerText ?? ''`);
+        const fNet = (await net()).filter((r) => r.slot === F.id);
+        const startAt = fNet.findIndex((r) => r.door === "open" && r.m === "POST");
+        const startBody = fNet[startAt]?.body ?? {};
+        const firstRead = fNet.findIndex((r) => r.door === "memory-grant" && r.m === "GET");
+        facts.foundingNet = fNet;
+        claims["founding: the start body carries no grant field — should-reject any grant, memory, project or view key"] = startAt >= 0
+          && !Object.keys(startBody).some((k) => /grant|memory|project|view/i.test(k));
+        claims["founding: the receipt reads the grant AFTER the start, fresh, at the new occupant — keine · Fassung 0"] = proofOk
+          && firstRead > startAt && /keine[\s\S]*der Start vergibt keine/.test(proofTxt) && /keine[\s\S]*frisch gelesen[\s\S]*Fassung 0/.test(proofTxt)
+          && fNet.filter((r) => r.door === "memory-grant" && r.m === "PATCH").length === 0;
+        const step = `document.querySelector('#shell-found .fdproofgrant')`;
+        claims["founding: the receipt offers \"Zuweisen …\" as its own optional step"] =
+          await evaluate<boolean>(`!!${rk("open", step)} && ${step}.innerText.includes('optional')`);
+        await shot(width, "beleg");
+        const fOpened = (await rows()).find((r) => r.id === F.id)?.openedAt ?? 0;
+        await click(rk("open", step));
+        await click(rk(`p:${kRepo}`, step));
+        await click(rk("apply", step));
+        const assigned = await wait(`${proofRow}?.innerText.includes('Fassung 1')`, 8000);
+        const fGrant = await grantOf(F.id);
+        const fPatch = (await net()).filter((r) => r.slot === F.id && r.door === "memory-grant" && r.m === "PATCH");
+        claims["founding: assigning from the receipt is one PATCH against the new occupant, and the row shows the server's grant"] = assigned
+          && fPatch.length === 1 && fPatch[0].body?.expectedOpenedAt === fOpened && fPatch[0].body?.expectedRevision === 0
+          && fGrant.grant?.revision === 1 && fGrant.grant.projectKeys.join() === kRepo;
+        await shot(width, "beleg-zugewiesen");
+        await stopVideo();
+
+        // --- slot A: assign, cancel without PATCH, 409, revoke — every painted right is the server's answer
+        claims["PROBE: the Info opens on slot A with its rights block"] = await openOn(width, height, A.slot);
+        await startVideo(`${width}-info`);
+        await wait(`${GR}?.innerText.includes('Nie zugewiesen')`);
+        const order = await evaluate<{ keys: string[]; afterSetup: boolean }>(`(() => { const body = document.querySelector('#boardbody');
+          const secs = [...body.children]; const r = ${RB}; const su = body.querySelector('.bsetup');
+          return { keys: [...r.querySelectorAll('.rgkey')].map((k) => k.textContent),
+            afterSetup: !!su && secs.indexOf(su) < secs.indexOf(r) && secs.slice(secs.indexOf(r) + 1).every((s) => !s.classList.contains('bsetup')) }; })()`);
+        facts.order = order;
+        claims["board: the block \"Rechte\" stands after the context and names Eigene Arbeit · Projektsichten · Ausführung · Deine Sicht"] =
+          order.afterSetup && order.keys.join("|") === "Eigene Arbeit|Projektsichten|Ausführung|Deine Sicht";
+        const aText0 = await grantText();
+        claims["board: a session without a grant reads \"Keine · Nie zugewiesen\", read from the server, no PATCH"] =
+          /^Keine/.test(aText0) && aText0.includes("Nie zugewiesen") && (await patches(A.slot)).length === 0
+          && (await net()).some((r) => r.slot === A.slot && r.door === "memory-grant" && r.m === "GET" && r.status === 200);
+        await shot(width, "frei");
+        await click(rk("open"));
+        const edOpen = await wait(`${RB}?.querySelector('.rged')`);
+        await click(rk(`p:${kRepo}`));
+        const delta = await evaluate<string>(`${RB}?.querySelector('.rgdelta')?.innerText ?? ''`);
+        await shot(width, "auswahl");
+        claims["board: \"Zuweisen …\" opens the choice in the block; nothing is sent while choosing"] = edOpen
+          && delta.includes(`+ ${basename(o.repo)}`) && (await patches(A.slot)).length === 0;
+        await click(rk("apply"));
+        const set1 = await wait(`${GR}?.innerText.includes('Fassung 1') && !${RB}.querySelector('.rged')`);
+        const a1 = await grantOf(A.slot);
+        const p1 = await patches(A.slot);
+        claims["board: Zuweisen is one PATCH with expectedOpenedAt + expectedRevision 0, and the block paints the server's grant"] = set1
+          && p1.length === 1 && p1[0].body?.expectedOpenedAt === A.openedAt && p1[0].body?.expectedRevision === 0
+          && JSON.stringify(p1[0].body?.projectKeys) === JSON.stringify([kRepo]) && JSON.stringify(p1[0].body?.views) === JSON.stringify(["work"])
+          && a1.grant?.revision === 1 && a1.inForce && (await grantText()).includes(basename(o.repo))
+          && (await grantText()).includes("Arbeitsstand · nur lesen") && (await grantText()).includes("von dir");
+        await shot(width, "zugewiesen");
+        // Abbrechen — in the choice and in the revoke question — sends nothing
+        await click(rk("open"));
+        await click(rk("v:observations"));
+        await click(rk("cancel"));
+        await click(rk("revoke"));
+        const asked = await evaluate<string>(`${GR}?.innerText ?? ''`);
+        await click(rk("revoke-cancel"));
+        claims["board: Abbrechen sends nothing — neither in the choice nor in the revoke question"] =
+          (await patches(A.slot)).length === 1 && asked.includes("Widerrufen?") && !(await grantText()).includes("Beobachtung")
+          && (await grantOf(A.slot)).grant?.revision === 1;
+        // 409: another window revokes while the choice is open
+        await click(rk("open"));
+        await click(rk("v:observations"));
+        const elsewhere = await own("PATCH", `/api/slots/${A.slot}/memory-grant`, { expectedOpenedAt: A.openedAt, expectedRevision: 1, revoke: true });
+        await click(rk("apply"));
+        const conflict = await wait(`${GR}?.innerText.includes('inzwischen geändert')`);
+        const outside = await evaluate<string>(`(() => { const g = ${GR}; if (!g) return ''; const c = g.cloneNode(true); c.querySelector('.rged')?.remove(); return c.innerText; })()`);
+        const a2 = await grantOf(A.slot);
+        const p2 = await patches(A.slot);
+        facts.conflict = { outside, p2: p2.map((r) => [r.body?.expectedRevision, r.status]) };
+        claims["board: 409 revision-mismatch paints the server's new state (Fassung 2, widerrufen) and keeps the choice open — the draft is never drawn"] =
+          elsewhere.ok && conflict && p2.length === 2 && p2[1].status === 409 && p2[1].body?.expectedRevision === 1
+          && /Fassung 2/.test(outside) && /^Keine/.test(outside) && /Zuletzt widerrufen/.test(outside) && !outside.includes("Beobachtung · nur lesen")
+          && await evaluate<boolean>(`!!${RB}?.querySelector('.rged')`) && a2.grant?.revision === 2 && a2.grant.revokedAt !== null;
+        await shot(width, "konflikt");
+        await click(rk("apply"));
+        const set3 = await wait(`${GR}?.innerText.includes('Fassung 3')`);
+        const a3 = await grantOf(A.slot);
+        claims["board: the open choice then lands against the new revision — Fassung 3, both views, from the server"] = set3
+          && a3.grant?.revision === 3 && a3.grant.views.join("+") === "work+observations"
+          && (await grantText()).includes("Arbeitsstand + Beobachtung · nur lesen");
+        // Widerrufen, with its question
+        await click(rk("revoke"));
+        await click(rk("revoke-go"));
+        const revoked = await wait(`${GR}?.innerText.includes('Zuletzt widerrufen') && ${GR}?.innerText.includes('Fassung 4')`);
+        const a4 = await grantOf(A.slot);
+        const p4 = await patches(A.slot);
+        claims["board: Widerrufen is one PATCH {revoke, expectedRevision 3} and paints \"Keine · Zuletzt widerrufen · Fassung 4\""] = revoked
+          && p4.length === 4 && p4[3].body?.revoke === true && p4[3].body?.expectedRevision === 3 && p4[3].body?.expectedOpenedAt === A.openedAt
+          && a4.grant?.revision === 4 && a4.grant.revokedAt !== null && !a4.inForce;
+        await shot(width, "widerrufen");
+
+        // --- a lane: no button, no read
+        claims["PROBE: the Info opens on the lane"] = await openOn(width, height, lane.slot);
+        const laneBlock = await evaluate<string>(`${RB}?.innerText ?? ''`);
+        claims["board: a lane says \"Nicht für Lanes\" with no Zuweisen/Ändern/Widerrufen button and never asks the grant door"] =
+          laneBlock.includes("Nicht für Lanes") && laneBlock.includes("Keinen Auftrag")
+          && await evaluate<boolean>(`!${rk("open")} && !${rk("revoke")} && !${rk("apply")}`)
+          && !(await net()).some((r) => r.slot === lane.slot && r.door === "memory-grant");
+        await shot(width, "lane");
+
+        // --- unknown is never "keine": a project the server no longer names, and a read that failed
+        claims["PROBE: the Info opens on slot C"] = await openOn(width, height, C.slot);
+        await wait(`${GR}?.innerText.includes('Fassung')`);
+        const cText = await grantText();
+        claims["board: a granted project the server no longer names reads \"unbekanntes Projekt\" — never \"Keine\""] =
+          cText.includes(`unbekanntes Projekt ${kGone.slice(0, 8)}`) && cText.includes("nennt der Server heute nicht mehr") && !/^Keine/.test(cText);
+        await click(rk("open"));
+        const cFoot = await evaluate<string>(`${RB}?.querySelector('.rgfoot')?.innerText ?? ''`);
+        const cBlocked = await evaluate<boolean>(`${rk("apply")}?.disabled === true`);
+        await shot(width, "unbekannt");
+        await click(rk("cancel"));
+        claims["board: an unknown project can only be dropped — Zuweisen stays off while it is chosen, and nothing is sent"] =
+          cBlocked && cFoot.includes("kann nicht neu zugewiesen werden") && (await patches(C.slot)).length === 0;
+        claims["PROBE: the Info opens on slot D (its first read answered 502 inside the page)"] = await openOn(width, height, D.slot, true);
+        await wait(`${GR}?.innerText.includes('Unbekannt')`);
+        const dText = await grantText();
+        claims["board: a read that failed says \"Unbekannt … nicht gemessen\" and offers no Zuweisen — never \"Keine\""] =
+          dText.startsWith("Unbekannt") && dText.includes("nicht gemessen") && !/^Keine/.test(dText) && !dText.includes("Nie zugewiesen")
+          && await evaluate<boolean>(`!${rk("open")} && !!${rk("reread")}`);
+        await shot(width, "nichtlesbar");
+        await click(rk("reread"));
+        claims["board: \"Neu lesen\" asks the server again and then shows what it says"] =
+          await wait(`${GR}?.innerText.includes('Nie zugewiesen')`);
+
+        // --- slot B is re-occupied while a choice is open: nothing goes out, the old answer is dropped
+        claims["PROBE: the Info opens on slot B"] = await openOn(width, height, B.slot);
+        await wait(`${GR}?.innerText.includes('Nie zugewiesen')`);
+        await click(rk("open"));
+        await click(rk(`p:${kRepo}`));
+        await own("POST", `/api/slots/${B.slot}/kill`, {});
+        await own("POST", `/api/slots/${B.slot}/open`, { cwd: o.repo, label: "Rechte B2" });
+        const B2 = (await rows()).find((r) => r.id === B.slot)?.openedAt ?? 0;
+        const said = await wait(`${GR}?.innerText.includes('neu belegt')`, 10000);
+        // a choice still on screen is clicked anyway: the rule is that nothing goes out
+        if (await evaluate<boolean>(`!!${rk("apply")}`)) await click(rk("apply"));
+        await settle(400);
+        const bText = await grantText();
+        const bGrant = await grantOf(B.slot);
+        facts.reoccupied = { bText, B2, before: B.openedAt };
+        claims["board: a slot re-occupied during an open choice sends no PATCH, says so, and the new session holds nothing"] = said
+          && B2 !== B.openedAt && (await patches(B.slot)).length === 0 && bText.includes("ging nicht raus")
+          && bGrant.openedAt === B2 && bGrant.grant === null;
+        await shot(width, "neubelegt");
+        await stopVideo();
+        facts.missing = missing.slice(0, 12);
+      } catch (error) {
+        claims["PROBE: the rights scenario ran to its end"] = false;
+        facts.error = error instanceof Error ? error.message : String(error);
+        facts.missing = missing.slice(0, 12);
+        await stopVideo().catch(() => undefined);
+      } finally {
+        await cleanup();
+      }
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
   }
 }

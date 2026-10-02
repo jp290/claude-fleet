@@ -265,20 +265,8 @@ interface CommandJobWatch extends WatchBase {
   kind: "job";
   jobId: string;
 }
-// STN-1: the Supervisor→Controller transition rail. The ONLY Watch kind triggered by a principal's
-// act (the bound Supervisor completing it) rather than a level the tick computes, and the only one
-// with a deadline, so a Controller can read "X never came" from its own row instead of waiting forever.
-interface TransitionWatch extends WatchBase {
-  kind: "transition";
-  awaiting: string;     // the Controller's bounded statement of WHAT transition it expects
-  deadlineAt: number;   // absolute ms; the tick disarms past it with lastResult "expired"
-}
-type Watch = LaneWatch | MergeWatch | AuditWatch | DeployWatch | TransitionWatch | CommandJobWatch;
-const watchKind = (w: Watch): "lane" | "merge" | "audit" | "deploy" | "transition" | "job" => w.kind ?? "lane";
-const TRANSITION_AWAITING_MAX = 500;
-const TRANSITION_DEADLINE_MIN_SEC = 60;
-const TRANSITION_DEADLINE_MAX_SEC = 86_400;
-const TRANSITION_DEADLINE_DEFAULT_SEC = 3_600;
+type Watch = LaneWatch | MergeWatch | AuditWatch | DeployWatch | CommandJobWatch;
+const watchKind = (w: Watch): "lane" | "merge" | "audit" | "deploy" | "job" => w.kind ?? "lane";
 function watchFrom(raw: unknown): Watch | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const w = raw as Partial<Watch> & Record<string, unknown>;
@@ -297,14 +285,6 @@ function watchFrom(raw: unknown): Watch | null {
   }
   if (w.kind === "job") {
     return typeof w.jobId === "string" && /^[0-9a-f]{12}$/.test(w.jobId) ? raw as CommandJobWatch : null;
-  }
-  if (w.kind === "transition") {
-    // pane-only by construction (the inbox is the owner's, not a Controller's): a persisted row
-    // claiming inbox delivery is malformed, not a transport choice.
-    return typeof w.awaiting === "string" && w.awaiting.trim().length > 0
-      && w.awaiting.length <= TRANSITION_AWAITING_MAX
-      && typeof w.deadlineAt === "number" && Number.isFinite(w.deadlineAt) && w.deadlineAt > 0
-      && w.delivery !== "inbox" ? raw as TransitionWatch : null;
   }
   if (w.kind !== undefined && w.kind !== "lane" && w.kind !== "merge") return null;
   return typeof w.target === "number" && typeof w.targetCwd === "string" && typeof w.targetBranch === "string"
@@ -453,21 +433,6 @@ interface FleetReportFleetEvent extends FleetEventBase {
   payload: FleetReportEventPayload;
   subjectName?: string; // S3d, see LaneFleetEvent
 }
-// STN-1. The subject is the Supervisor occupant that completed the Watch — stamped, never claimed —
-// and the payload carries the Controller's own `awaiting` back beside the Supervisor's text, so
-// the receiver can match the notification to the question it asked without a second read.
-interface SupervisorTransitionEventPayload {
-  watchId: string;
-  awaiting: string;
-  text: string;
-  completedAt: number;
-}
-interface SupervisorTransitionFleetEvent extends FleetEventBase {
-  subjectSlot: number;
-  subjectOpenedAt: number;
-  kind: "supervisor-transition";
-  payload: SupervisorTransitionEventPayload;
-}
 // A SUCCESSION THAT LEFT A DEBT (server.ts#recordSuccessionDebt): the predecessor has ended on its
 // slot, and either the successor stands without its founding brief (`respawned: true`) or no
 // successor opened at all (`respawned: false`, the slot is empty). The caller's pane is gone by
@@ -491,7 +456,7 @@ interface MessageFleetEvent extends FleetEventBase {
 }
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
   | CommandJobFleetEvent | LaneSuiteFleetEvent | ClarificationFleetEvent | FleetReportFleetEvent
-  | SupervisorTransitionFleetEvent | HarnessBlockFleetEvent | LaneReviewFleetEvent | SuccessionDebtFleetEvent
+  | HarnessBlockFleetEvent | LaneReviewFleetEvent | SuccessionDebtFleetEvent
   | MessageFleetEvent;
 
 // `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
@@ -865,7 +830,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       // THE THIRD CARRIER OF THE SAME FACT, tied to the receiver like the other two. `delivery`
       // says how the row travels and the base rule binds it; `FleetReport.basis` says who the
       // ROW was filed to and fleetReportFrom binds it; this one says who the EVENT was filed to,
-      // and it is what the board and the Supervisor projection actually read. Unbound, a row
+      // and it is what the board actually read. Unbound, a row
       // could hydrate with a null receiver while its payload claimed "program-main" — the owner
       // would see a report addressed to a MAIN that was never told — or with a session receiver
       // while claiming "owner-inbox". Both are lies about the one thing the row exists to say.
@@ -1071,18 +1036,6 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
         describedThisDiff: p.describedThisDiff, raw: p.raw, findingCount: p.findingCount!,
         findings: p.findings.map((f) => ({ title: f.title, file: f.file, line: f.line, impact: f.impact })),
         notes: p.notes }, ...subjectNameFrom(e.subjectName) };
-  }
-  if (e.kind === "supervisor-transition") {
-    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
-      || typeof e.subjectOpenedAt !== "number" || !Number.isFinite(e.subjectOpenedAt) || e.subjectOpenedAt <= 0
-      || e.delivery === "inbox") return null;
-    const p = e.payload as Partial<SupervisorTransitionEventPayload> | undefined;
-    if (!p || typeof p.watchId !== "string" || !/^[a-z0-9]+$/.test(p.watchId) || p.watchId !== base.watchId
-      || typeof p.awaiting !== "string" || !p.awaiting.trim() || p.awaiting.length > TRANSITION_AWAITING_MAX
-      || typeof p.text !== "string" || !p.text.trim() || p.text.length > MAX_SUPERVISOR_NUDGE_TEXT
-      || typeof p.completedAt !== "number" || !Number.isFinite(p.completedAt) || p.completedAt <= 0) return null;
-    return { ...base, subjectSlot: Number(e.subjectSlot), subjectOpenedAt: e.subjectOpenedAt, kind: e.kind,
-      payload: { watchId: p.watchId, awaiting: p.awaiting, text: p.text, completedAt: p.completedAt } };
   }
   return null;
 }
@@ -1333,7 +1286,7 @@ function validAttentionBranch(branch: string): boolean {
     && !branch.endsWith("/") && !branch.endsWith(".") && !branch.endsWith(".lock");
 }
 
-const MAX_SUPERVISOR_NUDGE_TEXT = 2000;
+const MAX_MESSAGE_TEXT = 2000;
 
 // a queued feature request. Owner-created or submitted via the public /intake address
 // (e.g. a CEO emailing features in). NEVER auto-sent: a task only leaves `pending` when
@@ -1580,7 +1533,7 @@ interface TaskCard extends TaskCardBody {
 // means nobody said why, never an empty reason: an archive without a body mints none. `beleg` is the
 // evidence pointer and is absent unless given. The row itself may later be evicted by capTasks; the
 // reason survives with it in tasks-archive.jsonl, which is where register.sh --archived reads it.
-interface TaskDisposition { grund: string; beleg?: string; by: "owner"; at: number }
+interface TaskDisposition { grund: string; beleg?: string; by: "owner" | "main"; slot?: number; at: number }
 const TASK_DISPOSITION_GRUND_MAX = 500;
 const TASK_DISPOSITION_BELEG_MAX = 2000;
 // read back whole or not at all: a reason without its `grund` is not a shorter reason
@@ -1589,9 +1542,11 @@ const loadTaskDisposition = (value: unknown): TaskDisposition | undefined => {
   const r = value as Record<string, unknown>;
   if (typeof r.grund !== "string" || !r.grund.trim() || typeof r.at !== "number" || !Number.isFinite(r.at))
     return undefined;
+  if (r.by === "main" && (typeof r.slot !== "number" || !Number.isInteger(r.slot) || r.slot < 1))
+    return undefined;
   return { grund: r.grund.slice(0, TASK_DISPOSITION_GRUND_MAX),
     ...(typeof r.beleg === "string" && r.beleg.trim() ? { beleg: r.beleg.slice(0, TASK_DISPOSITION_BELEG_MAX) } : {}),
-    by: "owner", at: r.at };
+    ...(r.by === "main" ? { by: "main" as const, slot: r.slot as number } : { by: "owner" as const }), at: r.at };
 };
 // one kind change (Task.kindChanges). Both writers — POST /api/tasks/:id/kind and the `adopt` alias —
 // sit past the owner token gate, so `by` has one value today.
@@ -1661,7 +1616,7 @@ const isTaskVerdict = (value: unknown): value is TaskVerdict =>
 // How many lands a note remembers. Five like the note block's own cap and for the same reason: the
 // answer to "has this moved lately" does not improve with the sixth entry.
 const TASK_TOUCHED_MAX = 5;
-interface TaskComment { id: string; ts: number; text: string; from?: string; verdict?: TaskVerdict }
+interface TaskComment { id: string; ts: number; text: string; from?: string; verdict?: TaskVerdict; by?: "owner" | "main"; slot?: number }
 
 // --- THE EXPLICIT TASK→NOTIZ ASSIGNMENT (N3) ---------------------------------------------------
 // Until N3 a note reached a lane by FILE-SURFACE INTERSECTION alone (task-notes.ts). That join is a
@@ -2107,7 +2062,7 @@ interface Slot {
   // named. Same lifetime as memoryGrant: reset with the occupant, carried by the generic succession
   // rail alone, persisted in fleet.json.
   reportDelegate: ReportDelegate | null;
-  // THE ROLE LINE this session holds (LineageHandover): minted by the first generic or Supervisor
+  // THE ROLE LINE this session holds (LineageHandover): minted by the first generic
   // succession of a line, inherited by every successor, null for every session that never took part
   // in one — and for a Program-MAIN, whose line is its Program id. Reset by openSlot/killSlot.
   lineageId: string | null;
@@ -2731,7 +2686,7 @@ const loadProgramLineage = (value: unknown): ProgramLineageRead => {
 // with an owner token that did not come from the board (LandActor.bypassed), which is a fact about
 // the Program and not about whoever held the pane at the time. That is why it belongs here rather
 // than in a FleetEvent: a succession retires the events, and this must outlive it.
-type ProgramInboxKind = "attention-answer" | "fleet-report" | "audit-red" | "ambient-land";
+type ProgramInboxKind = "attention-answer" | "fleet-report" | "audit-red" | "ambient-land" | "card-verdict";
 interface ProgramInboxEntry {
   id: string;                       // 24 hex, minted by appendProgramInbox
   kind: ProgramInboxKind;
@@ -2744,7 +2699,7 @@ interface ProgramInbox { v: 1; entries: ProgramInboxEntry[]; dropped: number }
 // the cap is on the RECORD, so a hand-written file cannot make a Program carry an unbounded
 // history either; past it appendProgramInbox drops and COUNTS, exactly like the lineage
 const PROGRAM_INBOX_MAX = 100;
-const PROGRAM_INBOX_KINDS: ProgramInboxKind[] = ["attention-answer", "fleet-report", "audit-red", "ambient-land"];
+const PROGRAM_INBOX_KINDS: ProgramInboxKind[] = ["attention-answer", "fleet-report", "audit-red", "ambient-land", "card-verdict"];
 const PROGRAM_INBOX_ENTRY_KEYS = ["id", "kind", "at", "ref", "readBy", "readAt"];
 const PROGRAM_INBOX_REF_MAX = 200;
 type ProgramInboxRead = { ok: true; inbox: ProgramInbox } | { ok: false; error: string };
@@ -2831,13 +2786,13 @@ const loadProgramInbox = (value: unknown): ProgramInboxRead => {
 // the same message under the same id. The READ RECEIPT is decided by the OCCUPANT TRIPLE — so the
 // record still says exactly who read it, and a later occupant never overwrites that. Two different
 // questions; a slot-keyed record answers both with one wrong answer.
-type MessageRole = "supervisor" | "orchestrator" | "controller";
+type MessageRole = "supervisor" | "orchestrator" | "controller" | "owner";
 // `controller` is carried DELIBERATELY as a well-formed but unresolvable address. The Controller is
 // Scope and holds no binding (docs/controller.md), so naming it here is how the dead end is
 // DOCUMENTED rather than invented: the loader accepts the address, the resolver refuses it by name,
 // and a later owner-promoted binding is a resolver change instead of a record migration. A MAIN
 // that wants to reach the Controller today addresses the Program the Controller is MAIN of.
-const MESSAGE_ROLES: MessageRole[] = ["supervisor", "orchestrator", "controller"];
+const MESSAGE_ROLES: MessageRole[] = [ "orchestrator", "controller", "owner"];
 type MessageAddress = { kind: "program"; id: string } | { kind: "role"; role: MessageRole };
 // CLOSED BY KIND, with exactly one member today. An unknown kind is a named refusal rather than a
 // tolerated extra — but the honest limit of what that buys: it keeps TODAY's text records stably
@@ -2849,7 +2804,7 @@ const MESSAGE_IDEMPOTENCY_KEY_MAX = 200;
 const MESSAGE_ENTRY_KEYS = ["id", "from", "to", "at", "payload", "idempotencyKey", "replyTo", "readBy", "readAt"];
 interface Message {
   id: string;                       // 24 hex, minted by appendMessage
-  from: MessageAddress;             // DERIVED from the sender's binding, never read from a body
+  from: MessageAddress;             // DERIVED from the sender's binding or owner credential, never from a body
   to: MessageAddress;
   at: number;
   payload: MessagePayload;
@@ -2866,7 +2821,7 @@ interface Messages { v: 1; entries: Message[]; dropped: number }
 const MESSAGES_MAX = 200;
 type MessagesRead = { ok: true; messages: Messages } | { ok: false; error: string };
 
-const loadMessageAddress = (value: unknown, what: string): MessageAddress | string => {
+const loadMessageAddress = (value: unknown, what: string, legacy = false): MessageAddress | string => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return `${what} must be an object`;
   const r = value as Record<string, unknown>;
   if (r.kind === "program") {
@@ -2879,7 +2834,7 @@ const loadMessageAddress = (value: unknown, what: string): MessageAddress | stri
   if (r.kind === "role") {
     if (Object.keys(r).some((k) => !["kind", "role"].includes(k)) || Object.keys(r).length !== 2)
       return `${what} must contain exactly kind, role`;
-    if (typeof r.role !== "string" || !MESSAGE_ROLES.includes(r.role as MessageRole))
+    if (typeof r.role !== "string" || !(MESSAGE_ROLES.includes(r.role as MessageRole) || (legacy && r.role === "supervisor")))
       return `${what} role must be one of ${MESSAGE_ROLES.join(", ")}`;
     return { kind: "role", role: r.role as MessageRole };
   }
@@ -2892,8 +2847,8 @@ const loadMessagePayload = (value: unknown, what: string): MessagePayload | stri
   if (r.kind !== "text") return `${what} kind must be one of ${MESSAGE_PAYLOAD_KINDS.join(", ")}`;
   if (Object.keys(r).some((k) => !["kind", "text"].includes(k)) || Object.keys(r).length !== 2)
     return `${what} must contain exactly kind, text`;
-  if (typeof r.text !== "string" || r.text.trim() === "" || r.text.length > MAX_SUPERVISOR_NUDGE_TEXT)
-    return `${what} text must be a non-empty string of at most ${MAX_SUPERVISOR_NUDGE_TEXT} chars`;
+  if (typeof r.text !== "string" || r.text.trim() === "" || r.text.length > MAX_MESSAGE_TEXT)
+    return `${what} text must be a non-empty string of at most ${MAX_MESSAGE_TEXT} chars`;
   return { kind: "text", text: r.text };
 };
 
@@ -2905,10 +2860,11 @@ const loadMessageEntry = (value: unknown, index: number): Message | string => {
     return `entry ${index} must contain exactly ${MESSAGE_ENTRY_KEYS.join(", ")}`;
   if (typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id))
     return `entry ${index} id must be 24 hex characters`;
-  const from = loadMessageAddress(r.from, `entry ${index} from`);
+  const from = loadMessageAddress(r.from, `entry ${index} from`, true);
   if (typeof from === "string") return from;
-  const to = loadMessageAddress(r.to, `entry ${index} to`);
+  const to = loadMessageAddress(r.to, `entry ${index} to`, true);
   if (typeof to === "string") return to;
+  if (to.kind === "role" && to.role === "owner") return `entry ${index} to: owner is sender-only, never a message destination`;
   if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
     return `entry ${index} at must be a positive number`;
   const payload = loadMessagePayload(r.payload, `entry ${index} payload`);
@@ -3184,28 +3140,6 @@ const loadProgramHandover = (value: unknown): ProgramHandoverRead => {
     obligations, settled, lost, dropped: r.dropped as number } };
 };
 
-// --- THE ROLE-LINEAGE HANDOVER (e3e5084a) ------------------------------------------------------
-// The Program record above is a Standard Program-MAIN's handover, addressed by its Program id. Every
-// OTHER role that succeeds through POST /api/self/succeed — an unbound session (Orchestrator,
-// Controller, legacy MAIN) and the Supervisor — had none: its gate was a HANDOFF.md commit and a
-// 500-character prompt sentence nobody persisted. This record is the same idea on a ROLE LINE: a
-// stable `lineageId` the successor inherits (Slot.lineageId), one record per succession, the
-// previous one marked `supersededBy` the moment the line moves again.
-//
-// IDS ONLY, AND THE TYPE IS WHAT ENFORCES IT. An obligation is `kind` + `id` + who owed it + the door
-// that re-registers it, and nothing else: there is no text field and no detail bag, and the loader
-// refuses any key beyond these four. So a watch body, an inbox payload or a report text cannot ride
-// in here by accident or by diligence — the record points at the ledger rows, it never copies them.
-// ONE TYPED EXCEPTION, on a watch only: `target`. dropWatchesFor deletes the watch row with its
-// registrant, so a watch id points at nothing the successor can read; on 2026-09-15 two audit
-// watches crossed only because their shas happened to sit in `intent`. `target` is a CLOSED object
-// built from the watch's own identity fields (the ones captureProgramHandover keeps in `detail`),
-// every field shape-checked, so the successor rebuilds the POST /api/self/watch body from it and
-// nothing is re-armed. `null` = a watch kind with no typed target here (deploy, job, transition —
-// the last one's `awaiting` is prose). ABSENT = a record written before the field existed; it stays
-// readable, and absent is never read as null.
-// The ONE prose field is `intent`, capped, and it is mutually exclusive with `pointer` (a committed,
-// dated section): exactly one handover channel, the game-maker checkpoint's rule.
 type LineageRole = "generic" | "supervisor";
 const LINEAGE_ROLES: LineageRole[] = ["generic", "supervisor"];
 type LineageObligationKind = "watch" | "auto" | "inbox" | "report";
@@ -3518,27 +3452,15 @@ type ProgramContent = Pick<Program, "title" | "intent" | "successCriterion" | "n
   | "decisions" | "evidence" | "openQuestions" | "promotionRequest">;
 type ProgramValidation = { ok: true; content: ProgramContent } | { ok: false; error: string };
 
-// The cross-program Supervisor is a SINGLETON above every Program bracket, so its binding lives
-// beside `programs` rather than inside one of them. Identical shape to Program.main on purpose:
-// slot+openedAt is the only occupant identity Fleet ever trusts, and a recycled slot must never
-// inherit an authority its predecessor held. The binding grants no capability by itself — it names
-// who the Supervisor is, and nothing reads it as permission to write.
-interface SupervisorBinding {
-  slot: number;
-  openedAt: number;
-  sessionId: string | null;
-  boundAt: number;
-}
-
 type ProgramDigest = Pick<Program, "id" | "status" | "title" | "createdAt">;
 
 export type {
   BoxPin, WSData, Share, ShareComment, Auto, WatchBase, LaneWatch, MergeWatch, AuditWatch,
-  DeployWatch, TransitionWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
+  DeployWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
   HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
-  SupervisorTransitionEventPayload, SupervisorTransitionFleetEvent, FleetEvent, ClarificationStatus,
+  FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportFulfilled, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
@@ -3554,7 +3476,7 @@ export type {
   ProgramHandoverRead, ProgramRecordLoss, ProgramRecordLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,
-  ProgramValidation, SupervisorBinding, ProgramDigest, DispatchSpawn, SlotContext, SlotStreamOccupant,
+  ProgramValidation, ProgramDigest, DispatchSpawn, SlotContext, SlotStreamOccupant,
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, StallRepoClock, StallSensorState,
@@ -3564,14 +3486,13 @@ export type {
 export {
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, loadReportDelegate,
   loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
-  MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, TRANSITION_AWAITING_MAX, TRANSITION_DEADLINE_MIN_SEC,
-  TRANSITION_DEADLINE_MAX_SEC, TRANSITION_DEADLINE_DEFAULT_SEC, watchFrom, FLEET_EVENT_TERMINAL,
+  MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,
   attentionFrom, MAX_CLARIFICATION_QUESTION, MAX_CLARIFICATION_ANSWER, MAX_FLEET_REPORT_TEXT,
   FLEET_REPORT_DISPOSITIONS, FLEET_REPORT_FULFILLED, MAX_FLEET_REPORT_DECISION_REASON,
   FLEET_REPORT_DELIVERY_STATES, MAX_FLEET_REPORT_DELIVERY_REASON,
   MAX_ATTENTION_TEXT, MAX_ATTENTION_ANSWER, MAX_ATTENTION_PROVENANCE_TEXT,
-  ATTENTION_CANDIDATE_SHA_RE, ATTENTION_BRANCH_RE, validAttentionBranch, MAX_SUPERVISOR_NUDGE_TEXT,
+  ATTENTION_CANDIDATE_SHA_RE, ATTENTION_BRANCH_RE, validAttentionBranch, MAX_MESSAGE_TEXT,
   TASK_KINDS, isTaskKind, loadTaskKind, TASK_REVIEW_MODES, TASK_VERDICTS, isTaskVerdict, TASK_TOUCHED_MAX,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, loadPromotionRequest,
   PROGRAM_PROFILE_KINDS, loadProgramProfile, PROGRAM_LINEAGE_MAX, PROGRAM_LINEAGE_VIA,

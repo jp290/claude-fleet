@@ -16,7 +16,7 @@ export interface FleetEventRow {
   delivery?: "pane" | "inbox";
   kind: "lane-ready" | "host-commit-ready" | "merge-terminal" | "post-land-audit"
     | "deploy-terminal" | "command-job" | "lane-suite" | "clarification-request" | "fleet-report"
-    | "supervisor-transition" | "harness-block" | "lane-review" | "succession-debt";
+    | "harness-block" | "lane-review" | "succession-debt";
   subjectSlot?: number; subjectBranch?: string; subjectCwd?: string;
   subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string; subjectJobId?: string;
   payload?: Record<string, unknown>;
@@ -97,7 +97,7 @@ export interface OpsPollSource extends OpsClassFields {
 }
 
 // per kind, the payload keys opsSummary reads — and nothing for the kinds that can never reach
-// opsRow (a clarification and a supervisor transition are never inbox rows)
+// opsRow (a clarification are never inbox rows)
 export const OPS_POLL_PAYLOAD_KEYS: Readonly<Record<FleetEventRow["kind"], readonly string[]>> = {
   "lane-ready": ["ahead", "dirty"],
   "host-commit-ready": ["ahead", "dirty"],
@@ -108,7 +108,6 @@ export const OPS_POLL_PAYLOAD_KEYS: Readonly<Record<FleetEventRow["kind"], reado
   "lane-suite": ["result", "branch", "failCount"],
   "clarification-request": [],
   "fleet-report": ["status", "taskId"],
-  "supervisor-transition": [],
   "harness-block": ["signal", "tool", "count", "escalated"],
   "lane-review": ["taskId", "findingCount", "describedThisDiff", "raw"],
   "succession-debt": ["debtId", "rail", "respawned"],

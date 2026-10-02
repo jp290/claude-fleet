@@ -1,6 +1,6 @@
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
-import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, newLane, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
-import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, fitTextarea, growComposer, reshapeSurface, mountComposer, renderParkHint, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS } from "./composer";
+import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
+import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, fitTextarea, growComposer, reshapeSurface, mountComposer, renderParkHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
 import { Terminal } from "@xterm/xterm";
@@ -8,17 +8,19 @@ import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SearchAddon } from "@xterm/addon-search";
 import qrcode from "qrcode-generator";
 import { entityMatches, mdInto, type MdEntityKind } from "./md";
 import { selectionMarkdown } from "./mdcopy";
 import { Flakes } from "./flakes";
+import { MarkStage, markFacts, placeMarks, projectHue, type MarkItem } from "./marks";
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
 import type { ModelEntry, ModelAvailability } from "../model-register";
 import { DraftBook, historySource, type HistoryEntry } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { closeEntityCard, hideEntityCard, showEntityCard } from "./entcard";
-import { loadChatSizes, onChatSize, sizePanel, stepChatSizes } from "./chatsize";
+import { loadChatSizes, onChatSize, onTermSize, setTermDefault, sizePanel, stepChatSizes, stepTermSize, termFontSize } from "./chatsize";
 import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, prefText, type PrefDef } from "./prefs";
 import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
@@ -29,7 +31,7 @@ import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
-import { METER_STATIONS, laneTail, meterKind, meterLine, mmss, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
+import { METER_STATIONS, laneDisplayName, laneTail, laneTitleOf, meterKind, meterLine, mmss, shortTitle, suiteMeter, type MeterBall, type MeterStation } from "./suitemeter";
 import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsSubject, opsSummary, type OpsPollRow } from "./opsevents";
 import {
   projectTaskWaves,
@@ -41,6 +43,8 @@ import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_ROWS_MAX,
 // re-spelled so the wave evidence and the brief's note lines cut a row at the same place
 import { noteFirstSentence } from "../task-notes";
 import type { Task as ServerTask } from "../server/types";
+import type { StartPlan, StartPlanNext } from "../start-plan";
+import type { WaitRow } from "../waits";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
@@ -51,6 +55,7 @@ import {
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
+import { openLaneFounding, openPicker } from "./founding";
 import { runningEffort, runningModel } from "./running";
 
 export const $ = (id: string) => document.getElementById(id)!;
@@ -100,7 +105,8 @@ $("menu").onclick = () => setDrawer(true);
 $("shade").onclick = () => setDrawer(false);
 // mobile's settings gear (#mset, on the place the duplicate #refresh freed — the reconnect lives
 // on the pane's own ↻ now, which the phone shows in the corner group). Desktop's gear sits in each
-// pane's group; both open the same window.
+// pane's group; both open the same window. The phone upright has no #mhead: there the pane's gear
+// comes back behind the top island's ⋯ (renderIsland), still one gear.
 $("mset").appendChild(icon("gear"));
 $("mset").onclick = () => openSettings($("mset"));
 
@@ -295,6 +301,9 @@ export interface SlotInfo {
   harness?: string; effort?: string;
   // what the session is for (server.ts, the /api/sessions slot row) — absent means none set
   mission?: string; awaiting?: "owner" | "main"; taskId?: string; taskHead?: string; programId?: string;
+  // a task lane's full title, derived by the server from its founding card on every poll
+  // (src/suitemeter.ts#laneTitleOf) — absent when there was nothing to derive it from
+  taskTitle?: string;
   // WHICH BOX and WHICH DAEMON this session's agent runs in. Present — RESOLVED, never null —
   // exactly when the slot's harness has a container concept, absent otherwise; that is the one
   // question the fleet-wide env could not answer per session.
@@ -426,7 +435,7 @@ export interface TaskRefineFull { at: number; model: string;
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string; waveBudget?: number;
   lanes?: number; quiet?: boolean }
 export let fleet: SlotInfo[] = [];
-// the harness catalogue, fetched ONCE (it is a server constant) the first time the picker opens.
+// the harness catalogue, fetched ONCE (it is a server constant) the first time the founding window opens.
 // Empty until then, and every reader treats empty as "only the default exists" — so a failed or
 // pending fetch degrades to exactly the pre-harness UI rather than to a broken one.
 export let harnesses: HarnessInfo[] = [];
@@ -434,7 +443,7 @@ let harnessesLoaded = false;
 // this fleet's box defaults, from the same fetch — shown as the container fields' placeholders so
 // the owner sees what leaving them empty gets. Never hardcoded here: they are server constants
 // (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and a second copy would drift silently.
-let containerDefaults: { container: string; containerContext: string } | null = null;
+export let containerDefaults: { container: string; containerContext: string } | null = null;
 // what a null model launches on the DEFAULT adapter, from the same fetch. Shown as the model
 // field's placeholder so "leave it empty" is a visible choice rather than a guess. Claude-only by
 // construction (the server says so): a foreign adapter keeps its own implicit default, and the
@@ -488,23 +497,6 @@ export function harnessEntry(slot: number): HarnessInfo | null {
   return harnesses.find((h) => h.id === s.harness) ?? (s.harness ? null : harnesses.find((h) => h.default) ?? null);
 }
 
-// A live slot's model/effort has TWO halves and neither writes the other (CLAUDE.md, supervisor
-// section, measured 2026-09-02): POST /api/slots/:id/model moves the RECORD and never touches the
-// pane, `/model <id>` in the pane moves the agent and never touches the record. So the move is
-// always a pair, record first — and if the record refuses the value (the adapter's modelRe), the
-// pane is deliberately NOT typed into: a rejected value must not reach the agent by the back door.
-//
-// Claude Code takes `/model <id>` and `/effort <level>` as commands. Measured in the fifteenth
-// cut against real panes: codex has no such command, so the typed line went to the model as a
-// PROMPT; pi opens its own picker on a bare id ("No matching models") and waits. pi-zai does take
-// `/model zai/<id>` and `/thinking <level>` — WITH the provider prefix — in-session and without the
-// picker: measured in the sixteenth cut at slot 6 (pi 0.85.0), pasted as /send pastes (bracketed)
-// plus one Enter, footer `glm-5.3 • low` after, `model_change` / `thinking_level_change` in the
-// session file. Typed key by key the first Enter only closes pi's slash autocomplete — the paste is
-// what makes one Enter enough. Plain pi stays on the restart: its model names are free provider/id
-// patterns, and none was measured. For every other harness the pane half is therefore a RESTART
-// (POST /api/slots/:id/restart), which respawns the pane from the record and resumes the pinned
-// conversation. The owner is asked first (it stops running work).
 export function paneCommand(h: HarnessInfo | null, field: "model" | "effort", value: string): string | null {
   if (h?.id === "claude") return `/${field} ${value}`;
   if (h?.id === "pi-zai") return field === "model" ? `/model zai/${value}` : `/thinking ${value}`;
@@ -575,6 +567,10 @@ loadChatSizes();
 // a column-width change pulls a LIMITED terminal along: the CSS width follows the var, the pane's
 // own fit path picks the new box up and tmux gets the new column count (no second resize way)
 onChatSize(() => { for (const p of panes) if (p.termIsLimited()) p.refit(); });
+// the terminal's font size (card K8): unset, a pane keeps the size it has always started with;
+// a change sets every pane and refits it, so tmux gets the new column count the usual way
+setTermDefault(() => (isMobile() ? 11 : 12));
+onTermSize(() => { for (const p of panes) p.setFontSize(termFontSize()); });
 
 const COPIED_MS = 1200;
 function copyButton(label: string, title: string, source: () => string): HTMLButtonElement {
@@ -845,6 +841,48 @@ export function describeEntity(kind: string, id: string, slot = 0): EntFacts | n
   };
 }
 
+// THE TERMINAL'S OWN SHORTCUTS (card K8): + / − / 0 size the terminal font, F opens the scrollback
+// search. The modifier is the platform's command key — ⌘ on Apple, Ctrl elsewhere, as a terminal in
+// the browser does it — because on a Mac Ctrl+F and Ctrl+− are keys the shell in the pane owns.
+const APPLE = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+type TermShortcut = 1 | -1 | 0 | "find";
+// the search's marks in the chat material (Grammatik G0.1/G0.2: ink, no blue, no signal colour):
+// every hit on --chat-faint, the current one with an --chat-ink edge. xterm wants #RRGGBB, so the
+// tokens are read off :root (index.html) instead of being copied here as literals.
+function findMarks() {
+  const tok = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  return {
+    matchBackground: tok("--chat-faint"), activeMatchBackground: tok("--chat-faint"), activeMatchBorder: tok("--chat-ink"),
+    matchOverviewRuler: tok("--chat-mute"), activeMatchColorOverviewRuler: tok("--chat-ink"),
+  };
+}
+function termShortcut(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean },
+  apple: boolean): TermShortcut | null {
+  if (e.altKey || (apple ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey)) return null;
+  if (e.key === "+" || e.key === "=") return 1;
+  if (e.key === "-") return -1;
+  if (e.key === "0") return 0;
+  return !e.shiftKey && e.key.toLowerCase() === "f" ? "find" : null;
+}
+// with the focused pane on its terminal; the xterm key handler lets these through (Pane), so this
+// one listener serves a focused terminal and a focused page alike. The search opens only from the
+// pane itself or the bare page — a dialog's own field keeps its keys.
+window.addEventListener("keydown", (e) => {
+  const p = panes[focused];
+  if (!p || p.isChat) return;
+  const k = termShortcut(e, APPLE);
+  if (k === null) return;
+  if (k === "find") {
+    const t = e.target as Node | null;
+    if (!p.slot || !(t === document.body || (t && p.root.contains(t)))) return;
+    e.preventDefault();
+    p.openSearch();
+    return;
+  }
+  e.preventDefault();
+  stepTermSize(k);
+});
+
 // Ctrl/Cmd +/−/0 resize the conversation text — only while the focused pane shows it, so the
 // browser's own page zoom keeps working everywhere else
 window.addEventListener("keydown", (e) => {
@@ -1041,6 +1079,11 @@ class Pane {
   // LONG PRESS COPIES (T2 of the same walk-through): on a phone the terminal refuses text selection
   // (.paneterm user-select:none, so a drag scrolls the scrollback) and nothing could be copied out.
   private readonly copyPop: HTMLButtonElement;
+  // the scrollback search (openSearch): the addon, its bar, the field and the hit count
+  private readonly search = new SearchAddon();
+  private readonly findBar: HTMLElement;
+  private readonly findInput: HTMLInputElement;
+  private readonly findCount: HTMLElement;
   private pressTimer: ReturnType<typeof setTimeout> | undefined;
   private pressAt: { x: number; y: number } | null = null;
   private pressFired = false;
@@ -1072,7 +1115,7 @@ class Pane {
       const box = this.chatEl.getBoundingClientRect();
       const kids = this.chatKids();
       let last: HTMLElement | null = null;
-      for (let i = kids.length - 1; i >= 0 && !last; i--) if (kids[i] !== this.workEl && kids[i].offsetHeight) last = kids[i];
+      for (let i = kids.length - 1; i >= 0 && !last; i--) if (kids[i].offsetHeight) last = kids[i];
       const lastBottom = last ? last.getBoundingClientRect().bottom : box.top;
       const sel = window.getSelection();
       if (chatClickToComposer(e, { top: box.top, height: box.height }, lastBottom, !!sel && !sel.isCollapsed)) ta.focus();
@@ -1142,7 +1185,8 @@ class Pane {
     // Zuhause); the button is the shortcut that opens the window right there
     this.sizeBtn.onclick = (e) => { e.stopPropagation(); openSettings(this.sizeBtn, "schrift"); };
     // the gear opens the settings window — empty for now (Grammatik K8/D1 fills it); the phone
-    // hides this one and keeps its gear in #mhead instead (G5), so exactly one gear is ever visible
+    // hides this one and keeps its gear in #mhead instead (G5), so exactly one gear is ever visible —
+    // upright #mhead is gone and this one comes back behind the top island's ⋯ (index.html)
     this.gearBtn = el("button", "panegear") as HTMLButtonElement;
     this.gearBtn.appendChild(icon("gear"));
     this.gearBtn.title = "Einstellungen öffnen";
@@ -1184,7 +1228,38 @@ class Pane {
       this.copyPop.textContent = "Kopiert";
       setTimeout(() => this.hideCopy(), 700);
     };
-    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.downBar, this.copyPop, this.toolsBox);
+    // THE SCROLLBACK SEARCH (card K8, T7): the canvas and WebGL renderers paint pixels, so the
+    // browser's own find never sees terminal text. ⌘F/Ctrl+F opens this bar over the focused pane;
+    // typing searches upward from the end (the newest hit first) and marks every hit, Enter goes to
+    // the older hit, Shift+Enter to the newer, Esc closes and gives the keys back to the terminal.
+    this.findBar = el("div", "termfind");
+    this.findBar.setAttribute("role", "search");
+    this.findInput = el("input", "termfindin") as HTMLInputElement;
+    this.findInput.type = "text";
+    this.findInput.placeholder = "Im Verlauf suchen";
+    this.findInput.setAttribute("aria-label", "Im Terminalverlauf suchen");
+    this.findInput.spellcheck = false;
+    this.findCount = el("span", "termfindn");
+    this.findCount.setAttribute("aria-live", "polite");
+    const findBtn = (name: IconName, title: string, run: () => void): HTMLButtonElement => {
+      const b = el("button", "termfindbtn") as HTMLButtonElement;
+      b.appendChild(icon(name));
+      b.title = title;
+      b.setAttribute("aria-label", title);
+      b.onmousedown = (e) => e.preventDefault(); // the field keeps the keyboard
+      b.onclick = (e) => { e.stopPropagation(); run(); };
+      return b;
+    };
+    this.findInput.addEventListener("input", () => this.findStep(-1));
+    this.findInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); this.closeSearch(); }
+      else if (e.key === "Enter") { e.preventDefault(); this.findStep(e.shiftKey ? 1 : -1); }
+    });
+    this.findBar.append(this.findInput, this.findCount,
+      findBtn("up", "Älterer Treffer (Enter)", () => this.findStep(-1)),
+      findBtn("down", "Neuerer Treffer (Shift+Enter)", () => this.findStep(1)),
+      findBtn("x", "Suche schließen (Esc)", () => this.closeSearch()));
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.downBar, this.copyPop, this.findBar, this.toolsBox);
     this.sizeObserver = new ResizeObserver(() => {
       clearTimeout(this.observedRefit);
       this.observedRefit = setTimeout(() => {
@@ -1215,14 +1290,17 @@ class Pane {
       // dem Finger herlaeuft. Reines Bedienungsgefuehl, kein Datenpfad: wer es zurueckdrehen
       // will, setzt 0 und hat exakt das Verhalten aller Versionen davor.
       smoothScrollDuration: 100,
-      fontSize: isMobile() ? 11 : 12,
+      fontSize: termFontSize(),
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
+      allowProposedApi: true, // the search addon marks its hits with decorations (a proposed API)
       theme: { background: "#000000", foreground: "#d8d8d8" }, // the chat view's black (index.html #main)
       linkHandler: { activate: openTermLink },
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
     this.term.loadAddon(new WebLinksAddon(openTermLink));
+    this.term.loadAddon(this.search);
+    this.search.onDidChangeResults(({ resultIndex, resultCount }) => this.paintFindCount(resultIndex, resultCount));
     this.term.open(termEl);
     // a finger held still for PRESS_MS selects the logical line under it (wrapped rows joined) and
     // offers "Kopieren" above it, through copyText like every other copy button. Moving first is a
@@ -1247,6 +1325,8 @@ class Pane {
     this.term.onData((d) => this.sendRaw(d));
     this.term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && e.key === "Escape") closeEntityCard();
+      // the terminal's own shortcuts go to the page's listener (termShortcut), not to the shell
+      if (termShortcut(e, APPLE) !== null) return false;
       // the canvas renderer paints cells as pixels, not DOM text, so a drag-selection has
       // nothing for the browser's native ⌘C to copy (no real Selection exists) — copy the
       // selection text directly instead. Guard e.type: xterm invokes this handler from both
@@ -1376,6 +1456,7 @@ class Pane {
   // "What did I send" lives in the 🕘 prompt history and the conversation view instead.
 
   setView(v: "term" | "chat") {
+    if (v !== "term") this.closeSearch();
     // the terminal view hides the chat (display:none) and a hidden element has no scroll position:
     // read it on the way out, restore it on the way back (applyChatMemo below)
     if (this.view === "chat" && v !== "chat") this.chatMemo ??= this.chatPosition();
@@ -1391,6 +1472,7 @@ class Pane {
     saveView();
     this.syncHarnessAffordances();
     mountComposer(); // the one composer takes the size of the focused pane's view
+    if (focused === this.index) renderIsland(); // the island's view word follows
     clearTimeout(this.chatTimer);
     if (v === "chat") { this.applyChatMemo(); void this.pollChat(); }
     else { this.refit(); this.term.focus(); }
@@ -1471,7 +1553,7 @@ class Pane {
     if (!this.slot || this.pastN !== null || (!this.chatTotal && this.chatSource === null)) { this.resetChat(); return; }
     const anchor = this.chatMemo ?? (this.view === "chat" ? this.chatPosition() : null);
     chatShelf.delete(this.slot);
-    chatShelf.set(this.slot, { nodes: [...this.chatEl.childNodes].filter((n) => n !== this.workEl),
+    chatShelf.set(this.slot, { nodes: [...this.chatEl.childNodes],
       total: this.chatTotal, source: this.chatSource, lastTurnAt: this.lastTurnAt, cacheTtl: this.cacheTtl, cacheTtlSec: this.cacheTtlSec,
       model: this.observedModel, effort: this.observedEffort, toolGroup: this.toolGroup, notifGroup: this.notifGroup,
       pending: this.pending, openAgents: this.openAgents, hover: this.hoverOn, anchor });
@@ -1524,37 +1606,22 @@ class Pane {
     return this.chatStuck ? "end" : chatAnchor(this.chatEl, this.chatKids());
   }
 
-  // --- THE WORK INDICATOR (Grammatik G2.3: one status line in the surface of the thing it is
-  // about — here: the chat view of a session that is producing output right now). The state is
-  // the same sessionActive() fact the sidebar dot reads; the HIDE side is precise: a one-shot
-  // timer re-checks exactly at the RECENT_MS boundary after the newest output, so the line is
-  // gone at latest RECENT_MS (+ timer jitter) after the agent stopped — without a new poll.
-  private readonly workEl = (() => {
-    const w = el("div", "chatwork");
-    w.append(el("span", "trundot"), "working …");
-    w.hidden = true;
-    return w;
-  })();
+  // The focused session paints its working state in the composer; the expiry stays a one-shot.
   private workTimer: ReturnType<typeof setTimeout> | undefined;
-  // every new node of the chat goes in ABOVE the work line: appending below it made updateWork move
-  // the line back to the end on every poll that brought something (a remove + re-add each time,
-  // restarting its dot's animation — measured 2026-09-29, 40× in 120 s)
   private chatAdd(node: Node): void {
     if (this.chatFresh && node instanceof HTMLElement) node.classList.add("fresh");
-    this.chatEl.insertBefore(node, this.workEl.parentNode === this.chatEl ? this.workEl : null);
+    this.chatEl.appendChild(node);
   }
 
   private updateWork(): void {
     clearTimeout(this.workTimer);
     const slot = this.slot;
-    const active = !!slot && this.pastN === null && this.view === "chat" && sessionActive(slot);
-    // keep the line the last child in EVERY state: content appends must never push it out of
-    // place, and a rebuilt chatEl (reset/source change) gets it back on the next poll
-    if (this.chatEl.lastChild !== this.workEl) this.chatEl.appendChild(this.workEl);
-    this.workEl.hidden = !active;
+    const active = !!slot && this.pastN === null && this.view === "chat" && sessionActive(slot)
+      && serverClock() - (fleet[slot - 1]?.lastOutput ?? 0) < RECENT_MS;
+    if (panes[focused] === this) tickCacheAge();
     if (active) {
       const s = fleet[slot - 1]!;
-      const left = RECENT_MS - (serverNow - s.lastOutput);
+      const left = RECENT_MS - (serverClock() - s.lastOutput);
       this.workTimer = setTimeout(() => { if (this.slot === slot) this.updateWork(); }, Math.max(left, 0));
     }
   }
@@ -1854,9 +1921,9 @@ class Pane {
           if (at > this.lastTurnAt) this.lastTurnAt = at;
         }
         // what has not arrived yet stays below what has
-        // (a pending bubble already right above the work line stays put — no remove + re-add)
+        // (a pending bubble already at the end stays put — no remove + re-add)
         this.chatFresh = false;
-        for (const p of this.pending) if (p.el.nextSibling !== (this.workEl.parentNode ? this.workEl : null)) this.chatAdd(p.el);
+        for (const p of this.pending) if (p.el.nextSibling !== null) this.chatAdd(p.el);
         tickCacheAge();
         this.chatGrew(this.chatEl.childElementCount - before, first);
       }
@@ -1996,6 +2063,7 @@ class Pane {
   assign(slot: number) {
     if (slot === this.slot) { this.focus(); this.scrollToEnd(); return; }
     this.leavePast();
+    this.closeSearch(); // the hits were the old slot's text
     // the slot this pane leaves keeps its chat and its reading position (owner 2026-09-29: „[Zitat entfernt]“
     // ) — this replaced the older wish in note
     // 37439a62 to land every switch at the end
@@ -2039,6 +2107,44 @@ class Pane {
     // no focus, so a switch left the keyboard on <body> (measured 2026-09-29, every frame of A->B->A)
     if (this.view === "chat" && this.pastN === null) ta.focus();
     else this.term.focus();
+  }
+
+  // the terminal font (card K8): set and refit — the refit sends tmux the new column count, and the
+  // next socket connects with it
+  setFontSize(px: number): void {
+    if (this.term.options.fontSize === px) return;
+    this.term.options.fontSize = px;
+    this.refit();
+  }
+
+  openSearch(): void {
+    if (this.view !== "term") return;
+    this.findBar.classList.add("open");
+    this.findInput.focus();
+    this.findInput.select();
+  }
+
+  closeSearch(): void {
+    if (!this.findBar.classList.contains("open")) return;
+    this.findBar.classList.remove("open");
+    this.search.clearDecorations();
+    this.term.clearSelection();
+    this.findCount.textContent = "";
+    if (this.view === "term" && !isMobile()) this.term.focus();
+  }
+
+  // -1 = the older hit (upward, where the search starts from the end), 1 = the newer one
+  private findStep(dir: -1 | 1): void {
+    const q = this.findInput.value;
+    if (!q) { this.search.clearDecorations(); this.term.clearSelection(); this.findCount.textContent = ""; return; }
+    if (dir < 0) this.search.findPrevious(q, { decorations: findMarks() });
+    else this.search.findNext(q, { decorations: findMarks() });
+  }
+
+  private paintFindCount(index: number, count: number): void {
+    if (!this.findInput.value) { this.findCount.textContent = ""; return; }
+    this.findCount.textContent = count === 0 ? "keine Treffer"
+      : index < 0 ? `über ${count}` : `${index + 1} von ${count}`;
   }
 
   scrollToEnd(chat = true) {
@@ -2289,18 +2395,31 @@ export let panes: Pane[] = [];
 export let focused = 0;
 let layout = 1;
 
-// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5): one gear top right, one window, four
-// sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
-// label, its control, its default and a way back (G5.1). "Schrift" is the size panel's ONE home
-// (G5.3) — the Aa corner button opens the window right there. "Fleet" holds the five server
-// switches whose routes already exist (G5.2, card D-3, fleetSection). "This machine" reads the fixed
-// class-2 allowlist and renders no control (card D-5). On the phone the sections become tabs (G3.1);
-// on the desktop all four stack. Esc, backdrop and ✕ come from openShell (G6.3); the focus returns to
-// the button that opened the window (G4).
+// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5+3e6342e2): one gear top right, one window,
+// four sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
+// label, its control and a way back (G5.1). "Schrift" is the size panel's ONE home (G5.3) — the Aa
+// corner button opens the window right there. "Fleet" holds the five server switches whose routes
+// already exist (G5.2, card D-3, fleetSection) and, beside them, what the parallelism really is right
+// now. "Diese Maschine" reads the fixed class-2 allowlist and renders no control (card D-5).
+// The four section targets stand at the top of the window at every width: on the phone each shows
+// its one section (G3.1), on the desktop all four stack and a target scrolls to its section. Esc,
+// backdrop and ✕ come from openShell (G6.3); the focus enters the window on open, Tab and Shift-Tab
+// stay among its visible controls, and the focus returns to the button that opened it (G4).
+// Every control is NAMED BY ITS VISIBLE LABEL through aria-labelledby (G5.3, UI-MAIN 30.09.): a
+// renamed label renames the control, nobody keeps a copied string in sync.
 let settingsShell: Shell | null = null;
 let settingsTab = "device";
-const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "This machine"]];
+const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "Diese Maschine"]];
 const SET_CHOICE_WORDS: Record<string, string> = { tree: "Baum", line: "Zeile", all: "alle" };
+const setOnOff = (on: boolean): string => on ? "an" : "aus";
+// one DOM id per label of the window — the window exists once, a key's dots become dashes
+const setId = (part: string): string => `set-${part.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+// what a keyboard can reach inside an element right now: enabled, rendered, not under [hidden]
+function visibleFocusables(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex='-1'])")]
+    .filter((e) => !(e as HTMLButtonElement).disabled && e.getClientRects().length > 0 && !e.closest("[hidden]")
+      && getComputedStyle(e).visibility !== "hidden");
+}
 
 // The live effect of a row beyond the write itself — the SAME setters the original surfaces
 // call, so a settings toggle can never mean something else than its own button (K2: Bedeutung
@@ -2313,11 +2432,6 @@ const PREF_APPLY: Record<string, () => void> = {
   "fleet.meter.open": () => { setMeterOpen(prefBool("fleet.meter.open")); renderSuiteMeter(); },
   "fleet.more": () => { moreOpen = prefBool("fleet.more"); applyMore(); },
   "fleet.histall": () => { histAll = prefBool("fleet.histall"); if (hist.style.display === "flex") void renderHist(); },
-  "fleet.hidewt": () => { hideWorktrees = prefBool("fleet.hidewt"); if (pkHideBtn) renderHideWtBtn(); },
-  "fleet.pkdot": () => {
-    showHidden = prefBool("fleet.pkdot");
-    if (pkDotBtn) { renderDotBtn(); if (pkShell?.isOpen()) void reloadTree(); }
-  },
   "fleet.bandDepth": () => renderSlots(),
   "fleet.queue.scope": () => { setQueueTreeOn(prefText("fleet.queue.scope") !== "line"); if (qShell?.isOpen()) { invalidateQueueList(); renderQueue(); } },
   "fleet.board.folds": () => { boardFolds.clear(); void renderBoard(); },
@@ -2328,7 +2442,6 @@ const PREF_APPLY: Record<string, () => void> = {
 
 // what a value row shows right now (mono, G5.3)
 const SET_VALUE: Record<string, () => string> = {
-  "fleet.pkdir": () => prefText("fleet.pkdir"),
   "fleet.board.folds": () => `${boardFolds.size} zugeklappt`,
   "fleet.stacks.closed": () => `${stackClosed.size} zugeklappt`,
   "fleet.view": () => `${layout} ${layout === 1 ? "Pane" : "Panes"}`,
@@ -2347,37 +2460,63 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
   });
   settingsShell = shell;
   shell.root.classList.add("solo");
+  // the window is a modal dialog named by its own title; ✕ is named in words, not by its glyph
+  const win = shell.root.querySelector<HTMLElement>(".shellwin");
+  const title = shell.root.querySelector<HTMLElement>(".shelltitles h2");
+  if (win && title) {
+    title.id = setId("title");
+    win.setAttribute("role", "dialog");
+    win.setAttribute("aria-modal", "true");
+    win.setAttribute("aria-labelledby", title.id);
+  }
+  const closeBtn = shell.root.querySelector<HTMLButtonElement>(".shellclose");
+  if (closeBtn) { closeBtn.title = "Schließen (Esc)"; closeBtn.setAttribute("aria-label", "Einstellungen schließen"); }
 
-  const tabs = el("div", "settabs");
+  const tabs = el("nav", "settabs");
+  tabs.setAttribute("aria-label", "Abschnitte");
   const tabBtns = SET_TABS.map(([id, word]) => {
     const b = el("button", "settab", word) as HTMLButtonElement;
+    b.type = "button";
+    b.id = setId(`tab-${id}`);
     b.dataset.settingsTab = id;
-    b.onclick = () => { settingsTab = id; syncTabs(); };
+    b.setAttribute("aria-controls", setId(`sec-${id}`));
+    b.onclick = () => { settingsTab = id; syncTabs(true); };
     tabs.appendChild(b);
     return b;
   });
+  // ONE NAME PER SECTION HEAD. The Fleet section opens with its own sub-heads (Parallelität,
+  // Automatik …), so a head "Fleet" right under the pressed target "Fleet" said the word twice
+  // (owner 02.10.); it is named by its target instead. The other sections keep their head.
+  const section = (id: string, head = true): HTMLElement => {
+    const sec = el("section", "setsec");
+    sec.id = setId(`sec-${id}`);
+    sec.dataset.sec = id;
+    if (!head) { sec.setAttribute("aria-labelledby", setId(`tab-${id}`)); return sec; }
+    const h = el("h3", "", SET_TABS.find(([x]) => x === id)?.[1] ?? id);
+    h.id = setId(`sec-${id}-h`);
+    sec.setAttribute("aria-labelledby", h.id);
+    sec.appendChild(h);
+    return sec;
+  };
 
-  const device = el("section", "setsec");
-  device.appendChild(el("h3", "", "Dieses Gerät"));
+  const device = section("device");
   for (const d of PREFS) {
     if (!d.row || (d.desktopOnly && MOBILE_MQ.matches)) continue;
     device.appendChild(settingsRow(d));
   }
-  const schrift = el("section", "setsec");
-  schrift.appendChild(el("h3", "", "Schrift"));
+  const schrift = section("schrift");
   schrift.appendChild(sizePanel()); // the ONE panel moves in here (G5.3, kein zweites Zuhause)
-  const fleetsec = el("section", "setsec");
-  fleetsec.appendChild(el("h3", "", "Fleet"));
-  const stagedCount = fleetSection(fleetsec);
-  const machine = el("section", "setsec");
-  machine.appendChild(el("h3", "", "This machine"));
+  const fleetsec = section("fleet", false);
+  const fleetState = fleetSection(fleetsec);
+  const machine = section("machine");
   machineSection(machine);
+  const sections: [string, HTMLElement][] = [["device", device], ["schrift", schrift], ["fleet", fleetsec], ["machine", machine]];
 
   shell.detail.append(tabs, device, schrift, fleetsec, machine);
   let discard: HTMLElement | null = null;
   let discardFocus: HTMLElement | null = null;
   shell.setCloseGuard(() => {
-    const n = stagedCount();
+    const n = fleetState.staged();
     if (!n) { discard?.remove(); discard = null; return false; }
     if (!discard) {
       discardFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -2388,7 +2527,14 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
       question.id = "settings-discard-question";
       const buttons = el("div", "riskbtns");
       const keep = el("button", "riskbtn", "Weiter bearbeiten") as HTMLButtonElement;
-      keep.onclick = () => { discard?.remove(); discard = null; discardFocus?.focus(); };
+      // back to the control the staged value lives in: the one the reader was on, if it is one of
+      // the Fleet section's; after ✕ or a backdrop click the first staged control
+      keep.onclick = () => {
+        discard?.remove(); discard = null;
+        const back = discardFocus?.isConnected && fleetsec.contains(discardFocus) ? discardFocus : fleetState.firstStaged();
+        settingsTab = "fleet"; syncTabs(false);
+        back?.focus();
+      };
       const drop = el("button", "riskbtn danger", "Verwerfen") as HTMLButtonElement;
       drop.onclick = () => { shell.setCloseGuard(null); shell.close(); };
       buttons.append(keep, drop);
@@ -2400,63 +2546,121 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
     shell.detail.scrollTop = 0;
     return true;
   });
-  syncTabs();
 
-  function syncTabs() {
+  // THE FOCUS TRAP, scoped to this window's own root: Tab after the last visible control goes to
+  // the first, Shift-Tab before the first to the last; every step in between is the browser's own.
+  // No document handler — a key typed anywhere else is none of this window's business.
+  shell.root.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
+    const ring = visibleFocusables(shell.root);
+    if (!ring.length) return;
+    const i = ring.indexOf(document.activeElement as HTMLElement);
+    const next = e.shiftKey ? (i === 0 ? ring[ring.length - 1] : null) : (i === ring.length - 1 ? ring[0] : null);
+    if (next) { e.preventDefault(); next.focus(); }
+  });
+  // on the desktop all four sections stack: the target of the section under the target row reads
+  // pressed while the reader scrolls (one frame per scroll burst, no timer)
+  let spy = 0;
+  shell.detail.addEventListener("scroll", () => {
+    if (MOBILE_MQ.matches || spy) return;
+    spy = requestAnimationFrame(() => {
+      spy = 0;
+      const top = tabs.getBoundingClientRect().bottom + 8;
+      const d = shell.detail;
+      const cur = sections.find(([id]) => id === settingsTab)?.[1];
+      // at the end of the scroll a short last section can never reach the top: a section the reader
+      // chose stays chosen while it is on screen
+      if (d.scrollTop + d.clientHeight >= d.scrollHeight - 2 && cur
+        && cur.getBoundingClientRect().top < d.getBoundingClientRect().bottom) return;
+      let pick = sections[0][0];
+      for (const [id, sec] of sections) if (sec.getBoundingClientRect().top <= top) pick = id;
+      if (pick !== settingsTab) { settingsTab = pick; syncTabs(false); }
+    });
+  }, { passive: true });
+  syncTabs(true);
+  tabBtns[Math.max(0, SET_TABS.findIndex(([id]) => id === settingsTab))].focus();
+
+  function syncTabs(scroll: boolean) {
     SET_TABS.forEach(([id], i) => {
       tabBtns[i].classList.toggle("on", settingsTab === id);
       tabBtns[i].setAttribute("aria-pressed", settingsTab === id ? "true" : "false");
     });
-    device.classList.toggle("on", settingsTab === "device");
-    schrift.classList.toggle("on", settingsTab === "schrift");
-    fleetsec.classList.toggle("on", settingsTab === "fleet");
-    machine.classList.toggle("on", settingsTab === "machine");
-    const section = settingsTab === "schrift" ? schrift : settingsTab === "fleet" ? fleetsec
-      : settingsTab === "machine" ? machine : device;
+    for (const [id, sec] of sections) sec.classList.toggle("on", settingsTab === id);
+    if (!scroll) return;
+    const sec = sections.find(([id]) => id === settingsTab)?.[1] ?? device;
     shell.detail.scrollTop = MOBILE_MQ.matches ? 0
-      : shell.detail.scrollTop + section.getBoundingClientRect().top - shell.detail.getBoundingClientRect().top - 2;
+      : shell.detail.scrollTop + sec.getBoundingClientRect().top - tabs.getBoundingClientRect().bottom - 2;
   }
 }
 
 // one registry row (G5.3): label left, control right, the value in mono, a hint under the row —
-// and the way back: "Standard" forgets the key, so the next read falls back to the default.
+// and the way back: "Standard" forgets the key, so the next read falls back to the default. The
+// control is named by the label element and described by the hint (aria-labelledby/-describedby);
+// a toggle carries its state as aria-pressed, a choice is one named group whose chosen option
+// alone reads pressed. "Standard" shows only while the row deviates, so the default needs no
+// second line beside a state that already says it.
 function settingsRow(d: PrefDef): HTMLElement {
   const row = el("div", "setrow");
   const main = el("div", "setmain");
-  main.appendChild(el("div", "setlabel", d.label));
-  const std = d.kind === "bool" ? (d.def === "1" ? "on" : "off")
-    : d.kind === "choice" ? SET_CHOICE_WORDS[d.def] ?? d.def : null;
-  main.appendChild(el("div", "hint setnote", [d.hint, std !== null ? `Standard: ${std}` : ""].filter(Boolean).join(" ")));
+  const label = el("div", "setlabel", d.label);
+  label.id = setId(`l-${d.key}`);
+  const hint = el("div", "hint setnote", d.hint ?? "");
+  hint.id = setId(`h-${d.key}`);
+  main.append(label, hint);
   row.appendChild(main);
+  const std = d.kind === "bool" ? setOnOff(d.def === "1")
+    : d.kind === "choice" ? SET_CHOICE_WORDS[d.def] ?? d.def : null;
+  const named = (c: HTMLElement) => { c.setAttribute("aria-labelledby", label.id); c.setAttribute("aria-describedby", hint.id); };
 
   const sync: (() => void)[] = [];
   let control: HTMLElement;
+  // where the focus goes when "Standard" hides itself under the reader's keyboard
+  let home: () => HTMLElement | null = () => null;
   if (d.row === "toggle") {
     const b = el("button", "settoggle") as HTMLButtonElement;
+    b.type = "button";
+    named(b);
     b.onclick = () => { prefSetBool(d.key, !prefBool(d.key)); PREF_APPLY[d.key]?.(); syncAll(); };
     sync.push(() => {
       const on = prefBool(d.key);
-      b.textContent = on ? "on" : "off";
+      b.textContent = setOnOff(on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
     });
     control = b;
+    home = () => b;
   } else if (d.row === "choice") {
     const wrap = el("div", "setchoice");
+    wrap.setAttribute("role", "group");
+    named(wrap);
     for (const v of d.values ?? []) {
       const b = el("button", "settab", SET_CHOICE_WORDS[v] ?? v) as HTMLButtonElement;
+      b.type = "button";
       b.onclick = () => { prefSet(d.key, v); PREF_APPLY[d.key]?.(); syncAll(); };
-      sync.push(() => b.classList.toggle("on", prefText(d.key) === v));
+      sync.push(() => {
+        const on = prefText(d.key) === v;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      });
       wrap.appendChild(b);
     }
     control = wrap;
+    home = () => wrap.querySelector<HTMLElement>('button[aria-pressed="true"]');
   } else {
     const val = el("span", "setval");
     sync.push(() => { val.textContent = SET_VALUE[d.key]?.() ?? prefText(d.key); });
     control = val;
   }
-  const reset = el("button", "setreset", "Reset") as HTMLButtonElement;
-  reset.title = `${d.label} auf den Standard zurücksetzen`;
-  reset.onclick = () => { prefSet(d.key, null); PREF_APPLY[d.key]?.(); syncAll(); };
+  const reset = el("button", "setreset", "Standard") as HTMLButtonElement;
+  reset.type = "button";
+  reset.id = setId(`r-${d.key}`);
+  reset.setAttribute("aria-labelledby", `${reset.id} ${label.id}`);
+  reset.title = std !== null ? `${d.label}: zurück auf den Standard (${std})` : `${d.label}: zurück auf den Standard`;
+  reset.onclick = () => {
+    const ring = visibleFocusables(row.closest<HTMLElement>(".shellwin") ?? document.body);
+    const at = ring.indexOf(reset);
+    prefSet(d.key, null); PREF_APPLY[d.key]?.(); syncAll();
+    (home() ?? ring[at + 1] ?? ring[at - 1])?.focus();
+  };
   row.append(control, reset);
   function syncAll() {
     for (const f of sync) f();
@@ -2474,11 +2678,13 @@ interface MachineSetting {
   how: ".env + Neustart" | "watchdog.sh + kickstart";
 }
 
-// THE "THIS MACHINE" SECTION (G5.3, card D-5): server-start values are observations, not form
+// THE "DIESE MASCHINE" SECTION (G5.3, card D-5): server-start values are observations, not form
 // state. Each row therefore has only the label, effective mono value and explanatory hint — no
-// input, toggle, Reset or Apply path. The route itself owns the security allowlist.
+// input, toggle, Reset or Apply path. The route itself owns the security allowlist. A row is a
+// group named by its label element, so the later rename of these labels renames it with them.
 function machineSection(sec: HTMLElement): void {
-  const status = el("div", "hint setnote", "Loading machine settings…");
+  const status = el("div", "hint setnote", "Lädt die Startwerte dieser Maschine …");
+  status.setAttribute("role", "status");
   status.title = "Lädt die wirksamen Startwerte dieses Servers.";
   sec.appendChild(status);
   void (async () => {
@@ -2492,143 +2698,363 @@ function machineSection(sec: HTMLElement): void {
         && (x.how === ".env + Neustart" || x.how === "watchdog.sh + kickstart");
     }) : [];
     if (!res?.ok || !body || settings.length === 0) {
-      status.textContent = "Machine settings unavailable.";
+      status.textContent = "Startwerte nicht lesbar.";
       status.title = "Die Startwerte konnten nicht vom Server gelesen werden.";
       return;
     }
     status.remove();
     for (const setting of settings) {
-      const row = el("div", "setrow fleetrow");
+      const row = el("div", "setrow machrow");
       row.title = "Zeigt den wirksamen Startwert dieses Servers und den Weg zu seiner Änderung.";
       const main = el("div", "setmain");
-      main.append(el("div", "setlabel", setting.name),
-        el("div", "hint setnote", `ändern: ${setting.how}; Standard: ${setting.default}`));
+      const label = el("div", "setlabel", setting.name);
+      label.id = setId(`m-${setting.name}`);
+      const hint = el("div", "hint setnote", `ändern: ${setting.how}; Standard: ${setting.default}`);
+      hint.id = setId(`m-${setting.name}-h`);
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-labelledby", label.id);
+      row.setAttribute("aria-describedby", hint.id);
+      main.append(label, hint);
       row.append(main, el("span", "setval", String(setting.value)));
       sec.appendChild(row);
     }
   })();
 }
 
-// THE "FLEET" SECTION (G5.2 + G4.4, card D-3): five server switches over routes that already
-// exist — nothing here is a value of this browser, every row changes the fleet for all devices
-// and sessions. A changed control is only STAGED (ink edge on the row); the one primary "Apply"
-// writes each staged row through its route, and the row then shows the value the SERVER answers
-// with — the poll for dispatcher/autos/quiet, GET /api/repo-lane-caps for the cap and the stored
-// bases, the route's own answer for the branch — never the typed one. A refusal (4xx) stays at its row as a hint and the
-// staged value stays. The dispatcher row reads the same `dispatch` the queue foot reads: no
-// second state lives in this window. Not here, on purpose: repoWorkers (a stored command),
-// .env/watchdog.sh values, and slot/program switches (they live at their thing).
-// e2e/tasks.ts pins the route set of this block — a sixth route is a new card, not a new row.
+// THE "FLEET" SECTION (G5.2 + G4.4, cards D-3 + 3e6342e2): five server switches over routes that
+// already exist — nothing here is a value of this browser, every row changes the fleet for all
+// devices and sessions. A changed control is only STAGED (ink edge on the row); the one primary
+// "Übernehmen" writes each staged row through its route, and the row then shows the value the
+// SERVER answers with — the poll for dispatcher/autos/quiet, GET /api/repo-lane-caps for the cap and
+// the stored bases, the route's own answer for the branch — never the typed one. A refusal (4xx)
+// stays at its row as a hint and the staged value stays. The dispatcher row reads the same
+// `dispatch` the queue foot reads: no second state lives in this window. Not here, on purpose:
+// repoWorkers (a stored command), .env/watchdog.sh values, and slot/program switches (they live
+// at their thing). e2e/tasks.ts pins the route set of this block — a sixth route is a new card.
+//
+// PARALLELISM IN ONE BLOCK (owner 30.09.): the master, the chosen repo's EFFECTIVE cap with its
+// source (machine default vs repo override, both numbers apart), the lanes busy there, the rows the
+// start plan would start now and why the others wait. Occupancy, startable rows and wait reasons
+// come from GET /api/start-plan — the same read the queue's Waves view makes on open — read ONCE
+// when the window opens and again after Übernehmen; no timer, no repaint reads it. A plan that
+// cannot be read says "unbekannt", never zero. "Startbar" is the PLAN's verdict: the master, the
+// kill switch and the quiet window still hold at the tick, and the row says which of them holds.
 interface FleetSetRow {
   row: HTMLElement; val: HTMLElement; err: HTMLElement;
+  // the control a staged value lives in — where "Weiter bearbeiten" and a refusal send the focus
+  focus: HTMLElement;
   staged(): boolean; write(): Promise<Response>; paint(): void; done(answer: unknown): void;
 }
-function fleetSection(sec: HTMLElement): () => number {
+interface FleetSection { staged(): number; firstStaged(): HTMLElement | null }
+type SetPlan = StartPlan & { waits?: WaitRow[] };
+type SetPlanWait = Exclude<StartPlanNext, "now">;
+// the wait kinds in the owner's words, one per step of start-plan.ts#projectStartPlan
+function setWaitKind(n: SetPlanWait): string {
+  if ("cap" in n) return /\bin program\b/.test(n.cap) ? "Program-Deckel voll" : "Repo-Deckel voll";
+  if ("after" in n) return n.missing ? "Reihenfolge, Ziel fehlt" : "Reihenfolge";
+  if ("unreleased" in n) return "nicht freigegeben";
+  if ("collides" in n) return "Überschneidung mit laufender Arbeit";
+  return "ungeprüft";
+}
+function fleetSection(sec: HTMLElement): FleetSection {
   let caps: Record<string, number> = {};
   let capDefault: number | null = null;
   let capMax = 99;
+  let capsRead: "unread" | "ok" | "fail" = "unread";
   // a repo's stored branch: filled from GET /api/repo-lane-caps (`bases`) and from each write's answer
   const bases = new Map<string, string | null>();
+  let plan: SetPlan | null = null;
+  let planRead: "unread" | "ok" | "fail" = "unread";
+  let planAt = 0;
   const repos = [...new Set([dispatch.repo, ...fleet.map((s) => s.cwd ? s.repo ?? s.worktree?.repo ?? "" : "")]
     .filter((r): r is string => !!r))].sort();
-  const onOff = (v: boolean | null) => v === null ? "?" : v ? "on" : "off";
+  const onOff = (v: boolean | null) => v === null ? "unbekannt" : setOnOff(v);
   const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
   const rows: FleetSetRow[] = [];
+  let seq = 0;
 
-  function shell(label: string, hint: string, tip: string): { row: HTMLElement; val: HTMLElement; err: HTMLElement; ctl: HTMLElement } {
+  function sub(word: string): void { sec.appendChild(el("h4", "setsub", word)); }
+  function shell(label: string, hint: string, tip: string, par?: string) {
     const row = el("div", "setrow fleetrow");
     row.title = tip;
+    if (par) row.dataset.par = par;
     const main = el("div", "setmain");
+    const lab = el("div", "setlabel", label);
+    lab.id = setId(`f-${++seq}`);
+    const note = el("div", "hint setnote", hint);
+    note.id = setId(`f-${seq}-h`);
     const err = el("div", "hint setnote seterr");
+    err.setAttribute("role", "status");
     err.hidden = true;
-    main.append(el("div", "setlabel", label), el("div", "hint setnote", hint), err);
+    main.append(lab, note, err);
     const val = el("span", "setval");
     val.title = "Wert, wie ihn der Server zuletzt gemeldet hat";
     const ctl = el("div", "setctl");
     row.append(main, val, ctl);
     sec.appendChild(row);
-    return { row, val, err, ctl };
+    const name = (c: HTMLElement, ...extra: string[]) => {
+      c.setAttribute("aria-labelledby", [...extra, lab.id].join(" "));
+      c.setAttribute("aria-describedby", note.id);
+    };
+    return { row, val, err, ctl, lab, note, name };
   }
   function toggle(): HTMLButtonElement {
-    return el("button", "settoggle") as HTMLButtonElement;
+    const b = el("button", "settoggle") as HTMLButtonElement;
+    b.type = "button";
+    return b;
   }
-  function repoPick(onPick: () => void): HTMLSelectElement {
-    const pick = el("select", "setin") as HTMLSelectElement;
-    for (const r of repos) {
-      const o = el("option", "", baseName(r)) as HTMLOptionElement;
-      o.value = r; o.title = r;
-      pick.appendChild(o);
-    }
-    pick.value = dispatch.repo && repos.includes(dispatch.repo) ? dispatch.repo : repos[0] ?? "";
-    pick.onchange = onPick;
-    return pick;
+  // ONE VALUE PER ROW: the control shows the value; the mono value beside it speaks only when it
+  // says something the control cannot — the server's word while a wish is staged ("Server: an"),
+  // or a state no control shows (unbekannt, nicht verfügbar, nicht gesetzt)
+  // a toggle that shows the staged wish, or the server's word — and "unbekannt" without a pressed
+  // state when the server never said, so an unknown can never read as a chosen "an"
+  function paintToggle(b: HTMLButtonElement, on: boolean | null, staged: boolean) {
+    b.textContent = onOff(on);
+    if (on === null) b.removeAttribute("aria-pressed"); else b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.classList.toggle("staged", staged);
+  }
+  // a small visible word in front of a control — what names it beside the row's label
+  function caption(word: string): HTMLElement {
+    const c = el("span", "setdash", word);
+    c.id = setId(`f-${++seq}-c`);
+    return c;
   }
 
-  // 1 · dispatcher
+  sub("Parallelität");
+  // 1 · dispatcher — the master
   {
-    const s = shell("Dispatcher",
-      "An: freigegebene Aufgaben starten ohne dich als Lanes, für alle Sessions dieser Fleet; aus: sie warten, bis du sie startest.",
-      "Schaltet den Dispatcher der ganzen Fleet — derselbe Schalter wie am Fuß der Queue.");
+    const s = shell("Master",
+      "An: freigegebene Zeilen dürfen ohne dich als Lane starten — für alle Repos und Sessions dieser Fleet. Startet nichts sofort: Reihenfolge, Freigabe, Karte, Deckel, Ruhezeit und Gate gelten weiter; Programs mit „darf starten: an“ starten auch bei aus.",
+      "Schaltet den Dispatcher der ganzen Fleet — derselbe Schalter wie am Fuß der Queue. intern: tickDispatch", "master");
     let want: boolean | null = null;
     const b = toggle();
+    s.name(b);
     b.disabled = !dispatch.available;
     b.onclick = () => { const cur = want ?? dispatch.on; want = !cur === dispatch.on ? null : !cur; sync(); };
     s.ctl.appendChild(b);
-    const r: FleetSetRow = { ...s,
+    const r: FleetSetRow = { ...s, focus: b,
       staged: () => want !== null,
       write: () => post("/api/dispatch", { on: want }),
-      paint: () => { s.val.textContent = dispatch.available ? onOff(dispatch.on) : "unavailable"; },
+      paint: () => {},
       done: () => { want = null; },
     };
     function sync() {
       const on = want ?? dispatch.on;
-      b.textContent = onOff(on);
-      b.setAttribute("aria-pressed", on ? "true" : "false");
-      b.classList.toggle("staged", want !== null);
+      paintToggle(b, on, want !== null);
+      s.val.textContent = !dispatch.available ? "nicht verfügbar" : want !== null ? `Server: ${onOff(dispatch.on)}` : "";
       syncStaged();
     }
     rows.push({ ...r, paint: () => { r.paint(); sync(); } });
   }
-  // 2 · automatic prompts (the kill-switch)
+  // the repo every row below the picker speaks about — one picker for cap, occupancy, waits, branch
+  const repoRow = shell("Repo", "Deckel, Belegung, Wartegründe und Branch darunter gelten für dieses Repo.",
+    "Wählt das Repo, über das die Zeilen darunter sprechen; schreibt nichts.", "repo");
+  const pick = el("select", "setin") as HTMLSelectElement;
+  repoRow.name(pick);
+  for (const r of repos) {
+    const o = el("option", "", baseName(r)) as HTMLOptionElement;
+    o.value = r; o.title = r;
+    pick.appendChild(o);
+  }
+  pick.value = dispatch.repo && repos.includes(dispatch.repo) ? dispatch.repo : repos[0] ?? "";
+  repoRow.ctl.appendChild(pick);
+  repoRow.val.title = "Pfad des gewählten Repos";
+  // two lists on purpose: a REPAINT keeps what the reader staged, a CHANGE of repo drops the staged
+  // cap and branch typed for the old repo (they would be written to the wrong one)
+  const repoPaints: (() => void)[] = [];
+  const repoChanged: (() => void)[] = [];
+  pick.onchange = () => { for (const f of repoChanged) f(); for (const f of repoPaints) f(); };
+  repoPaints.push(() => { repoRow.val.textContent = pick.value || "kein Repo"; });
+
+  // 2 · lane cap of the chosen repo: effective value, its source, the staged wish — three facts apart
+  const effectiveCap = (): { n: number; src: "repo" | "default" } | null => {
+    if (capsRead !== "ok" || !pick.value) return null;
+    const stored = caps[pick.value];
+    if (typeof stored === "number") return { n: stored, src: "repo" };
+    return capDefault !== null ? { n: capDefault, src: "default" } : null;
+  };
   {
-    const s = shell("Automatic prompts",
-      "Aus hält jeden geplanten Prompt in jeder Session an und startet auch keine Lane mehr, bis du sie wieder einschaltest; einmalige Handlungen von dir bleiben möglich.",
+    const s = shell("Lane-Deckel",
+      "Höchstens so viele Lanes startet die Fleet in diesem Repo ohne dich. Ein Deckel ist eine Obergrenze, keine Zusage; leer oder „Standard“ heißt Maschinen-Standard.",
+      "Setzt den Deckel für unbeaufsichtigte Lanes in einem Repo, für alle Sessions.", "cap");
+    const facts = el("div", "hint setnote setfacts");
+    facts.id = setId(`f-${++seq}-facts`);
+    s.note.after(facts);
+    const n = el("input", "setin setnum") as HTMLInputElement;
+    n.type = "number"; n.min = "0"; n.step = "1"; n.inputMode = "numeric";
+    s.name(n);
+    n.setAttribute("aria-describedby", `${facts.id} ${s.note.id}`);
+    let typed: string | null = null;
+    n.oninput = () => { typed = n.value.trim(); sync(); };
+    const std = el("button", "setreset", "Standard") as HTMLButtonElement;
+    std.type = "button";
+    std.id = setId(`f-${++seq}-std`);
+    std.setAttribute("aria-labelledby", `${std.id} ${s.lab.id}`);
+    std.title = "Repo-Override löschen (vormerken) — danach gilt der Maschinen-Standard";
+    std.onclick = () => { typed = ""; n.value = ""; sync(); n.focus(); };
+    s.ctl.append(n, std);
+    const stored = () => caps[pick.value] ?? null;
+    const staged = () => typed !== null && typed !== String(stored() ?? "");
+    function sync() {
+      n.classList.toggle("staged", staged());
+      const eff = effectiveCap();
+      const machineWord = capDefault !== null ? `Maschinen-Standard ${capDefault}` : "Maschinen-Standard unbekannt";
+      const parts = eff?.src === "repo" ? [`wirksam ${eff.n} — Repo-Override`, machineWord]
+        : eff ? [`wirksam ${eff.n} — Maschinen-Standard, kein Repo-Override`]
+        : [capsRead === "fail" ? "wirksam unbekannt — Deckel nicht lesbar" : !pick.value ? "kein Repo" : "wirksam unbekannt", machineWord];
+      if (staged()) parts.push(`vorgemerkt ${typed === "" ? "Maschinen-Standard" : typed}, gilt erst nach Übernehmen`);
+      facts.textContent = parts.join(" · ");
+      std.hidden = stored() === null || typed === "";
+      syncStaged();
+    }
+    function paintRow() {
+      n.max = String(capMax);
+      n.placeholder = capDefault !== null ? String(capDefault) : "";
+      if (!staged()) { typed = null; n.value = stored() !== null ? String(stored()) : ""; }
+      n.disabled = !pick.value;
+      sync();
+    }
+    repoChanged.push(() => { typed = null; paintRow(); });
+    rows.push({ ...s, focus: n, staged,
+      // empty → null (clear to the machine default); anything else goes as typed and the server judges it
+      write: () => post("/api/repo-lane-cap", { repo: pick.value, maxLanes: typed === "" ? null : Number(typed) }),
+      paint: paintRow,
+      done: () => { typed = null; },
+    });
+  }
+  // 3 · what the plan says about the chosen repo: occupancy, startable rows, wait reasons
+  const stat = (par: string, word: string) => {
+    const row = el("div", "setstat");
+    row.dataset.par = par;
+    const k = el("span", "setstatk", word);
+    const v = el("span", "setstatv");
+    const more = el("div", "setstatl");
+    row.append(k, v, more);
+    sec.appendChild(row);
+    return { v, more };
+  };
+  const load = stat("load", "Belegung");
+  const start = stat("start", "Startbar jetzt");
+  const waits = stat("wait", "Wartet");
+  // A ROW BY ITS KURZTITEL (owner 02.10.: „[Zitat entfernt]“ named row ids): the derivation the lane names
+  // use — src/suitemeter.ts#laneTitleOf over the row's card goal or its own [TITEL], cut by
+  // shortTitle — read on every paint, never stored; the id rides in the tooltip. A row nothing can
+  // be derived from (or whose text this window has not read) keeps its id.
+  const rowName = (id: string): HTMLElement => {
+    const title = laneTitleOf(taskCardFull.get(id)?.ziel, taskText.get(id));
+    const e = el("span", title ? "setname" : "setids", title ? shortTitle(title) : id);
+    e.title = title ? `${id} — ${title}` : id;
+    return e;
+  };
+  const ids = (list: string[]): HTMLElement => {
+    const box = el("span", "setnames");
+    list.forEach((id, i) => box.append(...(i ? [" · "] : []), rowName(id)));
+    return box;
+  };
+  function paintPlan() {
+    for (const x of [load, start, waits]) { x.v.textContent = ""; x.more.replaceChildren(); }
+    if (!pick.value) { for (const x of [load, start, waits]) x.v.textContent = "kein Repo"; return; }
+    if (planRead !== "ok" || !plan) {
+      const why = planRead === "fail" ? "unbekannt — Startplan nicht lesbar" : "wird gelesen …";
+      for (const x of [load, start, waits]) x.v.textContent = why;
+      return;
+    }
+    const at = `Startplan gelesen ${new Date(planAt).toLocaleTimeString("de-DE")}`;
+    // the plan keys a repo by the rows' own repo string; a picker path with another spelling of the
+    // same repo is matched by its unique base name, never guessed beyond that
+    const exact = plan.repos.find((r) => r.repo === pick.value);
+    const byName = plan.repos.filter((r) => baseName(r.repo) === baseName(pick.value));
+    const pr = exact ?? (byName.length === 1 ? byName[0] : null);
+    const eff = effectiveCap();
+    if (!pr) {
+      load.v.textContent = "unbekannt — der Startplan führt dieses Repo nicht (keine offene Zeile)";
+      start.v.textContent = "0";
+      start.more.textContent = "keine offene Zeile in diesem Repo";
+      waits.v.textContent = "0";
+      return;
+    }
+    load.v.textContent = `${pr.lanes} von ${eff?.n ?? pr.cap?.max ?? "?"} Lanes belegt`;
+    load.more.textContent = at;
+    const now = pr.waves.filter((w) => w.next === "now").flatMap((w) => w.ids);
+    start.v.textContent = String(now.length);
+    const holds = [!dispatch.on ? "Master aus" : "", autosOnSrv === false ? "Not-Aus" : "", dispatch.quiet ? "Ruhezeit" : ""].filter(Boolean);
+    if (now.length) start.more.append(ids(now), holds.length ? ` — hält gerade: ${holds.join(" · ")}` : " — der nächste Takt darf sie starten");
+    const waiting = pr.waves.filter((w): w is typeof w & { next: SetPlanWait } => w.next !== "now");
+    waits.v.textContent = String(waiting.reduce((n, w) => n + w.ids.length, 0));
+    // one line per wait kind, one name per row; the order target is named the same way
+    const groups = new Map<string, (string | HTMLElement)[]>();
+    for (const w of waiting) {
+      const kind = setWaitKind(w.next);
+      const tail = (): (string | HTMLElement)[] => "after" in w.next ? [" nach ", rowName(w.next.after)]
+        : "collides" in w.next ? [` · ${w.next.collides.file}`] : [];
+      const list = groups.get(kind) ?? [];
+      for (const id of w.ids) list.push(...(list.length ? [" · "] : []), rowName(id), ...tail());
+      groups.set(kind, list);
+    }
+    for (const [kind, list] of groups) {
+      const line = el("div", "setwait");
+      line.append(`${kind}: `, ...list);
+      waits.more.appendChild(line);
+    }
+    const why = (plan.waits ?? []).filter((w) => w.repo === pr.repo);
+    if (why.length) {
+      const det = el("details", "setwhy");
+      det.appendChild(el("summary", "", "Gründe je Zeile"));
+      for (const w of why) {
+        const line = el("div", "setwait");
+        line.append(rowName(w.id), ` ${w.grund} — wartet auf ${w.adressat}`);
+        det.appendChild(line);
+      }
+      waits.more.appendChild(det);
+    }
+    waits.more.appendChild(el("div", "hint setnote",
+      "Ein Program kann eine eigene, kleinere Grenze haben; sie steht am Program und erscheint hier als „Program-Deckel voll“."));
+  }
+  repoPaints.push(paintPlan);
+
+  sub("Automatik");
+  // 4 · automatic prompts (the kill-switch)
+  {
+    const s = shell("Automatik",
+      "Aus ist der Not-Aus: hält jeden geplanten Prompt in jeder Session an und startet keine Lane mehr, bis du sie wieder einschaltest; einmalige Handlungen von dir bleiben möglich.",
       "Not-Aus für alle geplanten Prompts und Lane-Starts der Fleet — auch Programs mit „darf starten: an“ halten.");
     let want: boolean | null = null;
     const b = toggle();
+    s.name(b);
     b.onclick = () => { const cur = want ?? autosOnSrv ?? true; want = !cur === autosOnSrv ? null : !cur; sync(); };
     s.ctl.appendChild(b);
-    const r: FleetSetRow = { ...s,
+    const r: FleetSetRow = { ...s, focus: b,
       staged: () => want !== null,
       write: () => post("/api/autos/switch", { on: want }),
-      paint: () => { s.val.textContent = onOff(autosOnSrv); },
+      paint: () => {},
       done: () => { want = null; },
     };
     function sync() {
-      const on = want ?? autosOnSrv ?? true;
-      b.textContent = onOff(on);
-      b.setAttribute("aria-pressed", on ? "true" : "false");
-      b.classList.toggle("staged", want !== null);
+      paintToggle(b, want ?? autosOnSrv, want !== null);
+      s.val.textContent = want !== null ? `Server: ${onOff(autosOnSrv)}` : "";
       syncStaged();
     }
     rows.push({ ...r, paint: () => { r.paint(); sync(); } });
   }
-  // 3 · quiet hours
+  // 5 · quiet hours
   {
-    const s = shell("Quiet hours",
+    const s = shell("Ruhezeit",
       "In diesem Fenster (Uhrzeit dieses Rechners) schickt die Fleet keiner Session wiederkehrende Prompts und startet keine Lane; einmalige Prompts bleiben.",
       "Setzt das Ruhefenster für wiederkehrende Prompts und Lane-Starts aller Sessions; ein Program mit „darf starten: an“ startet darin nur, was die Fleet selbst freigegeben hat.");
     const from = el("select", "setin") as HTMLSelectElement;
     const to = el("select", "setin") as HTMLSelectElement;
-    const off = el("option", "", "off") as HTMLOptionElement;
+    const fromWord = caption("von");
+    const dash = caption("bis");
+    s.name(from, fromWord.id);
+    s.name(to, dash.id);
+    const off = el("option", "", "aus") as HTMLOptionElement;
     off.value = "";
     from.appendChild(off);
     for (let h = 0; h < 24; h++) {
       const a = el("option", "", hh(h)) as HTMLOptionElement; a.value = String(h); from.appendChild(a);
       const z = el("option", "", hh(h)) as HTMLOptionElement; z.value = String(h); to.appendChild(z);
     }
-    const dash = el("span", "setdash", "–");
-    s.ctl.append(from, dash, to);
+    s.ctl.append(fromWord, from, dash, to);
     const cur = () => from.value === "" ? null : { start: Number(from.value), end: Number(to.value) };
     const same = (a: { start: number; end: number } | null, b: { start: number; end: number } | null) =>
       a === b || (!!a && !!b && a.start === b.start && a.end === b.end);
@@ -2640,12 +3066,12 @@ function fleetSection(sec: HTMLElement): () => number {
       dash.hidden = to.hidden = from.value === "";
       from.classList.toggle("staged", staged());
       to.classList.toggle("staged", staged());
+      s.val.textContent = staged() ? `Server: ${quietHoursSrv ? `${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}` : "aus"}` : "";
       syncStaged();
     }
-    rows.push({ ...s, staged,
+    rows.push({ ...s, focus: from, staged,
       write: () => post("/api/autos/quiet", cur() ?? { start: null }),
       paint: () => {
-        s.val.textContent = quietHoursSrv ? `${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}` : "off";
         if (!staged()) {
           touched = false;
           from.value = quietHoursSrv ? String(quietHoursSrv.start) : "";
@@ -2656,58 +3082,35 @@ function fleetSection(sec: HTMLElement): () => number {
       done: () => { touched = false; },
     });
   }
-  // 4 · lane cap per repo
+  // 6 · integration branch of the chosen repo
+  sub("Integration");
   {
-    const s = shell("Lane cap per repo",
-      "So viele Lanes startet die Fleet in diesem Repo höchstens ohne dich; leer heißt Standard der Maschine.",
-      "Setzt den Deckel für unbeaufsichtigte Lanes in einem Repo, für alle Sessions.");
-    const pick = repoPick(() => { typed = null; paintRow(); });
-    const n = el("input", "setin setnum") as HTMLInputElement;
-    n.type = "number"; n.min = "0"; n.step = "1"; n.inputMode = "numeric";
-    let typed: string | null = null;
-    n.oninput = () => { typed = n.value.trim(); sync(); };
-    s.ctl.append(pick, n);
-    const stored = () => caps[pick.value] ?? null;
-    const staged = () => typed !== null && typed !== String(stored() ?? "");
-    function sync() { n.classList.toggle("staged", staged()); syncStaged(); }
-    function paintRow() {
-      const v = stored();
-      s.val.textContent = !pick.value ? "no repo" : v !== null ? String(v) : `default ${capDefault ?? "?"}`;
-      n.max = String(capMax);
-      n.placeholder = capDefault !== null ? String(capDefault) : "";
-      if (!staged()) { typed = null; n.value = v !== null ? String(v) : ""; }
-      n.disabled = pick.disabled = !pick.value;
-      sync();
-    }
-    rows.push({ ...s, staged,
-      // empty → null (clear to the machine default); anything else goes as typed and the server judges it
-      write: () => post("/api/repo-lane-cap", { repo: pick.value, maxLanes: typed === "" ? null : Number(typed) }),
-      paint: paintRow,
-      done: () => { typed = null; },
-    });
-  }
-  // 5 · integration branch per repo
-  {
-    const s = shell("Integration branch per repo",
-      "In diesen Branch landen alle Lanes dieses Repos; leer heißt: der Branch, auf dem der Haupt-Checkout steht.",
-      "Setzt den Integrations-Branch eines Repos, für alle Sessions.");
-    const pick = repoPick(() => { typed = null; paintRow(); });
+    const s = shell("Integrations-Branch",
+      "In diesen Branch landen alle Lanes des oben gewählten Repos; leer heißt: der Branch, auf dem der Haupt-Checkout steht.",
+      "Setzt den Integrations-Branch eines Repos, für alle Sessions.", "branch");
     const t = el("input", "setin setbranch") as HTMLInputElement;
-    t.type = "text"; t.spellcheck = false; t.autocapitalize = "off"; t.placeholder = "branch";
+    t.type = "text"; t.spellcheck = false; t.autocapitalize = "off"; t.placeholder = "Branch";
+    s.name(t);
     let typed: string | null = null;
     t.oninput = () => { typed = t.value.trim(); sync(); };
-    s.ctl.append(pick, t);
+    s.ctl.append(t);
     const staged = () => typed !== null && (!bases.has(pick.value) || typed !== (bases.get(pick.value) ?? ""));
-    function sync() { t.classList.toggle("staged", staged()); syncStaged(); }
-    function paintRow() {
+    function sync() {
+      t.classList.toggle("staged", staged());
       const known = bases.has(pick.value);
       const v = bases.get(pick.value) ?? null;
-      s.val.textContent = !pick.value ? "no repo" : !known ? "?" : v ?? "not set";
+      s.val.textContent = !pick.value ? "kein Repo" : !known ? "unbekannt"
+        : staged() ? `Server: ${v ?? "nicht gesetzt"}` : v === null ? "nicht gesetzt" : "";
+      syncStaged();
+    }
+    function paintRow() {
+      const v = bases.get(pick.value) ?? null;
       if (!staged()) { typed = null; t.value = v ?? ""; }
-      t.disabled = pick.disabled = !pick.value;
+      t.disabled = !pick.value;
       sync();
     }
-    rows.push({ ...s, staged,
+    repoChanged.push(() => { typed = null; paintRow(); });
+    rows.push({ ...s, focus: t, staged,
       write: () => post("/api/repo-base", { repo: pick.value, branch: typed ?? "" }),
       paint: paintRow,
       done: (answer) => {
@@ -2720,7 +3123,9 @@ function fleetSection(sec: HTMLElement): () => number {
 
   const foot = el("div", "setfoot");
   const note = el("span", "hint setnote", "");
-  const apply = el("button", "cmdapply", "Apply") as HTMLButtonElement;
+  note.setAttribute("role", "status");
+  const apply = el("button", "cmdapply", "Übernehmen") as HTMLButtonElement;
+  apply.type = "button";
   apply.title = "Schreibt alle vorgemerkten Werte an den Server und zeigt danach, was er gespeichert hat.";
   foot.append(note, apply);
   sec.appendChild(foot);
@@ -2728,12 +3133,13 @@ function fleetSection(sec: HTMLElement): () => number {
     const n = rows.filter((r) => r.staged()).length;
     for (const r of rows) r.row.classList.toggle("staged", r.staged());
     apply.disabled = n === 0;
-    note.textContent = n ? `${n} vorgemerkt — gilt erst nach Apply` : "";
+    note.textContent = n ? `${n} vorgemerkt — gilt erst nach Übernehmen` : "";
   }
   async function readCaps() {
     const r = await api("/api/repo-lane-caps").catch(() => null);
     const j = r?.ok ? (await r.json().catch(() => null)) as { default?: number; max?: number; caps?: Record<string, number>; bases?: Record<string, string> } | null : null;
-    if (!j) return;
+    if (!j) { capsRead = "fail"; return; }
+    capsRead = "ok";
     caps = j.caps ?? {};
     // only a server that answers WITH the map may speak about branches: absence of the FIELD is an
     // old server (live is codeBehind), and an old answer must read as "?" — never as "not set" for
@@ -2749,9 +3155,23 @@ function fleetSection(sec: HTMLElement): () => number {
     capDefault = typeof j.default === "number" ? j.default : null;
     if (typeof j.max === "number") capMax = j.max;
   }
+  async function readPlan() {
+    const r = await api("/api/start-plan").catch(() => null);
+    const j = r?.ok ? (await r.json().catch(() => null)) as SetPlan | null : null;
+    if (j && Array.isArray(j.repos)) { plan = j; planRead = "ok"; planAt = Date.now(); } else planRead = "fail";
+  }
+  // the rows' texts and cards the names derive from: the queue's own cache (GET /api/tasks), read
+  // when it is stale and waited for when a read is already under way
+  async function readTexts() {
+    await loadTaskTexts();
+    if (taskTextBusy) await new Promise<void>((resolve) => taskTextWaiters.push(resolve));
+  }
+  const paintAll = () => { for (const r of rows) r.paint(); for (const f of repoPaints) f(); };
   apply.onclick = async () => {
+    const written = rows.filter((x) => x.staged());
     apply.disabled = true;
-    for (const r of rows.filter((x) => x.staged())) {
+    let refused: FleetSetRow | null = null;
+    for (const r of written) {
       const res = await r.write().catch(() => null);
       const j = res ? await res.json().catch(() => null) as { error?: string } | null : null;
       if (res?.ok) {
@@ -2760,15 +3180,20 @@ function fleetSection(sec: HTMLElement): () => number {
       } else {
         r.err.hidden = false;
         r.err.textContent = `Server lehnt ab: ${j?.error ?? (res ? `HTTP ${res.status}` : "keine Verbindung")}`;
+        refused ??= r;
       }
     }
     await refresh();
     await readCaps();
-    for (const r of rows) r.paint();
+    await Promise.all([readPlan(), readTexts()]);
+    paintAll();
+    // the button the reader pressed is disabled now: the focus goes to the first refused control,
+    // else to the first control that was written — never to the page behind the window
+    (refused ?? written[0])?.focus.focus();
   };
-  for (const r of rows) r.paint();
-  void readCaps().then(() => { for (const r of rows) r.paint(); });
-  return () => rows.filter((r) => r.staged()).length;
+  paintAll();
+  void Promise.all([readCaps(), readPlan(), readTexts()]).then(paintAll);
+  return { staged: () => rows.filter((r) => r.staged()).length, firstStaged: () => rows.find((r) => r.staged())?.focus ?? null };
 }
 
 // --- the file explorer (§F5) --------------------------------------------------------------
@@ -2783,7 +3208,7 @@ function fleetSection(sec: HTMLElement): () => number {
 //   · it is fetched ONCE per working directory, never from the repaint loop. /api/sessions at 2s
 //     is what data-saver.md had to shrink; a subprocess per board render would put it back.
 //   · what the reader has OPENED is module state, not DOM state, so a repaint cannot fold the
-//     tree shut under their hands. Same reason the board's folds and the picker's `pkdOpen` are.
+//     tree shut under their hands. Same reason the board's folds are.
 //
 // Everything the reader has DONE to this card is keyed BY CWD, and that is the third rule. The
 // open-folder set used to be one global Set of `"a/b"` prefixes: two repos that both have a `src/`
@@ -2814,7 +3239,7 @@ export function closeFxMenu(refocus: boolean): void {
   open?.trigger.classList.remove("on");
   if (refocus) open?.trigger.focus();
 }
-function fxActions(slot: number, rel: string): HTMLElement {
+function fxActions(slot: number, rel: string, writes?: (menu: HTMLElement) => void): HTMLElement {
   const actions = el("div", "fxacts");
   const more = el("button", "fxmore") as HTMLButtonElement;
   more.appendChild(icon("dots"));
@@ -2839,6 +3264,7 @@ function fxActions(slot: number, rel: string): HTMLElement {
       closeFxMenu(false);
     });
     item("Copy path", `Kopiert den relativen Pfad ${rel}`, (b) => { copyText(rel); b.textContent = "Copied"; });
+    writes?.(menu);
     actions.appendChild(menu);
     more.classList.add("on");
     fxMenu = { panel: menu, trigger: more };
@@ -2901,6 +3327,7 @@ interface PaintOpts {
   changedOnly?: boolean;
   actions?: (rel: string) => HTMLElement;
   onDrag?: (rel: string, e: DragEvent) => void;
+  onDrop?: (folder: string, e: DragEvent) => void;
 }
 const FX_PATH_MIME = "application/x-fleet-explorer-path";
 interface FxPathDrop { slot: number; path: string }
@@ -2918,7 +3345,7 @@ function fxAppendPath(text: string, path: string): string {
 export function fxStartDrag(slot: number, path: string, e: DragEvent): void {
   if (!e.dataTransfer) return;
   e.dataTransfer.setData(FX_PATH_MIME, JSON.stringify({ slot, path } satisfies FxPathDrop));
-  e.dataTransfer.effectAllowed = "copy";
+  e.dataTransfer.effectAllowed = "copyMove";
   const source = e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
   const explorer = source?.closest<HTMLElement>("#shell-files");
   if (explorer && source) {
@@ -3025,6 +3452,14 @@ export function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void
       row.setAttribute("aria-expanded", open ? "true" : "false");
       const act = () => { if (open) o.open.delete(rel); else o.open.add(rel); wantFocus = rel; redraw(); };
       row.onclick = act;
+      if (o.onDrop) {
+        row.ondragover = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = e.dataTransfer.types.includes(FX_PATH_MIME)
+            && !e.dataTransfer.types.includes("Files") ? "move" : "none";
+        };
+        row.ondrop = (e) => { e.preventDefault(); e.stopPropagation(); o.onDrop?.(rel, e); };
+      }
       appendRow(row, `${rel}/`, rows, act);
       takeFocus(rel, row);
       if (open) walkTree(kid, rel, depth + 1, rows);
@@ -3097,6 +3532,99 @@ export function fxTreeOf(paths: string[]): TreeNode {
     node.files.push(`${parts[parts.length - 1]}/`);
   }
   return root;
+}
+type FxWriteKind = "New file" | "Rename" | "Move" | "Delete";
+// the write DIALOG speaks German, one language per surface (card 1685d265 in 3e6342e2); the kind
+// stays the internal word that picks the route
+const FX_WRITE_WORD: Record<FxWriteKind, string> = { "New file": "Neue Datei", Rename: "Umbenennen", Move: "Verschieben", Delete: "Löschen" };
+interface FxWriteReply { ran?: string; afterwards?: string; sessionActive?: boolean; error?: string }
+function fxMoveDrop(slot: number, tracked: string[], folder: string, e: DragEvent): FxPathDrop | null {
+  if (!e.dataTransfer || e.dataTransfer.types.includes("Files")) return null;
+  const source = fxPathDrop(e.dataTransfer.getData(FX_PATH_MIME));
+  return source?.slot === slot && tracked.includes(source.path) && !source.path.endsWith("/")
+    && `${folder}/${source.path.split("/").pop()}` !== source.path ? source : null;
+}
+async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: string, to = ""):
+  Promise<FxWriteReply | null> {
+  const create = kind === "New file";
+  const remove = kind === "Delete";
+  const rename = kind === "Rename";
+  const parent = path.slice(0, path.lastIndexOf("/") + 1);
+  const body = el("div", "fxwritebody");
+  if (sessionActive(slot)) body.appendChild(el("div", "ocwarn",
+    "Diese Session arbeitet gerade — " + (create
+      ? "sie kann denselben Pfad anlegen; eine bestehende Datei wird nicht überschrieben"
+      : remove ? "sie kann die Datei weiter lesen oder schreiben; Löschen hält die Session nicht an"
+      : "sie kann den alten Pfad weiter lesen oder schreiben; Importe und Verweise folgen nicht")));
+  let input: HTMLInputElement | null = null;
+  if (!remove) {
+    const label = el("label", "fxwritelabel", rename ? "Neuer Name" : "Pfad");
+    input = el("input", "fxwriteinput") as HTMLInputElement;
+    input.type = "text"; input.spellcheck = false; input.autocomplete = "off";
+    input.dataset.ownEnter = "1";
+    input.value = create ? to : rename ? path.slice(parent.length) : to || path;
+    input.title = rename ? "Neuer Dateiname im selben Ordner" : "Relativer Dateipfad in dieser Session";
+    label.appendChild(input); body.appendChild(label);
+  }
+  // a row's value is prose (Sans) unless it IS a command or a place (mono); a path or a command
+  // inside prose rides as its own mono span (G0.3)
+  const row = (label: string, mono = false) => {
+    const r = el("div", "fxwriterow");
+    const value = el("span", mono ? "fxwritevalue mono" : "fxwritevalue");
+    r.append(el("span", "fxwritekey", label), value); body.appendChild(r);
+    return value;
+  };
+  const code = (text: string) => el("span", "fxcode", text);
+  const runs = row("Führt aus", true);
+  row("Wo", true).textContent = `${root} · Slot ${slot}`;
+  const afterwards = row("Danach");
+  row("Bleibt").textContent = create ? "Bestehende Dateien bleiben unverändert; kein git add und kein Commit."
+    : remove ? "Verweise bleiben unverändert; die Session läuft weiter; kein Commit."
+    : "Importe und Verweise bleiben am alten Pfad; die Session läuft weiter; kein Commit.";
+  const back = row("Rückweg");
+  if (create) back.textContent = "Die neue Datei löschen; ungetrackte Dateien blockieren das Land.";
+  else back.append(code(remove ? "git restore --staged --worktree" : "git mv"),
+    remove ? " — eine vorgemerkte Löschung braucht einen Commit." : " zurück — eine vorgemerkte Umbenennung braucht einen Commit.");
+  const quote = (arg: string) => "'" + arg.replaceAll("'", "'\\''") + "'";
+  let target = "";
+  let valid = remove;
+  const update = () => {
+    const value = input?.value ?? "";
+    target = rename ? parent + value : value;
+    valid = remove || !!target.trim() && !target.startsWith("/") && !/[\0\r\n]/.test(target)
+      && target.split("/").every((p) => !!p && p !== "." && p !== "..")
+      && (!rename || !value.includes("/")) && (create || target !== path);
+    const args = create ? ["-C", root, "rev-parse", "--is-inside-work-tree"]
+      : ["-C", root, "--literal-pathspecs", remove ? "rm" : "mv", "--", path, ...(!remove ? [target] : [])];
+    runs.textContent = `git ${args.map(quote).join(" ")}`;
+    afterwards.replaceChildren(...(create ? ["leere Datei unter ", code(target || "…"), "; nicht in git aufgenommen"]
+      : remove ? [code(path), " aus dem Arbeitsbaum entfernt; Löschung in git vorgemerkt"]
+      : [code(path), " liegt danach unter ", code(target), "; Umbenennung in git vorgemerkt"]));
+    input?.setAttribute("aria-invalid", String(!valid));
+    const button = body.closest(".panel")?.querySelector<HTMLButtonElement>(".riskbtn.primary, .riskbtn.danger");
+    if (button) button.disabled = !valid;
+  };
+  update();
+  if (input) input.oninput = update;
+  const answer = askRisk({ title: `${FX_WRITE_WORD[kind]}${create ? "" : ` — ${path}`}`, body: [body],
+    panelClass: "riskpanel fxwritepanel",
+    buttons: [{ label: "Abbrechen", value: false },
+      { label: FX_WRITE_WORD[kind], value: true, primary: !remove, danger: remove, disabled: !valid }] });
+  const shield = (e: KeyboardEvent) => {
+    e.stopPropagation();
+    if (e.key === "Escape") body.closest(".panel")?.querySelector<HTMLButtonElement>(".riskbtn")?.click();
+  };
+  window.addEventListener("keydown", shield, true);
+  input?.focus();
+  const accepted = await answer.finally(() => window.removeEventListener("keydown", shield, true));
+  if (!accepted || !valid) return null;
+  try {
+    const res = await post(`/api/file/${create ? "create" : remove ? "delete" : "move"}`,
+      { slot, path: create ? target : path, ...(!create && !remove ? { to: target } : {}) });
+    const reply = await res.json().catch(() => null) as FxWriteReply | null;
+    return res.ok && reply?.ran && reply.afterwards ? reply
+      : { error: reply?.error ?? `Der Server lehnt die Änderung ab (${res.status})` };
+  } catch { return { error: "Die Änderung ist nicht bestätigt — erst den Baum neu lesen, dann erneut versuchen" }; }
 }
 export async function loadTree(slot: number, cwd: string): Promise<void> {
   const res = await api(`/api/tree?slot=${slot}`).catch(() => null);
@@ -3178,13 +3706,61 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   const shell = openShell({
     id: "files",
     title: "Files",
-    detailHint: "Pick a file on the left. This window only reads — ✎ under a file is one extra click.",
+    detailHint: "Pick a file on the left. New file and the file menu preview each change before writing.",
     listWidth: 300,
     onClose: () => { fxShell = null; closeFxMenu(false); clearInterval(timer); clearTimeout(searchTimer); searchSeq++; },
   });
   fxShell = shell;
   // a ↻ that failed leaves the error in fxTree; the window keeps painting the last tree it had
   const tree = (): TreeInfo => { const t = fxTree.get(cwd); return t && !("error" in t) ? t : t0; };
+  let writeBusy = false;
+  const writeState = el("div", "fxwritestate");
+  writeState.setAttribute("role", "status");
+  shell.tools.after(writeState);
+  const write = async (kind: FxWriteKind, path = "", to = "") => {
+    if (writeBusy || !shell.isOpen()) return;
+    if (shell.detail.querySelector(".fvedit-ta")) {
+      writeState.textContent = "Finish editing this file before changing paths.";
+      return;
+    }
+    if (kind !== "New file" && !tree().files.includes(path)) return;
+    writeBusy = true;
+    closeFxMenu(false);
+    shell.setCloseGuard(() => true);
+    const reply = await fxWrite(slot, tree().root, kind, path, to);
+    shell.setCloseGuard(null);
+    if (reply) {
+      writeState.classList.toggle("err", !!reply.error);
+      writeState.textContent = reply.error ?? `Afterwards: ${reply.afterwards}`;
+      writeState.title = reply.ran ?? "";
+      if (!reply.error) {
+        fxUntracked.set(cwd, true);
+        if (kind === "Delete" && picked === path) {
+          picked = null; head = null; facts = null;
+          shell.detail.replaceChildren(el("div", "shellhint", reply.afterwards));
+        } else if ((kind === "Move" || kind === "Rename") && picked === path) {
+          picked = null; head = null; facts = null;
+          shell.detail.replaceChildren(el("div", "shellhint", "Pick the file at its new path to read it."));
+        }
+        await reread();
+        if (fxContents.get(cwd)) scheduleContents();
+      }
+    }
+    writeBusy = false;
+  };
+  const actions = (rel: string) => fxActions(slot, rel, (menu) => {
+    if (rel.endsWith("/") || !tree().files.includes(rel)) return;
+    for (const [kind, title] of [
+      ["Rename", "Datei im selben Ordner umbenennen — erst nach Bestätigung"],
+      ["Move", "Datei an einen anderen relativen Pfad verschieben — erst nach Bestätigung"],
+      ["Delete", "Getrackte Datei mit git rm löschen — erst nach Bestätigung"],
+    ] as const) {
+      const b = el("button", "fxmenuitem", kind) as HTMLButtonElement;
+      b.title = title; b.setAttribute("role", "menuitem");
+      b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); void write(kind, rel); };
+      menu.appendChild(b);
+    }
+  });
 
   // ↻ in the window's own head, beside ✕ (G1.1). Before this the window showed a tree it had read
   // once, and a file the agent had just written stayed missing until the CARD's ↻.
@@ -3248,7 +3824,10 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   };
   pathsB.onclick = () => setMode(false);
   contentsB.onclick = () => setMode(true);
-  shell.tools.append(search, mode, seg, untr);
+  const newFile = el("button", "fxtog", "New file") as HTMLButtonElement;
+  newFile.title = "Eine leere Datei anlegen — Pfad und Folgen vor dem Schreiben bestätigen";
+  newFile.onclick = () => void write("New file");
+  shell.tools.append(search, mode, seg, untr, newFile);
   const paintTools = () => {
     const v = fxView(cwd, tree());
     const changed = fxChanged.get(cwd) ?? false;
@@ -3302,7 +3881,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
     const mention = el("button", "fxmention", "Mention") as HTMLButtonElement;
     mention.title = `Fügt ${rel} in den Entwurf von Slot ${slot} ein — schreibt keine Datei`;
     mention.onclick = () => mentionExplorerPath(slot, rel);
-    top.append(crumb, mention, fxActions(slot, rel));
+    top.append(crumb, mention, actions(rel));
     h.appendChild(top);
     const meta = el("div", "fxfmeta");
     meta.appendChild(el("span", "", xy === "??"
@@ -3360,7 +3939,10 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
     const rows: ShellRow[] = [];
     for (const hit of contentResult.matches) {
       const row = el("button", `fxrow fxcontent${picked === hit.path ? " fxpicked" : ""}`) as HTMLButtonElement;
-      row.append(el("span", "fxcontentpath", hit.path), el("span", "fxcontentline", String(hit.line)),
+      const path = el("span", "fxcontentpath", hit.path.split("/").pop());
+      const parent = hit.path.slice(0, hit.path.lastIndexOf("/"));
+      if (hit.path.includes("/")) path.appendChild(el("span", "fxcontentdir", ` · ${parent}/`));
+      row.append(path, el("span", "fxcontentline", String(hit.line)),
         el("span", "fxcontenttext", hit.text.trim()));
       row.title = `${hit.path}:${hit.line}`;
       const act = () => open(hit.path, hit.line);
@@ -3368,7 +3950,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
       row.draggable = true;
       row.ondragstart = (e) => fxStartDrag(slot, hit.path, e);
       const line = el("div", "fxline");
-      line.append(row, fxActions(slot, hit.path));
+      line.append(row, actions(hit.path));
       shell.list.appendChild(line);
       rows.push({ el: row, open: act });
     }
@@ -3417,7 +3999,11 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
       query: fxQuery.get(cwd) ?? "",
       all: v.paths, capped: t.capped, shown: t.files.length, total: t.total,
       status: v.status, statusMore: v.statusMore, changedOnly: fxChanged.get(cwd) ?? false,
-      actions: (rel) => fxActions(slot, rel), onDrag: (rel, e) => fxStartDrag(slot, rel, e),
+      actions, onDrag: (rel, e) => fxStartDrag(slot, rel, e),
+      onDrop: (folder, e) => {
+        const source = fxMoveDrop(slot, t.files, folder, e);
+        if (source) void write("Move", source.path, `${folder}/${source.path.split("/").pop()}`);
+      },
       // ↑↓ walk the rows and Enter opens the selected one — the same keyboard contract every other
       // window here has. Without it this list was mouse-only, alone among the four.
       onRows: (rows) => {
@@ -3626,6 +4212,7 @@ window.addEventListener("keydown", (e) => {
     if (devdlg.style.display === "flex") closeDevDlg();
     if (codexdlg.style.display === "flex") closeCodexDlg();
     setDrawer(false);
+    setIsland(false);
   }
 });
 window.addEventListener("resize", () => { for (const p of panes) p.refit(); });
@@ -3634,6 +4221,7 @@ window.addEventListener("resize", () => { for (const p of panes) p.refit(); });
 // per-pane mobile settings (font size, inputMode, forced single layout) re-apply
 MOBILE_MQ.addEventListener("change", () => {
   setDrawer(false);
+  setIsland(false);
   setLive(false); // the live bar is a mobile-only surface
   if (!isMobile() && boardShell?.isOpen()) setBoard(false); // the info WINDOW is the phone's surface
   applyCollapsed(); // strip the rail on mobile, restore it on desktop
@@ -3646,6 +4234,7 @@ MOBILE_MQ.addEventListener("change", () => {
 // viewport — track it so the compose bar stays visible above the keyboard
 const vv = window.visualViewport;
 let keyboardPlaceholder: string | null = null;
+let keyboardWasOpen = false;
 const mobileMore = $("mobmore") as HTMLButtonElement;
 mobileMore.appendChild(icon("dots"));
 mobileMore.onclick = () => {
@@ -3676,6 +4265,95 @@ mreadWrite.onclick = () => {
   document.body.classList.add("landwrite");
   ta.focus();
 };
+// THE PHONE UPRIGHT: two islands instead of #mhead and the fixed foot (index.html, the island
+// block; docs/design/mobil-insel-notiz.md §1b/§1c). The top island has two steps — closed, a pill
+// with the state shape and the name (to read); open, the controls (to act). A tap on the pill opens
+// it; a tap on the name, on its free surface or anywhere outside closes it, and so does every
+// action in it. It invents no way of its own: each button hands over to the control the board
+// already has — ☰'s drawer, the focused pane's ℹ and view toggle, the tray's History and Schedule,
+// ⋯ = #mobmore's options. Body classes only; the CSS decides that they mean anything (portrait).
+const portrait = () => isMobile() && !LANDSCAPE_MQ.matches;
+const mTop = $("mtop"), mPill = $("mpill") as HTMLButtonElement, mName = $("mname") as HTMLButtonElement;
+const mSlot = $("mslot") as HTMLButtonElement, mInfo = $("minfo") as HTMLButtonElement, mView = $("mview") as HTMLButtonElement;
+const mMore = $("mmore") as HTMLButtonElement, mGrip = $("mgrip") as HTMLButtonElement;
+mInfo.appendChild(icon("info"));
+mMore.appendChild(icon("dots"));
+const paneControl = (cls: string): HTMLButtonElement | null => {
+  const b = panes[focused]?.root.querySelector<HTMLButtonElement>(`.panetools .${cls}`) ?? null;
+  return b && b.style.display !== "none" ? b : null;
+};
+function setIsland(open: boolean): void {
+  document.body.classList.toggle("mopen", open);
+  mPill.setAttribute("aria-expanded", String(open));
+  if (open) renderIsland();
+}
+let islandKey = "";
+function renderIsland(): void {
+  const pane = panes[focused];
+  const slot = pane?.slot ?? 0;
+  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
+  const name = mtitle.textContent ?? "";
+  // the drawer's own reading of the row (slotState: the shape, STATE_WORD: its word)
+  const state = s?.cwd ? slotState(s, serverNow, panes.some((p) => p.slot === s.id)) : null;
+  const lane = s?.cwd && s.worktree ? laneBandNames(stacksOf()).get(slot) : undefined;
+  const addr = !slot ? "—" : lane ?? String(slot);
+  // model · effort as the composer's switches read them (src/running.ts), display only
+  const model = s?.cwd ? runningModel(s.model, pane?.observedModel) : "";
+  const effort = s?.cwd ? runningEffort(s.effort, pane?.observedEffort) : "";
+  const meta = [model ? modelLabel(model).split(" · ")[0] : "", effort].filter(Boolean).join(" · ");
+  const view = paneControl("viewtoggle"), info = paneControl("boardtoggle");
+  const chat = !!pane?.isChat, more = document.body.classList.contains("keyboard-options");
+  const key = [name, state, addr, meta, !!view, chat, !!info, more].join("|");
+  if (key === islandKey) return;
+  islandKey = key;
+  const dot = () => { const d = el("span", `act ${state}`); d.title = state ? STATE_WORD[state] : ""; return d; };
+  mPill.replaceChildren(...(state ? [dot()] : []), el("span", "mnm", name));
+  mPill.setAttribute("aria-label", `${name}${state ? ` · ${STATE_WORD[state]}` : ""} — Insel aufklappen`);
+  mSlot.replaceChildren(el("span", "maddr", addr), ...(state ? [dot()] : []));
+  mSlot.setAttribute("aria-label", `Sessions öffnen — gerade ${addr} ${name}`);
+  const line1 = el("span", "ml1");
+  line1.append(...(state ? [dot()] : []), el("span", "mnm", name));
+  mName.replaceChildren(line1, el("span", "mrp", meta));
+  mView.hidden = !view;
+  mView.textContent = chat ? "Terminal" : "Konversation";
+  mView.title = chat ? "Zum Terminal zurück" : "Konversation anzeigen";
+  mInfo.hidden = !info;
+  mMore.setAttribute("aria-expanded", String(more));
+}
+// switching the step is no action: like the keys, it never takes the field's focus (keyboard stays).
+// Nor does ⋯: its options are for the field, and a keyboard leaving would fold them away again (sync)
+for (const b of [mPill, mName, mMore]) b.addEventListener("pointerdown", (e) => e.preventDefault());
+mPill.onclick = () => setIsland(true);
+mName.onclick = () => setIsland(false);
+mTop.addEventListener("click", (e) => {
+  if (e.target === mTop || e.target === $("mopen") || e.target === $("mtools")) setIsland(false);
+});
+const islandAction = (run: () => void) => () => { setIsland(false); run(); };
+mSlot.onclick = islandAction(() => $("menu").click());
+mInfo.onclick = islandAction(() => paneControl("boardtoggle")?.click());
+mView.onclick = islandAction(() => paneControl("viewtoggle")?.click());
+$("mhist").onclick = islandAction(() => $("histbtn").click());
+$("mauto").onclick = islandAction(() => $("autobtn").click());
+mMore.onclick = islandAction(() => mobileMore.click());
+// a tap outside closes the open island, and — upright only — ⋯'s options outside their own
+// surfaces; a window over the board (outside #app) is not "outside", its focus return needs them
+document.addEventListener("pointerdown", (e) => {
+  const t = e.target as Element | null;
+  if (!t || !portrait()) return;
+  if (document.body.classList.contains("mopen") && !mTop.contains(t)) setIsland(false);
+  if (document.body.classList.contains("keyboard-options") && $("app").contains(t)
+    && !t.closest("#bar, #mtop, .panetools")) mobileMore.click();
+}, true);
+// the grip folds the chips and the nine keys in and out of the bottom island; like the keys, it
+// never takes the field's focus, so the on-screen keyboard stays up
+mGrip.addEventListener("pointerdown", (e) => e.preventDefault());
+mGrip.onclick = () => {
+  const on = document.body.classList.toggle("mkeys");
+  mGrip.setAttribute("aria-expanded", String(on));
+  mGrip.title = on ? "Eigene Tasten einklappen" : "Eigene Tasten aufklappen — deine Befehls-Chips und ^C, esc, tab, Pfeile, Enter";
+};
+// turning the phone (MOBILE_MQ holds, its arm changes) leaves no island open behind the reading mode
+LANDSCAPE_MQ.addEventListener("change", () => setIsland(false));
 if (vv) {
   let vvRefitTimer: ReturnType<typeof setTimeout> | undefined;
   const sync = () => {
@@ -3694,10 +4372,13 @@ if (vv) {
       keyboardPlaceholder = null;
       fitTextarea();
     }
-    if (!keyboardOpen) {
+    // ⋯'s options fold away as the keyboard goes — upright they are also reachable without one
+    // (the island's ⋯), so only the keyboard's own leaving closes them, not every sync without it
+    if (!keyboardOpen && keyboardWasOpen) {
       document.body.classList.remove("keyboard-options");
       mobileMore.setAttribute("aria-expanded", "false");
     }
+    keyboardWasOpen = keyboardOpen;
     window.scrollTo(0, 0);
     // the keyboard opening/closing and its predictive-text bar toggling fire several of
     // these in a burst while typing; settle before refitting so a mid-transition height
@@ -3738,612 +4419,11 @@ function saveView() {
     chats: panes.map((p) => p.savedChat), hovers: panes.map((p) => p.savedHover) }));
 }
 
-// --- directory picker ---
-// Re-hosted in the src/shell.ts window; it was a 520px .panel with a list and three buttons. Same
-// rows, same pins, same type-a-few-letters-then-Enter path — plus the detail pane that answers the
-// question the old picker structurally could not: what IS this folder. A RE-HOST rather than a
-// rewrite on purpose. PK_ICONS below is pinned by fleet-e2e-security.ts §7, and the row anatomy
-// (pin star, ⎇ badge, start ▸) was already the part that worked.
-//
-// One interaction DID change, and it is the platform-standard direction: a single click selects
-// (and the detail follows) instead of navigating. Navigating in is now double-click or Enter, as it
-// is in Finder, Explorer and VS Code. Single-click-to-navigate made a detail pane unreachable —
-// you could never rest on a folder long enough to read about it. It also drops a 250ms timer that
-// only existed to tell a first click from a double.
-let pickerSlot = 0;
-let pkShell: Shell | null = null;
-let pkPins = new Set<string>(); // pinned paths, refreshed from /api/dirs on every browse()
-// worktree lanes clutter the picker (recents are mostly `*.worktrees/fleet-*`); hide them by
-// default. View-only pref, per device — kept in localStorage like the board/histall toggles.
-let hideWorktrees = prefBool("fleet.hidewt");
-// dotfolders were filtered out of every listing, so .claude and .github simply did not exist in the
-// picker — you could not start a session in one without typing its path. Off by default (a home
-// directory has more dot-entries than real ones), per device, like the lane toggle above.
-let showHidden = prefBool("fleet.pkdot");
-// a path is a lane if it lives under (or is) a `.worktrees` dir — reliable, no false positives
-function isWtPath(p: string): boolean { return /\.worktrees(\/|$)/.test(p); }
-
-// `way` = a row that is only on the PATH to a search hit, not a hit itself. It is drawn (a match
-// with no parents above it is unplaceable) but it is not counted as a match.
-interface PkRow { row: HTMLElement; path: string; name: string; head: HTMLElement | null; wt: boolean; way: boolean }
-let pkRows: PkRow[] = [];
-// the window's own controls, rebuilt on every open (the window itself is created per open)
-let pkFilter: HTMLInputElement;
-let pkPathIn: HTMLInputElement;
-let pkCrumb: HTMLElement;
-let pkHideBtn: HTMLButtonElement;
-let pkDotBtn: HTMLButtonElement;
-
-function closePicker() { pkShell?.close(); }
-
-// a row is out when the worktree toggle hides it (pkwt) OR the text filter excludes it (pkhide)
-function pkVisible(): PkRow[] {
-  return pkRows.filter((r) => !r.row.classList.contains("pkhide") && !r.row.classList.contains("pkwt"));
-}
-
-// the shell walks the rows it was handed, so it must be handed only the ones actually on screen —
-// otherwise ↑/↓ stops on a row hidden by the filter or the lane toggle
-function pkSyncRows(select: number) {
-  const shell = pkShell;
-  if (!shell) return;
-  const vis = pkVisible();
-  shell.setRows(vis.map((r) => ({ el: r.row, open: () => void browse(r.path) })));
-  if (select >= 0 && vis.length) shell.select(Math.min(select, vis.length - 1));
-  else shell.select(-1, false, false);
-}
-
-// mark/unmark worktree rows, refresh section counts to match, then re-run the text filter
-function applyWtHide() {
-  for (const r of pkRows) r.row.classList.toggle("pkwt", hideWorktrees && r.wt);
-  // section count badges show how many rows survive the toggle (so RECENT 4→2 signals what it did).
-  // the "Up to …" parent row is navigation, not a folder in this dir — exclude it from the count.
-  // So is a `way` row: counting the folders a search walked THROUGH as matches would inflate the
-  // one number on screen that says how much the query found.
-  const counts = new Map<HTMLElement, number>();
-  const dropped = new Map<HTMLElement, number>();
-  for (const r of pkRows) {
-    if (!r.head || r.row.classList.contains("up") || r.way) continue;
-    const off = r.row.classList.contains("pkwt");
-    counts.set(r.head, (counts.get(r.head) ?? 0) + (off ? 0 : 1));
-    if (off) dropped.set(r.head, (dropped.get(r.head) ?? 0) + 1);
-  }
-  // A COUNT THAT SHRANK IS NOT A COUNT THAT EXPLAINS ITSELF. The badge was never wrong — it always
-  // showed the surviving rows — but it did not say that any were left out. Measured 2026-08-04 on
-  // the live board: Recent held 8 entries and read "3", the five missing ones being every lane the
-  // owner had worked in that day, hidden by a toggle localStorage had never been asked about
-  // (`fleet.hidewt` unset reads as ON). The folder detail pane already says „[Zitat entfernt]“ for its
-  // dot-entries, so this is the app's own vocabulary, not a new one.
-  for (const [head, n] of counts) {
-    const b = head.querySelector<HTMLElement>(".shellsecn");
-    if (!b) continue;
-    const h = dropped.get(head) ?? 0;
-    b.textContent = h ? `${n} · ${h} hidden` : String(n);
-    b.classList.toggle("reveal", h > 0);
-    b.title = h ? `${h} worktree lane${h === 1 ? "" : "s"} hidden by the ⎇ toggle — click to show them` : "";
-    // routed through the toggle's own button rather than re-implementing it: one place decides what
-    // hiding means, persists it, and repaints, so this can never drift from the ⎇ control
-    b.onclick = h ? (ev: MouseEvent): void => { ev.stopPropagation(); pkHideBtn.click(); } : null;
-  }
-  applyPkFilter();
-}
-
-function applyPkFilter() {
-  const q = pkFilter.value.trim().toLowerCase();
-  const headHits = new Map<HTMLElement, number>();
-  for (const r of pkRows) {
-    // in search mode the tree rows ARE the result: the server chose them, and the folders on the
-    // way to a hit do not carry the query in their own name. Re-testing them here would hide the
-    // deep matches the search just went and found — the substring test only owns the shortcuts.
-    const hit = q === "" || r.name.includes(q) || (pkFind !== null && r.row.classList.contains("tree"));
-    r.row.classList.toggle("pkhide", !hit);
-    // a row counts toward its section head only if it survives BOTH the query and the wt toggle
-    const shown = hit && !r.row.classList.contains("pkwt");
-    if (r.head) headHits.set(r.head, (headHits.get(r.head) ?? 0) + (shown ? 1 : 0));
-  }
-  for (const [head, n] of headHits) head.classList.toggle("pkhide", n === 0);
-  pkSyncRows(q ? 0 : -1); // filtering pre-selects the best match so Enter just works
-}
-
-function renderHideWtBtn() {
-  pkHideBtn.textContent = "⎇ hide lanes";
-  pkHideBtn.classList.toggle("on", hideWorktrees);
-  pkHideBtn.title = hideWorktrees ? "Worktree-Lanes sind ausgeblendet — Klick zeigt sie wieder" : "Klick blendet die Worktree-Lanes aus";
-}
-
-function renderDotBtn() {
-  pkDotBtn.textContent = "· hidden";
-  pkDotBtn.classList.toggle("on", showHidden);
-  pkDotBtn.title = showHidden
-    ? "Punkt-Ordner (.claude, .github) sind gelistet — Klick blendet sie wieder aus"
-    : "Klick listet auch Punkt-Ordner (.claude, .github) — sie sind standardmäßig ausgeblendet";
-}
-
-// crisp monochrome glyphs (stroke = currentColor, tinted per row-kind in CSS). Static markup,
-// no interpolated data — safe to set via innerHTML.
-const PK_ICONS: Record<string, string> = {
-  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
-  folderOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 19V7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v1.5"/><path d="M5.6 19h13a1.6 1.6 0 0 0 1.55-1.2l1.35-5.2A1 1 0 0 0 20.5 11.3H8.4a1.6 1.6 0 0 0-1.55 1.2l-1.35 5.2A1.6 1.6 0 0 1 3.5 19"/></svg>',
-  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M13.5 3v5.5H19"/></svg>',
-  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v4.7l3 1.8"/></svg>',
-  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg>',
-  star: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 3l2.6 5.8 6.4.6-4.8 4.2 1.4 6.2L12 17l-5.6 2.8 1.4-6.2L3 9.4l6.4-.6z"/></svg>',
-  // the founding window's role art (gfStep1): same class of static literal, same one renderer
-  "gf-orch": `<svg class="gfart" viewBox="0 0 260 368" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <g stroke-width="1" opacity=".35"><path d="M130 158 L56 76"/><path d="M130 158 L206 70"/><path d="M130 158 L40 170"/><path d="M130 158 L222 176"/><path d="M130 158 L78 248"/><path d="M130 158 L188 252"/></g>
-      <g stroke-width="1.2" opacity=".55"><rect x="44" y="62" width="24" height="18" rx="4"/><rect x="194" y="56" width="24" height="18" rx="4"/><rect x="28" y="162" width="24" height="18" rx="4"/><rect x="210" y="168" width="24" height="18" rx="4"/><rect x="66" y="240" width="24" height="18" rx="4"/><rect x="176" y="244" width="24" height="18" rx="4"/><path d="M206 74 v18 q0 8 8 8 h10"/><circle cx="228" cy="100" r="3"/><path d="M40 180 v16 q0 8 -8 8 h-6"/><circle cx="22" cy="204" r="3"/></g>
-      <g stroke-width="1.6"><circle cx="130" cy="158" r="20" opacity=".9"/><circle cx="130" cy="158" r="5" fill="currentColor" opacity=".8"/><circle cx="130" cy="158" r="36" opacity=".28" stroke-dasharray="2 5"/><circle cx="130" cy="158" r="54" opacity=".14" stroke-dasharray="2 7"/></g>
-    </svg>`,
-  "gf-wt-new": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M18 128 H232" stroke-width="1.6" opacity=".45"/>
-      <g opacity=".45" fill="currentColor" stroke="none"><circle cx="46" cy="128" r="3.5"/><circle cx="86" cy="128" r="3.5"/><circle cx="126" cy="128" r="3.5"/><circle cx="196" cy="128" r="3.5"/></g>
-      <path d="M126 128 C 146 128 150 84 176 80 L 196 78" stroke-width="1.8" opacity=".9"/>
-      <circle cx="206" cy="78" r="9" stroke-width="1.8" opacity=".95"/>
-      <path d="M206 73 v10 M201 78 h10" stroke-width="1.6"/>
-      <g stroke-width="1.2" opacity=".55"><path d="M222 60 l6 -6"/><path d="M226 74 h9"/><path d="M218 94 l6 6"/></g>
-    </svg>`,
-  "gf-wt-old": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M18 132 H232" stroke-width="1.6" opacity=".45"/>
-      <g opacity=".45" fill="currentColor" stroke="none"><circle cx="40" cy="132" r="3.5"/><circle cx="80" cy="132" r="3.5"/><circle cx="210" cy="132" r="3.5"/></g>
-      <path d="M80 132 C 100 132 104 90 126 88 H 190" stroke-width="1.8" opacity=".75"/>
-      <g fill="currentColor" stroke="none" opacity=".75"><circle cx="140" cy="88" r="3.5"/><circle cx="162" cy="88" r="3.5"/><circle cx="184" cy="88" r="3.5"/></g>
-      <g stroke-width="1.7" opacity=".95"><circle cx="203" cy="50" r="6"/><path d="M203 57 v14 M203 71 l-7 12 M203 71 l7 12 M195 63 l8 -3 8 3"/></g>
-      <path d="M186 60 q-8 14 -2 24" stroke-width="1.3" stroke-dasharray="2 4" opacity=".7"/>
-    </svg>`,
-  "gf-plain": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M45 62 h56 l14 14 h90 a8 8 0 0 1 8 8 v40 a8 8 0 0 1 -8 8 H45 a8 8 0 0 1 -8 -8 V70 a8 8 0 0 1 8 -8 z" stroke-width="1.8" opacity=".85"/>
-      <circle cx="125" cy="101" r="9" stroke-width="1.8" opacity=".95"/>
-      <circle cx="125" cy="101" r="2.5" fill="currentColor" stroke="none" opacity=".8"/>
-      <g stroke-width="1.2" opacity=".4"><path d="M186 84 h18"/><path d="M186 118 h18"/></g>
-    </svg>`,
-  "gf-steward": `<svg class="gfart" viewBox="0 0 250 178" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
-      <path d="M25 128 H225" stroke-width="1.6" opacity=".45"/>
-      <path d="M55 78 Q125 34 195 78 Q125 118 55 78 z" stroke-width="1.8" opacity=".9"/>
-      <circle cx="125" cy="77" r="13" stroke-width="1.8" opacity=".95"/>
-      <circle cx="125" cy="77" r="4" fill="currentColor" stroke="none" opacity=".8"/>
-      <g stroke-width="1.2" opacity=".5"><path d="M125 128 v-24"/><path d="M87 128 q4 -14 18 -20"/><path d="M163 128 q-4 -14 -18 -20"/></g>
-    </svg>`,
-};
-function pkIcon(kind: string): HTMLElement {
-  const s = el("span", "pkicon");
-  s.innerHTML = PK_ICONS[kind] ?? PK_ICONS.folder;
-  return s;
-}
-
-interface DirRowOpts { label: string; sub?: string; path: string; cls: string; icon: string;
-  repo?: boolean; wt?: boolean; depth?: number; tree?: boolean;
-  // one flag per ANCESTOR level: true where that ancestor was the last of its siblings, so the
-  // spine at that level must stop rather than run past a branch that has nothing below it
-  blanks?: boolean[]; last?: boolean;
-  // search only: "hit" = this row's name matched, "way" = it is a folder on the path to one
-  find?: "hit" | "way" }
-function dirRow(o: DirRowOpts): HTMLElement {
-  const open = !!o.tree && pkIsOpen(o.path);
-  // `open` rides on the ROW, not just the ▸: it is what grows the line the children hang from,
-  // tints the icon, and turns the glyph. One state, one class, three things saying the same.
-  const row = el("div", `pkrow ${o.cls}${o.tree ? " tree" : ""}${open ? " open" : ""}`
-    + (o.find ? ` pk${o.find}` : ""));
-  row.title = o.path;
-  if (o.tree) {
-    // one guide span per ancestor level, each a vertical rule stretched over the FULL row box — that
-    // is what makes the lines continuous from row to row instead of a ladder of dashes. They live
-    // in their own container so .pkrow's 10px gap does not space them apart. The guide at the row's
-    // OWN level turns horizontally into the name (├), or corners into it if this is the last child
-    // (└) — that turn is what makes a column of names read as a branch of a tree.
-    const lead = el("span", "pklead");
-    const depth = o.depth ?? 0;
-    // depth + 1 columns, not depth: the row's OWN level gets an elbow too, so a top-level folder
-    // hangs off the same spine as everything below it and the whole section reads as ONE tree.
-    // Drawing them only for nested rows left the top level flat, and the first expansion then
-    // sprouted a line out of nowhere — the shape `tree(1)` gets right by connecting every entry.
-    for (let i = 0; i <= depth; i++) {
-      const g = el("span", "pkguide");
-      if (i === depth) g.classList.add(o.last ? "end" : "branch");
-      else if (o.blanks?.[i]) g.classList.add("blank");
-      lead.appendChild(g);
-    }
-    const tw = el("span", `pktw${open ? " open" : ""}`, open ? "▾" : "▸");
-    tw.title = open ? "collapse (←)" : "expand (→)";
-    tw.onclick = (e) => { e.stopPropagation(); void toggleNode(o.path); };
-    lead.appendChild(tw);
-    row.appendChild(lead);
-  }
-  // A folder icon on tree rows after all. It was dropped when every tree row was the same closed
-  // folder and the glyph therefore distinguished nothing — but an icon that OPENS is not the same
-  // glyph twice: it carries the one thing the name cannot say, and it says it in the place the eye
-  // already is. The shortcut sections keep their own kinds (star, clock, folder, up-arrow).
-  row.appendChild(pkIcon(o.tree ? (open ? "folderOpen" : "folder") : o.icon));
-  const name = el("span", "pkname");
-  name.appendChild(el("span", "pkleaf", o.label));
-  if (o.sub) name.appendChild(el("span", "cpksub", o.sub));
-  row.appendChild(name);
-  if (o.repo) {
-    const g = el("span", "pkgit", "⎇");
-    g.title = "git repo — ⌘Enter or “new lane” starts a worktree here";
-    row.appendChild(g);
-  }
-  // pin star: filled+amber when pinned (always shown), a ghost outline on hover otherwise.
-  // stopPropagation keeps the click off the row's browse/start timer.
-  const pinned = pkPins.has(o.path);
-  const star = el("span", `pkpin${pinned ? " on" : ""}`, pinned ? "★" : "☆");
-  star.title = pinned ? "unpin (⌘D)" : "pin this folder (⌘D)";
-  star.onclick = (e) => { e.stopPropagation(); void togglePin(o.path); };
-  row.appendChild(star);
-  // click 1 selects AND opens the folder (the detail pane follows), click 2 STARTS A SESSION here.
-  // No timer: both are idempotent-or-invisible, so the first click of a double-click costs nothing
-  // to let through — which is exactly what forced the old 250ms reconciliation. (A double-click
-  // that lands on a closed folder expands it on the way past; the window closes on the session it
-  // starts, so that is never seen.)
-  // Clicking the ROW to open it, not just the ▸, is what Finder, Explorer and VS Code all do, and
-  // the ▸ was an 18px target for the most common action in the window. Re-rooting — making a folder
-  // the top of the tree — stays on the breadcrumb, the "Up to …" row, the path box and Enter. The
-  // one row kind that navigates on double-click is "Up to …": it names a destination, not a place
-  // to work.
-  row.onclick = (e) => {
-    if (e.detail >= 2) { void (o.cls === "up" ? browse(o.path) : startSession(o.path)); return; }
-    // "Up to …" is pure navigation, and a phone has no comfortable double-click: one tap goes up.
-    // On a pointer device the double-click still does it and a single click inspects, unchanged.
-    if (o.cls === "up" && isMobile()) { void browse(o.path); return; }
-    const i = pkVisible().findIndex((r) => r.row === row);
-    if (i >= 0) pkShell?.select(i, false, false);
-    void showDirDetail(o.path);
-    // A click on a folder OPENS AND CLOSES it — the whole gesture, the way an explorer works. It
-    // used to open only, on the theory that collapsing would make the row under the cursor jump
-    // away; that theory was wrong, because collapsing removes the rows BELOW this one and leaves
-    // this one exactly where it is.
-    // Touch is the exception: there the same tap also pushes the detail pane OVER the list, so a
-    // collapse would happen behind it and be discovered on the way back — the folder you just
-    // opened, shut. On touch the tap only opens, and ▸ still closes.
-    if (o.tree && !(isMobile() && pkIsOpen(o.path))) void toggleNode(o.path);
-    // On a phone there is no second column, so the detail has to be PUSHED or it cannot be seen at
-    // all — which is exactly what it was: the picker never called this, so everything the pane
-    // knows (what is in the folder, its commits, "already open in slot N", ⎇ New lane) was
-    // desktop-only. The tree stays reachable: ▸ expands without leaving the list, and ‹ comes back.
-    if (isMobile()) pkShell?.showDetail(true);
-  };
-  const use = el("span", "pkuse", "start ▸");
-  use.onclick = (e) => {
-    e.stopPropagation();
-    void startSession(o.path);
-  };
-  row.appendChild(use);
-  return row;
-}
-
-// clickable path: each ancestor segment jumps straight there. /Users/<me> collapses to ~.
-function renderCrumb(path: string) {
-  pkCrumb.replaceChildren();
-  const home = /^(\/Users\/[^/]+)(\/.*)?$/.exec(path);
-  const segs: { label: string; full: string }[] = [];
-  let base: string;
-  let rest: string;
-  if (home) {
-    segs.push({ label: "~", full: home[1] });
-    base = home[1];
-    rest = home[2] ?? "";
-  } else {
-    segs.push({ label: "/", full: "/" });
-    base = "";
-    rest = path;
-  }
-  for (const part of rest.split("/").filter(Boolean)) {
-    base = `${base}/${part}`;
-    segs.push({ label: part, full: base });
-  }
-  segs.forEach((s, i) => {
-    if (i) pkCrumb.appendChild(el("span", "pksep", "›"));
-    const seg = el("span", "pkseg", s.label);
-    if (i === segs.length - 1) { seg.classList.add("here"); seg.title = s.full; }
-    else { seg.title = s.full; seg.onclick = () => void browse(s.full); }
-    pkCrumb.appendChild(seg);
-  });
-  pkCrumb.scrollLeft = pkCrumb.scrollWidth; // keep the current folder in view when deep
-  // fade the left edge when ancestors have scrolled out of view, so hidden segments are hinted
-  pkCrumb.classList.toggle("overflow", pkCrumb.scrollWidth > pkCrumb.clientWidth + 1);
-}
-
-async function browse(path: string): Promise<boolean> {
-  const res = await api(dirsUrl(path));
-  const data = (await res.json()) as
-    | { path: string; parent: string | null; dirs: string[]; repos?: string[]; worktrees?: string[];
-        recents: string[]; pins?: string[]; common: string[]; git?: boolean;
-        total?: number; capped?: boolean }
-    | { error: string };
-  const shell = pkShell;
-  if (!shell) return false;
-  if ("error" in data) {
-    pkPathIn.classList.add("bad");
-    setTimeout(() => pkPathIn.classList.remove("bad"), 1200);
-    return false;
-  }
-  pkPathIn.value = data.path;
-  pkPathIn.classList.remove("bad");
-  renderCrumb(data.path);
-  pkPins = new Set(data.pins ?? []);
-  prefSet("fleet.pkdir", data.path); // next openPicker starts where you left off
-  pkFilter.value = "";
-  // a new root is a new tree: nothing below it is expanded, and the cached children of the old
-  // root's descendants would only be stale weight. A search belongs to the root it ran under, so
-  // it goes with them.
-  clearFind();
-  pkRoot = data.path;
-  pkOpen.clear();
-  pkKids.clear();
-  pkCap.clear();
-  noteCap(data.path, data.total, data.capped);
-  pkKids.set(data.path, nodesOf(data.path, data.dirs, data.repos, data.worktrees));
-  pkShortcuts = { pins: data.pins ?? [], recents: data.recents, common: data.common, parent: data.parent };
-  paintPicker();
-  // the detail describes the folder you just navigated INTO until the cursor moves, so the pane is
-  // never empty and its actions always have an unambiguous target
-  void showDirDetail(data.path);
-  return true;
-}
-
-// --- the folder tree ---
-// The picker listed ONE directory at a time. Seeing whether a repo held the subfolder you wanted
-// meant navigating in, looking, and navigating back out — and the shortcut sections scrolled away
-// while you did it. Now the folders under the current root are a tree you expand in place, with a
-// guide line down each level so the nesting is readable at a glance rather than counted in spaces.
-interface PkNode { name: string; path: string; repo: boolean; wt: boolean; hit?: boolean }
-let pkRoot = "";
-const pkKids = new Map<string, PkNode[]>(); // path → its subfolders, fetched once per expansion
-const pkOpen = new Set<string>();           // which paths are expanded
-const pkBusy = new Set<string>();           // expansions in flight, so a double-click fetches once
-// path → how many subfolders it REALLY has, recorded only where the server's listing cap bit. The
-// tree used to serve 200 of them and say nothing, which reads exactly like a folder with 200 in it.
-const pkCap = new Map<string, number>();
-// A search is its own tree — the hits plus the folders on the way to them, nothing else. It is kept
-// SEPARATE from pkKids on purpose: merged in, a search's partial listing of a folder would be
-// cached as that folder's full contents and every later expansion of it would quietly be short.
-interface PkFind { q: string; kids: Map<string, PkNode[]>; open: Set<string>; partial: Set<string>;
-  hits: number; truncated: boolean }
-let pkFind: PkFind | null = null;
-let pkFindSeq = 0;                  // latest-wins: typing outruns the searches it starts
-let pkFindTimer: ReturnType<typeof setTimeout> | null = null;
-const PK_FIND_MIN = 2;              // one letter matches most of a disk — that is not a search
-let pkShortcuts: { pins: string[]; recents: string[]; common: string[]; parent: string | null } =
-  { pins: [], recents: [], common: [], parent: null };
-
-// which tree the picker is currently drawing: the browsed one, or a search's own
-function pkKidsOf(path: string): PkNode[] { return (pkFind ? pkFind.kids : pkKids).get(path) ?? []; }
-function pkIsOpen(path: string): boolean { return (pkFind ? pkFind.open : pkOpen).has(path); }
-
-// every listing request carries the dotfolder toggle: what the tree contains has to follow the
-// button that says what it contains
-function dirsUrl(path: string, extra = ""): string {
-  return `/api/dirs?path=${encodeURIComponent(path)}${showHidden ? "&hidden=1" : ""}${extra}`;
-}
-
-function nodesOf(base: string, dirs: string[], repos?: string[], worktrees?: string[]): PkNode[] {
-  const repoSet = new Set(repos ?? []);
-  const wtSet = new Set(worktrees ?? []);
-  return dirs.map((d) => ({
-    name: d, path: `${base}/${d}`.replace("//", "/"),
-    repo: repoSet.has(d), wt: wtSet.has(d) || d.endsWith(".worktrees"),
-  }));
-}
-
-// note what the server said it left out, so emit() can draw the line that says so
-function noteCap(path: string, total?: number, capped?: boolean) {
-  if (capped && typeof total === "number") pkCap.set(path, total);
-  else pkCap.delete(path);
-}
-
-async function fetchKids(path: string): Promise<PkNode[] | null> {
-  const res = await api(dirsUrl(path)).catch(() => null);
-  if (!res || !res.ok) return null;
-  const d = (await res.json().catch(() => null)) as
-    { path?: string; dirs?: string[]; repos?: string[]; worktrees?: string[];
-      total?: number; capped?: boolean } | null;
-  if (!d?.path || !d.dirs) return null;
-  noteCap(d.path, d.total, d.capped);
-  return nodesOf(d.path, d.dirs, d.repos, d.worktrees);
-}
-
-async function toggleNode(path: string) {
-  const open = pkFind ? pkFind.open : pkOpen;
-  const kids = pkFind ? pkFind.kids : pkKids;
-  if (open.has(path)) { open.delete(path); paintPicker(); return; }
-  // a search's synthesized listing holds only the children that lead to a match; re-opening such a
-  // folder fetches what is ACTUALLY in it, so expanding a result never shows a doctored directory
-  const partial = pkFind?.partial;
-  if (!kids.has(path) || partial?.has(path)) {
-    if (pkBusy.has(path)) return;
-    pkBusy.add(path);
-    const fresh = await fetchKids(path);
-    pkBusy.delete(path);
-    if (!pkShell?.isOpen()) return;
-    // an unreadable folder (permissions, or it vanished) caches as EMPTY rather than retrying on
-    // every click — the row then says so instead of silently doing nothing
-    kids.set(path, fresh ?? []);
-    partial?.delete(path);
-  }
-  open.add(path);
-  paintPicker();
-}
-
-// --- the search's own tree ---
-// The server answers with flat paths. Drawn flat they would be a list of names with no idea where
-// any of them is; drawn here they become the same tree as everything else, with the folders between
-// the root and each hit filled in as scaffolding (`hit: false`) so a match is never rootless.
-function buildFindTree(root: string, hits: { path: string; name: string; repo: boolean; wt: boolean }[],
-                       q: string, truncated: boolean): PkFind {
-  const kids = new Map<string, PkNode[]>();
-  const open = new Set<string>();
-  const partial = new Set<string>();
-  const hitPaths = new Set(hits.map((h) => h.path));
-  for (const h of hits) {
-    if (!h.path.startsWith(`${root}/`)) continue;
-    const rel = h.path.slice(root.length + 1).split("/");
-    let parent = root;
-    for (let i = 0; i < rel.length; i++) {
-      const path = `${parent}/${rel[i]}`;
-      const leaf = i === rel.length - 1;
-      const list = kids.get(parent) ?? [];
-      if (!list.some((n) => n.path === path)) {
-        list.push({ name: rel[i], path, hit: hitPaths.has(path),
-          repo: leaf ? h.repo : false, wt: (leaf && h.wt) || isWtPath(path) });
-        kids.set(parent, list);
-      }
-      if (!leaf) { open.add(path); partial.add(path); }
-      parent = path;
-    }
-  }
-  for (const list of kids.values()) list.sort((a, b) => a.name.localeCompare(b.name));
-  return { q, kids, open, partial, hits: hitPaths.size, truncated };
-}
-
-async function runFind(q: string) {
-  const seq = ++pkFindSeq;
-  const res = await api(dirsUrl(pkRoot, `&find=${encodeURIComponent(q)}`)).catch(() => null);
-  if (!res || !res.ok || seq !== pkFindSeq || !pkShell?.isOpen()) return;
-  const d = (await res.json().catch(() => null)) as
-    { hits?: { path: string; name: string; repo: boolean; wt: boolean }[]; truncated?: boolean } | null;
-  if (!d?.hits || seq !== pkFindSeq || !pkShell?.isOpen()) return;
-  pkFind = buildFindTree(pkRoot, d.hits, q, !!d.truncated);
-  paintPicker();
-}
-
-// typing is a filter FIRST (instant, on what is drawn) and a search SECOND (a round trip that
-// reaches into the folders that are not). The two are not alternatives: the local pass keeps the
-// window responsive per keystroke, the search replaces it a moment later with the deeper answer.
-function scheduleFind() {
-  const q = pkFilter.value.trim();
-  if (pkFindTimer) clearTimeout(pkFindTimer);
-  pkFindTimer = null;
-  if (q.length < PK_FIND_MIN) {
-    if (pkFind) { pkFind = null; pkFindSeq++; paintPicker(); }
-    return;
-  }
-  pkFindTimer = setTimeout(() => { pkFindTimer = null; void runFind(q); }, 200);
-}
-
-function clearFind() {
-  if (pkFindTimer) clearTimeout(pkFindTimer);
-  pkFindTimer = null;
-  pkFindSeq++;
-  pkFind = null;
-}
-
-// the dotfolder toggle changes what every listing CONTAINS, so every listing already on screen has
-// to be fetched again — keeping the folders the owner opened, which a plain browse() would drop
-async function reloadTree() {
-  const paths = [pkRoot, ...pkOpen];
-  const lists = await Promise.all(paths.map((p) => fetchKids(p)));
-  if (!pkShell?.isOpen()) return;
-  paths.forEach((p, i) => {
-    const kids = lists[i];
-    if (kids) pkKids.set(p, kids);
-    else { pkKids.delete(p); pkOpen.delete(p); } // gone or unreadable: stop claiming it is open
-  });
-  if (pkFind) await runFind(pkFind.q);
-  else paintPicker();
-}
-
-// rebuild the whole list from cached state. Cheap — the expensive part is the fetch, which happens
-// once per folder — and it keeps one painting path for browse(), expand, collapse and pin changes.
-function paintPicker() {
-  const shell = pkShell;
-  if (!shell) return;
-  const keep = pkFilter.value;
-  shell.list.replaceChildren();
-  pkRows = [];
-  let head: HTMLElement | null = null;
-  const addHead = (t: string, n?: number) => {
-    head = el("div", "shellsec");
-    head.appendChild(el("span", "shellsect", t));
-    if (n !== undefined) head.appendChild(el("span", "shellsecn", String(n)));
-    shell.list.appendChild(head);
-  };
-  const addRow = (o: DirRowOpts) => {
-    const row = dirRow(o);
-    shell.list.appendChild(row);
-    pkRows.push({ row, path: o.path, name: `${o.label} ${o.sub ?? ""}`.toLowerCase(), head,
-      wt: !!o.wt, way: o.find === "way" });
-  };
-  // the honest stand-in lines: "no subfolders", the listing cap, the search's own notes. They sit
-  // where a row would sit at that depth — the stylesheet owns that geometry via --pkdepth.
-  const addNote = (depth: number, text: string, cls = "") => {
-    const n = el("div", `pknone tree${cls ? ` ${cls}` : ""}`);
-    n.style.setProperty("--pkdepth", String(depth));
-    n.textContent = text;
-    shell.list.appendChild(n);
-  };
-  // full paths render as name-up-front + dimmed parent; a bare top-level dir (/tmp) still splits
-  const split = (p: string): { leaf: string; sub: string } => {
-    const disp = p.replace(/^\/Users\/[^/]+/, "~");
-    const i = disp.lastIndexOf("/");
-    if (i < 0) return { leaf: disp, sub: "" };
-    if (i === 0) return { leaf: disp.slice(1) || disp, sub: "/" };
-    return { leaf: disp.slice(i + 1), sub: disp.slice(0, i) };
-  };
-  // the shortcut sections stay FLAT: they are jump targets scattered across the disk, not places in
-  // this tree, and drawing guide lines beside them would claim a nesting that does not exist
-  if (pkShortcuts.pins.length) {
-    addHead("Pinned", pkShortcuts.pins.length);
-    for (const p of pkShortcuts.pins) {
-      const { leaf, sub } = split(p);
-      addRow({ label: leaf, sub, path: p, cls: "pin", icon: "star", wt: isWtPath(p) });
-    }
-  }
-  if (pkShortcuts.recents.length) {
-    addHead("Recent", pkShortcuts.recents.length);
-    for (const r of pkShortcuts.recents) {
-      const { leaf, sub } = split(r);
-      addRow({ label: leaf, sub, path: r, cls: "recent", icon: "clock", wt: isWtPath(r) });
-    }
-  }
-  addHead("Places");
-  for (const c of pkShortcuts.common)
-    addRow({ label: c.replace(/^\/Users\/[^/]+/, "~"), path: c, cls: "place", icon: "folder" });
-
-  const roots = pkKidsOf(pkRoot);
-  // in search mode the section counts MATCHES, not rows: the folders on the way to them are drawn
-  // but are not what the query found (applyWtHide recomputes this from the rows and skips them too)
-  addHead(pkFind ? `Matches for “${pkFind.q}”` : "Folders", pkFind ? pkFind.hits : roots.length);
-  if (pkShortcuts.parent)
-    addRow({ label: `Up to ${baseName(pkShortcuts.parent)}`, path: pkShortcuts.parent, cls: "up", icon: "up" });
-  // `blanks` grows one entry per level as we descend: the flag says whether the ancestor at that
-  // level was its parent's last child, and a spine below such an ancestor would draw a sibling that
-  // does not exist.
-  const emit = (parent: string, depth: number, blanks: boolean[]) => {
-    const kids = pkKidsOf(parent);
-    if (!kids.length && depth > 0) {
-      // depth only — the stylesheet owns the geometry and lines this up with the names above it.
-      // This was `61 + depth * 26`, a copy of the guide/▸/gap widths that no longer matched either
-      // the desktop or the phone once those changed.
-      addNote(depth, "no subfolders");
-      return;
-    }
-    kids.forEach((n, i) => {
-      const last = i === kids.length - 1;
-      addRow({ label: n.name, path: n.path, cls: "dir", icon: "folder", repo: n.repo, wt: n.wt,
-        depth, tree: true, blanks, last, find: pkFind ? (n.hit ? "hit" : "way") : undefined });
-      if (pkIsOpen(n.path)) emit(n.path, depth + 1, [...blanks, last]);
-    });
-    // the cap, said out loud. Serving 200 of 1284 folders silently is indistinguishable on screen
-    // from a folder that holds 200 — which is why nobody could tell it was happening.
-    const total = !pkFind ? pkCap.get(parent) : undefined;
-    if (total !== undefined) addNote(depth, `${kids.length} of ${total} — refine`, "pkcap");
-  };
-  emit(pkRoot, 0, []);
-  // the search has a budget (depth, folders read, matches returned) and it says when it spent it,
-  // so "no more results" is never reported as "no more matches" — the empty case most of all
-  if (pkFind) {
-    if (!pkFind.hits) addNote(0, pkFind.truncated
-      ? `nothing called “${pkFind.q}” in the part of this tree the search reached — it stopped at its limit`
-      : `nothing under this folder is called “${pkFind.q}”`);
-    else if (pkFind.truncated) addNote(0, "…and more below this — the search stopped at its limit", "pkcap");
-  } else if (!roots.length) shell.list.appendChild(el("div", "pknone", "no subfolders here"));
-  applyWtHide(); // honor the current "hide lanes" toggle for the freshly built rows
-  if (keep) { pkFilter.value = keep; applyPkFilter(); }
-}
-
 // --- what the highlighted folder actually is (GET /api/dirinfo) ---
 // The old picker could say "this is a git repo" and nothing more, so telling two similarly-named
 // checkouts apart meant opening a session in one to find out.
 interface DirCommit { hash: string; ts: number; subject: string }
-interface DirInfoResp {
+export interface DirInfoResp {
   path: string; exists: boolean; git: boolean; worktree?: boolean; branch?: string | null;
   dirty?: number; ahead?: number | null; behind?: number | null;
   last?: DirCommit | null; recent?: DirCommit[];
@@ -4356,161 +4436,14 @@ interface DirInfoResp {
   packs?: string[] | { error: string };
   orphans?: { path: string; branch: string }[];
 }
-let pkInfoSeq = 0; // latest-wins: arrow-keying down a list outruns the fetches it starts
 
 // A 404 on a route this page KNOWS about means one specific thing in Fleet, and it is worth saying
 // out loud rather than spinning: `bun run build` publishes the client instantly (the server serves
 // public/app.js off disk), while new server ROUTES only exist after srv restarts. So a freshly built
 // dashboard talks to a pre-change server until someone kills the srv session — and every call to a
 // route added in the same change 404s. That is exactly what an indefinite "reading…" was.
-const SKEW_NOTE = "this page is newer than the server it is talking to — that route does not exist"
+export const SKEW_NOTE = "this page is newer than the server it is talking to — that route does not exist"
   + " there yet. Restart Fleet's srv session to pick up the new routes (the sessions survive it).";
-
-// what the detail pane is currently able to say. A pane that can only render "loading" and "loaded"
-// has no way to stop loading, which is the whole defect: showDirDetail returned early on a failed
-// fetch and left the placeholder on screen forever.
-type DirLoad = { st: "loading" } | { st: "ok"; info: DirInfoResp } | { st: "fail"; why: string };
-
-// the folder the detail pane is currently describing — so a late-arriving harness catalogue can
-// repaint the pane it belongs to, instead of the options row appearing only on the NEXT click
-let pkDetailPath: string | null = null;
-
-async function showDirDetail(path: string) {
-  const shell = pkShell;
-  if (!shell) return;
-  pkDetailPath = path;
-  const seq = ++pkInfoSeq;
-  renderDirDetail(path, { st: "loading" });
-  const done = (load: DirLoad) => {
-    // a superseded fetch must not paint over the row the cursor has since moved to
-    if (shell.isOpen() && seq === pkInfoSeq) renderDirDetail(path, load);
-  };
-  const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`).catch(() => null);
-  if (!res) { done({ st: "fail", why: "couldn't reach the server — retry, or check the connection" }); return; }
-  if (res.status === 404) { done({ st: "fail", why: SKEW_NOTE }); return; }
-  if (!res.ok) { done({ st: "fail", why: `the server answered ${res.status} for this folder` }); return; }
-  const info = (await res.json().catch(() => null)) as DirInfoResp | null;
-  done(info ? { st: "ok", info } : { st: "fail", why: "the server's answer was not readable JSON" });
-}
-
-// What the NEXT session started from this picker will be spawned as. Held here rather than read
-// off the DOM at click time because the detail pane is re-rendered on every dir load, and a
-// choice that survives re-render but not a click would be the worst of both.
-// Reset per picker OPEN (openPicker), not per directory: picking a harness and then browsing to
-// the folder you want it in is the normal order of doing this.
-let spawnHarness: string | null = null;
-let spawnModel = "";
-let spawnEffort = "";
-let spawnContainer = "";
-let spawnContainerContext = "";
-
-// The spawn-options row — the first spawn-options UI in this app at all. Two things it closes at
-// once: choosing a harness (which never existed), and sending `model`, which the server routes
-// have accepted since long before this and no client call ever sent.
-//
-// The quick paths (⎇+ quicklane, ⌘Enter) deliberately do NOT read any of this: they stay
-// one-click on defaults. Only the two buttons in THIS pane carry the options.
-// `before`: the node to insert AHEAD of, or null for "append at the end". It exists because the
-// first call and the re-render after a harness change happen at different moments in the pane's
-// life. On the first call `host` ends at the buttons, so appending puts the row directly under
-// them; by the time a harness change re-renders, the whole rest of the pane is already there, so
-// appending would drop the row below the facts and the directory listing — far out of view. The
-// owner read that as the controls disappearing (2026-08-10), which is exactly what it looks like.
-function appendSpawnOptions(host: HTMLElement, before: Node | null = null): void {
-  // empty catalogue (not fetched yet, or the fetch failed) → render nothing at all. The pane is
-  // then exactly the pre-harness pane, and both buttons still work on defaults.
-  const agents = agentHarnesses();
-  if (agents.length < 2) return;
-  const row = el("div", "pkdopts");
-
-  const hSel = el("select", "pkdsel") as HTMLSelectElement;
-  for (const h of agents) {
-    const o = el("option", "", h.default ? `${h.id} (default)` : h.id) as HTMLOptionElement;
-    o.value = h.id;
-    if ((spawnHarness ?? agents.find((x) => x.default)?.id) === h.id) o.selected = true;
-    hSel.appendChild(o);
-  }
-  row.appendChild(labelled("harness", hSel));
-
-  const chosen = agents.find((h) => h.id === hSel.value) ?? agents.find((h) => h.default);
-
-  const mIn = el("input", "pkdin") as HTMLInputElement;
-  mIn.type = "text";
-  // the DEFAULT is only knowable for the default adapter — the server publishes exactly one
-  // value and says it is Claude-only. For a foreign harness the honest placeholder is the word
-  // "default", never this id: claiming it there would be a fact the server never asserted.
-  mIn.placeholder = chosen?.default && defaultModel ? defaultModel : "default";
-  mIn.value = spawnModel;
-  mIn.oninput = () => { spawnModel = mIn.value.trim(); };
-  if (chosen?.supports.model) row.appendChild(labelled("model", mIn));
-
-  // effort only exists for a harness that HAS the concept — the row simply does not offer it
-  // otherwise, which is the visible degradation: no dead control that silently does nothing.
-  if (chosen?.supports.effort && chosen.effortLevels.length) {
-    const eSel = el("select", "pkdsel") as HTMLSelectElement;
-    for (const lv of ["", ...chosen.effortLevels]) {
-      const o = el("option", "", lv || "default") as HTMLOptionElement;
-      o.value = lv;
-      if (spawnEffort === lv) o.selected = true;
-      eSel.appendChild(o);
-    }
-    eSel.onchange = () => { spawnEffort = eSel.value; };
-    row.appendChild(labelled("effort", eSel));
-  }
-
-  // the box: which container, and on which docker daemon. Only for a harness that runs in one —
-  // the same visible degradation as effort. Empty means the fleet default (the placeholder says
-  // which), never docker's ambient context. The two belong together: an IMAGE lives in exactly one
-  // daemon, so a context without this container's image is a pane full of docker's own error.
-  if (chosen?.supports.container) {
-    const cIn = el("input", "pkdin") as HTMLInputElement;
-    cIn.type = "text";
-    cIn.placeholder = containerDefaults?.container ?? "container";
-    cIn.value = spawnContainer;
-    cIn.oninput = () => { spawnContainer = cIn.value.trim(); };
-    row.appendChild(labelled("container", cIn));
-
-    const xIn = el("input", "pkdin") as HTMLInputElement;
-    xIn.type = "text";
-    xIn.placeholder = containerDefaults?.containerContext ?? "docker context";
-    xIn.value = spawnContainerContext;
-    xIn.title = "Auf welchem Docker-Daemon der Container läuft — ein Image lebt in genau einem, deshalb der Context, in dem es gebaut wurde (intern: docker context).";
-    xIn.oninput = () => { spawnContainerContext = xIn.value.trim(); };
-    row.appendChild(labelled("docker context", xIn));
-  }
-
-  hSel.onchange = () => {
-    // read from the SAME list the dropdown was built from — a place is not selectable, so looking
-    // it up in the unfiltered catalogue could only ever find something this control cannot show
-    const next = agents.find((h) => h.id === hSel.value);
-    spawnHarness = next && !next.default ? next.id : null;
-    // a level from the harness being left behind must not ride along to the next one
-    if (!next?.supports.effort || !next.effortLevels.includes(spawnEffort)) spawnEffort = "";
-    if (!next?.supports.model) spawnModel = "";
-    // ...and a box must not either: the server refuses one for a harness without the concept, so
-    // carrying it over would turn a harness change into a 400 the owner cannot see the cause of
-    if (!next?.supports.container) { spawnContainer = ""; spawnContainerContext = ""; }
-    renderSpawnOptions(host, row);
-  };
-
-  host.insertBefore(row, before);
-  // the caveat a harness states about ITSELF, shown before it is ever spawned rather than
-  // discovered afterwards — for Pi that is the shape of its write fence, and what the fence does
-  // NOT cover (reads, network), which is the half an owner has to weigh before picking it.
-  if (chosen?.note) host.insertBefore(el("div", "pkdwarn", `${chosen.id}: ${chosen.note}`), before);
-}
-
-// re-render the row in place after a harness change (the fields on offer depend on it)
-function renderSpawnOptions(host: HTMLElement, old: HTMLElement): void {
-  const note = old.nextElementSibling;
-  const warn = note?.classList.contains("pkdwarn") ? note : null;
-  // the anchor is read BEFORE either removal, so the rebuilt row goes back exactly where this one
-  // stood instead of at the end of a pane that has since been filled in
-  const anchor = (warn ?? old).nextSibling;
-  warn?.remove();
-  old.remove();
-  appendSpawnOptions(host, anchor);
-}
 
 export function labelled(text: string, control: HTMLElement): HTMLElement {
   const wrap = el("label", "pkdopt");
@@ -4519,275 +4452,14 @@ export function labelled(text: string, control: HTMLElement): HTMLElement {
   return wrap;
 }
 
-// the options every spawn from this pane carries. Absent fields mean "the default", which is
-// exactly what the server reads them as.
-function spawnBody(): { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[] } {
-  return {
-    ...(spawnHarness ? { harness: spawnHarness } : {}),
-    ...(spawnModel ? { model: spawnModel } : {}),
-    ...(spawnEffort ? { effort: spawnEffort } : {}),
-    ...(spawnContainer ? { container: spawnContainer } : {}),
-    ...(spawnContainerContext ? { containerContext: spawnContainerContext } : {}),
-    // the founding packs (B2b), only ever as an explicit choice: with no switch on the body is
-    // byte-identical to the founding this window made before the packs existed — absent is the
-    // door's "today's founding", and the switches live only in an open founding window
-    // (closeFounding clears them), so the tree picker's spawn can never inherit a choice
-    ...(gfPacks.size ? { packs: [...gfPacks] } : {}),
-  };
-}
-
-function renderDirDetail(path: string, load: DirLoad) {
-  const shell = pkShell;
-  if (!shell) return;
-  const info = load.st === "ok" ? load.info : null;
-  shell.detail.replaceChildren();
-  shell.detail.appendChild(el("div", "rvhead", baseName(path)));
-  shell.detail.appendChild(el("div", "pkdpath", path.replace(/^\/Users\/[^/]+/, "~")));
-
-  // a slot already sitting in this folder is the single most useful thing to know before starting
-  // another one there — Fleet will happily open two sessions on the same tree
-  const open = fleet.filter((s) => s.cwd === path);
-  if (open.length) {
-    const who = open.map((s) => `slot ${s.id}${s.label ? ` (${s.label})` : ""}`).join(", ");
-    shell.detail.appendChild(el("div", "pkdwarn", `already open in ${who}`));
-  }
-
-  const acts = el("div", "pkdacts");
-  const start = el("button", "shrbtn primary", "Start session here") as HTMLButtonElement;
-  start.onclick = () => void startSession(path);
-  acts.appendChild(start);
-  if (info?.git && !info.worktree) {
-    const lane = el("button", "shrbtn", "⎇ New lane here") as HTMLButtonElement;
-    lane.title = "create a git worktree (lane) in this repo and open a session in it";
-    lane.onclick = () => void startWorktree(path);
-    acts.appendChild(lane);
-  }
-  shell.detail.appendChild(acts);
-  appendSpawnOptions(shell.detail);
-
-  if (load.st === "loading") { shell.detail.appendChild(el("div", "hint shellhint", "reading…")); return; }
-  if (load.st === "fail") { shell.detail.appendChild(el("div", "diffstat err", load.why)); return; }
-  if (!info) return; // unreachable: st === "ok" carries one
-  if (info.error) { shell.detail.appendChild(el("div", "diffstat err", info.error)); return; }
-  if (!info.exists) {
-    shell.detail.appendChild(el("div", "diffstat err", "this folder no longer exists"));
-    return;
-  }
-  if (!info.git) {
-    shell.detail.appendChild(el("div", "hint shellhint",
-      "not a git repo — a session here works fine, there is just nothing to branch, diff or land"));
-    appendDirContents(shell.detail, info);
-    return;
-  }
-
-  const facts = el("div", "ocfacts");
-  facts.appendChild(chip(info.branch ?? "detached HEAD", info.branch ? "" : "warn"));
-  if (info.worktree) facts.appendChild(chip("⎇ this is a lane", "",
-    "a git worktree, not the primary checkout — Fleet lanes live in <repo>.worktrees/"));
-  facts.appendChild(info.dirty
-    ? chip(`${info.dirty} uncommitted`, "warn")
-    : chip("clean tree", "ok"));
-  // ABSENT is not zero: a branch with no upstream has nothing to be ahead OF, and rendering 0/0
-  // would state a comparison that was never made
-  if (typeof info.ahead === "number" && typeof info.behind === "number")
-    facts.appendChild(chip(`↑${info.ahead} ↓${info.behind}`, info.ahead ? "warn" : "",
-      "commits ahead of / behind the upstream branch"));
-  else facts.appendChild(chip("no upstream", "dim",
-    "this branch tracks nothing, so there is no ahead/behind to report — not a measured zero"));
-  if (info.lanes) facts.appendChild(chip(`${info.lanes} lane${info.lanes === 1 ? "" : "s"}`, "",
-    "Fleet worktrees forked from this repo, in <repo>.worktrees/"));
-  shell.detail.appendChild(facts);
-
-  appendDirContents(shell.detail, info);
-
-  // `recent` is a newer field than this route: a client built ahead of the server it talks to gets
-  // `last` alone, and one commit is what it can honestly show — not a padded list of one.
-  const commits = info.recent ?? (info.last ? [info.last] : []);
-  const sec = el("div", "shellsec");
-  sec.appendChild(el("span", "shellsect", "Recent commits"));
-  if (commits.length) sec.appendChild(el("span", "shellsecn", String(commits.length)));
-  shell.detail.appendChild(sec);
-  if (!commits.length) {
-    shell.detail.appendChild(el("div", "hint shellhint", "no commits yet in this repo"));
-    return;
-  }
-  for (const c of commits) {
-    const row = el("div", "pkdcommit");
-    row.appendChild(el("div", "pkdlast", c.subject));
-    row.appendChild(el("div", "diffstat", `${c.hash} · ${fmtTs(c.ts)}`));
-    shell.detail.appendChild(row);
-  }
-  // says what this list is NOT, so nobody reads five subjects as the repo's history: the audit
-  // trail and the activity window's commits lens are where the full record lives.
-  shell.detail.appendChild(el("div", "hint shellhint",
-    `the newest ${commits.length} — a glance at what this repo has been doing, not its history.`
-    + " The activity window's Commits lens carries the full list."));
-}
-
-// the folder's own children. This is the thing the pane was missing: a branch name and a commit
-// subject do not tell two similarly-named checkouts apart, and their contents do at one glance.
-// --- Contents: a tree you open IN PLACE, not a listing that sends you somewhere -----------------
-//
-// This list used to be one flat level, and a folder in it RE-ROOTED the tree on the left — you
-// asked what is in a folder and the whole window moved. Now it opens where it stands, with the
-// same guides, elbows and descender the left tree uses, so nesting is drawn rather than implied.
-// Its expansion state is its OWN: the left tree answers "where do I want to work", this answers
-// "what is in this project", and neither is a view of the other.
-interface DirEntry { name: string; dir: boolean }
-let pkdRoot = "";                                     // the folder this pane is showing
-let pkdBox: HTMLElement | null = null;                // the element to repaint on expand/collapse
-let pkdInfo: DirInfoResp | null = null;
-const pkdOpen = new Set<string>();
-const pkdKids = new Map<string, DirEntry[] | null>(); // null = read, and unreadable
-const pkdBusy = new Set<string>();
-
-// entries (files AND folders) for any path. /api/dirs is folders-only, which is right for the
-// left tree and useless here. No new route: this keeps the whole change client-side, so it goes
-// live on `bun run build` without an srv restart.
-async function fetchEntries(path: string): Promise<DirEntry[] | null> {
-  const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`).catch(() => null);
-  if (!res || !res.ok) return null;
-  const d = (await res.json().catch(() => null)) as DirInfoResp | null;
-  return d?.entries ?? null;
-}
-
-async function toggleContents(path: string) {
-  if (pkdOpen.has(path)) { pkdOpen.delete(path); paintContents(); return; }
-  if (!pkdKids.has(path)) {
-    if (pkdBusy.has(path)) return;
-    pkdBusy.add(path);
-    paintContents();                                  // the row says it is working
-    const kids = await fetchEntries(path);
-    pkdBusy.delete(path);
-    // an unreadable folder caches as null rather than retrying on every click — the row then says
-    // so, which is the same bargain the left tree makes
-    pkdKids.set(path, kids);
-  }
-  pkdOpen.add(path);
-  paintContents();
-}
-
-function contentsRow(e: DirEntry, path: string, depth: number, blanks: boolean[], last: boolean,
-                     rootPath: string): HTMLElement {
-  const open = e.dir && pkdOpen.has(path);
-  const row = el("div", `pkdent${e.dir ? " dir" : ""}${open ? " open" : ""}`);
-  row.title = path;
-  const lead = el("span", "pklead");
-  for (let i = 0; i <= depth; i++) {
-    const g = el("span", "pkguide");
-    if (i === depth) g.classList.add(last ? "end" : "branch");
-    else if (blanks[i]) g.classList.add("blank");
-    lead.appendChild(g);
-  }
-  // a FILE reserves the same column the ▸ occupies. It has nothing to expand, but taking the
-  // column away would step every filename left of its sibling folders and undo the alignment the
-  // guides just established.
-  const tw = el("span", `pktw${open ? " open" : ""}`,
-    e.dir ? (pkdBusy.has(path) ? "·" : open ? "▾" : "▸") : "");
-  if (e.dir) {
-    tw.title = open ? "collapse" : "expand";
-    tw.onclick = (ev) => { ev.stopPropagation(); void toggleContents(path); };
-  }
-  lead.appendChild(tw);
-  row.appendChild(lead);
-  row.appendChild(pkIcon(e.dir ? (open ? "folderOpen" : "folder") : "file"));
-  row.appendChild(el("span", "pkdname", e.name + (e.dir ? "/" : "")));
-  if (e.dir) {
-    // re-rooting the left tree was what a click did here, and it is still worth having — it just
-    // stops being what happens when you only wanted to look inside.
-    const go = el("span", "pkdgo", "↗");
-    go.title = `make ${e.name}/ the top of the tree on the left`;
-    go.onclick = (ev) => { ev.stopPropagation(); void browse(path); };
-    row.appendChild(go);
-    row.onclick = () => void toggleContents(path);
-  } else {
-    row.onclick = () => {
-      const shell = pkShell;
-      if (!shell) return;
-      showFileView(shell, {
-        path, label: e.name,
-        source: "as it is on disk right now",
-        back: { label: baseName(rootPath), go: () => void showDirDetail(rootPath) },
-      });
-    };
-  }
-  return row;
-}
-
-function paintContents() {
-  const box = pkdBox;
-  const info = pkdInfo;
-  if (!box || !info) return;
-  box.replaceChildren();
-  // Nothing expanded means every row is a sibling of every other, and siblings do not need to be
-  // stacked in one column down the middle of a wide pane — the stylesheet lays them out as a grid.
-  // Expanding anything ends that: nesting reads top-to-bottom, and a grid would break a subtree
-  // across a column boundary, away from the parent whose guide line claims it.
-  box.classList.toggle("flat", pkdOpen.size === 0);
-  const emit = (path: string, depth: number, blanks: boolean[]) => {
-    const kids = pkdKids.get(path);
-    if (kids === null) {
-      const bad = el("div", "pknone tree", "could not be read — that is a permissions answer");
-      bad.style.setProperty("--pkdepth", String(depth));
-      box.appendChild(bad);
-      return;
-    }
-    if (!kids) return;
-    if (!kids.length) {
-      const none = el("div", "pknone tree", "empty");
-      none.style.setProperty("--pkdepth", String(depth));
-      box.appendChild(none);
-      return;
-    }
-    kids.forEach((e, i) => {
-      const last = i === kids.length - 1;
-      const full = `${path}/${e.name}`;
-      box.appendChild(contentsRow(e, full, depth, blanks, last, info.path));
-      if (e.dir && pkdOpen.has(full)) emit(full, depth + 1, [...blanks, last]);
-    });
-  };
-  emit(info.path, 0, []);
-}
-
-function appendDirContents(target: HTMLElement, info: DirInfoResp) {
-  const sec = el("div", "shellsec");
-  sec.appendChild(el("span", "shellsect", "Contents"));
-  const entries = info.entries;
-  if (entries === undefined) {
-    target.appendChild(sec);
-    target.appendChild(el("div", "hint shellhint",
-      "this folder's contents could not be read — that is a permissions answer, not an empty folder"));
-    return;
-  }
-  // counted over what was actually LISTED. A capped listing says so instead of splitting a total it
-  // only partly saw — the entries sort folders first, so the unlisted tail is not a known mix.
-  const dirs = entries.filter((e) => e.dir).length;
-  const files = entries.length - dirs;
-  const total = info.entryTotal ?? entries.length;
-  const parts = [`${dirs} folder${dirs === 1 ? "" : "s"}`, `${files} file${files === 1 ? "" : "s"}`];
-  if (total > entries.length) parts.unshift(`${entries.length} of ${total}`);
-  if (info.hidden) parts.push(`${info.hidden} hidden`);
-  sec.appendChild(el("span", "shellsecn", parts.join(" · ")));
-  target.appendChild(sec);
-  if (!entries.length) {
-    target.appendChild(el("div", "hint shellhint",
-      info.hidden ? "nothing here but dot-entries — the folder is not empty, its contents are all hidden"
-        : "this folder is empty"));
-    return;
-  }
-  // switching to a DIFFERENT folder starts a fresh tree; re-rendering the same one (the pane
-  // repaints on every selection) keeps whatever the reader has opened
-  if (info.path !== pkdRoot) { pkdRoot = info.path; pkdOpen.clear(); pkdKids.clear(); pkdBusy.clear(); }
-  pkdKids.set(info.path, entries);
-  pkdInfo = info;
-  pkdBox = el("div", "pkdtree");
-  paintContents();
-  target.appendChild(pkdBox);
-}
+// the options a founding sends with the slot's /open door. Absent fields mean "the default", which
+// is exactly what the server reads them as. src/founding.ts builds it.
+// `branch` only on the worktree doors (/open-worktree, /api/lanes): the owner's named lane
+export interface SpawnBody { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[]; branch?: string }
 
 // --- the file view: one renderer for every file list in the app ---------------------------------
 //
-// Four surfaces list files and none of them could open one: the picker's Contents, a commit's
+// Four surfaces listed files and none of them could open one: the old picker's Contents, a commit's
 // files, a land's footprint, and the board's changed-files card (whose rows all opened the WHOLE
 // working diff, whichever row you clicked). They are the same gesture — "show me that file" — so
 // they share this one function, and each caller supplies the two things only it knows: WHICH
@@ -5014,20 +4686,7 @@ function openFileEditor(shell: Shell, body: HTMLElement,
   ta.focus();
 }
 
-// pin/unpin round-trips to the server (pins follow the owner across devices), then re-renders
-async function togglePin(path: string) {
-  const res = await post("/api/pins", { path, on: !pkPins.has(path) });
-  if (!res.ok) return;
-  const data = (await res.json()) as { pins?: string[] };
-  pkPins = new Set(data.pins ?? []);
-  const keepFilter = pkFilter.value; // browse() clears it — restore so ⌘D-pin keeps your context
-  await browse(pkPathIn.value); // rebuild the Pinned section + star states from the new set
-  // browse() drops the search with the root it belonged to; the query is back on screen, so the
-  // search it stands for has to come back too, or the box would describe a list it no longer made
-  if (keepFilter) { pkFilter.value = keepFilter; applyPkFilter(); scheduleFind(); }
-}
-
-async function revealStartedSlot(slot: number): Promise<boolean> {
+export async function revealStartedSlot(slot: number): Promise<boolean> {
   const deadline = Date.now() + 4500;
   do {
     await refresh();
@@ -5037,891 +4696,59 @@ async function revealStartedSlot(slot: number): Promise<boolean> {
   return false;
 }
 
-async function startSession(path: string, label?: string, onError?: (msg: string) => void) {
-  if (!pickerSlot) return;
-  const slot = pickerSlot;
+// `via` is the founding window (src/founding.ts), the one caller: it names its own slot and sends
+// its own body, and every refusal is said through onError where the click was. `ok` = the
+// session stands and shows; the window then shows its start receipt, if it is still the one that asked
+export interface SpawnVia { slot: number; body: SpawnBody }
+export type StartResult = { ok: true; slot: number; packsDelivered?: boolean; reason?: string } | { ok: false };
+export async function startSession(path: string, label: string | undefined, onError: (msg: string) => void, via: SpawnVia): Promise<StartResult> {
+  const slot = via.slot;
   // the label is the ROLE at founding time: the server keys its one role card and the steward
   // token export off exactly this string, so the founding window sends it here and nowhere else
-  const res = await post(`/api/slots/${slot}/open`, { cwd: path, ...(label ? { label } : {}), ...spawnBody() });
+  const res = await post(`/api/slots/${slot}/open`, { cwd: path, ...(label ? { label } : {}), ...via.body });
   const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
   if (!res.ok) {
-    // the options row can now make this fail for a reason the path field cannot express (an
-    // unknown harness, a model the chosen harness rejects) — say which, instead of only
-    // flashing the path box red as if the folder were at fault. The founding window has no
-    // path box: there the refusal is said where the click was, not in a dialog above it.
-    pkPathIn?.classList.add("bad");
-    setTimeout(() => pkPathIn?.classList.remove("bad"), 1200);
-    if (onError) onError(j.error ?? `the server answered ${res.status}`);
-    else if (j.error) alert(`Session failed: ${j.error}`);
-    return;
+    // the options row can make this fail for a reason the folder is not at fault for (an unknown
+    // harness, a model the chosen harness rejects) — say which
+    onError(j.error ?? `the server answered ${res.status}`);
+    return { ok: false };
   }
   if (j.packsDelivered === false) {
-    // B2b: the founding stands, the packs did not cross — said where the click was (gfError),
-    // and the window stays open: closing it would read the delivery as having succeeded
-    if (onError) onError(j.reason ?? "the packs were not delivered");
-    else alert(`Session opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
-    return;
+    // The session stands; the delivery refusal stays visible in its start receipt.
+    onError(j.reason ?? "the packs were not delivered");
   }
   if (!await revealStartedSlot(slot)) {
-    const msg = `Session opened, but slot ${slot} did not appear within 5 seconds.`;
-    if (onError) onError(msg); else alert(msg);
-    return;
+    onError(`Session opened, but slot ${slot} did not appear within 5 seconds.`);
+    return { ok: false };
   }
-  closeFounding();
-  closePicker();
+  return { ok: true, slot, packsDelivered: j.packsDelivered, reason: j.reason };
 }
 
-async function startWorktree(repo: string, onError?: (msg: string) => void) {
-  if (!pickerSlot) return;
-  const slot = pickerSlot;
-  const chosen = harnesses.find((h) => h.id === spawnHarness)
+export async function startWorktree(repo: string, onError: (msg: string) => void, via: SpawnVia): Promise<StartResult> {
+  const { slot, body } = via;
+  const chosen = harnesses.find((h) => h.id === body.harness)
     ?? harnesses.find((h) => h.default);
   if (chosen?.allowsLanes === false) {
-    const msg = `${chosen.id} is main-session only — choose “Start session here”, not a lane.`;
-    if (onError) onError(msg); else alert(msg);
-    return;
+    onError(`${chosen.id} runs as a main session only, not as a lane.`);
+    return { ok: false };
   }
   // branch names are plumbing, not something to type: the server auto-names the lane
   // (fleet/<stamp>-<rand>) and the slot label is what you actually rename
-  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "", ...spawnBody() });
+  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "", ...body });
   const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
   if (!res.ok) {
-    pkPathIn?.classList.add("bad");
-    setTimeout(() => pkPathIn?.classList.remove("bad"), 1200);
-    if (onError) onError(j.error ?? `the server answered ${res.status}`);
-    else if (j.error) alert(`Lane failed: ${j.error}`);
-    return;
+    onError(j.error ?? `the server answered ${res.status}`);
+    return { ok: false };
   }
   if (j.packsDelivered === false) {
-    // B2b: the lane stands, the packs did not cross — said where the click was (gfError),
-    // and the window stays open: closing it would read the delivery as having succeeded
-    if (onError) onError(j.reason ?? "the packs were not delivered");
-    else alert(`Lane opened, but the packs were not delivered: ${j.reason ?? "unknown reason"}`);
-    return;
+    // The lane stands; the delivery refusal stays visible in its start receipt.
+    onError(j.reason ?? "the packs were not delivered");
   }
   if (!await revealStartedSlot(slot)) {
-    const msg = `Lane opened, but slot ${slot} did not appear within 5 seconds.`;
-    if (onError) onError(msg); else alert(msg);
-    return;
+    onError(`Lane opened, but slot ${slot} did not appear within 5 seconds.`);
+    return { ok: false };
   }
-  closeFounding();
-  closePicker();
-}
-
-// --- THE FOUNDING WINDOW (Gruendungsfenster B1 · Stufen 1–3, only client) -----------------------
-//
-// WHAT A CLICK ON A FREE PLACE OPENS. The old tree answered "where"; the owner asked for
-// „[Zitat entfernt]“ in that order (2026-09-21, Program 0d51b4d4): a comic page of roles, then
-// profile and context, then the repo — and the tree stays one step behind "Anderer Ordner",
-// because a repo with no running session exists nowhere else. Design:
-// docs/messungen/2026-09-22-gruendungsfenster-entwurf.md §4 "erster Schnitt"; the mockup's shapes
-// (docs/design/gruendungsfenster/gf.js) are the reference, the grammar the material — G4.1 window,
-// G4.4 selection, G3.1 segments, G4.3 model switch, G0.5 owner language, G0.7 mobile fullscreen.
-// W6, decided in the design: the window hangs NEXT TO THE CLICKED ROW (the owner's own words),
-// not centred like a shell window — his sentence sets the place, the grammar sets the material.
-// The context column is READ-ONLY and says the truth about the founding it stands over: a role
-// card with anchors for an Orchestrator, nothing for a founding by hand (pack toggles are B2 and
-// are forbidden here). The two facts B3 added to dirinfo — a repo's packs and its seatless
-// worktrees — are exactly what makes step 3's card and the "vorhandener Worktree" role honest.
-type GfRole = "orch" | "wt-new" | "wt-old" | "plain" | "steward";
-
-// label the server keys the role off: isOrchestratorLabel (word boundary) and STEWARD_LABEL.
-const gfRoleLabel = (r: GfRole): string | undefined =>
-  r === "orch" ? "Orchestrator" : r === "steward" ? "⚙ steward" : undefined;
-
-let gfWin: HTMLElement | null = null;
-let gfStep: 1 | 2 | 3 = 1;
-let gfRole: GfRole | null = null;
-let gfRepo: string | null = null;       // the repo the card currently describes
-let gfDir: DirInfoResp | null = null;   // dirinfo of gfRepo — late arrivals lose to gfSeq
-let gfDirErr: string | null = null;
-let gfSeq = 0;
-let gfOrphan: string | null = null;     // the seatless worktree "wt-old" will seat
-let gfError: string | null = null;      // a refused founding, said where the click was
-let gfRepos: GfRepo[] = [];             // step 3's list, taken when Confirm opens the step
-let gfMoreOpen = false;                 // the "Mehr" reiter (G3.2), closed by default
-let gfRestoreFocus: HTMLElement | null | undefined;
-let gfTeardown: (() => void) | null = null;
-
-// THE FOUNDING PLAN (Gruendungsfenster B2b): GET /api/founding-plan for the repo, harness and
-// mode this founding would have. It hangs off the REPO (the server plan reads one), the repo is
-// only chosen in step 3 (F5), so the plan loads there — latest-wins like gfLoadDir, its own
-// counter because the two loads race different routes.
-interface GfPlanPack { id: string; bytes: number; source: string; useWhen?: string }
-interface GfPlan { selected: GfPlanPack[]; omitted: { id: string; reason: string }[] }
-let gfPlan: GfPlan | null = null;     // the plan of (repo, harness, mode) — null while reading
-let gfPlanErr: string | null = null;  // a plan that could not be read — SKEW_NOTE for a 404
-let gfPlanFor: string | null = null;  // the key the last attempt was for — a mismatch refetches
-let gfPlanSeq = 0;
-let gfPacks = new Set<string>();      // the switched-on ids — default off IS today's founding
-let gfBusy = false;                   // a founding with packs answers only after the boot grace
-
-interface GfRepo { repo: string; name: string; mains: SlotInfo[]; lanes: SlotInfo[] }
-
-// the roles of step 1. The three the owner named first carry the mockup's art; „[Zitat entfernt]“ and
-// "Steward" are his F1 answer ("die einfache Session in einem Ordner + Steward kommen auf die
-// Rollen-Seite") and get art in the same stroke language. Texts explain in German (G0.5).
-const GF_ROLES: { id: GfRole; name: string; sub: string; say: string }[] = [
-  { id: "orch", name: "Orchestrator", sub: "hält die Fleet zusammen",
-    say: "Hält das Portfolio, schärft Aufträge und verteilt Arbeit — sie landet nicht selbst. Beim Start bekommt sie ihre Rollenkarte." },
-  { id: "wt-new", name: "Worker", sub: "auf neuem Worktree",
-    say: "Eine eigene Lane auf frischem Branch: arbeitet, beweist, wird gelandet." },
-  { id: "wt-old", name: "Worker", sub: "auf vorhandenem Worktree",
-    say: "Setzt einen liegengebliebenen Worktree wieder in einen Platz — die Arbeit darauf bleibt." },
-  { id: "plain", name: "Session", sub: "in einem Ordner",
-    say: "Ein Agent, ein Ordner — keine Rolle und keine Lane, das heutige Standard-Gründen." },
-  { id: "steward", name: "Steward", sub: "hält den Betrieb im Blick",
-    say: "Beobachtet die Fleet, meldet Stillstand und Widerspruch — nie eine zweite Owner-Stimme." },
-];
-
-const GF_STEPS: [number, string][] = [[1, "Rolle"], [2, "Profil & Kontext"], [3, "Repo"]];
-
-function closeFounding() {
-  const win = gfWin;
-  if (!win) return;
-  gfWin = null;
-  gfTeardown?.();
-  gfTeardown = null;
-  win.remove();
-  pickerSlot = 0;
-  gfMoreOpen = false;
-  gfError = null;
-  // the pack choice dies with the window it was made in: "Anderer Ordner" founds through the tree
-  // with the SAME slot, and that founding must stay byte-identical when no switch was flipped —
-  // a choice for the founding repo must never ride along to a different one
-  gfPlan = null;
-  gfPlanErr = null;
-  gfPacks = new Set();
-  gfBusy = false;
-  // G4.1: the focus goes back to the trigger — best effort. The bar's rows are not in the tab
-  // order, so focus() on one is a no-op until a card gives the bar a tab order; named, not hidden.
-  gfRestoreFocus?.focus?.();
-  gfRestoreFocus = undefined;
-}
-
-// the repos of the running fleet, busiest first — the list the mockup draws and step 3 shows.
-// Grouped by the canonical toplevel (SlotInfo.repo), so a MAIN living in a subdir and its lanes
-// land on the same card. A repo with no session is NOT here: that is what "Anderer Ordner" is for.
-function gfRepoList(): GfRepo[] {
-  const by = new Map<string, GfRepo>();
-  for (const s of fleet) {
-    if (!s.cwd) continue;
-    const repo = s.repo ?? s.cwd; // a pending git tick is not a reason to hide the session
-    const r = by.get(repo) ?? { repo, name: baseName(repo), mains: [], lanes: [] };
-    (s.worktree ? r.lanes : r.mains).push(s);
-    by.set(repo, r);
-  }
-  return [...by.values()].sort((a, b) =>
-    (b.mains.length + b.lanes.length) - (a.mains.length + a.lanes.length) || a.name.localeCompare(b.name));
-}
-
-// the window sits RECHTS NEBEN the clicked row, its notch pointing at it, and only climbs as far
-// up as its own height demands (gf.js#anchor). Mobile is fullscreen — there is nothing to anchor to.
-function gfPlace() {
-  const win = gfWin;
-  if (!win || isMobile()) return;
-  const side = document.getElementById("side");
-  const row = document.querySelector<HTMLElement>(`#slots [data-slot="${pickerSlot}"]`);
-  const left = (side?.getBoundingClientRect().right ?? 0) + 14;
-  const h = win.offsetHeight;
-  const mid = row ? row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2 : innerHeight / 2;
-  const top = Math.max(12, Math.min(innerHeight - h - 12, mid - h * 0.42));
-  win.style.left = `${left}px`;
-  win.style.top = `${top}px`;
-  const notch = win.querySelector<HTMLElement>(".gfnotch");
-  if (notch && row) notch.style.top = `${Math.max(10, Math.min(h - 18, mid - top - 6))}px`;
-}
-
-function gfBtn(label: string, primary: boolean, onclick: () => void): HTMLButtonElement {
-  const b = el("button", "gfbtn" + (primary ? " primary" : ""), label) as HTMLButtonElement;
-  b.onclick = onclick;
-  return b;
-}
-
-// the carry line under the head: what the earlier steps chose, each earlier step one "ändern" away
-function gfCarry(body: HTMLElement, parts: [string, boolean][], backTo: string, go: () => void) {
-  const c = el("div", "gfcarry");
-  c.append("Gewählt:");
-  for (const [txt, mono] of parts) c.append(el("span", "gfchip" + (mono ? " m" : ""), txt));
-  const b = el("button", "gfback", `ändern (${backTo})`) as HTMLButtonElement;
-  b.onclick = go;
-  c.append(b);
-  body.append(c);
-}
-
-const gfRoleText = (r: (typeof GF_ROLES)[number]): string =>
-  r.name === "Worker" ? `Worker · ${r.sub}` : `${r.name}${r.sub ? ` · ${r.sub}` : ""}`;
-
-function gfChooseRepo(repo: string) {
-  gfRepo = repo;
-  gfOrphan = null;
-  gfDir = null;
-  gfDirErr = null;
-  gfPlan = null;
-  gfPlanErr = null;
-  void gfLoadDir();
-  void gfLoadPlan();
-}
-
-async function gfLoadDir() {
-  const seq = ++gfSeq;
-  const path = gfRepo;
-  if (!path) return;
-  const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`);
-  if (seq !== gfSeq || !gfWin || gfRepo !== path) return; // latest-wins, like every dir pane
-  if (res.status === 404) { gfDirErr = SKEW_NOTE; renderGf(); return; }
-  if (!res.ok) { gfDirErr = `the server answered ${res.status} for this folder`; renderGf(); return; }
-  const info = (await res.json().catch(() => null)) as DirInfoResp | null;
-  if (seq !== gfSeq || !gfWin || gfRepo !== path) return;
-  if (!info) { gfDirErr = "the server's answer was not readable JSON"; renderGf(); return; }
-  gfDir = info;
-  renderGf();
-}
-
-// the plan of THIS founding, for the repo just chosen, the profile chosen in step 2 and the mode
-// the role spells (wt-new/wt-old are lane foundings, the rest are mains). 404 reads as SKEW_NOTE:
-// a page newer than its server must say so, never pose as a repo without packs.
-function gfPlanKey(): string {
-  const harness = spawnHarness ?? harnesses.find((h) => h.default)?.id ?? "";
-  const mode = gfRole === "wt-new" || gfRole === "wt-old" ? "lane" : "main";
-  return `${gfRepo ?? ""}|${harness}|${mode}`;
-}
-
-async function gfLoadPlan() {
-  const seq = ++gfPlanSeq;
-  const path = gfRepo;
-  if (!path) return;
-  gfPlanFor = gfPlanKey(); // the attempt is the memory — a failed plan is not refetched on every render
-  gfPlan = null;
-  gfPacks = new Set();     // a fresh plan is a fresh choice — old switches never ride across
-  const harness = spawnHarness ?? harnesses.find((h) => h.default)?.id ?? "";
-  const mode = gfRole === "wt-new" || gfRole === "wt-old" ? "lane" : "main";
-  const res = await api(`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`);
-  if (seq !== gfPlanSeq || !gfWin || gfRepo !== path) return; // latest-wins, like gfLoadDir
-  if (res.status === 404) { gfPlanErr = SKEW_NOTE; renderGf(); return; }
-  if (!res.ok) { gfPlanErr = `the server answered ${res.status} for this founding plan`; renderGf(); return; }
-  const j = (await res.json().catch(() => null)) as GfPlan | null;
-  if (seq !== gfPlanSeq || !gfWin || gfRepo !== path) return;
-  if (!j || !Array.isArray(j.selected) || !Array.isArray(j.omitted)) {
-    gfPlanErr = "the server's answer was not readable JSON"; renderGf(); return;
-  }
-  gfPlanErr = null;
-  gfPlan = j;
-  renderGf();
-}
-
-async function gfStart() {
-  const onError = (msg: string) => { gfError = msg; renderGf(); };
-  // a founding WITH packs answers only after the door's boot grace plus readiness — the button
-  // says so instead of sitting silent, and a packsDelivered:false lands here as gfError, the
-  // same place a refused founding speaks, never as a success
-  const sending = gfPacks.size > 0 && gfRole !== "wt-old";
-  if (sending) { gfBusy = true; renderGf(); }
-  try {
-    if (gfRole === "wt-new") {
-      if (gfRepo) await startWorktree(gfRepo, onError);
-    } else if (gfRole === "wt-old") {
-      if (gfRepo && gfOrphan) {
-        // THE CLICKED PLACE (B3): the lane is seated exactly here or refused naming who sits there
-        const slot = pickerSlot;
-        const res = await post("/api/lanes", { repo: gfRepo, attach: gfOrphan, slot, ...spawnBody() });
-        if (!res.ok) {
-          const err = (await res.json().catch(() => ({}))) as { error?: string };
-          onError(err.error ?? `the server answered ${res.status}`);
-          return;
-        }
-        const j = (await res.json().catch(() => ({}))) as { slot?: number };
-        const shown = j.slot ?? slot;
-        if (!await revealStartedSlot(shown)) {
-          onError(`Lane attached, but slot ${shown} did not appear within 5 seconds.`);
-          return;
-        }
-        closeFounding();
-      }
-    } else if (gfRole && gfRepo) {
-      await startSession(gfRepo, gfRoleLabel(gfRole), onError);
-    }
-  } finally {
-    if (sending) { gfBusy = false; renderGf(); }
-  }
-}
-
-function renderGf() {
-  const win = gfWin;
-  if (!win) return;
-  win.replaceChildren();
-  win.style.width = isMobile() ? "" : gfStep === 1 ? "640px" : gfStep === 2 ? "800px" : "840px";
-  const hd = el("div", "gfhead");
-  const ttl = el("div", "gfttl");
-  ttl.append("Neue Session ", el("span", "mono", `· Slot ${pickerSlot}`));
-  const steps = el("div", "gfsteps");
-  GF_STEPS.forEach(([n, name], i) => {
-    if (i) steps.append(el("i", "gfsep"));
-    steps.append(el("span", `gfs${n === gfStep ? " on" : n < gfStep ? " done" : ""}`, `${n} ${name}`));
-  });
-  const x = el("button", "gfx", "✕") as HTMLButtonElement;
-  x.title = "Schließen — der Platz bleibt frei (Esc)";
-  x.onclick = () => closeFounding();
-  hd.append(ttl, steps, x);
-  win.append(el("i", "gfnotch"), hd);
-  const body = el("div", "gfbody");
-  if (gfError) body.append(el("div", "gferror", gfError));
-  if (gfStep === 1) gfStep1(win, body);
-  else if (gfStep === 2) gfStep2(win, body);
-  else gfStep3(win, body);
-  gfPlace();
-}
-
-function gfStep1(win: HTMLElement, body: HTMLElement) {
-  const comic = el("div", "gfcomic");
-  GF_ROLES.forEach((r, i) => {
-    const p = el("button", `gfpanel gf-${r.id}`) as HTMLButtonElement;
-    if (r.id === gfRole) p.classList.add("pick");
-    p.title = r.say;
-    // the role art rides the one reviewed static-icon path (fleet-e2e-security.ts §7): it lives in
-    // PK_ICONS, and the wrapper is display:contents so .gfpanel stays the art's containing block
-    const art = pkIcon(`gf-${r.id}`);
-    art.className = "gfartwrap";
-    p.append(art);
-    const cap = el("div", "gfcap", r.name);
-    cap.append(el("small", "", r.sub));
-    const say = el("div", "gfsay");
-    say.append(el("span", "", r.say));
-    p.append(cap, el("span", "gfnum", String(i + 1)), say);
-    p.onclick = () => {
-      gfRole = r.id;
-      gfError = null;
-      // a role is a different founding shape — the pack choice (B2b) dies with it, so a leftover
-      // switch from wt-new can never ride into an attach, whose door refuses packs by name
-      gfPacks.clear();
-      for (const other of gfWin?.querySelectorAll(".gfpanel") ?? []) other.classList.toggle("pick", other === p);
-      const next = gfWin?.querySelector<HTMLButtonElement>(".gffoot .gfbtn.primary");
-      if (next) next.disabled = false;
-    };
-    // the mockup's fast path: the second click is the first two decisions at once
-    p.ondblclick = () => { p.click(); gfStep = 2; renderGf(); };
-    comic.append(p);
-  });
-  body.append(comic);
-  const foot = el("div", "gffoot");
-  foot.append(el("span", "gfhint", "Klick merkt vor · Doppelklick geht gleich weiter · Pfeiltasten bewegen"));
-  foot.append(gfBtn("Cancel", false, () => closeFounding()));
-  const next = gfBtn("Next ▸", true, () => { if (gfRole) { gfStep = 2; renderGf(); } });
-  next.disabled = !gfRole;
-  foot.append(next);
-  win.append(body, foot);
-}
-
-function gfStep2(win: HTMLElement, body: HTMLElement) {
-  const role = gfRole ? GF_ROLES.find((r) => r.id === gfRole)! : null;
-  if (role) gfCarry(body, [[gfRoleText(role), false]], "Rolle", () => { gfStep = 1; renderGf(); });
-  const two = el("div", "gftwo");
-
-  const prof = el("div", "gfcol");
-  prof.append(el("h3", "", "Profil"), el("div", "gfsub", "Wie der Agent läuft."));
-  const agents = agentHarnesses();
-  const chosen = harnesses.find((h) => h.id === spawnHarness)
-    ?? agents.find((h) => h.default) ?? null;
-  // the harness as a segment (G3.1) — the tree's <select>, redrawn in the window's own material
-  if (agents.length >= 2) {
-    const fld = el("div", "gffld");
-    fld.append(el("div", "gfk", "Harness"));
-    const seg = el("div", "gfseg");
-    for (const a of agents) {
-      const on = (spawnHarness ?? agents.find((x) => x.default)?.id) === a.id;
-      const b = el("button", "gfsegbtn" + (on ? " on" : ""), a.id) as HTMLButtonElement;
-      b.setAttribute("aria-pressed", String(on));
-      b.onclick = () => {
-        spawnHarness = a.default ? null : a.id;
-        // a level from the harness being left behind must not ride along — the same three rules
-        // the tree's options row applies, because both write the same founding decision
-        if (!a.supports.effort || !a.effortLevels.includes(spawnEffort)) spawnEffort = "";
-        if (!a.supports.model) spawnModel = "";
-        if (!a.supports.container) { spawnContainer = ""; spawnContainerContext = ""; }
-        gfMoreOpen = false;
-        renderGf();
-      };
-      seg.append(b);
-    }
-    if (chosen) {
-      const facts = [
-        chosen.allowsLanes === false ? "keine Lanes — nur die Haupt-Session" : "Lanes erlaubt",
-        chosen.supports.container ? "läuft in einem Container" : "kein Container",
-      ];
-      fld.append(seg, el("div", "gfhint2", facts.join(" · ")));
-    } else fld.append(seg);
-    prof.append(fld);
-  }
-  // the model as an options switch (G4.3): value + chevron, the popover opens ABOVE, "default"
-  // and the catalogue's models as rows, an own value typed at the bottom
-  if (chosen?.supports.model) {
-    const fld = el("div", "gffld");
-    fld.append(el("div", "gfk", "Modell"));
-    const wrap = el("div", "gfswrap");
-    const sw = el("button", "gfsw") as HTMLButtonElement;
-    sw.append(el("span", "", spawnModel ? `${spawnModel}${modelNotice(chosen.id, spawnModel) ? ` · ${modelNotice(chosen.id, spawnModel)}` : ""}` : "default"), icon("chevron"));
-    sw.title = "Klick öffnet die Modellwahl — „default“ lässt den Adapter seinen nehmen";
-    const pop = el("div", "gfpop");
-    pop.style.maxHeight = "65vh";
-    pop.style.overflowY = "auto";
-    const pick = (v: string) => { spawnModel = v; renderGf(); };
-    const row = (label: string, v: string) => {
-      const r = el("button", "gfpoprow" + (spawnModel === v ? " on" : ""), label) as HTMLButtonElement;
-      if (modelNotice(chosen.id, v)) { r.style.whiteSpace = "normal"; r.style.overflowWrap = "anywhere"; }
-      r.onclick = () => pick(v);
-      return r;
-    };
-    pop.append(row("default", ""));
-    for (const m of chosen.models ?? []) if (m) {
-      const notice = modelNotice(chosen.id, m);
-      pop.append(row(`${m}${notice ? ` · ${notice}` : ""}`, m));
-    }
-    const inWrap = el("label", "gfpopin");
-    inWrap.append(el("span", "", "eigener Wert"));
-    const min = el("input", "") as HTMLInputElement;
-    min.type = "text";
-    min.spellcheck = false;
-    min.autocomplete = "off";
-    min.value = spawnModel;
-    min.placeholder = "genau so, wie der Adapter ihn liest";
-    min.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); pick(min.value.trim()); } };
-    inWrap.append(min);
-    pop.append(inWrap);
-    sw.onclick = () => {
-      const open = pop.classList.toggle("open");
-      if (open && !isMobile()) {
-        const rect = sw.getBoundingClientRect();
-        pop.style.position = "fixed";
-        pop.style.left = `${rect.left}px`;
-        pop.style.right = "auto";
-        pop.style.width = `${rect.width}px`;
-        pop.style.bottom = "auto";
-        pop.style.top = `${rect.bottom + 6}px`;
-      }
-    };
-    wrap.append(sw, pop);
-    fld.append(wrap);
-    prof.append(fld);
-  }
-  // effort exists only where the harness has the concept — the field simply is not offered otherwise
-  if (chosen?.supports.effort && chosen.effortLevels.length) {
-    const fld = el("div", "gffld");
-    fld.append(el("div", "gfk", "Effort"));
-    const seg = el("div", "gfseg");
-    for (const lv of ["", ...chosen.effortLevels]) {
-      const on = spawnEffort === lv;
-      const b = el("button", "gfsegbtn" + (on ? " on" : ""), lv || "default") as HTMLButtonElement;
-      b.setAttribute("aria-pressed", String(on));
-      b.onclick = () => { spawnEffort = lv; renderGf(); };
-      seg.append(b);
-    }
-    fld.append(seg);
-    prof.append(fld);
-  }
-  // the reiter (G3.2) for what only some harnesses carry: the box and its daemon. The codex
-  // context window would belong here too, but the client cannot tell which harnesses take it
-  // (the catalogue has no field), so offering it would 400 on every other harness — left out.
-  if (chosen?.supports.container) {
-    const more = el("div", "gfmore");
-    const head = el("button", "gfmorehead") as HTMLButtonElement;
-    head.append(el("span", "", "Mehr: Container"), icon("chevron"));
-    head.setAttribute("aria-expanded", String(gfMoreOpen));
-    head.title = "Container und Docker-Daemon dieser Session — leer heißt Fleet-Standard";
-    head.onclick = () => { gfMoreOpen = !gfMoreOpen; renderGf(); };
-    more.append(head);
-    if (gfMoreOpen) {
-      const box = el("div", "gfmorebox");
-      const cIn = el("input", "") as HTMLInputElement;
-      cIn.type = "text";
-      cIn.spellcheck = false;
-      cIn.autocomplete = "off";
-      cIn.placeholder = containerDefaults?.container ?? "container";
-      cIn.value = spawnContainer;
-      cIn.oninput = () => { spawnContainer = cIn.value.trim(); };
-      const xIn = el("input", "") as HTMLInputElement;
-      xIn.type = "text";
-      xIn.spellcheck = false;
-      xIn.autocomplete = "off";
-      xIn.placeholder = containerDefaults?.containerContext ?? "docker context";
-      xIn.value = spawnContainerContext;
-      xIn.title = "Auf welchem Docker-Daemon der Container läuft — ein Image lebt in genau einem, deshalb der Context, in dem es gebaut wurde (intern: docker context).";
-      xIn.oninput = () => { spawnContainerContext = xIn.value.trim(); };
-      box.append(labelled("container", cIn), labelled("docker context", xIn));
-      more.append(box);
-    }
-    prof.append(more);
-  }
-  two.append(prof);
-
-  // the context column — READ-ONLY (pack toggles are B2 and forbidden here), so it says what the
-  // founding it stands over will actually receive, never a switch that would do nothing
-  const ctx = el("div", "gfcol");
-  ctx.append(el("h3", "", "Kontext"),
-    el("div", "gfsub", "Context-Packs sind Zeiger auf Stellen im Repo, kein kopierter Text."));
-  if (gfRole === "orch") {
-    ctx.append(el("div", "gfnote",
-      "Rollenkarte mit Ankern — beim Start stellt der Server der Orchestrator ihre Karte mit Kontext-Ankern zu."));
-  } else {
-    ctx.append(el("div", "gfnote", "Keine Packs — eine Gründung von Hand bekommt keinen Brief zugestellt."),
-      el("div", "gfhint2", "Packs wählst du in Schritt 3, nach der Repo-Wahl."));
-  }
-  two.append(ctx);
-  body.append(two);
-  const foot = el("div", "gffoot");
-  foot.append(el("span", "gfhint", "Bestätigen übernimmt beides; die Repo-Wahl kommt danach."));
-  foot.append(gfBtn("Back", false, () => { gfStep = 1; renderGf(); }));
-  foot.append(gfBtn("Confirm", true, () => {
-    gfRepos = gfRepoList();
-    gfStep = 3;
-    if (gfRepos.length === 1) gfChooseRepo(gfRepos[0]!.repo);
-    renderGf();
-  }));
-  win.append(body, foot);
-}
-
-function gfStep3(win: HTMLElement, body: HTMLElement) {
-  const role = gfRole ? GF_ROLES.find((r) => r.id === gfRole)! : null;
-  if (role) {
-    const model = [spawnHarness || "default harness", spawnModel || "default model", spawnEffort || "default effort"]
-      .filter((x) => !x.startsWith("default")) as string[];
-    gfCarry(body, [[gfRoleText(role), false],
-      [model.length ? model.join(" · ") : "Profil auf Standard", model.length > 0]],
-      "Profil & Kontext", () => { gfStep = 2; renderGf(); });
-  }
-  if (!gfRepos.length) {
-    body.append(el("div", "gfnote",
-      "Kein Repo der Fleet hat gerade eine Session — „Anderer Ordner …“ öffnet den Verzeichnisbaum."));
-  }
-  // a profile or role changed since the plan was attempted — refetch. gfLoadPlan clears the stale
-  // plan synchronously, so no switch of the outdated plan is clickable while it runs.
-  if (gfRepo && gfPlanFor !== gfPlanKey()) void gfLoadPlan();
-  const split = el("div", "gfsplit");
-  const list = el("div", "gfrl");
-  for (const r of gfRepos) {
-    const row = el("button", "gfr" + (gfRepo === r.repo ? " on" : "")) as HTMLButtonElement;
-    row.style.setProperty("--h", String(projectHue(r.repo)));
-    row.append(el("i", "gfdt"), el("span", "", r.name),
-      el("span", "gfc", String(r.mains.length + r.lanes.length)));
-    row.title = `${r.mains.length} Session${r.mains.length === 1 ? "" : "s"}`
-      + (r.lanes.length ? ` · ${r.lanes.length} Lane${r.lanes.length === 1 ? "" : "s"}` : "");
-    row.onclick = () => { gfChooseRepo(r.repo); renderGf(); };
-    list.append(row);
-  }
-  const other = el("button", "gfr other", "Anderer Ordner …") as HTMLButtonElement;
-  other.title = "der heutige Verzeichnisbaum — jedes Repo, auch eines ohne laufende Session";
-  other.onclick = () => {
-    const slot = pickerSlot;
-    closeFounding();
-    openTreePicker(slot);
-  };
-  list.append(other);
-  split.append(list);
-
-  const card = el("div", "gfcard");
-  const sel = gfRepos.find((r) => r.repo === gfRepo);
-  // the head stands over every card state — reading, refused, loaded — so the reader never
-  // loses which repo the pane below it is about
-  const cardHead = () => {
-    const head = el("div", "gfhead");
-    const nm = el("div", "");
-    nm.append(el("div", "gfnm", sel!.name), el("div", "gfpth", sel!.repo.replace(/^\/Users\/[^/]+/, "~")));
-    head.append(nm);
-    return head;
-  };
-  if (!sel) {
-    card.append(el("div", "gfhint2", "Wähle links ein Repo — die Karte zeigt, wer dort arbeitet und was es einem Agenten mitgibt."));
-  } else if (gfDirErr) {
-    card.append(cardHead(), el("div", "gferror", gfDirErr));
-  } else if (!gfDir) {
-    card.append(cardHead(), el("div", "gfhint2", "liest …"));
-  } else {
-    const info = gfDir;
-    card.append(cardHead());
-    const facts = el("div", "gffacts");
-    facts.append(el("span", "gfchip m", info.branch ?? "detached HEAD"));
-    facts.append(info.dirty ? el("span", "gfchip warn", `${info.dirty} uncommitted`) : el("span", "gfchip ok", "sauber"));
-    // ABSENT is not zero: no upstream, nothing to be ahead of — the tree's detail already speaks this
-    if (typeof info.ahead === "number" && typeof info.behind === "number")
-      facts.append(el("span", "gfchip m", `↑${info.ahead} ↓${info.behind}`));
-    else facts.append(el("span", "gfchip", "kein Upstream"));
-    card.append(facts);
-
-    const who = el("div", "gfsec");
-    who.append(el("div", "gfsh", "Wer hier arbeitet"));
-    for (const s of [...sel.mains, ...sel.lanes].slice(0, 7)) {
-      const a = el("div", "gfag");
-      a.append(el("span", "gfid mono", String(s.id)), el("span", "", s.label || baseName(s.cwd || sel.repo)),
-        el("span", "gfhm", `${s.harness ?? "default"} · ${s.model || "—"}${s.modelSuperseded ? " · ⚠ superseded" : ""}`));
-      who.append(a);
-    }
-    const rest = sel.mains.length + sel.lanes.length - 7;
-    if (rest > 0) who.append(el("div", "gfhint2", `+ ${rest} weitere`));
-    if (!sel.mains.length && !sel.lanes.length) who.append(el("div", "gfhint2", "niemand — die Zahl links war die der Sessions, als sich das Fenster öffnete"));
-    card.append(who);
-
-    const gives = el("div", "gfsec");
-    gives.append(el("div", "gfsh", "Was es einem Agenten mitgibt"));
-    const gv = el("div", "gfgv");
-    const g = (k: string, v: HTMLElement | string, warn = false) => {
-      gv.append(el("span", "", k), typeof v === "string" ? el("span", "gv" + (warn ? " miss" : ""), v) : v);
-    };
-    const has = (name: string) => info.entries?.some((e) => !e.dir && e.name === name);
-    // THE TWO FACTS B3 ADDED. A broken manifest is an error, never an empty list — the value
-    // keeps the distinction the server drew.
-    g("AGENTS.md — der portable Vertrag", has("AGENTS.md") ? "liegt da" : "fehlt", !has("AGENTS.md"));
-    g("CLAUDE.md — das Regelbuch", has("CLAUDE.md") ? "liegt da" : "fehlt", !has("CLAUDE.md"));
-    // THE FOUNDING PACKS (Gruendungsfenster B2b), in the place of the read-only line the card had:
-    // the plan hangs off the repo, the repo is only chosen here (F5), so this is where the choice
-    // lives (F3) — each selected pack a switch, DEFAULT OFF (today's founding), each omitted pack
-    // visible with its reason and not switchable. wt-old seats a worktree that predates this
-    // founding — the door refuses a packs list by name, so here the switches stand locked.
-    const pv = el("div", "gfpv");
-    if (gfPlanErr) {
-      pv.append(el("span", "gv miss", gfPlanErr));
-    } else if (!gfPlan) {
-      pv.append(el("span", "gv", "liest …"));
-    } else {
-      const kb = (n: number): string =>
-        `${n >= 10000 ? String(Math.round(n / 1000)) : (n / 1000).toFixed(1).replace(".", ",")} KB`;
-      const srcOf = (s: string): string =>
-        s === "fleet-seed" ? "Fleet-Samen" : s === "repo-manifest" ? "Repo-Manifest" : s;
-      for (const p of gfPlan.selected) {
-        const on = gfPacks.has(p.id);
-        const b = el("button", "gfpack" + (on ? " on" : "")) as HTMLButtonElement;
-        if (gfRole === "wt-old") b.disabled = true;
-        b.setAttribute("aria-pressed", String(on));
-        b.title = `${p.useWhen ? `${p.useWhen} — ` : ""}${srcOf(p.source)}`;
-        b.append(el("span", "gfpn", p.id), el("span", "gfpb", kb(p.bytes)),
-          el("span", "gfpt" + (on ? " on" : ""), on ? "an" : "aus"));
-        b.onclick = () => { if (gfPacks.has(p.id)) gfPacks.delete(p.id); else gfPacks.add(p.id); renderGf(); };
-        pv.append(b);
-      }
-      for (const o of gfPlan.omitted) {
-        const d = el("div", "gfpack omit");
-        d.title = o.reason;
-        d.append(el("span", "gfpn", o.id), el("span", "gfpr", o.reason));
-        pv.append(d);
-      }
-      if (!gfPlan.selected.length && !gfPlan.omitted.length) pv.append(el("span", "gv", "keine"));
-    }
-    g("Kontext-Packs — je Pack an/aus", pv);
-    g("Worktrees auf der Platte", String(info.lanes ?? 0));
-    const orphans = info.orphans ?? [];
-    if (gfRole === "wt-old") {
-      const ov = el("span", "gvgv");
-      if (orphans.length) {
-        for (const o of orphans) {
-          const ob = el("button", "gforph" + (gfOrphan === o.path ? " pick" : "")) as HTMLButtonElement;
-          ob.append(el("span", "", baseName(o.path)), el("span", "gforphb", o.branch || "detached"));
-          ob.title = `diesen Worktree auf Platz ${pickerSlot} setzen — der Klick merkt vor, „Attach lane“ übernimmt`;
-          ob.onclick = () => { gfOrphan = gfOrphan === o.path ? null : o.path; renderGf(); };
-          ov.append(ob);
-        }
-      } else ov.append(el("span", "gv", "keine"));
-      g("davon ohne Platz — zum Setzen auf diesen Slot", ov);
-    } else {
-      g("davon ohne Platz", String(orphans.length));
-    }
-    gives.append(gv);
-    if (gfRole === "wt-old" && gfPlan && gfPlan.selected.length)
-      gives.append(el("div", "gfhint2",
-        "attach seats a worktree that predates this founding — packs delivers only at a fresh founding"));
-    card.append(gives);
-
-    if (info.recent?.length) {
-      const last = el("div", "gfsec");
-      last.append(el("div", "gfsh", "Zuletzt"));
-      for (const c of info.recent) {
-        const cm = el("div", "gfcm");
-        cm.append(el("span", "sha", c.hash), el("span", "s", c.subject), el("span", "ago", fmtTs(c.ts)));
-        last.append(cm);
-      }
-      card.append(last);
-    }
-  }
-  split.append(card);
-  body.append(split);
-  const foot = el("div", "gffoot");
-  foot.append(el("span", "gfhint", gfRole === "wt-old"
-    ? "Den Worktree in der Karte vormerken, dann übernimmt der Knopf — der Platz ist dieser hier."
-    : "Das Repo trägt dieselben Fakten, nach denen man einen Worker wählt: wer dort arbeitet, was er mitbekommt."));
-  foot.append(gfBtn("Back", false, () => { gfStep = 2; renderGf(); }));
-  const go = gfBtn(gfBusy ? "Packs werden zugestellt …"
-    : gfRole === "wt-new" ? "Start lane ▸" : gfRole === "wt-old" ? "Attach lane ▸" : "Start session",
-    true, () => void gfStart());
-  go.disabled = gfBusy || !gfRepo || (gfRole === "wt-old" && !gfOrphan);
-  foot.append(go);
-  win.append(body, foot);
-}
-
-function openPicker(slotId: number) {
-  setDrawer(false);
-  closeFounding();
-  pkShell?.close();
-  pickerSlot = slotId;
-  // a fresh picker is a fresh decision: the previous session's harness/model/effort must not be
-  // inherited by whatever this slot becomes next (the server clears the same three on recycle).
-  spawnHarness = null; spawnModel = ""; spawnEffort = ""; spawnContainer = ""; spawnContainerContext = "";
-  gfStep = 1; gfRole = null; gfRepo = null; gfDir = null; gfDirErr = null; gfOrphan = null; gfError = null;
-  gfPlan = null; gfPlanErr = null; gfPlanFor = null; gfPacks = new Set(); gfBusy = false;
-  gfRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const win = el("div", "gfwin");
-  win.id = "gf";
-  win.setAttribute("role", "dialog");
-  win.setAttribute("aria-label", `Neue Session auf Slot ${slotId}`);
-  // G4.1: Esc and an outside click close. Both listeners leave with the window, and neither sees
-  // the OPENING click: mousedown runs before the click that called this.
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key !== "Escape" || !gfWin) return;
-    e.preventDefault();
-    closeFounding();
-  };
-  const onDown = (e: MouseEvent) => {
-    if (gfWin && e.target instanceof Node && !gfWin.contains(e.target)) closeFounding();
-  };
-  document.addEventListener("keydown", onKey, true);
-  document.addEventListener("mousedown", onDown, true);
-  // step 1's arrows (G4.1): walk the five panels, Enter takes the preselected one into step 2.
-  // Riding on the window root, so it exists exactly while the window does; inputs in steps 2–3
-  // are untouched because the handler reads gfStep first.
-  win.addEventListener("keydown", (e) => {
-    if (gfStep !== 1 || !gfWin) return;
-    const panels = [...gfWin.querySelectorAll<HTMLButtonElement>(".gfpanel")];
-    if (!panels.length) return;
-    const cur = panels.findIndex((p) => p.classList.contains("pick"));
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-      e.preventDefault();
-      panels[(cur + 1 + panels.length) % panels.length]!.click();
-      panels[(cur + 1 + panels.length) % panels.length]!.focus();
-    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-      e.preventDefault();
-      panels[(cur - 1 + panels.length) % panels.length]!.click();
-      panels[(cur - 1 + panels.length) % panels.length]!.focus();
-    } else if (e.key === "Enter" && cur >= 0) {
-      e.preventDefault();
-      gfStep = 2;
-      renderGf();
-    }
-  });
-  document.body.appendChild(win);
-  gfWin = win;
-  gfTeardown = () => {
-    document.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("mousedown", onDown, true);
-  };
-  // fetch-once, and only from here: the catalogue is needed exactly when a spawn is being
-  // composed, so it never costs anything on a board that is only being watched.
-  void loadHarnesses().then(() => { if (gfWin && gfStep === 2) renderGf(); });
-  renderGf();
-}
-
-// the tree, one step behind "Anderer Ordner". Everything it could do before, it still does — its
-// two buttons carry their own meaning ("Start session here", "⎇ New lane here"), and the profile
-// chosen in the founding window's step 2 rides along in spawnBody; only the ROLE does not follow
-// it in (a label the owner never saw on a button he clicked would be a silent surprise).
-function openTreePicker(slotId: number) {
-  setDrawer(false);
-  pkShell?.close();
-  pickerSlot = slotId;
-  pkDetailPath = null;
-  // fetch-once, and only from here: the catalogue is needed exactly when a spawn is being
-  // composed, so it never costs anything on a board that is only being watched.
-  void loadHarnesses().then(() => {
-    if (pkShell?.isOpen() && pkDetailPath) void showDirDetail(pkDetailPath);
-  });
-  const shell = openShell({
-    id: "picker",
-    title: `New session — slot ${slotId}`,
-    listWidth: 460,
-    onSelect: (row) => {
-      const hit = pkRows.find((r) => r.row === row.el);
-      if (hit) void showDirDetail(hit.path);
-    },
-    onClose: () => { pickerSlot = 0; pkShell = null; pkRows = []; },
-  });
-  pkShell = shell;
-
-  // --- the window's controls. Line 1 is the fast path (filter + lane toggle); the breadcrumb and
-  // the type-a-path box wrap onto line 2, where they are navigation rather than the common case.
-  pkFilter = el("input", "pkfilterin") as HTMLInputElement;
-  pkFilter.type = "text";
-  pkFilter.spellcheck = false;
-  pkFilter.autocomplete = "off";
-  // a phone has no ⌘, no double-click idiom and no arrow keys: the desktop legend is not a shorter
-  // version of the truth there, it is the wrong instructions
-  pkFilter.placeholder = isMobile()
-    ? "search folders — subfolders too"
-    : "search — subfolders too · ↑↓ select · ⌘Enter start · Enter re-root · ⌘D pin";
-  pkHideBtn = el("button", "pktoggle") as HTMLButtonElement;
-  pkHideBtn.onclick = () => {
-    hideWorktrees = !hideWorktrees;
-    prefSetBool("fleet.hidewt", hideWorktrees);
-    renderHideWtBtn();
-    applyWtHide();
-  };
-  renderHideWtBtn();
-  // the lane toggle is a VIEW filter — the rows are there and get a class. This one is not: what a
-  // listing contains is decided on the server, so flipping it has to fetch the tree again.
-  pkDotBtn = el("button", "pktoggle") as HTMLButtonElement;
-  pkDotBtn.onclick = () => {
-    showHidden = !showHidden;
-    prefSetBool("fleet.pkdot", showHidden);
-    renderDotBtn();
-    void reloadTree();
-  };
-  renderDotBtn();
-  pkCrumb = el("div", "pkcrumb");
-  pkCrumb.setAttribute("aria-label", "current location");
-  pkPathIn = el("input", "pkpathin") as HTMLInputElement;
-  pkPathIn.type = "text";
-  pkPathIn.spellcheck = false;
-  pkPathIn.autocomplete = "off";
-  pkPathIn.placeholder = "or type a path";
-  pkPathIn.dataset.ownEnter = "1"; // Enter here goes to what was TYPED, not to the selected row
-  const line2 = el("div", "pkline2");
-  line2.append(pkCrumb, pkPathIn);
-  shell.tools.append(pkFilter, pkHideBtn, pkDotBtn, line2);
-
-  pkFilter.addEventListener("input", () => { applyPkFilter(); scheduleFind(); });
-  pkPathIn.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || e.metaKey || e.ctrlKey) return;
-    e.preventDefault();
-    void browse(pkPathIn.value);
-  });
-  // ⌘Enter starts, ⌘D pins. Both ride on the shell root: the shell skips modified Enter precisely
-  // so a view can claim it, and it never binds plain letters at all.
-  shell.root.addEventListener("keydown", (e) => {
-    const target = () => {
-      const i = shell.selectedIndex();
-      const vis = pkVisible();
-      return i >= 0 && vis[i] ? vis[i].path : pkPathIn.value;
-    };
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void startSession(target()); return; }
-    if ((e.metaKey || e.ctrlKey) && (e.key === "d" || e.key === "D")) { e.preventDefault(); void togglePin(target()); }
-    // →/← walk the tree. Only on tree rows: a shortcut row has no children to open, and swallowing
-    // the arrows inside the filter box would break moving the caret through what you typed.
-    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-    const i = shell.selectedIndex();
-    const hit = i >= 0 ? pkVisible()[i] : undefined;
-    if (!hit || !hit.row.classList.contains("tree")) return;
-    if ((e.target as HTMLElement | null)?.tagName === "INPUT" && pkFilter.value) return;
-    e.preventDefault();
-    if (e.key === "ArrowRight") { if (!pkIsOpen(hit.path)) void toggleNode(hit.path); }
-    else if (pkIsOpen(hit.path)) void toggleNode(hit.path);
-  });
-
-  shell.foot.textContent = isMobile()
-    ? "tap ▸ to open a folder in place · tap its name for what is inside it · “start ▸” opens a"
-      + " session there · ‹ goes back"
-    : "click selects and opens · double-click (or ⌘Enter) starts a session here"
-      + " · →/← expand and collapse · Enter re-roots the tree · ⌘D pins";
-
-  const last = prefText("fleet.pkdir");
-  void browse(last).then(async (ok) => {
-    if (!ok && last !== "~") await browse("~"); // remembered dir may have been deleted
-    // focusing an input on mobile would pop the keyboard over the folder list
-    if (!isMobile()) pkFilter.focus();
-  });
+  return { ok: true, slot, packsDelivered: j.packsDelivered, reason: j.reason };
 }
 
 // --- sidebar ---
@@ -5969,6 +4796,22 @@ export function laneBandNames(
     out.set(l.id, `0${typeof stored === "string" && stored ? stored : bandLetter(i)}`);
   });
   return out;
+}
+
+// WHAT A LANE IS CALLED IN WORDS. A task lane the server could derive a title for is called by that
+// title, cut to ~32 characters — in place of the label the dispatcher wrote from its branch
+// ("⎇ task <slug>-<hex>", "⎇ <repo> <hex>"), which the owner could not read (37439a62, cdf43028).
+// A label someone gave it by hand starts with no ⎇ and stays; a lane with no title stays as it was.
+export function laneLabel(s: SlotInfo): string {
+  const label = s.label ?? baseName(s.cwd ?? "");
+  return s.worktree && s.taskTitle && (!s.label || s.label.startsWith("⎇ ")) ? shortTitle(s.taskTitle) : label;
+}
+// a lane named from its BRANCH (a land, an undo): "<Lane-Referenz> · <Kurztitel>" while a slot still
+// holds that branch and has a title, otherwise the four hex as before
+export function laneNameOfBranch(branch: string): string {
+  const s = fleet.find((x) => x.cwd && x.worktree?.branch === branch);
+  const ref = s ? laneBandNames(stacksOf()).get(s.id) : undefined;
+  return ref && s?.taskTitle ? laneDisplayName(ref, s.taskTitle) : laneTail(branch);
 }
 
 // THE FOUR STATES A ROW MUST TELL APART WITHOUT COLOUR (owner, the left-bar card: working, resting,
@@ -6025,16 +4868,8 @@ function projectOf(s: SlotInfo): string | null {
 // but not the same colour tell you nothing while looking like they mean something. So: quantize.
 // Distinct projects are now 45° apart minimum and unmistakable; two projects CAN share a colour,
 // which reads as "same project" and is the failure §F2 already accepted. The wheel positions skip
-// the muddy yellow-brown band that turns grey against #141414.
-const PROJECT_HUES = [8, 45, 88, 135, 175, 205, 260, 315];
-function projectHue(path: string): number {
-  let h = 0x811c9dc5; // FNV-1a
-  for (let i = 0; i < path.length; i++) {
-    h ^= path.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return PROJECT_HUES[(h >>> 0) % PROJECT_HUES.length];
-}
+// the muddy yellow-brown band that turns grey against #141414. The function itself lives in
+// src/marks.ts#projectHue since the session mark's species IS this hue's index — one identity.
 function tintProject(node: HTMLElement, key: string | null) {
   if (!key) return;
   node.style.setProperty("--proj-h", String(projectHue(key)));
@@ -6457,6 +5292,8 @@ function updateTitle() {
   const s = slot ? fleet[slot - 1] : undefined;
   mtitle.textContent = s?.cwd ? (s.label ?? baseName(s.cwd)) : "Claude Fleet";
   mreadTitle.textContent = mtitle.textContent;
+  renderTarget(); // the composer's send target reads the same focused slot (G2.4)
+  renderIsland(); // …and so does the phone's top island
 }
 
 // --- attended Codex bind ---------------------------------------------------------------
@@ -6583,6 +5420,12 @@ function openCodexDlg(slot: number) {
   void loadCodexCandidates(slot);
 }
 
+// the bar's one mark canvas and the boxes it draws into, re-measured when the list changes size
+// (collapsed rail, a wrapped phone row) — the rows themselves only change in renderSlots
+const marks = new MarkStage();
+let markItems: MarkItem[] = [];
+new ResizeObserver(() => placeMarks(marks, slotsEl, markItems)).observe(slotsEl);
+
 function renderSlots() {
   updateTitle();
   // harness-dependent pane affordances follow the POLL, not just pane assignment: a session
@@ -6597,6 +5440,7 @@ function renderSlots() {
   const bandFocus = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("bandview")
     ? document.activeElement.closest<HTMLElement>(".slot")?.dataset.slot ?? null : null;
   slotsEl.replaceChildren();
+  markItems = [];
   // Every slot still gets a row and empty slots still hold their place — but a lane whose project
   // has a home in this list now renders under it instead of at its own number. The "slots are fixed
   // places" principle is bent HERE and only here, deliberately (§F3 edge 3): four sessions plus
@@ -6626,6 +5470,7 @@ function renderSlots() {
     slotsEl.appendChild(slotRow(s, undefined, refs)); // plain session, including another main with no lanes
   }
   if (bandFocus) slotsEl.querySelector<HTMLElement>(`.slot[data-slot="${bandFocus}"] .bandview`)?.focus();
+  placeMarks(marks, slotsEl, markItems);
 }
 
 // A FREE PLACE IS STILL A PLACE (owner: „[Zitat entfernt]“
@@ -6636,7 +5481,9 @@ function emptyRow(s: SlotInfo): HTMLElement {
   const row = el("div", "slot empty");
   row.dataset.slot = String(s.id);
   const r1 = el("div", "r1");
-  r1.append(el("span", "mark"), el("span", "n", String(s.id)), el("span", "lbl dim", "free · start a session"));
+  const mk = el("span", "mark");
+  markItems.push({ el: mk, facts: null }); // bare soil: the place holds the column's axis
+  r1.append(mk, el("span", "n", String(s.id)), el("span", "lbl dim", "free · start a session"));
   row.appendChild(r1);
   row.onclick = () => openPicker(s.id);
   // The ⎇+ quick-lane chip used to hang here, on EVERY empty row — twelve identical chips the
@@ -6675,10 +5522,12 @@ function repoHeaderRow(g: Stack, open: boolean): HTMLElement {
   return row;
 }
 
+// ⎇+ opens the founding window as a lane founding (owner 2026-10-01): the repo and the lane preset
+// are set, the name, profile and packs are still the owner's — the one-click lane had none of them
 function quickLaneChip(repo: string, parent?: LaneAnchor): HTMLElement {
   const q = el("span", "quicklane", "⎇+");
-  q.title = `new lane in ${baseName(repo)} — one click, no picker`;
-  q.onclick = (e) => { e.stopPropagation(); void newLane(repo, parent); };
+  q.title = `Neue Lane in ${baseName(repo)} — Name, Profil und Kontext im Gründungsfenster`;
+  q.onclick = (e) => { e.stopPropagation(); openLaneFounding(repo, parent); };
   return q;
 }
 
@@ -6729,19 +5578,19 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   // ROW: it overlays the row's right edge on hover, and on a phone it shares line 1's flex line.
   const r1 = el("div", "r1");
   {
-      const displayLabel = s.label ?? baseName(s.cwd);
+      const displayLabel = laneLabel(s);
       const lbl = el("span", "lbl", displayLabel);
-      // THE PLACE FOR THE SESSION MARK — reserved, sized, and deliberately EMPTY. It is build 2 of
-      // this card and waits on the owner's choice between the drawn variants
-      // (docs/messungen/2026-09-20-session-marke-runde-2.md §7). It draws nothing, so it is not a
-      // sixth thing on the row; it is the geometry the mark will land in.
-      r1.appendChild(el("span", "mark"));
+      // THE SESSION MARK — Fassung B "Zweig", the owner's choice (src/marks.ts). The span only
+      // reserves the geometry; the bar's one canvas draws into it (placeMarks, end of renderSlots),
+      // from facts registered below once the row's state glyph is known.
+      const mk = el("span", "mark");
+      r1.appendChild(mk);
       // WHAT THE ROW NO LONGER SAYS, the label says on hover: which checkout, a lane's branch and
       // git state (the lifecycle dot's three words), today's inbound bytes, a parked send. These
       // were line 2 and two chips; the board says all of them again, with actions.
       const facts: string[] = [];
       if (s.worktree) {
-        facts.push(`${refs.get(s.id) ?? "lane"} · ${displayLabel}`, s.worktree.branch);
+        facts.push(`${refs.get(s.id) ?? "lane"} · ${s.taskTitle ?? displayLabel}`, s.worktree.branch);
         if (s.git) {
           // lifecycle: editing (uncommitted) → ready (clean but commits to land) → clean — it was a
           // dot beside the state dot, a SECOND dot the resting row has no place for
@@ -6814,6 +5663,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       const hidHot = !!stack && !open && stack.lanes.some(
         (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
       const state = slotState(s, serverNow, visible || hidHot);
+      markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", state) });
       const live = el("span", `act ${state}`);
       live.title = STATE_WORD[state]
         + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")
@@ -7200,7 +6050,7 @@ export async function refresh() {
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
-      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.comments, s.mergePending,
+      data.slots.map((s) => [s.cwd, s.label, s.taskTitle, s.share?.id, s.share?.comments, s.mergePending,
         // the STATE GLYPH and the age beside it, both at the resolution the row paints them. The
         // glyph was a boolean here while it had two readings; it has four now, and `stalled`/`agent`
         // reach the row through nothing else — leaving them out would freeze a session at "resting"
@@ -7231,7 +6081,10 @@ export async function refresh() {
         s.inbound ? inboundChipLabel(s.inbound) : null,
         s.parkedSend?.count, s.parkedSend?.draftChars,
         // the band: a new session on the line adds a cell (bandify)
-        s.succession?.session])]);
+        s.succession?.session,
+        // the session mark's facts beyond the ones above (src/marks.ts#markFacts): role reads the
+        // model (astra), the waiting frame reads awaiting, the bud reads the harness
+        s.harness, s.model, s.awaiting])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();
@@ -9773,7 +8626,7 @@ async function renderHist() {
       const origin = p.label ?? (p.cwd ? baseName(p.cwd) : `slot ${p.slot}`);
       histList.appendChild(histRow(p.text, `${origin} · ${fmtTs(p.ts)}`,
         p.text.startsWith("[fleet") ? "fleet" : p.source === "terminal" ? "owner"
-          : ["auto", "steward", "supervisor"].includes(p.source) ? "fleet" : p.source));
+          : ["auto", "steward"].includes(p.source) ? "fleet" : p.source));
     }
   } else {
     const items = await fetchHistory(slot);

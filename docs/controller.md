@@ -14,15 +14,15 @@ bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN no
   übergreifende Abschlüsse proaktiv. Er führt keine fremden Program-Lanes und ersetzt deren MAIN nicht.
 - **Program-MAIN:** führt genau ihr bestätigtes Program end to end, beauftragt Lanes, prüft Reports
   gegen Diff/Verify und integriert, soweit Projektion und Owner-Promotion es erlauben.
-- **Supervisor:** beobachtet programmübergreifende Fakten/Ausnahmen und nudged die gebundene MAIN;
-  kein Ersatz-MAIN, keine zweite Owner-Stimme und kein dauernder Pane-Beobachter.
 
 ## Gebaute Türen — Fähigkeit ist nicht Autorität
 
 **Controller / gewöhnliche Nicht-Lane-Session**
 
+Bei rohem `curl` mit Owner-Bearer schickt die Orchestratorin auch `x-fleet-self-token: $FLEET_SELF_TOKEN`; sonst steht sie im Ledger als `unknown` — `ctl.sh` ergänzt den Header bei Owner-Verben automatisch, wenn die Variable gesetzt ist.
+
 - `GET|POST /api/self/programs`: GET liefert Vorschläge derselben Session und Programs dieses
-  MAIN-Occupants; nur der Supervisor sieht alle Inhalte. POST erzeugt nur `proposed`; bestätigen,
+  MAIN-Occupants. POST erzeugt nur `proposed`; bestätigen,
   aktivieren und binden bleiben Owner-Akte.
 - Controller-Scope gewährt keine Owner-Route. Eine konkrete Owner-Delegation bleibt aber wirksam:
   autorisierte Land-/Deploy-Abschlüsse werden innerhalb ihres benannten Umfangs proaktiv vollzogen,
@@ -61,25 +61,13 @@ bestätigten Programs im Blick. Er ersetzt weder deren fachliche Program-MAIN no
   `answer.by` bleibt `"owner"`, bis Zeile 923f771e die handelnde Session im Ledger unterscheidbar macht.
   Vertrag: `docs/self-api.md` §attention stage.
 
-**Supervisor**
-
-- `GET /api/self/supervisor-view` liest eine begrenzte, read-only Querprojektion: Program-Health,
-  Phasen-Zahlen, Operations-, Integrations- und Transition-Fakten samt `unknown[]`; keine Task-Bodies
-  und keine Pane-Captures.
-- `POST /api/self/nudge` stellt einer aus `programId` abgeleiteten lebenden Program-MAIN genau eine
-  begrenzte Frage. Der Entscheid bleibt bei der MAIN; Owner-Warten wird nicht übernudged.
-- `POST /api/self/supervisor-watch/:id/complete` vollendet genau einen vom Empfänger registrierten
-  Transition-Watch. Der Supervisor kann nicht bestätigen, aktivieren, landen, deployen oder den
-  Owner über `/api/self/attention` erreichen. Ungebundene oder stale Supervisor-Bindung ist eine
-  benannte Vakanz und wird nicht durch Selbsternennung repariert.
-
 ## Die Orchestrator-Rollenkarte — servergebaut, Owner-Text
 
 Seit 2026-09-17 ist das hier **nicht mehr nur Prosa**: ein Slot, dessen Label die Rolle nennt
 (`Orchestrator`, `Orchestratorin`, `🎛`, auch mit Zusatz wie „Orchestrator (Opus)"), bekommt diesen
 Text als Brief — beim Spawn über `POST /api/slots/:id/open` **und** bei `POST /api/self/succeed`
 (`server.ts#ORCHESTRATOR_ROLE_CARD`, `#buildOrchestratorSpawnBrief`,
-`#buildOrchestratorSuccessionBrief`; Muster: `server.ts#buildSupervisorBindBrief` — ein Rumpf, zwei
+`#buildOrchestratorSuccessionBrief` — ein Rumpf, zwei
 Präambeln). Das Label IST die Ernennung, wie bei `⚙ steward`: es gibt **keine Bindung**, keine
 Registry-Zeile und keine Verdrängung, und `isOrchestratorLabel` gewährt keine einzige Route. Die
 Zustellung durchläuft dieselben drei Gründungsschritte wie jede andere (Boot-Grace, Delivery-Gate,
@@ -152,9 +140,7 @@ Wo ein Verb `<slot>` nimmt (`ctx`, `watch lane|merge`, `land`, `wait merge`), da
    vollziehen oder eine echte Owner-Grenze vorlegen. Vorschläge werden erst durch Owner-Akte Programs.
 3. Program-Arbeit der gebundenen MAIN überlassen. Ihr typisierter Report bzw. ein terminales Event
    kommt serverseitig; der Controller pollt weder Panes noch Projektionen auf Bewegung.
-4. Einen Transition-Watch nur für einen konkret benannten programmübergreifenden Übergang und nur
-   bei gebundenem Supervisor setzen. Keine permanente Watch-Pflicht und keine Merge-/Audit-Watches
-   je Land in der Controller-Pane. Merge-/Audit-Rückwege gehören zur landenden Program-MAIN.
+4. Merge-/Audit-Rückwege gehören zur landenden Program-MAIN.
 5. Ausnahme, Widerspruch oder fällige Owner-Grenze knapp mit Quelle und Wirkung melden; nicht durch
    fremdes Landen, Deployen, Pane-Injektion oder erfundene Autorität beheben.
 
@@ -173,9 +159,6 @@ Wo ein Verb `<slot>` nimmt (`ctx`, `watch lane|merge`, `land`, `wait merge`), da
 - **Game-Maker-Program-MAIN:** behält den frischen, committed `## Current game checkpoint` mit der
   geschlossenen Sieben-Felder-Form und einer im Repository vorhandenen Build-SHA. Kein `carry`;
   Nachfolge startet mit Launch, realer Eingabe, frischer Wahrnehmung und Build-Vergleich.
-- **Supervisor:** schreibt denselben Linien-Record auf seine eigene Linie, ohne HANDOFF-Commit. Seine
-  Bindung folgt nur über den eigenen Supervisor-Nachfolgepfad; stale/ungebunden darf er sich nicht selbst
-  wieder einsetzen.
 
 **In allen vier Fällen bleibt die Linie auf ihrem Slot** (seit 2026-09-22, `server.ts#respawnInPlace`;
 Owner 2026-09-21: „[Zitat entfernt]“):
@@ -212,7 +195,7 @@ Slots der claude-Harness an; codex/pi/pi-zai sind nicht zuständig, nicht 0 %. S
 (`server.ts#migrateMessage`) folgt der Schiene, die `server.ts#migrateRailOf` über dieselbe Bindung
 wie `handleSelfSucceed` bestimmt: gebundene Standard-Program-MAIN → offene Pflichten lesbar machen,
 dann `succeed` mit optionalem `carry`, kein HANDOFF-Commit · Game-Maker → Checkpoint committen,
-`succeed` ohne `carry` · ungebunden, mehrdeutig gebunden, Supervisor → Pflichten stehen lassen (sie gehen
+`succeed` ohne `carry` · ungebunden, mehrdeutig gebunden → Pflichten stehen lassen (sie gehen
 per ID in den Linien-Record), `succeed` mit optionalem `intent` ODER `pointer`. Der Hinweis ist ein Server-Prädikat, nicht das Gate; das Gate bleibt `handleSelfSucceed`.
 
 ## Zwei Eigenarten, die eine Orchestratorin bezahlt hat (gemessen 2026-10-02)

@@ -1,9 +1,9 @@
 // The ⏫ merge/land paths: the agent verdicts (blocked / lying / resolved / prose), the server's
 // own conflict-free script pre-pass, identity-bound confirm-land, the V1 deterministic
 // verify gate, and the orphan reattach / remove / discard flows.
+import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { MODEL_DEFAULTS } from "../model-register";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
@@ -184,7 +184,7 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
         check(`${mode} ${r.worker}: argv pins Sol 6.1, medium, workspace-write and the lane cwd`,
           r.argv[0] === "exec" && pair("-m", "gpt-6.1-sol") && MODEL_DEFAULTS.worker.id === "gpt-6.1-sol"
             && pair("-s", "workspace-write") && r.argv.includes("--ephemeral") && r.argv.at(-1) === "-"
-            && configs.includes('model_reasoning_effort="medium"') && r.cwd === realpathSync(lane.cwd)
+            && configs.includes('model_reasoning_effort=medium') && r.cwd === realpathSync(lane.cwd)
             && r.prompt.includes(WORKER_CONTRACTS[r.worker].mark), JSON.stringify({ argv: r.argv, cwd: r.cwd }));
         check(`${mode} ${r.worker}: only private Git state plus shared objects/refs/logs are added`,
           configs.includes(`sandbox_workspace_write.writable_roots=${JSON.stringify([gd, `${cd}/objects`, `${cd}/refs`, `${cd}/logs`])}`)
@@ -624,10 +624,8 @@ export async function run(lc: LaneCtx): Promise<void> {
   // The note is read at `main` because the ff-merge just made the lane tip the integration tip.
   // `conflictedFiles` is asserted as the exact 1 this fixture created (code.txt) rather than
   // ">= 0": a count that could be anything would not tell the field from a zero-initialised one.
-  // The MODEL is asserted as the literal SUMMARY_MODEL default, which is precisely the value under
-  // the owner's question — the merge worker is pinned to the claude route and passes no per-call
-  // model, so summaryViaSession resolves `opts.model ?? SUMMARY_MODEL`. The subprocess stand-in
-  // takes the same value from the same const, so this asserts the wiring, not the transport.
+  // The CMD stand-in retains transport precedence and receives the resolved mergeExec default.
+  // Both ledgers must name that same model without claiming a Codex backend for the stand-in.
   type ResolverRunShape = { worker?: string; model?: string; backend?: string; status?: string;
     ms?: number; conflictedFiles?: number };
   const landNoteRuns = (sha: string): ResolverRunShape[] | null | undefined => {
@@ -643,7 +641,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   const resolvedRuns = landNoteRuns("main");
   check("the land note of an agent-resolved conflict names the resolver's model, verdict, cost and difficulty",
     (resolvedRuns ?? []).length === 1 && resolvedRuns?.[0]?.worker === "merge"
-      && resolvedRuns[0].status === "rebased" && resolvedRuns[0].model === "claude-sonnet-5-5[1m]"
+      && resolvedRuns[0].status === "rebased" && resolvedRuns[0].model === MODEL_DEFAULTS.mergeExec.id
       && resolvedRuns[0].conflictedFiles === 1 && typeof resolvedRuns[0].ms === "number"
       && (resolvedRuns[0].ms ?? -1) >= 0 && resolvedRuns[0].backend === undefined,
     JSON.stringify(resolvedRuns ?? null));
@@ -777,7 +775,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   const proseRuns = landNoteRuns("main"); // the ff just made this lane's tip the integration tip
   check("an off-contract resolver answer is counted AS unparseable on the land note, not folded into blocked",
     (proseRuns ?? []).length === 1 && proseRuns?.[0]?.worker === "merge"
-      && proseRuns[0].status === "unparseable" && proseRuns[0].model === "claude-sonnet-5-5[1m]"
+      && proseRuns[0].status === "unparseable" && proseRuns[0].model === MODEL_DEFAULTS.mergeExec.id
       && proseRuns[0].conflictedFiles === 1,
     JSON.stringify(proseRuns ?? null));
   check("the prose land's outcome row counts the same unparseable run",

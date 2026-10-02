@@ -437,9 +437,9 @@ export interface SurfaceInputs {
 // The resolver CODE is an input of every stored surface, exactly like the two tree stamps are: a
 // change in what the same tree resolves to must move every stored sha once, or a row would keep
 // projecting a surface its own resolver no longer produces. Bump on any resolution change.
-// ranges-3 (2026-09-22): citation lines and the source package joined the mask, and the lane
-// surface gained its hunk half — every stored derivation must recompute once.
-export const SURFACE_RESOLVER = "ranges-3";
+// ranges-4: symbol coordinates now come from the resolved base commit, including graph-known
+// declarations and branch-only files; invalidate surfaces derived from checkout coordinates.
+export const SURFACE_RESOLVER = "ranges-4";
 
 export function surfaceSha(inputs: SurfaceInputs): string {
   const h = createHash("sha256");
@@ -531,7 +531,7 @@ export function readTrackedSnapshot(repoRaw: string): TrackedSnapshot {
 // — which is the whole reason `ranges: null` is a first-class answer rather than an empty list.
 export const SYMBOL_GRAPH_PATH = "graphify-out/graph.json";
 
-export function readSymbolIndexSnapshot(repoRoot: string): SymbolIndexSnapshot | null {
+export function readSymbolIndexSnapshot(repoRoot: string, tree?: TrackedSnapshot): SymbolIndexSnapshot | null {
   const path = resolve(repoRoot, SYMBOL_GRAPH_PATH);
   let stamp: string;
   try {
@@ -542,23 +542,7 @@ export function readSymbolIndexSnapshot(repoRoot: string): SymbolIndexSnapshot |
   try { nodes = (JSON.parse(readFileSync(path, "utf8")) as { nodes?: unknown }).nodes; }
   catch { return null; }
   if (!Array.isArray(nodes)) return null;
-  // One read per FILE the graph mentions, not one per symbol — and a file that has since been
-  // deleted reports null, which buildSymbolIndex reads as "the last symbol stops at its own line".
-  // The CONTENT is kept because the declaration scan below needs the very same read.
-  const contents = new Map<string, string | null>();
-  const contentOf = (file: string): string | null => {
-    if (!contents.has(file)) {
-      try { contents.set(file, readFileSync(resolve(repoRoot, file), "utf8")); }
-      catch { contents.set(file, null); }
-    }
-    return contents.get(file) ?? null;
-  };
-  const lineCountOf = (file: string): number | null => contentOf(file)?.split("\n").length ?? null;
-  // THE DECLARATION SCAN (2026-09-16, docs/messungen/2026-09-16-serialisierung-ranges.md): what the
-  // graph does not carry but the tree declares at column 0 enters the index as a synthetic node, so
-  // buildSymbolIndex derives its end exactly like every graph symbol's. Only files the graph
-  // mentions are scanned, and a symbol the graph knows is never scanned twice — the graph wins, the
-  // scan fills gaps. A file whose content cannot be read contributes nothing.
+  if (tree && (!tree.indexStamp || tree.indexPath || tree.repo !== repoRoot)) return null;
   const typed = nodes as Parameters<typeof buildSymbolIndex>[0];
   const known = new Map<string, Set<string>>();
   for (const node of typed) {
@@ -569,14 +553,67 @@ export function readSymbolIndexSnapshot(repoRoot: string): SymbolIndexSnapshot |
     set.add(symbolKey(label));
     known.set(node.source_file, set);
   }
-  const scanned: { label?: unknown; file_type?: unknown; source_file?: unknown; source_location?: unknown }[] = [];
-  for (const [file, names] of known) {
+  // The graph supplies vocabulary, never coordinates: every declaration must exist in the selected
+  // commit. Scan its tracked code files too, so a branch-only file needs no graph rebuild.
+  const files = new Set(known.keys());
+  if (tree) for (const file of tree.paths) if (/\.[cm]?[jt]sx?$/.test(file)) files.add(file);
+  const contents = new Map<string, string | null>();
+  if (tree) {
+    const tracked = [...files].filter((file) => tree.paths.has(file));
+    if (tracked.length) {
+      // One git process for the immutable blobs, rather than one blocking spawn per source file.
+      const read = spawnSync("git", ["-C", repoRoot, "cat-file", "--batch"], {
+        input: tracked.map((file) => `${tree.indexStamp}:${file}\n`).join(""),
+        maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      });
+      if (read.status !== 0) return null;
+      let at = 0;
+      for (const file of tracked) {
+        const end = read.stdout.indexOf(10, at);
+        if (end < 0) return null;
+        const header = read.stdout.subarray(at, end).toString();
+        const blob = /^[a-f0-9]+ blob (\d+)$/.exec(header);
+        if (!blob) return null;
+        const size = Number(blob[1]);
+        at = end + 1;
+        if (at + size >= read.stdout.length || read.stdout[at + size] !== 10) return null;
+        contents.set(file, read.stdout.subarray(at, at + size).toString("utf8"));
+        at += size + 1;
+      }
+    }
+  }
+  const contentOf = (file: string): string | null => {
+    if (!contents.has(file)) {
+      if (tree) contents.set(file, null);
+      else {
+        try { contents.set(file, readFileSync(resolve(repoRoot, file), "utf8")); }
+        catch { contents.set(file, null); }
+      }
+    }
+    return contents.get(file) ?? null;
+  };
+  const lineCountOf = (file: string): number | null => contentOf(file)?.split("\n").length ?? null;
+  const located: Parameters<typeof buildSymbolIndex>[0][number][] = [];
+  for (const file of files) {
     const source = contentOf(file);
     if (source === null) continue;
-    for (const d of topLevelDeclarations(source, names))
-      scanned.push({ label: d.symbol, file_type: "code", source_file: file, source_location: `L${d.line}` });
+    const declarations = topLevelDeclarations(source, new Set());
+    const found = new Set(declarations.map((d) => d.symbol));
+    // Graph-known nested declarations and methods retain their vocabulary only when their
+    // declaration can be located; an absent or unsupported declaration stays unresolved.
+    for (const name of known.get(file) ?? []) {
+      if (found.has(name) || !IDENTIFIER.test(name)) continue;
+      const escaped = name.replace(/\$/g, "\\$");
+      const declaration = new RegExp(
+        `^[ \t]+(?:(?:export|default|declare|async|abstract)\\s+)*(?:function\\*?|const|let|var|class|type|interface|enum)\\s+${escaped}(?![A-Za-z0-9_$])|^[ \t]+(?:(?:public|private|protected|static|async|get|set|readonly|abstract|override)\\s+)*${escaped}\\s*(?:<[^;\n]*>)?\\s*\\([^;\n]*\\)\\s*(?::[^={;\n]+)?\\s*\\{`, "m");
+      const match = declaration.exec(source);
+      if (match) declarations.push({ symbol: name, line: source.slice(0, match.index).split("\n").length });
+    }
+    for (const d of declarations)
+      located.push({ label: d.symbol, file_type: "code", source_file: file, source_location: `L${d.line}` });
   }
-  return { index: buildSymbolIndex([...typed, ...scanned], lineCountOf), path, stamp };
+  return { index: buildSymbolIndex(located, lineCountOf), path,
+    stamp: tree ? `${tree.indexStamp}\0${stamp}` : stamp };
 }
 
 export function symbolGraphStamp(repoRoot: string): string | null {

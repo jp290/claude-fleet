@@ -19,7 +19,7 @@
 //     is extractable, it evaluates) is its OWN check, so a probe that could not be set up fails
 //     as itself rather than as the thing it was supposed to measure.
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { BASE, REPO, ROOT, check, get, post } from "./harness";
 import { gitUnquote, porcelainPath } from "../src/gitpath";
@@ -38,10 +38,17 @@ interface StubNode {
   onclick: (() => void) | null; oninput: (() => void) | null; onscroll: (() => void) | null;
   onfocus: (() => void) | null; onblur: (() => void) | null;
   ondragstart: ((e: unknown) => void) | null;
+  ondragover: ((e: unknown) => void) | null; ondrop: ((e: unknown) => void) | null;
+  parentElement: StubNode | null; disabled: boolean;
+  closest(selector: string): StubNode | null;
+  querySelector(selector: string): StubNode | null;
+  click(): void;
   scrollTop: number; focused: boolean;
   appendChild(n: StubNode): StubNode;
-  append(...n: StubNode[]): void;
-  replaceChildren(...n: StubNode[]): void;
+  append(...n: (StubNode | string)[]): void;
+  replaceChildren(...n: (StubNode | string)[]): void;
+  before(n: StubNode): void; after(n: StubNode): void; remove(): void;
+  classList: { toggle(c: string, on: boolean): void; add(c: string): void; remove(c: string): void; contains(c: string): boolean };
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   focus(): void;
@@ -53,15 +60,31 @@ function makeNode(tag: string): StubNode {
     tag, className: "", textContent: "", title: "", children: [], style: {}, dataset: {},
     value: "", type: "", placeholder: "", spellcheck: false, autocomplete: "",
     selectionStart: 0, draggable: false, onclick: null, oninput: null, onscroll: null, onfocus: null, onblur: null,
-    ondragstart: null,
+    ondragstart: null, ondragover: null, ondrop: null, parentElement: null, disabled: false,
     scrollTop: 0, focused: false, attrs: {},
-    appendChild(c) { n.children.push(c); return c; },
-    append(...c) { n.children.push(...c); },
-    replaceChildren(...c) { n.children = [...c]; },
+    appendChild(c) { c.parentElement = n; n.children.push(c); return c; },
+    append(...c) { for (const child of c) { const node = typeof child === "string" ? makeNode("text") : child;
+      if (typeof child === "string") node.textContent = child; n.appendChild(node); } },
+    replaceChildren(...c) { n.children = []; n.append(...c); },
     setAttribute(k, v) { n.attrs[k] = v; },
     getAttribute(k) { return n.attrs[k] ?? null; },
     focus() { n.focused = true; n.onfocus?.(); },
     setSelectionRange(a) { n.selectionStart = a; },
+    closest(s) { return s.split(", ").some((q) => q.slice(1).split(".").every((c) => n.className.split(" ").includes(c)))
+      ? n : n.parentElement?.closest(s) ?? null; },
+    querySelector(s) {
+      for (const c of n.children) { if (c.closest(s) === c) return c; const found = c.querySelector(s); if (found) return found; }
+      return null;
+    },
+    click() { if (!n.disabled) n.onclick?.(); },
+    before(c) { n.parentElement?.appendChild(c); }, after(c) { n.parentElement?.appendChild(c); },
+    remove() { if (n.parentElement) n.parentElement.children = n.parentElement.children.filter((c) => c !== n); },
+    classList: {
+      toggle(c, on) { const classes = new Set(n.className.split(" ").filter(Boolean));
+        if (on) classes.add(c); else classes.delete(c); n.className = [...classes].join(" "); },
+      add(c) { this.toggle(c, true); }, remove(c) { this.toggle(c, false); },
+      contains(c) { return n.className.split(" ").includes(c); },
+    },
   };
   return n;
 }
@@ -167,6 +190,59 @@ export async function run(): Promise<void> {
   const foreignContents = await get("/api/contents?slot=99999&q=marker");
   check("Contents rejects a foreign slot by name: the error names slot 99999",
     foreignContents.status === 400 && /slot 99999/.test(await foreignContents.text()), String(foreignContents.status));
+  const createdPath = "x3 nested/empty 'file.txt";
+  const createRes = await post("/api/file/create", { slot: ln.slot, path: createdPath });
+  const created = await createRes.json() as { ok?: boolean; ran?: string; afterwards?: string; sessionActive?: boolean };
+  const createdStatus = spawnSync("git", ["-C", ln.cwd, "status", "--porcelain", "--", createdPath]).stdout.toString();
+  check("Explorer create: empty file with intermediate directories, without git add, and an activity hint",
+    createRes.status === 200 && created.ok === true && created.ran === `git '-C' '${realpathSync(ln.cwd)}' 'rev-parse' '--is-inside-work-tree'`
+    && created.afterwards === `empty file at ${createdPath}; not added to git`
+    && typeof created.sessionActive === "boolean" && readFileSync(`${ln.cwd}/${createdPath}`).length === 0
+    && createdStatus.startsWith("?? "), `${createRes.status} ${JSON.stringify(created)} ${createdStatus}`);
+  writeFileSync(`${ln.cwd}/${createdPath}`, "keep existing bytes");
+  const existsRes = await post("/api/file/create", { slot: ln.slot, path: createdPath });
+  check("Explorer create refuses an existing path, preserving its bytes",
+    existsRes.status === 409 && readFileSync(`${ln.cwd}/${createdPath}`, "utf8") === "keep existing bytes",
+    `${existsRes.status} ${await existsRes.text()}`);
+  const untrackedDelete = await post("/api/file/delete", { slot: ln.slot, path: createdPath });
+  check("Explorer delete refuses an untracked file with a reason and keeps its bytes",
+    untrackedDelete.status === 409 && /untracked.*no recovery/.test(await untrackedDelete.text())
+    && readFileSync(`${ln.cwd}/${createdPath}`, "utf8") === "keep existing bytes", String(untrackedDelete.status));
+  spawnSync("git", ["-C", ln.cwd, "add", "--", createdPath]);
+  spawnSync("git", ["-C", ln.cwd, "commit", "-qm", "explorer: tracked write fixture"]);
+  const conflictMove = await post("/api/file/move", { slot: ln.slot, path: createdPath, to: "explorer-lane.txt" });
+  check("Explorer move refuses an occupied destination without changing either file",
+    conflictMove.status === 409 && readFileSync(`${ln.cwd}/${createdPath}`, "utf8") === "keep existing bytes"
+    && readFileSync(`${ln.cwd}/explorer-lane.txt`, "utf8").includes(contentMarker), String(conflictMove.status));
+  const movedPath = "moved 'file.txt";
+  const moveRes = await post("/api/file/move", { slot: ln.slot, path: createdPath, to: movedPath });
+  const moved = await moveRes.json() as typeof created;
+  const stagedMove = spawnSync("git", ["-C", ln.cwd, "diff", "--cached", "--name-status"]).stdout.toString();
+  check("Explorer move: git mv stages a rename, preserves bytes and names the exact command and aftermath",
+    moveRes.status === 200 && moved.ok === true
+    && moved.ran === `git '-C' '${realpathSync(ln.cwd)}' '--literal-pathspecs' 'mv' '--' 'x3 nested/empty '\\''file.txt' 'moved '\\''file.txt'`
+    && moved.afterwards === `${createdPath} moved to ${movedPath}; rename staged in git`
+    && typeof moved.sessionActive === "boolean" && !existsSync(`${ln.cwd}/${createdPath}`)
+    && readFileSync(`${ln.cwd}/${movedPath}`, "utf8") === "keep existing bytes" && stagedMove.startsWith("R100\t"),
+    `${moveRes.status} ${JSON.stringify(moved)} ${stagedMove}`);
+  spawnSync("git", ["-C", ln.cwd, "commit", "-qm", "explorer: moved write fixture"]);
+  const deleteRes = await post("/api/file/delete", { slot: ln.slot, path: movedPath });
+  const deleted = await deleteRes.json() as typeof created;
+  check("Explorer delete: git rm removes only the tracked file and stages its deletion",
+    deleteRes.status === 200 && deleted.ok === true
+    && deleted.ran === `git '-C' '${realpathSync(ln.cwd)}' '--literal-pathspecs' 'rm' '--' 'moved '\\''file.txt'`
+    && deleted.afterwards === `${movedPath} removed from the worktree; deletion staged in git`
+    && typeof deleted.sessionActive === "boolean" && !existsSync(`${ln.cwd}/${movedPath}`)
+    && spawnSync("git", ["-C", ln.cwd, "diff", "--cached", "--name-status"]).stdout.toString() === `D\t${movedPath}\n`,
+    `${deleteRes.status} ${JSON.stringify(deleted)}`);
+  spawnSync("git", ["-C", ln.cwd, "commit", "-qm", "explorer: deleted write fixture"]);
+  const writeAudit = await (await get("/api/audit?limit=1000")).json() as
+    { events: { event: string; slot: number; detail: string }[] };
+  for (const detail of [`create · ${createdPath}`, `move · ${createdPath} → ${movedPath}`, `delete · ${movedPath}`]) {
+    check(`Explorer writes audit exactly one successful act: ${detail}`,
+      writeAudit.events.filter((e) => e.event === "file_write" && e.slot === ln.slot && e.detail === detail).length === 1);
+  }
+
   // A DETACHED HEAD keeps the card: `brief.branch` is the STRING "HEAD" there, not null, so the
   // `if (brief.branch)` gate the card sits behind stays truthy. Measured, because the comment at
   // that gate says a detached HEAD loses the card — and the tree route serves it either way.
@@ -188,6 +264,14 @@ export async function run(): Promise<void> {
   } catch { cliSrc = ""; }
   check("explorer precondition: node_modules exposes src/client.ts for the interaction probes",
     cliSrc.length > 1000, `${cliSrc.length} bytes`);
+  let htmlSrc = "";
+  try { htmlSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/public/index.html`, "utf8"); }
+  catch { htmlSrc = ""; }
+  const dragListCss = htmlSrc.replace(/\/\*[\s\S]*?\*\//g, "")
+    .match(/#shell-files\.fxdragging \.shelllist\s*\{([^}]+)\}/)?.[1] ?? "";
+  check("Explorer drag CSS restores tree hit targets while the overlay lets composer drops through",
+    /pointer-events:\s*auto\s*;/.test(dragListCss)
+    && /#shell-files\.fxdragging\s*\{[^}]*pointer-events:\s*none\s*;/.test(htmlSrc.replace(/\/\*[\s\S]*?\*\//g, "")), dragListCss || "drag CSS unavailable");
 
   const fxSrc = cliSrc.slice(cliSrc.indexOf("interface PaintOpts"), cliSrc.indexOf("export async function loadTree"))
     .replace(/^export /gm, "");
@@ -215,6 +299,36 @@ export async function run(): Promise<void> {
     }
   `;
   type Painter = (into: StubNode, root: unknown, o: Record<string, unknown>) => void;
+  interface RiskSpec { title: string; body: StubNode[]; buttons: { label: string; disabled?: boolean }[] }
+  const risk: { spec: RiskSpec | null; resolve: ((ok: boolean) => void) | null; active: boolean;
+    calls: { url: string; body: Record<string, unknown> }[]; response: Record<string, unknown>; ok: boolean;
+    keys: ((e: { key: string; stopPropagation: () => void }) => void) | null } = {
+    spec: null, resolve: null, active: true, calls: [], response: { ran: "server command", afterwards: "server aftermath", sessionActive: true },
+    ok: true, keys: null,
+  };
+  let realAsk: ((spec: RiskSpec) => Promise<boolean>) | null = null;
+  const dialogBody = makeNode("body");
+  try {
+    const dialogSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/dialog.ts`, "utf8");
+    realAsk = new Function("document", "HTMLElement", new Bun.Transpiler({ loader: "ts" })
+      .transformSync(dialogSrc.replace(/^export /gm, "")) + "\nreturn askRisk;")(
+      { body: dialogBody, createElement: makeNode, activeElement: null, addEventListener: () => {}, removeEventListener: () => {} },
+      class {}) as (spec: RiskSpec) => Promise<boolean>;
+  } catch (e) { check("explorer dialog precondition", false, String(e)); }
+  check("explorer dialog precondition: the real askRisk helper evaluates against the DOM stand-in", !!realAsk, "dialog helper unavailable");
+  if (!realAsk) return;
+  const ask = (spec: RiskSpec) => {
+    risk.spec = spec;
+    const answer = realAsk(spec);
+    risk.resolve = (ok) => {
+      const buttons = spec.body[0].closest(".panel")?.querySelector(".riskbtns")?.children;
+      buttons?.[ok ? 1 : 0]?.click();
+    };
+    return answer;
+  };
+  const writePost = async (url: string, body: Record<string, unknown>) => {
+    risk.calls.push({ url, body }); return { ok: risk.ok, status: risk.ok ? 200 : 409, json: async () => risk.response };
+  };
   interface Cut {
     gitUnquote: (s: string) => string;
     porcelainPath: (s: string) => string;
@@ -225,14 +339,19 @@ export async function run(): Promise<void> {
     fxTreeOf: (paths: string[]) => unknown;
     fxPathDrop: (raw: string) => { slot: number; path: string } | null;
     fxAppendPath: (text: string, path: string) => string;
+    fxMoveDrop: (slot: number, tracked: string[], folder: string, e: unknown) => { slot: number; path: string } | null;
+    fxWrite: (slot: number, root: string, kind: string, path: string, to?: string) =>
+      Promise<{ ran?: string; afterwards?: string; error?: string } | null>;
   }
   let cut: Cut | null = null;
   let cutErr = "";
   try {
     const ts = new Bun.Transpiler({ loader: "ts" });
-    const painted = new Function("makeNode", "matchTree", "treeOf", "porcelainPath",
-      `${PRELUDE}\n${ts.transformSync(fxSrc)}\n` + "return { paintTree, fxStatusOf, fxTreeOf, fxPathDrop, fxAppendPath };")(
-      makeNode, matchTree, treeOf, porcelainPath) as Pick<Cut, "paintTree" | "fxStatusOf" | "fxTreeOf" | "fxPathDrop" | "fxAppendPath">;
+    const painted = new Function("makeNode", "matchTree", "treeOf", "porcelainPath", "askRisk", "post", "sessionActive", "window",
+      `${PRELUDE}\n${ts.transformSync(fxSrc)}\n` + "return { paintTree, fxStatusOf, fxTreeOf, fxPathDrop, fxAppendPath, fxMoveDrop, fxWrite };")(
+      makeNode, matchTree, treeOf, porcelainPath, ask, writePost, () => risk.active,
+      { addEventListener: (_: string, fn: typeof risk.keys) => { risk.keys = fn; }, removeEventListener: () => { risk.keys = null; } }) as
+      Omit<Cut, "gitUnquote" | "porcelainPath" | "treeOf" | "matchTree">;
     cut = { gitUnquote, porcelainPath, treeOf, matchTree, ...painted };
   } catch (e) { cutErr = e instanceof Error ? e.message : String(e); }
   check("explorer precondition: the extracted block evaluates against the DOM stand-in",
@@ -248,6 +367,63 @@ export async function run(): Promise<void> {
     cut.fxPathDrop(JSON.stringify({ slot: 7, path: "bad\npath" })) === null
     && cut.fxPathDrop(JSON.stringify({ slot: 0, path: "src/client.ts" })) === null
     && cut.fxPathDrop("") === null, "invalid payloads accepted");
+
+  const dropEvent = (slot: number, path: string, types = ["application/x-fleet-explorer-path"]) => ({
+    dataTransfer: { types, getData: () => JSON.stringify({ slot, path }), dropEffect: "" },
+    preventDefault: () => {}, stopPropagation: () => {},
+  });
+  check("Move drop accepts only a tracked file from the same slot, with a different destination",
+    cut.fxMoveDrop(7, ["src/client.ts"], "e2e", dropEvent(7, "src/client.ts"))?.path === "src/client.ts"
+    && cut.fxMoveDrop(7, ["src/client.ts"], "e2e", dropEvent(8, "src/client.ts")) === null
+    && cut.fxMoveDrop(7, ["src/client.ts"], "e2e", dropEvent(7, "src/new.ts")) === null
+    && cut.fxMoveDrop(7, ["src/client.ts"], "src", dropEvent(7, "src/client.ts")) === null
+    && cut.fxMoveDrop(7, ["src/client.ts"], "e2e", dropEvent(7, "src/client.ts", ["Files"])) === null,
+    "foreign, untracked, same-path or desktop data accepted");
+  // the dialog speaks German (card 3e6342e2); the kind stays the internal route word
+  const WORD: Record<string, string> = { "New file": "Neue Datei", Rename: "Umbenennen", Move: "Verschieben", Delete: "Löschen" };
+  for (const kind of ["New file", "Rename", "Move", "Delete"]) {
+    risk.active = kind !== "Rename";
+    const before = risk.calls.length;
+    const changing = cut.fxWrite(7, "/repo", kind, "src/old 'name.ts", "e2e/new.ts");
+    const body = risk.spec?.body[0];
+    const input = body?.querySelector(".fxwriteinput");
+    if (input && kind === "Rename") { input.value = "new 'name.ts"; input.oninput?.(); }
+    const preview = body?.querySelector(".fxwriterow")?.children[1]?.textContent ?? "";
+    const expected = kind === "New file" ? "git '-C' '/repo' 'rev-parse' '--is-inside-work-tree'"
+      : `git '-C' '/repo' '--literal-pathspecs' '${kind === "Delete" ? "rm" : "mv"}' '--' 'src/old '\\''name.ts'`
+        + (kind === "Delete" ? "" : kind === "Rename" ? " 'src/new '\\''name.ts'" : " 'e2e/new.ts'");
+    check(`${kind}: one pending risk question names the exact command and four risk rows before any write`,
+      dialogBody.children.length === 1 && risk.calls.length === before && risk.spec?.title.startsWith(WORD[kind]) === true && preview === expected
+      && ["Führt aus", "Wo", "Danach", "Bleibt"].every((label) => body?.children.some((r) => r.children[0]?.textContent === label))
+      && risk.spec?.buttons.map((b) => b.label).join("|") === `Abbrechen|${WORD[kind]}`
+      && !!body?.querySelector(".ocwarn") === risk.active, JSON.stringify({ preview, expected, body: body && textOf(body) }));
+    risk.resolve?.(true);
+    const result = await changing;
+    const call = risk.calls.at(-1);
+    check(`${kind}: confirmation sends exactly one X3a request and returns the server aftermath`,
+      risk.calls.length === before + 1 && call?.url === `/api/file/${kind === "New file" ? "create" : kind === "Delete" ? "delete" : "move"}`
+      && call.body.slot === 7 && call.body.path === (kind === "New file" ? "e2e/new.ts" : "src/old 'name.ts")
+      && (kind === "Rename" ? call.body.to === "src/new 'name.ts" : kind === "Move" ? call.body.to === "e2e/new.ts" : !("to" in call.body))
+      && result?.afterwards === "server aftermath" && risk.keys === null && dialogBody.children.length === 0, JSON.stringify({ call, result }));
+  }
+  const beforeCancel = risk.calls.length;
+  const cancelMove = cut.fxWrite(7, "/repo", "Move", "src/client.ts", "e2e/client.ts");
+  risk.keys?.({ key: "Escape", stopPropagation: () => {} });
+  check("Move dialog: Escape cancels through askRisk and leaves the write boundary untouched",
+    await cancelMove === null && risk.calls.length === beforeCancel && risk.keys === null, String(risk.calls.length));
+  const invalidWrite = cut.fxWrite(7, "/repo", "New file", "");
+  const pathInput = risk.spec?.body[0].querySelector(".fxwriteinput");
+  if (pathInput) { pathInput.value = "../outside"; pathInput.oninput?.(); }
+  check("New file dialog: blank and escaping paths cannot enable confirmation",
+    risk.spec?.buttons[1].disabled === true && pathInput?.getAttribute("aria-invalid") === "true"
+    && pathInput.closest(".panel")?.querySelector(".riskbtn.primary")?.disabled === true, "invalid path enabled");
+  risk.resolve?.(false); await invalidWrite;
+  risk.ok = false; risk.response = { error: "destination already exists" };
+  const refusedMove = cut.fxWrite(7, "/repo", "Move", "src/client.ts", "e2e/client.ts");
+  risk.resolve?.(true);
+  check("Move dialog: a server refusal is returned by name, without inventing a success aftermath",
+    (await refusedMove)?.error === "destination already exists", "refusal lost");
+  risk.ok = true; risk.response = { ran: "server command", afterwards: "server aftermath", sessionActive: true };
 
   // --- B1: the path decoder, against the shapes git was MEASURED to emit (2026-08-20) ---
   check("GITPATH: a space makes git quote a porcelain path — and it is decoded back",
@@ -312,6 +488,7 @@ export async function run(): Promise<void> {
     open: new Set(["src"]), query: "", all: ["src/client.ts"], capped: false, shown: 1, total: 1,
     onPick: () => { /* not exercised here */ }, picked: () => null,
     onDrag: (rel: string) => { dragged = rel; }, actions: () => makeNode("button"),
+    onDrop: (folder: string, e: unknown) => { const source = cut?.fxMoveDrop(7, ["src/client.ts"], folder, e); dragged = source ? folder : ""; },
   } as unknown as Record<string, unknown>);
   const draggable = rowsOf(actionBox).find((r) => r.title === "src/client.ts");
   draggable?.ondragstart?.({});
@@ -320,6 +497,9 @@ export async function run(): Promise<void> {
     && actionBox.children.some((c) => c.className === "fxline" && c.children.length === 2),
     JSON.stringify({ tag: draggable?.tag, draggable: draggable?.draggable, dragged,
       lines: actionBox.children.map((c) => [c.className, c.children.length]) }));
+  const folderDrop = rowsOf(actionBox).find((r) => r.className.includes("fxdir"));
+  folderDrop?.ondrop?.(dropEvent(7, "other.ts"));
+  check("tree folder: dropping an untracked path fires no move trigger", dragged === "", dragged);
 
   // click a folder → it opens, in place, and its children appear
   const e2eRow = dirRows.find((r) => textOf(r).includes("e2e"));
@@ -483,4 +663,113 @@ export async function run(): Promise<void> {
   gPaint(chCap, { changedOnly: true, statusMore: 7 });
   check("Changed: a status list the server capped says how many lines it did not send",
     /7 more/.test(textOf(chCap)) && /200 status lines/.test(textOf(chCap)), textOf(chCap));
+
+  const root = makeNode("div"), tools = makeNode("div"), list = makeNode("div"), detail = makeNode("div"), foot = makeNode("div");
+  const sub = makeNode("div"), close = makeNode("button"); sub.className = "shellsub"; close.className = "shellclose";
+  root.append(sub, close, tools, list, detail, foot);
+  const shell = { root, tools, list, detail, foot, close: () => {}, isOpen: () => true,
+    setCloseGuard: () => {}, setRows: () => {}, select: () => {}, showDetail: () => {} };
+  const files = { tracked: ["src/client.ts", "e2e/pins.ts"], status: ["?? note.txt"], reads: 0 };
+  const longPath = "attic/arbeit/very-long-parent/another-long-folder/distinct-file.ts";
+  const tree = () => ({ root: "/repo", files: files.tracked, total: files.tracked.length, capped: false });
+  const maps = { fxTree: new Map([["/repo", tree()]]), fxGit: new Map(), fxUntracked: new Map(),
+    fxChanged: new Map(), fxContents: new Map(), fxContentQuery: new Map(), fxQuery: new Map(), fxTreeAt: new Map() };
+  const deps = { ...maps, ...cut, openShell: () => shell, askRisk: ask, sessionActive: () => risk.active,
+    loadTree: async () => { files.reads++; maps.fxTree.set("/repo", tree()); },
+    loadGit: async () => { maps.fxGit.set("/repo", { lines: files.status, total: files.status.length, branch: "test" }); },
+    post: async (url: string, body: Record<string, unknown>) => {
+      const res = await writePost(url, body);
+      if (url.endsWith("/move")) files.tracked = files.tracked.map((p) => p === body.path ? String(body.to) : p);
+      else if (url.endsWith("/delete")) files.tracked = files.tracked.filter((p) => p !== body.path);
+      else files.status.push(`?? ${body.path}`);
+      return res;
+    },
+    api: async () => ({ ok: true, json: async () => ({ matches: [{ path: longPath, line: 9, text: "needle" }], capped: false, timedOut: false, limit: 200 }) }),
+    window: { addEventListener: () => {}, removeEventListener: () => {} },
+  };
+  const actionSrc = cliSrc.slice(cliSrc.indexOf("function fxActions("), cliSrc.indexOf("// The card's search box"));
+  const viewSrc = cliSrc.slice(cliSrc.indexOf("export function fxView("), cliSrc.indexOf("// The search box, built"));
+  const explorerSrc = cliSrc.slice(cliSrc.indexOf("export function openExplorer("), cliSrc.indexOf("// THE CONTEXT PACKS"));
+  let openExplorer: ((slot: number, cwd: string) => void) | null = null;
+  try {
+    const ts = new Bun.Transpiler({ loader: "ts" });
+    openExplorer = new Function("makeNode", "deps", `${PRELUDE}
+      const { fxTree, fxGit, fxUntracked, fxChanged, fxContents, fxContentQuery, fxQuery, fxTreeAt,
+        openShell, askRisk, sessionActive, loadTree, loadGit, post, api, window, matchTree, treeOf, porcelainPath } = deps;
+      let fxShell = null, fxMenu = null;
+      function closeFxMenu() { fxMenu?.panel.remove(); fxMenu = null; }
+      const fxOpenSet = () => new Set(["src", "e2e"]);
+      const baseName = (p) => p.split("/").pop(), fmtSince = () => "now", isMobile = () => false;
+      const requestAnimationFrame = (fn) => fn(), setInterval = () => undefined;
+      const mentionExplorerPath = () => {}, copyText = () => {}, openReview = () => {}, showFileView = () => {};
+      ${ts.transformSync([fxSrc, actionSrc, viewSrc, explorerSrc].join("\n").replace(/^export /gm, ""))}
+      return openExplorer;`)(makeNode, deps) as (slot: number, cwd: string) => void;
+    openExplorer?.(7, "/repo");
+  } catch (e) { check("explorer window interaction precondition", false, String(e)); }
+  check("explorer window interaction precondition: real openExplorer renders its tree and New file button",
+    !!openExplorer && rowsOf(list).some((r) => r.title === "src/client.ts") && tools.children.some((b) => b.textContent === "New file"), textOf(root));
+  if (!openExplorer) return;
+  const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  await settle();
+  const gesture = { preventDefault: () => {}, stopPropagation: () => {} };
+  const click = (b: StubNode | undefined | null) => (b?.onclick as ((e: unknown) => void) | null)?.(gesture);
+  const fileMenu = (path: string) => {
+    const line = list.children.find((n) => n.children[0]?.title.split(" — ")[0] === path);
+    click(line?.children[1]?.children[0]); return line?.querySelector(".fxmenu");
+  };
+  const untrackedMenu = fileMenu("note.txt");
+  check("Explorer menu offers no Delete, Move or Rename for an untracked file",
+    !!untrackedMenu && !untrackedMenu.children.some((b) => ["Delete", "Move", "Rename"].includes(b.textContent)), untrackedMenu ? textOf(untrackedMenu) : "missing");
+  const menu = fileMenu("src/client.ts");
+  check("Explorer tracked-file menu offers Rename, Move and Delete",
+    ["Rename", "Move", "Delete"].every((label) => menu?.children.some((b) => b.textContent === label)), menu ? textOf(menu) : "missing");
+  const readsBefore = files.reads, callsBefore = risk.calls.length;
+  rowsOf(list).find((r) => r.title.startsWith("e2e/ —"))?.ondrop?.(dropEvent(7, "src/client.ts"));
+  check("Explorer folder drop opens Move without writing or refreshing before confirmation",
+    risk.spec?.title === "Verschieben — src/client.ts" && files.reads === readsBefore && risk.calls.length === callsBefore, risk.spec?.title ?? "missing");
+  risk.resolve?.(false); await settle();
+  check("Explorer cancelled drop preserves its source row and read/write counts",
+    rowsOf(list).some((r) => r.title === "src/client.ts") && files.reads === readsBefore && risk.calls.length === callsBefore, String(files.reads));
+  rowsOf(list).find((r) => r.title.startsWith("e2e/ —"))?.ondrop?.(dropEvent(7, "src/client.ts"));
+  risk.resolve?.(true); await settle();
+  check("Explorer confirmed drop re-reads the tree, paints the moved row and displays server Afterwards",
+    files.reads === readsBefore + 1 && rowsOf(list).some((r) => r.title === "e2e/client.ts")
+    && !rowsOf(list).some((r) => r.title === "src/client.ts") && textOf(root).includes("Afterwards: server aftermath"), textOf(root));
+  click(tools.children.find((b) => b.textContent === "New file"));
+  const newInput = risk.spec?.body[0].querySelector(".fxwriteinput");
+  if (newInput) { newInput.value = "fresh.txt"; newInput.oninput?.(); }
+  risk.resolve?.(true); await settle();
+  check("Explorer New file button re-reads and shows the new file as untracked",
+    files.reads === readsBefore + 2 && rowsOf(list).some((r) => r.title.startsWith("fresh.txt —") && r.className.includes("fxuntr"))
+    && risk.calls.at(-1)?.url === "/api/file/create", textOf(list));
+  const moveMenu = fileMenu("e2e/client.ts");
+  click(moveMenu?.children.find((b) => b.textContent === "Move"));
+  check("Explorer Move button opens the same risk dialog as a folder drop",
+    risk.spec?.title === "Verschieben — e2e/client.ts" && files.reads === readsBefore + 2, risk.spec?.title ?? "missing");
+  risk.resolve?.(false); await settle();
+  const renameMenu = fileMenu("e2e/client.ts");
+  click(renameMenu?.children.find((b) => b.textContent === "Rename"));
+  const renameInput = risk.spec?.body[0].querySelector(".fxwriteinput");
+  if (renameInput) { renameInput.value = "renamed.ts"; renameInput.oninput?.(); }
+  risk.resolve?.(true); await settle();
+  check("Explorer Rename button keeps the directory and re-reads the renamed row",
+    files.reads === readsBefore + 3 && risk.calls.at(-1)?.body.to === "e2e/renamed.ts"
+    && rowsOf(list).some((r) => r.title === "e2e/renamed.ts") && !rowsOf(list).some((r) => r.title === "e2e/client.ts"), textOf(list));
+  const deleteMenu = fileMenu("e2e/renamed.ts");
+  click(deleteMenu?.children.find((b) => b.textContent === "Delete"));
+  check("Explorer Delete button waits for confirmation with its tracked source still visible",
+    risk.spec?.title === "Löschen — e2e/renamed.ts" && files.reads === readsBefore + 3
+    && rowsOf(list).some((r) => r.title === "e2e/renamed.ts"), textOf(list));
+  risk.resolve?.(true); await settle();
+  check("Explorer Delete confirmation re-reads and removes the tracked source row",
+    files.reads === readsBefore + 4 && risk.calls.at(-1)?.url === "/api/file/delete"
+    && !rowsOf(list).some((r) => r.title === "e2e/renamed.ts"), textOf(list));
+  click(tools.children.flatMap((n) => [n, ...n.children]).find((b) => b.textContent === "Contents"));
+  const search = tools.children.find((n) => n.tag === "input");
+  if (search) { search.value = "needle"; search.oninput?.(); }
+  await Bun.sleep(220);
+  const hit = rowsOf(list).find((r) => r.className.includes("fxcontent"));
+  check("Contents hit starts with its distinct filename and retains the complete path and line in its title",
+    hit?.children[0]?.textContent === "distinct-file.ts" && textOf(hit.children[0]).endsWith("another-long-folder/")
+    && hit.title === `${longPath}:9`, hit ? textOf(hit) : "missing");
 }

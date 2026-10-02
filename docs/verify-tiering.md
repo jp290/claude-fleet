@@ -837,8 +837,8 @@ belongs (§5, §6).
   construct the collision deliberately.
 - **Nothing measured here verifies the built client.** `bun run build` is in the table only to
   price it (~90 ms). The closest thing that exists is `fleet-e2e-security.ts` §7 (grep `§7`), which
-  asserts *source-level* invariants — no HTML/eval sink in `src/*.ts` beyond one reviewed static-icon
-  exception, no inline script in the served `public/*.html`, `src/md.ts` uses `textContent` — i.e.
+  asserts *source-level* invariants — no HTML/eval sink in `src/*.ts` (the one reviewed static-icon
+  exception went with the directory picker on 2026-09-29), no inline script in the served `public/*.html`, `src/md.ts` uses `textContent` — i.e.
   exactly the "asserted only at source-string level" caveat `lane-brief-template.md` names (grep the
   quoted phrase; `docs/lane-brief-template.md` is undated, so its own line refs carry the same risk
   this pass is closing — not re-verified here, out of this file's scope).
@@ -5249,7 +5249,7 @@ wirklich LIEFEN, eine Zeile geschrieben haben.
 
 Reihenfolge = Laufreihenfolge des Runners (gepinnt). `·L` = Modul des Worktree-Lane-Blocks, braucht
 `FLEET_E2E_REPO`; eine Auswahl, die eines davon zieht, wird ohne dieses Env verweigert statt still
-übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 31 der 47 Module sind nach
+übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 30 der 46 Module sind nach
 DIESER KARTE allein vorschaubar, die längste Kette ist acht (`steward-outcomes`).
 
 **Spalte 4 ist eine Ableitung, kein Laufbeweis.** Gefahren wurde EINE Auswahl (`slots,tasks`, §16d).

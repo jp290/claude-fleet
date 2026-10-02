@@ -30,6 +30,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { check, IP, PORT, ROOT, SOCK } from "./harness";
 import type { KonzeptAnmerkung, KonzeptVersion } from "../konzept-ledger";
+import { CONTEXT_PACK_HARNESSES, CONTEXT_PACKS } from "../context-packs";
 
 const FIX = `${process.env.TMPDIR ?? "/tmp"}/fleet-e2e-konzepte-${process.pid}`;
 const TOKEN = `konzepte-${randomBytes(8).toString("hex")}`;
@@ -86,6 +87,11 @@ const jsonl = (path: string): Record<string, unknown>[] => existsSync(path)
   ? readFileSync(path, "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as Record<string, unknown>) : [];
 
 export async function run(): Promise<void> {
+  await ledgerDoors();
+  await privatePackHandover();
+}
+
+async function ledgerDoors(): Promise<void> {
   rmSync(FIX, { recursive: true, force: true });
   mkdirSync(`${FIX}/srv`, { recursive: true });
   const i: Instance = { dir: `${FIX}/srv`, base: `http://${IP}:${PORT + OFF}`, sock: `${SOCK}konzepte${OFF}`,
@@ -309,7 +315,8 @@ export async function run(): Promise<void> {
         && row?.letzte?.version === 11 && row.versionen === 11
         && JSON.stringify(row.anmerkungen) === '{"offen":8,"eingearbeitet":2,"verworfen":1}'
         && idxBody.konzepte?.find((k) => k.konzept === "k-e2e-leer")?.letzte === null
-        && !JSON.stringify(idx.body).includes("# Konzept") && idxSelf.status === 401 && idxBoth.status === 409,
+        && !JSON.stringify(idx.body).includes("# Konzept") && idxSelf.status === 401 && idxBoth.status === 200
+        && JSON.stringify(idxBoth.body) === JSON.stringify(idx.body),
       `${idx.status} self=${idxSelf.status} both=${idxBoth.status} ${JSON.stringify(idx.body).slice(0, 500)}`);
 
     // ---- scope: a plain session is 409 on read and write, no token 401
@@ -336,5 +343,298 @@ export async function run(): Promise<void> {
     await stop(i);
     spawnSync("tmux", ["-L", i.sock, "kill-server"]);
     rmSync(FIX, { recursive: true, force: true });
+  }
+}
+
+// ================================================================================================
+// THE PRIVATE PACK HANDOVER (card a5f4, owner disposition 804bc34a): the selected private konzept pack
+// must reach something that can READ it. A selected id, a receipt row or a `match` verdict proves no
+// read — so this section founds real sessions on a scratch instance and lets the process the harness
+// adapter spawned read the bytes the delivered pointer names, from a konzept repo that is a separate
+// git repository beside the product repo. No model turn anywhere: the pane runs a mechanical reader
+// (the rule of e2e/context-plan.ts#readDelivered) behind the real claude and codex spawn lines.
+//
+//   PRODUCT REPO — the scratch instance's own checkout, git-initialised, so the server classifies a
+//                  founding there as the Fleet tree (server.ts#dispatchSourceTree). Two scratch-copy
+//                  edits, both named rows below: the konzept seed's pinned sourceHash is replaced by
+//                  the fixture fassung's hash (the real Sicht v2 is private and is never a fixture),
+//                  and the repo manifest declares one FOREIGN private pack.
+//   KONZEPT REPO — FLEET_KONZEPT_ROOT, a separate git repository: k-claude-fleet v1 published through
+//                  the owner's own versionen door (so the ledger layout is the writer's, not this
+//                  test's), plus k-fremd-projekt, another konzept no Fleet seed declares.
+//
+// What each row turns red on, stated as the mutation:
+//   claude / codex read  — the founding renders no readable path (root not handed to the resolver, the
+//                          pack carried only as an opaque id, a path from the product tree), or the
+//                          harness spawn line never reaches the pane that receives the paste.
+//   receipt              — the row loses the verdict/version or gains the local path.
+//   pi harnesses         — any pi-* back on the seed's harness list: its founding is not a 409.
+//   foreign source       — a repo manifest's private pack is selected, or its konzept is read.
+//   drift / missing file — a non-matching or absent fassung still hands the reader matching bytes.
+//   root not passed      — the same read claim on an instance without FLEET_KONZEPT_ROOT stays green.
+const HOFF = 29; // PORT offsets 1, 23-28 are taken (restart.ts, state-snapshot.ts, self-token.ts, trace.ts, above)
+const SEED_ID = "konzept-claude-fleet";
+const PK = "k-claude-fleet";
+const FREMD_PACK = "fremd-konzept";
+const FREMD = "k-fremd-projekt";
+const SENTINEL = `# Konzept-Fixture\nSENTINEL-${randomBytes(6).toString("hex")} — kein echter Konzeptinhalt\n`;
+const FREMD_SENTINEL = `# Fremdes Konzept\nFREMD-${randomBytes(6).toString("hex")}\n`;
+
+interface ReaderRecord { tag: string; slot: string; line: string; path: string | null; verdict: string | null; bytes: string | null }
+
+// The pane reader. It is the RECEIVER: it holds only what the pane was pasted, finds the first private
+// pack line, and reads the path that line names ONLY under `hash match`. One JSON record per pane.
+const READER_TS = String.raw`import { readFileSync, renameSync, writeFileSync } from "node:fs";
+const [outDir, tag] = process.argv.slice(2);
+const slot = process.env.FLEET_SELF_SLOT ?? "unknown";
+const RE = /^ {2}(?:(\/.+?) \| )?(k-[a-z0-9-]+)(?: v\d+)? · privat, lesen statt kopieren · hash (match|drift|missing)\b/;
+let buf = "";
+let done = false;
+process.stdin.on("data", (chunk) => {
+  if (done) return;
+  buf += chunk.toString("utf8").replace(/\r\n?/g, "\n");
+  const lines = buf.split("\n");
+  for (const raw of lines.slice(0, -1)) {
+    const line = raw.replace(/^\x1b\[200~/, "");
+    const m = RE.exec(line);
+    if (!m) continue;
+    const path = m[1] ?? null;
+    let bytes = null;
+    if (path !== null && m[3] === "match") { try { bytes = readFileSync(path, "utf8"); } catch { bytes = null; } }
+    const out = outDir + "/read-" + slot + ".json";
+    writeFileSync(out + ".tmp", JSON.stringify({ tag, slot, line, path, verdict: m[3], bytes }));
+    renameSync(out + ".tmp", out);
+    done = true;
+    return;
+  }
+});
+setInterval(() => {}, 1 << 30);
+`;
+
+async function privatePackHandover(): Promise<void> {
+  const FIXH = `${FIX}-handover`;
+  rmSync(FIXH, { recursive: true, force: true });
+  mkdirSync(`${FIXH}/srv`, { recursive: true });
+  const i: Instance = { dir: `${FIXH}/srv`, base: `http://${IP}:${PORT + HOFF}`, sock: `${SOCK}konzepte${HOFF}`,
+    root: `${FIXH}/konzept-repo`, proc: null, log: "" };
+  const reads = `${FIXH}/reads`;
+  const bin = `${FIXH}/bin`;
+  const OH = { "content-type": "application/json", authorization: `Bearer ${TOKEN}` };
+  const call = async (path: string, method: "GET" | "POST", body?: unknown): Promise<{ status: number; text: string; json: Record<string, unknown> }> => {
+    const r = await fetch(`${i.base}${path}`, { method, headers: OH, ...(method === "POST" ? { body: JSON.stringify(body ?? {}) } : {}) });
+    const text = await r.text();
+    let json: Record<string, unknown> = {};
+    try { json = JSON.parse(text) as Record<string, unknown>; } catch { /* the raw text is kept for the detail */ }
+    return { status: r.status, text, json };
+  };
+  const g = (dir: string, ...a: string[]) => spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+  const commitAll = (dir: string, msg: string, exclude = ""): boolean => {
+    g(dir, "init", "-q", "-b", "main");
+    if (exclude) writeFileSync(`${dir}/.git/info/exclude`, exclude);
+    g(dir, "config", "user.email", "e2e@fleet"); g(dir, "config", "user.name", "e2e"); g(dir, "config", "commit.gpgsign", "false");
+    g(dir, "add", "-A");
+    return g(dir, "commit", "-q", "-m", msg).status === 0;
+  };
+  try {
+    // ---- the product repo: the instance's own checkout, with the two named scratch-copy edits
+    for (const e of readdirSync(ROOT)) if (!SKIP.test(e)) cpSync(`${ROOT}/${e}`, `${i.dir}/${e}`, { recursive: true });
+    if (!existsSync(`${i.dir}/node_modules`)) symlinkSync(`${ROOT}/node_modules`, `${i.dir}/node_modules`);
+    const seed = CONTEXT_PACKS.find((pack) => pack.id === SEED_ID);
+    const pinned = seed && "sourceHash" in seed ? seed.sourceHash : "";
+    const packsSrc = readFileSync(`${i.dir}/context-packs.ts`, "utf8");
+    const pinCount = pinned ? packsSrc.split(`sourceHash: "${pinned}"`).length - 1 : 0;
+    writeFileSync(`${i.dir}/context-packs.ts`, packsSrc.replace(`sourceHash: "${pinned}"`, `sourceHash: "${sha(SENTINEL)}"`));
+    const manifestPath = `${i.dir}/.fleet/context-packs.json`;
+    const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>[] : [];
+    mkdirSync(`${i.dir}/.fleet`, { recursive: true });
+    writeFileSync(manifestPath, JSON.stringify([...manifest, {
+      id: FREMD_PACK, useWhen: "Ein fremdes privates Konzept, vom Repo-Manifest erklaert.", scope: "konzept", audience: "private-ops",
+      triggers: ["always"], hardness: "guidance", privateSourceId: FREMD, sourceHash: sha(FREMD_SENTINEL),
+      observedAt: "2026-10-02T00:00:00Z", requiredCapabilities: ["private-overlay-read"], harnesses: ["claude", "codex"],
+      modes: ["read-only", "mutating", "monitoring"], estimatedBytes: 64, evidence: "private-content-hash", owner: "owner", status: "active",
+    }], null, 2));
+    const productOk = commitAll(i.dir, "product fixture", "node_modules\n");
+    const product = realpathSync(i.dir);
+    check("konzepte handover fixture: the product repo is a git checkout whose konzept seed pin was replaced exactly once by the fixture hash",
+      productOk && pinCount === 1 && readFileSync(`${i.dir}/context-packs.ts`, "utf8").includes(`sourceHash: "${sha(SENTINEL)}"`),
+      `commit=${productOk} pins=${pinCount}`);
+
+    // ---- the konzept repo: a separate git repository, the fassungen placed, nothing published yet
+    mkdirSync(`${i.root}/${PK}`, { recursive: true });
+    mkdirSync(`${i.root}/${FREMD}`, { recursive: true });
+    writeFileSync(`${i.root}/${PK}/v1.md`, SENTINEL);
+    writeFileSync(`${i.root}/${FREMD}/v1.md`, FREMD_SENTINEL);
+    const konzeptOk = commitAll(i.root, "konzept fixture");
+    const konzeptRoot = realpathSync(i.root);
+    check("konzepte handover fixture: the konzept root is its own git repository, outside the product repo",
+      konzeptOk && !konzeptRoot.startsWith(`${product}/`) && g(konzeptRoot, "rev-parse", "--show-toplevel").stdout.trim() === konzeptRoot
+        && g(product, "rev-parse", "--show-toplevel").stdout.trim() === product,
+      `${konzeptRoot} vs ${product}`);
+    if (!productOk || pinCount !== 1 || !konzeptOk) return;
+
+    // ---- the receiver behind both spawn lines: FLEET_CMD for claude, `codex` on PATH for codex. The
+    // runner is bun reached through a symlink NAMED codex, so the codex adapter's comms probe finds its
+    // own name (the e2e/harness.ts#standInBin rule); the banner is the codex readiness marker.
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(`${FIXH}/runner`, { recursive: true });
+    mkdirSync(reads, { recursive: true });
+    writeFileSync(`${FIXH}/reader.ts`, READER_TS);
+    symlinkSync(process.execPath, `${FIXH}/runner/codex`);
+    const launcher = (tag: string) => `#!/bin/sh\nprintf '%s\\n' '>_ OpenAI Codex (v0.0.0-e2e-reader)'\n`
+      + `stty -icanon -echo 2>/dev/null\nexec '${FIXH}/runner/codex' '${FIXH}/reader.ts' '${reads}' '${tag}'\n`;
+    writeFileSync(`${bin}/fleet-reader`, launcher("claude"), { mode: 0o755 });
+    writeFileSync(`${bin}/codex`, launcher("codex"), { mode: 0o755 });
+    // every Pi adapter spawns `pi` by name: shadowed here too, so a regression that lets a Pi founding
+    // through reaches this reader and never a real agent with a provider behind it (measured in this
+    // lane's own mutation run: without the shadow, the host's `pi` was spawned and handed the brief)
+    writeFileSync(`${bin}/pi`, launcher("pi"), { mode: 0o755 });
+    mkdirSync(`${FIXH}/codex-home`, { recursive: true });
+    const bootH = async (root: string): Promise<boolean> => {
+      i.proc = Bun.spawn(["bun", "server.ts"], {
+        cwd: i.dir, stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, CODEX_HOME: `${FIXH}/codex-home`,
+          FLEET_HOST: IP, FLEET_PORT: String(PORT + HOFF), FLEET_SOCK: i.sock, FLEET_TOKEN: TOKEN,
+          FLEET_CMD: `${bin}/fleet-reader`, FLEET_HARNESS_COMMS: "", FLEET_AUTO_REVIEW_MS: "0", FLEET_STATE_SNAPSHOT_MS: "0",
+          FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_KONZEPT_ROOT: root, FLEET_FOUNDING_BOOT_GRACE_MS: "300",
+          FLEET_ACCEPT_WAIT_MS: "800", FLEET_PI_ZAI_AGENT_DIR: `${FIXH}/pi-zai-agent`,
+          FLEET_PI_OX_AGENT_DIR: `${FIXH}/pi-ox-agent`, FLEET_PI_ZAI_KEY_FILE: `${FIXH}/no-such-key` },
+      });
+      i.log = "";
+      const drain = async (st: ReadableStream<Uint8Array>) => { for await (const c of st) i.log += new TextDecoder().decode(c); };
+      void drain(i.proc.stdout as ReadableStream<Uint8Array>);
+      void drain(i.proc.stderr as ReadableStream<Uint8Array>);
+      for (let n = 0; n < 150; n++) {
+        if (await fetch(`${i.base}/api/sessions`, { headers: { authorization: `Bearer ${TOKEN}` } }).then((r) => r.ok, () => false)) return true;
+        await Bun.sleep(100);
+      }
+      return false;
+    };
+    let up = await bootH(konzeptRoot);
+    check("konzepte handover fixture: the scratch instance boots with the konzept repo as FLEET_KONZEPT_ROOT", up, i.log.slice(-300));
+    if (!up) return;
+
+    // publish v1 through the owner's own door: the ledger row is the writer's format, not this test's
+    const pub = await call(`/api/konzepte/${PK}/versionen`, "POST", { sha256: sha(SENTINEL), anlass: "e2e fassung", geltung: "fuer den Uebergabebeweis" });
+    const pubFremd = await call(`/api/konzepte/${FREMD}/versionen`, "POST", { sha256: sha(FREMD_SENTINEL), anlass: "e2e fremd", geltung: "fremd" });
+    check("konzepte handover fixture: v1 of both konzepte is published through the owner's versionen door",
+      pub.status === 200 && pubFremd.status === 200 && existsSync(`${konzeptRoot}/${PK}/versionen.jsonl`),
+      `${pub.status} ${pub.text.slice(0, 200)} / ${pubFremd.status}`);
+    if (pub.status !== 200) return;
+
+    const freeSlot = async (): Promise<number | null> => {
+      const body = (await call("/api/sessions", "GET")).json as { slots?: { id: number; cwd: string | null }[] };
+      return body.slots?.find((x) => !x.cwd)?.id ?? null;
+    };
+    const receiptFor = async (slot: number) => {
+      const body = (await call("/api/context-receipts", "GET")).json as { receipts?: { slot: number; harness: string | null;
+        selected: { id: string; anchors: unknown; private?: { verdict: string; version: number | null } }[] }[] };
+      return body.receipts?.filter((row) => row.slot === slot).at(-1) ?? null;
+    };
+    // ONE founding with the pack chosen, and the reader's record of what the pane received. The record
+    // is null when the pane never produced one — UNOBSERVED, which no row below accepts as a refusal.
+    const found = async (harness: string): Promise<{ slot: number | null; open: { status: number; text: string; json: Record<string, unknown> } | null;
+      record: ReaderRecord | null; receipt: Awaited<ReturnType<typeof receiptFor>> }> => {
+      const slot = await freeSlot();
+      if (slot === null) return { slot, open: null, record: null, receipt: null };
+      rmSync(`${reads}/read-${slot}.json`, { force: true });
+      const open = await call(`/api/slots/${slot}/open`, "POST", { cwd: product, harness, label: `privat-${harness}`, packs: [SEED_ID] });
+      let record: ReaderRecord | null = null;
+      for (let n = 0; n < 100 && record === null && open.status === 200; n++) {
+        try { record = JSON.parse(readFileSync(`${reads}/read-${slot}.json`, "utf8")) as ReaderRecord; } catch { await Bun.sleep(100); }
+      }
+      const receipt = await receiptFor(slot);
+      await call(`/api/slots/${slot}/kill`, "POST", {});
+      return { slot, open, record, receipt };
+    };
+    const readClaim = (r: ReaderRecord | null): boolean => r?.bytes === SENTINEL;
+    const outsideProduct = (path: string | null): boolean =>
+      path !== null && path.startsWith(`${konzeptRoot}/${PK}/`) && !path.startsWith(`${product}/`);
+
+    // ---- POSITIVE, both released harnesses: the spawned process reads the sentinel bytes
+    for (const harness of ["claude", "codex"]) {
+      const f = await found(harness);
+      check(`konzepte handover (${harness}): the founding delivers the chosen konzept pack, and the process the ${harness} adapter spawned reads the sentinel bytes from the konzept repo`,
+        f.open?.status === 200 && f.open.json.packsDelivered === true && f.record?.tag === (harness === "claude" ? "claude" : "codex")
+          && f.record.verdict === "match" && outsideProduct(f.record.path) && readClaim(f.record),
+        `slot=${f.slot} open=${f.open?.status} ${f.open?.text.slice(0, 200)} record=${JSON.stringify(f.record)}`);
+      const row = f.receipt?.selected.find((sel) => sel.id === SEED_ID);
+      check(`konzepte handover (${harness}): the receipt names the pack's verdict match on v1 by id, never the local path`,
+        !!row && JSON.stringify(row.anchors) === JSON.stringify({ privateSourceId: PK })
+          // a claude slot stores harness null — the legacy default adapter (context-plan.ts#resolveContextHarness)
+          && row.private?.verdict === "match" && row.private.version === 1 && (f.receipt?.harness ?? "claude") === harness
+          && !JSON.stringify(f.receipt).includes(konzeptRoot),
+        JSON.stringify(f.receipt));
+    }
+
+    // ---- UNSUITABLE HARNESS: every Pi harness is refused before any spawn, path or verdict
+    const piHarnesses = CONTEXT_PACK_HARNESSES.filter((h) => h.startsWith("pi"));
+    const piRows: Record<string, unknown>[] = [];
+    for (const harness of piHarnesses) {
+      const plan = await call(`/api/founding-plan?repo=${encodeURIComponent(product)}&mode=main&harness=${harness}`, "GET");
+      const reason = (plan.json.omitted as { id: string; reason: string }[] | undefined)?.find((o) => o.id === SEED_ID)?.reason ?? null;
+      const slot = await freeSlot();
+      const open = slot === null ? null : await call(`/api/slots/${slot}/open`, "POST", { cwd: product, harness, packs: [SEED_ID] });
+      const stillFree = slot !== null && (await freeSlot()) === slot;
+      if (slot !== null && !stillFree) await call(`/api/slots/${slot}/kill`, "POST", {});
+      piRows.push({ harness, reason, open: open?.status ?? null, error: (open?.json.error as string | undefined) ?? open?.text.slice(0, 160) ?? null,
+        stillFree, leaked: !!open && (open.text.includes(konzeptRoot) || plan.text.includes(konzeptRoot)) });
+    }
+    await Bun.sleep(500); // a Pi pane that was (wrongly) founded gets the time to hand its reader the paste
+    const piRead = readdirSync(reads).filter((f) => readFileSync(`${reads}/${f}`, "utf8").includes('"tag":"pi"'));
+    check("konzepte handover (pi harnesses): pi, pi-zai, pi-ox and pi-unfenced are each refused 409 harness-unsupported before the spawn, no path anywhere",
+      piHarnesses.length === 4 && piRead.length === 0 && piRows.every((r) => r.reason === "harness-unsupported" && r.open === 409
+        && String(r.error).includes(`pack ${SEED_ID} is omitted for this founding: harness-unsupported`) && r.stillFree && !r.leaked),
+      `${JSON.stringify(piRows)} piReads=${piRead.length}`);
+
+    // ---- FOREIGN SOURCE: a repo manifest's private pack is never selected, its konzept never read
+    const fremdPlan = await call(`/api/founding-plan?repo=${encodeURIComponent(product)}&mode=main&harness=claude`, "GET");
+    const fremdReason = (fremdPlan.json.omitted as { id: string; reason: string }[] | undefined)?.find((o) => o.id === FREMD_PACK)?.reason ?? null;
+    const fremdSlot = await freeSlot();
+    const fremdOpen = fremdSlot === null ? null : await call(`/api/slots/${fremdSlot}/open`, "POST", { cwd: product, harness: "claude", packs: [FREMD_PACK] });
+    const fremdFree = fremdSlot !== null && (await freeSlot()) === fremdSlot;
+    const anyFremd = readdirSync(reads).some((f) => readFileSync(`${reads}/${f}`, "utf8").includes(FREMD_SENTINEL.trim().split("\n")[1]!));
+    check("konzepte handover (foreign source): a private pack the repo manifest declares is manifest-invalid, refused 409 before the spawn, and its konzept is never read",
+      fremdReason === "manifest-invalid" && fremdOpen?.status === 409
+        && String(fremdOpen.json.error).includes(`pack ${FREMD_PACK} is omitted for this founding: manifest-invalid`) && fremdFree && !anyFremd,
+      `reason=${fremdReason} open=${fremdOpen?.status} ${fremdOpen?.text.slice(0, 200)} free=${fremdFree} read=${anyFremd}`);
+
+    // ---- WRONG HASH: the published fassung edited afterwards — drift by name, no matching bytes handed over
+    writeFileSync(`${konzeptRoot}/${PK}/v1.md`, `${SENTINEL}nachtraeglich geaendert\n`);
+    const drifted = await found("claude");
+    writeFileSync(`${konzeptRoot}/${PK}/v1.md`, SENTINEL);
+    const driftRow = drifted.receipt?.selected.find((sel) => sel.id === SEED_ID);
+    check("konzepte handover (hash drift): an edited v1.md is delivered as hash drift with its reason, the receipt says drift, and the read claim is red",
+      drifted.open?.status === 200 && drifted.record !== null && drifted.record.verdict === "drift"
+        && drifted.record.line.includes("v1.md no longer hashes to its versionen.jsonl row") && !readClaim(drifted.record)
+        && driftRow?.private?.verdict === "drift",
+      `record=${JSON.stringify(drifted.record)} receipt=${JSON.stringify(driftRow ?? null)}`);
+
+    // ---- MISSING FILE: the fassung moved away — missing by name, no path at all
+    renameSync(`${konzeptRoot}/${PK}/v1.md`, `${konzeptRoot}/${PK}/v1.md.away`);
+    const noFile = await found("claude");
+    renameSync(`${konzeptRoot}/${PK}/v1.md.away`, `${konzeptRoot}/${PK}/v1.md`);
+    check("konzepte handover (missing file): an absent v1.md is delivered as hash missing naming the file, with no path, and the read claim is red",
+      noFile.open?.status === 200 && noFile.record !== null && noFile.record.verdict === "missing" && noFile.record.path === null
+        && noFile.record.line.includes("v1.md is absent under the root") && !readClaim(noFile.record)
+        && noFile.receipt?.selected.find((sel) => sel.id === SEED_ID)?.private?.verdict === "missing",
+      `record=${JSON.stringify(noFile.record)}`);
+
+    // ---- MISSING ROOT, and the mutation "root not handed over": the same founding on an instance
+    // without FLEET_KONZEPT_ROOT turns the same read claim red, by name
+    await stop(i);
+    spawnSync("tmux", ["-L", i.sock, "kill-server"]);
+    up = await bootH("");
+    check("konzepte handover fixture: the instance boots again WITHOUT a konzept root", up, i.log.slice(-300));
+    if (!up) return;
+    const noRoot = await found("claude");
+    check("konzepte handover (missing root): without FLEET_KONZEPT_ROOT the founding names the unset env, renders no path, and the same read claim is red",
+      noRoot.open?.status === 200 && noRoot.record !== null && noRoot.record.verdict === "missing" && noRoot.record.path === null
+        && noRoot.record.line.includes("FLEET_KONZEPT_ROOT is not set on this server") && !readClaim(noRoot.record)
+        && noRoot.receipt?.selected.find((sel) => sel.id === SEED_ID)?.private?.verdict === "missing",
+      `record=${JSON.stringify(noRoot.record)}`);
+  } finally {
+    await stop(i);
+    spawnSync("tmux", ["-L", i.sock, "kill-server"]);
+    rmSync(FIXH, { recursive: true, force: true });
   }
 }

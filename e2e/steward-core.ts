@@ -1423,7 +1423,7 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
       `${codexDigestRes.status} ${JSON.stringify(codexDigest).slice(0, 300)}`);
     check("Codex digest pins the register model/medium/read-only/ephemeral and receives its complete marked payload only on stdin",
       digestArgv[digestArgv.indexOf("-m") + 1] === MODEL_DEFAULTS.worker.id
-      && digestArgv[digestArgv.indexOf("-c") + 1] === 'model_reasoning_effort="medium"'
+      && digestArgv[digestArgv.indexOf("-c") + 1] === 'model_reasoning_effort=medium'
       && digestArgv[digestArgv.indexOf("-s") + 1] === "read-only" && digestArgv.includes("--ephemeral")
       && digestPrompt.includes(WORKER_CONTRACTS.digest.mark)
       && digestPrompt.includes("## prior journal record") && digestPrompt.includes("## current slots")

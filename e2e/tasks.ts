@@ -1,11 +1,12 @@
 // The task queue (owner CRUD + dispatch availability) and the Tier-0 gates: the master stop and
 // quiet hours reach the DISPATCHER too, proven against a positive control.
+import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
+import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, srvEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt, buildBriefReviewPrompt } from "../refine-prompt";
 import { briefReviewArm } from "../refine-validate";
@@ -13,13 +14,13 @@ import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, dec
 import { renderWaveBrief, renderCardHead, renderRowComments, withCardHead, CARD_HEAD_MARK, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES, BRIEF_REVIEW_MARK } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
 import { classify as laneModelClass } from "../lane-context-cost";
-import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations,
+import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations, symbolGraphStamp,
   type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
-  LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, proposeBundles,
+  LAND_WAVE_BUDGET_DEFAULT, LAND_WAVE_ROWS_MAX, landWaveUnits, proposeBundles, taskOverlap, absorbedTaskIds,
   type LandWave, type LandWaveCosts, type LandWaveProjection, type ProjectLandWavesInput } from "../task-land-waves";
 import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
   type StartPlanLane, type StartPlanLaneClaim, type StartPlanRelease, type StartPlanRow } from "../start-plan";
@@ -423,11 +424,13 @@ export async function run(ctx: Ctx): Promise<void> {
   // D-3 (Grammatik G5.2 + G4.4): the settings window's "Fleet" section writes over EXACTLY the five
   // routes that existed before it — dispatcher, autos kill-switch, quiet hours, lane cap, integration
   // branch — each as one row's post(), and nothing reaches a route except through the section's Apply;
-  // the only other route the block names is the cap READ, whose answer also carries the stored
-  // integration branch per repo (`bases`, card D-3b). The dispatcher row reads the same `dispatch`
-  // the queue foot writes. Mutation probes: a sixth route (repo-worker, a slot or program switch), a
-  // dropped row, a post() fired from a control instead of from write(), or write() called outside
-  // apply.onclick — each turns this red.
+  // the only other routes the block names are two READS: the cap read, whose answer also carries the
+  // stored integration branch per repo (`bases`, card D-3b), and the start plan (card 3e6342e2:
+  // occupancy, startable rows, wait reasons) — read through api() on open and after Apply, never on
+  // a timer of its own. The dispatcher row reads the same `dispatch` the queue foot writes. Mutation
+  // probes: a sixth route (repo-worker, a slot or program switch), a dropped row, a post() fired from
+  // a control instead of from write(), write() called outside apply.onclick, or a poll series
+  // (setInterval/setTimeout) in the block — each turns this red.
   {
     const fsAt = taskClientSource.indexOf("function fleetSection(");
     const fsEnd = taskClientSource.indexOf("// --- the file explorer", fsAt);
@@ -450,11 +453,12 @@ export async function run(ctx: Ctx): Promise<void> {
     check("settings Fleet section: exactly the five existing routes, each written only through Apply",
       fsSrc.length > 0
         && JSON.stringify(posted) === JSON.stringify(FLEET_WRITES)
-        && JSON.stringify(named) === JSON.stringify([...FLEET_WRITES, "/api/repo-lane-caps"].sort())
+        && JSON.stringify(named) === JSON.stringify([...FLEET_WRITES, "/api/repo-lane-caps", "/api/start-plan"].sort())
+        && fsSrc.includes('api("/api/start-plan")') && !/\bset(?:Interval|Timeout)\(/.test(fsSrc)
         && (fsSrc.match(/\bpost\(/g) ?? []).length === 5
         && (fsSrc.match(/write: \(\) => post\(/g) ?? []).length === 5
         && writeCalls === 1 && applyBody.includes("r.write()")
-        && fsSrc.includes('el("button", "cmdapply", "Apply")')
+        && fsSrc.includes('el("button", "cmdapply", "Übernehmen")')
         && /const on = want \?\? dispatch\.on;/.test(fsSrc)
         && openQueueSource.includes('post("/api/dispatch", { on: !dispatch.on })')
         && readBases
@@ -504,7 +508,7 @@ export async function run(ctx: Ctx): Promise<void> {
         && uiSrc.includes('`ändern: ${setting.how}; Standard: ${setting.default}`')
         && !/el\("(?:button|input|select)"/.test(uiSrc) && !/\.(?:onclick|oninput|onchange)\s*=/.test(uiSrc)
         && /machineSection\(machine\);/.test(taskClientSource)
-        && (taskClientSource.match(/["']This machine["']/g) ?? []).length >= 2,
+        && (taskClientSource.match(/["']Diese Maschine["']/g) ?? []).length >= 1,
       JSON.stringify({ found: uiSrc.length > 0, controls: [...uiSrc.matchAll(/el\("(button|input|select)"/g)].map((m) => m[1]) }));
   }
   check("task workbench source: Work is default and Programs + History are explicit selections",
@@ -1847,8 +1851,9 @@ export async function run(ctx: Ctx): Promise<void> {
       !!legacyLane && !!legacyNote, migrationError);
     if (legacyLane) { legacyLane.kind = "lane"; delete legacyLane.originId; delete legacyLane.programId; }
     if (legacyNote) { legacyNote.kind = "note"; delete legacyNote.originId; legacyNote.programId = 7; }
-    const expectLane = legacyLane ? { ...legacyLane, kind: "auftrag" } : null;
-    const expectNote = legacyNote ? { ...legacyNote, kind: "notiz" } : null;
+    // The API adds the empty reverse archive projection; it must never enter the persisted row.
+    const expectLane = legacyLane ? { ...legacyLane, kind: "auftrag", absorbed: [] } : null;
+    const expectNote = legacyNote ? { ...legacyNote, kind: "notiz", absorbed: [] } : null;
     if (expectNote) delete expectNote.programId;
     if (migrationState) await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(migrationState)}\n`);
     await restartSrv();
@@ -2847,10 +2852,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const capEnd = taskServerSource.indexOf("const MAX_CRITERION =", capStart);
     const routeStart = taskServerSource.indexOf("    const taskComment =", capEnd);
     const routeEnd = taskServerSource.indexOf("    // deleting one is by id", routeStart);
+    const appendStart = taskServerSource.indexOf("function appendTaskComment(");
+    const appendSource = appendStart >= 0 && capStart > appendStart ? taskServerSource.slice(appendStart, capStart) : "";
     const capSource = capStart >= 0 && capEnd > capStart ? taskServerSource.slice(capStart, capEnd) : "";
     const routeSource = routeStart >= 0 && routeEnd > routeStart ? taskServerSource.slice(routeStart, routeEnd) : "";
     check("comment mutation fixture: the production cap helper and POST route are readable",
-      !!capSource && !!routeSource, `cap=${capStart}:${capEnd} route=${routeStart}:${routeEnd}`);
+      !!appendSource && !!capSource && !!routeSource, `append=${appendStart}:${capStart} cap=${capStart}:${capEnd} route=${routeStart}:${routeEnd}`);
     type FixtureComment = { id: string; text: string; from?: string };
     const compileCap = (source: string): (comments: FixtureComment[]) => FixtureComment[] =>
       new Function("MAX_COMMENTS_PER_TASK", `${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}\nreturn cappedTaskComments;`)(50) as
@@ -2875,7 +2882,7 @@ export async function run(ctx: Ctx): Promise<void> {
       };
       const bindings = Object.keys(deps).map((name) => `const ${name} = d[${JSON.stringify(name)}];`).join("\n");
       const route = new Function("d", `${bindings}\n${new Bun.Transpiler({ loader: "ts" })
-        .transformSync(`async function route() {\n${source}\n}`)}\nreturn route;`)(deps) as
+        .transformSync(`async function route() {\n${appendSource}\n${source}\n}`)}\nreturn route;`)(deps) as
         () => Promise<{ body: { delivery?: string; comment?: { id: string } }; code: number }>;
       const response = await route();
       return { response, sent, comments: task.comments };
@@ -5162,7 +5169,6 @@ export async function run(ctx: Ctx): Promise<void> {
     gitRoot("add", "snippet-probe");
     const snipCommitted = gitRoot("commit", "-qm", "snippet probe fixture (the lane's commit)").status === 0;
     const snipLaneSha = gitRoot("rev-parse", "HEAD").stdout.trim();
-    const snipLaneBlob = gitRoot("rev-parse", `${snipLaneSha}:${SNIP_PATH}`).stdout.trim();
     const snipLinkMode = gitRoot("ls-tree", snipLaneSha, "snippet-probe/link.ts").stdout.split(" ")[0];
     check("(d3) fixture: the snippet source and its symlink are committed at the lane's future fork point",
       snipCommitted && /^[0-9a-f]{40}$/.test(snipLaneSha) && snipLinkMode === "120000",
@@ -5188,26 +5194,26 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.sleep(500);
     }
     const fHead = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-    // THE EXCERPT, read back out of the delivered bytes by the label's OWN line numbers and compared
-    // with the lane commit's blob at exactly those lines. The block sits between the brief and the
+    // THE POINTER, resolved by its own commit and line numbers against the lane source. The block sits between the brief and the
     // anchors, so the anchor check below finds its block by position rather than by prefix.
-    const snipLabelRe = new RegExp(`^- ${SNIP_PATH.replace(/[./]/g, "\\$&")}#snippetProbeTarget · Zeilen (\\d+)-(\\d+) · blob ([0-9a-f]{12})`);
+    const snipLabelRe = new RegExp(`^- ${SNIP_PATH.replace(/[./]/g, "\\$&")}#snippetProbeTarget@([0-9a-f]{12}) Z. (\\d+)-(\\d+)`);
     const fLines = fPrompt.split("\n");
     const snipLabelAt = fLines.findIndex((line) => snipLabelRe.test(line));
     const snipLabel = snipLabelAt >= 0 ? snipLabelRe.exec(fLines[snipLabelAt]!) : null;
-    const snipFrom = Number(snipLabel?.[1] ?? 0);
-    const snipTo = Number(snipLabel?.[2] ?? 0);
-    const snipShown = snipLabelAt >= 0 ? fLines.slice(snipLabelAt + 2, snipLabelAt + 2 + snipTo - snipFrom + 1).join("\n") : null;
+    const snipFrom = Number(snipLabel?.[2] ?? 0);
+    const snipTo = Number(snipLabel?.[3] ?? 0);
+    const snipShown = snipLabelAt >= 0 ? fLines[snipLabelAt + 1] : null;
     const snipAtLane = gitRoot("show", `${snipLaneSha}:${SNIP_PATH}`).stdout.split("\n").slice(snipFrom - 1, snipTo).join("\n");
     const snipAtMain = snipMainText.split("\n").slice(snipFrom - 1, snipTo).join("\n");
     const snipOmitted = fLines.find((line) => line.startsWith("ausgelassen: ")) ?? "";
-    check("(d3) the delivered brief carries the named symbol's excerpt BYTE-IDENTICAL from the lane's commit, though main moved before the brief was cut",
+    check("(d3) the delivered brief carries the named symbol's complete pointer from the lane's commit, though main moved before the brief was cut",
       snipMoved && fHead !== snipLaneSha && fReceipt?.head === fHead
-      && fPrompt.includes(`\n\nQuellpaket — exakte Ausschnitte aus ${snipLaneSha.slice(0, 12)} `)
-      && snipLabel !== null && snipLabel[3] === snipLaneBlob.slice(0, 12)
+      && fPrompt.includes(`\n\nQuellpaket — Symbolzeiger aus ${snipLaneSha.slice(0, 12)} `)
+      && snipLabel !== null && snipLabel[1] === snipLaneSha.slice(0, 12)
       && snipFrom > 1 && snipTo > snipFrom
-      && fLines[snipLabelAt + 1] === "```" && fLines[snipLabelAt + 2 + snipTo - snipFrom + 1] === "```"
-      && snipShown === snipAtLane && snipShown !== snipAtMain && snipShown.includes("lane-commit:")
+      && snipShown !== "```" && snipTo - snipFrom + 1 === 3
+      && snipAtLane !== snipAtMain && snipAtLane.startsWith("export function snippetProbeTarget(")
+      && snipAtLane.includes("lane-commit:")
       && snipOmitted.includes(`${SNIP_PATH}#snippetProbeAbsent (symbol-not-found)`)
       && snipOmitted.includes("snippet-probe/link.ts#snippetProbeTarget (not-a-regular-file)")
       && fPrompt.indexOf("\n\nQuellpaket") < fPrompt.indexOf("\n\nContextPlan v2 anchors"),
@@ -5220,7 +5226,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const snipBlockBytes = fPrompt.includes("\n\nQuellpaket")
       ? new TextEncoder().encode(fPrompt.slice(fPrompt.indexOf("\n\nQuellpaket"), fPrompt.indexOf("\n\nContextPlan v2 anchors"))).byteLength
       : -1;
-    check("(d3) the receipt counts the source package it delivered: block bytes, excerpts shown, and the named refs it omitted",
+    check("(d3) the receipt counts the source package it delivered: block bytes, pointers shown, and the named refs it omitted",
       !!fReceipt?.snippet && snipBlockBytes > 0 && fReceipt.snippet.bytes === snipBlockBytes
       && fReceipt.snippet.hits === 1
       && fReceipt.snippet.omitted.some((entry) => entry.ref === `${SNIP_PATH}#snippetProbeAbsent` && entry.why === "symbol-not-found")
@@ -9882,8 +9888,21 @@ export async function run(ctx: Ctx): Promise<void> {
       surface: { files: ["fleet-e2e.ts"], symbols: [] },
       done: "die Zeile steht in fleet-e2e.ts", verify: "bun e2e/pins.ts", verboten: [],
     } });
-    await Bun.write(FAKECARD, `#!/bin/sh\ncat >/dev/null\ncat <<'JSON'\n${cardAnswer}\nJSON\n`);
+    await Bun.write(FAKECARD, `#!/bin/sh\n[ "$1" = "--model" ] && [ "$2" = "${MODEL_DEFAULTS.cardExec.id}" ] && [ "$3" = "--effort" ] && [ "$4" = "${MODEL_DEFAULTS.cardExec.effort}" ] || exit 17\ncat >/dev/null\ncat <<'JSON'\n${cardAnswer}\nJSON\n`);
     spawnSync("chmod", ["+x", FAKECARD]);
+    const cardGuardOk = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.cardExec.id,
+      "--effort", MODEL_DEFAULTS.cardExec.effort], { input: "guard probe" });
+    check("(j2) card stand-in accepts the exact registered model and medium effort",
+      cardGuardOk.status === 0 && cardGuardOk.stdout.toString().trim() === cardAnswer,
+      `exit=${cardGuardOk.status} answer=${cardGuardOk.stdout.toString().trim()}`);
+    const cardGuardModel = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.card.id,
+      "--effort", MODEL_DEFAULTS.cardExec.effort], { input: "guard probe" });
+    check("(j2) card stand-in rejects the wrong model with exact Exit17",
+      cardGuardModel.status === 17, `exit=${cardGuardModel.status}`);
+    const cardGuardEffort = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.cardExec.id,
+      "--effort", "high"], { input: "guard probe" });
+    check("(j2) card stand-in rejects the wrong effort with exact Exit17",
+      cardGuardEffort.status === 17, `exit=${cardGuardEffort.status}`);
 
     interface CRow { id: string; card?: { ziel: string; done: string; model: string; ms: number; valid: boolean;
       at: number; verboten: string[];
@@ -9910,15 +9929,10 @@ export async function run(ctx: Ctx): Promise<void> {
       cCard?.ziel === "fleet-e2e.ts bekommt eine Zeile" && cCard.valid === true
       && JSON.stringify(cCard.gaps) === "[]" && cCard.surface.files.join(" ") === "fleet-e2e.ts",
       JSON.stringify(cCard));
-    // (2) THE MODEL THAT RAN, not the constant the call site meant. The brief compiler stamps
-    // SUMMARY_MODEL on every brief no matter which route answered it; this field is read back from
-    // the worker observation, so a stand-in run says so instead of claiming a Haiku ran.
-    // The DISCRIMINATING form, not a literal: under a stand-in runWorker observes SUMMARY_MODEL,
-    // so a card that named the call site's own CARD_MODEL could only have been stamped from the
-    // constant. Asserting the summary model by name would instead pin an operator's environment.
-    check("(j2) card.model carries the model that RAN, not the tier constant the call site named",
-      typeof cCard?.model === "string" && !!cCard.model
-      && cCard.model !== "claude-haiku-4-5-20251001"
+    // The stand-in refuses argv carrying a different model; a valid card therefore proves both
+    // the transport's selected model and the persisted worker observation agree with the register.
+    check("(j2) card.model names the resolved card model passed to the stand-in",
+      cCard?.model === MODEL_DEFAULTS.cardExec.id
       && typeof cCard.ms === "number" && cCard.ms >= 0,
       JSON.stringify({ model: cCard?.model, ms: cCard?.ms }));
     // (6) THE CARD'S ROLE ADOPTS (2026-09-20, live rows 75c28778/fe2bf284/8bd19aac): a row that
@@ -10975,14 +10989,14 @@ export async function run(ctx: Ctx): Promise<void> {
       size: o.size ?? "klein", files: o.files ?? ["shared.ts"], ...(o.verify ? { verify: o.verify } : {}),
       ...(o.after ? { after: o.after } : {}) });
     const bdGot = {
-      same: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2)] }),
-      diffVerify: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { verify: "install, pins, tsc, build" })] }),
-      sameVerifyAnyOrder: proposeBundles({ tasks: [bdRow("b1", 1, { verify: "install, pins" }), bdRow("b2", 2, { verify: "pins + install" })] }),
-      tooBig: proposeBundles({ tasks: [bdRow("b1", 1, { size: "mittel" }), bdRow("b2", 2)] }),
-      diffProgram: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { programId: "other" })] }),
-      diffSurface: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { files: ["other.ts"] })] }),
-      chain: proposeBundles({ tasks: [bdRow("p1", 1, { after: ["q1"] }), bdRow("q1", 2)] }),
-      terminal: proposeBundles({ tasks: [bdRow("b1", 1, { status: "done" }), bdRow("b2", 2, { status: "done" })] }),
+      same: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2)] }).pairs,
+      diffVerify: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { verify: "install, pins, tsc, build" })] }).pairs,
+      sameVerifyAnyOrder: proposeBundles({ tasks: [bdRow("b1", 1, { verify: "install, pins" }), bdRow("b2", 2, { verify: "pins + install" })] }).pairs,
+      tooBig: proposeBundles({ tasks: [bdRow("b1", 1, { size: "mittel" }), bdRow("b2", 2)] }).pairs,
+      diffProgram: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { programId: "other" })] }).pairs,
+      diffSurface: proposeBundles({ tasks: [bdRow("b1", 1), bdRow("b2", 2, { files: ["other.ts"] })] }).pairs,
+      chain: proposeBundles({ tasks: [bdRow("p1", 1, { after: ["q1"] }), bdRow("q1", 2)] }).pairs,
+      terminal: proposeBundles({ tasks: [bdRow("b1", 1, { status: "done" }), bdRow("b2", 2, { status: "done" })] }).pairs,
       landPure: !("buendel" in projectLandWaves({ tasks: [
         { id: "b1", created: 1, kind: "auftrag", status: "queued", programId: "prog", filesOrigin: "confirmed", files: ["shared.ts"] },
         { id: "b2", created: 2, kind: "auftrag", status: "queued", programId: "prog", filesOrigin: "confirmed", files: ["shared.ts"] },
@@ -10999,13 +11013,78 @@ export async function run(ctx: Ctx): Promise<void> {
       && bdGot.chain[0]?.grund.startsWith("after-Kette: ")
       && bdGot.terminal.length === 0 && bdGot.landPure === true,
       JSON.stringify(bdGot.chain));
+    const boRows = [bdRow("old", 1), { ...bdRow("note", 2), kind: "notiz" },
+      bdRow("foreign", 3, { programId: "other" }), bdRow("closed", 4, { status: "done" }),
+      bdRow("new", 5), bdRow("unknown", 6, { files: [] })];
+    const bo = taskOverlap("new", boRows);
+    check("(buendel-overlap) same Program open work AND notes share exactly the common paths; foreign Program and terminal rows do not; unknown surface is null",
+      JSON.stringify(bo?.rows) === JSON.stringify([{ id: "old", kind: "auftrag", files: ["shared.ts"] },
+        { id: "note", kind: "notiz", files: ["shared.ts"] }])
+      && bo?.buendel.length === 1 && bo.buendel[0].ids.includes("new")
+      && taskOverlap("unknown", boRows) === null,
+      JSON.stringify(bo));
+    const baTask = { ...bdRow("target", 1), repo: "repo-a" };
+    const baNote = { ...bdRow("note", 3), kind: "notiz", status: "pending", repo: "repo-a" };
+    const ba = proposeBundles({ tasks: [baTask, { ...baTask, id: "second", created: 2 }, baNote] });
+    check("(buendel-attach) one pending note proposes the oldest shared-file work row exactly once; foreign Program, foreign Repo, unknown surface, closed work and already pinned note propose none",
+      JSON.stringify(ba.attach.map((a) => ({ noteId: a.noteId, taskId: a.taskId }))) === JSON.stringify([{ noteId: "note", taskId: "target" }])
+      && ba.attach[0]?.grund.includes("shared.ts")
+      && [{ ...baNote, programId: "other" }, { ...baNote, repo: "repo-b" }, { ...baNote, files: [] }]
+        .every((n) => proposeBundles({ tasks: [baTask, n] }).attach.length === 0)
+      && proposeBundles({ tasks: [{ ...baTask, status: "done" }, baNote] }).attach.length === 0
+      && proposeBundles({ tasks: [{ ...baTask, notes: [{ noteId: "note" }] }, baNote] }).attach.length === 0,
+      JSON.stringify(ba));
+    const abRows = [{ id: "source", status: "archived", disposition: { beleg: "target" } },
+      { id: "open", status: "pending", disposition: { beleg: "target" } },
+      { id: "other", status: "archived", disposition: { beleg: "target-suffix" } }];
+    check("(buendel-absorbed) only archived rows naming the whole target id in disposition.beleg are absorbed",
+      JSON.stringify(absorbedTaskIds("target", abRows)) === JSON.stringify(["source"])
+      && absorbedTaskIds("unknown", abRows).length === 0, JSON.stringify(abRows));
+    // Execute source mutations of the pure producers; each must change the measured verdict.
+    const baSource = readFileSync(`${ROOT}/task-land-waves.ts`, "utf8");
+    const baCode = baSource.slice(baSource.indexOf("const verifyStepSet"), baSource.indexOf("// --- CLI:"))
+      .replace(/export /g, "");
+    const baFns = (code: string) => new Function("LOCAL_PROOF_STEPS", "landWaveUnits", "rowOrder", "textOrder",
+      new Bun.Transpiler({ loader: "ts" }).transformSync(code) + "\nreturn {proposeBundles, taskOverlap, absorbedTaskIds};")(
+      LOCAL_PROOF_STEPS, landWaveUnits,
+      (a: { created: number; id: string }, b: { created: number; id: string }) => a.created - b.created || a.id.localeCompare(b.id),
+      (a: string, b: string) => a.localeCompare(b)) as {
+        proposeBundles: typeof proposeBundles; taskOverlap: typeof taskOverlap; absorbedTaskIds: typeof absorbedTaskIds };
+    check("(buendel) MUTATION: removing Program/file/null overlap guards, attach Program/Repo/file guards, or absorbed status/id guards changes the verdict",
+      baFns(baCode.replace("t.programId === row.programId", "true")).taskOverlap("new", boRows)?.rows.some((r) => r.id === "foreign") === true
+      && baFns(baCode.replace("t.files.filter((f) => row.files.includes(f))", "t.files")).taskOverlap("new", [...boRows, bdRow("disjoint", 7, { files: ["other.ts"] })])?.rows.some((r) => r.id === "disjoint") === true
+      && baFns(baCode.replace("if (!row?.files.length) return null;", "if (!row) return null;")).taskOverlap("unknown", boRows) !== null
+      && baFns(baCode.replace("t.programId === note.programId", "true")).proposeBundles({ tasks: [baTask, { ...baNote, programId: "other" }] }).attach.length === 1
+      && baFns(baCode.replace("t.repo === note.repo", "true")).proposeBundles({ tasks: [baTask, { ...baNote, repo: "repo-b" }] }).attach.length === 1
+      && baFns(baCode.replace("t.files.some((f) => note.files.includes(f))", "true")).proposeBundles({ tasks: [baTask, { ...baNote, files: ["other.ts"] }] }).attach.length === 1
+      && baFns(baCode.replace('t.status === "archived"', 'true')).absorbedTaskIds("target", abRows).includes("open")
+      && baFns(baCode.replace('t.disposition?.beleg?.split(/[^a-zA-Z0-9_-]+/).includes(id)', 'true')).absorbedTaskIds("target", abRows).includes("other"),
+      "eight producer mutations must invalidate their own observed claim");
     const bdSrv = (() => { try { return readFileSync(`${ROOT}/server.ts`, "utf8"); } catch { return ""; } })();
-    const bdTickSrc = bdSrv.slice(bdSrv.indexOf("async function tickDispatch("), bdSrv.indexOf("\nasync function ownerSeedCapture("));
+    const bdTickSrc = bdSrv.slice(bdSrv.indexOf("async function tickDispatch("), bdSrv.indexOf("\nasync function ownerSeedCapture(")).split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
     check("(buendel) PROBE + wiring: the tick reads no buendel and still walks startPlanWaves · StartPlanView carries the field, startPlanNow attaches it, the route serves it unchanged",
-      bdTickSrc.length > 1000 && !bdTickSrc.includes("buendel") && /startPlanWaves\(\)/.test(bdTickSrc)
-      && /type StartPlanView = StartPlan & \{ waits: WaitRow\[\]; stau: ReturnType<typeof stallView>; buendel: BundleProposal\[\] \};/.test(bdSrv)
+      bdTickSrc.length > 1000 && !/\b(?:buendel|overlap|attach|absorbed)\b/.test(bdTickSrc) && /startPlanWaves\(\)/.test(bdTickSrc)
+      && /type StartPlanView = StartPlan & \{ waits: WaitRow\[\]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles> \};/.test(bdSrv)
       && /return \{ \.\.\.plan, buendel, waits: waitsOf\(plan\), stau: stallView\(\) \};/.test(bdSrv)
       && /return json\(startPlanNow\(\)\)/.test(bdSrv), `tick=${bdTickSrc.length}`);
+    const baTickSafe = (code: string) => !/\b(?:attach|absorbed|overlap|buendel)\b/.test(code);
+    const baSweep = bdSrv.slice(bdSrv.indexOf("async function tickCardSweep("), bdSrv.indexOf("// --- ↻ refine"))
+      .split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+    const baVerdictWired = (code: string) => code.includes('appendProgramInbox(program, "card-verdict", t.id)')
+      && code.includes('t.card?.valid !== false') && code.includes('e.kind === "card-verdict" && e.ref === t.id');
+    check("(buendel) MUTATION wiring: card inbox producer guards are present; dispatch cannot read overlap, attach, absorbed or buendel even with a source mutation",
+      baVerdictWired(baSweep)
+      && !baVerdictWired(baSweep.replace('appendProgramInbox(program, "card-verdict", t.id)', 'void 0'))
+      && !baVerdictWired(baSweep.replace('t.card?.valid !== false', 'true'))
+      && baTickSafe(bdTickSrc) && ["attach", "absorbed", "overlap", "buendel"].every((field) => !baTickSafe(bdTickSrc + `\nplan.${field};`)),
+      "one inbox producer; four forbidden dispatcher readings rejected");
+    const baUI = taskClientSource;
+    const baVisible = (code: string) => code.includes('`aufgegangen in ${target.id}`')
+      && code.includes('taskAbsorbedFull.get(t.id)') && code.includes('`↳ aufgegangen: ${id}');
+    check("(buendel-absorbed) MUTATION UI: archive and target both show the derived links; removing either rendering is detected",
+      baVisible(baUI) && !baVisible(baUI.replace('`aufgegangen in ${target.id}`', '"hidden"'))
+      && !baVisible(baUI.replace('taskAbsorbedFull.get(t.id)', '[]')),
+      "archive label plus sources below the target");
     // (sp-criterion) A LANE PARKED ON THE OWNER WITH AN UNWRITTEN TREE HOLDS NO SURFACE
     // (start-plan.ts#startPlanLaneClaims). One rule, two lane builders — server.ts#startPlanNow off
     // the live slot, the CLI off a state file — so the rule is exercised directly here and the two
@@ -11478,7 +11557,9 @@ export async function run(ctx: Ctx): Promise<void> {
       spSaved && spCli.status === 0, `saved=${spSaved} exit=${spCli.status} ${spCli.stderr.slice(0, 300)}`);
     check("(sp) the route and `bun start-plan.ts --state fleet.json` print the same object, and it carries the two rows with next + checks",
       (spCliOut === spRoute1.plan || spCliOut === spRoute2.plan) && spPlanLive.version === 1
-      && Array.isArray(spRoute2.buendel)
+      && !!spRoute2.buendel && typeof spRoute2.buendel === "object"
+      && Array.isArray((spRoute2.buendel as { pairs?: unknown }).pairs)
+      && Array.isArray((spRoute2.buendel as { attach?: unknown }).attach)
       && spMine.flatMap((w) => w.ids).sort().join(" ") === [...spIds].sort().join(" ")
       && spMine.every((w) => w.next !== undefined && w.rows.every((r) => r.checks?.filedBy === "owner")),
       JSON.stringify({ route: spRoute2.plan.slice(0, 600), cli: spCliOut.slice(0, 600), buendel: spRoute2.buendel }));
@@ -12122,6 +12203,162 @@ export async function run(ctx: Ctx): Promise<void> {
       && new TextEncoder().encode(s3CappedBlock).byteLength <= ROW_COMMENTS_MAX_BYTES + 256
       && !s3CappedBlock.includes("branch-geheim"),
       `${new TextEncoder().encode(s3CappedBlock).byteLength} bytes · ${s3CappedBlock.slice(-100)}`);
+  }
+
+  // Base coordinates are immutable commit facts, while the graph remains an unchanged vocabulary.
+  {
+    type BaseRange = { file: string; symbol: string; startLine: number; endLine: number };
+    interface BaseRow { id: string; files?: string[]; surface?: { ranges: BaseRange[] | null; sha: string };
+      card?: { model: string; valid: boolean; surface: { ranges: BaseRange[] | null } } }
+    const repo = mkdtempSync(join(tmpdir(), "fleet-base-symbols-"));
+    const fakeCard = `${ROOT}/fakecard-base-symbols`;
+    const ids: string[] = [];
+    const git = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    const commit = () => {
+      if (git("add", ".").status !== 0) throw new Error("base-symbol fixture add failed");
+      const result = git("-c", "user.name=e2e", "-c", "user.email=e2e@localhost", "commit", "-qm", "base symbols");
+      if (result.status !== 0) throw new Error(`base-symbol fixture commit: ${result.stderr}`);
+    };
+    const read = async (id: string): Promise<BaseRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: BaseRow[] }).tasks.find((t) => t.id === id);
+    const file = "symbols.ts";
+    const wanted = (line: number, endLine: number): string =>
+      JSON.stringify([{ file, symbol: "known", startLine: line, endLine }]);
+    const shape = (row: BaseRow | undefined): string => JSON.stringify(row?.surface?.ranges);
+    const card = { ziel: "Basis-Symbol bearbeiten", surface: { files: [file], symbols: [`${file}#known`] },
+      done: "Symbol ist bearbeitet", verify: "bun e2e/pins.ts", verboten: ["kein Dispatch"] };
+    const create = async (base?: string, author?: typeof card, text = `${file}#known`): Promise<string> => {
+      const result = await post("/api/tasks", { text, queue: false, repo, ...(base ? { base } : {}),
+        ...(author ? { card: author } : {}) });
+      const body = (await result.json()) as { task?: { id: string }; error?: string };
+      check("(base-symbols) fixture filing succeeds before its projection is measured",
+        result.ok && !!body.task?.id, JSON.stringify({ status: result.status, body }));
+      const id = body.task?.id ?? "";
+      if (id) ids.push(id);
+      return id;
+    };
+    try {
+      writeFileSync(fakeCard, "#!/bin/sh\ncat >/dev/null\necho '{}'\n", { mode: 0o700 });
+      await restartSrv({ FLEET_CARD_MS: "100", FLEET_CARD_CMD: fakeCard });
+      const tickEnv = await srvEnv("FLEET_CARD_MS");
+      check("(base-symbols) fixture: the isolated card sweep is explicitly armed with its stand-in",
+        tickEnv.readable && tickEnv.value === "100", JSON.stringify(tickEnv));
+      if (git("init", "-q", "-b", "main").status !== 0) throw new Error("base-symbol fixture init failed");
+      writeFileSync(join(repo, ".gitignore"), "graphify-out/\n");
+      writeFileSync(join(repo, file), "export const known = 1;\n\nexport const tail = 2;\n");
+      commit();
+      mkdirSync(join(repo, "graphify-out"));
+      writeFileSync(join(repo, "graphify-out/graph.json"), JSON.stringify({ nodes: [
+        { file_type: "code", source_file: file, label: "known", source_location: "L99" },
+        { file_type: "code", source_file: file, label: "gone", source_location: "L200" },
+      ] }));
+      if (git("checkout", "-q", "-b", "branch").status !== 0) throw new Error("base-symbol fixture branch failed");
+      writeFileSync(join(repo, file), "\n\n\nexport const known = 1;\n\n\nexport const tail = 2;\n");
+      writeFileSync(join(repo, "branch-only.ts"), "\nexport function branchOnly() {}\n");
+      commit();
+      if (git("checkout", "-q", "main").status !== 0) throw new Error("base-symbol fixture checkout failed");
+      const defaultId = await create();
+      const explicitId = await create("branch", card);
+      const branchOnlyId = await create("branch", { ...card,
+        surface: { files: ["branch-only.ts"], symbols: ["branch-only.ts#branchOnly"] } });
+      const main = await read(defaultId);
+      const switched = await post("/api/repo-base", { repo, branch: "branch" });
+      const branch = await read(defaultId);
+      const returned = await post("/api/repo-base", { repo, branch: "main" });
+      const mainAgain = await read(defaultId);
+      const explicit = await read(explicitId);
+      check("(base-symbols) main -> branch -> main relocates graph-known coordinates exactly and isolates an explicit base",
+        switched.ok && returned.ok && shape(main) === wanted(1, 2) && shape(branch) === wanted(4, 6)
+        && shape(mainAgain) === wanted(1, 2) && shape(explicit) === wanted(4, 6)
+        && main?.surface?.sha === mainAgain?.surface?.sha && main?.surface?.sha !== branch?.surface?.sha
+        && JSON.stringify(explicit?.card?.surface.ranges) === wanted(4, 6),
+        JSON.stringify({ main, branch, mainAgain, explicit }));
+      const only = await read(branchOnlyId);
+      check("(base-symbols) a branch-only declaration in a graph-absent file gains exact author and reader ranges",
+        JSON.stringify(only?.surface?.ranges) === JSON.stringify([
+          { file: "branch-only.ts", symbol: "branchOnly", startLine: 2, endLine: 3 }])
+        && only?.card?.valid === true && JSON.stringify(only.card.surface.ranges) === JSON.stringify(only.surface?.ranges),
+        JSON.stringify(only));
+      const sweepText = [
+        "ROLLE: codex/gpt-6.1-sol/high", "GROESSE: klein", `FLAECHE: ${file}#known`,
+        "DONE: Symbol ist bearbeitet", "VERIFY: bun e2e/pins.ts", "VERBOTEN: kein Dispatch",
+        "", "Basis-Symbol bearbeiten",
+      ].join("\n");
+      const sweepParsed = parseFormattedCard(sweepText);
+      const parsedSurface: unknown = sweepParsed?.surface;
+      const parsedSymbols = typeof parsedSurface === "object" && parsedSurface !== null && "symbols" in parsedSurface
+        ? parsedSurface.symbols : undefined;
+      check("(base-symbols) fixture: the complete deterministic header parses with its prose goal and exact symbol",
+        sweepParsed?.ziel === "Basis-Symbol bearbeiten"
+        && JSON.stringify(parsedSymbols) === JSON.stringify([`${file}#known`]), JSON.stringify(sweepParsed));
+      const sweptId = await create("branch", undefined, sweepText);
+      let swept: BaseRow | undefined;
+      let sweepTimedOut = false;
+      await until(async () => { swept = await read(sweptId); return swept?.card?.model === "format"; },
+        { timeoutMs: 20_000, stepMs: 100, what: "base-symbol formatted card sweep" })
+        .catch((e: unknown) => { if (!(e instanceof UntilTimeout)) throw e; sweepTimedOut = true; });
+      check("(base-symbols) the card sweep uses the same explicit base coordinates as author validation and projection",
+        !sweepTimedOut && swept?.card?.model === "format" && swept.card.valid === true
+        && JSON.stringify(swept.card.surface.ranges) === wanted(4, 6), JSON.stringify({ sweepTimedOut, swept }));
+
+      const source = readFileSync(`${ROOT}/server.ts`, "utf8");
+      const cacheCode = source.slice(source.indexOf("const taskBaseTreeCache ="), source.indexOf("// WHY THE SURFACE IS STORED"));
+      const makeResolver = (code: string): { base: (repo: string, base: string) => import("../task-metadata").TrackedSnapshot | null;
+        symbols: (tree: import("../task-metadata").TrackedSnapshot | null) => ReturnType<typeof readSymbolIndexSnapshot> } =>
+        new Function("Bun", "repoCanon", "repoBases", "statSync", "readFileSync", "resolve", "basename", "symbolGraphStamp", "readSymbolIndexSnapshot",
+          new Bun.Transpiler({ loader: "ts" }).transformSync(code) + "\nreturn {base: taskBaseSnapshotFor, symbols: symbolIndexFor};")
+          (Bun, realpathSync, {}, statSync, readFileSync, resolve, basename, symbolGraphStamp, readSymbolIndexSnapshot);
+      const resolver = makeResolver(cacheCode);
+      const mutantCode = cacheCode.replace('const key = `${repo}\\0${tree.indexStamp}`;', 'const key = repo;');
+      const mutant = makeResolver(mutantCode);
+      const coordinates = (r: typeof resolver, base: string): string =>
+        JSON.stringify(r.symbols(r.base(repo, base))?.index.get(file)?.filter((s) => s.symbol === "known"));
+      const exactSwitch = (r: typeof resolver): boolean => coordinates(r, "main") === wanted(1, 2)
+        && coordinates(r, "branch") === wanted(4, 6) && coordinates(r, "main") === wanted(1, 2);
+      check("(base-symbols) mutation: removing resolvedCommit from the production cache key makes the exact main/branch/main claim fail",
+        mutantCode !== cacheCode && exactSwitch(resolver) && !exactSwitch(mutant),
+        JSON.stringify({ normal: coordinates(resolver, "branch"), mutant: coordinates(mutant, "branch") }));
+
+      if (git("checkout", "-q", "branch").status !== 0) throw new Error("base-symbol fixture branch advance failed");
+      writeFileSync(join(repo, file), "\n\n\n\n\nexport const known = 1;\n\n\n\nexport const tail = 2;\n");
+      commit();
+      if (git("checkout", "-q", "main").status !== 0) throw new Error("base-symbol fixture main return failed");
+      const advanced = await read(explicitId);
+      check("(base-symbols) another branch commit invalidates both ref and symbol caches and the stored surface sha",
+        shape(advanced) === wanted(6, 9) && advanced?.surface?.sha !== explicit?.surface?.sha
+        && coordinates(resolver, "branch") === wanted(6, 9), JSON.stringify(advanced));
+      const missing = await post("/api/tasks", { text: `${file}#gone`, repo, base: "branch", queue: false,
+        card: { ...card, surface: { files: [file], symbols: [`${file}#gone`] } } });
+      const missingText = await missing.text();
+      let missingBody: unknown;
+      try { missingBody = JSON.parse(missingText); } catch { missingBody = null; }
+      const missingError = typeof missingBody === "object" && missingBody !== null && "error" in missingBody
+        && typeof missingBody.error === "string" ? missingBody.error : null;
+      const unresolvedId = await create("branch", undefined, `${file}#gone`);
+      const unresolved = await read(unresolvedId);
+      const ranges = unresolved?.surface?.ranges ?? null;
+      const plan = projectLandWaves({ tasks: [
+        { id: "unresolved", repo, programId: "base-symbols", filesOrigin: "confirmed", files: [file], ranges, created: 1, status: "queued", kind: "auftrag" },
+        { id: "distant", repo, programId: "base-symbols", filesOrigin: "confirmed", files: [file], ranges: [{ file, symbol: "distant", startLine: 5000, endLine: 5001 }], created: 2, status: "queued", kind: "auftrag" },
+      ], costs: LAND_WAVE_COSTS_2026_09 });
+      check("(base-symbols) a graph-known symbol missing in the chosen tree is refused and its unresolved projection collides as a whole file",
+        missing.status === 400 && missingError !== null && missingError.includes('"symbols.ts#gone" does not resolve')
+        && JSON.stringify(ranges) === "[]" && JSON.stringify(plan.repos[0]?.waves[0]?.ids) === JSON.stringify(["unresolved", "distant"]),
+        JSON.stringify({ status: missing.status, missingText, missingError, unresolved, plan }));
+      if (git("branch", "-D", "branch").status !== 0) throw new Error("base-symbol fixture delete failed");
+      const deleted = await read(explicitId);
+      const digest = ((await (await get("/api/sessions")).json()) as { tasks: BaseRow[] }).tasks.find((t) => t.id === explicitId);
+      check("(base-symbols) a deleted explicit base is UNKNOWN in Full and Digest with no cached surface or main coordinates",
+        !!deleted && !!digest && deleted.files === undefined && deleted.surface === undefined && digest.files === undefined
+        && resolver.base(repo, "branch") === null && resolver.symbols(null) === null,
+        JSON.stringify({ deleted, digest }));
+    } finally {
+      for (const id of ids) await post(`/api/tasks/${id}/delete`, {});
+      await post("/api/repo-base", { repo, branch: "" });
+      await restartSrv();
+      rmSync(fakeCard, { force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
   }
 
   // --- S6 (queue row 08ec67c0) THE AUTHOR'S CARD. Whoever files a row may hand its card along; it
@@ -12778,6 +13015,69 @@ export async function run(ctx: Ctx): Promise<void> {
       mSlot >= 0 && !!mOpen?.ok && /^[0-9a-f]{32}$/.test(mToken)
         && !!mLive?.cwd && !mLive.worktree && mBoundSlot === mSlot,
       `slot=${mSlot} open=${mOpen?.status} token=${mToken.length} cwd=${mLive?.cwd} bound=${mBoundSlot}`);
+
+    // Mutation probes: drop either response field, the Program filter, the null guard, the
+    // inbox append, its first-verdict guard, or the gaps join: each named check below turns red.
+    type BOReply = { task?: { id: string }; overlap?: { rows: { id: string; kind: string; files: string[] }[] } | null };
+    const boCard = { ziel: "AGENTS.md bekommt eine Zeile", surface: { files: ["AGENTS.md"], symbols: [] },
+      done: "die Zeile steht in AGENTS.md", verify: "bun e2e/pins.ts", verboten: [] };
+    const boOldRes = await post("/api/tasks", { text: "overlap older", kind: "notiz", programId: mMainProgram, card: boCard, repo: REPO });
+    const boOld = await boOldRes.json() as BOReply;
+    const boNewRes = await mFile(mToken, { text: "overlap newer", kind: "notiz", card: boCard });
+    const boNew = await boNewRes.json() as BOReply;
+    const boOwnerRes = await post("/api/tasks", { text: "overlap owner newer", kind: "notiz", programId: mMainProgram, card: boCard, repo: REPO });
+    const boOwner = await boOwnerRes.json() as BOReply;
+    const boUnknownRes = await mFile(mToken, { text: "opaque xyzwv filing", kind: "notiz" });
+    const boUnknown = await boUnknownRes.json() as BOReply;
+    check("(buendel-overlap-live) both create doors report the older same-Program note; unknown filing reports null",
+      boOldRes.ok && boNewRes.ok && boOwnerRes.ok && boUnknownRes.ok
+      && !!boOld.task?.id && !!boNew.overlap?.rows.some((r) => r.id === boOld.task?.id && r.kind === "notiz" && r.files.join(" ") === "AGENTS.md")
+      && !!boOwner.overlap?.rows.some((r) => r.id === boNew.task?.id) && boUnknown.overlap === null,
+      JSON.stringify({ self: boNew.overlap, owner: boOwner.overlap, unknown: boUnknown.overlap }));
+    const boBadRes = await mFile(mToken, { kind: "auftrag", text:
+      "ZIEL: AGENTS.md bekommt eine Zeile\nFLAECHE: AGENTS.md\nDONE:\nVERIFY: bun e2e/pins.ts\nVERBOTEN: keine anderen Dateien" });
+    const boBad = await boBadRes.json() as BOReply;
+    const boFake = `${ROOT}/fakecard-verdict`;
+    writeFileSync(boFake, "#!/bin/sh\ncat >/dev/null\necho '{}'\n", { mode: 0o700 });
+    await restartSrv({ FLEET_CARD_MS: "100", FLEET_CARD_CMD: boFake });
+    type BOInbox = { entries: { kind: string; ref: string; subject: { gaps?: string[] } | null }[] };
+    const boInbox = async (): Promise<BOInbox> => (await fetch(`${BASE}/api/self/inbox`,
+      { headers: { "x-fleet-self-token": mToken } })).json();
+    await until(async () => (await boInbox()).entries.some((e) => e.kind === "card-verdict" && e.ref === boBad.task?.id),
+      { timeoutMs: 10_000, what: "first invalid card verdict in bound MAIN inbox" }).catch((e: unknown) => { if (!(e instanceof UntilTimeout)) throw e; });
+    // Several real sweep intervals; the card remains attached and is not due again.
+    await Bun.sleep(450);
+    const boEntries = (await boInbox()).entries.filter((e) => e.kind === "card-verdict" && e.ref === boBad.task?.id);
+    const boFull = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; card?: { valid: boolean; gaps: string[] } }[] })
+      .tasks.find((t) => t.id === boBad.task?.id);
+    check("(buendel-card-verdict) an invalid MAIN card produces exactly ONE inbox entry over repeated sweeps; subject carries literal gaps",
+      boBadRes.ok && boFull?.card?.valid === false && !!boFull.card.gaps.length && boEntries.length === 1
+      && JSON.stringify(boEntries[0].subject?.gaps) === JSON.stringify(boFull.card.gaps),
+      JSON.stringify({ card: boFull?.card, entries: boEntries }));
+    await restartSrv();
+    rmSync(boFake, { force: true });
+    for (const row of [boOld, boNew, boOwner, boUnknown, boBad]) if (row.task?.id) await post(`/api/tasks/${row.task.id}/delete`, {});
+
+    const baLiveWorkRes = await mFile(mToken, { text: "attach work", kind: "auftrag", card: boCard });
+    const baLiveWork = await baLiveWorkRes.json() as BOReply;
+    const baLiveNoteRes = await mFile(mToken, { text: "attach note", kind: "notiz", card: boCard });
+    const baLiveNote = await baLiveNoteRes.json() as BOReply;
+    const baPlan = await (await get("/api/start-plan")).json() as { buendel: { attach: { noteId: string; taskId: string }[] } };
+    const baExecution = await (await fetch(`${BASE}/api/self/program-execution`, { headers: { "x-fleet-self-token": mToken } })).json() as
+      { programs: { program: { id: string }; buendel: { attach: { noteId: string; taskId: string; nextStep: { path: string; body: { note: string } } }[] } }[] };
+    const baSuggested = baExecution.programs?.find((p) => p.program.id === mMainProgram)?.buendel.attach.find((a) => a.noteId === baLiveNote.task?.id);
+    check("(buendel-attach-live) start plan and bound MAIN execution expose the same note suggestion with the existing notes door as next step",
+      baLiveWorkRes.ok && baLiveNoteRes.ok && !!baPlan.buendel.attach.some((a) => a.noteId === baLiveNote.task?.id)
+      && !!baSuggested && baSuggested.nextStep.path === `/api/self/tasks/${baSuggested.taskId}/notes`
+      && baSuggested.nextStep.body.note === baLiveNote.task?.id,
+      JSON.stringify(baSuggested));
+    const baArcRes = baLiveNote.task?.id ? await post(`/api/tasks/${baLiveNote.task.id}/archive`, { grund: "aufgegangen", beleg: baLiveWork.task?.id }) : null;
+    const baFullRows = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; absorbed?: string[]; notes?: unknown }[] }).tasks;
+    check("(buendel-absorbed-live) archive disposition alone derives the reverse link on the open work row; proposing never pins a note",
+      baArcRes?.ok === true && JSON.stringify(baFullRows.find((t) => t.id === baLiveWork.task?.id)?.absorbed) === JSON.stringify([baLiveNote.task?.id])
+      && baFullRows.find((t) => t.id === baLiveWork.task?.id)?.notes === undefined,
+      JSON.stringify(baFullRows.find((t) => t.id === baLiveWork.task?.id)));
+    for (const row of [baLiveWork, baLiveNote]) if (row.task?.id) await post(`/api/tasks/${row.task.id}/delete`, {});
 
     // (kr6) The MAIN's create door uses the same card-role adoption as the owner door in (kr1).
     // Removing adoptSpawnFromCard(t) from createTaskForMain leaves this stored row without spawn.
@@ -13760,7 +14060,9 @@ export async function run(ctx: Ctx): Promise<void> {
     interface NSlot { id: number; cwd: string | null; worktree?: unknown }
     interface NBrief { text: string; at: number; model: string; edited: boolean; by?: string }
     interface NRow { id: string; text: string; kind: string; status: string;
-      programId?: string; repo?: string | null; brief?: NBrief }
+      programId?: string; repo?: string | null; brief?: NBrief; card?: unknown;
+      comments?: { id: string; text: string; by?: string; slot?: number }[];
+      disposition?: { grund: string; beleg?: string; by: string; slot?: number } }
     interface NState {
       slots?: Record<string, { openedAt?: number; sessionId?: string | null; selfToken?: string }>;
       programs?: { id: string; status?: string; main?: unknown }[];
@@ -13868,6 +14170,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const nOwnerAfter = await nRow(nOwnerId);
     check("ACP-25 (3): a brief the OWNER wrote is refused 409 in its own words and stays byte-for-byte as it was",
       nOverOwner.status === 409 && nOverOwnerText.includes("written by the owner")
+        && nOverOwnerText.includes("POST /api/self/tasks/:id/comment")
         && nOwnerAfter?.brief?.text === "the owner's own bytes" && nOwnerAfter.brief.by === "owner",
       `${nOverOwner.status}:${nOverOwnerText} row=${JSON.stringify(nOwnerAfter?.brief)}`);
 
@@ -13926,6 +14229,99 @@ export async function run(ctx: Ctx): Promise<void> {
       `by=${nBodyBy.status}:${nBodyByText} byMain=${nBodyMain.status} model=${nBodyModel.status}:${nBodyModelText}`
         + ` missing=${nNoText.status} blank=${nBlank.status}`);
 
+    const doorCall = (path: string, method: string, body?: unknown, token = nToken): Promise<Response> =>
+      fetch(BASE + path, { method, headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const doors = [
+      { suffix: "", method: "GET", body: undefined },
+      { suffix: "/comment", method: "POST", body: { text: "foreign attempt" } },
+      { suffix: "/withdraw", method: "POST", body: { grund: "foreign attempt" } },
+    ];
+    for (const door of doors) {
+      const before = JSON.stringify(await nRow(nForeignId));
+      const foreign = await doorCall(`/api/self/tasks/${nForeignId}${door.suffix}`, door.method, door.body);
+      check(`MAIN doors foreign: ${door.method} ${door.suffix || "full text"} refuses another Program without mutation`,
+        foreign.status === 409 && JSON.stringify(await nRow(nForeignId)) === before,
+        `${foreign.status}:${await foreign.text()}`);
+      const loose = await doorCall(`/api/self/tasks/${nLooseId}${door.suffix}`, door.method, door.body);
+      check(`MAIN doors unbracketed: ${door.method} ${door.suffix || "full text"} refuses a row without Program`,
+        loose.status === 409, String(loose.status));
+      const lane = await doorCall(`/api/self/tasks/${nOkId}${door.suffix}`, door.method, door.body, nLaneToken);
+      check(`MAIN doors lane: ${door.method} ${door.suffix || "full text"} refuses with the lane reason`,
+        lane.status === 409 && (await lane.text()).includes("a lane may not"), String(lane.status));
+    }
+    const fullText = ("acp25 full task text " + "beyond the preview. ".repeat(30)).trim();
+    const fullSurface = spawnSync("git", ["-C", REPO, "ls-files"], { encoding: "utf8" }).stdout.trim().split("\n")[0] ?? "";
+    const fullCreated = await post("/api/tasks", { text: fullText, kind: "auftrag", repo: REPO, programId: nBoundProgram,
+      card: { ziel: "MAIN full-text card probe", surface: { files: [fullSurface], symbols: [] },
+        done: "the MAIN reads the exact full text and card", verify: "bun install", verboten: ["no dispatch"] } });
+    const fullId = ((await fullCreated.json()) as { task?: { id: string } }).task?.id ?? "";
+    check("MAIN doors full-text fixture: a row with an explicit valid author card is filed",
+      fullCreated.ok && !!fullId && !!fullSurface, `${fullCreated.status} surface=${fullSurface}`);
+    const full = await doorCall(`/api/self/tasks/${fullId}`, "GET");
+    const fullBody = await full.json() as { task?: NRow };
+    const storedFull = await nRow(fullId);
+    check("MAIN doors own: GET returns the exact full text and stored card", full.ok
+      && fullBody.task?.text === fullText && fullText.length > 200 && !!storedFull?.card
+      && JSON.stringify(fullBody.task.card) === JSON.stringify(storedFull.card),
+      `${full.status} text=${fullBody.task?.text.length} card=${JSON.stringify(fullBody.task?.card)}`);
+    const comment = await doorCall(`/api/self/tasks/${nOwnerId}/comment`, "POST", { text: "  MAIN sharpening remark  " });
+    const commentBody = await comment.json() as { comment?: { id: string; text: string; by?: string; slot?: number } };
+    check("MAIN doors own: comment stores by main and the caller slot on an owner-pinned row", comment.ok
+      && commentBody.comment?.text === "MAIN sharpening remark" && commentBody.comment.by === "main"
+      && commentBody.comment.slot === nSlot
+      && !!(await nRow(nOwnerId))?.comments?.some((c) => c.id === commentBody.comment?.id),
+      `${comment.status}:${JSON.stringify(commentBody)}`);
+    for (const text of [undefined, " "]) {
+      const blank = await doorCall(`/api/self/tasks/${nOwnerId}/comment`, "POST", { text });
+      check(`MAIN doors comment: ${text === undefined ? "missing" : "blank"} text is 400`, blank.status === 400, String(blank.status));
+    }
+    const capped = await doorCall(`/api/self/tasks/${nOwnerId}/comment`, "POST", { text: "x".repeat(2001) });
+    const cappedBody = await capped.json() as { comment?: { text: string } };
+    check("MAIN doors comment: MAX_COMMENT_TEXT caps stored text at exactly 2000", capped.ok
+      && cappedBody.comment?.text === "x".repeat(2000), `${capped.status} length=${cappedBody.comment?.text.length}`);
+    for (const body of [{}, { grund: " " }, { grund: "x".repeat(501) }, { grund: "ok", beleg: " " }]) {
+      const bad = await doorCall(`/api/self/tasks/${fullId}/withdraw`, "POST", body);
+      check(`MAIN doors withdraw: invalid reason/beleg is 400 (${JSON.stringify(body).slice(0, 40)})`,
+        bad.status === 400 && (await nRow(fullId))?.status === "pending", String(bad.status));
+    }
+    const withdrawn = await doorCall(`/api/self/tasks/${fullId}/withdraw`, "POST", { grund: "  replaced  ", beleg: "evidence" });
+    const withdrawnRow = await nRow(fullId);
+    check("MAIN doors own: withdraw archives pending with a trimmed MAIN disposition", withdrawn.ok
+      && withdrawnRow?.status === "archived" && withdrawnRow.disposition?.grund === "replaced"
+      && withdrawnRow.disposition.by === "main" && withdrawnRow.disposition.slot === nSlot,
+      `${withdrawn.status}:${JSON.stringify(withdrawnRow?.disposition)}`);
+    const ownerArchiveId = await nMake("acp25 owner disposition", nBoundProgram);
+    const ownerArchive = await post(`/api/tasks/${ownerArchiveId}/archive`, { grund: "owner reason" });
+    check("MAIN doors owner compatibility: archive still records by owner without slot", ownerArchive.ok
+      && (await nRow(ownerArchiveId))?.disposition?.by === "owner"
+      && (await nRow(ownerArchiveId))?.disposition?.slot === undefined, String(ownerArchive.status));
+    const queuedId = await nMake("acp25 queued withdraw refusal", nBoundProgram);
+    await post(`/api/tasks/${queuedId}/queue`, {});
+    const queuedWithdraw = await doorCall(`/api/self/tasks/${queuedId}/withdraw`, "POST", { grund: "refused" });
+    check("MAIN doors withdraw: queued is 409 and remains queued", queuedWithdraw.status === 409
+      && (await nRow(queuedId))?.status === "queued", String(queuedWithdraw.status));
+    await post(`/api/tasks/${queuedId}/unqueue`, {});
+    const makeAuto = async (token: string): Promise<string> => {
+      const response = await doorCall("/api/self/autos", "POST", { text: "MAIN auto deletion", inSec: 3600 }, token);
+      const body = await response.json() as { auto?: { id: string } };
+      check("MAIN doors autos fixture: self scheduling succeeds", response.ok && !!body.auto?.id, String(response.status));
+      return body.auto?.id ?? "";
+    };
+    const ownAuto = await makeAuto(nToken);
+    const foreignAuto = await makeAuto(nLaneToken);
+    const foreignAutoDelete = await doorCall(`/api/self/autos/${foreignAuto}`, "DELETE");
+    const ownAutoDelete = await doorCall(`/api/self/autos/${ownAuto}`, "DELETE");
+    const laneSelf = await doorCall("/api/self", "GET", undefined, nLaneToken);
+    const laneSelfBody = await laneSelf.json() as { autos?: { id: string }[] };
+    check("MAIN doors autos foreign: DELETE is 409 and retains the foreign auto", foreignAutoDelete.status === 409
+      && !!laneSelfBody.autos?.some((a) => a.id === foreignAuto), String(foreignAutoDelete.status));
+    const ownGone = await doorCall(`/api/self/autos/${ownAuto}`, "DELETE");
+    check("MAIN doors autos own: DELETE is 200 and the auto is gone", ownAutoDelete.status === 200
+      && ownGone.status === 404, `${ownAutoDelete.status}/${ownGone.status}`);
+    const laneAutoDelete = await doorCall(`/api/self/autos/${foreignAuto}`, "DELETE", undefined, nLaneToken);
+    check("MAIN doors autos lane: a lane deletes its own auto", laneAutoDelete.status === 200, String(laneAutoDelete.status));
+
     const nLegacyId = await nMake("acp25 row carrying a pre-field brief", nBoundProgram);
     // (7) THE ALT-ZEILEN-GEGENPROBE — the counter-probe the whole constraint rests on. A brief that
     // was PINNED BEFORE this field existed is planted into the state file exactly as it stood then
@@ -13944,6 +14340,19 @@ export async function run(ctx: Ctx): Promise<void> {
     if (nGarbageRow) nGarbageRow.brief = { text: "a brief with a forged author", at: 1_700_000_000_000, model: "owner", edited: true, by: "the owner themselves" };
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(nLegacyPlant, null, 2), { mode: 0o600 });
     await restartSrv();
+    const commentBack = (await nRow(nOwnerId))?.comments?.find((c) => c.id === commentBody.comment?.id);
+    const withdrawBack = await nRow(fullId);
+    const archiveLines = readFileSync(`${ROOT}/tasks-archive.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { task?: NRow });
+    const archiveBack = archiveLines.findLast((line) => line.task?.id === fullId)?.task;
+    check("MAIN doors restart: comment keeps by main plus slot", commentBack?.by === "main"
+      && commentBack.slot === nSlot && commentBack.text === "MAIN sharpening remark", JSON.stringify(commentBack));
+    check("MAIN doors restart: withdrawn disposition keeps by main plus slot in live state AND archive ledger",
+      withdrawBack?.disposition?.by === "main" && withdrawBack.disposition.slot === nSlot
+      && archiveBack?.disposition?.by === "main" && archiveBack.disposition.slot === nSlot,
+      JSON.stringify({ live: withdrawBack?.disposition, archive: archiveBack?.disposition }));
+    check("MAIN doors restart: owner disposition stays owner without slot", (await nRow(ownerArchiveId))?.disposition?.by === "owner"
+      && (await nRow(ownerArchiveId))?.disposition?.slot === undefined);
     const nLegacyBack = await nRow(nLegacyId);
     const nGarbageBack = await nRow(nForeignId);
     const nOkBack = await nRow(nOkId);
@@ -13990,6 +14399,9 @@ export async function run(ctx: Ctx): Promise<void> {
         && nRevOk.status === 200 && nRevRow?.review === "advisory" && nRevRow.brief?.by === "main",
       `bad=${nRevBad.status}:${nRevBadText} ok=${nRevOk.status} row=${JSON.stringify(nRevRow?.review)}`);
     const nRevSlot = ((await (await post(`/api/tasks/${nRevId}/dispatch`, {})).json()) as { slot?: number }).slot;
+    const sentWithdraw = await doorCall(`/api/self/tasks/${nRevId}/withdraw`, "POST", { grund: "refused" });
+    check("MAIN doors withdraw: sent is 409 and remains sent", sentWithdraw.status === 409
+      && (await nRow(nRevId))?.status === "sent", String(sentWithdraw.status));
     let nRevCwd = "";
     for (let i = 0; i < 60 && typeof nRevSlot === "number" && !nRevCwd; i++) {
       nRevCwd = (await nSess()).find((x) => x.id === nRevSlot)?.cwd ?? "";
@@ -14024,7 +14436,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // Leave the board as this section found it: every row it minted is deleted, the planted MAIN's
     // slot is closed, and both Programs are completed rather than left active for the modules after
     // this one to inherit.
-    for (const id of [nOkId, nOwnerId, nForeignId, nLooseId, nLaneTarget, nClosedId, nLegacyId, nRevId])
+    for (const id of [nOkId, nOwnerId, nForeignId, nLooseId, nLaneTarget, nClosedId, nLegacyId, nRevId, fullId, ownerArchiveId, queuedId])
       await post(`/api/tasks/${id}/delete`, {});
     await post(`/api/slots/${nSlot}/kill`, {});
     await post(`/api/programs/${nBoundProgram}/complete`, {});

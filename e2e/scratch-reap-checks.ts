@@ -264,5 +264,107 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
     }
   }
 
+  const snapSource = `${FIXROOT}/snapshot-source`;
+  const snapDir = `${FIXROOT}/snapshot-instance`;
+  mkdirSync(snapSource);
+  mkdirSync(snapDir);
+  const marker = (name: string) => `SYNTHETIC_SECRET_${name}_${process.pid}`;
+  const markers = ["owner", "steward", "helper", "device", "share", "slot", "env"].map(marker);
+  writeFileSync(`${snapSource}/fleet.json`, JSON.stringify({
+    token: markers[0], stewardToken: markers[1], helperToken: markers[2],
+    helperDevices: [{ token: markers[3] }], shares: [{ token: markers[4] }],
+    slots: { 1: { cwd: `${snapSource}/real-worktree`, selfToken: markers[5], label: "snapshot row", openedAt: Date.now() } },
+    tasks: [{ id: "snapshot-task", text: "Snapshot queue row", source: "owner", status: "pending", repo: snapSource }],
+    programs: [], fleetReports: [], attentionRequests: [], dispatch: true, autosOn: true,
+  }));
+  writeFileSync(`${snapSource}/.env`, `SYNTHETIC_ENV=${markers[6]}\n`);
+  for (const name of ["lane-outcomes.jsonl", "post-land-audits.jsonl", "audit.jsonl"])
+    writeFileSync(`${snapSource}/${name}`, JSON.stringify({ ts: Date.now(), at: Date.now(), text: "snapshot ledger row" }) + "\n");
+  const ref = () => spawnSync("git", ["-C", snapSource, "for-each-ref", "--format=%(refname) %(objectname)"], { encoding: "utf8" }).stdout;
+  const head = () => spawnSync("git", ["-C", snapSource, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout;
+  spawnSync("git", ["-C", snapSource, "init", "-q"]);
+  spawnSync("git", ["-C", snapSource, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]);
+  const beforeRefs = ref(), beforeHead = head();
+  const snapToken = marker("instance");
+  const planted = spawnSync("bun", [`${source}/testinstanz-snapshot.js`], {
+    env: { ...process.env, FLEET_TI_SRC: source, FLEET_TI_SNAPSHOT_SRC: snapSource,
+      FLEET_TI_DIR: snapDir, FLEET_TI_SOCK: `fleettisnap${process.pid}`, FLEET_TI_TOKEN: snapToken },
+    encoding: "utf8", timeout: 30_000,
+  });
+  check("host-hygiene §e9 snapshot probe plants a synthetic source", planted.status === 0,
+    `exit=${planted.status} tail=${planted.stderr?.trim().split("\n").slice(-1)[0] ?? ""}`);
+  if (planted.status === 0) {
+    const markerFile = `${FIXROOT}/snapshot-markers`;
+    writeFileSync(markerFile, markers.join("\n") + "\n");
+    const grep = spawnSync("grep", ["-r", "-F", "-f", markerFile, snapDir], { encoding: "utf8" });
+    check("host-hygiene §e9 grep -r finds no token, stewardToken, helperToken, helperDevices, shares, slot selfToken or .env marker",
+      grep.status === 1, `grep exit=${grep.status}`);
+    const plantedState = JSON.parse(readFileSync(`${snapDir}/fleet.json`, "utf8"));
+    check("host-hygiene §e9 snapshot master stop and paths refuse a real worktree",
+      plantedState.dispatch === false && plantedState.autosOn === false
+        && Object.values(plantedState.slots as Record<string, unknown>).every((value) => {
+          const s = value as { cwd?: unknown; worktree?: unknown };
+          return s.cwd === snapDir && !s.worktree;
+        })
+        && plantedState.tasks[0]?.repo === snapDir,
+      `dispatch=${plantedState.dispatch} autosOn=${plantedState.autosOn} cwd=${plantedState.slots[1]?.cwd}`);
+    check("host-hygiene §e9 source refs and HEAD remain byte-identical after snapshot",
+      ref() === beforeRefs && head() === beforeHead, "git for-each-ref and HEAD before/after");
+  }
+
+  if (ready && planted.status === 0) {
+    // the same rsync shim §e8 stages: a helper host (Linux, no rsync) otherwise dies at the staging
+    // copy with exit 127 before the snapshot is ever read (helper job bb9cc4f9a026, 2026-09-29)
+    const env = { ...process.env, PATH: `${FIXROOT}/bin:${process.env.PATH ?? ""}`,
+      FLEET_TI_DIR: snapDir, FLEET_TI_PORT: String(tiPort),
+      FLEET_TI_SOCK: `fleettisnap${process.pid}`, FLEET_TI_SNAPSHOT_SRC: snapSource,
+      FLEET_TI_TOKEN: snapToken };
+    const up = spawnSync(tiScript, ["up", "snapshot", "--ttl", "5"],
+      { env, encoding: "utf8", timeout: 120_000 });
+    const address = up.stdout?.match(/TESTINSTANZ SNAPSHOT UP\s+(http:\/\/[^/]+)\//)?.[1];
+    check("host-hygiene §e9 synthetic snapshot instance starts", up.status === 0 && !!address,
+      `exit=${up.status} tail=${up.stderr?.trim().split("\n").slice(-1)[0] ?? ""}`);
+    try {
+      if (up.status === 0 && address) {
+        const grep = spawnSync("grep", ["-r", "-F", "-f", `${FIXROOT}/snapshot-markers`, snapDir],
+          { encoding: "utf8" });
+        check("host-hygiene §e9 grep -r finds no source marker after the snapshot server boots",
+          grep.status === 1, `grep exit=${grep.status}`);
+        const state = JSON.parse(readFileSync(`${snapDir}/fleet.json`, "utf8"));
+        const envNames = readFileSync(`${snapDir}/env-names`, "utf8");
+        check("host-hygiene §e9 serving snapshot keeps master stop, local paths and no live-coupling env names",
+          state.dispatch === false && state.autosOn === false
+            && Object.values(state.slots as Record<string, unknown>).every((value) => {
+              const s = value as { cwd?: unknown; worktree?: unknown };
+              return s.cwd === snapDir && !s.worktree;
+            }) && !/FLEET_(HUB_|HELPER_|SHARE_)/.test(envNames),
+          `dispatch=${state.dispatch} autosOn=${state.autosOn} slots=${Object.keys(state.slots).length}`);
+        const routes = [
+          ["/api/slots/1/merge", {}], ["/api/tasks/snapshot-task/land", {}],
+          ["/api/deploy", {}], ["/api/repos/undo-land", { repo: snapDir }],
+        ] as const;
+        for (const [route, body] of routes) {
+          let status = 0;
+          try {
+            const response = await fetch(`${address}${route}`, {
+              method: "POST", headers: { authorization: `Bearer ${snapToken}`, "content-type": "application/json" },
+              body: JSON.stringify(body), signal: AbortSignal.timeout(10_000),
+            });
+            status = response.status;
+          } catch { /* failed request is a failed probe */ }
+          check(`host-hygiene §e9 POST ${route} is refused by planted state`, status >= 400,
+            `HTTP ${status}`);
+        }
+      }
+    } finally {
+      const down = spawnSync(tiScript, ["down"],
+        { env, encoding: "utf8", timeout: 30_000 });
+      check("host-hygiene §e9 synthetic snapshot down frees its instance", down.status === 0,
+        `exit=${down.status} tail=${down.stderr?.trim().split("\n").slice(-1)[0] ?? ""}`);
+      check("host-hygiene §e9 source refs and HEAD remain byte-identical after the mutation probes",
+        ref() === beforeRefs && head() === beforeHead, "git for-each-ref and HEAD before/after");
+    }
+  }
+
   rmSync(FIXROOT, { recursive: true, force: true });
 }

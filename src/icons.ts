@@ -1,4 +1,4 @@
-// The composer's icon set, in the board's existing grammar (client.ts#PK_ICONS: 24-unit box,
+// The composer's icon set, in the board's grammar (the former directory picker's icons: 24-unit box,
 // stroke 1.8, round caps and joins, currentColor) — built node by node with createElementNS, so
 // no markup string ever reaches a sink (the md.ts rule; fleet-e2e-security.ts §7).
 const NS = "http://www.w3.org/2000/svg";
@@ -126,3 +126,9 @@ export function harnessMark(id: string): Element | null {
   if (id === "pi" || id.startsWith("pi-")) return wordMark("pi", "pimark");
   return null;
 }
+
+export const MASCOT_MOTIONS: Keyframe[][] = [
+  [{ transform: "translateY(0)" }, { transform: "translateY(-4px)", offset: 0.4 }, { transform: "translateY(0)" }],
+  [{ transform: "scaleY(1)" }, { transform: "scaleY(0.2)", offset: 0.45 }, { transform: "scaleY(1)" }],
+  [{ transform: "rotate(0)" }, { transform: "rotate(-14deg)" }, { transform: "rotate(14deg)" }, { transform: "rotate(-8deg)" }, { transform: "rotate(0)" }],
+];

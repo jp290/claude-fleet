@@ -16,7 +16,7 @@
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; overflow: hidden; background: #141414; overscroll-behavior: none; }
   body { font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--text); -webkit-text-size-adjust: 100%; }
-  button, .slot, .chip, .pkrow { touch-action: manipulation; }
+  button, .slot, .chip { touch-action: manipulation; }
   /* momentum scrolling for the terminal scrollback on touch */
   .xterm .xterm-viewport { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 
@@ -24,7 +24,7 @@
      ). No hex here: each design language carries --sb-thumb/--sb-thumb-h/--sb-track
      and every surface hears its own language's values (chat: .pane.chat below, board: :root below).
      Both engines are dressed — one with ::-webkit-scrollbar takes that branch (it owns hover, the
-     only state), the rest take the standard thin pair. The three hide-rules (#keys, .pkcrumb,
+     only state), the rest take the standard thin pair. The two hide-rules (#keys,
      #comptray) outrank this block by specificity and keep hiding. */
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: var(--sb-track); }
@@ -42,6 +42,7 @@
 
   #mhead { display: none; }
   #mread { display: none; }
+  #mtop, #mgrip { display: none; }
   #shade { display: none; position: fixed; inset: 0; background: #0009; z-index: 29; }
   /* verification tier 2 — the post-land check alarm (grammatik G2.1): IN FLOW, never an overlay.
      On the desktop it is the first card of the board's machine zone — the same place as the
@@ -197,7 +198,11 @@
   /* The bar's own side padding and the row's used to sit on top of each other: 8 + 10 on each side,
      36px of a 249px column spent before a single character. 5 + 8 keeps the rows off the edge and
      off the scrollbar and gives the 10px back to the one element that is flex:1 — the label. */
-  #slots { flex: 1; overflow-y: auto; padding: 4px 5px 8px 2px; display: flex; flex-direction: column; gap: 2px; }
+  #slots { position: relative; flex: 1; overflow-y: auto; padding: 4px 5px 8px 2px; display: flex; flex-direction: column; gap: 2px; }
+  /* THE BAR'S ONE MARK CANVAS (src/marks.ts): absolutely placed inside the scrolling list, so it
+     scrolls with the rows and takes no place in the flex column; above the rows so a row's tint
+     cannot cover a mark, and never a click target. Only as wide and tall as the marks' column. */
+  #slots > .markstage { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 1; }
   /* A ROW IS TWO LINES now. Line 1 (.r1) is address · label · state and everything that asks for a
      decision; line 2 (.r2) carries the two facts the row used to say only in colour and brightness
      — which checkout, and how long since it last spoke. `flex: none` stays: a row that can be
@@ -231,11 +236,10 @@
   .slot .r2 .repo { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .slot .r2 .when { flex: none; margin-left: auto; font-family: var(--chat-mono);
     font-variant-numeric: tabular-nums; }
-  /* THE PLACE FOR THE SESSION MARK — reserved, sized, and EMPTY. The mark is build 2 of this card
-     and waits on the owner's choice between the drawn variants; the size is the one variant A2 is
-     drawn at (docs/messungen/2026-09-20-session-marke-runde-2.md §7, marken-a2.html: 26px on a
-     session row, 21px on a lane). Reserved now so the row's geometry is already the one the mark
-     lands in — and empty on purpose: a placeholder that draws something is not a placeholder. */
+  /* THE PLACE FOR THE SESSION MARK — the owner chose Fassung B "Zweig" (2026-09-29); the size is
+     still the one reserved for it, first drawn at (docs/messungen/2026-09-20-session-marke-runde-2.md §7, marken-a2.html: 26px on a
+     session row, 21px on a lane). The box stays EMPTY in the DOM: the bar's one canvas
+     (.markstage) draws Fassung B into it, so the row's geometry does not move when a mark does. */
   .slot .mark { flex: none; width: var(--mark-size, 26px); height: var(--mark-size, 26px); }
   .slot.lane { --mark-size: 21px; }
   /* THE ADDRESS IS A CHIP, and it is the same object the chat view sets an id or a code span in
@@ -317,11 +321,11 @@
      whose session falls asleep does not move by a pixel. The flat bar is drawn INSIDE the square
      (a centred 8×2 gradient) instead of shrinking the element to 2px — which is what made it
      "a different size" than the disc beside it. */
-  .slot .act { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--q-live); }
-  .slot .act.rest { background: none; box-shadow: inset 0 0 0 1.5px var(--chat-mute); }
-  .slot .act.sleep { border-radius: 0;
+  .slot .act, #mtop .act { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--q-live); }
+  .slot .act.rest, #mtop .act.rest { background: none; box-shadow: inset 0 0 0 1.5px var(--chat-mute); }
+  .slot .act.sleep, #mtop .act.sleep { border-radius: 0;
     background: linear-gradient(var(--chat-faint), var(--chat-faint)) center / 8px 2px no-repeat; }
-  .slot .act.bad { border-radius: 1px; background: var(--danger);
+  .slot .act.bad, #mtop .act.bad { border-radius: 1px; background: var(--danger);
     clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%,
       50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
   /* Actions replace the row's right edge on a solid matching surface, never overpaint facts. */
@@ -621,13 +625,6 @@
   .nibody { padding: 2px 10px 8px; margin: 0; white-space: pre-wrap; word-break: break-word;
     color: #8a8163; font-size: var(--chat-code-fs); font-family: var(--chat-mono); max-height: 260px; overflow-y: auto; }
   .chatempty { color: var(--chat-faint); font-size: var(--chat-ui-fs); padding: 40px 10px; text-align: center; }
-  /* G2.3 status line: the chat view of a WORKING session — one quiet line pinned to the reading
-     flow's bottom edge, state as a word, the dot in the state colour (--q-live: läuft von selbst).
-     [hidden] must beat the display:flex below — the attribute alone would not. */
-  .chatwork { position: sticky; bottom: 4px; display: flex; align-items: center; gap: 7px;
-    padding: 5px 2px; color: var(--chat-mute); font-family: var(--chat-sans); font-weight: 400;
-    font-size: var(--chat-ui-fs); }
-  .chatwork[hidden] { display: none; }
   /* the same dot on a running subagent call inside a tool step ("Agent … läuft …") */
   .trun { margin-left: 8px; display: inline-flex; align-items: center; gap: 5px;
     font-family: var(--chat-sans); font-weight: 400; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
@@ -671,6 +668,21 @@
   .termcopy { display: none; position: absolute; z-index: 6; width: 96px; height: 40px; border-radius: var(--r1);
     border: 1px solid var(--chat-mute); background: var(--chat-raised); color: var(--chat-ink);
     font: 500 14px var(--chat-sans); cursor: pointer; }
+  /* the scrollback search (Pane#openSearch, card K8): one bar at the terminal's top left, the past
+     bar's material; the corner group keeps the right. Terminal view only. */
+  .termfind { display: none; }
+  .pane:not(.chat) .termfind.open { position: absolute; z-index: 7; top: 8px; left: 10px; display: flex;
+    align-items: center; gap: 4px; max-width: calc(100% - 120px); padding: 4px 6px; background: var(--chat-raised);
+    border: 1px solid var(--chat-edge); border-radius: var(--r1); font-family: var(--chat-sans);
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .termfindin { flex: 1 1 180px; min-width: 0; width: 180px; font: inherit; color: var(--chat-ink);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 3px 6px; }
+  .termfindin:focus { outline: none; border-color: var(--chat-mute); }
+  .termfindn { flex: none; white-space: nowrap; padding: 0 4px; font-variant-numeric: tabular-nums; }
+  .termfindbtn { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+    padding: 0; color: var(--chat-mute); background: none; border: 1px solid transparent; border-radius: var(--r1); cursor: pointer; }
+  .termfindbtn:hover { color: var(--chat-ink); border-color: var(--chat-edge); }
+  .termfindbtn svg { width: 15px; height: 15px; }
 
   #bar { flex: none; background: #000; border-top: 1px solid transparent;
     padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -737,6 +749,19 @@
   #comp.bar #input { order: 0; }
   #comp.bar #send { order: 2; }
   #comp.bar #compspace { display: none; }
+  /* THE SEND TARGET (Grammatik G2.4, src/composer.ts#renderTarget): the session the composer writes
+     to, on screen while the field holds text. The address in the bar's own tile (.slot .n), the
+     name in Sans and shortened, never the address. A target that takes nothing (empty slot, a past
+     session, no session) reads faint. In the low bar it sits between the field and the send. */
+  #comptarget { flex: 0 1 auto; display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 34%;
+    font-family: var(--chat-sans); font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; }
+  #comptarget:empty { display: none; }
+  #comptarget .ctaddr { flex: none; padding: 1px 6px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+    background: var(--chat-surface); color: var(--chat-ink); font-family: var(--chat-mono); }
+  #comptarget .ctname { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #comptarget.none .ctaddr { color: var(--chat-faint); }
+  #comptarget.none .ctname { color: var(--chat-faint); }
+  #comp.bar #comptarget { order: 1; }
   .ico { display: block; flex: none; width: 16px; height: 16px; }
   .tricon { flex: none; display: grid; place-items: center; }
   #dropbtn { flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0;
@@ -867,12 +892,19 @@
   /* a staged value shows on the switch itself, underlined until it is applied or discarded */
   .optswrap.staged .optval { color: var(--chat-ink); text-decoration: underline dotted; text-underline-offset: 3px; }
   .optmark { flex: none; display: grid; margin-right: 4px; color: var(--chat-mute); }
-  /* time since the session's last message (src/composer.ts#tickCacheAge): quiet mute under 4:40,
-     faint + dashed underline from 4:40 (CACHE_COLD_AT_MS), 20 s before the 5 min TTL — the tooltip says why */
-  .optage { flex: none; margin-right: 4px; padding: 0 4px; font: 400 12px var(--chat-sans);
-    font-variant-numeric: tabular-nums; color: var(--chat-mute); cursor: default;
-    transition: color var(--t); }
-  .optage.cold { color: var(--chat-faint); text-decoration: underline dashed; text-underline-offset: 3px; }
+  /* G0.1 / G2.3: one fixed status seat in the composer's own row. Only transforms move. */
+  .compactivity { flex: none; display: grid; place-items: center; width: 28px; height: 24px; margin-right: 4px; }
+  .compmascot, .optage { grid-area: 1 / 1; }
+  .compmascot { display: grid; place-items: center; width: 24px; height: 24px; color: var(--chat-ink); }
+  .compmascot[hidden], .optage[hidden] { display: none; }
+  .compmascot .mark { display: block; transform-origin: center; }
+  .compmascot .clawd { width: 24px; height: 16px; fill: currentColor; }
+  .compmascot .codexmark, .compmascot .pimark { font: 700 var(--chat-ui-fs)/1 var(--chat-mono); }
+  .optage { width: 16px; height: 16px; border-radius: 50%; cursor: default;
+    background: conic-gradient(var(--chat-mute) calc(var(--cache-fill, 0) * 1turn), var(--chat-edge) 0); }
+  .optage.cold { background: var(--chat-faint); }
+  .optage.blink { opacity: 0.25; }
+  @media (prefers-reduced-motion: reduce) { .optage.blink { opacity: 1; } }
   /* the model switch's question, in the popover's own material (twelfth cut) */
   .optconfirm { display: grid; gap: 8px; width: 300px; font: 400 13px/1.45 var(--chat-sans); color: var(--chat-prose); }
   .cfage { font-size: 12px; color: var(--chat-mute); }
@@ -1185,7 +1217,12 @@
   .qfoldmark { font-size: 10px; color: var(--faint); width: 8px; }
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
      a destructive click, not only after a refusal. Built dynamically, styled off .overlay/.panel */
-  .riskpanel { gap: 8px; }
+  /* G0.2/G0.3 for every askRisk question (card 3e6342e2): the dialog reads in Sans on the chat
+     tokens (the page body is mono), paths/commands/diffs keep their mono, and the keyboard ring is
+     the composer's neutral 1px --chat-mute instead of the browser's blue */
+  .riskpanel { gap: 8px; font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
+  .riskpanel h2 { font: 500 var(--chat-fs) var(--chat-sans); color: var(--chat-ink); }
+  .riskpanel :focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 2px; }
   /* THE EXPORT MENU (client.ts#openExportDlg): a segment for the content and one for the format
      (G3.1 — the chosen one on --c-hover with an inset edge), toggles for the conversation's parts
      (G1.3 — on = ink with a --chat-mute edge on --chat-surface), hints in the .hint base (G2.2) */
@@ -1208,15 +1245,15 @@
   /* explainer so the merge-preview diff isn't misread as unsaved work — committing doesn't clear it, landing does */
   .landhint { padding: 2px 0 4px; line-height: 1.45; }
   .riskempty { color: var(--add); font-size: 12.5px; padding: 6px 0; }
-  .riskhead { color: var(--amber); font-size: 11px; font-weight: 700; margin-top: 4px; }
+  .riskhead { color: var(--chat-mute); font-size: var(--chat-ui-fs); font-weight: 500; margin-top: 4px; } /* a heading, not a signal — G0.2 */
   /* "left alone" section of the commit preview — muted, so it reads as skipped, not committed */
-  .riskhead.skip { color: var(--faint); font-weight: 600; }
-  .riskfile.skip { color: var(--faint); }
-  .risklist { max-height: 180px; overflow-y: auto; background: #141414; border: 1px solid var(--line-soft);
-    border-radius: 8px; padding: 6px 9px; }
-  .riskfile, .riskcommit { font-size: 11.5px; color: var(--text); padding: 1px 0; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, Menlo, Consolas, monospace; }
-  .riskmore { font-size: 11px; color: var(--faint); padding-top: 2px; }
+  .riskhead.skip { color: var(--chat-faint); font-weight: 500; }
+  .riskfile.skip { color: var(--chat-faint); }
+  .risklist { max-height: 180px; overflow-y: auto; background: var(--chat-void); border: 1px solid var(--chat-edge-soft);
+    border-radius: var(--r2); padding: 6px 9px; }
+  .riskfile, .riskcommit { font-size: var(--chat-ui-fs); color: var(--chat-prose); padding: 1px 0; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; font-family: var(--chat-mono); }
+  .riskmore { font-size: var(--chat-ui-fs); color: var(--chat-faint); padding-top: 2px; }
   .riskbtns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
   .wordbtn, :is(.riskbtn, .shrbtn, .qbtn, .bbtn) { border: 1px solid var(--chat-edge);
     border-radius: var(--r1); background: var(--chat-surface); color: var(--chat-ink);
@@ -1710,6 +1747,9 @@
   /* condition MUST match MOBILE_MQ in src/client.ts and src/shell.ts */
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     :is(.riskbtn, .shrbtn, .qbtn, .bbtn) { min-height: 40px; }
+    .rgbtn:not(.link) { min-height: 40px; padding: 6px 14px; }
+    .rgopt { min-height: 44px; padding: 8px 6px; }
+    #shell-found .fdrights .rgrow { grid-template-columns: 100px minmax(0, 1fr); }
     .tabrow { overflow-x: auto; flex-wrap: nowrap; max-width: 100%; }
     .tabrow button { min-height: 40px; flex: none; }
     .shell { align-items: stretch; justify-content: stretch; }
@@ -1747,157 +1787,19 @@
     #shell-queue .pkfilterin { flex: 1 0 100%; max-width: none; min-height: 40px; }
     .qwavehint { padding-bottom: 8px; }
   }
-
-  /* picker controls, built by openPicker into the window's .shelltools. They sit on ONE line and
-     wrap only when the window is too narrow to hold them. `flex-basis: 100%` on the navigation
-     group used to force the wrap unconditionally, which cost 37px of window height at every width
-     — on a 1400px window the breadcrumb line was "~" at the far left, the path box at the far
-     right and 1100px of nothing between them. */
-  .pkline2 { flex: 1 1 320px; display: flex; align-items: center; gap: 8px; min-width: 0; }
   /* capped: past ~420px the filter is only eating the breadcrumb's room, and its placeholder (the
      keyboard legend) is fully readable well before that */
   .pkfilterin { flex: 1 1 240px; min-width: 0; max-width: 420px; height: 32px; padding: 0 12px; border-radius: 9px;
     border: 1px solid var(--line); background: #1a1a1a; color: #ddd; font-size: 13px; font-family: inherit; }
   .pkfilterin:focus { outline: none; border-color: var(--focus); }
-  .pkpathin { flex: none; width: 240px; height: 28px; padding: 0 10px; border-radius: 8px;
-    border: 1px solid #2e2e2e; background: #191919; color: #bbb; font-size: 11.5px;
-    font-family: ui-monospace, Menlo, Consolas, monospace; }
-  .pkpathin:focus { outline: none; border-color: var(--focus); }
-  .pkpathin.bad { border-color: var(--danger); }
-
-  /* breadcrumb: where you are + one-click jump to any ancestor. Scrolls sideways when deep. */
-  .pkcrumb { flex: 1; min-width: 0; display: flex; align-items: center; gap: 1px; padding: 1px 2px;
-    min-height: 24px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
-  .pkcrumb::-webkit-scrollbar { display: none; }
-  .pkseg { flex: none; padding: 3px 7px; border-radius: 6px; font-size: 12px; color: #8b93b0;
-    cursor: pointer; }
-  .pkseg:hover { background: var(--raised); color: #cdd6f4; }
-  .pkseg.here { color: #e8e8e8; font-weight: 600; cursor: default; }
-  .pkseg.here:hover { background: none; }
-  .pksep { flex: none; color: #4c4c4c; font-size: 11px; }
 
   #pkfilterrow { display: flex; gap: 7px; align-items: stretch; }
   #pkfilter { flex: 1; min-width: 0; height: 34px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line);
     background: #1a1a1a; color: #ddd; font-size: 13px; }
   #pkfilter:focus { outline: none; border-color: var(--focus); }
-  /* "hide lanes" toggle — dim by default, amber when active (matches #live.on / #queuebtn.hot) */
-  .pktoggle { flex: none; padding: 0 11px; border-radius: 9px; border: 1px solid var(--line); background: #1a1a1a;
-    color: var(--dim); font-size: 11px; font-family: inherit; cursor: pointer; white-space: nowrap; }
-  .pktoggle:hover { color: var(--text); border-color: #444; }
-  .pktoggle.on { background: #2a2320; color: var(--amber); border-color: #5a4a2a; }
-
-  .pkrow.pkhide, .shellsec.pkhide, .pknone.pkhide { display: none; }
-
-  .pkrow { display: flex; align-items: center; gap: 10px; padding: 6px 9px; border-radius: 7px;
-    cursor: pointer; }
-  /* --- tree rows: one guide line per ancestor level ---
-     The vertical padding moves OFF the row and onto its name, so a guide with align-self:stretch
-     covers the full row box. Left on the row, stretch would only span the content box and the
-     lines would break into a ladder of dashes with a gap at every row boundary. */
-  .pkrow.tree { padding-top: 0; padding-bottom: 0; gap: var(--pkgap); }
-  /* 7px, not 10: a 37px row put 19 folders on a 707px column while the list scrolled 4539px. At
-     31px it is 22, and the row is still taller than the 26px one in the Contents pane beside it.
-     The phone keeps its 10px below — 31px is a comfortable pointer target and a poor finger one. */
-  .pkrow.tree .pkname { padding: 7px 0; }
-  .pkrow.tree .pkleaf { font-size: 14px; }
-  .pklead { flex: none; align-self: stretch; display: flex; align-items: stretch; position: relative; }
-  /* AN OPEN FOLDER GROWS THE LINE ITS CHILDREN HANG FROM. From the middle of this row — where its
-     own elbow turns into the name — straight down to the row's bottom edge, in exactly the column
-     the children draw their spine in: the lead is (depth+1) columns wide, so that column begins at
-     its right edge, and left:100% lands on it whatever the depth or the column width.
-     Without it a child's spine started out of nowhere below the parent, and expanding a folder
-     read as "some rows appeared" rather than "this folder opened and here is what is inside". */
-  .pkrow.tree.open .pklead::after, .pkdent.open .pklead::after {
-    content: ""; position: absolute; top: 50%; bottom: 0;
-    left: calc(100% - var(--pktwid));
-    border-left: 3px solid var(--pkline); }
-  /* Each level is a column carrying a vertical rule (::before) and, at the row's own level, a
-     horizontal one turning into the name (::after). Drawn as pseudo-elements rather than a border
-     on the box so the last child can stop its vertical half-way (└) while staying pixel-aligned
-     with the full-height rules (│) of the siblings above it.
-     Sized for READING: 30px columns, a 3px rule and a 26px branch. At 16px and 1px the levels sat
-     so close, and the lines so faint, that the tree read as plain indentation — which is what it
-     was replacing. 26/2/18 fixed the spacing and still read as thin, so the stroke took weight and
-     the branch grew until it runs the whole column and arrives at the ▸ it points at. */
-  /* ONE definition of the tree's geometry. The guides read it, the ▸ reads it, and so does the
-     indent of the "empty" line that stands in where a row would be. That indent used to be a
-     magic `61 + depth * 26` in the renderer — a copy of these numbers that went wrong the instant
-     either changed, and was already wrong on the phone, where the ▸ is 34px and not 18px. */
-  /* --pkline lives on the ROW, not on .pkguide: the descender below is drawn by .pklead, which is
-     not inside a guide, and an out-of-scope var makes the whole `border-left` shorthand invalid —
-     computing to width 0, i.e. a line that silently is not there. */
-  /* 24px columns, down from 30: the column width is only indentation, and at depth 3 the desktop
-     was charging 90px of it to a 460px list — the same trade the phone already makes below, for
-     the same reason. The 3px stroke is what makes a tree legible; the gap between levels is not. */
-  .pkrow.tree, .pknone.tree { --pkline: #5b6a91; --pkcol: 24px; --pktwid: 18px; --pkiconw: 16px;
-    --pkgap: 8px;
-    /* where a row's NAME starts, measured from the row's left edge: padding + ▸ + gap + icon + gap.
-       Derived once so the stand-in line below tracks it — adding the folder icon moved every name
-       24px right and would otherwise have left that line behind, exactly as the old hardcoded
-       `61 + depth * 26` did. */
-    --pkname0: calc(9px + var(--pktwid) + var(--pkgap) + var(--pkiconw) + var(--pkgap)); }
-  .pkguide { flex: none; width: var(--pkcol); position: relative; }
-  .pkguide::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
-    border-left: 3px solid var(--pkline); }
-  .pkguide.blank::before { border-left-color: transparent; }
-  .pkguide.end::before { bottom: 50%; }
-  .pkguide.branch::after, .pkguide.end::after { content: ""; position: absolute; left: 0; top: 50%;
-    width: calc(var(--pkcol) - 4px); border-top: 3px solid var(--pkline); }
-  .pkrow.tree:hover, .pkrow.tree.sel { --pkline: var(--accent); }
-  /* the branch runs INTO this glyph, so an 11px one reads as a speck at the end of a 3px stroke */
-  .pktw { flex: none; width: var(--pktwid, 18px); display: flex; align-items: center;
-    justify-content: center; color: #9aa0ad; font-size: 13px; cursor: pointer; }
-  .pktw.open { color: var(--accent); }
-  .pktw:hover { color: #fff; }
-  .pkdtree .pknone.tree { --pkline: #5b6a91; --pkcol: 20px; --pktwid: 15px; --pkiconw: 14px;
-    --pkgap: 7px; --pkname0: calc(6px + var(--pktwid) + var(--pkgap) + var(--pkiconw) + var(--pkgap));
-    font-size: 11.5px; }
-  .pknone.tree { padding: 5px 9px; font-size: 12px; color: #5a5a5a; text-align: left;
-    padding-left: calc(var(--pkname0) + (var(--pkdepth, 0) + 1) * var(--pkcol)); }
-  /* what the tree LEFT OUT — the listing cap and the search budget. Amber, because it is not a
-     description of the folder (that is #5a5a5a above) but a statement that this list is short. */
-  .pknone.tree.pkcap { color: #b08a4a; }
-  /* a search draws its hits AND the folders on the way to them; the way is dimmed and the hit takes
-     the amber, so at a glance the answer is separable from the route to it */
-  .pkrow.tree.pkhit .pkleaf { color: var(--amber); }
-  .pkrow.tree.pkway .pkleaf { color: #7e7e7e; }
-  .pkrow:hover { background: var(--raised); }
-  .pkrow.sel { background: var(--sel); }
-  .pkrow.sel .pkuse { visibility: visible; }
-  .pkicon { flex: none; display: flex; width: 16px; height: 16px; color: #7f7f7f; }
-  .pkicon svg { width: 16px; height: 16px; display: block; }
-  /* the tree's icon is a STATE, so it is lit like one: grey shut, accent open — the same accent
-     the ▾ and the guides take, so one glance at a row answers "is this open" three ways */
-  .pkrow.tree .pkicon, .pkrow.tree .pkicon svg { width: var(--pkiconw); height: var(--pkiconw); }
-  .pkrow.tree .pkicon { color: #8a93a6; }
-  .pkrow.tree.open .pkicon { color: var(--accent); }
-  .pkrow.recent .pkicon { color: #a7c080; }
-  .pkrow.place .pkicon { color: var(--accent); }
-  .pkrow.up .pkicon { color: var(--dim); }
-  .pkname { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 9px; overflow: hidden; }
-  .pkleaf { flex: none; max-width: 64%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-size: 13px; color: #dcdcdc; }
-  .pkrow.up .pkleaf { color: #999; }
   .pksub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 11px; color: #5f5f5f; }
-  .pkgit { flex: none; font-size: 11px; color: var(--accent); opacity: 0.7; padding: 0 2px; }
-  .pkuse { flex: none; margin-left: 4px; padding: 3px 10px; border-radius: 6px; font-size: 12px;
-    color: var(--accent); visibility: hidden; }
-  .pkrow:hover .pkuse, .pkrow.sel .pkuse { visibility: visible; }
-  .pkuse:hover { background: var(--sel); }
   .pknone { padding: 12px 9px; font-size: 12px; color: #555; text-align: center; }
-  /* pin star: reserves a gutter (visibility, not display), ghost on hover, amber when pinned */
-  .pkpin { flex: none; width: 20px; text-align: center; font-size: 13px; color: #6a6a6a;
-    visibility: hidden; cursor: pointer; }
-  .pkrow:hover .pkpin, .pkrow.sel .pkpin { visibility: visible; }
-  .pkpin:hover { color: var(--amber); }
-  .pkpin.on { visibility: visible; color: var(--amber); }
-  .pkrow.pin .pkicon { color: var(--amber); }
-  .pkrow.pkwt { display: none; } /* hidden by the "hide lanes" toggle — separate from filter's pkhide */
-  /* left-fade the breadcrumb when ancestors have scrolled out of view (hint they're reachable) */
-  .pkcrumb.overflow { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);
-    mask-image: linear-gradient(90deg, transparent 0, #000 26px); }
-  /* the picker's detail pane: what this folder IS */
   /* WHERE AM I is the one question this pane must answer at a glance. The path was here all along
      but painted #777 — the same grey as secondary metadata — so it read as a caption rather than
      as the answer. Owner, 2026-08-04: „[Zitat entfernt]“
@@ -1939,241 +1841,290 @@
   .qspawnfx { font: 11.5px ui-monospace, Menlo, Consolas, monospace; color: var(--dim); line-height: 1.45; }
   .qspawnblock { font-size: 12px; color: var(--amber); background: #2a2320; border: 1px solid #5a4a2a;
     border-radius: 7px; padding: 6px 9px; line-height: 1.45; }
-  .pkdlast { font-size: 12.5px; color: #ddd; margin-top: 4px; }
-  .pkdcommit { padding: 5px 0; border-bottom: 1px solid #1e1e1e; }
-  .pkdcommit:last-of-type { border-bottom: 0; }
 
-  /* THE FOUNDING WINDOW (Gruendungsfenster B1, openPicker) — the comic page of roles, profile
-     + context, the repo card. Material is G4.1 (raised, --chat-edge, --r2, the void-shadow), the
-     place is the owner's own: right of the clicked row, notch at it (W6). Every colour here is a
-     --chat-* token; the art svgs draw themselves in currentColor. Widths per step: 640/800/840. */
-  .gfwin { position: fixed; z-index: 40; display: flex; flex-direction: column; max-height: calc(100vh - 24px);
-    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: var(--r2);
-    box-shadow: 0 18px 48px color-mix(in srgb, var(--chat-void) 70%, transparent), 0 0 0 1px var(--chat-void);
-    font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-ink); }
-  /* the mockup resets every button globally, the board page does not — without this the browser
-     paints its own light ButtonFace under each control (measured: rgb(239,239,239) + a 2px border
-     on Cancel, the off segments and the repo rows). :where keeps the reset at ZERO specificity,
-     so every class rule below still wins. */
-  .gfwin :where(button) { appearance: none; border: 0; background: none; padding: 0; margin: 0;
+  /* THE FOUNDING WINDOW (src/founding.ts, Neuentwurf 2026-10-01 with the owner) — a src/shell.ts
+     window without a list: ONE column of four fields (Ort, Rolle, Profil, Kontext) on pure black
+     with the chat view's drifting flakes, the one sentence and the one button in the foot. Every
+     colour is a --chat-* token or a state token (G0.1/G0.2), radii are --r1/--r2/--r3, sizes the
+     three --chat-*-fs (G0.3/G0.4). One fixed size: a state change never moves the window. */
+  #shell-found { background: color-mix(in srgb, var(--chat-void) 72%, transparent);
+    font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
+  #shell-found .shellwin { position: relative; width: min(880px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px));
+    background: var(--chat-void); border: 1px solid var(--chat-edge); border-radius: var(--r3);
+    box-shadow: 0 24px 64px color-mix(in srgb, var(--chat-void) 80%, transparent); }
+  #shell-found .chatflakes { display: block; z-index: 0; }
+  #shell-found .shellhead, #shell-found .shellbody, #shell-found .shellfoot { position: relative; z-index: 1; }
+  #shell-found .shellhead { padding: 14px 16px 12px 22px; border-bottom: 1px solid var(--chat-edge-soft); }
+  #shell-found .shellhead h2 { font-size: var(--chat-fs); font-weight: 600; color: var(--chat-ink); }
+  #shell-found .shellsub { font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .shelllist, #shell-found .shelltools { display: none; }
+  #shell-found .shelldetail { display: block; padding: 0; scrollbar-width: thin; scrollbar-color: var(--chat-edge) transparent; }
+  #shell-found .shelldetail:focus { outline: none; }
+  /* the board page does not reset buttons; the id INSIDE :where keeps this at zero specificity,
+     so every .fd* class below still wins (an id outside it would beat them all) */
+  :where(#shell-found button) { appearance: none; border: 0; background: none; padding: 0; margin: 0;
     font: inherit; color: inherit; text-align: left; cursor: pointer; }
-  .gfnotch { position: absolute; left: -7px; width: 12px; height: 12px; transform: rotate(45deg);
-    background: var(--chat-raised); border-left: 1px solid var(--chat-edge); border-bottom: 1px solid var(--chat-edge); }
-  .gfhead { flex: none; display: flex; align-items: center; gap: 12px; padding: 12px 14px 10px; }
-  .gfttl { font-weight: 500; }
-  .gfttl .mono { color: var(--chat-mute); font-size: var(--chat-code-fs); font-family: var(--chat-mono); }
-  .gfsteps { display: flex; align-items: center; gap: 6px; margin-left: auto;
+  :where(#shell-found button:disabled) { cursor: default; }
+  #shell-found :where(button):focus-visible { outline: none; box-shadow: 0 0 0 1px var(--chat-mute); }
+  #shell-found .shellclose { display: grid; place-items: center; }
+  #shell-found .shellclose svg { width: 14px; height: 14px; }
+  #shell-found .mono { font-family: var(--chat-mono); }
+  #shell-found .ok { color: var(--q-live); }
+  #shell-found .warn { color: var(--amber); }
+
+  /* a field: its name and one hint on the left, its content on the right */
+  #shell-found .fdsec { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 0 20px; padding: 18px 22px;
+    border-bottom: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdsec:last-child { border-bottom: 0; }
+  #shell-found .fdlab { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; }
+  #shell-found .fdlabt { font-size: var(--chat-ui-fs); font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--chat-faint); }
+  #shell-found .fdlabh { font-size: var(--chat-ui-fs); line-height: 1.45; color: var(--chat-faint); }
+  #shell-found .fdbody { min-width: 0; display: flex; flex-direction: column; align-items: stretch; }
+  #shell-found .fdnote { font-size: var(--chat-ui-fs); color: var(--chat-faint); line-height: 1.5; padding: 4px 2px; }
+  #shell-found .fdnote.warn { color: var(--amber); }
+  #shell-found .fdmeta { font-size: var(--chat-ui-fs); color: var(--chat-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ORT */
+  #shell-found .fdplace { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border-radius: var(--r2);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); transition: border-color var(--t); }
+  #shell-found .fdplace:not(:disabled):hover { border-color: var(--c-edge-hi); }
+  #shell-found .fddot { flex: none; width: 9px; height: 9px; border-radius: 50%;
+    background: hsl(var(--proj-h, 220) var(--proj-s) var(--proj-l));
+    box-shadow: 0 0 10px hsl(var(--proj-h, 220) var(--proj-s) var(--proj-l) / .45); }
+  #shell-found .fdpn { display: flex; flex-direction: column; min-width: 0; }
+  #shell-found .fdpname { font-weight: 600; color: var(--chat-ink); }
+  #shell-found .fdppath { font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shell-found .fdpfacts { margin-left: auto; flex: none; display: flex; align-items: center; gap: 10px;
+    font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-found .fdpfacts svg, #shell-found .fdpfv svg { width: 14px; height: 14px; color: var(--chat-faint); }
+  #shell-found .fdhere { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px;
     font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  .gfs { padding: 3px 8px; border-radius: var(--r1); white-space: nowrap; }
-  .gfs.on { color: var(--chat-ink); background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-  .gfs.done { color: var(--chat-mute); }
-  .gfsep { width: 10px; height: 1px; background: var(--chat-edge); }
-  .gfx { flex: none; width: 23px; height: 23px; display: grid; place-items: center; border-radius: var(--r1);
-    color: var(--chat-mute); background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-  .gfx:hover { color: var(--chat-ink); }
-  .gfbody { padding: 0 14px 2px; min-height: 0; flex: 1 1 auto; overflow-y: auto; }
-  .gffoot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px; }
-  .gfhint { flex: 1; font-size: var(--chat-ui-fs); color: var(--chat-faint); line-height: 1.4; }
-  .gfbtn { font: 500 var(--chat-ui-fs)/1 var(--chat-sans); padding: 7px 11px; border-radius: var(--r1);
-    box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-prose); cursor: pointer; }
-  .gfbtn:hover { background: var(--c-hover); }
-  .gfbtn.primary { background: var(--chat-ink); color: var(--chat-void); box-shadow: none; }
-  .gfbtn:disabled { opacity: .45; cursor: not-allowed; }
-  .gferror { font-size: var(--chat-ui-fs); color: var(--amber); background: color-mix(in srgb, var(--amber) 9%, var(--chat-void));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 40%, transparent); border-radius: var(--r1);
-    padding: 7px 9px; margin: 0 0 10px; line-height: 1.45; word-break: break-word; }
-  .gfcarry { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px;
+  #shell-found .fdchip { font-size: var(--chat-ui-fs); color: var(--chat-mute); padding: 2px 7px; border-radius: var(--r1);
+    background: var(--chat-raised); border: 1px solid var(--chat-edge-soft); cursor: help; }
+  #shell-found .fdseg { display: inline-flex; align-self: flex-start; gap: 2px; margin-top: 12px; padding: 3px; border-radius: var(--r2);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); }
+  #shell-found .fdsegb { padding: 6px 12px; border-radius: var(--r1); font-size: var(--chat-ui-fs); color: var(--chat-mute);
+    white-space: nowrap; transition: background var(--t), color var(--t); }
+  #shell-found .fdsegb:not(:disabled):hover { color: var(--chat-ink); }
+  #shell-found .fdsegb.on { background: var(--c-hover); color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  #shell-found .fdsegb:disabled { opacity: .45; }
+  #shell-found .fdcouple { margin-top: 8px; font-size: var(--chat-ui-fs); color: var(--chat-mute); animation: fdrise var(--t); }
+  #shell-found .fdname { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 0 12px; border-radius: var(--r2);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); animation: fdrise var(--t); }
+  #shell-found .fdname:focus-within { border-color: var(--c-edge-hi); }
+  #shell-found .fdname > span { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdname input { flex: 1; min-width: 0; padding: 9px 0; border: 0; outline: none; background: none;
+    font-family: var(--chat-mono); font-size: var(--chat-code-fs); color: var(--chat-ink); }
+  #shell-found .fdname input::placeholder { color: var(--chat-faint); font-family: var(--chat-sans); }
+  #shell-found .fdbranch { margin-top: 7px; font-size: var(--chat-ui-fs); color: var(--chat-faint); overflow-wrap: anywhere; }
+  #shell-found .fdorphans { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  #shell-found .fdorph { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r2);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); font-size: var(--chat-code-fs); color: var(--chat-prose); }
+  #shell-found .fdorph.on { border-color: var(--chat-mute); background: var(--chat-raised); }
+  #shell-found .fdorph .fdmeta { margin-left: auto; }
+  #shell-found .fdradio { flex: none; width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--chat-faint); }
+  #shell-found .fdorph.on .fdradio { border-color: var(--chat-ink); background: radial-gradient(var(--chat-ink) 0 3px, transparent 3.5px); }
+
+  /* ROLLE — four cards; the chosen one in ink */
+  #shell-found .fdroles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  #shell-found .fdrole { display: flex; flex-direction: column; gap: 6px; min-height: 116px; padding: 12px 12px 11px; border-radius: var(--r2);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); transition: border-color var(--t), background var(--t), transform var(--t); }
+  #shell-found .fdrole:not(:disabled):hover { border-color: var(--c-edge-hi); transform: translateY(-1px); }
+  #shell-found .fdrole.on { border-color: var(--chat-ink); background: var(--chat-raised);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--chat-ink) 7%, transparent); }
+  #shell-found .fdrole:disabled { opacity: .35; }
+  #shell-found .fdrn { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--chat-ink); }
+  #shell-found .fdglyph { display: grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: var(--r1);
+    background: var(--c-hover); color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+  #shell-found .fdrole.on .fdglyph { background: var(--chat-ink); color: var(--chat-void); }
+  #shell-found .fdrs { font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-mute); }
+  #shell-found .fdrk { margin-top: auto; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  /* MAIN — the Program she is founded for, under the cards: active Programs only, the ones with a
+     living MAIN greyed with their slot, an unknown one greyed with "unbekannt" */
+  #shell-found .fdprogs { grid-column: -2; min-width: 0; margin-top: 12px; animation: fdrise var(--t); }
+  #shell-found .fdproghead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #shell-found .fdproghead .fdmeta { flex: 1; }
+  #shell-found .fdproglist { display: flex; flex-direction: column; gap: 6px; max-height: 232px; overflow-y: auto; scrollbar-width: thin; }
+  #shell-found .fdprog { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 12px; border-radius: var(--r2);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); color: var(--chat-prose); transition: border-color var(--t); }
+  #shell-found .fdprog:not(:disabled):hover { border-color: var(--c-edge-hi); }
+  #shell-found .fdprog.on { border-color: var(--chat-mute); background: var(--chat-raised); color: var(--chat-ink); }
+  #shell-found .fdprog.on .fdradio { border-color: var(--chat-ink); background: radial-gradient(var(--chat-ink) 0 3px, transparent 3.5px); }
+  #shell-found .fdprog:disabled { opacity: .5; cursor: help; }
+  #shell-found .fdprogt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* "MAIN lebt · Slot N" keeps the muted ink of the row it sits on: green read as "go" on a row
+     that cannot be chosen (owner 02.10.). Amber stays for what is not known. */
+  #shell-found .fdpst { flex: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdpst.stale, #shell-found .fdpst.unknown { color: var(--amber); }
+
+  /* PROFIL — fields with their name above the value */
+  #shell-found .fdprof { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  #shell-found .fdpfw { position: relative; min-width: 0; }
+  #shell-found .fdpf { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 7px 11px 8px; border-radius: var(--r2);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); transition: border-color var(--t); }
+  #shell-found .fdpf:not(:disabled):hover, #shell-found .fdpf.open { border-color: var(--c-edge-hi); }
+  #shell-found .fdpfl { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdpfv { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--chat-ink); white-space: nowrap; }
+  #shell-found .fdpfv span { overflow: hidden; text-overflow: ellipsis; }
+  #shell-found .fdpf.dim .fdpfv { color: var(--chat-mute); }
+  #shell-found .fdpmeta { margin-top: 8px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  /* what she may do and read (src/rights.ts#foundingRights, G6.6) — under the profile switches */
+  #shell-found .fdrights { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--chat-edge-soft); }
+  #shell-found .fdrights .rgrow { display: grid; grid-template-columns: 118px minmax(0, 1fr); column-gap: 10px; padding: 3px 0; align-items: baseline; }
+  #shell-found .fdrights .rgkey { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-found .fdrights .rgv { font-size: var(--chat-ui-fs); }
+  /* the receipt's optional step: the same block as in the session's Info */
+  #shell-found .fdproofgrant { margin-top: 16px; }
+
+  /* the popovers: place, profile values, more packs — one material */
+  #shell-found .fdpop { position: relative; z-index: 3; display: flex; flex-direction: column; gap: 1px; margin-top: 6px; padding: 5px;
+    max-height: 300px; overflow-y: auto; border-radius: var(--r2); background: var(--chat-surface); border: 1px solid var(--chat-edge);
+    box-shadow: 0 12px 32px color-mix(in srgb, var(--chat-void) 70%, transparent); animation: fdrise var(--t); }
+  #shell-found .fdpfw .fdpop { position: absolute; left: 0; right: 0; top: 100%; min-width: 220px; }
+  #shell-found .fdprow { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 9px; border-radius: var(--r1); color: var(--chat-prose); }
+  #shell-found .fdprow:hover, #shell-found .fdprow:focus-visible { background: var(--c-hover); box-shadow: none; }
+  #shell-found .fdprow.on { background: var(--chat-raised); color: var(--chat-ink); }
+  #shell-found .fdprow.off { opacity: .55; cursor: default; }
+  #shell-found .fdprow svg { flex: none; width: 14px; height: 14px; color: var(--chat-faint); }
+  #shell-found .fdprn { flex: none; color: inherit; }
+  #shell-found .fdprr { margin-left: auto; flex: none; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-found .fdother { color: var(--chat-mute); border-top: 1px solid var(--chat-edge-soft); border-radius: 0 0 var(--r1) var(--r1); margin-top: 4px; padding-top: 10px; }
+  #shell-found .fdpopsep { padding: 9px 9px 4px; margin-top: 4px; border-top: 1px solid var(--chat-edge-soft);
+    font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdnav { display: flex; align-items: center; gap: 6px; padding: 2px 2px 6px; }
+  #shell-found .fdnavb { padding: 4px 8px; border-radius: var(--r1); font-size: var(--chat-ui-fs); color: var(--chat-mute); border: 1px solid var(--chat-edge); }
+  #shell-found .fdnavb:not(:disabled):hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
+  #shell-found .fdnavb:disabled { opacity: .4; }
+  #shell-found .fdhereb { margin-left: auto; color: var(--chat-ink); }
+  #shell-found .fdcwd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdfind, #shell-found .fdpin input { width: 100%; padding: 7px 10px; border-radius: var(--r1); outline: none;
+    background: var(--chat-void); border: 1px solid var(--chat-edge); color: var(--chat-ink); font: inherit; font-size: var(--chat-ui-fs); }
+  #shell-found .fdfind:focus, #shell-found .fdpin input:focus { border-color: var(--c-edge-hi); }
+  #shell-found .fdfolders { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; }
+  #shell-found .fdfrow { display: flex; align-items: center; }
+  #shell-found .fdfrow .fdprow { flex: 1; }
+  #shell-found .fdinto { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r1); color: var(--chat-faint); }
+  #shell-found .fdinto:hover { background: var(--c-hover); color: var(--chat-ink); }
+  #shell-found .fdinto svg { width: 14px; height: 14px; transform: rotate(-90deg); }
+  #shell-found .fdpin { display: flex; flex-direction: column; gap: 4px; padding: 6px 9px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+
+  /* KONTEXT — ONE line of chips (owner 2026-10-01: a card per pack takes too much room and does not
+     scale); what a pack is stands in its tooltip, the rest is one click away */
+  #shell-found .fdctx { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; overflow: hidden; }
+  #shell-found .fdctx.all { flex-wrap: wrap; }
+  #shell-found .fdctx > * { flex: none; }
+  #shell-found .fdctx > [hidden] { display: none; }
+  #shell-found .fdmore { height: 28px; padding: 0 10px; border-radius: var(--r1); background: var(--chat-raised);
+    border: 1px solid var(--chat-edge); color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+  #shell-found .fdmore:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
+  #shell-found .fdcx { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 4px 0 10px; border-radius: var(--r1);
+    background: var(--chat-raised); border: 1px solid var(--chat-edge); color: var(--chat-ink); font-size: var(--chat-code-fs); cursor: help;
+    transition: background .6s, border-color .6s, opacity .3s; }
+  #shell-found .fdcx.fix { padding-right: 10px; color: var(--chat-mute); background: var(--chat-surface); border-style: dashed; }
+  #shell-found .fdcx.srv { color: var(--chat-prose); border-style: solid; border-color: var(--c-edge-hi); }
+  #shell-found .fdcx.mine { border-color: color-mix(in srgb, var(--amber) 55%, var(--chat-edge)); }
+  #shell-found .fdcx.in { animation: fdpop .5s ease; background: color-mix(in srgb, var(--add) 16%, var(--chat-raised));
+    border-color: color-mix(in srgb, var(--add) 70%, transparent); }
+  #shell-found .fdcx.out { padding-right: 10px; opacity: .4; text-decoration: line-through; border-color: color-mix(in srgb, var(--del) 60%, transparent); }
+  #shell-found .fdcxrm { display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r1); color: var(--chat-faint); }
+  #shell-found .fdcxrm:hover { background: var(--c-hover); color: var(--chat-ink); }
+  #shell-found .fdcxrm svg { width: 11px; height: 11px; }
+  #shell-found .fdadd { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: var(--r1);
+    border: 1px dashed var(--c-edge-hi); color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+  #shell-found .fdadd:hover, #shell-found .fdadd.open { color: var(--chat-ink); border-color: var(--chat-mute); }
+  #shell-found .fdadd svg { width: 12px; height: 12px; }
+  #shell-found .fdaddn { font-family: var(--chat-mono); color: var(--chat-faint); }
+  #shell-found .fdaddpop .fdprow .fdmeta { flex: 1; }
+  #shell-found .fdctxfoot { display: flex; align-items: center; gap: 12px; margin-top: 10px; min-height: 24px; }
+  #shell-found .fddelta { flex: 1; min-width: 0; font-size: var(--chat-ui-fs); color: var(--chat-faint); line-height: 1.5; }
+  #shell-found .fddelta .add { color: var(--add); }
+  #shell-found .fddelta .del { color: var(--del); }
+  #shell-found .fdghost { flex: none; padding: 5px 10px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
     font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  .gfchip { padding: 2px 7px; border-radius: var(--r1); background: var(--chat-surface);
-    box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-prose); font: 500 var(--chat-ui-fs)/1.5 var(--chat-sans); }
-  .gfchip.m { font-family: var(--chat-mono); font-weight: 400; }
-  .gfchip.warn { color: var(--amber); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 40%, transparent); }
-  .gfchip.ok { color: var(--chat-prose); }
-  .gfback { color: var(--chat-faint); text-decoration: underline; text-underline-offset: 2px; margin-left: 4px; cursor: pointer; }
-  .gfback:hover { color: var(--chat-prose); }
+  #shell-found .fdghost:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
+  #shell-found .fdlist { display: flex; flex-direction: column; margin-top: 10px; border-radius: var(--r2);
+    border: 1px solid var(--chat-edge); background: var(--chat-surface); animation: fdrise var(--t); }
+  #shell-found .fdlrow { display: flex; align-items: flex-start; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdlrow:last-child { border-bottom: 0; }
+  #shell-found .fdlrow.off { opacity: .5; }
+  #shell-found .fdlt { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  #shell-found .fdlh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; color: var(--chat-ink); font-size: var(--chat-code-fs); }
+  #shell-found .fdlsrc, #shell-found .fdlrole, #shell-found .fdlmine { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdlrole { color: var(--chat-mute); }
+  #shell-found .fdlmine { color: var(--amber); }
+  #shell-found .fdluse { font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-mute); }
+  #shell-found .fdsw { flex: none; position: relative; width: 28px; height: 17px; margin-top: 2px; border-radius: 9px; background: var(--chat-edge); }
+  #shell-found .fdsw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--chat-faint); transition: transform var(--t), background var(--t); }
+  #shell-found .fdsw.on { background: var(--chat-ink); }
+  #shell-found .fdsw.on::after { transform: translateX(11px); background: var(--chat-void); }
+  #shell-found .fdsw.off { opacity: .4; }
+  #shell-found .fdcmp { margin-top: 10px; border-radius: var(--r2); border: 1px solid var(--chat-edge); background: var(--chat-surface);
+    overflow-x: auto; animation: fdrise var(--t); }
+  #shell-found .fdcmp table { width: 100%; border-collapse: collapse; font-size: var(--chat-ui-fs); }
+  #shell-found .fdcmp th, #shell-found .fdcmp td { padding: 7px 10px; text-align: center; border-bottom: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdcmp th { font-weight: 600; color: var(--chat-mute); white-space: nowrap; }
+  #shell-found .fdcmp th:first-child, #shell-found .fdcmp td:first-child { text-align: left; color: var(--chat-prose); white-space: nowrap; }
+  #shell-found .fdcmp .cur { background: color-mix(in srgb, var(--chat-ink) 4%, transparent); color: var(--chat-ink); }
+  #shell-found .fdcmpwhy td { vertical-align: top; color: var(--chat-faint); line-height: 1.4; border-bottom: 0; }
+  #shell-found .fdcmpx { color: var(--chat-faint); }
+  #shell-found .fdpip { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--c-edge-hi); vertical-align: middle; }
+  #shell-found .fdpip.on { background: var(--chat-ink); border-color: var(--chat-ink); }
+  #shell-found .fdcmpfoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px;
+    font-size: var(--chat-ui-fs); color: var(--chat-faint); border-top: 1px solid var(--chat-edge-soft); }
 
-  /* step 1 — the comic page. Black gutters (--chat-void), one picture per panel, caption box top
-     left, one sentence at the bottom, panel number top right. Pick = Tintenkante (G4.4). */
-  .gfcomic { display: grid; gap: 9px; padding: 9px; margin-bottom: 10px; background: var(--chat-void);
-    border-radius: var(--r1); grid-template-columns: 1.12fr 1fr;
-    /* the third row carries the plain/Steward panels: caption box, subtitle and the say line must
-       all fit INSIDE the panel — at 96px the caption ran into the picture and the bottom edge cut
-       (MAIN's rejection of e9d5a101, 2026-09-24). 132px holds all three. */
-    grid-template-rows: 178px 178px 132px;
-    grid-template-areas: "orch wt-new" "orch wt-old" "plain steward"; }
-  .gfpanel { position: relative; overflow: hidden; text-align: left; background: var(--chat-surface);
-    border-radius: var(--r1); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-mute); cursor: pointer; }
-  .gfpanel:hover { background: var(--chat-raised); color: var(--chat-prose); }
-  .gfpanel:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--chat-mute); }
-  .gf-orch { grid-area: orch; } .gf-wt-new { grid-area: wt-new; } .gf-wt-old { grid-area: wt-old; }
-  .gf-plain { grid-area: plain; } .gf-steward { grid-area: steward; }
-  .gfpanel svg.gfart { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .gfartwrap { display: contents; }
-  .gfcap { position: absolute; left: 0; top: 0; padding: 6px 10px; background: var(--chat-raised);
-    border-right: 1px solid var(--chat-edge); border-bottom: 1px solid var(--chat-edge);
-    border-bottom-right-radius: var(--r1); font-weight: 500; color: var(--chat-ink); font-size: 13px; }
-  .gfcap small { display: block; font-weight: 400; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  .gfsay { position: absolute; left: 10px; right: 10px; bottom: 8px; font-size: var(--chat-ui-fs); line-height: 1.4;
-    color: var(--chat-prose); }
-  .gfsay span { background: color-mix(in srgb, var(--chat-void) 72%, transparent); box-decoration-break: clone;
-    -webkit-box-decoration-break: clone; padding: 1px 4px; border-radius: var(--r1); }
-  .gfnum { position: absolute; right: 8px; top: 6px; font: 400 var(--chat-ui-fs)/1 var(--chat-mono); color: var(--chat-faint); }
-  .gfpanel.pick { box-shadow: inset 0 0 0 1px var(--chat-ink); background: var(--chat-raised); color: var(--chat-prose); }
-  .gfpanel.pick .gfcap { border-color: var(--chat-ink); }
-  .gfpanel.pick .gfnum { color: var(--chat-ink); }
-
-  /* step 2 — profile left, context beside it (the owner: „[Zitat entfernt]“
-     ). Segment buttons G3.1, model switch G4.3, the Mehr reiter G3.2. */
-  .gftwo { display: grid; grid-template-columns: 300px 1fr; gap: 12px; margin-bottom: 10px; }
-  .gfcol { background: var(--chat-surface); border-radius: var(--r2); box-shadow: inset 0 0 0 1px var(--chat-edge-soft);
-    padding: 12px; min-width: 0; }
-  .gfcol h3 { margin: 0 0 2px; font-size: 13px; font-weight: 500; color: var(--chat-ink); }
-  .gfsub { font-size: var(--chat-ui-fs); color: var(--chat-mute); margin-bottom: 10px; line-height: 1.45; }
-  .gffld { margin: 0 0 11px; }
-  .gfk { font-size: var(--chat-ui-fs); color: var(--chat-mute); margin-bottom: 5px; font-weight: 500; }
-  .gfseg { display: flex; flex-wrap: wrap; gap: 2px; }
-  .gfsegbtn { font: 500 var(--chat-ui-fs)/1 var(--chat-sans); padding: 6px 8px; border-radius: var(--r1);
-    color: var(--chat-mute); cursor: pointer; }
-  .gfsegbtn:hover { color: var(--chat-ink); }
-  .gfsegbtn.on { background: var(--c-hover); color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-  .gfsegbtn:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--chat-mute); }
-  .gfhint2 { font-size: var(--chat-ui-fs); color: var(--chat-faint); margin-top: 5px; line-height: 1.4; }
-  .gfswrap { position: relative; }
-  .gfsw { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    padding: 6px 8px; border-radius: var(--r1); background: var(--chat-raised);
-    box-shadow: inset 0 0 0 1px var(--chat-edge); font: 400 var(--chat-code-fs)/1.3 var(--chat-mono);
-    color: var(--chat-prose); cursor: pointer; }
-  .gfsw:hover { color: var(--chat-ink); }
-  .gfsw svg { width: 14px; height: 14px; flex: none; color: var(--chat-faint); }
-  .gfpop { display: none; position: absolute; z-index: 5; bottom: calc(100% + 6px); left: 0; right: 0;
-    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: var(--r2);
-    box-shadow: 0 18px 48px color-mix(in srgb, var(--chat-void) 70%, transparent); padding: 6px; }
-  .gfpop.open { display: grid; gap: 2px; }
-  .gfpoprow { text-align: left; font: 400 var(--chat-code-fs)/1.3 var(--chat-mono); color: var(--chat-prose);
-    padding: 6px 8px; border-radius: var(--r1); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .gfpoprow:hover { background: var(--c-hover); }
-  .gfpoprow.on { background: var(--c-hover); color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-  .gfpopin { display: grid; gap: 3px; font-size: var(--chat-ui-fs); color: var(--chat-faint);
-    border-top: 1px solid var(--chat-edge-soft); margin-top: 4px; padding-top: 6px; }
-  .gfpopin input { font: 400 var(--chat-code-fs)/1.3 var(--chat-mono); color: var(--chat-ink);
-    background: var(--chat-void); border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 6px 8px; }
-  .gfpopin input:focus { outline: none; border-color: var(--chat-mute); }
-  .gfmore { border-top: 1px solid var(--chat-edge-soft); padding-top: 6px; }
-  .gfmorehead { width: 100%; display: flex; align-items: center; justify-content: space-between;
-    font-size: var(--chat-ui-fs); color: var(--chat-mute); cursor: pointer; padding: 2px 0; }
-  .gfmorehead:hover { color: var(--chat-ink); }
-  .gfmorehead svg { width: 14px; height: 14px; flex: none; }
-  .gfmorebox { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; padding-top: 8px; }
-  .gfnote { font-size: var(--chat-ui-fs); color: var(--chat-prose); line-height: 1.5;
-    border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 8px 10px; margin: 0 0 8px; }
-
-  /* step 3 — the repos of the fleet left, the repo card right (F2, Lesart b). The dot carries
-     projectHue(repo); every line of the card is a fact a route serves today. */
-  .gfsplit { display: grid; grid-template-columns: 210px 1fr; gap: 12px; margin-bottom: 10px; }
-  .gfrl { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .gfr { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: var(--r1);
-    color: var(--chat-prose); cursor: pointer; text-align: left; min-width: 0; }
-  .gfr:hover { background: var(--c-hover); }
-  .gfr .gfdt { width: 8px; height: 8px; border-radius: 50%; background: hsl(var(--h, 0) 55% 60%); flex: none; }
-  .gfr .gfc { margin-left: auto; font: 400 var(--chat-ui-fs)/1 var(--chat-mono); color: var(--chat-faint); }
-  .gfr.on { background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); }
-  .gfr.other { color: var(--chat-faint); border: 1px dashed var(--c-edge-hi); }
-  .gfr.other:hover { color: var(--chat-prose); }
-  .gfcard { background: var(--chat-surface); border-radius: var(--r2); box-shadow: inset 0 0 0 1px var(--chat-edge-soft);
-    padding: 12px 14px; min-width: 0; overflow-y: auto; max-height: 56vh; }
-  .gfhead { display: flex; align-items: center; gap: 10px; }
-  .gfnm { font-weight: 500; font-size: 15px; }
-  .gfpth { font: 400 var(--chat-ui-fs)/1.4 var(--chat-mono); color: var(--chat-faint); word-break: break-all; }
-  .gffacts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-  .gfsec { margin-top: 12px; }
-  .gfsh { font-size: var(--chat-ui-fs); color: var(--chat-mute); font-weight: 500; margin-bottom: 4px; }
-  .gfag { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 8px;
-    padding: 3px 0; font-size: 12.5px; color: var(--chat-prose); }
-  .gfag .gfid { font: 500 var(--chat-ui-fs)/1.45 var(--chat-mono); color: var(--chat-mute); text-align: center;
-    padding: 0 4px; border-radius: var(--r1); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-  .gfag .gfhm { font: 400 var(--chat-ui-fs)/1 var(--chat-mono); color: var(--chat-faint); }
-  .gfgv { display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; font-size: 12.5px; color: var(--chat-prose); align-items: center; }
-  .gfgv .gv { font: 400 var(--chat-ui-fs)/1.5 var(--chat-mono); color: var(--chat-mute); text-align: right; }
-  .gfgv .gv.miss { color: var(--amber); }
-  .gfgv .gvgv { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
-  .gforph { display: flex; gap: 8px; align-items: baseline; font: 400 var(--chat-code-fs)/1.4 var(--chat-mono);
-    color: var(--chat-prose); background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge);
-    border-radius: var(--r1); padding: 4px 8px; cursor: pointer; text-align: right; }
-  .gforph:hover { color: var(--chat-ink); }
-  .gforph.pick { color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-mute); background: var(--chat-surface); }
-  .gforph .gforphb { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  /* the founding packs (Gruendungsfenster B2b): the plan of the chosen repo as switches — a row
-     per selected pack (id + bytes + an/aus), a muted row per omitted pack with its reason. The
-     same value column the orphans sit in, but stretch-filled so the toggles line up. */
-  .gfpv { display: flex; flex-direction: column; gap: 3px; align-items: stretch; min-width: 300px; }
-  .gfpack { display: flex; gap: 8px; align-items: baseline; justify-content: flex-end; text-align: right;
-    font: 400 var(--chat-code-fs)/1.4 var(--chat-mono); color: var(--chat-prose);
-    background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge);
-    border-radius: var(--r1); padding: 4px 8px; cursor: pointer; }
-  .gfpack:hover { color: var(--chat-ink); }
-  .gfpack.on { color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-mute); background: var(--chat-surface); }
-  .gfpack:disabled { opacity: .45; cursor: default; }
-  .gfpack:disabled:hover { color: var(--chat-prose); }
-  .gfpack .gfpb { font: 400 var(--chat-ui-fs)/1 var(--chat-mono); color: var(--chat-faint); font-variant-numeric: tabular-nums; }
-  .gfpack .gfpt { min-width: 30px; text-align: center; padding: 2px 6px; border-radius: var(--r1);
-    font: 500 var(--chat-ui-fs)/1 var(--chat-sans); color: var(--chat-faint);
-    box-shadow: inset 0 0 0 1px var(--chat-edge-soft); }
-  .gfpack .gfpt.on { color: var(--chat-ink); background: var(--chat-surface); box-shadow: inset 0 0 0 1px var(--chat-mute); }
-  .gfpack.omit { background: none; box-shadow: none; cursor: default; color: var(--chat-faint); }
-  .gfpack.omit .gfpr { font: 400 var(--chat-ui-fs)/1.4 var(--chat-sans); max-width: 220px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .gfcm { display: grid; grid-template-columns: 64px 1fr auto; gap: 8px; font-size: 12px; color: var(--chat-prose); padding: 2px 0; }
-  .gfcm .sha { font: 400 var(--chat-ui-fs)/1.6 var(--chat-mono); color: var(--chat-mute); }
-  .gfcm .ago { font: 400 var(--chat-ui-fs)/1.6 var(--chat-mono); color: var(--chat-faint); }
-  .gfcm .s { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* the folder's own children — drawn with the same elbows as the tree on the left.
-     NO max-height and NO scroller of its own: it had `max-height: 340px; overflow-y: auto`, which
-     sealed 1020px of listing into a 340px box while 197px of the detail pane below it sat empty.
-     That is the nested-scroller bug this window's own header calls out ("two nested scrollers is
-     the bug that made the old overlay feel like a keyhole") — .shelldetail already scrolls, so the
-     list simply runs to the bottom of the pane and the pane carries it. */
-  .pkdtree { margin-top: 8px; font: 13.5px ui-monospace, Menlo, Consolas, monospace; }
-  /* A FLAT listing is a grid, a NESTED one is a tree. With nothing expanded these rows are one
-     level of siblings in alphabetical order — 40 of them, 345px of ink each, stacked down the
-     middle of a 910px column. As a grid they are three columns and one glance. The moment anything
-     is expanded the class comes off in paintContents(): depth has to be drawn top-to-bottom, and a
-     column break through the middle of a subtree would cut the guide lines that say what contains
-     what. */
-  .pkdtree.flat { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    column-gap: 18px; }
-  /* the guides are the drawing of NESTING, and a flat grid has none — at one level they are an
-     elbow pointing at nothing, 20px per row of pure decoration. The ▸ stays: it is the control
-     that leaves this mode. */
-  .pkdtree.flat .pkguide { display: none; }
-  /* the SAME drawing as the tree on the left — guides, elbows, the descender under an open folder
-     — at this pane's smaller scale. It is one visual language for one idea (this is inside that),
-     and it is the reason these rows carry .pklead/.pkguide/.pktw rather than a ├ character: a
-     character cannot join up with the row above it, which is exactly what a tree has to do. */
-  .pkdent { display: flex; align-items: center; gap: var(--pkgap); padding: 0 6px; border-radius: 6px;
-    cursor: pointer; --pkline: #5b6a91; --pkcol: 20px; --pktwid: 15px; --pkiconw: 14px; --pkgap: 7px;
-    --pkname0: calc(6px + var(--pktwid) + var(--pkgap) + var(--pkiconw) + var(--pkgap)); }
-  .pkdent .pkdname { padding: 5px 0; }
-  .pkdent:hover { --pkline: var(--accent); }
-  .pkdent .pkicon, .pkdent .pkicon svg { width: var(--pkiconw); height: var(--pkiconw); }
-  .pkdent .pkicon { color: #7f8798; }
-  .pkdent.dir .pkicon { color: #8a93a6; }
-  .pkdent.open .pkicon { color: var(--accent); }
-  .pkdent .pktw { font-size: 11px; }
-  .pkdgo { flex: none; margin-left: auto; padding: 0 5px; color: var(--accent); font-size: 12px;
-    visibility: hidden; }
-  .pkdent:hover .pkdgo { visibility: visible; }
-  .pkdgo:hover { color: #cfe0ff; }
-  .pkdname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9a9a9a; }
-  .pkdent.dir .pkdname { color: var(--accent); }
-  /* EVERY row here acts on a click — a folder re-roots the tree, a file opens in the viewer — so
-     every row says so under the cursor. Only the folders ever did: when the file rows became
-     clickable they kept the text caret and no hover at all, which reads as prose that happens to
-     respond, and a row that acts without looking like it will is a row nobody clicks. */
-  .pkdent:hover { background: #232a3a; }
-  .pkdent:hover .pkdelbow { color: var(--accent); }
-  .pkdent:hover .pkdname { color: #dcdcdc; text-decoration: underline;
-    text-decoration-color: var(--accent); text-underline-offset: 3px; }
-  .pkdent.dir:hover .pkdname { color: #9ec1ff; }
+  /* the foot: one sentence of what starts, and the one button */
+  #shell-found .shellfoot { display: flex; align-items: center; gap: 14px; padding: 12px 14px 12px 22px; border-top: 1px solid var(--chat-edge); }
+  #shell-found .fdsaycol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  #shell-found .fdsay { color: var(--chat-mute); line-height: 1.45; }
+  #shell-found .fdsay b { color: var(--chat-ink); font-weight: 600; }
+  #shell-found .fdsaym { color: var(--chat-faint); }
+  #shell-found .fdfootnote { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdfootnote.warn { color: var(--amber); }
+  #shell-found .fdgo { flex: none; display: inline-flex; align-items: center; gap: 10px; padding: 10px 14px 10px 16px; border-radius: var(--r2);
+    background: var(--chat-ink); color: var(--chat-void); font-weight: 600; white-space: nowrap; transition: opacity var(--t); }
+  #shell-found .fdgo:disabled { opacity: .35; }
+  #shell-found .fdgo:focus-visible { box-shadow: 0 0 0 2px var(--chat-void), 0 0 0 3px var(--chat-ink); }
+  #shell-found .fdgo kbd { font-family: var(--chat-mono); font-size: var(--chat-ui-fs); padding: 1px 5px; border-radius: 4px;
+    background: color-mix(in srgb, var(--chat-void) 12%, transparent); }
+  @keyframes fdrise { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+  @keyframes fdpop { 0% { transform: scale(.88); opacity: 0; } 60% { transform: scale(1.04); opacity: 1; } 100% { transform: none; } }
+  @media (prefers-reduced-motion: reduce) { #shell-found * { animation: none !important; transition: none !important; } }
+  @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
+    #shell-found .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh); border-radius: 0; border: 0; }
+    #shell-found .shelldetail { display: block; }
+    #shell-found .fdsec { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+    #shell-found .fdlab { flex-direction: row; align-items: baseline; gap: 10px; padding: 0 0 10px; }
+    #shell-found .fdroles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #shell-found .fdrole { min-height: 0; }
+    #shell-found .fdprog { flex-wrap: wrap; row-gap: 2px; }
+    #shell-found .fdpst { flex-basis: 100%; padding-left: 23px; }
+    #shell-found .fdseg { align-self: stretch; }
+    #shell-found .fdsegb { flex: 1; text-align: center; padding: 7px 6px; white-space: normal; }
+    #shell-found .fdpfacts .mono { display: none; }
+    #shell-found .shellfoot { padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
+    #shell-found .fdsay { font-size: var(--chat-ui-fs); }
+  }
+  #shell-found.fdproved .shelltools, #shell-found.fdproved .shelllist,
+  #shell-found.fdproved .shellback { display: none; }
+  #shell-found.fdproved .shellbody { display: block; overflow-y: auto; }
+  #shell-found.fdproved .shelldetail { display: block; padding: 16px; }
+  #shell-found.fdproved .fdgo { align-self: flex-start; }
+  /* the receipt is short: the window ends where it does, up to the ceiling the form has */
+  #shell-found.fdproved .shellwin { height: auto; max-height: min(860px, calc(100vh - 32px)); }
+  #shell-found.fdproved .shellbody { flex: 0 1 auto; }
+  #shell-found.fdproved .shellfoot:empty { display: none; }
+  .fdproofstatus { margin-bottom: 16px; font-weight: 500; }
+  .fdproofrow { display: grid; grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 8px 0; }
+  .fdproofrow > * { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .fdproofkey, .fdproofhead, .fdproofnote { color: var(--chat-mute); font: 400 var(--chat-ui-fs)/1.4 var(--chat-sans); }
+  .fdproofhead { font-weight: 500; }
+  .fdproof .mono { font-family: var(--chat-mono); font-size: var(--chat-code-fs); }
+  .fdproofnote { display: block; margin-top: 4px; }
+  .fdproof .warn, .fdproofstatus.warn { color: var(--amber); }
+  .fdproof .fdnone { color: var(--chat-faint); } /* nothing was read back — the status line says why, once */
+  .fdreceiptpack + .fdreceiptpack { margin-top: 12px; }
+  /* end of THE FOUNDING WINDOW */
   .pkbtns { display: flex; justify-content: flex-end; gap: 8px; }
   .pkbtns button { padding: 9px 18px; border-radius: 9px; border: 1px solid var(--line); background: var(--raised);
     color: var(--text); font-size: 13px; font-family: inherit; cursor: pointer; }
@@ -2355,6 +2306,24 @@
   .fxrow:hover { background: var(--c-hover); }
   .fxrow[draggable="true"] { cursor: grab; }
   .fxrow[draggable="true"]:active { cursor: grabbing; }
+  .fxwritepanel { width: min(620px, 94vw); overflow-y: auto; }
+  .fxwritepanel h2 { overflow-wrap: anywhere; }
+  .fxwritebody { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .fxwritelabel { display: flex; flex-direction: column; gap: 5px; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+  .fxwriteinput { width: 100%; box-sizing: border-box; min-height: 36px; padding: 6px 8px;
+    font: var(--chat-code-fs) var(--chat-mono); color: var(--chat-ink); background: var(--chat-surface);
+    border: 1px solid var(--chat-edge); border-radius: var(--r1); }
+  .fxwriteinput:focus { outline: none; border-color: var(--chat-mute); }
+  .fxwriterow { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; font-size: var(--chat-ui-fs); }
+  .fxwritekey { color: var(--chat-mute); font-family: var(--chat-sans); }
+  /* a row's prose is Sans; the command, the place and every path in it are mono (G0.3) */
+  .fxwritevalue { overflow-wrap: anywhere; white-space: pre-wrap; font-family: var(--chat-sans); color: var(--chat-prose); }
+  .fxwritevalue.mono, .fxwritevalue .fxcode { font-family: var(--chat-mono); }
+  .fxwritepanel .ocwarn { font: var(--chat-ui-fs)/1.45 var(--chat-sans); }
+  .fxwritestate { flex: none; padding: 8px 14px; border-bottom: 1px solid var(--chat-edge-soft);
+    font-size: var(--chat-ui-fs); overflow-wrap: anywhere; }
+  .fxwritestate:empty { display: none; }
+  .fxwritestate.err { color: var(--danger); }
   .fxline { position: relative; display: flex; align-items: center; min-width: 0; flex: none; }
   .fxline > .fxrow { flex: 1 1 auto; min-width: 0; }
   .fxacts { position: relative; flex: none; display: flex; align-items: center; }
@@ -2405,7 +2374,8 @@
   /* A dragged path has to reach the composer behind this full-screen window. Keep the explorer
      visible as the source, but let pointer events and the user's eye through to the drop target. */
   #shell-files.fxdragging { pointer-events: none; background: #0002; }
-  #shell-files.fxdragging .shellwin { opacity: .16; }
+  #shell-files.fxdragging .shellwin { opacity: .85; }
+  #shell-files.fxdragging .shelllist { pointer-events: auto; }
   #shell-files .shellhead { border-bottom: 0; padding-bottom: 6px; }
   #shell-files .fxmono { font-family: var(--chat-mono); color: var(--chat-prose); }
   #shell-files .fxnum { font-variant-numeric: tabular-nums; }
@@ -2457,6 +2427,7 @@
   .fxcontent { display: grid; grid-template-columns: minmax(90px, 38%) 34px minmax(0, 1fr); gap: 8px;
     font-family: var(--chat-sans); }
   .fxcontentpath { overflow: hidden; text-overflow: ellipsis; color: var(--chat-ink); font-family: var(--chat-mono); }
+  .fxcontentdir { color: var(--chat-faint); }
   .fxcontentline { color: var(--chat-faint); text-align: right; font-variant-numeric: tabular-nums; }
   .fxcontenttext { overflow: hidden; text-overflow: ellipsis; color: var(--chat-mute); }
   .fxcontentempty { margin: 8px; line-height: 1.45; }
@@ -2489,6 +2460,12 @@
     #shell-files .pkfilterin { flex: 1 0 100%; max-width: none; height: 40px; font-size: 16px; }
     .fxseg { overflow-x: auto; }
     .fxseg button, .fxtog { height: 40px; }
+    .panel.fxwritepanel { width: 100vw; max-width: none; max-height: none;
+      height: var(--vvh, 100dvh); box-sizing: border-box; border-radius: 0;
+      overflow-y: auto; }
+    .fxwriteinput { min-height: 40px; font-size: 16px; }
+    .fxwritepanel .riskbtn { min-height: 40px; }
+    .fxwriterow { grid-template-columns: 80px minmax(0, 1fr); gap: 8px; }
     .fxreload { width: 40px; height: 40px; }
     #shell-files .fxrow { height: 40px; }
     .fxmore, .fxmention { min-width: 40px; height: 40px; }
@@ -2503,31 +2480,22 @@
     .fxjump { height: 40px; }
     .fvgut { min-width: 34px; padding: 0 8px 0 4px; }
     .fxkeys { display: none; }
-    /* the founding window is fullscreen here (G0.7/G4 mobil): nothing to anchor a popover to, so
-       the notch goes and the steps wrap onto their own line; columns stack; inputs 16px so iOS
-       does not zoom; foot buttons at touch height. The desktop block above owns the shapes. */
-    .gfwin { inset: 0 !important; left: 0 !important; top: 0 !important; width: auto !important;
-      max-height: none; border-radius: 0; border: 0; }
-    .gfnotch { display: none; }
-    .gfhead { flex-wrap: wrap; row-gap: 6px; }
-    .gfsteps { margin-left: 0; order: 3; width: 100%; }
-    .gfx { margin-left: auto; }
-    .gfcomic { grid-template-columns: 1fr; grid-template-rows: 200px 150px 150px 132px 132px;
-      grid-template-areas: "orch" "wt-new" "wt-old" "plain" "steward"; }
-    .gftwo, .gfsplit { grid-template-columns: 1fr; }
-    .gfcard { max-height: none; }
-    /* the card's fact grid stacks as well: the pack rows' 300px floor and the long Grund rows
-       have no room beside the label at phone width — a clipped right edge would lie (B2b) */
-    .gfgv { grid-template-columns: 1fr; }
-    .gfpv { min-width: 0; }
-    .gfpack.omit { justify-content: flex-start; }
-    .gfpack.omit .gfpn { flex-shrink: 0; }
-    .gfpack.omit .gfpr { flex: 1 1 auto; min-width: 0; max-width: none; text-align: right; }
-    .gfhint { display: none; }
-    .gffoot { justify-content: flex-end; }
-    .gfbtn { padding: 12px 16px; font-size: 13px; min-height: 40px; }
-    .gfpopin input, .gfmorebox input { font-size: 16px; }
-    .gfpop { position: fixed; left: 8px; right: 8px; bottom: auto; top: 30vh; z-index: 60; }
+    /* the founding window on a phone (G0.7): the shell's fullscreen, one column; touch heights
+       40 px, fields 16 px (no iOS zoom), the button full width under its sentence */
+    #shell-found .fdsegb, #shell-found .fdprow, #shell-found .fdnavb, #shell-found .fdghost, #shell-found .fdorph { min-height: 40px; }
+    #shell-found .fdcx, #shell-found .fdadd, #shell-found .fdmore { height: 34px; }
+    #shell-found .fdcxrm { width: 28px; height: 28px; }
+    #shell-found .fdfind, #shell-found .fdpin input, #shell-found .fdname input { font-size: 16px; }
+    #shell-found .shellfoot { flex-wrap: wrap; }
+    #shell-found .fdgo { flex: 1 1 100%; justify-content: center; min-height: 44px; }
+    #shell-found .fdpfw .fdpop { position: fixed; left: 8px; right: 8px; top: auto; bottom: 132px; max-height: 50vh; }
+    #shell-found.fdproved .fdgo { align-self: stretch; flex: none; }
+    .fdproofrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+    .fdproofheadrow > span:first-child { display: none; }
+    .fdproofkey { grid-column: 1 / -1; }
+    #shell-found.fdproved .shelldetail { padding: 12px; }
+    #shell-found.fdproved .shellwin { height: 100dvh; height: var(--vvh, 100dvh); max-height: none; }
+    #shell-found.fdproved .shellbody { flex: 1 1 auto; }
   }
   .ocsub { font-size: 10.5px; color: var(--dim); margin-top: 5px; }
   .ocnote { font-size: 11px; color: #999; line-height: 1.45; margin-top: 4px; }
@@ -2747,6 +2715,67 @@
   #board .bsetup .bspack:hover { color: var(--chat-ink); border-color: var(--chat-edge); background: var(--chat-raised); }
   #board .bsetup .bsnote { margin-top: 5px; font-size: 11px; color: var(--b-ink3); }
 
+  /* THE RIGHTS BLOCK (src/rights.ts, G6.5; Skizze docs/design/datenrechte-skizze.html): three
+     statements stacked as key over value — the column is 300 px, a side-by-side key would leave
+     the sentences a third of it. The grant value (.rggrant …) is shared with the start receipt,
+     so its rules are not scoped to #board; they use only the chat tokens. */
+  #board .brights h3 { display: flex; align-items: baseline; gap: 8px; }
+  #board .brights .brhint { font-size: 11px; font-weight: 400; color: var(--b-faint); }
+  #board .brights .rgrow { display: block; padding: 5px 0 6px; }
+  #board .brights .rgkey { display: block; margin-bottom: 2px; font-size: 11px; color: var(--b-ink3); }
+  .rgv, .rggrant { display: block; min-width: 0; color: var(--chat-prose); overflow-wrap: anywhere; }
+  .rgval { color: var(--chat-prose); }
+  .rgmute { color: var(--chat-mute); }
+  .rgink { color: var(--chat-ink); }
+  .rgfaint { color: var(--chat-faint); }
+  .rgmono { font-family: var(--chat-mono); font-size: var(--chat-code-fs); }
+  .rgsub { display: block; margin-top: 2px; font-size: var(--chat-ui-fs); line-height: 1.45; color: var(--chat-mute); }
+  .rgsub.faint { color: var(--chat-faint); }
+  .rghint { font-size: var(--chat-ui-fs); line-height: 1.45; color: var(--chat-mute); margin-top: 6px; }
+  .rgsay { margin-top: 8px; font-size: var(--chat-ui-fs); line-height: 1.45; color: var(--chat-mute); }
+  .rgsay.ok { color: var(--chat-prose); }
+  .rgsay.bad { color: var(--chat-prose); padding-left: 9px; box-shadow: inset 2px 0 0 var(--danger); }
+  .rgsay.unk { color: var(--chat-prose); padding-left: 9px; box-shadow: inset 2px 0 0 var(--amber); }
+  .rgrule { height: 1px; background: var(--chat-edge-soft); margin: 8px 0 4px; }
+  .rgacts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+  .rgacts .rghint { flex-basis: 100%; margin-top: 0; }
+  .rgbtn { padding: 4px 10px; white-space: nowrap; }
+  .rgbtn:disabled { opacity: .45; cursor: default; }
+  .rgbtn.quiet { border-color: transparent; background: transparent; color: var(--chat-mute); }
+  .rgbtn.quiet:hover:not(:disabled) { color: var(--chat-ink); background: var(--c-hover); border-color: transparent; }
+  .rgbtn.quiet.danger { color: var(--danger); }
+  .rgbtn.link { padding: 0; border: 0; background: none; color: var(--chat-prose); font-size: inherit; font-weight: 400;
+    text-decoration: underline; text-decoration-color: var(--chat-edge); text-underline-offset: 3px; white-space: normal; text-align: left; }
+  .rgbtn.link:hover:not(:disabled) { background: none; color: var(--chat-ink); text-decoration-color: var(--chat-mute); }
+  /* the choice — the material of the founding window's pack list: rows with a switch, a delta */
+  .rged { margin-top: 8px; padding: 8px 8px 10px; border-radius: var(--r2); background: var(--chat-surface);
+    box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .rgeh { display: flex; align-items: baseline; gap: 8px; margin: 2px 0 4px; font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-ink); }
+  .rgeh:not(:first-child) { margin-top: 12px; }
+  .rgehn { font-weight: 400; color: var(--chat-faint); }
+  .rgopt { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 8px; align-items: start; width: 100%;
+    margin: 0; padding: 5px 6px; border: 0; border-radius: var(--r1); background: none; color: var(--chat-prose);
+    font: 400 var(--chat-ui-fs)/1.4 var(--chat-sans); text-align: left; cursor: pointer; }
+  .rgopt:hover { background: var(--c-hover); }
+  .rgbox { width: 14px; height: 14px; margin-top: 1px; border-radius: 4px; box-shadow: inset 0 0 0 1px var(--c-edge-hi);
+    display: grid; place-items: center; }
+  .rgopt[aria-checked="true"] .rgbox { background: var(--chat-ink); box-shadow: none; }
+  .rgopt[aria-checked="true"] .rgbox::after { content: ""; width: 7px; height: 4px; border: solid var(--chat-void);
+    border-width: 0 0 1.6px 1.6px; transform: rotate(-45deg) translate(1px, -1px); }
+  .rgoptl { display: block; min-width: 0; }
+  .rgoptn { display: block; font-size: var(--chat-fs); color: var(--chat-prose); }
+  .rgoptn.on { color: var(--chat-ink); }
+  .rgoptd { display: block; margin-top: 1px; color: var(--chat-mute); overflow-wrap: anywhere; }
+  .rgoptd.rgmono { color: var(--chat-faint); font-size: 11px; }
+  .rgopt.add .rgoptn::after { content: " · neu"; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+  .rgopt.drop .rgoptn { text-decoration: line-through; color: var(--chat-mute); }
+  .rgdelta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font: 500 var(--chat-code-fs)/1.5 var(--chat-mono); }
+  .rgdelta .p { color: var(--chat-ink); }
+  .rgdelta .m { color: var(--chat-mute); text-decoration: line-through; }
+  .rgfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--chat-edge); }
+  .rgfor { flex: 1 1 100%; min-width: 0; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .rgfoot .rgbtn.primary { margin-left: auto; }
+
   /* the context-packs window: a pack is a pointer list, and its sources open the file itself */
   #shell-packs .cpkrow, #shell-packs .cpksrc { border: 0; background: none; font: inherit; color: inherit;
     text-align: left; -webkit-appearance: none; appearance: none; }
@@ -2881,13 +2910,14 @@
   .tone-ok > .smdot { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--add); }
   .tone-red > .smdot { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--del); }
   .tone-unknown > .smdot, .tone-warn > .smdot { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--amber); }
-  /* THE NAME GIVES WAY FIRST. With the place in a column of its own the row is ~267px wide at the
-     column's real width, and a flex:none name plus a flex:none place squeezed the suite column to
-     13px — "suite offer" rendered as "suit…" beside 82px of "no helper yet". The name shrinks, the
-     suite keeps a floor, and the place (the half a truncated row used to lose) never moves. */
-  .smname { flex: 0 1 auto; min-width: 40px; max-width: 38%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* THE NAME GOES FIRST (owner 02.10.). A task lane is „[Zitat entfernt]“, and the old 38 % cap on
+     the name cut it to ~10 characters at the board's ~300 px. Now the name takes its own width, the
+     KIND column (branch · state · clock · kind — all of it also in the row's tooltip) grows from
+     zero and is what gives way, to nothing if it must, and the place (the half a truncated row
+     used to lose, 2026-09-20) still never moves. e2e/slots.ts measures it at the real width. */
+  .smname { flex: 0 1 auto; min-width: 40px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .smrow.mine .smname { color: var(--accent); font-weight: 600; }
-  .smwhat { flex: 1 1 auto; min-width: 54px; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3);
+  .smwhat { flex: 1 1 0; min-width: 0; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* WHERE it runs, and it is the LAST column: pushed right so the machines line up down the list,
      never shrinking, because the machine is the half a truncated row used to lose. */
@@ -2955,7 +2985,6 @@
   .bbtnrow .bbtn { margin-top: 0; }
   .bbtn:disabled { opacity: 0.55; cursor: default; }
   .bbtn.on { border-color: var(--chat-mute); background: var(--chat-surface); color: var(--chat-ink); }
-  .bbtn.ghost { background: transparent; }
   .bbtn.subtle { margin-top: 5px; padding: 3px 9px; color: var(--chat-mute); }
   /* one helper device: a card in the machine-level group. The board is 264px wide and a device
      names ITSELF (up to 40 chars), so the name must wrap rather than push the panel sideways —
@@ -3114,7 +3143,6 @@
        the hover rule, later in the sheet, so this wins) */
     .slot:hover .r1 .ctxfill, .slot:hover .r1 .act,
     .slot:focus-within .r1 .ctxfill, .slot:focus-within .r1 .act { visibility: visible; }
-    .pkrow .pkuse, .pkrow .pkpin { visibility: visible; }
   }
 
   /* --- mobile: phones in any orientation (short landscape counts too) --- */
@@ -3227,6 +3255,10 @@
        row, ↻ left of ⚙ 💬 ℹ so ℹ keeps the corner. The conversation view keeps its own layout. */
     .paneterm { top: 48px; }
     .pane:not(.chat) .panetools { flex-direction: row-reverse; align-items: center; top: 4px; right: 6px; }
+    /* the search lies in that same strip and covers the group while it is open (✕ gives it back) */
+    .pane:not(.chat) .termfind.open { top: 4px; left: 6px; right: 6px; max-width: none; height: 40px; }
+    .termfindin { font-size: 16px; }
+    .termfindbtn { width: 40px; height: 40px; }
 
     .chip { padding: 9px 14px; }
     #livein { flex: 1; min-width: 0; height: 44px; padding: 0 12px; border-radius: 10px;
@@ -3269,6 +3301,8 @@
     body.keyboard-open #comp #input { flex: 1 1 90px; order: 0; min-width: 0; min-height: 40px;
       max-height: 82px; padding: 6px 4px; }
     body.keyboard-open #comp #send { order: 3; width: 40px; height: 40px; }
+    /* with the keyboard up the target stays, right after the field (G2.4: the address never goes) */
+    body.keyboard-open #comp #comptarget { order: 1; max-width: 30%; }
     body.keyboard-open #mobmore { display: grid; place-items: center; order: 2; flex: none;
       width: 40px; height: 40px; padding: 0; border-radius: var(--r1);
       border: 1px solid var(--chat-edge); background: var(--chat-raised); color: var(--chat-ink);
@@ -3294,24 +3328,157 @@
     #morepanel .bbtn { min-height: 40px; }
 
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
-    .pkrow { padding: 11px 9px; font-size: 13px; }
     .qrelease { align-items: stretch; flex-wrap: wrap; }
     .qreleasenote { flex-basis: 100%; font-size: 12px; }
     .qrelease .shrbtn { min-height: 44px; }
-    /* the ▸ is the one control that must NOT push the detail pane — it is how you walk the tree
-       without leaving the list — so on touch it gets a target worth aiming at. Widening it shifts
-       the name column only: the guides sit BEFORE it, so a child's spine still lands on its
-       parent's elbow. */
-    /* the guides keep their WEIGHT here and give back their WIDTH. Clarity is the 3px stroke; the
-       column width is only indentation, and on 390px it is charged to the name — at depth 2 the
-       desktop's 30px columns plus the 34px touch target left 115px for a filename. */
-    .pkrow.tree, .pknone.tree { --pkcol: 22px; --pktwid: 34px; --pkiconw: 15px; --pkgap: 7px; }
-    /* the desktop row tightened to 31px; a finger needs the 37px back */
-    .pkrow.tree .pkname { padding: 10px 0; }
     /* clear of the prompt bar, which owns the bottom of a phone screen */
     #newver { right: 10px; bottom: calc(74px + env(safe-area-inset-bottom)); }
     #pkpath, #pkfilter, #gatein { font-size: 16px; }
     .pkbtns button { padding: 11px 18px; }
+
+    /* --- THE PHONE UPRIGHT: two islands instead of a head and a foot (card "Auf dem Telefon steht
+       oben klein, mit wem man spricht", owner's pick 2026-10-02; drawn and measured in
+       docs/design/mobil-insel-notiz.md §1b/§1c, sketch mobil-insel-skizze.html?v=oben). MOBILE_MQ
+       without its second arm — the reading mode below keeps the phone on its side — so no width
+       limit of its own (G0.7). Last in the mobile block on purpose: it overrides by order, and by an
+       id more where a keyboard rule above already names two.
+       TOP: #mtop floats over the pane. Closed it is a pill — state shape + name, 32 px seen, 40 px
+       hit (G0.7) — and the conversation starts 18 px under it, the terminal 6 px. Open it is two
+       40-px rows that COVER the top of the pane (nothing moves): ☰'s drawer, name with
+       model · effort, ℹ; under the name the view, History, Schedule and ⋯ (= #mobmore's options:
+       the corner group's own buttons under the pill, model/effort and Live in the bottom island).
+       BOTTOM: #bar itself is the island, in flow (so the terminal ends above it by construction):
+       + field send in one row, the grip over it folds #chips and #keys in. Live line, a dropped
+       socket (.panedown) and the alarm stay in flow as before; #mhead only keeps the alarm. */
+    @media not all and ((pointer: coarse) and (max-height: 500px)) {
+      #mhead { display: none; }
+      #mhead:has(> #malarm:not([hidden])) { display: flex; justify-content: flex-end; padding: env(safe-area-inset-top) 6px 0;
+        background: none; border: 0; }
+      #mhead > #menu, #mhead > #mtitle, #mhead > #mset, #mhead > #mdot { display: none; }
+      #panes { padding: 0; gap: 0; }
+      .paneterm { top: calc(44px + env(safe-area-inset-top)); }
+      .panechat { padding-top: calc(56px + env(safe-area-inset-top)); padding-right: max(18px, calc((100% - var(--chat-col)) / 2)); }
+      /* calm above the conversation: it runs on under the pill and fades out there */
+      .pane.chat::after { content: ""; position: absolute; z-index: 2; left: 0; right: 0; top: 0;
+        height: calc(54px + env(safe-area-inset-top)); pointer-events: none;
+        background: linear-gradient(to bottom, var(--chat-void) calc(100% - 16px), transparent); }
+      .pane:not(.chat) .termfind.open { top: calc(44px + env(safe-area-inset-top)); }
+
+      #mtop { display: flex; flex-direction: column; align-items: center; position: absolute; z-index: 8;
+        top: calc(6px + env(safe-area-inset-top)); left: 6px; right: 6px; pointer-events: none;
+        font-family: var(--chat-sans); }
+      #mpill { position: relative; pointer-events: auto; display: inline-flex; align-items: center; justify-content: center;
+        gap: 8px; min-width: 120px; max-width: 100%; height: 32px; padding: 0 16px 0 14px; border: 0;
+        border-radius: var(--r3); background: var(--chat-raised); color: var(--chat-ink); cursor: pointer;
+        box-shadow: inset 0 0 0 1px var(--chat-edge), 0 8px 24px color-mix(in srgb, var(--chat-void) 70%, transparent);
+        font: 500 var(--chat-fs) / 1.2 var(--chat-sans); letter-spacing: -0.01em; transition: box-shadow var(--t); }
+      #mpill::before { content: ""; position: absolute; left: 0; right: 0; top: -4px; bottom: -4px; }
+      #mpill:active, #mpill:focus-visible { outline: none;
+        box-shadow: inset 0 0 0 1px var(--chat-mute), 0 8px 24px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+      #mtop .mnm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #mopen { display: none; }
+      body.mopen #mpill { display: none; }
+      body.mopen #mtop { pointer-events: auto; align-items: stretch; padding: 4px; border-radius: var(--r3);
+        background: var(--chat-raised);
+        box-shadow: inset 0 0 0 1px var(--chat-edge), 0 10px 30px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+      body.mopen #mopen { display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; grid-template-rows: 40px 40px; gap: 2px; }
+      #mopen button { padding: 0; border: 0; background: none; color: var(--chat-mute); font-family: var(--chat-sans);
+        cursor: pointer; }
+      #mopen button:active, #mopen button:focus-visible { outline: none; background: var(--c-hover); color: var(--chat-ink); }
+      #mslot, #minfo { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--r2); }
+      #mslot { grid-column: 1; grid-row: 1; position: relative; }
+      #minfo { grid-column: 3; grid-row: 1; }
+      #minfo .ico { width: 18px; height: 18px; }
+      #mslot .maddr { min-width: 26px; padding: 1px 5px; border-radius: var(--r1); background: var(--chat-surface);
+        box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); font: 400 var(--chat-code-fs) / 1.45 var(--chat-mono);
+        font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
+      #mslot .act { position: absolute; right: 3px; top: 5px; box-shadow: 0 0 0 2px var(--chat-raised); }
+      #mslot .act.rest { box-shadow: inset 0 0 0 1.5px var(--chat-mute), 0 0 0 2px var(--chat-raised); }
+      #mopen #mname { grid-column: 2; grid-row: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center;
+        align-items: flex-start; gap: 1px; padding: 0 8px; border-radius: 14px; text-align: left; }
+      #mname .ml1 { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+      #mname .mnm { font-size: var(--chat-fs); font-weight: 500; line-height: 1.25; letter-spacing: -0.01em; color: var(--chat-ink); }
+      #mname .mrp { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-size: var(--chat-ui-fs); line-height: 1.2; color: var(--chat-faint); }
+      #mname .mrp:empty { display: none; }
+      /* the tools row runs on under ℹ, and ⋯ sticks to its right end: with a wide font or a large
+         Aa the words scroll under it, ⋯ itself never leaves the screen */
+      #mtools { grid-column: 2 / 4; grid-row: 2; display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+      #mtools button { flex: none; display: inline-flex; align-items: center; height: 40px; padding: 0 10px;
+        border-radius: var(--r1); font-size: var(--chat-fs); white-space: nowrap; }
+      #mopen #mtools #mmore { position: sticky; right: 0; width: 40px; justify-content: center; padding: 0; margin-left: auto;
+        background: var(--chat-raised); }
+      #mtools #mmore .ico { width: 18px; height: 18px; }
+      #mtools [hidden], #minfo[hidden] { display: none; }
+
+      /* the pane's corner group: its view toggle and ℹ live in the island; the rest waits behind ⋯ —
+         only the end mark stays, resting over the bottom island while the conversation is released */
+      #panes .pane .panetools { top: auto; bottom: 10px; right: 10px; left: auto; flex-direction: row; }
+      /* !important: ↻ ℹ 💬 ⇔ carry their visibility inline (Pane#syncCornerButtons) */
+      .panetools .ptboth > *, .panetools .ptview > * { display: none !important; }
+      .pane.chat .panetools .ptview > .promptnav.end[aria-pressed="false"] { display: flex !important; height: 40px; min-width: 40px;
+        border-radius: 20px; color: var(--chat-ink); border-color: var(--chat-mute);
+        box-shadow: 0 6px 18px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+      body.keyboard-options #panes .pane .panetools { top: calc(44px + env(safe-area-inset-top)); bottom: auto; right: 6px;
+        gap: 2px; padding: 4px; border-radius: var(--r3); background: var(--chat-raised);
+        box-shadow: inset 0 0 0 1px var(--chat-edge), 0 10px 30px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+      body.keyboard-options .panetools .ptrow { display: contents; }
+      body.keyboard-options .pane:not(.past) .panetools .panegear, body.keyboard-options .panetools .panehover,
+      body.keyboard-options .pane.chat .panetools .promptnav, body.keyboard-options .pane.chat .panetools .chatsizebtn,
+      body.keyboard-options .pane:not(.chat) .panetools .panereload[style*="flex"] { display: flex !important; }
+      body.keyboard-options .panetools button { border-color: transparent; background: none; }
+
+      /* the bottom island: #bar, in flow, 6 px from the edges; 18 px above it hold the grip clear of
+         the terminal's last row (the session's own input line) */
+      #main #bar { position: relative; margin: 18px 6px calc(6px + env(safe-area-inset-bottom)); padding: 4px; gap: 2px;
+        border: 0; border-radius: var(--r3); background: var(--chat-raised);
+        box-shadow: inset 0 0 0 1px var(--chat-edge), 0 10px 30px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+      body.keyboard-open #main #bar { margin-bottom: 6px; padding: 4px; gap: 2px; }
+      #main #mgrip { display: block; position: absolute; left: 50%; top: -15px; width: 52px; height: 16px; margin-left: -26px;
+        padding: 0; border: 0; border-radius: 9px 9px 0 0; background: var(--chat-raised); cursor: pointer;
+        box-shadow: inset 0 1px 0 var(--chat-edge), inset 1px 0 0 var(--chat-edge), inset -1px 0 0 var(--chat-edge); }
+      #main #mgrip::before { content: ""; position: absolute; left: -4px; right: -4px; top: -12px; bottom: -12px; }
+      #main #mgrip::after { content: ""; position: absolute; left: 16px; right: 16px; top: 7px; height: 3px; border-radius: 2px;
+        background: var(--chat-faint); transition: background-color var(--t); }
+      #main #mgrip[aria-expanded="true"]::after { background: var(--chat-mute); }
+      #main #mgrip:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 2px; }
+      #main #keys, #main #chips { display: none; }
+      body.mkeys #main #chips:not(:empty) { display: flex; gap: 4px; padding-bottom: 2px; scrollbar-width: none; }
+      body.mkeys #main #keys { display: grid; grid-template-columns: repeat(9, minmax(40px, 1fr)); gap: 1px; overflow-x: auto;
+        padding-bottom: 2px; margin-bottom: 2px; border-bottom: 1px solid var(--chat-edge-soft); }
+      #main #keys button { min-width: 0; height: 40px; padding: 0; border: 0; border-radius: var(--r1);
+        background: var(--chat-surface); color: var(--chat-prose); font: 500 var(--chat-code-fs) / 1 var(--chat-mono); }
+      #main #keys button:active { background: var(--c-hover); color: var(--chat-ink); }
+      #main #keys button[data-k="cc"] { color: var(--chat-ink); }
+      /* the owner's chips above the keys (the sketch's order), in the island's own material */
+      #main #chips { order: -1; }
+      #main #chips .chip { flex: none; min-height: 40px; padding: 0 12px; border: 0; border-radius: var(--r1); background: none;
+        box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-mute); font: 500 var(--chat-code-fs) / 1 var(--chat-mono); }
+      #main #chips .chip.active { color: var(--chat-ink); background: var(--chat-surface); box-shadow: inset 0 0 0 1px var(--chat-mute); }
+
+      #main #comp { max-width: 100%; margin: 0; gap: 2px; }
+      #main #comp #compsurface { flex-flow: row wrap; align-items: flex-end; align-content: flex-end; gap: 2px; padding: 0;
+        border: 0; border-radius: 0; background: none; }
+      #main #comp #comprow { display: contents; }
+      #main #comp #compspace, #main #comp #mobmore { display: none; }
+      #main #comp #compfiles { order: -2; flex-basis: 100%; padding: 2px 2px 4px; }
+      #main #comp #dropbtn { display: grid; order: -1; width: 40px; height: 40px; margin: 0; }
+      #main #comp #input { order: 0; flex: 1 1 90px; min-width: 0; min-height: 40px; max-height: 110px; padding: 9px 10px;
+        border-radius: 14px; background: var(--chat-surface); box-shadow: inset 0 0 0 1px var(--chat-edge-soft);
+        font-size: 16px; line-height: 1.4; }
+      #main #comp #input:focus { box-shadow: inset 0 0 0 1px var(--chat-mute); }
+      /* the send target (G2.4) stays, as its address between field and send — the pill above names
+         the session; a target that takes nothing keeps its word ("leer", "liest nur") */
+      #main #comp #comptarget { order: 1; align-self: center; max-width: 30%; }
+      #main #comp #comptarget:not(.none) .ctname { display: none; }
+      #main #comp #send { order: 3; width: 40px; height: 40px; }
+      /* ⋯: model/effort (conversation) and Live join the island as rows above the field */
+      #main #comp #compopts, #main #comp #comptray { display: none; }
+      body.keyboard-options #main #comp #compopts:not(:empty) { display: flex; order: -3; flex: 1 0 100%;
+        justify-content: space-between; min-width: 0; }
+      body.keyboard-options #main #comp #comptray { display: flex; order: -1; padding: 0 2px; }
+      #main #comp #comptray > button:not(#live) { display: none; }
+    }
   }
 
   /* --- mobile LANDSCAPE: the reading mode (Richtung B, owner's pick 2026-09-24; measured and drawn
@@ -3394,58 +3561,80 @@
   .autostatusline { margin: 8px 0; color: var(--chat-mute); font: 400 var(--chat-ui-fs) var(--chat-sans); }
   .autostatusline .shrbtn { margin-top: 8px; }
 
-  /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8): three sections —
-     "Dieses Gerät" (the src/prefs.ts registry rows, G5.1), "Schrift" (the size panel's one home,
-     G5.3), "Fleet" (five server switches over existing routes, G5.2, card D-3 — a changed value
-     is staged with an ink edge until Apply, G4.4). Rows: label left, control right, value in
-     mono, hint under (G5.3). On the phone the sections become tabs (G3.1) — the
-     tab row and the one-section view exist only under MOBILE_MQ; the desktop stacks all three. */
+  /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8+3e6342e2): four
+     sections — "Dieses Gerät" (the src/prefs.ts registry rows, G5.1), "Schrift" (the size panel's
+     one home, G5.3), "Fleet" (five server switches over existing routes, G5.2, card D-3 — a changed
+     value is staged with an ink edge until Übernehmen, G4.4 — and the parallelism block), "Diese
+     Maschine" (read-only start values). Rows: label left, control right, value in mono, hint under
+     (G5.3). The window reads in Sans (G0.3: the page body is mono); values, paths and ids stay mono.
+     The four section targets stand at the top at every width and stick while the sections scroll;
+     on the phone each shows its one section (G3.1), on the desktop all four stack. */
+  #shell-settings .shellwin { font-family: var(--chat-sans); }
+  #shell-settings :focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 2px; } /* G0.2: the composer's ring */
+  #shell-settings .shellclose:focus-visible { outline: 1px solid var(--chat-mute); }
+  .settabs { position: sticky; top: -12px; z-index: 1; display: flex; gap: 4px; margin: -12px 0 4px; padding: 12px 0 8px;
+    background: var(--chat-surface); border-bottom: 1px solid var(--chat-edge-soft); }
   .settab { border: 1px solid transparent; background: none; color: var(--chat-mute); font: inherit;
     font-size: var(--chat-ui-fs); padding: 6px 10px; border-radius: var(--r1); cursor: pointer; }
   .settab:hover { color: var(--chat-ink); }
   .settab.on { background: var(--c-hover); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); }
   .setsec h3 { margin: 14px 2px 6px; font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-ink); }
-  .setsec h3:first-child { margin-top: 2px; }
+  .setsec h3:first-child { margin-top: 10px; }
+  .setsub { margin: 14px 0 2px; font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-mute); }
   .setrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--chat-edge-soft); }
   .setrow:last-child { border-bottom: 0; }
   .setmain { flex: 1; min-width: 0; }
-  .setlabel { font-size: var(--chat-ui-fs); color: var(--chat-ink); }
-  .setnote { font-size: 11px; color: var(--chat-mute); line-height: 1.5; margin-top: 2px; }
+  .setlabel { font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-ink); }
+  .machrow .setlabel { font-family: var(--chat-mono); font-weight: 400; } /* the server's variable names are addresses, G0.3 */
+  .setnote { font-size: var(--chat-ui-fs); color: var(--chat-mute); line-height: 1.5; margin-top: 2px; }
+  .setfacts { color: var(--chat-prose); }
   .setval { flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-family: var(--chat-mono); font-size: 11px; color: var(--chat-mute); }
+    font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .setval:empty { display: none; }
   .settoggle { flex: none; min-width: 48px; padding: 4px 10px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
     background: var(--chat-raised); color: var(--chat-mute); font: inherit; font-size: var(--chat-ui-fs); cursor: pointer; }
   .settoggle:hover { color: var(--chat-ink); }
   .settoggle[aria-pressed="true"] { color: var(--chat-ink); border-color: var(--chat-mute); } /* "an" is ink, not blue — G1.3 */
   .setchoice { flex: none; display: flex; gap: 4px; }
-  .setreset { flex: none; font: inherit; font-size: 11px; color: var(--chat-mute); background: var(--chat-raised);
+  .setreset { flex: none; font: inherit; font-size: var(--chat-ui-fs); color: var(--chat-mute); background: var(--chat-raised);
     border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 4px 8px; cursor: pointer; }
   .setreset:hover { color: var(--chat-ink); }
   .setreset[hidden] { display: none; }
   .fleetrow { flex-wrap: wrap; }
-  .fleetrow .setlabel { font-family: var(--chat-sans); font-weight: 500; } /* label Sans, value Mono — G0.3 */
   .fleetrow.staged { box-shadow: inset 2px 0 0 var(--chat-ink); padding-left: 10px; } /* vorgemerkt = ink edge, G4.4 */
   .setctl { flex: none; display: flex; align-items: center; gap: 4px; }
-  .setin { font: 400 11px var(--chat-mono); color: var(--chat-ink); background: var(--chat-raised);
+  .setin { font: 400 var(--chat-ui-fs) var(--chat-mono); color: var(--chat-ink); background: var(--chat-raised);
     border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 4px 6px; min-width: 0; }
   .setin:disabled { color: var(--chat-faint); }
   .setin.staged, .settoggle.staged { border-color: var(--chat-ink); color: var(--chat-ink); }
   .setnum { width: 5em; }
   .setbranch { width: 10em; }
-  .setdash { color: var(--chat-mute); }
+  .setdash { color: var(--chat-mute); font-size: var(--chat-ui-fs); }
   .setdash[hidden], .setin[hidden], .seterr[hidden] { display: none; }
+  /* the plan's three facts about the chosen repo: word, value, the ids in mono under it */
+  .setstat { display: grid; grid-template-columns: max-content 1fr; column-gap: 10px; row-gap: 2px; padding: 8px 0;
+    border-bottom: 1px solid var(--chat-edge-soft); font-size: var(--chat-ui-fs); }
+  .setstatk { font-weight: 500; color: var(--chat-ink); }
+  .setstatv { color: var(--chat-prose); }
+  .setstatl { grid-column: 1 / -1; color: var(--chat-mute); line-height: 1.5; }
+  .setstatl:empty { display: none; }
+  .setids { font-family: var(--chat-mono); color: var(--chat-prose); }
+  .setname { color: var(--chat-prose); cursor: help; } /* a row by its Kurztitel; the id is in the tooltip */
+  .setwhy summary { cursor: pointer; color: var(--chat-mute); }
+  .setwhy summary:hover { color: var(--chat-ink); }
   .setfoot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 0 2px; }
   .setfoot .setnote { flex: 1; margin: 0; }
-  .settabs { display: none; }
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
-    #shell-settings .settabs { display: flex; gap: 4px; padding: 2px 0 10px; }
+    #shell-settings .settabs { overflow-x: auto; }
+    #shell-settings .settab { flex: none; }
     #shell-settings .setsec { display: none; }
     #shell-settings .setsec.on { display: block; }
+    #shell-settings .setsec > h3 { display: none; } /* the pressed target already names the one section shown */
     .settoggle, .settab, .setreset, .setin, .setfoot .cmdapply, .setchoice .cmdlevel { min-height: 40px; } /* finger targets, G0.7 */
     .setin { font-size: 16px; } /* no iOS zoom, G0.7 */
     .fleetrow .setmain { flex-basis: 100%; }
     .fleetrow .setval { flex: 1; max-width: none; }
-    .fleetrow .setctl { flex-wrap: wrap; justify-content: flex-end; }
+    .fleetrow .setctl { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
     .setbranch { width: 8em; }
   }
 </style>
@@ -3496,6 +3685,9 @@
   <div id="main">
     <div id="panes" class="l1"></div>
     <div id="bar">
+      <!-- the phone upright only (the island block): the grip over the bottom island folds the
+           chips and the nine keys in and out; it never takes the field's focus -->
+      <button id="mgrip" type="button" aria-expanded="false" title="Eigene Tasten aufklappen — deine Befehls-Chips und ^C, esc, tab, Pfeile, Enter"></button>
       <div id="keys">
         <button data-k="cc">^C</button>
         <button data-k="esc">esc</button>
@@ -3524,6 +3716,7 @@
             autocomplete="off"></textarea>
           <div id="comprow">
             <button id="dropbtn" title="attach files — drag&amp;drop and paste do the same thing"><span class="tricon"></span></button>
+            <span id="comptarget"></span>
             <div id="compspace"></div>
             <div id="compopts"></div>
             <button id="mobmore" type="button" title="Weitere Eingabeoptionen öffnen" aria-expanded="false"></button>
@@ -3543,6 +3736,24 @@
     <div id="mread">
       <div id="mreadtl"><button id="mreadmenu" type="button" title="Sessions"></button><span id="mreadtitle"></span></div>
       <div id="mreadbr"><button id="mreadkeys" type="button" title="Tastenreihe einblenden" aria-pressed="false"></button><button id="mreadwrite" type="button" title="Prompt schreiben"></button></div>
+    </div>
+    <!-- the phone upright only (index.html, the island block): the top island in two steps — the
+         pill to read (state + name), opened to act. Every button hands over to a control the board
+         already has (src/client.ts#renderIsland): ☰'s drawer, the pane's ℹ and view toggle, the
+         tray's History and Schedule, ⋯ = #mobmore's options -->
+    <div id="mtop" role="group" aria-label="Session und Werkzeuge">
+      <button id="mpill" type="button" aria-expanded="false" title="Insel aufklappen — Sessions, Info und Werkzeuge"></button>
+      <div id="mopen">
+        <button id="mslot" type="button" title="Sessions öffnen — wechseln, starten, Tasks"></button>
+        <button id="mname" type="button" aria-expanded="true" title="Insel zuklappen — mehr Platz zum Lesen"></button>
+        <button id="minfo" type="button" title="Info öffnen — Brief, Änderungen, Checks, Verlauf"></button>
+        <div id="mtools">
+          <button id="mview" type="button"></button>
+          <button id="mhist" type="button" title="Prompt-Verlauf dieser Session">History</button>
+          <button id="mauto" type="button" title="Geplante Prompts für diese Session">Schedule</button>
+          <button id="mmore" type="button" aria-expanded="false" title="Weitere Werkzeuge — Modell, Effort, Live, Suche, Schrift, Einstellungen"></button>
+        </div>
+      </div>
     </div>
   </div>
   <div id="board">

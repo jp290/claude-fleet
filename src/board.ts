@@ -1,16 +1,25 @@
-import { $, el, RECENT_MS, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, landsEnabled, laneBandNames, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename } from "./client";
-import { openQueue, programsPoll } from "./queue";
+import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename } from "./client";
+import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool } from "./prefs";
 import { popover } from "./popover";
+import { openLaneFounding } from "./founding";
 import { askRisk } from "./dialog";
 import { Shell, openShell } from "./shell";
-import { LaneAnchor, PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow } from "./protocol";
-import { METER_STATIONS, MeterBall, MeterStation, laneTail, meterKind, meterLine, mmss, suiteMeter } from "./suitemeter";
+import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow } from "./protocol";
+import { METER_STATIONS, MeterBall, MeterStation, laneDisplayName, laneTail, meterKind, meterLine, meterRuns, mmss, suiteMeter } from "./suitemeter";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
 import { porcelainPath } from "./gitpath";
 import { icon } from "./icons";
 import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./devices";
 import { serverClock } from "./composer";
+import { rightsHoldFocus, rightsSection, wireRights } from "./rights";
+
+// the rights block reads the queue's lists through the board, never by import (src/rights.ts#wireRights)
+wireRights({
+  tasks: () => tasksList, programs: () => programsList, programsPoll: () => programsPoll,
+  programsRead: () => programsRead, loadPrograms: () => loadPrograms(),
+  openSheet: (repo) => { openQueue(); qSelect(`repo:${repo}`); },
+});
 
 // --- right sideboard: session brief (desktop-only). Deterministic layers only —
 // git facts fetched fresh from /brief per render, and the prompt outline derived from
@@ -689,24 +698,6 @@ export async function doCommitMain(slot: number, mode: "quick" | "agent", files:
   if (ok) await doCommit(slot, mode, true); // the preview already carried the mid-run warning
 }
 
-export async function newLane(repo: string, parent?: LaneAnchor): Promise<void> {
-  if (laneReqBusy) return;
-  laneReqBusy = true;
-  try {
-    // The server still picks the first free slot. A main-row click additionally names the exact
-    // SESSION OCCUPANT it came from; generic board/repo-header creation omits `parent` and lets the
-    // server make its one-time fallback choice. Never send a slot alone — slots recycle.
-    const r = await post("/api/lanes", { repo, ...(parent ? { parent } : {}) });
-    const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
-    if (!r.ok) { alert(`Lane failed: ${j.error ?? "?"}`); return; }
-    await refresh();
-    if (j.slot) showSlot(j.slot);
-  } finally {
-    laneReqBusy = false;
-  }
-}
-
-
 // THE INFO COLUMN ON THE PHONE (owner 2026-09-22: „[Zitat entfernt]“
 // ). ℹ moves the REAL #board element into a fullscreen window (G6.3) — the same live
 // content the column renders, not a copy; the column itself stays display:none on mobile
@@ -900,9 +891,13 @@ export function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   // `pid null` is a lock file whose contents are not a pid — a lost holder either way, but
   // printing "pid null" would read as a bug in this line rather than as one on disk.
   const who = lk?.pid === null ? "unreadable pid file" : `pid ${lk?.pid}`;
+  const ownerSlotId = lk?.owner?.slot ?? null;
+  const ownerSlot = ownerSlotId ? fleet.find((x) => x.id === ownerSlotId) : undefined;
+  const ownerTitle = ownerSlot?.worktree ? ownerSlot.taskTitle ?? null : null;
   const ownerName = lk?.owner?.slot === null ? "Fleet" : lk?.owner?.slot
-    ? laneBandNames(stacksOf()).get(lk.owner.slot) ?? `Slot ${lk.owner.slot}` : "Fleet";
-  const owner = `${ownerName} · ${lk?.owner?.branch ? laneTail(lk.owner.branch) : "Branch unbekannt"}`;
+    ? laneDisplayName(laneBandNames(stacksOf()).get(lk.owner.slot) ?? `Slot ${lk.owner.slot}`, ownerTitle) : "Fleet";
+  // a lane with a title is named by it; its branch's four hex move to the tooltip below
+  const owner = ownerTitle ? ownerName : `${ownerName} · ${lk?.owner?.branch ? laneTail(lk.owner.branch) : "Branch unbekannt"}`;
   const age = gateAge(lk?.ageMs ?? lk?.heldMs ?? 0);
   const id = lk?.identityProven === true ? "identity proven"
     : lk?.identityProven === false ? "identity mismatch"
@@ -918,12 +913,13 @@ export function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
       // NEUTRAL on purpose: every finished run leaves its dir behind (release is implicit), so
       // this is what an idle machine looks like — it was a ⚠ for one day and shouted constantly.
       : `· check runs · none running · stale lock (${who}, ${id}, claimed ${age} ago)`);
-  head.title = state === "free" ? "Kein Check hält gerade die maschinenweite Sperre (intern: suite mutex)."
+  head.title = (ownerTitle && lk?.owner?.branch ? `${ownerTitle} — ${lk.owner.branch} · ` : "")
+    + (state === "free" ? "Kein Check hält gerade die maschinenweite Sperre (intern: suite mutex)."
     : lk?.reason || lk?.effect
       ? `Grund: ${lk.reason ?? "unknown"}; Nächstes: ${lk.nextAction ?? "unknown"}; Wirkung: ${lk.effect ?? "unknown"} (intern: lock reason/nextAction/effect)`
     : state === "stale" ? "Nichts läuft — ein beendeter Check lässt sein Sperr-Verzeichnis absichtlich zurück, der nächste räumt es weg (intern: stale lock)."
     : state === "overdue" ? "Der Halter lebt noch, hält aber viel länger als jeder Check auf dieser Maschine braucht — prüfe, ob er feststeckt (intern: overdue)."
-    : "Die maschinenweite Sperre, von der Platte gelesen — Fleet liest nur, das Aufräumen eines toten Halters ist Sache der Wrapper (intern: suite mutex).";
+    : "Die maschinenweite Sperre, von der Platte gelesen — Fleet liest nur, das Aufräumen eines toten Halters ist Sache der Wrapper (intern: suite mutex).");
   return head;
 }
 
@@ -956,7 +952,7 @@ export function meterModel() {
     gate: gateInfo, audit: postLandLive, offers: meterSuites, devices: helperDevicesInfo,
     slots: fleet.filter((s) => s.cwd).map((s) => ({ id: s.id, label: s.label,
       branch: s.worktree?.branch ?? null,
-      letter: laneNames.get(s.id) ?? null })),
+      letter: laneNames.get(s.id) ?? null, title: s.worktree ? s.taskTitle ?? null : null })),
   });
 }
 export const METER_TITLE: Record<MeterStation, string> = {
@@ -1054,14 +1050,16 @@ export function renderSuiteMeter() {
       ball.style.left = meterX(i, (j - (here.length - 1) / 2) * 9);
       // only the leading ball of a crowd trails a streak — the rest would draw theirs across it
       ball.className = `smball tone-${b.tone}${b.slot !== null && b.slot === focusSlot ? " mine" : ""}${j > 0 ? " tail" : ""}`;
-      ball.title = `${b.name} — ${meterLine(b, serverClock()).join(" · ")}`;
+      ball.title = `${b.name} — ${b.title ? `${b.title} · ${b.branch ? laneTail(b.branch) : "Branch unbekannt"} · ` : ""}${meterLine(b, serverClock()).join(" · ")}`;
     });
   });
   for (const [key, ball] of meterBalls) if (!seen.has(key)) { ball.remove(); meterBalls.delete(key); }
 
   // stations: the four labels, each under its tick, with a count
   meterCols.replaceChildren(el("div", "smcol0"), ...METER_STATIONS.map((st) => {
-    const n = m.balls.filter((b) => b.station === st).length;
+    // RUNS, not balls: a sharded audit is one ball and several runs, and the helper station must say
+    // the number the devices themselves report as running (src/suitemeter.ts#meterRuns)
+    const n = meterRuns(m.balls, st);
     const lab = el("button", `smst${n ? " on" : ""}`, METER_WORD[st]) as HTMLButtonElement;
     if (n) lab.appendChild(el("span", "smstn", String(n)));
     lab.title = METER_TITLE[st];
@@ -1091,7 +1089,8 @@ export function renderSuiteMeter() {
     const name = b.kind === "post-land check" && b.slot === null ? "Fleet" : b.name;
     row.append(el("span", "smdot"), el("span", "smname", name), el("span", "smwhat", line),
       el("span", "smplace", b.where));
-    row.title = `${name} — ${b.branch ?? "Branch unbekannt"} · ${line} · ${b.where} · ${meterState(b)} · ${meterKind(b.kind).title}`
+    // the full title and the branch (with its four hex) live HERE, not in the row
+    row.title = `${name} — ${b.title ? `${b.title} · ` : ""}${b.branch ?? "Branch unbekannt"} · ${line} · ${b.where} · ${meterState(b)} · ${meterKind(b.kind).title}`
       + (b.expect ? ` · „~“ ist der Median früherer Läufe dieser Art (n=${b.expect.n}), „länger als üblich“ heißt: über ihrem 90. Perzentil` : "")
       + (b.kind === "land check" ? " · Die Uhr zählt das Warten auf die maschinenweite Sperre mit (intern: suite mutex)" : "")
       + (b.slot !== null ? " · Klick öffnet die Lane" : "");
@@ -1355,6 +1354,9 @@ export async function renderBoard() {
   // draft map keeps the TEXT across re-renders, this check keeps the CARET — a board tick that
   // lands mid-typing simply waits for the next one
   if (document.activeElement instanceof HTMLTextAreaElement && boardBody.contains(document.activeElement)) return;
+  // the same hold for an open choice in the rights block: its own state survives a repaint, but a
+  // rebuilt column would take the focus out from under the owner's next switch
+  if (rightsHoldFocus(boardBody)) return;
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
   // dropped — remember it and re-run once the current pass finishes
   if (boardBusy) { boardAgain = true; return; }
@@ -1435,7 +1437,11 @@ export async function renderBoard() {
     // stay behind ⋯. The phone reaches this head through ℹ, and its drawer row through ⋯.
     const idsec = el("div", "bsec bhead");
     const top = el("div", "bheadtop");
-    top.appendChild(el("div", "bheadname", s.label ?? baseName(s.cwd)));
+    // a task lane is "<Lane-Referenz> · <Kurztitel>"; the full title and the branch on hover
+    const headRef = s.worktree && s.taskTitle ? laneBandNames(stacksOf()).get(s.id) : undefined;
+    const headName = el("div", "bheadname", headRef ? laneDisplayName(headRef, s.taskTitle) : laneLabel(s));
+    if (headRef && s.worktree) headName.title = `${s.taskTitle} — ${s.worktree.branch}`;
+    top.appendChild(headName);
     top.appendChild(scopeTag("session"));
     const mbtn = el("button", `bheadmenu${boardMenuOpen ? " on" : ""}`, "⋯") as HTMLButtonElement;
     mbtn.title = "Weitere Aktionen — Worktree-Pfad kopieren, die Session zurückholen";
@@ -1723,6 +1729,9 @@ export async function renderBoard() {
         if (setup?.omitted.length) note.textContent += ` · ${setup.omitted.length} omitted`;
         if (setup?.omitted.length) note.title = setup.omitted.map((o) => `${o.id}: ${o.why}`).join("\n");
         su.appendChild(note);
+        // E34 (docs/design/datenrechte-notiz.md): a pack is a pointer, never a right — the rights
+        // block right below says what the session may read
+        su.appendChild(el("div", "bsnote", "Packs zeigen ihr, wo sie nachlesen soll. Ein Recht geben sie nicht."));
       }
       // no row for "no packs": a session without them is the ordinary case, and a row saying `none`
       // cost a line on every session to answer a question only a packed one raises. The hover on
@@ -1740,6 +1749,13 @@ export async function renderBoard() {
       }
       nodes.push(su);
     }
+
+    // 1c — RECHTE (G6.5: after the context, before the checks; owner 2026-10-02 „[Zitat entfernt]“
+    // ): what this session may read — its own work, the project views the owner
+    // assigns over the memory-grant door, and the owner's own view. src/rights.ts holds the block
+    // and its state per occupant; the column only hangs it in.
+    const rsec = rightsSection(s);
+    nodes.push(rsec);
 
     // THE NOTEPAD — the owner's free text on THIS lane's worktree, directly above the suite area
     // (owner 2026-09-23: „[Zitat entfernt]“). Drawn from the lanes read alone, so it
@@ -1976,7 +1992,7 @@ export async function renderBoard() {
         // ↩ undo last land — only when the server still holds an undoable land for THIS repo
         // (main not moved since, not pushed). Reverses the one action that mutates main.
         if (mg?.undoable && brief.worktree.repo) {
-          const ub = el("button", "bbtn quiet", `Undo last land (${laneTail(mg.undoable.branch)})`) as HTMLButtonElement;
+          const ub = el("button", "bbtn quiet", `Undo last land (${laneNameOfBranch(mg.undoable.branch)})`) as HTMLButtonElement;
           ub.disabled = !!mg?.running;
           ub.title = "reset main back to before the last land in this repo — refuses if main moved since or the commit was pushed; the landed branch is kept, so the work is recoverable either way";
           const repo = brief.worktree.repo;
@@ -2017,7 +2033,7 @@ export async function renderBoard() {
             else landAlarmOpens.delete(alarmKey);
           });
           const kind = l.status === "blocked" ? "Land blockiert" : l.status === "interrupted" ? "Land unterbrochen" : "Land fehlgeschlagen";
-          note.appendChild(el("summary", "", `${kind} · ${laneTail(l.branch)}`));
+          note.appendChild(el("summary", "", `${kind} · ${laneNameOfBranch(l.branch)}`));
           note.appendChild(el("div", "bmergedetail", l.detail));
           note.appendChild(verifyBadge(l.verify));
           land.appendChild(note);
@@ -2441,8 +2457,8 @@ export async function renderBoard() {
           }
         }
         const nb = el("button", "bbtn quiet", "New lane") as HTMLButtonElement;
-        nb.title = `fresh worktree lane off ${wts.main}, session opens in the first free slot — one click`;
-        nb.onclick = () => { nb.disabled = true; void newLane(wts.repo); };
+        nb.title = `Neue Lane von ${wts.main} — Name, Profil und Kontext im Gründungsfenster`;
+        nb.onclick = () => { openLaneFounding(wts.repo); };
         sec.appendChild(nb);
         nodes.push(lsec);
       }

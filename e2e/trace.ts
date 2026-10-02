@@ -18,6 +18,7 @@
 //   no-raw    — copy a report text, a note's verify.out, an audit's out or a task text into an event.
 //   old task  — answer a task older than every horizon with `read`, zero events, or a 404.
 //   malformed — drop a torn line instead of counting it.
+import { runNativeProbes } from "./trace-native-fixtures";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -140,6 +141,7 @@ function stage(dir: string): void {
 }
 
 export async function run(): Promise<void> {
+  await runNativeProbes(check);
   rmSync(FIX, { recursive: true, force: true });
   const dir = `${FIX}/instance`;
   const repo = `${FIX}/repo`;

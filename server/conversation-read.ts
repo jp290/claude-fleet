@@ -12,7 +12,11 @@
 // the pair is how the chat view can show a subagent call as RUNNING until its result lands
 // (without them, pairing stays positional as it always was; codex/pi blocks carry none)
 export interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string;
-  id?: string; ref?: string }
+  id?: string; ref?: string;
+  // owner transcript routes only (row 1e01b4f3): a native Claude Code AskUserQuestion call, typed
+  // from the ORIGINAL input — never from the 600-char `text` — and whether it is bound to the
+  // terminal of the confirmed current occupant; on its tool_result, the typed answer
+  ask?: NativeAsk; terminal?: Binding; answer?: NativeAnswer }
 // meta: a harness-injected user turn — real content, not typed by the owner (folded in the view)
 export interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 
@@ -34,6 +38,144 @@ export interface ConversationRead {
   effort: string | null;
   // lines the reader could use: a torn LAST line (mid-append) is left out so the next poll re-reads it
   total: number;
+}
+
+// --- native Claude Code questions (row 1e01b4f3) -----------------------------------------------
+// ONE original is measured: Claude Code 2.1.286, a single-select call, already answered. The call is
+// an assistant tool_use named AskUserQuestion whose input is exactly {questions: [{question, header,
+// multiSelect, options: [{label, description}]}]}. Its answer rides on the user line that carries the
+// tool_result (tool_use_id = the call's id), as that LINE's top-level `toolUseResult`: {questions —
+// the call's questions again, answers — keyed by the question TEXT, a single-select value is the
+// chosen option's label, annotations — {}}. Multi-select and free-text answers, `preview`/
+// `metadata` fields and non-empty annotations are UNMEASURED: they classify as `unsupported`, never
+// as a guessed form. Codex and pi questions are unmeasured too — their readers above classify none.
+export const ASK_TOOL = "AskUserQuestion";
+// a typed form longer than this (its JSON) is answered `clipped` with its size and NO questions — a
+// cut question or option would be an invented one
+export const ASK_MAX = 20_000;
+export interface AskOption { label: string; description: string }
+export interface AskQuestion { question: string; header: string; multiSelect: boolean; options: AskOption[] }
+export type NativeAsk =
+  | { state: "complete"; questions: AskQuestion[] }
+  | { state: "clipped"; chars: number; limit: number }
+  | { state: "invalid" | "unsupported"; reason: string };
+// `question`/`option` index the CALL's questions and that question's options, found by the answer's
+// key (the question text) and value (the label) — never by position
+export type NativeAnswer =
+  | { state: "answered"; answers: { question: number; form: "single"; option: number; label: string }[] }
+  | { state: "clipped"; chars: number; limit: number }
+  | { state: "invalid" | "unsupported"; reason: string };
+// whether something read from a transcript may be treated as the CURRENT occupant's terminal state.
+// `none` always names why; it is the default, and `current` only follows from server-side identity
+export type Binding = { state: "current" } | { state: "none"; reason: string };
+export interface Occupant { slot: number; openedAt: number }
+// where the served conversation came from: the session id that names its file, and the occupant
+// that is RECORDED for it — null when no record proves one (an adopted pane's newest file, a past
+// session whose record names none). `via` says which identity found the file.
+export interface TranscriptOrigin { sessionId: string | null; occupant: Occupant | null;
+  via: "pinned" | "newest-file" | "succession-record" | "harness-file" | null }
+export interface NativeTranscript { questions: "claude-code" | "unsupported"; origin: TranscriptOrigin; binding: Binding }
+
+type Parsed<T> = { ok: T } | { state: "invalid" | "unsupported"; reason: string };
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+// known keys typed, a missing or mistyped one invalid, an EXTRA one unsupported — unknown stays unknown
+function strictKeys(o: Record<string, unknown>, known: string[], what: string): Parsed<true> {
+  const extra = Object.keys(o).filter((k) => !known.includes(k));
+  if (extra.length) return { state: "unsupported", reason: `${what}: unmeasured field ${extra.sort().join(", ")}` };
+  return { ok: true };
+}
+function askQuestions(v: unknown): Parsed<AskQuestion[]> {
+  if (!Array.isArray(v) || v.length === 0) return { state: "invalid", reason: "questions is not a non-empty array" };
+  const out: AskQuestion[] = [];
+  for (const [i, q] of v.entries()) {
+    if (!isObj(q)) return { state: "invalid", reason: `question ${i} is not an object` };
+    const k = strictKeys(q, ["question", "header", "multiSelect", "options"], `question ${i}`);
+    if (!("ok" in k)) return k;
+    if (typeof q.question !== "string" || typeof q.header !== "string" || typeof q.multiSelect !== "boolean")
+      return { state: "invalid", reason: `question ${i}: question/header/multiSelect mistyped or missing` };
+    if (!Array.isArray(q.options) || q.options.length === 0) return { state: "invalid", reason: `question ${i}: options is not a non-empty array` };
+    const options: AskOption[] = [];
+    for (const [j, o] of q.options.entries()) {
+      if (!isObj(o)) return { state: "invalid", reason: `question ${i} option ${j} is not an object` };
+      const ok = strictKeys(o, ["label", "description"], `question ${i} option ${j}`);
+      if (!("ok" in ok)) return ok;
+      if (typeof o.label !== "string" || typeof o.description !== "string")
+        return { state: "invalid", reason: `question ${i} option ${j}: label/description mistyped or missing` };
+      options.push({ label: o.label, description: o.description });
+    }
+    out.push({ question: q.question, header: q.header, multiSelect: q.multiSelect, options });
+  }
+  return { ok: out };
+}
+function callQuestions(input: unknown): Parsed<AskQuestion[]> {
+  if (!isObj(input)) return { state: "invalid", reason: "input is not an object" };
+  const k = strictKeys(input, ["questions"], "input");
+  return "ok" in k ? askQuestions(input.questions) : k;
+}
+// the call, typed whole or not at all
+export function nativeAsk(input: unknown): NativeAsk {
+  const p = callQuestions(input);
+  if (!("ok" in p)) return p;
+  const chars = JSON.stringify(p.ok).length;
+  return chars > ASK_MAX ? { state: "clipped", chars, limit: ASK_MAX } : { state: "complete", questions: p.ok };
+}
+// the answer, from the result line's `toolUseResult`, against the call it answers (same file, by id)
+export function nativeAnswer(result: unknown, callInput: unknown): NativeAnswer {
+  if (!isObj(result)) return { state: "unsupported", reason: "no structured result on the tool_result line (a refusal or error is unmeasured)" };
+  const k = strictKeys(result, ["questions", "answers", "annotations"], "result");
+  if (!("ok" in k)) return k;
+  if (result.annotations !== undefined && !(isObj(result.annotations) && Object.keys(result.annotations).length === 0))
+    return { state: "unsupported", reason: "non-empty annotations are unmeasured" };
+  const call = callQuestions(callInput);
+  if (!("ok" in call)) return { state: call.state, reason: `the call: ${call.reason}` };
+  const asked = askQuestions(result.questions);
+  if (!("ok" in asked)) return { state: asked.state, reason: `the result's questions: ${asked.reason}` };
+  if (JSON.stringify(asked.ok) !== JSON.stringify(call.ok)) return { state: "invalid", reason: "the result's questions differ from the call's" };
+  if (!isObj(result.answers)) return { state: "invalid", reason: "answers is not an object" };
+  const answers: { question: number; form: "single"; option: number; label: string }[] = [];
+  for (const [text, value] of Object.entries(result.answers)) {
+    const hits = call.ok.flatMap((q, i) => (q.question === text ? [i] : []));
+    if (hits.length !== 1) return { state: "invalid", reason: hits.length ? "an answer's question text is not unique in the call" : "an answer names no question of the call" };
+    const qi = hits[0]!;
+    const q = call.ok[qi]!;
+    if (q.multiSelect) return { state: "unsupported", reason: "the multi-select answer form is unmeasured" };
+    if (typeof value !== "string") return { state: "unsupported", reason: "a non-string answer value is unmeasured" };
+    const opts = q.options.flatMap((o, j) => (o.label === value ? [j] : []));
+    if (opts.length > 1) return { state: "invalid", reason: "the answer's label is not unique among the options" };
+    if (!opts.length) return { state: "unsupported", reason: "a free-text answer (no option label) is unmeasured" };
+    answers.push({ question: qi, form: "single", option: opts[0]!, label: value });
+  }
+  if (answers.length !== call.ok.length) return { state: "unsupported", reason: "a partial answer (not every question answered) is unmeasured" };
+  answers.sort((a, b) => a.question - b.question);
+  const chars = JSON.stringify(answers).length;
+  return chars > ASK_MAX ? { state: "clipped", chars, limit: ASK_MAX } : { state: "answered", answers };
+}
+// THE RESPONSE'S BINDING. `before` is the slot as the read began, `after` the same slot once the file
+// was read (null: gone) — an occupant or session that changed across the await is not the one whose
+// file was read. Only a live read of the slot's own PINNED session, in a harness whose question form is
+// measured, can be current; history stays history even when its session id was resumed later.
+export interface ReadSeat { slot: number; openedAt: number; sessionId: string | null }
+export function transcriptBinding(f: { history: boolean; questions: boolean; pinned: boolean;
+  fileSession: string | null; before: ReadSeat; after: ReadSeat | null }): Binding {
+  if (f.history) return { state: "none", reason: "history: a past session of the line, never the current terminal" };
+  if (!f.questions) return { state: "none", reason: "harness: its native question form is unmeasured" };
+  if (!f.pinned || !f.before.sessionId) return { state: "none", reason: "unbound: the slot has no pinned session id (an adopted pane's newest file proves no occupant)" };
+  if (f.fileSession !== f.before.sessionId) return { state: "none", reason: "session mismatch: the file is not the slot's pinned session" };
+  if (!f.after) return { state: "none", reason: "occupant gone during the read" };
+  if (f.after.slot !== f.before.slot || f.after.openedAt !== f.before.openedAt)
+    return { state: "none", reason: "occupant changed during the read" };
+  if (f.after.sessionId !== f.before.sessionId) return { state: "none", reason: "session changed during the read" };
+  return { state: "current" };
+}
+// one call's terminal binding: the response's, narrowed by what this call is. No result in the file is
+// NOT proof that the terminal still waits — `current` says only "unanswered in the current occupant's
+// own file, in the measured single-select form"; an answered call is history whatever the response is.
+export function askTerminal(response: Binding, ask: NativeAsk, answered: boolean): Binding {
+  if (response.state !== "current") return response;
+  if (answered) return { state: "none", reason: "answered: the file carries this call's result" };
+  if (ask.state !== "complete") return { state: "none", reason: `form ${ask.state}` };
+  if (ask.questions.some((q) => q.multiSelect)) return { state: "none", reason: "the multi-select answer form is unmeasured" };
+  return { state: "current" };
 }
 
 const trim = (t: string, max: number) => (t.length > max ? t.slice(0, max) + ` … [+${t.length - max} chars]` : t);

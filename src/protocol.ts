@@ -498,10 +498,7 @@ export interface CapabilityDimensionGap {
   readonly gap: string;
 }
 
-// Question transports are role policy, not a fourth stable Fleet function: `ask_question` remains
-// future vocabulary. Keeping the current rail beside the capability rows still lets a reader learn
-// where a question goes without repeating the Supervisor brief's false attention promise.
-export type QuestionRole = "lane" | "program-main" | "supervisor" | "other-session";
+export type QuestionRole = "lane" | "program-main" | "other-session";
 export interface QuestionRoute {
   readonly role: QuestionRole;
   readonly recipient: string;
@@ -555,4 +552,33 @@ export interface PromotionPolicyFacts {
   readonly riskClasses: readonly PromotionRiskClass[];
   readonly conflicts: readonly string[];
   readonly repairRounds: number;
+}
+
+// --- the founding window's role presets ---------------------------------------------------------
+// What each founding role switches on over a founding plan (src/founding.ts). Fleet-wide, so the
+// owner's redrawn presets live in fleet.json behind POST /api/role-presets (G5.2); the window owns
+// the built-in ones. One shape for both sides: the server keeps only what this normalizer accepts,
+// and the window applies exactly that. `base` decides an unnamed pack — a repo's own packs come
+// along under "all" without anyone naming them — plus/minus are the named exceptions.
+export const FOUNDING_ROLES = ["leer", "lane", "orch", "steward"] as const;
+export type FoundingRole = (typeof FOUNDING_ROLES)[number];
+export interface RolePreset { base: "all" | "none"; plus: string[]; minus: string[] }
+export type RolePresets = Partial<Record<FoundingRole, RolePreset>>;
+export const ROLE_PRESET_IDS_MAX = 64;
+const ROLE_PRESET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+// null for anything else — an unknown role, a third base, a non-id — never a partial repair
+export function normalizeRolePresets(x: unknown): RolePresets | null {
+  if (!x || typeof x !== "object" || Array.isArray(x)) return null;
+  const out: RolePresets = {};
+  const ids = (a: unknown): string[] | null =>
+    Array.isArray(a) && a.length <= ROLE_PRESET_IDS_MAX && a.every((i) => typeof i === "string" && ROLE_PRESET_ID_RE.test(i))
+      ? [...new Set(a as string[])] : null;
+  for (const [role, v] of Object.entries(x)) {
+    if (!(FOUNDING_ROLES as readonly string[]).includes(role) || !v || typeof v !== "object" || Array.isArray(v)) return null;
+    const { base, plus, minus } = v as Record<string, unknown>;
+    const p = ids(plus), m = ids(minus);
+    if ((base !== "all" && base !== "none") || !p || !m) return null;
+    out[role as FoundingRole] = { base, plus: p, minus: m };
+  }
+  return out;
 }

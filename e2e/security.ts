@@ -18,7 +18,7 @@
 // Plus the invariants whose only statement today is a code comment: credentials are revoked when
 // a slot dies or is recycled (`server.ts` ~1147), and no secret reaches the audit log or any
 // non-owner-readable payload.
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { afterTick, AUTOS_TICK_MS, BASE, H, REPO, ROOT, TOKEN, check, get, post, readText, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
@@ -26,7 +26,7 @@ import type { Ctx, StewardCtx } from "./ctx";
 interface FleetState {
   token?: string;
   stewardToken?: string;
-  slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number }>;
+  slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number; label?: string | null }>;
   shares?: { id: string; secret: string }[];
 }
 const readState = (): FleetState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as FleetState;
@@ -64,6 +64,8 @@ const PRE_AUTH_ROUTES = [
   // lane-only questions keep their non-lane 409s, and §2 below re-runs the whole dangerous owner
   // surface against a plain session's token.
   '= /api/self',          // same credential, read-only: the session's own row (slot-bound, no lane needed)
+  // DELETE derives the owning slot from the same live self principal; foreign autos stay 409.
+  String.raw`~ /^\/api\/self\/autos\/([a-z0-9]+)$/`,
   '= /api/self/autos',    // the scoped per-slot credential — no lane check, and never had one
   // A Program is a planning bracket above lanes, so this self route runs in the opposite scope:
   // a non-lane session may propose and read only rows carrying its exact session triple. It never
@@ -88,23 +90,6 @@ const PRE_AUTH_ROUTES = [
   // the `v<N>.md` the writer placed under that konzept, to hash it. It sends into no pane, starts,
   // releases, lands and deploys nothing.
   String.raw`~ /^\/api\/self\/konzepte\/([^/]+)\/(.+)$/`,
-  // The Supervisor's two Cut-2 channels, on this list for the same reason as their neighbours (the
-  // self principal IS the boundary) and narrower than any of them: both answer 409 to every session
-  // but the one the OWNER bound as Supervisor. The view is read-only and mutates nothing (pinned as
-  // a source rule). The nudge writes into a pane, and that is bounded structurally: the receiver is
-  // DERIVED from the named program's bound Program-MAIN and no body field can nominate a slot
-  // (pinned), it refuses a program that is not active, a stale/absent binding, an owner debt on the
-  // receiver, and a pane with no agent behind it.
-  '= /api/self/supervisor-view',
-  '= /api/self/nudge',
-  // STN-1, the Supervisor's second voice and the one that PERSISTS: it completes exactly one
-  // transition watch a non-lane Controller registered, minting one FleetEvent onto the existing
-  // transport. Same 401 rail and same occupancy 409 as its two neighbours. What bounds it: the
-  // watch id comes from the path and the receiver from that watch's registrant occupant
-  // (re-resolved at completion, never from the body — `text` is the only field read, pinned in
-  // e2e/security.ts §STN-1), once-only through spendWatch, expiry refused, and a lane can never
-  // be the receiver because a lane can never register (the /api/self/watch lane rule, unchanged).
-  String.raw`~ /^\/api\/self\/supervisor-watch\/([a-z0-9]+)\/complete$/`,
   '= /api/self/main-direct', // scoped non-lane provenance view; both git heads are server-read
   '= /api/self/main-direct/preflight',
   '= /api/self/main-direct/finalize',
@@ -142,23 +127,6 @@ const PRE_AUTH_ROUTES = [
   // never overwrites an existing receipt, mints nothing, sends into no pane and moves no status.
   '= /api/self/inbox',
   String.raw`~ /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/`,
-  // ACP-18 · THE ADDRESSED MESSAGE RAIL, and it is broader than the inbox above in exactly one
-  // respect that had to be reviewed rather than assumed: its caller need not be the MAIN of a
-  // Program at all — the bound Supervisor is a principal here too. That is the POINT of the cut (a
-  // role outlives the occupant holding it), so what bounds it is stated rather than inherited:
-  //   · NON-LANE only, and the sender is DERIVED from the caller's own binding — a Program-MAIN
-  //     sends as its Program, the bound Supervisor as `role:supervisor`. The body is closed to
-  //     {to, payload, idempotencyKey, replyTo}; a `from` key is a named 400, so no request can
-  //     claim an address. A session holding BOTH bindings is refused as ambiguous rather than
-  //     silently attributed.
-  //   · It reaches NO pane and NO tick: there is no sendText, no FleetEvent, no Watch, no auto.
-  //     The rail is PULL-only, so the worst a caller can do to another principal is put bounded
-  //     text (2000 chars, the nudge's own cap) into a capped record it must come and read.
-  //   · It confers NOTHING: no owner, release, land or deploy authority travels with a message,
-  //     and no route anywhere reads one as an instruction.
-  //   · Reads and receipts are ADDRESS-scoped: a caller sees only rows addressed to or from an
-  //     address it currently holds, so a recycled occupant reaches no record at all. The receipt
-  //     is the addressee's and never overwrites an existing one.
   '= /api/self/messages',
   String.raw`~ /^\/api\/self\/messages\/([0-9a-f]{24})\/read$/`,
   // …and the door that JUDGES one of those rows, deliberately its own route rather than a fold
@@ -227,6 +195,10 @@ const PRE_AUTH_ROUTES = [
   // pending notiz/richtung/betrieb rows awaiting owner disposition, so neither kind can close the
   // other's filing door. It writes into no pane, starts nothing and reaches no foreign slot.
   '= /api/self/tasks',
+  // Bound MAIN only: own Program + checkout; comment appends, withdraw requires pending + reason.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)$/`,
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/comment$/`,
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/withdraw$/`,
   // REVIEW PARK (2026-09-25, server.ts#reviewParkTaskForMain): the exact bound Program-MAIN may
   // retire one live lane of its own Program into a review candidate. The task comes from the path,
   // note/hours are the closed body, and mintReviewCandidate keeps the owner's admission rules.
@@ -326,7 +298,7 @@ const PRE_AUTH_ROUTES = [
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)$/', // same credential, READ only: the receiver's own event + its rendered text (c14fcd75); another occupant 409
   '= /api/self/succeed',  // one successor for the caller's own session, never a named target. For a
   // MAIN: a free slot in the same cwd, caller retires on grace; the committed HANDOFF gate still
-  // holds the unbound, Supervisor and game-maker rails, while a Standard Program-MAIN hands over the
+  // holds the unbound and game-maker rails, while a Standard Program-MAIN hands over the
   // Program's own measured record in the founding brief instead (2026-09-08). For a LANE (2026-09-12,
   // succeedLane): a fresh session in the SAME slot on the SAME worktree and branch, which is why it
   // is no longer a 409 here — what bounds it is that it moves NOTHING: no land, no merge (a running
@@ -474,19 +446,8 @@ const PRE_AUTH_ROUTES = [
   // and the handler sits before the steward interceptor only so a steward credential meets the same
   // tokenGate 401 as any other non-owner credential.
   String.raw`~ /^\/api\/studios(?:\/[^/]+)?$/`,
-  // Same placement and same reason as the Programs regex above, one bracket higher: the Supervisor
-  // is cross-program owner identity, so the handler sits before the steward interceptor only so a
-  // steward credential meets the same tokenGate 401 as any other non-owner credential. The route
-  // calls tokenGate inline before it can mint anything, and it never reads a self-token header —
-  // both are pinned as source rules in e2e/pins.ts.
-  '= /api/supervisor/bootstrap',
-  // …and the SECOND appointment door, added 2026-09-07: it binds an ALREADY RUNNING session as
-  // Supervisor by explicit slot. Same placement and same reasons as its neighbour one line up, and
-  // REVIEWED rather than merely widened: the block's FIRST statement is the owner tokenGate, it
-  // reads no self-token header (both pinned as source rules in e2e/pins.ts), and the body is closed
-  // to a single `slot` — no label match, no "first idle session", no wildcard, so nothing in the
-  // request can make the route pick a session the caller did not name.
-  '= /api/supervisor/bind',
+
+
   '= /favicon.ico',
   '= /intake',            // its own secret (FLEET_INTAKE_SECRET), never the owner token
   String.raw`~ /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/`,
@@ -595,10 +556,12 @@ const pathAliases = (src: string): string[] => [
 // scratch instance with the suite's FLEET_DISPATCH_REPO set (without it, the task dispatch probe
 // answers 400 "no target repo" instead of 409).
 // /api/dispatch is the one exclusion: it reads `body.on` with no validation (server.ts ~5393).
-interface Probe { path: string; method: "GET" | "POST"; body?: unknown; owner?: 200 | 400 | 409 }
+interface Probe { path: string; method: "GET" | "POST"; body?: unknown; owner?: 200 | 400 | 404 | 409 | 503 }
 const dangerous = (slot: number): Probe[] => [
   { path: "/send", method: "POST", body: { slot, text: "x" }, owner: 400 },
   { path: `/api/slots/${slot}/kill`, method: "POST", body: {}, owner: 200 },
+  { path: `/api/slots/${slot}/restart`, method: "POST", body: {}, owner: 400 },
+  { path: `/api/slots/${slot}/transcript?after=0`, method: "GET", owner: 400 },
   { path: `/api/slots/${slot}/open`, method: "POST", body: { model: "not a model!" }, owner: 400 },
   { path: `/api/slots/${slot}/open-worktree`, method: "POST", body: {}, owner: 400 },
   { path: `/api/slots/${slot}/share`, method: "POST", body: { password: "short" }, owner: 400 },
@@ -642,6 +605,8 @@ const dangerous = (slot: number): Probe[] => [
   // the content-bearing read exists while the principal matrix proves scoped credentials do not.
   { path: "/api/programs", method: "POST", body: {}, owner: 400 },
   { path: "/api/programs", method: "GET", owner: 200 },
+  { path: "/api/messages", method: "GET", owner: 200 },
+  { path: "/api/messages/000000000000000000000000/reply", method: "POST", body: {}, owner: 400 },
   // The studio inventory is owner truth about the WORKFLOW a Program binds — stages, spawn triples,
   // gates, brief blocks — so it is owner-only for the reason the Program bodies above are: a session
   // that could write it would be choosing the workflow it is judged by. Empty POST is a
@@ -663,6 +628,9 @@ const dangerous = (slot: number): Probe[] => [
   // is what lets them carry the positive control; the containment guards themselves (realpath
   // prefix, the .env/fleet.json refusal, the hash conflict) are proved in fleet-e2e-security.ts §10.
   { path: "/api/file/write", method: "POST", body: {}, owner: 400 },
+  { path: "/api/file/create", method: "POST", body: {}, owner: 400 },
+  { path: "/api/file/move", method: "POST", body: {}, owner: 400 },
+  { path: "/api/file/delete", method: "POST", body: {}, owner: 400 },
   // the second write route: the owner's drop lands as a FILE inside a session's working directory,
   // so an auth regression here is the same class of thing. An empty JSON body names no active slot,
   // so the owner's own call is a side-effect-free 400 and carries the positive control.
@@ -723,7 +691,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§1 the owner gate is still the last line of fetch()'s chain (the whole pin rests on it)",
     gate > 0 && preAuth.length > 1000 && src.slice(gate, gate + 200).includes("tokenGate"), `gate@${gate}`);
   const authSrc = await readText(`${ROOT}/server/auth.ts`);
-  const resolverAt = authSrc.indexOf("export function resolvePrincipal(req: Request)");
+  const resolverAt = authSrc.indexOf("export function resolveSelfPrincipal(req: Request)");
   const resolverBody = resolverAt < 0 ? "" : authSrc.slice(resolverAt, authSrc.indexOf("\n}\n", resolverAt));
   check("§1 the self credential has one resolver with a live-slot and secret comparison",
     resolverBody.includes('req.headers.get("x-fleet-self-token")')
@@ -733,8 +701,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const selfAuth = preAuth.slice(preAuth.indexOf('url.pathname === "/api/self"'));
   const inlineSelf = /const s = given \? slots\.find\(\(x\) => x\.cwd && x\.selfToken && secretEq\(given, x\.selfToken\)\)/;
   check("§1 self routes call the resolver rather than copy the credential comparison",
-    selfAuth.includes("resolvePrincipal(req)") && !inlineSelf.test(selfAuth),
-    `resolver=${selfAuth.includes("resolvePrincipal(req)")} inline=${inlineSelf.test(selfAuth)}`);
+    selfAuth.includes("resolveSelfPrincipal(req)") && !inlineSelf.test(selfAuth),
+    `resolver=${selfAuth.includes("resolveSelfPrincipal(req)")} inline=${inlineSelf.test(selfAuth)}`);
   check("§1 the inline-self detector rejects a reintroduced credential comparison",
     inlineSelf.test(selfAuth + '\nconst s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;'));
   const stray = unrecognized(preAuth);
@@ -846,6 +814,22 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // self token, whoever holds it); a real LANE's token is exercised against the self routes it CAN
   // reach in §3 below and throughout e2e/self-token.ts.
   const plainSelf = await selfTokenOf(2);
+  const mainDoorProbes = [
+    { path: "/api/self/tasks/deadbeef", method: "GET" },
+    { path: "/api/self/tasks/deadbeef/comment", method: "POST", body: { text: "probe" } },
+    { path: "/api/self/tasks/deadbeef/withdraw", method: "POST", body: { grund: "probe" } },
+    { path: "/api/self/autos/deadbeef", method: "DELETE" },
+  ];
+  for (const probe of mainDoorProbes) {
+    const options = { method: probe.method, ...(probe.body ? { body: JSON.stringify(probe.body) } : {}) };
+    const denied = await fetch(BASE + probe.path, options);
+    const scoped = await fetch(BASE + probe.path, { ...options,
+      headers: { "content-type": "application/json", "x-fleet-self-token": plainSelf } });
+    check(`§2 MAIN doors: ${probe.method} ${probe.path} requires a live self credential`,
+      denied.status === 401 && scoped.status === (probe.method === "DELETE" ? 404 : 409),
+      `unauth=${denied.status} scoped=${scoped.status}`);
+  }
+
   check("§2 fixtures: a PLAIN session's selfToken and a real guest cookie are available as principals",
     /^[0-9a-f]{32}$/.test(plainSelf) && /^share_[0-9a-f]+=/.test(ctx.shICookie),
     `plain=${plainSelf.slice(0, 8)}… cookie=${ctx.shICookie.slice(0, 16)}…`);
@@ -909,10 +893,37 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     check(`§2 control guard: an injected ${code} on every owner probe is rejected, never read as admission`,
       ownerProbes.length > 0 && injected.length === ownerProbes.length, `${injected.length}/${ownerProbes.length} rejected`);
   }
-  const ownerRes = await Promise.all(ownerProbes.map(async (probe) => ({ probe, status: (await fire(probe, H)).status })));
-  const missed = ownerMisses(ownerRes);
-  check(`§2 control: the owner gets each probe's expected status on all ${ownerProbes.length} of them (so the denials above are about auth, not missing or crashing routes)`,
-    missed.length === 0, missed.map((r) => `${r.probe.path}:${r.status}≠${r.probe.owner}`).join(" "));
+  const parityProbes: Probe[] = [...ownerProbes,
+    { path: "/api/dispositions", method: "GET", owner: 200 },
+    { path: "/api/machine-settings", method: "GET", owner: 200 },
+    { path: "/api/harnesses", method: "GET", owner: 200 },
+    { path: "/api/konzepte", method: "GET", owner: 503 },
+    { path: "/api/tasks/authprobe/done", method: "POST", body: {}, owner: 404 },
+    { path: "/api/tasks/authprobe/delete", method: "POST", body: {}, owner: 404 },
+    { path: "/api/autos/authprobe/delete", method: "POST", body: {}, owner: 404 },
+  ];
+  const ownerCredentials: { name: string; headers: Record<string, string> }[] = [
+    { name: "Cookie", headers: { cookie: `fleet=${TOKEN}` } },
+    { name: "Bearer", headers: H },
+    { name: "Bearer plus Self-Token", headers: { ...H, "x-fleet-self-token": plainSelf } },
+  ];
+  const routeKey = (method: string, path: string): string => `${method} ${path.split("?")[0]!
+    .replace(/\$\{[^}]+\}/g, ":id")
+    .replace(/(\/api\/(?:slots|tasks|autos|repos)\/)[^/]+(?=\/)/g, "$1:id")}`;
+  const covered = new Set(parityProbes.map((p) => routeKey(p.method, p.path)));
+  const suiteOwnerCalls = [...(await readText(import.meta.path)).matchAll(/(?<!\.)\b(post|get)\((["`])(\/api\/[^"`]+)\2/g)];
+  const uncovered = suiteOwnerCalls.map((m) => routeKey(m[1] === "post" ? "POST" : "GET", m[3]!))
+    .filter((key) => !covered.has(key) && !(key === "POST /api/file/:id"
+      && ["write", "create", "move", "delete"].every((op) => covered.has(`POST /api/file/${op}`))));
+  check("§2 owner parity covers every Owner-route called by this security family",
+    suiteOwnerCalls.length > 0 && uncovered.length === 0, [...new Set(uncovered)].join(" "));
+  for (const credential of ownerCredentials) {
+    for (const probe of parityProbes) {
+      const response = await fire(probe, credential.headers);
+      check(`§2 owner parity: ${credential.name} ${probe.method} ${probe.path}`,
+        response.status === probe.owner, `${response.status} expected=${probe.owner}`);
+    }
+  }
   await post(`/api/tasks/${fixT.task.id}/delete`, {}); // the task-surface fixture, retired
 
   if (!REPO) return; // §3–§5 need a lane; the lane sections of the suite are repo-gated too
@@ -932,7 +943,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const tickAuto = await selfAuto(selfTok, 1, 0);
   check("§3 actor fixture: a one-shot auto is scheduled for the tick", tickAuto.ok, String(tickAuto.status));
   const tickAutoId = ((await tickAuto.json()) as { auto?: { id?: string } }).auto?.id;
-  type AuditActor = { kind: string; via?: string; slot?: number; openedAt?: number; role?: string; why?: string };
+  type AuditActor = { kind: string; via?: string; slot?: number; openedAt?: number; role?: string; label?: string; why?: string };
   type ActorRow = { ts?: number; event?: string; slot?: number; detail?: string; actor?: AuditActor };
   const actorRows = async (): Promise<ActorRow[]> => {
     const raw = (await readText(ctx.auditPath)) + (await readText(`${ctx.auditPath}.1`));
@@ -955,8 +966,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     if (ownerRow && selfRow && tickRow) break;
     await Bun.sleep(50);
   }
-  check("§3 owner Bearer action is audited with owner via bearer",
-    ownerRow?.actor?.kind === "owner" && ownerRow.actor.via === "bearer", JSON.stringify(ownerRow?.actor));
+  check("§3 owner Bearer without Self-Token is audited as unknown",
+    JSON.stringify(ownerRow?.actor) === JSON.stringify({ kind: "unknown" }), JSON.stringify(ownerRow?.actor));
   check("§3 self-token action is audited with its session slot, openedAt and lane role",
     selfRow?.actor?.kind === "session" && selfRow.actor.slot === ln.slot
       && typeof openedAt === "number" && selfRow.actor.openedAt === openedAt && selfRow.actor.role === "lane",
@@ -966,6 +977,45 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§3 self and tick actions never claim owner without an owner credential",
     selfRow?.actor?.kind !== "owner" && tickRow?.actor?.kind !== "owner"
       && !!selfRow?.actor && !!tickRow?.actor);
+  const actorLabel = "🎛 Orchestratorin · Klartext";
+  const rename = await post(`/api/slots/${ln.slot}/rename`, { label: actorLabel });
+  check("§3 actor fixture: a readable slot label is set", rename.ok, String(rename.status));
+  const ownerActors = [];
+  const actorCredentials: { name: string; headers: Record<string, string> }[] = [
+    { name: "cookie", headers: { cookie: `fleet=${TOKEN}`, "x-fleet-self-token": selfTok } },
+    { name: "query", headers: { "x-fleet-self-token": selfTok } },
+    { name: "bearer", headers: H },
+    { name: "bearer-self", headers: { ...H, "x-fleet-self-token": selfTok } },
+    { name: "bearer-invalid-self", headers: { ...H, "x-fleet-self-token": "not-a-live-self-token" } },
+  ];
+  for (const credential of actorCredentials) {
+    const before = (await actorRows()).filter((r) => r.event === "slot_model" && r.slot === ln.slot).length;
+    const response = await fire({ path: `/api/slots/${ln.slot}/model${credential.name === "query" ? `?token=${TOKEN}` : ""}`,
+      method: "POST", body: { effort: "low" } }, credential.headers);
+    let row: ActorRow | undefined;
+    for (let i = 0; i < 100; i++) {
+      const rows = (await actorRows()).filter((r) => r.event === "slot_model" && r.slot === ln.slot);
+      if (rows.length > before) { row = rows[rows.length - 1]; break; }
+      await Bun.sleep(20);
+    }
+    check(`§3 owner actor fixture: ${credential.name} reaches the same owner action`, response.status === 200, String(response.status));
+    ownerActors.push({ name: credential.name, actor: row?.actor });
+  }
+  for (const name of ["cookie", "query"]) {
+    const actor = ownerActors.find((r) => r.name === name)?.actor;
+    check(`§3 owner ${name} is audited as owner even beside a Self-Token`,
+      JSON.stringify(actor) === JSON.stringify({ kind: "owner" }), JSON.stringify(actor));
+  }
+  for (const name of ["bearer", "bearer-invalid-self"]) {
+    const actor = ownerActors.find((r) => r.name === name)?.actor;
+    check(`§3 owner ${name} is audited as unknown`,
+      JSON.stringify(actor) === JSON.stringify({ kind: "unknown" }), JSON.stringify(actor));
+  }
+  const joined = ownerActors.find((r) => r.name === "bearer-self")?.actor;
+  check("§3 owner Bearer plus Self-Token actor joins the live slot snapshot",
+    joined?.kind === "session" && joined.slot === ln.slot && joined.openedAt === openedAt
+      && joined.role === "lane" && joined.label === actorLabel && joined.via === "owner-bearer"
+      && Object.keys(joined).length === 6, JSON.stringify(joined));
   if (tickAutoId) await post(`/api/autos/${tickAutoId}/delete`, {});
   const live = await selfAuto(selfTok);
   const liveJ = (await live.json()) as { auto?: { id: string } };
@@ -973,73 +1023,31 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     live.ok && !!liveJ.auto, `${live.status} ${JSON.stringify(liveJ)}`);
   if (liveJ.auto) await post(`/api/autos/${liveJ.auto.id}/delete`, {});
 
-  // ===== §STN-1 the transition rail's perimeter: nobody impersonates the Supervisor, nobody
-  // nominates a receiver, and no Supervisor text can reach a lane =====
+  // Removed self doors follow the same principal perimeter as an unknown path.
   {
-    const completeUrl = `${BASE}/api/self/supervisor-watch/deadbeef/complete`;
-    const completeAs = (headers: Record<string, string>): Promise<Response> =>
-      fetch(completeUrl, { method: "POST", headers: { "content-type": "application/json", ...headers },
-        body: JSON.stringify({ text: "perimeter probe" }) });
-    const [noCred, ownerTok, stewardTok, guestCookie, plainSession, laneSession] = await Promise.all([
-      completeAs({}),
-      completeAs({ authorization: `Bearer ${TOKEN}` }),
-      completeAs({ authorization: `Bearer ${sc.token}` }),
-      completeAs({ cookie: ctx.shICookie }),
-      completeAs({ "x-fleet-self-token": plainSelf }),
-      completeAs({ "x-fleet-self-token": selfTok }),
-    ]);
-    check("§STN-1 the completion door is a self-principal door: owner, steward, guest and no credential are all 401",
-      noCred.status === 401 && ownerTok.status === 401 && stewardTok.status === 401 && guestCookie.status === 401,
-      `${noCred.status}/${ownerTok.status}/${stewardTok.status}/${guestCookie.status}`);
-    // WHAT THIS CHECK IS ABOUT IS THE STATUS, and that is asserted first and unchanged: a
-    // recognized self principal meets 409, never a 401, so nothing here sends anyone looking for a
-    // better credential. The SENTENCE moved on 2026-09-07, when the occupancy stage learned to name
-    // which of its three states it is in (server.ts#supervisorRefusal) — and this suite runs AFTER
-    // e2e/supervisor.ts, which leaves a dead binding behind, so the honest answer here is "the role
-    // is unfilled", not "you are not it". Read the state from the owner side rather than hard-coding
-    // one: a fixed sentence is what made this check fall on a change it was never about, and a bare
-    // `.includes("bound Supervisor")` would pass on all three and assert nothing.
-    const svOccupancy = ((await (await get("/api/programs")).json()) as
-      { supervisorHealth: { occupancy: string } }).supervisorHealth.occupancy;
-    const expectedRefusal = svOccupancy === "unbound" ? "no Supervisor binding exists"
-      : svOccupancy === "stale" ? "the Supervisor binding is STALE"
-      : "not the bound Supervisor";
-    const plainText = await plainSession.text();
-    check("§STN-1 a recognized self principal that is not the bound Supervisor is 409 (plain and lane alike) — no token hunt, and the refusal names the occupancy state the fleet is actually in",
-      plainSession.status === 409 && laneSession.status === 409
-        && !/unauthorized/i.test(plainText) && plainText.includes(expectedRefusal),
-      `${plainSession.status}/${laneSession.status} occupancy=${svOccupancy} expected="${expectedRefusal}" got=${plainText}`);
-    const register = (tok: string, body: unknown): Promise<Response> =>
-      fetch(`${BASE}/api/self/watch`, { method: "POST",
-        headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
-    const base = { kind: "transition", idleSec: 60, deadlineSec: 600, awaiting: "perimeter" };
-    const [laneRegisters, nominatesTarget, nominatesSlot, asksInbox] = await Promise.all([
-      register(selfTok, base),
-      register(plainSelf, { ...base, target: ln.slot }),
-      register(plainSelf, { ...base, slot: ln.slot }),
-      register(plainSelf, { ...base, delivery: "inbox" }),
-    ]);
-    const [tTarget, tSlot, tInbox] = await Promise.all([nominatesTarget, nominatesSlot, asksInbox].map((r) => r.text()));
-    check("§STN-1 a lane never registers a transition watch, so Supervisor text can structurally never reach a lane pane (409)",
-      laneRegisters.status === 409 && (await laneRegisters.text()).includes("a lane may not subscribe"),
-      String(laneRegisters.status));
-    check("§STN-1 no caller nominates a receiver anywhere: target and slot are refused by name at registration (400)",
-      nominatesTarget.status === 400 && tTarget.includes("[target] is not read")
-        && nominatesSlot.status === 400 && tSlot.includes("[slot] is not read"),
-      `${nominatesTarget.status}:${tTarget} | ${nominatesSlot.status}:${tSlot}`);
-    check("§STN-1 the owner operations inbox is not a Controller's: delivery is refused by name for a transition watch (400)",
-      asksInbox.status === 400 && tInbox.includes("[delivery] is not read"), `${asksInbox.status}:${tInbox}`);
-    // the source rule behind the two refusals above: the completion handler reads `text` and
-    // nothing else from the body, and the receiver comes from the WATCH's slot.
-    const srv = readFileSync(`${ROOT}/server.ts`, "utf8");
-    const handlerAt = srv.indexOf("async function completeTransitionWatch(");
-    const handlerEnd = srv.indexOf("\n}\n", handlerAt);
-    const handler = handlerAt < 0 ? "" : srv.slice(handlerAt, handlerEnd);
-    check("§STN-1 source: completeTransitionWatch reads only `text` from the body and derives the receiver from the watch's own slot",
-      handler.includes('Object.keys(body).filter((k) => k !== "text")')
-        && handler.includes("const receiver = slotFrom(w.slot);")
-        && !/body\.(slot|target|receiver|programId|delivery)/.test(handler),
-      `${handlerAt}:${handlerEnd}`);
+    const credentials: Record<string, string>[] = [
+      {}, { authorization: `Bearer ${TOKEN}` }, { authorization: `Bearer ${sc.token}` },
+      { cookie: ctx.shICookie }, { "x-fleet-self-token": plainSelf },
+      { "x-fleet-self-token": selfTok },
+    ];
+    const removed = [
+      { method: "GET", path: "/api/self/supervisor-view" },
+      { method: "POST", path: "/api/self/nudge" },
+      { method: "POST", path: "/api/self/supervisor-watch/deadbeef/complete" },
+    ];
+    for (const door of removed) {
+      const observations = await Promise.all(credentials.map(async (headers) => {
+        const init = { method: door.method, headers };
+        const old = await fetch(BASE + door.path, init);
+        const unknown = await fetch(BASE + "/api/self/d5-unknown-path", init);
+        return { status: old.status, expected: unknown.status,
+          body: await old.text(), expectedBody: await unknown.text() };
+      }));
+      check(`D5 removed self door ${door.method} ${door.path} answers exactly like an unknown path for every principal`,
+        observations.every((r) => r.status === r.expected && r.body === r.expectedBody)
+          && observations[1]?.status === 404,
+        JSON.stringify(observations));
+    }
   }
 
   // ===== §4 no secret reaches a non-owner-readable payload =====
@@ -2180,4 +2188,54 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     // executable command token says the recycled pane actually inherited that harness.
     && !/(^|[; ])codex(?: |$)/.test(rcmd.replaceAll("\\", "")), rcmd.slice(-160));
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  const explorerLane = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string };
+  const outsideName = `x3-outside-${explorerLane.slot}`;
+  const outsideDir = `${explorerLane.cwd}/../${outsideName}`;
+  mkdirSync(outsideDir, { recursive: true });
+  const canary = `${outsideDir}/canary.txt`;
+  writeFileSync(canary, "outside bytes must survive");
+  writeFileSync(`${explorerLane.cwd}/x3-source.txt`, "tracked source must survive");
+  spawnSync("git", ["-C", explorerLane.cwd, "add", "--", "x3-source.txt"]);
+  symlinkSync(outsideDir, `${explorerLane.cwd}/x3-link`);
+  const beforeIndex = spawnSync("git", ["-C", explorerLane.cwd, "ls-files", "--stage", "-z"]).stdout;
+  for (const route of ["create", "move", "delete"]) {
+    for (const escape of [`../${outsideName}`, "x3-link"]) {
+      const path = `${escape}/${route === "create" ? "new.txt" : "canary.txt"}`;
+      const res = await post(`/api/file/${route}`, { slot: explorerLane.slot, path, to: "x3-moved.txt" });
+      check(`Explorer security should-reject ${route}: ${escape} source escape`,
+        res.status === 400 && /outside this session/.test(await res.text())
+        && readFileSync(canary, "utf8") === "outside bytes must survive"
+        && !existsSync(`${outsideDir}/new.txt`) && !existsSync(`${explorerLane.cwd}/x3-moved.txt`),
+        String(res.status));
+      if (route === "move") {
+        const toRes = await post("/api/file/move", { slot: explorerLane.slot, path: "x3-source.txt", to: `${escape}/new.txt` });
+        check(`Explorer security should-reject move: ${escape} destination escape`,
+          toRes.status === 400 && /outside this session/.test(await toRes.text())
+          && readFileSync(`${explorerLane.cwd}/x3-source.txt`, "utf8") === "tracked source must survive"
+          && !existsSync(`${outsideDir}/new.txt`), String(toRes.status));
+      }
+    }
+    for (const denied of [".env", "nested/.env.local", "fleet.json", ".git"]) {
+      const path = `${explorerLane.cwd}/${denied}`;
+      if (denied !== ".git") {
+        mkdirSync(`${explorerLane.cwd}/nested`, { recursive: true });
+        writeFileSync(path, "protected bytes");
+      }
+      const res = await post(`/api/file/${route}`, { slot: explorerLane.slot, path: denied, to: "x3-moved.txt" });
+      check(`Explorer security should-reject ${route}: denied source ${denied}`,
+        res.status === 400 && /not editable here/.test(await res.text())
+        && (denied === ".git" || readFileSync(path, "utf8") === "protected bytes"), String(res.status));
+      if (route === "move") {
+        const destRes = await post("/api/file/move", { slot: explorerLane.slot, path: "x3-source.txt", to: denied });
+        check(`Explorer security should-reject move: denied destination ${denied}`,
+          destRes.status === 400 && /not editable here/.test(await destRes.text())
+          && readFileSync(`${explorerLane.cwd}/x3-source.txt`, "utf8") === "tracked source must survive", String(destRes.status));
+      }
+    }
+  }
+  check("Explorer security: every rejected write leaves the git index unchanged",
+    beforeIndex.equals(spawnSync("git", ["-C", explorerLane.cwd, "ls-files", "--stage", "-z"]).stdout));
+  await post(`/api/slots/${explorerLane.slot}/kill`, {});
+  rmSync(outsideDir, { recursive: true, force: true });
+
 }

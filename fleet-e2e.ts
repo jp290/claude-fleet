@@ -55,7 +55,6 @@ import * as concurrency from "./e2e/concurrency";
 import * as selfToken from "./e2e/self-token";
 import * as laneSuite from "./e2e/lane-suite";
 import * as programs from "./e2e/programs";
-import * as supervisor from "./e2e/supervisor";
 import * as refAdvance from "./e2e/ref-advance";
 import * as outcomes from "./e2e/outcomes";
 import * as landDurability from "./e2e/land-durability";
@@ -266,15 +265,6 @@ const steps: Step[] = [
   { unit: "programs", lane: true, module: "programs", run: async () => {
     await programs.run(ctx);
   } },
-  // the cross-program Supervisor binding sits ABOVE the Program brackets, so it runs directly after
-  // them: it reuses the same fleet-checkout git fixture and the same restart proof, and it leaves
-  // no occupied slot behind for the sections that follow.
-  { unit: "supervisor", lane: true, module: "supervisor", run: async () => {
-    await supervisor.run();
-  } },
-  // the READ half of the trail family — here, not next to trail.run() at the end, because its
-  // route checks need a LANE's selfToken alive (ctx.restartSelfTok, which restart.run() tears
-  // down) to prove the query reaches the principal the proof order it replaces actually binds.
   { unit: "core", lane: true, module: "trailstats", run: async () => {
     await trailstats.run(ctx);
   } },

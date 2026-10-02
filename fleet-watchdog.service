@@ -74,7 +74,7 @@ RestartSec=5
 # KillMode=process, and it is not a nicety. `tmux new-session -d` forks the tmux SERVER out of this
 # unit's process when no server is running yet, so it lands in this cgroup; the default
 # KillMode=control-group would then take the fleet's srv session — and every live claude pane with
-# it — on a plain `systemctl --user restart`. The watchdog is a supervisor loop whose subject must
+# it — on a plain `systemctl --user restart`. The watchdog is a watchdog loop whose subject must
 # outlive it, the same independence the macOS path has.
 KillMode=process
 

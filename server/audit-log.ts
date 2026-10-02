@@ -355,6 +355,11 @@ type AuditEvent =
   // slot id is recycled and the count is the only thing that says a lane spanned n sessions —
   // sessionMs on the outcome row measures the LAST one alone.
   | "lane_succession"
+  // the owner moved a LIVE lane to another harness/model (POST /api/slots/:id/lane-harness): same
+  // worktree, branch, slot and rows, a new session on the new executor. One row per switch, written
+  // by the shared lane restart; detail names branch, from -> to, the bound task and how many
+  // uncommitted paths rode along, or `brief-undelivered: <reason>` when the session stands unbriefed.
+  | "lane_harness"
   // A MAIN LINE HANDED OVER IN PLACE (server.ts#respawnInPlace): the generic and
   // Program-MAIN rails end the predecessor and open the successor on the SAME slot, like the lane
   // baton. The detail names the rail and, when it did not go through, the reason and what the slot

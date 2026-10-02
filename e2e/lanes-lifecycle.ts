@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
-import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plogRead, post, restartSrv,
+import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plantScreen, plogRead, post, restartSrv,
   reviewRunsFor, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
@@ -1263,6 +1263,122 @@ export async function run(lc: LaneCtx): Promise<void> {
       laneRetire.status === 409 && laneRetireText.includes("a lane lands"),
       `${laneRetire.status} ${laneRetireText.slice(0, 160)}`);
 
+    // === THE OWNER'S HARNESS SWITCH on this same lane (owner 2026-09-25: „[Zitat entfernt]“
+    // ; card 7dacd84a + 6633fc41). The heir holds a row, a
+    // Program and a counted baton — exactly what the switch must carry across untouched — and gets
+    // an UNCOMMITTED edit and an untracked file first, because the switch (unlike the baton) is for
+    // an executor that stopped mid-work. Every refusal below is asserted to have spawned nothing.
+    {
+      type LhSlot = { selfToken?: string; openedAt?: number; taskId?: string | null; programId?: string | null;
+        harness?: string | null; model?: string | null; effort?: string | null; laneSuccessions?: number;
+        worktree?: { branch?: string } | null };
+      const lhSlot = (): LhSlot | undefined => batonSlot(batonSlotId) as LhSlot | undefined;
+      const lhPath = `/api/slots/${batonSlotId}/lane-harness`;
+      const lhBefore = lhSlot();
+      const untouched = (): boolean => lhSlot()?.openedAt === lhBefore?.openedAt && lhSlot()?.selfToken === lhBefore?.selfToken;
+      const lhText = async (r: Response): Promise<string> => `${r.status} ${await r.text()}`;
+
+      const asSelf = await fetch(BASE + lhPath, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": heirTok },
+        body: JSON.stringify({ harness: "codex" }) });
+      check("(lane-harness) the lane's own self-token is refused 401 — choosing the executor is the owner's",
+        asSelf.status === 401 && untouched(), String(asSelf.status));
+      const asSelfDoor = await selfPost(heirTok, "/api/self/succeed", { harness: "codex", model: "gpt-6.1-sol" });
+      check("(lane-harness) …and the lane's baton door stays harness-true: a codex model on this claude lane is 400, nothing spawned",
+        asSelfDoor.status === 400 && untouched(), await lhText(asSelfDoor));
+
+      const sess = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; worktree: unknown }[] };
+      const plainSlot = sess.slots.find((x) => x.cwd && !x.worktree)?.id ?? 0;
+      const notLane = await post(`/api/slots/${plainSlot}/lane-harness`, { harness: "codex" });
+      const notLaneText = await lhText(notLane);
+      check("(lane-harness) a slot that holds no worktree is refused 409 'not a lane'",
+        plainSlot > 0 && notLane.status === 409 && notLaneText.includes("not a lane"), `slot ${plainSlot}: ${notLaneText}`);
+
+      const refusals: [string, Record<string, unknown>, (t: string) => boolean][] = [
+        ["no harness named", {}, (x) => x.startsWith("400 ") && x.includes("expected { harness")],
+        ["an unknown harness", { harness: "warp-drive" }, (x) => x.startsWith("400 ") && x.includes("unknown harness")],
+        ["a main-session-only harness", { harness: "pi-unfenced" }, (x) => x.startsWith("400 ") && x.includes("main-session only")],
+        ["a claude model on codex", { harness: "codex", model: "claude-opus-5-5[1m]" },
+          (x) => x.startsWith("400 ") && x.includes("bad model") && x.includes("not for harness codex")],
+        ["a codex model on claude", { harness: "claude", model: "gpt-6.1-sol" },
+          (x) => x.startsWith("400 ") && x.includes("not for harness claude")],
+        ["an effort the harness lacks", { harness: "codex", model: "gpt-6.1-sol", effort: "warp" },
+          (x) => x.startsWith("400 ") && x.includes("bad effort")],
+      ];
+      for (const [what, body, ok] of refusals) {
+        const r = await lhText(await post(lhPath, body));
+        check(`(lane-harness) ${what} is refused, and the lane's session is untouched`, ok(r) && untouched(), r.slice(0, 240));
+      }
+
+      // THE SWITCH. One tracked edit and one untracked file, read back as BYTES afterwards.
+      const dirtyTracked = "cut one\nhalf of cut two, not committed\n";
+      const dirtyNew = "UNTRACKED: the stopped executor's scratch it meant to keep\n";
+      writeFileSync(`${batonCwd}/baton.txt`, dirtyTracked);
+      writeFileSync(`${batonCwd}/baton-lh-untracked.txt`, dirtyNew);
+      const headBefore = spawnSync("git", ["-C", batonCwd, "rev-parse", "HEAD"]).stdout.toString().trim();
+      const lhPromptsBefore = (await plogRead()).filter((e) => e.slot === batonSlotId).length;
+      const lhPending = post(lhPath, { harness: "codex", model: "gpt-6.1-sol", effort: "high" });
+      let lhSeen = false;
+      for (let i = 0; i < 60 && !lhSeen; i++) {
+        await Bun.sleep(150);
+        const at = lhSlot()?.openedAt ?? 0;
+        if (at > 0 && at !== lhBefore?.openedAt) lhSeen = true;
+      }
+      // the spawn line BEFORE the screen is planted — plantScreen respawns the pane with its stand-in
+      let lhCmd = "";
+      for (let i = 0; i < 40 && lhSeen && !lhCmd.includes("codex"); i++) {
+        await Bun.sleep(50);
+        lhCmd = (await tmuxOut("display-message", "-p", "-t", `s${batonSlotId}`, "#{pane_start_command}")).out.replaceAll("\\", "");
+      }
+      if (lhSeen) await plantScreen(batonSlotId, ">_ OpenAI Codex (v0.147.0)", "lane-harness fixture");
+      const lhRes = await lhPending;
+      const lhBody = (await lhRes.json().catch(() => ({}))) as { ok?: boolean; slot?: number; branch?: string;
+        harness?: string; model?: string | null; effort?: string | null; successions?: number; delivered?: boolean };
+      check("(lane-harness) the owner's switch answers 200 on the SAME slot and branch, delivered, and is no baton",
+        lhRes.ok && lhBody.slot === batonSlotId && lhBody.branch === batonBranch && lhBody.harness === "codex"
+          && lhBody.model === "gpt-6.1-sol" && lhBody.effort === "high" && lhBody.successions === 1 && lhBody.delivered === true,
+        `${lhRes.status} ${JSON.stringify(lhBody)}`);
+      const lhAfter = lhSlot();
+      check("(lane-harness) the slot runs a NEW session on codex, with worktree, row, Program and baton count held",
+        lhAfter?.harness === "codex" && lhAfter.model === "gpt-6.1-sol" && lhAfter.effort === "high"
+          && lhAfter.worktree?.branch === batonBranch && lhAfter.taskId === batonTaskId && lhAfter.programId === batonProgramId
+          && lhAfter.laneSuccessions === 1 && lhAfter.openedAt !== lhBefore?.openedAt && lhAfter.selfToken !== heirTok,
+        JSON.stringify(lhAfter).slice(0, 300));
+      check("(lane-harness) the pane was spawned as codex with the chosen model",
+        /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(lhCmd) && lhCmd.includes("--model 'gpt-6.1-sol'"),
+        lhCmd.slice(-220));
+      const statusAfter = spawnSync("git", ["-C", batonCwd, "status", "--porcelain"]).stdout.toString();
+      check("(lane-harness) the uncommitted edit and the untracked file survive BYTE for byte, on the same HEAD",
+        readFileSync(`${batonCwd}/baton.txt`, "utf8") === dirtyTracked
+          && readFileSync(`${batonCwd}/baton-lh-untracked.txt`, "utf8") === dirtyNew
+          && spawnSync("git", ["-C", batonCwd, "rev-parse", "HEAD"]).stdout.toString().trim() === headBefore
+          && statusAfter.includes(" M baton.txt") && statusAfter.includes("?? baton-lh-untracked.txt"),
+        JSON.stringify(statusAfter));
+      check("(lane-harness) the queue row never left the lane — still `sent`, still this slot",
+        batonState().tasks?.find((x) => x.id === batonTaskId)?.status === "sent"
+          && batonState().tasks?.find((x) => x.id === batonTaskId)?.slot === batonSlotId,
+        JSON.stringify(batonState().tasks?.find((x) => x.id === batonTaskId) ?? {}).slice(0, 160));
+      const lhPrompts = (await plogRead()).filter((e) => e.slot === batonSlotId);
+      const lhBrief = lhPrompts.length > lhPromptsBefore ? lhPrompts[lhPrompts.length - 1]!.text : "";
+      check("(lane-harness) the continuation brief names the task id, the HEAD, the switch, the dirty paths and the lane exit",
+        lhBrief.includes(`Task-Id: ${batonTaskId}`) && lhBrief.includes(`HEAD: ${headBefore}`)
+          && lhBrief.includes("codex/gpt-6.1-sol/high") && lhBrief.includes("baton-lh-untracked.txt")
+          && lhBrief.includes("baton.txt") && lhBrief.includes(BATON_TASK_TEXT) && lhBrief.includes("HOW THIS LANE ENDS"),
+        JSON.stringify(lhBrief).slice(0, 400));
+      let lhAudit: { event?: string; slot?: number; detail?: string }[] = [];
+      for (let i = 0; i < 40 && !lhAudit.length; i++) { // appendEvent is fire-and-forget — poll the trail
+        lhAudit = (await Bun.file(`${ROOT}/audit.jsonl`).text()).split("\n").filter(Boolean)
+          .map((l) => { try { return JSON.parse(l) as { event?: string; slot?: number; detail?: string }; } catch { return null; } })
+          .filter((r): r is { event?: string; slot?: number; detail?: string } => r?.event === "lane_harness" && r.slot === batonSlotId);
+        if (!lhAudit.length) await Bun.sleep(50);
+      }
+      check("(lane-harness) exactly ONE audit row names branch, from -> to, the task and the uncommitted count",
+        lhAudit.length === 1 && (lhAudit[0]?.detail ?? "").includes(batonBranch)
+          && (lhAudit[0]?.detail ?? "").includes("-> codex/gpt-6.1-sol/high")
+          && (lhAudit[0]?.detail ?? "").includes(`task=${batonTaskId}`) && (lhAudit[0]?.detail ?? "").includes("uncommitted=2"),
+        JSON.stringify(lhAudit));
+    }
+
     // …and what the LEDGER says about a lane that took two sessions. The kill is the teardown this
     // fixture needs anyway, and it is the cheapest disposition that writes a row: `successions` is
     // the only field on it that can say the lane spanned more than one conversation, because
@@ -1297,6 +1413,38 @@ export async function run(lc: LaneCtx): Promise<void> {
       { programs: { id: string }[] }).programs;
     check("(baton) fixture cleanup: the planted Program is gone — the 2 s poll must not carry a fixture for the rest of the suite",
       !remaining.some((p) => p.id === batonProgramId), `${remaining.length} program(s) left`);
+  }
+
+  // === THE HARNESS SWITCH WAITS FOR A RUNNING MERGE: a merge/land owns the tree and the slot, and a
+  // recycle underneath it would leave the job talking to a session that no longer exists — the same
+  // reservation the baton honours. The F5 shape from e2e/merge.ts: a real conflict, so the fake agent
+  // runs in `hang` and holds mergeInflight for its whole sleep.
+  {
+    const mh = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot?: number; cwd?: string; branch?: string };
+    const mhSlot = mh.slot ?? 0;
+    writeFileSync(`${mh.cwd}/lane-harness-merge.txt`, "lane side\n");
+    spawnSync("git", ["-C", mh.cwd ?? "", "add", "lane-harness-merge.txt"]);
+    spawnSync("git", ["-C", mh.cwd ?? "", "commit", "-qm", "lane-harness: lane side"]);
+    writeFileSync(`${REPO}/lane-harness-merge.txt`, "main side\n"); // add/add → conflict → the agent (hang) runs
+    spawnSync("git", ["-C", REPO, "add", "lane-harness-merge.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "lane-harness: main side"]);
+    await setMergeMode("hang");
+    await settleForMerge(mhSlot);
+    const mhStart = (await (await post(`/api/slots/${mhSlot}/merge`, {})).json()) as { running?: boolean };
+    const mhOpened = (): number | undefined => (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { openedAt?: number }> }).slots?.[String(mhSlot)]?.openedAt;
+    const mhOpenedAt = mhOpened();
+    const during = await post(`/api/slots/${mhSlot}/lane-harness`, { harness: "codex", model: "gpt-6.1-sol" });
+    const duringText = await during.text();
+    check("(lane-harness) a running merge on the lane refuses the switch 409, and the session stays",
+      mhStart.running === true && during.status === 409 && duringText.includes("merge is running")
+        && typeof mhOpenedAt === "number" && mhOpened() === mhOpenedAt,
+      `running=${mhStart.running} ${during.status} ${duringText.slice(0, 200)}`);
+    await waitMerge(mhSlot);
+    await setMergeMode("blocked");
+    await post(`/api/slots/${mhSlot}/kill`, {});
+    if (mh.cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", mh.cwd]);
+    if (mh.branch) spawnSync("git", ["-C", REPO, "branch", "-qD", mh.branch]);
   }
 
   // === THE REVIEW PARK: a finished lane set aside for a LATER owner review, slot freed, identity kept ==

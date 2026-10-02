@@ -7043,11 +7043,15 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // and the receiver resolved from the lane's current occupant:
   // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
   // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
+  // FOUR since the owner's harness switch (2026-10-02, server.ts#buildLaneHarnessBrief): its
+  // continuation brief appends the same footer at the same kind of seam, resolved for the NEW
+  // harness (`ho.harness`), because the session that reads it runs on that one.
   pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
     /const deliveredBrief = `\$\{brief\}\$\{clarify \? "" : `\\n\\n\$\{LANE_ROLE_CARD\}`\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness, selfPosition\(free\)\.receiver\)\}\$\{memoryBlock\}`;/.test(server)
       && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
       && /footer: laneExitFooter\(s\.harness, selfPosition\(s\)\.receiver\)/.test(server)
-      && (server.split("laneExitFooter(").length - 1) === 3,
+      && /footer: laneExitFooter\(ho\.harness, selfPosition\(s\)\.receiver\)/.test(server)
+      && (server.split("laneExitFooter(").length - 1) === 4,
     `laneExitFooter call sites=${server.split("laneExitFooter(").length - 1}`);
 }
 

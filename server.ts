@@ -3,7 +3,7 @@ import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
 import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelRole } from "./model-register";
+import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServerWebSocket } from "bun";
@@ -1738,12 +1738,33 @@ function harnessIdOf(body: Record<string, unknown> | null): { ok: true; harness:
 
 // Model validation is now a question about the SLOT's harness, not about the server's env. For the
 // default adapter this resolves to SLOT_MODEL_RE — i.e. unchanged — so no existing caller moves.
-function modelOf(body: Record<string, unknown> | null, h: Harness = CLAUDE_HARNESS): { ok: true; model: string | null } | { ok: false } {
+// The refusal carries its own sentence: a charset miss reads modelErrFor, a register miss names
+// both harnesses (registerMismatch), and every door returns `error` verbatim.
+function modelOf(body: Record<string, unknown> | null, h: Harness = CLAUDE_HARNESS):
+  { ok: true; model: string | null } | { ok: false; error: string } {
   const m = body?.model;
   if (m === undefined || m === null || m === "") return { ok: true, model: null };
-  if (!h.supports.model) return { ok: false };
-  if (typeof m === "string" && (h.modelRe ?? SLOT_MODEL_RE).test(m)) return { ok: true, model: m };
-  return { ok: false };
+  if (!h.supports.model) return { ok: false, error: modelErrFor(h) };
+  if (typeof m !== "string" || !(h.modelRe ?? SLOT_MODEL_RE).test(m)) return { ok: false, error: modelErrFor(h) };
+  const mismatch = registerMismatch(h, m);
+  return mismatch ? { ok: false, error: mismatch } : { ok: true, model: m };
+}
+// THE REGISTER'S SECOND QUESTION (6633fc41, 2026-09-26): the charset alone let a codex lane's
+// successor spawn as harness=codex, model=claude-opus-5-5[1m] — HARNESS_MODEL_RE admits the name,
+// and the provider answered 400 to a pane that looked alive. So a name model-register.ts files
+// under ANOTHER harness, and not in modelsForHarness of this one, is refused here by name. Only a
+// KNOWN mismatch refuses: a name the register has never heard of (a local `--oss` tag, a probe
+// model) stays with the charset, and a harness the register does not keep (pi, container — which
+// runs claude in a box) is not judged, because "not listed" there says nothing.
+const REGISTER_HARNESSES: ReadonlySet<string> = new Set(MODEL_REGISTER.map((e) => e.harness));
+function registerMismatch(h: Harness, m: string): string | null {
+  if (!REGISTER_HARNESSES.has(h.id)) return null;
+  const own = modelsForHarness(h.id as ModelHarness);
+  if (own.includes(m)) return null;
+  const elsewhere = [...new Set(MODEL_REGISTER.filter((e) => e.id === m).map((e) => e.harness))];
+  if (!elsewhere.length) return null;
+  return `bad model (${m} is registered for harness ${elsewhere.join("/")}, not for harness ${h.id} — `
+    + `harness ${h.id} takes one of: ${own.join(", ")})`;
 }
 const modelErrFor = (h: Harness) =>
   h.supports.model
@@ -1831,7 +1852,7 @@ function taskSpawnFromBody(body: Record<string, unknown> | null):
   if (!h.ok) return { ok: false, error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` };
   const harness = harnessOf(h.harness);
   const m = modelOf(body, harness);
-  if (!m.ok) return { ok: false, error: modelErrFor(harness) };
+  if (!m.ok) return { ok: false, error: m.error };
   const e = effortOf(body, harness);
   if (!e.ok) return { ok: false, error: effortErrFor(harness) };
   const b = browserOf(body, harness);
@@ -8803,6 +8824,7 @@ type SendPath =
   | "brief"             // a task's founding brief into a fresh lane (briefAndSend)
   | "founding"          // a Program-MAIN / orchestrator founding or bind brief
   | "succession"        // the successor's founding brief on POST /api/self/succeed
+  | "lane-harness"      // the continuation brief after the owner switched a live lane's harness
   | "auto"              // a scheduled check-in firing (tickAutos)
   | "steward"           // the steward's own send door
   | "fleet-event"       // a watch event or a fleet-report recovery reaching its receiver
@@ -8853,6 +8875,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "brief": "Gruendungs-Brief einer Lane",
   "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Orchestratorin)",
   "succession": "Nachfolge-Brief (POST /api/self/succeed)",
+  "lane-harness": "Fortsetzungs-Brief nach Harness-Wechsel (POST /api/slots/:id/lane-harness)",
   "auto": "geplanter Check-in",
   "steward": "Steward-Sendetuer",
   "fleet-event": "Fleet-Ereignis (Watch/Report/Land)",
@@ -8877,6 +8900,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "brief": "naechster Schritt: fuehre die zugewiesene Karte aus · Grenze: ihr Write-Set und Stop-Punkt",
   "founding": "naechster Schritt: uebernimm die gebundene Rolle · Grenze: ihr bestaetigter Auftrag",
   "succession": "naechster Schritt: setze die uebergebene Arbeit fort · Grenze: derselbe Auftrag und dieselbe Rolle",
+  "lane-harness": "naechster Schritt: setze die Lane-Arbeit auf dem neuen Harness fort · Grenze: derselbe Auftrag und Worktree",
   "auto": "naechster Schritt: beantworte den Check-in im laufenden Auftrag · Grenze: keine neue Befugnis",
   "steward": "naechster Schritt: pruefe den Steward-Hinweis · Grenze: deine bestehende Rolle",
   "fleet-event": "naechster Schritt: lies das Ereignis und handle in deiner Rolle · Grenze: keine neue Befugnis",
@@ -11103,15 +11127,38 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   if (!sameSuccessionOccupant(s, expected))
     return json({ error: "predecessor session changed during succession preflight — retry from the current occupant" }, 409);
 
+  // the baton is the harness-TRUE call of the shared restart: same harness, same box, same MCP
+  // profile and Remote Control as the lane it continues; only model/effort may move (handleSelfSucceed).
+  return await restartLaneSession(s, { cwd, ref, label, harness: s.harness, model: spawn.model,
+    effort: spawn.effort, box: { container: s.container, containerContext: s.containerContext },
+    browser: s.browser, remote: s.remote, hold, brief, event: "lane_succession",
+    detail: `${ref.branch} session=${session}`, succession: { successions: s.laneSuccessions + 1 },
+    answer: { session } });
+}
+
+// THE ONE LANE RESTART (card 7dacd84a + 6633fc41, 2026-10-02): a fresh session in the SAME slot, on
+// the SAME worktree and branch, holding the SAME queue rows — the half of succeedLane after its
+// preflight, pulled out so the owner's harness switch (POST /api/slots/:id/lane-harness) is not a
+// second respawn path beside it. The caller has proved the occupant and built the brief; this
+// function owns everything from the pane recycle to the founding delivery. `succession` is the one
+// switch between the two callers: a baton counts (laneSuccessions + 1, the per-row deckel, its warn
+// attention), a harness switch is no baton and leaves the count where it stood.
+interface LaneRestart {
+  cwd: string; ref: LaneRef; label: string | null;
+  harness: string | null; model: string | null; effort: string | null;
+  box: BoxPin; browser: boolean; remote: boolean;
+  hold: LaneRowHold[]; brief: string;
+  event: "lane_succession" | "lane_harness"; detail: string;
+  succession: { successions: number } | null;
+  answer: Record<string, unknown>;
+}
+async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
+  const { cwd, ref, hold, brief } = r;
   // carried across openSlot, which clears all four by design (no occupant inherits the previous
   // one's queue row) — the dispatcher restamps them the same way after its own open.
   const provenance = { taskId: s.taskId, originId: s.originId, programId: s.programId,
     releasedBy: s.releasedBy };
-  const harness = s.harness;
-  const box: BoxPin = { container: s.container, containerContext: s.containerContext };
-  const browser = s.browser; // the successor runs the same MCP profile as the lane it continues
-  const remote = s.remote; // ...and stays reachable from the Claude app if the predecessor was
-  const successions = s.laneSuccessions + 1;
+  const successions = r.succession?.successions ?? s.laneSuccessions;
   const priorOpenedAt = s.openedAt; // the predecessor occupation, read before openSlot rotates it
   // WHICH CONVERSATION LEAVES, read before openSlot clears sessionId — never guessed afterwards
   const seats: LaneSeat[] = [...s.laneSeats,
@@ -11121,7 +11168,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   laneSpawn.add(s.id);
   try {
     try {
-      await openSlot(s, cwd, ref, spawn.model, label, harness, spawn.effort, box, null, browser, null, remote);
+      await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote);
     } catch (e) {
       // The predecessor's pane is already gone at this point and its rows went back to the queue
       // with detachSlotTasks' reason, which is the recoverable state: the worktree and its commits
@@ -11147,12 +11194,12 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     for (const j of laneSuiteJobs.values())
       if (j.slot === s.id && j.slotOpenedAt === priorOpenedAt && (j.state === "open" || j.state === "claimed")) {
         j.slotOpenedAt = s.openedAt;
-        audit("lane_succession", s.id,
+        audit(r.event, s.id,
           `preview suite job ${j.id} (${j.state}) rides the baton — the successor on ${ref.branch} waits for it now`);
       }
     // the deckel counts PASSED successions only — a failed open above left the row where it was
-    const before = s.originId ? laneSucceedCounts.get(s.originId) ?? 0 : 0;
-    if (s.originId) laneSucceedCounts.set(s.originId, before + 1);
+    const before = r.succession && s.originId ? laneSucceedCounts.get(s.originId) ?? 0 : 0;
+    if (r.succession && s.originId) laneSucceedCounts.set(s.originId, before + 1);
     // ...and the rows come back exactly as they were. detachSlotTasks reads a recycle as an ABORT
     // and answers `pending` + "slot recycled before landing"; here the lane did not end, so the
     // abort's answer is the wrong one and is reversed on the same rows it was written to.
@@ -11164,7 +11211,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     saveState();
     // the soft signal, AFTER the rows are restored: its save is an await, and before the restore
     // the dispatcher would read this lane's rows as the abort's `pending`
-    if (s.originId && FLEET_LANE_SUCCEED_MAX_WARN > 0 && before === FLEET_LANE_SUCCEED_MAX_WARN)
+    if (r.succession && s.originId && FLEET_LANE_SUCCEED_MAX_WARN > 0 && before === FLEET_LANE_SUCCEED_MAX_WARN)
       await raiseSuccessionWarnAttention(s, before + 1);
 
     const openedAt = s.openedAt;
@@ -11176,7 +11223,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     // brief did not arrive is visible on the board and recoverable with one owner send; an orphan
     // is neither. Every failure below therefore reports and leaves the session standing.
     const failed = (reason: string): Response => {
-      audit("lane_succession", s.id, `${ref.branch} session=${session} brief-undelivered: ${reason}`);
+      audit(r.event, s.id, `${r.detail} brief-undelivered: ${reason}`);
       return json({ error: `successor stands on ${ref.branch} but its founding brief was not delivered (${reason}) — send it by hand`,
         slot: s.id, successions, delivered: false }, 500);
     };
@@ -11188,7 +11235,9 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     if (!readiness.ok) return failed(readiness.reason);
     if (!stillCurrent()) return failed("successor slot changed before founding delivery");
     try {
-      await sendText(s, brief, true, { path: "succession" });
+      // two literal channels, one per caller: the send ledger names every path at its call (pins)
+      if (r.succession) await sendText(s, brief, true, { path: "succession" });
+      else await sendText(s, brief, true, { path: "lane-harness" });
     } catch (e) {
       return failed(e instanceof Error ? e.message : String(e));
     }
@@ -11196,13 +11245,99 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
     s.history = [...s.history, { text: brief, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(s);
     logPrompt(s, brief, "auto", now);
-    audit("lane_succession", s.id, `${ref.branch} session=${session} successions=${successions}`);
+    audit(r.event, s.id, `${r.detail} successions=${successions}`);
     await saveStateNow();
     return json({ ok: true, slot: s.id, label: s.label, branch: ref.branch,
-      successions, session, delivered: true });
+      successions, ...r.answer, delivered: true });
   } finally {
     laneSpawn.delete(s.id);
   }
+}
+
+// THE OWNER'S HARNESS SWITCH ON A LIVE LANE (owner 2026-09-25, while two pi-zai lanes hung on
+// 429/1308: „[Zitat entfernt]“). Not a baton — the lane's own staffel stays harness-true — but the same
+// restart: restartLaneSession with the owner's {harness, model, effort}. Unlike the baton it takes a
+// DIRTY tree on purpose: the reason to switch is an executor that stopped mid-work, and what it left
+// uncommitted stays byte for byte where it is (openSlot never touches the tree), named in the brief.
+function buildLaneHarnessBrief(facts: { branch: string; base: string; from: string; to: string;
+  taskId: string | null; rows: readonly Task[]; head: string; log: string; status: string[];
+  footer: string }): string {
+  return [
+    `[fleet harness-wechsel] Du setzt DIESE Lane fort — gleicher Worktree, gleicher Branch (${facts.branch}), gleicher Slot, gleiche Queue-Zeile(n).`,
+    `Der Owner hat den Ausführer gewechselt: ${facts.from} → ${facts.to}. Die vorige Session ist beendet; ihre Arbeit steht unter dir, committet UND uncommittet.`,
+    `Task-Id: ${facts.taskId ?? "(keine — diese Lane hält keine gebundene Queue-Zeile)"} · HEAD: ${facts.head}`,
+    "Lies zuerst den Auftrag, dann den git-Stand, dann arbeite weiter, wo er aufhört.",
+    "",
+    memoryPointer("lane"),
+    "",
+    "--- DER AUFTRAG (unverändert, im Wortlaut)",
+    laneSuccessionRowLines(facts.rows),
+    "",
+    `--- WAS SCHON DRIN IST (git log --oneline ${facts.base}..HEAD)`,
+    facts.log || "(noch kein Commit auf diesem Branch)",
+    "",
+    "--- DER BAUM JETZT (git status --porcelain)",
+    facts.status.length
+      ? `${facts.status.join("\n")}\n(uncommittet und unverändert von der vorigen Session — prüfe es, bevor du darauf baust)`
+      : "(sauber)",
+  ].join("\n") + facts.footer;
+}
+const spawnName = (harness: string | null, model: string | null, effort: string | null): string =>
+  `${harnessOf(harness).id}/${model ?? "default"}${effort ? `/${effort}` : ""}`;
+
+async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
+  if (!s.cwd) return json({ error: "slot not active" }, 400);
+  if (!s.worktree) return json({ error: "not a lane — a harness switch keeps a worktree, and this slot has none (open a session with the harness you want instead)" }, 409);
+  const body = await readJson(req);
+  if (!body || body.harness === undefined)
+    return json({ error: "expected { harness, model?, effort? }" }, 400);
+  // harness FIRST — it is what the model and the effort are judged by (same order as open)
+  const ho = harnessIdOf(body);
+  if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+  const hh = harnessOf(ho.harness);
+  if (!hh.allowsLanes) return json({ error: `harness ${hh.id} is main-session only — it cannot carry a lane` }, 400);
+  const mo = modelOf(body, hh);
+  if (!mo.ok) return json({ error: mo.error }, 400);
+  const eo = effortOf(body, hh);
+  if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+  const bo = boxOf(body, hh);
+  if (!bo.ok) return json({ error: bo.why }, 400);
+  // the same reservations the baton honours: a merge/land owns this tree, and a restart already in
+  // flight (a baton, a dispatch) owns this slot — recycling under either orphans its job.
+  if (mergeInflight.has(s.id))
+    return json({ error: "a merge is running on this lane — switch the harness after it settles" }, 409);
+  if (laneSpawn.has(s.id) || successionInflight.has(s.selfToken))
+    return json({ error: "a session restart is already running on this lane — retry after it settles" }, 409);
+  const ref = s.worktree;
+  const expected: SuccessionPredecessorIdentity = { slot: s.id, openedAt: s.openedAt, cwd: s.cwd, selfToken: s.selfToken };
+  const from = spawnName(s.harness, s.model, s.effort);
+  const to = spawnName(ho.harness, mo.model, eo.effort);
+  // the continuation's facts, read from the tree BEFORE the pane is recycled
+  const base = ref.base ?? await integrationBranch(ref.repo) ?? "main";
+  const headRead = await gitRead(expected.cwd, "rev-parse", "HEAD");
+  const logRead = await gitRead(expected.cwd, "log", "--oneline", `${base}..HEAD`);
+  const status = await statusLines(expected.cwd);
+  const log = (logRead.code === 0 ? logRead.out : "(git log konnte nicht gelesen werden)")
+    .split("\n").slice(0, LANE_SUCCESSION_LOG_LINES).join("\n").slice(0, LANE_SUCCESSION_LOG_CHARS);
+  const statusShown = status.code === 0
+    ? status.lines.slice(0, LANE_SUCCESSION_STATUS_SHOWN).concat(status.lines.length > LANE_SUCCESSION_STATUS_SHOWN
+      ? [`(… ${status.lines.length - LANE_SUCCESSION_STATUS_SHOWN} weitere)`] : [])
+    : ["(git status konnte nicht gelesen werden — prüfe den Baum selbst)"];
+  if (!sameSuccessionOccupant(s, expected) || mergeInflight.has(s.id) || laneSpawn.has(s.id))
+    return json({ error: "the lane's session changed while the switch was prepared — retry from the current occupant" }, 409);
+  const hold: LaneRowHold[] = waveRowsOf(s.id).map((task) => ({ task, note: task.note }));
+  const brief = buildLaneHarnessBrief({ branch: ref.branch, base, from, to, taskId: s.taskId,
+    rows: hold.map((h) => h.task), head: headRead.code === 0 ? headRead.out : "(unbekannt)", log,
+    status: statusShown, footer: laneExitFooter(ho.harness, selfPosition(s).receiver) });
+  // the lane's MCP profile and Remote Control ride along only where the NEW harness can carry them
+  // (browserOf/remoteOf refuse them elsewhere); a box rides along only into a harness that has one
+  return await restartLaneSession(s, { cwd: expected.cwd, ref, label: s.label, harness: ho.harness,
+    model: mo.model, effort: eo.effort,
+    box: bo.box !== NO_BOX ? bo.box : hh.supports.container ? { container: s.container, containerContext: s.containerContext } : NO_BOX,
+    browser: s.browser && hh.browserProfile === "apply", remote: s.remote && hh.id === CLAUDE_HARNESS.id,
+    hold, brief, event: "lane_harness", detail: `${ref.branch} ${from} -> ${to} task=${s.taskId ?? "-"} `
+      + `uncommitted=${status.code === 0 ? status.lines.length : "unknown"}`,
+    succession: null, answer: { harness: hh.id, model: mo.model, effort: eo.effort } });
 }
 
 async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
@@ -11236,7 +11371,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     // by the adapter that will actually read it. A present null/"" clears, same as the owner route.
     const hh = harnessOf(s.harness);
     const mo = modelOf(body, hh);
-    if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+    if (!mo.ok) return json({ error: mo.error }, 400);
     const eo = effortOf(body, hh);
     if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
     const spawn: SuccessionSpawn = {
@@ -35163,7 +35298,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
   if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
   const hh = harnessOf(ho.harness);
   const mo = modelOf(body, hh);
-  if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+  if (!mo.ok) return json({ error: mo.error }, 400);
   const eo = effortOf(body, hh);
   if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
   if (typeof body.cwd !== "string" || !body.cwd.trim()) return json({ error: "cwd is required" }, 400);
@@ -42461,7 +42596,7 @@ Bun.serve<WSData>({
       if (!laneH.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
       const laneHarness = harnessOf(laneH.harness);
       const laneModel = modelOf(body, laneHarness);
-      if (!laneModel.ok) return json({ error: modelErrFor(laneHarness) }, 400);
+      if (!laneModel.ok) return json({ error: laneModel.error }, 400);
       const laneEffort = effortOf(body, laneHarness);
       if (!laneEffort.ok) return json({ error: effortErrFor(laneHarness) }, 400);
       const laneBrowser = browserOf(body, laneHarness);
@@ -43938,7 +44073,7 @@ Bun.serve<WSData>({
       const wHarnessId = wNames("harness") ? wh.harness : wRowSpawn.harness;
       const wHarness = harnessOf(wHarnessId);
       const wModel = modelOf(wNames("model") ? wBody : { model: wRowSpawn.model }, wHarness);
-      if (!wModel.ok) return json({ error: modelErrFor(wHarness) }, 400);
+      if (!wModel.ok) return json({ error: wModel.error }, 400);
       const wEffort = effortOf(wNames("effort") ? wBody : { effort: wRowSpawn.effort }, wHarness);
       if (!wEffort.ok) return json({ error: effortErrFor(wHarness) }, 400);
       const wBrowser = browserOf(wBody?.browser !== undefined ? wBody : { browser: wRowSpawn.browser }, wHarness);
@@ -44023,7 +44158,7 @@ Bun.serve<WSData>({
       const dHarnessId = dNames("harness") ? dh.harness : dRowSpawn.harness;
       const dHarness = harnessOf(dHarnessId);
       const dModel = modelOf(dNames("model") ? dBody : { model: dRowSpawn.model }, dHarness);
-      if (!dModel.ok) return json({ error: modelErrFor(dHarness) }, 400);
+      if (!dModel.ok) return json({ error: dModel.error }, 400);
       const dEffort = effortOf(dNames("effort") ? dBody : { effort: dRowSpawn.effort }, dHarness);
       if (!dEffort.ok) return json({ error: effortErrFor(dHarness) }, 400);
       // the browser profile falls back the same way: a body boolean wins, else the row's own choice
@@ -44567,7 +44702,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|remote|model|share|unshare|land|shelve|restart|sleep|wake)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|remote|model|lane-harness|share|unshare|land|shelve|restart|sleep|wake)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -44623,7 +44758,7 @@ Bun.serve<WSData>({
           return json({ error: "expected { model?, effort? }" }, 400);
         const hh = harnessOf(s.harness);
         const mo = modelOf(body, hh);
-        if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+        if (!mo.ok) return json({ error: mo.error }, 400);
         const eo = effortOf(body, hh);
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
         if (body.model !== undefined) s.model = mo.model;
@@ -44681,6 +44816,10 @@ Bun.serve<WSData>({
         return json({ ok: true, remote: s.remote, effective: "next spawn",
           ...(s.remote ? { name: remoteControlName(s.label, s.cwd, s.id) } : {}) });
       }
+      // the owner moves a LIVE lane to another harness/model, keeping its worktree, branch, slot and
+      // rows (switchLaneHarness). Owner-only by the gate above, like model/remote: a lane choosing
+      // its own executor would be a session widening its own grant.
+      if (slotMatch[2] === "lane-harness") return await switchLaneHarness(s, req);
       if (slotMatch[2] === "open") {
         const body = await readJson(req);
         if (!body) return json({ error: "expected application/json" }, 400);
@@ -44689,7 +44828,7 @@ Bun.serve<WSData>({
         if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
         const hh = harnessOf(ho.harness);
         const mo = modelOf(body, hh);
-        if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+        if (!mo.ok) return json({ error: mo.error }, 400);
         const eo = effortOf(body, hh);
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
         const bo = boxOf(body, hh);
@@ -44753,7 +44892,7 @@ Bun.serve<WSData>({
         if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
         const hh = harnessOf(ho.harness);
         const mo = modelOf(body, hh);
-        if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+        if (!mo.ok) return json({ error: mo.error }, 400);
         const eo = effortOf(body, hh);
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
         const bo = boxOf(body, hh);

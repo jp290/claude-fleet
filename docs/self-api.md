@@ -376,7 +376,7 @@ Akt beendet oder neu gestartet wird: 409, nichts wird wieder geöffnet. `carry` 
 begrenzt; es ist ein unpersistierter Prompt-Satz, kein Transfer. **`model` und `effort` sind optional (seit 2026-09-02):**
 abwesend = wörtliche Vererbung aus dem Datensatz der Vorgängerin; vorhanden = der Nachfolger wird darauf
 geöffnet, validiert exakt wie `open`/`dispatch` gegen die geerbte Harness (`MODEL_RE` bzw.
-`HARNESS_MODEL_RE`, Effort aus `effortLevels` des Adapters), ungültig = 400 und KEIN Slot geöffnet;
+`HARNESS_MODEL_RE`, dazu das Register — §model —, Effort aus `effortLevels` des Adapters), ungültig = 400 und KEIN Slot geöffnet;
 ein vorhandenes `null`/`""` löscht (Modell → Fleet-Default, Effort → kein Flag). Die Harness selbst ist
 nicht überschreibbar. Gilt für beide MAIN-Nachfolge-Pfade (generisch, Program-MAIN). Der Anlass:
 eine MAIN, die per `/model` in der Pane gewechselt hat, bekam ihren Nachfolger auf dem Spawn-Wert des
@@ -4310,6 +4310,16 @@ curl -X POST http://<fleet-host>:<port>/api/slots/<id>/model \
   `effortLevels` des Adapters (codex etwa `low…ultra`, Adapter ohne Effort-Begriff lehnen jeden Wert ab).
   Ungültig = 400, Datensatz unverändert. Das `[1m]`-Suffix bleibt in der Spawn-Zeile single-quoted
   (`agentCmd`), die Route weitet nichts auf.
+- **Register-Prüfung (seit 2026-10-02, Befund `6633fc41`):** nach dem Zeichensatz fragt
+  `server.ts#modelOf` `model-register.ts`: Führt das Register den Namen unter einer ANDEREN Harness und
+  nicht in `modelsForHarness(<Ziel-Harness>)`, ist es 400 `bad model (<name> is registered for harness
+  <a>, not for harness <b> — harness <b> takes one of: …)`. Anlass: Slot 7 stand nach einer Nachfolge als
+  `harness=codex, model=claude-opus-5-5[1m]`; `HARNESS_MODEL_RE` ließ den Namen durch, der Anbieter
+  antwortete 400. Nur ein BEKANNTER Fehlgriff wird abgelehnt: ein Name, den das Register gar nicht kennt
+  (lokaler `--oss`-Tag, Prüfmodell), bleibt beim Zeichensatz, und eine Harness ohne Register-Einträge
+  (`pi`, `pi-ox`, `container`) wird nicht beurteilt. Dieselbe Prüfung gilt an jeder Tür, die `modelOf`
+  fragt: `open`, `open-worktree`, `/api/lanes`, `model`, `dispatch`, Task-Spawn, `POST /api/self/succeed`
+  und `lane-harness` (§lane-harness).
 - Antwort `{ok, model, effort, modelPushedAt?}`; persistiert (`saveState`), Trail-Zeile `slot_model` mit dem
   resultierenden Paar. `GET /api/sessions` (Effort weggelassen, wenn null) und `GET /api/steward/sessions`
   (seit 2026-09-02 mit `effort`) zeigen den neuen Stand sofort. Ein erfolgreicher Push stempelt
@@ -4322,6 +4332,44 @@ curl -X POST http://<fleet-host>:<port>/api/slots/<id>/model \
   nie als `null`; der Sensor ist prozesslokal und ändert den gespeicherten Datensatz nicht. Beweis der
   Spawn-Hälfte bleibt `./e2e-claude-gate.sh` (Rewrite, dann `↻ restart`, Spawn-Zeile trägt
   `--model '<neu>'` und `--effort '<neu>'`, gleicher `--resume`-Pin).
+
+## lane-harness — `POST /api/slots/:id/lane-harness` (OWNER-Route, nicht `/api/self/*`)
+
+Stellt eine LEBENDE Lane auf eine andere Harness/ein anderes Modell um und behält ihren Worktree
+(Owner 2026-09-25, als zwei pi-zai-Lanes an 429/1308 hingen: „[Zitat entfernt]“). Die Pane der Lane
+endet, eine neue Session des Ziel-Harness startet im SELBEN Worktree auf demselben Branch.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/slots/<id>/lane-harness \
+  -H "authorization: Bearer $FLEET_TOKEN" -H "content-type: application/json" \
+  -d '{"harness":"codex","model":"gpt-6.1-sol","effort":"high"}'
+```
+
+- Body `{harness, model?, effort?, container?, containerContext?}`; `harness` ist Pflicht (400
+  `expected { harness, model?, effort? }`), Validierung in der Reihenfolge von `open`: unbekannte
+  Harness → 400 `unknown harness`, eine Harness ohne Lanes (`pi-unfenced`) → 400, Modell gegen
+  Zeichensatz UND Register des Ziel-Harness (§model) → 400 mit Harness-Namen, Effort aus dessen
+  `effortLevels` → 400.
+- 409 `not a lane` für einen Slot ohne Worktree; 409, solange auf der Lane ein Merge/Land läuft
+  (`mergeInflight`) oder schon ein Neustart (Staffelstab, Dispatch) den Slot hält; 409, wenn die Session
+  während der Vorbereitung wechselt. Inaktiver Slot → 400. Owner-only: Self-Token 401, Steward-Token 403.
+- **Was bleibt:** Slot-Id, `worktree`, Branch, Task-Bindung (`taskId`/`originId`/`programId`/
+  `releasedBy`), die gehaltenen Queue-Zeilen (`sent` auf diesem Slot), `laneSuccessions` und die Sitze
+  (`laneSeats`), ein offenes oder geclaimtes Suite-Angebot. **Uncommittete Dateien bleiben
+  byte-gleich** — anders als der Staffelstab verlangt der Wechsel KEINEN sauberen Baum, weil sein Anlass
+  ein Ausführer ist, der mitten in der Arbeit stehen blieb. Browser-Profil und Remote Control fahren nur
+  mit, wo der neue Harness sie trägt.
+- **Was neu ist:** Session, `openedAt`, Self-Token (das alte antwortet 401), `harness`/`model`/`effort`.
+- Der Fortsetzungsbrief (`server.ts#buildLaneHarnessBrief`, Kopfzeile `path=lane-harness`) nennt den
+  Wechsel `alt → neu`, die Task-Id, `HEAD`, `git log <base>..HEAD`, `git status --porcelain` und den
+  Auftrag im Wortlaut, darunter den Lane-Ausgang des NEUEN Harness.
+- Antwort `{ok, slot, label, branch, successions, harness, model, effort, delivered: true}`; ein Brief, der
+  nicht zugestellt wurde, ist 500 mit `delivered:false` — die Session steht dann, der Brief geht von Hand.
+- Genau EINE Audit-Zeile `lane_harness`: `<branch> <alt> -> <neu> task=<id> uncommitted=<n> successions=<n>`
+  (bzw. `… brief-undelivered: <grund>`).
+- Kein zweiter Respawn-Pfad: der Neustart ist `server.ts#restartLaneSession`, dieselbe Funktion, die
+  `server.ts#succeedLane` harness-treu ruft. Der Staffelstab zählt (`laneSuccessions + 1`, Deckel), der
+  Wechsel nicht — er ist keine Übergabe der Lane an sich selbst, sondern ein Owner-Akt.
 
 ## dispatch — `POST /api/tasks/:id/dispatch` (OWNER-Route, nicht `/api/self/*`)
 

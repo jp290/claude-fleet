@@ -369,6 +369,19 @@ export async function run(ctx: Ctx): Promise<void> {
         && stateFile().laneSucceedCounts?.[truthTaskId] === 4,
       JSON.stringify(stateFile().slots?.[String(truthSlot)] ?? {}).slice(0, 200));
 
+    // THE REGISTER, BEFORE ANY TICKET (6633fc41): a successor of this CODEX lane asked onto a claude
+    // model is the 2026-09-26 shape — Slot 7 stood as harness=codex, model=claude-opus-5-5[1m] and the
+    // provider answered 400. HARNESS_MODEL_RE admits the name; model-register.ts files it under claude,
+    // so the door refuses it naming the harness, and nothing is spawned.
+    const truthOpenedBefore = stateFile().slots?.[String(truthSlot)]?.openedAt;
+    const wrongHarnessModel = await laneSelfPost(truthTok, "/api/self/succeed", { model: "claude-opus-5-5[1m]" });
+    const wrongHarnessText = await wrongHarnessModel.text();
+    check("baton truth: a claude model for a codex lane's successor is 400 naming harness codex, and nothing spawned",
+      wrongHarnessModel.status === 400 && wrongHarnessText.includes("bad model")
+        && wrongHarnessText.includes("not for harness codex")
+        && stateFile().slots?.[String(truthSlot)]?.openedAt === truthOpenedBefore,
+      `${wrongHarnessModel.status} ${wrongHarnessText.slice(0, 240)}`);
+
     // THE TICKET GATE, both halves (verdict (a)): no report yet, then a newest `complete`.
     const noReportYet = await laneSelfPost(truthTok, "/api/self/succeed", {});
     check("baton truth: a clean lane with no report is refused 409 — the handoff report is the ticket",

@@ -41,7 +41,7 @@
     "useWhen": "Bevor du als Orchestratorin oder MAIN Watches armierst oder ueber eine Nachfolge entscheidest.",
     "scope": "repo-contract",
     "audience": "maintainer",
-    "triggers": ["task-queue"],
+    "triggers": ["orchestration"],
     "hardness": "guidance",
     "sources": [
       { "path": "docs/controller.md", "anchor": "## Zwei Eigenarten, die eine Orchestratorin bezahlt hat (gemessen 2026-10-02)" }

@@ -10,7 +10,7 @@ import { KONZEPT_ID_RE } from "../konzept-ledger";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, observedSourceHash, planRepoContext,
   readContextManifest, stampObservedSourceHashes } from "../context-manifest";
 import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_CONTEXT_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
@@ -640,6 +640,8 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
 
   privatePackChecks(check);
 
+  orchestrationTriggerChecks(check);
+
   if (!externalCheck) {
     console.log(rows.join("\n"));
     console.log(failures ? `\n${failures} FAILURES` : "\nALL PASS");
@@ -765,6 +767,49 @@ function privatePackChecks(check: ContextPlanCheck): void {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+// --- THE ORCHESTRATION TRIGGER (owner decision 2026-10-02 after MAIN clarification). A new trigger
+// name exists so the Fleet manifest's orchestrator-eigenarten reaches founding sessions through
+// server.ts#BOOTSTRAP_CONTEXT_TRIGGERS without putting the hard seed pack task-queue on the same
+// brief. These probes plan the REAL tracked manifest, not a synthetic pack: a synthetic one would
+// stay green while the manifest regressed to a dormant trigger, and the DORMANT pin would not
+// notice (a pack whose triggers are all dormant is never stranded). Facts mirror server.ts
+// (#BOOTSTRAP_CONTEXT_TRIGGERS + FLEET_CONTROL_CONTEXT_CAPABILITIES vs #DISPATCH_CONTEXT_*).
+function orchestrationTriggerChecks(check: ContextPlanCheck): void {
+  const root = resolve(import.meta.dir, "..");
+  const manifest = readContextManifest(readFileSync(join(root, ".fleet/context-packs.json"), "utf8"));
+  const paths = manifest.kind === "packs" ? [...manifest.referencedPaths] : [];
+  const repo = {
+    trackedPaths: new Set(paths),
+    sourceBytes: new Map(paths.map((path) => [path, readFileSync(join(root, path), "utf8")])),
+  };
+  const bootstrapFacts = {
+    harness: "claude", mode: "mutating" as const,
+    triggers: ["always", "verification", "orchestration"] as const,
+    capabilities: ["tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect", "task-queue-read",
+      "harness-adapter-read", "private-overlay-read", "deploy-observe"] as ContextPackCapability[],
+  };
+  const lanePlan = planRepoContext({ manifest, repo, facts: { ...bootstrapFacts,
+    triggers: ["always", "verification", "jev-use"] as const,
+    capabilities: ["tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect",
+      "harness-adapter-read", "private-overlay-read"] as ContextPackCapability[] } });
+  check("orchestration trigger: the lane/dispatch plan does NOT carry orchestrator-eigenarten",
+    !lanePlan.selected.some((pack) => pack.id === "orchestrator-eigenarten")
+      && lanePlan.omitted.some((pack) => pack.id === "orchestrator-eigenarten" && pack.why === "trigger-not-matched"),
+    JSON.stringify({ selected: lanePlan.selected.map((pack) => pack.id),
+      why: lanePlan.omitted.find((pack) => pack.id === "orchestrator-eigenarten") }));
+  const mainPlan = planRepoContext({ manifest, repo, facts: bootstrapFacts });
+  check("orchestration trigger: the bootstrap plan of a MAIN or Orchestratorin founding carries orchestrator-eigenarten",
+    mainPlan.selected.some((pack) => pack.id === "orchestrator-eigenarten"),
+    `${manifest.kind} ${JSON.stringify(mainPlan.selected.map((pack) => pack.id))}`);
+  const seedPlan = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating",
+    triggers: [...bootstrapFacts.triggers], capabilities: bootstrapFacts.capabilities });
+  check("orchestration trigger: the bootstrap plan does NOT select the seed pack task-queue — that trigger stays dormant",
+    !seedPlan.selected.some((pack) => pack.id === "task-queue")
+      && seedPlan.omitted.some((pack) => pack.id === "task-queue" && pack.why === "trigger-not-matched"),
+    JSON.stringify({ selected: seedPlan.selected.map((pack) => pack.id),
+      taskQueue: seedPlan.omitted.find((pack) => pack.id === "task-queue") }));
 }
 
 if (import.meta.main) await run();

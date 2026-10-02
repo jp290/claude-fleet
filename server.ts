@@ -33622,7 +33622,7 @@ const PROGRAM_CONTENT_KEYS: (keyof ProgramContent)[] = ["title", "intent", "succ
   "nonGoals", "decisions", "evidence", "openQuestions", "promotionRequest"];
 
 const BOOTSTRAP_CONTEXT_MODE: ContextPackMode = "mutating"; // Program-MAIN is founded to act on the owner's confirmed Program.
-const BOOTSTRAP_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification"]; // The founding contract promises grounding + proof, not a land/deploy act.
+const BOOTSTRAP_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification", "orchestration"]; // Grounding + proof + orchestration guidance at a founding (Owner-Entscheid 2026-10-02); `task-queue` stays dormant so the hard seed pack of that name never rides along.
 // These are Fleet-control capabilities only. A target repository gets a smaller honest capability
 // set and, independently, omits every Fleet-owned pack because those source pointers are absent.
 const FLEET_CONTROL_CONTEXT_CAPABILITIES: readonly ContextPackCapability[] = [

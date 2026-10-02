@@ -1668,9 +1668,24 @@ export async function run(ctx: Ctx): Promise<void> {
         `${JSON.stringify(ln)} rename=${lnName?.status} row=${JSON.stringify(lnRow)}`);
       if (ln.slot && ln.cwd) {
         const auditFrom = (await Bun.file(`${ROOT}/audit.jsonl`).text()).length;
-        const auditSince = async (): Promise<{ event: string; slot?: number; detail?: string; path?: string }[]> =>
+        type Row = { event: string; slot?: number; detail?: string; path?: string; paths?: string; count?: number };
+        const auditSince = async (): Promise<Row[]> =>
           (await Bun.file(`${ROOT}/audit.jsonl`).text()).slice(auditFrom).trim().split("\n").filter(Boolean)
-            .map((l) => JSON.parse(l) as { event: string; slot?: number; detail?: string; path?: string });
+            .map((l) => JSON.parse(l) as Row);
+        // the nudge is TYPED into `slot` in one of two shapes, both a real paste with its send row:
+        // alone (the send row keeps path inbox-nudge), or merged with a "sofort" send that met the
+        // waiting bundle (flushDeliveryBundle(key, immediate): one paste, send row path "bundle",
+        // the nudge named in delivery_bundle_sent.paths). The full shard hits the second shape:
+        // report-orphan hints from earlier modules' Program reports go to the Orchestratorin every
+        // tick (post-land audits on cb108971 and 0ef933f6, workhorse shard 2). A sent row with no
+        // send row before it on the same slot counts as nothing.
+        const nudgeTyped = (rows: Row[], slot: number): boolean => rows.some((r, i) => {
+          if (r.event === "send" && r.slot === slot && r.path === "inbox-nudge") return true;
+          if (r.event !== "delivery_bundle_sent" || r.slot !== slot
+            || !(r.paths ?? "").split(",").includes("inbox-nudge") || (r.count ?? 0) < 2) return false;
+          const typed = rows.slice(0, i).reverse().find((x) => x.event === "send" && x.slot === slot);
+          return typed?.path === "bundle";
+        });
         const oneView = await selfMessages("GET");
         const oneBody = (await oneView.json()) as { addresses?: { kind: string; role?: string }[]; error?: string };
         const sentMsg = await selfMessages("POST", { to: { kind: "role", role: "orchestrator" },
@@ -1682,16 +1697,18 @@ export async function run(ctx: Ctx): Promise<void> {
             && sentMsg.ok && sentBody.holder?.slot === roleA && sentBody.escalatedTo === null,
           `view=${oneView.status} ${JSON.stringify(oneBody.addresses ?? oneBody.error)} send=${sentMsg.status} ${JSON.stringify(sentBody)}`);
         // before the fix: delivery_bundle_dropped "orchestrator no current role occupant" after 30 s
-        const nudged = await until(async () => (await auditSince()).find((r) =>
-          r.event === "send" && r.slot === roleA && r.path === "inbox-nudge") ?? null,
+        const nudged = await until(async () => nudgeTyped(await auditSince(), roleA) || null,
         { timeoutMs: 20_000, what: "the role-addressed inbox-nudge reaches the Orchestratorin" }).catch(() => null);
         const rows = await auditSince();
         check("the role-addressed bundle is typed into the Orchestratorin, never into the lane, nothing dropped",
           !!nudged && rows.some((r) => r.event === "delivery_bundle_queued" && r.detail?.startsWith("orchestrator ") === true)
             && !rows.some((r) => r.event === "delivery_bundle_dropped" && r.detail?.startsWith("orchestrator ") === true)
-            && !rows.some((r) => r.event === "send" && r.slot === ln.slot && r.path === "inbox-nudge"),
-          JSON.stringify(rows.filter((r) => r.event.startsWith("delivery_bundle") || r.path === "inbox-nudge")
-            .map((r) => [r.event, r.slot, r.detail])));
+            && !nudgeTyped(rows, ln.slot)
+            && !rows.some((r) => r.event.startsWith("delivery_bundle") && r.slot === ln.slot
+              && r.detail?.startsWith("orchestrator ") === true),
+          JSON.stringify(rows.filter((r) => r.event.startsWith("delivery_bundle") || r.path === "inbox-nudge"
+            || (r.event === "send" && r.path === "bundle"))
+            .map((r) => [r.event, r.slot, r.detail, r.paths ?? r.path])));
         await post(`/api/slots/${ln.slot}/kill`, {});
         if (existsSync(ln.cwd)) rmSync(ln.cwd, { recursive: true, force: true });
         spawnSync("git", ["worktree", "prune"], { cwd: laneRepo });

@@ -97,6 +97,62 @@ Rechnung. Er ist kein Urteil: ob der Lauf geschuldet ist, sagt `isolatedPreview`
 (auch in jedem Fremdrepo, `steps: []`) und mit `localProof: null`. Ein eingeengter Body braucht
 `helper.takesModules`, sonst antwortet die Tür `offer: null` (§suite-offer).
 
+## Operative gehaltene Sicht — `GET /api/operational-view`
+
+Ein Owner-GET hinter der bestehenden Owner-Auth, auch für die Orchestratorin mit ihrer
+Owner-Credential. Ein Orchestrator-Label oder Self-Token erteilt kein neues Recht.
+Lane-, Share-, fehlende und falsche Credentials werden vor dem Datenzugriff abgewiesen;
+auf einem Share-Host existiert die Route nicht. Projektgrants und Portfolio-Memory bleiben
+separat: diese Sicht liest keine Memorytabellen und liefert keine Memoryinhalte.
+
+`schema: "fleet.operational-view/v1"`, `scope: "owner-metadata"`, `bootEpoch`, `computedAt`,
+`revision` (berechneter Stand), `observedRevision`, `freshness: "fresh" | "unknown"`,
+`pending`, `inflight`, `failed` und `sources` unterscheiden Boot, Beobachtung und Berechnung.
+Je Quelle (`queue`, `bindings`, `addresses`, `git`, `gateAudit`) stehen Revision,
+`computedRevision`, `observedAt`, `cadenceMs`, `ageMs`, `basis` und
+`state: fresh | pending | failed | stale | unknown`. Revisionen sind Hashes der Quellenstände,
+keine geschätzten Zeitmessungen. `unknown` nennt betroffene Quellen und Gründe.
+
+Die Erneuerung hängt an `saveState`/`saveStateNow`, dem Abschluss von `tickGit` und einem
+Beobachter im bestehenden `AUTOS_TICK_MS`-Takt. Bursts werden über eine Microtask gebündelt;
+während eines Produzenten läuft höchstens eine nachfolgende Erneuerung. Unveränderte Revisionen
+erneuern nur die Quellenbeobachtung, ohne neue Folds, Git- oder Ledgerarbeit. Externe Ref- und
+Ledgeränderungen werden im Hintergrund an Dateistempeln erkannt. Git-Beobachtung stammt
+ausschließlich aus dem abgeschlossenen bestehenden Git-Tick (`GIT_TICK_MS`); die Revision
+enthält auch den beobachteten Occupant. Ein GET beobachtet keine Quelle und rechnet nichts nach.
+
+Frisch bedeutet: Berechnung passt zur beobachteten Revision, kein Refresh wartet/läuft/ist
+fehlgeschlagen, und jede Quellenbeobachtung ist jünger als ihr benannter Takt. Genau am
+Taktalter ist die Quelle `stale`; ein verpasster Tick kann alten Stand daher nicht frisch nennen.
+Boot, fehlende Ledgerquelle und gescheiterte Erneuerung bleiben ausdrücklich `unknown`.
+Der alte berechnete Stand darf als solcher lesbar bleiben; `data.startable` ist dabei leer.
+`snapshot.ts` bleibt der tatsächliche Berechnungszeitpunkt: beispielsweise `idleS` wird nicht
+bei jedem GET hochgezählt und als neue Messung verkauft. Beobachtetes Output wechselt die
+Quellenrevision; unveränderte Quellenbeobachtung ist keine neue Snapshot-Messung.
+
+`data` hält die unveränderte Metadatenform von `buildStateSnapshot`, Queue-IDs/Status/Program/Hold/
+`after`, Program-Bindungen, Nachrichten-IDs mit Lesestatus und aufgelöstem Occupant, Auditstände,
+`exceptions` mit IDs/benannten Gründen und vom vorhandenen Startplan bereits autorisierte
+`startable`-IDs mit `by: release | policy`. Bindungen ohne passende `openedAt` **und**
+`sessionId` sind `unknown`, nie die heutige Besetzung einer recycelten Slotnummer.
+Es gibt keine Nachrichten-, Brief-, Hold- oder freien Fehlertexte und keine Credentials.
+Ein fehlender Ledger oder roter/unbekannter Audit nennt seine offene Grenze.
+
+Diese Sicht ist kein Ledger und keine Policy. Start-, Reverse-, Land- und Deploytüren prüfen
+ihre Quellen weiterhin selbst; keine Handlung liest cached readiness.
+Wire/Server/CLI/Docs/Probes: apply; Browser-UI: not-applicable.
+
+`./state.sh --brief` und `./register.sh --brief` lesen direkt diese Route, höchstens 40 Zeilen.
+Beide verwenden `FLEET_CTL_URL`, sonst `FLEET_SELF_URL`, sonst
+`FLEET_HOST`/`FLEET_PORT` (Default `127.0.0.1:8790`);
+die Owner-Credential kommt aus `FLEET_CTL_TOKEN`, sonst `FLEET_TOKEN` und bleibt im
+Interpreter, niemals im argv oder Output. Fehlende Credential, unerreichbare Quelle oder
+ein alter Server/ein anderes Schema ergeben `unknown`, ohne Vollfallback.
+Die Kurzformen nennen Schema, Scope, Revisionen, Frische, IDs, Gründe und ausgelassene Zeilen.
+`--full` ruft die volle Diagnose ausdrücklich auf; Standard, `--since` und `--archived`
+behalten ihre bisherige Bedeutung. Die Kurzsicht hat keine Vollausgabe-Bytezählung mehr:
+ihre Kostenprobe misst tatsächliche Fixture-Arbeit und Bytes separat.
+
 ## autos delete — `DELETE /api/self/autos/:id`
 
 Die Session löscht ausschließlich ein Auto ihres eigenen Slots; der Slot wird aus dem lebendigen

@@ -16,6 +16,7 @@ import { LOCAL_PROOF_STEPS } from "../verify-proportion";
 import { classify as laneModelClass } from "../lane-context-cost";
 import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations, symbolGraphStamp,
   type SymbolIndex, type TaskCluster } from "../task-metadata";
+import { surfaceSha, clusterForFiles } from "../task-metadata";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
@@ -152,6 +153,248 @@ export async function run(ctx: Ctx): Promise<void> {
   } catch (e) { taskClientReadError = e instanceof Error ? e.message : String(e); }
   check("task workbench precondition: client source, server source and page CSS are readable",
     taskClientSource.length > 0 && taskServerSource.length > 0 && taskPageSource.length > 0, taskClientReadError);
+  // Execute the held view and the existing producer functions. Only the disk/ledger/git and
+  // role-address boundaries are fixture adapters; the queue, metadata and start-plan folds run.
+  {
+    const cut = (a: string, b: string): string => {
+      const start = taskServerSource.indexOf(a), end = taskServerSource.indexOf(b, start + a.length);
+      if (start < 0 || end <= start) throw new Error(`operational fixture cannot find ${a} -> ${b}`);
+      return taskServerSource.slice(start, end);
+    };
+    const fn = (name: string): string => {
+      const start = taskServerSource.search(new RegExp(`(?:async )?function ${name}\\(`));
+      const end = taskServerSource.indexOf("\n}\n", start);
+      if (start < 0 || end < start) throw new Error(`operational fixture cannot find ${name}`);
+      return taskServerSource.slice(start, end + 3);
+    };
+    type Held = { schema: string; freshness: string; revision: string | null; computedAt: number | null;
+      pending: boolean; inflight: boolean; failed: string | null;
+      sources: Record<string, { state: string; revision: string | null; computedRevision: string | null }>;
+      data: null | { rows: { id: string; held: boolean; status: string }[];
+        bindings: { state: string; sessionId: string | null }[]; messages: { id: string; unread: boolean; holder: unknown }[];
+        audits: { result: string | null }[]; exceptions: { kind: string; id: string; reason: string }[];
+        startable: { id: string }[] } };
+    type Fixture = { clock: { now: number; gitAt: number | null; fail: boolean; observeFail: boolean };
+      tasks: { id: string; text: string; status: string; hold?: { slot: number; grund: string; at: number } }[];
+      slots: { openedAt: number; sessionId: string | null }[];
+      programs: { main: { openedAt: number; sessionId: string | null } }[];
+      messages: { entries: { readBy: unknown; readAt: number | null; payload: { text: string } }[] };
+      stamps: Map<string, number>; auditRows: { result: string }[];
+      counts: { folds: number; subprocess: number; ledger: number; read: number; syncGit: number };
+      view: { observe(): void; invalidate(): void; read(): Held };
+      flush(): Promise<void>; legacyRead(): Promise<string>; freeze(): void; begin(): void; release(): void };
+    let fixtureError = "";
+    let makeFixture: ((mutated?: boolean) => Fixture) | null = null;
+    try {
+      const actual = [cut("// --- held operational view:", "// --- end held operational view ---"),
+        fn("buildStateSnapshot"), fn("memoryAuditState"), fn("resolveMessageAddress"), fn("escalateMessage"),
+        cut("const taskBaseTreeCache =", "// WHY THE SURFACE IS STORED NOW"),
+        cut("function taskSurfaceOf(", "// The acceptance that stands"), fn("landWaveProjectionNow"),
+        cut("const startPlanSurfaceOf =", "// GET /api/start-plan's object"), fn("bundleRowsNow"), fn("startPlanNow"), fn("waitsOf"),
+        cut("const programReleasePolicy =", "// …whether the TICK"),
+        cut("const programMainLive =", "let dispatchBusy ="),
+        cut("const activeProgramDispatch =", "const programDispatchGrant ="),
+        cut("const repoLaneCap =", "// Tracked paths are repository facts"),
+        cut("const programDispatchCap =", "// THE OWNER'S RELEASE POLICY"), fn("foundingRowOf"),
+        cut("const taskRepoOf =", "// ONE flag for the sweep below")].join("\n");
+      const setup = `
+        const clock = {now: 1800000000000, gitAt: 1800000000000, fail: false, observeFail: false, pause: false};
+        const waiters = [];
+        const Date = {now: () => clock.now};
+        const counts = {folds: 0, subprocess: 0, ledger: 0, read: 0, syncGit: 0};
+        const stamps = new Map();
+        const tasks = [{id: 'row1', text: 'PRIVATE_TEXT_MARKER ACCESS_CREDENTIAL_MARKER', brief: {text: 'PRIVATE_BRIEF_MARKER'},
+          repo: '/fixture', programId: 'program1', kind: 'auftrag', status: 'queued', source: 'owner', created: 1,
+          card: {valid: true, surfaceValid: true, at: 1, surface: {files: ['server.ts'], symbols: []},
+            done: 'PRIVATE_DONE_MARKER', verify: 'PRIVATE_VERIFY_MARKER', size: 'klein', after: [], gaps: []}}];
+        const slots = [{id: 1, cwd: '/fixture', openedAt: 1, sessionId: 'session1', label: 'main', worktree: null}];
+        const programs = [{id: 'program1', status: 'active', main: {slot: 1, openedAt: 1, sessionId: 'session1'}, release: {policy: 'manual'}}];
+        const messages = {entries: [{id: 'message1', to: {kind: 'program', id: 'program1'}, at: 1,
+          payload: {text: 'PRIVATE_MESSAGE_MARKER ACCESS_CREDENTIAL_MARKER'}, readBy: null, readAt: null}], dropped: 0};
+        const auditRows = [{at: 2, result: 'green', covers: [{branch: 'fleet/fx', mainAfter: 'abc'}]}];
+        const outcomeRows = [{taskId: 'row1', branch: 'fleet/fx', mainAfter: 'abc', repo: '/fixture'}];
+        const repoBases = {}, repoLaneCaps = {}, auditQueue = new Map(), gitInfo = new Map(), laneHunkInfo = new Map(), aliveInfo = new Map();
+        const operationalGitOccupants = new Map(), fleetReports = [{id: 'report1', text: 'PRIVATE_REPORT_MARKER'}];
+        const attentionRequests = [{id: 'attention1', status: 'open', text: 'PRIVATE_ATTENTION_MARKER'}];
+        const clarifications = [{id: 'clarification1', status: 'open', question: 'PRIVATE_QUESTION_MARKER'}];
+        const fleetEvents = [], composerHolds = new Map(), messagesLost = null;
+        const SERVER_BOOT_AT = clock.now, AUTOS_TICK_MS = 100, GIT_TICK_MS = 1000, DISPATCH_REPO = '/fixture';
+        const DISPATCH_MAX_LANES = 4, DISPATCH_MAX_LANES_PER_PROGRAM = null, REPO_MAX_LANES_MAX = 24;
+        const CARD_AUTOLIFT_ON = false, LAND_WAVE_BUDGET = 12, LAND_WAVE_COSTS_2026_09 = costs;
+        const LANE_OUTCOME_FILE = '/outcomes', POSTLAND_AUDIT_FILE = '/audits', AUDIT_ADJUDICATION_FILE = '/judged';
+        const runningPostLandAudit = null, auditDraining = false, dispatchOn = false, autosOn = false, quietHours = null;
+        const operationalGitObservedAt = clock.gitAt;
+        const statSync = (path) => {counts.read++; if (clock.observeFail) throw Error('private failure');
+          return {ino: 1, mtimeMs: stamps.get(path) ?? 1, size: 1};};
+        const existsSync = (path) => {counts.read++; return !path.endsWith('.1') && stamps.get(path) !== -1;};
+        const readFileSync = () => {counts.read++; return 'ref: refs/heads/main';};
+        const readSymbolIndexSnapshot = () => {counts.read++; return null;};
+        const symbolGraphStamp = () => null;
+        const repoCanon = (repo) => repo;
+        const taskSizeOf = (task) => task.card?.valid ? task.card.size : undefined;
+        const variantGroupOf = (task) => task.variantOf ? tasks.find((t) => t.id === task.variantOf && t.variants) : undefined;
+        const variantSourceOf = (task) => variantGroupOf(task) ?? task;
+        const dispatchParked = (task) => !!task.parked;
+        const stallView = () => ({open: []});
+        const slotFrom = (id) => slots[id - 1];
+        const deliveryRecipient = () => null;
+        const auditCmdFor = () => 'fixture verify';
+        const auditQueueGroups = (q) => [{covers: q.covers}];
+        const adjudicationsByAudit = async () => {counts.ledger++; return new Map();};
+        const readLedger = async (file) => {counts.ledger++; if (clock.pause) await new Promise((resolve) => waiters.push(resolve)); if (clock.fail) throw Error('ACCESS_CREDENTIAL_MARKER');
+          const rows = file === LANE_OUTCOME_FILE ? outcomeRows : auditRows; return {rows, malformed: 0};};
+        const observationBasis = () => 'none';
+        const laneSignalView = () => {throw Error('unexpected pane probe');};
+        const Bun = {spawnSync(argv) {counts.subprocess++; return {success: true, stdout: Buffer.from(
+          argv.includes('--git-common-dir') ? '/fixture/.git\\n/fixture/.git' : argv.includes('ls-tree')
+            ? '100644 blob abc\\tserver.ts\\0' : argv.includes('--abbrev-ref') ? 'main' : 'abc')};}};
+        const projectLandWaves = (input) => {counts.folds++; return landFold(input);};
+        const projectStartPlan = (input) => {counts.folds++; return startFold(input);};
+        const proposeBundles = (input) => {counts.folds++; return bundleFold(input);};
+      `;
+      const finish = `
+        const scheduled = [];
+        const view = makeOperationalView({bootEpoch: SERVER_BOOT_AT, now: Date.now,
+          schedule: (run) => scheduled.push(run), observe: operationalSources, produce: produceOperationalData});
+        const flush = async () => {for (let i = 0; i < 30; i++) {scheduled.splice(0).forEach((run) => run());
+          await Promise.resolve(); if (!scheduled.length && !view.read().inflight) return;} throw Error('fixture refresh did not settle');};
+        const legacyRead = async () => JSON.stringify({tasks: tasks.map(taskView), data: await produceOperationalData(clock.now)});
+        return {clock, tasks, slots, programs, messages, stamps, auditRows, counts, view, flush, legacyRead,
+          freeze: () => {clock.pause = true;}, begin: () => scheduled.splice(0).forEach((run) => run()),
+          release: () => {clock.pause = false; waiters.splice(0).forEach((resolve) => resolve());}};
+      `;
+      makeFixture = (mutated = false) => new Function("createHash", "resolve", "basename", "surfaceSha", "clusterForFiles", "deriveTaskMetadata",
+        "resolveSurfaceRanges", "absorbedTaskIds", "startPlanChecks", "startPlanCardPaths", "startPlanLaneClaims", "startPlanLaneSurface",
+        "deriveWaits", "landFold", "startFold", "bundleFold", "costs", new Bun.Transpiler({ loader: "ts" }).transformSync(setup
+          + (mutated ? actual.replace('revision(sources) !== revision(computedSources) || failure !== null', 'data === null') : actual) + finish))(
+        createHash, resolve, basename, surfaceSha, clusterForFiles, deriveTaskMetadata, resolveSurfaceRanges, absorbedTaskIds,
+        startPlanChecks, (c: StartPlanCardFacts | null) => c?.surface?.files ?? [], startPlanLaneClaims, startPlanLaneSurface,
+        deriveWaits, projectLandWaves, projectStartPlan, proposeBundles, LAND_WAVE_COSTS_2026_09) as Fixture;
+    } catch (e) { fixtureError = e instanceof Error ? e.message : String(e); }
+    check("operational fixture precondition: actual cache, source observer, producer and existing folds execute", !!makeFixture, fixtureError);
+    if (makeFixture) {
+      try {
+        const fx = makeFixture();
+        check("operational boot is unknown without an observed or computed source", fx.view.read().freshness === "unknown" && fx.view.read().data === null);
+        fx.view.observe();
+        check("operational pending refresh cannot present old readiness as fresh", fx.view.read().pending && fx.view.read().freshness === "unknown");
+        await fx.flush();
+        const initial = fx.view.read();
+        check("operational producer holds queue, proven binding, message IDs, open boundaries and authorized start IDs",
+          initial.freshness === "fresh" && initial.data?.rows[0].id === "row1" && initial.data.bindings[0].state === "bound"
+          && initial.data.messages[0].id === "message1" && initial.data.startable[0]?.id === "row1"
+          && ["report1", "attention1", "clarification1"].every((id) => initial.data?.exceptions.some((e) => e.id === id)), JSON.stringify(initial));
+        const beforeRead = JSON.stringify(fx.counts);
+        const beforeRevision = initial.revision;
+        for (let i = 0; i < 4; i++) fx.view.read();
+        check("operational same-source GETs invoke exactly zero observer, producer, folds, git/syncgit or ledger reads",
+          JSON.stringify(fx.counts) === beforeRead && fx.view.read().revision === beforeRevision, JSON.stringify(fx.counts));
+        fx.view.observe(); await fx.flush();
+        check("operational heartbeat at unchanged revisions does not refold", fx.view.read().revision === beforeRevision && fx.counts.folds === JSON.parse(beforeRead).folds);
+        const mutations = [
+          () => {fx.tasks[0].hold = {slot: 1, grund: 'PRIVATE_HOLD_MARKER', at: 1};},
+          () => {fx.slots[0].openedAt = 2; fx.slots[0].sessionId = 'session2';},
+          () => {fx.messages.entries[0].readBy = {slot: 1, openedAt: 2}; fx.messages.entries[0].readAt = 2;},
+          () => {fx.stamps.set('/fixture/.git/refs/heads/main', 2);},
+          () => {fx.auditRows[0].result = 'red'; fx.stamps.set('/audits', 2);},
+        ];
+        for (const [index, mutate] of mutations.entries()) {
+          const rev = fx.view.read().revision;
+          mutate(); fx.view.observe(); await fx.flush();
+          check(`operational background mutation ${["queue", "binding", "message", "git ref", "gate-audit"][index]} renews before another GET`,
+            fx.view.read().revision !== rev && !fx.view.read().pending);
+        }
+        const recycled = fx.view.read();
+        check("operational stale binding does not name the recycled occupant or claim readiness",
+          recycled.data?.bindings[0].state === "unknown" && recycled.data.bindings[0].sessionId === "session1"
+          && recycled.data.messages[0].holder === null && recycled.data.startable.length === 0);
+        check("operational red audit names row ID and measured result", recycled.data?.audits[0].result === "red"
+          && recycled.data.exceptions.some((e) => e.kind === "audit" && e.id === "row1" && e.reason === "red"));
+        const serialized = JSON.stringify(recycled);
+        check("operational projection contains no text, private content or credential markers",
+          !/PRIVATE_|ACCESS_CREDENTIAL_MARKER/.test(serialized), `${serialized.length} response bytes`);
+        const burst = makeFixture(); burst.view.observe(); await burst.flush();
+        const foldCount = burst.counts.folds;
+        for (let i = 0; i < 12; i++) {burst.tasks[0].status = i === 11 ? 'pending' : 'queued'; burst.view.invalidate();}
+        await burst.flush();
+        check("operational mutation burst is one producer (three existing folds)", burst.counts.folds - foldCount === 3, JSON.stringify(burst.counts));
+        burst.clock.fail = true; burst.tasks[0].status = 'queued'; burst.view.observe(); await burst.flush();
+        const failed = burst.view.read();
+        check("operational injected refresh failure retains old revision as unknown with empty startable",
+          failed.failed === "refresh-failed" && failed.freshness === "unknown" && failed.data?.startable.length === 0
+          && failed.sources.queue.revision !== failed.sources.queue.computedRevision && !/ACCESS_CREDENTIAL_MARKER/.test(JSON.stringify(failed)));
+        burst.clock.fail = false; burst.view.observe(); await burst.flush();
+        // t | event | exclusive owner
+        // 0 | last successful observation/refresh | background producer
+        // 100 | no observation tick; exact AUTOS_TICK_MS boundary | fixture clock
+        // 100 | next observation renews evidence, not the fold | background observer
+        burst.clock.now += 100;
+        check("operational exact missed cadence boundary is stale, no tolerance and no GET-triggered refresh",
+          burst.view.read().sources.queue.state === "stale" && burst.view.read().freshness === "unknown" && burst.view.read().data?.startable.length === 0);
+        burst.view.observe(); await burst.flush();
+        check("operational background observation restores unchanged fresh revision", burst.view.read().freshness === "fresh");
+        burst.stamps.set('/audits', -1); burst.view.observe(); await burst.flush();
+        check("operational missing audit source is concretely unknown", burst.view.read().sources.gateAudit.state === "unknown"
+          && !!burst.view.read().data?.exceptions.some((e) => e.kind === "ledger" && e.id === "audits" && e.reason === "source-missing"));
+        const missingIdentity = makeFixture(); missingIdentity.programs[0].main.openedAt = 0;
+        missingIdentity.view.observe(); await missingIdentity.flush();
+        check("operational slot number without openedAt is unknown", missingIdentity.view.read().data?.bindings[0].state === "unknown");
+        missingIdentity.programs[0].main.openedAt = 1; missingIdentity.programs[0].main.sessionId = null;
+        missingIdentity.view.observe(); await missingIdentity.flush();
+        check("operational slot number without sessionId is unknown", missingIdentity.view.read().data?.bindings[0].state === "unknown");
+        const inflight = makeFixture(); inflight.view.observe(); await inflight.flush();
+        const inflightRevision = inflight.view.read().revision;
+        inflight.freeze(); inflight.tasks[0].status = 'done'; inflight.view.observe(); inflight.begin();
+        check("operational inflight never marks the previous source fresh", inflight.view.read().inflight
+          && inflight.view.read().freshness === "unknown" && inflight.view.read().data?.startable.length === 0);
+        inflight.tasks[0].status = 'pending'; inflight.view.invalidate(); inflight.release(); await inflight.flush();
+        check("operational mutation during external await discards old target and renews once for the latest source",
+          inflight.view.read().revision !== inflightRevision && inflight.view.read().data?.rows[0].status === 'pending'
+          && inflight.view.read().freshness === "fresh");
+        const mutant = makeFixture(true); mutant.view.observe(); await mutant.flush();
+        check("operational invalidation mutation control first produces the real fixture", mutant.view.read().freshness === "fresh"
+          && mutant.view.read().data?.rows[0].status === 'queued');
+        mutant.tasks[0].status = 'done'; mutant.view.observe(); await mutant.flush();
+        check("operational invalidation mutation turns the background-visibility claim red",
+          mutant.view.read().data === null || mutant.view.read().data?.rows[0].status !== 'done');
+        const old = makeFixture(), held = makeFixture();
+        await old.legacyRead(); held.view.observe(); await held.flush();
+        const oldCounts = {...old.counts}, heldCounts = {...held.counts};
+        let oldBytes = 0, heldBytes = 0;
+        for (let i = 0; i < 3; i++) {oldBytes += Buffer.byteLength(await old.legacyRead()); heldBytes += Buffer.byteLength(JSON.stringify(held.view.read()));}
+        const delta = (after: typeof oldCounts, before: typeof oldCounts) => Object.fromEntries(Object.keys(after)
+          .map((k) => [k, after[k as keyof typeof after] - before[k as keyof typeof before]]));
+        const before = delta(old.counts, oldCounts), after = delta(held.counts, heldCounts);
+        check("operational identical fixture three reads measure repeated full folds versus held zero work (bytes are measurements, no ms threshold)",
+          before.folds === 9 && before.ledger === 9 && before.subprocess === 3 && before.read > 0
+          && Object.values(after).every((n) => n === 0), JSON.stringify({before, after, oldBytes, heldBytes, time: "not-measured"}));
+      } catch (e) { check("operational fixture execution completes", false, e instanceof Error ? e.message : String(e)); }
+    }
+    const authorized = await get("/api/operational-view");
+    const authorizedBody = await authorized.json() as { schema?: string; scope?: string };
+    check("operational Owner/Orchestrator owner credential reads the held schema", authorized.status === 200
+      && authorizedBody.schema === "fleet.operational-view/v1" && authorizedBody.scope === "owner-metadata");
+    let shareCookie = "";
+    try {
+      const persisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {shares?: {id: string; secret: string}[]};
+      const share = persisted.shares?.[0];
+      if (share) shareCookie = `share_${share.id}=${share.secret}`;
+    } catch { /* the fixture precondition below names the missing source */ }
+    check("operational auth fixture precondition: recognized lane and Share credentials exist", !!ctx.restartSelfTok && !!shareCookie);
+    for (const [name, headers] of [["missing", {}], ["wrong", {authorization: "Bearer wrong"}],
+      ["lane", {"x-fleet-self-token": ctx.restartSelfTok ?? "", authorization: `Bearer ${ctx.restartSelfTok ?? ""}`}],
+      ["share", {cookie: shareCookie}]] as const) {
+      const denied = await fetch(BASE + "/api/operational-view", {headers});
+      const body = await denied.text();
+      check(`operational auth negative ${name} cannot read cached metadata`, denied.status === 401 && !body.includes('"sources"') && !body.includes('"data"'));
+    }
+    const shareHost = process.env.FLEET_SHARE_HOSTS;
+    check("operational Share-host fixture precondition: isolated server names its Share host", !!shareHost);
+    if (shareHost) {
+      const denied = await fetch(BASE + "/api/operational-view", {headers: {host: shareHost, cookie: shareCookie}});
+      check("operational Share-host exposes no held route or cached data", denied.status === 404 && !(await denied.text()).includes('"sources"'));
+    }
+  }
   const taskModelStart = taskClientSource.indexOf("type QGroup =");
   const taskModelEnd = taskClientSource.indexOf("function qWaveProjection", taskModelStart);
   const taskModelSource = taskModelStart >= 0 && taskModelEnd > taskModelStart

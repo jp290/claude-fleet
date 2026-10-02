@@ -2199,12 +2199,12 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && !releaseBody.includes("task_override") && !releaseBody.includes(".analysis"),
     releaseSlice === "" ? "the queue action was not found" : `${releaseBody.split("\n").length} code lines`);
 
-  // register is the offline view of the queue. Visibility in the browser must not turn that shell
-  // path into an API client; comments are excluded so a warning about curl would not trip the rule.
-  const registerCode = read("register.sh").split("\n")
+  // Full diagnosis retains the offline queue projector; only --brief reads the held source.
+  const registerSource = read("register.sh");
+  const registerCode = registerSource.slice(registerSource.indexOf("\nesac\n") + 7).split("\n")
     .filter((l) => !l.trim().startsWith("#")).join("\n");
-  pin("register remains offline and API-independent",
-    !/\b(curl|wget|fetch)\b|https?:\/\/|\/api\//.test(registerCode));
+  pin("register full diagnosis remains offline and API-independent; brief uses the held Owner source",
+    registerSource.includes("/api/operational-view") && !/\b(curl|wget|fetch)\b|https?:\/\/|\/api\//.test(registerCode));
 }
 
 // ================================================================================================
@@ -2861,6 +2861,91 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && /state\.sh --brief/.test(ctl) && /register\.sh --brief/.test(ctl),
       `state=${dispatch(state)}/${rejects(state)} register=${dispatch(register)}/${rejects(register)} `
         + `doc=${/state\.sh --brief/.test(ctl)}/${/register\.sh --brief/.test(ctl)}`);
+    const dir = mkdtempSync(join(tmpdir(), "fleet-held-cli-"));
+    try {
+      const python = spawnSync("python3", ["-c", "import sys;print(sys.executable)"], {encoding: "utf8"});
+      pin("held CLI fixture precondition: Python interpreter executes", python.status === 0 && !!python.stdout.trim(), python.stderr);
+      const log = join(dir, "calls");
+      writeFileSync(join(dir, "python3"), `#!${python.stdout.trim()}
+import io, json, os, sys, urllib.request, urllib.error
+def note(s):
+    with open(os.environ['HELD_PROBE_LOG'], 'a') as f: f.write(s + '\\n')
+def urlopen(request, timeout):
+    note('http')
+    if 'PROBE_CREDENTIAL_MARKER' in ' '.join(sys.argv): raise RuntimeError('credential in argv')
+    if request.get_header('Authorization') != 'Bearer PROBE_CREDENTIAL_MARKER': raise RuntimeError('missing header')
+    if request.full_url != 'http://held.fixture/api/operational-view': raise RuntimeError('wrong source')
+    mode = os.environ['HELD_PROBE_MODE']
+    if mode == 'offline': raise OSError('PROBE_CREDENTIAL_MARKER private error')
+    if mode == 'old': return io.BytesIO(b'{"version":0}')
+    return io.BytesIO(os.environ['HELD_PROBE_VIEW'].encode())
+urllib.request.urlopen = urlopen
+note('python')
+exec(compile(sys.stdin.read(), '<held-cli>', 'exec'))
+`);
+      chmodSync(join(dir, "python3"), 0o755);
+      const fixture = {schema: "fleet.operational-view/v1", scope: "owner-metadata", bootEpoch: 1, computedAt: 2,
+        revision: "queue:r1/bindings:b1/addresses:a1/git:g1/gateAudit:u1", observedRevision: "queue:r1/bindings:b1/addresses:a1/git:g1/gateAudit:u1",
+        freshness: "fresh", pending: false, inflight: false, failed: null,
+        sources: {queue: {revision: "r1", computedRevision: "r1", observedAt: 2, cadenceMs: 100, ageMs: 0, state: "fresh"}}, unknown: [],
+        data: {rows: [{id: "row1", status: "queued", programId: "program1", held: false, after: []}],
+          startable: [{id: "row1", by: "release"}], exceptions: [{kind: "audit", id: "row2", reason: "unknown", relatedIds: []}]} };
+      const env = {...process.env, PATH: `${dir}:${process.env.PATH}`, FLEET_CTL_URL: "http://held.fixture",
+        FLEET_CTL_TOKEN: "PROBE_CREDENTIAL_MARKER", FLEET_TOKEN: "", HELD_PROBE_LOG: log,
+        HELD_PROBE_MODE: "fresh", HELD_PROBE_VIEW: JSON.stringify(fixture)};
+      const run = (script: string, flag: string, mode = "fresh", view: unknown = fixture, credential = true) => {
+        writeFileSync(log, "");
+        const result = spawnSync("/bin/sh", [script, flag], {encoding: "utf8", timeout: 10_000,
+          env: {...env, HELD_PROBE_MODE: mode, HELD_PROBE_VIEW: JSON.stringify(view), FLEET_CTL_TOKEN: credential ? env.FLEET_CTL_TOKEN : ""}});
+        return {...result, calls: readFileSync(log, "utf8").trim().split("\n").filter(Boolean)};
+      };
+      for (const [name, source] of [["state.sh", state], ["register.sh", register]]) {
+        const end = source.indexOf("\nesac\n");
+        const prefix = source.slice(0, end + 7);
+        const script = join(dir, name);
+        // The executed dispatch chooses a full-path tripwire. Full diagnostics themselves retain
+        // their existing body; this probe must fail if any brief success/failure enters that body.
+        writeFileSync(script, prefix + `\nprintf 'full\\n' >> "$HELD_PROBE_LOG"\nprintf '__FULL_PATH__\\n'\n`);
+        chmodSync(script, 0o755);
+        const fresh = run(script, "--brief");
+        pin(`${name} --brief reads the held schema/revision/IDs/reasons in one Python + one HTTP, never the full path`,
+          fresh.status === 0 && fresh.calls.join(",") === "python,http" && fresh.stdout.includes(fixture.revision)
+          && fresh.stdout.includes("startable row1 by=release") && fresh.stdout.includes("boundary audit row2 reason=unknown")
+          && !fresh.stdout.includes("__FULL_PATH__") && !/PROBE_CREDENTIAL_MARKER/.test(fresh.stdout + fresh.stderr),
+          `${Buffer.byteLength(fresh.stdout)} CLI bytes; calls=${fresh.calls.join(",")}`);
+        for (const mode of ["offline", "old"])
+          { const result = run(script, "--brief", mode);
+            pin(`${name} --brief ${mode} source is concretely unknown without a full fallback or secret output`,
+              result.status === 0 && result.stdout.includes("unknown source /api/operational-view")
+              && result.calls.join(",") === "python,http" && !result.stdout.includes("__FULL_PATH__")
+              && !/PROBE_CREDENTIAL_MARKER/.test(result.stdout + result.stderr)); }
+        const missing = run(script, "--brief", "fresh", fixture, false);
+        pin(`${name} --brief missing Owner credential is unknown before any HTTP or full work`,
+          missing.status === 0 && missing.calls.join(",") === "python" && missing.stdout.includes("freshness=unknown"));
+        const stale = run(script, "--brief", "fresh", {...fixture, freshness: "unknown", data: null,
+          unknown: [{id: "git", reason: "stale"}]});
+        pin(`${name} --brief carries stale source ID/reason and claims no startable row`,
+          stale.status === 0 && stale.stdout.includes("unknown git reason=stale") && !stale.stdout.includes("startable row1"));
+        const many = run(script, "--brief", "fresh", {...fixture, data: {...fixture.data,
+          exceptions: Array.from({length: 100}, (_, i) => ({kind: "audit", id: `row${i}`, reason: "unknown"}))}});
+        pin(`${name} --brief is capped at exactly 40 lines with an explicit omission count`,
+          many.status === 0 && many.stdout.trim().split("\n").length === 40 && many.stdout.includes("omitted="));
+        const full = run(script, "--full"), invalid = run(script, "--not-a-flag");
+        pin(`${name} --full selects diagnosis, unknown flag rejects before either producer`,
+          full.calls.join(",") === "full" && full.stdout.includes("__FULL_PATH__") && invalid.status === 2 && invalid.calls.length === 0);
+        writeFileSync(script, prefix.replace("--brief)\n", '--brief)\n  "$0" --full\n')
+          + `\nprintf 'full\\n' >> "$HELD_PROBE_LOG"\nprintf '__FULL_PATH__\\n'\n`);
+        const mutant = run(script, "--brief");
+        pin(`${name} full-replay mutation makes the no-full-work claim fail (executed negative control)`,
+          mutant.calls.includes("full") && mutant.stdout.includes("__FULL_PATH__"));
+      }
+      const operationalRoute = /if \(url\.pathname === "\/api\/operational-view" && req\.method === "GET"\)[\s\S]{0,250}/.exec(server)?.[0] ?? "";
+      const ownerGate = server.lastIndexOf('if (!(await tokenGate(tokenFrom(req))))', server.indexOf(operationalRoute));
+      pin("held view wire/docs agree on the sole Owner-auth GET and no GET-triggered refresh",
+        operationalRoute.includes("operationalView?.read()") && ownerGate >= 0
+        && read("docs/self-api.md").includes('schema: "fleet.operational-view/v1"')
+        && !/observe\(|produceOperationalData\(|invalidate\(/.test(operationalRoute));
+    } finally { rmSync(dir, {recursive: true, force: true}); }
   }
   // THE REPORT LEDGER: every place that opens a report or stamps a verdict writes its row. A fourth
   // decision site without the line would leave that verdict only in the prunable live list.

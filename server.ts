@@ -5578,8 +5578,10 @@ function writeStateFile(body: string): void {
 // open a pane after its marker failed to reach disk, and boot recovery may not serve requests
 // after its cleanup failed.
 const queueStateSave = coalescedSaver(stateSnapshot, writeStateFile, (e) => logError("saveState", e));
+let operationalView: ReturnType<typeof makeOperationalView> | null = null;
 function saveState(): void {
   archiveTerminalTransitions();
+  operationalView?.invalidate();
   void queueStateSave();
 }
 // saveState, but AWAITABLE — the write is on disk when this resolves. saveState alone queues the
@@ -5590,6 +5592,7 @@ function saveState(): void {
 // marker still sitting in a microtask when that arrives is exactly the marker that was needed.
 function saveStateNow(): Promise<void> {
   archiveTerminalTransitions();
+  operationalView?.invalidate();
   return queueStateSave();
 }
 
@@ -6473,9 +6476,12 @@ const gitOpInfo = new Map<number, boolean>();
 // and the plan falls back to the whole file, exactly as without this cache.
 const laneHunkInfo = new Map<number, Record<string, TaskWaveRange[]>>();
 let gitTickBusy = false;
+let operationalGitObservedAt: number | null = null;
+const operationalGitOccupants = new Map<number, { openedAt: number; sessionId: string | null }>();
 async function tickGit(): Promise<void> {
   if (gitTickBusy) return;
   gitTickBusy = true;
+  const occupants = slots.map((s) => ({ slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null }));
   try {
     for (const s of slots) {
       if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); paneModelInfo.delete(s.id); gitOpInfo.delete(s.id); laneHunkInfo.delete(s.id); continue; }
@@ -6562,8 +6568,20 @@ async function tickGit(): Promise<void> {
     }
     // the two deploy facts ride this tick rather than the 2 s poll — see refreshDeployFacts
     await refreshDeployFacts();
+    operationalGitObservedAt = Date.now();
+    for (const o of occupants) {
+      const s = slots[o.slot - 1];
+      if (s?.cwd && s.openedAt === o.openedAt && (s.sessionId ?? null) === o.sessionId
+        && !mergeInflight.has(s.id) && !mergeStart.has(s.id) && !gitOpInfo.get(s.id) && gitInfo.get(s.id))
+        operationalGitOccupants.set(s.id, { openedAt: o.openedAt, sessionId: o.sessionId });
+      else operationalGitOccupants.delete(o.slot);
+    }
+  } catch (e: unknown) {
+    operationalGitObservedAt = null;
+    throw e;
   } finally {
     gitTickBusy = false;
+    operationalView?.invalidate();
   }
 }
 
@@ -37475,9 +37493,224 @@ function buildStateSnapshot(now: number): Record<string, unknown> {
   };
 }
 
+// --- held operational view: read-only, no ledger and no authority ---
+type OperationalSourceName = "queue" | "bindings" | "addresses" | "git" | "gateAudit";
+type OperationalSource = { revision: string; observedAt: number | null; cadenceMs: number; basis: string };
+type OperationalSources = Record<OperationalSourceName, OperationalSource>;
+type OperationalBoundary = { kind: string; id: string; reason: string; relatedIds?: string[] };
+type OperationalData = {
+  snapshot: Record<string, unknown>;
+  rows: { id: string; status: string; programId: string | null; held: boolean; after: string[] }[];
+  bindings: { programId: string; state: "bound" | "unknown"; slot: number | null;
+    openedAt: number | null; sessionId: string | null }[];
+  messages: { id: string; unread: boolean; state: "addressed" | "unknown";
+    holder: { slot: number; openedAt: number; sessionId: string | null } | null }[];
+  audits: { taskId: string; mainAfter: string | null; state: string; result: string | null }[];
+  exceptions: OperationalBoundary[];
+  startable: { id: string; by: "release" | "policy" }[];
+};
+
+function makeOperationalView(deps: { bootEpoch: number; now: () => number; schedule: (run: () => void) => void;
+  observe: () => OperationalSources; produce: (now: number) => Promise<OperationalData> }) {
+  let sources: OperationalSources | null = null;
+  let computedSources: OperationalSources | null = null;
+  let data: OperationalData | null = null;
+  let computedAt: number | null = null;
+  let pending = false, scheduled = false, inflight = false;
+  let failure: "observation-failed" | "refresh-failed" | null = null;
+  const names: OperationalSourceName[] = ["queue", "bindings", "addresses", "git", "gateAudit"];
+  const revision = (s: OperationalSources | null): string | null => s
+    ? names.map((name) => `${name}:${s[name].revision}`).join("/") : null;
+  const queue = () => {
+    if (scheduled || inflight) return;
+    scheduled = true;
+    deps.schedule(() => { scheduled = false; void refresh(); });
+  };
+  const observe = () => {
+    try {
+      sources = deps.observe();
+      if (failure === "observation-failed") failure = null;
+      pending = revision(sources) !== revision(computedSources) || failure !== null;
+      if (pending) queue();
+    } catch {
+      failure = "observation-failed";
+      pending = true;
+    }
+  };
+  const refresh = async () => {
+    if (inflight) return;
+    try { sources = deps.observe(); }
+    catch { failure = "observation-failed"; pending = true; return; }
+    if (data && revision(sources) === revision(computedSources) && !failure) { pending = false; return; }
+    const target = sources;
+    const at = deps.now();
+    inflight = true;
+    pending = true;
+    try {
+      const next = await deps.produce(at);
+      sources = deps.observe();
+      if (revision(target) !== revision(sources)) { queueAfterRefresh = true; return; }
+      data = next;
+      computedAt = at;
+      computedSources = target;
+      failure = null;
+      pending = false;
+    } catch { failure = "refresh-failed"; }
+    finally {
+      inflight = false;
+      if (queueAfterRefresh) { queueAfterRefresh = false; queue(); }
+    }
+  };
+  let queueAfterRefresh = false;
+  return {
+    observe,
+    invalidate() { pending = true; queue(); },
+    read() {
+      const now = deps.now();
+      const sourceViews = Object.fromEntries(names.map((name) => {
+        const source = sources?.[name];
+        const ageMs = source?.observedAt === null || !source ? null : now - source.observedAt;
+        const current = source && computedSources?.[name].revision === source.revision;
+        const state = failure ? "failed" : pending || inflight ? "pending"
+          : !data || !source || ageMs === null ? "unknown"
+          : ageMs < 0 || ageMs >= source.cadenceMs ? "stale" : current ? "fresh" : "unknown";
+        return [name, { revision: source?.revision ?? null,
+          computedRevision: computedSources?.[name].revision ?? null,
+          observedAt: source?.observedAt ?? null, cadenceMs: source?.cadenceMs ?? null,
+          basis: source?.basis ?? "not-observed", ageMs, state }];
+      }));
+      const fresh = !!data && Object.values(sourceViews).every((s) => s.state === "fresh");
+      const unknown = names.filter((name) => sourceViews[name].state !== "fresh")
+        .map((name) => ({ kind: "source", id: name, reason: failure ?? sourceViews[name].state }));
+      return { schema: "fleet.operational-view/v1", scope: "owner-metadata", bootEpoch: deps.bootEpoch,
+        computedAt, revision: revision(computedSources), observedRevision: revision(sources),
+        freshness: fresh ? "fresh" : "unknown", pending, inflight, failed: failure,
+        sources: sourceViews, unknown, data: data ? { ...data, startable: fresh ? data.startable : [] } : null };
+    },
+  };
+}
+// --- operational sources and existing folds ---
+function operationalSources(): OperationalSources {
+  const now = Date.now();
+  const hash = (v: unknown): string => createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, 16);
+  const source = (v: unknown, basis: string, observedAt: number | null = now, cadenceMs = AUTOS_TICK_MS): OperationalSource =>
+    ({ revision: hash(v), basis, observedAt, cadenceMs });
+  const occupants = slots.map((s) => ({ slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null,
+    active: !!s.cwd, worktree: s.worktree, programId: s.programId, taskId: s.taskId, awaiting: s.awaiting, label: s.label,
+    lastOutput: s.lastOutput, observation: observationBasis(s) }));
+  const refs = [...taskBaseGitDirs].map(([repo, dirs]) => ({ repo,
+    head: taskBaseFileStamp(resolve(dirs.gitDir, "HEAD")), packed: taskBaseFileStamp(resolve(dirs.commonDir, "packed-refs")),
+    bases: [...new Set([repoBases[repo], ...tasks.filter((t) => (t.repo ?? DISPATCH_REPO) === repo).map((t) => t.base),
+      ...[...taskBaseRefCache.keys()].filter((k) => k.startsWith(`${repo}\0`)).map((k) => k.slice(repo.length + 1))])]
+      .filter((b): b is string => !!b).map((b) => [b, taskBaseFileStamp(resolve(dirs.commonDir, "refs/heads", b))]) }));
+  const gitIdentityProven = slots.filter((s) => s.cwd && s.worktree).every((s) => {
+    const o = operationalGitOccupants.get(s.id);
+    return !!s.sessionId && s.openedAt === o?.openedAt && s.sessionId === o?.sessionId && !!gitInfo.get(s.id);
+  });
+  return {
+    queue: source(tasks, "tasks: in-memory persisted queue; revision is a hash, texts never leave the producer"),
+    bindings: source([occupants, programs.map((p) => ({ id: p.id, status: p.status, main: p.main, dispatch: p.dispatch })),
+      repoLaneCaps, repoBases, dispatchOn, autosOn, quietHours], "slots/program bindings and existing dispatch settings"),
+    addresses: source([messages.entries.map((m) => ({ id: m.id, to: m.to, at: m.at, readBy: m.readBy, readAt: m.readAt })),
+      messages.dropped, messagesLost?.at ?? null, fleetReports.map((r) => [r.id, r.decision?.at]),
+      attentionRequests.map((r) => [r.id, r.status]), clarifications.map((r) => [r.id, r.status]),
+      fleetEvents.map((e) => [e.id, e.status]), composerHolds.size], "message status and open obligation IDs; no payloads"),
+    git: source([[...gitInfo], [...laneHunkInfo], [...aliveInfo], [...operationalGitOccupants], refs],
+      "tickGit display sensors and observed ref stamps; no git on GET", gitIdentityProven ? operationalGitObservedAt : null, GIT_TICK_MS),
+    gateAudit: source([...[LANE_OUTCOME_FILE, POSTLAND_AUDIT_FILE, AUDIT_ADJUDICATION_FILE]
+      .flatMap((f) => [taskBaseFileStamp(f), taskBaseFileStamp(`${f}.1`)]), [...auditQueue],
+      runningPostLandAudit ? [runningPostLandAudit.mainSha, runningPostLandAudit.startedAt] : null, auditDraining],
+      "lane-outcomes + post-land-audits + audit-adjudications (.1 and active), audit queue and running audit",
+      [LANE_OUTCOME_FILE, POSTLAND_AUDIT_FILE].every((f) => existsSync(f) || existsSync(`${f}.1`)) ? now : null),
+  };
+}
+
+async function produceOperationalData(now: number): Promise<OperationalData> {
+  const [outcomes, audits, judged] = await Promise.all([
+    readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE), readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE),
+    adjudicationsByAudit(),
+  ]);
+  const exceptions: OperationalBoundary[] = [];
+  const occupied = (s: Slot | undefined, openedAt: number | undefined, sessionId: string | null | undefined): s is Slot =>
+    !!s?.cwd && !!openedAt && s.openedAt === openedAt && !!sessionId && s.sessionId === sessionId;
+  const bindings: OperationalData["bindings"] = programs.filter((p) => p.status !== "complete").map((p) => {
+    const main = p.main;
+    const live = main ? slots[main.slot - 1] : undefined;
+    const bound = main && occupied(live, main.openedAt, main.sessionId) && programMainLive(p.id);
+    if (!bound) exceptions.push({ kind: "binding", id: p.id, reason: main ? "stale-or-unproven-occupant" : "no-bound-main" });
+    return { programId: p.id, state: bound ? "bound" : "unknown", slot: main?.slot ?? null,
+      openedAt: main?.openedAt ?? null, sessionId: main?.sessionId ?? null };
+  });
+  const messageRows: OperationalData["messages"] = messages.entries.map((m) => {
+    const address = resolveMessageAddress(m.to);
+    const holder = address.ok ? address.holder : null;
+    const programId = m.to.kind === "program" ? m.to.id : null;
+    const bound = holder && holder.openedAt && holder.sessionId && (programId === null
+      || bindings.some((b) => b.programId === programId && b.state === "bound" && b.slot === holder.id));
+    if (!bound && m.readBy === null) exceptions.push({ kind: "message", id: m.id, reason: "address-unresolved-or-escalated" });
+    return { id: m.id, unread: m.readBy === null, state: bound ? "addressed" : "unknown",
+      holder: bound ? { slot: holder.id, openedAt: holder.openedAt, sessionId: holder.sessionId ?? null } : null };
+  });
+  if (messagesLost) exceptions.push({ kind: "message", id: "messages", reason: "retained-record-lost" });
+  if (messages.dropped) exceptions.push({ kind: "message", id: "messages", reason: "retention-incomplete" });
+  for (const [kind, rows] of [["report", fleetReports.filter((r) => !r.decision)],
+    ["attention", attentionRequests.filter((r) => r.status === "open" || r.status === "send-uncertain")],
+    ["clarification", clarifications.filter((r) => r.status === "open" || r.status === "send-uncertain")]] as const)
+    for (const row of rows) exceptions.push({ kind, id: row.id, reason: "open" });
+  for (const [name, file, malformed] of [["outcomes", LANE_OUTCOME_FILE, outcomes.malformed],
+    ["audits", POSTLAND_AUDIT_FILE, audits.malformed]] as const)
+    if ((!existsSync(file) && !existsSync(`${file}.1`)) || malformed)
+      exceptions.push({ kind: "ledger", id: name, reason: malformed ? "malformed-rows" : "source-missing" });
+  const auditRows: OperationalData["audits"] = [];
+  const lands = new Map<string, Record<string, unknown>>();
+  for (const land of outcomes.rows) for (const id of [land.taskId, land.originId])
+    if (typeof id === "string") lands.set(id, land);
+  for (const t of tasks.filter((t) => t.status !== "archived")) {
+    const land = lands.get(t.id) ?? null;
+    if (!land) continue;
+    const audit: MemoryAuditState = outcomes.malformed || audits.malformed
+      ? { state: "unknown", why: "malformed-source" } : memoryAuditState(land, audits.rows, judged);
+    const result = audit.state === "terminal" ? audit.result : null;
+    auditRows.push({ taskId: t.id, mainAfter: typeof land.mainAfter === "string" ? land.mainAfter : null, state: audit.state, result });
+    if (result !== "green") exceptions.push({ kind: "audit", id: t.id,
+      reason: audit.state === "terminal" ? result === "red" ? "red" : "unknown" : audit.state });
+  }
+  const plan = startPlanNow();
+  const startable: OperationalData["startable"] = [];
+  for (const repo of plan.repos) for (const wave of repo.waves) {
+    for (const row of wave.rows) {
+      if (wave.next === "now" && row.release?.released) startable.push({ id: row.id, by: row.release.by });
+      else exceptions.push({ kind: "start", id: row.id,
+        reason: wave.next === "now" ? "not-released" : typeof wave.next === "string" ? wave.next : Object.keys(wave.next)[0],
+        relatedIds: typeof wave.next === "object" && "after" in wave.next ? [wave.next.after] : [] });
+    }
+  }
+  for (const row of plan.unresolved) exceptions.push({ kind: "start", id: row.id, reason: "unresolved-surface" });
+  const gitUnknown = slots.filter((s) => s.cwd && s.worktree).filter((s) => {
+    const o = operationalGitOccupants.get(s.id);
+    return !occupied(s, o?.openedAt, o?.sessionId) || !gitInfo.get(s.id);
+  });
+  for (const s of gitUnknown) exceptions.push({ kind: "git", id: String(s.id), reason: "occupant-not-observed" });
+  const snapshot = buildStateSnapshot(now);
+  snapshot.lanes = (snapshot.lanes as Record<string, unknown>[]).map((lane) => gitUnknown.some((s) => s.id === lane.s)
+    ? { ...lane, alive: null, ahead: null, dirty: null, merge: null } : lane);
+  return { snapshot, bindings, messages: messageRows, audits: auditRows, exceptions,
+    rows: tasks.filter((t) => t.status !== "archived").map((t) => ({ id: t.id, status: t.status,
+      programId: t.programId ?? null, held: !!t.hold, after: t.card?.after ?? [] })),
+    startable: gitUnknown.length ? [] : startable.filter((row) => {
+      const programId = tasks.find((t) => t.id === row.id)?.programId;
+      return !programId || bindings.some((b) => b.programId === programId && b.state === "bound");
+    }) };
+}
+// --- end held operational view ---
+
 // THE SCHEDULER TICKS: every one names itself to logError, because a tick that throws has skipped
 // its whole round and an empty catch hid that. The `p.kill()` and pty-chain catches stay empty on purpose.
 withAuditActor({ kind: "machine", why: "tick" }, () => {
+operationalView = makeOperationalView({ bootEpoch: SERVER_BOOT_AT, now: Date.now, schedule: queueMicrotask,
+  observe: operationalSources, produce: produceOperationalData });
+operationalView.observe();
+setInterval(() => operationalView?.observe(), AUTOS_TICK_MS);
 setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
@@ -41577,6 +41810,9 @@ Bun.serve<WSData>({
 
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
+
+    if (url.pathname === "/api/operational-view" && req.method === "GET")
+      return json(operationalView?.read() ?? { schema: "fleet.operational-view/v1", freshness: "unknown", unknown: ["boot"] });
 
     if (url.pathname === "/api/messages" && req.method === "GET") return ownerMessageView(url);
     const ownerMessageReply = /^\/api\/messages\/([0-9a-f]{24})\/reply$/.exec(url.pathname);

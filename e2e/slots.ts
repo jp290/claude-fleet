@@ -3636,6 +3636,29 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && /const briefErr = briefRes\.ok \|\| noGit \? null :/.test(boardSrc)
         && /No git in this folder — changes, history and lanes apply only to a repository\./.test(boardSrc),
       "renderBoard's brief read");
+    // the window's own read (src/client.ts#loadGit) makes the SAME kind decision the board makes:
+    // a plain folder is drawn calmly — the board noGit card's very sentence — while gone,
+    // unreadable and error keep the server's named sentence, and only a body that never parsed
+    // falls back to the generic. The DECISION is lifted from the source and run for real (the
+    // ownerReportAwaiting method above), because a sentence match over the whole cliSrc would
+    // pass off board.ts's copy; the slice is loadGit's body, counted over code lines only.
+    {
+      const fn = cliSrc.slice(cliSrc.indexOf("async function loadGit("), cliSrc.indexOf("// What both homes paint"));
+      const code = fn.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+      const ternary = /error: (e\?\.git === "none"[\s\S]*?"git status could not be read")\s*\}/.exec(code)?.[1] ?? "";
+      const pick = ((): ((e: { error?: string; git?: string } | null) => string) | null => {
+        if (!ternary) return null;
+        try { return new Function(`return (e) => (${ternary});`)() as (e: { error?: string; git?: string } | null) => string; } catch { return null; }
+      })();
+      const calm = "No git in this folder — changes, history and lanes apply only to a repository.";
+      check("client: the file window's loadGit draws git:none with the board's calm sentence and keeps the server's named error for every other kind",
+        pick !== null
+          && pick({ git: "none", error: "not a git repository" }) === calm
+          && pick({ git: "gone", error: "the session's folder no longer exists" }) === "the session's folder no longer exists"
+          && pick({ git: "error", error: "git could not read the session's folder: fatal" }) === "git could not read the session's folder: fatal"
+          && pick(null) === "git status could not be read",
+        `loadGit decision: ${ternary.slice(0, 160) || "(ternary not found in loadGit)"}`);
+    }
   }
 
   // --- the owner /send RECEIPT and its journal attribution (Communication Cut 3) ---

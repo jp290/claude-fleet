@@ -3115,8 +3115,18 @@ export async function loadTree(slot: number, cwd: string): Promise<void> {
 async function loadGit(slot: number, cwd: string): Promise<void> {
   const res = await api(`/api/slots/${slot}/brief`).catch(() => null);
   const b = res?.ok ? ((await res.json().catch(() => null)) as BriefInfo | null) : null;
-  fxGit.set(cwd, b ? { lines: b.uncommittedFiles, total: b.uncommitted, branch: b.branch }
-    : { error: "git status could not be read" });
+  if (b) {
+    fxGit.set(cwd, { lines: b.uncommittedFiles, total: b.uncommitted, branch: b.branch });
+    return;
+  }
+  // the 400 body names WHY (server.ts#cwdGitBody): git:"none" is a plain folder — the normal
+  // absence, not a failed read — drawn as calmly as the board's noGit card, in its very sentence;
+  // gone/unreadable/error keep the server's named sentence, the generic only when even the body
+  // never parsed.
+  const e = res ? ((await res.json().catch(() => null)) as { error?: string; git?: string } | null) : null;
+  fxGit.set(cwd, { error: e?.git === "none"
+    ? "No git in this folder — changes, history and lanes apply only to a repository."
+    : e?.error ?? "git status could not be read" });
 }
 // What both homes paint, derived in ONE place so the card and the window cannot disagree about
 // which rows exist: the tracked list, plus — with Untracked on — the untracked lines of git status.

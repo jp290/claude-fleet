@@ -129,7 +129,7 @@ import {
   type LineageHandoverLoss,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
-  PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold, TASK_HOLD_GRUND_MAX,
+  PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold, loadTaskHoldUntil, TASK_HOLD_GRUND_MAX,
   REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview, loadCandidateReview,
   loadStallSensor, type StallSensorState,
   type TaskDisposition, loadTaskDisposition, TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX,
@@ -149,7 +149,7 @@ import {
   type AttentionRequest, type AttentionStage, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type TaskKindChange, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
-  type TaskCard, type TaskCriterion, type TaskFilesProposal,
+  type TaskHoldUntil, type TaskCard, type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
   type TaskRefine, type TaskBriefReview, type BriefReviewFinding, type LaneForm, type LaneRef, type LaneReviewCandidate, type LanePreview, type CandidateReview, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
@@ -10083,6 +10083,7 @@ function slotDeliveryBudget(slotId: number): DeliveryBudgetKnown {
 // refused at CREATE time, loudly.
 async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   if (!s.cwd) return json({ error: "slot not active" }, 400);
+  const receiverOpenedAt = s.openedAt;
   const b = body ?? {};
   const kind = b.kind === undefined ? "lane" : b.kind;
   if (kind !== "lane" && kind !== "merge" && kind !== "audit" && kind !== "deploy"
@@ -10183,6 +10184,7 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     return fired?.kind === laneWatchEventKind(laneSignal) && fired.status !== "acknowledged"
       && fired.subjectOpenedAt === identity!.t.openedAt && now - laneSig.idleMs <= w.firedAt;
   };
+  if (!s.cwd || s.openedAt !== receiverOpenedAt) return json({ error: "receiver occupant changed while validating watch" }, 400);
   const dup = watches.find((w) => {
     if (w.slot !== s.id || watchKind(w) !== kind) return false;
     if (kind === "audit") return watchKind(w) === "audit" && "repo" in w
@@ -10289,15 +10291,23 @@ function spendWatch(w: Watch, event: FleetEvent): boolean {
   return true;
 }
 
-async function mintMergeEvents(target: number, cwd: string, branch: string, outcome: MergeLast): Promise<void> {
+async function mintMergeEvents(target: number, cwd: string, branch: string, outcome: MergeLast, land?: { repo: string; task?: string }): Promise<void> {
   let dirty = false;
   const now = Date.now();
   const subject = slotFrom(target) ?? undefined;
+  if (!land && outcome.landed && subject?.cwd === cwd && subject.worktree?.branch === branch)
+    land = { repo: repoCanon(subject.worktree.repo), ...(subject.taskId ? { task: subject.taskId } : {}) };
   for (const w of watches) {
-    if (!w.armed || watchKind(w) !== "merge" || !("target" in w)
-      || w.target !== target || w.targetCwd !== cwd || w.targetBranch !== branch) continue;
+    if (!w.armed || watchKind(w) !== "merge" || !("target" in w)) continue;
+    if ("land" in w && w.land) {
+      const carriedTask = w.land.task ? tasks.find((t) => t.id === w.land!.task) : null;
+      const taskMatches = w.land.task === land?.task
+        || (carriedTask?.slot === target && w.targetBranch === branch);
+      if (!outcome.landed || outcome.status !== "merged" || w.land.repo !== land?.repo
+        || (w.land.task ? !taskMatches : w.land.branch !== branch)) continue;
+    } else if (w.target !== target || w.targetCwd !== cwd || w.targetBranch !== branch) continue;
     const receiver = slotFrom(w.slot);
-    if (!receiver?.cwd) continue;
+    if (!receiver?.cwd || (w.slotOpenedAt !== undefined && w.slotOpenedAt !== receiver.openedAt)) continue;
     const event: MergeFleetEvent = {
       id: randomBytes(12).toString("hex"), watchId: w.id,
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
@@ -10328,7 +10338,9 @@ function armProgramMainLandWatch(lane: Slot, cwd: string, branch: string): void 
   const { receiver } = resolved;
   if (receiver.slot === lane.id) return; // a session watching itself learns nothing
   if (watches.some((w) => w.armed && watchKind(w) === "merge" && "target" in w
-    && w.target === lane.id && w.targetCwd === cwd && w.targetBranch === branch
+    && ((w.target === lane.id && w.targetCwd === cwd && w.targetBranch === branch)
+      || ("land" in w && w.land && w.land.repo === repoCanon(lane.worktree!.repo)
+        && (w.land.task ? w.land.task === lane.taskId : w.land.branch === branch)))
     && w.slot === receiver.slot && w.slotOpenedAt === receiver.openedAt)) return;
   const budget = slotDeliveryBudget(receiver.slot);
   if (budget.free === 0) {
@@ -13569,7 +13581,7 @@ function dropWatchesFor(slotId: number, why?: SlotEnding): void {
   reconcileAttention(slotId, why);
   watches = watches.filter((w) => w.slot !== slotId);
   for (const w of watches) {
-    if (!("target" in w) || w.target !== slotId || !w.armed) continue;
+    if (!("target" in w) || w.target !== slotId || !w.armed || ("land" in w && w.land)) continue;
     w.armed = false;
     w.lastResult = watchKind(w) === "merge"
       ? "target session ended before a terminal merge event was recorded — no notification will come"
@@ -14825,21 +14837,82 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
     task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
 }
 
-// THE HOLD ROUTE'S ONE FIELD. The body is closed: `{grund}` or nothing — an empty body is a hold
-// without a reason, exactly the pre-2026-09-18 call. Any other key is a 400, so a body can never
-// nominate a program, a repo or a policy (the release policy is never read from a self body).
-function holdGrundFrom(raw: string): string | null | { error: string } {
-  if (!raw.trim()) return null;
+// The closed hold body cannot nominate a program, repository or start authority.
+function holdGrundFrom(raw: string): { grund: string | null; until?: TaskHoldUntil } | { error: string } {
+  if (!raw.trim()) return { grund: null };
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return { error: "body must be JSON {\"grund\": \"…\"} or empty" }; }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { error: "body must be an object {grund}" };
-  const extra = Object.keys(parsed).filter((k) => k !== "grund");
-  if (extra.length) return { error: `the hold reads grund only — [${extra.join(", ")}] is not read` };
-  const g = (parsed as { grund?: unknown }).grund;
-  if (g === undefined || g === null) return null;
-  if (typeof g !== "string" || !g.trim()) return { error: "grund must be a non-empty string or null" };
-  if (g.trim().length > TASK_HOLD_GRUND_MAX) return { error: `grund must be at most ${TASK_HOLD_GRUND_MAX} chars` };
-  return g.trim();
+  try { parsed = JSON.parse(raw); } catch { return { error: "body must be JSON {grund, until?} or empty" }; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { error: "body must be an object {grund, until?}" };
+  const extra = Object.keys(parsed).filter((k) => k !== "grund" && k !== "until");
+  if (extra.length) return { error: `the hold reads grund and until only — [${extra.join(", ")}] is not read` };
+  const r = parsed as { grund?: unknown; until?: unknown };
+  const g = r.grund;
+  if (g !== undefined && g !== null && (typeof g !== "string" || !g.trim()))
+    return { error: "grund must be a non-empty string or null" };
+  const grund = typeof g === "string" ? g.trim() : null;
+  if (grund && grund.length > TASK_HOLD_GRUND_MAX) return { error: `grund must be at most ${TASK_HOLD_GRUND_MAX} chars` };
+  if (r.until === undefined) return { grund };
+  const until = loadTaskHoldUntil(r.until);
+  if (!until) return { error: 'until must be {kind:"land",task|slot|branch}, {kind:"merge",slot}, or {kind:"audit",sha}; exactly one selector' };
+  if (!grund) return { error: "grund must be a non-empty string when until is set" };
+  return { grund, until };
+}
+
+async function holdWatchFor(s: Slot, id: string, repo: string, until: TaskHoldUntil): Promise<Watch | { error: string }> {
+  const openedAt = s.openedAt;
+  if (until.kind !== "land") {
+    const response = await createWatchForSlot(s, until.kind === "merge"
+      ? { kind: "merge", target: until.slot }
+      : { kind: "audit", repo, mainAfter: until.sha });
+    const result = await response.json() as { watch?: Watch; error?: string };
+    return result.watch ?? { error: `until.${until.kind}: ${result.error ?? "watch was not created"}` };
+  }
+  const { rows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+  let task: Task | null = null;
+  let lane: Slot | undefined;
+  let branch: string | undefined;
+  if ("task" in until) {
+    if (until.task === id) return { error: "until.land: a held task cannot wait for its own land" };
+    task = tasks.find((t) => t.id === until.task) ?? await youngestArchivedTask(until.task);
+    if (!task || task.kind !== "auftrag") return { error: "until.land: task is unknown or advisory — no land can exist" };
+    if (repoCanon(task.repo ?? DISPATCH_REPO) !== repo) return { error: "until.land: task targets another repository" };
+    const visited = new Set([id]);
+    for (let dependency: Task | null | undefined = task; dependency;) {
+      if (visited.has(dependency.id)) return { error: "until.land: cyclic held-task dependency cannot land" };
+      visited.add(dependency.id);
+      const next: TaskHoldUntil | undefined = dependency.hold?.until;
+      dependency = next?.kind === "land" && "task" in next ? tasks.find((t) => t.id === next.task) : null;
+    }
+    lane = task.status === "sent" && task.slot !== null ? slotFrom(task.slot) ?? undefined : undefined;
+  } else if ("slot" in until) {
+    lane = slotFrom(until.slot) ?? undefined;
+    if (!lane?.cwd || !lane.worktree) return { error: "until.land: slot is not an active lane" };
+    branch = lane.worktree.branch;
+  } else {
+    branch = until.branch;
+    lane = slots.find((t) => t.cwd && t.worktree && t.worktree.branch === branch && repoCanon(t.worktree.repo) === repo);
+  }
+  if (lane?.worktree && repoCanon(lane.worktree.repo) !== repo) return { error: "until.land: lane targets another repository" };
+  const landed = rows.findLast((r) => r.disposition === "landed" && r.repo === repo
+    && (task ? r.taskId === task.id : r.branch === branch));
+  if (task && task.status !== "pending" && task.status !== "queued" && task.status !== "sent" && !landed)
+    return { error: "until.land: terminal task has no persisted land" };
+  if (!task && !lane && !landed) return { error: "until.land: branch has no active lane or persisted land" };
+  const historicalSlot = !lane && !task && landed && branch ? (await laneDossier(branch, repo)).slot : null;
+  if (!task && !lane && historicalSlot === null) return { error: "until.land: persisted branch has no identifiable lane slot" };
+  if (!s.cwd || s.openedAt !== openedAt) return { error: "until.land: receiver occupant changed" };
+  const land = task ? { repo, task: task.id } : { repo, branch: branch! };
+  const dup = watches.find((w) => w.slot === s.id && w.slotOpenedAt === openedAt
+    && "land" in w && w.land && JSON.stringify(w.land) === JSON.stringify(land));
+  if (dup) return dup;
+  if (slotDeliveryBudget(s.id).free === 0) return { error: "until.land: no watch delivery budget" };
+  const w: MergeWatch = { id: randomBytes(4).toString("hex"), kind: "merge", land,
+    slot: s.id, slotOpenedAt: openedAt, idleSec: PROGRAM_MAIN_LAND_IDLE_SEC,
+    created: Date.now(), armed: true, firedAt: null, lastResult: null,
+    target: lane?.id ?? task?.slot ?? historicalSlot ?? 0, targetCwd: lane?.cwd ?? repo,
+    targetBranch: branch ?? lane?.worktree?.branch ?? "" };
+  watches = [...watches, w];
+  return w;
 }
 
 // THE HOLD (Schnitt 3) — a bound Program-MAIN's stop on one row of its OWN program, over its
@@ -14849,12 +14922,13 @@ function holdGrundFrom(raw: string): string | null | { error: string } {
 // binding, the repo from the caller's checkout, nothing from a body. Idempotent — a second hold on
 // a held row answers ok and writes nothing. A running or terminal row is not held: a hold stops a
 // START, and those rows have started or ended.
-// `grund` is the MAIN's sentence why (TaskHold.grund), parsed by the route (holdGrundFrom) and never
-// anything else: the program still comes from the binding and the repo from the checkout. A hold
+// `grund` is the MAIN's sentence why (TaskHold.grund), parsed by the route (holdGrundFrom).
+// Optional `until` arms its one-shot Watch; program and repo still come from binding and checkout. A hold
 // without one is ACCEPTED and stored as grund:null — visible on the row, in the audit line and in the
 // wait register — because refusing it would strand every MAIN that holds a row the old way. A second
-// hold on a held row writes only a NEW reason (the way to name one after the fact), else nothing.
-async function holdTaskForMain(s: Slot, id: string, grund: string | null): Promise<Response> {
+// hold may add a reason or an until, but cannot replace a standing until. The Watch never releases it.
+async function holdTaskForMain(s: Slot, id: string, grund: string | null, until?: TaskHoldUntil): Promise<Response> {
+  const openedAt = s.openedAt;
   const bound = boundProgramForMain(s);
   if (!bound.ok) return json({ error: bound.error }, 409);
   const { program, sessionIdMatch } = bound;
@@ -14872,12 +14946,23 @@ async function holdTaskForMain(s: Slot, id: string, grund: string | null): Promi
   const target = t.repo ?? DISPATCH_REPO;
   if (!target || repoCanon(target) !== mainRepo)
     return json({ error: `task does not target ${basename(mainRepo)}, where this MAIN is bound — a hold never reaches across repositories` }, 409);
+  if (!s.cwd || s.openedAt !== openedAt) return json({ error: "hold receiver occupant changed" }, 409);
+  if (until && t.hold?.until && JSON.stringify(t.hold.until) !== JSON.stringify(until))
+    return json({ error: "until already set — release the hold before changing its condition" }, 400);
+  let watchId = t.hold?.watchId;
+  if (until && !t.hold?.until) {
+    const watch = await holdWatchFor(s, id, mainRepo, until);
+    if ("error" in watch) return json({ error: watch.error }, 400);
+    if (!s.cwd || s.openedAt !== openedAt || !["pending", "queued"].includes(t.status))
+      return json({ error: "hold receiver or task changed while validating until" }, 409);
+    watchId = watch.id;
+  }
   if (!t.hold) {
-    t.hold = { by: "main", slot: s.id, at: Date.now(), grund };
+    t.hold = { by: "main", slot: s.id, at: Date.now(), grund, ...(until ? { until, watchId } : {}) };
     audit("task_hold", s.id, `${t.id} program=${program.id} held grund=${JSON.stringify(grund)}`);
     await saveStateNow();
-  } else if (grund !== null && grund !== t.hold.grund) {
-    t.hold = { ...t.hold, grund };
+  } else if ((grund !== null && grund !== t.hold.grund) || (until && !t.hold.until)) {
+    t.hold = { ...t.hold, ...(grund !== null ? { grund } : {}), ...(until ? { until, watchId } : {}) };
     audit("task_hold", s.id, `${t.id} program=${program.id} regrund grund=${JSON.stringify(grund)}`);
     await saveStateNow();
   }
@@ -23134,6 +23219,35 @@ async function tickWatches(): Promise<void> {
         w.armed = false;
         w.lastResult = "receiver session gone or replaced — no notification will come";
         dirty = true;
+        continue;
+      }
+      if (watchKind(w) === "merge" && "land" in w && w.land) {
+        if (w.slotOpenedAt !== s.openedAt) {
+          w.armed = false;
+          w.lastResult = "hold receiver occupant changed — no notification will come";
+          dirty = true;
+          continue;
+        }
+        const selector = w.land;
+        const task = selector.task ? tasks.find((t) => t.id === selector.task) ?? await youngestArchivedTask(selector.task) : null;
+        const lane = task?.status === "sent" && task.slot !== null ? slotFrom(task.slot) : null;
+        if (lane?.cwd && lane.worktree && repoCanon(lane.worktree.repo) === selector.repo
+          && (w.target !== lane.id || w.targetBranch !== lane.worktree.branch || w.targetCwd !== lane.cwd)) {
+          w.target = lane.id;
+          w.targetBranch = lane.worktree.branch;
+          w.targetCwd = lane.cwd;
+          dirty = true;
+        }
+        const { rows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+        const row = rows.findLast((r) => r.disposition === "landed" && r.repo === selector.repo
+          && (selector.task ? r.taskId === selector.task
+            || (task?.status === "done" && task.note === `landed (${r.branch})` && task.slot !== null
+              && tasks.find((t) => t.id === r.taskId)?.slot === task.slot)
+            : r.branch === selector.branch));
+        if (row && typeof row.branch === "string" && typeof row.ts === "number") {
+          await mintMergeEvents(task?.slot ?? w.target, worktreePathFor(w.land.repo, row.branch), row.branch,
+            { status: "merged", landed: true, branch: row.branch, at: row.ts, detail: "persisted land" }, w.land);
+        }
         continue;
       }
       if (watchKind(w) === "deploy" && "deployId" in w) {
@@ -41552,8 +41666,8 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not hold a queue row — holding is the bracket above lanes, like releasing" }, 409);
       const grund = holdGrundFrom(await req.text());
-      if (typeof grund === "object" && grund !== null) return json({ error: grund.error }, 400);
-      return holdTaskForMain(s, selfTaskHold[1], grund);
+      if ("error" in grund) return json({ error: grund.error }, 400);
+      return holdTaskForMain(s, selfTaskHold[1], grund.grund, grund.until);
     }
 
     // ACP · Program-MAIN land. Non-lane only for the same "one edge per role" reason as its three

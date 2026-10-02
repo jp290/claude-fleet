@@ -6216,6 +6216,186 @@ export async function run(): Promise<void> {
   if (rOkJ.watch?.id) await post(`/api/watches/${rOkJ.watch.id}/delete`, {});
   await post(`/api/slots/${okTgt.slot}/kill`, {});
 
+  // Holds subscribe through the existing Watch rail; the public land door supplies the fact.
+  {
+    const main = await freeSlot();
+    const opened = main ? await post(`/api/slots/${main}/open`, { cwd: REPO, label: "hold-until-main", harness: "pi-unfenced" }) : null;
+    const token = await paneEnv(`s${main}`, "FLEET_SELF_TOKEN") ?? "";
+    const lane = await (await post("/api/lanes", { repo: REPO })).json() as
+      { slot: number; cwd: string; branch: string };
+    const mergeLane = await (await post("/api/lanes", { repo: REPO })).json() as
+      { slot: number; cwd: string; branch: string };
+    const programId = "1a".repeat(12);
+    const ids = { held: "hu000001", legacy: "hu000002", invalid: "hu000003", prerequisite: "hu000004",
+      terminal: "hu000005", cycle: "hu000006", merge: "hu000007", audit: "hu000008",
+      slot: "hu000009", branch: "hu000010", future: "hu000011", futureHeld: "hu000012" };
+    const sha = "d0".repeat(20);
+    const path = `${ROOT}/fleet.json`;
+    type HoldFixture = { slots: Record<string, Record<string, unknown>>;
+      programs?: Record<string, unknown>[]; tasks?: Record<string, unknown>[];
+      mergeParked?: Record<string, unknown>; watches?: { id: string; slot: number; idleSec: number }[] };
+    check("hold-until fixture: bound MAIN and two isolated target lanes have scoped identities",
+      opened?.ok === true && token.length === 32 && lane.slot > 0 && mergeLane.slot > 0
+        && lane.slot !== mergeLane.slot);
+    await stopSrv();
+    const image = JSON.parse(readFileSync(path, "utf8")) as HoldFixture;
+    const identity = image.slots[String(main)];
+    const at = Date.now();
+    image.programs = [...(image.programs ?? []), {
+      id: programId, title: "Hold until fixture", intent: "Wake a holding MAIN once",
+      successCriterion: "A land wakes without release", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: at - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: at - 900, activatedAt: at - 800,
+      main: { slot: main, openedAt: identity.openedAt, sessionId: identity.sessionId, boundAt: at - 700 },
+    }];
+    image.tasks = [...(image.tasks ?? []), ...Object.values(ids).map((id) => ({
+      id, text: `hold-until fixture ${id}`, source: "owner", kind: "auftrag", repo: REPO,
+      programId, status: id === ids.prerequisite ? "sent" : id === ids.terminal ? "done" : "pending",
+      created: at, slot: id === ids.prerequisite ? lane.slot : null,
+      ...(id === ids.cycle ? { hold: { by: "main", slot: main, at, grund: "cycle counterprobe",
+        until: { kind: "land", task: ids.invalid } } } : {}),
+    }))];
+    image.slots[String(lane.slot)].taskId = ids.prerequisite;
+    image.slots[String(lane.slot)].programId = programId;
+    image.mergeParked = { ...(image.mergeParked ?? {}), [mergeLane.branch]: {
+      status: "resolved", landed: false, branch: mergeLane.branch, at, detail: "hold-until terminal fixture",
+    } };
+    writeFileSync(path, JSON.stringify(image, null, 2), { mode: 0o600 });
+    appendFileSync(`${ROOT}/post-land-audits.jsonl`, `${JSON.stringify({ at, startedAt: at - 1,
+      ms: 1, repo: REPO, main: "main", mainSha: sha, result: "green", cmd: "hold-until fixture",
+      exitCode: 0, out: "ALL PASS", checks: { ran: 1, failed: 0 },
+      covers: [{ branch: "fleet/hold-until-audit", mainAfter: sha }] })}\n`);
+    await restartSrv();
+    const hold = (id: string, payload?: unknown) => fetch(`${BASE}/api/self/tasks/${id}/hold`, {
+      method: "POST", headers: { "x-fleet-self-token": token, "content-type": "application/json" },
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+    });
+    type HoldReply = { hold?: { grund: string | null; at: number; until?: unknown; watchId?: string } };
+    type Event = { id: string; watchId: string; receiverSlot: number; receiverOpenedAt: number;
+      kind: string; subjectBranch?: string; payload: { landed?: boolean; status?: string; result?: string } };
+    const events = async () => (await (await get("/api/events")).json() as { events: Event[] }).events;
+    const tasksNow = async () => (await (await get("/api/tasks")).json() as
+      { tasks: { id: string; status: string; hold?: HoldReply["hold"] }[] }).tasks;
+    const watchStart = (await watchRows()).filter((w) => w.slot === main).length;
+    const rejects: { name: string; payload: unknown; error: string }[] = [
+      { name: "closed outer keys", payload: { grund: "x", until: { kind: "land", task: ids.prerequisite }, repo: REPO }, error: "[repo]" },
+      { name: "closed inner keys", payload: { grund: "x", until: { kind: "land", task: ids.prerequisite, repo: REPO } }, error: "until must be" },
+      { name: "exactly one selector", payload: { grund: "x", until: { kind: "land", task: ids.prerequisite, slot: lane.slot } }, error: "until must be" },
+      { name: "unknown kind", payload: { grund: "x", until: { kind: "lane", slot: lane.slot } }, error: "until must be" },
+      { name: "nonempty reason", payload: { until: { kind: "land", task: ids.prerequisite } }, error: "grund must be a non-empty string when until" },
+      { name: "self dependency", payload: { grund: "x", until: { kind: "land", task: ids.invalid } }, error: "own land" },
+      { name: "cyclic dependency", payload: { grund: "x", until: { kind: "land", task: ids.cycle } }, error: "cyclic" },
+      { name: "unknown task", payload: { grund: "x", until: { kind: "land", task: "missingholdtask" } }, error: "unknown or advisory" },
+      { name: "terminal task without land", payload: { grund: "x", until: { kind: "land", task: ids.terminal } }, error: "terminal task" },
+      { name: "inactive land slot", payload: { grund: "x", until: { kind: "land", slot: 99999 } }, error: "not an active lane" },
+      { name: "unknown branch", payload: { grund: "x", until: { kind: "land", branch: "fleet/missing-hold-branch" } }, error: "no active lane or persisted land" },
+      { name: "merge without operation", payload: { grund: "x", until: { kind: "merge", slot: lane.slot } }, error: "until.merge: no running or persisted terminal merge" },
+      { name: "audit without land", payload: { grund: "x", until: { kind: "audit", sha: "d1".repeat(20) } }, error: "until.audit: no persisted, queued, or running audit" },
+      { name: "short audit sha", payload: { grund: "x", until: { kind: "audit", sha: "d0d0" } }, error: "until must be" },
+    ];
+    for (const counter of rejects) {
+      const response = await hold(ids.invalid, counter.payload);
+      const detail = await response.text();
+      check(`hold-until refuses ${counter.name} with a named 400`, response.status === 400 && detail.includes(counter.error), detail);
+    }
+    check("hold-until refusals write no hold and reserve no watch",
+      !(await tasksNow()).find((t) => t.id === ids.invalid)?.hold
+        && (await watchRows()).filter((w) => w.slot === main).length === watchStart);
+    const legacy = await hold(ids.legacy);
+    const legacyReply = await legacy.json() as HoldReply;
+    const payload = { grund: "wait for prerequisite land", until: { kind: "land", task: ids.prerequisite } };
+    const first = await hold(ids.held, payload);
+    const firstReply = await first.json() as HoldReply;
+    const duplicate = await hold(ids.held, payload);
+    const duplicateReply = await duplicate.json() as HoldReply;
+    const watchId = firstReply.hold?.watchId;
+    check("hold-until creates one merge Watch for the holding MAIN and the duplicate preserves its ID and hold timestamp",
+      first.ok && duplicate.ok && !!watchId && duplicateReply.hold?.watchId === watchId
+        && duplicateReply.hold?.at === firstReply.hold?.at
+        && (await watchRows()).filter((w) => w.id === watchId && w.slot === main && w.kind === "merge" && w.armed).length === 1,
+      JSON.stringify({ first: firstReply, duplicate: duplicateReply }));
+    const changed = await hold(ids.held, { grund: "changed condition", until: { kind: "audit", sha } });
+    check("hold-until cannot silently replace a standing condition", changed.status === 400 && (await changed.text()).includes("until already set"));
+    // Shrink only the receiver's idle clock in the isolated fixture; the real hold keeps 60s.
+    await stopSrv();
+    const timing = JSON.parse(readFileSync(path, "utf8")) as HoldFixture;
+    const timedWatch = timing.watches?.find((w) => w.id === watchId);
+    if (timedWatch) timedWatch.idleSec = 0;
+    writeFileSync(path, JSON.stringify(timing, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const land = await post(`/api/slots/${lane.slot}/land`, {});
+    check("hold-until fixture: prerequisite X actually lands through the public land door", land.ok, await land.text());
+    let received: Event[] = [];
+    await until(async () => {
+      received = (await events()).filter((e) => e.watchId === watchId);
+      return received.length > 0;
+    }, { timeoutMs: 10_000, what: "hold-until land event reaches the holding MAIN" });
+    let prompts: Awaited<ReturnType<typeof plogRead>> = [];
+    await until(async () => {
+      prompts = (await plogRead()).filter((p) => p.slot === main && p.text.includes(received[0]!.id));
+      return prompts.length > 0;
+    }, { timeoutMs: 20_000, what: "holding MAIN receives the existing watch transport" });
+    const read = await fetch(`${BASE}/api/self/events/${received[0]?.id}`, { headers: { "x-fleet-self-token": token } });
+    const heldRow = (await tasksNow()).find((t) => t.id === ids.held);
+    check("hold until land X: the holding MAIN receives exactly one readable landed event and the hold remains pending",
+      received.length === 1 && received[0]?.kind === "merge-terminal" && received[0].receiverSlot === main
+        && received[0].receiverOpenedAt === identity.openedAt && received[0].subjectBranch === lane.branch
+        && received[0].payload.landed === true && read.ok && prompts.length === 1 && heldRow?.status === "pending"
+        && heldRow.hold?.watchId === watchId
+        && (await events()).filter((e) => e.receiverSlot === main && e.subjectBranch === lane.branch).length === 1,
+      JSON.stringify({ received, hold: heldRow?.hold, read: read.status }));
+    await ackEvent(token, received[0]!.id);
+    const repeated = await hold(ids.held, payload);
+    await restartSrv();
+    await until(async () => (await watchRows()).some((w) => w.id === watchId && !w.armed),
+      { timeoutMs: 5000, what: "spent hold Watch survives restart" });
+    await Bun.sleep(AUTOS_TICK_MS * 3);
+    const afterRestart = (await events()).filter((e) => e.watchId === watchId);
+    const legacyRow = (await tasksNow()).find((t) => t.id === ids.legacy);
+    check("hold-until stays spent after Ack, repeated hold and restart; a legacy hold has no until and no watch",
+      repeated.ok && afterRestart.length === 1
+        && (await plogRead()).filter((p) => p.slot === main && p.text.includes(received[0]!.id)).length === 1 && legacy.ok && legacyReply.hold?.grund === null
+        && legacyRow?.hold?.grund === null && legacyRow.hold.until === undefined && legacyRow.hold.watchId === undefined
+        && (await tasksNow()).find((t) => t.id === ids.held)?.hold?.watchId === watchId,
+      JSON.stringify({ events: afterRestart.length, legacy: legacyRow?.hold }));
+    const merge = await hold(ids.merge, { grund: "terminal merge", until: { kind: "merge", slot: mergeLane.slot } });
+    const mergeReply = await merge.json() as HoldReply;
+    const audit = await hold(ids.audit, { grund: "existing audit", until: { kind: "audit", sha } });
+    const auditReply = await audit.json() as HoldReply;
+    const terminalEvents = await events();
+    check("hold-until merge and audit are level-triggered at creation on their existing persisted terminals",
+      merge.ok && audit.ok
+        && terminalEvents.filter((e) => e.watchId === mergeReply.hold?.watchId && e.kind === "merge-terminal" && e.payload.status === "resolved").length === 1
+        && terminalEvents.filter((e) => e.watchId === auditReply.hold?.watchId && e.kind === "post-land-audit" && e.payload.result === "green").length === 1,
+      JSON.stringify({ merge: mergeReply, audit: auditReply }));
+    const slotHold = await hold(ids.slot, { grund: "land this lane identity", until: { kind: "land", slot: mergeLane.slot } });
+    const slotReply = await slotHold.json() as HoldReply;
+    const branchHold = await hold(ids.branch, { grund: "land the same branch", until: { kind: "land", branch: mergeLane.branch } });
+    const branchReply = await branchHold.json() as HoldReply;
+    check("hold-until land slot and branch bind the same concrete branch and share one Watch",
+      slotHold.ok && branchHold.ok && !!slotReply.hold?.watchId && slotReply.hold.watchId === branchReply.hold?.watchId);
+    const branchLand = await post(`/api/slots/${mergeLane.slot}/land`, {});
+    await until(async () => (await events()).some((e) => e.watchId === slotReply.hold?.watchId && e.payload.landed),
+      { timeoutMs: 10_000, what: "hold-until concrete branch land" });
+    check("hold-until branch and slot Watch fires once after target teardown",
+      branchLand.ok && (await events()).filter((e) => e.watchId === slotReply.hold?.watchId && e.payload.landed).length === 1);
+    const future = await hold(ids.futureHeld, { grund: "task has not started", until: { kind: "land", task: ids.future } });
+    const futureReply = await future.json() as HoldReply;
+    check("hold-until may reserve a Watch before a known prerequisite task has a lane",
+      future.ok && (await watchRows()).some((w) => w.id === futureReply.hold?.watchId && w.armed));
+    for (const id of [mergeReply.hold?.watchId, auditReply.hold?.watchId, slotReply.hold?.watchId]) {
+      const event = (await events()).find((e) => e.watchId === id);
+      if (event) await ackEvent(token, event.id);
+    }
+    await post(`/api/slots/${main}/kill`, {});
+    await stopSrv();
+    const cleaned = JSON.parse(readFileSync(path, "utf8")) as HoldFixture;
+    cleaned.programs = (cleaned.programs ?? []).filter((p) => p.id !== programId);
+    cleaned.tasks = (cleaned.tasks ?? []).filter((t) => !Object.values(ids).includes(String(t.id)));
+    writeFileSync(path, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
   // === THE SELF TWIN: POST /api/self/watch =====================================================
   // Same mint (createWatchForSlot), different principal: `s` comes from the token instead of the
   // URL. The delivery machinery is therefore already proven by the owner half above and is not

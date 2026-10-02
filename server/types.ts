@@ -244,6 +244,7 @@ interface LaneWatch extends WatchBase {
 }
 interface MergeWatch extends WatchBase {
   kind: "merge";
+  land?: { repo: string; task?: string; branch?: string };
   target: number;
   targetCwd: string;
   targetBranch: string;
@@ -285,6 +286,13 @@ function watchFrom(raw: unknown): Watch | null {
   }
   if (w.kind === "job") {
     return typeof w.jobId === "string" && /^[0-9a-f]{12}$/.test(w.jobId) ? raw as CommandJobWatch : null;
+  }
+  if (w.land !== undefined) {
+    if (w.kind !== "merge" || !w.land || typeof w.land !== "object" || Array.isArray(w.land)) return null;
+    const land = w.land as Record<string, unknown>;
+    if (typeof land.repo !== "string" || !land.repo
+      || !((typeof land.task === "string" && !!land.task && land.branch === undefined)
+        || (typeof land.branch === "string" && !!land.branch && land.task === undefined))) return null;
   }
   if (w.kind !== undefined && w.kind !== "lane" && w.kind !== "merge") return null;
   return typeof w.target === "number" && typeof w.targetCwd === "string" && typeof w.targetBranch === "string"
@@ -1561,14 +1569,39 @@ const loadTaskKindChanges = (value: unknown): TaskKindChange[] | undefined => {
   });
   return out.length ? out : undefined;
 };
-interface TaskHold { by: "main"; slot: number; at: number; grund: string | null }
+type TaskHoldUntil =
+  | { kind: "land"; task: string }
+  | { kind: "land"; slot: number }
+  | { kind: "land"; branch: string }
+  | { kind: "merge"; slot: number }
+  | { kind: "audit"; sha: string };
+const loadTaskHoldUntil = (value: unknown): TaskHoldUntil | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const r = value as Record<string, unknown>;
+  const keys = Object.keys(r);
+  if (keys.length !== 2 || !keys.includes("kind")) return undefined;
+  if (r.kind === "land") {
+    if (typeof r.task === "string" && /^[a-z0-9]+$/.test(r.task)) return { kind: "land", task: r.task };
+    if (typeof r.branch === "string" && r.branch.trim()) return { kind: "land", branch: r.branch.trim() };
+    if (typeof r.slot === "number" && Number.isInteger(r.slot) && r.slot > 0) return { kind: "land", slot: r.slot };
+  }
+  if (r.kind === "merge" && typeof r.slot === "number" && Number.isInteger(r.slot) && r.slot > 0)
+    return { kind: "merge", slot: r.slot };
+  if (r.kind === "audit" && typeof r.sha === "string" && /^[0-9a-f]{40,64}$/.test(r.sha))
+    return { kind: "audit", sha: r.sha };
+  return undefined;
+};
+interface TaskHold { by: "main"; slot: number; at: number; grund: string | null;
+  until?: TaskHoldUntil; watchId?: string }
 const TASK_HOLD_GRUND_MAX = 500;
 const loadTaskHold = (value: unknown): TaskHold | undefined => {
   if (value === undefined || value === null || value === false) return undefined;
   const r = (typeof value === "object" && !Array.isArray(value) ? value : {}) as Record<string, unknown>;
   return { by: "main", slot: typeof r.slot === "number" && Number.isInteger(r.slot) ? r.slot : 0,
     at: typeof r.at === "number" && Number.isFinite(r.at) ? r.at : 0,
-    grund: typeof r.grund === "string" && r.grund.trim() ? r.grund.trim().slice(0, TASK_HOLD_GRUND_MAX) : null };
+    grund: typeof r.grund === "string" && r.grund.trim() ? r.grund.trim().slice(0, TASK_HOLD_GRUND_MAX) : null,
+    ...(loadTaskHoldUntil(r.until) ? { until: loadTaskHoldUntil(r.until) } : {}),
+    ...(typeof r.watchId === "string" ? { watchId: r.watchId } : {}) };
 };
 // THE STALL SENSOR'S CLOCK (server.ts#tickStallSensor) — the one piece of the wait register that is
 // state: since when a repo has stood stuck (waits.ts#stallReadings), and the one attention it raised.
@@ -3479,7 +3512,7 @@ export type {
   ProgramValidation, ProgramDigest, DispatchSpawn, SlotContext, SlotStreamOccupant,
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
-  StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, StallRepoClock, StallSensorState,
+  StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, TaskHoldUntil, StallRepoClock, StallSensorState,
   TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageSeat, LaneSeat, LineageWatchTarget, LineageObligationRef, LineageHandover,
   LineageHandoverRead, LineageHandoverLoss, MemoryGrant, MemoryGrantView, MemoryGrantOccupant, ReportDelegate,
 };
@@ -3510,7 +3543,7 @@ export {
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
-  PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, TASK_HOLD_GRUND_MAX, loadTaskKindChanges, loadStallSensor,
+  PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, loadTaskHoldUntil, TASK_HOLD_GRUND_MAX, loadTaskKindChanges, loadStallSensor,
   REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview, loadCandidateReview,
   TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX, loadTaskDisposition,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName,

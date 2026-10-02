@@ -4512,9 +4512,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // runtime probe on a fleet without a policy (every fleet by default) can see a second writer that
   // never fired: (1) `program.release` is written — set AND cleared — only inside the owner route;
   // (2) the one reader of the record is programReleasePolicy, and it reads the PROGRAM, never a
-  // request; (3) the hold route, the one self door of this cut, reads ONE field of its body — the
-  // MAIN's `grund` (2026-09-18, holdGrundFrom: a closed body, any other key a 400) — and hands the
-  // handler nothing else, so no body can reach a program, a repo or a policy.
+  // request; (3) the hold route, the one self door of this cut, reads its closed {grund, until} body — only the MAIN's reason and a validated
+  // completion selector reach the handler, never a program, a repo or a policy.
   const relWrites = [...serverExec.matchAll(/(?:\w+)\.release = |delete (?:\w+)\.release\b/g)];
   const relRouteStart = serverExec.indexOf("const programReleaseRoute = /^");
   const relRouteEnd = serverExec.indexOf("const action = /^", relRouteStart);
@@ -4527,15 +4526,38 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const holdFnAt = server.indexOf("async function holdTaskForMain(");
   const holdFn = holdFnAt < 0 ? "" : server.slice(holdFnAt, server.indexOf("\n}\n", holdFnAt));
   const holdGrundFn = server.match(/function holdGrundFrom\([\s\S]*?\n\}\n/)?.[0] ?? "";
-  pin("program.release is written only by the owner release door, read only through programReleasePolicy off the Program record, and the self hold door reads its closed {grund} body only",
+  const holdUntilFn = readFileSync(`${ROOT}/server/types.ts`, "utf8")
+    .match(/const loadTaskHoldUntil = [\s\S]*?\n\};/)?.[0] ?? "";
+  const { loadTaskHoldUntil: parseHoldUntil } = await import("../server/types");
+  const allowedUntil = [{ kind: "land", task: "abc123" }, { kind: "land", slot: 2 },
+    { kind: "land", branch: "fleet/probe" }, { kind: "merge", slot: 2 },
+    { kind: "audit", sha: "a".repeat(40) }];
+  const refusedUntil = [null, [], {}, { kind: "land" }, { kind: "merge", task: "abc123" },
+    { kind: "audit", slot: 2 }, { kind: "audit", sha: "abc123" }, { kind: "land", slot: 0 },
+    { kind: "merge", slot: 1.5 }, { kind: "land", task: "abc123", branch: "fleet/probe" },
+    ...["lane", "deploy", "job", "main", "transition"].map((kind) => ({ kind, slot: 2 })),
+    ...allowedUntil.flatMap((until) => ["program", "repo", "release", "policy", "extra"]
+      .map((key) => ({ ...until, [key]: "forbidden" })))];
+  pin("program.release is written only by the owner release door, read only through programReleasePolicy off the Program record, and the self hold door reads its closed {grund, until} body only",
     relWrites.length === 2 && relRouteStart > 0 && relRouteEnd > relRouteStart
     && relWrites.every((m) => m.index > relRouteStart && m.index < relRouteEnd)
     && /return p\?\.status === "active" && p\.release \? p\.release\.policy : "manual";/.test(relPolicyFn)
     && relReaders.length >= 2
     && relReaders.every((m) => inside(m.index, relPolicyAt, relPolicyAt + relPolicyFn.length) || inside(m.index, relRouteStart, relRouteEnd))
     && holdRoute.length > 0 && /const grund = holdGrundFrom\(await req\.text\(\)\);/.test(holdRoute)
-    && /return holdTaskForMain\(s, selfTaskHold\[1\], grund\);/.test(holdRoute) && !/readJson/.test(holdRoute)
-    && /const extra = Object\.keys\(parsed\)\.filter\(\(k\) => k !== "grund"\);/.test(holdGrundFn) && !/release|policy/.test(holdGrundFn)
+    && /return holdTaskForMain\(s, selfTaskHold\[1\], grund\.grund, grund\.until\);/.test(holdRoute) && !/readJson/.test(holdRoute)
+    && /const extra = Object\.keys\(parsed\)\.filter\(\(k\) => k !== "grund" && k !== "until"\);/.test(holdGrundFn) && !/release|policy/.test(holdGrundFn)
+    && /const until = loadTaskHoldUntil\(r\.until\);/.test(holdGrundFn)
+    && /if \(!until\) return \{ error:/.test(holdGrundFn)
+    && /if \(!grund\) return \{ error:/.test(holdGrundFn)
+    && /keys\.length !== 2/.test(holdUntilFn) && /!keys\.includes\("kind"\)/.test(holdUntilFn)
+    && /r\.kind === "land"/.test(holdUntilFn) && /r\.kind === "merge"/.test(holdUntilFn)
+    && /r\.kind === "audit"/.test(holdUntilFn)
+    && /typeof r\.task === "string"/.test(holdUntilFn) && /typeof r\.branch === "string"/.test(holdUntilFn)
+    && /Number\.isInteger\(r\.slot\)/.test(holdUntilFn) && /typeof r\.sha === "string"/.test(holdUntilFn)
+    && !/release|policy/.test(holdUntilFn)
+    && allowedUntil.every((value) => JSON.stringify(parseHoldUntil(value)) === JSON.stringify(value))
+    && refusedUntil.every((value) => parseHoldUntil(value) === undefined)
     && holdFn.length > 0 && !/\bbody\b|\breq\b|readJson/.test(holdFn),
     JSON.stringify({ writes: relWrites.map((m) => m[0]), readers: relReaders.length, holdRoute: holdRoute.length, holdFn: holdFn.length }));
   // ...and it is READ through exactly one predicate in the tick. The record's whole meaning is

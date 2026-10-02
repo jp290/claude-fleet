@@ -1569,13 +1569,15 @@ Bindung wird nach dem Lesen des Bodys erneut gegen Slot und `openedAt` geprüft.
 ## hold — `POST /api/self/tasks/:id/hold`
 
 Die Gegen-Tür zur Politik: die gebundene Program-MAIN sperrt eine `pending`- oder `queued`-Zeile
-ihres EIGENEN Programs gegen jeden Start des Ticks. Body leer oder `{"grund":"…"}` (≤ 500 Zeichen) —
+ihres EIGENEN Programs gegen jeden Start des Ticks. Body leer oder `{"grund":"…","until":…}`
+(`grund` ≤ 500 Zeichen, `until` optional) — nur diese beiden Schlüssel sind erlaubt;
 jedes andere Feld ist 400, nichts gehalten (`server.ts#holdGrundFrom`); Program aus der Bindung, Repo
 aus dem Checkout, `slot`/`at` aus dem Token. **Ein Hold ohne Grund wird angenommen und trägt
 `grund:null` sichtbar** (an der Zeile, im Audit, im Warte-Register von `GET /api/start-plan`): am
 2026-09-17 setzten zwei MAIN-Slots 42 Holds in 50 min ohne Grund, und einen Tag später konnte
 niemand sagen, was sie aufhebt (`docs/messungen/2026-09-18-queue-durchsatz.md` §b). Idempotent: ein
-zweiter Aufruf schreibt nur einen NEUEN Grund (Nachtrag, `at` bleibt), sonst nichts. Aufheben:
+zweiter Aufruf schreibt einen NEUEN Grund oder ergänzt erstmals `until` (`at` bleibt), sonst nichts.
+Eine gesetzte Bedingung lässt sich erst nach Aufheben des Holds ändern. Aufheben:
 `POST /api/self/tasks/:id/release` (oder der `▸ queue` des Owners). Eine gehaltene `queued`-Zeile
 entlastet den `manual`-Freigabedeckel; das Aufheben über die Self-Route braucht einen freien Platz.
 Nicht-Lane-only wie `release`.
@@ -1583,10 +1585,33 @@ Nicht-Lane-only wie `release`.
 ```
 curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/hold \
   -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
-  -d '{"grund":"wartet auf das Land von <id>, danach frei"}'
+  -d '{"grund":"wartet auf das Land von <id>, danach prüfen","until":{"kind":"land","task":"<id>"}}'
 ```
 
-Antwort: `{ok:true, sessionIdMatch, hold:{by:"main",slot,at,grund}, task:{id,kind,status,programId}}`,
+`until` ist eine geschlossene Bedingung mit genau einem Selektor:
+
+- `{kind:"land",task:"<id>"}` wartet auf das Land einer bekannten Auftragszeile, auch bevor deren
+  Lane startet; `{kind:"land",slot:<n>}` bindet den Branch der jetzt aktiven Lane;
+  `{kind:"land",branch:"fleet/…"}` benennt eine aktive Lane oder ein persistiertes Land im Repo
+  der MAIN. Unbekannte/advisory Tasks, ein terminaler Task ohne Land, Selbstbezug, zyklische
+  Hold-Abhängigkeiten und unbekannte Branches werden mit benanntem `400 until.land: …` abgelehnt.
+- `{kind:"merge",slot:<n>}` nutzt die bestehende Merge-Watch-Zulassung: aktiver Lane-Slot mit
+  laufendem oder persistiertem terminalem Merge. Ein schon wahres Terminal feuert sofort.
+- `{kind:"audit",sha:"<vollständige Git-Objekt-ID>"}` nutzt die bestehende Audit-Watch-Zulassung
+  im Repo der MAIN: persistiertes, laufendes oder eingereihtes Audit dieses Lands. Ein schon
+  vorliegendes Audit feuert sofort. Die Watch-Ablehnungen heißen hier `400 until.merge: …` bzw.
+  `400 until.audit: …`; ungültige Formen und zusätzliche Selektoren sind ebenfalls 400.
+
+Mit `until` ist ein nichtleerer `grund` Pflicht. Ohne `until` bleibt der bisherige Hold unverändert.
+Der Hold speichert `until` und `watchId`; der Watch reserviert das übliche Zustellbudget, erscheint
+in `GET /api/self` und mintet genau ein bestehendes `merge-terminal`- bzw. `post-land-audit`-Event
+für die haltende MAIN. Land-Watches lesen in `tickWatches` den dauerhaften Land-Beleg, überleben
+also das Ende des Ziel-Slots und feuern bei einem bereits belegten Land im nächsten Tick.
+Zustellung und Bestätigung laufen wie bei §watch, einschließlich des 60-Sekunden-Idle-Gates.
+**Das Event hebt den Halt nicht auf:** Release bleibt ein eigener Akt der MAIN. Ein erneuter Hold
+mit derselben Bedingung erzeugt keinen weiteren Watch; eine Freigabe löscht keine Watch-Abos.
+
+Antwort: `{ok:true, sessionIdMatch, hold:{by:"main",slot,at,grund,until?,watchId?}, task:{id,kind,status,programId}}`,
 beim ersten Setzen ein `task_hold`-Event (`… held grund="…"` bzw. `grund=null`), beim Nachtrag
 `… regrund grund="…"`; das Aufheben durch die MAIN schreibt `… lifted grund=…`, durch den
 `▸ queue` des Owners `… lifted by=owner grund=…`. Ablehnungen: Lane (409 `a lane may not hold a

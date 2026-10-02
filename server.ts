@@ -9430,6 +9430,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
     if (!entries.length && !immediate) { deliveryBundles.delete(key); return; }
     const recipientOpenedAt = s.openedAt;
     let ownerGateBlocked = false;
+    let sent: { acceptance: Acceptance } | undefined;
     if (!immediate) {
       bundle.entries.unshift(...entries);
       const next = bundleDeadline(bundle, s, Date.now());
@@ -9503,18 +9504,24 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       const payload = bundleText(ordered, s);
       // a single entry keeps its own path: the header then carries its own sentence, and the send
       // row names the channel it came through rather than a bundle of one
+      // the immediate send's own ids ride the one paste's send row: the restart seeds of
+      // tickOrphanReports, tickFastProgramInbox and notifyOrchestratorOfProgramLoss read exactly
+      // these, and a hint typed inside a merged paste is as delivered as one typed alone
       const { acceptance } = await sendText(s, payload, true,
         { path: "bundle", ...(ordered.length === 1 ? { path: ordered[0]!.options.path } : {}),
           rollbackOwnPayload: true, requireAgent: true,
           deliveryClass: immediate ? "sofort" : "buendelbar", bypassQueue: true,
-          paneInboxNotice: bundleNotice(ordered) });
+          paneInboxNotice: bundleNotice(ordered),
+          ...(immediate?.options.reportId ? { reportId: immediate.options.reportId } : {}),
+          ...(immediate?.options.inboxId ? { inboxId: immediate.options.inboxId } : {}),
+          ...(immediate?.options.programEventId ? { programEventId: immediate.options.programEventId } : {}) });
       audit("delivery_bundle_sent", s.id, `${key} count=${entries.length}`,
         { count: entries.length + (immediate ? 1 : 0),
           paths: [...entries.map((e) => e.options.path), ...(immediate ? [immediate.options.path] : [])].join(","),
           deliveryClass: immediate ? "sofort" : "buendelbar",
           ...deliveryAuditCache(s) });
       for (const entry of entries) entry.resolve({ acceptance });
-      if (immediate) return { acceptance };
+      if (immediate) sent = { acceptance };
     } catch (error) {
       if (error instanceof DeliveryGateDropped || error instanceof SendAgentNotAlive) {
         const reason = error instanceof SendAgentNotAlive ? `gate=${error.agent} — nothing typed` : error.message;
@@ -9548,6 +9555,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       if (immediate) {
         if (bundle.entries.length) scheduleDeliveryBundle(key, bundle);
+        else deliveryBundles.delete(key);
         if (ownerGateBlocked) {
           if (immediate.slot.openedAt !== immediate.origin.openedAt)
             throw new DeliveryCancelled("slot occupant changed before immediate delivery");
@@ -9556,8 +9564,11 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
         throw error;
       }
     }
+    // an immediate flush ends here too: an emptied bundle left in the map would pull every later
+    // "sofort" send to this key through a bundle of none (delivery_bundle_sent count=0)
     if (bundle.entries.length) scheduleDeliveryBundle(key, bundle);
     else deliveryBundles.delete(key);
+    return sent;
   };
   bundle.inflight = run().finally(() => { bundle.inflight = null; });
   return bundle.inflight;
@@ -11921,7 +11932,7 @@ async function notifyOrchestratorOfProgramLoss(key: string, programId: string, m
   try {
     if (!programEventNotifiedSeeded) {
       for (const row of (await readEventLog(AUDIT_FILE)).rows)
-        if (row.event === "send" && row.path === "program-event-orphan"
+        if (row.event === "send" && (row.path === "program-event-orphan" || row.path === "bundle")
           && typeof row.programEventId === "string" && typeof row.bytes === "number" && row.bytes > 0)
           programEventNotified.add(row.programEventId);
       programEventNotifiedSeeded = true;
@@ -12225,7 +12236,7 @@ async function tickOrphanReports(): Promise<void> {
     if (!orphanReportSeeded) {
       const { rows } = await readEventLog(AUDIT_FILE);
       for (const row of rows)
-        if (row.event === "send" && row.path === "report-orphan"
+        if (row.event === "send" && (row.path === "report-orphan" || row.path === "bundle")
           && typeof row.reportId === "string" && typeof row.bytes === "number" && row.bytes > 0)
           orphanReportNotified.add(row.reportId);
       orphanReportSeeded = true;
@@ -21777,7 +21788,7 @@ async function tickFastProgramInbox(): Promise<void> {
     if (!fastInboxSeeded) {
       const { rows } = await readEventLog(AUDIT_FILE);
       for (const row of rows)
-        if (row.event === "send" && row.path === "inbox-nudge"
+        if (row.event === "send" && (row.path === "inbox-nudge" || row.path === "bundle")
           && typeof row.inboxId === "string" && typeof row.bytes === "number" && row.bytes > 0)
           fastInboxNotified.add(row.inboxId);
       fastInboxSeeded = true;

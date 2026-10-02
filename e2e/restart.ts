@@ -1714,6 +1714,126 @@ export async function run(ctx: Ctx): Promise<void> {
         spawnSync("git", ["worktree", "prune"], { cwd: laneRepo });
         if (ln.branch) spawnSync("git", ["branch", "-qD", ln.branch], { cwd: laneRepo });
       }
+
+      // --- a hint typed inside a MERGED paste is delivered, across a restart too, and an immediate
+      // flush leaves no bundle behind (rest of 669a45ad, Report 300035b7). flushDeliveryBundle(key,
+      // immediate) types the waiting bundle and the "sofort" send as one paste whose send row has
+      // path "bundle"; that row carried no reportId, so tickOrphanReports' restart seed missed the
+      // hint and sent it again. And the immediate branch returned before the delete, so the emptied
+      // bundle pulled every later "sofort" send to the key through a bundle of none
+      // (delivery_bundle_sent "orchestrator count=0"). Fixture: a Program whose live MAIN holds two
+      // planted undecided reports; a role-message nudge waits under "orchestrator" (600 s window),
+      // then the MAIN is killed — the first report's hint meets the bundle, the second comes a tick later.
+      {
+        type ARow = { ts?: number; event: string; slot?: number; detail?: string; path?: string; paths?: string;
+          reportId?: string; bytes?: number };
+        // both generations and by time, never a byte offset: a rotation inside the window moves rows to .1
+        const auditAfter = (since: number): ARow[] => ["audit.jsonl.1", "audit.jsonl"].flatMap((f) =>
+          existsSync(`${ROOT}/${f}`) ? readFileSync(`${ROOT}/${f}`, "utf8").split("\n").filter(Boolean)
+            .map((l) => { try { return JSON.parse(l) as ARow; } catch { return null; } })
+            .filter((r): r is ARow => r !== null) : []).filter((r) => (r.ts ?? 0) >= since);
+        const orphanTyped = (rows: ARow[], id: string): ARow[] => rows.filter((r) => r.event === "send"
+          && r.reportId === id && (r.bytes ?? 0) > 0 && (r.path === "report-orphan" || r.path === "bundle"));
+        const mainSlot = (await sessions()).slots.find((s) => !s.cwd && s.id !== roleA)?.id;
+        const mainOpen = mainSlot ? await post(`/api/slots/${mainSlot}/open`, { cwd: ROOT }) : null;
+        const made = await post("/api/programs", { title: "merged orphan hint", intent: "e2e fixture",
+          successCriterion: "a merged hint is delivered once", nonGoals: ["none"], decisions: ["none"],
+          evidence: ["e2e/restart.ts"], openQuestions: ["none"] });
+        const programId = made.ok ? ((await made.json()) as { program?: { id?: string } }).program?.id ?? "" : "";
+        const confirmed = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
+        const activated = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+        // the probe above leaves roleA's role message unread; after the restart its nudge would wait
+        // in the bundle, the POST below would then queue none, and the merged flush would drop it
+        // ("messages for slot N changed before paste") — the hint typed alone, no merge to measure
+        const inbox = (await (await selfMessages("GET")).json()) as { entries?: { id: string; readBy: unknown }[] };
+        for (const m of inbox.entries ?? []) if (m.readBy === null)
+          await fetch(BASE + `/api/self/messages/${m.id}/read`, { method: "POST",
+            headers: { "content-type": "application/json", "x-fleet-self-token": selfToken }, body: "{}" });
+        const unreadLeft = ((await (await selfMessages("GET")).json()) as { unread?: number }).unread;
+        await stopSrv();
+        type PlantState = { slots?: Record<string, { openedAt?: number }>;
+          programs?: { id: string; main?: unknown }[]; fleetReports?: { id?: string }[] };
+        const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PlantState;
+        const mainOpenedAt = mainSlot ? plant.slots?.[String(mainSlot)]?.openedAt ?? 0 : 0;
+        const programRow = plant.programs?.find((p) => p.id === programId);
+        const reportIds = [0, 1].map(() => createHash("sha256").update(`${Date.now()}-${Math.random()}`)
+          .digest("hex").slice(0, 24));
+        if (programRow && mainSlot && mainOpenedAt > 0) {
+          programRow.main = { slot: mainSlot, openedAt: mainOpenedAt, sessionId: null, boundAt: Date.now() };
+          // at the FRONT: tickOrphanReports takes the first eligible row, so no earlier module's
+          // leftover report can take the first hint's place in the merged paste
+          plant.fleetReports = [...reportIds.map((id, i) => ({ id, reportedAt: Date.now() - 1000 + i,
+            status: "complete", text: `merged orphan fixture ${i}`,
+            worker: { slot: mainSlot, openedAt: mainOpenedAt, sessionId: null, cwd: ROOT, branch: "fleet/e2e-merged-orphan" },
+            provenance: { taskId: null, originId: null, programId, instance: null },
+            receiver: null, basis: "program", eventId: null })), ...(plant.fleetReports ?? [])];
+        }
+        writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(plant, null, 2), { mode: 0o600 });
+        const bundleEnv = { FLEET_DELIVERY_BUNDLE_SEC: "600", FLEET_INBOX_NUDGE_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" };
+        await restartSrv(bundleEnv);
+        const t0 = Date.now();
+        check("precondition: a Program with a live MAIN holds two planted undecided reports, the Orchestratorin is unique",
+          !!mainOpen?.ok && made.ok && !!confirmed?.ok && !!activated?.ok && !!programRow && mainOpenedAt > 0
+            && unreadLeft === 0 && (await selfMessages("GET")).ok,
+          `main=${mainSlot} open=${mainOpen?.status} program=${made.status}/${confirmed?.status}/${activated?.status} openedAt=${mainOpenedAt} unread=${unreadLeft}`);
+        // earlier modules' leftover orphans (full shard) are typed one per tick right after the restart;
+        // the nudge must wait in the bundle only once they are done
+        let typedCount = -1;
+        for (let i = 0; i < 30; i++) {
+          const n = auditAfter(t0).filter((r) => r.event === "send" && (r.path === "report-orphan" || r.path === "bundle")).length;
+          if (n === typedCount) break;
+          typedCount = n;
+          await Bun.sleep(1_250);
+        }
+        const tPost = Date.now();
+        const queuedMsg = await selfMessages("POST", { to: { kind: "role", role: "orchestrator" },
+          payload: { kind: "text", text: "a nudge that waits for the merged orphan hint" },
+          idempotencyKey: `merged-orphan-${Date.now()}` });
+        // the nudge WAITS: its queued row has no orchestrator bundle row after it
+        const queued = await until(async () => {
+          const rows = auditAfter(tPost);
+          const at = rows.findLastIndex((r) => r.event === "delivery_bundle_queued" && r.path === "inbox-nudge"
+            && r.detail?.startsWith("orchestrator ") === true);
+          return at >= 0 && !rows.slice(at + 1).some((r) => r.event !== "delivery_bundle_queued"
+            && r.event.startsWith("delivery_bundle") && r.detail?.startsWith("orchestrator ") === true) || null;
+        }, { timeoutMs: 15_000, what: "the role-message nudge waits in the orchestrator bundle" }).catch(() => null);
+        const tKill = Date.now();
+        if (mainSlot) await post(`/api/slots/${mainSlot}/kill`, {});
+        const bothTyped = await until(async () => {
+          const rows = auditAfter(tKill);
+          return reportIds.every((id) => orphanTyped(rows, id).length > 0) || null;
+        }, { timeoutMs: 15_000, what: "both orphan hints are typed into the Orchestratorin" }).catch(() => null);
+        await Bun.sleep(1_000); // four ticks: a second paste of either hint would land here
+        const before = auditAfter(tKill);
+        const merged = before.filter((r) => r.event === "send" && r.slot === roleA && r.path === "bundle"
+          && typeof r.reportId === "string" && reportIds.includes(r.reportId) && (r.bytes ?? 0) > 0);
+        const mergedSent = before.find((r) => r.event === "delivery_bundle_sent" && r.slot === roleA
+          && (r.paths ?? "").split(",").includes("inbox-nudge") && (r.paths ?? "").split(",").includes("report-orphan"));
+        const evidence = JSON.stringify(before.filter((r) => r.event.startsWith("delivery_bundle")
+          || (r.event === "send" && r.slot === roleA)).map((r) => [r.event, r.slot, r.detail, r.paths ?? r.path, r.reportId]));
+        check("an orphan hint that meets the waiting bundle is typed in ONE paste whose send row carries its reportId",
+          queuedMsg.ok && !!queued && !!bothTyped && merged.length === 1 && !!mergedSent
+            && reportIds.every((id) => orphanTyped(before, id).length === 1), evidence);
+        check("after an immediate flush no emptied bundle stays behind: the next hint is typed alone, no delivery_bundle_sent count=0",
+          !!bothTyped && !before.some((r) => r.event === "delivery_bundle_sent" && r.detail === "orchestrator count=0")
+            && reportIds.some((id) => orphanTyped(before, id).some((r) => r.path === "report-orphan" && r.slot === roleA)),
+          evidence);
+        await restartSrv(bundleEnv);
+        const tBoot = Date.now();
+        await Bun.sleep(3_000); // twelve orphan ticks after the seed
+        const after = auditAfter(tBoot);
+        const sessionsAfter = (await (await get("/api/sessions")).json()) as { reportsAwaitingOwner?: number };
+        check("after a restart the seed counts the merged paste as delivered: neither hint is typed again",
+          !!bothTyped && reportIds.every((id) => orphanTyped(after, id).length === 0)
+            && (sessionsAfter.reportsAwaitingOwner ?? 0) >= 2,
+          JSON.stringify(after.filter((r) => r.event === "send" && r.slot === roleA).map((r) => [r.path, r.reportId])));
+        await stopSrv();
+        const clean = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PlantState;
+        clean.fleetReports = (clean.fleetReports ?? []).filter((r) => !reportIds.includes(r.id ?? ""));
+        clean.programs = (clean.programs ?? []).filter((p) => p.id !== programId);
+        writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(clean, null, 2), { mode: 0o600 });
+        await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
+      }
       await post(`/api/slots/${roleA}/kill`, {});
     }
     await restartSrv();

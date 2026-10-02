@@ -2117,7 +2117,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     for (const result of await runPhoneIslandDom(sourceRoot)) {
       const facts = JSON.stringify(result.facts).slice(0, 1500);
       for (const [claim, ok] of Object.entries(result.claims))
-        check(`phone island DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+        check(`phone island DOM ${result.width}x${result.height}: ${claim}`, ok,
+          claim in result.detail ? JSON.stringify(result.detail[claim]).slice(0, 1500) : facts);
     }
   } catch (error) {
     check("phone island DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
@@ -3014,7 +3015,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     // so each state must change the GEOMETRY of the glyph — and resting and asleep must not be the
     // same means twice (two brightnesses of one dot is the failure this forbids).
     {
-      const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
+      // the phone's top island reads the same four shapes from the SAME rule (`, #mtop .act…`), so a
+      // second selector in that rule is allowed — a second rule of its own would not be found here
+      const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}(?:,\\s*#mtop \\.act${sel})?\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
       const base = glyph(""), rest = glyph("\\.rest"), sleep = glyph("\\.sleep"), bad = glyph("\\.bad");
       check("client: the four states differ in SHAPE, and resting and asleep differ from each other",
         /border-radius: 50%/.test(base) && /background: var\(/.test(base)
@@ -6200,7 +6203,8 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
 // page's geometry, never the source. 1200 × 900 and the phone on its side (844 × 390, touch) only
 // claim that no island exists there; their pixels are compared before/after by the lane, not here.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
-interface PhoneIslandDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+// `detail` holds the facts one claim was judged on — the whole `facts` outgrows a check line
+interface PhoneIslandDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown>; detail: Record<string, unknown> }
 export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string): Promise<PhoneIslandDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-island-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
@@ -6356,7 +6360,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
 
     // --- the desktop and the phone on its side: no island, the heads they had
     for (const [width, height, touch] of [[1200, 900, false], [844, 390, true]] as const) {
-      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {};
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
       await boot(width, height, touch);
       facts.coarse = await evaluate<boolean>("matchMedia('(pointer: coarse)').matches");
       facts.seen = { mtop: await shown("#mtop"), grip: await shown("#mgrip"), mhead: await shown("#mhead"), mread: await shown("#mread"),
@@ -6367,13 +6371,13 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       else claims["the phone on its side keeps the reading mode (#mread) and no phone head"] = facts.coarse === true && seen.mread && !seen.mhead;
       await shot(`${width}-start`);
       facts.missing = [...missing]; missing.length = 0;
-      results.push({ width, height, claims, facts });
+      results.push({ width, height, claims, facts, detail });
     }
 
     // --- the phone upright, 390 × 844: without and with the on-screen keyboard
     const W = 390, H = 844;
     for (const keyboard of [false, true]) {
-      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {};
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
       fx.inputs = [];
       await boot(W, H, true);
       if (artifacts) { recording = `video-${W}${keyboard ? "-tastatur" : ""}`; frame = 0; mkdirSync(resolve(artifacts, recording), { recursive: true }); await send("Page.startScreencast", { format: "jpeg", quality: 85, everyNthFrame: 1 }); }
@@ -6454,16 +6458,24 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       actions.viewBack = await act("#mview", "!window.__fx.pane().classList.contains('chat')");
       actions.info = await act("#minfo", "window.__fx.shown(document.querySelector('#shell-board'))", escape);
       actions.hist = await act("#mhist", "getComputedStyle(document.querySelector('#hist')).display === 'flex'", escape);
+      if (keyboard) { await tap("document.querySelector('#input')"); await wait("document.body.classList.contains('keyboard-open')", 2000); }
       actions.more = await act("#mmore", "document.body.classList.contains('keyboard-options')");
+      await settle(300); // a keyboard that left with the focus would have folded the options away by now (sync)
+      // Live is a touch affordance (index.html: #comptray > #live only under any-pointer: coarse)
       facts.more = { gear: await evaluate<boolean>("[...document.querySelectorAll('.panegear')].some((e) => window.__fx.shown(e))"),
-        live: await shown("#live"), tools: await box("document.querySelector('#panes .pane .panetools')") };
+        live: await shown("#live"), still: await evaluate<boolean>("document.body.classList.contains('keyboard-options')"),
+        where: await evaluate<string>("window.__fx.where()"), anyCoarse: await evaluate<boolean>("matchMedia('(any-pointer: coarse)').matches"),
+        tools: await box("document.querySelector('#panes .pane .panetools')") };
       await tapAt({ x: W / 2, y: Math.round((bottom - 60) * 0.6) }, "outside ⋯");
       const moreClosed = await evaluate<boolean>("!document.body.classList.contains('keyboard-options')");
       facts.actions = actions;
-      claims[`${tag}every action closes the island and does what the board's own control does (drawer, view, ℹ, History, ⋯)`] =
-        Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
-      claims[`${tag}⋯ brings the corner group's tools (with the gear) and Live; a tap outside folds them away`] =
-        (facts.more as { gear: boolean }).gear && (facts.more as { live: boolean }).live && moreClosed;
+      const actionsClaim = `${tag}every action closes the island and does what the board's own control does (drawer, view, ℹ, History, ⋯)`;
+      claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
+      detail[actionsClaim] = { actions, chatView: facts.chatView, missing: [...missing] };
+      const moreClaim = `${tag}⋯ brings the corner group's tools (with the gear) and, on a touch screen, Live; a tap outside folds them away`;
+      const more = facts.more as { gear: boolean; live: boolean; still: boolean; where: string; anyCoarse: boolean };
+      claims[moreClaim] = more.gear && more.still && more.live === more.anyCoarse && moreClosed && (!keyboard || more.where === "#input");
+      detail[moreClaim] = { ...more, moreClosed };
       // 5. the terminal ends above the bottom island and its grip
       const term = await box("document.querySelector('.paneterm')"), grip = await box("#mgrip"), bar2 = await box("#bar");
       facts.terminal = { term, grip, bar: bar2 };
@@ -6495,7 +6507,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await tap("document.querySelector('#mgrip')");
       if (artifacts) { await send("Page.stopScreencast"); recording = null; }
       facts.inputs = [...fx.inputs]; facts.missing = [...missing]; missing.length = 0;
-      results.push({ width: W, height: keyboard ? H - 336 : H, claims, facts });
+      results.push({ width: W, height: keyboard ? H - 336 : H, claims, facts, detail });
     }
     return results;
   } finally {

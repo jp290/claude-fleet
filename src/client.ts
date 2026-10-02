@@ -4309,8 +4309,9 @@ function renderIsland(): void {
   mInfo.hidden = !info;
   mMore.setAttribute("aria-expanded", String(more));
 }
-// switching the step is no action: like the keys, it never takes the field's focus (keyboard stays)
-for (const b of [mPill, mName]) b.addEventListener("pointerdown", (e) => e.preventDefault());
+// switching the step is no action: like the keys, it never takes the field's focus (keyboard stays).
+// Nor does ⋯: its options are for the field, and a keyboard leaving would fold them away again (sync)
+for (const b of [mPill, mName, mMore]) b.addEventListener("pointerdown", (e) => e.preventDefault());
 mPill.onclick = () => setIsland(true);
 mName.onclick = () => setIsland(false);
 mTop.addEventListener("click", (e) => {

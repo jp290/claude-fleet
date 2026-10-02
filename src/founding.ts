@@ -43,6 +43,7 @@ import { projectHue } from "./marks";
 import { modelLabel } from "./modelname";
 import { normalizeRolePresets, type FoundingRole, type LaneAnchor, type RolePreset } from "./protocol";
 import { openShell, type Shell } from "./shell";
+import { dropGrantMount, foundingRights, proofGrantRow } from "./rights";
 
 // the window's roles. "main" is no stored preset role: bootstrap-main carries no packs, so it has
 // no preset to redraw, and the server's preset store (src/protocol.ts#FOUNDING_ROLES) never sees it
@@ -784,7 +785,7 @@ function progList(): HTMLElement {
     b.disabled = !pickable(p);
     b.title = progTip(p);
     b.append(el("i", "fdradio"), el("span", "fdprogt", p.title), el("span", `fdpst ${p.state}`, progSays(p)));
-    b.onclick = () => { s.program = on ? null : p.id; s.error = null; renderRole(); renderFoot(); };
+    b.onclick = () => { s.program = on ? null : p.id; s.error = null; renderRole(); renderProfile(); renderFoot(); };
     list.append(b);
   }
   if (!s.progs.length) list.append(el("div", "fdnote", "Kein aktives Program — eine MAIN gehört immer zu einem."));
@@ -963,7 +964,11 @@ function renderProfile() {
       row.append(profField("container", "Container", s.container || containerDefaults?.container || "Fleet-Standard", !s.container, false,
         "Container und Docker-Daemon dieser Session — leer heißt der Fleet-Standard."));
   } else row.append(el("div", "fdnote", "Agenten werden gelesen …"));
-  body.append(row, el("div", "fdpmeta", "Ausführungsrechte: Fleet-Standard, hier nicht wählbar."));
+  // WHAT SHE MAY DO AND READ (G6.6, E35): execution, her own work and the project views, per role —
+  // the start grants no project view (foundingBody carries no grant field); assigning one is its
+  // own step after the start, in the receipt or later in the session's Info (src/rights.ts)
+  const prog = s.role === "main" ? s.progs?.find((x) => x.id === s.program)?.title ?? null : null;
+  body.append(row, foundingRights(s.role, prog));
   sec.append(body);
 }
 
@@ -1482,7 +1487,7 @@ function renderFoot() {
   const body = foundingBody();
   const prof = [body.harness ?? h?.id ?? "", body.model ? modelLabel(body.model) : h ? modelShown(h) : "", body.effort ?? ""].filter(Boolean).join(" · ");
   const ctx = s.role === "main" ? "Gründungsbrief" : s.packs.size ? `${s.packs.size} ${s.packs.size === 1 ? "Pack" : "Packs"}` : "ohne Packs";
-  say.append(el("b", "", who), document.createTextNode(` ${where}`), el("span", "fdsaym", ` · ${prof} · ${ctx}${s.role === "orch" ? " · Rollenkarte" : ""}`));
+  say.append(el("b", "", who), document.createTextNode(` ${where}`), el("span", "fdsaym", ` · ${prof} · ${ctx}${s.role === "orch" ? " · Rollenkarte" : ""} · ohne Projektsicht`));
   // a plan nobody could read starts without packs — allowed, but never silently
   const planGone = !!s.planErr && s.mode !== "old" && !!s.info?.git && s.role !== "main";
   // bootstrap-main picks the free MAIN place itself — the clicked one is a likely answer, not a promise
@@ -1635,7 +1640,7 @@ async function captureProof(s: State, body: SpawnBody, before: number | undefine
   const slots = document.getElementById("slots");
   if (slots) watch.observe(slots, { childList: true, subtree: true });
   const teardown = s.teardown;
-  s.teardown = () => { watch.disconnect(); teardown(); };
+  s.teardown = () => { watch.disconnect(); dropGrantMount("proof"); teardown(); };
   renderProof();
   if (body.packs?.length || role === "orch" || role === "main") {
     try {
@@ -1743,7 +1748,30 @@ function renderProof() {
     if (p.receiptCount > 1) packCell.append(el("div", "fdproofnote", `${p.receiptCount} Startbelege — der jüngste gilt.`));
   }
   if (p.receiptError) packCell.append(el("div", "fdproofnote", p.receiptError));
+  // E38/E39: THE PROJECT VIEWS this start granted — none, by construction — read back FRESH at the
+  // occupant the start produced (GET …/memory-grant after the start, never before it). Below the
+  // table the same block as in the session's Info, as an optional step of its own: a failure there
+  // is said in the block, and the status line above stays what the start was.
+  let step: HTMLElement | null = null;
+  if (row && !p.stale) {
+    const gr = proofGrantRow(p.result.slot, row.openedAt!, !!row.worktree, () => { if (S === s) renderProof(); });
+    const r = el("div", "fdproofrow"); r.dataset.field = "Projektsichten";
+    r.dataset.state = gr.warn ? "missing" : "same";
+    const req = el("div", "fdrequested", "keine");
+    req.append(el("span", "fdproofnote", "der Start vergibt keine"));
+    const got = el("div", `fdactual${gr.warn ? " warn" : ""}`);
+    got.append(gr.observed);
+    r.append(el("span", "fdproofkey", "Projektsichten"), req, got);
+    table.append(r);
+    if (gr.step) {
+      step = el("div", "fdproofgrant");
+      const h = el("div", "fdlab");
+      h.append(el("span", "fdlabt", "Projektsichten"), el("span", "fdlabh", "optional — die Session läuft auch ohne"));
+      step.append(h, gr.step);
+    }
+  }
   detail.append(table);
+  if (step) detail.append(step);
   s.shell.foot.replaceChildren();
   // no session started: there is nothing to go to, so the button is not offered at all — and the
   // focus it held stays inside the window
@@ -1758,5 +1786,10 @@ function renderProof() {
     if (!row || current?.openedAt !== row.openedAt || !current?.cwd) { p.stale = true; renderProof(); return; }
     closeFounding(); showSlot(p.result.slot);
   };
+  if (!row.worktree && !p.stale) {
+    const t = el("div", "fdsaycol");
+    t.append(el("div", "fdsay", "Die Session steht. Was du hier zuweist, ist ein eigener Schritt und ändert den Start nicht."));
+    s.shell.foot.append(t);
+  }
   s.shell.foot.append(go);
 }

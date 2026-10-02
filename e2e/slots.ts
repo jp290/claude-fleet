@@ -3,7 +3,7 @@
 // regression).
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
@@ -2107,6 +2107,22 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // THE RIGHTS OF A SESSION (card "der Owner sieht an jeder Session und beim Gruenden, was sie
+  // lesen darf"; docs/design/datenrechte-notiz.md): measured against THIS instance, not a fixture —
+  // real grants, real 409s, a really re-occupied slot. Every scenario is its own line, so a painted
+  // draft, a PATCH that should not have gone out or an "unbekannt" drawn as "keine" turns exactly
+  // that line red. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runRightsDom({ base: BASE, token: TOKEN, repo: REPO, sourceRoot })) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`rights DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("rights DOM — PROBE: Chromium runs the tree's client against the isolated instance", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
   // --- the board's SECTION ORDER. The owner set it twice: §F4 (briefs/ui-next-level-2026-08-06.md)
   // and the redesign of 2026-09-18/19 — machine alarms → head → changes → checks → history → the
   // sections and one fold. Nothing else in the suite would notice a re-sort
@@ -2121,9 +2137,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // `gsec` (the guest-console panel) left with the console itself, 2026-08-08, and `dsec1` (the
   // helper register) left for the meter's device count, 2026-09-19 — both absences are asserted,
   // so a re-added machine-level section has to state where it goes.
-  check("client: the board renders in the owner's order — alarms → head → setup → changes → checks → history → lanes → tools",
+  check("client: the board renders in the owner's order — alarms → head → setup → rights → changes → checks → history → lanes → tools",
     at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("idsec")
-    && at("idsec") < at("su") && at("su") < at("work")
+    && at("idsec") < at("su") && at("su") < at("rsec") && at("rsec") < at("work")
     && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("lsec") && at("lsec") < at("tsec")
     && at("gsec") === -1 && at("dsec1") === -1,
     JSON.stringify(pushOrder));
@@ -6130,6 +6146,430 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
       if (artifacts) { await send("Page.stopScreencast"); recording = null; }
       results.push({ width, height, claims, facts });
       missing.length = 0;
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE RIGHTS OF A SESSION against a REAL isolated instance (card "Der Owner sieht an jeder Session
+// und beim Gruenden, was sie lesen darf", docs/design/datenrechte-notiz.md E1–E39). Unlike the
+// fixture probes above, nothing here is stubbed: the staged server answers every request, the
+// grants are real records behind PATCH /api/slots/:id/memory-grant, and the owner's out-of-band
+// moves (a revoke from „[Zitat entfernt]“, a re-occupied slot, a project that leaves) go through the
+// same owner doors. Two things are the probe's own, and both are named: the client bundle is built
+// from `sourceRoot` and handed to the page in place of the served /app.js (so a mutant tree can be
+// measured against the same server), and ONE read — slot D's first GET — is answered 502 inside the
+// page, because a real server cannot be made to fail exactly one read. Every claim is read off the
+// DOM, the page's own request log and the server's state afterwards.
+export interface RightsDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+
+export async function runRightsDom(o: { base: string; token: string; repo: string; sourceRoot: string; artifacts?: string }): Promise<RightsDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-rights-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(o.sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const OH = { "content-type": "application/json", authorization: `Bearer ${o.token}` };
+  const own = (method: string, path: string, body?: unknown) =>
+    fetch(o.base + path, { method, headers: OH, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  type Row = { id: number; cwd: string | null; openedAt?: number; worktree?: { repo: string } | null };
+  type GrantRec = { revision: number; projectKeys: string[]; views: string[]; revokedAt: number | null };
+  type GrantGet = { openedAt: number | null; grant: GrantRec | null; inForce: boolean; knownProjects: { projectKey: string; repo: string }[] };
+  const rows = async (): Promise<Row[]> => ((await (await own("GET", "/api/sessions")).json()) as { slots: Row[] }).slots;
+  const grantOf = async (slot: number): Promise<GrantGet> => (await (await own("GET", `/api/slots/${slot}/memory-grant`)).json()) as GrantGet;
+  const taken = new Set<number>();
+  const lanes: { slot: number; cwd: string; repo: string }[] = [];
+  const openPlain = async (label: string): Promise<{ slot: number; openedAt: number }> => {
+    const free = (await rows()).find((r) => r.id <= 16 && !r.cwd && !taken.has(r.id));
+    if (!free) throw new Error("rights DOM: no free band slot for " + label);
+    taken.add(free.id);
+    const r = await own("POST", `/api/slots/${free.id}/open`, { cwd: o.repo, label });
+    if (!r.ok) throw new Error(`rights DOM: open ${free.id} → ${r.status} ${await r.text()}`);
+    const row = (await rows()).find((x) => x.id === free.id);
+    return { slot: free.id, openedAt: row?.openedAt ?? 0 };
+  };
+  const openLane = async (repo: string): Promise<{ slot: number; cwd: string }> => {
+    const r = await own("POST", "/api/lanes", { repo });
+    const j = (await r.json()) as { slot?: number; cwd?: string; error?: string };
+    if (!r.ok || !j.slot || !j.cwd) throw new Error(`rights DOM: lane on ${repo} → ${r.status} ${j.error ?? ""}`);
+    taken.add(j.slot);
+    lanes.push({ slot: j.slot, cwd: j.cwd, repo });
+    return { slot: j.slot, cwd: j.cwd };
+  };
+  const closeLane = async (slot: number) => {
+    const l = lanes.find((x) => x.slot === slot);
+    await own("POST", `/api/slots/${slot}/kill`, {});
+    if (l) { spawnSync("git", ["worktree", "remove", "--force", l.cwd], { cwd: l.repo }); lanes.splice(lanes.indexOf(l), 1); }
+    taken.delete(slot);
+  };
+  const cleanup = async () => {
+    for (const l of [...lanes]) await closeLane(l.slot);
+    for (const s of [...taken]) await own("POST", `/api/slots/${s}/kill`, {});
+    taken.clear();
+  };
+  // a throwaway repository: known while its one lane lives, unknown once the lane ends
+  const goneRepo = resolve(scratch, "gone-project");
+  mkdirSync(goneRepo, { recursive: true });
+  for (const args of [["init", "-q", "-b", "main"], ["-c", "user.email=p@x", "-c", "user.name=p", "commit", "-q", "--allow-empty", "-m", "init"]])
+    spawnSync("git", args, { cwd: goneRepo });
+  const canon = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+
+  // the page's own request log for the grant door and the start doors, and the one injected failure
+  const NET = `(() => { window.__net = []; const f0 = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input.url; const m = String(init?.method || 'GET').toUpperCase();
+      const g = /\\/api\\/slots\\/(\\d+)\\/(memory-grant|open|open-worktree)$/.exec(new URL(url, location.href).pathname);
+      if (!g) return f0(input, init);
+      let body = null; try { body = init?.body ? JSON.parse(init.body) : null; } catch {}
+      const row = { m, slot: Number(g[1]), door: g[2], body, at: performance.now(), status: null };
+      window.__net.push(row);
+      const fail = Number(localStorage.getItem('probe.failGrant') || 0);
+      if (g[2] === 'memory-grant' && m === 'GET' && fail === row.slot) {
+        localStorage.removeItem('probe.failGrant'); row.status = 502;
+        return new Response(JSON.stringify({ error: 'probe: one injected failure' }), { status: 502, headers: { 'content-type': 'application/json' } });
+      }
+      const res = await f0(input, init); row.status = res.status; return res; }; })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("rights DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, recording: string | null = null, frame = 0;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.screencastFrame" && msg.params) {
+        if (o.artifacts && recording) writeFileSync(resolve(o.artifacts, recording, `${String(frame++).padStart(5, "0")}.jpg`), Buffer.from(String(msg.params.data), "base64"));
+        void send("Page.screencastFrameAck", { sessionId: msg.params.sessionId }).catch(() => undefined);
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      // the one substituted response: the bundle of the tree under test instead of the served one
+      if (msg.method === "Fetch.requestPaused" && msg.params) {
+        const { requestId } = msg.params as { requestId: string };
+        void send("Fetch.fulfillRequest", { requestId, responseCode: 200, responseHeaders: [{ name: "content-type", value: "text/javascript" }],
+          body: Buffer.from(appJs).toString("base64") }).catch(() => undefined);
+      }
+    };
+    let targetId = "";
+    const freshTarget = async () => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      const target = await send("Target.createTarget", { url: "about:blank" });
+      targetId = String(target.targetId);
+      sessionId = undefined;
+      const attached = await send("Target.attachToTarget", { targetId, flatten: true });
+      sessionId = String(attached.sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: `${o.base}/app.js*` }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: NET });
+    };
+    const missing: string[] = [];
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 80) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (url: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 40); }; tick(); })`);
+    const click = async (expression: string): Promise<boolean> => {
+      const at = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
+        e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (!at) { missing.push(expression.slice(0, 120)); return false; }
+      for (const type of ["mouseMoved", "mousePressed", "mouseReleased"])
+        await send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1 });
+      await settle();
+      return true;
+    };
+    const shot = async (width: number, stage: string) => {
+      if (!o.artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(o.artifacts, `rechte-${stage}-${width}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // the rights block and its parts, wherever the Info lives (the column, or the phone's window)
+    const RB = `document.querySelector('#board .brights')`;
+    const GR = `${RB}?.querySelector('.rggrant')`;
+    const rk = (k: string, root = RB) => `${root}?.querySelector('[data-rk="${k}"]')`;
+    const grantText = () => evaluate<string>(`${GR}?.innerText ?? ''`);
+    const net = <T = { m: string; slot: number; door: string; body: Record<string, unknown> | null; status: number | null }[]>() => evaluate<T>(`window.__net`);
+    const patches = async (slot: number) => (await net()).filter((r) => r.door === "memory-grant" && r.m === "PATCH" && r.slot === slot);
+    // the page opened on ONE session, with the Info shown: the column at 1200, the ℹ window at 390
+    const openOn = async (width: number, height: number, slot: number, failFirstRead = false) => {
+      await freshTarget();
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
+      const phone = width < 700;
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${slot}], focused: 0 }));
+        localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); ${failFirstRead ? `localStorage.setItem('probe.failGrant', '${slot}');` : ""} })()`);
+      await navigate(`${o.base}/`);
+      if (!await wait(`document.querySelector('#panes .pane .xterm')`, 15000))
+        throw new Error("client did not boot against the instance: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      if (phone) await click(`document.querySelector('#panes .pane .boardtoggle')`);
+      return wait(`${RB}`, 10000);
+    };
+    const startVideo = async (name: string) => {
+      if (!o.artifacts) return;
+      recording = `video-${name}`; frame = 0;
+      mkdirSync(resolve(o.artifacts, recording), { recursive: true });
+      await send("Page.startScreencast", { format: "jpeg", quality: 80, everyNthFrame: 1 });
+    };
+    const stopVideo = async () => { if (recording) await send("Page.stopScreencast").catch(() => undefined); recording = null; };
+
+    const results: RightsDomResult[] = [];
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      try {
+        // --- the instance: four plain sessions, a lane on the fixture repo, a lane on a throwaway repo
+        const A = await openPlain("Rechte A");
+        const lane = await openLane(o.repo);
+        const laneG = await openLane(goneRepo);
+        const C = await openPlain("Rechte C");
+        const D = await openPlain("Rechte D");
+        const B = await openPlain("Rechte B");
+        const known0 = (await grantOf(A.slot)).knownProjects;
+        const kRepo = known0.find((p) => canon(p.repo) === canon(o.repo))?.projectKey ?? "";
+        const kGone = known0.find((p) => canon(p.repo) === canon(goneRepo))?.projectKey ?? "";
+        facts.known0 = known0;
+        claims["PROBE: the fixture repo and the throwaway repo are two known projects while their lanes live"] = !!kRepo && !!kGone && kRepo !== kGone;
+        // slot C holds a grant on the throwaway project, set over the owner door; then its only lane ends
+        const setC = await own("PATCH", `/api/slots/${C.slot}/memory-grant`, { expectedOpenedAt: C.openedAt, expectedRevision: 0, projectKeys: [kGone], views: ["work"] });
+        await closeLane(laneG.slot);
+        const knownC = (await grantOf(C.slot)).knownProjects;
+        claims["PROBE: slot C holds a grant on the throwaway project, and that project left the known set when its lane ended"] =
+          setC.ok && !knownC.some((p) => p.projectKey === kGone);
+
+        // --- the founding window: rights in the profile field, no grant field in the start, a fresh read after it
+        const F = (await rows()).find((r) => r.id <= 16 && !r.cwd && !taken.has(r.id));
+        if (!F) throw new Error("rights DOM: no free band slot for the founding");
+        taken.add(F.id); // the founding opens it — killed with the rest
+        await freshTarget();
+        await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+        await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
+        await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${A.slot}], focused: 0 })); localStorage.setItem('fleet.board', '0'); })()`);
+        await navigate(`${o.base}/`);
+        await wait(`document.querySelector('#slots .slot.empty[data-slot="${F.id}"]')`, 15000);
+        await startVideo(`${width}-gruendung`);
+        // the phone keeps the bar in its drawer; the row's own handler opens the same window
+        if (width < 700) await evaluate(`document.querySelector('#slots .slot.empty[data-slot="${F.id}"]').click()`);
+        else await click(`document.querySelector('#slots .slot.empty[data-slot="${F.id}"]')`);
+        const profile = `document.querySelector('#shell-found .fdrights')`;
+        const profTxt = () => evaluate<string>(`${profile}?.innerText ?? ''`);
+        const fdReady = await wait(`${profile} && document.querySelector('#shell-found .fdgo') && !document.querySelector('#shell-found .fdgo').disabled`, 10000);
+        const leerTxt = await profTxt();
+        claims["founding: the profile field names Ausführung, Eigene Arbeit and Projektsichten — none at the start, assigned after it"] = fdReady
+          && /Ausführung[\s\S]*Fleet-Standard/.test(leerTxt) && /Eigene Arbeit[\s\S]*Keine/.test(leerTxt)
+          && /Projektsichten[\s\S]*Keine beim Start\. Du weist sie danach zu/.test(leerTxt);
+        claims["founding: the foot says the start goes out without a project view"] =
+          (await evaluate<string>(`document.querySelector('#shell-found .fdsay')?.textContent ?? ''`)).includes("ohne Projektsicht");
+        await click(`document.querySelector('#shell-found .fdrole[data-role="lane"]')`);
+        const laneTxt = await profTxt();
+        await click(`document.querySelector('#shell-found .fdrole[data-role="orch"]')`);
+        const orchTxt = await profTxt();
+        await click(`document.querySelector('#shell-found .fdrole[data-role="leer"]')`);
+        await wait(`${profile}?.innerText.includes('Keine beim Start. Du weist')`);
+        claims["founding: the rows follow the role — Lane: \"Nicht für Lanes\", Orchestratorin: the role gives none"] =
+          /Projektsichten[\s\S]*Nicht für Lanes/.test(laneTxt) && /die Rolle gibt keine/.test(orchTxt);
+        facts.founding = { leerTxt, laneTxt, orchTxt };
+        await shot(width, "gruendung");
+        await click(`document.querySelector('#shell-found .fdgo')`);
+        const proofRow = `document.querySelector('#shell-found .fdproofrow[data-field="Projektsichten"]')`;
+        const proofOk = await wait(`${proofRow}?.innerText.includes('frisch gelesen')`, 15000);
+        const proofTxt = await evaluate<string>(`${proofRow}?.innerText ?? ''`);
+        const fNet = (await net()).filter((r) => r.slot === F.id);
+        const startAt = fNet.findIndex((r) => r.door === "open" && r.m === "POST");
+        const startBody = fNet[startAt]?.body ?? {};
+        const firstRead = fNet.findIndex((r) => r.door === "memory-grant" && r.m === "GET");
+        facts.foundingNet = fNet;
+        claims["founding: the start body carries no grant field — should-reject any grant, memory, project or view key"] = startAt >= 0
+          && !Object.keys(startBody).some((k) => /grant|memory|project|view/i.test(k));
+        claims["founding: the receipt reads the grant AFTER the start, fresh, at the new occupant — keine · Fassung 0"] = proofOk
+          && firstRead > startAt && /keine[\s\S]*der Start vergibt keine/.test(proofTxt) && /keine[\s\S]*frisch gelesen[\s\S]*Fassung 0/.test(proofTxt)
+          && fNet.filter((r) => r.door === "memory-grant" && r.m === "PATCH").length === 0;
+        const step = `document.querySelector('#shell-found .fdproofgrant')`;
+        claims["founding: the receipt offers \"Zuweisen …\" as its own optional step"] =
+          await evaluate<boolean>(`!!${rk("open", step)} && ${step}.innerText.includes('optional')`);
+        await shot(width, "beleg");
+        const fOpened = (await rows()).find((r) => r.id === F.id)?.openedAt ?? 0;
+        await click(rk("open", step));
+        await click(rk(`p:${kRepo}`, step));
+        await click(rk("apply", step));
+        const assigned = await wait(`${proofRow}?.innerText.includes('Fassung 1')`, 8000);
+        const fGrant = await grantOf(F.id);
+        const fPatch = (await net()).filter((r) => r.slot === F.id && r.door === "memory-grant" && r.m === "PATCH");
+        claims["founding: assigning from the receipt is one PATCH against the new occupant, and the row shows the server's grant"] = assigned
+          && fPatch.length === 1 && fPatch[0].body?.expectedOpenedAt === fOpened && fPatch[0].body?.expectedRevision === 0
+          && fGrant.grant?.revision === 1 && fGrant.grant.projectKeys.join() === kRepo;
+        await shot(width, "beleg-zugewiesen");
+        await stopVideo();
+
+        // --- slot A: assign, cancel without PATCH, 409, revoke — every painted right is the server's answer
+        claims["PROBE: the Info opens on slot A with its rights block"] = await openOn(width, height, A.slot);
+        await startVideo(`${width}-info`);
+        await wait(`${GR}?.innerText.includes('Nie zugewiesen')`);
+        const order = await evaluate<{ keys: string[]; afterSetup: boolean }>(`(() => { const body = document.querySelector('#boardbody');
+          const secs = [...body.children]; const r = ${RB}; const su = body.querySelector('.bsetup');
+          return { keys: [...r.querySelectorAll('.rgkey')].map((k) => k.textContent),
+            afterSetup: !!su && secs.indexOf(su) < secs.indexOf(r) && secs.slice(secs.indexOf(r) + 1).every((s) => !s.classList.contains('bsetup')) }; })()`);
+        facts.order = order;
+        claims["board: the block \"Rechte\" stands after the context and names Eigene Arbeit · Projektsichten · Ausführung · Deine Sicht"] =
+          order.afterSetup && order.keys.join("|") === "Eigene Arbeit|Projektsichten|Ausführung|Deine Sicht";
+        const aText0 = await grantText();
+        claims["board: a session without a grant reads \"Keine · Nie zugewiesen\", read from the server, no PATCH"] =
+          /^Keine/.test(aText0) && aText0.includes("Nie zugewiesen") && (await patches(A.slot)).length === 0
+          && (await net()).some((r) => r.slot === A.slot && r.door === "memory-grant" && r.m === "GET" && r.status === 200);
+        await shot(width, "frei");
+        await click(rk("open"));
+        const edOpen = await wait(`${RB}?.querySelector('.rged')`);
+        await click(rk(`p:${kRepo}`));
+        const delta = await evaluate<string>(`${RB}?.querySelector('.rgdelta')?.innerText ?? ''`);
+        await shot(width, "auswahl");
+        claims["board: \"Zuweisen …\" opens the choice in the block; nothing is sent while choosing"] = edOpen
+          && delta.includes(`+ ${basename(o.repo)}`) && (await patches(A.slot)).length === 0;
+        await click(rk("apply"));
+        const set1 = await wait(`${GR}?.innerText.includes('Fassung 1') && !${RB}.querySelector('.rged')`);
+        const a1 = await grantOf(A.slot);
+        const p1 = await patches(A.slot);
+        claims["board: Zuweisen is one PATCH with expectedOpenedAt + expectedRevision 0, and the block paints the server's grant"] = set1
+          && p1.length === 1 && p1[0].body?.expectedOpenedAt === A.openedAt && p1[0].body?.expectedRevision === 0
+          && JSON.stringify(p1[0].body?.projectKeys) === JSON.stringify([kRepo]) && JSON.stringify(p1[0].body?.views) === JSON.stringify(["work"])
+          && a1.grant?.revision === 1 && a1.inForce && (await grantText()).includes(basename(o.repo))
+          && (await grantText()).includes("Arbeitsstand · nur lesen") && (await grantText()).includes("von dir");
+        await shot(width, "zugewiesen");
+        // Abbrechen — in the choice and in the revoke question — sends nothing
+        await click(rk("open"));
+        await click(rk("v:observations"));
+        await click(rk("cancel"));
+        await click(rk("revoke"));
+        const asked = await evaluate<string>(`${GR}?.innerText ?? ''`);
+        await click(rk("revoke-cancel"));
+        claims["board: Abbrechen sends nothing — neither in the choice nor in the revoke question"] =
+          (await patches(A.slot)).length === 1 && asked.includes("Widerrufen?") && !(await grantText()).includes("Beobachtung")
+          && (await grantOf(A.slot)).grant?.revision === 1;
+        // 409: another window revokes while the choice is open
+        await click(rk("open"));
+        await click(rk("v:observations"));
+        const elsewhere = await own("PATCH", `/api/slots/${A.slot}/memory-grant`, { expectedOpenedAt: A.openedAt, expectedRevision: 1, revoke: true });
+        await click(rk("apply"));
+        const conflict = await wait(`${GR}?.innerText.includes('inzwischen geändert')`);
+        const outside = await evaluate<string>(`(() => { const g = ${GR}; if (!g) return ''; const c = g.cloneNode(true); c.querySelector('.rged')?.remove(); return c.innerText; })()`);
+        const a2 = await grantOf(A.slot);
+        const p2 = await patches(A.slot);
+        facts.conflict = { outside, p2: p2.map((r) => [r.body?.expectedRevision, r.status]) };
+        claims["board: 409 revision-mismatch paints the server's new state (Fassung 2, widerrufen) and keeps the choice open — the draft is never drawn"] =
+          elsewhere.ok && conflict && p2.length === 2 && p2[1].status === 409 && p2[1].body?.expectedRevision === 1
+          && /Fassung 2/.test(outside) && /^Keine/.test(outside) && /Zuletzt widerrufen/.test(outside) && !outside.includes("Beobachtung · nur lesen")
+          && await evaluate<boolean>(`!!${RB}?.querySelector('.rged')`) && a2.grant?.revision === 2 && a2.grant.revokedAt !== null;
+        await shot(width, "konflikt");
+        await click(rk("apply"));
+        const set3 = await wait(`${GR}?.innerText.includes('Fassung 3')`);
+        const a3 = await grantOf(A.slot);
+        claims["board: the open choice then lands against the new revision — Fassung 3, both views, from the server"] = set3
+          && a3.grant?.revision === 3 && a3.grant.views.join("+") === "work+observations"
+          && (await grantText()).includes("Arbeitsstand + Beobachtung · nur lesen");
+        // Widerrufen, with its question
+        await click(rk("revoke"));
+        await click(rk("revoke-go"));
+        const revoked = await wait(`${GR}?.innerText.includes('Zuletzt widerrufen') && ${GR}?.innerText.includes('Fassung 4')`);
+        const a4 = await grantOf(A.slot);
+        const p4 = await patches(A.slot);
+        claims["board: Widerrufen is one PATCH {revoke, expectedRevision 3} and paints \"Keine · Zuletzt widerrufen · Fassung 4\""] = revoked
+          && p4.length === 4 && p4[3].body?.revoke === true && p4[3].body?.expectedRevision === 3 && p4[3].body?.expectedOpenedAt === A.openedAt
+          && a4.grant?.revision === 4 && a4.grant.revokedAt !== null && !a4.inForce;
+        await shot(width, "widerrufen");
+
+        // --- a lane: no button, no read
+        claims["PROBE: the Info opens on the lane"] = await openOn(width, height, lane.slot);
+        const laneBlock = await evaluate<string>(`${RB}?.innerText ?? ''`);
+        claims["board: a lane says \"Nicht für Lanes\" with no Zuweisen/Ändern/Widerrufen button and never asks the grant door"] =
+          laneBlock.includes("Nicht für Lanes") && laneBlock.includes("Keinen Auftrag")
+          && await evaluate<boolean>(`!${rk("open")} && !${rk("revoke")} && !${rk("apply")}`)
+          && !(await net()).some((r) => r.slot === lane.slot && r.door === "memory-grant");
+        await shot(width, "lane");
+
+        // --- unknown is never "keine": a project the server no longer names, and a read that failed
+        claims["PROBE: the Info opens on slot C"] = await openOn(width, height, C.slot);
+        await wait(`${GR}?.innerText.includes('Fassung')`);
+        const cText = await grantText();
+        claims["board: a granted project the server no longer names reads \"unbekanntes Projekt\" — never \"Keine\""] =
+          cText.includes(`unbekanntes Projekt ${kGone.slice(0, 8)}`) && cText.includes("nennt der Server heute nicht mehr") && !/^Keine/.test(cText);
+        await click(rk("open"));
+        const cFoot = await evaluate<string>(`${RB}?.querySelector('.rgfoot')?.innerText ?? ''`);
+        const cBlocked = await evaluate<boolean>(`${rk("apply")}?.disabled === true`);
+        await shot(width, "unbekannt");
+        await click(rk("cancel"));
+        claims["board: an unknown project can only be dropped — Zuweisen stays off while it is chosen, and nothing is sent"] =
+          cBlocked && cFoot.includes("kann nicht neu zugewiesen werden") && (await patches(C.slot)).length === 0;
+        claims["PROBE: the Info opens on slot D (its first read answered 502 inside the page)"] = await openOn(width, height, D.slot, true);
+        await wait(`${GR}?.innerText.includes('Unbekannt')`);
+        const dText = await grantText();
+        claims["board: a read that failed says \"Unbekannt … nicht gemessen\" and offers no Zuweisen — never \"Keine\""] =
+          dText.startsWith("Unbekannt") && dText.includes("nicht gemessen") && !/^Keine/.test(dText) && !dText.includes("Nie zugewiesen")
+          && await evaluate<boolean>(`!${rk("open")} && !!${rk("reread")}`);
+        await shot(width, "nichtlesbar");
+        await click(rk("reread"));
+        claims["board: \"Neu lesen\" asks the server again and then shows what it says"] =
+          await wait(`${GR}?.innerText.includes('Nie zugewiesen')`);
+
+        // --- slot B is re-occupied while a choice is open: nothing goes out, the old answer is dropped
+        claims["PROBE: the Info opens on slot B"] = await openOn(width, height, B.slot);
+        await wait(`${GR}?.innerText.includes('Nie zugewiesen')`);
+        await click(rk("open"));
+        await click(rk(`p:${kRepo}`));
+        await own("POST", `/api/slots/${B.slot}/kill`, {});
+        await own("POST", `/api/slots/${B.slot}/open`, { cwd: o.repo, label: "Rechte B2" });
+        const B2 = (await rows()).find((r) => r.id === B.slot)?.openedAt ?? 0;
+        const said = await wait(`${GR}?.innerText.includes('neu belegt')`, 10000);
+        // a choice still on screen is clicked anyway: the rule is that nothing goes out
+        if (await evaluate<boolean>(`!!${rk("apply")}`)) await click(rk("apply"));
+        await settle(400);
+        const bText = await grantText();
+        const bGrant = await grantOf(B.slot);
+        facts.reoccupied = { bText, B2, before: B.openedAt };
+        claims["board: a slot re-occupied during an open choice sends no PATCH, says so, and the new session holds nothing"] = said
+          && B2 !== B.openedAt && (await patches(B.slot)).length === 0 && bText.includes("ging nicht raus")
+          && bGrant.openedAt === B2 && bGrant.grant === null;
+        await shot(width, "neubelegt");
+        await stopVideo();
+        facts.missing = missing.slice(0, 12);
+      } catch (error) {
+        claims["PROBE: the rights scenario ran to its end"] = false;
+        facts.error = error instanceof Error ? error.message : String(error);
+        facts.missing = missing.slice(0, 12);
+        await stopVideo().catch(() => undefined);
+      } finally {
+        await cleanup();
+      }
+      results.push({ width, height, claims, facts });
     }
     return results;
   } finally {

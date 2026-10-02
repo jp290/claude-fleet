@@ -12,6 +12,7 @@ import { porcelainPath } from "./gitpath";
 import { icon } from "./icons";
 import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./devices";
 import { serverClock } from "./composer";
+import { rightsHoldFocus, rightsSection } from "./rights";
 
 // --- right sideboard: session brief (desktop-only). Deterministic layers only —
 // git facts fetched fresh from /brief per render, and the prompt outline derived from
@@ -1342,6 +1343,9 @@ export async function renderBoard() {
   // draft map keeps the TEXT across re-renders, this check keeps the CARET — a board tick that
   // lands mid-typing simply waits for the next one
   if (document.activeElement instanceof HTMLTextAreaElement && boardBody.contains(document.activeElement)) return;
+  // the same hold for an open choice in the rights block: its own state survives a repaint, but a
+  // rebuilt column would take the focus out from under the owner's next switch
+  if (rightsHoldFocus(boardBody)) return;
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
   // dropped — remember it and re-run once the current pass finishes
   if (boardBusy) { boardAgain = true; return; }
@@ -1709,6 +1713,9 @@ export async function renderBoard() {
         if (setup?.omitted.length) note.textContent += ` · ${setup.omitted.length} omitted`;
         if (setup?.omitted.length) note.title = setup.omitted.map((o) => `${o.id}: ${o.why}`).join("\n");
         su.appendChild(note);
+        // E34 (docs/design/datenrechte-notiz.md): a pack is a pointer, never a right — the rights
+        // block right below says what the session may read
+        su.appendChild(el("div", "bsnote", "Packs zeigen ihr, wo sie nachlesen soll. Ein Recht geben sie nicht."));
       }
       // no row for "no packs": a session without them is the ordinary case, and a row saying `none`
       // cost a line on every session to answer a question only a packed one raises. The hover on
@@ -1726,6 +1733,13 @@ export async function renderBoard() {
       }
       nodes.push(su);
     }
+
+    // 1c — RECHTE (G6.5: after the context, before the checks; owner 2026-10-02 „[Zitat entfernt]“
+    // ): what this session may read — its own work, the project views the owner
+    // assigns over the memory-grant door, and the owner's own view. src/rights.ts holds the block
+    // and its state per occupant; the column only hangs it in.
+    const rsec = rightsSection(s);
+    nodes.push(rsec);
 
     // THE NOTEPAD — the owner's free text on THIS lane's worktree, directly above the suite area
     // (owner 2026-09-23: „[Zitat entfernt]“). Drawn from the lanes read alone, so it

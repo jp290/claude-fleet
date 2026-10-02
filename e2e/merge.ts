@@ -2835,4 +2835,170 @@ export async function run(lc: LaneCtx): Promise<void> {
   await post(`/api/slots/${receiverB}/kill`, {});
   await codexWritingWorkers();
   await preserveMergeHistory();
+  await reverifyHeldCandidate();
+}
+
+// THE RE-VERIFY DOOR (`{reverify:true}`, server.ts#reverifyRefusal/#reverifyJob), against the shape
+// lane 0A stood in on 2026-10-02: resolved, resolvedBy author, verify RED — and the red FOREIGN, a
+// failure outside the tree that was repaired without the candidate or main moving. The foreign red
+// is forced by a flag file the gate reads and the tree never contains; the lane carries the marker
+// only so no other tree in this run can be reddened by it. The resolution is written onto the
+// persisted verdict with the server stopped (the Q4 legacy fixture's method): the author round trip
+// is proved in ② above, and the door under test is about the verdict, not about who wrote it.
+async function reverifyHeldCandidate(): Promise<void> {
+  const delegate = process.env.FLEET_VERIFY_CMD ?? "";
+  const verify = `${ROOT}/reverify-foreign-verify`;
+  const foreign = `${ROOT}/reverify-foreign-red`;
+  const git = (cwd: string, ...args: string[]): string =>
+    spawnSync("git", ["-C", cwd, ...args]).stdout.toString().trim();
+  const commitIn = async (cwd: string, msg: string): Promise<boolean> => {
+    for (let i = 0; i < 20; i++) {
+      if (spawnSync("git", ["-C", cwd, "commit", "-qm", msg]).status === 0) return true;
+      await Bun.sleep(150);
+    }
+    return false;
+  };
+  type Lane = { slot: number; cwd: string; branch: string };
+  type Held = { resolvedBy?: string; at?: number };
+  let lane: Lane | null = null;
+  let landed = false;
+  try {
+    check("re-verify setup: the run's own verify command is known, so the foreign-red gate can delegate to it",
+      delegate !== "" && existsSync(delegate), delegate);
+    if (!delegate) return;
+    writeFileSync(verify, `#!/bin/sh
+if [ -f '${foreign}' ] && git grep -qI REVERIFYFOREIGN -- . 2>/dev/null; then
+  echo "verify FAIL: foreign red — the failure is outside this tree"
+  exit 1
+fi
+exec '${delegate}' "$@"
+`, { mode: 0o755 });
+    writeFileSync(foreign, "red\n");
+    await restartSrv({ FLEET_VERIFY_CMD: verify });
+    await setMergeMode("blocked");
+    lane = (await (await post("/api/lanes", { repo: REPO })).json()) as Lane;
+    await Bun.write(`${lane.cwd}/reverify-held.txt`, "held candidate, REVERIFYFOREIGN fixture\n");
+    spawnSync("git", ["-C", lane.cwd, "add", "reverify-held.txt"]);
+    const laneCommit = await commitIn(lane.cwd, "reverify held candidate");
+    await Bun.write(`${REPO}/reverify-main.txt`, "main side\n"); // different file → clean rebase
+    spawnSync("git", ["-C", REPO, "add", "reverify-main.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "reverify main work"]);
+    await settleForMerge(lane.slot);
+    await post(`/api/slots/${lane.slot}/merge`, {});
+    const first = await waitMerge(lane.slot);
+    const candidate = first.last?.candidateSha ?? "";
+    const firstOk = laneCommit && first.last?.status === "resolved" && first.last.verify?.ok === false
+      && first.last.verify.out.includes("foreign red") && /^[0-9a-f]{40,64}$/.test(candidate)
+      && /^[0-9a-f]{40,64}$/.test(first.last.diffHash ?? "");
+    check("re-verify setup: the forced foreign red stops the candidate as resolved with verify ok:false and a bound identity",
+      firstOk, JSON.stringify(first.last));
+    if (!firstOk) return;
+    await stopSrv();
+    const state = (await Bun.file(`${ROOT}/fleet.json`).json()) as { merges?: Record<string, Record<string, unknown>> };
+    const row = state.merges?.[String(lane.slot)];
+    if (row) { row.conflicted = ["reverify-held.txt"]; row.resolvedBy = "author"; }
+    await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(state, null, 2));
+    await restartSrv({ FLEET_VERIFY_CMD: verify });
+    const held = await waitMerge(lane.slot);
+    const mainSha = git(REPO, "rev-parse", "main");
+    const heldOk = row !== undefined && (held.last as Held | null)?.resolvedBy === "author"
+      && held.last?.candidateSha === candidate && held.last.mainSha === mainSha;
+    check("re-verify setup: the persisted verdict now holds the author resolution 0A carried, bound to the unmoved main",
+      heldOk, JSON.stringify({ held: held.last, mainSha }));
+    const heldV = held.last;
+    if (!heldOk || !heldV) return;
+
+    // the gap itself, measured before the door: ⏫ is held, confirm refuses the red
+    await settleForMerge(lane.slot);
+    const holdR = (await (await post(`/api/slots/${lane.slot}/merge`, {})).json()) as
+      { running?: boolean; status?: string; detail?: string };
+    const confR = await post(`/api/slots/${lane.slot}/merge`, { confirm: true });
+    const conf = (await confR.json()) as { detail?: string };
+    check("re-verify gap: without the door ⏫ is held by the ⏸ guard and confirm refuses the recorded red",
+      holdR.running === false && holdR.status === "resolved" && (holdR.detail ?? "").includes("awaits your review")
+        && confR.status === 409 && (conf.detail ?? "").includes("not green"),
+      JSON.stringify({ holdR, confirm: confR.status, conf }));
+    const bothR = await post(`/api/slots/${lane.slot}/merge`, { confirm: true, reverify: true });
+    check("re-verify: confirm and reverify in one request are refused 400 — two acts, never one",
+      bothR.status === 400, String(bothR.status));
+
+    // (1) a DIFFERENT candidate is refused 409 and nothing is measured or written
+    await Bun.write(`${lane.cwd}/reverify-unreviewed.txt`, "committed after the verdict\n");
+    spawnSync("git", ["-C", lane.cwd, "add", "reverify-unreviewed.txt"]);
+    const moved = await commitIn(lane.cwd, "candidate changed after the verdict");
+    await settleForMerge(lane.slot);
+    const staleR = await post(`/api/slots/${lane.slot}/merge`, { reverify: true });
+    const stale = (await staleR.json()) as { status?: string; reverify?: boolean };
+    const afterStale = await waitMerge(lane.slot);
+    check("re-verify (1): a candidate that is not the bound one is refused 409 stale, and the verdict is untouched",
+      moved && staleR.status === 409 && stale.status === "stale" && stale.reverify === false
+        && (afterStale.last as Held | null)?.at === (heldV as Held).at
+        && afterStale.last?.verify?.at === heldV.verify?.at,
+      JSON.stringify({ status: staleR.status, stale, verdict: afterStale.last }));
+    spawnSync("git", ["-C", lane.cwd, "reset", "-q", "--hard", candidate]);
+    // …and a MOVED TARGET is refused too: the hold has lapsed there, ⏫ is the way
+    await Bun.write(`${REPO}/reverify-target-moved.txt`, "main moved\n");
+    spawnSync("git", ["-C", REPO, "add", "reverify-target-moved.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "reverify target moved"]);
+    await settleForMerge(lane.slot);
+    const movedR = await post(`/api/slots/${lane.slot}/merge`, { reverify: true });
+    const movedBody = (await movedR.json()) as { detail?: string };
+    spawnSync("git", ["-C", REPO, "reset", "-q", "--hard", mainSha]);
+    check("re-verify (1b): a moved target is refused 409 and sent to ⏫",
+      movedR.status === 409 && (movedBody.detail ?? "").includes("moved since the verdict")
+        && git(lane.cwd, "rev-parse", "HEAD") === candidate && git(REPO, "rev-parse", "main") === mainSha,
+      JSON.stringify({ status: movedR.status, movedBody }));
+
+    // (2) the foreign failure still stands: re-measured RED, held, with a NEW verdict
+    await settleForMerge(lane.slot);
+    const redR = await post(`/api/slots/${lane.slot}/merge`, { reverify: true });
+    const redStart = (await redR.json()) as { running?: boolean; candidate?: string };
+    const red = await waitMerge(lane.slot);
+    check("re-verify (2): the same candidate re-measured RED stays held with a new verdict, resolution kept, main unmoved",
+      redR.ok && redStart.running === true && redStart.candidate === candidate
+        && red.last?.status === "resolved" && red.last.landed === false && red.last.verify?.ok === false
+        && (red.last.verify.at ?? 0) > (heldV.verify?.at ?? 0)
+        && ((red.last as Held).at ?? 0) > ((heldV as Held).at ?? 0)
+        && red.last.candidateSha === candidate && red.last.diffHash === heldV.diffHash
+        && (red.last as Held).resolvedBy === "author" && (red.last.conflicted ?? []).includes("reverify-held.txt")
+        && red.last.detail.includes("still RED") && git(REPO, "rev-parse", "main") === mainSha,
+      JSON.stringify({ redStart, verdict: red.last }));
+
+    // (3) the foreign failure is repaired outside the tree: re-measured GREEN, then the EXISTING confirm lands
+    rmSync(foreign, { force: true });
+    await settleForMerge(lane.slot);
+    await post(`/api/slots/${lane.slot}/merge`, { reverify: true });
+    const green = await waitMerge(lane.slot);
+    check("re-verify (3): the same candidate re-measured GREEN, still held for review — the door itself never lands",
+      green.last?.status === "resolved" && green.last.landed === false && green.last.verify?.ok === true
+        && green.last.candidateSha === candidate && green.last.diffHash === heldV.diffHash
+        && green.last.detail.includes("GREEN") && git(REPO, "rev-parse", "main") === mainSha,
+      JSON.stringify(green.last));
+    await settleForMerge(lane.slot);
+    const landR = await post(`/api/slots/${lane.slot}/merge`, { confirm: true });
+    const land = (await landR.json()) as { status?: string; landed?: boolean };
+    landed = land.landed === true;
+    check("re-verify (3): green leads into the existing confirm, which lands exactly the re-measured candidate",
+      landR.ok && land.status === "merged" && landed && git(REPO, "rev-parse", "main") === candidate,
+      JSON.stringify({ status: landR.status, land, main: git(REPO, "rev-parse", "main"), candidate }));
+    const rows = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .flatMap((l) => { try { return [JSON.parse(l) as { event?: string; detail?: string; reverify?: boolean;
+        verifyOk?: boolean | null; stopKind?: string | null }]; } catch { return []; } })
+      .filter((r) => r.event === "merge_verdict" && r.detail === lane?.branch && r.reverify === true);
+    check("re-verify: each measurement is one merge_verdict ledger row (red, then green); a refusal writes none",
+      rows.length === 2 && rows[0].verifyOk === false && rows[0].stopKind === "red"
+        && rows[1].verifyOk === true && rows[1].stopKind === "conflict",
+      JSON.stringify(rows));
+  } finally {
+    rmSync(foreign, { force: true });
+    if (lane && !landed) {
+      await post(`/api/slots/${lane.slot}/kill`, {});
+      await post("/api/worktrees/discard", { repo: REPO, path: lane.cwd, branch: lane.branch });
+    }
+    if (landed) {
+      spawnSync("git", ["-C", REPO, "rm", "-q", "reverify-held.txt"]);
+      spawnSync("git", ["-C", REPO, "commit", "-qm", "cleanup: drop the re-verify fixture from main"]);
+    }
+    await restartSrv();
+  }
 }

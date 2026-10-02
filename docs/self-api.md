@@ -4138,7 +4138,7 @@ tun. Es gibt dafür **keine zweite Merge- oder Land-Implementierung**: es ist di
 | | Board-⏸ (`byHuman:true`) | MAIN unter `guarded` |
 | --- | --- | --- |
 | Verify | wird als `stale` MARKIERT, nie neu gefahren | wird FRISCH auf dem Kandidaten gefahren |
-| Landet bei | Owner-Ermessen (auch bei `ok:false`) | **ausschließlich `ok:true`** |
+| Landet bei | nur über einem aufgezeichneten `ok:true` (seit `578e8975`; Rot/unbekannt → 409) | **ausschließlich frisches `ok:true`** |
 | `confirmedByHuman` | `true` | `false` (wer es war, steht auf dem Actor-Rail) |
 
 **Sie läuft im HINTERGRUND** wie der Merge-Job und aus demselben Grund: ein frischer `runVerify`
@@ -4184,6 +4184,45 @@ durch den sauberer Auto-Land, Owner-Confirm und Boot-Nachholung gleichermassen l
 `hubPush` faellt das Land nicht: `verify` und `landed` bleiben, was sie waren, und es gibt weder
 Retry noch Rebase gegen die Nabe. Begruendung und Beweis:
 `docs/dual-host-topologie-entscheidung-2026-09-05.md` §6.
+
+### Re-Verify: denselben gehaltenen Kandidaten neu messen (Owner-Route)
+
+Gemessene Lücke (Orchestratorin 2026-10-02): Lane 0A (Slot 24) stand 01:32 auf
+`resolved` / `resolvedBy:"author"` / `verify.ok:false`, und das Rot war FREMD (Pins E9/E10, 01:33
+außerhalb der Lane behoben). Danach hielt jeder `POST /api/slots/24/merge` im ⏸-Guard
+(`server.ts#carriedFromPendingVerdict`: Auflösung + Ziel noch Vorfahr), und jedes Confirm
+verweigerte das aufgezeichnete Rot (`server.ts#confirmResolvedCandidate`, `578e8975`). Neu messen
+ging erst, als das Ziel 02:17 durch ein fremdes Land weiterzog.
+
+Die Tür dafür ist **`POST /api/slots/:id/merge` mit `{"reverify":true}`** (Owner-Token), neben
+`{"confirm":true}` und nie zusammen mit ihm (400). Sie fährt das Gate über den Kandidaten, den das
+Verdikt schon gebunden hat — kein Rebase, kein Land, die Auflösung bleibt unangetastet — und schreibt
+das Ergebnis als neues Verdikt (`server.ts#reverifyRefusal`, `server.ts#reverifyJob`):
+
+| Lage | Antwort |
+| --- | --- |
+| Verdikt `resolved` mit Auflösung, Verify nicht grün, Ziel unbewegt, gleiche `candidateSha` + `diffHash` | `{running:true, reverify:true, candidate}`; Ausgang über `GET …/merge` und das merge-terminal-Event |
+| frisch GRÜN | Verdikt bleibt `resolved` (die Auflösung wartet weiter auf Review), jetzt mit `verify.ok:true` — das **bestehende** `{"confirm":true}` landet es |
+| frisch ROT oder unbekannt | weiter gehalten, neues Verdikt mit neuem `at` und neuer Messung |
+| Lane-Tip oder kanonischer Diff weicht ab | 409 `status:"stale"`, nichts gemessen, Verdikt unverändert |
+| Ziel hat sich bewegt | 409 — der ⏸-Hold ist verfallen, ⏫ rebaset und misst neu |
+| keine Auflösung im Verdikt / Verify schon grün / kein Verify / keine Identität | 409 mit dem Satz, welche andere Tür gilt |
+
+Jede Messung schreibt eine `merge_verdict`-Zeile mit `reverify:true`; eine Verweigerung schreibt
+keine. Kein Tick ruft die Tür: sie ist ein Owner-Akt, und ein Confirm landet weiterhin nie ein
+nicht-grünes Verify. Ändert sich der Kandidat oder das Ziel WÄHREND des Laufs, wird die Messung
+verworfen und das alte Verify bleibt stehen.
+
+**Warum nicht an der Program-MAIN-Land-Tür** (`POST /api/self/tasks/:id/land`): die MAIN nimmt einen
+anderen Pfad. Unter `green-only` darf sie eine Auflösung gar nicht bestätigen — neu messen öffnete
+ihr nichts. Unter `guarded` IST ihr Confirm schon ein frisches Re-Verify (`byHuman:false`), einmal pro
+Kandidat (`selfConfirmSpent`); dieser Deckel ist der Schutz gegen Zyklen über identischen Bytes, und
+der Server kann ein fremdes Rot nicht von einem echten unterscheiden. Nach einem fremden Rot
+eskaliert die MAIN also an den Owner, der diese Tür fährt und danach bestätigt.
+
+Beweis: `e2e/merge.ts#reverifyHeldCandidate` (erzwungenes Fremd-Rot per Flag-Datei, die Lücke vor der
+Tür, 409 für einen abweichenden Kandidaten und ein bewegtes Ziel, Rot gehalten, Grün → Confirm
+landet genau den Kandidaten).
 
 ### Aktor-Provenienz: wer den Integrations-Branch bewegt hat
 

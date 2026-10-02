@@ -32455,23 +32455,27 @@ function freshConfirmRefusal(fresh: MergeLast["verify"]): string {
 // It returns `{status, body}` rather than a Response so the two callers can render it in their own
 // vocabulary: the owner route as JSON, the MAIN's background job as a merge verdict + event.
 type ConfirmLandResult = { status: number; body: Record<string, unknown> };
+// The land candidate as it stands NOW — target tip, lane tip, canonical diff hash — read the way
+// mergeJob's bindCandidate bound it, so confirm and re-verify compare like with like. null = unknown.
+async function landCandidateIdentity(repo: string, cwd: string, main: string):
+  Promise<{ mainSha: string; candidateSha: string; diffHash: string } | null> {
+  const [mainNow, tipNow] = await Promise.all([
+    git(repo, "rev-parse", main), git(cwd, "rev-parse", "HEAD"),
+  ]);
+  if (mainNow.code !== 0 || tipNow.code !== 0
+    || !/^[0-9a-f]{40,64}$/.test(mainNow.out) || !/^[0-9a-f]{40,64}$/.test(tipNow.out)) return null;
+  const diff = await git(cwd, "diff", "--binary", `${mainNow.out}...${tipNow.out}`, "--");
+  if (diff.code !== 0) return null;
+  const diffHash = await patchIdOf(cwd, diff.out, "");
+  return diffHash ? { mainSha: mainNow.out, candidateSha: tipNow.out, diffHash } : null;
+}
 async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main: string,
   branch: string, opts: { byHuman: boolean; actor: LandActor }): Promise<ConfirmLandResult> {
   // the "resolved" verdict the caller is confirming — its resolver detail, conflicted
   // files, and verify result are the review story this land is owning. Read it BEFORE
   // the delete below so the provenance note carries what the confirmer actually reviewed.
   const reviewed = mergeLast.get(s.id);
-  const readCandidateIdentity = async (): Promise<{ mainSha: string; candidateSha: string; diffHash: string } | null> => {
-    const [mainNow, tipNow] = await Promise.all([
-      git(repo, "rev-parse", main), git(cwd, "rev-parse", "HEAD"),
-    ]);
-    if (mainNow.code !== 0 || tipNow.code !== 0
-      || !/^[0-9a-f]{40,64}$/.test(mainNow.out) || !/^[0-9a-f]{40,64}$/.test(tipNow.out)) return null;
-    const diff = await git(cwd, "diff", "--binary", `${mainNow.out}...${tipNow.out}`, "--");
-    if (diff.code !== 0) return null;
-    const diffHash = await patchIdOf(cwd, diff.out, "");
-    return diffHash ? { mainSha: mainNow.out, candidateSha: tipNow.out, diffHash } : null;
-  };
+  const readCandidateIdentity = () => landCandidateIdentity(repo, cwd, main);
   const identityKnown = reviewed !== undefined
     && /^[0-9a-f]{40,64}$/.test(reviewed.mainSha ?? "")
     && /^[0-9a-f]{40,64}$/.test(reviewed.candidateSha ?? "")
@@ -32655,6 +32659,96 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
   return { status: 200, body: { status: "merged", landed: true, branch,
     detail: opts.byHuman ? "reviewed resolution — landed"
       : "resolved candidate confirmed by the bound MAIN, re-verified fresh — landed" } };
+}
+
+// --- RE-MEASURE A HELD CANDIDATE: the owner's `{reverify:true}` door (2026-10-02). Measured gap:
+// lane 0A (slot 24) stood at resolved / resolvedBy author / verify ok:false at 01:32, and the red
+// was FOREIGN (pins E9/E10, repaired 01:33 outside the lane). From then on every ⏫ was held by the
+// ⏸ guard (carriedFromPendingVerdict: a resolution, main still an ancestor) and every confirm was
+// refused by the verify bar (578e8975: a recorded verify that is not green never lands). The two
+// rules are each right and together a dead end: the only way to measure the SAME bytes again was
+// for main to move, which happened by accident at 02:17.
+//
+// This door is that one missing act and nothing else: it runs the gate over the candidate the
+// verdict already bound, and writes the result as the new verdict. It never rebases, never lands
+// and never touches the resolution — green leaves a verdict the existing confirm accepts, red
+// leaves the lane held exactly as before with the new measurement on it. Three refusals keep it
+// from being a second ⏫: the verdict must HOLD a resolution (without one the ⏫ re-run is not held
+// and already re-measures), the target must not have moved (then the hold has lapsed and ⏫ is the
+// way), and lane tip + canonical diff must be exactly what the verdict bound (`stale`, as confirm).
+// Owner route only — why the Program-MAIN door does not take it: docs/self-api.md §Re-Verify.
+type ReviewedCandidate = MergeLast & { mainSha: string; candidateSha: string; diffHash: string };
+async function reverifyRefusal(s: Slot, cwd: string, repo: string, main: string):
+  Promise<{ refuse: ConfirmLandResult } | { reviewed: ReviewedCandidate }> {
+  const pend = mergeLast.get(s.id);
+  const refuse = (detail: string, extra: Record<string, unknown> = {}): { refuse: ConfirmLandResult } =>
+    ({ refuse: { status: 409, body: { status: pend?.status ?? null, landed: false, reverify: false, detail, ...extra } } });
+  const holdsResolution = (pend?.conflicted?.length ?? 0) > 0 || !!pend?.resolvedBy;
+  if (!pend || pend.status !== "resolved" || pend.landed === true || !holdsResolution)
+    return refuse("re-verify measures a HELD resolved candidate — this lane's verdict holds no unreviewed resolution, so ⏫ merge is not held and re-measures by itself");
+  if (!pend.verify)
+    return refuse("the verdict records no verify — no gate was configured when it was written, so there is nothing to re-measure");
+  if (pend.verify.ok === true)
+    return refuse("the recorded verify is already green — confirm the candidate instead", { verify: pend.verify });
+  const { mainSha, candidateSha, diffHash } = pend;
+  if (!mainSha || !candidateSha || !diffHash || !/^[0-9a-f]{40,64}$/.test(mainSha)
+    || !/^[0-9a-f]{40,64}$/.test(candidateSha) || !/^[0-9a-f]{40,64}$/.test(diffHash))
+    return refuse("the verdict bound no candidate identity — a re-measure could not prove it measured the reviewed candidate");
+  const reviewed: ReviewedCandidate = { ...pend, mainSha, candidateSha, diffHash };
+  const current = await landCandidateIdentity(repo, cwd, main);
+  if (current === null)
+    return refuse("the lane's candidate identity could not be read — an unknown candidate is never re-measured");
+  const bound = { mainSha: reviewed.mainSha, candidateSha: reviewed.candidateSha, diffHash: reviewed.diffHash };
+  if (current.mainSha !== reviewed.mainSha)
+    return refuse(`${main} moved since the verdict — the ⏸ hold has lapsed; re-run ⏫ merge, which rebases and measures the new candidate`,
+      { reviewed: bound, current });
+  if (current.candidateSha !== reviewed.candidateSha || current.diffHash !== reviewed.diffHash)
+    return { refuse: { status: 409, body: { status: "stale", landed: false, reverify: false,
+      detail: "the reviewed lane tip or canonical diff changed — run merge again and review the new candidate",
+      reviewed: bound, current } } };
+  return { reviewed };
+}
+async function reverifyJob(s: Slot, cwd: string, repo: string, main: string, branch: string,
+  reviewed: ReviewedCandidate, actor: LandActor): Promise<void> {
+  let next: MergeLast;
+  try {
+    const plan = await verifyPlanFor(cwd, repo, reviewed.mainSha);
+    const fresh = await reportServerRun(`land:${s.id}`,
+      { slot: s.id, label: s.label, branch, suite: "re-verify gate", cwd, repo },
+      () => runVerify(cwd, reviewed.mainSha, plan));
+    // the measurement is about the candidate only if the candidate is still the one it bound: a
+    // commit or a main move during the run makes it a measurement of something nobody reviewed
+    const after = await landCandidateIdentity(repo, cwd, main);
+    const same = after !== null && after.mainSha === reviewed.mainSha
+      && after.candidateSha === reviewed.candidateSha && after.diffHash === reviewed.diffHash;
+    next = !fresh || !same ? { ...reviewed, at: Date.now(),
+      detail: (!fresh ? "re-verify could not run: no verify command is configured for this repo now — the recorded verify stands"
+        : "the candidate or its target changed while re-verify ran — the measurement was discarded and the recorded verify stands; run merge again").slice(0, 600) }
+      : { ...reviewed, at: Date.now(), verify: fresh,
+        detail: (fresh.ok === true
+          ? `re-verified the same candidate ${reviewed.candidateSha.slice(0, 8)}: GREEN — the resolution still awaits review; confirm lands it`
+          : fresh.ok === false
+            ? `re-verified the same candidate ${reviewed.candidateSha.slice(0, 8)}: still RED (${fresh.cmd}) — held; repair the lane, or re-verify once the failure outside it is fixed`
+            : `re-verified the same candidate ${reviewed.candidateSha.slice(0, 8)}, but the gate measured nothing (${fresh.timedOut ? "timed out" : fresh.waitedOut ? "never started" : fresh.serverDown ? "a suite server did not come up" : "skipped"}) — held, unknown is never green`).slice(0, 600) };
+  } catch (e) {
+    next = { ...reviewed, at: Date.now(),
+      detail: `re-verify threw — the recorded verify stands: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600) };
+  }
+  // the same occupant guard as every job that outlives its request: a slot recycled onto another
+  // lane mid-run gets nothing written over its own verdict
+  if (s.cwd === cwd && s.worktree?.branch === branch) {
+    mergeLast.set(s.id, next);
+    // one ledger row per verdict, in mergeJob's columns, marked so a count can tell it from a run
+    audit("merge_verdict", s.id, branch, {
+      status: next.status, landed: false, actor: actor.kind, reverify: true,
+      verifyOk: next.verify?.ok ?? null,
+      stopKind: next.verify?.ok === false ? "red" : next.verify?.ok === null ? "unmeasured"
+        : (next.conflicted?.length ?? 0) > 0 ? "conflict" : "review",
+      ...(next.verify?.ms !== undefined ? { ms: next.verify.ms } : {}),
+    } as unknown as NonNullable<Parameters<typeof audit>[3]>);
+    await mintMergeEvents(s.id, cwd, branch, next);
+    await saveStateNow();
+  }
 }
 
 // --- WHAT A FRESH RUN CARRIES OUT OF THE VERDICT IT SUPERSEDES, and the ⏸ guard that sometimes
@@ -44414,6 +44508,20 @@ Bun.serve<WSData>({
         const main = await laneBaseRef(s);
         if (!main) return json({ error: "cannot resolve this lane's integration branch" }, 400);
         if (main === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
+        if (body?.reverify === true && body?.confirm === true)
+          return json({ error: "confirm and reverify are two acts — re-verify measures, confirm lands; send one" }, 400);
+        // re-verify: the gate over the SAME held candidate, nothing else (reverifyRefusal). Asked
+        // ahead of the dirty-main stop because a measurement never touches the main checkout. In the
+        // background like the merge job, on the same reservation, so ⏫/confirm answer running:true
+        // meanwhile and the board's poll and merge watches read its verdict like any other.
+        if (body?.reverify === true) {
+          const pre = await reverifyRefusal(s, cwd, repo, main);
+          if ("refuse" in pre) return json(pre.refuse.body, pre.refuse.status);
+          const job: Promise<void> = reverifyJob(s, cwd, repo, main, branch, pre.reviewed, ownerActor)
+            .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
+          mergeInflight.set(s.id, job);
+          return json({ running: true, reverify: true, candidate: pre.reviewed.candidateSha });
+        }
         // the collision guard only matters when the integration branch is checked out somewhere: an ff-merge
         // THERE rewrites files on disk. Checked out nowhere (primary parked off it), landing advances the
         // ref with branch -f and touches no working tree — skip the guard entirely.

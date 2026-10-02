@@ -8,6 +8,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SearchAddon } from "@xterm/addon-search";
 import qrcode from "qrcode-generator";
 import { entityMatches, mdInto, type MdEntityKind } from "./md";
 import { selectionMarkdown } from "./mdcopy";
@@ -19,7 +20,7 @@ import type { ModelEntry, ModelAvailability } from "../model-register";
 import { DraftBook, historySource, type HistoryEntry } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { closeEntityCard, hideEntityCard, showEntityCard } from "./entcard";
-import { loadChatSizes, onChatSize, sizePanel, stepChatSizes } from "./chatsize";
+import { loadChatSizes, onChatSize, onTermSize, setTermDefault, sizePanel, stepChatSizes, stepTermSize, termFontSize } from "./chatsize";
 import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, prefText, type PrefDef } from "./prefs";
 import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
@@ -564,6 +565,10 @@ loadChatSizes();
 // a column-width change pulls a LIMITED terminal along: the CSS width follows the var, the pane's
 // own fit path picks the new box up and tmux gets the new column count (no second resize way)
 onChatSize(() => { for (const p of panes) if (p.termIsLimited()) p.refit(); });
+// the terminal's font size (card K8): unset, a pane keeps the size it has always started with;
+// a change sets every pane and refits it, so tmux gets the new column count the usual way
+setTermDefault(() => (isMobile() ? 11 : 12));
+onTermSize(() => { for (const p of panes) p.setFontSize(termFontSize()); });
 
 const COPIED_MS = 1200;
 function copyButton(label: string, title: string, source: () => string): HTMLButtonElement {
@@ -834,6 +839,48 @@ export function describeEntity(kind: string, id: string, slot = 0): EntFacts | n
   };
 }
 
+// THE TERMINAL'S OWN SHORTCUTS (card K8): + / − / 0 size the terminal font, F opens the scrollback
+// search. The modifier is the platform's command key — ⌘ on Apple, Ctrl elsewhere, as a terminal in
+// the browser does it — because on a Mac Ctrl+F and Ctrl+− are keys the shell in the pane owns.
+const APPLE = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+type TermShortcut = 1 | -1 | 0 | "find";
+// the search's marks in the chat material (Grammatik G0.1/G0.2: ink, no blue, no signal colour):
+// every hit on --chat-faint, the current one with an --chat-ink edge. xterm wants #RRGGBB, so the
+// tokens are read off :root (index.html) instead of being copied here as literals.
+function findMarks() {
+  const tok = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  return {
+    matchBackground: tok("--chat-faint"), activeMatchBackground: tok("--chat-faint"), activeMatchBorder: tok("--chat-ink"),
+    matchOverviewRuler: tok("--chat-mute"), activeMatchColorOverviewRuler: tok("--chat-ink"),
+  };
+}
+function termShortcut(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean },
+  apple: boolean): TermShortcut | null {
+  if (e.altKey || (apple ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey)) return null;
+  if (e.key === "+" || e.key === "=") return 1;
+  if (e.key === "-") return -1;
+  if (e.key === "0") return 0;
+  return !e.shiftKey && e.key.toLowerCase() === "f" ? "find" : null;
+}
+// with the focused pane on its terminal; the xterm key handler lets these through (Pane), so this
+// one listener serves a focused terminal and a focused page alike. The search opens only from the
+// pane itself or the bare page — a dialog's own field keeps its keys.
+window.addEventListener("keydown", (e) => {
+  const p = panes[focused];
+  if (!p || p.isChat) return;
+  const k = termShortcut(e, APPLE);
+  if (k === null) return;
+  if (k === "find") {
+    const t = e.target as Node | null;
+    if (!p.slot || !(t === document.body || (t && p.root.contains(t)))) return;
+    e.preventDefault();
+    p.openSearch();
+    return;
+  }
+  e.preventDefault();
+  stepTermSize(k);
+});
+
 // Ctrl/Cmd +/−/0 resize the conversation text — only while the focused pane shows it, so the
 // browser's own page zoom keeps working everywhere else
 window.addEventListener("keydown", (e) => {
@@ -1030,6 +1077,11 @@ class Pane {
   // LONG PRESS COPIES (T2 of the same walk-through): on a phone the terminal refuses text selection
   // (.paneterm user-select:none, so a drag scrolls the scrollback) and nothing could be copied out.
   private readonly copyPop: HTMLButtonElement;
+  // the scrollback search (openSearch): the addon, its bar, the field and the hit count
+  private readonly search = new SearchAddon();
+  private readonly findBar: HTMLElement;
+  private readonly findInput: HTMLInputElement;
+  private readonly findCount: HTMLElement;
   private pressTimer: ReturnType<typeof setTimeout> | undefined;
   private pressAt: { x: number; y: number } | null = null;
   private pressFired = false;
@@ -1173,7 +1225,38 @@ class Pane {
       this.copyPop.textContent = "Kopiert";
       setTimeout(() => this.hideCopy(), 700);
     };
-    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.downBar, this.copyPop, this.toolsBox);
+    // THE SCROLLBACK SEARCH (card K8, T7): the canvas and WebGL renderers paint pixels, so the
+    // browser's own find never sees terminal text. ⌘F/Ctrl+F opens this bar over the focused pane;
+    // typing searches upward from the end (the newest hit first) and marks every hit, Enter goes to
+    // the older hit, Shift+Enter to the newer, Esc closes and gives the keys back to the terminal.
+    this.findBar = el("div", "termfind");
+    this.findBar.setAttribute("role", "search");
+    this.findInput = el("input", "termfindin") as HTMLInputElement;
+    this.findInput.type = "text";
+    this.findInput.placeholder = "Im Verlauf suchen";
+    this.findInput.setAttribute("aria-label", "Im Terminalverlauf suchen");
+    this.findInput.spellcheck = false;
+    this.findCount = el("span", "termfindn");
+    this.findCount.setAttribute("aria-live", "polite");
+    const findBtn = (name: IconName, title: string, run: () => void): HTMLButtonElement => {
+      const b = el("button", "termfindbtn") as HTMLButtonElement;
+      b.appendChild(icon(name));
+      b.title = title;
+      b.setAttribute("aria-label", title);
+      b.onmousedown = (e) => e.preventDefault(); // the field keeps the keyboard
+      b.onclick = (e) => { e.stopPropagation(); run(); };
+      return b;
+    };
+    this.findInput.addEventListener("input", () => this.findStep(-1));
+    this.findInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); this.closeSearch(); }
+      else if (e.key === "Enter") { e.preventDefault(); this.findStep(e.shiftKey ? 1 : -1); }
+    });
+    this.findBar.append(this.findInput, this.findCount,
+      findBtn("up", "Älterer Treffer (Enter)", () => this.findStep(-1)),
+      findBtn("down", "Neuerer Treffer (Shift+Enter)", () => this.findStep(1)),
+      findBtn("x", "Suche schließen (Esc)", () => this.closeSearch()));
+    this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.downBar, this.copyPop, this.findBar, this.toolsBox);
     this.sizeObserver = new ResizeObserver(() => {
       clearTimeout(this.observedRefit);
       this.observedRefit = setTimeout(() => {
@@ -1204,14 +1287,17 @@ class Pane {
       // dem Finger herlaeuft. Reines Bedienungsgefuehl, kein Datenpfad: wer es zurueckdrehen
       // will, setzt 0 und hat exakt das Verhalten aller Versionen davor.
       smoothScrollDuration: 100,
-      fontSize: isMobile() ? 11 : 12,
+      fontSize: termFontSize(),
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
+      allowProposedApi: true, // the search addon marks its hits with decorations (a proposed API)
       theme: { background: "#000000", foreground: "#d8d8d8" }, // the chat view's black (index.html #main)
       linkHandler: { activate: openTermLink },
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
     this.term.loadAddon(new WebLinksAddon(openTermLink));
+    this.term.loadAddon(this.search);
+    this.search.onDidChangeResults(({ resultIndex, resultCount }) => this.paintFindCount(resultIndex, resultCount));
     this.term.open(termEl);
     // a finger held still for PRESS_MS selects the logical line under it (wrapped rows joined) and
     // offers "Kopieren" above it, through copyText like every other copy button. Moving first is a
@@ -1236,6 +1322,8 @@ class Pane {
     this.term.onData((d) => this.sendRaw(d));
     this.term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && e.key === "Escape") closeEntityCard();
+      // the terminal's own shortcuts go to the page's listener (termShortcut), not to the shell
+      if (termShortcut(e, APPLE) !== null) return false;
       // the canvas renderer paints cells as pixels, not DOM text, so a drag-selection has
       // nothing for the browser's native ⌘C to copy (no real Selection exists) — copy the
       // selection text directly instead. Guard e.type: xterm invokes this handler from both
@@ -1365,6 +1453,7 @@ class Pane {
   // "What did I send" lives in the 🕘 prompt history and the conversation view instead.
 
   setView(v: "term" | "chat") {
+    if (v !== "term") this.closeSearch();
     // the terminal view hides the chat (display:none) and a hidden element has no scroll position:
     // read it on the way out, restore it on the way back (applyChatMemo below)
     if (this.view === "chat" && v !== "chat") this.chatMemo ??= this.chatPosition();
@@ -1970,6 +2059,7 @@ class Pane {
   assign(slot: number) {
     if (slot === this.slot) { this.focus(); this.scrollToEnd(); return; }
     this.leavePast();
+    this.closeSearch(); // the hits were the old slot's text
     // the slot this pane leaves keeps its chat and its reading position (owner 2026-09-29: „[Zitat entfernt]“
     // ) — this replaced the older wish in note
     // 37439a62 to land every switch at the end
@@ -2013,6 +2103,44 @@ class Pane {
     // no focus, so a switch left the keyboard on <body> (measured 2026-09-29, every frame of A->B->A)
     if (this.view === "chat" && this.pastN === null) ta.focus();
     else this.term.focus();
+  }
+
+  // the terminal font (card K8): set and refit — the refit sends tmux the new column count, and the
+  // next socket connects with it
+  setFontSize(px: number): void {
+    if (this.term.options.fontSize === px) return;
+    this.term.options.fontSize = px;
+    this.refit();
+  }
+
+  openSearch(): void {
+    if (this.view !== "term") return;
+    this.findBar.classList.add("open");
+    this.findInput.focus();
+    this.findInput.select();
+  }
+
+  closeSearch(): void {
+    if (!this.findBar.classList.contains("open")) return;
+    this.findBar.classList.remove("open");
+    this.search.clearDecorations();
+    this.term.clearSelection();
+    this.findCount.textContent = "";
+    if (this.view === "term" && !isMobile()) this.term.focus();
+  }
+
+  // -1 = the older hit (upward, where the search starts from the end), 1 = the newer one
+  private findStep(dir: -1 | 1): void {
+    const q = this.findInput.value;
+    if (!q) { this.search.clearDecorations(); this.term.clearSelection(); this.findCount.textContent = ""; return; }
+    if (dir < 0) this.search.findPrevious(q, { decorations: findMarks() });
+    else this.search.findNext(q, { decorations: findMarks() });
+  }
+
+  private paintFindCount(index: number, count: number): void {
+    if (!this.findInput.value) { this.findCount.textContent = ""; return; }
+    this.findCount.textContent = count === 0 ? "keine Treffer"
+      : index < 0 ? `über ${count}` : `${index + 1} von ${count}`;
   }
 
   scrollToEnd(chat = true) {

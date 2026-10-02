@@ -34,16 +34,39 @@ function apply(): void {
   for (const l of listeners) l();
 }
 
+// THE TERMINAL'S FONT SIZE (card K8, T6): one px value for every pane's xterm. It stands apart from
+// the conversation's sizes — their keys, steps and Ctrl/Cmd 0 reset are untouched — and rides in the
+// same fleet.chatsize document under "term". null = nothing chosen: the device default the pane
+// constructor has always used (11 px on a phone, 12 px elsewhere), handed in by src/client.ts.
+export const TERM_SPEC = { label: "Terminal", min: 9, max: 18, step: 1 };
+let termPx: number | null = null;
+let termDefault = (): number => 12;
+const termListeners = new Set<() => void>();
+const clampTerm = (n: number): number => Math.round(Math.min(TERM_SPEC.max, Math.max(TERM_SPEC.min, n)));
+export const termFontSize = (): number => termPx ?? termDefault();
+export function setTermDefault(fn: () => number): void { termDefault = fn; }
+export function onTermSize(fn: () => void): void { termListeners.add(fn); }
+export function setTermSize(n: number | null): void {
+  termPx = n === null ? null : clampTerm(n);
+  for (const l of termListeners) l();
+  save();
+}
+// Ctrl/Cmd +/− with a terminal on screen: one px per step; 0 goes back to the device default
+export function stepTermSize(dir: -1 | 0 | 1): void {
+  setTermSize(dir === 0 ? null : termFontSize() + dir);
+}
+
 function save(): void {
-  prefSet("fleet.chatsize", JSON.stringify(sizes));
+  prefSet("fleet.chatsize", JSON.stringify(termPx === null ? sizes : { ...sizes, term: termPx }));
 }
 
 export function loadChatSizes(): void {
-  const raw = prefJSON<Partial<Record<SizeKey, unknown>> | null>("fleet.chatsize");
+  const raw = prefJSON<Partial<Record<SizeKey | "term", unknown>> | null>("fleet.chatsize");
   if (raw && typeof raw === "object") {
     const next = { ...sizes };
     for (const k of KEYS) if (typeof raw[k] === "number" && Number.isFinite(raw[k])) next[k] = clamp(k, raw[k]);
     sizes = next;
+    if (typeof raw.term === "number" && Number.isFinite(raw.term)) termPx = clampTerm(raw.term);
   }
   apply();
 }
@@ -96,23 +119,42 @@ export function sizePanel(): HTMLElement {
     row.append(name, input, val);
     return { k, input, val, row };
   });
+  // the terminal row: same shape as the chat rows, its own value (TERM_SPEC)
+  const termRow = document.createElement("label");
+  termRow.className = "sizerow";
+  const termName = document.createElement("span");
+  termName.textContent = TERM_SPEC.label;
+  const termInput = document.createElement("input");
+  termInput.type = "range";
+  termInput.min = String(TERM_SPEC.min);
+  termInput.max = String(TERM_SPEC.max);
+  termInput.step = String(TERM_SPEC.step);
+  termInput.setAttribute("aria-label", "Terminalschrift");
+  const termVal = document.createElement("span");
+  termVal.className = "sizeval";
+  termInput.addEventListener("input", () => setTermSize(Number(termInput.value)));
+  termRow.title = "Schriftgröße im Terminal aller Panes — die Spaltenzahl folgt";
+  termRow.append(termName, termInput, termVal);
   const sync = () => {
     for (const r of rows) {
       r.input.value = String(sizes[r.k]);
       r.val.textContent = shown(r.k, sizes[r.k]);
     }
+    termInput.value = String(termFontSize());
+    termVal.textContent = `${termFontSize()}px`;
   };
   listeners.add(sync);
+  termListeners.add(sync);
   sync();
   const reset = document.createElement("button");
   reset.className = "sizereset";
   reset.textContent = "Reset";
-  reset.title = "Standardgrößen und -breite (Strg/⌘ 0)";
-  reset.addEventListener("click", () => stepChatSizes(0));
+  reset.title = "Standardgrößen, -breite und Terminalschrift (Strg/⌘ 0 setzt die sichtbare Ansicht zurück)";
+  reset.addEventListener("click", () => { stepChatSizes(0); setTermSize(null); });
   const hint = document.createElement("div");
   hint.className = "sizehint";
   hint.textContent = "Strg/⌘ + / − / 0";
-  box.append(...rows.map((r) => r.row), reset, hint);
+  box.append(...rows.map((r) => r.row), termRow, reset, hint);
   panel = box;
   return box;
 }

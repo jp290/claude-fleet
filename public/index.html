@@ -667,6 +667,21 @@
   .termcopy { display: none; position: absolute; z-index: 6; width: 96px; height: 40px; border-radius: var(--r1);
     border: 1px solid var(--chat-mute); background: var(--chat-raised); color: var(--chat-ink);
     font: 500 14px var(--chat-sans); cursor: pointer; }
+  /* the scrollback search (Pane#openSearch, card K8): one bar at the terminal's top left, the past
+     bar's material; the corner group keeps the right. Terminal view only. */
+  .termfind { display: none; }
+  .pane:not(.chat) .termfind.open { position: absolute; z-index: 7; top: 8px; left: 10px; display: flex;
+    align-items: center; gap: 4px; max-width: calc(100% - 120px); padding: 4px 6px; background: var(--chat-raised);
+    border: 1px solid var(--chat-edge); border-radius: var(--r1); font-family: var(--chat-sans);
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .termfindin { flex: 1 1 180px; min-width: 0; width: 180px; font: inherit; color: var(--chat-ink);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 3px 6px; }
+  .termfindin:focus { outline: none; border-color: var(--chat-mute); }
+  .termfindn { flex: none; white-space: nowrap; padding: 0 4px; font-variant-numeric: tabular-nums; }
+  .termfindbtn { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+    padding: 0; color: var(--chat-mute); background: none; border: 1px solid transparent; border-radius: var(--r1); cursor: pointer; }
+  .termfindbtn:hover { color: var(--chat-ink); border-color: var(--chat-edge); }
+  .termfindbtn svg { width: 15px; height: 15px; }
 
   #bar { flex: none; background: #000; border-top: 1px solid transparent;
     padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -3128,6 +3143,10 @@
        row, ↻ left of ⚙ 💬 ℹ so ℹ keeps the corner. The conversation view keeps its own layout. */
     .paneterm { top: 48px; }
     .pane:not(.chat) .panetools { flex-direction: row-reverse; align-items: center; top: 4px; right: 6px; }
+    /* the search lies in that same strip and covers the group while it is open (✕ gives it back) */
+    .pane:not(.chat) .termfind.open { top: 4px; left: 6px; right: 6px; max-width: none; height: 40px; }
+    .termfindin { font-size: 16px; }
+    .termfindbtn { width: 40px; height: 40px; }
 
     .chip { padding: 9px 14px; }
     #livein { flex: 1; min-width: 0; height: 44px; padding: 0 12px; border-radius: 10px;

@@ -183,7 +183,8 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
 import { konzeptIndex, konzeptOpOf, konzeptRequest } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
-import { readCodexRollout, readPiSession, type ConversationRead, type TBlock, type TEntry } from "./server/conversation-read";
+import { readCodexRollout, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, type Binding,
+  type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
 
@@ -19527,11 +19528,14 @@ function resultText(c: unknown): string {
 
 // `full` lifts the view's cuts — the conversation EXPORT (row 11e541e0) must carry a block whole,
 // the chat view and every other reader keep them
-function viewEntry(raw: unknown, n: number, full = false): TEntry | null {
+// `ask` (owner transcript routes only): the file's native question calls by id, the ids its results
+// answer, and the response's binding — with it a call gets its typed form, a result its typed answer
+interface AskRead { calls: Map<string, unknown>; answered: Set<string>; binding: Binding }
+function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry | null {
   const cap = (t: string, max: number) => (full ? t : trim(t, max));
   const d = raw as {
     type?: unknown; isMeta?: unknown; isSidechain?: unknown; timestamp?: unknown;
-    message?: { content?: unknown };
+    message?: { content?: unknown }; toolUseResult?: unknown;
     attachment?: { type?: unknown; prompt?: unknown; commandMode?: unknown; timestamp?: unknown };
   };
   if (d.type !== "user" && d.type !== "assistant" && d.type !== "attachment") return null;
@@ -19567,7 +19571,9 @@ function viewEntry(raw: unknown, n: number, full = false): TEntry | null {
         const blk = b as { type?: unknown; content?: unknown; text?: unknown; tool_use_id?: unknown };
         if (blk.type === "tool_result")
           blocks.push({ t: "tool_result", text: cap(resultText(blk.content), 3000),
-            ...(typeof blk.tool_use_id === "string" && blk.tool_use_id ? { ref: blk.tool_use_id } : {}) });
+            ...(typeof blk.tool_use_id === "string" && blk.tool_use_id ? { ref: blk.tool_use_id } : {}),
+            ...(ask && typeof blk.tool_use_id === "string" && ask.calls.has(blk.tool_use_id)
+              ? { answer: nativeAnswer(d.toolUseResult, ask.calls.get(blk.tool_use_id)) } : {}) });
         else if (blk.type === "text" && typeof blk.text === "string" && !blk.text.startsWith("<system-reminder"))
           blocks.push({ t: "text", text: cap(blk.text, 20_000) });
       }
@@ -19581,9 +19587,15 @@ function viewEntry(raw: unknown, n: number, full = false): TEntry | null {
       if (blk.type === "text" && typeof blk.text === "string") blocks.push({ t: "text", text: cap(blk.text, 40_000) });
       else if (blk.type === "thinking" && typeof blk.thinking === "string" && blk.thinking)
         blocks.push({ t: "thinking", text: cap(blk.thinking, 10_000) });
-      else if (blk.type === "tool_use")
-        blocks.push({ t: "tool", name: typeof blk.name === "string" ? blk.name : "tool", text: cap(JSON.stringify(blk.input ?? {}), 600),
-          ...(typeof blk.id === "string" && blk.id ? { id: blk.id } : {}) });
+      else if (blk.type === "tool_use") {
+        const b: TBlock = { t: "tool", name: typeof blk.name === "string" ? blk.name : "tool", text: cap(JSON.stringify(blk.input ?? {}), 600),
+          ...(typeof blk.id === "string" && blk.id ? { id: blk.id } : {}) };
+        if (ask && blk.name === ASK_TOOL && typeof blk.id === "string" && ask.calls.has(blk.id)) {
+          b.ask = nativeAsk(blk.input);
+          b.terminal = askTerminal(ask.binding, b.ask, ask.answered.has(blk.id));
+        }
+        blocks.push(b);
+      }
     }
   }
   if (!blocks.length) return null;
@@ -19597,44 +19609,94 @@ function viewEntry(raw: unknown, n: number, full = false): TEntry | null {
 // against — the same reading the delivery cache edge uses (deliveryCacheState: 3600 on a 1 h write,
 // 300 on a 5 min one or when the file names none). Only for the slot's LIVE record: a past session's
 // copy (pastTranscript) would re-key the per-slot context cache under a stranger's session id.
-async function transcriptPayload(s: Slot, afterRaw: number, full = false):
-  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null; ttlSec?: number }> {
+// `native` (row 1e01b4f3) — the owner's two transcript routes only; share, steward, the export and
+// the pulse never pass it, so their payloads and rights stay exactly what they were. With it, native
+// Claude Code question calls and their answers arrive typed (server/conversation-read.ts#nativeAsk),
+// and the payload says WHERE the conversation came from and whether it is the current occupant's
+// (`native`). `history: true` is a past session of the line (pastTranscript): its origin is the
+// succession record's own session id and occupant — never the copied live record's openedAt.
+type NativeReq = { history: false } | { history: true; sessionId: string | null; occupant: Occupant | null };
+function nativeOf(req: NativeReq, s: Slot, before: ReadSeat, read: { found: boolean; questions: boolean; pinned: boolean;
+  fileSession: string | null; via: TranscriptOrigin["via"] }): NativeTranscript {
+  const questions = read.questions ? "claude-code" as const : "unsupported" as const;
+  if (req.history)
+    return { questions, origin: { sessionId: req.sessionId, occupant: req.occupant, via: req.sessionId ? "succession-record" : null },
+      binding: transcriptBinding({ history: true, questions: read.questions, pinned: false, fileSession: null, before, after: null }) };
+  if (!read.found)
+    return { questions, origin: { sessionId: before.sessionId, occupant: null, via: null },
+      binding: { state: "none", reason: "no transcript file: nothing was read" } };
+  // re-read the slot AFTER the file was read: an occupant recycled during the await is not the one
+  // whose file this is
+  const now = slots[s.id - 1];
+  const after = now?.cwd ? { slot: now.id, openedAt: now.openedAt, sessionId: now.sessionId } : null;
+  return { questions,
+    origin: { sessionId: read.fileSession, occupant: read.pinned ? { slot: before.slot, openedAt: before.openedAt } : null, via: read.via },
+    binding: transcriptBinding({ history: false, questions: read.questions, pinned: read.pinned, fileSession: read.fileSession, before, after }) };
+}
+async function transcriptPayload(s: Slot, afterRaw: number, full = false, native?: NativeReq):
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null; ttlSec?: number; native?: NativeTranscript }> {
   const conv = harnessOf(s.harness).conversation;
-  if (conv) return conversationPayload(s, conv, afterRaw);
+  if (conv) return conversationPayload(s, conv, afterRaw, native);
+  const before: ReadSeat = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
   const file = transcriptFile(s);
-  if (!file) return { entries: [], total: 0, source: null };
+  const claude = harnessOf(s.harness).id === "claude";
+  if (!file) return { entries: [], total: 0, source: null,
+    ...(native && { native: nativeOf(native, s, before, { found: false, questions: claude, pinned: false, fileSession: null, via: null }) }) };
+  const pinned = !!s.sessionId && file === `${projDir(s.cwd!)}/${s.sessionId}.jsonl`;
   const tier = harnessOf(s.harness).id === "claude" && slots[s.id - 1] === s ? { ttlSec: deliveryCacheState(s).ttlSec } : {};
   const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
   const after = Math.max(0, afterRaw | 0);
+  const nat = native && nativeOf(native, s, before, { found: true, questions: claude, pinned,
+    fileSession: basename(file).replace(/\.jsonl$/, ""), via: pinned ? "pinned" : "newest-file" });
+  const ask: AskRead | undefined = nat && claude ? { calls: new Map(), answered: new Set(), binding: nat.binding } : undefined;
   // A queued prompt the transcript ALSO records as its own type:user turn (same source_uuid)
   // shows once, at the attachment's earlier position — the later duplicate is dropped. Pass 1
   // collects over the WHOLE file: the attachment may sit before `after`, its duplicate after.
+  // The same pass (no second scan) collects the native question calls by id and the ids a result
+  // answers — a call's result may sit after `after`, its call before it. Only lines that name the
+  // tool, or a known call id, are parsed; a sidechain (subagent) line is not this conversation's.
   const queued = new Set<string>();
   for (const l of lines) {
-    if (!l.includes("queued_command")) continue;
+    if (l.includes("queued_command")) {
+      try {
+        const d = JSON.parse(l) as { type?: unknown; attachment?: { type?: unknown; commandMode?: unknown; source_uuid?: unknown } };
+        if (d.type === "attachment" && d.attachment?.type === "queued_command" && d.attachment.commandMode === "prompt"
+          && typeof d.attachment.source_uuid === "string") queued.add(d.attachment.source_uuid);
+      } catch { /* torn line — the render loop reports it */ }
+    }
+    if (!ask) continue;
+    const callLine = l.includes(`"${ASK_TOOL}"`);
+    const resultLine = ask.calls.size > 0 && l.includes('"tool_result"') && [...ask.calls.keys()].some((id) => l.includes(id));
+    if (!callLine && !resultLine) continue;
     try {
-      const d = JSON.parse(l) as { type?: unknown; attachment?: { type?: unknown; commandMode?: unknown; source_uuid?: unknown } };
-      if (d.type === "attachment" && d.attachment?.type === "queued_command" && d.attachment.commandMode === "prompt"
-        && typeof d.attachment.source_uuid === "string") queued.add(d.attachment.source_uuid);
+      const d = JSON.parse(l) as { type?: unknown; isSidechain?: unknown; message?: { content?: unknown } };
+      if (d.isSidechain === true || !Array.isArray(d.message?.content)) continue;
+      for (const b of d.message.content as { type?: unknown; name?: unknown; id?: unknown; input?: unknown; tool_use_id?: unknown }[]) {
+        if (d.type === "assistant" && b?.type === "tool_use" && b.name === ASK_TOOL && typeof b.id === "string" && b.id)
+          ask.calls.set(b.id, b.input);
+        else if (d.type === "user" && b?.type === "tool_result" && typeof b.tool_use_id === "string" && ask.calls.has(b.tool_use_id))
+          ask.answered.add(b.tool_use_id);
+      }
     } catch { /* torn line — the render loop reports it */ }
   }
   const entries: TEntry[] = [];
   const { model, effort } = transcriptModel(lines);
+  const tail = nat ? { native: nat } : {};
   for (let i = after; i < lines.length; i++) {
     try {
       const parsed: unknown = JSON.parse(lines[i]);
       const u = parsed as { type?: unknown; source_uuid?: unknown };
       if (queued.size && u.type === "user" && typeof u.source_uuid === "string" && queued.has(u.source_uuid)) continue;
-      const e = viewEntry(parsed, i + 1, full);
+      const e = viewEntry(parsed, i + 1, full, ask);
       if (e) entries.push(e);
     } catch {
       // only the FINAL line may be a partial mid-append (cap total so the next poll
       // re-reads it once complete) — an unparseable line mid-file is just skipped,
       // otherwise it would pin total forever and loop the client on the same range
-      if (i === lines.length - 1) return { entries, total: i, source: file.split("/").pop() ?? null, model, effort, ...tier };
+      if (i === lines.length - 1) return { entries, total: i, source: file.split("/").pop() ?? null, model, effort, ...tier, ...tail };
     }
   }
-  return { entries, total: lines.length, source: file.split("/").pop() ?? null, model, effort, ...tier };
+  return { entries, total: lines.length, source: file.split("/").pop() ?? null, model, effort, ...tier, ...tail };
 }
 
 // the model the conversation's newest assistant turn ran on (Claude writes message.model on every
@@ -19661,12 +19723,17 @@ function transcriptModel(lines: string[]): { model: string | null; effort: strin
 // of MB. Keyed by path + size + mtime; bounded by clearing it whole past 32 files (a handful of
 // conversations are open at once, and a miss costs one read).
 const conversationCache = new Map<string, { size: number; mtime: number; read: ConversationRead }>();
-async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversation"]>, afterRaw: number):
-  Promise<{ entries: TEntry[]; total: number; source: string | null; cache: ConversationRead["cache"]; model: string | null; effort: string | null }> {
+// `native`: codex and pi name no measured question form — their origin is the identity that found the
+// file, their binding always `none` (transcriptPayload#nativeOf); no Claude form is guessed here
+async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversation"]>, afterRaw: number, native?: NativeReq):
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache: ConversationRead["cache"]; model: string | null; effort: string | null; native?: NativeTranscript }> {
+  const before: ReadSeat = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
   const file = s.cwd && s.sessionId ? conv.file({ cwd: s.cwd, sessionId: s.sessionId }) : null;
-  if (!file) return { entries: [], total: 0, source: null, cache: null, model: null, effort: null };
+  const none = { entries: [], total: 0, source: null, cache: null, model: null, effort: null,
+    ...(native && { native: nativeOf(native, s, before, { found: false, questions: false, pinned: false, fileSession: null, via: null }) }) };
+  if (!file) return none;
   let st: { size: number; mtimeMs: number };
-  try { st = statSync(file); } catch { return { entries: [], total: 0, source: null, cache: null, model: null, effort: null }; }
+  try { st = statSync(file); } catch { return none; }
   let hit = conversationCache.get(file);
   if (!hit || hit.size !== st.size || hit.mtime !== st.mtimeMs) {
     const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
@@ -19679,7 +19746,8 @@ async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversat
   // the branch rides in `source`: when pi's leaf moves to another branch the client's consumed
   // lines are no longer the conversation, and a changed source is how it learns to start over
   const source = (file.split("/").pop() ?? "") + (read.branch ? `#${read.branch}` : "");
-  return { entries: read.entries.filter((e) => e.n > after), total: read.total, source, cache: read.cache, model: read.model, effort: read.effort };
+  return { entries: read.entries.filter((e) => e.n > after), total: read.total, source, cache: read.cache, model: read.model, effort: read.effort,
+    ...(native && { native: nativeOf(native, s, before, { found: true, questions: false, pinned: true, fileSession: s.sessionId, via: "harness-file" }) }) };
 }
 
 // --- THE CONVERSATION EXPORT (row 11e541e0; owner 2026-09-22: „[Zitat entfernt]“
@@ -22082,10 +22150,12 @@ interface SuccessionPast { session: number; startedAt: number | null; handedAt: 
 // handover (a lane's seat, a lineage record's `from`) FIRST, the handoff report's worker second.
 // Never on the wire of the chain — the transcript route below is the one reader.
 type PastWho = { sessionId: string; cwd: string } | null;
-type PastEntry = Omit<SuccessionPast, "session" | "ctx"> & { who: PastWho };
+// `occupant`: the past occupation the SAME record names (slot + openedAt) — the transcript route's
+// provenance (row 1e01b4f3), never on the chain's wire either; null where no record names one
+type PastEntry = Omit<SuccessionPast, "session" | "ctx"> & { who: PastWho; occupant: Occupant | null };
 const whoOf = (sessionId: string | null | undefined, cwd: string | null | undefined): PastWho =>
   sessionId && cwd ? { sessionId, cwd } : null;
-function successionLine(s: Slot): { f: SuccessionFacts; past: (SuccessionPast & { who: PastWho })[] } {
+function successionLine(s: Slot): { f: SuccessionFacts; past: (SuccessionPast & { who: PastWho; occupant: Occupant | null })[] } {
   const f = successionFacts(s);
   const handoffOf = (slot: number, openedAt: number): FleetReport | null =>
     fleetReports.filter((r) => r.status === "handoff" && r.worker.slot === slot && r.worker.openedAt === openedAt)
@@ -22099,13 +22169,13 @@ function successionLine(s: Slot): { f: SuccessionFacts; past: (SuccessionPast & 
     for (const r of fleetReports)
       if (r.status === "handoff" && r.worker.slot === s.id && r.worker.branch === branch && r.worker.openedAt < s.openedAt)
         byOccupant.set(r.worker.openedAt, { startedAt: r.worker.openedAt, handedAt: r.reportedAt, report: r.id,
-          who: whoOf(r.worker.sessionId, r.worker.cwd) });
+          who: whoOf(r.worker.sessionId, r.worker.cwd), occupant: { slot: s.id, openedAt: r.worker.openedAt } });
     // the seat outlives the pruned report, and its pair outranks the report's
     for (const seat of s.laneSeats) {
       if (seat.openedAt >= s.openedAt) continue;
       const r = byOccupant.get(seat.openedAt);
       byOccupant.set(seat.openedAt, { startedAt: seat.openedAt, handedAt: seat.handedAt, report: r?.report ?? null,
-        who: whoOf(seat.sessionId, seat.cwd) ?? r?.who ?? null });
+        who: whoOf(seat.sessionId, seat.cwd) ?? r?.who ?? null, occupant: { slot: s.id, openedAt: seat.openedAt } });
     }
     known = [...byOccupant.values()].sort((a, b) => a.startedAt! - b.startedAt!);
   } else if (programLine) {
@@ -22116,25 +22186,26 @@ function successionLine(s: Slot): { f: SuccessionFacts; past: (SuccessionPast & 
     known = programLine.past.map((e) => {
       const r = handoffOf(e.slot, e.openedAt);
       return { startedAt: e.openedAt, handedAt: e.endedAt, report: r?.id ?? null,
-        who: whoOf(r?.worker.sessionId, r?.worker.cwd) ?? whoOf(e.sessionId, s.cwd) };
+        who: whoOf(r?.worker.sessionId, r?.worker.cwd) ?? whoOf(e.sessionId, s.cwd), occupant: { slot: e.slot, openedAt: e.openedAt } };
     });
   } else {
     known = [...(lineageStateOf(s)?.line ?? [])].sort((a, b) => a.at - b.at).map((h) => {
       const r = handoffOf(h.from.slot, h.from.openedAt);
       return { startedAt: h.from.openedAt, handedAt: h.at, report: r?.id ?? null,
-        who: whoOf(h.from.sessionId, h.from.cwd) ?? whoOf(r?.worker.sessionId, r?.worker.cwd) };
+        who: whoOf(h.from.sessionId, h.from.cwd) ?? whoOf(r?.worker.sessionId, r?.worker.cwd),
+        occupant: { slot: h.from.slot, openedAt: h.from.openedAt } };
     });
   }
   const tail = n > 0 ? known.slice(-n) : [];
   const past = [
-    ...Array.from({ length: n - tail.length }, (): PastEntry => ({ startedAt: null, handedAt: null, report: null, who: null })),
+    ...Array.from({ length: n - tail.length }, (): PastEntry => ({ startedAt: null, handedAt: null, report: null, who: null, occupant: null })),
     ...tail,
   ].map((p, i) => ({ session: i + 1, ...p, ctx: p.who ? contextFillOf(s, p.who.cwd, p.who.sessionId) : null }));
   return { f, past };
 }
 function successionChain(s: Slot): { session: number; taken: number | null; cap: number | null; past: SuccessionPast[] } {
   const { f, past } = successionLine(s);
-  return { session: f.session, taken: f.taken, cap: f.cap, past: past.map(({ who: _who, ...p }) => p) };
+  return { session: f.session, taken: f.taken, cap: f.cap, past: past.map(({ who: _who, occupant: _occupant, ...p }) => p) };
 }
 
 // ONE PAST SESSION'S CONVERSATION — what the bar's band shows when it is pulled back onto a session
@@ -22169,10 +22240,15 @@ async function pastTranscript(s: Slot, n: number, after: number) {
   const past = successionLine(s).past.find((p) => p.session === n);
   if (!past) return null;
   const base = { session: n, startedAt: past.startedAt, handedAt: past.handedAt, report: past.report };
+  // `was` copies the RUNNING record and swaps cwd + session only, so its openedAt is the live
+  // occupant's: the provenance names the record's own occupation instead, and the binding is history
+  const history: NativeReq = { history: true, sessionId: past.who?.sessionId ?? null, occupant: past.occupant };
   if (!past.who)
-    return { ...base, assigned: false as const, reason: TRANSCRIPT_UNASSIGNED, ctx: null, entries: [], total: 0, source: null };
+    return { ...base, assigned: false as const, reason: TRANSCRIPT_UNASSIGNED, ctx: null, entries: [], total: 0, source: null,
+      native: nativeOf(history, s, { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
+        { found: false, questions: harnessOf(s.harness).id === "claude", pinned: false, fileSession: null, via: null }) };
   const was: Slot = { ...s, cwd: past.who.cwd, sessionId: past.who.sessionId };
-  return { ...base, assigned: true as const, ctx: past.ctx, ...(await transcriptPayload(was, after)) };
+  return { ...base, assigned: true as const, ctx: past.ctx, ...(await transcriptPayload(was, after, false, history)) };
 }
 
 function migrateMessage(fill: ContextFill, rail: MigrateRail): string {
@@ -41851,7 +41927,7 @@ Bun.serve<WSData>({
     if (req.method === "GET" && trMatch) {
       const s = slotFrom(trMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      return json(await transcriptPayload(s, Number(url.searchParams.get("after") ?? 0)));
+      return json(await transcriptPayload(s, Number(url.searchParams.get("after") ?? 0), false, { history: false }));
     }
     const histMatch = /^\/api\/slots\/(\d+)\/history$/.exec(url.pathname);
     if (req.method === "GET" && histMatch) {

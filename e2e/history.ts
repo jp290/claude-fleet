@@ -3,9 +3,10 @@
 import { appendFileSync, existsSync, statSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { check, get, post, plogPath, plogRead, ROOT, REPO, restartSrv, until, UntilTimeout } from "./harness";
+import { BASE, check, get, post, plogPath, plogRead, ROOT, REPO, restartSrv, stopSrv, until, UntilTimeout } from "./harness";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { entityMatches, mdInto, type MdEntityKind } from "../src/md";
+import { ASK_MAX, askTerminal, transcriptBinding, type NativeTranscript, type ReadSeat } from "../server/conversation-read";
 
 // Runs under the claude-gate harness, not run() below: the main history suite deliberately uses
 // FLEET_CMD=true and therefore has no pinned session identity. Keeping the probe in this family
@@ -530,6 +531,7 @@ export async function run(): Promise<void> {
       JSON.stringify(after?.packs));
   }
 
+  await runNativeQuestions();
   await runForeignConversations();
   runLinks();
 }
@@ -752,7 +754,12 @@ function runLinks(): void {
 // newer, is not what the slot shows.
 interface ConvPayload { entries: { n: number; role: string; blocks: { t: string; text: string }[] }[];
   total: number; source: string | null; cache?: { at: number; provider: string } | null; model?: string | null;
-  effort?: string | null }
+  effort?: string | null; native?: NativeTranscript }
+// codex and pi name no measured question form (row 1e01b4f3): their file is found by identity, so the
+// origin names it — and the binding is never current, and no block is typed as a Claude question
+const foreignNative = (p: ConvPayload, sid: string | null): boolean => p.native?.questions === "unsupported"
+  && p.native.origin.sessionId === sid && p.native.origin.via === (sid ? "harness-file" : null)
+  && p.native.binding.state === "none" && JSON.stringify(p.entries).match(/"(ask|answer|terminal)":/) === null;
 const persistedSlot = (slot: number): { sessionId?: string | null } | undefined =>
   (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
     { slots?: Record<string, { sessionId?: string | null }> }).slots?.[String(slot)];
@@ -820,6 +827,8 @@ async function runForeignConversations(): Promise<void> {
       p1.cache?.at === T0 + 3000 && p1.cache?.provider === "zai" && p1.model === "glm-5.3-flash", JSON.stringify([p1.cache, p1.model]));
     check("pi conversation: the effort is the newest thinking_level_change ON the path — the abandoned branch's level is not",
       p1.effort === "low", `effort=${p1.effort}`);
+    check("pi conversation: the native origin names the slot's session, the question form stays unsupported, nothing is bound",
+      foreignNative(p1, sid), JSON.stringify(p1.native));
     const p2 = (await (await get(`/api/slots/${piSlot}/transcript?after=${p1.total}`)).json()) as ConvPayload;
     check("pi conversation: an incremental fetch with nothing appended is empty and keeps the source",
       p2.entries.length === 0 && p2.total === p1.total && p2.source === p1.source, JSON.stringify(p2).slice(0, 200));
@@ -855,6 +864,8 @@ async function runForeignConversations(): Promise<void> {
     const unbound = (await (await get(`/api/slots/${cxSlot}/transcript`)).json()) as ConvPayload;
     check("codex conversation: an unbound slot shows nothing (no id → no file, never the newest rollout)",
       unbound.source === null && unbound.entries.length === 0, JSON.stringify(unbound));
+    check("codex conversation: an unbound slot's native origin names no session and binds nothing",
+      foreignNative(unbound, null), JSON.stringify(unbound.native));
     const ID = "30000000-0000-4000-8000-00000000000c";
     const d = new Date();
     const dayDir = `${codexRoot}/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
@@ -893,11 +904,228 @@ async function runForeignConversations(): Promise<void> {
       check("codex conversation: the cache reference is the newest token_usage_record, provider openai; model from turn_context",
         c1.cache?.at === Date.parse(TU) && c1.cache?.provider === "openai" && c1.model === "gpt-5.5", JSON.stringify([c1.cache, c1.model]));
       check("codex conversation: the effort is the turn_context's own", c1.effort === "xhigh", `effort=${c1.effort}`);
+      check("codex conversation: the native origin names the bound session, the question form stays unsupported, nothing is bound",
+        foreignNative(c1, ID), JSON.stringify(c1.native));
       rmSync(foreign, { force: true });
     }
     await post(`/api/slots/${cxSlot}/kill`, {});
     rmSync(rollout, { force: true });
   } finally {
     await restartSrv(); // normal PATH back for the modules after this one
+  }
+}
+
+// --- NATIVE QUESTIONS AND WHERE THEY CAME FROM (row 1e01b4f3): the owner's transcript routes type a
+// Claude Code AskUserQuestion call from its ORIGINAL input and its answer from the result line's
+// toolUseResult, paired by tool_use id, and say which session/occupant the conversation is and
+// whether it is the current terminal's. The fixture replays the FIELD STRUCTURE of the one measured
+// original (Claude Code 2.1.286, single-select, answered) with anonymous sentinels — no original text.
+// Each check names the violation that turns it red: a 600-char cut, a positional answer guess, an
+// invented form, a binding on an unpinned or past session, the live occupant stamped on history.
+type NqBlock = { t: string; text: string; id?: string; ref?: string; ask?: Record<string, unknown>;
+  answer?: Record<string, unknown>; terminal?: { state: string; reason?: string } };
+type NqPayload = { entries: { n: number; blocks: NqBlock[] }[]; total: number; source: string | null; native?: NativeTranscript;
+  assigned?: boolean };
+async function runNativeQuestions(): Promise<void> {
+  // the pure decisions first — the races (a recycle DURING the read) cannot be timed on the wire
+  const seat: ReadSeat = { slot: 7, openedAt: 1000, sessionId: "nq-session" };
+  const bind = (o: Partial<Parameters<typeof transcriptBinding>[0]>) => transcriptBinding({ history: false, questions: true,
+    pinned: true, fileSession: "nq-session", before: seat, after: seat, ...o });
+  const why = (b: ReturnType<typeof bind>) => (b.state === "none" ? b.reason : "current");
+  check("native binding: only a live read of the slot's own pinned session, unchanged across the read, is current",
+    bind({}).state === "current"
+      && why(bind({ history: true })).startsWith("history") && why(bind({ questions: false })).startsWith("harness")
+      && why(bind({ pinned: false })).startsWith("unbound") && why(bind({ before: { ...seat, sessionId: null } })).startsWith("unbound")
+      && why(bind({ fileSession: "other-session" })).startsWith("session mismatch")
+      && why(bind({ after: null })).startsWith("occupant gone")
+      && why(bind({ after: { ...seat, openedAt: 2000 } })).startsWith("occupant changed")
+      && why(bind({ after: { ...seat, slot: 8 } })).startsWith("occupant changed")
+      && why(bind({ after: { ...seat, sessionId: "resumed-elsewhere" } })).startsWith("session changed"),
+    JSON.stringify([bind({}), bind({ after: { ...seat, openedAt: 2000 } })]));
+  const formQ = { question: "q", header: "h", multiSelect: false, options: [{ label: "a", description: "d" }] };
+  const cur = { state: "current" } as const;
+  check("native binding: a call is bound only unanswered, complete and single-select — answered, clipped, multi-select are not",
+    askTerminal(cur, { state: "complete", questions: [formQ] }, false).state === "current"
+      && why(askTerminal(cur, { state: "complete", questions: [formQ] }, true)).startsWith("answered")
+      && why(askTerminal(cur, { state: "clipped", chars: 1, limit: 1 }, false)) === "form clipped"
+      && why(askTerminal(cur, { state: "complete", questions: [{ ...formQ, multiSelect: true }] }, false)).includes("multi-select")
+      && why(askTerminal({ state: "none", reason: "history: x" }, { state: "complete", questions: [formQ] }, false)) === "history: x");
+
+  const cwd = `${tmpdir()}/fleet-e2e-nativeq-${process.pid}`;
+  const proj = `${process.env.HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(proj, { recursive: true });
+  const sid = crypto.randomUUID();
+  const at = new Date(0).toISOString();
+  const opt = (k: string) => ({ label: `NQ-LABEL-${k}`, description: `NQ-DESC-${k} ${"d".repeat(140)}` });
+  const q = (k: string, multiSelect = false) =>
+    ({ question: `NQ-QUESTION-${k} ${"q".repeat(420)}`, header: `NQ-H-${k}`, multiSelect, options: ["a", "b", "c"].map((x) => opt(`${k}${x}`)) });
+  type Q = ReturnType<typeof q>;
+  // the measured result repeats the questions with `options` BEFORE `multiSelect` — the pairing must
+  // compare forms, not key order
+  const echo = (qs: Q[]) => qs.map(({ question, header, multiSelect, options }) => ({ question, header, options, multiSelect }));
+  const line = (o: Record<string, unknown>) => JSON.stringify({ cwd, sessionId: sid, timestamp: at, isSidechain: false, ...o });
+  const call = (id: string, input: unknown, extra: Record<string, unknown> = {}, name = "AskUserQuestion") =>
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id, name, input, caller: { type: "direct" } }] }, ...extra });
+  const result = (id: string, toolUseResult?: unknown, extra: Record<string, unknown> = {}) =>
+    line({ type: "user", message: { role: "user", content: [{ type: "tool_result", content: `NQ-RESULT ${id}`, tool_use_id: id }] },
+      ...(toolUseResult === undefined ? {} : { toolUseResult }), ...extra });
+  const answered = (qs: Q[], answers: Record<string, string>) => ({ questions: echo(qs), answers, annotations: {} });
+  const QS = { single: [q("s")], open: [q("o")], two: [q("t1"), q("t2")], multi: [q("m", true)], free: [q("f")],
+    huge: [{ ...q("h"), question: `NQ-HUGE ${"h".repeat(ASK_MAX)}` }], mismatch: [q("x")], refused: [q("r")] };
+  const preview = [{ ...q("p"), options: [{ ...opt("pa"), preview: "NQ-PREVIEW" }, opt("pb")] }];
+  const lines = [
+    line({ type: "user", message: { role: "user", content: "NQ start" } }),
+    // three calls in a row, their results back in REVERSED order: pairing is by id, never by position
+    call("toolu_nq_single", { questions: QS.single }),
+    call("toolu_nq_open", { questions: QS.open }),
+    call("toolu_nq_two", { questions: QS.two }),
+    // two questions answered in the OPPOSITE key order of the questions: by text, not by position
+    result("toolu_nq_two", answered(QS.two, { [QS.two[1]!.question]: "NQ-LABEL-t2a", [QS.two[0]!.question]: "NQ-LABEL-t1c" })),
+    result("toolu_nq_single", answered(QS.single, { [QS.single[0]!.question]: "NQ-LABEL-sb" })),
+    call("toolu_nq_multi", { questions: QS.multi }),
+    result("toolu_nq_multi", answered(QS.multi, { [QS.multi[0]!.question]: "NQ-LABEL-ma, NQ-LABEL-mb" })),
+    call("toolu_nq_free", { questions: QS.free }),
+    result("toolu_nq_free", answered(QS.free, { [QS.free[0]!.question]: "NQ-FREE-TEXT" })),
+    call("toolu_nq_huge", { questions: QS.huge }),
+    call("toolu_nq_preview", { questions: preview }),
+    call("toolu_nq_bad", { questions: "NQ-NOT-AN-ARRAY" }),
+    call("toolu_nq_mismatch", { questions: QS.mismatch }),
+    result("toolu_nq_mismatch", answered([q("x-other")], { [q("x-other").question]: "NQ-LABEL-x-othera" })),
+    // a result whose call is NOT in this file (another conversation's id): no answer is typed
+    result("toolu_nq_elsewhere", answered([q("e")], { [q("e").question]: "NQ-LABEL-ea" })),
+    call("toolu_nq_refused", { questions: QS.refused }),
+    result("toolu_nq_refused", undefined, { message: { role: "user", content: [{ type: "tool_result", content: "NQ-REFUSED", is_error: true, tool_use_id: "toolu_nq_refused" }] } }),
+    // a subagent's question is not this conversation's; another tool with the same input shape is not a question
+    call("toolu_nq_side", { questions: [q("side")] }, { isSidechain: true }),
+    call("toolu_nq_bash", { questions: [q("b")] }, {}, "Bash"),
+    result("toolu_nq_bash", answered([q("b")], { [q("b").question]: "NQ-LABEL-ba" })),
+  ];
+  writeFileSync(`${proj}/${sid}.jsonl`, lines.join("\n") + "\n");
+  const slot = await freeSlotId();
+  const opened = slot !== undefined && (await post(`/api/slots/${slot}/open`, { cwd })).ok;
+  check("native-question fixture: a free slot opens on a throwaway cwd whose one transcript carries the planted calls",
+    opened && (persistedSlot(slot)?.sessionId ?? null) === null, `slot=${slot} sid=${slot !== undefined ? persistedSlot(slot)?.sessionId : "-"}`);
+  const lineageId = "1e01".padEnd(24, "0");
+  try {
+    if (!opened || slot === undefined) return;
+    const read = async (path: string): Promise<NqPayload> => (await (await get(path)).json()) as NqPayload;
+    const blocks = (p: NqPayload) => p.entries.flatMap((e) => e.blocks);
+    const callOf = (p: NqPayload, id: string) => blocks(p).find((b) => b.t === "tool" && b.id === id);
+    const resultOf = (p: NqPayload, id: string) => blocks(p).find((b) => b.t === "tool_result" && b.ref === id);
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+    // (A) FLEET_CMD=true pins no session: the file is the cwd's newest — typed, but bound to nobody
+    const a = await read(`/api/slots/${slot}/transcript`);
+    check("native-question fixture: the owner route serves the planted file, every line counted",
+      a.source === `${sid}.jsonl` && a.total === lines.length, `source=${a.source} total=${a.total}`);
+    const single = callOf(a, "toolu_nq_single");
+    check("native question: a call longer than the 600-char view arrives typed WHOLE — question, header, multiSelect, every option",
+      JSON.stringify(QS.single).length > 600 && same(single?.ask, { state: "complete", questions: QS.single })
+        && /… \[\+\d+ chars\]$/.test(single?.text ?? ""),
+      `chars=${JSON.stringify(QS.single).length} ask=${JSON.stringify(single?.ask).slice(0, 160)} text=${single?.text.slice(-24)}`);
+    check("native question: tool_use.id and tool_result.tool_use_id both survive on every planted pair",
+      ["toolu_nq_single", "toolu_nq_two", "toolu_nq_multi", "toolu_nq_free", "toolu_nq_mismatch", "toolu_nq_refused"]
+        .every((id) => callOf(a, id) && resultOf(a, id)) && !!resultOf(a, "toolu_nq_elsewhere"),
+      JSON.stringify(blocks(a).map((b) => [b.t, b.id ?? b.ref ?? ""])));
+    check("native answer: a single-select answer is the chosen option, found by its label, on the call it answers by id",
+      same(resultOf(a, "toolu_nq_single")?.answer, { state: "answered", answers: [{ question: 0, form: "single", option: 1, label: "NQ-LABEL-sb" }] }),
+      JSON.stringify(resultOf(a, "toolu_nq_single")?.answer));
+    check("native answer: interleaved calls, results in reversed order, two answers keyed in reversed order — paired by id and question text, never position",
+      same(resultOf(a, "toolu_nq_two")?.answer, { state: "answered", answers: [
+        { question: 0, form: "single", option: 2, label: "NQ-LABEL-t1c" }, { question: 1, form: "single", option: 0, label: "NQ-LABEL-t2a" }] })
+        && blocks(a).findIndex((b) => b.ref === "toolu_nq_two") < blocks(a).findIndex((b) => b.ref === "toolu_nq_single"),
+      JSON.stringify(resultOf(a, "toolu_nq_two")?.answer));
+    const st = (b: NqBlock | undefined, k: "ask" | "answer") => `${b?.[k]?.state}:${String(b?.[k]?.reason ?? "")}`;
+    check("native answer: the UNMEASURED forms stay unsupported — multi-select, free text, a refusal without structured result",
+      st(resultOf(a, "toolu_nq_multi"), "answer").startsWith("unsupported:the multi-select")
+        && st(resultOf(a, "toolu_nq_free"), "answer").startsWith("unsupported:a free-text")
+        && st(resultOf(a, "toolu_nq_refused"), "answer").startsWith("unsupported:no structured result"),
+      [st(resultOf(a, "toolu_nq_multi"), "answer"), st(resultOf(a, "toolu_nq_free"), "answer"), st(resultOf(a, "toolu_nq_refused"), "answer")].join(" | "));
+    const huge = callOf(a, "toolu_nq_huge");
+    check("native question: past the limit the form is CLIPPED with its size — no question, no option is served cut",
+      huge?.ask?.state === "clipped" && (huge.ask.chars as number) > ASK_MAX && huge.ask.limit === ASK_MAX && !("questions" in huge.ask),
+      JSON.stringify(huge?.ask));
+    check("native question: an unmeasured field is unsupported, a malformed input invalid, a result that repeats other questions invalid",
+      st(callOf(a, "toolu_nq_preview"), "ask") === "unsupported:question 0 option 0: unmeasured field preview"
+        && st(callOf(a, "toolu_nq_bad"), "ask").startsWith("invalid:")
+        && st(resultOf(a, "toolu_nq_mismatch"), "answer") === "invalid:the result's questions differ from the call's",
+      [st(callOf(a, "toolu_nq_preview"), "ask"), st(callOf(a, "toolu_nq_bad"), "ask"), st(resultOf(a, "toolu_nq_mismatch"), "answer")].join(" | "));
+    check("native question: nothing is classified that is not this file's own AskUserQuestion — a foreign id, another tool, a subagent",
+      !("answer" in (resultOf(a, "toolu_nq_elsewhere") ?? {})) && !("ask" in (callOf(a, "toolu_nq_bash") ?? {}))
+        && !("answer" in (resultOf(a, "toolu_nq_bash") ?? { answer: 1 })) && !callOf(a, "toolu_nq_side"),
+      JSON.stringify([resultOf(a, "toolu_nq_elsewhere"), callOf(a, "toolu_nq_bash")?.ask, !!callOf(a, "toolu_nq_side")]).slice(0, 200));
+    check("native origin: an UNPINNED pane's newest file names its session but no occupant, and binds nothing — not even an open call",
+      a.native?.questions === "claude-code" && a.native.origin.via === "newest-file" && a.native.origin.sessionId === sid
+        && a.native.origin.occupant === null && a.native.binding.state === "none" && a.native.binding.reason.startsWith("unbound")
+        && blocks(a).filter((b) => b.ask).every((b) => b.terminal?.state === "none"),
+      JSON.stringify(a.native));
+    const inc = await read(`/api/slots/${slot}/transcript?after=4`);
+    check("native answer: an incremental read whose calls lie BEFORE `after` still types the answers (calls read over the whole file)",
+      !callOf(inc, "toolu_nq_single") && same(resultOf(inc, "toolu_nq_single")?.answer, resultOf(a, "toolu_nq_single")?.answer),
+      JSON.stringify(resultOf(inc, "toolu_nq_single")?.answer));
+
+    // the guest reader is the owner payload cut down — it gains NOTHING from this row
+    const share = (await (await post(`/api/slots/${slot}/share`, { mode: "view", password: "nativeq-pass" })).json()) as { id?: string };
+    const auth = share.id ? await post(`/s/${share.id}/auth`, { password: "nativeq-pass" }) : null;
+    const cookie = (auth?.headers.get("set-cookie") ?? "").split(";")[0];
+    const guest = share.id ? (await (await fetch(`${BASE}/s/${share.id}/transcript`, { headers: { cookie } })).json()) as NqPayload : null;
+    check("native question: the share reader carries no native field, no typed form, no answer, no binding — and the same 600-char tool text",
+      !!guest && guest.total === lines.length && !("native" in guest)
+        && blocks(guest).every((b) => !("ask" in b) && !("answer" in b) && !("terminal" in b))
+        && callOf(guest, "toolu_nq_single")?.text === single?.text,
+      guest ? JSON.stringify({ total: guest.total, keys: Object.keys(guest) }) : `share=${JSON.stringify(share)} auth=${auth?.status}`);
+
+    // (B) the slot PINNED to that session, and its line planted: one old record that names no session,
+    // one whose `from` names the SAME session id — a resumed UUID is still a past occupant's history
+    const opened0 = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, { openedAt: number }> }).slots[String(slot)]!.openedAt;
+    await stopSrv();
+    const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, Record<string, unknown>>;
+      lineageHandovers?: { lineageId: string }[] };
+    plant.slots[String(slot)]!.sessionId = sid;
+    plant.slots[String(slot)]!.lineageId = lineageId;
+    const old1 = opened0 - 7_200_000, old2 = opened0 - 3_600_000;
+    const rec = (from: Record<string, unknown>, to: number, atMs: number) => ({ v: 1, lineageId, role: "generic", at: atMs,
+      from, to: { slot, openedAt: to }, obligations: [], intent: "native question probe", pointer: null, supersededBy: null });
+    plant.lineageHandovers = [...(plant.lineageHandovers ?? []),
+      rec({ slot, openedAt: old1 }, old2, old2), rec({ slot, openedAt: old2, sessionId: sid, cwd }, opened0, opened0)];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(plant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const now = persistedSlot(slot) as { sessionId?: string | null; openedAt?: number } | undefined;
+    check("native-question fixture: after the restart the slot is pinned to the planted session, same occupant",
+      now?.sessionId === sid && now.openedAt === opened0, JSON.stringify({ sid: now?.sessionId, openedAt: now?.openedAt, opened0 }));
+    const b = await read(`/api/slots/${slot}/transcript`);
+    check("native origin: the pinned session's live read names that session and the occupant, and is the current binding",
+      b.native?.origin.via === "pinned" && b.native.origin.sessionId === sid
+        && same(b.native.origin.occupant, { slot, openedAt: opened0 }) && b.native.binding.state === "current",
+      JSON.stringify(b.native));
+    check("native binding: on the current read only the unanswered complete single-select call is bound — answered, multi-select, clipped are not",
+      callOf(b, "toolu_nq_open")?.terminal?.state === "current"
+        && (callOf(b, "toolu_nq_single")?.terminal?.reason ?? "").startsWith("answered")
+        && (callOf(b, "toolu_nq_refused")?.terminal?.reason ?? "").startsWith("answered")
+        && (callOf(b, "toolu_nq_multi")?.terminal?.reason ?? "").startsWith("answered")
+        && callOf(b, "toolu_nq_huge")?.terminal?.reason === "form clipped",
+      JSON.stringify(["open", "single", "refused", "multi", "huge"].map((k) => callOf(b, `toolu_nq_${k}`)?.terminal)));
+    const past = await read(`/api/slots/${slot}/succession/2/transcript`);
+    check("native origin: a past session read through its record names the RECORD's occupant, never the live occupant's openedAt, and stays history",
+      past.assigned === true && past.source === `${sid}.jsonl` && past.native?.origin.via === "succession-record"
+        && past.native.origin.sessionId === sid && same(past.native.origin.occupant, { slot, openedAt: old2 })
+        && past.native.binding.state === "none" && past.native.binding.reason.startsWith("history")
+        && callOf(past, "toolu_nq_open")?.terminal?.state === "none" && same(callOf(past, "toolu_nq_single")?.ask, single?.ask),
+      JSON.stringify(past.native));
+    const unassigned = await read(`/api/slots/${slot}/succession/1/transcript`);
+    check("native origin: a past session whose record names no session has no session id, its recorded occupant, and no binding",
+      unassigned.assigned === false && unassigned.entries.length === 0 && unassigned.native?.origin.sessionId === null
+        && same(unassigned.native.origin.occupant, { slot, openedAt: old1 }) && unassigned.native.binding.state === "none",
+      JSON.stringify(unassigned.native));
+  } finally {
+    if (opened && slot !== undefined) await post(`/api/slots/${slot}/kill`, {});
+    await stopSrv();
+    const unplant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { lineageHandovers?: { lineageId: string }[] };
+    unplant.lineageHandovers = (unplant.lineageHandovers ?? []).filter((r) => r.lineageId !== lineageId);
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(unplant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    rmSync(proj, { recursive: true, force: true }); // outside the repo — never leave it
+    rmSync(cwd, { recursive: true, force: true });
   }
 }

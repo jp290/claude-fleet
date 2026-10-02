@@ -1717,7 +1717,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       leads = [f(3600), f(300), f(null)];
     } catch (e) { leadErr ||= e instanceof Error ? e.message : String(e); }
     const payload = /const tier = harnessOf\(s\.harness\)\.id === "claude" && slots\[s\.id - 1\] === s \? \{ ttlSec: deliveryCacheState\(s\)\.ttlSec \} : \{\};/.test(srv)
-      && /return \{ entries, total: lines\.length, source: file\.split\("\/"\)\.pop\(\) \?\? null, model, effort, \.\.\.tier \};/.test(srv);
+      // `...tail` is the owner routes' native provenance (row 1e01b4f3) — absent for every other reader
+      && /return \{ entries, total: lines\.length, source: file\.split\("\/"\)\.pop\(\) \?\? null, model, effort, \.\.\.tier, \.\.\.tail \};/.test(srv);
     const taken = /if \(data\.cache === undefined && typeof data\.ttlSec === "number"[^\n]*\n\s*this\.cacheTtlSec = data\.ttlSec;\n\s*this\.cacheTtl = data\.ttlSec \* 1000;/.test(cliSrc);
     const used = /const cold = ms >= ttl - cacheLeadMs\(pane\?\.cacheTtlSec \?\? null\);/.test(cliSrc);
     check("cache counter (E): a claude pane measures against the server's tier and warns min(300, ttlSec/5) s before the edge; codex/pi keep 20 s",

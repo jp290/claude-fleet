@@ -548,6 +548,39 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   benennt genau ein Gespräch, ein falsches cwd findet also nichts statt eines fremden Transkripts.
   Gemessen in `e2e/lanes-lifecycle.ts` (Staffelstab-Fixture, Sitz, gepflanzte Alt-Linie) und
   `e2e/self-token.ts` (echte MAIN-Nachfolge in place, A→B→C→D auf einem Slot).
+- **Native Fragen und ihre Herkunft** (Owner-Route, seit 2026-10-02, Zeile 1e01b4f3 — nur der
+  lesende Datenvertrag, die Fragekarte baut eine eigene UI-Zeile): `GET /api/slots/:id/transcript`
+  und `GET /api/slots/:id/succession/:n/transcript` tragen zusätzlich `native: {questions, origin,
+  binding}` (`server.ts#nativeOf`, Typen in `server/conversation-read.ts`). Ein Claude-Code-
+  `AskUserQuestion`-Aufruf bekommt am `tool`-Block `ask` — aus dem ORIGINAL-Input getypt, nie aus
+  dem 600-Zeichen-`text`, der unverändert bleibt —: `complete` mit `questions[{question, header,
+  multiSelect, options[{label, description}]}]`, `clipped` mit `chars`/`limit` (über `ASK_MAX` =
+  20 000 Zeichen, dann ohne eine einzige Frage), `invalid` oder `unsupported` mit `reason` (ein
+  ungemessenes Feld wie `preview`/`metadata`). Sein `tool_result` (per `ref` = `tool_use_id`, nur
+  wenn der Aufruf in DERSELBEN Datei steht) bekommt `answer` aus dem `toolUseResult` der Zeile:
+  `answered` mit `{question, form: "single", option, label}` — Frage per Fragetext, Option per
+  Label, nie per Position —, sonst `unsupported` (Mehrfachauswahl, Freitext, Teilantwort,
+  Annotationen, Ablehnung ohne strukturiertes Resultat: **UNGEMESSEN**) oder `invalid`.
+  Gemessen ist genau ein Original: Claude Code 2.1.286, Single-Select, schon beantwortet.
+  Sidechain-Zeilen (Subagenten) und andere Tools werden nicht klassifiziert; Codex und Pi
+  antworten `questions: "unsupported"` und typen nichts. `origin` = `{sessionId, occupant, via}`:
+  `pinned` (die gepinnte Session des Slots, Occupant = Slot + `openedAt` zu Lesebeginn),
+  `newest-file` (adoptierte Pane: Session aus dem Dateinamen, `occupant: null`),
+  `succession-record` (vergangene Session: Session und Occupant aus dem Nachfolge-Record — nie das
+  `openedAt` des laufenden Records, das `pastTranscript` kopiert; nennt der Record keine Session,
+  ist `sessionId: null`), `harness-file` (Codex/Pi, per Identität gefunden). `binding` ist
+  `{state: "current"}` NUR für einen Live-Read der eigenen gepinnten Claude-Session, dessen Slot,
+  `openedAt` und `sessionId` NACH dem asynchronen Lesen noch dieselben sind
+  (`server/conversation-read.ts#transcriptBinding`); sonst `none` mit `reason` (`history` — auch
+  bei wieder aufgenommener UUID —, `harness`, `unbound`, `session mismatch`, `occupant
+  gone/changed`, `session changed`). Je Aufruf `terminal`: `current` nur bei aktueller Bindung,
+  ohne Resultat in der Datei, `complete` und Single-Select (`server/conversation-read.ts#askTerminal`) — ein fehlendes
+  Resultat beweist KEIN Warten des Terminals, es ist keine Antworttür. Kein zweiter Scan: Aufrufe
+  und Resultat-IDs sammelt derselbe Vorlauf, der schon die `queued_command`-Zeilen sammelt; ein
+  inkrementeller Read (`after`) typt Antworten auch, wenn ihr Aufruf vor `after` liegt. Share,
+  Steward, Export und Puls übergeben kein `native` und bleiben byte-gleich. Gemessen in
+  `e2e/history.ts#runNativeQuestions` (anonyme Sentinel-Fixture in der gemessenen Feldstruktur,
+  ungepinnt → gepinnt mit gepflanzter Linie, Share-Gegenprobe) und `e2e/history.ts#runForeignConversations`.
 - **Die WARTESCHLANGE am Suite-Mutex ist seit 2026-09-20 dieselbe Frage wie der Lock:** `gate.queue`
   auf `/api/sessions` (`server.ts#suiteQueueView`) liest die Ticket-Verzeichnisse
   `t<n>.<pid>` unter `$FLEET_SUITE_LOCK.q`, die `e2e-stage.sh#_st_queue_scan` schreibt — in DEREN

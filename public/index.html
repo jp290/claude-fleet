@@ -2767,6 +2767,11 @@
   .rgoptn.on { color: var(--chat-ink); }
   .rgoptd { display: block; margin-top: 1px; color: var(--chat-mute); overflow-wrap: anywhere; }
   .rgoptd.rgmono { color: var(--chat-faint); font-size: 11px; }
+  /* a project is two lines at every width: its name, and its path cut in the middle (src/rights.ts#pathLine) */
+  .rgoptn1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rgpath { display: flex; min-width: 0; overflow: hidden; overflow-wrap: normal; white-space: nowrap; }
+  .rgpaths { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .rgpathe { flex: none; max-width: calc(100% - 5ch); overflow: hidden; text-overflow: ellipsis; white-space: pre; }
   .rgopt.add .rgoptn::after { content: " · neu"; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
   .rgopt.drop .rgoptn { text-decoration: line-through; color: var(--chat-mute); }
   .rgdelta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font: 500 var(--chat-code-fs)/1.5 var(--chat-mono); }

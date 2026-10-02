@@ -6611,7 +6611,12 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         localStorage.removeItem('probe.failGrant'); row.status = 502;
         return new Response(JSON.stringify({ error: 'probe: one injected failure' }), { status: 502, headers: { 'content-type': 'application/json' } });
       }
-      const res = await f0(input, init); row.status = res.status; return res; }; })()`;
+      const res = await f0(input, init); row.status = res.status;
+      // the one injected project: a long path the server cannot have here, added to a read that answered
+      const extra = g[2] === 'memory-grant' && m === 'GET' && res.ok ? localStorage.getItem('probe.longProject') : null;
+      if (!extra) return res;
+      const j = await res.json(); j.knownProjects = [...(j.knownProjects || []), JSON.parse(extra)];
+      return new Response(JSON.stringify(j), { status: res.status, headers: { 'content-type': 'application/json' } }); }; })()`;
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("rights DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -6704,13 +6709,14 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
     const net = <T = { m: string; slot: number; door: string; body: Record<string, unknown> | null; status: number | null }[]>() => evaluate<T>(`window.__net`);
     const patches = async (slot: number) => (await net()).filter((r) => r.door === "memory-grant" && r.m === "PATCH" && r.slot === slot);
     // the page opened on ONE session, with the Info shown: the column at 1200, the ℹ window at 390
-    const openOn = async (width: number, height: number, slot: number, failFirstRead = false) => {
+    const openOn = async (width: number, height: number, slot: number, failFirstRead = false, longProject?: { projectKey: string; repo: string }) => {
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
       const phone = width < 700;
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${slot}], focused: 0 }));
-        localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); ${failFirstRead ? `localStorage.setItem('probe.failGrant', '${slot}');` : ""} })()`);
+        localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); ${failFirstRead ? `localStorage.setItem('probe.failGrant', '${slot}');` : ""}
+        ${longProject ? `localStorage.setItem('probe.longProject', ${JSON.stringify(JSON.stringify(longProject))});` : ""} })()`);
       await navigate(`${o.base}/`);
       if (!await wait(`document.querySelector('#panes .pane .xterm')`, 15000))
         throw new Error("client did not boot against the instance: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
@@ -6888,6 +6894,39 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
           && p4.length === 4 && p4[3].body?.revoke === true && p4[3].body?.expectedRevision === 3 && p4[3].body?.expectedOpenedAt === A.openedAt
           && a4.grant?.revision === 4 && a4.grant.revokedAt !== null && !a4.inForce;
         await shot(width, "widerrufen");
+
+        // --- the project choice reads a project by its name (App-JA 2026-10-02: „[Zitat entfernt]“
+        // ): name, then ONE line of path — home as ~, a middle too long as …, the last segment
+        // whole — and the full path only in the tooltip. The long path is injected into the page's read
+        // (NET, probe.longProject): no folder outside the scratch, and it is under a home on every host.
+        const LONG = { projectKey: "probe-long-path", repo: "/Users/probe-owner/Developer/kunden/archiv-2026-herbst/ein-sehr-langer-ordnername-der-die-mitte-fuellt/noch-eine-ebene-tiefer/projekt-mit-langem-namen" };
+        claims["PROBE: the Info opens on slot A with a long fixture path among the known projects"] = await openOn(width, height, A.slot, false, LONG);
+        await wait(`${GR}?.innerText.includes('Fassung 4')`);
+        await click(rk("open"));
+        const picked = await wait(`${rk(`p:${LONG.projectKey}`)}`);
+        type Pick = { rk: string; title: string; text: string; name: string; nameLines: number; pathLines: number;
+          start: string | null; tail: string | null; cut: boolean; tailWhole: boolean; pathFits: boolean };
+        const picks = await evaluate<Pick[]>(`(() => {
+          const lines = (e) => e ? Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight)) : 0;
+          return [...${RB}.querySelectorAll('.rgopt[data-rk^="p:"]')].map((o) => {
+            const n = o.querySelector('.rgoptn'), p = o.querySelector('.rgpath'), s = o.querySelector('.rgpaths'), t = o.querySelector('.rgpathe');
+            return { rk: o.dataset.rk, title: o.title, text: o.innerText, name: n?.textContent ?? '', nameLines: lines(n), pathLines: lines(p),
+              start: s?.textContent ?? null, tail: t?.textContent ?? null, cut: !!s && s.scrollWidth > s.clientWidth,
+              tailWhole: !!t && t.scrollWidth <= t.clientWidth + 1, pathFits: !!p && p.scrollWidth <= p.clientWidth + 1 }; }); })()`) ?? [];
+        await shot(width, "projektauswahl");
+        await click(rk("cancel"));
+        const repoOf = new Map([...(await grantOf(A.slot)).knownProjects, LONG].map((p) => [`p:${p.projectKey}`, p.repo]));
+        const long = picks.find((x) => x.rk === `p:${LONG.projectKey}`);
+        facts.projectChoice = picks.map(({ rk: k, name, nameLines, pathLines, start, tail, cut, tailWhole, pathFits }) => ({ k, name, nameLines, pathLines, start, tail, cut, tailWhole, pathFits }));
+        claims["board: in the project choice every project is its name over one line of path — never more than two lines, nothing sent"] = picked
+          && picks.length >= 2 && picks.every((x) => x.nameLines === 1 && x.pathLines === 1 && x.pathFits && x.name === basename(repoOf.get(x.rk) ?? ""))
+          && (await patches(A.slot)).length === 0;
+        claims["board: a long path is cut — home as ~, the middle as …, the last segment whole"] = !!long && long.name === "projekt-mit-langem-namen"
+          && long.start === "~/Developer/kunden/archiv-2026-herbst/ein-sehr-langer-ordnername-der-die-mitte-fuellt/noch-eine-ebene-tiefer"
+          && long.tail === "/projekt-mit-langem-namen" && long.cut && long.tailWhole && !long.text.includes("/Users/");
+        claims["board: the full path stands only in the tooltip — every project's title opens with it, the long one's text never holds it"] =
+          picks.length >= 2 && picks.every((x) => x.title.startsWith(`${repoOf.get(x.rk) ?? "\0"} (intern: projectKey `))
+          && !!long && long.title.startsWith(`${LONG.repo} (`) && !long.text.includes(LONG.repo);
 
         // --- a lane: no button, no read
         claims["PROBE: the Info opens on the lane"] = await openOn(width, height, lane.slot);

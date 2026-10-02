@@ -3016,9 +3016,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     // so each state must change the GEOMETRY of the glyph — and resting and asleep must not be the
     // same means twice (two brightnesses of one dot is the failure this forbids).
     {
-      // the phone's top island reads the same four shapes from the SAME rule (`, #mtop .act…`), so a
-      // second selector in that rule is allowed — a second rule of its own would not be found here
-      const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}(?:,\\s*#mtop \\.act${sel})?\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
+      // the phone's top island and its sheets read the same four shapes from the SAME rule
+      // (`, #mtop .act…, #msheet .act…`), so those selectors in that rule are allowed — a second rule
+      // of its own would not be found here
+      const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}(?:,\\s*#mtop \\.act${sel})?(?:,\\s*#msheet \\.act${sel})?\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
       const base = glyph(""), rest = glyph("\\.rest"), sleep = glyph("\\.sleep"), bad = glyph("\\.bad");
       check("client: the four states differ in SHAPE, and resting and asleep differ from each other",
         /border-radius: 50%/.test(base) && /background: var\(/.test(base)
@@ -3149,7 +3150,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       // showRiskPreview) is gone on purpose with the six copies. Same reachability guarantee.
       const drawerClosedByHelper = dlgSrc !== null
         && dlgSrc.includes("closeDrawer?.()")
-        && /onDialogWillOpen\(\(\) => setDrawer\(false\)\)/.test(cliSrc)
+        && /onDialogWillOpen\(\(\) => (?:setDrawer\(false\)|\{ setDrawer\(false\);[^}]*\})\)/.test(cliSrc)
         && /askRisk\(/.test(riskSrc);
       // Since row 69bdf591 the phone reaches it one tap further: the strip's ✕ hides under
       // MOBILE_MQ and the row's ⋯ menu carries "Kill session" — the same killSlot, last in the list.

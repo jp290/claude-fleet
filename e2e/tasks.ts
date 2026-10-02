@@ -645,7 +645,8 @@ export async function run(ctx: Ctx): Promise<void> {
     check("dialog helper: askRisk closes the phone drawer before painting — client hands over setDrawer(false)",
       taskDialogSource.includes("closeDrawer?.()")
       && taskDialogSource.includes("export function onDialogWillOpen")
-      && taskClientSource.includes("onDialogWillOpen(() => setDrawer(false))"),
+      // the handover may close the phone's sheets in the same breath (closeSheet), the drawer first
+      && /onDialogWillOpen\(\(\) => (?:setDrawer\(false\)|\{ setDrawer\(false\);[^}]*\})\)/.test(taskClientSource),
       `dialog.ts drawer close + client.ts registration${taskDialogSource ? "" : " (dialog source unreadable)"}`);
     const delStart = taskClientSource.indexOf('el("button", "shrbtn danger", "✕ delete")');
     const delEnd = taskClientSource.indexOf("danger.appendChild(dangerActs);", delStart);

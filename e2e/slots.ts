@@ -2107,6 +2107,23 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // THE PHONE UPRIGHT'S TWO ISLANDS (card "Auf dem Telefon steht oben klein", docs/design/
+  // mobil-insel-notiz.md §1c), same rig: the two steps of the top island, closing by name, by a tap
+  // outside and by every action, the 40-px targets, the terminal above the bottom island, the grip's
+  // keys without focus loss and with #keys' bytes — at 390 × 844 with and without a simulated
+  // keyboard; at 1200 and on its side only that no island exists. A browser that cannot run is the
+  // PROBE line — red, never a skip.
+  try {
+    for (const result of await runPhoneIslandDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`phone island DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("phone island DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
   // THE RIGHTS OF A SESSION (card "der Owner sieht an jeder Session und beim Gruenden, was sie
   // lesen darf"; docs/design/datenrechte-notiz.md): measured against THIS instance, not a fixture —
   // real grants, real 409s, a really re-occupied slot. Every scenario is its own line, so a painted
@@ -5444,6 +5461,13 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       return { W, shown, focusables, desc, inside, row, section };
     })()`;
     const gear = `[...document.querySelectorAll('#mset, .panegear')].find((e) => window.__fx.shown(e))`;
+    // the phone upright keeps the gear behind the top island's ⋯ (index.html, the island block): the
+    // client is ready when either is drawn, and the gear is reached through pill → ⋯ there
+    const ready = `(${gear}) || window.__fx.shown(document.querySelector('#mpill'))`;
+    const toGear = async () => {
+      if (await evaluate<boolean>(`!!(${gear})`)) return;
+      await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#mmore')`);
+    };
     const results: SettingsDomResult[] = [];
     for (const [width, height] of [[1200, 900], [390, 844]] as const) {
       shotIndex = 0;
@@ -5457,7 +5481,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); })()`);
       await navigate("http://fleet.fixture/");
-      const booted = await wait(`${gear}`, 12000);
+      const booted = await wait(ready, 12000);
       if (!booted) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
       await evaluate("new Promise(r => setTimeout(r, 600))");
       if (artifacts) {
@@ -5468,6 +5492,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const sinceOpen = fx.posts.length;
 
       // --- 1. open: the focus enters the window and lands on the current section's target
+      await toGear();
       await click(gear);
       await wait("window.__fx.W()");
       await shot(width, "open");
@@ -5670,7 +5695,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       claims["Verwerfen closes with zero writes and returns the focus to the opener"] = dropped.closed && dropped.onGear && dropped.writes === 0;
 
       // --- 6. Apply: refused first (row keeps the staged value, server value unchanged), then written once
-      await click(gear); await wait("window.__fx.W()");
+      await toGear(); await click(gear); await wait("window.__fx.W()");
       await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
       await wait(`window.__fx.W().querySelector('[data-par="cap"]')?.innerText.includes('wirksam')`, 4000);
       await evaluate(`${capInput}.focus(); ${capInput}.select()`);
@@ -5717,7 +5742,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await key("Escape");
       fx.planStatus = 500; fx.caps.bases = undefined; fx.autosOn = undefined; fx.capsStatus = 200;
       await evaluate("new Promise(r => setTimeout(r, 2300))");
-      await click(gear); await wait("window.__fx.W()");
+      await toGear(); await click(gear); await wait("window.__fx.W()");
       await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
       await evaluate("new Promise(r => setTimeout(r, 400))");
       const parU = await par();
@@ -5735,10 +5760,13 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       // the Info column is a desktop preference; on the phone ℹ opens it as a window of its own
       if (width === 1200) await evaluate(`localStorage.setItem('fleet.board', '1')`);
       await navigate("http://fleet.fixture/");
-      await wait(`${gear}`, 12000);
+      await wait(ready, 12000);
       const openExplorerBtn = `[...document.querySelectorAll('button')].find((b) => /explorer/i.test(b.textContent) && window.__fx.shown(b))`;
       if (!await wait(openExplorerBtn, 4000)) {
-        await click(`[...document.querySelectorAll('.boardtoggle')].find((b) => window.__fx.shown(b))`);
+        // ℹ: the pane's corner button, or on the phone upright the open island's
+        const cornerInfo = `[...document.querySelectorAll('.boardtoggle')].find((b) => window.__fx.shown(b))`;
+        if (await evaluate<boolean>(`!!(${cornerInfo})`)) await click(cornerInfo);
+        else { await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#minfo')`); }
       }
       const explorerOpened = await wait(openExplorerBtn, 8000);
       if (explorerOpened) {
@@ -6116,7 +6144,9 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         await click("window.__fx.pane(0).querySelector('.viewtoggle')");
       } else {
         // --- the phone: one pane, the slot switch comes from the drawer; the keyboard never opens by itself
-        await click("document.querySelector('#menu')");
+        // the drawer opens from the top island: the pill opens it, its slot button hands over to ☰
+        await click("document.querySelector('#mpill')");
+        await click("document.querySelector('#mslot')");
         // the drawer slides in: the row is clicked where it finally rests, not mid-flight
         await wait("document.body.classList.contains('drawer') && document.querySelector('#slots .slot[data-slot=\"2\"]')?.getBoundingClientRect().left >= 0", 3000);
         await settle(400);
@@ -6154,6 +6184,318 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
       if (artifacts) { await send("Page.stopScreencast"); recording = null; }
       results.push({ width, height, claims, facts });
       missing.length = 0;
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE PHONE UPRIGHT'S TWO ISLANDS, measured in a real browser on the real client bundle (card "Auf
+// dem Telefon steht oben klein, mit wem man spricht", docs/design/mobil-insel-notiz.md §1b/§1c),
+// same rig as the send target probe: a fixture origin, a fake socket per pane that keeps every byte,
+// native clicks. The on-screen keyboard is simulated where the client reads it — a visualViewport
+// that loses 336 px (iOS upright with the suggestion row) and fires its resize — so the real
+// sync path sets body.keyboard-open and --vvh. Every claim reads the DOM, the socket bytes or the
+// page's geometry, never the source. 1200 × 900 and the phone on its side (844 × 390, touch) only
+// claim that no island exists there; their pixels are compared before/after by the lane, not here.
+// Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
+interface PhoneIslandDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string): Promise<PhoneIslandDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-island-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  const slots = [
+    { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000, model: "claude-opus-5-5", effort: "high", lastOutput: 0 },
+    { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, lastOutput: 0 },
+    ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
+  ];
+  const fx = { sessions: 0, inputs: [] as string[] };
+  // the bytes the nine keys must send — src/client.ts KEYS, in the row's order (^C first)
+  const KEY_BYTES = "\x03\x1b\t\x1b[Z\x1b[A\x1b[B\x1b[D\x1b[C\r";
+  const FAKE = `(() => { window.__ws = [];
+    class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.sent = ''; this.binaryType = 'blob'; window.__ws.push(this);
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          this.onmessage?.({ data: new TextEncoder().encode('fixture\\r\\n$ ').buffer }); }, 0); }
+      send(b) { this.sent += typeof b === 'string' ? b : new TextDecoder().decode(b); }
+      close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS;
+    const vv = new EventTarget(); let kbd = 0;
+    for (const [k, f] of Object.entries({ height: () => window.innerHeight - kbd, width: () => window.innerWidth, offsetTop: () => 0, offsetLeft: () => 0, pageTop: () => 0, pageLeft: () => 0, scale: () => 1 }))
+      Object.defineProperty(vv, k, { get: f });
+    Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => vv });
+    window.__keyboard = (px) => { kbd = px; vv.dispatchEvent(new Event('resize')); }; })()`;
+  const HELP = `(() => {
+    const q = (s) => document.querySelector(s);
+    const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none' && !e.closest('[hidden]');
+    const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), r: Math.round(r.right), b: Math.round(r.bottom) }; };
+    const pane = () => q('#panes .pane');
+    const where = () => { const a = document.activeElement; return !a || a === document.body ? 'body' : a.id ? '#' + a.id : a.tagName.toLowerCase() + '.' + String(a.className).split(' ').join('.'); };
+    const hits = (sel, x, y) => !!document.elementFromPoint(x, y)?.closest(sel);
+    const sent = () => window.__ws.filter((w) => w.url.includes('/ws/1?')).map((w) => w.sent).join('');
+    return { q, shown, box, pane, where, hits, sent };
+  })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("island DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, recording: string | null = null, frame = 0;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.screencastFrame" && msg.params) {
+        if (artifacts && recording) writeFileSync(resolve(artifacts, recording, `${String(frame++).padStart(5, "0")}.jpg`), Buffer.from(String(msg.params.data), "base64"));
+        void send("Page.screencastFrameAck", { sessionId: msg.params.sessionId }).catch(() => undefined);
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: 10 * 60_000, chips: ["/review", "/compact"], slots, tasks: [] }); }
+      if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    let targetId = "";
+    const freshTarget = async () => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      const target = await send("Target.createTarget", { url: "about:blank" });
+      targetId = String(target.targetId);
+      sessionId = undefined;
+      const attached = await send("Target.attachToTarget", { targetId, flatten: true });
+      sessionId = String(attached.sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `${FAKE}; window.__fx = ${HELP}` });
+    };
+    const missing: string[] = [];
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 80) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (url: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const mouse = async (type: string, at: { x: number; y: number }) => send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1 });
+    const tapAt = async (at: { x: number; y: number }, label: string) => {
+      fx.inputs.push(`tap ${Math.round(at.x)},${Math.round(at.y)} ${label}`);
+      await mouse("mouseMoved", at); await mouse("mousePressed", at); await mouse("mouseReleased", at);
+      await settle();
+    };
+    const tap = async (expression: string): Promise<boolean> => {
+      const at = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e || !window.__fx.shown(e)) return null;
+        const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (!at) { missing.push("tap " + expression.slice(0, 100)); return false; }
+      await tapAt(at, expression.slice(0, 60));
+      return true;
+    };
+    const wait = async (condition: string, ms = 4000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    type Box = { x: number; y: number; w: number; h: number; r: number; b: number } | null;
+    const box = (sel: string) => evaluate<Box>(`window.__fx.box(${sel.startsWith("window.") || sel.startsWith("document.") ? sel : `document.querySelector(${JSON.stringify(sel)})`})`);
+    const shown = (sel: string) => evaluate<boolean>(`window.__fx.shown(document.querySelector(${JSON.stringify(sel)}))`);
+    const isOpen = () => evaluate<boolean>("document.body.classList.contains('mopen')");
+    const boot = async (width: number, height: number, touch: boolean) => {
+      await freshTarget();
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await send("Emulation.setTouchEmulationEnabled", touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelector('#panes .pane .xterm') && window.__ws.some((w) => w.readyState === 1) && document.querySelector('#mtitle').textContent === 'Alpha'`, 12000);
+      if (!booted) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(500);
+    };
+    const results: PhoneIslandDomResult[] = [];
+
+    // --- the desktop and the phone on its side: no island, the heads they had
+    for (const [width, height, touch] of [[1200, 900, false], [844, 390, true]] as const) {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {};
+      await boot(width, height, touch);
+      facts.coarse = await evaluate<boolean>("matchMedia('(pointer: coarse)').matches");
+      facts.seen = { mtop: await shown("#mtop"), grip: await shown("#mgrip"), mhead: await shown("#mhead"), mread: await shown("#mread"),
+        side: await shown("#side"), bar: await box("#bar") };
+      const seen = facts.seen as { mtop: boolean; grip: boolean; mhead: boolean; mread: boolean; side: boolean };
+      claims["no island exists here: neither the top island nor the grip is drawn"] = !seen.mtop && !seen.grip;
+      if (width === 1200) claims["the desktop keeps its sidebar and no phone head"] = seen.side && !seen.mhead && !seen.mread;
+      else claims["the phone on its side keeps the reading mode (#mread) and no phone head"] = facts.coarse === true && seen.mread && !seen.mhead;
+      await shot(`${width}-start`);
+      facts.missing = [...missing]; missing.length = 0;
+      results.push({ width, height, claims, facts });
+    }
+
+    // --- the phone upright, 390 × 844: without and with the on-screen keyboard
+    const W = 390, H = 844;
+    for (const keyboard of [false, true]) {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {};
+      fx.inputs = [];
+      await boot(W, H, true);
+      if (artifacts) { recording = `video-${W}${keyboard ? "-tastatur" : ""}`; frame = 0; mkdirSync(resolve(artifacts, recording), { recursive: true }); await send("Page.startScreencast", { format: "jpeg", quality: 85, everyNthFrame: 1 }); }
+      const tag = keyboard ? "Tastatur · " : "";
+      if (keyboard) {
+        await tap("document.querySelector('#input')");
+        await evaluate("window.__keyboard(336)");
+        await wait("document.body.classList.contains('keyboard-open')", 2000);
+        await settle(400);
+        facts.keyboard = { open: await evaluate<boolean>("document.body.classList.contains('keyboard-open')"), app: await box("#app"), where: await evaluate<string>("window.__fx.where()") };
+        claims[`${tag}the simulated keyboard is up: keyboard-open, the app 508 px tall, the field focused`] =
+          (facts.keyboard as { open: boolean }).open && (facts.keyboard as { app: Box }).app?.h === H - 336 && (facts.keyboard as { where: string }).where === "#input";
+      }
+      const bottom = keyboard ? H - 336 : H;
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-zu`);
+      // 1. no head, no fixed foot: the bottom island floats 6 px from the edges
+      const bar = await box("#bar");
+      facts.start = { mhead: await shown("#mhead"), keys: await shown("#keys"), bar, pill: await box("#mpill"), pane: await box("window.__fx.pane()"),
+        pillText: await evaluate<string>("document.querySelector('#mpill').textContent"), pillShape: await evaluate<string>("document.querySelector('#mpill .act')?.className ?? ''"),
+        open: await isOpen(), mopen: await shown("#mopen") };
+      const st = facts.start as { mhead: boolean; keys: boolean; bar: Box; pill: Box; pane: Box; pillText: string; pillShape: string; open: boolean; mopen: boolean };
+      claims[`${tag}no head and no fixed foot: #mhead is gone, the keys are folded, the bottom island floats 6 px from the edges`] =
+        !st.mhead && !st.keys && !!bar && bar.x === 6 && bar.r === W - 6 && bar.b === bottom - 6;
+      // 2. the start is the closed pill: centred, state shape + name, 32 px seen and 40 px to hit
+      const pill = st.pill;
+      const hitTop = pill ? await evaluate<boolean>(`window.__fx.hits('#mpill', ${pill.x + pill.w / 2}, ${pill.y - 3})`) : false;
+      const hitBottom = pill ? await evaluate<boolean>(`window.__fx.hits('#mpill', ${pill.x + pill.w / 2}, ${pill.b + 3})`) : false;
+      facts.pillHit = { hitTop, hitBottom };
+      claims[`${tag}the start is the closed pill: centred, state shape and the session's name, nothing else`] = !st.open && !st.mopen && !!pill
+        && Math.abs(pill.x + pill.w / 2 - W / 2) <= 1 && pill.y === 6 && st.pillText === "Alpha" && /\bact (work|rest|sleep|bad)\b/.test(st.pillShape);
+      claims[`${tag}the pill is 32 px seen and hits 40 px (4 px above and below it still open it)`] = !!pill && pill.h === 32 && hitTop && hitBottom;
+      // 3. a tap on the pill opens; the open island covers the pane without moving it
+      const termBefore = await box("document.querySelector('.paneterm')");
+      await tap("document.querySelector('#mpill')");
+      const opened = await isOpen();
+      const ids = ["#mslot", "#mname", "#minfo", "#mview", "#mhist", "#mauto", "#mmore"];
+      const boxes: Record<string, Box> = {};
+      for (const id of ids) boxes[id] = (await shown(id)) ? await box(id) : null;
+      facts.open = { opened, boxes, name: await evaluate<string>("document.querySelector('#mname').innerText"), view: await evaluate<string>("document.querySelector('#mview').textContent"),
+        term: await box("document.querySelector('.paneterm')"), pane: await box("window.__fx.pane()"), top: await box("#mtop"), where: await evaluate<string>("window.__fx.where()") };
+      const op = facts.open as { opened: boolean; name: string; view: string; term: Box; pane: Box; top: Box; where: string };
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-auf`);
+      const b = (id: string) => boxes[id];
+      claims[`${tag}a tap on the pill opens the island: slot button left, name with model · effort, ℹ right; view, History, Schedule, ⋯ under the name`] =
+        opened && ids.every((id) => !!b(id)) && b("#mslot")!.x < b("#mname")!.x && b("#mname")!.r <= b("#minfo")!.x
+        && b("#mview")!.y >= b("#mname")!.b && b("#mview")!.x < b("#mhist")!.x && b("#mhist")!.x < b("#mauto")!.x && b("#mauto")!.x < b("#mmore")!.x
+        && /Alpha/.test(op.name) && /Opus 5\.5 · high/.test(op.name) && op.view === "Konversation";
+      claims[`${tag}every target in the open island is at least 40 px high, the icon buttons 40 × 40`] = ids.every((id) => (b(id)?.h ?? 0) >= 40)
+        && ["#mslot", "#minfo", "#mmore"].every((id) => (b(id)?.w ?? 0) >= 40);
+      claims[`${tag}the open island covers the top of the pane — the pane and the terminal do not move`] = JSON.stringify(op.pane) === JSON.stringify(st.pane)
+        && JSON.stringify(op.term) === JSON.stringify(termBefore) && !!op.top && op.top.b > (termBefore?.y ?? 0);
+      if (keyboard) claims[`${tag}opening the island keeps the field's focus and the keyboard`] = op.where === "#input" && await evaluate<boolean>("document.body.classList.contains('keyboard-open')");
+      // 4. closing: a tap on the name, a tap outside, and every action
+      await tap("document.querySelector('#mname')");
+      const byName = !await isOpen();
+      await tap("document.querySelector('#mpill')");
+      const reopened = await isOpen();
+      await tapAt({ x: W / 2, y: Math.round((bottom - 60) * 0.55) }, "outside");
+      const byOutside = !await isOpen();
+      facts.close = { byName, reopened, byOutside };
+      claims[`${tag}a tap on the name closes the island, a tap outside closes it too`] = byName && reopened && byOutside;
+      // the actions, each handing over to the board's own control
+      const act = async (id: string, effect: string, undo?: () => Promise<unknown>) => {
+        await tap("document.querySelector('#mpill')");
+        const was = await isOpen();
+        await tap(`document.querySelector('${id}')`);
+        const done = await wait(effect, 3000);
+        const closed = !await isOpen();
+        await shot(`${W}${keyboard ? "-tastatur" : ""}-${id.slice(2)}`);
+        if (undo) await undo();
+        return { was, done, closed };
+      };
+      const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(400); };
+      const actions: Record<string, { was: boolean; done: boolean; closed: boolean }> = {};
+      actions.slot = await act("#mslot", "document.body.classList.contains('drawer')", async () => { await escape(); await wait("!document.body.classList.contains('drawer')"); await settle(300); });
+      actions.view = await act("#mview", "window.__fx.pane().classList.contains('chat')");
+      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').textContent"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')") };
+      actions.viewBack = await act("#mview", "!window.__fx.pane().classList.contains('chat')");
+      actions.info = await act("#minfo", "window.__fx.shown(document.querySelector('#shell-board'))", escape);
+      actions.hist = await act("#mhist", "getComputedStyle(document.querySelector('#hist')).display === 'flex'", escape);
+      actions.more = await act("#mmore", "document.body.classList.contains('keyboard-options')");
+      facts.more = { gear: await evaluate<boolean>("[...document.querySelectorAll('.panegear')].some((e) => window.__fx.shown(e))"),
+        live: await shown("#live"), tools: await box("document.querySelector('#panes .pane .panetools')") };
+      await tapAt({ x: W / 2, y: Math.round((bottom - 60) * 0.6) }, "outside ⋯");
+      const moreClosed = await evaluate<boolean>("!document.body.classList.contains('keyboard-options')");
+      facts.actions = actions;
+      claims[`${tag}every action closes the island and does what the board's own control does (drawer, view, ℹ, History, ⋯)`] =
+        Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
+      claims[`${tag}⋯ brings the corner group's tools (with the gear) and Live; a tap outside folds them away`] =
+        (facts.more as { gear: boolean }).gear && (facts.more as { live: boolean }).live && moreClosed;
+      // 5. the terminal ends above the bottom island and its grip
+      const term = await box("document.querySelector('.paneterm')"), grip = await box("#mgrip"), bar2 = await box("#bar");
+      facts.terminal = { term, grip, bar: bar2 };
+      claims[`${tag}the terminal ends above the bottom island and its grip`] = !!term && !!grip && !!bar2 && term.b <= grip.y && grip.y < bar2.y && term.y >= (pill?.b ?? 99);
+      // 6. the grip: chips and the nine keys fold in, 40 px each, no focus lost, the #keys bytes
+      // the view switch above gave the terminal the keys; the field takes them back first
+      await tap("document.querySelector('#input')");
+      if (keyboard) await wait("document.body.classList.contains('keyboard-open')", 2000);
+      const focusBefore = await evaluate<string>("window.__fx.where()");
+      await tap("document.querySelector('#mgrip')");
+      await settle(400);
+      const keys = await evaluate<Box[]>("[...document.querySelectorAll('#keys button')].map((k) => window.__fx.shown(k) ? window.__fx.box(k) : null)");
+      const chips = await evaluate<number>("[...document.querySelectorAll('#chips .chip')].filter((c) => window.__fx.shown(c)).length");
+      const sentBefore = await evaluate<string>("window.__fx.sent()");
+      for (let i = 0; i < 9; i++) await tap(`document.querySelectorAll('#keys button')[${i}]`);
+      await settle(200);
+      const sentAfter = await evaluate<string>("window.__fx.sent()");
+      const term2 = await box("document.querySelector('.paneterm')"), grip2 = await box("#mgrip");
+      facts.grip = { focusBefore, focusAfter: await evaluate<string>("window.__fx.where()"), keys, chips, bytes: JSON.stringify(sentAfter.slice(sentBefore.length)),
+        keyboardStill: await evaluate<boolean>("document.body.classList.contains('keyboard-open')"), term2, grip2, expanded: await evaluate<string>("document.querySelector('#mgrip').getAttribute('aria-expanded')") };
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-griff`);
+      const g = facts.grip as { focusBefore: string; focusAfter: string; keyboardStill: boolean; expanded: string };
+      claims[`${tag}the grip folds in the owner's chips and the nine keys, each key at least 40 × 40`] = g.expanded === "true" && chips === 2
+        && keys.length === 9 && keys.every((k) => !!k && k.w >= 40 && k.h >= 40);
+      claims[`${tag}grip and keys leave the focus in the field${keyboard ? " and the keyboard up" : ""}`] = g.focusBefore === "#input" && g.focusAfter === "#input"
+        && (!keyboard || g.keyboardStill);
+      claims[`${tag}the nine keys send exactly the bytes of #keys (^C esc tab ⇧tab ↑ ↓ ← → ⏎) to the focused slot`] = sentAfter.slice(sentBefore.length) === KEY_BYTES;
+      claims[`${tag}with the keys folded in, the terminal still ends above the island`] = !!term2 && !!grip2 && term2.b <= grip2.y;
+      await tap("document.querySelector('#mgrip')");
+      if (artifacts) { await send("Page.stopScreencast"); recording = null; }
+      facts.inputs = [...fx.inputs]; facts.missing = [...missing]; missing.length = 0;
+      results.push({ width: W, height: keyboard ? H - 336 : H, claims, facts });
     }
     return results;
   } finally {
@@ -6341,7 +6683,8 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       await navigate(`${o.base}/`);
       if (!await wait(`document.querySelector('#panes .pane .xterm')`, 15000))
         throw new Error("client did not boot against the instance: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
-      if (phone) await click(`document.querySelector('#panes .pane .boardtoggle')`);
+      // the phone upright: ℹ sits in the top island (pill → ℹ), the pane's corner button is folded away
+      if (phone) { await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#minfo')`); }
       return wait(`${RB}`, 10000);
     };
     const startVideo = async (name: string) => {

@@ -104,7 +104,8 @@ $("menu").onclick = () => setDrawer(true);
 $("shade").onclick = () => setDrawer(false);
 // mobile's settings gear (#mset, on the place the duplicate #refresh freed — the reconnect lives
 // on the pane's own ↻ now, which the phone shows in the corner group). Desktop's gear sits in each
-// pane's group; both open the same window.
+// pane's group; both open the same window. The phone upright has no #mhead: there the pane's gear
+// comes back behind the top island's ⋯ (renderIsland), still one gear.
 $("mset").appendChild(icon("gear"));
 $("mset").onclick = () => openSettings($("mset"));
 
@@ -1183,7 +1184,8 @@ class Pane {
     // Zuhause); the button is the shortcut that opens the window right there
     this.sizeBtn.onclick = (e) => { e.stopPropagation(); openSettings(this.sizeBtn, "schrift"); };
     // the gear opens the settings window — empty for now (Grammatik K8/D1 fills it); the phone
-    // hides this one and keeps its gear in #mhead instead (G5), so exactly one gear is ever visible
+    // hides this one and keeps its gear in #mhead instead (G5), so exactly one gear is ever visible —
+    // upright #mhead is gone and this one comes back behind the top island's ⋯ (index.html)
     this.gearBtn = el("button", "panegear") as HTMLButtonElement;
     this.gearBtn.appendChild(icon("gear"));
     this.gearBtn.title = "Einstellungen öffnen";
@@ -1469,6 +1471,7 @@ class Pane {
     saveView();
     this.syncHarnessAffordances();
     mountComposer(); // the one composer takes the size of the focused pane's view
+    if (focused === this.index) renderIsland(); // the island's view word follows
     clearTimeout(this.chatTimer);
     if (v === "chat") { this.applyChatMemo(); void this.pollChat(); }
     else { this.refit(); this.term.focus(); }
@@ -4198,6 +4201,7 @@ window.addEventListener("keydown", (e) => {
     if (devdlg.style.display === "flex") closeDevDlg();
     if (codexdlg.style.display === "flex") closeCodexDlg();
     setDrawer(false);
+    setIsland(false);
   }
 });
 window.addEventListener("resize", () => { for (const p of panes) p.refit(); });
@@ -4206,6 +4210,7 @@ window.addEventListener("resize", () => { for (const p of panes) p.refit(); });
 // per-pane mobile settings (font size, inputMode, forced single layout) re-apply
 MOBILE_MQ.addEventListener("change", () => {
   setDrawer(false);
+  setIsland(false);
   setLive(false); // the live bar is a mobile-only surface
   if (!isMobile() && boardShell?.isOpen()) setBoard(false); // the info WINDOW is the phone's surface
   applyCollapsed(); // strip the rail on mobile, restore it on desktop
@@ -4218,6 +4223,7 @@ MOBILE_MQ.addEventListener("change", () => {
 // viewport — track it so the compose bar stays visible above the keyboard
 const vv = window.visualViewport;
 let keyboardPlaceholder: string | null = null;
+let keyboardWasOpen = false;
 const mobileMore = $("mobmore") as HTMLButtonElement;
 mobileMore.appendChild(icon("dots"));
 mobileMore.onclick = () => {
@@ -4248,6 +4254,94 @@ mreadWrite.onclick = () => {
   document.body.classList.add("landwrite");
   ta.focus();
 };
+// THE PHONE UPRIGHT: two islands instead of #mhead and the fixed foot (index.html, the island
+// block; docs/design/mobil-insel-notiz.md §1b/§1c). The top island has two steps — closed, a pill
+// with the state shape and the name (to read); open, the controls (to act). A tap on the pill opens
+// it; a tap on the name, on its free surface or anywhere outside closes it, and so does every
+// action in it. It invents no way of its own: each button hands over to the control the board
+// already has — ☰'s drawer, the focused pane's ℹ and view toggle, the tray's History and Schedule,
+// ⋯ = #mobmore's options. Body classes only; the CSS decides that they mean anything (portrait).
+const portrait = () => isMobile() && !LANDSCAPE_MQ.matches;
+const mTop = $("mtop"), mPill = $("mpill") as HTMLButtonElement, mName = $("mname") as HTMLButtonElement;
+const mSlot = $("mslot") as HTMLButtonElement, mInfo = $("minfo") as HTMLButtonElement, mView = $("mview") as HTMLButtonElement;
+const mMore = $("mmore") as HTMLButtonElement, mGrip = $("mgrip") as HTMLButtonElement;
+mInfo.appendChild(icon("info"));
+mMore.appendChild(icon("dots"));
+const paneControl = (cls: string): HTMLButtonElement | null => {
+  const b = panes[focused]?.root.querySelector<HTMLButtonElement>(`.panetools .${cls}`) ?? null;
+  return b && b.style.display !== "none" ? b : null;
+};
+function setIsland(open: boolean): void {
+  document.body.classList.toggle("mopen", open);
+  mPill.setAttribute("aria-expanded", String(open));
+  if (open) renderIsland();
+}
+let islandKey = "";
+function renderIsland(): void {
+  const pane = panes[focused];
+  const slot = pane?.slot ?? 0;
+  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
+  const name = mtitle.textContent ?? "";
+  // the drawer's own reading of the row (slotState: the shape, STATE_WORD: its word)
+  const state = s?.cwd ? slotState(s, serverNow, panes.some((p) => p.slot === s.id)) : null;
+  const lane = s?.cwd && s.worktree ? laneBandNames(stacksOf()).get(slot) : undefined;
+  const addr = !slot ? "—" : lane ?? String(slot);
+  // model · effort as the composer's switches read them (src/running.ts), display only
+  const model = s?.cwd ? runningModel(s.model, pane?.observedModel) : "";
+  const effort = s?.cwd ? runningEffort(s.effort, pane?.observedEffort) : "";
+  const meta = [model ? modelLabel(model).split(" · ")[0] : "", effort].filter(Boolean).join(" · ");
+  const view = paneControl("viewtoggle"), info = paneControl("boardtoggle");
+  const chat = !!pane?.isChat, more = document.body.classList.contains("keyboard-options");
+  const key = [name, state, addr, meta, !!view, chat, !!info, more].join("|");
+  if (key === islandKey) return;
+  islandKey = key;
+  const dot = () => { const d = el("span", `act ${state}`); d.title = state ? STATE_WORD[state] : ""; return d; };
+  mPill.replaceChildren(...(state ? [dot()] : []), el("span", "mnm", name));
+  mPill.setAttribute("aria-label", `${name}${state ? ` · ${STATE_WORD[state]}` : ""} — Insel aufklappen`);
+  mSlot.replaceChildren(el("span", "maddr", addr), ...(state ? [dot()] : []));
+  mSlot.setAttribute("aria-label", `Sessions öffnen — gerade ${addr} ${name}`);
+  const line1 = el("span", "ml1");
+  line1.append(...(state ? [dot()] : []), el("span", "mnm", name));
+  mName.replaceChildren(line1, el("span", "mrp", meta));
+  mView.hidden = !view;
+  mView.textContent = chat ? "Terminal" : "Konversation";
+  mView.title = chat ? "Zum Terminal zurück" : "Konversation anzeigen";
+  mInfo.hidden = !info;
+  mMore.setAttribute("aria-expanded", String(more));
+}
+// switching the step is no action: like the keys, it never takes the field's focus (keyboard stays)
+for (const b of [mPill, mName]) b.addEventListener("pointerdown", (e) => e.preventDefault());
+mPill.onclick = () => setIsland(true);
+mName.onclick = () => setIsland(false);
+mTop.addEventListener("click", (e) => {
+  if (e.target === mTop || e.target === $("mopen") || e.target === $("mtools")) setIsland(false);
+});
+const islandAction = (run: () => void) => () => { setIsland(false); run(); };
+mSlot.onclick = islandAction(() => $("menu").click());
+mInfo.onclick = islandAction(() => paneControl("boardtoggle")?.click());
+mView.onclick = islandAction(() => paneControl("viewtoggle")?.click());
+$("mhist").onclick = islandAction(() => $("histbtn").click());
+$("mauto").onclick = islandAction(() => $("autobtn").click());
+mMore.onclick = islandAction(() => mobileMore.click());
+// a tap outside closes the open island, and — upright only — ⋯'s options outside their own
+// surfaces; a window over the board (outside #app) is not "outside", its focus return needs them
+document.addEventListener("pointerdown", (e) => {
+  const t = e.target as Element | null;
+  if (!t || !portrait()) return;
+  if (document.body.classList.contains("mopen") && !mTop.contains(t)) setIsland(false);
+  if (document.body.classList.contains("keyboard-options") && $("app").contains(t)
+    && !t.closest("#bar, #mtop, .panetools")) mobileMore.click();
+}, true);
+// the grip folds the chips and the nine keys in and out of the bottom island; like the keys, it
+// never takes the field's focus, so the on-screen keyboard stays up
+mGrip.addEventListener("pointerdown", (e) => e.preventDefault());
+mGrip.onclick = () => {
+  const on = document.body.classList.toggle("mkeys");
+  mGrip.setAttribute("aria-expanded", String(on));
+  mGrip.title = on ? "Eigene Tasten einklappen" : "Eigene Tasten aufklappen — deine Befehls-Chips und ^C, esc, tab, Pfeile, Enter";
+};
+// turning the phone (MOBILE_MQ holds, its arm changes) leaves no island open behind the reading mode
+LANDSCAPE_MQ.addEventListener("change", () => setIsland(false));
 if (vv) {
   let vvRefitTimer: ReturnType<typeof setTimeout> | undefined;
   const sync = () => {
@@ -4266,10 +4360,13 @@ if (vv) {
       keyboardPlaceholder = null;
       fitTextarea();
     }
-    if (!keyboardOpen) {
+    // ⋯'s options fold away as the keyboard goes — upright they are also reachable without one
+    // (the island's ⋯), so only the keyboard's own leaving closes them, not every sync without it
+    if (!keyboardOpen && keyboardWasOpen) {
       document.body.classList.remove("keyboard-options");
       mobileMore.setAttribute("aria-expanded", "false");
     }
+    keyboardWasOpen = keyboardOpen;
     window.scrollTo(0, 0);
     // the keyboard opening/closing and its predictive-text bar toggling fire several of
     // these in a burst while typing; settle before refitting so a mid-transition height
@@ -5184,6 +5281,7 @@ function updateTitle() {
   mtitle.textContent = s?.cwd ? (s.label ?? baseName(s.cwd)) : "Claude Fleet";
   mreadTitle.textContent = mtitle.textContent;
   renderTarget(); // the composer's send target reads the same focused slot (G2.4)
+  renderIsland(); // …and so does the phone's top island
 }
 
 // --- attended Codex bind ---------------------------------------------------------------

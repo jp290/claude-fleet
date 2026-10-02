@@ -3,9 +3,17 @@
 // ). It replaces the place-list window of 2026-09-29.
 //
 // ONE COLUMN, FOUR FIELDS, read top to bottom: ORT (the repo, or the worktree a lane gets — named
-// or auto-named), ROLLE (Leer, Lane, Orchestratorin, Steward), PROFIL (agent, model, effort,
+// or auto-named), ROLLE (Leer, Lane, Orchestratorin, MAIN), PROFIL (agent, model, effort,
 // container) and KONTEXT (what the agent is handed). The foot says in one sentence what will start
 // and holds the one button. Nothing replaces the page: a state change repaints its field.
+//
+// MAIN REPLACES THE STEWARD CARD (owner 2026-10-02: „[Zitat entfernt]“). A MAIN is
+// founded for exactly one ACTIVE Program over its existing owner door, POST
+// /api/programs/:id/bootstrap-main — the same door the Program detail in src/queue.ts uses. The
+// window reads GET /api/programs fresh, offers only a Program without a living MAIN, shows the
+// others greyed with their reason, and says "unbekannt" where the row does not carry the fact.
+// The door takes cwd (the Ort), harness, model and effort; no packs and no container — the
+// server builds the Program's own founding brief and picks the free MAIN place itself.
 //
 // THE ROLE PRESELECTS THE CONTEXT, VISIBLY. Each role carries a preset over the founding plan
 // (all fitting packs, none, or none plus a few). Choosing a role applies it, and the packs that
@@ -35,7 +43,10 @@ import { modelLabel } from "./modelname";
 import { normalizeRolePresets, type FoundingRole, type LaneAnchor, type RolePreset } from "./protocol";
 import { openShell, type Shell } from "./shell";
 
-type Role = FoundingRole;
+// the window's roles. "main" is no stored preset role: bootstrap-main carries no packs, so it has
+// no preset to redraw, and the server's preset store (src/protocol.ts#FOUNDING_ROLES) never sees it
+type Role = Exclude<FoundingRole, "steward"> | "main";
+const isWindowRole = (r: string): r is Role => r === "leer" || r === "lane" || r === "orch" || r === "main";
 type Mode = "repo" | "new" | "old";
 
 // `say` is the card's sentence (G0.5, owner words); `why` is the compare table's last row
@@ -46,13 +57,13 @@ const ROLES: { id: Role; name: string; glyph: string; say: string; why: string }
     why: "Alles, was zu diesem Start passt." },
   { id: "orch", name: "Orchestratorin", glyph: "◎", say: "Hält das Portfolio, schärft Aufträge, verteilt Arbeit. Landet nicht selbst.",
     why: "Ihre Rollenkarte trägt die Zeiger — Packs wären doppelt." },
-  { id: "steward", name: "Steward", glyph: "⚙", say: "Beobachtet die Fleet, meldet Stillstand und Widerspruch.",
-    why: "Regeln, Queue und Land-Mechanik — was er beobachtet." },
+  { id: "main", name: "MAIN", glyph: "◆", say: "Führt ein aktives Program: schneidet Karten, treibt Lanes, landet.",
+    why: "Der Server baut ihren Gründungsbrief — Packs gehen nicht mit." },
 ];
 
-// the label the server keys a role off: isOrchestratorLabel (word boundary) and STEWARD_LABEL
-const roleLabel = (r: Role): string | undefined =>
-  r === "orch" ? "Orchestrator" : r === "steward" ? "⚙ steward" : undefined;
+// the label the server keys a role off: isOrchestratorLabel (word boundary). A MAIN gets hers
+// from bootstrap-main ("Program-MAIN: <title>"), never from this window.
+const roleLabel = (r: Role): string | undefined => r === "orch" ? "Orchestrator" : undefined;
 
 // A ROLE'S PRESET over the founding plan (shape: src/protocol.ts#RolePreset). These are the
 // built-in ones; the owner's redrawn ones come from GET /api/role-presets and win per role. Read
@@ -62,8 +73,11 @@ const PRESET_DEFAULT: Record<Role, Preset> = {
   leer: { base: "none", plus: [], minus: [] },
   lane: { base: "all", plus: [], minus: [] },
   orch: { base: "none", plus: [], minus: [] },
-  steward: { base: "none", plus: ["portable-core", "task-queue", "land-mechanics"], minus: [] },
+  main: { base: "none", plus: [], minus: [] },
 };
+// a stored preset of a role this window no longer offers (the Steward's) rides along unchanged on
+// every save — the window drops a card, never the owner's stored choice
+let presetsForeign: Record<string, Preset> = {};
 let presets: Record<Role, Preset> = clonePresets(PRESET_DEFAULT);
 function clonePresets(p: Record<Role, Preset>): Record<Role, Preset> {
   const out = {} as Record<Role, Preset>;
@@ -100,6 +114,11 @@ interface PlanPack { id: string; bytes: number; source: string; useWhen?: string
 interface Plan { selected: PlanPack[]; omitted: { id: string; reason: string }[] }
 interface DirList { path: string; parent: string | null; dirs: string[]; repos?: string[]; capped?: boolean; total?: number }
 interface FindHit { path: string; name: string; repo: boolean }
+// one Program as the MAIN choice reads it off GET /api/programs. `state` is the server's own
+// health.occupancy (the same comparison bootstrap-main's live guard makes); a row whose founding
+// marker stands, or that carries no readable occupancy, is "unknown" — never guessed free.
+type ProgState = "free" | "stale" | "live" | "unknown";
+interface ProgRow { id: string; title: string; state: ProgState; slot: number | null }
 type Pop = "place" | "harness" | "model" | "effort" | "container" | "add";
 
 interface State {
@@ -125,6 +144,8 @@ interface State {
   presetState: "idle" | "saving" | "saved" | "error";
   presetNote: string | null;            // why the stored presets could not be read or written
   orphan: string | null;
+  progs: ProgRow[] | null; progOther: number; progErr: string | null; progSeq: number;
+  program: string | null;               // the Program the MAIN is founded for
   harness: string | null; model: string; effort: string; container: string; containerContext: string;
   dir: string; list: DirList | null; listErr: string | null; listSeq: number;
   find: string; hits: FindHit[] | null; findPartial: boolean; findSeq: number;
@@ -200,11 +221,31 @@ function foundingBody(): SpawnBody {
   };
 }
 
+// what bootstrap-main reads: cwd plus the three spawn fields. No packs, no container and no label —
+// the door builds the Program's brief, runs without a box and names the slot itself.
+function mainSpawn(): SpawnBody {
+  const s = S!;
+  return {
+    ...(s.harness ? { harness: s.harness } : {}),
+    ...(s.model ? { model: s.model } : {}),
+    ...(s.effort ? { effort: s.effort } : {}),
+  };
+}
+const mainBody = (): SpawnBody & { cwd: string } => ({ cwd: S?.place ?? "", ...mainSpawn() });
+
 // why the button cannot start right now — null when it can. Said next to the button, never only
 // as a greyed-out control.
 function blocker(): string | null {
   const s = S!;
   if (!s.place) return "Wähle, wo die Session laufen soll.";
+  if (s.role === "main") {
+    if (s.progErr) return "Die Programs sind nicht lesbar — ohne sie wird keine MAIN gegründet.";
+    if (!s.progs) return "Die Programs werden gelesen …";
+    const p = s.progs.find((x) => x.id === s.program);
+    if (!p) return s.progs.some(pickable) ? "Wähle das Program, dessen MAIN du gründest." : "Kein aktives Program ohne lebende MAIN.";
+    if (!pickable(p)) return `„${p.title}“ ist nicht mehr wählbar: ${progSays(p)}.`;
+    return null;
+  }
   if (s.mode !== "repo") {
     if (s.info && !s.info.git) return "Ein Worktree braucht ein Git-Repo.";
     if (chosenHarness()?.allowsLanes === false) return `${chosenHarness()!.id} läuft nur als Haupt-Session, nicht als Lane.`;
@@ -269,7 +310,7 @@ function open(entry: Entry) {
     repos, view: repos.length ? "repos" : "folders", place: null,
     info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0,
     packs: new Set(), touched: new Map(), presetDue: true, fresh: new Set(), gone: [], delta: null, compare: false, listOpen: false, presetState: "idle", presetNote: null,
-    orphan: null, harness: null, model: "", effort: "", container: "", containerContext: "",
+    orphan: null, progs: null, progOther: 0, progErr: null, progSeq: 0, program: null, harness: null, model: "", effort: "", container: "", containerContext: "",
     dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
     findTimer: null, paintFolders: null, error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
     fPlace, fRole, fProfile, fContext,
@@ -684,12 +725,122 @@ function renderRole() {
     grid.append(b);
   }
   sec.append(grid);
+  if (s.role === "main") sec.append(progList());
+}
+
+// --- the MAIN's Program -----------------------------------------------------------------------------
+
+const pickable = (p: ProgRow): boolean => p.state === "free" || p.state === "stale";
+function progSays(p: ProgRow): string {
+  if (p.state === "live") return `MAIN lebt${p.slot !== null ? ` · Slot ${p.slot}` : ""}`;
+  if (p.state === "stale") return `alte MAIN weg${p.slot !== null ? ` (Slot ${p.slot})` : ""} — wird ersetzt`;
+  if (p.state === "free") return "ohne MAIN";
+  return "Belegung unbekannt";
+}
+function progTip(p: ProgRow): string {
+  if (p.state === "live") return "Dieses Program hat eine lebende MAIN — bootstrap-main würde sie nicht ersetzen.";
+  if (p.state === "stale") return "Die gebundene MAIN lebt nicht mehr. Der Server prüft das beim Gründen noch einmal und nennt die ersetzte Bindung.";
+  if (p.state === "free") return "Für dieses Program wurde noch keine MAIN gegründet.";
+  return "GET /api/programs sagt nicht, ob dieses Program eine lebende MAIN hat (Gründung offen oder Belegung nicht gemeldet) — darum nicht wählbar.";
+}
+
+// ONLY THE ACTIVE PROGRAMS, the free ones first. A program the server says has a living MAIN stays
+// on the list, greyed, with its slot — "it already has one" is an answer the owner should see.
+function progList(): HTMLElement {
+  const s = S!;
+  const box = el("div", "fdprogs");
+  const head = el("div", "fdproghead");
+  head.append(el("span", "fdlabt", "Program"));
+  const free = s.progs?.filter(pickable).length ?? 0;
+  head.append(el("span", "fdmeta", s.progs ? `${s.progs.length} aktiv · ${free} ohne lebende MAIN` : s.progErr ? "nicht lesbar" : "liest …"));
+  const again = btn("fdghost", "Neu lesen");
+  again.title = "GET /api/programs noch einmal lesen.";
+  again.onclick = () => { void loadProgs(); };
+  head.append(again);
+  box.append(head);
+  if (s.progErr) { box.append(el("div", "fdnote warn", s.progErr)); return box; }
+  if (!s.progs) return box;
+  const list = el("div", "fdproglist");
+  list.setAttribute("role", "radiogroup");
+  list.setAttribute("aria-label", "Program der MAIN");
+  for (const p of s.progs) {
+    const on = s.program === p.id;
+    const b = btn(`fdprog${on ? " on" : ""}`);
+    b.dataset.program = p.id;
+    b.dataset.state = p.state;
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(on));
+    b.disabled = !pickable(p);
+    b.title = progTip(p);
+    b.append(el("i", "fdradio"), el("span", "fdprogt", p.title), el("span", `fdpst ${p.state}`, progSays(p)));
+    b.onclick = () => { s.program = on ? null : p.id; s.error = null; renderRole(); renderFoot(); };
+    list.append(b);
+  }
+  if (!s.progs.length) list.append(el("div", "fdnote", "Kein aktives Program — eine MAIN gehört immer zu einem."));
+  box.append(list);
+  if (s.progOther) box.append(el("div", "fdnote", `${s.progOther} weitere nicht aktiv — bootstrap-main nimmt nur ein aktives Program.`));
+  return box;
+}
+
+// a fresh read every time the MAIN card is chosen and after every answer of the door: whether a
+// MAIN lives is a fact that moves, and a cached one would offer a founding the server refuses
+async function loadProgs() {
+  const s = S;
+  if (!s) return;
+  const seq = ++s.progSeq;
+  s.progs = null;
+  s.progErr = null;
+  if (s.role === "main") { renderRole(); renderFoot(); }
+  let rows: ProgRow[] | null = null, other = 0, err: string | null = null;
+  try {
+    const res = await api("/api/programs");
+    const j: unknown = await res.json().catch(() => null);
+    if (S !== s || seq !== s.progSeq) return; // latest-wins
+    const list = j && typeof j === "object" && "programs" in j && Array.isArray(j.programs) ? (j.programs as unknown[]) : null;
+    if (res.status === 404) err = SKEW_NOTE;
+    else if (!res.ok || !list) err = `Die Programs sind nicht lesbar (Antwort ${res.status}).`;
+    else {
+      rows = [];
+      for (const x of list) {
+        const p = progRow(x);
+        if (p === "inactive") other++;
+        else if (p) rows.push(p);
+      }
+      const rank: Record<ProgState, number> = { free: 0, stale: 1, live: 2, unknown: 3 };
+      rows.sort((a, b) => rank[a.state] - rank[b.state] || a.title.localeCompare(b.title));
+    }
+  } catch {
+    if (S !== s || seq !== s.progSeq) return;
+    err = "Die Programs konnten nicht geladen werden — der Server ist nicht erreichbar.";
+  }
+  s.progs = rows;
+  s.progOther = other;
+  s.progErr = err;
+  renderRole();
+  renderFoot();
+}
+
+// a row off the wire; "inactive" is counted, not shown; null is a row this build cannot read at all
+function progRow(x: unknown): ProgRow | "inactive" | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Record<string, unknown>;
+  if (typeof r.id !== "string" || !r.id) return null;
+  if (r.status !== "active") return "inactive";
+  const title = typeof r.title === "string" && r.title.trim() ? r.title : r.id;
+  const main = r.main && typeof r.main === "object" ? r.main as Record<string, unknown> : null;
+  const slot = main && typeof main.slot === "number" ? main.slot : null;
+  const health = r.health && typeof r.health === "object" ? r.health as Record<string, unknown> : null;
+  const occ = health?.occupancy;
+  const state: ProgState = r.founding !== undefined && r.founding !== null ? "unknown"
+    : occ === "live" ? "live" : occ === "stale" ? "stale" : occ === "unbound" ? "free" : "unknown";
+  return { id: r.id, title, state, slot };
 }
 
 // the card's foot: what the role hands over HERE, counted against this start's plan
 function roleBrings(r: Role): string {
   const s = S!;
   if (r === "orch") return "Rollenkarte";
+  if (r === "main") return "Gründungsbrief";
   const p = presets[r];
   if (!s.plan) return p.base === "all" ? "alle passenden Packs" : p.plus.length ? `${p.plus.length} Packs` : "keine Packs";
   const n = s.plan.selected.filter((x) => presetHas(p, x.id)).length;
@@ -709,6 +860,7 @@ function setRole(r: Role, why?: string) {
   if (r !== "lane" && s.mode !== "repo") { s.mode = "repo"; s.note = "Ort → Direkt im Repo: nur eine Lane bekommt einen Worktree."; }
   applyPreset(`${ROLES.find((x) => x.id === r)!.name} statt ${ROLES.find((x) => x.id === prev)!.name}`);
   renderAll();
+  if (r === "main") void loadProgs();
 }
 
 function setMode(m: Mode) {
@@ -767,7 +919,10 @@ function renderProfile() {
     if (h.supports.effort && h.effortLevels.length)
       row.append(profField("effort", "Effort", s.effort || "Adapter wählt", !s.effort, false,
         "Wie gründlich der Agent denkt — ohne Angabe wählt der Adapter."));
-    if (h.supports.container)
+    if (h.supports.container && s.role === "main")
+      row.append(profField("container", "Container", "ohne", true, true,
+        "Eine MAIN läuft ohne Container — bootstrap-main nimmt keinen."));
+    else if (h.supports.container)
       row.append(profField("container", "Container", s.container || containerDefaults?.container || "Fleet-Standard", !s.container, false,
         "Container und Docker-Daemon dieser Session — leer heißt der Fleet-Standard."));
   } else row.append(el("div", "fdnote", "Agenten werden gelesen …"));
@@ -949,6 +1104,16 @@ function renderContext() {
   fieldHead(sec, "Kontext", "Was der Agent beim Start mitbekommt.");
   const body = el("div", "fdbody");
   sec.append(body);
+  if (s.role === "main") {
+    const line = el("div", "fdctx");
+    const card = el("span", "fdcx fix srv", "Gründungsbrief des Programs");
+    card.title = "bootstrap-main baut den Brief aus dem Program und hängt die Kontext-Anker an — der Startbeleg zeigt sie.";
+    line.append(card);
+    body.append(line, el("div", "fdnote", "Packs gehen hier nicht mit: die Gründungstür einer MAIN nimmt keine."));
+    // the door decides; the window only says ahead what dirinfo already read
+    if (s.info && !s.info.git) body.append(el("div", "fdnote warn", "Kein Git-Repo — bootstrap-main wird diesen Ordner voraussichtlich ablehnen."));
+    return;
+  }
   if (!s.info?.git) {
     body.append(el("div", "fdnote", s.info ? "Kein Git-Repo — hier gibt es keine Packs." : "Wird gelesen, sobald der Ort feststeht."));
     return;
@@ -1153,6 +1318,7 @@ function compareTable(plan: Plan): HTMLElement {
     for (const r of ROLES) {
       const td = el("td", r.id === s.role ? "cur" : "");
       if (r.id === "orch") { td.append(el("span", "fdcmpx", "—")); td.title = "Die Rollenkarte trägt ihre Zeiger."; tr.append(td); continue; }
+      if (r.id === "main") { td.append(el("span", "fdcmpx", "—")); td.title = "bootstrap-main nimmt keine Packs."; tr.append(td); continue; }
       const on = presetHas(presets[r.id], p.id);
       const pip = btn(`fdpip${on ? " on" : ""}`);
       pip.setAttribute("role", "switch");
@@ -1212,7 +1378,10 @@ async function loadPresets() {
     if (S !== s) return;
     const stored = res.ok && j ? (j.presets === null ? {} : normalizeRolePresets(j.presets)) : null;
     if (!stored) { s.presetNote = `Die gesicherte Vorauswahl ist nicht lesbar (Antwort ${res.status}) — es gilt die eingebaute.`; return; }
-    presets = { ...clonePresets(PRESET_DEFAULT), ...stored };
+    const mine: Partial<Record<Role, Preset>> = {};
+    presetsForeign = {};
+    for (const [r, v] of Object.entries(stored)) if (v) { if (isWindowRole(r)) mine[r] = v; else presetsForeign[r] = v; }
+    presets = { ...clonePresets(PRESET_DEFAULT), ...mine };
     applyPreset("");
   } catch {
     if (S === s) s.presetNote = "Die gesicherte Vorauswahl konnte nicht geladen werden — es gilt die eingebaute.";
@@ -1226,7 +1395,7 @@ async function loadPresets() {
 async function savePresets() {
   const s = S;
   if (!s) return;
-  const changed = Object.fromEntries(ROLES.filter((r) => customized(r.id)).map((r) => [r.id, presets[r.id]]));
+  const changed = { ...presetsForeign, ...Object.fromEntries(ROLES.filter((r) => customized(r.id)).map((r) => [r.id, presets[r.id]])) };
   s.presetState = "saving";
   renderContext();
   const res = await post("/api/role-presets", { presets: Object.keys(changed).length ? changed : null }).catch(() => null);
@@ -1263,22 +1432,26 @@ function renderFoot() {
   const hadGo = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("fdgo") && foot.contains(document.activeElement);
   foot.replaceChildren();
   const say = el("div", "fdsay");
-  const who = { leer: "Eine Session ohne Rolle", lane: "Eine Lane", orch: "Eine Orchestratorin", steward: "Ein Steward" }[s.role];
+  const who = { leer: "Eine Session ohne Rolle", lane: "Eine Lane", orch: "Eine Orchestratorin", main: "Eine MAIN" }[s.role];
   const repo = s.place ? baseName(s.place) : "…";
-  const where = s.mode === "new" ? `in einem neuen Worktree${branchFor(s.name) ? ` „${s.name.trim()}“` : ""} von ${repo}`
+  const prog = s.role === "main" ? s.progs?.find((x) => x.id === s.program) : undefined;
+  const where = s.role === "main" ? `${prog ? `für „${prog.title}“ ` : ""}in ${repo}`
+    : s.mode === "new" ? `in einem neuen Worktree${branchFor(s.name) ? ` „${s.name.trim()}“` : ""} von ${repo}`
     : s.mode === "old" ? `in ${s.orphan ? baseName(s.orphan) : "einem liegengebliebenen Worktree"}` : `in ${repo}`;
   const h = chosenHarness();
   const body = foundingBody();
   const prof = [body.harness ?? h?.id ?? "", body.model ? modelLabel(body.model) : h ? modelShown(h) : "", body.effort ?? ""].filter(Boolean).join(" · ");
-  const ctx = s.packs.size ? `${s.packs.size} ${s.packs.size === 1 ? "Pack" : "Packs"}` : "ohne Packs";
+  const ctx = s.role === "main" ? "Gründungsbrief" : s.packs.size ? `${s.packs.size} ${s.packs.size === 1 ? "Pack" : "Packs"}` : "ohne Packs";
   say.append(el("b", "", who), document.createTextNode(` ${where}`), el("span", "fdsaym", ` · ${prof} · ${ctx}${s.role === "orch" ? " · Rollenkarte" : ""}`));
   // a plan nobody could read starts without packs — allowed, but never silently
-  const planGone = !!s.planErr && s.mode !== "old" && !!s.info?.git;
-  const why = s.error ?? blocker() ?? (planGone ? "Der Plan für diesen Start ist nicht lesbar — er startet ohne Packs." : null);
+  const planGone = !!s.planErr && s.mode !== "old" && !!s.info?.git && s.role !== "main";
+  // bootstrap-main picks the free MAIN place itself — the clicked one is a likely answer, not a promise
+  const seat = s.role === "main" && s.entry.kind === "slot" ? `Den Platz wählt der Server — nicht unbedingt Slot ${s.entry.slot}.` : null;
+  const why = s.error ?? blocker() ?? (planGone ? "Der Plan für diesen Start ist nicht lesbar — er startet ohne Packs." : seat);
   const note = el("div", `fdfootnote${s.error || planGone ? " warn" : ""}`, why ?? "");
   const go = btn("fdgo");
-  const label = s.busy ? (s.packs.size ? "Packs werden zugestellt …" : "Startet …")
-    : s.mode === "old" ? "Fortsetzen" : s.mode === "new" ? "Lane starten" : "Starten";
+  const label = s.busy ? (s.role === "main" ? "MAIN wird gegründet …" : s.packs.size ? "Packs werden zugestellt …" : "Startet …")
+    : s.role === "main" ? "MAIN gründen" : s.mode === "old" ? "Fortsetzen" : s.mode === "new" ? "Lane starten" : "Starten";
   go.append(el("span", "", label));
   if (!s.busy) go.append(el("kbd", "", "⏎"));
   go.disabled = s.busy || blocker() !== null;
@@ -1309,7 +1482,17 @@ async function start() {
     const requestedRole = s.role, requestedMode = s.mode;
     const requestedPlace = s.mode === "old" ? s.orphan! : s.place;
     let result: StartResult;
-    if (s.entry.kind === "lane") {
+    let bound: number | null = null;
+    if (s.role === "main") {
+      const pid = s.program!;
+      const said = await foundMain(pid, onError);
+      // every answer can move the binding; the list is read again whatever came back
+      void loadProgs();
+      if (!said) return;
+      bound = said.bound;
+      if (!await revealStartedSlot(said.slot)) { onError(`Die MAIN steht, aber Slot ${said.slot} erschien nicht binnen 5 Sekunden.`); return; }
+      result = { ok: true, slot: said.slot };
+    } else if (s.entry.kind === "lane") {
       // ⎇+: the server picks the next free place and hangs the lane under the session it came from
       const res = await post("/api/lanes", { repo: s.place, ...(s.entry.parent ? { parent: s.entry.parent } : {}), branch, ...body });
       const j = (await res.json().catch(() => ({}))) as { slot?: number; error?: string; packsDelivered?: boolean; reason?: string };
@@ -1337,12 +1520,41 @@ async function start() {
     } else {
       result = await startSession(s.place, roleLabel(s.role), onError, { slot: s.entry.slot, body });
     }
-    if (result.ok && S === s) await captureProof(s, body, before.get(result.slot), result, requestedRole, requestedMode, requestedPlace);
+    if (result.ok && S === s) await captureProof(s, s.role === "main" ? mainSpawn() : body, before.get(result.slot), result, requestedRole, requestedMode, requestedPlace, bound);
   } finally {
     // a start answers seconds later (packs: boot grace plus readiness); by then the owner may have
     // closed this window and opened the next — only the window that asked shows the receipt
     if (S === s) { s.busy = false; renderFoot(); }
   }
+}
+
+// THE MAIN'S DOOR. A refusal is shown as the server wrote it, status first and every further field
+// of its answer verbatim (a 503 carries availability/recovery/affected beside the sentence), and
+// existing:true is shown as what it is — the Program already has a living MAIN, nothing was founded.
+async function foundMain(pid: string, onError: (msg: string) => void): Promise<{ slot: number; bound: number | null } | null> {
+  let res: Response;
+  try {
+    res = await post(`/api/programs/${encodeURIComponent(pid)}/bootstrap-main`, mainBody());
+  } catch (e) {
+    onError(`Der Server ist nicht erreichbar: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+  const j: unknown = await res.json().catch(() => null);
+  const r = j && typeof j === "object" && !Array.isArray(j) ? j as Record<string, unknown> : null;
+  if (!res.ok) {
+    const { error, ...rest } = r ?? {};
+    const more = Object.keys(rest).length ? ` ${JSON.stringify(rest)}` : "";
+    onError(typeof error === "string" && error ? `Abgelehnt (${res.status}): ${error}${more}` : `Abgelehnt (${res.status}), ohne lesbaren Grund${more}`);
+    return null;
+  }
+  if (r?.existing === true) {
+    const main = r.program && typeof r.program === "object" ? (r.program as { main?: { slot?: unknown } }).main : undefined;
+    onError(`existing: true — das Program hat schon eine lebende MAIN${typeof main?.slot === "number" ? ` auf Slot ${main.slot}` : ""}. Nichts wurde gegründet.`);
+    return null;
+  }
+  if (typeof r?.slot !== "number") { onError(`Die Antwort nennt keinen Slot: ${JSON.stringify(j)}`); return null; }
+  const prog = r.program && typeof r.program === "object" ? r.program as { main?: { slot?: unknown } } : null;
+  return { slot: r.slot, bound: typeof prog?.main?.slot === "number" ? prog.main.slot : null };
 }
 
 interface ReceiptPack {
@@ -1353,16 +1565,17 @@ interface ReceiptPack {
 interface StartProof {
   result: Extract<StartResult, { ok: true }>;
   body: SpawnBody; role: Role; mode: Mode; place: string;
+  bound: number | null;                 // a MAIN: the slot the Program's binding names after the door
   occupant: SlotInfo | null;
   receipt: { slot: number; at: number; selected: ReceiptPack[] } | null;
   receiptCount: number; receiptError: string | null; stale: boolean;
 }
 
-async function captureProof(s: State, body: SpawnBody, before: number | undefined, result: Extract<StartResult, { ok: true }>, role: Role, mode: Mode, place: string) {
+async function captureProof(s: State, body: SpawnBody, before: number | undefined, result: Extract<StartResult, { ok: true }>, role: Role, mode: Mode, place: string, bound: number | null) {
   const row = fleet.find((r) => r.id === result.slot);
   const occupant = row?.cwd && Number.isFinite(row.openedAt) && row.openedAt! > 0 && row.openedAt !== before
     ? structuredClone(row) : null;
-  const proof: StartProof = { result, body, role, mode, place, occupant,
+  const proof: StartProof = { result, body, role, mode, place, bound, occupant,
     receipt: null, receiptCount: 0, receiptError: null, stale: false };
   s.proof = proof;
   closePop(false);
@@ -1384,7 +1597,7 @@ async function captureProof(s: State, body: SpawnBody, before: number | undefine
   const teardown = s.teardown;
   s.teardown = () => { watch.disconnect(); teardown(); };
   renderProof();
-  if (body.packs?.length || role === "orch") {
+  if (body.packs?.length || role === "orch" || role === "main") {
     try {
       const response = await api("/api/context-receipts");
       if (!response.ok) throw new Error(`Der Server antwortete ${response.status}.`);
@@ -1435,9 +1648,10 @@ function renderProof() {
     table.append(r);
     return actual;
   };
-  const requestedRole = p.role === "lane" ? "Lane" : p.role === "orch" ? "Orchestrator" : p.role === "steward" ? "Steward" : "Session";
-  const observedRole = !row ? undefined : row.worktree ? "Lane" : /\borchestrator\b/i.test(row.label ?? "") ? "Orchestrator"
-    : row.label === "⚙ steward" ? "Steward" : "Session";
+  const requestedRole = p.role === "lane" ? "Lane" : p.role === "orch" ? "Orchestrator" : p.role === "main" ? "MAIN" : "Session";
+  // a MAIN is read back at the Program's binding, not at a label: the door's answer names the slot it bound
+  const observedRole = !row ? undefined : p.role === "main" && p.bound === p.result.slot ? "MAIN"
+    : row.worktree ? "Lane" : /\borchestrator\b/i.test(row.label ?? "") ? "Orchestrator" : "Session";
   field("Rolle", requestedRole, observedRole);
   const place = field("Ort", p.place, row?.cwd ?? undefined, true, true, p.mode === "new" ? row?.worktree?.repo ?? row?.cwd ?? undefined : row?.cwd ?? undefined);
   if (row?.worktree) place.append(el("div", "mono", `Branch: ${row.worktree.branch ?? "nicht gemeldet"}`));
@@ -1446,8 +1660,8 @@ function renderProof() {
   field("Effort", p.body.effort, row?.effort, true);
   if (p.body.container || row?.container) field("Container", p.body.container, row?.container, true);
   if (p.body.containerContext || row?.containerContext) field("Docker-Daemon", p.body.containerContext, row?.containerContext, true);
-  const needsReceipt = !!p.body.packs?.length || p.role === "orch";
-  const packCell = field("Packs", p.body.packs?.join("\n") ?? "keine",
+  const needsReceipt = !!p.body.packs?.length || p.role === "orch" || p.role === "main";
+  const packCell = field("Packs", p.body.packs?.join("\n") ?? (p.role === "main" ? "Gründungsbrief des Programs" : "keine"),
     p.result.packsDelivered === false ? `nicht zugestellt: ${p.result.reason ?? "the packs were not delivered"}`
       : !needsReceipt ? "keine" : p.receipt ? p.receipt.selected.map((pack) => pack.id).join("\n") : undefined, true, false);
   if (p.result.packsDelivered === false) packCell.classList.add("warn");

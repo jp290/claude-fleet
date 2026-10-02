@@ -1968,11 +1968,21 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && foundCode.includes("shell.detail.replaceChildren(fPlace, fRole, fProfile, fContext);"),
     "renderPlace/renderRole/renderProfile/renderContext in src/founding.ts");
   check("founding window: the four roles are radio cards with one sentence each, two across on a phone",
-    ['"Leer"', '"Lane"', '"Orchestratorin"', '"Steward"'].every((w) => foundCode.includes(`name: ${w}`))
+    ['"Leer"', '"Lane"', '"Orchestratorin"', '"MAIN"'].every((w) => foundCode.includes(`name: ${w}`))
     && foundCode.includes('b.setAttribute("role", "radio");') && foundCode.includes('b.setAttribute("aria-checked", String(on));')
     && /#shell-found \.fdroles \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\);/.test(foundCss)
     && foundCss.includes("#shell-found .fdroles { grid-template-columns: repeat(2, minmax(0, 1fr)); }"),
     "ROLES + renderRole in src/founding.ts");
+  // MAIN STATT STEWARD (owner 2026-10-02: „[Zitat entfernt]“): the card founds over the
+  // existing owner door and nothing else — should-reject a Steward card, its label, or a second
+  // founding path for a MAIN (a slot open with a MAIN label would be a MAIN without a Program)
+  check("founding window: MAIN replaced the Steward card and founds only over POST /api/programs/:id/bootstrap-main",
+    !foundCode.includes('name: "Steward"') && !foundCode.includes("⚙ steward")
+    && foundCode.includes("post(`/api/programs/${encodeURIComponent(pid)}/bootstrap-main`, mainBody())")
+    && foundCode.includes('await api("/api/programs")')
+    && (foundCode.match(/bootstrap-main`/g) ?? []).length === 1
+    && foundCode.includes('const roleLabel = (r: Role): string | undefined => r === "orch" ? "Orchestrator" : undefined;'),
+    "ROLES/roleLabel/foundMain/loadProgs in src/founding.ts");
   const presetSrc = /const PRESET_DEFAULT: Record<Role, Preset> = \{([\s\S]*?)\n\};/.exec(foundCode)?.[1] ?? "";
   check("founding window: the built-in presets — Leer none, Lane every fitting pack, Orchestratorin none (her role card carries the pointers)",
     presetSrc.includes('leer: { base: "none", plus: [], minus: [] },') && presetSrc.includes('lane: { base: "all", plus: [], minus: [] },')
@@ -4632,6 +4642,21 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       if (path.startsWith('/api/dirinfo?')) return Response.json({ git: true, branch: 'fixture', dirty: 0, orphans: [{path:'/fixture/lane', branch:'fleet/continued'}] });
       if (path === '/api/role-presets') return Response.json({ presets: window.fixtureStored });
       if (path === '/api/sessions') return Response.json({ slots: window.fixtureSlots });
+      // the Programs the MAIN card reads: one free, one stale, one living, two without a readable
+      // occupancy (no health record; a founding marker), and one complete that is not offered
+      if (path === '/api/programs') {
+        window.fixtureProgramReads++;
+        if (window.fixturePrograms === 'fail') return Response.json({ error: 'fixture programs refusal' }, { status: 500 });
+        const h = occupancy => ({ occupancy, sessionIdMatch: occupancy === 'live' ? 'exact' : 'unknown' });
+        return Response.json({ programs: [
+          { id: 'p-live', title: 'Fixture Lebt', status: 'active', main: { slot: 1, openedAt: 100 }, health: h('live') },
+          { id: 'p-free', title: 'Fixture Frei', status: 'active', health: h('unbound') },
+          { id: 'p-stale', title: 'Fixture Alt', status: 'active', main: { slot: 5, openedAt: 50 }, health: h('stale') },
+          { id: 'p-unknown', title: 'Fixture Ohne Befund', status: 'active' },
+          { id: 'p-founding', title: 'Fixture Gruendet', status: 'active', founding: { v: 2 }, health: h('unbound') },
+          { id: 'p-done', title: 'Fixture Fertig', status: 'complete', health: h('unbound') },
+        ] });
+      }
       if (path === '/api/context-receipts') {
         window.fixtureReceiptReads++;
         if (window.fixtureReceiptHold) await new Promise(resolve => {window.fixtureReceiptRelease=resolve;});
@@ -4669,10 +4694,15 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       window.fixtureRequests.push({ url, body });
       if (window.fixturePostHold) await new Promise(resolve => window.fixtureReleases.push(resolve));
       if (url === '/api/role-presets') { window.fixtureStored = body.presets; return Response.json({ ok: true }); }
+      // bootstrap-main's three answers that found nothing, word for word as server.ts writes them
+      const boot = url.endsWith('/bootstrap-main');
+      if (boot && window.fixtureBootstrap === 'existing') return Response.json({ ok: true, existing: true, program: { id: 'p-free', main: { slot: 1, openedAt: 100 } } });
+      if (boot && window.fixtureBootstrap === 'refuse') return Response.json({ error: 'cannot bootstrap Program-MAIN for a complete program' }, { status: 409 });
+      if (boot && window.fixtureBootstrap === 'pending') return Response.json({ error: 'Program-MAIN founding recovery is pending; retry did not open another slot', availability: 'unknown', recovery: 'pending', affected: { attemptId: 'a'.repeat(32), slot: 4, openedAt: 4000 } }, { status: 503 });
       // without a receipt mode the door refuses: those scenarios read only the request the window sent
       if (!window.fixtureMode) return Response.json({error:'fixture: request captured'}, {status:503});
       const lane = url.endsWith('open-worktree') || url === '/api/lanes';
-      const row = {id:2,cwd:lane ? '/fixture/lane' : body.cwd,label:body.label || null,
+      const row = {id:2,cwd:lane ? '/fixture/lane' : body.cwd,label:boot ? 'Program-MAIN: Fixture Frei' : body.label || null,
         openedAt:window.fixtureMode === 'unchanged' ? 1000 : 2000,
         model:window.fixtureMode === 'difference' ? 'observed-model' : body.model || 'fixture-model',
         effort:body.effort || 'high', ...(body.harness ? {harness:body.harness} : {}),
@@ -4680,6 +4710,7 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
         ...(body.container ? {container:body.container,containerContext:body.containerContext} : {})};
       if (window.fixtureMode === 'unreported') {delete row.model; delete row.effort;}
       window.fixtureSlots = [fleet[0],row];
+      if (boot) return Response.json({ok:true,slot:2,program:{id:'p-free',main:{slot:2,openedAt:2000}}});
       return Response.json({ok:true,slot:2,cwd:row.cwd,label:row.label,
         ...(window.fixtureMode === 'undelivered' ? {packsDelivered:false,reason:'fixture delivery refused'} : {})});
     };
@@ -4701,6 +4732,7 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: stub, loader: 'ts' }));
       build.onLoad({ filter: /\/src\/founding\.ts$/ }, args => ({
         contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases = []; window.fixturePlanReads = 0; window.fixtureStored = null;
+window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null;
 window.fixtureReload = () => { void loadPlan(); renderAll(); };
 window.fixturePlanReady = () => !!S?.plan && S.planFor === planKey();
 window.fixtureClose = closeFounding; window.fixtureSettled = () => !S?.busy;
@@ -4799,7 +4831,8 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const ready = `document.querySelector('.fdadd') !== null && !document.querySelector('.fdctx .fdnote')`;
       const reset = async (extra = '') => {
         await evaluate(`document.querySelector('#shell-found')?.remove(); window.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases.splice(0).forEach(r => r()); window.fixtureStored = null;
-          window.fixtureMode = null; window.fixtureShown = null; window.fixtureReceiptReads = 0; window.fixtureReceiptHold = false; window.fixtureResetSlots(); ${extra}`);
+          window.fixtureMode = null; window.fixtureShown = null; window.fixtureReceiptReads = 0; window.fixtureReceiptHold = false; window.fixtureResetSlots();
+          window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; ${extra}`);
         await evaluate(`window.fixtureOpen()`);
         await wait(ready);
       };
@@ -4840,6 +4873,47 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g['Orchestratorin shows her role card and carries no packs'] = await evaluate<boolean>(`document.querySelector('.fdcx.srv')?.textContent === 'Rollenkarte' && ${chips}.length === 0`);
       await click('.fdgo');
       g['Orchestratorin with another agent: exactly { cwd, label, harness }'] = await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo', label: 'Orchestrator', harness: 'other' }); await said('orch');
+
+      // MAIN STATT STEWARD (owner 2026-10-02): the card reads GET /api/programs and founds over
+      // POST /api/programs/:id/bootstrap-main — the only founding path a MAIN has
+      const progs = `Array.from(document.querySelectorAll('.fdprog'))`;
+      const footSays = `(document.querySelector('.fdfootnote')?.textContent || '')`;
+      const toMain = async () => { await click('.fdrole[data-role="main"]'); await wait(`${progs}.length > 0 || !!document.querySelector('.fdprogs .fdnote.warn')`); };
+      await reset();
+      g['the role cards are exactly Leer, Lane, Orchestratorin, MAIN — no Steward is offered'] = await evaluate<boolean>(`Array.from(document.querySelectorAll('.fdrole'), b => b.dataset.role).join() === 'leer,lane,orch,main' && !document.querySelector('#shell-found').textContent.includes('Steward')`);
+      await toMain(); await shot('main');
+      const listed = await evaluate<string>(`JSON.stringify(${progs}.map(b => [b.dataset.program, b.disabled, b.querySelector('.fdpst').textContent]))`);
+      detail['main-programs'] = listed;
+      g['MAIN lists the active Programs, free first; a living MAIN is shown with its slot but not choosable, a missing fact reads unbekannt'] =
+        listed === JSON.stringify([['p-free', false, 'ohne MAIN'], ['p-stale', false, 'alte MAIN weg (Slot 5) — wird ersetzt'], ['p-live', true, 'MAIN lebt · Slot 1'],
+          ['p-founding', true, 'Belegung unbekannt'], ['p-unknown', true, 'Belegung unbekannt']])
+        && await evaluate<boolean>(`document.querySelector('.fdprogs').textContent.includes('1 weitere nicht aktiv') && window.fixtureProgramReads === 1`);
+      g['MAIN carries no packs: the Programs founding brief stands in Kontext, no pack button'] = await evaluate<boolean>(`${chips}.length === 0 && !document.querySelector('.fdadd') && document.querySelector('.fdcx.srv')?.textContent === 'Gründungsbrief des Programs'`);
+      g['should-reject: MAIN without a chosen Program blocks the button and Enter'] = await blocked();
+      await click('.fdprog[data-program="p-live"]');
+      g['should-reject: a Program with a living MAIN cannot be chosen'] = await evaluate<boolean>(`document.querySelector('.fdprog[data-program="p-live"]').getAttribute('aria-checked') === 'false' && document.querySelector('.fdgo').disabled`);
+      await click('.fdprog[data-program="p-free"]'); await shot('main-chosen');
+      g['MAIN chosen: the foot names the Program and says the server picks the place'] = await evaluate<boolean>(`document.querySelector('.fdsay').textContent.includes('Eine MAIN für „Fixture Frei“ in repo') && ${footSays}.includes('nicht unbedingt Slot 2') && !document.querySelector('.fdgo').disabled`);
+      for (const [mode, expect] of [
+        ['existing', 'existing: true — das Program hat schon eine lebende MAIN auf Slot 1. Nichts wurde gegründet.'],
+        ['refuse', 'Abgelehnt (409): cannot bootstrap Program-MAIN for a complete program'],
+        ['pending', `Abgelehnt (503): Program-MAIN founding recovery is pending; retry did not open another slot {"availability":"unknown","recovery":"pending","affected":{"attemptId":"${'a'.repeat(32)}","slot":4,"openedAt":4000}}`],
+      ] as const) {
+        await reset(`window.fixtureBootstrap = ${JSON.stringify(mode)};`); await toMain(); await click('.fdprog[data-program="p-free"]');
+        await click('.fdgo'); await wait(`window.fixtureSettled() && window.fixtureProgramReads === 2`);
+        if (mode === 'refuse') await shot('main-refused');
+        detail[`main-${mode}`] = await evaluate<string>(footSays);
+        g[`bootstrap-main answers ${mode}: the window shows it word for word, founds nothing and reads the Programs again`] =
+          await evaluate<boolean>(`${footSays} === ${JSON.stringify(expect)} && !document.querySelector('#shell-found.fdproved')`)
+          && await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo' });
+      }
+      await reset(`window.fixturePrograms = 'fail';`); await toMain();
+      g['should-reject: Programs that cannot be read offer nothing, say so and block the start'] = await evaluate<boolean>(`${progs}.length === 0 && document.querySelector('.fdprogs .fdnote.warn').textContent.includes('Antwort 500')`) && await blocked();
+      await reset(`window.fixtureMode = 'equal';`); await toMain(); await click('.fdprog[data-program="p-free"]');
+      await click('[data-pop="model"]'); await click('.fdpop .fdprow:nth-child(2)'); await click('[data-pop="effort"]'); await click('.fdpop .fdprow:nth-child(2)');
+      await click('.fdgo'); await wait(`window.fixtureSettled() && !!document.querySelector('#shell-found.fdproved')`); await shot('main-receipt');
+      g['MAIN start: exactly one bootstrap-main with { cwd, model, effort } — no packs, no container, no label'] = await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo', model: 'fixture-model', effort: 'high' }); await said('main');
+      g['the start receipt reads the MAIN back at the Programs binding'] = await evaluate<boolean>(`document.querySelector('.fdproofrow[data-field="Rolle"] .fdactual')?.textContent === 'MAIN' && document.querySelector('.fdproofrow[data-field="Rolle"]').dataset.state === 'same'`);
 
       await reset(); await role('lane'); await wait(`${chips}.length === 2`);
       await evaluate(`window.fixtureHold = true;`);
@@ -4899,6 +4973,12 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
         && afterReset === JSON.stringify([{ presets: { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }, { presets: null }]);
       detail['presets'] = afterReset;
       await shot('compare');
+      await reset(`window.fixtureStored = { steward: { base: 'none', plus: ['fixture-alpha'], minus: [] } };`); await role('lane'); await wait(`${chips}.length === 2`);
+      await click('.fdctxfoot .fdghost:last-child'); await wait(`document.querySelector('.fdcmp') !== null`);
+      await click('.fdpip[aria-label="fixture-beta für Lane"]'); await wait(`${chips}.length === 1`);
+      g['a stored Steward preset rides along unchanged when the window saves — dropping the card drops no stored choice'] =
+        await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`)
+        === JSON.stringify([{ presets: { steward: { base: 'none', plus: ['fixture-alpha'], minus: [] }, lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }]);
 
       await reset(`window.fixturePlan = 'many';`); await role('lane'); await wait(`document.querySelectorAll('.fdctx .fdcx').length === 14`);
       await wait(`document.querySelectorAll('.fdcx.in').length === 0`);

@@ -1935,6 +1935,22 @@
   #shell-found .fdrole.on .fdglyph { background: var(--chat-ink); color: var(--chat-void); }
   #shell-found .fdrs { font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-mute); }
   #shell-found .fdrk { margin-top: auto; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  /* MAIN — the Program she is founded for, under the cards: active Programs only, the ones with a
+     living MAIN greyed with their slot, an unknown one greyed with "unbekannt" */
+  #shell-found .fdprogs { grid-column: -2; min-width: 0; margin-top: 12px; animation: fdrise var(--t); }
+  #shell-found .fdproghead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #shell-found .fdproghead .fdmeta { flex: 1; }
+  #shell-found .fdproglist { display: flex; flex-direction: column; gap: 6px; max-height: 232px; overflow-y: auto; scrollbar-width: thin; }
+  #shell-found .fdprog { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 12px; border-radius: var(--r2);
+    background: var(--chat-surface); border: 1px solid var(--chat-edge); color: var(--chat-prose); transition: border-color var(--t); }
+  #shell-found .fdprog:not(:disabled):hover { border-color: var(--c-edge-hi); }
+  #shell-found .fdprog.on { border-color: var(--chat-mute); background: var(--chat-raised); color: var(--chat-ink); }
+  #shell-found .fdprog.on .fdradio { border-color: var(--chat-ink); background: radial-gradient(var(--chat-ink) 0 3px, transparent 3.5px); }
+  #shell-found .fdprog:disabled { opacity: .5; cursor: help; }
+  #shell-found .fdprogt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shell-found .fdpst { flex: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdpst.live { color: var(--q-live); }
+  #shell-found .fdpst.stale, #shell-found .fdpst.unknown { color: var(--amber); }
 
   /* PROFIL — fields with their name above the value */
   #shell-found .fdprof { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
@@ -2069,6 +2085,8 @@
     #shell-found .fdlab { flex-direction: row; align-items: baseline; gap: 10px; padding: 0 0 10px; }
     #shell-found .fdroles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     #shell-found .fdrole { min-height: 0; }
+    #shell-found .fdprog { flex-wrap: wrap; row-gap: 2px; }
+    #shell-found .fdpst { flex-basis: 100%; padding-left: 23px; }
     #shell-found .fdseg { align-self: stretch; }
     #shell-found .fdsegb { flex: 1; text-align: center; padding: 7px 6px; white-space: normal; }
     #shell-found .fdpfacts .mono { display: none; }

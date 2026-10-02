@@ -770,8 +770,9 @@ Rollenkarten in `docs/rollenkarten.md` sagen es für beide Seiten). Mechanik (`s
 `#escalateAttention`, `#attentionWaitsOn`, `server/types.ts#AttentionRequest`):
 
 - **Die Stufe wird beim Anlegen gewählt, einmal.** `POST /api/self/attention` fragt
-  `server.ts#deliveryRecipient` mit `{kind:"orchestrator"}`: genau ein lebender Slot mit
-  Orchestrator-Label (`isOrchestratorLabel`: `🎛`, „Orchestrator…") → `stage:"orchestrator"`; keiner
+  `server.ts#deliveryRecipient` mit `{kind:"orchestrator"}`: genau ein lebender Nicht-Lane-Slot mit
+  Orchestrator-Label (`isOrchestratorLabel`: `🎛`, „Orchestrator…"; eine Lane zählt nie mit, auch wenn
+  ihr Label das Wort trägt) → `stage:"orchestrator"`; keiner
   oder zwei → `stage:"owner"` (die nächsthöhere Stufe). Ist die fragende MAIN selbst diese eine
   Orchestratorin, geht die Frage an den Owner. Die serverseitig erhobenen Zeilen (Nachfolge-Warnung,
   Kriteriums-Bitte, Stall-Sensor) sind immer `stage:"owner"`.

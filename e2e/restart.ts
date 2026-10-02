@@ -1638,8 +1638,66 @@ export async function run(ctx: Ctx): Promise<void> {
           && dropped.lastResult?.startsWith("skipped — slot occupant changed") === true
           && staleLog.length === 0 && !staleCap.out.includes(staleMarker),
         `${JSON.stringify(dropped)} log=${staleLog.length}`);
-      await post(`/api/slots/${roleA}/kill`, {});
+
+      // --- the ROLE address resolves over non-lane slots only. Measured 2026-10-02 (Report e67d865d):
+      // a lane in Slot 22 labelled "⎇ task orchestratorinnen-karte-4dbe" matched the label, so
+      // deliveryRecipient({kind:"orchestrator"}) saw two candidates and a bundle for the real
+      // Orchestratorin (an inbox-nudge among it) fell after 30 s with "no current role occupant".
+      // Measured on the message rail, which resolves through deliveryRecipient, and on its nudge,
+      // which rides a {kind:"orchestrator"} bundle (FLEET_DELIVERY_BUNDLE_SEC > 0).
+      await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2", FLEET_INBOX_NUDGE_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
+      const selfMessages = (method: "GET" | "POST", body?: unknown): Promise<Response> =>
+        fetch(BASE + "/api/self/messages", { method,
+          headers: { "content-type": "application/json", "x-fleet-self-token": selfToken },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      const twoView = await selfMessages("GET");
+      const twoErr = ((await twoView.json()) as { error?: string }).error ?? "";
+      check("two non-lane Orchestratorin slots: the role holds nobody, and the refusal names why",
+        twoView.status === 409 && twoErr.includes("unique live Orchestrator"), `${twoView.status} ${twoErr}`);
+
+      const laneRepo = process.env.FLEET_E2E_REPO ?? "";
       await post(`/api/slots/${roleB}/kill`, {});
+      const ln = laneRepo ? (await (await post("/api/lanes", { repo: laneRepo })).json()) as
+        { slot?: number; cwd?: string; branch?: string } : {};
+      const lnName = ln.slot ? await post(`/api/slots/${ln.slot}/rename`,
+        { label: "⎇ task orchestratorinnen-karte-e2e" }) : null;
+      const lnRow = ln.slot ? ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; label?: string | null; worktree?: unknown }[] }).slots.find((x) => x.id === ln.slot) : undefined;
+      check("precondition: one Orchestratorin plus a LANE whose label carries the word orchestrator",
+        !!ln.slot && lnName?.ok === true && !!lnRow?.worktree && /orchestratorinnen-karte/.test(lnRow?.label ?? ""),
+        `${JSON.stringify(ln)} rename=${lnName?.status} row=${JSON.stringify(lnRow)}`);
+      if (ln.slot && ln.cwd) {
+        const auditFrom = (await Bun.file(`${ROOT}/audit.jsonl`).text()).length;
+        const auditSince = async (): Promise<{ event: string; slot?: number; detail?: string; path?: string }[]> =>
+          (await Bun.file(`${ROOT}/audit.jsonl`).text()).slice(auditFrom).trim().split("\n").filter(Boolean)
+            .map((l) => JSON.parse(l) as { event: string; slot?: number; detail?: string; path?: string });
+        const oneView = await selfMessages("GET");
+        const oneBody = (await oneView.json()) as { addresses?: { kind: string; role?: string }[]; error?: string };
+        const sentMsg = await selfMessages("POST", { to: { kind: "role", role: "orchestrator" },
+          payload: { kind: "text", text: "role address beside an orchestrator-named lane" },
+          idempotencyKey: `lane-label-${Date.now()}` });
+        const sentBody = (await sentMsg.json()) as { holder?: { slot?: number } | null; escalatedTo?: string | null; error?: string };
+        check("with an orchestrator-named lane beside her, the Orchestratorin holds the role address",
+          oneView.ok && oneBody.addresses?.some((a) => a.kind === "role" && a.role === "orchestrator") === true
+            && sentMsg.ok && sentBody.holder?.slot === roleA && sentBody.escalatedTo === null,
+          `view=${oneView.status} ${JSON.stringify(oneBody.addresses ?? oneBody.error)} send=${sentMsg.status} ${JSON.stringify(sentBody)}`);
+        // before the fix: delivery_bundle_dropped "orchestrator no current role occupant" after 30 s
+        const nudged = await until(async () => (await auditSince()).find((r) =>
+          r.event === "send" && r.slot === roleA && r.path === "inbox-nudge") ?? null,
+        { timeoutMs: 20_000, what: "the role-addressed inbox-nudge reaches the Orchestratorin" }).catch(() => null);
+        const rows = await auditSince();
+        check("the role-addressed bundle is typed into the Orchestratorin, never into the lane, nothing dropped",
+          !!nudged && rows.some((r) => r.event === "delivery_bundle_queued" && r.detail?.startsWith("orchestrator ") === true)
+            && !rows.some((r) => r.event === "delivery_bundle_dropped" && r.detail?.startsWith("orchestrator ") === true)
+            && !rows.some((r) => r.event === "send" && r.slot === ln.slot && r.path === "inbox-nudge"),
+          JSON.stringify(rows.filter((r) => r.event.startsWith("delivery_bundle") || r.path === "inbox-nudge")
+            .map((r) => [r.event, r.slot, r.detail])));
+        await post(`/api/slots/${ln.slot}/kill`, {});
+        if (existsSync(ln.cwd)) rmSync(ln.cwd, { recursive: true, force: true });
+        spawnSync("git", ["worktree", "prune"], { cwd: laneRepo });
+        if (ln.branch) spawnSync("git", ["branch", "-qD", ln.branch], { cwd: laneRepo });
+      }
+      await post(`/api/slots/${roleA}/kill`, {});
     }
     await restartSrv();
   }

@@ -9304,7 +9304,10 @@ function deliveryRecipient(address: DeliveryAddress): Slot | null {
     return s?.cwd && s.openedAt === main?.openedAt ? s : null;
   }
   if (address.kind === "orchestrator") {
-    const candidates = slots.filter((s) => s.cwd && isOrchestratorLabel(s.label));
+    // non-lane only, the same predicate deliveryAddress uses on the sender side: a lane labelled
+    // "⎇ task orchestratorinnen-karte-…" matched the label and made the role ambiguous, so a bundle
+    // for the real Orchestratorin fell with "no current role occupant" (Slot 22, 2026-10-02)
+    const candidates = slots.filter((s) => s.cwd && !s.worktree && isOrchestratorLabel(s.label));
     return candidates.length === 1 ? candidates[0]! : null;
   }
   const s = slotFrom(address.id);

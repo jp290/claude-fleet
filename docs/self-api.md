@@ -130,6 +130,18 @@ die Paste kann durch die Bündelung bis zu `delivery.maxDelaySec` Sekunden spät
 (Default 900, Bündelung d6d75307, `server.ts#deliveryClass`). Eine sofort-Zustellung an denselben
 Slot oder die Cache-Kante spült das Bündel früher; `idleSec:0` hebt dieses Bündelfenster nicht auf.
 
+Empfänger ist **dein Slot mit deinem Occupant**, nie eine Rolle: das Auto trägt `slotOpenedAt` (der
+Occupant, der es angelegt hat), und `server.ts#tickAutos` stellt es mit `address:{kind:"slot"}` zu.
+Ein Orchestratorinnen-Label macht es also nicht zur Rollen-Zustellung — vorher löste
+`server.ts#deliveryAddress` einen solchen Slot zu `{kind:"orchestrator"}` auf, und bei null oder zwei
+Slots mit diesem Label endete das Auto in `failed: no current role occupant — nothing typed`
+(Self-Auto `0b781fcc`, Slot 9, 2026-10-02: eine Lane mit „orchestratorinnen" im Label war der
+zweite Kandidat). Hält der Slot inzwischen einen anderen Occupant, wird das Auto verworfen statt
+zugestellt: `enabled:false`, `lastResult: "skipped — slot occupant changed (…)"`, Audit `auto_skip`.
+Dieselbe Zustellung gilt für Owner-Autos (`POST /api/slots/:id/autos`), weil beide Türen
+`server.ts#createAutoForSlot` und `tickAutos` teilen. Ein Altbestand ohne `slotOpenedAt` geht ohne
+Occupant-Prüfung an den Slot.
+
 
 ## watch — `POST /api/self/watch`
 

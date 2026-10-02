@@ -9953,6 +9953,7 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
     runsLeft: runs,
     ...(perpetual ? { perpetual: true } : {}),
     idleSec,
+    slotOpenedAt: s.openedAt,
     enabled: true,
     created: Date.now(),
     lastRun: 0,
@@ -10842,8 +10843,8 @@ async function lineagePointerCommitted(cwd: string, pointer: string): Promise<bo
 }
 
 // WHAT DIES WITH THE PREDECESSOR, by id. Joined on the occupant pair wherever the row carries one
-// (a watch, an event, a report); an Auto carries no openedAt and teardown deletes every Auto of the
-// SLOT, so the slot is exactly what dies with it (captureProgramHandover's same exception).
+// (a watch, an event, a report); an Auto's slotOpenedAt is absent on legacy rows and teardown deletes
+// every Auto of the SLOT, so the slot is exactly what dies with it (captureProgramHandover's same exception).
 // A watch also names its SUBJECT (server/types.ts#LineageWatchTarget): its row dies here too, and the
 // id alone would leave the successor nothing to rebuild the re-arm body from.
 const lineageWatchTarget = (w: Watch): LineageWatchTarget | null => {
@@ -16024,6 +16025,15 @@ async function tickAutos(): Promise<void> {
         dirty = true;
         continue;
       }
+      // AN AUTO BELONGS TO ITS OCCUPANT, not to the slot number or a role: a slot id that holds a
+      // different session than the one that scheduled it gets nothing typed, and the row says why.
+      if (typeof a.slotOpenedAt === "number" && a.slotOpenedAt !== s.openedAt) {
+        a.enabled = false;
+        a.lastResult = `skipped — slot occupant changed (scheduled by openedAt=${a.slotOpenedAt}, now ${s.openedAt})`;
+        audit("auto_skip", a.slot, a.lastResult);
+        dirty = true;
+        continue;
+      }
       // the shared choke-point (killSwitch already handled by the tick-level early return above;
       // quiet hours mute the PERIODIC surface only — one-shots are a specific owner intent and
       // always fire, so quiet-hours is honored only for a recurring auto).
@@ -16079,7 +16089,11 @@ async function tickAutos(): Promise<void> {
       void (async () => {
         let recipient = s;
         try {
-          await sendText(s, a.text, true, { path: "auto",
+          // addressed to THIS slot, never re-resolved by role: deliveryAddress would turn an
+          // Orchestratorin slot into {kind:"orchestrator"}, which resolves to nobody while zero or two
+          // slots carry the label ("no current role occupant", Slot 9, 2026-10-02). The slot address
+          // also makes the bundle drop the entry if the occupant changes before the paste.
+          await sendText(s, a.text, true, { path: "auto", address: { kind: "slot", id: s.id },
             bundleGate: { quietHours: a.everySec === null ? false : undefined,
               idleMs: a.idleSec * 1000 }, beforeSend: async (current) => {
             if (!a.enabled || !autos.includes(a)) throw new DeliveryCancelled(`auto ${a.id} was cancelled before paste`);
@@ -16098,6 +16112,12 @@ async function tickAutos(): Promise<void> {
             a.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
             audit("auto_skip", a.slot, a.lastResult);
             advanceAuto(a, Date.now());
+          } else if (a.enabled && autos.includes(a)) {
+            // cancelled by the occupant check (the row itself was not cancelled): the scheduling
+            // session is gone, so the row is spent with the reason, never handed to its successor
+            a.enabled = false;
+            a.lastResult = `skipped — ${e.message}`.slice(0, 160);
+            audit("auto_skip", a.slot, a.lastResult);
           }
         } finally {
           pendingAutoSends.delete(a.id);
@@ -34870,8 +34890,8 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
   successor: { slot: number; openedAt: number }, at: number, auditRows: PostLandAuditRow[]): ProgramHandover {
   // joined on the full occupant PAIR, never the slot alone: slot ids are recycled, and a successor
   // told about a stranger's obligations would re-ask a stranger's question. `autos` is the one
-  // exception and it is the row's own shape, not a shortcut — an Auto carries no openedAt, and
-  // teardown deletes every row of the SLOT, so the slot is exactly what dies with it.
+  // exception and it is the row's own shape, not a shortcut — an Auto's slotOpenedAt is absent on
+  // legacy rows, and teardown deletes every row of the SLOT, so the slot is exactly what dies with it.
   const armed = watches.filter((w) => w.armed && w.slot === predecessor.slot
     && w.slotOpenedAt === predecessor.openedAt);
   const checkIns = autos.filter((a) => a.slot === predecessor.slot);

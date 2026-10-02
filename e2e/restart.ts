@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { BASE, IP, PORT, ROOT, SOCK, TOKEN, BoundAgentError, UntilTimeout, check, get, plogRead, post, readText, restartSrv, tmuxOut, until, waitForBoundAgent, wsUrl } from "./harness";
+import { BASE, IP, PORT, ROOT, SOCK, TOKEN, BoundAgentError, UntilTimeout, check, get, plogRead, post, readText, restartSrv, stopSrv, tmuxOut, until, waitForBoundAgent, wsUrl } from "./harness";
 import type { AgentBinding, BoundAgentObservation, BoundAgentWait } from "./harness";
 import type { Ctx } from "./ctx";
 import { MERGE_IDLE_MS, settleForMerge } from "./lane-helpers";
@@ -1567,6 +1567,82 @@ export async function run(ctx: Ctx): Promise<void> {
     !existsSync(`${ROOT}/fleet.json.tmp`)
     && readdirSync(ROOT).filter((f) => f.startsWith("fleet.json.") && f.endsWith(".tmp")).length === 0,
     readdirSync(ROOT).filter((f) => f.startsWith("fleet.json.")).join(","));
+
+  // --- a self-Auto goes to the SLOT that scheduled it, never to a role. Measured 2026-10-02: Slot 9
+  // (Orchestratorin) scheduled 0b781fcc and got "failed: no current role occupant — nothing typed",
+  // because deliveryAddress turned her slot into {kind:"orchestrator"} and a lane labelled
+  // "…orchestratorinnen-karte…" was the second candidate. Only reachable WITH a bundle window (the
+  // wrapper's FLEET_DELIVERY_BUNDLE_SEC=0 sends immediately, bypassing the role resolution), so
+  // this section restarts with one. Half 2 changes the occupant on disk while the server is down —
+  // the only way an Auto row outlives its occupant, since open/kill delete every Auto of the slot.
+  {
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
+    type AutoRow = { id: string; slot: number; enabled: boolean; lastResult: string | null; slotOpenedAt?: number };
+    type SessionsView = { slots: { id: number; cwd: string | null; openedAt: number }[]; autos: AutoRow[] };
+    const sessions = async (): Promise<SessionsView> => (await (await get("/api/sessions")).json()) as SessionsView;
+    const vacant = (await sessions()).slots.filter((s) => !s.cwd).map((s) => s.id);
+    const [roleA, roleB] = vacant;
+    check("precondition: two vacant slots for the two Orchestratorin labels", !!roleA && !!roleB, JSON.stringify(vacant));
+    if (roleA && roleB) {
+      // labelled by rename, not at open: an Orchestratorin label at open also pastes the role card
+      // (deliverOrchestratorSpawnCard), which this section does not test
+      const openA = await post(`/api/slots/${roleA}/open`, { cwd: ROOT });
+      const openB = await post(`/api/slots/${roleB}/open`, { cwd: ROOT });
+      const nameA = await post(`/api/slots/${roleA}/rename`, { label: "🎛 Orchestratorin · e2e auto" });
+      const nameB = await post(`/api/slots/${roleB}/rename`, { label: "Orchestrator zwei · e2e auto" });
+      check("precondition: two non-lane slots carry an Orchestratorin label (role address resolves to nobody)",
+        openA.ok && openB.ok && nameA.ok && nameB.ok,
+        `${openA.status} ${openB.status} ${nameA.status} ${nameB.status}`);
+      const selfToken = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { selfToken?: string }> }).slots?.[String(roleA)]?.selfToken ?? "";
+      const selfAuto = async (text: string, inSec: number): Promise<AutoRow | null> => {
+        const r = await fetch(BASE + "/api/self/autos", { method: "POST",
+          headers: { "content-type": "application/json", "x-fleet-self-token": selfToken },
+          body: JSON.stringify({ text, inSec, idleSec: 0 }) });
+        return r.ok ? ((await r.json()) as { auto: AutoRow }).auto : null;
+      };
+      const openedA = (await sessions()).slots.find((s) => s.id === roleA)?.openedAt ?? 0;
+      const sentMarker = `self-auto-own-slot-${Date.now()}`;
+      const sent = await selfAuto(sentMarker, 1);
+      check("a self-Auto is stamped with the occupant that scheduled it",
+        !!sent && sent.slot === roleA && sent.slotOpenedAt === openedA && openedA > 0,
+        `${JSON.stringify(sent)} openedAt=${openedA}`);
+      // before the fix this row ended "failed: no current role occupant" after the 30 s absent grace
+      const fired = sent ? await until(async () => (await sessions()).autos.find((a) =>
+        a.id === sent.id && a.lastResult !== null) ?? null,
+      { timeoutMs: 15_000, what: "own-slot self-Auto settles" }).catch(() => null) : null;
+      const sentLog = (await plogRead()).filter((p) => p.text === sentMarker);
+      check("with two Orchestratorin labels a self-Auto is sent into its own slot",
+        fired?.lastResult === "sent" && sentLog.length === 1 && sentLog[0]?.slot === roleA,
+        `${JSON.stringify(fired)} log=${JSON.stringify(sentLog.map((p) => p.slot))}`);
+
+      const staleMarker = `self-auto-stale-occupant-${Date.now()}`;
+      const stale = await selfAuto(staleMarker, 3600);
+      check("precondition: the far-future self-Auto for the occupant change exists", !!stale, "");
+      await stopSrv();
+      const stFile = `${ROOT}/fleet.json`;
+      const st = JSON.parse(readFileSync(stFile, "utf8")) as { autos?: (AutoRow & { nextAt: number })[] };
+      const row = st.autos?.find((a) => a.id === stale?.id);
+      // the row of a FORMER occupant: same slot id, another openedAt; due now
+      if (row) { row.slotOpenedAt = openedA - 1; row.nextAt = Date.now() - 1000; }
+      writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
+      await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
+      const dropped = stale ? await until(async () => (await sessions()).autos.find((a) =>
+        a.id === stale.id && a.lastResult !== null) ?? null,
+      { timeoutMs: 10_000, what: "stale-occupant self-Auto settles" }).catch(() => null) : null;
+      await Bun.sleep(2_500); // one bundle window: nothing may have been queued for a later paste
+      const staleLog = (await plogRead()).filter((p) => p.text === staleMarker);
+      const staleCap = await tmuxOut("capture-pane", "-t", `s${roleA}`, "-p", "-J");
+      check("a self-Auto of a former occupant is discarded with its reason, nothing typed",
+        !!row && dropped?.enabled === false
+          && dropped.lastResult?.startsWith("skipped — slot occupant changed") === true
+          && staleLog.length === 0 && !staleCap.out.includes(staleMarker),
+        `${JSON.stringify(dropped)} log=${staleLog.length}`);
+      await post(`/api/slots/${roleA}/kill`, {});
+      await post(`/api/slots/${roleB}/kill`, {});
+    }
+    await restartSrv();
+  }
 
   ctx.cmdEnv = cmdEnv;
   ctx.gapEnv = gapEnv;

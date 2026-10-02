@@ -76,6 +76,8 @@ interface Auto {
   runsLeft: number;
   perpetual?: boolean; // owner-only: a recurring auto that re-arms instead of expiring at the runs cap
   idleSec: number; // only fire when the session produced no output for this long (0 = always)
+  slotOpenedAt?: number; // the occupant that minted it: an Auto is delivered to THIS slot+occupant
+  // only (server.ts#tickAutos), never re-resolved by role. Absent is an honest legacy row.
   enabled: boolean;
   created: number;
   lastRun: number;

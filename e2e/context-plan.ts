@@ -3,17 +3,20 @@ import {
   CONTEXT_PACK_CAPABILITIES,
   CONTEXT_PACK_HARNESSES,
   CONTEXT_PACKS,
+  CONTEXT_PACK_TRIGGERS,
+  type ContextPackTrigger,
   type ContextPackCapability,
 } from "../context-packs";
 import { CONTEXT_PLAN_OMISSION_REASONS, PRIVATE_PACK_VERDICTS, PROGRAM_CONTEXT_PACKS_MAX, planContext, planProgramContext,
   programContextPacksFrom, renderPrivatePackLines, resolvePrivatePack, validateProgramContextPacks } from "../context-plan";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, observedSourceHash, planRepoContext,
-  readContextManifest, stampObservedSourceHashes } from "../context-manifest";
+  readContextManifest, stampObservedSourceHashes, taskContextTriggers } from "../context-manifest";
 import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_HIT_MAX_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
   planSnippets, renderSnippetBlock, snippetPathRefusal, symbolSpan,
   type SnippetFile, type SnippetRow } from "../context-snippets";
@@ -120,7 +123,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     owner: "owner", status: "active", ...over,
   });
   const privateOnly = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating",
-    triggers: ["deployment"], capabilities: fullCapabilities() })
+    triggers: ["always"], capabilities: fullCapabilities() })
     .selected.filter((pack) => "privateSourceId" in pack.sources);
   const repoWorld = (packs: readonly unknown[], bytes = "## Product promise\nplay first.\n") => ({
     manifest: readContextManifest(JSON.stringify(packs)),
@@ -627,6 +630,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     SNIPPET_HIT_MAX_LINES === 60 && definitionLines(alpha.split("\n"), "alphaTwo").join(",") === "5",
     `${SNIPPET_HIT_MAX_LINES} ${definitionLines(alpha.split("\n"), "alphaTwo")}`);
 
+  taskCatalogChecks(check);
   privatePackChecks(check);
 
   if (!externalCheck) {
@@ -634,6 +638,70 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     console.log(failures ? `\n${failures} FAILURES` : "\nALL PASS");
     if (failures) process.exitCode = 1;
   }
+}
+
+function taskCatalogChecks(check: ContextPlanCheck): void {
+  const here = resolve(import.meta.dir, "..");
+  const candidates = [here];
+  try { candidates.push(dirname(realpathSync(join(here, "node_modules")))); } catch { /* no source pointer */ }
+  const root = candidates.find((path) => {
+    try { readFileSync(join(path, ".fleet/context-packs.json")); return true; } catch { return false; }
+  });
+  if (!root) { check("task catalog: PROBE finds the real manifest", false, candidates.join(",")); return; }
+  const manifest = readContextManifest(readFileSync(join(root, ".fleet/context-packs.json"), "utf8"));
+  const tracked = spawnSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  if (manifest.kind !== "packs" || tracked.status !== 0) {
+    check("task catalog: PROBE reads the manifest and tracked paths", false, `manifest=${manifest.kind} git=${tracked.status}`); return;
+  }
+  const repo = { trackedPaths: new Set(tracked.stdout.split("\0").filter(Boolean)), sourceBytes: new Map<string, string>() };
+  for (const path of manifest.referencedPaths) {
+    try { repo.sourceBytes.set(path, readFileSync(join(root, path), "utf8")); } catch { /* validator reports missing sources */ }
+  }
+  const baseline: ContextPackTrigger[] = ["always", "verification", "jev-use"];
+  const catalog = (texts: readonly string[], harness = "claude", capabilities = fullCapabilities()) => {
+    const facts = { harness, mode: "mutating" as const, capabilities, triggers: taskContextTriggers(texts, baseline) };
+    const seeds = planContext({ sourceTree: "fleet", ...facts });
+    const own = planRepoContext({ manifest, repo, facts });
+    return { selected: [...seeds.selected, ...own.selected].map((p) => p.id), omitted: [...seeds.omitted, ...own.omitted] };
+  };
+  const code = catalog(["ZIEL: Queue-Ansicht korrigieren", "FLAECHE: src/client.ts"]);
+  const measurement = catalog(["ZIEL: Zustellungsdauer messen", "FLAECHE: docs/messungen/latenz.md"]);
+  const rulebook = catalog(["ZIEL: Regelbuch aendern", "FLAECHE: rulebook/einstieg.md"]);
+  check("task catalog: an ordinary code task gets exactly the core and proof seeds",
+    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet", JSON.stringify(code));
+  check("task catalog: a measurement task adds only the measurement index",
+    measurement.selected.join(",") === `${code.selected.join(",")},messnotiz-index`, JSON.stringify(measurement));
+  check("task catalog: a rulebook edit adds only the generator guidance",
+    rulebook.selected.join(",") === `${code.selected.join(",")},rulebook-generat`, JSON.stringify(rulebook));
+  check("task catalog: code, measurement and rulebook catalogs are pairwise different",
+    new Set([code, measurement, rulebook].map((row) => row.selected.join(","))).size === 3);
+  check("task catalog: unrelated work omits both act-specific packs by trigger",
+    ["rulebook-generat", "messnotiz-index"].every((id) => code.omitted.some((p) => p.id === id && p.why === "trigger-not-matched")),
+    JSON.stringify(code.omitted));
+  check("task catalog: reading the rulebook alone does not select editing guidance",
+    ["Lies CLAUDE.md", "Lies CLAUDE.md und aendere src/client.ts"].every((text) =>
+      !catalog([text]).selected.includes("rulebook-generat")));
+  check("task catalog: surfaces alone can name rulebook and measurement work",
+    catalog(["rulebook.ts"]).selected.includes("rulebook-generat")
+      && catalog(["docs/messungen/latenz.md"]).selected.includes("messnotiz-index"));
+  check("task catalog: rulebook editing matches umlauts and their ASCII spelling",
+    ["Regelbuch ändern", "Ändere CLAUDE.md", "Regelbuch aendern"].every((text) =>
+      catalog([text]).selected.includes("rulebook-generat")));
+  const harness = catalog(["ZIEL: Harness-Adapter pruefen", "FLAECHE: server.ts#HARNESSES"]);
+  check("task catalog: a harness task selects the adapter pack through the text path",
+    harness.selected.includes("harness-adapter"), JSON.stringify(harness));
+  check("task catalog: the text path preserves the capability boundary",
+    catalog(["Harness auswaehlen"], "claude", fullCapabilities().filter((c) => c !== "harness-adapter-read"))
+      .omitted.some((p) => p.id === "harness-adapter" && p.why === "capability-missing"));
+  check("task catalog: a monitoring role omits act packs by mode even with matching text",
+    ["rulebook-generat", "messnotiz-index"].every((id) => planRepoContext({ manifest, repo, facts: { harness: "claude", mode: "monitoring", capabilities: fullCapabilities(),
+      triggers: taskContextTriggers(["Regelbuch aendern und messen"], baseline) } })
+      .omitted.some((p) => p.id === id && p.why === "mode-unsupported")));
+  check("task catalog: an empty task keeps only baseline triggers even if all candidates are offered",
+    taskContextTriggers([], CONTEXT_PACK_TRIGGERS).join(",") === "always,verification,landing");
+  check("task catalog: removed queue and deployment triggers and packs stay absent",
+    !(CONTEXT_PACK_TRIGGERS as readonly string[]).some((t) => ["task-queue", "deployment"].includes(t))
+      && !(CONTEXT_PACKS as readonly { id: string }[]).some((p) => ["task-queue", "private-deploy-overlay"].includes(p.id)));
 }
 
 // THE MECHANICAL RECEIVER of a private pack line (renderPrivatePackLines' format): null when no line

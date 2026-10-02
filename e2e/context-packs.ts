@@ -248,7 +248,7 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
   // `tracked-source-read` — it would assert its own fixture. The three constants are the entire
   // supply of dispatch facts (e2e/pins.ts RULE_REACH pins that same call site), so a probe that
   // cannot find them fails UNDER ITS OWN NAME rather than as "the pack is not delivered".
-  const RULE_INDEX = "context manifest: the measurement-note index is delivered to a dispatched lane";
+  const RULE_INDEX = "context manifest: the measurement-note index is delivered to a measurement lane";
   const INDEX_PACK = "messnotiz-index";
   const INDEX_SOURCE = { path: "docs/messungen/INDEX.md", anchor: "# Index der Messnotizen" };
   const source = sourceCheckout();
@@ -310,16 +310,17 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
         const bytes = readAt(path);
         if (bytes !== null) sourceBytes.set(path, bytes);
       }
-      const plan = planRepoContext({
-        manifest,
-        repo: { trackedPaths, sourceBytes },
-        facts: {
-          harness: "claude",
-          mode: modeMatch[1] as ContextPackMode,
-          triggers: triggers as ContextPackTrigger[],
-          capabilities: capabilities as ContextPackCapability[],
-        },
-      });
+      const repoFacts = { harness: "claude", mode: modeMatch[1] as ContextPackMode,
+        capabilities: capabilities as ContextPackCapability[] };
+      const plan = planRepoContext({ manifest, repo: { trackedPaths, sourceBytes },
+        facts: { ...repoFacts, triggers: taskContextTriggers(["ZIEL: Zustellungsdauer messen"],
+          triggers as ContextPackTrigger[]) } });
+      const ordinaryRepoPlan = planRepoContext({ manifest, repo: { trackedPaths, sourceBytes },
+        facts: { ...repoFacts, triggers: ordinaryTriggers } });
+      check("context manifest: an ordinary code lane omits the measurement-note index by trigger",
+        !ordinaryRepoPlan.selected.some((pack) => pack.id === INDEX_PACK)
+          && ordinaryRepoPlan.omitted.some((pack) => pack.id === INDEX_PACK && pack.why === "trigger-not-matched"),
+        JSON.stringify(ordinaryRepoPlan));
       const selection = plan.selected.find((pack) => pack.id === INDEX_PACK);
       const omission = plan.omitted.find((pack) => pack.id === INDEX_PACK);
       check(`${RULE_INDEX}, with its own anchor`,

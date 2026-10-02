@@ -2456,16 +2456,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // ============================================================================================
   // TRIGGER REACHABILITY — a pack whose trigger no seam ever passes is shelf-ware
   // ============================================================================================
-  // MEASURED 2026-08-19 over every context receipt on the ledger: the trigger histogram contains
-  // `always` and `verification` and nothing else. Three call sites in server.ts are the entire
-  // supply of triggers, and only these three:
-  //   DISPATCH_CONTEXT_TRIGGERS   — the dispatch delivery seam
-  //   BOOTSTRAP_CONTEXT_TRIGGERS  — Program-MAIN / Supervisor founding and succession
-  //   landingAnchorBlock          — the two mutating merge workers, `triggers: ["landing"]`
-  // A pack whose triggers all lie outside that union can never be selected anywhere. That is a
-  // legitimate state (a seam that will pass them is not built yet) but it must be DECLARED, not
-  // discovered — otherwise a pack is authored, validated, committed, and silently never delivered.
-  //
+  // Baseline triggers come from the three delivery seams; task triggers additionally come from
+  // taskContextTriggers' pattern table, which the dispatch seam evaluates against the brief.
   // WHY THIS PIN GREPS THE THREE NAMED CALL SITES AND NEVER A BARE LITERAL — do not "simplify" it:
   // counting `"verification"` across server.ts is counting phantoms. That literal also appears as a
   // JSON KEY inside a WORKER_CONTRACTS template (the worker-contract block, unrelated to context
@@ -2489,14 +2481,20 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     pin(`${RULE_REACH} — PROBE: all three delivery call sites were located`, false,
       `dispatch=${dispatchTriggers ?? "not found"} bootstrap=${bootstrapTriggers ?? "not found"} landing=${landingTriggers ?? "not found"}`);
   else {
-    const reaching = new Set([...dispatchTriggers, ...bootstrapTriggers, ...landingTriggers]);
-    // DORMANT — triggers with ZERO literals at those three call sites, listed in full and on
-    // purpose. Each is ruled by a seam Fleet has not built and the owner has not decided on:
-    // `task-queue` (no queue-reading seam plans context), `harness-selection` (adapter choice
-    // happens before any plan is derived), `deployment` (Verb 2 derives no plan at all).
-    // A SHORT list here would be worse than none: it would pass while asserting that the trigger
-    // it forgot is reachable, so the set is held EXACTLY equal to the complement of the union.
-    const DORMANT = ["task-queue", "harness-selection", "deployment"];
+    const taskSource = read("context-manifest.ts").replace(/^\s*\/\/.*$/gm, "");
+    const taskFrom = taskSource.indexOf("export function taskContextTriggers(");
+    const taskBody = taskFrom < 0 ? "" : taskSource.slice(taskFrom, taskSource.indexOf("\n}", taskFrom));
+    const taskTriggers = [...taskBody.matchAll(/^\s*\["([a-z-]+)",/gm)].map((m) => m[1]);
+    const taskSeam = server.replace(/^\s*\/\/.*$/gm, "")
+      .includes("triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS)");
+    const taskLoop = /for \(const \[trigger, pattern\] of taskTriggers\)/.test(taskBody)
+      && /if \(texts\.some\(\(value\) => pattern\.test\(value\)\)\) selected\.add\(trigger\);/.test(taskBody);
+    pin(`${RULE_REACH} — PROBE: task triggers are produced by the dispatch text path`,
+      taskSeam && taskLoop && taskTriggers.length > 0,
+      `seam=${taskSeam} loop=${taskLoop} task-triggers=[${taskTriggers}]`);
+    const reaching = new Set([...dispatchTriggers, ...bootstrapTriggers, ...landingTriggers,
+      ...(taskSeam && taskLoop ? taskTriggers : [])]);
+    const DORMANT: readonly string[] = [];
     const complement = CONTEXT_PACK_TRIGGERS.filter((trigger) => !reaching.has(trigger));
     pin(`${RULE_REACH} — the dormant list is exactly the triggers no seam passes`,
       JSON.stringify([...complement].sort()) === JSON.stringify([...DORMANT].sort()),
@@ -2517,7 +2515,6 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       }
     } catch { manifestRead = "manifest unreadable"; }
     const stranded = active.filter((pack) => !pack.triggers.some((trigger) => reaching.has(trigger)))
-      .filter((pack) => !pack.triggers.every((trigger) => (DORMANT as readonly string[]).includes(trigger)))
       .map((pack) => `${pack.id}[${pack.triggers}]`);
     if (manifestRead)
       pin(`${RULE_REACH} — PROBE: the Fleet manifest's active packs were read`, false, manifestRead);

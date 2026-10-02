@@ -7356,7 +7356,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   //
   // The bound Program-MAIN's subscription is armed HERE, immediately before that mint, because
   // this is the last instant at which the lane identity it binds to still exists.
-  armProgramMainLandWatch(s, path, branch);
+  armProgramMainLandWatch(s, path, branch, landed?.ts);
   if (beforeTeardown) await beforeTeardown();
   // …and a caller that passes NO callback still owes the same event. The ⏏ door tore a lane down
   // without ever minting a merge terminal, so every armed subscription on it — the implicit one
@@ -10331,12 +10331,16 @@ async function mintMergeEvents(target: number, cwd: string, branch: string, outc
 // lane-watch fallback is deliberately NOT honoured (a subscriber already owns a row here). The
 // EXACTLY-ONE argument per guard: server-narrativ-archiv.md#armprogrammainlandwatch
 const PROGRAM_MAIN_LAND_IDLE_SEC = 60; // createWatchForSlot's own default: deliver at rest
-function armProgramMainLandWatch(lane: Slot, cwd: string, branch: string): void {
+function armProgramMainLandWatch(lane: Slot, cwd: string, branch: string, landedAt?: number): void {
   if (!lane.programId) return;
   const resolved = clarificationReceiverFor(lane);
   if ("error" in resolved || resolved.basis !== "program-main") return;
   const { receiver } = resolved;
   if (receiver.slot === lane.id) return; // a session watching itself learns nothing
+  // The ledger tick may have spent the hold Watch while landLane awaited note settlement.
+  if (landedAt !== undefined && fleetEvents.some((e) => e.kind === "merge-terminal"
+    && e.receiverSlot === receiver.slot && e.receiverOpenedAt === receiver.openedAt
+    && e.subjectBranch === branch && e.payload.landed && e.payload.at === landedAt)) return;
   if (watches.some((w) => w.armed && watchKind(w) === "merge" && "target" in w
     && ((w.target === lane.id && w.targetCwd === cwd && w.targetBranch === branch)
       || ("land" in w && w.land && w.land.repo === repoCanon(lane.worktree!.repo)
@@ -23200,6 +23204,7 @@ async function tickWatches(): Promise<void> {
   try {
     const now = Date.now();
     let dirty = false;
+    let landRows: Record<string, unknown>[] | null = null;
     // Every hold whose row stopped being probeable ends here, with its totals, before the round
     // that could mint new ones. Writes trail lines only, never state.
     sweepComposerHolds();
@@ -23238,8 +23243,8 @@ async function tickWatches(): Promise<void> {
           w.targetCwd = lane.cwd;
           dirty = true;
         }
-        const { rows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
-        const row = rows.findLast((r) => r.disposition === "landed" && r.repo === selector.repo
+        landRows ??= (await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE)).rows;
+        const row = landRows.findLast((r) => r.disposition === "landed" && r.repo === selector.repo
           && (selector.task ? r.taskId === selector.task
             || (task?.status === "done" && task.note === `landed (${r.branch})` && task.slot !== null
               && tasks.find((t) => t.id === r.taskId)?.slot === task.slot)

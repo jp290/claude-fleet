@@ -143,11 +143,14 @@ ihre Quellen weiterhin selbst; keine Handlung liest cached readiness.
 Wire/Server/CLI/Docs/Probes: apply; Browser-UI: not-applicable.
 
 `./state.sh --brief` und `./register.sh --brief` lesen direkt diese Route, höchstens 40 Zeilen.
-Beide verwenden `FLEET_CTL_URL`, sonst `FLEET_SELF_URL`, sonst
-`FLEET_HOST`/`FLEET_PORT` (Default `127.0.0.1:8790`);
-die Owner-Credential kommt aus `FLEET_CTL_TOKEN`, sonst `FLEET_TOKEN` und bleibt im
-Interpreter, niemals im argv oder Output. Fehlende Credential, unerreichbare Quelle oder
-ein alter Server/ein anderes Schema ergeben `unknown`, ohne Vollfallback.
+Beide rufen `./ctl.sh get /api/operational-view --json` auf und parsen dessen Ausgabe.
+Die bestehende Controller-Auflösung findet den Haupt-Checkout auch aus einer Lane;
+`FLEET_CTL_HOME` überschreibt dieses Home. Host/Port kommen aus dessen `.env` (oder
+`FLEET_CTL_URL`), die Owner-Credential aus `FLEET_CTL_TOKEN`, `FLEET_TOKEN` oder
+`<home>/fleet.json`; Credentials bleiben außerhalb von argv und Output.
+Fehlende Credential, abgewiesener Lane-Zugriff, unerreichbare Quelle oder ein alter
+Server/ein anderes Schema ergeben `unknown`, ohne Vollfallback. Die unknown-Zeile nennt
+ausdrücklich `./state.sh --full` beziehungsweise `./register.sh --full`.
 Die Kurzformen nennen Schema, Scope, Revisionen, Frische, IDs, Gründe und ausgelassene Zeilen.
 `--full` ruft die volle Diagnose ausdrücklich auf; Standard, `--since` und `--archived`
 behalten ihre bisherige Bedeutung. Die Kurzsicht hat keine Vollausgabe-Bytezählung mehr:

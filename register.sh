@@ -37,21 +37,18 @@ case "${1:-}" in
 --full) shift ;;
 --brief)
   python3 - <<'PYBRIEF'
-import json, os, urllib.error, urllib.request
+import json, subprocess
 
 schema = 'fleet.operational-view/v1'
-base = os.environ.get('FLEET_CTL_URL') or os.environ.get('FLEET_SELF_URL') or ('http://' + os.environ.get('FLEET_HOST', '127.0.0.1') + ':' + os.environ.get('FLEET_PORT', '8790'))
-token = os.environ.get('FLEET_CTL_TOKEN') or os.environ.get('FLEET_TOKEN')
 lines = []
 reason = 'invalid-held-source'
 try:
-    if not token:
-        reason = 'owner-credential-missing'
-        raise ValueError('owner credential unavailable (FLEET_CTL_TOKEN/FLEET_TOKEN)')
-    request = urllib.request.Request(base.rstrip('/') + '/api/operational-view',
-                                     headers={'Authorization': 'Bearer ' + token})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        view = json.load(response)
+    result = subprocess.run(['./ctl.sh', 'get', '/api/operational-view', '--json'],
+                            capture_output=True, text=True, timeout=10)
+    if result.returncode:
+        reason = 'ctl-read-failed'
+        raise ValueError('held source unavailable')
+    view = json.loads(result.stdout)
     if view.get('schema') != schema or view.get('scope') != 'owner-metadata':
         reason = 'unsupported-schema'
         raise ValueError('held operational source unsupported (old server/schema)')
@@ -75,19 +72,18 @@ try:
     for row in rows:
         lines.append(f"row {row.get('id')} status={row.get('status')} program={row.get('programId')} "
                      f"held={row.get('held')} after={','.join(row.get('after', []))}")
-except urllib.error.HTTPError as error:
+except subprocess.TimeoutExpired:
     lines = []
-    reason = 'http-' + str(error.code)
+    reason = 'source-timeout'
 except OSError:
     lines = []
-    reason = 'source-unreachable'
+    reason = 'ctl-unavailable'
 except (ValueError, TypeError, KeyError, AttributeError):
     lines = []
 if not lines:
     # Only named reasons leave the interpreter; exceptions may contain URLs or credentials.
     lines = [schema + ' freshness=unknown',
-             'unknown source /api/operational-view reason=' + reason,
-             'full diagnosis: ./register.sh --full']
+             'unknown source /api/operational-view reason=' + reason + '; full diagnosis: ./register.sh --full']
 if len(lines) > 40:
     lines = lines[:39] + [f"omitted={len(lines) - 39} metadata lines; held detail: GET /api/operational-view"]
 print('\n'.join(lines))

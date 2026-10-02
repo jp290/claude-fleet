@@ -2867,36 +2867,58 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       pin("held CLI fixture precondition: Python interpreter executes", python.status === 0 && !!python.stdout.trim(), python.stderr);
       const log = join(dir, "calls");
       writeFileSync(join(dir, "python3"), `#!${python.stdout.trim()}
-import io, json, os, sys, urllib.request, urllib.error
-def note(s):
-    with open(os.environ['HELD_PROBE_LOG'], 'a') as f: f.write(s + '\\n')
-def urlopen(request, timeout):
-    note('http')
-    if 'PROBE_CREDENTIAL_MARKER' in ' '.join(sys.argv): raise RuntimeError('credential in argv')
-    if request.get_header('Authorization') != 'Bearer PROBE_CREDENTIAL_MARKER': raise RuntimeError('missing header')
-    if request.full_url != 'http://held.fixture/api/operational-view': raise RuntimeError('wrong source')
-    mode = os.environ['HELD_PROBE_MODE']
-    if mode == 'offline': raise OSError('PROBE_CREDENTIAL_MARKER private error')
-    if mode == 'old': return io.BytesIO(b'{"version":0}')
-    return io.BytesIO(os.environ['HELD_PROBE_VIEW'].encode())
-urllib.request.urlopen = urlopen
-note('python')
+import os, sys
+with open(os.environ['HELD_PROBE_LOG'], 'a') as f: f.write('python\\n')
 exec(compile(sys.stdin.read(), '<held-cli>', 'exec'))
 `);
       chmodSync(join(dir, "python3"), 0o755);
+      writeFileSync(join(dir, "ctl.sh"), read("ctl.sh"));
+      chmodSync(join(dir, "ctl.sh"), 0o755);
+      const home = join(dir, "owner-home");
+      mkdirSync(home);
+      writeFileSync(join(home, ".env"), "FLEET_HOST='held.fixture'\nFLEET_PORT=8765\n");
+      writeFileSync(join(home, "fleet.json"), JSON.stringify({token: "PROBE_CREDENTIAL_MARKER"}, null, 2));
+      writeFileSync(join(home, "server.ts"), "");
+      writeFileSync(join(dir, "git"), `#!/bin/sh
+printf 'git-home\\n' >> "$HELD_PROBE_LOG"
+[ "$2" = "$HELD_PROBE_DIR" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--path-format=absolute" ] && [ "$5" = "--git-common-dir" ] || exit 91
+printf '%s/.git\\n' "$HELD_PROBE_HOME"
+`);
+      chmodSync(join(dir, "git"), 0o755);
+      writeFileSync(join(dir, "bun"), `#!${process.execPath}
+import {appendFileSync} from "node:fs";
+import {pathToFileURL} from "node:url";
+const note = (s) => appendFileSync(process.env.HELD_PROBE_LOG, s + "\\n");
+note("bun");
+if (process.argv.join(" ").includes("PROBE_CREDENTIAL_MARKER")) throw new Error("credential in argv");
+globalThis.fetch = async (url, opts) => {
+  note("http");
+  if (url !== "http://held.fixture:8765/api/operational-view") throw new Error("wrong home/.env host");
+  if (opts.headers.authorization !== "Bearer PROBE_CREDENTIAL_MARKER") throw new Error("wrong home owner credential");
+  const mode = process.env.HELD_PROBE_MODE;
+  if (mode === "offline") throw new Error("PROBE_CREDENTIAL_MARKER private error");
+  if (mode === "denied") return new Response('{"error":"PROBE_CREDENTIAL_MARKER refused"}', {status:401});
+  return new Response(mode === "old" ? '{"version":0}' : process.env.HELD_PROBE_VIEW, {headers:{"content-type":"application/json"}});
+};
+await import(pathToFileURL(process.argv[2]).href);
+`);
+      chmodSync(join(dir, "bun"), 0o755);
       const fixture = {schema: "fleet.operational-view/v1", scope: "owner-metadata", bootEpoch: 1, computedAt: 2,
         revision: "queue:r1/bindings:b1/addresses:a1/git:g1/gateAudit:u1", observedRevision: "queue:r1/bindings:b1/addresses:a1/git:g1/gateAudit:u1",
         freshness: "fresh", pending: false, inflight: false, failed: null,
         sources: {queue: {revision: "r1", computedRevision: "r1", observedAt: 2, cadenceMs: 100, ageMs: 0, state: "fresh"}}, unknown: [],
         data: {rows: [{id: "row1", status: "queued", programId: "program1", held: false, after: []}],
           startable: [{id: "row1", by: "release"}], exceptions: [{kind: "audit", id: "row2", reason: "unknown", relatedIds: []}]} };
-      const env = {...process.env, PATH: `${dir}:${process.env.PATH}`, FLEET_CTL_URL: "http://held.fixture",
-        FLEET_CTL_TOKEN: "PROBE_CREDENTIAL_MARKER", FLEET_TOKEN: "", HELD_PROBE_LOG: log,
+      const env: NodeJS.ProcessEnv = {...process.env, PATH: `${dir}:${process.env.PATH}`, FLEET_CTL_HOME: home,
+        FLEET_SELF_URL: "http://wrong-pane-host",
+        HELD_PROBE_LOG: log, HELD_PROBE_DIR: realpathSync(dir), HELD_PROBE_HOME: home,
         HELD_PROBE_MODE: "fresh", HELD_PROBE_VIEW: JSON.stringify(fixture)};
-      const run = (script: string, flag: string, mode = "fresh", view: unknown = fixture, credential = true) => {
+      for (const key of ["FLEET_TOKEN", "FLEET_CTL_TOKEN", "FLEET_CTL_URL", "FLEET_SELF_TOKEN"]) delete env[key];
+      const run = (script: string, flag: string, mode = "fresh", view: unknown = fixture, credential = true, anchor = true) => {
         writeFileSync(log, "");
+        writeFileSync(join(home, "fleet.json"), JSON.stringify(credential ? {token: "PROBE_CREDENTIAL_MARKER"} : {}, null, 2));
         const result = spawnSync("/bin/sh", [script, flag], {encoding: "utf8", timeout: 10_000,
-          env: {...env, HELD_PROBE_MODE: mode, HELD_PROBE_VIEW: JSON.stringify(view), FLEET_CTL_TOKEN: credential ? env.FLEET_CTL_TOKEN : ""}});
+          env: {...env, HELD_PROBE_MODE: mode, HELD_PROBE_VIEW: JSON.stringify(view), FLEET_CTL_HOME: anchor ? home : ""}});
         return {...result, calls: readFileSync(log, "utf8").trim().split("\n").filter(Boolean)};
       };
       for (const [name, source] of [["state.sh", state], ["register.sh", register]]) {
@@ -2908,20 +2930,27 @@ exec(compile(sys.stdin.read(), '<held-cli>', 'exec'))
         writeFileSync(script, prefix + `\nprintf 'full\\n' >> "$HELD_PROBE_LOG"\nprintf '__FULL_PATH__\\n'\n`);
         chmodSync(script, 0o755);
         const fresh = run(script, "--brief");
-        pin(`${name} --brief reads the held schema/revision/IDs/reasons in one Python + one HTTP, never the full path`,
-          fresh.status === 0 && fresh.calls.join(",") === "python,http" && fresh.stdout.includes(fixture.revision)
+        pin(`${name} --brief without environment Owner token/URL executes ctl.sh get with home/.env and fleet.json, never the full path`,
+          fresh.status === 0 && fresh.calls.join(",") === "python,bun,http" && fresh.stdout.includes(fixture.revision)
           && fresh.stdout.includes("startable row1 by=release") && fresh.stdout.includes("boundary audit row2 reason=unknown")
           && !fresh.stdout.includes("__FULL_PATH__") && !/PROBE_CREDENTIAL_MARKER/.test(fresh.stdout + fresh.stderr),
           `${Buffer.byteLength(fresh.stdout)} CLI bytes; calls=${fresh.calls.join(",")}`);
-        for (const mode of ["offline", "old"])
+        for (const mode of ["offline", "old", "denied"])
           { const result = run(script, "--brief", mode);
             pin(`${name} --brief ${mode} source is concretely unknown without a full fallback or secret output`,
               result.status === 0 && result.stdout.includes("unknown source /api/operational-view")
-              && result.calls.join(",") === "python,http" && !result.stdout.includes("__FULL_PATH__")
+              && result.calls.join(",") === "python,bun,http" && !result.stdout.includes("__FULL_PATH__")
+              && result.stdout.includes(`full diagnosis: ./${name} --full`)
               && !/PROBE_CREDENTIAL_MARKER/.test(result.stdout + result.stderr)); }
+        const laneHome = run(script, "--brief", "fresh", fixture, true, false);
+        pin(`${name} --brief finds the same Owner home from the lane common git directory (no history read)`,
+          laneHome.status === 0 && laneHome.calls.join(",") === "python,git-home,bun,http"
+          && laneHome.stdout.includes(fixture.revision) && !/PROBE_CREDENTIAL_MARKER/.test(laneHome.stdout + laneHome.stderr),
+          `calls=${laneHome.calls.join(",")}; exit=${laneHome.status}`);
         const missing = run(script, "--brief", "fresh", fixture, false);
         pin(`${name} --brief missing Owner credential is unknown before any HTTP or full work`,
-          missing.status === 0 && missing.calls.join(",") === "python" && missing.stdout.includes("freshness=unknown"));
+          missing.status === 0 && missing.calls.join(",") === "python" && missing.stdout.includes("freshness=unknown")
+          && missing.stdout.includes(`unknown source /api/operational-view reason=ctl-read-failed; full diagnosis: ./${name} --full`));
         const stale = run(script, "--brief", "fresh", {...fixture, freshness: "unknown", data: null,
           unknown: [{id: "git", reason: "stale"}]});
         pin(`${name} --brief carries stale source ID/reason and claims no startable row`,

@@ -9645,6 +9645,29 @@ function refreshDeliveryBundles(): void {
     scheduleDeliveryBundle(key, bundle);
   }
 }
+// THE HELD BUNDLE, SHOWN (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Szenario 4): what
+// deliveryBundles holds for this occupant, on the owner poll. A report, never a gate — it reads the
+// map and changes nothing; timing, order and text stay flushDeliveryBundle's. dueAt null = held
+// without a deadline (a cold fleet event waits for the next send, coldDeliveryHeld). An entry queued
+// for an earlier occupant of a slot address is dropped at the flush, never typed here, so it does
+// not count. Omitted (undefined) when nothing is held.
+function heldDeliveriesView(s: Slot): { count: number; dueAt: number | null; paths: SendPath[] } | undefined {
+  if (!s.cwd || !deliveryBundles.size) return undefined;
+  let count = 0, dueAt = Infinity;
+  const paths = new Set<SendPath>();
+  for (const bundle of deliveryBundles.values()) {
+    if (!bundle.entries.length) continue;
+    const r = deliveryRecipient(bundle.address);
+    if (r?.id !== s.id || r.openedAt !== s.openedAt) continue;
+    const held = bundle.entries.filter((entry) => bundle.address.kind !== "slot"
+      || (entry.origin.slot === s.id && entry.origin.openedAt === s.openedAt));
+    if (!held.length) continue;
+    count += held.length;
+    dueAt = Math.min(dueAt, bundle.dueAt);
+    for (const entry of held) paths.add(entry.options.path);
+  }
+  return count ? { count, dueAt: Number.isFinite(dueAt) ? dueAt : null, paths: [...paths] } : undefined;
+}
 // One entry is no bundle: it is typed as itself, under its own path's header (flushDeliveryBundle).
 // Two or more share the `bundle` header, so each mark carries its entry's own sentence.
 // The marks themselves are written by src/delivery-format.ts, which the chat view reads them back with.
@@ -43350,6 +43373,7 @@ Bun.serve<WSData>({
           const inb = s.cwd ? inboundToday(s.id, pollNow) : null;
           const paneModel = s.cwd ? paneModelInfo.get(s.id) : undefined;
           const parked = parkedSendView(s);
+          const held = heldDeliveriesView(s);
           const modelSuperseded = s.cwd ? supersededModel(harnessOf(s.harness).id, s.model) : undefined;
           return {
             id: s.id, cwd: s.cwd, label: s.label, openedAt: s.openedAt,
@@ -43389,6 +43413,8 @@ Bun.serve<WSData>({
             ...(paneModel?.modelPushedAt ? { modelPushedAt: paneModel.modelPushedAt } : {}),
             // an owner /send waiting for an empty composer (THE PARKED SEND); omitted when none waits
             ...(parked ? { parkedSend: parked } : {}),
+            // Fleet deliveries a bundle holds for this occupant (heldDeliveriesView); omitted when none
+            ...(held ? { heldDeliveries: held } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
             // started with Remote Control (Slot.remote) — the next spawn's truth; omitted when off

@@ -1006,6 +1006,63 @@ export async function run(): Promise<void> {
         composerAfterEnter: blindResidue === null ? "absent" : `present, ${blindResidue.length} chars`,
         submittedTurn: blindTurns.includes("blackout-acceptance-probe") }));
   }
+  // --- THE HELD BUNDLE, SHOWN (server.ts#heldDeliveriesView; docs/messungen/2026-10-03-terminal-vs-
+  // chat-warten.md, Szenario 4 and fix 3). The same stand-in pi in slot 3, a server with a 30 s bundle
+  // window and a due auto: the slot row of GET /api/sessions names what the bundle holds, and the
+  // owner's send takes it along („[Zitat entfernt]“) — afterwards the field is gone. The turns
+  // ledger is the witness that the auto was held, then typed exactly once. A report, never a gate:
+  // nothing here may change the bundle's timing.
+  {
+    type Held = { count: number; dueAt: number | null; paths: string[] };
+    type HeldAudit = { event?: string; slot?: number; path?: string; dueAt?: number };
+    const statePath = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
+    const turnsOf = (): string => { try { return readFileSync(`${statePath}.turns`, "utf8"); } catch { return ""; } };
+    const countIn = (hay: string, needle: string): number => hay.split(needle).length - 1;
+    const heldOf = async (): Promise<{ present: boolean; held?: Held }> => {
+      const row = ((await (await get("/api/sessions")).json()) as { slots: { id: number; heldDeliveries?: Held }[] })
+        .slots.find((x) => x.id === 3);
+      return { present: !!row && "heldDeliveries" in row, held: row?.heldDeliveries };
+    };
+    const auditTail = (from: number): HeldAudit[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").slice(from)
+      .flatMap((l) => { try { return l ? [JSON.parse(l) as HeldAudit] : []; } catch { return []; } });
+    const autoText = `held-bundle-auto-${Date.now()}`, ownerText = `held-bundle-owner-${Date.now()}`;
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "30" });
+    let agent: string | null | undefined;
+    for (let i = 0; i < 80 && agent !== "alive"; i++) {
+      agent = (await modelRowOf(3))?.agent;
+      if (agent !== "alive") await Bun.sleep(50);
+    }
+    const before = await heldOf();
+    // its own check: a fixture that could not be built must fail as ITSELF, never as the field
+    check("held bundle fixture: slot 3 runs the stand-in pi with a turns ledger, and nothing is held before the auto",
+      statePath !== "" && agent === "alive" && !before.present,
+      JSON.stringify({ statePath: statePath !== "", agent, before }));
+    const auditFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").length - 1;
+    const scheduled = await post("/api/slots/3/autos", { text: autoText, inSec: 1, idleSec: 0 });
+    let queued: HeldAudit | undefined;
+    for (let i = 0; i < 200 && !queued; i++) {
+      queued = auditTail(auditFrom).find((r) => r.event === "delivery_bundle_queued" && r.slot === 3 && r.path === "auto");
+      if (!queued) await Bun.sleep(100);
+    }
+    const held = await heldOf();
+    // BREAKS IF: the slot row omits a held bundle, counts it wrong, or names another deadline than
+    // the one the bundle was queued with (the delivery_bundle_queued audit row's own dueAt).
+    check("held bundle: a due auto in a 30 s bundle stands on the slot row as heldDeliveries {count:1, dueAt, paths:[auto]}",
+      scheduled.ok && !!queued && typeof queued.dueAt === "number" && held.held?.count === 1
+        && held.held.dueAt === queued.dueAt && queued.dueAt - Date.now() > 15_000
+        && JSON.stringify(held.held.paths) === JSON.stringify(["auto"]) && countIn(turnsOf(), autoText) === 0,
+      JSON.stringify({ scheduled: scheduled.status, queued: queued ?? null, held, now: Date.now() }));
+    const sent = await post("/send", { slot: 3, text: ownerText, submit: true });
+    let after = await heldOf();
+    for (let i = 0; i < 100 && after.present; i++) { await Bun.sleep(50); after = await heldOf(); }
+    for (let i = 0; i < 100 && countIn(turnsOf(), autoText) === 0; i++) await Bun.sleep(50);
+    const turns = turnsOf();
+    // BREAKS IF: the field outlives the flush, or the owner's send stops taking the held auto along
+    check("held bundle: the owner's send takes the held auto along, and afterwards the slot row carries no heldDeliveries",
+      sent.ok && !after.present && countIn(turns, autoText) === 1 && countIn(turns, ownerText) === 1,
+      JSON.stringify({ sent: sent.status, after, auto: countIn(turns, autoText), owner: countIn(turns, ownerText) }));
+    await restartSrv();
+  }
   await post("/api/slots/3/kill", {});
   await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
   await post("/api/slots/2/open", { cwd: "~" });
@@ -2187,6 +2244,20 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     }
   } catch (error) {
     check("bundle chat DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // THE HELD BUNDLE IN THE CHAT VIEW (Szenario 4 of the 2026-10-03 measurement), same rig: the slot
+  // row carries heldDeliveries, the view ends in one quiet line and the composer says "Senden nimmt sie
+  // mit"; without the field both are gone. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runHeldDeliveriesDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`held bundle DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("held bundle DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
       error instanceof Error ? error.message : String(error));
   }
 
@@ -8203,6 +8274,182 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
         q4.sys.filter((x) => x.who === "esc").length === 1 && !q4.sys.find((x) => x.who === "esc")!.inBubble
         && /^interrupted/.test(q4.sys.find((x) => x.who === "esc")!.text) && !q4.own.some((m) => m.text.includes("Request interrupted"));
       await shot(`${width}-7-esc`);
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE HELD BUNDLE IN THE CHAT VIEW (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Szenario 4
+// and fix 3), measured in a real browser on the real client bundle: the fixture's /api/sessions row
+// carries heldDeliveries the way server.ts#heldDeliveriesView writes it, and every claim reads the
+// DOM — one quiet line at the end of the view, "N Fleet-Zustellungen gehalten bis HH:MM", the
+// composer's "Senden nimmt sie mit", and both gone once the row no longer carries the field.
+// Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
+export interface HeldDeliveriesDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runHeldDeliveriesDom(sourceRoot: string, artifacts?: string): Promise<HeldDeliveriesDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-held-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const at = (min: number) => new Date(Date.UTC(2026, 9, 3, 7, min)).toISOString();
+  const text = (role: "user" | "assistant", t: string, min: number) => ({ role, ts: at(min), blocks: [{ t: "text", text: t }] });
+  type Held = { count: number; dueAt: number | null; paths: string[] };
+  const fx = { entries: [] as Record<string, unknown>[], held: null as Held | null };
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("held DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const url = new URL(request.url), p = url.pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), chips: [], tasks: [],
+        slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude",
+          ...(fx.held ? { heldDeliveries: fx.held } : {}) }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+      if (p === "/api/slots/1/transcript") {
+        const after = Number(url.searchParams.get("after") ?? 0);
+        return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
+          source: "/fixture/orch.jsonl", ttlSec: 300, queued: [] });
+      }
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("held DOM probe: evaluate failed: " + expression.replace(/\s+/g, " ").slice(0, 120));
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // the due time as the owner's clock writes it, derived here without the client's formatter
+    const clock = (ms: number) => evaluate<string>(`(() => { const d = new Date(${ms}); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); })()`);
+    const READ = `(() => { const chat = document.querySelector('.pane .panechat'); const line = chat.querySelector(':scope > .mheld');
+      const s = line?.querySelector('summary'), r = line?.getBoundingClientRect(), meta = chat.querySelector('.mmeta'), hint = document.querySelector('#compheld');
+      const hr = hint?.getBoundingClientRect();
+      return { lines: chat.querySelectorAll('.mheld').length, who: line?.querySelector('.msyswho')?.textContent ?? null,
+        text: line?.querySelector('.msystext')?.textContent ?? null, title: s?.title ?? null, last: !!line && chat.lastElementChild === line,
+        lastKind: chat.lastElementChild?.className ?? null, inBubble: !!line?.closest('.msg'), h: s ? s.getBoundingClientRect().height : 0,
+        left: r?.left ?? 0, right: r?.right ?? 0, fs: line ? getComputedStyle(line).fontSize : null, color: line ? getComputedStyle(line).color : null,
+        metaFs: meta ? getComputedStyle(meta).fontSize : null, chatLeft: chat.getBoundingClientRect().left, chatRight: chat.getBoundingClientRect().right,
+        pageScroll: document.documentElement.scrollWidth - innerWidth,
+        faint: (() => { const t = document.createElement('span'); t.style.color = 'var(--chat-faint)'; chat.append(t); const c = getComputedStyle(t).color; t.remove(); return c; })(),
+        hint: hint && !hint.hidden && hint.offsetHeight > 0 ? hint.textContent : null,
+        hintInside: !!hr && hr.left >= 0 && hr.right <= innerWidth && hr.bottom <= innerHeight && hr.height > 0 && hr.height < 30,
+        assistants: chat.querySelectorAll('.msg.assistant').length }; })()`;
+    type Read = { lines: number; who: string | null; text: string | null; title: string | null; last: boolean; lastKind: string | null;
+      inBubble: boolean; h: number; left: number; right: number; fs: string | null; color: string | null; metaFs: string | null;
+      chatLeft: number; chatRight: number; pageScroll: number; faint: string; hint: string | null; hintInside: boolean; assistants: number };
+    const results: HeldDeliveriesDomResult[] = [];
+    let targetId = "";
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
+      fx.held = null;
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };` });
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
+      if (!booted) throw new Error("held DOM probe: the chat view did not show the fixture transcript: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(2500); // one owner poll (2 s) has run against a row without the field
+      const r0 = await evaluate<Read>(READ);
+      facts.none = { lines: r0.lines, hint: r0.hint };
+      claims["nothing held: no held line in the view and no sentence at the composer"] = r0.lines === 0 && r0.hint === null;
+
+      // --- 1. the bundle holds two deliveries, due in twenty minutes
+      const dueAt = Date.now() + 20 * 60_000;
+      fx.held = { count: 2, dueAt, paths: ["auto", "inbox-nudge"] };
+      const shown = await wait(`document.querySelector('.pane .panechat > .mheld')`);
+      await settle(200);
+      const r1 = await evaluate<Read>(READ);
+      const hhmm = await clock(dueAt);
+      facts.held = r1; facts.hhmm = hhmm;
+      claims["held: the view ends in ONE quiet Fleet line \"2 Fleet-Zustellungen gehalten bis HH:MM\", HH:MM the bundle's due time"] = shown
+        && r1.lines === 1 && r1.last && r1.who === "fleet" && r1.text === `2 Fleet-Zustellungen gehalten bis ${hhmm}`;
+      claims["held: the line is quiet — outside every bubble, the meta row's size and the faint ink, one line high, inside the chat column"] =
+        !r1.inBubble && r1.fs === r1.metaFs && r1.color === r1.faint && r1.h > 0 && r1.h < 30
+        && r1.left >= r1.chatLeft - 1 && r1.right <= r1.chatRight + 1 && r1.pageScroll <= 0;
+      claims["held: its tooltip names the held paths"] = (r1.title ?? "").includes("auto, inbox-nudge");
+      claims["held: the composer says \"Senden nimmt sie mit\", on one line inside the screen"] = r1.hint === "Senden nimmt sie mit" && r1.hintInside;
+      await shot(`${width}-1-gehalten`);
+
+      // --- 2. the agent writes on: what arrives stands above the held line
+      fx.entries.push(text("assistant", "Und die zweite Messung folgt gleich.", 52));
+      await wait(`document.querySelectorAll('.pane .panechat .msg.assistant').length >= 2`);
+      await settle(300);
+      const r2 = await evaluate<Read>(READ);
+      facts.grown = { last: r2.last, lastKind: r2.lastKind, lines: r2.lines };
+      claims["held: a newly arrived entry stands above it — the held line stays the last thing in the view"] = r2.assistants === 2 && r2.lines === 1 && r2.last;
+
+      // --- 3. one cold event, held without a deadline until the next send
+      fx.held = { count: 1, dueAt: null, paths: ["fleet-event"] };
+      const single = await wait(`document.querySelector('.pane .panechat > .mheld .msystext')?.textContent === '1 Fleet-Zustellung gehalten bis zum nächsten Senden'`);
+      claims["held: one delivery without a deadline reads \"1 Fleet-Zustellung gehalten bis zum nächsten Senden\""] = single;
+
+      // --- 4. the flush: the row no longer carries the field
+      fx.held = null;
+      const gone = await wait(`!document.querySelector('.pane .panechat .mheld') && document.querySelector('#compheld').hidden`);
+      await settle(200);
+      const r3 = await evaluate<Read>(READ);
+      facts.flushed = { lines: r3.lines, hint: r3.hint, lastKind: r3.lastKind };
+      claims["after the flush: the held line and the composer's sentence are gone"] = gone && r3.lines === 0 && r3.hint === null;
+      await shot(`${width}-2-nach-flush`);
       results.push({ width, height, claims, facts });
     }
     return results;

@@ -1,4 +1,4 @@
-import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, stacksOf, parkedSendLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, boxOrphan, adoptBox, type HarnessInfo } from "./client";
+import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, stacksOf, parkedSendLine, heldDeliveriesLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, boxOrphan, adoptBox, type HarnessInfo } from "./client";
 import { icon, harnessMark, MASCOT_MOTIONS, type IconName } from "./icons";
 import { sessionActive } from "./board";
 import { modelLabel } from "./modelname";
@@ -82,6 +82,7 @@ export function mountComposer(): void {
   setComposerSize(pane?.isChat ? "tall" : "bar");
   renderComposerOpts(false);
   renderParkHint();
+  renderHeldHint();
   renderTarget();
 }
 
@@ -164,6 +165,19 @@ export function renderParkHint(): void {
   const ps = fleet.find((x) => x.id === panes[focused]?.slot)?.parkedSend;
   hint.hidden = !ps;
   const text = ps ? `⏳ ${parkedSendLine(ps)}` : "";
+  if (hint.textContent !== text) hint.textContent = text;
+}
+
+// the focused session's held bundle (server.ts#heldDeliveriesView): an owner send takes it along
+// (server.ts#sendText flushes the bundle with the send), so the composer says so. In the chat view
+// the line above the box names what is held; under a terminal, which shows nothing of it, the hint
+// names it itself. A past session on screen addresses nothing — no hint.
+export function renderHeldHint(): void {
+  const hint = $("compheld");
+  const pane = panes[focused];
+  const hd = pane?.pastN == null ? fleet.find((x) => x.id === pane?.slot)?.heldDeliveries : undefined;
+  hint.hidden = !hd;
+  const text = !hd ? "" : pane?.isChat ? "Senden nimmt sie mit" : `${heldDeliveriesLine(hd)} · Senden nimmt sie mit`;
   if (hint.textContent !== text) hint.textContent = text;
 }
 

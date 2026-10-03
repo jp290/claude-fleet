@@ -1,6 +1,6 @@
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
 import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
-import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
+import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
 import { Terminal } from "@xterm/xterm";
@@ -322,6 +322,9 @@ export interface SlotInfo {
   // owner /sends parked behind an occupied composer (server.ts, THE PARKED SEND): how many wait,
   // the size of the draft that blocks them, since when. ABSENT = nothing waits.
   parkedSend?: { count: number; draftChars: number; since: number };
+  // Fleet deliveries a bundle holds for this session (server.ts#heldDeliveriesView): how many, when
+  // the bundle is due (null = until the next send), which paths. ABSENT = nothing held.
+  heldDeliveries?: HeldDeliveries;
   // Codex rollout discovery is lazy and can terminally refuse ambiguity/loss. This is a typed
   // claim about the server poll, not inferred from harness/session recency in the client.
   codexRecovery?: { state: "pending" | "bound" | "ambiguous" | "lost";
@@ -1964,6 +1967,37 @@ class Pane {
     this.pending = this.pending.map((p) => (p.key === undefined ? p
       : { ...p, leftAt: listed.has(p.key) ? undefined : p.leftAt ?? now }));
   }
+  // THE HELD BUNDLE (server.ts#heldDeliveriesView): Fleet holds deliveries for this session and types
+  // them when the bundle is due — until then neither the terminal nor this view showed anything for
+  // up to FLEET_DELIVERY_BUNDLE_SEC (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Szenario 4).
+  // One quiet line at the very end, below every "wartet" bubble, read from the 2 s owner poll and
+  // gone with the flush; the composer adds „[Zitat entfernt]“ (src/composer.ts#renderHeldHint).
+  // Not a message: it never counts as new and never moves a released view.
+  syncHeld(): void {
+    const hd = this.slot && this.pastN === null && this.view === "chat"
+      ? fleet.find((x) => x.id === this.slot)?.heldDeliveries : undefined;
+    let line = this.chatEl.querySelector<HTMLElement>(":scope > .mheld");
+    if (!hd) { line?.remove(); return; }
+    const text = heldDeliveriesLine(hd);
+    const title = `Fleet hält ${hd.count === 1 ? "diese Zustellung" : "diese Zustellungen"} gebündelt zurück und tippt `
+      + `sie ${hd.dueAt === null ? "mit dem nächsten Senden" : "zur genannten Zeit"} in die Session — `
+      + `Senden nimmt sie früher mit. Wege: ${hd.paths.join(", ")}`;
+    if (!line) {
+      line = document.createElement("details");
+      line.className = "msys mheld";
+      const sum = document.createElement("summary");
+      sum.append(el("span", "msyswho", "fleet"), el("span", "msystext", text));
+      line.appendChild(sum);
+    }
+    const sum = line.querySelector("summary")!;
+    const shown = sum.querySelector(".msystext")!;
+    if (shown.textContent !== text) shown.textContent = text;
+    if (sum.title !== title) sum.title = title;
+    if (line.parentNode !== this.chatEl || line.nextSibling !== null) {
+      this.chatEl.appendChild(line);
+      if (this.chatStuck) this.followEnd(false);
+    }
+  }
   // true = the entry retired a bubble this board put up: it is the same send, now DURCH
   private settlePending(text: string): boolean {
     const hit = this.pending.find((p) => pendingSettledBy(p.text, text));
@@ -2082,6 +2116,8 @@ class Pane {
           this.chatGrew(this.chatEl.childElementCount - had, first);
         }
       }
+      // the held line stays the last thing in the view, below what this read appended
+      if (past === null) this.syncHeld();
       // codex / pi: the file's own newest request record (server/conversation-read.ts) — codex its
       // newest token_usage_record, pi its newest assistant message's request start — and the
       // provider that sets the TTL. Read on every poll, not only when new entries arrived.
@@ -5962,6 +5998,13 @@ function laneCountChip(g: Stack, open: boolean): HTMLElement {
 // that draws the chip and the sidebar's render key, which must be keyed on what is painted and not
 // on the raw byte count (the rule `behind` and the ctx chip above both document).
 // ONE sentence for a parked send, shared by the slot chip's tooltip and the pane view's hint
+export type HeldDeliveries = { count: number; dueAt: number | null; paths: string[] };
+// THE HELD BUNDLE in owner words (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Szenario 4):
+// the chat view's quiet line and the composer's terminal-view hint say the same thing. HH:MM on the
+// viewer's clock — dueAt is an instant, not a server-clock age.
+export const heldDeliveriesLine = (hd: HeldDeliveries): string =>
+  `${hd.count} Fleet-Zustellung${hd.count === 1 ? "" : "en"} gehalten ${hd.dueAt === null ? "bis zum nächsten Senden"
+    : `bis ${new Date(hd.dueAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}`}`;
 export const parkedSendLine = (ps: { count: number; draftChars: number }): string =>
   `${ps.count} message${ps.count === 1 ? "" : "s"} wait${ps.count === 1 ? "s" : ""} for an empty input — `
   + `a draft of ${ps.draftChars} char${ps.draftChars === 1 ? "" : "s"} holds the composer; send or clear it`;
@@ -6446,6 +6489,8 @@ export async function refresh() {
     chipCmds = data.chips;
     renderChips(data.chips);
     renderParkHint();
+    renderHeldHint();
+    for (const p of panes) p.syncHeld();
     // hot also for a PROPOSED done-criterion (2026-08-05): a clarify lane that filed its
     // proposal sits parked on the owner — before this, nothing on the board said so and the
     // lane waited invisibly until the owner happened to reselect the task

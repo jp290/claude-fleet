@@ -769,6 +769,9 @@
   /* an owner send parked behind a draft (src/composer.ts#renderParkHint): the chat view's quiet ink */
   #comppark { padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute); }
   #comppark[hidden] { display: none; }
+  /* a held Fleet bundle (src/composer.ts#renderHeldHint): the same quiet ink as the parked line */
+  #compheld { padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute); }
+  #compheld[hidden] { display: none; }
   #compspace { flex: 1; }
   #mobmore { display: none; }
   #input { flex: 1; min-height: 24px; max-height: 140px; resize: none; padding: 4px 0; border: 0;
@@ -3817,6 +3820,7 @@
            twice — src/composer.ts#mountComposer moves this node. -->
       <div id="comp" class="bar">
         <div id="comppark" hidden></div>
+        <div id="compheld" hidden></div>
         <div id="compsurface">
           <div id="compfiles"></div>
           <textarea id="input" rows="1" placeholder="Prompt for the selected session…"

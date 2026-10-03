@@ -827,6 +827,12 @@ export async function run(): Promise<void> {
     const o1Open = o1 ? await post(`/api/slots/${o1}/open`, { cwd: REPO, label: "attention-chain-o1" }) : null;
     const o2 = await freeSlot();
     const o2Open = o2 ? await post(`/api/slots/${o2}/open`, { cwd: REPO, label: "attention-chain-o2" }) : null;
+    const unboundSlot = await freeSlot();
+    const unboundOpen = unboundSlot ? await post(`/api/slots/${unboundSlot}/open`, { cwd: REPO, label: "attention-chain-unbound" }) : null;
+    const authLaneOpen = await post("/api/lanes", { repo: REPO });
+    const authLane = await authLaneOpen.json() as { slot?: number };
+    const unboundToken = unboundSlot ? await paneEnv(`s${unboundSlot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const authLaneToken = authLane.slot ? await paneEnv(`s${authLane.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const eTok = eSlot ? await paneEnv(`s${eSlot}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const oTok = o1 ? await paneEnv(`s${o1}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const foreignOrch = (await sessions()).slots.filter((x) => x.cwd
@@ -852,8 +858,10 @@ export async function run(): Promise<void> {
     const orchBefore = await liveOrch();
     check("attention chain fixture: a bound MAIN with a credential, two planted 🎛 slots, and no other Orchestratorin in the instance",
       !!eOpen?.ok && !!o1Open?.ok && !!o2Open?.ok && /^[0-9a-f]{32}$/.test(eTok)
-        && /^[0-9a-f]{32}$/.test(oTok) && new Set([eTok, oTok, laneTok]).size === 3
-        && new Set([eSlot, o1, o2]).size === 3 && orchBefore.length === 2
+        && !!unboundOpen?.ok && authLaneOpen.ok && !!authLane.slot
+        && [oTok, unboundToken, authLaneToken].every((t) => /^[0-9a-f]{32}$/.test(t))
+        && new Set([eTok, oTok, unboundToken, authLaneToken]).size === 4
+        && new Set([eSlot, o1, o2, unboundSlot, authLane.slot]).size === 5 && orchBefore.length === 2
         && orchBefore.includes(o1) && orchBefore.includes(o2) && foreignOrch.length === 0,
       JSON.stringify({ eSlot, o1, o2, open: [eOpen?.status, o1Open?.status, o2Open?.status], orchBefore, foreignOrch }));
     const hintSends = () => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
@@ -933,7 +941,7 @@ export async function run(): Promise<void> {
     const answerState = () => JSON.stringify({ rows: readRows(),
       inbox: (JSON.parse(readFileSync(statePath, "utf8")) as { programs: { id: string; inbox?: unknown }[] })
         .programs.find((p) => p.id === programE)?.inbox });
-    const authenticated = await Promise.all([eTok, oTok, laneTok, tokB].map((token) =>
+    const authenticated = await Promise.all([eTok, oTok, authLaneToken, unboundToken].map((token) =>
       fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": token } })));
     const originalOrchestrator = await authenticated[1]!.json() as { slot?: number; position?: unknown };
     const originalOpenedAt = (await sessions()).slots.find((s) => s.id === o1)?.openedAt;
@@ -941,9 +949,9 @@ export async function run(): Promise<void> {
       authenticated.every((res) => res.status === 200), authenticated.map((res) => res.status).join(" "));
     for (const [who, token, id, status] of [
       ["non-Orchestratorin", eTok, orchRow?.id, 401],
-      ["unbound session", tokB, orchRow?.id, 401],
+      ["unbound session", unboundToken, orchRow?.id, 401],
       ["Orchestratorin on owner stage", oTok, chainRow?.id, 403],
-      ["lane", laneTok, orchRow?.id, 401],
+      ["lane", authLaneToken, orchRow?.id, 401],
     ] as const) {
       const before = answerState();
       const refused = await scopedAnswer(token, id, "Unauthorized answer must change nothing.");
@@ -1027,6 +1035,8 @@ export async function run(): Promise<void> {
       await post(`/api/attention/${id}/refuse`, { reason: why });
     await post(`/api/programs/${programE}/complete`, { force: true });
     if (eSlot) await post(`/api/slots/${eSlot}/kill`, {});
+    if (unboundSlot) await post(`/api/slots/${unboundSlot}/kill`, {});
+    if (authLane.slot) await post(`/api/slots/${authLane.slot}/kill`, {});
   }
 
   // Pre-provenance rows are a distinct historical shape: absence means UNKNOWN and must stay

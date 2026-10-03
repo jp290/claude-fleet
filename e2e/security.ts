@@ -663,11 +663,6 @@ const taskSurface = (fix: string): Probe[] => [
   // remote code execution through the back door, so it belongs on this matrix more than most
   { path: `/api/tasks/${fix}/brief`, method: "POST", body: { text: "probe" }, owner: 409 },
   { path: `/api/tasks/${fix}/dispatch`, method: "POST", body: {}, owner: 409 },
-  // ↻ refine spawns a repo-reading agent and refine-confirm mints task rows — both answer the
-  // owner a side-effect-free 409 on this DONE fixture (wrong status / no proposal), so both can
-  // carry the positive control while every other principal must be denied outright
-  { path: `/api/tasks/${fix}/refine`, method: "POST", body: {}, owner: 409 },
-  { path: `/api/tasks/${fix}/refine-confirm`, method: "POST", body: {}, owner: 409 },
   // W2 · the CONFIRM of a row's file surface — the only writer of `filesOrigin:"confirmed"` that a
   // request can reach, and therefore the door a scoped credential must never open (its lane-facing
   // twin, /api/self/tasks/:id/files-proposal, deliberately cannot promote). On this DONE fixture

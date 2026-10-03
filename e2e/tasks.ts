@@ -187,7 +187,7 @@ export async function run(ctx: Ctx): Promise<void> {
       const actual = [cut("// --- held operational view:", "// --- end held operational view ---"),
         fn("buildStateSnapshot"), fn("memoryAuditState"), fn("resolveMessageAddress"), fn("escalateMessage"),
         cut("const taskBaseTreeCache =", "// WHY THE SURFACE IS STORED NOW"),
-        cut("function taskSurfaceOf(", "// The acceptance that stands"), fn("landWaveProjectionNow"),
+        fn("taskSurfaceOf"), fn("taskView"), fn("landWaveProjectionNow"),
         cut("const startPlanSurfaceOf =", "// GET /api/start-plan's object"), fn("bundleRowsNow"), fn("startPlanNow"), fn("waitsOf"),
         cut("const programReleasePolicy =", "// …whether the TICK"),
         cut("const programMainLive =", "let dispatchBusy ="),
@@ -7125,7 +7125,7 @@ export async function run(ctx: Ctx): Promise<void> {
       // The SAME seam on a CLAUDE lane (2026-09-15): claude's trust dialog keeps the TUI alive on a
       // selector whose preselected "No, exit" an Enter answers. The default adapter declares that one
       // block and no ready marker, so the dialog refuses by name and every other screen delivers as
-      // before. The worker-tier half of the same block is (jt), beside ↻ refine.
+      // before. The worker-tier half of the same block is (jt), using Summary.
       const cTrust = await screenLane(CLAUDE_TRUST_SCREEN, "claude");
       const cTrustRow = await rowAfter(cTrust.id, (r) => r?.status === "queued");
       check("a claude pane on its TRUST DIALOG never receives the brief — requeued with the screen named",
@@ -7884,8 +7884,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${iT.task.id}/delete`, {});
   }
 
-  // --- Task.files + Task.cluster: one deterministic projector, three surface states. This sits
-  // beside refine because refine-confirm is the stronger origin whose precedence it must preserve.
+  // --- Task.files + Task.cluster: one deterministic projector, three surface states.
   {
     // THE BRIEF COMPILER IS TURNED OFF FIRST, and that is a PRECONDITION of this block, not tidiness.
     // §(h) left this server armed (restartSrv(hEnv): FLEET_BRIEF_MS=1000 plus the enhancer stand-in),
@@ -8713,7 +8712,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(w2) the parked proposal reaches the 2 s poll whole — the board must compare it against the surface below it",
       (await wDigest(wA))?.filesProposal?.files.join(" ") === `${WFILE} ${WGHOST}`,
       JSON.stringify((await wDigest(wA))?.filesProposal ?? null));
-    // one standing proposal per row: the second overwrites the first, exactly as a second refine run does
+    // one standing proposal per row: the second overwrites the first
     const wP2 = await wPropose(wA, [WFILE]);
     check("(w2) a second proposal REPLACES the first (one standing proposal per row) and reports a clean tree as []",
       wP2.ok && (await wFull(wA))?.filesProposal?.files.join(" ") === WFILE

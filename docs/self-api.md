@@ -1408,7 +1408,7 @@ unbekannte Klassen oder ungültige Rollen werden als benannte Kartenlücken abge
 **Optionale Flächen-VORSCHLAG-Liste `files`:** der Body darf zusätzlich eine explizite
 `files: ["pfad", …]` tragen. Sie wird AUSSCHLIESSLICH nach `Task.filesProposal` geschrieben — nie
 nach `files`, nie nach `filesOrigin`. Das ist dieselbe propose/promote-Grenze wie bei `criterion`
-und `refine`, und aus demselben Grund: die MAIN, die die Zeile anlegt, ist die Produzentin, und die
+und aus demselben Grund: die MAIN, die die Zeile anlegt, ist die Produzentin, und die
 Produzentin bestätigt nicht die Fläche, nach der ihre eigene Arbeit später gebündelt wird.
 Bestätigen kann weiterhin nur der Owner an seiner BESTEHENDEN Tür `POST /api/tasks/:id/files` —
 mit leerem Body konsumiert sie genau diesen geparkten Vorschlag. Keine neue Route, kein
@@ -2039,7 +2039,7 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 **Keine lane-only Route** (409 `a lane may not sharpen a brief — …`) — und dieser Ausschluss ist der
 lauteste der Familie, nicht der leiseste. Zwei bestehende Doktrinen zeigen in dieselbe Richtung: der
 Brief IST die Arbeitsanweisung, auf die eine Lane gegründet wurde, also schriebe eine Lane an der
-eigenen Zeile **ihren eigenen Auftrag um** — genau das, wogegen `criterion` und `refine` propose von
+eigenen Zeile **ihren eigenen Auftrag um** — genau das, wogegen `criterion` propose von
 promote trennen („the producer must not be the one who rewrites the work order it was measured
 against"); und an einer FREMDEN Zeile ist es Lane-schreibt-für-Lane, die Kopplung, die
 `/api/self/watch` ablehnt, weil nur der Owner sie sichtbar machen kann. Der `⚙ steward` ist **nicht**
@@ -2133,7 +2133,7 @@ role"-Grenze liegt darum auf dem BESTÄTIGEN, und das ist eine Owner-Route hinte
 existiert nicht.
 
 - **Ein einziger stehender Vorschlag pro Zeile.** Ein zweiter Aufruf überschreibt den ersten,
-  genau wie ein zweiter `↻ refine`-Lauf seinen geparkten Vorschlag überschreibt.
+  Ein zweiter Vorschlag ersetzt den vorherigen.
 - **`by` kommt vom Server, nie aus dem Body**: eine Lane wird nach ihrer Branch benannt, jede
   andere Session nach ihrem Label. Eine Provenienz, die der Aufrufer diktieren kann, ist keine.
 - **`unknownPaths` MELDET, es gated nicht.** Drei Zustände, und sie dürfen nie kollabieren:
@@ -2164,7 +2164,7 @@ Die Owner-Seite (`POST /api/tasks/:id/files`, Owner-Token) schreibt `{files, fil
 "confirmed"}` auf dieselbe Zeile: mit leerem Body bestätigt sie den stehenden Vorschlag, mit
 `{"files":[…]}` die eigene Liste des Owners, mit `{"accept":false}` verwirft sie den Vorschlag und
 lässt die Fläche unberührt. Warum das überhaupt eine Tür braucht: `filesOrigin:"confirmed"` hatte
-bis dahin genau EINEN Schreiber (den refine-promote, der nur NEUE Kinder so stempeln kann) —
+historisch nur einen Schreiber beim Erzeugen neuer Zeilen —
 gemessen am 2026-09-07 trugen 0 von 48 offenen `auftrag`-Zeilen `confirmed`, und der
 Landewellen-Sensor lieferte darum 44 Wellen der Größe 1, jede mit dem Grund
 `flaeche-nur-abgeleitet` und 0 s Ersparnis. Eine Fläche wird NIE automatisch von `derived` nach

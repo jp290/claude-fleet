@@ -30,7 +30,6 @@ import {
 import { makeSimulatorHygiene, simReapArming } from "./simulator-hygiene";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
-import { buildRefinePrompt, buildBriefReviewPrompt } from "./refine-prompt";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor,
   type LocalProof, type LocalProofStep } from "./verify-proportion";
 import { moduleListFrom } from "./suite-modules";
@@ -38,8 +37,6 @@ import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRolePointers, rulebookBody,
   type RulebookFragment,
 } from "./rulebook";
-import { validateRefineProposal, briefReviewArm, briefReviewEligible, isBriefReviewKind,
-  type RefineValidation } from "./refine-validate";
 import { planContext, planProgramContext, programContextPacksFrom, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
   validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
   PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
@@ -131,7 +128,7 @@ import {
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold, loadTaskHoldUntil, TASK_HOLD_GRUND_MAX,
-  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview, loadCandidateReview,
+  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume,
   loadStallSensor, type StallSensorState,
   type TaskDisposition, loadTaskDisposition, TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX,
   type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
@@ -151,8 +148,7 @@ import {
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskHoldUntil, type TaskCard, type TaskCriterion, type TaskFilesProposal,
-  type RefineChild, type RefineProposal,
-  type TaskRefine, type TaskBriefReview, type BriefReviewFinding, type LaneForm, type LaneRef, type LaneReviewCandidate, type LanePreview, type CandidateReview, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
+  type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
@@ -1695,8 +1691,6 @@ const WORKER_MODELS = {
   merge: fleetWorkerModel("merge", "MERGE", "mergeExec"),
   repair: fleetWorkerModel("repair", "REPAIR", "repairExec"),
   cleanReview: fleetWorkerModel("cleanReview", "CLEAN_REVIEW", "cleanReviewExec", "SUMMARY", "CLEANREVIEW"),
-  refine: fleetWorkerModel("refine", "REFINE", "refineExec", "REFINE"),
-  briefReview: fleetWorkerModel("briefReview", "BRIEF_REVIEW", "briefReviewExec", "REFINE", "REFINE"),
   card: fleetWorkerModel("card", "CARD", "cardExec", "CARD"),
 } satisfies Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>;
 
@@ -2207,9 +2201,6 @@ function criterionPartsFromBody(v: unknown): { ok: true; parts: TaskCriterionPar
 // this sentence into the next dispatcher's reading, and a longer one would be truncated there
 // anyway — a limit that silently cuts is worse than one that refuses.
 const MAX_WAVE_SPLIT_REASON = 200;
-const MAX_REFINE_CHILDREN = 4; // the split cap lives HERE, not in the model's judgment: an answer
-// over it is a worker that ignored its contract, and that fails closed like any other (runRefineJob)
-const MAX_REFINE_FIELD = 2000; // doneCriterion/verify/reason are sentences, not documents
 const MAX_REFINE_FILES = 20;
 // A surface's range list is bounded like every other list read off disk. A row that genuinely
 // names more than this many distinct symbols has stopped being one change, and the wave rule this
@@ -4316,8 +4307,6 @@ function reviewParkOf(taskId: string): { path: string; candidate: LaneReviewCand
 function dropShelved(path: string, why: string): void {
   const candidate = shelved[path]?.review;
   delete shelved[path];
-  dropLanePreviewsAt(path, why);
-  delete candidateReviews[path]; // no board row is left to show them on, and no tree to be stale against
   delete worktreeNotes[path]; // the tree is gone and its notepad goes with it — no orphan entry
   if (!candidate) return;
   for (const t of tasks) {
@@ -4328,25 +4317,7 @@ function dropShelved(path: string, why: string): void {
   }
 }
 
-// ===== THE REVIEW PREVIEW (server/types.ts#LanePreview, lane-preview.sh) =====================
-// The owner's two decisions on row 6ec36333 (2026-09-24) are the budget and the clock: at most
-// LANE_PREVIEW_MAX live previews fleet-wide, exactly one per candidate, each ended after
-// LANE_PREVIEW_TTL_MS — env knobs, so moving them is a restart, not a code change. Reachability is
-// the board's own: a preview binds exactly HOST, never a wildcard. Ports come from their own band
-// (the note under e2e-isolated.sh's PORT BAND TABLE), bind-probed here, never 8790/8899.
-const lanePreviewKnob = (raw: string | undefined, dflt: number, lo: number, hi: number): number => {
-  const n = raw === undefined || raw === "" ? dflt : Number(raw);
-  return Number.isInteger(n) && n >= lo && n <= hi ? n : dflt;
-};
-const LANE_PREVIEW_MAX = lanePreviewKnob(process.env.FLEET_LANE_PREVIEW_MAX, 2, 1, 8);
-const LANE_PREVIEW_TTL_MS = lanePreviewKnob(process.env.FLEET_LANE_PREVIEW_TTL_MS, 30 * 60_000, 1_000, 24 * 3_600_000);
-const LANE_PREVIEW_PORT_BASE = 25400;
-const LANE_PREVIEW_PORT_SPAN = 20;
-// the script's own backstop fires this long AFTER the server's timer, so the timer is the normal end
-const LANE_PREVIEW_REAP_GRACE_SEC = 30;
-const LANE_PREVIEW_START_TIMEOUT_MS = 180_000;
-const LANE_PREVIEW_STOP_TIMEOUT_MS = 30_000;
-const LANE_PREVIEW_SCRIPT = `${import.meta.dir}/lane-preview.sh`;
+let retiredCandidateState: { lanePreviews?: unknown; candidateReviews?: unknown } = {};
 const testinstanzBusy = new Set<number>();
 
 async function testinstanzCommand(cwd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string; err: string }> {
@@ -4406,287 +4377,6 @@ function testinstanzList(out: string): Array<{ worktree: string; port: number; u
     return { worktree, port, url, expiresAt: expiryByInstance.get(`${worktree}\0${port}`) ?? null, state };
   });
 }
-// candidate id -> its ONE record (start, stop and expiry evidence in one)
-let lanePreviews: Record<string, LanePreview> = {};
-const lanePreviewTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const lanePreviewLive = (p: LanePreview): boolean => p.state === "starting" || p.state === "running";
-const lanePreviewUrl = (p: LanePreview): string =>
-  `http://${p.host.includes(":") ? `[${p.host}]` : p.host}:${p.port}/?token=${p.token}`;
-
-// THE SCRIPT'S ENVIRONMENT IS AN ALLOWLIST, not this server's env minus a list: whatever credential
-// the live server was started with (owner token, API keys, FLEET_* of every kind) is simply never
-// named. HOME is the preview's own, so nothing under the owner's home is the instance's to read;
-// the bun cache is the one thing of the real HOME it is pointed at, so an install stays offline.
-function lanePreviewEnv(dir: string): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const k of ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMUX_TMPDIR", "USER", "LOGNAME", "SHELL", "TERM"]) {
-    const v = process.env[k];
-    if (v) env[k] = v;
-  }
-  env.HOME = `${dir}/home`;
-  env.BUN_INSTALL_CACHE_DIR = process.env.BUN_INSTALL_CACHE_DIR ?? `${process.env.BUN_INSTALL ?? `${HOME}/.bun`}/install/cache`;
-  return env;
-}
-
-async function runLanePreviewScript(args: string[], dir: string, stdin: string | null, timeoutMs: number):
-  Promise<{ code: number; out: string; err: string }> {
-  const p = Bun.spawn(["sh", LANE_PREVIEW_SCRIPT, ...args],
-    { env: lanePreviewEnv(dir), stdin: stdin === null ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe" });
-  if (stdin !== null && p.stdin) { p.stdin.write(stdin); await p.stdin.end(); }
-  const timer = setTimeout(() => p.kill(), timeoutMs);
-  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
-  clearTimeout(timer);
-  return { code, out: out.trim(), err: err.trim() };
-}
-
-// a port is free when THIS process can bind it on HOST right now; the instance binds it seconds later
-function lanePreviewPortFree(port: number): boolean {
-  try {
-    Bun.serve({ hostname: HOST, port, fetch: () => new Response(null) }).stop(true);
-    return true;
-  } catch {
-    return false; // in use, or not ours to bind — either way not a port to hand out
-  }
-}
-
-function armLanePreviewExpiry(p: LanePreview): void {
-  const prior = lanePreviewTimers.get(p.candidate);
-  if (prior) clearTimeout(prior);
-  lanePreviewTimers.set(p.candidate, setTimeout(() => {
-    lanePreviewTimers.delete(p.candidate);
-    endLanePreview(p.candidate, "expired", LANE_PREVIEW_TTL_MS >= 60_000
-      ? `its ${Math.round(LANE_PREVIEW_TTL_MS / 60_000)}-minute deadline passed`
-      : `its ${Math.round(LANE_PREVIEW_TTL_MS / 1000)}-second deadline passed`)
-      .catch((e: unknown) => logError("lane-preview-expiry", e));
-  }, Math.max(0, p.expiresAt - Date.now())));
-}
-
-type LanePreviewResult = { ok: true; preview: LanePreview } | { ok: false; code: number; error: string };
-
-// THE START. Every refusal is named and every one is decided BEFORE the first await: the record is
-// claimed as `starting` synchronously, so a second start of the same candidate — or one past the
-// budget — that arrives while this one installs and boots is refused, never raced.
-async function startLanePreview(candidateId: string): Promise<LanePreviewResult> {
-  const no = (code: number, error: string) => ({ ok: false as const, code, error });
-  let path: string | null = null;
-  let c: LaneReviewCandidate | null = null;
-  for (const [p, sh] of Object.entries(shelved)) if (sh.review?.id === candidateId) { path = p; c = sh.review; }
-  if (path === null || c === null) return no(404, `no parked review candidate ${candidateId}`);
-  const prior = lanePreviews[c.id];
-  if (prior && lanePreviewLive(prior))
-    return no(409, `candidate ${c.id} already has preview ${prior.id} (${prior.state}) on port ${prior.port} until ${new Date(prior.expiresAt).toISOString()} — one preview per candidate; stop it first`);
-  const live = Object.values(lanePreviews).filter(lanePreviewLive);
-  if (live.length >= LANE_PREVIEW_MAX)
-    return no(409, `preview budget spent: ${live.length} of ${LANE_PREVIEW_MAX} running fleet-wide (candidates ${live.map((p) => p.candidate).join(", ")}) — stop one or wait for its deadline`);
-  if (HOST === "0.0.0.0" || HOST === "::" || HOST === "")
-    return no(409, `this server binds the wildcard host '${HOST}' — a preview binds one named address only, so none is started`);
-  if (!existsSync(path)) return no(409, `the candidate's worktree ${path} is gone — nothing to preview`);
-  const taken = new Set(live.map((p) => p.port));
-  let port = 0;
-  for (let i = 0; i < LANE_PREVIEW_PORT_SPAN && !port; i++) {
-    const cand = LANE_PREVIEW_PORT_BASE + i;
-    if (!taken.has(cand) && cand !== PORT && cand !== 8790 && cand !== 8899 && lanePreviewPortFree(cand)) port = cand;
-  }
-  if (!port) return no(409, `no free port in the preview band ${LANE_PREVIEW_PORT_BASE}–${LANE_PREVIEW_PORT_BASE + LANE_PREVIEW_PORT_SPAN - 1}`);
-  const id = randomBytes(6).toString("hex");
-  const now = Date.now();
-  const rec: LanePreview = { id, candidate: c.id, path, branch: c.branch, head: c.head, host: HOST, port,
-    sock: `fleetpv${id}`, dir: `${tmpdir()}/fleet-lane-preview-${id}`, token: randomBytes(24).toString("hex"),
-    startedAt: now, expiresAt: now + LANE_PREVIEW_TTL_MS, state: "starting", endedAt: null, why: null };
-  lanePreviews[c.id] = rec;
-  audit("lane_preview", undefined, `start candidate:${c.id} preview:${id} port:${port}`);
-  const reapSec = String(Math.ceil(LANE_PREVIEW_TTL_MS / 1000) + LANE_PREVIEW_REAP_GRACE_SEC);
-  const r = await runLanePreviewScript(["start", path, c.head, rec.dir, HOST, String(port), rec.sock, reapSec],
-    rec.dir, `${rec.token}\n`, LANE_PREVIEW_START_TIMEOUT_MS);
-  if (r.code !== 0) {
-    // the script cleans up after its own refusals; a start killed on the timeout did not get to
-    await runLanePreviewScript(["stop", rec.dir, rec.sock], rec.dir, null, LANE_PREVIEW_STOP_TIMEOUT_MS);
-    const why = (r.err.split("\n").pop() ?? "").slice(0, 400) || `lane-preview.sh exited ${r.code}`;
-    Object.assign(rec, { state: "failed", endedAt: Date.now(), why: `start failed: ${why}` });
-    audit("lane_preview", undefined, `failed candidate:${c.id} preview:${id}`);
-    await saveStateNow();
-    return no(502, rec.why ?? why);
-  }
-  rec.state = "running";
-  // a worktree removed during the start left no board row to show or stop this preview on
-  if (!existsSync(path)) {
-    await endLanePreview(c.id, "stopped", "its worktree left the board while it was starting");
-    return no(409, `the candidate's worktree ${path} went away while preview ${id} started — it was stopped`);
-  }
-  armLanePreviewExpiry(rec);
-  await saveStateNow();
-  return { ok: true, preview: rec };
-}
-
-// THE ONE END of a live preview — the owner's stop, the deadline, a boot past the deadline, a
-// candidate whose worktree went away. The state is written BEFORE the script runs, so a second end
-// arriving meanwhile finds nothing live and returns; a stop script that failed says so in `why`
-// (the detached backstop in lane-preview.sh still ends the instance at its deadline).
-async function endLanePreview(candidateId: string, state: "stopped" | "expired", why: string): Promise<LanePreview | null> {
-  const rec = lanePreviews[candidateId];
-  if (!rec || rec.state !== "running") return rec ?? null;
-  const timer = lanePreviewTimers.get(candidateId);
-  if (timer) { clearTimeout(timer); lanePreviewTimers.delete(candidateId); }
-  Object.assign(rec, { state, endedAt: Date.now(), why });
-  const r = await runLanePreviewScript(["stop", rec.dir, rec.sock], rec.dir, null, LANE_PREVIEW_STOP_TIMEOUT_MS);
-  if (r.code !== 0) rec.why = `${why} — the stop script exited ${r.code}: ${(r.err.split("\n").pop() ?? "").slice(0, 200)}`;
-  audit("lane_preview", undefined, `${state} candidate:${candidateId} preview:${rec.id}`);
-  saveState();
-  return rec;
-}
-
-// a worktree that leaves the board takes its previews with it: a live one is ended, and every
-// record naming the path is dropped, since no board row is left to show it on
-function dropLanePreviewsAt(path: string, why: string): void {
-  for (const rec of Object.values(lanePreviews)) {
-    if (rec.path !== path) continue;
-    if (rec.state === "running")
-      endLanePreview(rec.candidate, "stopped", `its worktree left the board — ${why}`)
-        .catch((e: unknown) => logError("lane-preview-drop", e));
-    if (rec.state !== "starting") delete lanePreviews[rec.candidate];
-  }
-}
-
-// AT BOOT: a preview the server was starting when it died is ended as failed (the script may have
-// half-built it), a running one past its deadline is ended now, the rest get their timers back.
-async function reconcileLanePreviewsAtBoot(): Promise<void> {
-  for (const rec of Object.values(lanePreviews)) {
-    if (rec.state === "starting") {
-      await runLanePreviewScript(["stop", rec.dir, rec.sock], rec.dir, null, LANE_PREVIEW_STOP_TIMEOUT_MS);
-      Object.assign(rec, { state: "failed", endedAt: Date.now(), why: "the server restarted while this preview was starting" });
-    } else if (rec.state === "running") {
-      if (Date.now() >= rec.expiresAt) await endLanePreview(rec.candidate, "expired", "its deadline passed while the server was down");
-      else if ((await Bun.spawn(["tmux", "-L", rec.sock, "has-session", "-t", "srv"], { stdout: "ignore", stderr: "ignore" }).exited) !== 0)
-        await endLanePreview(rec.candidate, "stopped", "its instance was gone at boot");
-      else armLanePreviewExpiry(rec);
-    }
-  }
-}
-
-// THE BOARD'S VIEW of the newest record on a worktree path: identity, the URL only while it runs,
-// and `stale` — the lane's HEAD read now against the stored head the preview was built from (one
-// rev-parse per previewed row; `null` when HEAD could not be read, never "not stale").
-interface LanePreviewView {
-  id: string; candidate: string; branch: string; head: string; state: LanePreview["state"];
-  url: string | null; startedAt: number; expiresAt: number; endedAt: number | null; why: string | null;
-  laneHead: string | null; stale: boolean | null;
-}
-async function lanePreviewView(path: string): Promise<LanePreviewView | null> {
-  let rec: LanePreview | null = null;
-  for (const p of Object.values(lanePreviews)) if (p.path === path && (!rec || p.startedAt > rec.startedAt)) rec = p;
-  if (!rec) return null;
-  const h = existsSync(path) ? await git(path, "rev-parse", "HEAD") : null;
-  const laneHead = h && h.code === 0 && /^[0-9a-f]{40,64}$/.test(h.out) ? h.out : null;
-  return { id: rec.id, candidate: rec.candidate, branch: rec.branch, head: rec.head, state: rec.state,
-    url: rec.state === "running" ? lanePreviewUrl(rec) : null, startedAt: rec.startedAt, expiresAt: rec.expiresAt,
-    endedAt: rec.endedAt, why: rec.why, laneHead, stale: laneHead === null ? null : laneHead !== rec.head };
-}
-
-// ===== THE REVIEW ON PRESS (server/types.ts#CandidateReview) ==================================
-// Owner 2026-09-24 on the orchestrator's proposal „[Zitat entfernt]“: „[Zitat entfernt]“
-//  — this replaces the 60-minute interval of card c617a142 outright. The ONLY door is
-// the owner's POST /api/review-candidates/:id/review; no tick, timer or boot path calls
-// startCandidateReview, and tickAutoReview never sees a parked candidate (it walks slots, and a
-// candidate holds none). Advisory like every ③: nothing lands, gates, accepts or decides on it.
-// worktree path -> its comments, oldest first (a path outlives the candidate id a resume consumes)
-let candidateReviews: Record<string, CandidateReview[]> = {};
-// runs per CANDIDATE, failed ones included: a reviewer that keeps failing spends real agent runs too
-const CANDIDATE_REVIEW_MAX_RUNS = 5;
-
-type CandidateReviewResult = { ok: true; review: CandidateReview } | { ok: false; code: number; error: string };
-
-// every refusal is named; the ones that need no git are decided BEFORE the first await, and the run
-// is claimed as `running` in the same synchronous stretch — so a second press arriving while the
-// first reads git or waits on the reviewer is refused by name, never raced into a second agent
-async function startCandidateReview(candidateId: string): Promise<CandidateReviewResult> {
-  const no = (code: number, error: string) => ({ ok: false as const, code, error });
-  let path: string | null = null;
-  let c: LaneReviewCandidate | null = null;
-  for (const [p, sh] of Object.entries(shelved)) if (sh.review?.id === candidateId) { path = p; c = sh.review; }
-  if (path === null || c === null) {
-    const live = slots.find((x) => x.worktree?.resumedFrom?.candidate === candidateId);
-    if (live) return no(409, `candidate ${candidateId} was resumed into live lane slot ${live.id} (${live.worktree?.branch ?? "?"}) — a live lane is not a parked candidate; review it on its slot`);
-    const known = Object.entries(candidateReviews).find(([, rs]) => rs.some((r) => r.candidate === candidateId));
-    if (known) return no(409, `candidate ${candidateId} is no longer parked — its worktree ${known[0]} ${shelved[known[0]] ? "is shelved without review" : "holds no candidate now"}; only a worktree parked for review can be reviewed here`);
-    return no(404, `no parked review candidate ${candidateId} — only a worktree parked for review can be reviewed here`);
-  }
-  const holder = slots.find((x) => x.cwd === path);
-  if (holder) return no(409, `live lane slot ${holder.id} holds ${path} — a live lane is not a parked candidate`);
-  const all = candidateReviews[path] ?? [];
-  const running = all.find((r) => r.state === "running");
-  if (running) return no(409, `review ${running.id} of ${path} is still running since ${new Date(running.startedAt).toISOString()} — one run at a time`);
-  const runs = all.filter((r) => r.candidate === c.id).length;
-  if (runs >= CANDIDATE_REVIEW_MAX_RUNS)
-    return no(409, `candidate ${c.id} spent its review budget: ${runs} of ${CANDIDATE_REVIEW_MAX_RUNS} runs — no further run for this candidate`);
-  const base = c.base ?? c.baseSha;
-  if (!base) return no(409, `candidate ${c.id} has no base to diff its head against`);
-  const rec: CandidateReview = { id: randomBytes(6).toString("hex"), candidate: c.id, path, branch: c.branch,
-    head: c.head, base, patchId: "", startedAt: Date.now(), at: null, state: "running", why: null, model: null,
-    scope: "", notes: "", raw: null, findings: [] };
-  candidateReviews[path] = [...all, rec];
-  // a refusal after the claim takes the claim back: only a run that reached the reviewer counts
-  const unclaim = (code: number, error: string): CandidateReviewResult => {
-    candidateReviews[path] = (candidateReviews[path] ?? []).filter((r) => r !== rec);
-    if (!candidateReviews[path]!.length) delete candidateReviews[path];
-    return no(code, error);
-  };
-  if (!existsSync(path)) return unclaim(409, `the candidate's worktree ${path} is gone — nothing to review`);
-  // THE SUBJECT is the STORED head against the base, read out of git objects: what the worktree
-  // holds now does not enter it (a parked tree is clean by admission; a moved one is not the candidate)
-  const cd = await gitRead(path, "diff", "--no-color", `${base}...${c.head}`);
-  if (cd.code !== 0) return unclaim(409, `git diff ${base}...${c.head.slice(0, 12)} exited ${cd.code}: ${(cd.err || cd.out).slice(0, 200)}`);
-  const patchId = await patchIdOf(path, cd.out, "");
-  if (patchId === null) return unclaim(409, `candidate ${c.id}'s head carries no diff against ${base} with a patch id — nothing to review`);
-  const same = (candidateReviews[path] ?? []).find((r) => r.state === "filed" && r.patchId === patchId);
-  if (same) return unclaim(409, `patch ${patchId.slice(0, 12)} was already reviewed — comment ${same.id} of ${new Date(same.at ?? same.startedAt).toISOString()} (candidate ${same.candidate}); a second run of the same patch is not started`);
-  rec.patchId = patchId;
-  audit("candidate_review", undefined, `start candidate:${c.id} review:${rec.id} patch:${patchId.slice(0, 12)}`);
-  await saveStateNow();
-  try {
-    const now = await gitRead(path, "rev-parse", "HEAD");
-    const st = await gitRead(path, "status", "--porcelain");
-    // full files ride only while the worktree IS the stored head: otherwise they are another version
-    const atHead = now.code === 0 && now.out === c.head && st.code === 0 && !st.out.trim();
-    const lg = await gitRead(path, "log", "--no-color", "--oneline", "-15", c.head);
-    const result = await reviewDiffs(path, {
-      scope: `review candidate ${c.id}'s stored head ${c.head.slice(0, 12)} against ${base} — committed changes only`
-        + (atHead ? "" : "; no full files (the worktree is no longer exactly that head)"),
-      committed: cd.out, uncommitted: "", log: lg.code === 0 ? lg.out : "",
-      context: () => (atHead ? reviewContextBlocks(path, base) : Promise.resolve([])),
-    }, { model: WORKER_MODELS.review.model, at: Date.now(), head: c.head, dirty: 0, patchId });
-    Object.assign(rec, { state: "filed", at: Date.now(), model: result.model, scope: result.scope,
-      notes: result.notes, raw: result.raw, findings: result.findings });
-    audit("candidate_review", undefined, `filed candidate:${c.id} review:${rec.id} findings:${result.findings.length}${result.raw ? " raw" : ""}`);
-    await saveStateNow();
-    return { ok: true, review: rec };
-  } catch (e) {
-    Object.assign(rec, { state: "failed", at: Date.now(), why: (e instanceof Error ? e.message : "reviewer failed").slice(0, 400) });
-    audit("candidate_review", undefined, `failed candidate:${c.id} review:${rec.id}`);
-    await saveStateNow();
-    return no(502, `review ${rec.id} failed: ${rec.why}`);
-  }
-}
-
-// THE BOARD'S VIEW of a path's comments: each with `stale` — the patch the worktree carries NOW
-// (its HEAD against the comment's base, plus anything uncommitted) against the patch it read.
-// `null` = the patch now could not be established, never "current". One read per distinct base.
-type CandidateReviewView = CandidateReview & { patchNow: string | null; stale: boolean | null };
-async function candidateReviewsView(path: string): Promise<CandidateReviewView[] | null> {
-  const recs = candidateReviews[path];
-  if (!recs?.length) return null;
-  const now = new Map<string, string | null>();
-  for (const base of new Set(recs.map((r) => r.base))) {
-    if (!existsSync(path)) { now.set(base, null); continue; }
-    const cd = await gitRead(path, "diff", "--no-color", `${base}...HEAD`);
-    const ud = await gitRead(path, "diff", "HEAD", "--no-color");
-    now.set(base, cd.code === 0 && ud.code === 0 ? await patchIdOf(path, cd.out, ud.out) : null);
-  }
-  return recs.map((r) => {
-    const patchNow = now.get(r.base) ?? null;
-    return { ...r, findings: [...r.findings], patchNow, stale: patchNow === null ? null : patchNow !== r.patchId };
-  });
-}
-
 const MAX_TASKS = 200;
 // cap the task list WITHOUT dropping non-terminal tasks: a still-pending/queued/sent task
 // must never be evicted just because 200 terminal tasks piled up — only the terminal
@@ -4945,12 +4635,6 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   // which bytes release will send.
   // deliberately NOT Pick<Task, "criterion">: the poll carries the two timestamps, never the text
   & { briefAt?: number; criterion?: { proposedAt: number; confirmedAt: number | null } }
-  // same two-tier rule for the refine proposal: the poll says THAT one exists, how it turned out
-  // and how many children it holds — the texts ride GET /api/tasks with everything else.
-  // `refining` is derived from the in-flight map, never persisted: it is a fact about this
-  // process, and a restart mid-run must not leave a row claiming a worker that no longer exists.
-  & { refine?: { at: number; unchanged: boolean; count: number }; refining?: true }
-  & { briefReview?: { arm: TaskBriefReview["arm"]; at: number; state?: TaskBriefReview["state"]; findings?: number } }
   // …and for comments: how many and how recent. That is everything the row chip needs and
   // everything the overlay needs to notice a new one; the texts ride GET /api/tasks.
   & { comments?: { n: number; at: number } }
@@ -4996,14 +4680,6 @@ function taskDigest(t: Task): TaskDigest {
     // the two-tier rule: the poll carries only whether a criterion exists and
     // whether it is confirmed — the text itself rides GET /api/tasks, which the overlay fetches
     ...(t.criterion ? { criterion: { proposedAt: t.criterion.proposedAt, confirmedAt: t.criterion.confirmedAt } } : {}),
-    ...(t.refine ? { refine: { at: t.refine.at, unchanged: t.refine.proposal.unchanged,
-      count: t.refine.proposal.unchanged ? 0 : t.refine.proposal.tasks.length } } : {}),
-    ...(refineInflight.has(t.id) ? { refining: true as const } : {}),
-    // the counter-read's ARM rides the poll (it is the row's place in a trial the board must show),
-    // with its state; findings and the proposed brief ride GET /api/tasks like refine's texts
-    ...(t.briefReview ? { briefReview: { arm: t.briefReview.arm, at: t.briefReview.at,
-      ...(t.briefReview.state ? { state: t.briefReview.state } : {}),
-      ...(t.briefReview.findings ? { findings: t.briefReview.findings.length } : {}) } } : {}),
     ...(t.comments?.length
       ? { comments: { n: t.comments.length, at: t.comments[t.comments.length - 1].ts } } : {}),
     // N3, the two-tier rule again: the poll carries only HOW MANY sources this row names and how
@@ -5295,33 +4971,10 @@ function taskView(t: Task): Task & { absorbed?: string[] } {
   // the code, and a stored one would be the one field here that can be wrong about a tree that
   // never changed.
   const cluster = surface ? clusterForFiles(surface.files, project) : undefined;
-  const { blockers: _blockers, blockerZeiten: _blockerZeiten, ...row } = t;
+  const { blockers: _blockers, blockerZeiten: _blockerZeiten, refine: _refine, briefReview: _briefReview, ...row } = t;
   return { ...row,
     ...(["pending", "queued", "sent"].includes(t.status) ? { absorbed: absorbedTaskIds(t.id, tasks) } : {}),
-    files: surface?.files, filesOrigin: surface?.origin, cluster,
-    ...(t.refine ? { refine: { ...t.refine, ...refineValidationFor(t, snapshot) } } : {}) };
-}
-// The acceptance that stands between a compiled proposal and the owner's confirm (refine-validate
-// .ts, docs/attic/brief-kompilierung-verbesserung-2026-08-18.md §6). Derived HERE rather than stored at
-// compile time, for the reason the field comment on TaskRefine.validation gives: a finding about a
-// tree is only worth reading if it is about the tree as it stands now, and this projection already
-// holds the index-stamped snapshot every other surface reads — no second path cache, and no third
-// place that can disagree about what "tracked" means.
-//
-// An `unchanged` proposal gets none: it has no children, so there is nothing whose paths or verify
-// path could be judged, and an empty pass there would read as an endorsement of a triage answer
-// this validator has no opinion about.
-function refineValidationFor(t: Task, snapshot: TrackedSnapshot | null): { validation?: RefineValidation } {
-  if (!t.refine || t.refine.proposal.unchanged) return {};
-  return { validation: validateRefineProposal({
-    children: t.refine.proposal.tasks,
-    // null, never an empty set: an unreadable index is not a repository that tracks nothing
-    trackedPaths: snapshot?.paths ?? null,
-    // git toplevel identity is the classifier, exactly as dispatchSourceTree applies it — and
-    // "could not read the tree" is its own answer rather than a quiet "foreign"
-    tree: snapshot === null ? null
-      : FLEET_REPO_ROOT !== null && snapshot.repo === FLEET_REPO_ROOT ? "fleet" : "foreign",
-  }) };
+    files: surface?.files, filesOrigin: surface?.origin, cluster };
 }
 // ONE reading of "this projection carries a KNOWN surface". Absence and an empty list are the same
 // fact — deriveTaskMetadata returns absence rather than an invented `[]`, and a reader that
@@ -5687,7 +5340,7 @@ function stateSnapshot(): string {
     ...(laneSucceedCounts.size ? { laneSucceedCounts: Object.fromEntries(laneSucceedCounts) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, repoWorkers, repoLaneCaps, shelved, ...(Object.keys(lanePreviews).length ? { lanePreviews } : {}), ...(Object.keys(candidateReviews).length ? { candidateReviews } : {}), ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
+    repoBases, repoWorkers, repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
     // the stall sensor's clock (tickStallSensor) — only once it ever ran, so a state file of a
     // fleet that never stood stuck carries no new key
@@ -7230,8 +6883,6 @@ interface WorktreeBoardRow {
   dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean; note: string | null;
   notepad: string | null; // the owner's free-text notepad on this path (never in any other surface)
   review: ReviewCandidateView | null;
-  preview: LanePreviewView | null;
-  reviews: CandidateReviewView[] | null;
 }
 // the parked candidate as the board shows it: its identity plus the one derived word, whether its
 // deadline has passed. `expired` asks for a decision; nothing acts on it.
@@ -7248,9 +6899,7 @@ const worktreeBoardRecomputing = new Set<string>();
 // integration branch — a plain object read unless it has to be derived from the primary's HEAD),
 // `slot` (the holding session, from `slots`), `note` (the shelve note, in memory), `notepad` (the
 // owner's free-text notepad, in memory) and `review` (the review-park candidate beside that note)
-// — plus `preview`, whose one git read (lanePreviewView)
-// rides the same overlay because its state moves on clicks and a deadline. They cost
-// nothing to recompute, so EVERY answer gets them fresh — cached or not. Serving them stale is
+// These fields cost nothing to recompute, so EVERY answer gets them fresh — cached or not. Serving them stale is
 // what the post-land audit of ea3b141b caught: a repo-base change, a shelve and a resume were
 // each invisible for up to GIT_TICK_MS, because the mutation never touched git and the cache
 // only ages on git time. Overlaying beats invalidating at the mutation sites: an overlay cannot
@@ -7268,9 +6917,7 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
       review: reviewCandidateView(w.path),
       // the preview's state moves on the owner's clicks and its deadline, never on git time; its
       // `stale` is one rev-parse, and only for a row that has a preview record at all
-      preview: await lanePreviewView(w.path),
       // the owner-pressed review comments move on a press, never on git time — and `stale` with the tree
-      reviews: await candidateReviewsView(w.path),
     }))),
   };
 }
@@ -11438,7 +11085,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const rows = hold.map((h) => h.task);
   const sourceRows = rows[0]?.variantOf ? [variantSourceOf(rows[0])] : rows;
   const sourceBrief = sourceRows.map((row) => withCardHead(row.card?.valid ? row.card : null,
-    row.brief?.text ?? row.text, row.comments, briefReviewForLane(row))).join("\n\n");
+    row.brief?.text ?? row.text, row.comments)).join("\n\n");
   const context = await laneContextDelivery(s, { repo: ref.repo, path: cwd, branch: ref.branch },
     sourceBrief, sourceRows, sourceRows[0] ? briefSourceOf(sourceRows[0], false) : "raw");
   const session = s.laneSuccessions + 2; // the founding session was 1; this is the n-th successor
@@ -17304,20 +16951,18 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
           card: row.card?.valid ? row.card : null,
           // S3: the owner's words on the row reach the lane — as wave-brief.ts's own capped block
           // BEHIND the row's brief, never folded into the released brief bytes
-          comments: row.comments, review: briefReviewForLane(row) })),
+          comments: row.comments })),
         sharedFiles: wave.sharedFiles, klasse: wave.klasse, units: wave.units, budget: LAND_WAVE_BUDGET,
         baseUrl: `http://${HOST}:${PORT}` })
       // a VALID card goes in front of the prose as a KARTE head; an absent or invalid one leaves
       // the bytes exactly as they were, which is what keeps briefSourceOf's "card" honest. The
       // row's comments ride BEHIND that prose as their own capped block (S3, wave-brief.ts) —
       // absent entirely when the row has none, so a commentless delivery stays byte-identical.
-      : withCardHead(src.card?.valid ? src.card : null, src.brief?.text ?? src.text, src.comments, briefReviewForLane(src));
+      : withCardHead(src.card?.valid ? src.card : null, src.brief?.text ?? src.text, src.comments);
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(src, clarify);
   // …and the counter-read's `atStart` is stamped at this same moment, so it says exactly whether the
-  // findings block above was in the bytes (briefReviewForLane reads the same state)
-  if (!clarify && briefReviewStampStart(sourceRows)) saveState();
   // let claude finish booting in the fresh pane before the first prompt lands
   await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
   // A post-spawn hold is TRANSIENT — retry-shaped, so the row goes back to `queued` and the
@@ -18288,20 +17933,6 @@ async function tickCardSweep(): Promise<void> {
   }
 }
 
-// --- ↻ refine (briefs/task-refine.md): the brief compiler on the queue. One read-only worker
-// turns a raw request into what a person would have written as a work brief — files, done-
-// criterion, verification — or into the two or three separate tasks it really was. ATTENDED ONLY
-// in v1: no tick calls this, the owner's button does, and the result is a PROPOSAL on the row.
-// The task itself is never rewritten by the worker; only the owner's confirm mints anything.
-const REFINE_CMD = process.env.FLEET_REFINE_CMD ?? null; // tests: subprocess stand-in
-// the refiner runs on the interactive tier rather than the summary one: it reads a repository and
-// writes the text a fresh session will be founded on
-const REFINE_MODEL = WORKER_MODELS.refine.model;
-// refines currently running, by task id. Keyed on the task rather than a slot (there is no slot —
-// nothing is spawned): the route refuses a second run for the same row, and taskDigest reads it so
-// the owner sees „[Zitat entfernt]“ instead of a button that appears to do nothing for three minutes.
-const refineInflight = new Map<string, Promise<void>>();
-
 const clampStr = (v: unknown, max: number): string => (typeof v === "string" ? v : "").slice(0, max).trim();
 // A declared path list off the wire or off disk, clamped exactly like the refine proposal it comes
 // from so a hand-edited fleet.json cannot flood the prompt. An empty result is
@@ -18418,9 +18049,8 @@ const normFilesProposal = (v: unknown): TaskFilesProposal | undefined => {
 // The tracked-tree reading a DECLARED surface gets, computed in exactly one place because both
 // doors below must answer it the same way. `null` is "the index could not be read" and is a third
 // value on purpose — an unreadable tree that answered `[]` would say "every path is tracked", which
-// is the collapse refineValidationFor already refuses one screen above. Neither door GATES on this:
-// the owner may confirm a surface this reading flags, and the audit line records that he could see
-// it — the same bargain the refine promote strikes with its validation.
+// would turn missing evidence into a pass. Neither door GATES on this: the owner may confirm
+// a surface this reading flags, and the audit line records that he could see it.
 function untrackedAmong(files: readonly string[], repoRaw: string | null): string[] | null {
   const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
   if (!snapshot) return null;
@@ -18432,42 +18062,6 @@ function untrackedAmong(files: readonly string[], repoRaw: string | null): strin
 const filesProposalBy = (s: Slot): string => clampStr(
   s.worktree ? `slot ${s.id} \u00b7 ${s.worktree.branch}` : `slot ${s.id}${s.label ? ` \u00b7 ${s.label}` : ""}`,
   MAX_FILES_PROPOSAL_BY);
-
-// The row text the owner actually promotes, composed from the child's fields in a fixed order.
-// Deterministic on purpose: it becomes the DRAFT of a fresh row, so the brief sweep compiles a
-// brief from it — and a person reads it in the
-// queue. All of them benefit more from one predictable shape than from whatever layout the model
-// felt like emitting. (A refined child arrives with no brief and no verdict, which is exactly
-// right: the sweep's uniform rule is "never analysed → analyse", and it applies here unchanged.)
-//
-// THIS COMPOSITION IS NOW THE CARD'S SOURCE, and the row text only when the card did not validate
-// (docs/messungen/2026-09-12-spezifizierung-buendelung-befund.md §3: refine produced structure and
-// the promote folded it straight back into prose). A child whose card is valid carries done,
-// verify and files as FIELDS and its text is the request alone — the KARTE head delivers the rest
-// at dispatch. A child whose card is not valid gets no head, so the folded text stays its text:
-// dropping done/verify there would hand the lane less than it got before the card existed.
-function refineChildText(c: RefineChild): string {
-  return [
-    c.text,
-    ...(c.files.length ? ["", `Files: ${c.files.join(", ")}`] : []),
-    ...(c.doneCriterion ? ["", `Done: ${c.doneCriterion}`] : []),
-    ...(c.verify ? [`Verify: ${c.verify}`] : []),
-  ].join("\n").slice(0, MAX_TASK_TEXT).trim();
-}
-
-// The card a refined child carries — the refiner's own fields, run through the SAME validator the
-// extractor tick uses (card-extract.ts#validateCard), against the folded text as source so the
-// quote rule sees the paths the refiner named. `model: "refine"` names the producer: no extractor
-// ran, and a card that claimed one would repeat the mis-stamp TaskCard.model exists to avoid.
-function refineChildCard(c: RefineChild, programId: string | undefined,
-  snapshot: TrackedSnapshot | null, index: SymbolIndexSnapshot | null, now: number,
-  foreignVerifyCommand?: string | null): TaskCard {
-  const checked = validateCard({ ziel: c.text, surface: { files: c.files, symbols: [] },
-    done: c.doneCriterion, verify: c.verify, verboten: [], ...(programId ? { program: programId } : {}) },
-  cardValidationContext(refineChildText(c), snapshot, index, foreignVerifyCommand));
-  return { ...checked.body, model: "refine", at: now, ms: 0, valid: checked.valid,
-    surfaceValid: checked.surfaceValid, validatorVersion: CARD_VALIDATOR_VERSION, gaps: checked.gaps };
-}
 
 // THE AUTHOR'S CARD (S6, queue row 08ec67c0): whoever files a row knows its files and symbols at
 // that moment, so both create doors accept `card{ziel,rolle?,klasse?,surface{files,symbols},done,verify,verboten}`
@@ -18503,224 +18097,6 @@ async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null
   if (!checked.valid) return { ok: false, status: 400, error: `card rejected, nothing filed: ${checked.gaps.join("; ")}` };
   return { ok: true, card: { ...checked.body, model: "author", at: now, ms: 0, valid: true, surfaceValid: true,
     validatorVersion: CARD_VALIDATOR_VERSION, gaps: [] } };
-}
-
-// Parse + validate the worker's answer. Every off-contract shape THROWS, because the caller's
-// only fail direction is closed: a half-understood proposal must never reach the owner looking
-// like a compiled brief. The cap is enforced here rather than truncated — an answer with six
-// children is a worker that ignored its contract, not five good children plus one.
-function parseRefineAnswer(out: string): RefineProposal {
-  const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  let j: { unchanged?: unknown; reason?: unknown; tasks?: unknown };
-  try {
-    j = JSON.parse(body) as typeof j;
-  } catch {
-    const obj = extractJsonObject(out); // same rescue as runEnhance: a wrapped answer is not a failed one
-    if (!obj) throw new Error("refiner returned no JSON");
-    j = JSON.parse(obj) as typeof j;
-  }
-  if (j.unchanged === true)
-    return { unchanged: true, reason: clampStr(j.reason, MAX_REFINE_FIELD) || "already brief-shaped" };
-  if (!Array.isArray(j.tasks)) throw new Error("refiner returned no tasks array");
-  if (j.tasks.length > MAX_REFINE_CHILDREN)
-    throw new Error(`refiner returned ${j.tasks.length} tasks — the cap is ${MAX_REFINE_CHILDREN}`);
-  const kids: RefineChild[] = [];
-  for (const raw of j.tasks as { text?: unknown; doneCriterion?: unknown; verify?: unknown; files?: unknown }[]) {
-    const text = clampStr(raw?.text, MAX_TASK_TEXT);
-    if (!text) continue; // an entry with no request in it is not a task
-    kids.push({
-      text,
-      doneCriterion: clampStr(raw?.doneCriterion, MAX_REFINE_FIELD),
-      verify: clampStr(raw?.verify, MAX_REFINE_FIELD),
-      files: Array.isArray(raw?.files)
-        ? (raw.files as unknown[]).filter((f): f is string => typeof f === "string" && !!f.trim())
-          .map((f) => f.trim().slice(0, 300)).slice(0, MAX_REFINE_FILES)
-        : [],
-    });
-  }
-  if (!kids.length) throw new Error("refiner returned no usable task");
-  return { unchanged: false, tasks: kids };
-}
-
-// the same shape read back off disk, where anything may have been hand-edited (loadState)
-function normRefine(r: TaskRefine | undefined): TaskRefine | undefined {
-  const p = r?.proposal as Partial<RefineProposal> | undefined;
-  if (!r || !p) return undefined;
-  const at = Number(r.at) || 0;
-  const model = typeof r.model === "string" ? r.model : "";
-  if (p.unchanged === true) return { at, model, proposal: { unchanged: true, reason: clampStr((p as { reason?: unknown }).reason, MAX_REFINE_FIELD) } };
-  const kids = Array.isArray((p as { tasks?: unknown }).tasks) ? (p as { tasks: unknown[] }).tasks : [];
-  const out: RefineChild[] = [];
-  for (const k of kids as RefineChild[]) {
-    const text = clampStr(k?.text, MAX_TASK_TEXT);
-    if (text) out.push({ text, doneCriterion: clampStr(k?.doneCriterion, MAX_REFINE_FIELD),
-      verify: clampStr(k?.verify, MAX_REFINE_FIELD),
-      files: Array.isArray(k?.files) ? k.files.filter((f): f is string => typeof f === "string").slice(0, MAX_REFINE_FILES) : [] });
-  }
-  return out.length ? { at, model, proposal: { unchanged: false, tasks: out.slice(0, MAX_REFINE_CHILDREN) } } : undefined;
-}
-
-// FAIL-CLOSED, in the ② direction: a worker that times out, answers off-contract or blows the cap
-// leaves the row exactly as it was and says why in its note. There is no partial proposal and no
-// retry loop — the owner clicks again if they want another try.
-async function runRefineJob(t: Task, repo: string): Promise<void> {
-  try {
-    let model = REFINE_MODEL;
-    const out = await runWorker({ worker: "refine", cmd: REFINE_CMD, tools: REVIEW_TOOLS,
-      observe: (run) => { model = run.model; } },
-      buildRefinePrompt(repo, t.text, MAX_REFINE_CHILDREN), repo);
-    t.refine = { at: Date.now(), model, proposal: parseRefineAnswer(out) };
-    // clear ONLY a previous refine failure — the note is a shared display line (the dispatcher
-    // writes "lane fleet/…" and its waiting reasons there), and a compile that succeeded while
-    // the row was being started elsewhere must not wipe what that other path put on it
-    if (t.note?.startsWith("refine failed")) t.note = null;
-  } catch (e) {
-    // note only — never t.refine, and never the text: an errored compiler has said nothing about
-    // this task, and absence must not read as "nothing to improve"
-    t.note = `refine failed: ${e instanceof Error ? e.message : e}`.slice(0, 200);
-  }
-  saveState();
-}
-
-// --- THE COUNTER-READ (Gegenlese) as a measurement trial (docs/brief-gegenlese.md; owner filing
-// 2026-09-14). ↻ refine extended the other way round: a strong model reads a mittel|gross row's
-// brief back against the code before the tick spends a lane on it. The bounds are the analyst's
-// grave (docs/queue-analyst.md §0), each held structurally here rather than by the prompt alone:
-//   · OFF BY DEFAULT — FLEET_BRIEF_REVIEW=1 and nothing else arms it; off, no row grows a field,
-//     no note is written and no start waits (the three reads below all return first).
-//   · NEVER A GATE — the start waits at most BRIEF_REVIEW_WAIT_MS from the review's own start and
-//     then goes ahead WITHOUT it; a failed review holds nothing at all. Nothing reads the findings.
-//   · NEVER AN OVERWRITE — the proposal lives in `briefReview`; `brief` and `text` are not written
-//     here, whoever authored them. Adopting it is the MAIN's act, by the rule in the doc.
-//   · HALF IS CONTROL — every eligible row gets an arm (refine-validate.ts#briefReviewArm), and the
-//     control half is recorded as such, so the evaluation compares two populations of the same
-//     sizes in the same weeks instead of a before and an after.
-// Brief review owns a register role; absent its own override it inherits the refine env keys.
-const BRIEF_REVIEW_ON = process.env.FLEET_BRIEF_REVIEW === "1";
-const BRIEF_REVIEW_CMD = process.env.FLEET_BRIEF_REVIEW_CMD ?? null; // tests: subprocess stand-in
-// THE NAMED BUDGET: how long a start may wait for its row's review, counted from the review's start.
-// Default 10 min — about what one read of the repository takes the refiner — so that most reviews
-// land before the start and a hung worker costs one row ten minutes, never the queue.
-const BRIEF_REVIEW_WAIT_MS = Math.max(0, Number(process.env.FLEET_BRIEF_REVIEW_WAIT_MS ?? 10 * 60_000) | 0);
-const MAX_BRIEF_REVIEW_FINDINGS = 12;
-// running reviews, by task id — process-local like refineInflight: a restart drops the worker, and
-// normBriefReview turns a persisted `running` into `failed` so no row waits on a worker that is gone
-const briefReviewInflight = new Map<string, Promise<void>>();
-
-// Allocate once and, on the reviewed arm, start the worker. Called by the tick for every row of a
-// wave the plan says could start now; a no-op for everything that already has an arm, is not
-// eligible, or runs with the switch off.
-function briefReviewKick(t: Task): void {
-  if (!BRIEF_REVIEW_ON || t.briefReview || t.kind !== "auftrag") return;
-  const size = taskSizeOf(t);
-  if (!briefReviewEligible(size)) return;
-  const arm = briefReviewArm(t.id);
-  const repo = resolve(expandCwd(t.repo ?? DISPATCH_REPO));
-  t.briefReview = { arm, at: Date.now(), size,
-    ...(arm === "reviewed" ? { state: "running" as const, model: WORKER_MODELS.briefReview.model } : {}) };
-  audit("task_brief_review", undefined, `${t.id} arm=${arm} size=${size}`);
-  saveState();
-  if (arm !== "reviewed") return;
-  const job: Promise<void> = runBriefReviewJob(t, repo)
-    .finally(() => { if (briefReviewInflight.get(t.id) === job) briefReviewInflight.delete(t.id); });
-  briefReviewInflight.set(t.id, job);
-}
-
-// How much longer the start of these rows may wait for a review still running — 0 = not at all.
-function briefReviewWaitLeft(rows: Task[], now: number): number {
-  if (!BRIEF_REVIEW_ON) return 0;
-  let left = 0;
-  for (const r of rows) {
-    const b = r.briefReview;
-    if (b?.arm === "reviewed" && b.state === "running") left = Math.max(left, b.at + BRIEF_REVIEW_WAIT_MS - now);
-  }
-  return left;
-}
-
-// The wait sits in tickDispatch directly before the free-slot grab — the kick sits higher, right
-// after the plan's own verdict, so the review runs while the caps still hold the wave and the budget
-// is spent on waiting that happens anyway. The wait SKIPS like every per-row hold there: one row
-// under review must not hold the queue behind it.
-const briefReviewWaitNote = (leftMs: number): string =>
-  `waiting: brief review running — starts without it in ≤ ${Math.ceil(leftMs / 1000)} s (FLEET_BRIEF_REVIEW_WAIT_MS)`;
-
-// The counter-read's one fact about the START, stamped in briefAndSend when the founding bytes are
-// chosen (any door — tick or attended): whether the review had landed, i.e. whether its findings
-// block rode along. "Reviewed" and "reviewed, but the budget ran out first" are
-// different populations for the evaluation. Returns how many rows it stamped.
-function briefReviewStampStart(rows: Task[]): number {
-  let n = 0;
-  for (const row of rows) {
-    const b = row.briefReview;
-    if (b?.arm === "reviewed" && b.state && !b.atStart) { row.briefReview = { ...b, atStart: b.state }; n++; }
-  }
-  return n;
-}
-
-// the answer, parsed or thrown — the same fail-closed direction as parseRefineAnswer
-function parseBriefReviewAnswer(out: string): { findings: BriefReviewFinding[]; brief: string } {
-  const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  let j: { findings?: unknown; brief?: unknown };
-  try {
-    j = JSON.parse(body) as typeof j;
-  } catch {
-    const obj = extractJsonObject(out);
-    if (!obj) throw new Error("reviewer returned no JSON");
-    j = JSON.parse(obj) as typeof j;
-  }
-  if (!Array.isArray(j.findings)) throw new Error("reviewer returned no findings array");
-  return { findings: normBriefReviewFindings(j.findings), brief: clampStr(j.brief, MAX_TASK_TEXT) };
-}
-// an unknown kind is DROPPED, never mapped onto a known one: the evaluation counts findings per kind
-function normBriefReviewFindings(raw: unknown[]): BriefReviewFinding[] {
-  return (raw as { kind?: unknown; text?: unknown; evidence?: unknown }[])
-    .filter((f) => isBriefReviewKind(f?.kind) && clampStr(f?.text, MAX_REFINE_FIELD))
-    .map((f) => ({ kind: f.kind as BriefReviewFinding["kind"], text: clampStr(f.text, MAX_REFINE_FIELD),
-      evidence: clampStr(f.evidence, MAX_REFINE_FIELD) }))
-    .slice(0, MAX_BRIEF_REVIEW_FINDINGS);
-}
-
-// The review reads the bytes the lane would receive (the compiled/owner brief, else the text) and
-// writes ONLY its own record — on success and on failure alike.
-async function runBriefReviewJob(t: Task, repo: string): Promise<void> {
-  try {
-    const out = await runWorker({ worker: "refine", role: "briefReview", cmd: BRIEF_REVIEW_CMD, tools: REVIEW_TOOLS },
-      buildBriefReviewPrompt(repo, t.brief?.text ?? t.text), repo);
-    const answer = parseBriefReviewAnswer(out);
-    if (t.briefReview) t.briefReview = { ...t.briefReview, state: "done", doneAt: Date.now(), ...answer };
-  } catch (e) {
-    if (t.briefReview) t.briefReview = { ...t.briefReview, state: "failed", doneAt: Date.now(),
-      error: `${e instanceof Error ? e.message : e}`.slice(0, 200) };
-  }
-  saveState();
-}
-
-// WHAT THE LANE GETS of the counter-read (MAIN decision (b), 2026-09-19): the findings of a review
-// that LANDED on the reviewed arm, rendered by wave-brief.ts#renderBriefReviewBlock behind the
-// byte-identical brief. Undefined for control, for a review still running or failed, and with the
-// switch off — the renderer then emits nothing and the founding bytes are the old bytes.
-function briefReviewForLane(t: Task): BriefReviewFinding[] | undefined {
-  const b = t.briefReview;
-  return b?.arm === "reviewed" && b.state === "done" && b.findings?.length ? b.findings : undefined;
-}
-
-// off disk: a malformed record degrades to ABSENT (the row then simply never had an arm), and a
-// `running` one to `failed` — its worker died with the process that started it
-function normBriefReview(r: TaskBriefReview | undefined): TaskBriefReview | undefined {
-  if (!r || (r.arm !== "reviewed" && r.arm !== "control") || (r.size !== "mittel" && r.size !== "gross")) return undefined;
-  const at = Number(r.at) || 0;
-  if (r.arm === "control") return { arm: "control", at, size: r.size,
-    ...(r.atStart ? { atStart: r.atStart } : {}) };
-  const state = r.state === "done" ? "done" : "failed";
-  const states = ["running", "done", "failed"] as const;
-  return { arm: "reviewed", at, size: r.size, state,
-    model: typeof r.model === "string" ? r.model : "",
-    ...(Number(r.doneAt) ? { doneAt: Number(r.doneAt) } : {}),
-    ...(r.state === "running" ? { error: "server restarted while the review ran" }
-      : typeof r.error === "string" && r.error ? { error: r.error.slice(0, 200) } : {}),
-    ...(state === "done" ? { findings: normBriefReviewFindings(Array.isArray(r.findings) ? r.findings : []),
-      brief: clampStr(r.brief, MAX_TASK_TEXT) } : {}),
-    ...(states.includes(r.atStart as typeof states[number]) ? { atStart: r.atStart } : {}) };
 }
 
 // idle-lane dispatcher: when ON and a lane budget is free, pull the oldest task the OWNER released,
@@ -19593,7 +18969,6 @@ async function tickDispatch(): Promise<void> {
       }
       const rowLimit = harnessLimitFor(rowSpawn); // a measured usage limit — rule at noteHarnessLimits
       if (rowLimit) { waiting(harnessLimitNote(rowLimit.scope, rowLimit.limit)); continue; }
-      for (const row of rows) briefReviewKick(row); // the counter-read starts here (briefReviewKick)
       // count lanes in the task's TARGET repo: the cap bounds unattended fan-out per project —
       // a hand-driven lane in an unrelated repo used to eat the budget and stall the queue
       // with no signal.
@@ -19655,8 +19030,6 @@ async function tickDispatch(): Promise<void> {
       // SKIPS like every per-row hold above, so each held row carries the reason on itself.
       const reserved = variantReserveHolds(next, repo);
       if (reserved) { waiting(variantReserveNote(reserved)); continue; }
-      const reviewLeft = briefReviewWaitLeft(rows, Date.now()); // …and is waited for here, bounded
-      if (reviewLeft > 0) { waiting(briefReviewWaitNote(reviewLeft)); continue; }
       const free = freeSessionSlot("lane");
       if (!free) { waiting(`waiting: ${sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot")}`); return; }
       // THE UNATTENDED INVARIANT STOOD HERE, and it is gone with the reader that satisfied it.
@@ -20971,7 +20344,6 @@ interface WorkerSpec {
   cmd: string | null;      // FLEET_*_CMD stand-in; null → the worker's closed production route
   tools: ToolProfile;      // capability floor for the Claude session path (see ToolProfile)
   timeoutMs?: number;      // omitted → SUMMARY_TIMEOUT_MS on every transport, same as before
-  role?: "briefReview"; // omitted → the named worker; briefReview shares the refine prompt contract
   observe?: (run: WorkerRunObservation) => void; // additive response facts; only summary exposes them
 }
 type WorkerRouteConfig = { route: "claude" | "codex-exec" };
@@ -20995,7 +20367,6 @@ const WORKER_ROUTES = {
   repair: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REPAIR),
   cleanReview: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CLEANREVIEW),
   digest: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
-  refine: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REFINE),
   card: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CARD),
 } satisfies Record<WorkerName, WorkerRouteConfig>;
 function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
@@ -21003,8 +20374,8 @@ function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
 }
 async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise<string> {
   const started = Date.now();
-  const role = spec.role ?? spec.worker;
-  const selection = WORKER_MODELS[spec.role ?? spec.worker];
+  const role = spec.worker;
+  const selection = WORKER_MODELS[spec.worker];
   const route = spec.cmd ? "cmd" : workerRouteFor(spec.worker).route;
   let ok = false;
   let error: string | undefined;
@@ -21418,7 +20789,7 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
 }
 
 // THE REVIEWER ITSELF, over diff text a caller already read: runReview hands it a live slot's tree,
-// runCandidateReview a parked candidate's stored head. One prompt, one contract, one parser.
+// One prompt, one contract, one parser.
 async function reviewDiffs(cwd: string,
   subject: { scope: string; committed: string; uncommitted: string; log: string; context: () => Promise<string[]>; card?: TaskCard },
   meta: Pick<ReviewResult, "model" | "at" | "head" | "dirty" | "patchId">): Promise<ReviewResult> {
@@ -37729,8 +37100,8 @@ if (existsSync(STATE_FILE)) {
           // against a mangled key would silently stop matching the pulse's next filing anyway
           ref: typeof t.ref === "string" && STEWARD_REF_RE.test(t.ref) ? t.ref : undefined,
           // a malformed proposal degrades to "none proposed": confirming one mints new task rows
-          refine: normRefine(t.refine),
-          briefReview: normBriefReview(t.briefReview),
+          ...(t.refine !== undefined ? { refine: t.refine } : {}),
+          ...(t.briefReview !== undefined ? { briefReview: t.briefReview } : {}),
           // comments carry no authority, so a malformed entry is dropped. Capped on the way back
           // IN: a hand-edit must not widen a field past what the route would have accepted.
           comments: loadTaskComments(t.comments),
@@ -38356,22 +37727,10 @@ if (existsSync(STATE_FILE)) {
     if (typeof pwn === "object" && pwn !== null && !Array.isArray(pwn))
       for (const [k, v] of Object.entries(pwn as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "string") worktreeNotes[k] = v;
-    // the review previews come back record by record, whole or not at all (loadLanePreview);
-    // reconcileLanePreviewsAtBoot then settles the ones the downtime overtook
-    const persistedPreviews = (persisted as { lanePreviews?: unknown }).lanePreviews;
-    if (typeof persistedPreviews === "object" && persistedPreviews !== null && !Array.isArray(persistedPreviews))
-      for (const v of Object.values(persistedPreviews as Record<string, unknown>)) {
-        const lp = loadLanePreview(v);
-        if (lp) lanePreviews[lp.candidate] = lp;
-      }
-    // the review comments come back comment by comment, whole or not at all (loadCandidateReview),
-    // and only under the path they name; a run the downtime cut short is settled at boot below
-    const persistedReviews = (persisted as { candidateReviews?: unknown }).candidateReviews;
-    if (typeof persistedReviews === "object" && persistedReviews !== null && !Array.isArray(persistedReviews))
-      for (const [k, v] of Object.entries(persistedReviews as Record<string, unknown>)) {
-        const rs = Array.isArray(v) ? v.map(loadCandidateReview).filter((r): r is CandidateReview => r !== null && r.path === k) : [];
-        if (rs.length) candidateReviews[k] = rs;
-      }
+    retiredCandidateState = {
+      ...("lanePreviews" in persisted ? { lanePreviews: persisted.lanePreviews } : {}),
+      ...("candidateReviews" in persisted ? { candidateReviews: persisted.candidateReviews } : {}),
+    };
     // undoable lands survive deploys. MIGRATION, load-bearing: the pre-stack shape was ONE record per
     // repo, and a boot that only understood the array would read every pre-upgrade land as "no
     // land" — so a bare object is read as a one-element stack.
@@ -38521,15 +37880,8 @@ pruneAttention();
 // …EXCEPT a row a review candidate holds (reviewParkOf): it is `sent` with no slot BY DESIGN, and
 // requeuing it here is the silent restart the park exists to rule out. A candidate whose worktree
 // vanished while the server was down cannot be resumed, so its rows go back to owner review instead.
-await reconcileLanePreviewsAtBoot();
 for (const [path, sh] of Object.entries(shelved))
   if (sh.review && !existsSync(path)) dropShelved(path, "its worktree was gone at boot");
-// a review the server died in filed nothing, and it spent its run; comments of a vanished tree go
-for (const [path, rs] of Object.entries(candidateReviews)) {
-  if (!existsSync(path)) { delete candidateReviews[path]; continue; }
-  for (const r of rs) if (r.state === "running")
-    Object.assign(r, { state: "failed", at: Date.now(), why: "the server restarted while this review was running" });
-}
 // …and a notepad whose tree vanished while the server was down goes with the tree (the boot's
 // saveState below persists the sweep)
 for (const path of Object.keys(worktreeNotes))
@@ -44091,8 +43443,6 @@ Bun.serve<WSData>({
             note: shelved[w.path]?.note ?? null, // shelve note, if this orphan was set aside
             notepad: worktreeNotes[w.path] ?? null, // the owner's notepad on this path
             review: reviewCandidateView(w.path), // …and the review candidate, if it was parked for review
-            preview: await lanePreviewView(w.path), // …and its time-boxed preview, if one was started
-            reviews: await candidateReviewsView(w.path), // …and the review comments the owner pressed for
           };
         };
         const rows: WorktreeBoardRow[] = new Array(targets.length);
@@ -44413,31 +43763,7 @@ Bun.serve<WSData>({
         testinstanzBusy.delete(s.id);
       }
     }
-    // THE REVIEW PREVIEW (startLanePreview): one time-boxed isolated instance of a parked candidate's
-    // stored head, for the owner to look at before land. The answer carries the record — the board
-    // row carries it too, with the URL and `stale`. A view, never a verify or land-gate result.
-    const lpMatch = /^\/api\/review-candidates\/([0-9a-f]{12})\/preview(\/stop)?$/.exec(url.pathname);
-    if (lpMatch && req.method === "POST") {
-      if (!lpMatch[2]) {
-        const r = await startLanePreview(lpMatch[1]);
-        if (!r.ok) return json({ error: r.error }, r.code);
-        return json({ ok: true, preview: { ...r.preview, token: undefined, url: lanePreviewUrl(r.preview) } });
-      }
-      const cur = lanePreviews[lpMatch[1]];
-      if (!cur) return json({ error: `candidate ${lpMatch[1]} has no preview` }, 404);
-      if (cur.state === "starting") return json({ error: `preview ${cur.id} is still starting — stop it once it runs, or it ends at its deadline` }, 409);
-      if (cur.state !== "running") return json({ error: `preview ${cur.id} already ended (${cur.state}${cur.why ? `: ${cur.why}` : ""})` }, 409);
-      const ended = await endLanePreview(lpMatch[1], "stopped", "stopped by the owner");
-      return json({ ok: true, preview: ended ? { ...ended, token: undefined } : null });
-    }
-    // THE REVIEW ON PRESS (startCandidateReview): the owner's one door to an advisory diff review of a
-    // parked candidate's stored head. The answer carries the comment; the board row carries it too.
-    const crMatch = /^\/api\/review-candidates\/([0-9a-f]{12})\/review$/.exec(url.pathname);
-    if (crMatch && req.method === "POST") {
-      const r = await startCandidateReview(crMatch[1]);
-      if (!r.ok) return json({ error: r.error }, r.code);
-      return json({ ok: true, review: r.review });
-    }
+
     // set/clear a repo's integration branch — the branch lanes land into. Setting it lets the
     // owner park the primary checkout on a working branch while lanes still land onto `main`.
     // Empty branch clears it (back to deriving from the primary's HEAD). The branch must exist.
@@ -45767,112 +45093,15 @@ Bun.serve<WSData>({
         from: { harness: dFrom("harness"), model: dFrom("model"), effort: dFrom("effort") } };
       return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck, spawn: dSpawn });
     }
-    // POST /api/tasks/:id/reanalyse stood here until 2026-09-10: the owner's only way to force the
-    // queue analyst to read a row again, which it did by DELETING the stored verdict and any
-    // un-edited machine brief. It is retired with the analyst and deliberately not replaced by a
-    // brief-only variant: what it did to the brief was collateral, and ↻ refine is the attended way
-    // to a new one. The route now 404s like any other unknown path — a retired verb must not answer
-    // `ok:true` for work nothing will do.
-    // ↻ refine: hand this task to the brief compiler (briefs/task-refine.md). Async like ⏫ — the
-    // worker reads the repository and can take minutes — so the route answers immediately and the
-    // proposal appears on the row when it lands. The task itself is never touched by the worker.
-    const taskRefine = /^\/api\/tasks\/([a-z0-9]+)\/refine$/.exec(url.pathname);
-    if (req.method === "POST" && taskRefine) {
-      const t = tasks.find((x) => x.id === taskRefine[1]);
-      if (!t) return json({ error: "unknown task" }, 404);
-      // Confirming a refinement mints auftrag rows, so refining an advisory category would be a
-      // kind change wearing a rewrite — the same reason the dispatch button refuses it.
-      if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — refining it would mint auftrag rows` }, 409);
-      if (t.status !== "pending" && t.status !== "queued")
-        return json({ error: `task is ${t.status} — only a pending or queued task can be refined` }, 409);
-      if (refineInflight.has(t.id)) return json({ error: "a refine is already running for this task" }, 409);
-      if (!DISPATCH_REPO && !t.repo) return json({ error: "no target repo — set FLEET_DISPATCH_REPO or give the task a repo" }, 400);
-      // the compiler's whole value is that it READS this repository — a missing one is a 400 here,
-      // not a worker failure three minutes later
-      const rRepo = resolve(expandCwd(t.repo ?? DISPATCH_REPO));
-      if (!existsSync(rRepo) || !statSync(rRepo).isDirectory()) return json({ error: `repo is not a directory: ${rRepo}` }, 400);
-      const job: Promise<void> = runRefineJob(t, rRepo)
-        .finally(() => { if (refineInflight.get(t.id) === job) refineInflight.delete(t.id); });
-      refineInflight.set(t.id, job);
-      audit("task_refine", undefined, t.id);
-      return json({ ok: true, running: true });
-    }
-    // the owner's half of the refine pair. `{accept:false}` discards the proposal. Accepting is
-    // ALL-OR-NOTHING by design (briefs/task-refine.md): a useless child is archived afterwards.
-    const taskRefineConfirm = /^\/api\/tasks\/([a-z0-9]+)\/refine-confirm$/.exec(url.pathname);
-    if (req.method === "POST" && taskRefineConfirm) {
-      const t = tasks.find((x) => x.id === taskRefineConfirm[1]);
-      if (!t) return json({ error: "unknown task" }, 404);
-      const proposal = t.refine?.proposal;
-      if (!proposal) return json({ error: "no refine proposal for this task" }, 409);
-      if ((await readJson(req))?.accept === false) {
-        t.refine = undefined;
-        saveState();
-        audit("task_refine_dismiss", undefined, t.id);
-        return json({ ok: true, dismissed: true });
-      }
-      if (proposal.unchanged) return json({ error: "the proposal says this task is already brief-shaped — there is nothing to promote" }, 409);
-      if (t.status !== "pending" && t.status !== "queued")
-        return json({ error: `task is ${t.status} — only a pending or queued task can be replaced by its refinement` }, 409);
-      // a run still in flight holds a reference to this row and would write its proposal onto the
-      // archived original afterwards
-      if (refineInflight.has(t.id)) return json({ error: "a refine is still running for this task" }, 409);
-      // The deterministic acceptance, recomputed AT the promote against the tree as it stands now
-      // (refine-validate.ts). It does NOT gate — a proposal with hallucinated paths still promotes if the
-      // owner says so — but the ledger records that he could see it and confirmed anyway.
-      const rRepoRaw = t.repo ?? (DISPATCH_REPO || null);
-      const rSnapshot = rRepoRaw ? taskBaseSnapshotFor(rRepoRaw, t.base) : null;
-      const rValidation = refineValidationFor(t, rSnapshot).validation ?? null;
-      const now = Date.now();
-      const originId = t.originId ?? t.id;
-      const rSymbols = symbolIndexFor(rSnapshot);
-      const foreignVerifyCommand = rRepoRaw ? await cardForeignVerifyCommand(rRepoRaw) : null;
-      if (!tasks.includes(t) || t.refine?.proposal !== proposal || (t.status !== "pending" && t.status !== "queued")
-        || refineInflight.has(t.id))
-        return json({ error: "the task or its refinement changed while its verify command was resolved — nothing promoted" }, 409);
-      const kids: Task[] = proposal.tasks.map((c) => {
-        const id = randomBytes(4).toString("hex");
-        const card = refineChildCard(c, t.programId, rSnapshot, rSymbols, now, foreignVerifyCommand);
-        return {
-          id, originId, ...(t.programId ? { programId: t.programId } : {}),
-          // a valid card carries done/verify/files as fields — the text does not say them twice
-          text: card.valid ? c.text.slice(0, MAX_TASK_TEXT).trim() : refineChildText(c), card,
-          // source "owner": the owner is confirming this text. NO `brief` — a child is a NEW
-          // draft and must reach the compiler as one. `repo` rides along, or the split would silently retarget
-          // the dispatcher default. Children land `pending`, never `queued`: releasing stays a separate owner act.
-          source: "owner", kind: "auftrag", kindAtCreate: "auftrag", repo: t.repo,
-          // the paths the refiner verified against the tree, as the row's confirmed surface (the card
-          // above holds them too, as a READING). Not a model judgement ABOUT this row the way `brief` is.
-          ...(c.files.length ? {
-            files: c.files.slice(0, MAX_REFINE_FILES), filesOrigin: "confirmed" as const,
-          } : {}),
-          status: "pending", created: now, slot: null, note: null,
-        };
-      });
-      // append BEFORE archiving the original: capTasks may only evict TERMINAL rows, and the
-      // original is still live at this point — archiving first could make the very row we are
-      // about to annotate the one the cap drops
-      tasks = capTasks([...tasks, ...kids]);
-      t.status = "archived";
-      t.note = `refined → ${kids.map((k) => k.id).join(", ")}`;
-      saveState();
-      // the acceptance rides INTO the audit line when it is not clean — a sighted decision an outcome
-      // ledger is later asked about. A clean one adds nothing: silence already means pass.
-      audit("task_refine_confirm", undefined, `${t.id} → ${kids.map((k) => k.id).join(",")}`
-        + (rValidation && rValidation.verdict !== "pass"
-          ? ` (validation: ${rValidation.verdict}, ${rValidation.findings.length} finding${rValidation.findings.length === 1 ? "" : "s"})` : ""));
-      return json({ ok: true, tasks: kids.map(taskDigest), validation: rValidation });
-    }
     // W2 · THE OWNER'S DOOR ONTO AN EXISTING ROW'S FILE SURFACE. Until this route there was exactly
-    // ONE writer of `filesOrigin:"confirmed"` — the refine promote directly above, which can only
-    // mint that surface on rows it is CREATING. Measured 2026-09-07 on the live queue: 0 of 48 open
+    // ONE writer of `filesOrigin:"confirmed"` — the retired refinement promote, which could only
+    // mint that surface on rows it created. Measured 2026-09-07 on the live queue: 0 of 48 open
     // auftrag rows carried a confirmed surface, all 48 derived, and the land-wave sensor therefore
     // returned 44 waves of size one, every one of them for the reason "flaeche-nur-abgeleitet",
     // total saving 0 s. The gap was never a policy: there was no door.
     //
     // What this route deliberately is NOT: it mints no children, archives nothing, and touches no
-    // other field on the row — a refine SPLITS a request, this only says which files the request
-    // already there stands on. And it never promotes `derived` on its own: the paths come from the
+    // other field on the row — it only says which files the existing request stands on. And it never promotes `derived` on its own: the paths come from the
     // owner's body or from a proposal a person confirms, because lifting a prose reading to a fact
     // by machine is exactly the variant the owner rejected when this door was specified.
     // N3 · THE OWNER'S ASSIGNMENT DOOR. `{„[Zitat entfernt]“:„[Zitat entfernt]“,„[Zitat entfernt]“:true|false}` — one source per

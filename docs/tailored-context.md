@@ -246,10 +246,6 @@ delivered (the wave: the head row's card). **No card, or `valid: false`: no head
 reading the tree refused would put an unestablished claim first. A clarify lane gets no head: it
 ignores the brief by design.
 
-Where refine fits: `refine-confirm` no longer folds `done`/`verify`/`files` into the child's text when
-the child's card validates (`server.ts#refineChildCard`, `model: "refine"`); the head delivers them.
-A child whose card does not validate keeps the folded text, so it never receives less than before.
-
 ## 7. Checklist for a good brief
 
 - [ ] **Environment:** the files/constraints/interfaces this task actually touches — curated, not exhaustive.

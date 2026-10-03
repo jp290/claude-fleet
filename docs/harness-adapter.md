@@ -323,28 +323,25 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   im Rollout einer gpt-6.1-sol-Session vom 2026-09-29.
 - `DEFAULT_MODEL` (`server.ts`, Override `FLEET_MODEL`) bleibt die Auswahl für Sessions/Lanes.
   Fleet-eigene Worker beziehen Modell **und Effort** aus `model-register.ts#MODEL_DEFAULTS`;
-  `server.ts#WORKER_MODELS` löst die validierte Auswahl einmal beim Boot auf. Elf Rollen: summary,
-  commitMsg, enhance, digest, review, merge, repair, cleanReview, refine, briefReview und card.
-  Brief-Gegenlese teilt den Prompt-Vertrag und den Routenschalter mit refine, behält aber eine
-  eigene Modellauswahl und eigene Override-Schlüssel.
-- Alle zehn Worker-Routen laufen standardmäßig über `codex exec`. Die elf rollenbezogenen
-  `*Exec`-Defaults einschließlich `briefReviewExec` sind `codex/gpt-6.1-sol` mit Effort `medium`.
+  `server.ts#WORKER_MODELS` löst die validierte Auswahl einmal beim Boot auf. Neun Rollen: summary,
+  commitMsg, enhance, digest, review, merge, repair, cleanReview und card.
+- Alle neun Worker-Routen laufen standardmäßig über `codex exec`. Die neun rollenbezogenen
+  `*Exec`-Defaults sind `codex/gpt-6.1-sol` mit Effort `medium`.
   Der interaktive Worker-Default bleibt davon unabhängig auf `high`.
   Nur der exakte Wert `claude` an `FLEET_WORKER_ROUTE_SUMMARY`, `_COMMITMSG`, `_ENHANCE`, `_DIGEST`,
-  `_REVIEW`, `_CLEANREVIEW`, `_REFINE`, `_CARD`, `_MERGE` oder `_REPAIR` wählt den bisherigen
-  Claude-Session-Pfad mit dessen unverändertem Toolprofil. Brief-Gegenlese teilt `_REFINE`.
+  `_REVIEW`, `_CLEANREVIEW`, `_CARD`, `_MERGE` oder `_REPAIR` wählt den bisherigen
+  Claude-Session-Pfad mit dessen unverändertem Toolprofil.
   Fehlende, `codex-exec` und ungültige Werte wählen Codex; `FLEET_*_CMD` und Repo-Worker-Kommandos
   behalten Vorrang vor der Route.
 - Claude-Fallbackdefaults bleiben unverändert: summary, commitMsg, enhance, digest, review,
-  cleanReview, merge und repair verwenden Sonnet 5.5; refine und briefReview Opus 5.5;
+  cleanReview, merge und repair verwenden Sonnet 5.5;
   card Haiku 4.5. Alle Claude-Defaults tragen `effort: null` und lassen den CLI-Effort-Flag weg.
   Der effektive CLI-Default ist unbekannt. Modell und Effort können unabhängig überschrieben werden.
 - Worker-Overrides heißen `FLEET_<KEY>_MODEL` und `FLEET_<KEY>_EFFORT`, mit den Keys SUMMARY,
-  COMMITMSG, ENHANCE, DIGEST, REVIEW, MERGE, REPAIR, CLEAN_REVIEW, REFINE, BRIEF_REVIEW und CARD.
+  COMMITMSG, ENHANCE, DIGEST, REVIEW, MERGE, REPAIR, CLEAN_REVIEW und CARD.
   Auf Headless-Routen heißen sie `FLEET_<KEY>_CODEX_MODEL|EFFORT`; die bisherigen Claude-Keys
   ändern diese Routen weiterhin nicht. Ohne rollenbezogenen Override gelten für Claude die
-  bisherigen `FLEET_SUMMARY_MODEL|EFFORT`, für Brief-Gegenlese `FLEET_REFINE_MODEL|EFFORT`.
-  Card und refine haben eigene Keys.
+  bisherigen `FLEET_SUMMARY_MODEL|EFFORT`. Card hat eigene Keys.
 - Beim Boot werden Overrides gegen `MODEL_REGISTER` und die Effort-Stufen der Harness geprüft.
   Unbekannte oder harnessfremde Modelle und ungültige Efforts werden laut zurückgewiesen;
   der jeweilige Register-Fallback greift. Registrierte `superseded`-Overrides bleiben lesbar,
@@ -381,7 +378,7 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
 
 `server.ts#runWorker` schreibt pro Aufruf genau eine Zeile in den gitignorierten
 `worker-runs.jsonl`-Ledger über `server/persist.ts#appendEvent`, auch bei Fehlern.
-Die Zeile trägt `at` (Startzeit), `worker`, `role` (einschließlich briefReview),
+Die Zeile trägt `at` (Startzeit), `worker`, `role`,
 `route` (`cmd`, `claude` oder `codex-exec`), die konfigurierte Auswahl `model` und
 `effort` (`null` heißt weiterhin CLI-Default unbekannt), `ms` und `ok`.
 Bei Fehlern kommt `error` hinzu: höchstens 300 Zeichen der ersten Diagnosezeile,

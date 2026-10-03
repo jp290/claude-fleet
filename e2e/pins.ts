@@ -79,8 +79,7 @@ import { buildRepoGraph, roleOf, type PathRole } from "../server/deploy-classify
 import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 // S3's byte-equality rule is DRIVEN, not scanned: the renderer is pure (no clock, no git, no
 // state — wave-brief.ts's own header says so), so the pin runs it over the no-comment shapes.
-import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES,
-  renderBriefReviewBlock, BRIEF_REVIEW_MARK, BRIEF_REVIEW_MAX_BYTES } from "../wave-brief";
+import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
 import { SESSION_BLOCKS } from "../session-blocks";
 import { readContextManifest } from "../context-manifest";
@@ -2252,7 +2251,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("one plainly named server fact derives brief-compiler mode from its own configured cadence",
     briefFactDefs.length === 1, `${briefFactDefs.length} BRIEF_ON definition(s)`);
   const briefStart = server.indexOf("async function tickBriefSweep");
-  const briefBody = briefStart < 0 ? "" : server.slice(briefStart, server.indexOf("// --- ↻ refine", briefStart));
+  const briefBody = briefStart < 0 ? "" : server.slice(briefStart, server.indexOf("const clampStr", briefStart));
   const briefCode = briefBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("BRIEF_ON feeds the brief sweep guard and its only scheduler registration",
     /sweepBusy \|\| !BRIEF_ON/.test(briefBody)
@@ -2446,19 +2445,15 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // are the branches of a derivation, and banning the token everywhere would only push the same
   // constant one alias further away.
   //
-  // The comparison count is held EXACT and every occurrence is named below, so an unnamed new one
-  // still trips this rule. Since 2026-08-18 there are three, and only the first two classify a
-  // delivery seam: refineValidationFor answers the same fleet/foreign question for the refine
-  // acceptance (whether LOCAL_PROOF_STEPS describes the target tree at all), which reaches no
-  // receipt and no pack — it is listed here to keep the count honest, not because it delivers.
+  // Both comparisons classify a delivery seam; the retired refinement projection had no receipt.
   const literal = [...server.matchAll(/sourceTree:\s*"/g)].length;
   const classifiers = [...server.matchAll(/=== FLEET_REPO_ROOT\b/g)].length;
   pin("no delivery seam declares its sourceTree — every planContext caller derives it from a repository-root comparison",
-    literal === 0 && classifiers === 3
+    literal === 0 && classifiers === 2
     && /async function dispatchSourceTree\(repo: string\): Promise<"fleet" \| "foreign"> \{\n  const repoRoot = await repoRootOf\(repo\);/.test(server)
     && /const sourceTree = await dispatchSourceTree\(wt\.repo\);/.test(server)
     && /const frame: ProgramMainFrame = FLEET_REPO_ROOT !== null && repoRoot === FLEET_REPO_ROOT/.test(server)
-    && /tree: snapshot === null \? null\n\s*: FLEET_REPO_ROOT !== null && snapshot\.repo === FLEET_REPO_ROOT \? "fleet" : "foreign",/.test(server),
+,
     `${literal} literal sourceTree assignment(s), ${classifiers} FLEET_REPO_ROOT comparison(s)`);
 }
 
@@ -3612,28 +3607,6 @@ await import(pathToFileURL(process.argv[2]).href);
     pin("S3: the comments block has one renderer — server.ts carries no copy of the block's marker",
       !server.includes(ROW_COMMENTS_MARK),
       server.includes(ROW_COMMENTS_MARK) ? "server.ts re-spells the marker" : "absent");
-    // THE COUNTER-READ BLOCK (docs/brief-gegenlese.md, MAIN decision (b)): a row with no findings to
-    // deliver — every control row, every row the trial never saw — gets the OLD bytes, with and without
-    // comments, on the card-headed and the bare path. Run, not grepped, for the reason (1b) states.
-    const brComments = [{ text: "eine Anmerkung" }];
-    const brNoReview = renderBriefReviewBlock(undefined) === "" && renderBriefReviewBlock([]) === ""
-      && withCardHead(s3Card, s3Prose, undefined, undefined) === headAlone
-      && withCardHead(s3Card, s3Prose, undefined, []) === headAlone
-      && withCardHead(null, s3Prose, brComments, []) === `${s3Prose}${renderRowComments(brComments)}`
-      && withCardHead(null, s3Prose, brComments) === withCardHead(null, s3Prose, brComments, undefined);
-    const brOne = [{ kind: "done-impossible", text: "DONE widerspricht DO NOT", evidence: "rg -n tsc -> 3" }];
-    const brBody = withCardHead(null, s3Prose, brComments, brOne);
-    const brMany = renderBriefReviewBlock(Array.from({ length: 12 }, (_, i) =>
-      ({ kind: "scope-beyond", text: `Befund ${i} ${"y".repeat(300)}`, evidence: "rg" })));
-    pin("Gegenlese: without findings (control, never reviewed, review not landed) the founding bytes are the old bytes on both paths",
-      brNoReview, JSON.stringify({ brNoReview }));
-    pin("Gegenlese: the block rides BEHIND prose and comments, names kind + evidence, caps with a count, and has one renderer",
-      brBody.startsWith(`${s3Prose}${renderRowComments(brComments)}\n\n--- ${BRIEF_REVIEW_MARK} ---`)
-      && brBody.includes("[done-impossible] DONE widerspricht DO NOT — Beleg: rg -n tsc -> 3")
-      && brMany.includes("von 12 Befunden ausgelassen")
-      && new TextEncoder().encode(brMany).byteLength <= BRIEF_REVIEW_MAX_BYTES + 512
-      && !server.includes(BRIEF_REVIEW_MARK),
-      `${JSON.stringify(brBody).slice(0, 220)} · capped=${new TextEncoder().encode(brMany).byteLength}B`);
   }
   // (2) THE WAVE BUDGET (S7, 5ac5565d) HAS ONE DEFINITION, A PINNED DEFAULT, AND IS NOT THE UNDO
   // DEPTH. The door bounds on IDENTIFIERS — the live budget (env over the default) and the row
@@ -4430,7 +4403,6 @@ await import(pathToFileURL(process.argv[2]).href);
       "digest:FLEET_WORKER_ROUTE_DIGEST",
       "enhance:FLEET_WORKER_ROUTE_ENHANCE",
       "merge:FLEET_WORKER_ROUTE_MERGE",
-      "refine:FLEET_WORKER_ROUTE_REFINE",
       "repair:FLEET_WORKER_ROUTE_REPAIR",
       "review:FLEET_WORKER_ROUTE_REVIEW",
       "summary:FLEET_WORKER_ROUTE_SUMMARY",
@@ -11265,19 +11237,19 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const start = executable.indexOf("function fleetWorkerModel(");
   const end = executable.indexOf("} satisfies Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>;", start);
   const source = start < 0 || end < 0 ? "" : executable.slice(start, end + "} satisfies Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>;".length);
-  const roles = [...Object.keys(WORKER_CONTRACTS), "briefReview"].sort();
+  const roles = Object.keys(WORKER_CONTRACTS).sort();
   const bindings = [...source.matchAll(/^  (\w+): fleetWorkerModel\("(\w+)", "([A-Z_]+)"(?:, "(\w+)")?/gm)];
-  pin("worker model sources cover every contract and brief review with current register defaults",
+  pin("worker model sources cover every contract with current register defaults",
     JSON.stringify(bindings.map((m) => m[1]).sort()) === JSON.stringify(roles)
       && bindings.every((m) => m[1] === m[2] && [m[2], ...(m[4] ? [m[4]] : [])].every((role) => {
         const d = MODEL_DEFAULTS[role as keyof typeof MODEL_DEFAULTS];
         return d && "effort" in d && modelEntry(d.harness, d.id)?.status === "current";
       })), bindings.map((m) => `${m[1]}:${m[2]}:${m[4] ?? "session"}`).join(" | "));
   pin("worker model aliases cannot reintroduce a literal fallback",
-    ["CARD", "REFINE", "SUMMARY"].every((key) =>
+    ["CARD", "SUMMARY"].every((key) =>
       executable.includes(`const ${key}_MODEL = WORKER_MODELS.${key.toLowerCase()}.model;`))
       && !/["'](?:claude-(?:opus|sonnet|haiku)|gpt-\d)[^"'\n]*["']/.test(executable),
-    "CARD_MODEL, REFINE_MODEL and SUMMARY_MODEL must read WORKER_MODELS");
+    "CARD_MODEL and SUMMARY_MODEL must read WORKER_MODELS");
   let select: ((env: Record<string, string>) => Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>) | null = null;
   try {
     const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source + "\nreturn WORKER_MODELS;");
@@ -11293,20 +11265,19 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         && config.modelSource === "register" && config.effortSource === "register";
     }), JSON.stringify(selected ?? "selection source could not run"));
   const rollback = select?.({ FLEET_WORKER_ROUTE_SUMMARY: "claude", FLEET_WORKER_ROUTE_CARD: "claude",
-    FLEET_WORKER_ROUTE_REFINE: "claude", FLEET_SUMMARY_MODEL: MODEL_DEFAULTS.merge.id,
-    FLEET_SUMMARY_EFFORT: "high", FLEET_CARD_EFFORT: "medium", FLEET_REFINE_MODEL: MODEL_DEFAULTS.summary.id });
+    FLEET_SUMMARY_MODEL: MODEL_DEFAULTS.merge.id,
+    FLEET_SUMMARY_EFFORT: "high", FLEET_CARD_EFFORT: "medium" });
   const overridden = select?.({ FLEET_COMMITMSG_CODEX_MODEL: MODEL_DEFAULTS.worker.id, FLEET_COMMITMSG_CODEX_EFFORT: "high" });
   pin("worker env overrides preserve rollback, legacy keys and independent model/effort sources",
     rollback?.summary.model === MODEL_DEFAULTS.merge.id && rollback.summary.modelSource === "env"
       && rollback.summary.effort === "high" && rollback.summary.effortSource === "env"
       && rollback.card.modelSource === "register" && rollback.card.effort === "medium" && rollback.card.effortSource === "env"
-      && rollback.refine.model === MODEL_DEFAULTS.summary.id && rollback.briefReview.model === rollback.refine.model
       && overridden?.commitMsg.model === MODEL_DEFAULTS.worker.id && overridden.commitMsg.effort === "high",
     JSON.stringify({ rollback, overridden }));
   for (const binding of bindings) {
     const role = binding[1] as FleetWorkerRole;
     const key = binding[3]!;
-    const routeKey = role === "briefReview" ? "REFINE" : role === "cleanReview" ? "CLEANREVIEW" : key;
+    const routeKey = role === "cleanReview" ? "CLEANREVIEW" : key;
     const defaultSelection = selected?.[role];
     const override = select?.({ [`FLEET_${key}_CODEX_MODEL`]: MODEL_DEFAULTS.denk.id,
       [`FLEET_${key}_CODEX_EFFORT`]: "high" })?.[role];
@@ -11328,7 +11299,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const rejected = resolveWorkerModel("card", "unlisted-model", "unsafe-effort");
   const wrongHarness = resolveWorkerModel("card", MODEL_DEFAULTS.worker.id);
   const old = MODEL_REGISTER.find((entry) => entry.harness === "claude" && entry.status === "superseded");
-  const superseded = resolveWorkerModel("refine", old?.id);
+  const superseded = resolveWorkerModel("enhance", old?.id);
   pin("worker boot diagnostics reject invalid overrides and name superseded/unavailable/unknown selections",
     rejected.model === MODEL_DEFAULTS.card.id && rejected.effort === MODEL_DEFAULTS.card.effort
       && rejected.warnings.length === 2 && wrongHarness.modelSource === "register"
@@ -11347,7 +11318,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     if (bootStart >= 0 && bootEnd > bootStart && selected) {
       const code = new Bun.Transpiler({ loader: "ts" }).transformSync(executable.slice(bootStart, bootEnd));
       new Function("WORKER_MODELS", "workerModelWarnings", "readFileSync", "resolve", "homedir", "process", "console", code)(
-        { ...selected, refine: superseded, card: rejected }, workerModelWarnings,
+        { ...selected, enhance: superseded, card: rejected }, workerModelWarnings,
         () => JSON.stringify({ models: [] }), resolve, () => "/synthetic", { env: {} },
         { log: (line: string) => bootLines.push(line), warn: (line: string) => warningLines.push(line) });
       bootRan = true;
@@ -11358,19 +11329,19 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && roles.every((role) => bootLines.some((line) => line.startsWith(`[fleet] worker ${role} model=`)
         && line.includes(" effort=") && / source=(register|env) effortSource=(register|env)$/.test(line)))
       && warningLines.some((line) => line.includes("WORKER MODEL summary") && line.includes("codexAvailability=unavailable"))
-      && warningLines.some((line) => line.includes("WORKER MODEL refine") && line.includes("superseded model"))
+      && warningLines.some((line) => line.includes("WORKER MODEL enhance") && line.includes("superseded model"))
       && warningLines.some((line) => line.includes("WORKER MODEL card") && line.includes("override rejected")),
     JSON.stringify({ bootLines, warningLines, bootRan }));
   pin("every worker transport receives the resolved model and effort",
-    executable.includes("const selection = WORKER_MODELS[spec.role ?? spec.worker];")
+    executable.includes("const selection = WORKER_MODELS[spec.worker];")
       && executable.includes('summaryViaSubprocess(spec.cmd, prompt, cwd, selection, spec.timeoutMs)')
       && executable.includes('...(selection.effort ? ["--effort", selection.effort] : [])')
       && executable.includes('model: selection.model, effort: selection.effort, timeoutMs:')
       && executable.includes('model: selection.model, effort: selection.effort });')
       && executable.includes('model_reasoning_effort=${opts.effort}')
       && executable.includes("--effort '${o.effort}'")
-      && executable.includes('worker: "refine", role: "briefReview"'),
-    "stand-in, Claude and Codex carry effort; brief review owns its model role");
+,
+    "stand-in, Claude and Codex carry effort");
   let effortArgvProved = false;
   try {
     const claudeExpression = executable.match(/worker: \(o\) => \(\{\s+cmd: ([^\n]+),/)?.[1];

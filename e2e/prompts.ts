@@ -126,8 +126,7 @@ export async function run(): Promise<void> {
     // Every prompt builder whose output reaches an agent that the SERVER spawns with a tool
     // profile. buildAuthorPrompt is deliberately absent: its text goes through sendText into the
     // lane's OWN pane (see wakeAuthor), which is the owner's session and carries no profile —
-    // there is no pair to check. The ↻ refine worker is absent for a different reason: its prompt
-    // is a markdown brief (briefs/task-refine.md), not a builder this module can call.
+    // there is no pair to check.
     const PAIRS: { worker: string; profile: "MERGE_TOOLS" | "REVIEW_TOOLS" | "TEXT_ONLY_TOOLS"; text: string }[] = [
       { worker: "merge", profile: "MERGE_TOOLS", text: buildMergePrompt({ branch: "fleet/probe", main: "main",
           mergeBase: "abc123", conflicted: ["server.ts"], laneTask: "t", laneLog: "a", mainLog: "b", graphs: GRAPH }) },

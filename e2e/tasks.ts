@@ -13720,7 +13720,9 @@ export async function run(ctx: Ctx): Promise<void> {
       for (let i = 0; i < tries; i++) { if (await ok()) return true; await Bun.sleep(250); }
       return false;
     };
-    interface StAtt { id: string; kind: string; status: string; programId: string; text: string; answer: { text: string } | null }
+    interface StAtt { id: string; kind: string; status: string; programId: string; text: string;
+      stage: "orchestrator" | "owner"; raisedAt: number; escalation?: { reason: string; at: number };
+      answer: { text: string } | null }
     const stBlocked = async (): Promise<StAtt[]> => ((await (await get("/api/attention")).json()) as { requests: StAtt[] })
       .requests.filter((a) => a.kind === "blocked" && a.programId === mMainProgram);
     interface StView { waits?: { id: string; repo: string; grund: string; adressat: string; kette: string[]; freigegeben: boolean }[];
@@ -13764,16 +13766,27 @@ export async function run(ctx: Ctx): Promise<void> {
         && !!stClock1 && stClock1.stalled === false && stClock1.attentionId === null
         && (await stBlocked()).filter((a) => a.status === "open").length === 0,
       JSON.stringify({ slot: stSlot, wait: stWaitB ?? null, stau: st1.stau ?? null }));
-    const stPlant = async (extra: Record<string, string>, then?: (st: Record<string, unknown>) => void): Promise<void> => {
+    const stRestart = async (extra: Record<string, string>, then: (st: Record<string, unknown>) => void): Promise<void> => {
       await stopSrv();
       const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>;
-      st.stallSensor = { detected: 0, msTotal: 0, repos: { [stKey]: { since: Date.now() - 16 * 60_000, attentionId: null, counted: false } } };
-      then?.(st);
+      then(st);
       writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
       await restartSrv(extra);
     };
+    const stPlant = async (extra: Record<string, string>, then?: (st: Record<string, unknown>) => void): Promise<void> =>
+      stRestart(extra, (st) => {
+        st.stallSensor = { detected: 0, msTotal: 0, repos: { [stKey]: { since: Date.now() - 16 * 60_000, attentionId: null, counted: false } } };
+        then?.(st);
+      });
+    const stLabels = new Map<string, string | null>();
     // (d) lanes == cap: the planted old clock must be DROPPED, nothing raised
-    await stPlant({ FLEET_DISPATCH_MAX_LANES: "1" });
+    await stPlant({ FLEET_DISPATCH_MAX_LANES: "1" }, (st) => {
+      for (const [id, s] of Object.entries(st.slots as Record<string, { label: string | null; worktree?: unknown }>)) {
+        if (s.worktree) continue;
+        stLabels.set(id, s.label);
+        s.label = null;
+      }
+    });
     await stUntil(async () => !((await stPlan()).stau?.open ?? []).some((o) => o.repo === stKey), 40);
     await Bun.sleep(4 * DISPATCH_TICK_MS);
     const stD = await stPlan();
@@ -13800,6 +13813,8 @@ export async function run(ctx: Ctx): Promise<void> {
         && stOpen[0]!.text.includes("f-stau.ts") && stOpen[0]!.text.includes(stB) && stOpen[0]!.text.includes(stC)
         && stClockA?.stalled === true && stClockA.attentionId === stOpen[0]!.id && (stA1.stau?.detected ?? 0) >= 1,
       JSON.stringify({ open: stOpen, stau: stA1.stau ?? null }));
+    check("(stau)(owner) without a live Orchestratorin the sensor row immediately waits on the owner",
+      stOpen.length === 1 && stOpen[0]?.stage === "owner" && !stOpen[0].escalation, JSON.stringify(stOpen));
     check("(stau)(f) the chain row → row → lane ends at the lane: C (after B, B behind lane N) is addressed to slot:N and names both links",
       stWaitC?.adressat === `slot:${stSlot}` && stWaitC.freigegeben === true
         && JSON.stringify(stWaitC.kette) === JSON.stringify([`row ${stB} (after)`, `lane ${stSlot} auf f-stau.ts`]),
@@ -13808,6 +13823,70 @@ export async function run(ctx: Ctx): Promise<void> {
     const stB2 = (await stBlocked()).filter((a) => a.status === "open");
     check("(stau)(b) further ticks keep it at ONE open attention — the same row",
       stB2.length === 1 && stB2[0]?.id === stOpen[0]?.id, JSON.stringify(stB2.map((a) => a.id)));
+    const stFreshOrch = async (removeId: string): Promise<StAtt | undefined> => {
+      await stPlant({}, (st) => {
+        st.attentionRequests = (st.attentionRequests as StAtt[]).filter((a) => a.id !== removeId);
+        (st.slots as Record<string, { label: string | null }>)[String(mSlot)]!.label = "Orchestratorin stau fixture";
+      });
+      await stUntil(async () => (await stBlocked()).some((a) => a.status === "open"), 60);
+      return (await stBlocked()).find((a) => a.status === "open");
+    };
+    const stOrch = await stFreshOrch(stOpen[0]?.id ?? "");
+    check("(stau)(orch) one live Orchestratorin receives the sensor row; before the default 10-minute deadline it stays there",
+      !!stOrch && stOrch.stage === "orchestrator" && !stOrch.escalation, JSON.stringify(stOrch));
+    const stRejected = stOrch ? await post(`/api/attention/${stOrch.id}/answer`, { text: " " }) : null;
+    check("(stau)(reject) an empty answer is rejected and does not acknowledge the sensor row",
+      stRejected?.status === 400 && (await stBlocked()).find((a) => a.id === stOrch?.id)?.status === "open",
+      `answer=${stRejected?.status ?? "no row"}`);
+    await stRestart({}, (st) => {
+      const a = (st.attentionRequests as StAtt[]).find((a) => a.id === stOrch?.id);
+      if (a) a.raisedAt = Date.now() - 10 * 60_000 - 1;
+    });
+    await stUntil(async () => (await stBlocked()).some((a) => a.id === stOrch?.id && a.stage === "owner"), 60);
+    const stExpired = (await stBlocked()).find((a) => a.id === stOrch?.id);
+    check("(stau)(timeout) an unanswered sensor row reaches the owner after the default deadline through the existing escalation",
+      stExpired?.status === "open" && stExpired.stage === "owner"
+        && stExpired.escalation?.reason === "Stau-Sensor: keine Antwort innerhalb von 600000 ms",
+      JSON.stringify(stExpired));
+    await Bun.sleep(8 * DISPATCH_TICK_MS);
+    const stOnce = await stBlocked();
+    const stEscalations = ((await (await get("/api/audit?limit=300")).json()) as
+      { events: { event?: string; detail?: string }[] }).events
+      .filter((e) => e.event === "attention_escalated" && e.detail?.startsWith(`${stExpired?.id} `));
+    check("(stau)(once) further ticks retain one row and the first escalation receipt",
+      stOnce.length === 1 && stOnce[0]?.id === stExpired?.id && !!stExpired?.escalation
+        && stOnce[0]?.escalation?.at === stExpired.escalation.at && stEscalations.length === 1,
+      JSON.stringify({ rows: stOnce, escalations: stEscalations }));
+    const stConfigured = await stFreshOrch(stExpired?.id ?? "");
+    await stRestart({ FLEET_STALL_ORCH_ACK_MS: "1000" }, (st) => {
+      const a = (st.attentionRequests as StAtt[]).find((a) => a.id === stConfigured?.id);
+      if (a) a.raisedAt = Date.now() - 2000;
+    });
+    await stUntil(async () => (await stBlocked()).some((a) => a.id === stConfigured?.id && a.stage === "owner"), 60);
+    const stShortDeadline = (await stBlocked()).find((a) => a.id === stConfigured?.id);
+    check("(stau)(configured) the configured deadline replaces the default for an unanswered row",
+      stShortDeadline?.status === "open" && stShortDeadline.stage === "owner"
+        && stShortDeadline.escalation?.reason === "Stau-Sensor: keine Antwort innerhalb von 1000 ms",
+      JSON.stringify(stShortDeadline));
+    const stAck = await stFreshOrch(stConfigured?.id ?? "");
+    const stAnswer = stAck ? await post(`/api/attention/${stAck.id}/answer`, { text: "Orchestratorin: Stau wird bearbeitet" }) : null;
+    await stRestart({ FLEET_STALL_ORCH_ACK_MS: "1000" }, (st) => {
+      const a = (st.attentionRequests as StAtt[]).find((a) => a.id === stAck?.id);
+      if (a) a.raisedAt = Date.now() - 2000;
+    });
+    await Bun.sleep(8 * DISPATCH_TICK_MS);
+    const stAcknowledged = (await stBlocked()).find((a) => a.id === stAck?.id);
+    check("(stau)(ack) an answer acknowledges the row: after the configured deadline it remains at the Orchestratorin without escalation",
+      stAck?.stage === "orchestrator" && stAnswer?.status === 200 && stAcknowledged?.status === "answered"
+        && stAcknowledged.stage === "orchestrator" && !stAcknowledged.escalation
+        && stAcknowledged.answer?.text === "Orchestratorin: Stau wird bearbeitet", JSON.stringify(stAcknowledged));
+    await stRestart({}, (st) => {
+      st.attentionRequests = (st.attentionRequests as StAtt[]).filter((a) => a.id !== stAck?.id);
+      if (stOpen[0]) (st.attentionRequests as StAtt[]).push(stOpen[0]);
+      const sensor = st.stallSensor as { repos: Record<string, { attentionId: string | null }> };
+      if (sensor.repos[stKey]) sensor.repos[stKey]!.attentionId = stOpen[0]?.id ?? null;
+      for (const [id, label] of stLabels) (st.slots as Record<string, { label: string | null }>)[id]!.label = label;
+    });
     // (c) the blocker goes: A "lands" (done + kill, the (sp-tick) emulation), B starts
     await post(`/api/tasks/${stA}/done`, {});
     if (stSlot > 0) await post(`/api/slots/${stSlot}/kill`, {});

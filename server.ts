@@ -474,7 +474,7 @@ interface Harness {
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
     container: string; containerContext: string; cwd: string; browserMcp: boolean;
     context: SlotContext | null; rulebookRole: "main" | "orchestrator" | null;
-    remoteName: string | null }): string;
+    remoteName: string | null; webSearch?: boolean }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -1496,6 +1496,7 @@ const CODEX_HARNESS: Harness = {
     // that constant is a claude model id and Codex has never heard of it.
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` -c model_reasoning_effort='${o.effort}'`;
+    if (o.webSearch) cmd += " --search";
     // the slot's context budget (Slot.context), fresh AND resume form. Both numbers are integers judged
     // by contextOf, so no request text reaches this line; absent = no flag, today's line byte for byte.
     // The scope is `total`, the counting mode docs/messungen/2026-09-15-codex-kontextfenster-profile.md §4
@@ -8073,12 +8074,15 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   context: SlotContext | null;
   container: string | null;
   containerContext: string | null;
+  webSearch: boolean;
 }
 
-const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
+const slotSpawnOccupant = (s: Slot, webSearch = !!s.worktree && tasks.some((t) =>
+  t.slot === s.id && t.status === "sent" && t.card?.valid === true && t.card.web === "search")): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
   browser: s.browser, remote: s.remote, context: s.context, container: s.container, containerContext: s.containerContext,
+  webSearch,
 } : null;
 
 // label is a captured spawn input, not occupant identity: the owner may relabel a live session
@@ -8146,12 +8150,12 @@ function rulebookRoleForSpawn(s: Slot, occupant: SlotSpawnOccupant): "main" | "o
   return positionRole(s) === "orchestrator" ? "orchestrator" : null;
 }
 
-async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal"): Promise<void> {
+async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal", webSearch?: boolean): Promise<void> {
   if (slotTeardownInflight.has(s.id)) return;
   // ASLEEP ON PURPOSE (sleepSlot): the absent pane is the state, not damage. Every caller — the 2 s
   // self-heal first of all — must leave it absent; only wakeSlot clears the mark and then calls here.
   if (s.sleeping) return;
-  let occupant = slotSpawnOccupant(s);
+  let occupant = slotSpawnOccupant(s, webSearch);
   if (!occupant) return;
   const entrySpawn = slotSpawnInflight.get(s.id);
   if (entrySpawn) { await entrySpawn; return; }
@@ -8227,6 +8231,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
           browserMcp: !s.worktree || occupant.browser, context: occupant.context, rulebookRole,
+          webSearch: h.id === "codex" && occupant.webSearch,
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);
@@ -8343,7 +8348,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false, context: SlotContext | null = null, remote = false): Promise<void> {
+  browser = false, context: SlotContext | null = null, remote = false, webSearch = false): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   await waitForSlotTeardown(s.id);
@@ -8493,7 +8498,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
       || hashSelfToken(s.selfToken) !== treeLease.founding.target.selfTokenHash)
       throw new GameMakerTreeConflict("Program-MAIN target identity changed during candidate persistence");
   } else saveState();
-  await ensureSlot(s, "open");
+  await ensureSlot(s, "open", webSearch);
   } finally {
     openSlotIntents.delete(openIntent);
   }
@@ -16974,7 +16979,8 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     await syncLaneRefs(dRef, wt.path);
     try {
       await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
-        spawn.context ?? null);
+        spawn.context ?? null, false, [next, ...(wave?.followers ?? [])].some((t) =>
+          t.card?.valid === true && t.card.web === "search"));
     } finally {
       releaseLaneLetter(letterBand, letter);
     }
@@ -18027,7 +18033,7 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
 // card is validated against the JOINED text — the string the model path validates against — so
 // the quote rule asks both paths the same question. `null` still hands the row to the extractor
 // exactly as before.
-const LABELED_FORMAT_LINE = /^\s*(ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|ZIEL|VERIFY|DONE|VERBOTEN)\s*:[ \t]*(.*)$/i;
+const LABELED_FORMAT_LINE = /^\s*(ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|WEB|ZIEL|VERIFY|DONE|VERBOTEN)\s*:[ \t]*(.*)$/i;
 const FALSE_GOAL_LEAD = /^(SUCHE|WARUM|NACH|QUELLEN|VORBEDINGUNG)\b/i;
 const EXPLICIT_GOAL_PLACEHOLDER = "__FLEET_EXPLICIT_GOAL__";
 
@@ -18281,6 +18287,7 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
   return {
     ziel: str(raw.ziel), done: str(raw.done), verify: str(raw.verify), verboten: strs(raw.verboten),
     ...(str(raw.delegation) ? { delegation: str(raw.delegation) } : {}),
+    ...(raw.web === "search" ? { web: "search" as const } : {}),
     ...(field(raw.klasse) ? { klasse: field(raw.klasse)! } : {}),
     rolle: { harness: field(role.harness), model: field(role.model), effort: field(role.effort) },
     surface: { files: strs(surface.files), symbols, ranges,
@@ -18422,7 +18429,7 @@ async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     return { ok: false, status: 400, error: "card must be an object {ziel, rolle?, klasse?, surface{files, symbols}, done, verify, verboten, size?, after?}" };
   const c = raw as Record<string, unknown>;
-  const known = ["ziel", "rolle", "klasse", "surface", "done", "verify", "verboten", "size", "after"];
+  const known = ["ziel", "rolle", "klasse", "surface", "done", "verify", "verboten", "size", "after", "web"];
   const extra = Object.keys(c).filter((k) => !known.includes(k));
   if (extra.length) return { ok: false, status: 400, error: `card reads ${known.join(", ")} only — [${extra.join(", ")}] is not read` };
   const snapshot = repoRaw ? taskBaseSnapshotFor(repoRaw, base) : null;
@@ -18435,7 +18442,7 @@ async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null
   const foreignVerifyCommand = await cardForeignVerifyCommand(snapshot.repo);
   const checked = validateCard({ ...c, ...(programId ? { program: programId } : {}) },
     // an author's size is its own declaration, exactly like the surface line beside it
-    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}`, snapshot, symbolIndexFor(snapshot), foreignVerifyCommand));
+    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}${c.web === "search" ? "\nWEB: search" : ""}`, snapshot, symbolIndexFor(snapshot), foreignVerifyCommand));
   if (!checked.valid) return { ok: false, status: 400, error: `card rejected, nothing filed: ${checked.gaps.join("; ")}` };
   return { ok: true, card: { ...checked.body, model: "author", at: now, ms: 0, valid: true, surfaceValid: true,
     validatorVersion: CARD_VALIDATOR_VERSION, gaps: [] } };

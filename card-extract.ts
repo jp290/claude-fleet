@@ -58,7 +58,7 @@ export const CARD_KEY = "card";
 //   9 (2026-09-26) — DELEGATION is a filing header and survives card re-reads
 //  10 (2026-09-26) — KLASSE is a checked header; its registry is supplied by the caller
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 10;
+export const CARD_VALIDATOR_VERSION = 11;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
@@ -73,6 +73,7 @@ export interface TaskCardBody {
   verify: string;
   verboten: string[];
   delegation?: string;
+  web?: "search";
   klasse?: string;
   program?: string;
   // the lane size the row's own text states (KLEINE / MITTLERE / GROSSE LANE); absent = not stated.
@@ -88,6 +89,7 @@ export interface TaskCardBody {
 export interface RawCard {
   ziel?: unknown; rolle?: unknown; surface?: unknown;
   done?: unknown; verify?: unknown; verboten?: unknown; delegation?: unknown; klasse?: unknown; program?: unknown; size?: unknown; after?: unknown;
+  web?: unknown;
   // set only by the filing-format parser: header lines that stood AFTER the block it read. The
   // model path never carries one, so absence is the case for every other reading.
   strayHeaderLines?: unknown;
@@ -233,6 +235,13 @@ function verifyAliased(verify: string): { verify: string; aliased: boolean } {
  */
 export function validateCard(raw: RawCard, ctx: CardValidationContext): CardValidation {
   const gaps: string[] = [];
+  let web: "search" | undefined;
+  if (raw.web !== undefined && raw.web !== null) {
+    if (raw.web !== "search") gaps.push('web: only "search" is supported');
+    else if (!/^\s*WEB\s*:[ \t]*search[ \t]*$/mi.test(ctx.sourceText))
+      gaps.push('web: WEB: search is not declared in the request');
+    else web = "search";
+  }
   const ziel = text1(raw.ziel);
   if (!ziel) gaps.push("ziel: the extractor returned no goal sentence");
   const done = text1(raw.done);
@@ -463,6 +472,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     surface: { files, symbols, ranges: ctx.symbolIndex ? ranges.filter((r) => !rangeless.has(r.file)) : null,
       ...(creates.length ? { creates } : {}), ...(unchecked.length ? { unchecked } : {}) },
     verboten: list(raw.verboten),
+    ...(web ? { web } : {}),
     ...(typeof raw.delegation === "string" && raw.delegation.trim() ? { delegation: text1(raw.delegation) } : {}),
     ...(klasse && ctx.classKnown?.(klasse) ? { klasse } : {}),
     ...(program ? { program } : {}),
@@ -507,10 +517,10 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
 // (wave-brief.ts#renderCardHead renders it into every lane brief), so losing it silently is the
 // dangerous direction. Both readings are written to round-trip the head that renderCardHead emits:
 // `·` between entries, an em dash alone meaning none.
-const FORMAT_KEYS = ["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"] as const;
+const FORMAT_KEYS = ["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "WEB", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"] as const;
 type FormatKey = typeof FORMAT_KEYS[number];
 const FORMAT_REQUIRED: readonly FormatKey[] = ["GROESSE", "FLAECHE", "VERIFY", "DONE"];
-const FORMAT_LINE = /^\s*(KLASSE|ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|VERIFY|DONE|DELEGATION|VERBOTEN)\s*:[ \t]*(.*)$/i;
+const FORMAT_LINE = /^\s*(KLASSE|ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|WEB|VERIFY|DONE|DELEGATION|VERBOTEN)\s*:[ \t]*(.*)$/i;
 const formatKey = (word: string): FormatKey =>
   word.toUpperCase().replace("Ö", "OE").replace("Ä", "AE") as FormatKey;
 const FORMAT_DASH = /^[-\u2013\u2014]+$/;
@@ -569,6 +579,7 @@ export function parseFormattedCard(text: string): RawCard | null {
     done: field("DONE"), verify: field("VERIFY"), delegation: field("DELEGATION"), klasse: field("KLASSE"), verboten: formatPhrases(field("VERBOTEN")),
     ...(size ? { size } : {}),
     after: formatTokens(field("NACH")),
+    ...(fields.has("WEB") ? { web: field("WEB") } : {}),
     ...(strayHeaderLines.length ? { strayHeaderLines } : {}),
   };
 }
@@ -651,6 +662,7 @@ export function buildCardPrompt(text: string, effortLevels: readonly string[]): 
     '  "size": "klein, mittel or gross — only when the text states the lane size (e.g. KLEINE LANE)",',
     '  "after": ["queue row ids the text says this request waits on"]',
     "}}",
+    'The optional field "web": "search" is allowed only when a WEB: search header explicitly declares live web research. Otherwise omit it; never infer it from a research goal.',
     `\`effort\` is one of: ${effortLevels.join(", ")}. Every string field may be "", every list may be [].`,
   ].join("\n");
 }

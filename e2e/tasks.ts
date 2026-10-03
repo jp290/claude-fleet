@@ -6696,6 +6696,108 @@ export async function run(ctx: Ctx): Promise<void> {
   // no outcome row carried it, and the owner closed it by hand. The LINK is the gain; passing the
   // harness is what makes the gain reachable.
   //
+  {
+    const webDir = mkdtempSync(join(tmpdir(), "fleet-web-search-"));
+    const binDir = join(webDir, "bin");
+    const liveDir = join(webDir, "live");
+    const sessionsDir = join(webDir, "sessions", "2026", "10", "03");
+    const invoked = join(webDir, "invoked");
+    for (const dir of [binDir, liveDir, sessionsDir]) mkdirSync(dir, { recursive: true });
+    const cat = Bun.which("cat");
+    const q = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
+    const originalPath = process.env.PATH ?? "";
+    const webPath = `${binDir}:${originalPath}`;
+    const made: { id: string; slot?: number }[] = [];
+    if (cat) symlinkSync(cat, join(liveDir, "codex"));
+    writeFileSync(join(binDir, "codex"), ["#!/bin/sh",
+      `printf '%s\\n' "$@" > ${q(invoked)}`, "printf '› \\n'",
+      `exec ${q(join(liveDir, "codex"))}`, ""].join("\n"));
+    chmodSync(join(binDir, "codex"), 0o755);
+    check("(web) setup: Codex resolves exclusively to the stand-in binary",
+      !!cat && Bun.which("codex", { PATH: webPath }) === join(binDir, "codex"), `cat=${!!cat}`);
+    try {
+      if (cat) {
+        await restartSrv({ PATH: webPath, FLEET_CODEX_SESSIONS_DIR: join(webDir, "sessions"), FLEET_DISPATCH_REPO: REPO });
+        for (const search of [false, true]) {
+          const text = ["ROLLE: codex/gpt-6-astra/high", "GROESSE: klein", "FLAECHE: code.txt",
+            ...(search ? ["WEB: search"] : []), "VERIFY: bun e2e/pins.ts", "DONE: code.txt enthaelt eine Zeile",
+            "", "code.txt bekommt eine Recherchezeile."].join("\n");
+          const raw = parseFormattedCard(text);
+          const create = await post("/api/tasks", { text, repo: REPO, queue: false, card: raw ? {
+            ziel: raw.ziel, rolle: raw.rolle, surface: raw.surface, done: raw.done, verify: raw.verify,
+            verboten: raw.verboten, size: raw.size, ...(raw.web !== undefined ? { web: raw.web } : {}),
+          } : undefined });
+          const created = (await create.json()) as { task?: { id: string; card?: { web?: string } } };
+          check(`(web) ${search ? "search" : "absent"}: author door preserves the parsed declaration`,
+            create.ok && !!created.task && created.task.card?.web === (search ? "search" : undefined), `status=${create.status}`);
+          if (!created.task) continue;
+          const row = { id: created.task.id, slot: undefined as number | undefined };
+          made.push(row);
+          rmSync(invoked, { force: true });
+          const dispatch = await post(`/api/tasks/${row.id}/dispatch`, {});
+          const started = (await dispatch.json()) as { ok?: boolean; slot?: number };
+          row.slot = started.slot;
+          check(`(web) ${search ? "search" : "absent"}: dispatch starts the declared Codex lane`,
+            dispatch.ok && started.ok === true && typeof row.slot === "number", `status=${dispatch.status}`);
+          if (typeof row.slot !== "number") continue;
+          const expected = (id?: string): string => `${id ? `codex resume '${id}'` : "codex"}`
+            + " --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false"
+            + " --model 'gpt-6-astra' -c model_reasoning_effort='high'"
+            + (search ? " --search" : "")
+            + ' -c \'mcp_servers.playwright={command="npx",args=["@playwright/mcp@latest"],enabled=false}\'';
+          const command = async (): Promise<string> => {
+            const out = (await tmuxOut("display-message", "-p", "-t", `s${row.slot}`, "#{pane_start_command}")).out;
+            return out.slice(out.lastIndexOf("; codex ") + 2).split("; exec ")[0]?.trim() ?? "";
+          };
+          const observe = async (id?: string): Promise<void> => {
+            await until(() => existsSync(invoked), { timeoutMs: 10_000, what: "web stand-in invocation" });
+            const actual = await command();
+            const args = readFileSync(invoked, "utf8").trim().split("\n");
+            check(`(web) ${search ? "search" : "absent"} ${id ? "resume" : "fresh"}: generated command is byte-exact`,
+              actual === expected(id), `matches=${actual === expected(id)}`);
+            check(`(web) ${search ? "search" : "absent"} ${id ? "resume" : "fresh"}: stand-in receives the exact search selection`,
+              args.filter((arg) => arg === "--search").length === (search ? 1 : 0)
+              && (id ? args[0] === "resume" && args[1] === id : args[0] === "--dangerously-bypass-approvals-and-sandbox"),
+              `searchFlags=${args.filter((arg) => arg === "--search").length}`);
+          };
+          await observe();
+          const slots = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string }[] };
+          const cwd = slots.slots.find((s) => s.id === row.slot)?.cwd;
+          const id = crypto.randomUUID();
+          writeFileSync(join(sessionsDir, `rollout-web-${id}.jsonl`), JSON.stringify({ type: "session_meta",
+            payload: { id, cwd, timestamp: new Date().toISOString(), thread_source: "user" } }) + "\n");
+          const bind = await post(`/api/slots/${row.slot}/codex-bind`, { sessionId: id });
+          check(`(web) ${search ? "search" : "absent"}: exact rollout binding succeeds before resume`, bind.ok, `status=${bind.status}`);
+          if (bind.ok) {
+            await restartSrv({ PATH: webPath, FLEET_CODEX_SESSIONS_DIR: join(webDir, "sessions"), FLEET_DISPATCH_REPO: REPO });
+            const persisted = (await (await get(`/api/tasks/${row.id}`)).json()) as { task?: { card?: { web?: string } } };
+            check(`(web) ${search ? "search" : "absent"}: declaration survives server restart`,
+              persisted.task?.card?.web === (search ? "search" : undefined) && !!persisted.task, `web=${persisted.task?.card?.web ?? "absent"}`);
+            rmSync(invoked, { force: true });
+            const resume = await post(`/api/slots/${row.slot}/restart`, {});
+            check(`(web) ${search ? "search" : "absent"}: restart creates the resume pane`, resume.ok, `status=${resume.status}`);
+            if (resume.ok) await observe(id);
+          }
+          await post(`/api/slots/${row.slot}/kill`, {});
+          await slotsEmptied([row.slot]);
+          row.slot = undefined;
+          await post(`/api/tasks/${row.id}/delete`, {});
+        }
+        const invalid = await post("/api/tasks", { text: "code.txt: research", repo: REPO, queue: false,
+          card: { ziel: "code.txt aendern", rolle: { harness: "codex", model: "gpt-6-astra", effort: "high" },
+            surface: { files: ["code.txt"], symbols: [] }, done: "Zeile steht", verify: "bun e2e/pins.ts", verboten: [], web: "auto" } });
+        check("(web) author door refuses unsupported search modes before dispatch", invalid.status === 400, `status=${invalid.status}`);
+      }
+    } finally {
+      for (const row of made) {
+        if (typeof row.slot === "number") { await post(`/api/slots/${row.slot}/kill`, {}); await slotsEmptied([row.slot]); }
+        await post(`/api/tasks/${row.id}/delete`, {});
+      }
+      await restartSrv({ FLEET_DISPATCH_REPO: REPO });
+      rmSync(webDir, { recursive: true, force: true });
+    }
+  }
+
   // Every assertion here is on the PANE's own command line or on the row, never on the route's 200:
   // a dropped harness answers 200 exactly as happily as a carried one, which is the failure mode
   // this section exists for (same argument as the lane routes in e2e/lanes-basic.ts). ---
@@ -10526,6 +10628,20 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(delegationCard.body.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"]),
       JSON.stringify({ gaps: delegationCard.gaps, delegation: delegationCard.body.delegation,
         verboten: delegationCard.body.verboten }));
+    const webText = vbText.replace("VERBOTEN:", "WEB: search\nVERBOTEN:");
+    const webCard = validateCard(parseFormattedCard(webText) ?? {}, { ...cardCtx, sourceText: webText });
+    check("(web) WEB: search survives the formatted parser and validator; absence grants no web field",
+      webCard.valid && webCard.body.web === "search" && parseFormattedCard(vbText)?.web === undefined
+      && validateCard(vbRaw ?? {}, { ...cardCtx, sourceText: vbText }).body.web === undefined,
+      JSON.stringify({ web: webCard.body.web, gaps: webCard.gaps }));
+    const badWebText = webText.replace("WEB: search", "WEB: auto");
+    const badWeb = validateCard(parseFormattedCard(badWebText) ?? {}, { ...cardCtx, sourceText: badWebText });
+    const inventedWeb = validateCard({ ...vbRaw, web: "search" }, { ...cardCtx, sourceText: vbText });
+    check("(web) an unsupported web value and an undeclared extractor value both refuse the card",
+      !badWeb.valid && badWeb.gaps.includes('web: only "search" is supported') && badWeb.body.web === undefined
+      && !inventedWeb.valid && inventedWeb.gaps.includes('web: WEB: search is not declared in the request')
+      && inventedWeb.body.web === undefined,
+      JSON.stringify({ bad: badWeb.gaps, invented: inventedWeb.gaps }));
     check("(s2) a card with no DELEGATION header grants no delegation field",
       vbRaw !== null && !("delegation" in validateCard(vbRaw, { ...cardCtx,
         sourceText: vbText.replaceAll("fleet-e2e.ts", "server.ts") }).body),

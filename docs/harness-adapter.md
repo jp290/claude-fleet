@@ -671,6 +671,20 @@ Netzwerkkosten werden nicht als null behauptet.
     weder `~/.claude/settings.json` noch `~/.codex/config.toml` (Pin in `e2e/pins.ts`). Gemessen am
     2026-09-14 auf eigenem tmux-Socket, Kinder nach Executable-/Skriptposition gezählt: claude ambient 2 →
     strict 0; codex frisch ambient 2 → Override 0; `codex resume <id>` mit Override 0.
+  - **Web-Recherche je Queue-Karte: `WEB: search`.** Optionale Kopfzeile neben `NACH:`;
+    `search` ist der einzige gültige Wert. Die strukturierten Create-Türen nehmen entsprechend
+    `card.web: "search"` als explizite Autor-Deklaration. Eine Rechercheabsicht in Prosa aktiviert
+    nichts. Parser und Validator bewahren das Feld; ein anderer Wert verweigert die Karte.
+    **Codex `apply`**: Dispatch reicht die gültige Karte bis `CODEX_HARNESS.spawnCmd` weiter;
+    frische UND exakt-ID-resumierte Kommandozeilen erhalten `--search`. Ohne Deklaration bleibt
+    die Kommandozeile bytegleich. Bei einer Welle genügt eine deklarierende Karte; Heal, Restart
+    und Server-Neustart lesen die persistierten, an den Slot gebundenen Karten erneut.
+    Die vorhandene Kartenansicht zeigt die Deklaration im Auftrag; ein eigener Web-Schalter im
+    Client ist **not-applicable**. Plain-Sessions und handgeöffnete Lanes ohne Queue-Karte wählen
+    hier kein Web-Profil. **claude/pi/container `not-applicable`**: deren Kommandozeilen bleiben
+    unverändert. Keine Änderung an globaler Codex-Konfiguration oder Trust-Prelude.
+    `e2e/tasks.ts` prüft Parser-Refusals sowie erzeugte frische und Resume-Zeilen mit/ohne Auswahl
+    gegen ein Stand-in-Binary; dafür wird kein echter Codex gestartet.
   - **Kontextbudget je Codex-Slot: `context: {window, compactAt}` (2026-09-15).** Zwei ganze Zahlen in
     Tokens, Spawn-Option wie `effort`: `POST /api/slots/:n/open`, `…/open-worktree`, `POST /api/lanes`
     (auch attach), `Task.spawn` (beide Create-Türen), Dispatch- und Wellen-Tür (Body-Feld gewinnt, sonst die

@@ -751,12 +751,20 @@ Rollenkarten in `docs/rollenkarten.md` sagen es für beide Seiten). Mechanik (`s
   Orchestrator-Label (`isOrchestratorLabel`: `🎛`, „Orchestrator…"; eine Lane zählt nie mit, auch wenn
   ihr Label das Wort trägt) → `stage:"orchestrator"`; keiner
   oder zwei → `stage:"owner"` (die nächsthöhere Stufe). Ist die fragende MAIN selbst diese eine
-  Orchestratorin, geht die Frage an den Owner. Die serverseitig erhobenen Zeilen (Nachfolge-Warnung,
-  Kriteriums-Bitte, Stall-Sensor) sind immer `stage:"owner"`.
+  Orchestratorin, geht die Frage an den Owner. Nachfolge-Warnung und Kriteriums-Bitte sind immer
+  `stage:"owner"`. Eine Stau-Attention (`server.ts#raiseStallAttention`) entsteht mit
+  `stage:"orchestrator"`, wenn `deliveryRecipient({kind:"orchestrator"})` genau eine lebende
+  Orchestratorin liefert, sonst sofort mit `stage:"owner"`. Sie erhält denselben Hinweis wie bei
+  MAIN-Attentions.
 - **Genau ein Hinweis** an die Orchestratorin, nach dem State-Cut und außerhalb der Antwort: eine
   Zeile mit Id, Kind, Program, gekürzter Frage und den beiden Türen, gebucht als Audit-`send` mit
   `path:"attention-orchestrator"`. Ein idempotenter Re-Raise derselben Frage sendet nichts. Ein
   gescheiterter Hinweis ändert die Zeile nicht; `GET /api/attention` zeigt sie weiter.
+- **Stau-Frist** (`server.ts#tickStallSensor`): Bleibt die Stau-Zeile offen und auf
+  `stage:"orchestrator"`, hebt der Sensor sie nach `FLEET_STALL_ORCH_ACK_MS` ab `raisedAt`
+  (Default 600000 ms = 10 min) genau einmal per `server.ts#escalateAttention` auf `owner`.
+  „[Zitat entfernt]“ heißt hier: Die Orchestratorin hat **beantwortet**, die Zeile ist nicht mehr `open`.
+  Eine eigene Lese-Quittung gibt es dafür nicht; jede nicht mehr offene Zeile wird nicht eskaliert.
 - **Zählung auf dem 2-s-Poll:** `attentionOpen` zählt nur, was auf den Owner wartet;
   `attentionAtOrchestrator` zählt, was bei der Orchestratorin liegt, beide entfallen bei null. Gibt es
   keine eindeutige lebende Orchestratorin mehr, zählt eine dort geparkte Zeile zur Lesezeit wieder

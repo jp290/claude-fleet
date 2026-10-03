@@ -10,6 +10,43 @@ weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, ni
   alle drei exportieren, denn Server-PATH wird in jede Pane gebacken. Symptom sonst: "zsh: command not found:
   claude/bun" in neuen Slots.
 
+## Lokaler Modell-Abgleich
+
+`bun model-scan.ts` und `bun model-scan.ts --json` geben denselben JSON-Vorschlag aus.
+Der Scanner liest nur Dateien; er startet keine Harness-CLI, fragt kein Netzwerk ab,
+installiert nichts und schreibt weder ins `MODEL_REGISTER` noch in Konfigurationsdateien.
+Die Harness-Menge kommt aus `model-register.ts#MODEL_REGISTER`, einschliesslich
+`superseded`-Eintraegen. `bun e2e/model-scan.ts` prueft den Abgleich ausschliesslich
+mit temporaeren Fixture-Quellen.
+
+| Harness | Lokale Quelle | Bedeutung |
+| --- | --- | --- |
+| `codex` | `$CODEX_HOME/models_cache.json`, Default `~/.codex/models_cache.json` | `models[].slug` ist der von Codex gespeicherte Modellkatalog; optional `fetched_at` datiert den Cache. |
+| `pi-zai` | `$FLEET_PI_ZAI_AGENT_DIR/models-store.json`, Default `~/.config/claude-fleet/pi-zai-agent/models-store.json` | Nur `zai.models[].id` aus dem dynamischen Provider-Katalog; `zai.checkedAt` datiert die letzte Cache-Pruefung. Ein fehlender Provider, leere Modelle oder fehlender Zeitstempel bleiben `unknown`. |
+| `claude` | `$CLAUDE_CONFIG_DIR/cache/model-access.json` und `model-capabilities.json`, Default `~/.claude/cache/` | Bei Claude Code 2.1.288: Access-Schema `version: 1, entries: {scope: {model: {s: "ok"\|"refused", at: number}}}`; Capability-Schema `models: [{id, max_input_tokens?, max_tokens?}], timestamp: number`. Beide Dateien fehlen auf dem gemessenen Host. Auch vorhandene, passende Dateien bilden keinen vollstaendigen Verfuegbarkeitskatalog: Access merkt scoped Provider-Erfahrungen, Capabilities Tokenlimits. Ergebnis bleibt `unknown`. |
+
+Je Harness nennt `sources` die Quelle ohne aufgeloeste Host-/Override-Pfade.
+`status: "known"` liefert sortierte, deduplizierte `available`, `newlyAvailable`
+und `registeredButUnavailable`; die beiden Differenzen vergleichen exakte IDs mit
+allen Register-Eintraegen des Harness. `basis: "local-cache"` begrenzt die Aussage
+auf diesen lokalen Katalogstand: kein erfolgreicher Modellaufruf, keine aktuelle
+Konto-Berechtigung, keine Zusicherung eines frischen Remote-Katalogs. Pi's Cache
+ist ein dynamischer Katalog, kein Abbild der von Fleet erzeugten `models.json`;
+letztere waere ein Zirkelschluss zur Registerpolitik. Built-in-/Custom-Modelle
+ausserhalb des Cache-Katalogs werden hier nicht als verfuegbar behauptet.
+
+Fehlende, nicht lesbare, kaputte oder unbekannte Quellen liefern `status: "unknown"`
+mit `reason`; alle drei Modelllisten sind dann `null`, niemals eine behauptete leere
+Verfuegbarkeitsmenge. Ausgegeben werden nur Modell-IDs, Cache-Zeit und feste
+Quellen-/Fehlerbeschreibungen, keine Account-/Org-Felder, Credentials oder Rohinhalte.
+Eine leere, syntaktisch gueltige Codex-Modellliste ist dagegen ein bekannter leerer
+Cache, wie bei `model-register.ts#codexAvailability`.
+
+Flaechen dieses Vorschlags: CLI/JSON und Dokumentation `apply`, Fixture-Probe `apply`;
+Server/Wire, Client und Reverse-State `not-applicable`, da kein laufender Fleet-Zustand
+geaendert wird. CLI-Updates und regelmaessige Ausfuehrung sind in diesem Scanner
+`unsupported`; ein spaeterer Service braucht dafuer eine eigene Entscheidung.
+
 ## Land-Pfad-Flags
 
 - Land-path flags (in `watchdog.sh`'s srv-spawn env — die Deploy-Identität dagegen in `.env`, s. o.; grep die

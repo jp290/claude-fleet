@@ -148,26 +148,32 @@ anything was read.
 2. In this repo a docs-only land runs `install` + `pins` in the gate; every other land runs the full chain.
 3. Only `ALL PASS` at a suite's tail is green; an early end is red, a remembered check count proves nothing.
 4. A `waitedOut` never looked at the tree: it is neither red nor green.
-5. Never stop a run by name pattern, never kill a PID from the suite lock or `suiteLock.pid`: it can be the live server.
+5. Never stop a run by name pattern.
 
 More: borrow `verify-e2e` for its section "More" and the knowledge parts `gate-vs-audit` and `proportion`, each cut from its home with its own hash.
 
 ### Lane
 
 6. Run `localProof.steps` in the returned order; stop at the first failure. The names are links of `verify.cmd` in the same answer: `install` `pins` `tsc` `build` `clean-review` `security` `claude-gate`. `localProof: null`: all of `verify.cmd`; no answer: the full chain in `watchdog.sh#VERIFY_CMD`. Empty `steps`: the command in `localProof.note`.
-7. `./e2e-isolated.sh` is a preview, not a gate, owed only for `e2e/`, a suite wrapper, the merge/land path or a statement a check asserts. Owed and `helper.online`: offer it (`POST /api/self/suite-offer`, body `localProof.offerBody`) and go idle; run it locally only if the offer came back `null` or a withdraw answered 200.
-8. An offer whose budget runs out unclaimed sends nothing: before going idle, arm one one-shot `POST /api/self/autos` at `waitPolicy.unclaimedMs` (`heldMs` while `suiteLock` is held); when it fires and `GET /api/self/suite-offer` still reads `open`, withdraw.
+7. `./e2e-isolated.sh` is a preview, not a gate, owed only for the `e2e/` lifecycle, a suite wrapper, the merge/land path or a statement a check asserts; a brief does not widen this rule, and docs-only lanes never owe it. Owed and `helper.online`: offer it (`POST /api/self/suite-offer`, body `localProof.offerBody` for `localProof.modules`) and go idle; run it locally only if the offer came back `null` or a withdraw answered 200.
+8. An offer whose budget runs out unclaimed sends nothing: before going idle, arm one one-shot `POST /api/self/autos` at `waitPolicy.unclaimedMs` (`waitPolicy.heldMs` while `suiteLock` is held); when it fires and `GET /api/self/suite-offer` still reads `open`, withdraw (`POST /api/self/suite-offer/withdraw`).
+
+9. Stopping your own run: never kill a PID from `/tmp/fleet-e2e.lock/pid` or `suiteLock.pid`: it can be the live server. Use only the PID you noted. Take the runner first (`pgrep -P <pid>`), kill both, then `tmux -L <SOCK><pid> kill-server`; check lock and socket.
+
+```bash
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '<localProof.offerBody>' "$FLEET_SELF_URL/api/self/suite-offer"
+```
 
 ### MAIN
 
 6. You have no `self/gate` and no suite-offer: your own preview goes through `POST /api/self/jobs` with `{"cmd":"./e2e-isolated.sh"}` and a job watch.
+7. Gate suites go through `POST /api/self/jobs` with `{"cmd":"./e2e-clean-review.sh"}`, `{"cmd":"./e2e-security.sh"}` or `{"cmd":"./e2e-claude-gate.sh"}`. Before running one locally, withdraw its open job; run only on `mayRunLocally: true`.
 
 ### More
 
-- Gate suites can run on the helper: `POST /api/self/jobs` with `{"cmd":"./e2e-clean-review.sh"}` (or `e2e-security`, `e2e-claude-gate`). Before running one locally, withdraw its open job; run only on `mayRunLocally: true`.
 - A local suite run logs to a scratch file; read its tail after it exits. A long wait for the suite mutex is normal, not a hang.
 - With an offer open or claimed, the only local preview is a run that proves a repair to the suites themselves.
-- Stopping your own run: by the PID you noted only. Take the runner first (`pgrep -P <pid>`), kill both, then `tmux -L <SOCK><pid> kill-server`; check lock and socket.
 - Writing or changing a check: `AGENTS.md` §How a check is written.
 
 ## Landing

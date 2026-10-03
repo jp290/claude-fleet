@@ -7,6 +7,18 @@ import { BASE, IP, PORT, ROOT, check, get, plogRead, post, tmuxOut, wsWithHeader
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
+  // Plant output before connecting: a bare s2 prompt is smaller than the replay byte floor.
+  await tmuxOut("send-keys", "-t", "s2", "C-u");
+  const seed = await tmuxOut("send-keys", "-t", "s2", "printf 'share-replay-fixture-line-%s\\n' 1 2 3 4 5", "Enter");
+  let seedReady = false;
+  for (let i = 0; i < 60; i++) {
+    const pane = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
+    seedReady = pane.code === 0 && pane.out.includes("share-replay-fixture-line-5");
+    if (seedReady) break;
+    await Bun.sleep(100);
+  }
+  check("share replay fixture produces output on slot 2 before the guest connects",
+    seed.code === 0 && seedReady, `send=${seed.code}, output=${seedReady}`);
   // --- session sharing: guest access is slot-scoped, password-gated, mode-enforced ---
   const shCreate = await post("/api/slots/2/share", { mode: "view", password: "viewpass123" });
   const shView = (await shCreate.json()) as { id: string; path: string; password: string };
@@ -36,18 +48,24 @@ export async function run(ctx: Ctx): Promise<void> {
     method: "POST", headers: { cookie: shCookie, "content-type": "application/json" },
     body: JSON.stringify({ text: "nope" }),
   })).status === 400);
-  const viewWsBytes = await new Promise<number>((resolve) => {
-    let n = 0;
+  const viewReplay = await new Promise<{ bytes: number; text: string }>((resolve) => {
+    let n = 0, text = "";
     const w = wsWithHeaders(`ws://${IP}:${PORT}/ws-share/${shView.id}`, { cookie: shCookie });
     w.binaryType = "arraybuffer";
-    w.onmessage = (e) => { n += (e.data as ArrayBuffer).byteLength; };
+    w.onmessage = (e) => {
+      n += (e.data as ArrayBuffer).byteLength;
+      text += new TextDecoder().decode(e.data as ArrayBuffer);
+    };
     w.onopen = () => {
       w.send("view-must-not-type");
-      setTimeout(() => { w.close(); resolve(n); }, 1200);
+      setTimeout(() => { w.close(); resolve({ bytes: n, text }); }, 1200);
     };
-    w.onerror = () => resolve(-1);
+    w.onerror = () => resolve({ bytes: -1, text });
   });
+  const viewWsBytes = viewReplay.bytes;
   check("view share WS streams replay", viewWsBytes > 100, `${viewWsBytes} bytes`);
+  check("view share WS replay carries the pane's pre-connect output",
+    viewReplay.text.includes("share-replay-fixture-line-3"), `${viewWsBytes} bytes`);
   await Bun.sleep(400);
   const capV = await tmuxOut("capture-pane", "-t", "s2", "-p");
   check("view share WS input dropped server-side", !capV.out.includes("view-must-not-type"));

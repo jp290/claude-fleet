@@ -1,4 +1,4 @@
-import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, stacksOf, parkedSendLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, type HarnessInfo } from "./client";
+import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, stacksOf, parkedSendLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, boxOrphan, adoptBox, type HarnessInfo } from "./client";
 import { icon, harnessMark, MASCOT_MOTIONS, type IconName } from "./icons";
 import { sessionActive } from "./board";
 import { modelLabel } from "./modelname";
@@ -106,7 +106,10 @@ export function promptPlaceholder(): string {
 // the name the label or the folder. Both are read from the focused pane and its session's openedAt
 // — the two values the draft is bound to (src/drafts.ts) — synchronously, on every focus, draft and
 // poll change (mountComposer, src/client.ts#updateTitle), so no late await can paint an old target.
-// Nothing is guessed: without a session object the slot reads "unbekannt".
+// Nothing is guessed: without a session object the slot reads "unbekannt". A draft written for the
+// session that ran there before (src/drafts.ts#BoxDraft) is the one state that adds a control: the
+// name gives way to "Entwurf für beendete Session" in --q-wait, and "übernehmen" beside it addresses
+// the draft to what runs now — until then, or until the box is empty, Enter sends nothing (doSend).
 let targetKey = "";
 export function renderTarget(): void {
   const t = $("comptarget");
@@ -122,15 +125,37 @@ export function renderTarget(): void {
     : pane?.pastN != null ? [`${s.label ?? baseName(s.cwd)} · liest nur`, `${where} zeigt Session ${pane.pastN} — sie liest nur, gesendet wird an die laufende`]
     : [s.label ?? baseName(s.cwd), `Senden geht an ${where} · ${s.label ?? baseName(s.cwd)}`];
   const openedAt = s?.cwd ? String(s.openedAt ?? "") : "";
-  const key = [slot, openedAt, addr, name, title].join("|");
+  const orphan = !!slot && boxOrphan();
+  // what runs now and takes the draft once adopted; an empty slot or a past session takes nothing
+  const heir = orphan && s?.cwd && pane?.pastN == null ? s.label ?? baseName(s.cwd) : "";
+  const key = [slot, openedAt, addr, name, title, orphan, heir].join("|");
   if (key === targetKey) return;
   targetKey = key;
   t.dataset.slot = String(slot);
   t.dataset.openedAt = openedAt;
-  t.title = title;
-  t.setAttribute("aria-label", `Sendeziel: ${addr} ${name}`);
+  t.dataset.orphan = String(orphan);
   t.classList.toggle("none", !s?.cwd || pane?.pastN != null);
-  t.replaceChildren(el("span", "ctaddr", addr), el("span", "ctname", name));
+  t.classList.toggle("orphan", orphan);
+  if (!orphan) {
+    t.title = title;
+    t.setAttribute("aria-label", `Sendeziel: ${addr} ${name}`);
+    t.replaceChildren(el("span", "ctaddr", addr), el("span", "ctname", name));
+    return;
+  }
+  const word = "Entwurf für beendete Session";
+  t.title = `Dieser Entwurf wurde für die Session geschrieben, die in ${where} lief — sie ist beendet. `
+    + (heir ? `Enter sendet ihn nicht an ${heir}: „übernehmen" richtet ihn an ${heir}, ein leeres Feld gibt es frei.`
+      : "Enter sendet ihn nicht; ein leeres Feld gibt es frei.");
+  t.setAttribute("aria-label", `Sendeziel: ${addr} — ${word}`);
+  const parts: HTMLElement[] = [el("span", "ctaddr", addr), el("span", "ctname", word)];
+  if (heir) {
+    const adopt = el("button", "ctadopt", "übernehmen") as HTMLButtonElement;
+    adopt.type = "button";
+    adopt.title = `Entwurf an ${heir} richten — danach sendet Enter an ${heir}`;
+    adopt.onclick = () => adoptBox();
+    parts.push(adopt);
+  }
+  t.replaceChildren(...parts);
 }
 
 // the focused pane's parked sends (server.ts, THE PARKED SEND), one quiet line above the composer

@@ -6313,6 +6313,9 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
         // the send is answered like the server answers a delivered prompt; nothing is typed anywhere
         if (p === "/send") { fx.sends.push({ slot: Number(body?.slot), text: String(body?.text ?? "") }); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
+        // an upload is answered with the mention the server words; the file goes nowhere
+        const up = /^\/api\/slots\/(\d+)\/upload$/.exec(p);
+        if (up) return void json(requestId, { mention: `@.fleet-drops/orphan-${up[1]}.txt` });
         return void json(requestId, { ok: true });
       }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
@@ -6346,7 +6349,7 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
       await send("Page.navigate", { url });
       await Promise.race([done, Bun.sleep(15000)]);
     };
-    const KEY: Record<string, [number, string, string?]> = { Enter: [13, "Enter", "\r"], Escape: [27, "Escape"] };
+    const KEY: Record<string, [number, string, string?]> = { Enter: [13, "Enter", "\r"], Escape: [27, "Escape"], Backspace: [8, "Backspace"] };
     const key = async (name: string) => {
       const [vk, code, text] = KEY[name];
       fx.inputs.push(`key ${name}`);
@@ -6570,6 +6573,86 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
           && names(shownAtSend, 2, 2000, "Beta");
         claims["no window opened over the composer on the way"] = await evaluate<boolean>("!document.querySelector('#shell-found')");
         await shot(width, "sent-to-2");
+        await evaluate("document.activeElement?.blur()");
+      }
+
+      // --- 8. THE FOCUSED slot is recycled while the box holds a draft (card "Ein Entwurf geht nie
+      // still an eine Session, fuer die er nicht geschrieben wurde", src/drafts.ts#BoxDraft): the draft
+      // stays, the target marks it as the ended session's, Enter (➤ on the phone) sends nothing, and
+      // only an emptied box or "übernehmen" frees it. The new session arrives on the poll alone.
+      {
+        const fs = phone ? 2 : 1;
+        const field = () => evaluate<string>("document.querySelector('#input').value");
+        const recycle = async (openedAt: number, label: string) => {
+          fx.slots = fx.slots.map((r) => (r.id === fs ? { ...r, openedAt, label } : r));
+          const ok = await polls(1); await settle(100); return ok;
+        };
+        const orphanShown = (t: Target, openedAt: number) => !!t && t.shown && t.slot === String(fs) && t.openedAt === String(openedAt)
+          && t.text.includes("Entwurf für beendete Session");
+        const adoptBtn = () => evaluate<{ shown: boolean; text: string; title: string; h: number } | null>(`(() => { const b = document.querySelector('#comptarget .ctadopt');
+          return b ? { shown: window.__fx.shown(b), text: b.textContent.trim(), title: b.title, h: Math.round(b.getBoundingClientRect().height) } : null; })()`);
+        const pressSend = async () => { if (phone) await click("document.querySelector('#send')"); else await key("Enter"); await settle(250); };
+        await click("document.querySelector('#input')");
+        await evaluate("(() => { const t = document.querySelector('#input'); t.value = ''; t.dispatchEvent(new Event('input')); })()");
+        await typeText("für die alte Session");
+        const before = await tgt();
+        const polled = await recycle(5000, "Nachfolger");
+        facts.orphan = { before, polled, draft: await field(), target: await tgt(), adopt: await adoptBtn() };
+        const o = facts.orphan as { draft: string; target: Target; adopt: { shown: boolean; text: string; h: number } | null };
+        claims["a new session in the FOCUSED slot (openedAt 5000) keeps the draft on screen, marked as the ended session's, with übernehmen beside it"] =
+          !!before && before.openedAt !== "5000" && polled && o.draft === "für die alte Session" && orphanShown(o.target, 5000)
+          && !!o.adopt?.shown && o.adopt.text === "übernehmen" && (!phone || o.adopt.h >= 40);
+        await shot(width, "orphan-draft");
+        const s0 = sendsAt();
+        await pressSend();
+        await polls(1);
+        facts.orphanSend = { sends: fx.sends.slice(s0), draft: await field(), target: await tgt() };
+        claims[`${phone ? "➤" : "Enter"} sends the ended session's draft nowhere — no /send, the draft and its mark stay, through one more poll`] =
+          fx.sends.length === s0 && await field() === "für die alte Session" && orphanShown((facts.orphanSend as { target: Target }).target, 5000);
+        // emptying the field by hand frees it: the target names what runs now, and new text binds to it
+        await click("document.querySelector('#input')");
+        await evaluate("document.querySelector('#input').select()");
+        await key("Backspace");
+        facts.orphanCleared = { draft: await field(), target: await tgt(), adopt: await adoptBtn() };
+        const c = facts.orphanCleared as { draft: string; target: Target; adopt: unknown };
+        claims["an emptied field is free again: no mark, the target names the new session (openedAt 5000)"] = c.draft === "" && c.adopt === null
+          && names(c.target, fs, 5000, "Nachfolger") && !c.target?.text.includes("Entwurf");
+        // a second draft, a second recycle — "übernehmen" addresses it to the new session, and only then Enter sends
+        await typeText("jetzt für die neue");
+        await recycle(6000, "Dritte");
+        const marked = orphanShown(await tgt(), 6000);
+        await click("document.querySelector('#comptarget .ctadopt')");
+        facts.adopted = { marked, draft: await field(), target: await tgt(), adopt: await adoptBtn(), where: await evaluate<string>("window.__fx.where()") };
+        const a = facts.adopted as { draft: string; target: Target; adopt: unknown; where: string };
+        claims["übernehmen keeps the text, drops the mark and puts the keys back in the field"] = marked && a.draft === "jetzt für die neue"
+          && a.adopt === null && names(a.target, fs, 6000, "Dritte") && !a.target?.text.includes("Entwurf") && a.where === "composer";
+        await shot(width, "orphan-adopted");
+        const s1 = sendsAt();
+        await pressSend();
+        await wait("document.querySelector('#input').value === ''", 3000);
+        claims["after übernehmen the send goes to the new session's slot, exactly once"] = fx.sends.length === s1 + 1
+          && fx.sends[s1]?.slot === fs && fx.sends[s1]?.text === "jetzt für die neue";
+        // an attachment alone is a draft too: held through a recycle, sent nowhere, freed by its ✕
+        const file = resolve(scratch, "orphan.txt");
+        writeFileSync(file, "attachment for the old session");
+        const doc = await send("DOM.getDocument", { depth: 0 });
+        const node = await send("DOM.querySelector", { nodeId: (doc.root as { nodeId: number }).nodeId, selector: "#dropfile" });
+        await send("DOM.setFileInputFiles", { nodeId: node.nodeId, files: [file] });
+        const uploaded = await wait("document.querySelectorAll('#compfiles .att').length === 1", 3000);
+        await recycle(7000, "Vierte");
+        const s2 = sendsAt();
+        await click("document.querySelector('#input')");
+        await pressSend();
+        facts.orphanAttached = { uploaded, draft: await field(), files: await evaluate<number>("document.querySelectorAll('#compfiles .att').length"),
+          sends: fx.sends.slice(s2), target: await tgt() };
+        const f = facts.orphanAttached as { draft: string; files: number; target: Target };
+        claims["an attachment alone held through a recycle (openedAt 7000) is marked and sends nothing"] = uploaded && f.draft === "" && f.files === 1
+          && fx.sends.length === s2 && orphanShown(f.target, 7000);
+        await click("document.querySelector('#compfiles .att .attx')");
+        facts.orphanUnattached = { files: await evaluate<number>("document.querySelectorAll('#compfiles .att').length"), target: await tgt() };
+        const u = facts.orphanUnattached as { files: number; target: Target };
+        claims["its ✕ empties the box and frees it: the target names the new session again"] = u.files === 0
+          && names(u.target, fs, 7000, "Vierte") && !u.target?.text.includes("Entwurf");
         await evaluate("document.activeElement?.blur()");
       }
 

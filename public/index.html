@@ -798,6 +798,16 @@
   #comptarget.none .ctaddr { color: var(--chat-faint); }
   #comptarget.none .ctname { color: var(--chat-faint); }
   #comp.bar #comptarget { order: 1; }
+  /* a draft written for the session that ran here before (src/drafts.ts#BoxDraft): the word in
+     --q-wait (it waits for you), and the one G1.2 word button that addresses it to what runs now */
+  #comptarget.orphan { max-width: none; flex-shrink: 1; }
+  #comptarget.orphan .ctaddr { border-color: var(--q-wait); }
+  #comptarget.orphan .ctname { color: var(--q-wait); }
+  #comptarget .ctadopt { flex: none; padding: 1px 8px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+    background: var(--chat-raised); color: var(--chat-ink); font: 500 var(--chat-ui-fs) / 1.4 var(--chat-sans);
+    cursor: pointer; transition: background var(--t), border-color var(--t); }
+  #comptarget .ctadopt:hover { background: var(--c-hover); border-color: var(--c-edge-hi); }
+  #comptarget .ctadopt:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 1px; }
   .ico { display: block; flex: none; width: 16px; height: 16px; }
   .tricon { flex: none; display: grid; place-items: center; }
   #dropbtn { flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0;
@@ -3512,7 +3522,10 @@
       /* the send target (G2.4) stays, as its address between field and send — the pill above names
          the session; a target that takes nothing keeps its word ("leer", "liest nur") */
       #main #comp #comptarget { order: 1; align-self: center; max-width: 30%; }
-      #main #comp #comptarget:not(.none) .ctname { display: none; }
+      #main #comp #comptarget:not(.none):not(.orphan) .ctname { display: none; }
+      /* an orphaned draft says so on its own line above the field, the button at 40 px (G0.7) */
+      #main #comp #comptarget.orphan { order: -2; flex-basis: 100%; max-width: 100%; padding: 0 2px 4px; }
+      #main #comp #comptarget .ctadopt { min-height: 40px; padding: 0 14px; margin-left: auto; }
       #main #comp #send { order: 3; width: 40px; height: 40px; }
       /* model/effort and Live are rows of the sheet behind ⋯; the switches' row comes back into the
          island only while one of its popovers is open — the sheet's Übernehmen opens the switch's

@@ -17,7 +17,7 @@ import { MarkStage, markFacts, placeMarks, projectHue, type MarkItem } from "./m
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
 import type { ModelEntry, ModelAvailability } from "../model-register";
-import { DraftBook, historySource, type HistoryEntry } from "./drafts";
+import { BoxDraft, DraftBook, historySource, type HistoryEntry } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { closeEntityCard, hideEntityCard, showEntityCard } from "./entcard";
 import { loadChatSizes, onChatSize, onTermSize, setTermDefault, sizePanel, stepChatSizes, stepTermSize, termFontSize } from "./chatsize";
@@ -5693,6 +5693,7 @@ function updateTitle() {
   const s = slot ? fleet[slot - 1] : undefined;
   mtitle.textContent = s?.cwd ? (s.label ?? baseName(s.cwd)) : "Claude Fleet";
   mreadTitle.textContent = mtitle.textContent;
+  syncBox(); // a new session in the focused slot turns a held draft into the ended one's (G2.4)
   renderTarget(); // the composer's send target reads the same focused slot (G2.4)
   const ph = promptPlaceholder(); // …the placeholder names it (a rename, the first poll)…
   if (ta.placeholder !== ph) ta.placeholder = ph;
@@ -9217,6 +9218,13 @@ async function doSend() {
   // the box's content was written for draftSlot; switchDraft keeps the two equal, and a send
   // that finds them apart refuses rather than guess (the seventeenth cut's misdelivery)
   if (slot !== draftSlot) { toast(`not sent — this draft belongs to slot ${draftSlot}`); return; }
+  // …and to the session that was running there: after a recycle it waits for "übernehmen" or an empty box
+  if (syncBox()) {
+    renderTarget();
+    toast("Nicht gesendet — der Entwurf war für die beendete Session. Übernehmen oder leeren.");
+    flashSendError();
+    return;
+  }
   send.disabled = true;
   const pending = pane.addPending(outgoing);
   try {
@@ -9278,6 +9286,8 @@ ta.addEventListener("input", () => {
   cyc = null; // real typing (not our programmatic recall) ends a history cycle
   updateChips();
   growComposer();
+  syncBox(); // an emptied box frees an orphaned draft; the first character binds a new one
+  renderTarget();
 });
 
 // --- 📎 drops: hand a FILE to the focused session (drag&drop, paste, or the button) ----------
@@ -9310,12 +9320,34 @@ const attached: Attachment[] = [];
 // split 7|6: typed with 7 focused, mousedown on 6, Enter → POST /send {slot:6}.
 const drafts = new DraftBook<Attachment>();
 let draftSlot = 0;
+// …and the draft IN the box is bound to its occupation too (src/drafts.ts#BoxDraft): a recycled
+// FOCUSED slot keeps the text on screen, marked, and no Enter sends it to the session that replaced
+// the one it was written for. An occupation is the session's openedAt, 0 for a slot with no session,
+// undefined for a slot whose row is not read yet.
+const box = new BoxDraft();
+function occupation(slot: number): number | undefined {
+  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
+  return !s ? undefined : s.cwd ? s.openedAt ?? 0 : 0;
+}
+const boxHolds = (): boolean => !!ta.value.trim() || attached.length > 0;
+// re-read on every poll (updateTitle), input and send; the target paints the answer
+function syncBox(): boolean { return box.observe(occupation(draftSlot), boxHolds()); }
+export function boxOrphan(): boolean { return syncBox(); }
+export function adoptBox(): void {
+  box.adopt(occupation(draftSlot));
+  renderTarget();
+  ta.focus();
+}
+// where the box's draft parks when the focus leaves it: an orphan under the occupation it was
+// written for, so the book drops it like any draft of an ended session — never under the new one
+const parkedAt = (): number | undefined => box.orphan ? box.boundTo : fleet[draftSlot - 1]?.openedAt;
 function switchDraft(slot: number): void {
   if (slot === draftSlot) return;
-  const next = drafts.swap(draftSlot, fleet[draftSlot - 1]?.openedAt, { text: ta.value, attached },
+  const next = drafts.swap(draftSlot, parkedAt(), { text: ta.value, attached },
     slot, fleet[slot - 1]?.openedAt);
   for (const a of next.dropped) if (a.thumb) URL.revokeObjectURL(a.thumb);
   draftSlot = slot;
+  box.reset(occupation(slot));
   ta.value = next.text;
   attached.length = 0; // no revoke: the parked entries still own their thumbnails
   attached.push(...next.attached);
@@ -9337,7 +9369,7 @@ function mentionExplorerPath(slot: number, path: string): void {
     return;
   }
   const currentSlot = draftSlot;
-  const currentOpenedAt = fleet[currentSlot - 1]?.openedAt;
+  const currentOpenedAt = parkedAt(); // parked and taken back under the same value, orphan or not
   const target = drafts.swap(currentSlot, currentOpenedAt, { text: ta.value, attached }, slot, openedAt);
   for (const a of target.dropped) if (a.thumb) URL.revokeObjectURL(a.thumb);
   const restored = drafts.swap(slot, openedAt,
@@ -9438,7 +9470,7 @@ function renderAttachments(): void {
     const x = el("button", "attx") as HTMLButtonElement;
     x.appendChild(icon("x"));
     x.title = `remove ${a.name} from this prompt`;
-    x.onclick = () => { dropAttachment(i); renderAttachments(); ta.focus(); };
+    x.onclick = () => { dropAttachment(i); renderAttachments(); syncBox(); renderTarget(); ta.focus(); };
     box.appendChild(x);
     return box;
   })));

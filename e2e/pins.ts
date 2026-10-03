@@ -64,7 +64,7 @@ import {
 } from "../land-quality";
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
-import { DraftBook } from "../src/drafts";
+import { BoxDraft, DraftBook } from "../src/drafts";
 import { fleetEventBundleText } from "../src/delivery-format";
 import { runningEffort, runningModel } from "../src/running";
 import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole } from "../model-register";
@@ -11176,6 +11176,52 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin("drafts: focusPane swaps the draft before it writes the placeholder, and doSend refuses a draft of another slot",
     /switchDraft\(slot \?\? 0\);[\s\S]*ta\.placeholder =/.test(focusBody) && /if \(slot !== draftSlot\)/.test(sendBody),
     `focus=${focusBody.includes("switchDraft(")} send=${sendBody.includes("draftSlot")}`);
+}
+
+// --- the draft IN the box is bound to its session too (card "Ein Entwurf geht nie still an eine
+// Session, fuer die er nicht geschrieben wurde") ---------------------------------------------------
+// The rest of the misdelivery: the FOCUSED slot recycled (new openedAt) while the box held text —
+// the target repainted to the new session (src/composer.ts#renderTarget) and Enter sent the text
+// there. src/drafts.ts#BoxDraft is the fix; the replay holds its behaviour, the source rows the wiring.
+// Measured in a browser with /send intercepted: e2e/slots.ts#runComposerTargetDom, section 8.
+{
+  const box = new BoxDraft();
+  box.reset(1000);
+  const typed = box.observe(1000, true);
+  const recycled = box.observe(5000, true);
+  pin("box draft: text typed for openedAt 1000 is the ended session's draft once the slot reads 5000 (send refuses on this answer)",
+    typed === false && recycled === true && box.orphan && box.boundTo === 1000, JSON.stringify({ typed, recycled, bound: box.boundTo }));
+  const unread = box.observe(undefined, true), again = box.observe(5000, true), back = box.observe(1000, true);
+  pin("box draft: an unread row, another poll, even the old value coming back never free it",
+    unread && again && back && box.boundTo === 1000, JSON.stringify({ unread, again, back }));
+  const cleared = box.observe(5000, false), rebound = box.observe(5000, true);
+  pin("box draft: an empty box frees it, and the next text binds to what runs now (5000)",
+    !cleared && !rebound && box.boundTo === 5000, JSON.stringify({ cleared, rebound, bound: box.boundTo }));
+  box.observe(6000, true);
+  box.adopt(undefined);
+  const stillHeld = box.orphan;
+  box.adopt(6000);
+  pin("box draft: übernehmen addresses it to the session running now (6000); an adopt without a read row changes nothing",
+    stillHeld && !box.orphan && box.boundTo === 6000 && !box.observe(6000, true), JSON.stringify({ stillHeld, bound: box.boundTo }));
+  const late = new BoxDraft();
+  late.reset(undefined);
+  const firstRead = late.observe(2000, true);
+  const emptied = late.observe(0, true);
+  pin("box draft: text typed before the row was read binds on the first read; the session ending (0, empty slot) makes it an orphan",
+    !firstRead && emptied && late.boundTo === 2000, JSON.stringify({ firstRead, emptied, bound: late.boundTo }));
+  const client = clientU.text;
+  const sendBody = client.slice(client.indexOf("async function doSend("), client.indexOf("send.onclick = () => void doSend();"));
+  const titleBody = client.slice(client.indexOf("function updateTitle() {"), client.indexOf("function updateTitle() {") + 700);
+  const switchBody = client.slice(client.indexOf("function switchDraft(slot: number)"), client.indexOf("function switchDraft(slot: number)") + 700);
+  pin("box draft: doSend asks the binding before deliver(), every poll re-reads it before the target paints, a focus swap parks an orphan under its own session",
+    /if \(syncBox\(\)\) \{[\s\S]*return;[\s\S]*deliver\(slot, outgoing\)/.test(sendBody)
+      && /syncBox\(\);[^\n]*\n\s*renderTarget\(\);/.test(titleBody)
+      && switchBody.includes("drafts.swap(draftSlot, parkedAt(),") && switchBody.includes("box.reset(occupation(slot));")
+      && client.includes("const parkedAt = (): number | undefined => box.orphan ? box.boundTo : fleet[draftSlot - 1]?.openedAt;"),
+    `send=${sendBody.includes("syncBox()")} title=${titleBody.includes("syncBox()")} switch=${switchBody.includes("parkedAt()")}`);
+  pin("box draft: the target paints the mark and the übernehmen button from the same binding (src/composer.ts#renderTarget)",
+    client.includes('const orphan = !!slot && boxOrphan();') && client.includes('"Entwurf für beendete Session"')
+      && client.includes('el("button", "ctadopt", "übernehmen")') && client.includes("adopt.onclick = () => adoptBox();"));
 }
 
 // --- the switches name what the session RUNS, not what its record says (eighteenth cut) ----------

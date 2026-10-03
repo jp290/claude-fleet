@@ -5891,7 +5891,7 @@ async function laneLocalProof(s: Slot): Promise<LaneLocalProof | null> {
     ? await gitRead(s.worktree.repo, "rev-parse", "--verify", `refs/heads/${targetRef}`) : null;
   const head = await gitRead(s.cwd, "rev-parse", "HEAD");
   const tree = await gitRead(s.cwd, "rev-parse", `${head.out}^{tree}`);
-  const base = s.worktree.baseSha ?? targetRef;
+  const base = (await laneForkSha(s.cwd, targetRef)) ?? s.worktree.baseSha;
   if (!base || head.code !== 0 || tree.code !== 0) return null;
   const diffBase = await gitRead(s.cwd, "merge-base", base, head.out);
   if (diffBase.code !== 0 || !diffBase.out) return null;

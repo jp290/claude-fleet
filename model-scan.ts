@@ -1,3 +1,4 @@
+// model-scan.ts — read local harness model caches and propose a register comparison without writes.
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";

@@ -132,6 +132,7 @@ export interface ModuleFixtures {
 export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "context-packs" },
   { module: "context-plan" },
+  { module: "model-scan" },
   { module: "prompts" },
   { module: "briefstats" },
   { module: "auth" },

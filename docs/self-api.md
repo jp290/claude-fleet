@@ -4823,6 +4823,66 @@ Eintrag). Der Backfill gilt nur für Zeilen, die den Key nie hatten.
 `sessionIdMatch` und der Rest von `authority` sind unverändert. `GET /api/programs` trägt den Record
 im Program-Row mit (`publicProgram` spreizt das Program); der 4-Feld-`ProgramDigest` bleibt.
 
+## subscription usage — Owner `GET /api/subscription-usage`, `POST /api/subscription-usage/refresh`
+
+Beide Türen verlangen die bestehende Owner-Credential. Self-Credentials erhalten keine neuen
+Rechte (401); Steward-Credentials sind außerhalb ihres Scope (403). GET akzeptiert keine
+Queryparameter. POST akzeptiert ausschließlich `{"target":"local"}` oder
+`{"target":"provider"}`; kaputtes JSON, weitere Felder, freie URL/Pfad/Shell und andere Ziele
+sind 400. Während eines Reads ist POST 409. Ein unsupported Ziel antwortet 200 mit seinem
+expliziten Zustand; es führt keinen Ersatzread aus.
+
+Die Antwort `fleet.subscription-usage/v1` trägt `generatedAt` (Server-Uhr, Unixmillisekunden),
+`codex`, `otherSubscriptions` und `model`. `codex.primary` und `codex.secondary` sind getrennt
+`{used_percent,window_minutes,resets_at}` oder null/unknown. `resets_at` ist Unixsekunden;
+Millisekunden in diesem Feld werden abgelehnt. Gemessene 0 bleibt 0. Beide Fenster stammen aus
+demselben validierten Ereignis; Dauer und Reset werden nicht aus der Fensterposition geraten.
+
+`codex.source` enthält `kind:"local-rollout"`, Ereigniszeit `measuredAt`, Readabschluss
+`fetchedAt` (beide Unixmillisekunden), `ageMs`, `staleAfterMs:900000`, `reason`,
+`limitId:"codex"|null`, `accountBound:false` und eine opaque SHA-256-`provenance` der validierten
+Ereignisfelder. Sie belegt weder Account noch Session. Ein unbeschriftetes historisches
+Codex-Ereignis hat `limitId:null`; ein ausdrücklich anderer Bucket wird ausgeschlossen.
+Der feste lokale Sensor liest `$CODEX_HOME/sessions` bzw. `~/.codex/sessions` read-only.
+Die lokale Beobachtung ist begrenzt: `source.selection` nennt `kind:"recent-file-tails"`,
+`maxFiles:16`, `maxBytesPerFile:262144`, `historyComplete:false`. mtime wählt nur die 16 jüngsten
+Dateien; pro Datei werden höchstens 256 KiB vom Ende gelesen. Unter diesen beobachteten
+Ereignissen gewinnt die neueste validierte Ereigniszeit. mtime liefert weder Messzeit noch
+Account-/Sessionidentität; außerhalb dieser Enden wird keine vollständige Historie behauptet.
+Eine am Anfang abgeschnittene Zeile gehört nicht zur Beobachtung. Eine unvollständige letzte
+Zeile darf fehlen; kaputte vollständige/innere Zeilen innerhalb der Beobachtung, invalide Fenster,
+fehlende Messzeit oder Ereigniszeit nach der Server-Uhr machen die Quelle error/unknown mit null Fenstern.
+Fehlende/unlesbare Quellen werden nicht zu 0. Ereignisse älter als 15 Minuten bleiben `stale`
+mit ihren gemessenen Werten und Altersgrund, auch nach erneutem lokalen Lesen.
+
+GET beobachtet beim ersten Read die lokale Quelle; weitere GETs projizieren den zuletzt gelesenen
+Snapshot und berechnen sein Alter mit der Server-Uhr neu. POST local liest dieselbe gespeicherte
+Quelle erneut, begrenzt auf fünf Sekunden, und prüft die Dateidentität vor/nach dem await.
+Späte Resultate nach Timeout werden verworfen. Rohfehler, Rollouts, Pfade, Accountdaten, Tokens
+und Prompt-/Antworttexte werden nie ausgegeben. `refresh` benennt `target`,
+`status:not-requested|refreshing|ok|error|timeout|unsupported`, `startedAt`, `finishedAt`, `reason`.
+Während des Reads kann GET den vorigen Snapshot mit `refreshing` sehen. `ok` bezeichnet einen
+beendeten lokalen Read, keine neue Provider-Messung; stale bleibt sichtbar.
+
+POST provider ist **unsupported**: Die installierten Schemata belegen
+`account/rateLimits/read`, aber keinen gebundenen Account-Reader oder autorisierten Anschluss
+(`docs/messungen/2026-09-30-codex-app-session-bridge.md`, Subscription-Vertrag). `codex.provider`
+und `refresh.reason` nennen genau diese Grenze. Kein Account-/Providerrequest wird gestartet.
+Ein reines Importieren des Sensors startet weder CLI-main noch Resetfeed, Netzwerk oder Seen-Cache.
+Die bestehende CLI-Ausgabe, Exitcodes und `quotaPosition`-Berechnung bleiben bestehen.
+
+Andere Subscriptions sind `unknown` mit Grund: kein gemessener Sensor und kein maschinenlesbarer
+Quellen-/Geltungsvertrag für datierte Owner-Verfügbarkeitsmeldungen. Die GLM/z.ai-Meldung ist
+keine Providerprobe. `model.ownerPreference` bleibt aus demselben Grund unknown;
+`registerDefaults` projiziert ausschließlich `MODEL_DEFAULTS`. `selected` zeigt aktive
+`slot`/`harness`/`model` aus `slot-state`, `decisionSource:"unknown"`, `usedTurnModel:null`.
+Slot-Auswahl ist kein Beweis eines tatsächlich ausgeführten Turnmodells und kein Owner-Entscheid.
+Quota löst keine Modellwahl aus; es gibt keine neue Policy-Persistenz.
+
+Flächen: wire/server/docs/probes **apply**; reverse-state **not-applicable** (keine persistierten
+Subscription-Felder); aktiver Provideranschluss **unsupported**; Client **not-applicable** in
+diesem Schnitt, eine eigene Nachfolgekarte besitzt seine Darstellung.
+
 ## model — `POST /api/slots/:id/model` (OWNER-Route, nicht `/api/self/*`)
 
 Schreibt Modell und/oder Effort eines LEBENDEN Slots **in den Datensatz** — ohne Respawn. Der Datensatz

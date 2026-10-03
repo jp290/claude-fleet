@@ -15,7 +15,7 @@ import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
 import { deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
 import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
-import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
+import { normalizeLaneAnchor, type LaneAnchor, type SubscriptionUsage } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
 import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-register";
@@ -744,6 +744,47 @@ export async function run(): Promise<void> {
   });
   check("a slot's own self-token cannot reach the model route (401 — it is not an owner credential)",
     /^[0-9a-f]{32}$/.test(selfTok2) && mdSelfWrite.status === 401, `tok=${selfTok2.length} ${mdSelfWrite.status}`);
+  for (const [path, method] of [["/api/subscription-usage", "GET"], ["/api/subscription-usage/refresh", "POST"]] as const) {
+    const unauthenticated = await fetch(BASE + path, { method, headers: { "content-type": "application/json" }, body: method === "POST" ? '{"target":"local"}' : undefined });
+    const self = await fetch(BASE + path, { method, headers: { "content-type": "application/json", "x-fleet-self-token": selfTok2 }, body: method === "POST" ? '{"target":"local"}' : undefined });
+    const steward = await fetch(BASE + path, { method, headers: { "content-type": "application/json", authorization: `Bearer ${stewTok}` }, body: method === "POST" ? '{"target":"local"}' : undefined });
+    check(`subscription ${method}: owner credential required, self and steward cannot refresh/read`,
+      unauthenticated.status === 401 && self.status === 401 && steward.status === 403,
+      `anonymous=${unauthenticated.status} self=${self.status} steward=${steward.status}`);
+  }
+  for (const body of [null, [], {}, { target: "auto" }, { target: "local", path: "/private" }, { target: "provider", url: "https://example.com" }, { target: "local", shell: "echo unsafe" }]) {
+    const malformed = await post("/api/subscription-usage/refresh", body);
+    check("subscription refresh: closed body rejects malformed and arbitrary input", malformed.status === 400, String(malformed.status));
+  }
+  const malformedJson = await fetch(BASE + "/api/subscription-usage/refresh", { method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: '{"target":' });
+  check("subscription refresh: torn JSON body is 400", malformedJson.status === 400);
+  const queryInput = await get("/api/subscription-usage?path=private");
+  check("subscription read: no query-shaped source selection", queryInput.status === 400);
+  const providerRead = await post("/api/subscription-usage/refresh", { target: "provider" });
+  const providerUsage = await providerRead.json() as SubscriptionUsage;
+  check("subscription provider: unsupported account reader is explicit, no local substitution",
+    providerRead.status === 200 && providerUsage.codex.provider.status === "unsupported"
+    && providerUsage.codex.refresh.status === "unsupported" && providerUsage.codex.refresh.target === "provider"
+    && providerUsage.codex.refresh.reason === providerUsage.codex.provider.reason);
+  const beforeLocal = Date.now();
+  const localRead = await post("/api/subscription-usage/refresh", { target: "local" });
+  const localUsage = await localRead.json() as SubscriptionUsage;
+  const afterLocal = Date.now();
+  check("subscription local: server clock and target recorded independently from event time",
+    localRead.status === 200 && localUsage.generatedAt >= beforeLocal && localUsage.generatedAt <= afterLocal
+    && localUsage.codex.refresh.target === "local" && localUsage.codex.refresh.startedAt !== null
+    && localUsage.codex.refresh.startedAt >= beforeLocal && localUsage.codex.refresh.finishedAt !== null
+    && localUsage.codex.refresh.finishedAt <= afterLocal && localUsage.codex.source.accountBound === false);
+  const usage = await (await get("/api/subscription-usage")).json() as SubscriptionUsage;
+  check("subscription read: unknown owner decision is separate from register defaults and slot selection",
+    usage.schema === "fleet.subscription-usage/v1" && usage.model.ownerPreference.status === "unknown"
+    && usage.otherSubscriptions.status === "unknown" && usage.model.registerDefaults.worker.id === MODEL_DEFAULTS.worker.id
+    && usage.model.selected.some(row => row.slot === 2 && row.model === "claude-sonnet-5[1m]"
+      && row.source === "slot-state" && row.decisionSource === "unknown" && row.usedTurnModel === null));
+  const localWire = JSON.stringify({ codex: usage.codex, otherSubscriptions: usage.otherSubscriptions });
+  check("subscription wire: no paths, raw accounts, credentials or rollout contents",
+    !/accountId|email|access_token|session_meta|\/Users\/|\/tmp\/|prompt|message_content/.test(localWire));
   const mdAfter = await modelRowOf(2);
   check("...and none of the six rejections touched the stored pair",
     mdAfter?.model === "claude-sonnet-5[1m]" && mdAfter.effort === "high", JSON.stringify(mdAfter));

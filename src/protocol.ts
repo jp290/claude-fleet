@@ -14,6 +14,41 @@
 // with a single reader belongs next to that reader, where its comment can say why it has its value.
 import { MODEL_DEFAULTS, MODEL_REGISTER } from "../model-register";
 
+export interface SubscriptionWindow {
+  used_percent: number;
+  window_minutes: number;
+  resets_at: number;
+}
+export interface SubscriptionSnapshot {
+  status: "measured" | "stale" | "unknown" | "error";
+  primary: SubscriptionWindow | null;
+  secondary: SubscriptionWindow | null;
+  source: { kind: "local-rollout"; measuredAt: number | null; fetchedAt: number | null;
+    ageMs: number | null; staleAfterMs: number; reason: string | null;
+    selection: { kind: "recent-file-tails"; maxFiles: 16; maxBytesPerFile: 262144; historyComplete: false };
+    limitId: "codex" | null; accountBound: false; provenance: string | null };
+}
+export interface SubscriptionRefresh {
+  target: "local" | "provider" | null;
+  status: "not-requested" | "refreshing" | "ok" | "error" | "timeout" | "unsupported";
+  startedAt: number | null;
+  finishedAt: number | null;
+  reason: string | null;
+}
+export interface SubscriptionUsage {
+  schema: "fleet.subscription-usage/v1";
+  generatedAt: number;
+  codex: SubscriptionSnapshot & { refresh: SubscriptionRefresh;
+    provider: { status: "unsupported"; reason: string } };
+  otherSubscriptions: { status: "unknown"; reason: string };
+  model: {
+    ownerPreference: { status: "unknown"; reason: string };
+    registerDefaults: typeof MODEL_DEFAULTS;
+    selected: { slot: number; harness: string | null; model: string | null; source: "slot-state";
+      decisionSource: "unknown"; usedTurnModel: null }[];
+  };
+}
+
 // --- WS input frame cap -------------------------------------------------------------------------
 // The server drops any keystroke frame larger than this, silently (there is no error path to a
 // terminal). The client's paste chunker sizes itself from the SAME number, so lowering the cap can

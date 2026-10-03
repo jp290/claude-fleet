@@ -1,4 +1,6 @@
 import { historySource } from "./src/drafts";
+import { createSubscriptionReader } from "./codex-quota";
+import type { SubscriptionUsage } from "./src/protocol";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access } from "node:fs/promises";
@@ -35130,6 +35132,16 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
 // while the rest of the auth surface (tokenFrom, secretEq, the share gates, guard) is imported
 // from server/auth.ts above.
 let TOKEN = "";
+const subscriptionReader = createSubscriptionReader();
+async function subscriptionUsage(target?: "local" | "provider"): Promise<SubscriptionUsage> {
+  const codex = target ? await subscriptionReader.refresh(target) : await subscriptionReader.get();
+  return { schema: "fleet.subscription-usage/v1", generatedAt: Date.now(), codex,
+    otherSubscriptions: { status: "unknown", reason: "no measured subscription sensor; dated owner availability messages have no machine-readable source or validity contract" },
+    model: { ownerPreference: { status: "unknown", reason: "no dated owner preference source with scope and validity" },
+      registerDefaults: MODEL_DEFAULTS,
+      selected: slots.filter(s => s.cwd !== null).map(s => ({ slot: s.id, harness: s.harness,
+        model: s.model, source: "slot-state", decisionSource: "unknown", usedTurnModel: null })) } };
+}
 const tokenOk = (t: string | null): boolean => !!t && secretEq(t, TOKEN);
 // throttled wrapper for the two request paths that check a caller-supplied token: a flat
 // per-attempt cost, same precedent as share auth (failStrike in server/auth.ts), but deliberately no
@@ -43342,6 +43354,18 @@ Bun.serve<WSData>({
 
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
+
+    if (url.pathname === "/api/subscription-usage" && req.method === "GET") {
+      if (url.search) return json({ error: "subscription usage accepts no query parameters" }, 400);
+      return json(await subscriptionUsage());
+    }
+    if (url.pathname === "/api/subscription-usage/refresh" && req.method === "POST") {
+      const body = await readJson(req);
+      if (url.search || !body || Object.keys(body).length !== 1 || (body.target !== "local" && body.target !== "provider"))
+        return json({ error: "body must contain only target: local or provider" }, 400);
+      if (subscriptionReader.busy()) return json({ error: "subscription read in progress" }, 409);
+      return json(await subscriptionUsage(body.target));
+    }
 
     if (url.pathname === "/api/operational-view" && req.method === "GET")
       return json(operationalView?.read() ?? { schema: "fleet.operational-view/v1", freshness: "unknown", unknown: ["boot"] });

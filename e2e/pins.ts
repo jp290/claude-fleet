@@ -57,7 +57,7 @@ import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
 import { LIVE_TMUX_SOCK, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
 import { readJsonl } from "../briefstats";
-import { quotaPosition, newResetEntries } from "../codex-quota";
+import { quotaPosition, newResetEntries, parseQuotaRollout, readLocalQuota, readIdentityBound, createSubscriptionReader, SUBSCRIPTION_STALE_MS, PROVIDER_UNSUPPORTED } from "../codex-quota";
 import {
   readJsonl as landQualityReadJsonl, modelKey, renderFull, renderSummary, sizeIndexOf, sizeStampOrJoin,
   type LandRow,
@@ -2734,6 +2734,115 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     pin("codex-quota: missing data is a named feed error", errorOf(() => newResetEntries(feed, new Set())) === "feed: missing data array");
   }
   pin("codex-quota: malformed announcement fails even if known", errorOf(() => newResetEntries({ data: [{ id: "known" }] }, new Set(["known"]))) === "feed: invalid announcement");
+}
+
+{
+  // t (ms) | event | exclusive owner
+  // now-900001 | stale stored quota | local source; now | read/refresh | server clock
+  // read pending -> 10 ms timeout -> late result | one acquisition | reader generation
+  const now = Date.parse("2026-10-03T12:00:00Z");
+  const window = { used_percent: 27, window_minutes: 300, resets_at: now / 1000 + 7200 };
+  const limits = { limit_id: "codex", primary: window,
+    secondary: { used_percent: 61, window_minutes: 10080, resets_at: now / 1000 + 604800 } };
+  const event = (at = now, rate_limits: unknown = limits) => JSON.stringify({ timestamp: new Date(at).toISOString(), payload: { rate_limits } });
+  const measured = parseQuotaRollout(event(), now);
+  pin("subscription: unequal primary/secondary windows come from one event in seconds", measured.primary?.used_percent === 27
+    && measured.primary.window_minutes === 300 && measured.primary.resets_at === now / 1000 + 7200
+    && measured.secondary?.used_percent === 61 && measured.secondary.window_minutes === 10080
+    && measured.source.measuredAt === now && measured.source.ageMs === 0 && measured.source.accountBound === false);
+  const missing = parseQuotaRollout(event(now, { primary: window }), now);
+  pin("subscription: absent secondary and legacy limit id remain null", missing.secondary === null && missing.source.limitId === null);
+  const zero = parseQuotaRollout(event(now, { primary: { ...window, used_percent: 0 } }), now);
+  pin("subscription: measured zero is retained", zero.status === "measured" && zero.primary?.used_percent === 0);
+  const old = parseQuotaRollout(event(now - SUBSCRIPTION_STALE_MS - 1), now);
+  pin("subscription: stale is event age, never read time", old.status === "stale" && old.source.ageMs === SUBSCRIPTION_STALE_MS + 1
+    && old.source.fetchedAt === now && old.source.reason === "event-older-than-15-minutes");
+  pin("subscription: torn last line is ignored", parseQuotaRollout(event() + '\n{"payload":', now).primary?.used_percent === 27);
+  for (const text of ['{broken}\n' + event(), event() + '\n{broken}\n']) {
+    const value = parseQuotaRollout(text, now);
+    pin("subscription: malformed complete/interior line invalidates source", value.status === "error" && value.primary === null
+      && value.secondary === null && value.source.reason === "invalid-json-line");
+  }
+  for (const bad of [{ ...limits, primary: { ...window, resets_at: window.resets_at * 1000 } },
+    { ...limits, secondary: { ...window, used_percent: 101 } }, { ...limits, primary: { ...window, window_minutes: 0 } }]) {
+    const value = parseQuotaRollout(event(now, bad), now);
+    pin("subscription: invalid window fails without fallback to old event", value.status === "error" && value.primary === null
+      && value.source.reason === "invalid-window");
+  }
+  const foreign = parseQuotaRollout(event(now, { ...limits, limit_id: "other" }), now);
+  pin("subscription: foreign limit id cannot masquerade as codex", foreign.status === "unknown" && foreign.primary === null);
+  const future = parseQuotaRollout(event(now + 1), now);
+  pin("subscription: server clock rejects future event time", future.status === "unknown" && future.source.reason === "event-time-ahead-of-server");
+  const noTime = parseQuotaRollout(JSON.stringify({ payload: { rate_limits: limits } }), now);
+  pin("subscription: event time is required, not inferred from mtime", noTime.status === "unknown" && noTime.source.measuredAt === null);
+  const dir = mkdtempSync(join(tmpdir(), "subscription-quota-"));
+  try {
+    const day = join(dir, "2026", "10", "03");
+    mkdirSync(day, { recursive: true });
+    writeFileSync(join(day, "a.jsonl"), event(now));
+    writeFileSync(join(day, "z.jsonl"), event(now - 60_000));
+    const local = await readLocalQuota(dir, () => now);
+    pin("subscription: newest event wins over later-written other session", local.source.measuredAt === now && local.primary?.used_percent === 27);
+    const absent = await readLocalQuota(join(dir, "absent"), () => now);
+    pin("subscription: missing source is unknown with null windows", absent.status === "unknown" && absent.primary === null
+      && absent.secondary === null && absent.source.reason === "missing-source");
+    writeFileSync(join(day, "a.jsonl"), JSON.stringify({ payload: { fixture: "x".repeat(300_000) } }) + '\n' + event());
+    const bounded = await readLocalQuota(dir, () => now);
+    pin("subscription: bounded tail skips only its incomplete leading fragment and retains the event",
+      bounded.primary?.used_percent === 27 && bounded.source.selection.historyComplete === false
+      && bounded.source.measuredAt === now);
+    writeFileSync(join(day, "z.jsonl"), '{bad}\n' + event());
+    const corrupt = await readLocalQuota(dir, () => now);
+    pin("subscription: corrupt file cannot fall back to another session", corrupt.status === "error" && corrupt.primary === null);
+    const probe = spawnSync(process.execPath, ["-e", `
+      let calls = 0;
+      globalThis.fetch = () => { calls++; throw new Error("network-forbidden"); };
+      Bun.write = () => { calls++; throw new Error("write-forbidden"); };
+      const fs = await import("node:fs/promises");
+      for (const name of ["mkdir", "rename", "unlink"]) fs.default[name] = () => { calls++; throw new Error("cache-forbidden"); };
+      await import(${JSON.stringify(resolve(ROOT, "codex-quota.ts"))});
+      console.log(JSON.stringify({calls, cache: (await import("node:fs")).existsSync(${JSON.stringify(join(dir, ".cache"))})}));
+    `], { env: { ...process.env, HOME: dir, CODEX_HOME: dir }, encoding: "utf8", timeout: 10_000 });
+    pin("subscription: import causes no CLI, network, feed or cache action", probe.status === 0
+      && probe.stdout.trim() === '{"calls":0,"cache":false}', `status=${probe.status}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  let identity = "own";
+  const rejected = await readIdentityBound(async () => identity, async () => { identity = "foreign"; return measured; })
+    .then(() => "accepted", (error: unknown) => error instanceof Error ? error.message : "other");
+  pin("subscription: identity replacement after await rejects foreign result", rejected === "source-identity-changed");
+  const accepted = await readIdentityBound(async () => "own", async () => measured);
+  pin("subscription: unchanged identity admits exact result", accepted.primary?.used_percent === 27);
+  const reader = createSubscriptionReader(async () => old, () => now, 100);
+  await reader.get();
+  const reread = await reader.refresh("local");
+  pin("subscription: local refresh never clears stale", reread.status === "stale" && reread.refresh.status === "ok"
+    && reread.source.measuredAt === old.source.measuredAt);
+  const unsupported = await reader.refresh("provider");
+  pin("subscription: provider request is explicitly unsupported, keeps local provenance", unsupported.refresh.status === "unsupported"
+    && unsupported.refresh.target === "provider" && unsupported.refresh.reason === PROVIDER_UNSUPPORTED
+    && unsupported.source.measuredAt === old.source.measuredAt);
+  let forbiddenReads = 0;
+  const providerOnly = createSubscriptionReader(async () => { forbiddenReads++; return measured; }, () => now);
+  const providerResult = await providerOnly.refresh("provider");
+  pin("subscription: unsupported provider performs no local fallback read", forbiddenReads === 0
+    && providerResult.primary === null && providerResult.refresh.status === "unsupported");
+  let calls = 0;
+  let release: ((value: typeof measured) => void) | undefined;
+  const pending = createSubscriptionReader(async () => { calls++; return new Promise(resolve => { release = resolve; }); }, () => now, 10);
+  const refreshing = pending.refresh("local");
+  await Promise.resolve();
+  const inFlight = await pending.get();
+  pin("subscription: active refresh is visible without a second read", inFlight.refresh.status === "refreshing" && calls === 1);
+  const timedOut = await refreshing;
+  pin("subscription: read timeout has null windows and sanitized error", timedOut.refresh.status === "timeout"
+    && timedOut.primary === null && timedOut.secondary === null && timedOut.source.reason === "read-timeout");
+  release?.(measured);
+  await Promise.resolve();
+  pin("subscription: late read cannot overwrite timeout", (await pending.get()).refresh.status === "timeout" && (await pending.get()).primary === null);
+  const failed = createSubscriptionReader(async () => { throw new Error("token/private/path/prompt"); }, () => now, 100);
+  const failure = await failed.refresh("local");
+  pin("subscription: unexpected source errors cannot leak raw details", failure.refresh.status === "error"
+    && failure.source.reason === "read-failed" && !JSON.stringify(failure).includes("token/private"));
 }
 
 {

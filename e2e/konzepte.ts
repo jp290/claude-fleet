@@ -25,6 +25,16 @@
 //   index             — list a directory that is no konzept id, read a fassung into the list, miscount the
 //                       fold, or answer a request carrying a self token anything but 401 (alone) / 409
 //                       (beside the owner's) — GET /api/konzepte, the board's list.
+//   owner heft        — drop the owner-only rule of k-owner-korrekturen (lane or MAIN publish a fassung), or
+//                       let a session learn more than the 403's door sentence.
+//   erwartet          — skip the expected-predecessor compare under the lock (a stale or ahead erwartet
+//                       appends), or make it required (k-claude-fleet's first-version body is 409).
+//   ersetzt fold      — fold a replaced entry to anything but veraltet + abgeloestDurch, or rewrite v1.
+//   ersetzt refusal   — one mutation per sentence, each dropping its own return in checkKorrekturHeft:
+//                       self-replacement, unknown id, cycle, duplicate id, two successors, another geltung,
+//                       a published entry changed, withdrawn and replaced at once; the prior fassung's hash
+//                       compare (drift); the one-block rule of parseKorrekturHeft.
+//   other konzepte    — narrow any other konzept's writers while guarding the owner's heft.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -327,6 +337,111 @@ async function ledgerDoors(): Promise<void> {
     check("konzepte scope: a plain session is 409 on both verbs, a missing credential 401 on both doors",
       plainW.status === 409 && plainR.status === 409 && /neither/.test(plainW.body.error ?? "") && anon.status === 401 && anonOwner.status === 401,
       `plain=${plainW.status}/${plainR.status} ${plainW.body.error} anon=${anon.status}/${anonOwner.status}`);
+
+    // ---- the owner's heft (k-owner-korrekturen): only the owner publishes, one fassung replaces entries of
+    // an earlier one in ONE append. Synthetic entries only — ok-a, ok-b, … say nothing about anyone.
+    const OK = "k-owner-korrekturen";
+    mkdirSync(`${i.root}/${OK}`, { recursive: true });
+    const ALL = { projekte: "*", rollen: "*", harnesses: "*", modi: "*" };
+    const eintrag = (id: string, ersetzt: string[] = [], geltung: Record<string, unknown> = ALL) =>
+      ({ id, aussage: `synthetische Aussage ${id}`, quelle: "fixture.md#abschnitt", geltung, ersetzt });
+    const heftText = (heft: unknown): string => `# Owner-Korrekturen (Fixture)\n\n\`\`\`owner-korrekturen\n${JSON.stringify(heft, null, 2)}\n\`\`\`\n`;
+    const placeOK = (n: number, heft: unknown): string => { const t = typeof heft === "string" ? heft : heftText(heft); writeFileSync(`${i.root}/${OK}/v${n}.md`, t); return sha(t); };
+    const okLines = () => jsonl(`${i.root}/${OK}/versionen.jsonl`);
+    const ownerOK = (body: unknown) => owner("versionen", "POST", body, OK);
+    type Folded = { id: string; status: string; abgeloestDurch?: string; grund?: string };
+    const foldOf = (a: Answer) => ((a.body as { eintraege?: Folded[] }).eintraege ?? []).map((e) =>
+      `${e.id}:${e.status}${e.abgeloestDurch ? `>${e.abgeloestDurch}` : ""}${e.grund ? `!${e.grund}` : ""}`).join(" ");
+
+    const ok1 = placeOK(1, { eintraege: [eintrag("ok-a")] });
+    const laneOK = await self(laneTok!, "versionen", "POST", version(ok1), OK);
+    const mainOK = await self(mainTok!, "versionen", "POST", version(ok1, { ebene: "owner" }), OK);
+    check("konzepte owner heft: a fassung of k-owner-korrekturen from the lane or the bound MAIN is 403 naming the owner's door, nothing appended",
+      laneOK.status === 403 && mainOK.status === 403 && /only from the owner/.test(laneOK.body.error ?? "")
+        && /a lane proposes/.test(laneOK.body.error ?? "") && /a main proposes/.test(mainOK.body.error ?? "") && okLines().length === 0,
+      `lane=${laneOK.status} ${laneOK.body.error} main=${mainOK.status} ${mainOK.body.error} lines=${okLines().length}`);
+
+    const ebeneOK = await ownerOK(version(ok1, { ebene: "projekt" }));
+    const erwBad = await ownerOK(version(ok1, { erwartet: "1" }));
+    const erwAhead = await ownerOK(version(ok1, { erwartet: 1 }));
+    const ownerV1 = await ownerOK(version(ok1, { erwartet: null }));
+    const row1 = JSON.stringify(okLines()[0] ?? null);
+    const erwStale = await ownerOK(version(ok1, { erwartet: null }));
+    check("konzepte owner heft: the owner publishes v1 as ebene owner with its entries folded; another ebene is 400",
+      ebeneOK.status === 400 && ownerV1.status === 200 && ownerV1.body.version?.ebene === "owner"
+        && JSON.stringify(ownerV1.body.version?.actor) === JSON.stringify({ kind: "owner", via: "bearer" })
+        && foldOf(ownerV1) === "ok-a:gilt" && okLines().length === 1,
+      `ebene=${ebeneOK.status} v1=${ownerV1.status} ${JSON.stringify(ownerV1.body).slice(0, 400)}`);
+    check("konzepte erwartet: a wrong expected predecessor is 409 under the lock, a malformed one 400, and neither appends",
+      erwBad.status === 400 && erwAhead.status === 409 && /no version yet, the body expects version 1/.test(erwAhead.body.error ?? "")
+        && erwStale.status === 409 && /is at version 1, the body expects none yet/.test(erwStale.body.error ?? "") && okLines().length === 1,
+      `bad=${erwBad.status} ahead=${erwAhead.status} ${erwAhead.body.error} stale=${erwStale.status} ${erwStale.body.error} lines=${okLines().length}`);
+
+    // ---- ersetzt: v2 carries ok-a unchanged and ok-b replacing it — ONE append, v1 untouched
+    const v1Bytes = readFileSync(`${i.root}/${OK}/v1.md`, "utf8");
+    const base = [eintrag("ok-a"), eintrag("ok-b", ["ok-a"])];
+    const ok2 = placeOK(2, { eintraege: base });
+    const ownerV2 = await ownerOK(version(ok2, { erwartet: 1 }));
+    check("konzepte ersetzt: v2 with ok-b ersetzt [ok-a] folds ok-a to veraltet abgeloestDurch ok-b in one append",
+      ownerV2.status === 200 && ownerV2.body.version?.vorgaenger === 1 && foldOf(ownerV2) === "ok-a:veraltet>ok-b ok-b:gilt"
+        && okLines().length === 2,
+      `${ownerV2.status} ${JSON.stringify(ownerV2.body).slice(0, 500)}`);
+    check("konzepte ersetzt: the bytes of fassung 1 and its ledger row stay as they were",
+      readFileSync(`${i.root}/${OK}/v1.md`, "utf8") === v1Bytes && sha(v1Bytes) === okLines()[0]?.sha256
+        && JSON.stringify(okLines()[0]) === row1,
+      `file=${readFileSync(`${i.root}/${OK}/v1.md`, "utf8") === v1Bytes} row=${JSON.stringify(okLines()[0]) === row1}`);
+
+    // ---- each refusal of the graph: v3 is placed, the owner's POST is 409 with its own sentence, nothing appended
+    const refusedV3 = async (heft: unknown): Promise<Answer> => ownerOK(version(placeOK(3, heft), { erwartet: 2 }));
+    const refusals: [string, unknown, RegExp][] = [
+      ["self-replacement", { eintraege: [...base, eintrag("ok-c", ["ok-c"])] }, /entry ok-c ersetzt itself/],
+      ["unknown id", { eintraege: [...base, eintrag("ok-c", ["ok-x"])] }, /ersetzt unknown entry ok-x/],
+      ["cycle", { eintraege: [...base, eintrag("ok-c", ["ok-d"]), eintrag("ok-d", ["ok-c"])] }, /ersetzt forms a cycle: ok-d → ok-c → ok-d/],
+      ["duplicate id", { eintraege: [...base, eintrag("ok-c"), eintrag("ok-c")] }, /entry id ok-c appears twice/],
+      ["two successors", { eintraege: [...base, eintrag("ok-c", ["ok-b"]), eintrag("ok-d", ["ok-b"])] }, /entry ok-b has two successors: ok-c and ok-d/],
+      ["a second successor of a replaced entry", { eintraege: [...base, eintrag("ok-c", ["ok-a"])] }, /entry ok-a has two successors: ok-b and ok-c/],
+      ["another geltung", { eintraege: [...base, eintrag("ok-c", ["ok-b"], { ...ALL, harnesses: ["codex"] })] }, /different geltung/],
+      ["a published entry changed", { eintraege: [eintrag("ok-a"), { ...eintrag("ok-b", ["ok-a"]), aussage: "umgeschrieben" }] }, /entry ok-b of the previous fassung is missing or changed/],
+      ["withdrawn and replaced at once", { eintraege: [...base, eintrag("ok-c", ["ok-b"])], zurueckgezogen: [{ id: "ok-b", grund: "synthetisch" }] },
+        /entry ok-b is withdrawn and replaced by ok-c at once/],
+      ["no heft block", "# ohne Block\n", /exactly one ```owner-korrekturen block \(found 0\)/],
+    ];
+    for (const [name, heft, re] of refusals) {
+      const a = await refusedV3(heft);
+      check(`konzepte ersetzt refusal: ${name} is 409 with its own sentence and appends nothing`,
+        a.status === 409 && re.test(a.body.error ?? "") && okLines().length === 2, `${a.status} ${a.body.error} lines=${okLines().length}`);
+    }
+    // the fassung a new one follows must still be the published one
+    const v2Path = `${i.root}/${OK}/v2.md`;
+    const v2Bytes = readFileSync(v2Path, "utf8");
+    writeFileSync(v2Path, `${v2Bytes}\nnachtraeglich\n`);
+    const drift = await refusedV3({ eintraege: [...base, eintrag("ok-c")] });
+    writeFileSync(v2Path, v2Bytes);
+    check("konzepte ersetzt refusal: a previous fassung changed after its append is no basis — 409, nothing appended",
+      drift.status === 409 && /v2\.md is missing or no longer hashes to its ledger row/.test(drift.body.error ?? "") && okLines().length === 2,
+      `${drift.status} ${drift.body.error}`);
+    const ownerV3 = await refusedV3({ eintraege: base, zurueckgezogen: [{ id: "ok-b", grund: "synthetisch zurueckgezogen" }] });
+    check("konzepte zurueckgezogen: a withdrawal in v3 folds ok-b to verworfen with its grund, ok-a stays veraltet",
+      ownerV3.status === 200 && foldOf(ownerV3) === "ok-a:veraltet>ok-b ok-b:verworfen!synthetisch zurueckgezogen" && okLines().length === 3,
+      `${ownerV3.status} ${JSON.stringify(ownerV3.body).slice(0, 400)}`);
+
+    // ---- every other konzept keeps its writers: k-claude-fleet with the body of its first version
+    // (Program note fa9afdd2), written by the lane, then by the MAIN without erwartet
+    const CF = "k-claude-fleet";
+    mkdirSync(`${i.root}/${CF}`, { recursive: true });
+    const cf1 = "# Konzept-Fixture, kein echter Inhalt\n";
+    writeFileSync(`${i.root}/${CF}/v1.md`, cf1);
+    writeFileSync(`${i.root}/${CF}/v2.md`, `${cf1}zweite Fassung\n`);
+    const cfLane = await self(laneTok!, "versionen", "POST", { sha256: sha(cf1), anlass: "e2e erste Fassung", geltung: "fuer den e2e-Beweis",
+      ebene: "projekt", arbeitetEin: [], quellen: { neu: [] } }, CF);
+    const cfMain = await self(mainTok!, "versionen", "POST", version(sha(`${cf1}zweite Fassung\n`)), CF);
+    const kStale = await self(mainTok!, "versionen", "POST", version(sha(same), { erwartet: 10 }));
+    place(12, same);
+    const kLane = await self(laneTok!, "versionen", "POST", version(sha(same), { erwartet: 11, ebene: "owner" }));
+    check("konzepte other konzepte: k-claude-fleet and k-e2e-konzept stay writable by lane and MAIN, erwartet absent or right",
+      cfLane.status === 200 && cfLane.body.version?.version === 1 && cfMain.status === 200 && cfMain.body.version?.version === 2
+        && kStale.status === 409 && kLane.status === 200 && kLane.body.version?.version === 12 && kLane.body.version.ebene === "owner",
+      `cfLane=${cfLane.status} ${cfLane.body.error ?? ""} cfMain=${cfMain.status} ${cfMain.body.error ?? ""} stale=${kStale.status} lane=${kLane.status} ${kLane.body.error ?? ""}`);
 
     // ---- missing root: 503 naming FLEET_KONZEPT_ROOT, on read and write, and nothing is created
     renameSync(i.root, `${i.root}.away`);

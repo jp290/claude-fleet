@@ -1202,6 +1202,9 @@ still verworfen.
   `projekt` (Owner-Richtung b04fd193, Notiz d7edfbea: EIN Eintragsmodell mit Ebene als Feld; `team` kommt
   spaeter nur ins Modell). Keine Aufstiegslogik — nur das Feld.
 - `geltung` ist Pflicht: Freitext 1–200 Zeichen, wofuer der Eintrag gilt.
+- `erwartet` ist optional: die Version, die der Schreiber als `letzte` gelesen hat (`null` = noch keine).
+  Die Route vergleicht sie unter derselben Konzept-Sperre, die N vergibt; weicht sie ab, **409** und
+  nichts wird angehaengt. Fehlt das Feld, gilt das bisherige Verhalten (N = `letzte + 1`, kein Vergleich).
 
 Ablehnungen: **400** `sha256 must be the 64 lowercase hex of v<N>.md` · **400** `anlass must be a string of
 1–500 chars` · **400** `geltung must be a string of 1–200 chars` · **400** `ebene must be one of
@@ -1209,7 +1212,36 @@ arbeit|strang|projekt|portfolio|owner (absent = projekt)` · **400** `arbeitetEi
 100 anmerkung ids (16 hex)` · **400** `quellen must be {korpus?: <64 hex>, neu: [...]}` · **400**
 `detailRef must be {source, locator, fp?}` · **409** `<konzept>/v<N>.md does not exist — the next version
 is <N>; place the file under the root first` · **409** `<konzept>/v<N>.md hashes to <x>, the body names <y>`
-· **409** `arbeitetEin names anmerkungen <konzept> does not have: <ids>` · **404** (GET) `unknown konzept`.
+· **409** `arbeitetEin names anmerkungen <konzept> does not have: <ids>` · **400** `erwartet must be the
+version you read as latest (integer ≥ 1), or null for none yet` · **409** `<konzept> is at version <M>|no
+version yet, the body expects version <E>|none yet — re-read and decide again` · **404** (GET) `unknown konzept`.
+
+#### Das Owner-Heft `k-owner-korrekturen` (seit 2026-10-03, Program 31aa88ea)
+
+Entwurf `docs/messungen/2026-10-02-owner-korrekturen-regal-entwurf.md` §Empfehlung, Karte 1 (Schreibseite).
+Eine Fassung dieses einen Konzepts nimmt NUR der Owner an (`POST /api/konzepte/k-owner-korrekturen/versionen`);
+Lane und gebundene MAIN bekommen auf der Self-Tuer **403** `k-owner-korrekturen takes a fassung only from the
+owner (…) — a lane|main proposes through an anmerkung or the clarification chain`, bevor der Body gelesen
+wird. Anmerkungen an einer veroeffentlichten Fassung bleiben ihnen offen. `ebene` ist hier `owner` (fehlt
+sie, gilt `owner`; jede andere **400**). Alle anderen Konzepte behalten ihre Schreiber unveraendert.
+
+Das Eintragsformat lebt IN der Fassung, nicht im Body: `v<N>.md` traegt genau einen Block
+```` ```owner-korrekturen ```` mit JSON `{eintraege: [{id, aussage, quelle, geltung, ersetzt}],
+zurueckgezogen?: [{id, grund}]}` — geschlossene Schluessel auf jeder Ebene (`konzept-ledger.ts#parseKorrekturHeft`).
+`id` `^[a-z0-9][a-z0-9-]{0,63}$`; `quelle` ein String (≤500) oder ein `detailRef`; `geltung`
+`{projekte, rollen, harnesses, modi}`, je Achse `"*"` (bewusst alle) oder eine nicht-leere Namensliste —
+eine leere Liste gilt nirgends und wird abgelehnt; `ersetzt` eine Liste aelterer ids (leer, wenn keine).
+
+Jede Fassung ist das GANZE Heft samt Geschichte: ein veroeffentlichter Eintrag steht in jeder spaeteren
+Fassung unveraendert, eine Aenderung bekommt eine neue id, die die alte `ersetzt`. Unter der Sperre prueft
+die Route (`konzept-ledger.ts#checkKorrekturHeft`), dass die Vorgaenger-Fassung noch auf ihre Ledger-Zeile
+hasht, und lehnt mit **409** `k-owner-korrekturen/v<N>.md: …` ab: doppelte id · Selbstabloesung · unbekannte
+id in `ersetzt` oder `zurueckgezogen` · zwei Nachfolger fuer dieselbe id · zugleich zurueckgezogen und
+ersetzt · Zyklus · andere `geltung` als der ersetzte Eintrag (in diesem Schnitt ersetzt nur identische
+Geltung) · ein Eintrag oder Rueckzug der Vorgaenger-Fassung fehlt oder ist veraendert · kein oder mehr als
+ein Block. Die Antwort traegt zusaetzlich `eintraege[]`, gefaltet (`#foldKorrekturHeft`): `gilt` ·
+`veraltet` mit `abgeloestDurch` · `verworfen` mit `grund` — aus EINER Fassung, nichts wird zweimal
+geschrieben. Eine Lesesicht fuer Sessions gibt es in diesem Schnitt nicht (Karte 2).
 
 ### Anmerkungen — `GET|POST /api/self/konzepte/:id/anmerkungen`
 

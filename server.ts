@@ -41647,7 +41647,8 @@ Bun.serve<WSData>({
     }
 
     // THE KONZEPT DOOR (docs/self-api.md §konzepte, konzept-ledger.ts): versions and anmerkungen of a
-    // konzept, read and appended by a lane OR a bound MAIN. `actor` is the Principal resolved here and
+    // konzept, read and appended by a lane OR a bound MAIN — except a fassung of k-owner-korrekturen, which
+    // the ledger takes from the owner alone (403, konzept-ledger.ts#OWNER_KORREKTUREN). `actor` is the Principal resolved here and
     // `kontext` the TraceRefs konzeptKontextFor builds — a body naming either is a 400 in the ledger
     // module. The occupant is re-checked after the body read, before anything is appended, so a slot
     // recycled mid-request writes nothing under the old credential.

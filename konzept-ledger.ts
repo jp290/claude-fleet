@@ -311,6 +311,57 @@ export function foldKorrekturHeft(heft: KorrekturHeft): GefalteterEintrag[] {
     : { ...e, status: "gilt" as const });
 }
 
+// THE READ VIEW (Karte 2 von 3, Entwurf §Dieselbe Lesetür für Claude, Codex und pi-zai): the entries of the
+// LAST fassung that apply to ONE reader, whose three coordinates the server derives from the session's
+// current binding — never from the request. `projekt` is the opaque projectKey of the bound repository,
+// `rolle` the server's positionRole (lane · program-main · orchestrator), `harness` the slot's adapter id.
+// A list axis holds when it names the reader's value, "*" holds for everyone; `modi` is NOT filtered — no
+// binding names a working mode — and each served entry carries its geltung, so the reader sees that axis.
+export interface KorrekturLeser { projekt: string; rolle: string; harness: string }
+const gilt = (achse: "*" | string[], wert: string): boolean => achse === "*" || achse.includes(wert);
+export const geltungTrifft = (g: KorrekturGeltung, l: KorrekturLeser): boolean =>
+  gilt(g.projekte, l.projekt) && gilt(g.rollen, l.rolle) && gilt(g.harnesses, l.harness);
+
+// Every way this view can fail is a NAMED refusal with no entry list in it: an unreadable heft must never
+// look like an empty one (Entwurf: „nie als leeres Korrektur-Regal"). Only a 200 carries geltendeEintraege,
+// and a 200 with [] means the current owner fassung has no gilt entry for THIS binding — nothing else.
+// The private `quelle` of an entry is never served; neither is any entry outside the reader's geltung.
+export async function konzeptLeseansicht(root: string | null, konzept: string, leser: KorrekturLeser): Promise<KonzeptAnswer> {
+  if (!KONZEPT_ID_RE.test(konzept)) return refuse(400, `konzept id must match ${KONZEPT_ID_RE.source}`);
+  if (konzept !== OWNER_KORREKTUREN)
+    return refuse(404, `the leseansicht reads ${OWNER_KORREKTUREN} only — ${konzept} is read through /versionen and /anmerkungen`);
+  const dir = await rootDir(root);
+  if (isAnswer(dir)) return dir;
+  const kdir = `${dir}/${konzept}`;
+  try { if (!(await stat(kdir)).isDirectory()) throw new Error("not a directory"); }
+  catch { return refuse(404, `${konzept} has no directory under the root — no owner fassung exists yet, which is not an empty heft`); }
+  const l = await readLedgers(kdir, konzept);
+  const n = lastVersion(l);
+  const row = l.versionen.find((v) => v.version === n);
+  if (!row) return refuse(404, `${konzept} has no published fassung yet — that is not an empty heft`);
+  // the reader checks the owner actor itself: the write door's 403 is one guard, a ledger line is another
+  // claim, and a newest row from anyone else is no current owner fassung — never fall back to an older one
+  if (!isObj(row.actor) || row.actor.kind !== "owner")
+    return refuse(409, `${konzept} v${n} was not published by the owner (actor ${isObj(row.actor) ? String(row.actor.kind) : "missing"}) — there is no current owner fassung to read`);
+  let bytes: Buffer;
+  try { bytes = await readFile(`${kdir}/v${n}.md`); }
+  catch { return refuse(409, `${konzept}/v${n}.md is missing — the ledger names a fassung the root does not hold`); }
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  if (sha256 !== row.sha256)
+    return refuse(409, `hash drift: ${konzept}/v${n}.md hashes to ${sha256}, its ledger row names ${String(row.sha256)} — the file changed after the owner published it`);
+  const heft = parseKorrekturHeft(bytes.toString("utf8"));
+  if (typeof heft === "string") return refuse(409, `${konzept}/v${n}.md: ${heft}`);
+  const mine = foldKorrekturHeft(heft).filter((e) => geltungTrifft(e.geltung, leser));
+  const geltendeEintraege = mine.filter((e) => e.status === "gilt")
+    .map(({ id, aussage, geltung, ersetzt }) => ({ id, aussage, geltung, ersetzt }));
+  const status = {
+    gilt: geltendeEintraege.length,
+    veraltet: mine.flatMap((e) => e.status === "veraltet" ? [{ id: e.id, abgeloestDurch: e.abgeloestDurch }] : []),
+    verworfen: mine.flatMap((e) => e.status === "verworfen" ? [{ id: e.id, grund: e.grund }] : []),
+  };
+  return { status: 200, body: { konzept, version: n, sha256, geltendeEintraege, status, bindung: leser, nichtGefiltert: ["modi"] } };
+}
+
 async function append(path: string, row: unknown): Promise<void> {
   await appendFile(path, `${JSON.stringify(row)}\n`, { mode: 0o600 });
 }
@@ -347,12 +398,13 @@ export async function konzeptIndex(root: string | null): Promise<KonzeptAnswer> 
 }
 
 export type KonzeptOp =
-  | { op: "read-versionen" } | { op: "read-anmerkungen" }
+  | { op: "read-versionen" } | { op: "read-anmerkungen" } | { op: "read-leseansicht" }
   | { op: "write-version" } | { op: "write-anmerkung" } | { op: "verwerfen"; anmerkung: string };
 
-// `/versionen`, `/anmerkungen` or `/anmerkungen/<id>/verwerfen` after the konzept id, with its method —
-// null for anything else, so the caller answers its own 404
+// `/versionen`, `/anmerkungen`, `/anmerkungen/<id>/verwerfen` or (GET only) `/leseansicht` after the
+// konzept id, with its method — null for anything else, so the caller answers its own 404
 export function konzeptOpOf(method: string, rest: string): KonzeptOp | null {
+  if (rest === "leseansicht") return method === "GET" ? { op: "read-leseansicht" } : null;
   if (rest === "versionen") return method === "GET" ? { op: "read-versionen" } : method === "POST" ? { op: "write-version" } : null;
   if (rest === "anmerkungen") return method === "GET" ? { op: "read-anmerkungen" } : method === "POST" ? { op: "write-anmerkung" } : null;
   const m = /^anmerkungen\/([^/]+)\/verwerfen$/.exec(rest);
@@ -369,6 +421,11 @@ export async function konzeptRequest(input: {
   const { konzept, op, body, writer } = input;
   const now = input.now ?? Date.now;
   if (!KONZEPT_ID_RE.test(konzept)) return refuse(400, `konzept id must match ${KONZEPT_ID_RE.source}`);
+
+  // the read view filters by a SESSION's binding (konzeptLeseansicht, called by the self door); this
+  // handler holds no binding — the owner door reads the whole heft through /versionen
+  if (op.op === "read-leseansicht")
+    return refuse(409, `the leseansicht filters by a session's binding — the owner reads ${konzept} through /versionen and its fassung files`);
 
   if (op.op === "read-versionen" || op.op === "read-anmerkungen") {
     const root = await rootDir(input.root);

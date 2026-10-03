@@ -181,7 +181,7 @@ import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolveSelfPrincipal, actorFromPrincipal, setPrincipalState, commentStrike, authFails, failStrike,
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
-import { konzeptIndex, konzeptOpOf, konzeptRequest } from "./konzept-ledger";
+import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { readCodexRollout, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, type Binding,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
@@ -14121,6 +14121,23 @@ function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>):
     return bound.ok ? { ok: true, refs: { ...base, program: bound.program.id } } : { ok: false, error: bound.error };
   }
   return { ok: false, error: `a konzept is read and written by a lane or by the bound MAIN of an active Program — this session is neither (role ${p.role})` };
+}
+
+// THE READER OF THE OWNER'S CORRECTIONS (konzept-ledger.ts#konzeptLeseansicht, Karte 2 von 3): who reads,
+// derived from the CURRENT binding alone — role from positionRole (no second role derivation), project
+// as the opaque projectKey of the bound repository (a lane's worktree repo, otherwise the cwd's git
+// toplevel), harness from the slot's adapter. A READ door only: it widens no write. The Orchestratorin
+// reads here although konzeptKontextFor refuses her every write; a free session (role generic) reads
+// nothing, and a session outside any git repository has no project and is refused by name.
+type KorrekturLeserAnswer = { ok: true; leser: KorrekturLeser } | { ok: false; error: string };
+async function korrekturLeserFor(s: Slot): Promise<KorrekturLeserAnswer> {
+  const bound = boundProgramForMain(s);
+  const rolle = positionRole(s, bound);
+  if (rolle === "generic")
+    return { ok: false, error: `the owner's corrections are read by a lane, a bound Program-MAIN or the Orchestratorin — this session is none of them (${bound.ok ? "role generic" : bound.error})` };
+  const repo = s.cwd ? await repoKeyOf(s) : null;
+  if (!repo) return { ok: false, error: "this session's working directory is in no git repository — without a project binding no entry can be chosen for it" };
+  return { ok: true, leser: { projekt: projectKeyOf(repo), rolle, harness: harnessOf(s.harness).id } };
 }
 
 // THE SCOPE OF BOTH INBOX DOORS, in one place because they answer the SAME two questions in the
@@ -41648,7 +41665,8 @@ Bun.serve<WSData>({
 
     // THE KONZEPT DOOR (docs/self-api.md §konzepte, konzept-ledger.ts): versions and anmerkungen of a
     // konzept, read and appended by a lane OR a bound MAIN — except a fassung of k-owner-korrekturen, which
-    // the ledger takes from the owner alone (403, konzept-ledger.ts#OWNER_KORREKTUREN). `actor` is the Principal resolved here and
+    // the ledger takes from the owner alone (403, konzept-ledger.ts#OWNER_KORREKTUREN). Its GET /leseansicht
+    // is the one read the Orchestratorin shares, scoped by korrekturLeserFor and checked before any kontext. `actor` is the Principal resolved here and
     // `kontext` the TraceRefs konzeptKontextFor builds — a body naming either is a 400 in the ledger
     // module. The occupant is re-checked after the body read, before anything is appended, so a slot
     // recycled mid-request writes nothing under the old credential.
@@ -41659,6 +41677,18 @@ Bun.serve<WSData>({
       if (!s || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const op = konzeptOpOf(req.method, selfKonzept[2]!);
       if (!op) return json({ error: "not found" }, 404);
+      if (op.op === "read-leseansicht") {
+        const leser = await korrekturLeserFor(s);
+        if (!leser.ok) return json({ error: leser.error }, 409);
+        const asked = [...new Set(url.searchParams.keys())];
+        if (asked.length)
+          return json({ error: `the leseansicht takes its scope from your binding, never from the request — [${asked.join(", ")}] is not read` }, 400);
+        const answer = await konzeptLeseansicht(KONZEPT_ROOT, selfKonzept[1]!, leser.leser);
+        const still = resolveSelfPrincipal(req);
+        if (s.openedAt !== p.openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== p.openedAt)
+          return json({ error: "the slot changed occupant while this read ran — nothing is served on the old credential" }, 409);
+        return json(answer.body, answer.status);
+      }
       const kontext = konzeptKontextFor(s, p);
       if (!kontext.ok) return json({ error: kontext.error }, 409);
       const body = req.method === "POST" ? await readJson(req) : null;

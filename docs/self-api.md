@@ -1136,7 +1136,9 @@ Report, Attention-Antwort); ihn nennt der Schreiber.
 **Wer:** die Self-Tuer ist offen fuer eine **Lane** und fuer die **gebundene MAIN eines aktiven
 Programs** (`boundProgramForMain`); jede andere Session bekommt **409** `a konzept is read and written by a
 lane or by the bound MAIN of an active Program — this session is neither (role <role>)` — auch
-Orchestratorin (Rolle `generic` im Principal). Ohne erkannte Credential 401 nach 400 ms.
+Orchestratorin (Rolle `generic` im Principal). Einzige Ausnahme ist die reine Lesetuer
+`GET …/k-owner-korrekturen/leseansicht` (unten), die auch die Orchestratorin liest; an allen anderen
+Pfaden und an jedem Schreibakt bleibt es bei 409. Ohne erkannte Credential 401 nach 400 ms.
 Nach dem Body-Lesen wird der Occupant erneut geprueft; ein recycelter Slot bekommt 409 und nichts wird
 geschrieben.
 
@@ -1241,7 +1243,49 @@ ersetzt · Zyklus · andere `geltung` als der ersetzte Eintrag (in diesem Schnit
 Geltung) · ein Eintrag oder Rueckzug der Vorgaenger-Fassung fehlt oder ist veraendert · kein oder mehr als
 ein Block. Die Antwort traegt zusaetzlich `eintraege[]`, gefaltet (`#foldKorrekturHeft`): `gilt` ·
 `veraltet` mit `abgeloestDurch` · `verworfen` mit `grund` — aus EINER Fassung, nichts wird zweimal
-geschrieben. Eine Lesesicht fuer Sessions gibt es in diesem Schnitt nicht (Karte 2).
+geschrieben.
+
+#### Die Leseansicht — `GET /api/self/konzepte/k-owner-korrekturen/leseansicht` (seit 2026-10-03)
+
+Karte 2 (Leseseite), Entwurf §Dieselbe Lesetuer fuer Claude, Codex und pi-zai. Eine Tuer fuer jeden Harness:
+
+```sh
+curl -s http://<fleet-host>:<port>/api/self/konzepte/k-owner-korrekturen/leseansicht \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+```
+
+**Antwort (200):** `{konzept, version, sha256, geltendeEintraege, status, bindung, nichtGefiltert}` aus der
+LETZTEN Fassung (`konzept-ledger.ts#konzeptLeseansicht`). `geltendeEintraege` sind die `gilt`-Eintraege,
+deren `geltung` die Bindung trifft, je `{id, aussage, geltung, ersetzt}` — die private `quelle` wird nie
+ausgeliefert. `status` ist `{gilt: <Anzahl>, veraltet: [{id, abgeloestDurch}], verworfen: [{id, grund}]}`
+ueber die Eintraege derselben Geltung: abgeloeste ids bleiben nachvollziehbar, ihr Text nicht. `bindung`
+`{projekt, rolle, harness}` nennt, wonach gefiltert wurde; `nichtGefiltert: ["modi"]` — keine Bindung nennt
+einen Arbeitsmodus, darum traegt jeder Eintrag seine `geltung.modi` sichtbar. Ein 200 mit `[]` heisst NUR:
+die aktuelle Owner-Fassung hat fuer DIESE Bindung keinen geltenden Eintrag.
+
+**Die Bindung kommt vom Server, nie aus der Anfrage** (`server.ts#korrekturLeserFor`): `rolle` aus
+`positionRole` (`lane` · `program-main` · `orchestrator`), `projekt` der opake projectKey (16 hex ueber den
+kanonischen Repo-Pfad) des gebundenen Repositoriums — die Lane ihr Worktree-Repo, sonst das Git-Toplevel des
+cwd —, `harness` die Adapter-id des Slots (`claude` bei keiner). Eine Achse trifft, wenn sie `"*"` ist oder
+den Wert nennt. Claude-, Codex- und pi-zai-Lanes gleicher Bindung lesen also dieselben Eintraege. Lesen
+duerfen Lane, gebundene Program-MAIN und Orchestratorin; das erweitert KEIN Schreibrecht — die Fassung
+bleibt Owner-Sache (403 oben), die Orchestratorin bleibt an allen anderen Konzept-Pfaden 409.
+
+**Abweisungen, jede benannt und ohne Eintragsliste** — eine unlesbare Sicht erscheint nie als leeres Regal:
+**409** `the owner's corrections are read by a lane, a bound Program-MAIN or the Orchestratorin — this
+session is none of them (…)` (freie Session) · **409** `this session's working directory is in no git
+repository — …` · **400** `the leseansicht takes its scope from your binding, never from the request —
+[<params>] is not read` (jeder Query-Parameter) · **401** fuer ein rotiertes Token eines recycelten Slots ·
+**409** wenn der Slot waehrend des Lesens den Occupant wechselt · **503** wie oben (Wurzel) · **404**
+`k-owner-korrekturen has no directory under the root — no owner fassung exists yet, which is not an empty
+heft` · **404** `… has no published fassung yet — that is not an empty heft` · **409** `… v<N> was not
+published by the owner (actor <kind>) — there is no current owner fassung to read` (kein Rueckfall auf eine
+aeltere Fassung) · **409** `…/v<N>.md is missing — …` · **409** `hash drift: k-owner-korrekturen/v<N>.md
+hashes to <x>, its ledger row names <y> — …` · **409** `…/v<N>.md: <Formatfehler>` · **404** `the leseansicht
+reads k-owner-korrekturen only — …` fuer jedes andere Konzept · **404** `not found` fuer jedes andere Verb.
+Die Owner-Tuer `GET /api/konzepte/k-owner-korrekturen/leseansicht` antwortet **409** `the leseansicht
+filters by a session's binding — …`: der Owner hat keine Bindung und liest das ganze Heft ueber `/versionen`
+und die Fassungsdateien. Beweis: `e2e/konzepte.ts` §leseansicht, synthetische Eintraege je Geltungsachse.
 
 ### Anmerkungen — `GET|POST /api/self/konzepte/:id/anmerkungen`
 

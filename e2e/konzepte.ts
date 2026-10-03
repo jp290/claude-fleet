@@ -35,6 +35,19 @@
 //                       a published entry changed, withdrawn and replaced at once; the prior fassung's hash
 //                       compare (drift); the one-block rule of parseKorrekturHeft.
 //   other konzepte    — narrow any other konzept's writers while guarding the owner's heft.
+//   leseansicht       — GET /api/self/konzepte/k-owner-korrekturen/leseansicht (konzept-ledger.ts#konzeptLeseansicht,
+//                       server.ts#korrekturLeserFor), one mutation per row:
+//     harness parity  — resolve a harness to anything but harnessOf(slot.harness).id (codex or pi-zai lose ok-drei).
+//     filter          — drop any one axis of geltungTrifft (projekt: ok-fremd reaches the Fleet lanes;
+//                       rolle: ok-main/ok-orch reach a lane; harness: ok-container reaches everyone), or serve
+//                       a veraltet/verworfen entry or its private quelle.
+//     main / orch     — refuse the Orchestratorin (konzeptKontextFor in front of the read) or a bound MAIN.
+//     no new write    — let the Orchestratorin through konzeptKontextFor, or the MAIN past the owner's 403.
+//     free / recycled — serve role generic, or honor a rotated token (401 must stay 401).
+//     request scope   — read projekt/rolle/harness from the query instead of refusing it.
+//     refusals        — each named, never a 200 with []: hash drift, missing v<N>.md, a newest row not
+//                       the owner's (fall back to an older one), no directory, no ledger row, missing root,
+//                       the owner door (no binding), another konzept, a POST.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -53,17 +66,20 @@ const PROGRAM = "c0ffee".repeat(4);
 const TASK = "k0nz3pt7a5k0";
 const BRANCH = "e2e-konzept-lane";
 const LANE = 2; // opened as a plain session on the worktree (open is band-only), made a lane by the plant
+// the reader slots of the leseansicht: two more Fleet lanes (same repo, same Program) planted with the codex
+// and pi-zai adapters, a lane on ANOTHER repository, and an Orchestratorin on the Fleet repo
+const CODEX_LANE = 4, PI_LANE = 5, FREMD_LANE = 6, ORCH = 7;
 
 interface Instance { dir: string; base: string; sock: string; root: string; proc: ReturnType<typeof Bun.spawn> | null; log: string }
 interface SlotRow { selfToken?: string; openedAt?: number; sessionId?: string | null; cwd?: string | null;
-  worktree?: { repo?: string; branch?: string }; taskId?: string | null; programId?: string | null }
+  worktree?: { repo?: string; branch?: string }; taskId?: string | null; programId?: string | null; harness?: string | null }
 interface Answer { status: number; body: { error?: string; ok?: boolean; version?: KonzeptVersion; anmerkung?: KonzeptAnmerkung;
   versionen?: KonzeptVersion[]; anmerkungen?: KonzeptAnmerkung[]; letzte?: number | null; malformed?: number } }
 
-async function boot(i: Instance): Promise<boolean> {
+async function boot(i: Instance, bin?: string): Promise<boolean> {
   i.proc = Bun.spawn(["bun", "server.ts"], {
     cwd: i.dir, stdout: "pipe", stderr: "pipe",
-    env: { ...process.env, FLEET_HOST: IP, FLEET_PORT: i.base.split(":").pop()!, FLEET_SOCK: i.sock,
+    env: { ...process.env, ...(bin ? { PATH: `${bin}:${process.env.PATH ?? ""}` } : {}), FLEET_HOST: IP, FLEET_PORT: i.base.split(":").pop()!, FLEET_SOCK: i.sock,
       FLEET_TOKEN: TOKEN, FLEET_CMD: "true", FLEET_AUTO_REVIEW_MS: "0", FLEET_STATE_SNAPSHOT_MS: "0",
       FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_KONZEPT_ROOT: i.root },
   });
@@ -136,13 +152,30 @@ async function ledgerDoors(): Promise<void> {
     // passes here (previews f689da8d05aa, 8ebe0c95abcb). This module proves the ledger, not lane creation.
     const laneDir = `${FIX}/repo.worktrees/${BRANCH}`;
     const addWt = spawnSync("git", ["-C", repo, "worktree", "add", "-q", "-b", BRANCH, laneDir], { encoding: "utf8" });
-    let up = await boot(i);
+    // the leseansicht's readers: same repo for codex and pi-zai, a second repository for the foreign lane
+    const repo2 = gitRepo(`${FIX}/repo2`);
+    const readerWt: [number, string, string][] = [[CODEX_LANE, repo, "e2e-konzept-codex"], [PI_LANE, repo, "e2e-konzept-pi"],
+      [FREMD_LANE, repo2, "e2e-konzept-fremd"]];
+    const readerAdds = readerWt.map(([, r, b]) => spawnSync("git", ["-C", r, "worktree", "add", "-q", "-b", b, `${r}.worktrees/${b}`], { encoding: "utf8" }).status);
+    // a slot planted with the codex or a pi adapter may be (re)spawned by ensureSlot at boot: both names are
+    // shadowed by a sleeper, so no real agent with a provider behind it ever starts here
+    const bin = `${FIX}/bin`;
+    mkdirSync(bin, { recursive: true });
+    for (const name of ["codex", "pi"]) writeFileSync(`${bin}/${name}`, "#!/bin/sh\nexec sleep 3600\n", { mode: 0o755 });
+    let up = await boot(i, bin);
     check("konzepte fixture: the scratch instance boots on its own port and socket", up, i.log.slice(-300));
     if (!up) return;
-    await fetch(`${i.base}/api/slots/1/open`, { method: "POST", headers: OH, body: JSON.stringify({ cwd: plain, label: "konzept-main" }) });
+    // the MAIN sits on the Fleet repo's checkout: its project is that repository (korrekturLeserFor)
+    await fetch(`${i.base}/api/slots/1/open`, { method: "POST", headers: OH, body: JSON.stringify({ cwd: repo, label: "konzept-main" }) });
     await fetch(`${i.base}/api/slots/3/open`, { method: "POST", headers: OH, body: JSON.stringify({ cwd: plain, label: "konzept-plain" }) });
     const wt = await fetch(`${i.base}/api/slots/${LANE}/open`, { method: "POST", headers: OH, body: JSON.stringify({ cwd: laneDir, label: "konzept-lane" }) });
     const wtBody = await wt.text();
+    const readerOpens: number[] = [];
+    for (const [k, r, b] of readerWt)
+      readerOpens.push((await fetch(`${i.base}/api/slots/${k}/open`, { method: "POST", headers: OH,
+        body: JSON.stringify({ cwd: `${r}.worktrees/${b}`, label: `konzept-leser-${k}` }) })).status);
+    readerOpens.push((await fetch(`${i.base}/api/slots/${ORCH}/open`, { method: "POST", headers: OH,
+      body: JSON.stringify({ cwd: repo, label: "konzept-orchestrator" }) })).status);
     // THREE setup rows, not one: a preview hands back only the NAMES of failed checks, so each conjunct
     // gets its own name. The wait is 30 s because the slot rows reach fleet.json through the pane spawn
     // and the coalesced save, and a helper running the whole suite is far busier than a lane's machine.
@@ -158,7 +191,16 @@ async function ledgerDoors(): Promise<void> {
       `worktree=${addWt.status} ${addWt.stderr.slice(0, 200)} open=${wt.status} ${wtBody.slice(0, 300)}`);
     check("konzepte fixture: the MAIN-to-be, the lane and the plain session each persist their own credential within 30 s",
       rows.every(credentialed), seen);
-    const opened = addWt.status === 0 && wt.ok && rows.every(credentialed);
+    let readerRows: SlotRow[] = [];
+    for (let n = 0; n < 300; n++) {
+      readerRows = [CODEX_LANE, PI_LANE, FREMD_LANE, ORCH].map((k) => readState().slots[String(k)] ?? {});
+      if (readerRows.every(credentialed)) break;
+      await Bun.sleep(100);
+    }
+    check("konzepte fixture: the codex, pi-zai, foreign-project and Orchestratorin reader slots open and persist their credential",
+      readerAdds.every((x) => x === 0) && readerOpens.every((x) => x === 200) && readerRows.every(credentialed),
+      `worktrees=${readerAdds.join(",")} opens=${readerOpens.join(",")} ${JSON.stringify(readerRows.map((x) => ({ cwd: x.cwd, token: credentialed(x) })))}`);
+    const opened = addWt.status === 0 && wt.ok && rows.every(credentialed) && readerRows.every(credentialed);
     // a red SETUP row leaves everything below unmeasured, not violated — stop here rather than print it
     if (!opened) return;
 
@@ -175,8 +217,12 @@ async function ledgerDoors(): Promise<void> {
       status: "sent", created: now - 600, slot: LANE, note: null, programId: PROGRAM }];
     planted.slots[String(LANE)] = { ...planted.slots[String(LANE)], taskId: TASK, programId: PROGRAM,
       worktree: { repo, branch: BRANCH } };
+    // the same binding as LANE but the adapter (claude = harness null), and one lane on another repository
+    for (const [k, r, b] of readerWt)
+      planted.slots[String(k)] = { ...planted.slots[String(k)], programId: PROGRAM, worktree: { repo: r, branch: b },
+        harness: k === CODEX_LANE ? "codex" : k === PI_LANE ? "pi-zai" : null };
     writeFileSync(`${i.dir}/fleet.json`, JSON.stringify(planted, null, 2), { mode: 0o600 });
-    up = await boot(i);
+    up = await boot(i, bin);
     check("konzepte fixture: the instance boots again over the planted Program binding", up, i.log.slice(-300));
     if (!up) return;
     const [mainTok, laneTok, plainTok] = rows.map((x) => x.selfToken ?? "");
@@ -425,6 +471,159 @@ async function ledgerDoors(): Promise<void> {
       ownerV3.status === 200 && foldOf(ownerV3) === "ok-a:veraltet>ok-b ok-b:verworfen!synthetisch zurueckgezogen" && okLines().length === 3,
       `${ownerV3.status} ${JSON.stringify(ownerV3.body).slice(0, 400)}`);
 
+    // ================================================================================================
+    // THE LESEANSICHT (Karte 2 von 3): one read door for every harness, scoped by the session's binding.
+    // v4 adds synthetic entries along each geltung axis to the published v3; every reader's answer is
+    // compared as ids, and every refusal must be named and carry no entry list and no entry text.
+    async function leseansicht(): Promise<void> {
+      const [codexTok, piTok, fremdTok, orchTok] = readerRows.map((x) => x.selfToken ?? "");
+      type Lese = { konzept?: string; version?: number; sha256?: string; error?: string;
+        geltendeEintraege?: { id: string; aussage: string; geltung: unknown; ersetzt: string[] }[];
+        status?: { gilt: number; veraltet: { id: string; abgeloestDurch: string }[]; verworfen: { id: string; grund: string }[] };
+        bindung?: { projekt: string; rolle: string; harness: string } };
+      const lese = async (tok: string, q = "", k = OK): Promise<{ status: number; body: Lese; raw: string }> => {
+        const r = await fetch(`${i.base}/api/self/konzepte/${k}/leseansicht${q}`, { headers: { "x-fleet-self-token": tok } });
+        const raw = await r.text();
+        let body: Lese = {};
+        try { body = JSON.parse(raw) as Lese; } catch { /* raw kept for the detail */ }
+        return { status: r.status, body, raw };
+      };
+      const ids = (a: { body: Lese }) => (a.body.geltendeEintraege ?? []).map((e) => e.id).join(" ");
+      // a refusal carries a name and NOTHING of the heft: no list key, no entry text, no private quelle
+      const empty = (a: { body: Lese; raw: string }) => !a.raw.includes("geltendeEintraege") && !a.raw.includes("synthetische Aussage")
+        && !a.raw.includes("fixture.md") && typeof a.body.error === "string";
+
+      const roles = await Promise.all([codexTok, piTok, fremdTok, orchTok].map((t) => pos(t)));
+      check("konzepte leseansicht fixture: the reader slots resolve to lane, lane, lane and orchestrator",
+        JSON.stringify(roles) === '["lane","lane","lane","orchestrator"]', JSON.stringify(roles));
+      // the projects are the server's opaque projectKeys, read from v3's answer to one reader per repository
+      const p1 = (await lese(laneTok!)).body.bindung?.projekt ?? "";
+      const p2 = (await lese(fremdTok!)).body.bindung?.projekt ?? "";
+      check("konzepte leseansicht fixture: the Fleet lane and the foreign lane read v3 with two different 16-hex projects",
+        /^[0-9a-f]{16}$/.test(p1) && /^[0-9a-f]{16}$/.test(p2) && p1 !== p2, `${p1} ${p2}`);
+      const ax = (over: Record<string, unknown>) => ({ ...ALL, ...over });
+      const v4Heft = { eintraege: [...base, eintrag("ok-alle"), eintrag("ok-projekt", [], ax({ projekte: [p1] })),
+        eintrag("ok-fremd", [], ax({ projekte: [p2] })), eintrag("ok-drei", [], ax({ harnesses: ["claude", "codex", "pi-zai"] })),
+        eintrag("ok-container", [], ax({ harnesses: ["container"] })), eintrag("ok-lane", [], ax({ rollen: ["lane"] })),
+        eintrag("ok-main", [], ax({ rollen: ["program-main"] })), eintrag("ok-orch", [], ax({ rollen: ["orchestrator"] })),
+        eintrag("ok-alt"), eintrag("ok-neu", ["ok-alt"])],
+        zurueckgezogen: [{ id: "ok-b", grund: "synthetisch zurueckgezogen" }] };
+      const v4Sha = placeOK(4, v4Heft);
+      const ownerV4 = await ownerOK(version(v4Sha, { erwartet: 3 }));
+      check("konzepte leseansicht fixture: the owner publishes v4 with one synthetic entry per geltung axis",
+        ownerV4.status === 200 && ownerV4.body.version?.version === 4, `${ownerV4.status} ${ownerV4.body.error ?? ""}`);
+      if (ownerV4.status !== 200) return;
+
+      // ---- harness parity: claude, codex and pi-zai lanes with the same binding read the same entries
+      const [claudeL, codexL, piL] = [await lese(laneTok!), await lese(codexTok!), await lese(piTok!)];
+      const sameView = (a: { body: Lese }) => JSON.stringify({ e: a.body.geltendeEintraege, s: a.body.status, v: a.body.version, h: a.body.sha256 });
+      check("konzepte leseansicht harness parity: claude, codex and pi-zai lanes of one binding read the same v4 entries",
+        claudeL.status === 200 && codexL.status === 200 && piL.status === 200 && claudeL.body.konzept === OK
+          && claudeL.body.version === 4 && claudeL.body.sha256 === v4Sha && ids(claudeL) === "ok-alle ok-projekt ok-drei ok-lane ok-neu"
+          && sameView(claudeL) === sameView(codexL) && sameView(claudeL) === sameView(piL)
+          && JSON.stringify([claudeL, codexL, piL].map((a) => a.body.bindung?.harness)) === '["claude","codex","pi-zai"]',
+        `${claudeL.status}/${codexL.status}/${piL.status} claude=[${ids(claudeL)}] codex=[${ids(codexL)}] pi=[${ids(piL)}] ${JSON.stringify([claudeL, codexL, piL].map((a) => a.body.bindung))}`);
+      check("konzepte leseansicht filter: only gilt entries of the reader's geltung, never a veraltet one or a private quelle; status names the replaced ids",
+        JSON.stringify(claudeL.body.status) === JSON.stringify({ gilt: 5, veraltet: [{ id: "ok-a", abgeloestDurch: "ok-b" }, { id: "ok-alt", abgeloestDurch: "ok-neu" }],
+          verworfen: [{ id: "ok-b", grund: "synthetisch zurueckgezogen" }] })
+          && !claudeL.raw.includes("fixture.md") && !claudeL.raw.includes("synthetische Aussage ok-fremd")
+          && !claudeL.raw.includes("synthetische Aussage ok-container") && !claudeL.raw.includes("synthetische Aussage ok-alt\""),
+        `${JSON.stringify(claudeL.body.status)} quelle=${claudeL.raw.includes("fixture.md")}`);
+
+      // ---- the bound MAIN and the Orchestratorin read — their role's entries, nothing more
+      const mainL = await lese(mainTok!);
+      const orchL = await lese(orchTok!);
+      check("konzepte leseansicht main / orch: the bound MAIN and the Orchestratorin read v4 with their own role's entries",
+        mainL.status === 200 && ids(mainL) === "ok-alle ok-projekt ok-drei ok-main ok-neu" && mainL.body.bindung?.rolle === "program-main"
+          && orchL.status === 200 && ids(orchL) === "ok-alle ok-projekt ok-drei ok-orch ok-neu" && orchL.body.bindung?.rolle === "orchestrator",
+        `main=${mainL.status} [${ids(mainL)}] ${mainL.body.error ?? ""} orch=${orchL.status} [${ids(orchL)}] ${orchL.body.error ?? ""}`);
+      // ---- and no new write: the Orchestratorin stays refused on every write and every other read of the
+      // konzept door, the MAIN stays refused a fassung of the owner's heft
+      const okBefore = okLines().length;
+      const orchW = await self(orchTok!, "anmerkungen", "POST", { version: 4, text: "x" }, OK);
+      const orchV = await self(orchTok!, "versionen", "POST", version(v4Sha), OK);
+      const orchR = await self(orchTok!, "versionen", "GET", undefined, OK);
+      const mainV = await self(mainTok!, "versionen", "POST", version(v4Sha), OK);
+      check("konzepte leseansicht no new write: the Orchestratorin is still 409 on anmerkung, fassung and /versionen, the MAIN still 403 on a fassung",
+        orchW.status === 409 && orchV.status === 409 && orchR.status === 409 && /neither/.test(orchW.body.error ?? "")
+          && mainV.status === 403 && okLines().length === okBefore,
+        `orch=${orchW.status}/${orchV.status}/${orchR.status} main=${mainV.status} lines=${okLines().length - okBefore}`);
+
+      // ---- wrong project: the foreign lane reads its own project's entry and none of the Fleet project's bytes
+      const fremdL = await lese(fremdTok!);
+      check("konzepte leseansicht wrong project: a lane on another repository gets ok-fremd and not one byte of ok-projekt",
+        fremdL.status === 200 && ids(fremdL) === "ok-alle ok-fremd ok-drei ok-lane ok-neu" && fremdL.body.bindung?.projekt === p2
+          && !fremdL.raw.includes("synthetische Aussage ok-projekt") && !fremdL.raw.includes(p1),
+        `${fremdL.status} [${ids(fremdL)}]`);
+      const asked = await lese(laneTok!, `?projekt=${p2}`);
+      const askedRolle = await lese(fremdTok!, "?rolle=orchestrator&harness=container");
+      check("konzepte leseansicht request scope: a query naming projekt, rolle or harness is 400 and serves no bytes",
+        asked.status === 400 && empty(asked) && /never from the request/.test(asked.body.error ?? "")
+          && askedRolle.status === 400 && empty(askedRolle) && /rolle, harness/.test(askedRolle.body.error ?? ""),
+        `${asked.status} ${asked.body.error} ${askedRolle.status} ${askedRolle.body.error}`);
+
+      // ---- free and recycled sessions: no bytes
+      const freeL = await lese(plainTok!);
+      await fetch(`${i.base}/api/slots/3/kill`, { method: "POST", headers: OH, body: "{}" });
+      await fetch(`${i.base}/api/slots/3/open`, { method: "POST", headers: OH, body: JSON.stringify({ cwd: repo, label: "konzept-recycelt" }) });
+      let freshTok = "";
+      for (let n = 0; n < 300 && !freshTok; n++) {
+        const t = readState().slots["3"]?.selfToken ?? "";
+        if (/^[0-9a-f]{32}$/.test(t) && t !== plainTok) freshTok = t;
+        else await Bun.sleep(100);
+      }
+      const staleL = await lese(plainTok!);
+      const freshL = await lese(freshTok);
+      check("konzepte leseansicht free / recycled: a free session is 409, the recycled slot's old token 401, its new free occupant 409 — none gets bytes",
+        freeL.status === 409 && empty(freeL) && /none of them/.test(freeL.body.error ?? "") && staleL.status === 401 && empty(staleL)
+          && freshTok !== "" && freshL.status === 409 && empty(freshL),
+        `free=${freeL.status} ${freeL.body.error} stale=${staleL.status} fresh=${freshTok ? freshL.status : "no token"} ${freshL.body.error ?? ""}`);
+
+      // ---- named refusals: each a status and a sentence, never a 200 with an empty list
+      const okDir = `${i.root}/${OK}`;
+      const v4Path = `${okDir}/v4.md`;
+      const v4Text = readFileSync(v4Path, "utf8");
+      writeFileSync(v4Path, `${v4Text}\nnachtraeglich\n`);
+      const drift = await lese(laneTok!);
+      writeFileSync(v4Path, v4Text);
+      renameSync(v4Path, `${v4Path}.away`);
+      const noFile = await lese(codexTok!);
+      renameSync(`${v4Path}.away`, v4Path);
+      const ledger = readFileSync(`${okDir}/versionen.jsonl`, "utf8");
+      writeFileSync(`${okDir}/versionen.jsonl`, `${ledger}${JSON.stringify({ ...okLines()[3], version: 5, vorgaenger: 4,
+        actor: { kind: "session", slot: LANE, openedAt: 1, role: "lane" } })}\n`);
+      const notOwner = await lese(piTok!);
+      writeFileSync(`${okDir}/versionen.jsonl`, ledger);
+      renameSync(`${okDir}/versionen.jsonl`, `${okDir}/versionen.jsonl.away`);
+      const noRow = await lese(mainTok!);
+      renameSync(`${okDir}/versionen.jsonl.away`, `${okDir}/versionen.jsonl`);
+      renameSync(okDir, `${okDir}.away`);
+      const noDir = await lese(orchTok!);
+      renameSync(`${okDir}.away`, okDir);
+      const ownerDoor = await call(`/api/konzepte/${OK}/leseansicht`, "GET", OH);
+      const otherK = await lese(laneTok!, "", K);
+      const posted = await call(`/api/self/konzepte/${OK}/leseansicht`, "POST", { "x-fleet-self-token": laneTok! }, {});
+      const named: [string, { status: number; body: Lese; raw: string }, number, RegExp][] = [
+        ["hash drift", drift, 409, /^hash drift: k-owner-korrekturen\/v4\.md hashes to/],
+        ["a missing fassung file", noFile, 409, /v4\.md is missing/],
+        ["a newest ledger row not the owner's", notOwner, 409, /v5 was not published by the owner \(actor session\)/],
+        ["no ledger row", noRow, 404, /no published fassung yet — that is not an empty heft/],
+        ["no directory", noDir, 404, /no owner fassung exists yet, which is not an empty heft/],
+        ["the owner door, which holds no binding", { status: ownerDoor.status, body: { error: ownerDoor.body.error }, raw: JSON.stringify(ownerDoor.body) },
+          409, /filters by a session's binding/],
+        ["another konzept", otherK, 404, /reads k-owner-korrekturen only/],
+      ];
+      for (const [name, a, st, re] of named)
+        check(`konzepte leseansicht refusal: ${name} is ${st} with its own sentence and no entry bytes`,
+          a.status === st && re.test(a.body.error ?? "") && empty(a), `${a.status} ${a.body.error ?? a.raw.slice(0, 200)}`);
+      check("konzepte leseansicht refusal: a POST to the leseansicht is 404 (a read door only)", posted.status === 404, `${posted.status}`);
+      const after = await lese(laneTok!);
+      check("konzepte leseansicht refusal: every probe restored, the lane reads v4 again unchanged",
+        after.status === 200 && sameView(after) === sameView(claudeL), `${after.status} ${after.body.error ?? ""}`);
+    }
+
+    await leseansicht();
+
     // ---- every other konzept keeps its writers: k-claude-fleet with the body of its first version
     // (Program note fa9afdd2), written by the lane, then by the MAIN without erwartet
     const CF = "k-claude-fleet";
@@ -448,12 +647,16 @@ async function ledgerDoors(): Promise<void> {
     const goneW = await self(laneTok!, "anmerkungen", "POST", { version: 1, text: "ins Nichts" });
     const goneR = await owner("versionen", "GET");
     const goneIdx = await call("/api/konzepte", "GET", OH);
+    const goneLese = await call("/api/self/konzepte/k-owner-korrekturen/leseansicht", "GET", { "x-fleet-self-token": laneTok! });
     const recreated = existsSync(i.root);
     renameSync(`${i.root}.away`, i.root);
     check("konzepte missing root: 503 naming FLEET_KONZEPT_ROOT on read and write, and no root is created",
       goneW.status === 503 && goneR.status === 503 && goneIdx.status === 503
         && (goneW.body.error ?? "").includes("FLEET_KONZEPT_ROOT") && !recreated,
       `write=${goneW.status} ${goneW.body.error} read=${goneR.status} index=${goneIdx.status} recreated=${recreated}`);
+    check("konzepte leseansicht refusal: a missing root is 503 naming FLEET_KONZEPT_ROOT, never an empty heft",
+      goneLese.status === 503 && (goneLese.body.error ?? "").includes("FLEET_KONZEPT_ROOT") && !("geltendeEintraege" in goneLese.body),
+      `${goneLese.status} ${goneLese.body.error}`);
   } finally {
     await stop(i);
     spawnSync("tmux", ["-L", i.sock, "kill-server"]);

@@ -171,9 +171,12 @@ const MAX_SENTENCE = 400;
 const MAX_LIST = 20;
 const collapse = (v: string): string => v.replace(/\s+/g, " ").trim();
 const text1 = (v: unknown): string => collapse(typeof v === "string" ? v : "").slice(0, MAX_SENTENCE);
-const list = (v: unknown): string[] => (Array.isArray(v) ? v : [])
+// A list field's ENTRIES, normalized but UNCUT — the count an over-long surface list is refused
+// on. `list` keeps the cut for the fields that stay capped (verboten, after, stray header lines).
+const listRaw = (v: unknown): string[] => (Array.isArray(v) ? v : [])
   .filter((e): e is string => typeof e === "string" && !!e.trim())
-  .map((e) => e.trim().slice(0, 300)).slice(0, MAX_LIST);
+  .map((e) => e.trim().slice(0, 300));
+const list = (v: unknown): string[] => listRaw(v).slice(0, MAX_LIST);
 
 // Where a text NAMES a size: the fleet's filing header ("KLEINE LANE", "MITTLERE LANE", "GROSSE
 // LANE") or a labelled line ("GROESSE: klein"). Deliberately narrow — "klein" alone is an ordinary
@@ -345,8 +348,22 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     for (const hit of intent.matchAll(chain)) if (hit[1].split(/(?:\s*[/,]\s*|\s+)#/).includes(symbol)) return true;
     return false;
   };
+  // AN OVER-LONG LIST FIELD IS REFUSED WHOLE, NEVER A VALID TRUNCATED PARTIAL. `list` cuts at
+  // MAX_LIST, so a 21st file vanished silently and the card stood as a valid 20-entry surface —
+  // a surface the row never filed (the defect this closes, 2026-09-30). The gap names field and
+  // limit, and NONE of the field's entries reach the body: the card is refused as filed. The
+  // capped fields (verboten, after) keep their silent cut: their entries are constraints, not the
+  // surface the wave fold and the bundler act on.
+  const wholeList = (name: string, value: unknown): string[] => {
+    const entries = listRaw(value);
+    if (entries.length > MAX_LIST) {
+      gaps.push(`${name}: ${entries.length} entries exceed the ${MAX_LIST}-entry limit — the list is refused whole, not truncated`);
+      return [];
+    }
+    return entries;
+  };
   const files: string[] = [];
-  for (const path of list(rawSurface.files)) {
+  for (const path of wholeList("surface.files", rawSurface.files)) {
     if (!ctx.trackedPaths.has(path)) { gaps.push(`surface.files: "${path}" is not tracked in this repository`); continue; }
     if (!named(path)) { gaps.push(`surface.files: "${path}" is not named as a change target in the request (only as proof, or not at all)`); continue; }
     files.push(path);
@@ -355,7 +372,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   const ranges: SymbolRange[] = [];
   // files in which at least one symbol stood only as a declaration, with no range to show for it
   const rangeless = new Set<string>();
-  for (const ref of list(rawSurface.symbols)) {
+  for (const ref of wholeList("surface.symbols", rawSurface.symbols)) {
     const split = splitSymbolRef(ref);
     if (!split) { gaps.push(`surface.symbols: "${ref}" is not a datei#symbol reference`); continue; }
     const [file, symbol] = split;
@@ -405,7 +422,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     }
     return trackedDirs.has(dir);
   };
-  for (const path of list(rawSurface.creates)) {
+  for (const path of wholeList("surface.creates", rawSurface.creates)) {
     if (path.startsWith("/") || path.split("/").some((part) => part === ".." || part === "." || !part)) {
       gaps.push(`surface.creates: "${path}" is not a repository-relative path`); continue;
     }

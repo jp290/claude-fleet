@@ -9891,6 +9891,103 @@ export async function run(ctx: Ctx): Promise<void> {
       listShapes.every((r) => !r.valid && r.named)
       && listAbsent.valid && listAbsent.gaps.length === 0 && listAbsent.body.verboten.length === 0,
       JSON.stringify({ shapes: listShapes, absent: listAbsent.gaps }));
+    // (j2-limit) AN OVER-LONG LIST FIELD IS REFUSED WHOLE, NEVER A VALID TRUNCATED PARTIAL.
+    // card-extract.ts#list cut every list at 20, so a 21-entry surface used to validate as its
+    // first 20 entries — a surface the row never filed. Exactly 20 entries stay legal (the limit
+    // itself is untouched); 21 entries in files/symbols/creates refuse the card with a gap naming
+    // the field and the limit, on BOTH filing paths — the structured author card
+    // (server.ts#authorCardFrom) and the parsed filing format (parseFormattedCard) — and no
+    // 20-entry partial body is read.
+    // Named mutation probe: removing the wholeList limit check in validateCard turns exactly the
+    // three refusal checks below red — the truncated card reads valid again.
+    const limitFile = (i: number): string => `src/bereich/f${i}.ts`;
+    const limitRef = (i: number): string => `server.ts#lmsg${i}`;
+    const limitCreate = (i: number): string => `docs/messungen/2026-09-30-l${i}.md`;
+    const limitPaths = (n: number, make: (i: number) => string): string[] => Array.from({ length: n }, (_, i) => make(i));
+    const limitCtx = (tracked: string[], text: string) => ({
+      sourceText: text,
+      trackedPaths: new Set<string>(tracked),
+      symbolIndex: null,
+      harnessKnown: (v: string) => v === "claude",
+      modelKnown: () => true,
+      effortKnown: (v: string) => ["low", "medium", "high"].includes(v),
+      declares: () => true,
+      rowKnown: () => false,
+    });
+    const limitBase = { ziel: "etwas aendern", done: "der Check ist gruen", verify: "bun e2e/pins.ts" };
+    const limitNamed = (paths: string[]): string => `BAU: ${paths.join(" ")}`;
+    const limitFormat = (flaeche: string, neu: string | null): string =>
+      `ROLLE: claude/claude-opus-5/high\nGROESSE: klein\nFLAECHE: ${flaeche}\n${neu === null ? "" : `NEU: ${neu}\n`}VERIFY: bun e2e/pins.ts\nDONE: der Check ist gruen\n\nZIEL: etwas aendern`;
+    // the parsed RawCard's list fields are `unknown`-typed; the COUNT is what the probe needs
+    const rawListOf = (raw: { surface?: unknown } | null, key: "files" | "symbols" | "creates"): number => {
+      const s = raw?.surface as Record<string, unknown> | undefined;
+      return Array.isArray(s?.[key]) ? (s[key] as unknown[]).length : -1;
+    };
+    // a refusal carries: valid=false, a surface gap naming the FIELD and the LIMIT, and an EMPTY
+    // body field — never the first 20 entries as a usable surface
+    const limitRejected = (field: string, r: ReturnType<typeof validateCard>): boolean =>
+      r.valid === false && r.surfaceValid === false
+      && r.gaps.some((g) => g.startsWith(`${field}: `) && g.includes("21 entries exceed") && g.includes("20-entry limit"))
+      && (field === "surface.creates" ? (r.body.surface.creates ?? []).length === 0
+        : field === "surface.files" ? r.body.surface.files.length === 0 : r.body.surface.symbols.length === 0);
+    const files20 = limitPaths(20, limitFile);
+    const refs20 = limitPaths(20, limitRef);
+    const creates20 = limitPaths(20, limitCreate);
+    const fmt20text = limitFormat(files20.join(" "), null);
+    const fmt20raw = parseFormattedCard(fmt20text);
+    const fmt20out = fmt20raw ? validateCard(fmt20raw, limitCtx(files20, fmt20text)) : null;
+    const ok20sym = validateCard({ ...limitBase, surface: { files: [], symbols: refs20 } }, limitCtx(["server.ts"], limitNamed(refs20)));
+    const ok20cre = validateCard({ ...limitBase, surface: { files: [], symbols: [], creates: creates20 } }, limitCtx([], limitNamed(creates20)));
+    const ok20filesA = validateCard({ ...limitBase, surface: { files: files20, symbols: [] } }, limitCtx(files20, limitNamed(files20)));
+    check("(j2-limit) exactly 20 surface entries stay a VALID card — the limit itself is unchanged (files on both paths, symbols and creates on the author path)",
+      ok20filesA.valid === true && ok20filesA.body.surface.files.length === 20
+      && rawListOf(fmt20raw, "files") === 20 && fmt20out !== null && fmt20out.valid === true
+      && fmt20out.body.surface.files.length === 20
+      && ok20sym.valid === true && ok20sym.body.surface.symbols.length === 20
+      && ok20cre.valid === true && (ok20cre.body.surface.creates ?? []).length === 20,
+      JSON.stringify({ filesA: { valid: ok20filesA.valid, gaps: ok20filesA.gaps },
+        filesF: { raw: rawListOf(fmt20raw, "files"), valid: fmt20out?.valid ?? null, gaps: fmt20out?.gaps },
+        sym: { valid: ok20sym.valid, gaps: ok20sym.gaps }, cre: { valid: ok20cre.valid, gaps: ok20cre.gaps } }));
+    const files21 = limitPaths(21, limitFile);
+    const refs21 = limitPaths(21, limitRef);
+    const creates21 = limitPaths(21, limitCreate);
+    const rej21 = {
+      filesA: validateCard({ ...limitBase, surface: { files: files21, symbols: [] } }, limitCtx(files21, limitNamed(files21))),
+      symA: validateCard({ ...limitBase, surface: { files: [], symbols: refs21 } }, limitCtx(["server.ts"], limitNamed(refs21))),
+      creA: validateCard({ ...limitBase, surface: { files: [], symbols: [], creates: creates21 } }, limitCtx([], limitNamed(creates21))),
+    };
+    // the format path must DELIVER the whole incoming list to the validator — the limit counts
+    // before any cut — so the parsed raw card's count is asserted, not only the verdict
+    const fmt21text = {
+      files: limitFormat(files21.join(" "), null),
+      symbols: limitFormat(refs21.join(" "), null),
+      creates: limitFormat("e2e/pins.ts", creates21.join(" ")),
+    };
+    const fmt21raw = {
+      files: parseFormattedCard(fmt21text.files),
+      symbols: parseFormattedCard(fmt21text.symbols),
+      creates: parseFormattedCard(fmt21text.creates),
+    };
+    const fmt21out = {
+      files: fmt21raw.files ? validateCard(fmt21raw.files, limitCtx(files21, fmt21text.files)) : null,
+      symbols: fmt21raw.symbols ? validateCard(fmt21raw.symbols, limitCtx(["server.ts"], fmt21text.symbols)) : null,
+      creates: fmt21raw.creates ? validateCard(fmt21raw.creates, limitCtx(["e2e/pins.ts"], fmt21text.creates)) : null,
+    };
+    check("(j2-limit) 21 surface.files refuse the card WHOLE on the author and the format path — a field-named limit gap, no 20-file partial body",
+      limitRejected("surface.files", rej21.filesA)
+      && rawListOf(fmt21raw.files, "files") === 21 && fmt21out.files !== null && limitRejected("surface.files", fmt21out.files),
+      JSON.stringify({ author: { gaps: rej21.filesA.gaps, files: rej21.filesA.body.surface.files.length },
+        format: { raw: rawListOf(fmt21raw.files, "files"), valid: fmt21out.files?.valid ?? null, gaps: fmt21out.files?.gaps } }));
+    check("(j2-limit) 21 surface.symbols refuse the card WHOLE on the author and the format path — a field-named limit gap, no 20-symbol partial body",
+      limitRejected("surface.symbols", rej21.symA)
+      && rawListOf(fmt21raw.symbols, "symbols") === 21 && fmt21out.symbols !== null && limitRejected("surface.symbols", fmt21out.symbols),
+      JSON.stringify({ author: { gaps: rej21.symA.gaps, symbols: rej21.symA.body.surface.symbols.length },
+        format: { raw: rawListOf(fmt21raw.symbols, "symbols"), valid: fmt21out.symbols?.valid ?? null, gaps: fmt21out.symbols?.gaps } }));
+    check("(j2-limit) 21 surface.creates refuse the card WHOLE on the author and the format path — a field-named limit gap, no 20-entry partial body",
+      limitRejected("surface.creates", rej21.creA)
+      && rawListOf(fmt21raw.creates, "creates") === 21 && fmt21out.creates !== null && limitRejected("surface.creates", fmt21out.creates),
+      JSON.stringify({ author: { gaps: rej21.creA.gaps, creates: rej21.creA.body.surface.creates?.length ?? null },
+        format: { raw: rawListOf(fmt21raw.creates, "creates"), valid: fmt21out.creates?.valid ?? null, gaps: fmt21out.creates?.gaps } }));
     // THE SYMBOL HALF WITH AND WITHOUT AN INDEX (queue row 56522568). The author path appends the
     // author's own FLAECHE line to the source (server.ts#authorCardFrom), so the quote rule passes
     // by construction and the index is the ONLY symbol check left. The invented name is the one

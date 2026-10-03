@@ -681,6 +681,16 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   Steward, Export und Puls übergeben kein `native` und bleiben byte-gleich. Gemessen in
   `e2e/history.ts#runNativeQuestions` (anonyme Sentinel-Fixture in der gemessenen Feldstruktur,
   ungepinnt → gepinnt mit gepflanzter Linie, Share-Gegenprobe) und `e2e/history.ts#runForeignConversations`.
+- **Ein gesendeter Drop als Bild** (Owner-Route, seit 2026-10-03, Zeile 7d9c5394): `GET
+  /api/slots/:id/drop?path=<abs>` liefert die Bytes hinter einer `attached: <path> — read it`-Zeile
+  (`server.ts#dropMention`), damit die Chat-Blase das Bild zeigt (`src/client.ts#dropStrip`). Kein
+  Dateileser: `path` muss GLEICH `<realpath(cwd)>/drops/<Name aus dem Upload>` sein
+  (`server.ts#DROP_NAME_RE`), sonst 400/404 vor jedem Lesen; ein Symlink in `drops/` ist 404;
+  ausgeliefert wird nur, was die Bytes als PNG/JPEG/GIF/WebP ausweisen (`server.ts#dropRasterType`,
+  sonst 415 — SVG und HEIC nie), mit `nosniff`. Nach dem Lesen wird der Occupant neu geprüft (409).
+  Owner-Cookie, kein Token in der URL; ein Share-Gast bekommt 401, die Share-API hat kein Gegenstück.
+  Gemessen in `e2e/drops.ts#run` (echte Lane, Gegenproben, Share-Gast desselben Slots) und
+  `e2e/drops.ts#runDropChatDom` (Chromium-DOM 1200/390 gegen Fixtures).
 - **Die WARTESCHLANGE am Suite-Mutex ist seit 2026-09-20 dieselbe Frage wie der Lock:** `gate.queue`
   auf `/api/sessions` (`server.ts#suiteQueueView`) liest die Ticket-Verzeichnisse
   `t<n>.<pid>` unter `$FLEET_SUITE_LOCK.q`, die `e2e-stage.sh#_st_queue_scan` schreibt — in DEREN

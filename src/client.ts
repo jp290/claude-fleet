@@ -993,6 +993,50 @@ const chatShelf = new Map<number, ChatShelfRow>();
 // the Markdown each rendered message body came from — what relinkChat re-renders in place
 const bodySource = new WeakMap<HTMLElement, string>();
 
+// A SENT DROP, SHOWN AS THE PICTURE IT IS (card 7d9c5394; owner 2026-09-30: „[Zitat entfernt]“
+//  — the bubble showed only the attached path). The prompt that
+// left the board is unchanged: the composer still appends server.ts#dropMention's line, the agent
+// still reads the path, the copy button still copies that text. Only the BUBBLE reads the line back:
+// a line of exactly that form, naming a raster in a drops/ folder, becomes a thumbnail; every other
+// line — a foreign path, a HEIC, a pasted look-alike — stays text. The bytes come from the slot's
+// own drop route (server.ts, GET /api/slots/:id/drop), which serves nothing but this slot's own
+// drops, so a look-alike line that names someone else's file fails there and falls back to its
+// text. Plain same-origin URLs on the owner cookie: no token in a URL, no object URL to revoke.
+const DROP_LINE_RE = /^attached: (\/.*\/drops\/(\d{13}-[A-Za-z0-9._-]{1,80}\.(?:png|jpe?g|gif|webp))) — read it$/i;
+const DROP_PREVIEW_MAX = 12; // per message; a longer list keeps the rest as text lines
+type DropImage = { path: string; name: string; line: string };
+function splitDropImages(text: string): { rest: string; images: DropImage[] } {
+  const images: DropImage[] = [];
+  const keep: string[] = [];
+  for (const line of text.split("\n")) {
+    const m = images.length < DROP_PREVIEW_MAX ? DROP_LINE_RE.exec(line.trim()) : null;
+    if (m) images.push({ path: m[1], name: m[2].replace(/^\d{13}-/, ""), line: line.trim() });
+    else keep.push(line);
+  }
+  return images.length ? { rest: keep.join("\n").trim(), images } : { rest: text, images };
+}
+// One button per picture (Enter/Space open it like a click), the lightbox the composer's thumbnails
+// already use, Escape back to this button. A picture that does not come (gone with its worktree,
+// not a raster, not this slot's) turns back into its own line — readable, never a broken image.
+function dropStrip(slot: number, images: DropImage[]): HTMLElement {
+  const strip = el("div", "mimgs");
+  for (const d of images) {
+    const url = `/api/slots/${slot}/drop?path=${encodeURIComponent(d.path)}`;
+    const open = el("button", "mimg") as HTMLButtonElement;
+    open.type = "button";
+    open.title = `${d.name} — groß öffnen`;
+    const img = document.createElement("img");
+    img.alt = d.name;
+    img.decoding = "async";
+    img.onerror = () => open.replaceWith(el("div", "mimgline", d.line));
+    img.src = url;
+    open.appendChild(img);
+    open.onclick = () => openLightbox(url, d.name, open);
+    strip.appendChild(open);
+  }
+  return strip;
+}
+
 class Pane {
   slot = 0; // 0 = unassigned
   private gen = 0; // bump to suppress a stale socket's reconnect loop
@@ -1797,10 +1841,13 @@ class Pane {
   }
   private addMessage(e: TEntry, text: string, header: string | null, mark: string | null, arrived: boolean) {
     const msg = el("div", `msg ${e.role}`);
+    // only YOUR prompt names drops (the composer appends them); an agent quoting the line stays text
+    const drops = e.role === "user" ? splitDropImages(text) : { rest: text, images: [] };
     const body = el("div", "mbody");
-    mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
-    bodySource.set(body, text);
+    mdInto(body, drops.rest, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
+    bodySource.set(body, drops.rest);
     for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
+    if (drops.images.length) msg.appendChild(dropStrip(this.slot, drops.images));
     const meta = el("div", "mmeta");
     const who = e.role === "user" ? "you" : "claude";
     meta.appendChild(el("span", "mwho", e.ts ? `${who} · ${fmtClock(e.ts)}` : who));
@@ -1838,9 +1885,13 @@ class Pane {
   addPending(text: string): HTMLElement | null {
     if (this.view !== "chat" || this.pastN !== null) return null;
     const msg = el("div", "msg user pending fresh");
+    // the same picture strip the transcript entry will carry, so the swap in settlePending changes
+    // the state line and nothing else (one preview before, one after)
+    const drops = splitDropImages(text);
+    if (drops.images.length) msg.appendChild(dropStrip(this.slot, drops.images));
     const body = el("div", "mbody");
-    mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
-    bodySource.set(body, text);
+    mdInto(body, drops.rest, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
+    bodySource.set(body, drops.rest);
     const meta = el("div", "mmeta");
     meta.appendChild(el("span", "mwho", "you · wird gesendet…"));
     msg.append(body, sendState("sending"), meta);
@@ -9270,7 +9321,8 @@ function closeLightbox(): void {
   if (!lightbox?.classList.contains("open")) return;
   lightbox.classList.remove("open");
   lightbox.replaceChildren();
-  lightboxBack?.focus();
+  // a chat thumbnail can be gone by now (the pane switched slot): focus nothing rather than a ghost
+  if (lightboxBack?.isConnected) lightboxBack.focus();
   lightboxBack = null;
 }
 

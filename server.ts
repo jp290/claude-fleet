@@ -20035,6 +20035,22 @@ function dropName(raw: string): string {
 // both images correctly and quoted the file's contents). One function, so the client and any later
 // caller cannot drift from what was measured.
 const dropMention = (path: string): string => `attached: ${path} — read it`;
+// THE READ SIDE, for the chat bubble that names a drop (card 7d9c5394, owner 2026-09-30: „[Zitat entfernt]“
+// ). The name is what dropName + the timestamp built, and
+// nothing looser: a name this pattern refuses was never written by the upload route.
+const DROP_NAME_RE = /^\d{13}-[A-Za-z0-9._-]{1,80}$/;
+// The bytes decide the type, never the name and never a stored claim: a drop is whatever the owner
+// pasted, and only a raster a browser draws without running anything is served. SVG is NOT here on
+// purpose (it is markup that can carry script); HEIC is not here because no browser on the board
+// draws it — the chat keeps the text line for both.
+function dropRasterType(b: Uint8Array): string | null {
+  const at = (i: number, ...v: number[]) => v.every((x, k) => b[i + k] === x);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  if (at(0, 0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (at(0, 0x47, 0x49, 0x46, 0x38) && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61) return "image/gif";
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return "image/webp";
+  return null;
+}
 // Read a request body to its end and throw it away, at flat memory cost. Only for the path that
 // REFUSES a request before consuming it — see the upload route's size pre-check for the failure
 // this prevents and the three variants that did not.
@@ -45174,6 +45190,46 @@ Bun.serve<WSData>({
       writeFileSync(target, Buffer.from(await file.arrayBuffer()));
       audit("file_drop", s.id, `${rel} · ${file.size}b`);
       return json({ ok: true, path: target, name: rel.split("/").pop(), size: file.size, mention: dropMention(target) });
+    }
+    // --- the READ side of a drop: the bytes behind one `attached: <path> — read it` line, so the chat
+    // bubble shows the picture instead of the path (card 7d9c5394). NOT a general file reader: the
+    // path must be EXACTLY `<realpath(slot cwd)>/drops/<a name the upload route builds>` — the same
+    // string dropMention printed — so a pasted foreign path, a traversal or another slot's drop is
+    // refused before any filesystem read. Owner cookie only (a share guest never reaches this block);
+    // the bytes are served only when they ARE a raster (dropRasterType), with nosniff, so a renamed
+    // HTML or SVG file can never execute under the board's origin.
+    const dropRead = /^\/api\/slots\/(\d+)\/drop$/.exec(url.pathname);
+    if (dropRead && req.method === "GET") {
+      const s = slotFrom(dropRead[1]);
+      if (!s?.cwd) return json({ error: "slot not active" }, 400);
+      const cwd = s.cwd, openedAt = s.openedAt;
+      const raw = url.searchParams.get("path") ?? "";
+      const name = raw.slice(raw.lastIndexOf("/") + 1);
+      if (!raw.startsWith("/") || raw.length > 4096 || raw.includes("\0") || !DROP_NAME_RE.test(name))
+        return json({ error: "not a drop path" }, 400);
+      let root: string;
+      try { root = realpathSync(cwd); } catch { return json({ error: "this session's directory is gone" }, 404); }
+      const target = `${root}/${DROP_DIR}/${name}`;
+      // equality, not a prefix test: `/x/drops/../../etc/drops/<name>` and every other spelling of
+      // a path outside this slot's own drops/ is simply not this string
+      if (raw !== target) return json({ error: "not one of this session's drops" }, 404);
+      let resolved = "";
+      try { resolved = realpathSync(target); } catch { return json({ error: "no such drop" }, 404); }
+      // a symlinked drops/ or a symlink planted inside it resolves elsewhere: refused, not followed
+      if (resolved !== target) return json({ error: "not one of this session's drops" }, 404);
+      let st;
+      try { st = lstatSync(target); } catch { return json({ error: "no such drop" }, 404); }
+      if (!st.isFile() || st.size === 0 || st.size > UPLOAD_CAP) return json({ error: "not a readable drop" }, 404);
+      const buf = await Bun.file(target).arrayBuffer().catch(() => null);
+      // the read awaited: the slot may have been recycled meanwhile, and its new occupant's request
+      // must not be answered with the old occupant's bytes
+      if (s.cwd !== cwd || s.openedAt !== openedAt) return json({ error: "slot changed during this request" }, 409);
+      if (buf === null) return json({ error: "this drop could not be read" }, 404);
+      const bytes = new Uint8Array(buf);
+      const type = dropRasterType(bytes);
+      if (!type) return json({ error: "not an image this board shows" }, 415);
+      return new Response(bytes, { headers: { "content-type": type, "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; sandbox", "cache-control": "private, max-age=86400" } });
     }
     // one commit's change, for the Commits lens's detail pane. Same membership rule as the per-slot
     // route above and for the same reason: the hash must be one the list THIS ROUTE computes just

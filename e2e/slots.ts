@@ -1916,7 +1916,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: the delivery head rides in the meta row beside the bubble, and the bubble and its copy carry the body only",
     /const \{ header, body \} = splitDeliveryHeader\(raw\);/.test(cliSrc)
     && /if \(header \|\| mark\) \{[\s\S]*?el\("span", "mhead", mark \?\? header \?\? ""\)[\s\S]*?meta\.appendChild\(head\)/.test(cliSrc)
-    && /mdInto\(body, text,/.test(cliSrc),
+    // the bubble renders the body — since 7d9c5394 minus the drop lines it shows as pictures
+    // (splitDropImages, own prompt only) — and the copy still hands out the whole body text
+    && /const drops = e\.role === "user" \? splitDropImages\(text\) : \{ rest: text, images: \[\] \};/.test(cliSrc)
+    && /mdInto\(body, drops\.rest,/.test(cliSrc)
+    && /copyButton\("copy", "copy this message as Markdown", \(\) => text\)/.test(cliSrc),
     "Pane.appendEntry / addMessage in src/client.ts");
 
   // --- A BUNDLED OWNER SEND (owner 2026-10-03: „[Zitat entfernt]“

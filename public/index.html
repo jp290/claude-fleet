@@ -538,7 +538,21 @@
   .msend.wait .msenddot { background: var(--q-wait); }
   .msend.done { color: var(--chat-faint); }
   .msend.done .msenddot { background: var(--q-live); }
-  .msg.user.pending .mbody { opacity: 0.7; }
+  .msg.user.pending .mbody, .msg.user.pending .mimgs { opacity: 0.7; }
+  /* a sent drop as its picture (src/client.ts#dropStrip): one fixed-height row above YOUR bubble,
+     right-aligned like the bubble, the bubble's edge and a softer radius. The height is set before
+     the bytes arrive, so a loading picture never moves the reading position; the width follows the
+     picture up to a cap. A prompt that was only pictures has an empty bubble, which is not drawn. */
+  .mimgs { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: min(80%, 640px);
+    margin-bottom: 6px; }
+  .mimg { flex: none; display: block; height: 120px; min-width: 48px; padding: 0; overflow: hidden; cursor: zoom-in;
+    border: 1px solid var(--chat-edge); border-radius: 14px; background: var(--chat-raised); }
+  .mimg img { display: block; height: 100%; width: auto; max-width: 240px; object-fit: cover; }
+  .mimg:hover img { opacity: 0.88; }
+  .mimg:focus-visible { outline: 2px solid var(--chat-mute); outline-offset: 2px; }
+  .mimgline { max-width: 100%; font: 12px var(--chat-mono); color: var(--chat-mute); overflow-wrap: anywhere;
+    text-align: right; }
+  .msg.user .mbody:empty { display: none; }
   /* a bundle part Fleet wrote, not you (Pane#addFleetLine): one quiet line in the faint ink, its
      first line only — a click opens the rest, the tooltip names the mark (G0.1, G0.3, G2.2) */
   .msys { margin: 0 0 8px; padding: 0 2px; font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
@@ -3190,6 +3204,10 @@
       border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--text); cursor: pointer; }
     #mset .ico { width: 16px; height: 16px; }
     #mset:active { background: var(--c-hover); color: var(--chat-ink); border-color: var(--c-edge-hi); }
+    /* a sent picture on the phone: a lower row, so two still sit side by side in a 390-px column */
+    .mimgs { max-width: 100%; }
+    .mimg { height: 96px; }
+    .mimg img { max-width: 132px; }
 
     #side { position: fixed; z-index: 30; top: 0; bottom: 0; left: 0;
       width: min(80vw, 300px); border-right: 1px solid var(--line);

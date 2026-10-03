@@ -13,7 +13,7 @@
 # copy is what gives it its own state), and FLEET_CMD=true so no agent is ever spawned. The three
 # live values are refused by name below rather than merely avoided.
 #
-#   ./testinstanz.sh up [mixed|full|snapshot] [--ttl <min>]   stage, build, start, plant EVERYTHING (fixtures,
+#   ./testinstanz.sh up [mixed|snapshot] [--ttl <min>]   stage, build, start, plant EVERYTHING (fixtures,
 #                                           succession, ctx, codex states, painters), print the URL
 #                                           — the whole demo; FLEET_TI_TOKEN=<old> keeps the link the
 #                                           owner holds; default ttl 240 min
@@ -47,6 +47,23 @@ STATE="$DIR/testinstanz.state"
 PIDF="$DIR/.testinstanz.pid"
 TOKF="$DIR/.testinstanz.token"
 ti_alive() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
+ti_owned() {
+  [ -f "$STATE" ] && [ -f "$PIDF" ] || return 1
+  [ "$(sed -n 's/^src=//p' "$STATE")" = "$SRC" ] || return 1
+  [ "$(sed -n 's/^dir=//p' "$STATE")" = "$DIR" ] || return 1
+  [ "$(sed -n 's/^sock=//p' "$STATE")" = "$SOCK" ] || return 1
+  TI_PID=$(cat "$PIDF")
+  case "$TI_PID" in ''|*[!0-9]*|0|1) return 1 ;; esac
+  TI_BIRTH=$(sed -n 's/^birth=//p' "$STATE" | sed 's/^ *//;s/ *$//')
+  [ -n "$TI_BIRTH" ] && [ "$TI_BIRTH" = "$(LC_ALL=C ps -p "$TI_PID" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')" ] || return 1
+  [ "$(lsof -nP -a -p "$TI_PID" -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null)" = "$TI_PID" ]
+}
+ti_source_match() {
+  TI_EXPECTED="${TI_SOURCE_ID:-$(sed -n 's/^sourceIdentity=//p' "$STATE" 2>/dev/null)}"
+  [ -n "$TI_EXPECTED" ] || return 1
+  TI_CURRENT=$(TI_GIT_SRC="$SRC" bun -e 'const fs=require("node:fs"); const p=process.env.TI_GIT_SRC; const a=fs.statSync(p),b=fs.lstatSync(p+"/.git"); console.log([a.dev,a.ino,a.birthtimeMs,b.dev,b.ino,b.birthtimeMs].join(":"));' 2>/dev/null) || return 1
+  [ "$TI_EXPECTED" = "$TI_CURRENT" ]
+}
 
 if [ "${1:-}" = up ] && ! ti_alive; then
   if [ -z "${FLEET_TI_PORT:-}" ]; then
@@ -94,6 +111,7 @@ ti_workhorse_url() {
 # The fixtures are replanted against the RUNNING instance, so switching between the two stands
 # (free places in the axis / all sixteen taken) costs no restart.
 ti_plant() {
+  ti_source_match || { echo 'refused: source removed or replaced' >&2; return 2; }
   FLEET_TI_BASE="http://$(ti_addr):$PORT" FLEET_TI_TOKEN="$(cat "$TOKF")" FLEET_TI_SRC="$SRC" \
     FLEET_TI_DIR="$DIR" FLEET_TI_SOCK="$SOCK" bun "$SRC/testinstanz-fixtures.js" "$1"
 }
@@ -124,6 +142,7 @@ ti_shims() {
   done
 }
 ti_serve() {
+  ti_source_match || { echo 'refused: source removed or replaced; no server started' >&2; return 2; }
   # the harness start lines write their trust entries under $HOME (codex: $HOME/.codex/config.toml)
   # and die on a missing directory — before they ever reach the stand-in
   mkdir -p "$DIR/home/.codex" "$DIR/home/.pi"
@@ -172,7 +191,9 @@ ti_serve() {
   # The state file's pid is the SERVING pid — `succession` relaunches and moves it, so refresh
   # whenever a state file is already there (`up` writes the rest of it before calling us).
   if [ -f "$STATE" ]; then
-    sed "s/^pid=.*/pid=$(cat "$PIDF")/" "$STATE" > "$STATE.new" && mv "$STATE.new" "$STATE"
+    sed '/^birth=/d;s/^pid=.*/pid='"$(cat "$PIDF")"'/' "$STATE" > "$STATE.new"
+    printf 'birth=%s\n' "$(LC_ALL=C ps -p "$(cat "$PIDF")" -o lstart= | sed 's/^ *//;s/ *$//')" >> "$STATE.new"
+    mv "$STATE.new" "$STATE"
   fi
   return 0
 }
@@ -181,6 +202,7 @@ ti_serve() {
 # testinstanz-fixtures.js). The server is stopped for the edit because it would otherwise write its
 # in-memory state back over it; the tmux sessions are left alone, so the panes are still there.
 ti_patch() {
+  ti_owned || { echo 'refused: instance identity is unknown' >&2; return 2; }
   kill "$(cat "$PIDF")" 2>/dev/null || true
   i=0; while kill -0 "$(cat "$PIDF")" 2>/dev/null && [ "$i" -lt 40 ]; do i=$((i+1)); sleep 0.25; done
   ti_plant succession-patch
@@ -219,23 +241,44 @@ up)
              TI_TTL=$2; shift 2 ;;
       --ttl=*) TI_TTL="${1#--ttl=}"; shift ;;
       mixed|full|snapshot) TI_KIND=$1; shift ;;
-      *) echo "usage: ./testinstanz.sh up [mixed|full|snapshot] [--ttl <minutes>]" >&2; exit 2 ;;
+      *) echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <minutes>]" >&2; exit 2 ;;
     esac
   done
   case "$TI_TTL" in ''|*[!0-9]*) echo "up: --ttl wants whole minutes" >&2; exit 2 ;; esac
-  [ "$TI_TTL" -ge 1 ] || { echo "up: --ttl wants at least 1 minute" >&2; exit 2; }
-  ti_alive && { echo "already up — ./testinstanz.sh status"; exit 0; }
+  [ "$TI_TTL" -ge 1 ] && [ "$TI_TTL" -le 1440 ] || { echo "up: --ttl wants 1 to 1440 minutes" >&2; exit 2; }
+  case "$TI_KIND" in mixed|snapshot) : ;; *) echo 'refused: unavailable mode' >&2; exit 2 ;; esac
+  [ -f "$SRC/testinstanz-fixtures.js" ] && [ -f "$SRC/testinstanz-snapshot.js" ] || { echo 'refused: mode implementation missing' >&2; exit 2; }
+  if ti_alive; then
+    ti_owned || { echo 'refused: instance identity is unknown' >&2; exit 2; }
+    echo "already up — ./testinstanz.sh status"; exit 0
+  fi
+  TI_SOURCE_BEFORE=$(TI_GIT_SRC="$SRC" GIT_OPTIONAL_LOCKS=0 bun -e '
+const run=(...a)=>{const p=Bun.spawnSync(["git","-C",process.env.TI_GIT_SRC,...a],{env:{...process.env,GIT_OPTIONAL_LOCKS:"0"}});return p.exitCode===0?p.stdout.toString().trim():null;};
+const head=run("rev-parse","HEAD"),branch=run("symbolic-ref","--short","HEAD"),status=run("status","--porcelain");
+console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\n").filter(Boolean).length,measuredAt:Date.now()}));')
+  TI_COPY_STARTED=$(date +%s)
+  if [ -f "$STATE" ]; then
+    [ "$(sed -n 's/^src=//p' "$STATE")" = "$SRC" ] && [ "$(sed -n 's/^dir=//p' "$STATE")" = "$DIR" ] && [ "$(sed -n 's/^sock=//p' "$STATE")" = "$SOCK" ] || { echo 'refused: foreign instance state' >&2; exit 2; }
+    if tmux -L "$SOCK" list-sessions >/dev/null 2>&1; then echo 'refused: unknown socket owner' >&2; exit 2; fi
+  fi
+  TI_SOURCE_ID=$(TI_GIT_SRC="$SRC" bun -e 'const fs=require("node:fs"); const p=process.env.TI_GIT_SRC; const a=fs.statSync(p),b=fs.lstatSync(p+"/.git"); console.log([a.dev,a.ino,a.birthtimeMs,b.dev,b.ino,b.birthtimeMs].join(":"));')
   rm -rf "$DIR"; mkdir -p "$DIR"
   # rsync, not e2e-stage.sh: see the header. The EXCLUDES are the no-live-values fence:
   # `fleet.json*` because copying a state file is how a test instance adopts real sessions;
   # `.env` because it is this checkout's private configuration (workhorse URL, sync token);
   # `*.jsonl` because transcripts and trails are nobody's demo data. None of them may exist
   # in the copy, so the fixtures plant their OWN under the instance's HOME afterwards.
-  rsync -a --exclude .git --exclude node_modules --exclude .env --exclude 'fleet.json*' --exclude '*.jsonl' "$SRC/" "$DIR/"
+  rsync -a --exclude .git --exclude node_modules --exclude '.env*' --exclude fleet.pid --exclude 'fleet.json*' --exclude '*.jsonl' "$SRC/" "$DIR/"
+  TI_COPY_FINISHED=$(date +%s)
+  TI_SOURCE_AFTER=$(TI_GIT_SRC="$SRC" GIT_OPTIONAL_LOCKS=0 bun -e '
+const run=(...a)=>{const p=Bun.spawnSync(["git","-C",process.env.TI_GIT_SRC,...a],{env:{...process.env,GIT_OPTIONAL_LOCKS:"0"}});return p.exitCode===0?p.stdout.toString().trim():null;};
+const head=run("rev-parse","HEAD"),branch=run("symbolic-ref","--short","HEAD"),status=run("status","--porcelain");
+console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\n").filter(Boolean).length,measuredAt:Date.now()}));')
   ln -s "$SRC/node_modules" "$DIR/node_modules"
   # BUILD IN THE COPY, BEFORE THE SERVER. A red build starts nothing and exits 1 — an instance
   # serving yesterday's client bundle while claiming to show today's change is worse than none.
   ( cd "$DIR" && bun run build ) || { echo "up: build failed — nothing started" >&2; exit 1; }
+  TI_BUILT=$(date +%s)
   # FLEET_TI_TOKEN keeps the owner's link across a down/up (a rebuild after a client change);
   # without it every `up` mints a fresh one and the link he holds stops opening.
   TOK="${FLEET_TI_TOKEN:-$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
@@ -243,6 +286,18 @@ up)
   if [ "$TI_KIND" = snapshot ]; then
     FLEET_TI_SRC="$SRC" FLEET_TI_DIR="$DIR" FLEET_TI_SOCK="$SOCK" FLEET_TI_TOKEN="$TOK" \
       bun "$SRC/testinstanz-snapshot.js" || { echo "up: snapshot failed — nothing started" >&2; exit 1; }
+    TI_SNAPSHOT_DIR="$DIR" bun - <<'JS'
+const dir=process.env.TI_SNAPSHOT_DIR;
+const strip=(v)=>Array.isArray(v)?v.map(strip):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([k])=>!['selfToken','sessionId','worktree','helperDevices','shares','commandJobs','suiteOffers','watches','autos','lanePreviews'].includes(k)).map(([k,x])=>[k,strip(x)])):v;
+const file=Bun.file(`${dir}/fleet.json`),state=strip(await file.json());
+state.dispatch=false;state.autosOn=false;
+await Bun.write(file,JSON.stringify(state));
+for(const name of ['lane-outcomes.jsonl','post-land-audits.jsonl','audit.jsonl']){
+ const file=Bun.file(`${dir}/${name}`);if(!await file.exists())continue;
+ const lines=(await file.text()).split('\n').filter(Boolean).map(line=>JSON.stringify(strip(JSON.parse(line))));
+ await Bun.write(file,lines.join('\n')+(lines.length?'\n':''));
+}
+JS
   fi
   # THE STATE FILE is the machine-wide index: `list` reads it, scratch-reap.sh reaps by it, and
   # it records the values ACTUALLY chosen (the port bump may have moved off the hash port). No
@@ -250,6 +305,7 @@ up)
   TI_NOW=$(date +%s)
   {
     echo "src=$SRC"
+    echo "sourceIdentity=$TI_SOURCE_ID"
     echo "port=$PORT"
     echo "sock=$SOCK"
     echo "dir=$DIR"
@@ -257,8 +313,17 @@ up)
     echo "started=$TI_NOW"
     echo "ttlMin=$TI_TTL"
     echo "expiresAt=$((TI_NOW + TI_TTL * 60))"
+    echo "mode=$TI_KIND"
+    echo "sourceBefore=$TI_SOURCE_BEFORE"
+    echo "sourceAfter=$TI_SOURCE_AFTER"
+    echo "copyStartedAt=$TI_COPY_STARTED"
+    echo "copyFinishedAt=$TI_COPY_FINISHED"
+    echo "builtAt=$TI_BUILT"
+    echo "host=$(ti_addr)"
   } > "$STATE"
   ADDR=$(ti_addr)
+  TI_SOURCE_NOW=$(TI_GIT_SRC="$SRC" bun -e 'const fs=require("node:fs"); const p=process.env.TI_GIT_SRC; const a=fs.statSync(p),b=fs.lstatSync(p+"/.git"); console.log([a.dev,a.ino,a.birthtimeMs,b.dev,b.ino,b.birthtimeMs].join(":"));')
+  [ "$TI_SOURCE_ID" = "$TI_SOURCE_NOW" ] || { echo 'refused: source removed or replaced; no server started' >&2; exit 2; }
   ti_serve || exit 1
   if [ "$TI_KIND" = snapshot ]; then
     echo "TESTINSTANZ SNAPSHOT UP   http://$ADDR:$PORT/?token=$TOK"
@@ -296,6 +361,38 @@ states)
   ti_plant states
   ;;
 status)
+  if [ "${2:-}" = --json ]; then
+    TI_STATUS_SRC="$SRC" TI_STATUS_DIR="$DIR" TI_STATUS_HOST="$(ti_addr)" bun - <<'JS'
+const src=process.env.TI_STATUS_SRC,dir=process.env.TI_STATUS_DIR,host=process.env.TI_STATUS_HOST;
+const observedAt=Date.now();
+const read=async(name)=>await Bun.file(`${dir}/${name}`).text().catch(()=>null);
+const raw=await read('testinstanz.state');
+const fields=Object.fromEntries((raw??'').split('\n').map(line=>{const i=line.indexOf('=');return [line.slice(0,i),line.slice(i+1)];}));
+const number=(key)=>/^\d+$/.test(fields[key]??'')&&Number(fields[key])>0?Number(fields[key]):null;
+const pid=number('pid'),port=number('port'),expiresAt=number('expiresAt')===null?null:number('expiresAt')*1000;
+let procStatus='unknown',httpStatus='unknown',identity='unknown';
+const run=(...args)=>Bun.spawnSync(args,{timeout:1500,stdout:'pipe',stderr:'pipe',env:{...process.env,LC_ALL:'C'}});
+if(pid&&pid>1){const alive=run('kill','-0',String(pid));procStatus=alive.exitCode===0?'alive':'dead';}
+const pidFile=await read('.testinstanz.pid');
+if(raw&&fields.src===src&&fields.dir===dir&&/^fleetti[a-zA-Z0-9]+$/.test(fields.sock??'')
+ &&pid&&port>=8900&&port<=8999&&pidFile?.trim()===String(pid)&&fields.birth
+ &&run('env','LC_ALL=C','ps','-p',String(pid),'-o','lstart=').stdout.toString().trim()===fields.birth.trim()
+ &&run('lsof','-nP','-a','-p',String(pid),`-iTCP:${port}`,'-sTCP:LISTEN','-t').stdout.toString().trim()===String(pid))identity='matched';
+if(identity==='matched'&&fields.host===host&&/^(127\.0\.0\.1|100\.(?:\d{1,3}\.){2}\d{1,3})$/.test(host??'')){
+ const token=await read('.testinstanz.token');
+ if(token){const p=run('curl','--silent','--max-time','1','--max-redirs','0','--output','/dev/null','--write-out','%{http_code}',`http://${host}:${port}/api/sessions`,'-H',`authorization: Bearer ${token.trim()}`);
+ httpStatus=p.exitCode===28?'timeout':p.exitCode!==0?'failed':p.stdout.toString()==='200'?'healthy':'failed';}
+}
+const fact=(key)=>{try{const value=JSON.parse(fields[key]);return value&&typeof value==='object'?{head:/^[0-9a-f]{40}$/.test(value.head??'')?value.head:null,branch:typeof value.branch==='string'?value.branch:null,dirty:Number.isInteger(value.dirty)&&value.dirty>=0?value.dirty:null,measuredAt:Number.isSafeInteger(value.measuredAt)?value.measuredAt:null}:null;}catch{return null;}};
+const before=fact('sourceBefore'),after=fact('sourceAfter');
+const copyHead=null;
+console.log(JSON.stringify({state:!raw?'not-running':expiresAt!==null&&expiresAt<=observedAt?'expired':procStatus==='dead'?'not-running':identity!=='matched'?'unknown':httpStatus==='healthy'?'up':httpStatus==='timeout'?'http-timeout':httpStatus==='failed'?'http-failed':'unknown',
+ recordedSource:raw?{path:fields.src===src?src:null,before,after}:null,copyHead,mode:['mixed','snapshot'].includes(fields.mode)?fields.mode:null,
+ copyStartedAt:number('copyStartedAt')===null?null:number('copyStartedAt')*1000,copyFinishedAt:number('copyFinishedAt')===null?null:number('copyFinishedAt')*1000,builtAt:number('builtAt')===null?null:number('builtAt')*1000,
+ startedAt:number('started')===null?null:number('started')*1000,expiresAt,remainingTTL:expiresAt===null?null:Math.max(0,expiresAt-observedAt),port,procStatus,httpStatus,identity,observedAt}));
+JS
+    exit 0
+  fi
   if ti_alive; then echo "up   pid $(cat "$PIDF")   http://$(ti_addr):$PORT/?token=$(cat "$TOKF")"
   else echo "down (no live pid in $PIDF)"; fi
   echo "tmux sessions on socket $SOCK: $(tmux -L "$SOCK" list-sessions 2>/dev/null | wc -l | tr -d ' ')"
@@ -338,6 +435,14 @@ list)
   [ "$TI_ANY" = 1 ] || echo "no test instances on this machine (state files under $TI_ROOT/fleet-testinstanz-*/)"
   ;;
 down)
+  if ti_alive; then
+    ti_owned || { echo 'refused: instance identity is unknown; nothing stopped' >&2; exit 2; }
+  elif [ -f "$STATE" ]; then
+    [ "$(sed -n 's/^src=//p' "$STATE")" = "$SRC" ] && [ "$(sed -n 's/^dir=//p' "$STATE")" = "$DIR" ] && [ "$(sed -n 's/^sock=//p' "$STATE")" = "$SOCK" ] || { echo 'refused: foreign instance state' >&2; exit 2; }
+    if tmux -L "$SOCK" list-sessions >/dev/null 2>&1; then echo 'refused: unknown socket owner' >&2; exit 2; fi
+  else
+    echo 'down: no known instance'; exit 0
+  fi
   ti_alive && kill "$(cat "$PIDF")" 2>/dev/null || true
   # By SOCKET NAME, never a name pattern: `pkill -f` on this machine reaches the live server and
   # the post-land audit (AGENTS.md §Verify).
@@ -356,5 +461,5 @@ down)
   echo "down: server stopped, port $PORT free, tmux -L $SOCK killed, $DIR removed"
   ;;
 *)
-  echo "usage: ./testinstanz.sh up [mixed|full|snapshot] [--ttl <min>] | fixtures [mixed|full] | succession | states | status | list | down" >&2; exit 2;;
+  echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] | fixtures [mixed|full] | succession | states | status | list | down" >&2; exit 2;;
 esac

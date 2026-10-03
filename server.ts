@@ -4349,35 +4349,210 @@ const LANE_PREVIEW_REAP_GRACE_SEC = 30;
 const LANE_PREVIEW_START_TIMEOUT_MS = 180_000;
 const LANE_PREVIEW_STOP_TIMEOUT_MS = 30_000;
 const LANE_PREVIEW_SCRIPT = `${import.meta.dir}/lane-preview.sh`;
-const testinstanzBusy = new Set<number>();
+const testinstanzBusy = new Set<string>();
+const TESTINSTANZ_FRESH_MS = 30_000;
+interface TestinstanzTarget {
+  repo: string; path: string; primary: boolean; identity: string;
+}
+interface TestinstanzSource {
+  repoKey: string; worktreeKey: string; path: string; mainCheckout: boolean;
+  branch: string | null; head: string | null; dirty: number | null;
+  fork: { base: string; head: string } | null; measuredAt: number;
+}
+const testinstanzSources = new Map<string, { identity: string; value: TestinstanzSource }>();
+const testinstanzPlaces = new Map<number, { cwd: string; openedAt: number; sessionId: string | null;
+  path: string; repo: string; identity: string; mainCheckout: boolean; measuredAt: number }>();
 
-async function testinstanzCommand(cwd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string; err: string }> {
+function testinstanzPathIdentity(path: string): string | null {
+  try {
+    const st = statSync(path), g = lstatSync(`${path}/.git`);
+    if (!st.isDirectory()) return null;
+    return `${realpathSync(path)}:${st.dev}:${st.ino}:${st.birthtimeMs}:${g.dev}:${g.ino}:${g.birthtimeMs}`;
+  } catch { return null; }
+}
+
+async function testinstanzTarget(repo: string, path: string): Promise<TestinstanzTarget | null> {
+  try {
+    const canonicalRepo = realpathSync(repo), canonicalPath = realpathSync(path);
+    if (!knownRepos().some((r) => { try { return realpathSync(r) === canonicalRepo; } catch { return false; } })) return null;
+    const beforeRepo = testinstanzPathIdentity(canonicalRepo), beforePath = testinstanzPathIdentity(canonicalPath);
+    if (!beforeRepo || !beforePath) return null;
+    const rows = await listWorktrees(canonicalRepo);
+    const row = rows.find((w) => { try { return realpathSync(w.path) === canonicalPath; } catch { return false; } });
+    if (!row || testinstanzPathIdentity(canonicalRepo) !== beforeRepo || testinstanzPathIdentity(canonicalPath) !== beforePath) return null;
+    if (!knownRepos().some((r) => { try { return realpathSync(r) === canonicalRepo; } catch { return false; } })) return null;
+    return { repo: canonicalRepo, path: canonicalPath, primary: row.primary, identity: `${beforeRepo}\0${beforePath}` };
+  } catch { return null; }
+}
+
+async function testinstanzCommand(cwd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string }> {
   const env: Record<string, string> = {};
   for (const key of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL"]) {
     const value = process.env[key];
     if (value) env[key] = value;
   }
-  const child = Bun.spawn([`${cwd}/testinstanz.sh`, ...args], { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([`${cwd}/testinstanz.sh`, ...args], { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
   const timer = setTimeout(() => child.kill(), timeoutMs);
   try {
-    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    return { code, out, err };
-  } finally {
-    clearTimeout(timer);
-  }
+    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    return { code, out };
+  } finally { clearTimeout(timer); }
 }
 
-function testinstanzFact(out: string): { url: string; port: number; expiresAt: number } | null {
+function testinstanzFact(out: string): { url: string; port: number; expiresAt: number | null; state: "up" | "expired" } | null {
   const line = out.split("\n")[0] ?? "";
   const raw = /^up\s+pid\s+\d+\s+(https?:\/\/\S+)/.exec(line)?.[1];
   const expiry = /\bexpiresAt=(\d+)\b/.exec(out)?.[1];
-  if (!raw || !expiry) return null;
+  const expired = /\bttl: EXPIRED\b/.test(out);
+  if (!raw) return null;
   try {
-    const url = new URL(raw);
-    const port = Number(url.port);
-    const expiresAt = Number(expiry) * 1000;
-    return port >= 8900 && port <= 8999 && Number.isSafeInteger(expiresAt) ? { url: url.href, port, expiresAt } : null;
+    const url = new URL(raw), port = Number(url.port);
+    const expiresAt = expiry ? Number(expiry) * 1000 : null;
+    if (url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || url.hash
+      || !["127.0.0.1", HOST].includes(url.hostname) || port < 8900 || port > 8999
+      || (expiresAt !== null && !Number.isSafeInteger(expiresAt))) return null;
+    return { url: url.href, port, expiresAt, state: expired || (expiresAt !== null && expiresAt <= Date.now()) ? "expired" : "up" };
   } catch { return null; }
+}
+
+function testinstanzRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+function testinstanzGitFact(value: unknown): Record<string, unknown> | null {
+  const v = testinstanzRecord(value);
+  if (!v) return null;
+  return { head: typeof v.head === "string" && /^[0-9a-f]{40}$/.test(v.head) ? v.head : null,
+    branch: typeof v.branch === "string" ? v.branch : null,
+    dirty: typeof v.dirty === "number" && Number.isInteger(v.dirty) && v.dirty >= 0 ? v.dirty : null,
+    measuredAt: typeof v.measuredAt === "number" && Number.isSafeInteger(v.measuredAt) && v.measuredAt > 0 ? v.measuredAt : null };
+}
+function testinstanzObservation(out: string, target: TestinstanzTarget): Record<string, unknown> {
+  const observedAt = Date.now();
+  let v: Record<string, unknown> | null = null;
+  try { v = testinstanzRecord(JSON.parse(out)); } catch { /* legacy status has no recorded provenance */ }
+  const time = (key: string) => typeof v?.[key] === "number" && Number.isSafeInteger(v[key]) && (v[key] as number) > 0 ? v[key] as number : null;
+  if (v) {
+    const recorded = testinstanzRecord(v.recordedSource);
+    const expiresAt = time("expiresAt");
+    const states = ["up", "expired", "not-running", "unknown", "http-failed", "http-timeout"];
+    return { state: expiresAt !== null && expiresAt <= observedAt ? "expired" : typeof v.state === "string" && states.includes(v.state) ? v.state : "unknown",
+      recordedSource: recorded && recorded.path === target.path ? { path: target.path,
+        before: testinstanzGitFact(recorded.before), after: testinstanzGitFact(recorded.after) } : null,
+      copyHead: null, mode: v.mode === "mixed" || v.mode === "snapshot" ? v.mode : null,
+      copyStartedAt: time("copyStartedAt"), copyFinishedAt: time("copyFinishedAt"), builtAt: time("builtAt"),
+      startedAt: time("startedAt"), expiresAt, remainingTTL: expiresAt === null ? null : Math.max(0, expiresAt - observedAt),
+      port: typeof v.port === "number" && Number.isInteger(v.port) && v.port >= 8900 && v.port <= 8999 ? v.port : null,
+      procStatus: ["alive", "dead"].includes(String(v.procStatus)) ? v.procStatus : "unknown",
+      httpStatus: ["healthy", "failed", "timeout"].includes(String(v.httpStatus)) ? v.httpStatus : "unknown",
+      identity: v.identity === "matched" ? "matched" : "unknown", observedAt: time("observedAt") ?? observedAt };
+  }
+  const fact = testinstanzFact(out);
+  return { state: fact?.state ?? (out.startsWith("down ") ? "not-running" : "unknown"),
+    port: fact?.port ?? null, expiresAt: fact?.expiresAt ?? null,
+    remainingTTL: fact?.expiresAt === null || !fact ? null : Math.max(0, fact.expiresAt - observedAt),
+    recordedSource: null, copyHead: null, mode: null, copyStartedAt: null, copyFinishedAt: null, builtAt: null,
+    startedAt: null, procStatus: fact ? "alive" : "unknown", httpStatus: "unknown", identity: "unknown", observedAt };
+}
+
+async function testinstanzReadSource(target: TestinstanzTarget, s?: Slot): Promise<TestinstanzSource> {
+  const [branch, head, dirty] = await Promise.all([
+    gitRead(target.path, "symbolic-ref", "--short", "HEAD"), gitRead(target.path, "rev-parse", "HEAD"),
+    gitRead(target.path, "status", "--porcelain"),
+  ]);
+  let fork: TestinstanzSource["fork"] = null;
+  if (s?.worktree?.base && s.worktree.baseSha) {
+    const base = await gitRead(target.path, "rev-parse", "--verify", s.worktree.baseSha);
+    if (base.code === 0 && base.out === s.worktree.baseSha) fork = { base: s.worktree.base, head: base.out };
+  }
+  return { repoKey: target.repo, worktreeKey: target.path, path: target.path, mainCheckout: target.primary,
+    branch: branch.code === 0 ? branch.out : null, head: head.code === 0 ? head.out : null,
+    dirty: dirty.code === 0 ? dirty.out.split("\n").filter(Boolean).length : null, fork, measuredAt: Date.now() };
+}
+
+async function serveTestinstanz(req: Request, repo: string, path: string, s?: Slot): Promise<Response> {
+  const occupant = s ? { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId, cwd: s.cwd,
+    repo: s.worktree?.repo ?? null, branch: s.worktree?.branch ?? null } : null;
+  const testinstanzOccupantMatches = () => !occupant || (slots[occupant.slot - 1]?.openedAt === occupant.openedAt
+    && slots[occupant.slot - 1]?.sessionId === occupant.sessionId && slots[occupant.slot - 1]?.cwd === occupant.cwd
+    && (slots[occupant.slot - 1]?.worktree?.repo ?? null) === occupant.repo
+    && (slots[occupant.slot - 1]?.worktree?.branch ?? null) === occupant.branch);
+  const changed = () => json({ error: "testinstanz target removed, moved or replaced", refusal: "target-changed", state: "unknown", nullSpawn: true }, 409);
+  const target = await testinstanzTarget(repo, path);
+  if (!testinstanzOccupantMatches()) return changed();
+  if (!target) return json({ error: "removedWorktree or unknown repo/worktree", refusal: "unknown-worktree", state: "unknown", nullSpawn: true }, 409);
+  const key = target.path;
+  const unchanged = async () => {
+    if (!testinstanzOccupantMatches()) return false;
+    const now = await testinstanzTarget(target.repo, target.path);
+    return testinstanzOccupantMatches() && now?.identity === target.identity && now.primary === target.primary;
+  };
+  let action: "status" | "refresh" | "up" | "down" | "open" = "status", ttlMin = 240, mode = "mixed";
+  if (req.method === "POST") {
+    const body = await readJson(req);
+    if (!await unchanged()) return changed();
+    if (!body || !["up", "down", "refresh", "open"].includes(String(body.action))
+      || Object.keys(body).some((k) => !["action", "ttlMin", "mode"].includes(k)))
+      return json({ error: 'expected { action: "up" | "down" | "refresh" | "open", ttlMin?, mode? }' }, 400);
+    if (body.ttlMin !== undefined && (typeof body.ttlMin !== "number" || !Number.isInteger(body.ttlMin) || body.ttlMin < 1 || body.ttlMin > 1440))
+      return json({ error: "invalidTTL: ttlMin must be a whole number from 1 to 1440" }, 400);
+    if (body.mode !== undefined && body.mode !== "mixed" && body.mode !== "snapshot")
+      return json({ error: "unavailable-mode" }, 400);
+    action = body.action as "up" | "down" | "refresh" | "open";
+    if (typeof body.ttlMin === "number") ttlMin = body.ttlMin;
+    if (typeof body.mode === "string") mode = body.mode;
+  }
+  let scriptIdentity: string;
+  try {
+    const st = lstatSync(`${target.path}/testinstanz.sh`);
+    if (!st.isFile() || (st.mode & 0o111) === 0) throw new Error("missing");
+    scriptIdentity = `${st.dev}:${st.ino}:${st.mtimeMs}:${st.size}`;
+  } catch { return json({ error: "missingScript: testinstanz.sh is missing or not executable", state: "unknown", nullSpawn: true }, 409); }
+  if (testinstanzBusy.has(key)) return json({ error: "testinstanz command already running for worktree", refusal: "busy", nullSpawn: true }, 409);
+  testinstanzBusy.add(key);
+  const ready = async () => {
+    if (!await unchanged()) return false;
+    try { const st = lstatSync(`${target.path}/testinstanz.sh`);
+      return `${st.dev}:${st.ino}:${st.mtimeMs}:${st.size}` === scriptIdentity && testinstanzOccupantMatches();
+    } catch { return false; }
+  };
+  try {
+    if (!await ready()) return changed();
+    if (action === "up" || action === "down") {
+      const args = action === "up" ? ["up", mode, "--ttl", String(ttlMin)] : ["down"];
+      const run = await testinstanzCommand(target.path, args, action === "up" ? 240_000 : 30_000);
+      if (!await ready()) return changed();
+      if (run.code !== 0) return json({ error: `testinstanz ${action} failed`, refusal: "script-failed", state: "unknown" }, 409);
+      if (action === "down") return json({ ok: true, state: "not-running", worktree: target.path });
+    }
+    if (!await ready()) return changed();
+    const status = await testinstanzCommand(target.path, action === "open" ? ["status"] : ["status", "--json"], 15_000);
+    if (!await ready()) return changed();
+    if (status.code > 1 || status.code < 0) return json({ error: "testinstanz status failed", refusal: "script-failed", state: "unknown" }, 409);
+    if (action === "open") {
+      const fact = testinstanzFact(status.out);
+      if (!fact || fact.state !== "up") return json({ error: "testinstanz has no live opening endpoint", state: "unknown" }, 409);
+      return json({ ok: true, worktree: target.path, ...fact });
+    }
+    const instance = testinstanzObservation(status.out, target);
+    const cached = testinstanzSources.get(key);
+    let source = cached?.identity === target.identity ? cached.value : null;
+    if (!source || action === "refresh" || action === "up") {
+      source = await testinstanzReadSource(target, s);
+      if (!await ready()) return changed();
+      testinstanzSources.set(key, { identity: target.identity, value: source });
+    }
+    if (!await ready()) return changed();
+    if (s && testinstanzOccupantMatches()) testinstanzPlaces.set(s.id, { cwd: s.cwd!, openedAt: s.openedAt,
+      sessionId: s.sessionId ?? null, path: target.path, repo: target.repo, identity: target.identity, mainCheckout: target.primary, measuredAt: Date.now() });
+    const ageMs = Math.max(0, Date.now() - source.measuredAt);
+    return json({ ok: true, state: instance.state, port: instance.port, expiresAt: instance.expiresAt,
+      worktree: target.path, mainCheckout: target.primary, source: { ...source, ageMs,
+        freshness: source.head === null || source.dirty === null ? "unknown" : ageMs <= TESTINSTANZ_FRESH_MS ? "fresh" : "stale" },
+      instance: { ...instance, ageMs: typeof instance.observedAt === "number" ? Math.max(0, Date.now() - instance.observedAt) : null,
+        freshness: instance.state === "unknown" || typeof instance.observedAt !== "number" ? "unknown"
+          : Date.now() - instance.observedAt <= TESTINSTANZ_FRESH_MS ? "fresh" : "stale" } });
+  } catch { return json({ error: "testinstanz command could not run", state: "unknown" }, 409); }
+  finally { testinstanzBusy.delete(key); }
 }
 
 function testinstanzList(out: string): Array<{ worktree: string; port: number; url: string; expiresAt: number | null; state: string }> {
@@ -4403,9 +4578,10 @@ function testinstanzList(out: string): Array<{ worktree: string; port: number; u
     const url = parts.at(-1) ?? "";
     const worktree = parts.slice(3, -1).join("  ");
     if ((state !== "up" && state !== "down") || !Number.isInteger(port) || !worktree
-      || !/^rest /.test(parts[2] ?? "") || !/^https?:\/\/\S+\/$/.test(url))
-      throw new Error(`unrecognized testinstanz list row: ${line.slice(0, 200)}`);
-    return { worktree, port, url, expiresAt: expiryByInstance.get(`${worktree}\0${port}`) ?? null, state };
+      || !/^rest /.test(parts[2] ?? "") || !/^http:\/\/[^/?#@]+\/$/.test(url))
+      throw new Error("unrecognized testinstanz list row");
+    const expiresAt = expiryByInstance.get(`${worktree}\0${port}`) ?? null;
+    return { worktree, port, url, expiresAt, state: parts[2]?.includes("EXPIRED") || (expiresAt !== null && expiresAt <= Date.now()) ? "expired" : state };
   });
 }
 // candidate id -> its ONE record (start, stop and expiry evidence in one)
@@ -6761,6 +6937,14 @@ async function tickGit(): Promise<void> {
         const top = await gitRead(s.cwd, "rev-parse", "--show-toplevel");
         repoInfo.set(s.id, top.code === 0 && top.out ? repoCanon(top.out) : null);
       }
+      const placeCwd = s.cwd, placeOpenedAt = s.openedAt, placeSessionId = s.sessionId ?? null;
+      const placeRepo = repoInfo.get(s.id);
+      const place = placeRepo ? await testinstanzTarget(placeRepo, s.worktree ? placeCwd : placeRepo) : null;
+      if (s.cwd === placeCwd && s.openedAt === placeOpenedAt && (s.sessionId ?? null) === placeSessionId) {
+        if (place) testinstanzPlaces.set(s.id, { cwd: placeCwd, openedAt: placeOpenedAt, sessionId: placeSessionId,
+          path: place.path, repo: place.repo, identity: place.identity, mainCheckout: place.primary, measuredAt: Date.now() });
+        else testinstanzPlaces.delete(s.id);
+      }
       // A merge/land job OWNS this worktree's git for its whole lifetime — rebase, abort, ff-merge.
       // Every value below is a DISPLAY cache (the badges); every gate that acts on git state calls
       // gitOpInProgress fresh at its own site. So hold the last reading for the job's duration
@@ -7156,7 +7340,7 @@ async function laneRefsStale(w: LaneRef | null, cwd: string | null): Promise<boo
 // previously invisible anywhere in the UI) stay findable
 interface WtEntry { path: string; branch: string; primary: boolean }
 async function listWorktrees(root: string): Promise<WtEntry[]> {
-  const ls = await git(root, "worktree", "list", "--porcelain");
+  const ls = await gitRead(root, "worktree", "list", "--porcelain");
   if (ls.code !== 0) return [];
   const out: WtEntry[] = [];
   let cur: { path?: string; branch?: string } = {};
@@ -7262,6 +7446,10 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
     main: intb ?? b.main, // null = primary is detached; the computed fallback stands
     worktrees: await Promise.all(b.worktrees.map(async (w) => ({
       ...w,
+      workplace: await (async () => {
+        const target = await testinstanzTarget(b.repo, w.path);
+        return target ? { path: target.path, mainCheckout: target.primary, measuredAt: Date.now() } : null;
+      })(),
       slot: slots.find((x) => x.cwd === w.path)?.id ?? null,
       note: shelved[w.path]?.note ?? null,
       notepad: worktreeNotes[w.path] ?? null,
@@ -43380,6 +43568,11 @@ Bun.serve<WSData>({
             // Canonical checkout identity, separate from cwd: a main session may live in a
             // subdirectory. Older clients ignore it; a null before the slow git tick is UNKNOWN.
             repo: s.cwd ? (s.worktree?.repo ?? repoInfo.get(s.id) ?? null) : null,
+            workplace: (() => {
+              const p = testinstanzPlaces.get(s.id);
+              return p && p.cwd === s.cwd && p.openedAt === s.openedAt && p.sessionId === (s.sessionId ?? null)
+                && `${testinstanzPathIdentity(p.repo)}\0${testinstanzPathIdentity(p.path)}` === p.identity ? { path: p.path, mainCheckout: p.mainCheckout, measuredAt: p.measuredAt } : null;
+            })(),
             lastOutput: s.lastOutput,
             // `model` is the slot RECORD (rank 3 of the ONE precedence rule,
             // src/running.ts#runningModel — docs/harness-adapter.md describes it); `paneModel` below
@@ -44396,59 +44589,25 @@ Bun.serve<WSData>({
         const st = lstatSync(script);
         if (!st.isFile() || (st.mode & 0o111) === 0) return json({ error: "testinstanz.sh is missing or not executable" }, 409);
         const run = await testinstanzCommand(import.meta.dir, ["list"], 15_000);
-        if (run.code !== 0) return json({ error: `testinstanz list failed (${run.code}): ${(run.err.trim() || run.out.trim()).slice(-500)}` }, 409);
+        if (run.code !== 0) return json({ error: "testinstanz list failed" }, 409);
         return json({ testinstanzen: testinstanzList(run.out) });
       } catch (error) {
-        return json({ error: `testinstanz list could not run: ${String(error instanceof Error ? error.message : error).slice(0, 300)}` }, 409);
+        return json({ error: "testinstanz list could not run" }, 409);
       }
     }
     const tiMatch = /^\/api\/slots\/(\d+)\/testinstanz$/.exec(url.pathname);
     if (tiMatch && (req.method === "GET" || req.method === "POST")) {
       const s = slotFrom(tiMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
-      if (!s.worktree || !s.cwd) return json({ error: `slot ${s.id} has no lane worktree` }, 409);
-      const cwd = s.cwd;
-      const script = `${cwd}/testinstanz.sh`;
-      let ready = false;
-      try {
-        const st = lstatSync(script);
-        ready = st.isFile() && (st.mode & 0o111) !== 0;
-      } catch { /* absent script is a named refusal below */ }
-      if (!ready) return json({ error: `testinstanz.sh is missing or not executable in slot ${s.id}'s worktree` }, 409);
-      if (testinstanzBusy.has(s.id)) return json({ error: `testinstanz command already running for slot ${s.id}` }, 409);
-      let action: "up" | "down" | "status" = "status";
-      let ttlMin = 240;
-      if (req.method === "POST") {
-        const body = await readJson(req);
-        if (!body || (body.action !== "up" && body.action !== "down"))
-          return json({ error: 'expected { action: "up" | "down", ttlMin?: number }' }, 400);
-        if (body.ttlMin !== undefined && (typeof body.ttlMin !== "number" || !Number.isInteger(body.ttlMin) || body.ttlMin < 1 || body.ttlMin > 1440))
-          return json({ error: "ttlMin must be a whole number from 1 to 1440" }, 400);
-        action = body.action;
-        if (typeof body.ttlMin === "number") ttlMin = body.ttlMin;
-      }
-      testinstanzBusy.add(s.id);
-      try {
-        if (action !== "status") {
-          const args = action === "up" ? ["up", "mixed", "--ttl", String(ttlMin)] : ["down"];
-          const run = await testinstanzCommand(cwd, args, action === "up" ? 240_000 : 30_000);
-          if (run.code !== 0)
-            return json({ error: `testinstanz ${action} failed (${run.code}): ${(run.err.trim() || run.out.trim()).slice(-500)}` }, 409);
-          if (action === "down") return json({ ok: true });
-        }
-        const status = await testinstanzCommand(cwd, ["status"], 15_000);
-        const fact = testinstanzFact(status.out);
-        if (!fact) {
-          if (action === "status" && status.out.startsWith("down ")) return json({ ok: true, state: "down" });
-          if (status.code !== 0) return json({ error: `testinstanz status failed (${status.code}): ${status.err.trim().slice(-500)}` }, 409);
-          return json({ error: "testinstanz did not report a live URL, port and expiry" }, 409);
-        }
-        return json(action === "status" ? { ok: true, state: "up", ...fact } : fact);
-      } catch (error) {
-        return json({ error: `testinstanz command could not run: ${String(error instanceof Error ? error.message : error).slice(0, 300)}` }, 409);
-      } finally {
-        testinstanzBusy.delete(s.id);
-      }
+      if (!s.cwd) return json({ error: `slot ${s.id} has no lane worktree`, state: "unknown", nullSpawn: true }, 409);
+      const repo = s.worktree?.repo ?? repoInfo.get(s.id) ?? s.cwd;
+      const path = s.worktree ? s.cwd : repoInfo.get(s.id) ?? s.cwd;
+      return await serveTestinstanz(req, repo, path, s);
+    }
+    if (url.pathname === "/api/worktrees/testinstanz" && (req.method === "GET" || req.method === "POST")) {
+      const repo = url.searchParams.get("repo"), path = url.searchParams.get("path");
+      if (!repo || !path) return json({ error: "expected known repo and path query parameters" }, 400);
+      return await serveTestinstanz(req, repo, path);
     }
     // THE REVIEW PREVIEW (startLanePreview): one time-boxed isolated instance of a parked candidate's
     // stored head, for the owner to look at before land. The answer carries the record — the board

@@ -2758,6 +2758,142 @@ Die Antwort bleibt an die Program- oder Rollenadresse des ursprünglichen Absend
 jeweiligen Lesen/Zustellen auf die dann gebundene Session auf. Die Owner-Route quittiert den
 Elterneintrag nicht. Fragen an den Owner laufen weiterhin über die Rückfrage-Kette.
 
+## Testinstanz — bekannte Arbeitsorte, Lesen und ausdrückliche Gesten
+
+Eine Testinstanz ist eine isolierte Vorschau, kein Verify-Signal. Haupt-Checkout und slotlose
+Git-Worktrees sind als **Quelle einer Kopie** erlaubt. Der laufende Quellserver, Quellrefs und
+Quellinhalt werden dadurch nicht gestartet, gestoppt oder verändert. Ein Klon außerhalb des
+Git-Worktree-Registers ist hier unsupported. Client und DOM gehören zur Arbeitsort-Karte A.
+
+Alle folgenden Türen stehen hinter dem bestehenden **Owner-Authvertrag**. Ohne Auth, mit
+Lane-Self-Token oder Share-Cookie: 401. Metadata enthält keine Tokens oder credentialhaltigen
+URLs; erst die getrennte POST-Geste `open` liefert den Öffnungslink. Ein GET öffnet nichts.
+
+| Ziel | Read | ausdrückliche Aktion |
+|---|---|---|
+| belegter Slot-Arbeitsort | `GET /api/slots/:id/testinstanz` | `POST /api/slots/:id/testinstanz` |
+| bekannter Haupt-Checkout oder slotloser Worktree | `GET /api/worktrees/testinstanz?repo=<repo>&path=<path>` | `POST` derselben URL |
+| bestehender Maschinenindex | `GET /api/testinstanzen` | keine Aktion über den Index |
+
+`repo`/`path` sind URL-kodierte Auswahlwerte aus bekannten Repos und deren `git worktree list`,
+keine freie Pfadvollmacht. Die Query wählt auch bei POST das Ziel **vor** dem Body-Await. Die
+kanonischen Pfade müssen existieren; der Haupt-Checkout wird über den primary-Eintrag gemessen.
+Der Body ist exakt `{action:"up"|"down"|"refresh"|"open", ttlMin?:number,
+mode?:"mixed"|"snapshot"}`. `ttlMin`: ganze Zahl 1–1440, Default 240. `mode`: Default mixed;
+snapshot nutzt die vorhandene bereinigte historische Kopie. Andere Modi (auch full) werden
+verweigert, ohne Rückfall. Pfad, Shell, Command, URL und zusätzliche Bodyfelder: 400.
+
+Read und Refresh liefern beispielsweise:
+
+```json
+{
+  "ok": true,
+  "state": "up",
+  "worktree": "/known/repo/worktree",
+  "mainCheckout": false,
+  "port": 8912,
+  "expiresAt": 2000000000000,
+  "source": {
+    "repoKey": "/known/repo",
+    "worktreeKey": "/known/repo/worktree",
+    "path": "/known/repo/worktree",
+    "mainCheckout": false,
+    "branch": "feature",
+    "head": "0123456789012345678901234567890123456789",
+    "dirty": 2,
+    "fork": null,
+    "measuredAt": 1999999000000,
+    "ageMs": 500,
+    "freshness": "fresh"
+  },
+  "instance": {
+    "state": "up",
+    "recordedSource": {
+      "path": "/known/repo/worktree",
+      "before": {"head": "0123456789012345678901234567890123456789", "branch": "feature", "dirty": 1, "measuredAt": 1999998000000},
+      "after": {"head": "0123456789012345678901234567890123456789", "branch": "feature", "dirty": 1, "measuredAt": 1999998001000}
+    },
+    "copyHead": null,
+    "mode": "mixed",
+    "copyStartedAt": 1999998000000,
+    "copyFinishedAt": 1999998001000,
+    "builtAt": 1999998002000,
+    "startedAt": 1999998003000,
+    "expiresAt": 2000000000000,
+    "remainingTTL": 1997000,
+    "port": 8912,
+    "procStatus": "alive",
+    "httpStatus": "healthy",
+    "identity": "matched",
+    "observedAt": 1999998003000,
+    "ageMs": 0,
+    "freshness": "fresh"
+  }
+}
+```
+
+Zeitangaben im Wire sind Unix-Millisekunden; `remainingTTL` ist Millisekunden, bei Ablauf 0.
+`source` und `instance` sind getrennte Beobachtungen. Source-HEAD **jetzt** ersetzt niemals die
+beim Kopieren gemessenen `recordedSource.before`/`after`. Die Kopie enthält keine Git-Metadaten,
+und zwei HEAD/dirty-Messungen beweisen keine bytegleiche Version während der Kopie: `copyHead`
+bleibt deshalb null. Copy- und Buildzeiten stammen aus getrennten Scriptmessungen (Sekunden,
+im Wire zu Millisekunden umgerechnet). Dirty ist die Anzahl der Porcelain-Zeilen. Ein belegter
+Lane-Fork wird nur bei auflösbarer gespeicherter `base`/`baseSha` ausgegeben; sonst `fork:null`.
+Null bedeutet **unknown**, niemals sauber, identisch oder kein Fork.
+
+GET misst den bekannten Instanzstatus neu und verwendet die zum identischen Ziel gehörende
+Quellbeobachtung aus dem Speicher. Beim ersten Read wird Git gemessen; `refresh` liest Git neu,
+setzt `measuredAt` neu und startet keine History-, Suite-, Modell- oder Automationsaktion.
+Source-Cache: bis 30 000 ms fresh, danach stale; fehlender HEAD/Dirty unknown. Instanzstatus:
+frisch gemessen, bei unbestimmtem Zustand unknown. Alte Statefiles ohne Herkunft/Zeiten liefern
+null, keine erfundenen Fakten. Read schreibt weder Expiry/Cleanup noch State, TTL, Instanzinhalt
+oder Quellrefs; Gitreads laufen mit `GIT_OPTIONAL_LOCKS=0`.
+
+| `state` | Bedeutung |
+|---|---|
+| `not-running` | keine bekannte Instanz oder gemessener Prozess beendet |
+| `up` | bekannte Prozessidentität und erfolgreiche HTTP-Messung |
+| `expired` | Ablauf beobachtet; Aufräumen ist ein anderer Akt |
+| `http-failed` | Prozessidentität bestätigt, HTTP-Messung fehlgeschlagen |
+| `http-timeout` | Prozessidentität bestätigt, begrenzte HTTP-Messung abgelaufen |
+| `unknown` | Messung, Identität oder alter State nicht belegt |
+
+`procStatus`: alive/dead/unknown; `httpStatus`: healthy/failed/timeout/unknown.
+Legacy-Scriptstatus `up pid …` liefert Prozessbehauptung, aber keine belegte Prozessidentität
+oder HTTPgesundheit (`identity`/`httpStatus`: unknown). `ttl: EXPIRED` ohne `expiresAt` liefert
+`state:"expired",expiresAt:null`; das ist kein fehlender Worktree. Der Maschinenindex führt
+expired ebenfalls getrennt. Sein bare URL ist credentialfrei und keine Öffnungsgeste.
+
+`up` liefert dieselben Metadaten; `down` liefert `{ok:true,state:"not-running",worktree}`.
+`open` liefert `{ok:true,worktree,state:"up",url,port,expiresAt}` nur für ein gültiges
+HTTP-Origin mit eigenem Host/Port 8900–8999, Pfad `/`, ohne Userinfo/Fragment. Öffnungslinks
+enthalten das Instanzcredential und gehören weder in Metadata noch Logs oder Bilder.
+Die HTTP-Gesundheitsmessung verwendet ausschließlich den gespeicherten, lokal validierten Host
+und Port, festen `/api/sessions`-Pfad und das eigene Token; Timeout 1 s, Redirects werden nicht
+verfolgt. Fehlende Eigentums-/Endpointbelege ergeben unknown, keine fremde HTTP-Messung.
+
+Beide Routen binden vor/nach Awaits die kanonische Repo-/Register-/Worktree-Identität
+(inklusive Inode/Geburt), Slot zusätzlich `slot+openedAt+sessionId+cwd` und Lanezuordnung.
+Entfernt, ersetzt, moved oder fremd: 409 `refusal:"target-changed",state:"unknown",nullSpawn:true`;
+kein altes Resultat wird an den neuen Occupant geschrieben. `nullSpawn` bezeichnet hier keinen
+weiteren Spawn nach dem verworfenen Ziel; eine bereits begonnene isolierte Scriptaktion kann
+vor der späteren Revalidierung gelaufen sein. Busy ist pro kanonischem Worktree, auch ohne Slot.
+Weitere benannte Refusals: 409 unknown-worktree/removedWorktree, missingScript, busy,
+script-failed; 400 invalidTTL/unavailable-mode. Raw Scriptfehler werden nicht ausgeliefert.
+
+`GET /api/sessions` enthält je Slot `workplace:null` oder
+`{path,mainCheckout,measuredAt}`. Null ist noch nicht belegt oder Occupant/Checkout gewechselt.
+Die Worktree-Board-Zeilen tragen dasselbe `workplace`-Objekt, aus dem Register gemessen;
+der Client braucht Haupt-Checkout oder Quellpfad nicht aus Namen zu raten.
+
+Die Scriptkopie schließt `.git`, `node_modules`, `.env*`, `fleet.pid`, `fleet.json*` und
+`*.jsonl` aus. Vor dem Serverstart wird die Quellidentität nochmals geprüft. Eigenes HOME,
+Socket, Token, Harness-Shims und `FLEET_CMD=true` bleiben erhalten; snapshot hält Dispatch und
+Autos aus und bereinigt historische Slot-/Task-/Program-/Report-/Attentiondaten. `down` und
+Patch signalisieren nur den eigenen gespeicherten PID mit passender Prozessgeburt (Locale C)
+und belegtem Portbesitz. Führende/nachlaufende Format-Leerzeichen werden bei beiden Geburtswerten entfernt; der Zeitwert wird exakt verglichen. Fremder/al­ter State oder unbekannter Socketbesitz wird verweigert.
+Keine Live-Bindings, Helper-/Job-/Watch-Übertragung, Merge/Land/Deploy/Undo oder neuen Grants.
+
 ## jobs — `POST /api/self/jobs`, `GET /api/self/jobs/:id`, `POST /api/self/jobs/:id/withdraw`
 
 Arbeit von hier nach dort auslagern, mit Quittung. Eine Session übergibt ihren **eigenen Baum** und

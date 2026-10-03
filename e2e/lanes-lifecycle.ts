@@ -2,6 +2,7 @@
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
+import { request as httpRequest } from "node:http";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
@@ -9,6 +10,143 @@ import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastRevi
   reviewRunsFor, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+
+async function testinstanzWorktreeChecks(slot: number): Promise<void> {
+  const repo = realpathSync(REPO), dir = mkdtempSync(`${ROOT}/ti-api-`);
+  const a = `${dir}/a`, b = `${dir}/b`, trace = `${dir}/actions`, hold = `${dir}/hold`, started = `${dir}/started`;
+  const mainScript = `${repo}/testinstanz.sh`;
+  const original = exists(mainScript) ? { bytes: readFileSync(mainScript), mode: lstatSync(mainScript).mode & 0o777 } : null;
+  const cmd = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  const suffix = String(Date.now()), branchA = `ti-a-${suffix}`, branchB = `ti-b-${suffix}`;
+  const route = (path: string) => `/api/worktrees/testinstanz?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
+  const states = new Map<string, string>();
+  const script = (path: string, index: number) => {
+    const state = `${dir}/state-${index}`; states.set(path, state);
+    const data = JSON.stringify({ state: "up", port: 8912 + index, expiresAt: 2_000_000_000_000,
+      procStatus: "alive", httpStatus: "healthy", identity: "matched", mode: "mixed", startedAt: 1000,
+      copyStartedAt: 2000, copyFinishedAt: 3000, builtAt: 4000, copyHead: "a".repeat(40),
+      recordedSource: { path, before: { head: "a".repeat(40), branch: "old", dirty: 1, measuredAt: 1 }, after: null } });
+    writeFileSync(`${path}/testinstanz.sh`, `#!/bin/sh
+case "$1" in
+up)
+  printf 'up\n' >> '${trace}'
+  if [ -f '${hold}' ]; then : > '${started}'; while [ -f '${hold}' ]; do sleep 0.05; done; fi
+  printf '%s' '${data}' > '${state}' ;;
+down) printf 'down\n' >> '${trace}'; rm -f '${state}' ;;
+status)
+  if [ "$2" = --json ]; then
+    if [ -f '${state}' ]; then cat '${state}'; else echo '{"state":"not-running","procStatus":"dead"}'; fi
+  else echo 'up pid 123 http://127.0.0.1:${8912 + index}/?token=SYNTHETIC_TI_SECRET'; echo 'ttl: 45 min left (expiresAt=2000000000)'; fi ;;
+esac
+`); chmodSync(`${path}/testinstanz.sh`, 0o700);
+  };
+  const read = async (path: string, refresh = false) => {
+    const r = refresh ? await post(route(path), { action: "refresh" }) : await get(route(path));
+    return { status: r.status, body: await r.json() as { state?: string; url?: string; mainCheckout?: boolean;
+      source?: { head?: string; dirty?: number; measuredAt?: number; fork?: unknown; freshness?: string };
+      instance?: { copyHead?: string | null; httpStatus?: string; procStatus?: string; recordedSource?: unknown }; refusal?: string; nullSpawn?: boolean } };
+  };
+  try {
+    const createdA = cmd("worktree", "add", "-q", "-b", branchA, a, "HEAD");
+    const createdB = cmd("worktree", "add", "-q", "-b", branchB, b, "HEAD");
+    const commitB = spawnSync("git", ["-C", b, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "distinct copy source"], { encoding: "utf8" });
+    check("testinstanz known main and two slotless worktree fixtures exist", createdA.status === 0 && createdB.status === 0 && commitB.status === 0);
+    if (createdA.status !== 0 || createdB.status !== 0 || commitB.status !== 0) return;
+    script(repo, 0); script(a, 1); script(b, 2);
+    writeFileSync(`${b}/dirty`, "uncommitted fixture\n");
+    const sourceRefs = () => cmd("for-each-ref", "--format=%(refname) %(objectname)").stdout;
+    const beforeRefs = sourceRefs();
+    const missingAuth = await fetch(BASE + route(a));
+    check("testinstanz slotless read refuses absent auth", missingAuth.status === 401);
+    const laneToken = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { selfToken?: string }> }).slots?.[slot]?.selfToken;
+    const laneRead = await fetch(BASE + route(a), { headers: { "x-fleet-self-token": laneToken ?? "missing" } });
+    check("testinstanz slotless read refuses lane auth", !!laneToken && laneRead.status === 401);
+    const share = await post(`/api/slots/${slot}/share`, { mode: "view", password: "ti-fixture-password" });
+    const shareBody = await share.json() as { id?: string };
+    const shareAuth = await post(`/s/${shareBody.id}/auth`, { password: "ti-fixture-password" });
+    const shareCookie = (shareAuth.headers.get("set-cookie") ?? "").split(";")[0];
+    const shareRead = await fetch(BASE + route(a), { headers: { cookie: shareCookie } });
+    check("testinstanz Read refuses a real authenticated Share", share.status === 200 && shareAuth.status === 200 && shareCookie.startsWith("share_") && shareRead.status === 401);
+    const unknown = await post(route(dir), { action: "up" });
+    check("testinstanz refuses a foreign path without spawn", unknown.status === 409 && !exists(trace));
+    const badTTL = await post(route(a), { action: "up", ttlMin: 1441 });
+    const badMode = await post(route(a), { action: "up", mode: "full" });
+    const injection = await post(route(a), { action: "up", command: "touch foreign" });
+    check("testinstanz rejects TTL, unavailable mode and arbitrary command before spawn", badTTL.status === 400 && badMode.status === 400 && injection.status === 400 && !exists(trace));
+    const none = await read(a);
+    check("testinstanz absent copy reads not-running and unmeasured fork is null", none.status === 200 && none.body.state === "not-running" && none.body.source?.fork === null && !exists(trace));
+    const main = await post(route(repo), { action: "up" });
+    const upA = await post(route(a), { action: "up", ttlMin: 12 });
+    const upB = await post(route(b), { action: "up", mode: "snapshot" });
+    check("testinstanz starts known main and two slotless targets separately", main.status === 200 && upA.status === 200 && upB.status === 200
+      && [...states.values()].every(exists), `HTTP ${main.status}/${upA.status}/${upB.status}`);
+    const mainRead = await read(repo), readA = await read(a), readB = await read(b);
+    check("testinstanz reports measured main/worktree identity and distinct HEAD/dirty", mainRead.body.mainCheckout === true && readA.body.mainCheckout === false
+      && readB.body.mainCheckout === false && readA.body.source?.head !== readB.body.source?.head
+      && readA.body.source?.dirty === 1 && readB.body.source?.dirty === 2);
+    check("testinstanz never promotes recorded source HEAD to an exact copy version", readA.body.instance?.copyHead === null);
+    const actionBefore = readFileSync(trace, "utf8"), stateBefore = readFileSync(states.get(a)!, "utf8");
+    const dirtyBefore = spawnSync("git", ["-C", a, "status", "--porcelain"], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).stdout;
+    const metadata = await read(a), refresh = await read(a, true);
+    check("testinstanz readspy observes exactly zero up/open/down/suite/model/serverstart", readFileSync(trace, "utf8") === actionBefore
+      && readFileSync(states.get(a)!, "utf8") === stateBefore && sourceRefs() === beforeRefs
+      && spawnSync("git", ["-C", a, "status", "--porcelain"], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).stdout === dirtyBefore
+      && !JSON.stringify(metadata.body).includes("SYNTHETIC_TI_SECRET") && !JSON.stringify(refresh.body).includes("SYNTHETIC_TI_SECRET"));
+    const updated = spawnSync("git", ["-C", a, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "updated source"], { encoding: "utf8" });
+    writeFileSync(`${a}/dirty`, "new dirty fixture\n");
+    const cached = await read(a), fresh = await read(a, true);
+    check("testinstanz explicit Refresh advances measuredAt, HEAD and dirty; GET keeps cached source", updated.status === 0
+      && cached.body.source?.head === refresh.body.source?.head && fresh.body.source?.head !== cached.body.source?.head
+      && fresh.body.source?.dirty === 2 && (fresh.body.source?.measuredAt ?? 0) > (cached.body.source?.measuredAt ?? 0));
+    // t | event | owner: 0 Refresh cache | server; +30010ms Read | test. Freshness uses server Date.now and its 30000ms cache limit.
+    await Bun.sleep(30_010);
+    const stale = await read(a);
+    check("testinstanz cached source honestly becomes stale without renewing measuredAt", stale.body.source?.freshness === "stale"
+      && stale.body.source.measuredAt === fresh.body.source?.measuredAt);
+    for (const [http, state] of [["failed", "http-failed"], ["timeout", "http-timeout"]] as const) {
+      writeFileSync(states.get(a)!, JSON.stringify({ state, procStatus: "alive", httpStatus: http }));
+      const observation = await read(a);
+      check(`testinstanz procAlive plus HTTP ${http} stays separate`, observation.body.state === state
+        && observation.body.instance?.procStatus === "alive" && observation.body.instance.httpStatus === http);
+    }
+    writeFileSync(states.get(a)!, JSON.stringify({ state: "unknown" }));
+    const old = await read(a);
+    check("testinstanz old state has unknown provenance, copy and HTTP", old.body.state === "unknown" && old.body.instance?.recordedSource === null
+      && old.body.instance.copyHead === null && old.body.instance.httpStatus === "unknown");
+    const downA = await post(route(a), { action: "down" });
+    check("testinstanz stop targets only its own instance", downA.status === 200 && !exists(states.get(a)!) && exists(states.get(b)!) && exists(states.get(repo)!));
+    writeFileSync(hold, "hold"); rmSync(started, { force: true });
+    const delayed = post(route(a), { action: "up" });
+    await until(() => exists(started), { timeoutMs: 5000, what: "testinstanz delayed script accepted work" });
+    const busy = await post(route(a), { action: "down" });
+    const independent = await post(route(b), { action: "down" });
+    check("testinstanz busy is per known worktree, slotless neighbours remain independent", busy.status === 409 && independent.status === 200);
+    const moved = `${a}-moved`;
+    const move = cmd("worktree", "move", a, moved);
+    rmSync(hold, { force: true });
+    const late = await delayed;
+    const lateBody = await late.json() as { refusal?: string; nullSpawn?: boolean; state?: string };
+    check("testinstanz late result cannot attach to a moved target", move.status === 0 && late.status === 409 && lateBody.refusal === "target-changed" && lateBody.state === "unknown" && lateBody.nullSpawn === true);
+    cmd("worktree", "move", moved, a);
+    rmSync(`${a}/testinstanz.sh`);
+    const missing = await post(route(a), { action: "up" });
+    check("testinstanz missingScript refuses before spawn", missing.status === 409 && (await missing.json() as { error?: string }).error?.startsWith("missingScript") === true);
+    writeFileSync(`${a}/testinstanz.sh`, "#!/bin/sh\necho 'SYNTHETIC_RAW_ERROR_TOKEN' >&2\necho 'http://127.0.0.1:8912/?token=SYNTHETIC_RAW_ERROR_TOKEN'\nexit 2\n");
+    chmodSync(`${a}/testinstanz.sh`, 0o700);
+    const failure = await get(route(a));
+    const errorText = await failure.text();
+    check("testinstanz raw script errors and status URLs never escape Metadata", failure.status === 409 && !errorText.includes("SYNTHETIC_RAW_ERROR_TOKEN") && errorText.includes("script-failed"));
+    cmd("worktree", "remove", "--force", a);
+    const removed = await post(route(a), { action: "up" });
+    check("testinstanz removedWorktree refuses without fallback", removed.status === 409 && (await removed.json() as { nullSpawn?: boolean }).nullSpawn === true);
+  } finally {
+    rmSync(hold, { force: true });
+    if (original) { writeFileSync(mainScript, original.bytes); chmodSync(mainScript, original.mode); } else rmSync(mainScript, { force: true });
+    for (const path of [a, `${a}-moved`, b]) cmd("worktree", "remove", "--force", path);
+    for (const branch of [branchA, branchB]) cmd("branch", "-D", branch);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 export async function run(lc: LaneCtx): Promise<void> {
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
@@ -54,7 +192,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       "case $1 in",
       "  up) pwd > ti-cwd; printf '%s' \"$*\" > ti-args ;;",
       "  down) rm -f ti-cwd ti-args ;;",
-      "  status) if [ -f ti-cwd ]; then echo 'up pid 123 http://100.64.0.1:8912/?token=fixture'; echo 'ttl: 45 min left (expiresAt=2000000000)'; else echo 'down (fixture)'; fi; exit 1 ;;",
+      "  status) if [ -f ti-cwd ]; then echo 'up pid 123 http://127.0.0.1:8912/?token=fixture'; echo 'ttl: 45 min left (expiresAt=2000000000)'; else echo 'down (fixture)'; fi; exit 1 ;;",
       "esac",
       "",
     ].join("\n"));
@@ -66,12 +204,16 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("testinstanz rejects an invalid TTL before running the script", badTtl.status === 400 && !exists(`${emptyBranch.cwd}/ti-cwd`));
     const up = await post(route, { action: "up", ttlMin: 45 });
     const upBody = (await up.json().catch(() => ({}))) as { url?: string; port?: number; expiresAt?: number };
-    check("testinstanz up runs the slot worktree script in its own cwd and returns the phone URL, port and expiry",
+    check("testinstanz up runs the slot worktree script in its own cwd and returns credential-free metadata",
       up.ok && exists(`${emptyBranch.cwd}/ti-cwd`) && exists(`${emptyBranch.cwd}/ti-args`)
       && readFileSync(`${emptyBranch.cwd}/ti-cwd`, "utf8").trim() === emptyBranch.cwd
       && readFileSync(`${emptyBranch.cwd}/ti-args`, "utf8") === "up mixed --ttl 45"
-      && upBody.url === "http://100.64.0.1:8912/?token=fixture" && upBody.port === 8912
-      && upBody.expiresAt === 2_000_000_000_000, JSON.stringify(upBody));
+      && upBody.url === undefined && upBody.port === 8912
+      && upBody.expiresAt === 2_000_000_000_000, `HTTP ${up.status}; metadata credential-free=${!upBody.url}`);
+    const opened = await post(route, { action: "open" });
+    const openedBody = await opened.json() as { url?: string };
+    check("testinstanz opening needs its own explicit owner gesture", opened.status === 200
+      && openedBody.url === "http://127.0.0.1:8912/?token=fixture", `HTTP ${opened.status}`);
     const status = (await (await get(route)).json().catch(() => ({}))) as { state?: string; port?: number };
     check("testinstanz status serves the running state for a second device", status.state === "up" && status.port === 8912);
     const down = await post(route, { action: "down" });
@@ -81,7 +223,66 @@ export async function run(lc: LaneCtx): Promise<void> {
     const downStatus = await get(route);
     check("testinstanz status keeps the script's down fact when its final lock diagnostic exits 1",
       downStatus.status === 200
-      && ((await downStatus.json()) as { state?: string }).state === "down");
+      && ((await downStatus.json()) as { state?: string }).state === "not-running");
+    writeFileSync(script, "#!/bin/sh\necho 'up pid 123 http://127.0.0.1:8912/?token=fixture'\necho 'ttl: EXPIRED 2 min ago'\n");
+    const expired = await get(route);
+    const expiredBody = await expired.json() as { state?: string; expiresAt?: unknown; url?: unknown; mainCheckout?: boolean; worktree?: string };
+    check("testinstanz EXPIRED without expiresAt remains an expired worktree fact", expired.status === 200
+      && expiredBody.state === "expired" && expiredBody.expiresAt === null && expiredBody.url === undefined
+      && expiredBody.mainCheckout === false && expiredBody.worktree === realpathSync(emptyBranch.cwd), `HTTP ${expired.status}; state=${expiredBody.state}`);
+    await testinstanzWorktreeChecks(emptyBranch.slot);
+    const race = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string; branch: string };
+    const raceSpy = `${ROOT}/ti-occupant-spy-${race.slot}`;
+    writeFileSync(`${race.cwd}/testinstanz.sh`, `#!/bin/sh\n[ "$1" = up ] && echo spawned > '${raceSpy}'\necho 'down (fixture)'\n`);
+    chmodSync(`${race.cwd}/testinstanz.sh`, 0o700);
+    const requestBody = JSON.stringify({ action: "up" });
+    let finishBody: (() => void) | undefined;
+    const delayedBody = new Promise<{ code: number; body: { refusal?: string; nullSpawn?: boolean } }>((resolveResult, reject) => {
+      const req = httpRequest(BASE + `/api/slots/${race.slot}/testinstanz`, { method: "POST", headers: {
+        authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "content-length": Buffer.byteLength(requestBody),
+      } }, (response) => { let text = ""; response.on("data", (part) => text += part.toString());
+        response.on("end", () => { try { resolveResult({ code: response.statusCode ?? 0, body: JSON.parse(text) }); } catch (error) { reject(error); } }); });
+      req.on("error", reject); req.write(requestBody.slice(0, 1)); finishBody = () => req.end(requestBody.slice(1));
+    });
+    // t | event | owner: headers+one byte | request; kill+new open | test; remaining body | request. No up may cross this replacement.
+    await Bun.sleep(250);
+    const kill = await post(`/api/slots/${race.slot}/kill`, {});
+    const replacement = await post(`/api/slots/${race.slot}/open`, { cwd: REPO, label: "testinstanz-replacement" });
+    finishBody?.();
+    const delayedResult = await delayedBody;
+    check("testinstanz delayedBody reproves exact Slot occupant and has nullSpawn", kill.status === 200 && replacement.status === 200
+      && delayedResult.code === 409 && delayedResult.body.refusal === "target-changed" && delayedResult.body.nullSpawn === true && !exists(raceSpy));
+    const projection = await (await get("/api/sessions")).json() as { slots?: Array<{ id: number; workplace?: { path?: string; mainCheckout?: boolean } | null }> };
+    const projectionScript = `${REPO}/testinstanz.sh`;
+    const projectionOriginal = exists(projectionScript) ? { bytes: readFileSync(projectionScript), mode: lstatSync(projectionScript).mode & 0o777 } : null;
+    writeFileSync(projectionScript, "#!/bin/sh\necho 'down (fixture)'\n"); chmodSync(projectionScript, 0o700);
+    await get(`/api/slots/${race.slot}/testinstanz`);
+    if (projectionOriginal) { writeFileSync(projectionScript, projectionOriginal.bytes); chmodSync(projectionScript, projectionOriginal.mode); }
+    else rmSync(projectionScript, { force: true });
+    const measuredProjection = await (await get("/api/sessions")).json() as typeof projection;
+    const place = measuredProjection.slots?.find((row) => row.id === race.slot)?.workplace;
+    check("testinstanz Slot projection measures main checkout identity", place?.path === realpathSync(REPO) && place.mainCheckout === true);
+    await post(`/api/slots/${race.slot}/kill`, {});
+    spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", race.cwd]);
+    spawnSync("git", ["-C", REPO, "branch", "-D", race.branch]);
+    rmSync(raceSpy, { force: true });
+    const lateSlot = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string; branch: string };
+    const lateHold = `${ROOT}/ti-slot-hold`, lateReady = `${ROOT}/ti-slot-ready`;
+    writeFileSync(lateHold, "hold");
+    writeFileSync(`${lateSlot.cwd}/testinstanz.sh`, `#!/bin/sh\necho ready > '${lateReady}'\nwhile [ -f '${lateHold}' ]; do sleep 0.05; done\necho 'up pid 123 http://127.0.0.1:8912/?token=SYNTHETIC_OLD_SLOT_TOKEN'\necho 'ttl: 5 min left (expiresAt=2000000000)'\n`);
+    chmodSync(`${lateSlot.cwd}/testinstanz.sh`, 0o700);
+    const lateRead = get(`/api/slots/${lateSlot.slot}/testinstanz`);
+    await until(() => exists(lateReady), { timeoutMs: 5000, what: "testinstanz old Slot status entered script" });
+    const lateKill = await post(`/api/slots/${lateSlot.slot}/kill`, {});
+    const lateReplacement = await post(`/api/slots/${lateSlot.slot}/open`, { cwd: REPO, label: "testinstanz-late-result" });
+    rmSync(lateHold, { force: true });
+    const lateResponse = await lateRead, lateText = await lateResponse.text();
+    check("testinstanz late status result never reaches a new Slot occupant", lateKill.status === 200 && lateReplacement.status === 200
+      && lateResponse.status === 409 && lateText.includes("target-changed") && !lateText.includes("SYNTHETIC_OLD_SLOT_TOKEN"));
+    await post(`/api/slots/${lateSlot.slot}/kill`, {});
+    spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", lateSlot.cwd]);
+    spawnSync("git", ["-C", REPO, "branch", "-D", lateSlot.branch]);
+    rmSync(lateReady, { force: true });
     rmSync(script);
   }
   const emptyRemove = await post(`/api/slots/${emptyBranch.slot}/land`, {});

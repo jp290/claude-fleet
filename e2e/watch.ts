@@ -7782,7 +7782,7 @@ export async function run(): Promise<void> {
       return r.ok ? id : 0;
     };
     const mainId = await openPlain("migrate-main");
-    const lane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    const lane = (await (await post("/api/lanes", { repo: REPO, harness: "claude" })).json()) as { slot: number; cwd: string; branch: string };
     const stewardId = await openPlain("⚙ steward");
     const unknownId = await openPlain("migrate-unknown");
     // TWO MORE CONTROLS, 2026-09-13. `boundId` is a claude MAIN the planted Program below binds, so
@@ -8093,15 +8093,20 @@ export async function run(): Promise<void> {
     const migrateHeaders = { "content-type": "application/json", "x-fleet-self-token": migrateToken };
     const migrateSelf = await fetch(`${BASE}/api/self`, { headers: migrateHeaders });
     const migrateIdentity = await migrateSelf.json() as {
-      position?: { role: string; taskId: string | null; programId: string | null; harness: string };
+      position?: { role: string; taskId: string | null; programId: string | null; harness: string | null };
       lane?: { branch: string };
     };
+    const migrateReceiverWatches = (await watchRows())
+      .filter((w) => w.kind === "lane" && w.target === lane.slot && w.armed);
+    // harnessIdOf persists the explicitly requested default claude adapter as null.
     check("migration succession fixture is the owner's direct claude lane without task, program or receiver watch",
       migrateSelf.ok && migrateIdentity.position?.role === "lane"
-        && migrateIdentity.position.harness === "claude" && migrateIdentity.position.taskId === null
+        && migrateIdentity.position.harness === null && migrateIdentity.position.taskId === null
         && migrateIdentity.position.programId === null && migrateIdentity.lane?.branch === lane.branch
-        && !(await watchRows()).some((w) => w.kind === "lane" && w.target === lane.slot && w.armed),
-      JSON.stringify(migrateIdentity.position));
+        && migrateReceiverWatches.length === 0,
+      JSON.stringify({ status: migrateSelf.status, position: migrateIdentity.position,
+        branch: migrateIdentity.lane?.branch, expectedBranch: lane.branch,
+        receiverWatches: migrateReceiverWatches.map((w) => w.id) }));
     for (const status of ["complete", "needs-main", "failed"] as const) {
       const refused = await selfFleetReport(migrateToken, { status, text: "no dispatched terminal result" });
       const detail = await refused.text();

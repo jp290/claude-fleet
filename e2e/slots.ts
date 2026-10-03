@@ -2175,8 +2175,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 
   // A BUNDLED OWNER SEND IN THE CHAT VIEW (owner screenshot 2026-10-03 08:55), same rig: the composer
   // sends, the transcript brings back the bundle the server writes, and the "wartet" bubble must go
-  // "durch" while every Fleet part stands as a quiet line. A browser that cannot run is the PROBE
-  // line — red, never a skip.
+  // "durch" while every Fleet part stands as a quiet line; then the session's queue ("wartet" from the
+  // queue, through a reload, adopted, "durch") and the Esc line. A browser that cannot run is the
+  // PROBE line — red, never a skip.
   try {
     for (const result of await runBundleChatDom(sourceRoot)) {
       const facts = JSON.stringify(result.facts).slice(0, 1500);
@@ -3799,6 +3800,77 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     } else check("conversation export: fixture slot 3 opens for the no-transcript probe", false, String(bare.status));
     rmSync(bareCwd, { recursive: true, force: true });
     check("conversation export rejects an inactive slot", (await get("/api/slots/4/export/conversation?probe=1")).status === 400);
+  }
+
+  // --- THE SESSION'S OWN QUEUE AND THE ESC MARKER (card "wartet in der Chat-Ansicht",
+  // docs/messungen/2026-10-03-terminal-vs-chat-warten.md §2, §2t, §6, fixes 1 and 4). Before, only the
+  // sending tab knew "wartet": terminal typing, a MAIN's /send and every reload had no state, and
+  // "[Request interrupted by user]" stood as the owner's bubble. The fixture plants the line shapes
+  // Claude Code 2.1.288 writes (measured transcript d8113bca, a cross-session remove from 47390407):
+  // A queued and taken at the turn's end (dequeue, then its ordinary user line), B typed during the
+  // next turn, C absorbed mid-turn (remove + queued_command), a task notification (plumbing, never
+  // "wartet"), a cross-session message whose remove lost its hop-chain attribute (must take X, not the
+  // older B), both Esc markers. Then one more real user turn: the queue was drained before it started.
+  // Last, D and E queued and ONE dequeue: FIFO takes D.
+  // BREAKS IF: the reader stops pairing, pairs LIFO, lets a changed remove take the wrong entry,
+  // shows plumbing as waiting, or makes an Esc marker the owner's turn again.
+  {
+    const qCwd = `${tmpdir()}/fleet-e2e-queue-${process.pid}`;
+    const qProj = `${process.env.HOME}/.claude/projects/${qCwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(qCwd, { recursive: true });
+    mkdirSync(qProj, { recursive: true });
+    const at = (sec: number) => `2026-10-03T07:05:${String(sec).padStart(2, "0")}.000Z`;
+    const turn = (type: "user" | "assistant", content: unknown, sec: number) =>
+      `${JSON.stringify({ type, cwd: qCwd, isSidechain: false, timestamp: at(sec), message: { role: type, content } })}\n`;
+    const op = (operation: string, sec: number, extra: Record<string, unknown> = {}) =>
+      `${JSON.stringify({ type: "queue-operation", operation, timestamp: at(sec), sessionId: "q-fixture", ...extra })}\n`;
+    const qa = "[fleet-zustellung · Owner-Credential · Slot 1] queued A from the composer";
+    const qb = "typed in the terminal while the turn ran: B";
+    const qc = "absorbed mid-turn: C";
+    const tn = "<task-notification>\n<task-id>bq1</task-id>\n<status>completed</status>\n</task-notification>";
+    const xBody = "\nOrchestratorin an Slot 1: X\n</cross-session-message>";
+    writeFileSync(`${qProj}/queue.jsonl`,
+      turn("user", "queue fixture: the first turn", 1) + turn("assistant", [{ type: "text", text: "a turn runs" }], 2)
+      + op("enqueue", 3, { content: qa }) + op("dequeue", 4)
+      + turn("user", qa, 4) + op("enqueue", 5, { content: qb })
+      + op("enqueue", 6, { content: qc }) + op("remove", 7, { content: qc, reason: "absorbed_mid_turn" })
+      + `${JSON.stringify({ type: "attachment", cwd: qCwd, isSidechain: false, timestamp: at(7),
+        attachment: { type: "queued_command", prompt: qc, commandMode: "prompt", source_uuid: "q-c" } })}\n`
+      + op("enqueue", 8, { content: tn })
+      + op("enqueue", 9, { content: `<cross-session-message from="uds:/tmp/x.sock" hop-chain="abc123" from-name="o">${xBody}` })
+      + op("remove", 10, { content: `<cross-session-message from="uds:/tmp/x.sock" from-name="o">${xBody}`, reason: "absorbed_mid_turn" })
+      + turn("user", [{ type: "text", text: "[Request interrupted by user]" }], 11)
+      + turn("user", [{ type: "text", text: "[Request interrupted by user for tool use]" }], 12));
+    const qFree = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.filter((s) => s.cwd === null).map((s) => s.id).pop();
+    const qOpened = qFree !== undefined && (await post(`/api/slots/${qFree}/open`, { cwd: qCwd })).ok;
+    check("session queue fixture: a free slot opens on a throwaway cwd with a planted transcript", qOpened, `slot=${qFree}`);
+    if (qOpened) {
+      type QRead = { entries: { role: string; meta?: boolean; blocks: { text: string }[] }[]; total: number; queued?: { text: string; at: string | null }[] };
+      const q1 = (await (await get(`/api/slots/${qFree}/transcript`)).json()) as QRead;
+      check("session queue: the open entries ride with the transcript — only B, stamped when it was queued",
+        JSON.stringify(q1.queued) === JSON.stringify([{ text: qb, at: at(5) }]), JSON.stringify(q1.queued));
+      const stops = q1.entries.filter((e) => e.blocks.some((b) => b.text.startsWith("[Request interrupted by user")));
+      check("session queue: both Esc markers come as meta:true (a folded note), and neither is a user bubble any more",
+        stops.length === 2 && stops.every((e) => e.meta === true)
+          && !q1.entries.some((e) => e.role === "user" && !e.meta && e.blocks.some((b) => b.text.startsWith("[Request interrupted"))),
+        JSON.stringify(stops));
+      check("session queue: the dequeued A and the absorbed C stand as the owner's turns, each once",
+        q1.entries.filter((e) => e.role === "user" && !e.meta && e.blocks.some((b) => b.text === qa)).length === 1
+          && q1.entries.filter((e) => e.role === "user" && !e.meta && e.blocks.some((b) => b.text === qc)).length === 1,
+        JSON.stringify(q1.entries.map((e) => [e.role, e.meta ?? false, e.blocks[0]?.text.slice(0, 40)])));
+      appendFileSync(`${qProj}/queue.jsonl`, turn("user", "the next real turn", 20));
+      const q2 = (await (await get(`/api/slots/${qFree}/transcript?after=${q1.total}`)).json()) as QRead;
+      check("session queue: a later real user turn means the queue was drained — nothing waits, the field still answers",
+        Array.isArray(q2.queued) && q2.queued.length === 0, JSON.stringify(q2.queued));
+      appendFileSync(`${qProj}/queue.jsonl`, op("enqueue", 21, { content: "D" }) + op("enqueue", 22, { content: "E" }) + op("dequeue", 23));
+      const q3 = (await (await get(`/api/slots/${qFree}/transcript?after=${q2.total}`)).json()) as QRead;
+      check("session queue: a dequeue takes the OLDEST open entry (D), E still waits",
+        JSON.stringify(q3.queued?.map((q) => q.text)) === JSON.stringify(["E"]), JSON.stringify(q3.queued));
+      await post(`/api/slots/${qFree}/kill`, {});
+    }
+    rmSync(qProj, { recursive: true, force: true }); // it lives outside the repo — do not leave it
+    rmSync(qCwd, { recursive: true, force: true });
   }
 
   // --- a session in a folder WITHOUT git is an ordinary session, not a failed read ---
@@ -7804,6 +7876,9 @@ export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string
 // (owner 2026-10-03: „[Zitat entfernt]“
 // ). The owner sends from the composer, /send is intercepted, and the transcript route
 // hands back the bundle the server would have typed (bundleFixtures). Every claim reads the DOM.
+// The same rig then carries the session's queue (card "wartet in der Chat-Ansicht"): the transcript
+// route's `queued` names a terminal-typed prompt, a reload, a composer send the queue adopts, the
+// dequeue, and an Esc marker arriving as meta.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 export interface BundleChatDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runBundleChatDom(sourceRoot: string, artifacts?: string): Promise<BundleChatDomResult[]> {
@@ -7815,11 +7890,14 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const ownerA = "Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erf.";
   const ownerB = "Das ist ein erfundener Satz ohne echten Inhalt undx.";
+  const termQ = "im Terminal getippt, waehrend der Schritt laeuft";
+  const ownerC = "Das ist ein erfundener Satz ohne?";
+  const ownerHead = "[fleet-zustellung · Owner-Credential · Slot 1] ";
   const fixture = bundleFixtures(readFileSync(resolve(sourceRoot, "server.ts"), "utf8"), ownerA, ownerB);
   if (!fixture.ok) throw new Error("bundle DOM probe: server.ts names no delivery head or sentence to build the bundle from");
   const at = (min: number) => new Date(Date.UTC(2026, 9, 3, 7, min)).toISOString();
   const text = (role: "user" | "assistant", t: string, min: number) => ({ role, ts: at(min), blocks: [{ t: "text", text: t }] });
-  const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[] };
+  const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[], queued: [] as { text: string; at: string | null }[] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("bundle DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -7873,7 +7951,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       if (p === "/api/slots/1/transcript") {
         const after = Number(url.searchParams.get("after") ?? 0);
         return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
-          source: "/fixture/orch.jsonl", ttlSec: 300 });
+          source: "/fixture/orch.jsonl", ttlSec: 300, queued: fx.queued });
       }
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
@@ -7905,17 +7983,18 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       const own = [...chat.querySelectorAll('.msg.user')].map((m) => ({ text: m.querySelector('.mbody').innerText.trim(), pending: m.classList.contains('pending'),
         state: m.querySelector('.msend')?.innerText.trim() ?? null, head: m.querySelector('.mhead')?.textContent ?? null, headTitle: m.querySelector('.mhead')?.title ?? null }));
       const sys = [...chat.querySelectorAll('.msys')].map((d) => { const r = d.getBoundingClientRect(), s = d.querySelector('summary');
-        return { text: d.querySelector('.msystext').textContent, rest: d.querySelector('.msysbody')?.textContent ?? null, title: s.title, open: d.open,
+        return { who: d.querySelector('.msyswho').textContent, text: d.querySelector('.msystext').textContent, rest: d.querySelector('.msysbody')?.textContent ?? null, title: s.title, open: d.open,
           inBubble: !!d.closest('.msg'), right: r.right, left: r.left, h: s.getBoundingClientRect().height,
           fs: getComputedStyle(d).fontSize, color: getComputedStyle(d).color }; });
       const meta = chat.querySelector('.mmeta');
-      return { own, sys, raw: [...chat.querySelectorAll('.msg')].some((m) => /\\[fleet-(buendel|ereignis|zustellung) /.test(m.innerText)),
+      const last = chat.lastElementChild;
+      return { own, sys, lastOwn: last && last.matches('.msg.user') ? last.querySelector('.mbody').innerText.trim() : null, raw: [...chat.querySelectorAll('.msg')].some((m) => /\\[fleet-(buendel|ereignis|zustellung) /.test(m.innerText)),
         chatRight: chat.getBoundingClientRect().right, chatLeft: chat.getBoundingClientRect().left,
         pageScroll: document.documentElement.scrollWidth - innerWidth, metaFs: meta ? getComputedStyle(meta).fontSize : null,
         faint: (() => { const t = document.createElement('span'); t.style.color = 'var(--chat-faint)'; chat.append(t); const c = getComputedStyle(t).color; t.remove(); return c; })() }; })()`;
     type Read = { own: { text: string; pending: boolean; state: string | null; head: string | null; headTitle: string | null }[];
-      sys: { text: string; rest: string | null; title: string; open: boolean; inBubble: boolean; right: number; left: number; h: number; fs: string; color: string }[];
-      raw: boolean; chatRight: number; chatLeft: number; pageScroll: number; metaFs: string | null; faint: string };
+      sys: { who: string; text: string; rest: string | null; title: string; open: boolean; inBubble: boolean; right: number; left: number; h: number; fs: string; color: string }[];
+      lastOwn: string | null; raw: boolean; chatRight: number; chatLeft: number; pageScroll: number; metaFs: string | null; faint: string };
     const results: BundleChatDomResult[] = [];
     let targetId = "";
     for (const [width, height] of [[1200, 900], [390, 844]] as const) {
@@ -7923,6 +8002,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       const facts: Record<string, unknown> = {};
       fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
       fx.sends = [];
+      fx.queued = [];
       if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
       targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
       sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -7959,8 +8039,10 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       claims["owner part 1/2: the part's mark rides in the meta row, the bundle's head in its tooltip"] = a.length === 1
         && /^fleet-buendel 1\/2 · path=owner · /.test(a[0]!.head ?? "") && (a[0]!.headTitle ?? "").startsWith("fleet-zustellung · gebuendelte");
       claims["no bubble shows a raw bundle mark or delivery head"] = !r1.raw;
-      claims["the nudge part is ONE quiet line outside every bubble, showing the nudge's text"] = r1.sys.length === 1
-        && !r1.sys[0]!.inBubble && r1.sys[0]!.text === fixture.nudge && /fleet-buendel 2\/2 · path=inbox-nudge/.test(r1.sys[0]!.title);
+      // ONE label (Abnahme 6936ed0b: "fleet [fleet message] …"): the part's own bracket is the label
+      claims["the nudge part is ONE quiet line outside every bubble, labelled once by its own bracket, showing the nudge's text"] = r1.sys.length === 1
+        && !r1.sys[0]!.inBubble && r1.sys[0]!.who === "fleet message" && r1.sys[0]!.text === fixture.nudge.slice("[fleet message] ".length)
+        && /fleet-buendel 2\/2 · path=inbox-nudge/.test(r1.sys[0]!.title);
       claims["the quiet line is quiet: the meta row's size and the faint ink, one line high, inside the chat column"] = r1.sys.length === 1
         && r1.sys[0]!.fs === r1.metaFs && r1.sys[0]!.color === r1.faint && r1.sys[0]!.h < 30 && r1.sys[0]!.left >= r1.chatLeft - 1 && r1.sys[0]!.right <= r1.chatRight + 1
         && r1.pageScroll <= 0;
@@ -7977,9 +8059,10 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       const b = r2.own.filter((m) => m.text === ownerB);
       claims["owner part 2/2: its waiting bubble is gone and the owner text stands once, \"durch\""] = r2.own.every((m) => !m.pending)
         && b.length === 1 && b[0]!.state === "durch" && /^fleet-buendel 2\/2 · path=owner/.test(b[0]!.head ?? "");
-      claims["the event bundle is quiet lines: one per event and one for its closing line, no bubble"] = !r2.raw && r2.sys.length === 4
-        && r2.sys[1]!.text === "[fleet] Lane 3 ist gelandet." && r2.sys[2]!.text === "[fleet] fleet-report von Slot 5: complete"
-        && r2.sys[3]!.text === "[fleet] Ende des Buendels." && r2.sys.every((s) => !s.inBubble);
+      claims["the event bundle is quiet lines: one per event and one for its closing line, no bubble, each labelled once"] = !r2.raw && r2.sys.length === 4
+        && r2.sys[1]!.text === "Lane 3 ist gelandet." && r2.sys[2]!.text === "fleet-report von Slot 5: complete"
+        && r2.sys[3]!.text === "Ende des Buendels." && r2.sys.slice(1).every((s) => s.who === "fleet") && r2.sys.every((s) => !s.inBubble)
+        && r2.sys.every((s) => !s.text.startsWith("[fleet"));
       claims["↑/↓ jump between YOUR messages only: three bubbles, the Fleet parts are none of them"] =
         r2.own.length === 3 && r2.own.map((m) => m.text).join("|") === ["Wie weit ist die Messung?", ownerA, ownerB].join("|");
       // --- 4. a click opens a quiet line: the rest of the event stands below its first line
@@ -7988,6 +8071,54 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       const r3 = await evaluate<Read>(READ);
       claims["a click on a quiet line opens the rest of its text"] = clicked && r3.sys[2]?.open === true && r3.sys[2]?.rest === "zweiter Absatz des Reports";
       await shot(`${width}-3-ereignisse`);
+
+      // --- 5. THE SESSION'S QUEUE (card "wartet in der Chat-Ansicht"): a prompt typed in the TERMINAL
+      // mid-turn — no composer, no send from this tab — that the session holds in its queue
+      const sendsBefore = fx.sends.length;
+      fx.queued = [{ text: termQ, at: at(59) }];
+      const shownQ = await wait(`(() => { const m = [...document.querySelectorAll('.pane .panechat .msg.user.pending')].find((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(termQ)}); return m && m.querySelector('.msend')?.innerText.trim() === 'wartet'; })()`);
+      const q1 = await evaluate<Read>(READ);
+      facts.queue = q1.own;
+      claims["queue: a prompt the session holds, sent from the terminal, stands as a \"wartet\" bubble — no send from this tab"] = shownQ
+        && fx.sends.length === sendsBefore && q1.own.filter((m) => m.text === termQ).length === 1;
+      claims["queue: the waiting bubble stands below everything that has arrived"] = q1.lastOwn === termQ;
+      await shot(`${width}-4-wartet-terminal`);
+      // --- 6. a RELOAD: the page forgot everything, the session's queue did not
+      await navigate("http://fleet.fixture/");
+      await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
+      const keptQ = await wait(`[...document.querySelectorAll('.pane .panechat .msg.user.pending')].some((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(termQ)} && m.querySelector('.msend')?.innerText.trim() === 'wartet')`);
+      claims["queue: after a reload the bubble still says \"wartet\""] = keptQ;
+      await shot(`${width}-5-wartet-nach-reload`);
+      // --- 7. the composer sends while the turn runs: its own bubble shows at Enter, then the queue
+      // names the same send — it becomes the queue's bubble, never a second one
+      await sendFromComposer(ownerC);
+      await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'wartet')`);
+      fx.queued = [...fx.queued, { text: ownerHead + ownerC, at: at(59) }];
+      await settle(1600);
+      const q2 = await evaluate<Read>(READ);
+      facts.adopted = q2.own;
+      claims["queue: the composer's send and the queue's entry for it are ONE \"wartet\" bubble"] =
+        q2.own.filter((m) => m.text === ownerC).length === 1 && q2.own.find((m) => m.text === ownerC)?.state === "wartet";
+      // --- 8. the turn ends: both leave the queue and arrive as the owner's turns
+      fx.queued = [];
+      fx.entries.push(text("user", termQ, 59), text("user", ownerHead + ownerC, 59));
+      await wait(`![...document.querySelectorAll('.pane .panechat .msg.user.pending')].length`);
+      await settle(300);
+      const q3 = await evaluate<Read>(READ);
+      facts.dequeued = q3.own;
+      claims["queue: after the dequeue both say \"durch\", each once, and nothing is left waiting"] = q3.own.every((m) => !m.pending)
+        && [termQ, ownerC].every((t) => q3.own.filter((m) => m.text === t).length === 1 && q3.own.find((m) => m.text === t)?.state === "durch");
+      await shot(`${width}-6-durch`);
+      // --- 9. Esc mid-turn: Claude Code's own marker arrives as meta (server.ts#viewEntry) — a quiet
+      // line under the answer, not a bubble of yours
+      fx.entries.push({ role: "user", ts: at(59), meta: true, blocks: [{ t: "text", text: "[Request interrupted by user]" }] });
+      await wait(`[...document.querySelectorAll('.pane .panechat .msys .msyswho')].some((w) => w.textContent === 'esc')`);
+      const q4 = await evaluate<Read>(READ);
+      facts.esc = q4.sys.at(-1);
+      claims["esc: the interrupt is one quiet line outside every bubble, and no bubble of yours says it"] =
+        q4.sys.filter((x) => x.who === "esc").length === 1 && !q4.sys.find((x) => x.who === "esc")!.inBubble
+        && /^interrupted/.test(q4.sys.find((x) => x.who === "esc")!.text) && !q4.own.some((m) => m.text.includes("Request interrupted"));
+      await shot(`${width}-7-esc`);
       results.push({ width, height, claims, facts });
     }
     return results;

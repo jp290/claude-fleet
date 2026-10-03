@@ -1,5 +1,6 @@
 import { historySource } from "./src/drafts";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
+import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
@@ -20257,7 +20258,10 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   if (d.type !== "user" && d.type !== "assistant" && d.type !== "attachment") return null;
   if (d.isMeta === true || d.isSidechain === true) return null;
   const ts = typeof d.timestamp === "string" ? d.timestamp : null;
-  // A message typed while a turn runs is no user line: claude code queues it as an
+  // A message sent while a turn runs waits in Claude Code's queue (`queue-operation` lines, read by
+  // sessionQueue below) and reaches the conversation in one of two measured forms
+  // (docs/messungen/2026-10-03-terminal-vs-chat-warten.md §2, §2t): taken at the turn's end it becomes
+  // an ordinary type:user line; absorbed into a running tool turn it becomes an
   // attachment/queued_command (measured 2026-09-21, live transcript daccbb0e) — terminal typing
   // and chat-view sends alike, the chat view's prompt wrapped in its pasted_content envelope.
   // commandMode "prompt" is the owner's own words and renders as the user turn it is, through
@@ -20293,6 +20297,10 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
         else if (blk.type === "text" && typeof blk.text === "string" && !blk.text.startsWith("<system-reminder"))
           blocks.push({ t: "text", text: cap(blk.text, 20_000) });
       }
+      // Esc mid-turn: Claude Code writes its own marker as a user text block (measured,
+      // docs/messungen/2026-10-03-terminal-vs-chat-warten.md §6). The terminal shows it as a line under
+      // the answer; the chat view folds it instead of making it the owner's bubble.
+      if (blocks.length && blocks.every((x) => x.t === "text" && isInterruptMark(x.text))) meta = true;
       // a pure tool_result entry renders as part of the assistant's turn, not a user bubble
       if (blocks.length && blocks.every((x) => x.t === "tool_result"))
         return { n, role: "assistant", ts, blocks };
@@ -20316,6 +20324,50 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   }
   if (!blocks.length) return null;
   return { n, role: d.type, ts, blocks, ...(meta && { meta: true }) };
+}
+
+// THE SESSION'S OWN QUEUE (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Fix 4). Claude Code
+// 2.1.288 writes every prompt it holds back as `{type:"queue-operation", operation:"enqueue",
+// content, timestamp}` and its leaving as `dequeue` (no content: the oldest goes, taken at the turn's
+// end) or `remove` (with content, reason absorbed_mid_turn / delivered_to_agent). Paired FIFO, what
+// is left open is what the session still holds — whoever sent it: the composer, the terminal, a
+// MAIN's /send, an auto. A `remove` whose content no longer matches (measured: a cross-session
+// message loses its hop-chain attribute in its opening tag between the two lines) takes the open
+// entry that ends the same way for longest, the oldest when none shares an ending. Two more rules keep
+// a prompt from waiting forever where Claude Code wrote no leaving line: a later real user turn
+// starts only after the queue was drained, and harness plumbing the chat view folds anyway
+// (task notifications, reminders) is never shown as waiting. Only the owner's live chat route asks.
+interface QueuedPrompt { text: string; at: string | null }
+function sharedTail(a: string, b: string): number {
+  let n = 0;
+  while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++;
+  return n;
+}
+function sessionQueue(lines: readonly string[]): QueuedPrompt[] {
+  let open: QueuedPrompt[] = [];
+  for (const l of lines) {
+    const queueLine = l.includes('"queue-operation"');
+    if (!queueLine && !(open.length && l.includes('"user"'))) continue;
+    let d: { type?: unknown; operation?: unknown; content?: unknown; timestamp?: unknown; isMeta?: unknown; isSidechain?: unknown };
+    try { d = JSON.parse(l) as typeof d; } catch { continue; } // a torn last line — the next poll reads it whole
+    if (d.type === "queue-operation") {
+      const text = typeof d.content === "string" ? d.content : "";
+      if (d.operation === "enqueue") open = [...open, { text, at: typeof d.timestamp === "string" ? d.timestamp : null }];
+      else if (d.operation === "dequeue") open = open.slice(1);
+      else if (d.operation === "remove") {
+        const exact = open.findIndex((q) => q.text === text);
+        const tails = open.map((q) => sharedTail(q.text, text));
+        const hit = exact >= 0 ? exact : Math.max(0, tails.indexOf(Math.max(0, ...tails)));
+        open = open.filter((_, i) => i !== hit);
+      }
+    } else if (d.type === "user" && d.isMeta !== true && d.isSidechain !== true) {
+      // a real user turn (not a tool result, not a folded harness turn) means the queue was drained
+      const e = viewEntry(d, 0);
+      if (e && e.role === "user" && !e.meta) open = [];
+    }
+  }
+  return open.filter((q) => q.text.trim() !== "" && !q.text.startsWith("<system-reminder") && !q.text.startsWith("<task-notification"))
+    .map((q) => ({ text: trim(q.text, 20_000), at: q.at }));
 }
 
 // the conversation view's data source, shared by the owner chat view and the guest
@@ -20350,7 +20402,7 @@ function nativeOf(req: NativeReq, s: Slot, before: ReadSeat, read: { found: bool
     binding: transcriptBinding({ history: false, questions: read.questions, pinned: read.pinned, fileSession: read.fileSession, before, after }) };
 }
 async function transcriptPayload(s: Slot, afterRaw: number, full = false, native?: NativeReq):
-  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null; ttlSec?: number; native?: NativeTranscript }> {
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null; ttlSec?: number; native?: NativeTranscript; queued?: QueuedPrompt[] }> {
   const conv = harnessOf(s.harness).conversation;
   if (conv) return conversationPayload(s, conv, afterRaw, native);
   const before: ReadSeat = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
@@ -20397,7 +20449,9 @@ async function transcriptPayload(s: Slot, afterRaw: number, full = false, native
   }
   const entries: TEntry[] = [];
   const { model, effort } = transcriptModel(lines);
-  const tail = nat ? { native: nat } : {};
+  // the session's queue rides only on the owner's LIVE route: a past session's file holds no queue
+  // anyone still waits on, and share, steward and the export keep their payloads as they were
+  const tail = { ...(nat && { native: nat }), ...(native && !native.history && claude && { queued: sessionQueue(lines) }) };
   for (let i = after; i < lines.length; i++) {
     try {
       const parsed: unknown = JSON.parse(lines[i]);

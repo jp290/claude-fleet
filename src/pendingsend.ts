@@ -27,6 +27,14 @@ export function pendingSettledBy(pending: string, entry: string): boolean {
   return p === norm(body) || (deliveryParts(body) ?? []).some((part) => part.owner && norm(part.text) === p);
 }
 
+// Esc mid-turn: Claude Code writes one of these as a user text block of its own (measured,
+// docs/messungen/2026-10-03-terminal-vs-chat-warten.md §6). The server folds such a turn
+// (server.ts#viewEntry, meta) and the chat view shows it as a quiet line, never as the owner's bubble.
+const INTERRUPT_MARKS: ReadonlySet<string> = new Set(["[Request interrupted by user]", "[Request interrupted by user for tool use]"]);
+export function isInterruptMark(text: string): boolean {
+  return INTERRUPT_MARKS.has(text);
+}
+
 export function sendFailureMessage(status: number, body: unknown): string {
   const record = (value: unknown): Record<string, unknown> | null =>
     value !== null && typeof value === "object" && !Array.isArray(value)

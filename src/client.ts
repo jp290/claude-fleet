@@ -25,7 +25,7 @@ import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, p
 import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
-import { pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
+import { isInterruptMark, pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { sendFailureMessage } from "./pendingsend";
 import { askRisk, onDialogWillOpen } from "./dialog";
@@ -935,9 +935,10 @@ const CHAT_FOLLOW_PX = 8;
 const chatStill = matchMedia("(prefers-reduced-motion: reduce)");
 // A SEND'S STATE under YOUR bubble (Tranche 2, owner: „[Zitat entfernt]“
 // ): the state as a word, the dot in the state colour (G2.3).
-// "wartet" = this board sent it and the transcript has not brought it back — Claude Code queues a
-// prompt sent mid-turn and writes it after the turn; "durch" = the transcript has it (the entry that
-// retired the bubble). Nothing more is claimed: not read, not answered.
+// "wartet" = the session's own queue holds it (server.ts#sessionQueue — whoever sent it, and after a
+// reload too), or this board just sent it and neither the queue nor the transcript has it yet;
+// "durch" = the transcript has it (the entry that retired the bubble). Nothing more is claimed: not
+// read, not answered.
 type SendState = "sending" | "wait" | "done";
 const SEND_WORD: Record<SendState, string> = { sending: "wird gesendet …", wait: "wartet", done: "durch" };
 const SEND_TITLE: Record<SendState, string> = {
@@ -987,9 +988,17 @@ type ChatToolGroup = { det: HTMLElement; sum: HTMLElement; body: HTMLElement; co
 type ChatNotifGroup = { sum: HTMLElement; body: HTMLElement; count: number };
 type ChatShelfRow = { nodes: Node[]; total: number; source: string | null; lastTurnAt: number; cacheTtl: number | null; cacheTtlSec: number | null;
   model: string | null; effort: string | null; toolGroup: ChatToolGroup | null; notifGroup: ChatNotifGroup | null;
-  pending: { text: string; el: HTMLElement }[]; openAgents: Map<string, { step: HTMLElement; run: HTMLElement }>;
+  pending: PendingBubble[]; openAgents: Map<string, { step: HTMLElement; run: HTMLElement }>;
   hover: boolean; anchor: ChatAnchor | null };
 const chatShelf = new Map<number, ChatShelfRow>();
+// A "wartet" bubble: the composer's own at Enter (no `key`), or one the session's queue names
+// (`key` = the queue entry; GET /api/slots/:id/transcript → `queued`). A composer bubble the queue
+// names becomes that entry's bubble — one bubble per send. `leftAt`: when its entry left the queue
+// without the transcript bringing it in the same read.
+type PendingBubble = { text: string; el: HTMLElement; key?: string; leftAt?: number };
+// the transcript turn follows its dequeue within milliseconds (measured 2026-10-03, ~10 ms); a read
+// between the two lines keeps the bubble, one the transcript never brings goes after this long
+const QUEUE_LEFT_MS = 5000;
 // the Markdown each rendered message body came from — what relinkChat re-renders in place
 const bodySource = new WeakMap<HTMLElement, string>();
 
@@ -1679,7 +1688,7 @@ class Pane {
   // They render as prominent anchors; everything the agent did between two texts
   // collapses into one expandable "⚙ n steps" line instead of a wall of rows. ---
   // prompts sent from the composer that the transcript has not brought back yet (src/pendingsend.ts)
-  private pending: { text: string; el: HTMLElement }[] = [];
+  private pending: PendingBubble[] = [];
   private toolGroup: { det: HTMLElement; sum: HTMLElement; body: HTMLElement; count: number;
     lastStep: HTMLElement | null } | null = null;
   // task-notifications between two of your messages fold into one collapsed accordion —
@@ -1816,6 +1825,7 @@ class Pane {
   // One message: the rendered body (a bubble for you, free prose for the agent — t3code's layout
   // grammar) and a meta row that appears on hover with the time and a copy of the SOURCE text.
   private appendEntry(e: TEntry) {
+    if (e.meta && e.blocks.length && e.blocks.every((b) => b.t === "text" && isInterruptMark(b.text))) { this.addInterrupt(e); return; }
     if (e.meta) { this.addNotif(e); return; }
     this.notifGroup = null; // a real entry ends the notification run
     for (const b of e.blocks) {
@@ -1839,7 +1849,7 @@ class Pane {
       }
     }
   }
-  private addMessage(e: TEntry, text: string, header: string | null, mark: string | null, arrived: boolean) {
+  private addMessage(e: TEntry, text: string, header: string | null, mark: string | null, arrived: boolean): HTMLElement {
     const msg = el("div", `msg ${e.role}`);
     // only YOUR prompt names drops (the composer appends them); an agent quoting the line stays text
     const drops = e.role === "user" ? splitDropImages(text) : { rest: text, images: [] };
@@ -1861,6 +1871,7 @@ class Pane {
     meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
     msg.append(body, ...(arrived ? [sendState("done")] : []), meta);
     this.chatAdd(msg);
+    return msg;
   }
   // A bundle part Fleet wrote (a nudge, an event, the bundle's closing line): one quiet line, not a
   // bubble — you did not say it, and ↑/↓ and the outline jump between YOUR messages. Its first line
@@ -1869,12 +1880,31 @@ class Pane {
     const line = document.createElement("details");
     line.className = "msys";
     const sum = document.createElement("summary");
-    const [first = "", ...rest] = part.text.replace(/^\s*\n/, "").split("\n");
-    sum.append(el("span", "msyswho", "fleet"), el("span", "msystext", first));
+    const [lead = "", ...rest] = part.text.replace(/^\s*\n/, "").split("\n");
+    // ONE label: a part that opens with its own "[fleet]" / "[fleet message]" shows that as the label
+    // instead of "fleet [fleet] …" (Abnahme 6936ed0b, owner picture nachher-1200-3-ereignisse)
+    const own = /^\[(fleet(?: [a-z][a-z-]*)?)\] /.exec(lead);
+    const first = own ? lead.slice(own[0].length) : lead;
+    sum.append(el("span", "msyswho", own?.[1] ?? "fleet"), el("span", "msystext", first));
     sum.title = [header && `fleet-zustellung · ${header}`, part.mark].filter(Boolean).join("\n");
     line.appendChild(sum);
     const more = rest.join("\n").trim();
     if (more) line.appendChild(el("div", "msysbody", more));
+    this.chatAdd(line);
+  }
+
+  // Esc mid-turn (src/pendingsend.ts#isInterruptMark): the terminal shows "Interrupted" as a line under
+  // the answer, so the chat view does too — a quiet line in the same ink as a Fleet part, never a bubble
+  // of yours (docs/messungen/2026-10-03-terminal-vs-chat-warten.md §6). The marker rides in the tooltip.
+  private addInterrupt(e: TEntry) {
+    this.toolGroup = null;
+    this.notifGroup = null;
+    const line = document.createElement("details");
+    line.className = "msys mstop";
+    const sum = document.createElement("summary");
+    sum.append(el("span", "msyswho", "esc"), el("span", "msystext", `interrupted${e.ts ? ` · ${fmtClock(e.ts)}` : ""}`));
+    sum.title = `Die Session wurde mitten im Schritt unterbrochen — Claude Code schreibt das selbst, nicht du.\n${e.blocks.map((b) => b.text).join("\n")}`;
+    line.appendChild(sum);
     this.chatAdd(line);
   }
 
@@ -1903,6 +1933,36 @@ class Pane {
   dropPending(msg: HTMLElement): void {
     msg.remove();
     this.pending = this.pending.filter((p) => p.el !== msg);
+  }
+  // THE SESSION'S QUEUE, READ BACK (server.ts#sessionQueue): every owner text the session still holds
+  // stands as a "wartet" bubble at the end of the view — whoever sent it, and after a reload. The
+  // composer's own bubble for the same send becomes the queue's; the transcript turn retires either
+  // through settlePending ("durch"). A bundle in the queue waits as its owner parts.
+  private syncQueue(queued: readonly { text: string; at: string | null }[]): void {
+    const now = Date.now();
+    const listed = new Set<string>();
+    for (const q of queued) {
+      const { header, body } = splitDeliveryHeader(unwrapPasted(q.text));
+      const parts = deliveryParts(body)?.filter((p) => p.owner) ?? [{ owner: true, mark: null, text: body }];
+      parts.forEach((part, i) => {
+        const key = `${q.at ?? ""}#${i}\n${part.text}`;
+        listed.add(key);
+        if (this.pending.some((p) => p.key === key)) return;
+        const mine = this.pending.find((p) => p.key === undefined && pendingSettledBy(p.text, part.text));
+        if (mine) {
+          mine.el.querySelector(".msend")?.replaceWith(sendState("wait"));
+          this.pending = this.pending.map((p) => (p === mine ? { ...p, key } : p));
+          return;
+        }
+        const msg = this.addMessage({ n: 0, role: "user", ts: q.at, blocks: [] }, part.text, header, part.mark, false);
+        msg.classList.add("pending");
+        msg.insertBefore(sendState("wait"), msg.querySelector(".mmeta"));
+        this.pending = [...this.pending, { text: part.text, el: msg, key }];
+      });
+    }
+    for (const p of this.pending) if (p.key !== undefined && !listed.has(p.key) && now - (p.leftAt ?? now) > QUEUE_LEFT_MS) this.dropPending(p.el);
+    this.pending = this.pending.map((p) => (p.key === undefined ? p
+      : { ...p, leftAt: listed.has(p.key) ? undefined : p.leftAt ?? now }));
   }
   // true = the entry retired a bubble this board put up: it is the same send, now DURCH
   private settlePending(text: string): boolean {
@@ -1952,6 +2012,8 @@ class Pane {
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
         cache?: { at: number; provider: string } | null; model?: string | null; ttlSec?: number;
         effort?: string | null;
+        // the session's own queue (claude, the owner's live route only — server.ts#sessionQueue)
+        queued?: { text: string; at: string | null }[];
         // the band's past session (GET /api/slots/:id/succession/:n/transcript)
         session?: number; startedAt?: number | null; handedAt?: number | null; assigned?: boolean;
         reason?: string; ctx?: { usedTokens: number; windowTokens: number; pct: number } | null };
@@ -2008,6 +2070,17 @@ class Pane {
         for (const p of this.pending) if (p.el.nextSibling !== null) this.chatAdd(p.el);
         tickCacheAge();
         this.chatGrew(this.chatEl.childElementCount - before, first);
+      }
+      // after the entries: a send whose turn arrived in this read has retired its bubble already
+      if (past === null && data.queued) {
+        const had = this.chatEl.childElementCount, first = this.chatTotal === 0;
+        this.chatFresh = !first;
+        this.syncQueue(data.queued);
+        this.chatFresh = false;
+        if (this.chatEl.childElementCount > had) {
+          this.chatEl.querySelector(".chatempty")?.remove();
+          this.chatGrew(this.chatEl.childElementCount - had, first);
+        }
       }
       // codex / pi: the file's own newest request record (server/conversation-read.ts) — codex its
       // newest token_usage_record, pi its newest assistant message's request start — and the

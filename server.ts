@@ -11449,7 +11449,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   // profile and Remote Control as the lane it continues; only model/effort may move (handleSelfSucceed).
   return await restartLaneSession(s, { cwd, ref, label, harness: s.harness, model: spawn.model,
     effort: spawn.effort, box: { container: s.container, containerContext: s.containerContext },
-    browser: s.browser, remote: s.remote, hold, brief, context, event: "lane_succession",
+    browser: s.browser, remote: s.remote, webSearch: s.webSearch, hold, brief, context, event: "lane_succession",
     detail: `${ref.branch} session=${session}`, succession: { successions: s.laneSuccessions + 1 },
     answer: { session } });
 }
@@ -11464,7 +11464,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
 interface LaneRestart {
   cwd: string; ref: LaneRef; label: string | null;
   harness: string | null; model: string | null; effort: string | null;
-  box: BoxPin; browser: boolean; remote: boolean;
+  box: BoxPin; browser: boolean; remote: boolean; webSearch: boolean;
   hold: LaneRowHold[]; brief: string; context?: LaneContextDelivery;
   event: "lane_succession" | "lane_harness"; detail: string;
   succession: { successions: number } | null;
@@ -11486,7 +11486,7 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
   laneSpawn.add(s.id);
   try {
     try {
-      await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote);
+      await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote, r.webSearch);
     } catch (e) {
       // The predecessor's pane is already gone at this point and its rows went back to the queue
       // with detachSlotTasks' reason, which is the recoverable state: the worktree and its commits
@@ -11656,6 +11656,7 @@ async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
     model: mo.model, effort: eo.effort,
     box: bo.box !== NO_BOX ? bo.box : hh.supports.container ? { container: s.container, containerContext: s.containerContext } : NO_BOX,
     browser: s.browser && hh.browserProfile === "apply", remote: s.remote && hh.id === CLAUDE_HARNESS.id,
+    webSearch: s.webSearch && hh.id === CODEX_HARNESS.id,
     hold, brief, event: "lane_harness", detail: `${ref.branch} ${from} -> ${to} task=${s.taskId ?? "-"} `
       + `uncommitted=${status.code === 0 ? status.lines.length : "unknown"}`,
     succession: null, answer: { harness: hh.id, model: mo.model, effort: eo.effort } });

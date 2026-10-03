@@ -6710,7 +6710,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const made: { id: string; slot?: number }[] = [];
     if (cat) symlinkSync(cat, join(liveDir, "codex"));
     writeFileSync(join(binDir, "codex"), ["#!/bin/sh",
-      `printf '%s\\n' "$@" > ${q(invoked)}`, "printf '› \\n'",
+      `printf '%s\\n' "$@" > ${q(invoked)}`, "printf '>_ OpenAI Codex (v0.159.0)\\n› \\n'",
       `exec ${q(join(liveDir, "codex"))}`, ""].join("\n"));
     chmodSync(join(binDir, "codex"), 0o755);
     check("(web) setup: Codex resolves exclusively to the stand-in binary",
@@ -6749,18 +6749,25 @@ export async function run(ctx: Ctx): Promise<void> {
             const out = (await tmuxOut("display-message", "-p", "-t", `s${row.slot}`, "#{pane_start_command}")).out;
             return out.slice(out.lastIndexOf("; codex ") + 2).split("; exec ")[0]?.trim() ?? "";
           };
-          const observe = async (id?: string): Promise<void> => {
+          const observe = async (id?: string, phase = id ? "resume" : "fresh"): Promise<void> => {
             await until(() => existsSync(invoked), { timeoutMs: 10_000, what: "web stand-in invocation" });
             const actual = await command();
             const args = readFileSync(invoked, "utf8").trim().split("\n");
-            check(`(web) ${search ? "search" : "absent"} ${id ? "resume" : "fresh"}: generated command is byte-exact`,
+            check(`(web) ${search ? "search" : "absent"} ${phase}: generated command is byte-exact`,
               actual === expected(id), `matches=${actual === expected(id)}`);
-            check(`(web) ${search ? "search" : "absent"} ${id ? "resume" : "fresh"}: stand-in receives the exact search selection`,
+            check(`(web) ${search ? "search" : "absent"} ${phase}: stand-in receives the exact search selection`,
               args.filter((arg) => arg === "--search").length === (search ? 1 : 0)
               && (id ? args[0] === "resume" && args[1] === id : args[0] === "--dangerously-bypass-approvals-and-sandbox"),
               `searchFlags=${args.filter((arg) => arg === "--search").length}`);
           };
           await observe();
+          rmSync(invoked, { force: true });
+          const laneRestart = await post(`/api/slots/${row.slot}/lane-harness`, { harness: "codex", model: "gpt-6-astra", effort: "high" });
+          const laneRestarted = (await laneRestart.json()) as { slot?: number; delivered?: boolean; error?: string };
+          check(`(web) ${search ? "search" : "absent"}: shared lane restart preserves the profile on the same slot`,
+            laneRestart.ok && laneRestarted.slot === row.slot && laneRestarted.delivered === true,
+            `status=${laneRestart.status} error=${laneRestarted.error ?? "none"}`);
+          if (laneRestart.ok) await observe(undefined, "lane restart");
           const slots = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string }[] };
           const cwd = slots.slots.find((s) => s.id === row.slot)?.cwd;
           const id = crypto.randomUUID();

@@ -681,6 +681,8 @@ Netzwerkkosten werden nicht als null behauptet.
     wird als `Slot.webSearch` persistiert und im Spawn-Occupant mitverglichen; Heal, Restart
     und Resume erhalten sie auch dann, wenn die Queue-Zeile nicht mehr `sent` ist.
     Open und Teardown setzen das Profil zurück, sodass ein neuer Occupant es nicht erbt.
+    `succeedLane` und der gemeinsame `restartLaneSession` tragen die Auswahl weiter;
+    `switchLaneHarness` erhält sie bei Codex und setzt sie beim Wechsel auf einen anderen Harness auf false.
     `GET /api/sessions` zeigt das gewählte Profil als `webSearch: true`; ohne Auswahl fehlt das Feld.
     Ein eigener Web-Schalter im Client ist **not-applicable**. Plain-Sessions und handgeöffnete Lanes ohne Queue-Karte wählen
     hier kein Web-Profil. **claude/pi/container `not-applicable`**: deren Kommandozeilen bleiben

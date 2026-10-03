@@ -736,8 +736,11 @@ export async function run(ctx: Ctx): Promise<void> {
     await answer("ueberdenken", "vague opinion"); await change(2);
     const unanchored = await waitReview(2);
     check("ansatz parser: unanchored ueberdenken becomes ok", unanchored[1]?.payload?.ansatz === "ok", "rejected vague anchor");
+    await answer("invalid", null); await change(25);
+    const unknown = await waitReview(3);
+    check("ansatz parser: an invalid verdict stays unmeasured", unknown[2]?.payload?.ansatz === undefined, "no invented ok");
     await answer("ueberdenken", `DONE: ${card.done}`); await change(3);
-    const anchored = await waitReview(3); const verdict = anchored[2]!;
+    const anchored = await waitReview(4); const verdict = anchored[3]!;
     check("ansatz parser: exact DONE anchor records ueberdenken and one reason", verdict.payload?.ansatz === "ueberdenken"
       && verdict.payload.anker === `DONE: ${card.done}` && verdict.payload.begruendung === "Die Änderung verfehlt den genannten Anker.", "literal anchor");
     const projection = async (): Promise<string> => (await self("/api/self/program-execution")).text();
@@ -748,7 +751,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const wrong = await self(`/api/self/tasks/${author?.id}/comment`, { text: `Ansatz ${okEvents[0]!.id}: Ich prüfe das.` });
     check("ansatz answer: an ok event cannot close the obligation", wrong.status === 400, `status=${wrong.status}`);
     await answer("ueberdenken", "approach.txt"); await change(4);
-    const outside = (await waitReview(4))[3]!;
+    const outside = (await waitReview(5))[4]!;
     check("ansatz parser: real diff file outside FLAECHE records ueberdenken", outside.payload?.ansatz === "ueberdenken"
       && outside.payload.anker === "approach.txt", "outside scope");
     await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_REVIEW_OPTIN_TICK_MS: "1000" });

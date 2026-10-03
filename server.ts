@@ -6048,7 +6048,7 @@ async function laneLocalProof(s: Slot): Promise<LaneLocalProof | null> {
     ? await gitRead(s.worktree.repo, "rev-parse", "--verify", `refs/heads/${targetRef}`) : null;
   const head = await gitRead(s.cwd, "rev-parse", "HEAD");
   const tree = await gitRead(s.cwd, "rev-parse", `${head.out}^{tree}`);
-  const base = s.worktree.baseSha ?? targetRef;
+  const base = (await laneForkSha(s.cwd, targetRef)) ?? s.worktree.baseSha;
   if (!base || head.code !== 0 || tree.code !== 0) return null;
   const diffBase = await gitRead(s.cwd, "merge-base", base, head.out);
   if (diffBase.code !== 0 || !diffBase.out) return null;
@@ -9098,7 +9098,7 @@ type SendPath =
 type DeliveryClass = "sofort" | "buendelbar";
 function deliveryClass(path: SendPath): DeliveryClass {
   return path === "bundle" || path === "inbox-nudge" || path === "backlog-nudge"
-    || path === "migrate-nudge" || path === "auto" ? "buendelbar" : "sofort";
+    || path === "auto" ? "buendelbar" : "sofort";
 }
 function deliveryCacheState(s: Slot, now = Date.now()): DeliveryCacheFact & { cache: "warm" | "kalt"; edgeAt: number | null } {
   const fact = deliveryCacheReading(s);
@@ -12852,8 +12852,8 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   //    so the owner inbox receives the terminal fact with its original programId provenance.
   //  · a lane with contradictory or legacy-only watch evidence keeps its loud refusal. Absent
   //    evidence and ambiguous evidence are opposite facts.
-  //  · a programless lane with no task keeps its 409: nothing dispatched it, so nothing is owed a
-  //    terminal result. A completed Program's own binding is sufficient provenance.
+  //  · a programless lane with no task keeps its 409 for terminal results. Its handoff describes
+  //    open work for succession, so it may use the owner inbox without a dispatched task.
   //  · clarifications are untouched. An inbox cannot answer, so `/api/self/clarifications` keeps
   //    this exact 409 — a worker routed there would wait on a receiver that cannot speak.
   const completedProgram = program?.status === "complete";
@@ -12862,7 +12862,8 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     : resolved as ClarificationReceiver & { basis: Exclude<ClarificationBasis, "orchestrator"> };
   if (!bound) {
     const reason = resolved ? (resolved as { error: string }).error : NO_RECEIVER_EVIDENCE;
-    if (!completedProgram && (reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId))
+    if (!completedProgram && (reason !== NO_RECEIVER_EVIDENCE || s.programId
+      || (!s.taskId && body.status !== "handoff")))
       return json({ error: reason }, 409);
     if (ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX)
       return json({ error: "owner operations inbox has no FleetEvent delivery budget" }, 409);
@@ -18738,6 +18739,7 @@ let dispatchBusy = false;
 // and it is how a suite stands a clock on a stall without a product switch. No env: the number is
 // the owner's order („[Zitat entfernt]“), not a tuning knob.
 const STALL_MS = 15 * 60_000;
+const STALL_ORCH_ACK_MS = Math.max(0, Number(process.env.FLEET_STALL_ORCH_ACK_MS ?? 10 * 60_000) || 0);
 // The sensor reads the plan on every FOURTH dispatch tick, not every one: the tick itself already
 // projects the plan (startPlanWaves), and a second projection per 8 s tick doubled the plan's cost
 // (~0.3 s at the live queue's size, bun task-land-waves.ts + task-metadata.ts on a state copy,
@@ -18788,17 +18790,18 @@ function raiseStallAttention(r: StallReading, clock: StallSensorState["repos"][s
   const program = programId ? programs.find((p) => p.id === programId) : undefined;
   const occupant = program?.main ? slotFrom(program.main.slot) : undefined;
   if (!program || !occupant) return false;
+  const orchestrator = deliveryRecipient({ kind: "orchestrator" });
   const request: AttentionRequest = {
     id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind: "blocked", text,
     requester: { slot: occupant.id, openedAt: occupant.openedAt, sessionId: occupant.sessionId },
     programId: program.id,
     provenance: { taskId: r.waits[0]?.id ?? null, originId: null, programId: program.id, branch: null, candidateSha: null },
-    // server-raised sensor row: owner stage, like raiseSuccessionAttention's
-    status: "open", stage: "owner", answer: null, refusedReason: null, closedAt: null,
+    status: "open", stage: orchestrator ? "orchestrator" : "owner", answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
   clock.attentionId = request.id;
   audit("attention_open", occupant.id, `${request.id} kind=blocked program=${program.id} via=stall-sensor repo=${basename(r.repo)}`);
+  if (orchestrator) void saveStateNow().then(() => hintAttentionOrchestrator(request, orchestrator));
   return true;
 }
 // answerAttentionsForCriterion's close, for the same reason: the answer is COMPOSED — `by` is the
@@ -18842,6 +18845,12 @@ function tickStallSensor(on: boolean): void {
     if (now - clock.since < STALL_MS) continue;
     if (!clock.counted) { clock.counted = true; stallSensor.detected++; dirty = true; }
     if (raiseStallAttention(r, clock)) dirty = true;
+    const attention = attentionRequests.find((a) => a.id === clock.attentionId);
+    if (attention?.status === "open" && attention.stage === "orchestrator"
+      && now - attention.raisedAt >= STALL_ORCH_ACK_MS) {
+      void escalateAttention(attention.id, { reason: `Stau-Sensor: keine Antwort innerhalb von ${STALL_ORCH_ACK_MS} ms` });
+      dirty = true;
+    }
   }
   for (const [repo, clock] of Object.entries(stallSensor.repos)) {
     if (readings.some((r) => r.repo === repo && r.stuck)) continue;
@@ -20688,9 +20697,10 @@ async function workerViaCodexExec(prompt: string, cwd: string,
       const gitDir = realpathSync(gd.out);
       const commonDir = realpathSync(cd.out);
       // The private directory holds index, HEAD and rebase state. Shared objects, refs and
-      // reflogs receive commits; the common .git root (including other worktrees) stays read-only.
+      // reflogs receive commits; packed ref transactions need only these three root files.
+      // The common .git root, config and other worktrees stay read-only.
       const roots = gitDir === commonDir ? [gitDir]
-        : [gitDir, ...["objects", "refs", "logs"].map((d) => resolve(commonDir, d))];
+        : [gitDir, ...["objects", "refs", "logs", "packed-refs", "packed-refs.lock", "packed-refs.new"].map((d) => resolve(commonDir, d))];
       sandboxArgs.push("-c", 'approval_policy="never"',
         "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`,
         "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",

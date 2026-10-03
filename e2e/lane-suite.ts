@@ -1676,6 +1676,30 @@ export async function run(): Promise<void> {
           docsGate.localProof?.isolatedPreview === false && docsGate.localProof.steps.join(",") === "install,pins"
             && docsGate.localProof.preview?.default === "none" && docsGate.localProof.offerBody === undefined,
           JSON.stringify(docsGate.localProof));
+        writeFileSync(`${fixture}/server.ts`, source.replace("return 1", "return 2"));
+        commit(fixture);
+        const mainTip = command(fixture, "rev-parse", "HEAD").stdout.trim();
+        const rebased = command(docs.lane.cwd, "rebase", "main");
+        check("(LP.api rebase fixture) the docs lane rebases over main's server change",
+          rebased.status === 0, rebased.stderr.slice(0, 160));
+        const rebasedDocs = await gateOf(docs.token);
+        check("(LP.api rebase docs) inherited main files do not widen the lane's local proof",
+          rebasedDocs.localProof?.steps.join(",") === "install,pins"
+            && JSON.stringify(Object.keys(rebasedDocs.localProof.classifiedAs)) === '["docs/guide.md"]'
+            && rebasedDocs.localProof.preview?.diff?.baseSha === mainTip
+            && rebasedDocs.localProof.isolatedPreview === false
+            && rebasedDocs.localProof.offerBody === undefined,
+          JSON.stringify(rebasedDocs.localProof));
+        writeFileSync(`${docs.lane.cwd}/server.ts`, source.replace("return 1", "return 3"));
+        commit(docs.lane.cwd);
+        const ownServer = await gateOf(docs.token);
+        check("(LP.api rebase server) a lane's own server change still requires the full local chain",
+          ownServer.localProof?.steps.join(",") === "install,pins,tsc,build,clean-review,security,claude-gate"
+            && Object.hasOwn(ownServer.localProof.classifiedAs, "server.ts")
+            && ownServer.localProof.preview?.diff?.baseSha === mainTip
+            && ownServer.localProof.preview.default === "full"
+            && JSON.stringify(ownServer.localProof.offerBody) === "{}",
+          JSON.stringify(ownServer.localProof));
         seed(foreign);
         writeFileSync(`${foreign}/seed.txt`, "foreign\n");
         commit(foreign);

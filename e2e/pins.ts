@@ -4450,6 +4450,19 @@ await import(pathToFileURL(process.argv[2]).href);
       && cxCode.includes('sandbox_workspace_write.network_access=false')
       && !cxCode.includes("danger-full-access") && !cxCode.includes("bypass"),
     "closed writer set, read-only default, no escalation or temporary-directory roots");
+  const gitRootsExpression = cxCode.match(/const roots = ([\s\S]*?);/)?.[1];
+  const linkedCommon = "/scratch/repo/.git";
+  const linkedPrivate = `${linkedCommon}/worktrees/lane`;
+  const rootsFor = (gitDir: string, commonDir: string): unknown => gitRootsExpression
+    ? new Function("gitDir", "commonDir", "resolve", `return ${gitRootsExpression};`)(gitDir, commonDir, resolve)
+    : null;
+  pin("Codex linked-worktree writers grant packed-ref files without the common root or sibling worktrees",
+    JSON.stringify(rootsFor(linkedPrivate, linkedCommon)) === JSON.stringify([
+      linkedPrivate, ...["objects", "refs", "logs", "packed-refs", "packed-refs.lock", "packed-refs.new"].map((p) => resolve(linkedCommon, p)),
+    ]), gitRootsExpression ?? "Git roots expression absent");
+  pin("Codex primary-worktree writers retain their existing Git directory root",
+    JSON.stringify(rootsFor(linkedCommon, linkedCommon)) === JSON.stringify([linkedCommon]),
+    gitRootsExpression ?? "Git roots expression absent");
   for (const worker of ["merge", "repair"]) {
     const start = server.indexOf(`async function run${worker === "merge" ? "Merge" : "Repair"}(`);
     const code = server.slice(start, server.indexOf("\n}\n", start)).split("\n")
@@ -6592,12 +6605,16 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     server.indexOf("function clarificationFrom("));
   const reportDoor = server.match(/async function openFleetReport\([\s\S]*?\n\}/)?.[0] ?? "";
   const clarifyDoor = server.match(/async function openClarification\([\s\S]*?\n\}/)?.[0] ?? "";
-  pin(`${RULE_RECEIVER} — the report door falls through on the ONE named refusal, for a task-bearing lane with no program (B4)`,
-    reportDoor !== "" && /const NO_RECEIVER_EVIDENCE = "no exact clarification receiver evidence";/.test(server)
-      && reportDoor.includes("reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId")
-      && !reportDoor.includes('"no exact clarification receiver evidence"'),
+  const reportDoorCode = reportDoor.replace(/^\s*\/\/.*$/gm, "").replace(/\s+/g, " ");
+  const fallbackGate = 'if (!completedProgram && (reason !== NO_RECEIVER_EVIDENCE || s.programId '
+    + '|| (!s.taskId && body.status !== "handoff"))) return json({ error: reason }, 409);';
+  pin(`${RULE_RECEIVER} — the report fallback keeps the ONE named refusal and program boundary; only handoff needs no task (B4)`,
+    reportDoor !== "" && (server.replace(/^\s*\/\/.*$/gm, "")
+      .match(/const NO_RECEIVER_EVIDENCE = "no exact clarification receiver evidence";/g) ?? []).length === 1
+      && reportDoorCode.includes(fallbackGate)
+      && !reportDoorCode.includes('"no exact clarification receiver evidence"'),
     reportDoor === "" ? "openFleetReport not found in server.ts"
-      : `gate=${reportDoor.includes("reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId")}`);
+      : `gate=${reportDoorCode.includes(fallbackGate)}`);
   pin(`${RULE_RECEIVER} — a clarification never reaches the inbox: an inbox cannot answer (B4)`,
     clarifyDoor !== "" && clarifyDoor.includes('if ("error" in resolved) return json({ error: resolved.error }, 409);')
       && !clarifyDoor.includes("inbox"),

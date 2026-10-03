@@ -89,6 +89,10 @@ const ALL_MODES = CONTEXT_PACK_MODES;
 
 // Fleet seeds stay small. Public sources carry only tracked path + exact anchor metadata;
 // the private overlay carries only an opaque reference, content hash, and observation time.
+// `estimatedBytes` is what a reader pulls by FOLLOWING the pointers (each anchor's section to the
+// next heading of its level), not what is delivered — the founding window shows it as the
+// "Lesestoff hinter den Zeigern". Re-measured 2026-10-01 against main@0697f792; nothing checks it
+// against the sources, so a moved section makes it drift again.
 export const CONTEXT_PACKS = [
   {
     id: "portable-core",
@@ -101,7 +105,7 @@ export const CONTEXT_PACKS = [
     requiredCapabilities: ["tracked-source-read"],
     harnesses: ALL_HARNESSES,
     modes: ALL_MODES,
-    estimatedBytes: 3800,
+    estimatedBytes: 7900,
     evidence: "tree-anchor",
     owner: "owner",
     status: "active",
@@ -121,7 +125,7 @@ export const CONTEXT_PACKS = [
     requiredCapabilities: ["tracked-source-read", "pure-validator-run"],
     harnesses: ALL_HARNESSES,
     modes: ["read-only", "mutating"],
-    estimatedBytes: 6313,
+    estimatedBytes: 29900,
     evidence: "tree-anchor",
     owner: "owner",
     status: "active",
@@ -137,7 +141,7 @@ export const CONTEXT_PACKS = [
     requiredCapabilities: ["tracked-source-read"],
     harnesses: ALL_HARNESSES,
     modes: ["read-only", "mutating"],
-    estimatedBytes: 2400,
+    estimatedBytes: 3500,
     evidence: "tree-anchor",
     owner: "owner",
     status: "active",
@@ -156,7 +160,7 @@ export const CONTEXT_PACKS = [
     requiredCapabilities: ["tracked-source-read", "git-inspect"],
     harnesses: ["claude", "pi-unfenced"],
     modes: ["read-only", "mutating"],
-    estimatedBytes: 4300,
+    estimatedBytes: 9900,
     evidence: "tree-anchor",
     owner: "owner",
     status: "active",

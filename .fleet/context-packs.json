@@ -7,20 +7,19 @@
     "triggers": ["rulebook-edit"],
     "hardness": "guidance",
     "sources": [
-      { "path": "rulebook.ts", "anchor": "export const RULEBOOK_FRAGMENTS =" },
-      { "path": "docs/rulebook-inventar-2026-08-18.md", "anchor": "# Regelbuch-Inventar `CLAUDE.md` — Schritt 1 der Kontextlast-Kette" }
+      { "path": "rulebook.ts", "anchor": "export const RULEBOOK_FRAGMENTS =" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 25900,
+    "estimatedBytes": 7700,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
   },
   {
     "id": "messnotiz-index",
-    "useWhen": "Bevor du misst: pruefe im Index, ob deine Frage in diesem Repo schon vermessen wurde.",
+    "useWhen": "Bevor du misst: durchsuche den Index (rg), ob deine Frage schon vermessen wurde — nicht ganz lesen.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["measurement"],
@@ -31,7 +30,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 11700,
+    "estimatedBytes": 162000,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

@@ -4490,10 +4490,20 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       return { status: r.status, body: (await r.json()) as never };
     };
     const hasPane = async (slot: number): Promise<boolean> => (await tmuxOut("has-session", "-t", `=s${slot}`)).code === 0;
-    const settleIdle = async (slot: number): Promise<boolean> => {
-      for (let i = 0; i < 60; i++) {
+    const settleBudgetMs = 4 * (MERGE_IDLE_MS + 200);
+    const settleIdle = async (slot: number, interruptBusy = false): Promise<boolean> => {
+      const deadline = Date.now() + settleBudgetMs;
+      let lastOutput: number | undefined;
+      let lastInterrupt = Date.now();
+      while (Date.now() < deadline) {
         const row = (await rows()).find((r) => r.id === slot);
         if (row && Date.now() - row.lastOutput > MERGE_IDLE_MS + 200) return true;
+        if (interruptBusy && row && lastOutput !== undefined && row.lastOutput > lastOutput
+          && Date.now() - lastInterrupt >= 1000) {
+          await tmuxOut("send-keys", "-t", `=s${slot}:`, "C-c");
+          lastInterrupt = Date.now();
+        }
+        lastOutput = row?.lastOutput;
         await Bun.sleep(100);
       }
       return false;
@@ -4504,10 +4514,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     // with five more falling in the cascade. The 1 s containment after a failed settle lets the
     // downstream checks measure the sleep door rather than this fixture fault — a pane that is
     // still genuinely noisy stays red everywhere, as it should.
-    const settle = async (slot: number, where: string): Promise<void> => {
-      const ok = await settleIdle(slot);
+    const settle = async (slot: number, where: string, interruptBusy = false): Promise<void> => {
+      const ok = await settleIdle(slot, interruptBusy);
       check(`fixture: slot ${slot} wurde nicht ruhig — ${where}`, ok,
-        ok ? "" : `lastOutput never aged past ${MERGE_IDLE_MS + 200}ms within 6s`);
+        ok ? "" : `lastOutput never aged past ${MERGE_IDLE_MS + 200}ms within ${settleBudgetMs}ms`);
       if (!ok) await Bun.sleep(1000);
     };
     const free = (await rows()).filter((r) => !r.cwd).map((r) => r.id).reverse();
@@ -4534,7 +4544,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("sleep refuses a pane mid-turn (output inside the owner-act idle gate), by name",
       busy.status === 409 && busy.body.reason === "busy" && await hasPane(N), JSON.stringify(busy));
     await tmuxOut("send-keys", "-t", `=s${N}:`, "C-c");
-    await settle(N, "after the busy probe's C-c");
+    await settle(N, "after the busy probe's C-c", true);
     // The C-c is the graceful end and the settle above proves it; the restart makes the end
     // DETERMINISTIC. A C-c that loses the race leaves the loop running in the pane, the pane
     // survives stopSrv (it kills only the srv session), and the slot holds "busy" across the

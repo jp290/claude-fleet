@@ -2265,7 +2265,7 @@ export async function run(): Promise<void> {
       const queuedAuto = async (text: string, recurring = false): Promise<string> => {
         const start = auditRows().length;
         const response = await post(`/api/slots/${slot}/autos`, {
-          text, inSec: 1, idleSec: recurring ? 0 : 1, ...(recurring ? { everySec: 60, runs: 1 } : {}),
+          text, inSec: 1, idleSec: recurring ? 0 : 1, everySec: 60, runs: 1,
         });
         const body = await response.json() as { auto?: { id: string } };
         check("owner send fixture: a machine auto is accepted", response.ok && !!body.auto?.id, String(response.status));

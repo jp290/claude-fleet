@@ -80,7 +80,7 @@ export async function run(): Promise<void> {
     const before = (await plogRead()).length;
     const sendsBefore = auditRows().filter((r) => r.event === "send" && r.slot === 2).length;
     const scheduled = await post("/api/slots/2/autos", { text: autoText, everySec: 60, runs: 1, inSec: 1, idleSec: 0 });
-    const scheduledBody = await scheduled.json() as { auto?: { everySec: number | null } };
+    const scheduledBody = await scheduled.json() as { auto?: { id: string; everySec: number | null } };
     check("delivery-class fixture: recurring check-in is scheduled", scheduled.ok && scheduledBody.auto?.everySec === 60, `${scheduled.status}`);
     const queued = await until(() => auditRows().slice(oneShotAuditBefore).find((r) => r.event === "delivery_bundle_queued"
       && r.slot === 2 && r.path === "auto" && r.cache === "kalt"),
@@ -101,6 +101,8 @@ export async function run(): Promise<void> {
       const rows = (await plogRead()).slice(before).filter((p) => p.slot === 2 && p.text.includes(marker));
       return rows.length === 2 ? rows : null;
     }, { timeoutMs: 5_000, what: "bundle and owner delivery receipts" });
+    const afterRecurring = await (await get("/api/sessions")).json() as { autos: { id: string; enabled: boolean; runsLeft: number; lastResult: string | null }[] };
+    check("a recurring bundle fixture with runs:1 is spent after its delivery", afterRecurring.autos.some((a) => a.id === scheduledBody.auto?.id && !a.enabled && a.runsLeft === 0 && a.lastResult === "sent"));
     const sends = auditRows().filter((r) => r.event === "send" && r.slot === 2);
     const bundled = auditRows().filter((r) => r.event === "delivery_bundle_sent" && r.slot === 2);
     check("one physical bundle send carries two complete source texts and its path audit",
@@ -114,7 +116,6 @@ export async function run(): Promise<void> {
       inPane(twoPane, `path=bundle · Slot 2 · ${MEANING.bundle}] [fleet-buendel 1/2 · path=owner · ${MEANING.owner}]`)
         && inPane(twoPane, `[fleet-buendel 2/2 · path=auto · ${MEANING.auto}]`),
       JSON.stringify([around(twoPane, "[fleet-buendel 1/2"), around(twoPane, "[fleet-buendel 2/2")]));
-
     const timedAuto = `${marker}: kalter Auto-Termin`;
     const timedAutoAuditBefore = auditRows().length;
     const timedAutoPlBefore = (await plogRead()).length;
@@ -145,7 +146,6 @@ export async function run(): Promise<void> {
         && inPane(timedAutoPane, `[fleet-zustellung · geplanter Check-in · path=auto · Slot 2 · ${MEANING.auto}] ${timedAuto}`),
       JSON.stringify({ sends: timedAutoSends.map((r) => r.path), bundled: timedAutoBundled.map((r) => [r.count, r.paths]),
         line: around(timedAutoPane, timedAuto) }));
-
     const loneText = `${marker}: allein im leeren Buendel`;
     const loneAuditBefore = auditRows().length;
     const loneScheduled = await post("/api/slots/2/autos", { text: `${marker}: geloeschter Check-in`, everySec: 60, runs: 1, inSec: 1, idleSec: 0 });

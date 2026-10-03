@@ -33,8 +33,11 @@ export async function run(check: ContextPlanCheck): Promise<void> {
   };
   try {
     g("init", "-q", "-b", "main"); g("config", "user.name", "e2e"); g("config", "user.email", "e2e@fleet");
-    const content = "  # Borrow fixture\n## Section\nGrüße vom HEAD.\n## Portable operating contract\nFixture contract.\n\n";
+    const section = "## Section\nGrüße vom HEAD.\n### Child\nKept child.\n````md\n## Fenced sibling\n```\n# Still fenced\n````\n~~~md\n# Tilde fenced\n~~~\n\n";
+    const contract = "## Portable operating contract\nFixture contract.";
+    const content = `  # Borrow fixture\n${section}${contract}`;
     const hash = createHash("sha256").update(content).digest("hex");
+    const sectionHash = createHash("sha256").update(section).digest("hex");
     writeFileSync(join(root, "AGENTS.md"), content);
     mkdirSync(join(root, ".fleet"));
     const repoPack = { id: "repo-borrow", scope: "repo-contract", audience: "agent", triggers: ["always"], hardness: "guidance",
@@ -84,16 +87,16 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       return { status: response.status, body: await response.json() };
     };
     const first = await borrow("repo-borrow");
-    check("context borrow: a repo ID serves exact UTF-8 bytes and SHA-256 at HEAD, never the dirty working tree",
-      first.status === 200 && first.body.head === head && first.body.sources?.[0]?.content === content
-      && first.body.sources[0].sha256 === hash && first.body.sources[0].bytes === Buffer.byteLength(content));
+    check("context borrow: a repo ID serves exact section UTF-8 bytes and SHA-256 at HEAD, never the dirty working tree",
+      first.status === 200 && first.body.head === head && first.body.sources?.[0]?.content === section
+      && first.body.sources[0].sha256 === sectionHash && first.body.sources[0].bytes === Buffer.byteLength(section));
     const second = await borrow("repo-borrow");
     const ownRead = await borrow("own-borrow");
     const lines = (await readLedger<Record<string, unknown>>(borrowFile)).rows;
     check("context borrow: each successful request writes exactly one content-free line with exact occupant, task, Program, ID, hash and bytes",
       lines.length === 3 && lines.every((row) => row.slot === 1 && row.openedAt === 42 && row.taskId === "task" && row.programId === "own"
-        && row.bytes === Buffer.byteLength(content) && row.status === 200 && typeof row.borrowedAt === "number"
-        && JSON.stringify(row.sources).includes(hash) && !JSON.stringify(row).includes("Grüße"))
+        && row.bytes === Buffer.byteLength(section) && row.status === 200 && typeof row.borrowedAt === "number"
+        && JSON.stringify(row.sources).includes(sectionHash) && !JSON.stringify(row).includes("Grüße"))
       && lines[0]?.id === "repo-borrow" && lines[2]?.id === "own-borrow" && ownRead.status === 200 && second.status === 200);
     const foreign = await borrow("foreign-borrow"), unknown = await borrow("unknown-borrow");
     const narrowed = await borrow("repo-borrow", "?program=foreign");
@@ -127,8 +130,9 @@ export async function run(check: ContextPlanCheck): Promise<void> {
     dependencies.appendEventStrict = originalWriter;
     sourceTree = "fleet";
     const seedRead = await borrow("portable-core");
-    check("context borrow: a Fleet seed ID uses the same HEAD content and ledger door",
-      seedRead.status === 200 && seedRead.body.sources?.[0]?.content === content
+    check("context borrow: a Fleet seed ID serves the final section through EOF without a trailing newline",
+      seedRead.status === 200 && seedRead.body.sources?.[0]?.content === contract
+      && seedRead.body.sources[0].bytes === Buffer.byteLength(contract)
       && (await readLedger<Record<string, unknown>>(borrowFile)).rows.at(-1)?.id === "portable-core");
     slot.harness = "pi-zai";
     const privateDenied = await borrow("konzept-claude-fleet");
@@ -156,5 +160,59 @@ export async function run(check: ContextPlanCheck): Promise<void> {
     check("context borrow: an occupant change during the external read refuses content and writes no borrow under the new occupant",
       changed.status === 409 && (await changed.json() as { refusal: string }).refusal === "occupant-changed"
       && (await readLedger<Record<string, unknown>>(borrowFile)).rows.length === beforeChange);
+    const nested = "## Start\r\nGrüße.\r\n### Child\r\nKept.\r\n\r\n";
+    const paragraph = "**Paragraph** starts here.\r\nKept paragraph.\r\n\r\n";
+    const setext = "Setext title\r\n============\r\nKept title.\r\n## Child\r\nKept child.\r\n";
+    writeFileSync(join(root, "sections.md"), `# Before\r\n${nested}# Higher\r\n\r\n${paragraph}#### Next\r\n\r\n${setext}# After\r\n\`\`\`md\r\n## Fake\r\n\`\`\`\r\nText mentions INLINE ONLY here.\r\n## End`);
+    const codeTail = "const TARGET = [\n  1,\n];\nconst AFTER = 2;\n";
+    writeFileSync(join(root, "symbols.ts"), `const BEFORE = 0;\n${codeTail}`);
+    g("add", "sections.md", "symbols.ts"); g("commit", "-q", "-m", "section boundaries");
+    const addPack = (id: string, sources: { path: string; anchor: string }[]) => own.contextPacks.push({ id, useWhen: "Read section fixture", sources });
+    addPack("sections", [{ path: "sections.md", anchor: "## Start" }, { path: "sections.md", anchor: "**Paragraph**" },
+      { path: "sections.md", anchor: "Setext title" }, { path: "sections.md", anchor: "## End" }]);
+    addPack("fake-heading", [{ path: "sections.md", anchor: "## Fake" }]);
+    addPack("inline-anchor", [{ path: "sections.md", anchor: "INLINE ONLY" }]);
+    addPack("code-symbol", [{ path: "symbols.ts", anchor: "const TARGET =" }]);
+    const boundaries = await borrow("sections");
+    check("context borrow: heading sections retain children and stop before a higher heading with CRLF bytes intact",
+      boundaries.status === 200 && boundaries.body.sources?.[0]?.content === nested);
+    check("context borrow: a paragraph anchor stops before the next heading at any level",
+      boundaries.body.sources?.[1]?.content === paragraph);
+    check("context borrow: a Setext heading retains lower headings and stops before the next peer",
+      boundaries.body.sources?.[2]?.content === setext);
+    check("context borrow: an anchor on the last line yields that line without an invented newline",
+      boundaries.body.sources?.[3]?.content === "## End");
+    const boundaryLine = (await readLedger<Record<string, unknown>>(borrowFile)).rows.at(-1);
+    const expectedSections = [nested, paragraph, setext, "## End"];
+    check("context borrow: multiple anchors in one file record only the delivered bytes and each section hash",
+      boundaryLine?.bytes === expectedSections.reduce((sum, value) => sum + Buffer.byteLength(value), 0)
+      && JSON.stringify(boundaryLine.sources) === JSON.stringify(boundaries.body.sources?.map(({ content: _, ...rest }) => rest))
+      && boundaries.body.sources?.every((item, index) => item.bytes === Buffer.byteLength(expectedSections[index]!)
+        && item.sha256 === createHash("sha256").update(expectedSections[index]!).digest("hex")) === true);
+    const fake = await borrow("fake-heading"), inline = await borrow("inline-anchor");
+    check("context borrow: fenced and inline-only anchors are refused with no content or served bytes",
+      [fake, inline].every((answer) => answer.status === 409 && answer.body.refusal === "source-anchor-missing" && !answer.body.sources)
+      && (await readLedger<Record<string, unknown>>(borrowFile)).rows.slice(-2).every((row) => row.bytes === 0 && JSON.stringify(row.sources) === "[]"));
+    const code = await borrow("code-symbol");
+    check("context borrow: a non-Markdown symbol serves conservatively from its line to EOF, excluding earlier code",
+      code.status === 200 && code.body.sources?.[0]?.content === codeTail);
+    writeFileSync(join(root, "AGENTS.md"), readFileSync(join(sourceRoot, "AGENTS.md")));
+    mkdirSync(join(root, "docs"));
+    writeFileSync(join(root, "docs/verify-tiering.md"), readFileSync(join(sourceRoot, "docs/verify-tiering.md")));
+    g("add", "AGENTS.md", "docs/verify-tiering.md"); g("commit", "-q", "-m", "real verify sources");
+    const verify = await borrow("verify-e2e");
+    const verifySources = verify.body.sources;
+    const verifyLine = (await readLedger<Record<string, unknown>>(borrowFile)).rows.at(-1);
+    check("context borrow: the real verify-e2e pack serves three sections totaling less than 40,000 bytes",
+      verify.status === 200 && verifySources?.length === 3 && verifySources.reduce((sum, item) => sum + item.bytes, 0) < 40_000
+      && verifySources[0]?.content.startsWith("## Verify\n") === true
+      && verifySources[1]?.content.startsWith("## 6. Pre-land gate vs post-land audit") === true
+      && verifySources[2]?.content.startsWith("## How a check is written\n") === true,
+      `served bytes: ${verifySources?.reduce((sum, item) => sum + item.bytes, 0) ?? "unknown"}`);
+    check("context borrow: verify-e2e's ledger contains exact section hashes and the sum of delivered bytes",
+      verifyLine?.bytes === verifySources?.reduce((sum, item) => sum + item.bytes, 0)
+      && verifySources?.every((item) => item.bytes === Buffer.byteLength(item.content)
+        && item.sha256 === createHash("sha256").update(item.content).digest("hex")) === true
+      && JSON.stringify(verifyLine?.sources) === JSON.stringify(verifySources?.map(({ content: _, ...rest }) => rest)));
   } finally { rmSync(root, { recursive: true, force: true }); }
 }

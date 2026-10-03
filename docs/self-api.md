@@ -907,9 +907,17 @@ unbekannte ID: 404 `unknown-id`. Mehrdeutige IDs: 409 `ambiguous-id`.
 
 Der explizite Abruf ersetzt nur den Trigger der Katalogauswahl: Status, Harness, Mode,
 Capabilities und Quellverfügbarkeit bleiben Grenzen. Die Auswahl im Spawn-Brief bleibt gleich.
-Eine verletzte Grenze antwortet 409 mit ihrem benannten `refusal`. Öffentliche Quellen sind
-vollständige reguläre, getrackte UTF-8-Dateien am Integrations-HEAD, mit `path`, `anchor`,
-`content`, `sha256` und `bytes`; Arbeitsbaumänderungen werden nicht gelesen. Je Quelle gilt der
+Eine verletzte Grenze antwortet 409 mit ihrem benannten `refusal`. Öffentliche Quellen stammen
+aus regulären, getrackten UTF-8-Dateien am Integrations-HEAD, mit `path`, `anchor`, `content`,
+`sha256` und `bytes`; Arbeitsbaumänderungen werden nicht gelesen. Markdown (`.md`/`.markdown`)
+liefert ab der ersten Zeile, die außerhalb eines Codeblocks mit dem Anker beginnt, bis vor die
+nächste Überschrift gleicher oder höherer Ebene. Unterüberschriften bleiben enthalten; ATX-
+und Setext-Überschriften werden erkannt. Ist der Anker ein Absatzanfang, endet der Abschnitt vor
+der nächsten Überschrift überhaupt. Ohne folgende Grenze reicht er bis ans Dateiende. Zwei
+Anker derselben Datei liefern ihre jeweiligen Abschnitte. Nicht-Markdown-Quellen liefern
+konservativ ab der Ankerzeile bis ans Dateiende, ohne eine Symbol-Endgrenze zu behaupten.
+`sha256` und `bytes` messen exakt den gelieferten Inhalt, einschließlich seiner UTF-8-Bytes
+und Zeilenenden; es gibt keinen Volltext-Parameter. Je Quelldatei gilt weiterhin der
 bestehende 4-MiB-Deckel. Fehlende Anker, Symlinks, binäre oder unlesbare Quellen werden benannt
 abgelehnt, ohne Teilinhalt zu liefern. Private Quellen laufen ausschließlich durch
 `context-plan.ts#resolvePrivatePack`: nur `match` liefert Inhalt der aktuellen Fassung samt
@@ -918,7 +926,8 @@ abgelehnt, ohne Teilinhalt zu liefern. Private Quellen laufen ausschließlich du
 Erfolg: `{schema:"fleet.context.borrow/v1", id, useWhen, origin, repo, head, sources[], borrowedAt}`.
 Pro authentifiziertem Abruf wird genau eine Zeile in `context-borrows.jsonl` geschrieben:
 `slot`, `openedAt`, `taskId`, `programId`, `id`, `at`, `borrowedAt`, `repo`, `head`, `origin`,
-`status`, `refusal`, Quellen ohne Inhalt (mit SHA-256 und Bytes) und gesamte `bytes`.
+`status`, `refusal`, Quellen ohne Inhalt (mit Abschnitts-SHA-256 und gelieferten Bytes) und
+gesamte gelieferte `bytes`.
 Ablehnungen tragen `borrowedAt:null`, keine Quellen und 0 Bytes. Ein Credential- oder
 Occupant-Wechsel wird vor dem Append und nach dem Await abgefangen (409 `occupant-changed`).
 Nicht authentifizierte Requests schreiben keine Ausleihzeile. Scheitert das Ledger,

@@ -305,9 +305,14 @@ function optSlot(): number {
 // resolve the same in Claude Code 2.1.278 (both native_1m), so two identical rows would only
 // ask the owner to pick between twins. The kept id is the slot's own if it is one of them,
 // else the adapter's first; the other stays reachable through the free-text field.
+// Only what one should pick today is offered: an id the register marks superseded
+// (model-register.ts#MODEL_REGISTER, read here through modelNotice) is left out — unless the slot
+// runs on it, because hiding it would hide what is running; it then stands with its notice. The
+// switch at the field and the phone's tools sheet (optChoices) both read this list.
 function modelChoices(h: HarnessInfo, current: string): string[] {
   const byName = new Map<string, string>();
   for (const m of h.models ?? []) {
+    if (m !== current && modelNotice(h.id, m).startsWith("superseded")) continue;
     const name = modelLabel(m);
     if (!byName.has(name) || m === current) byName.set(name, m);
   }

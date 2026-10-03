@@ -17,7 +17,7 @@ import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
-import { MODEL_DEFAULTS, modelsForHarness } from "../model-register";
+import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-register";
 import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
 
@@ -6410,17 +6410,35 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
   const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  const alpha = { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000, model: "claude-opus-5-5", effort: "high", lastOutput: 0 };
   const slots = [
-    { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000, model: "claude-opus-5-5", effort: "high", lastOutput: 0 },
+    alpha,
     { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, lastOutput: 0 },
     ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
   ];
   const fx = { sessions: 0, inputs: [] as string[], posts: [] as { path: string; body: string }[] };
   // one harness with the composer's two switches, so the tools sheet has model and effort to show —
-  // its pick list is the register's (model-register.ts), as the server hands it out
+  // its pick list is the register's (model-register.ts), as the server hands it out — the register's
+  // statuses with it (server.ts /api/harnesses → modelRegistry), so a superseded id reads as one
   const HARNESSES = { harnesses: [{ id: "claude", default: true, note: null, effortLevels: ["low", "medium", "high", "xhigh"],
     models: modelsForHarness("claude"),
-    supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }] };
+    supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
+    modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) };
+  // THE PICK LIST OFFERS ONLY TODAY'S MODELS (card "Der Modellwaehler bietet nur noch Modelle an, die
+  // man heute waehlen soll"): a session on Opus 5.5 is offered no id the register marks superseded;
+  // one running ON such an id (claude-opus-5) keeps it, marked current and carrying its notice. The
+  // fixture's slot 1 is moved onto claude-opus-5 through the 2 s poll and back, the way a /model
+  // typed in the pane would reach the record.
+  const superseded = new Set(MODEL_REGISTER.filter((e) => e.harness === "claude" && e.status === "superseded").map((e) => e.id));
+  const todayNames = [...new Set(modelsForHarness("claude").filter((m) => !superseded.has(m)).map((m) => modelLabel(m).split(" · ")[0]))];
+  const OLD_MODEL = "claude-opus-5";
+  const oldOffer = [...new Set(modelsForHarness("claude").filter((m) => !superseded.has(m) || m === OLD_MODEL).map((m) => modelLabel(m).split(" · ")[0]))];
+  const OLD_NOTICE = `superseded → ${MODEL_REGISTER.find((e) => e.id === OLD_MODEL)?.supersededBy}`;
+  const moveAlpha = async (model: string) => {
+    alpha.model = model;
+    const seen = fx.sessions, until = Date.now() + 8000;
+    while (fx.sessions <= seen + 1 && Date.now() < until) await Bun.sleep(50);
+  };
   // the bytes the nine keys must send — src/client.ts KEYS, in the row's order (^C first)
   const KEY_BYTES = "\x03\x1b\t\x1b[Z\x1b[A\x1b[B\x1b[D\x1b[C\r";
   const FAKE = `(() => { window.__ws = [];
@@ -6560,6 +6578,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (!booted) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
       await settle(500);
     };
+    const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(400); };
     const results: PhoneIslandDomResult[] = [];
 
     // --- the desktop and the phone on its side: no island, the heads they had
@@ -6578,6 +6597,39 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (width === 1200) claims["the desktop keeps its sidebar and no phone head"] = seen.side && !seen.mhead && !seen.mread;
       else claims["the phone on its side keeps the reading mode (#mread) and no phone head"] = facts.coarse === true && seen.mread && !seen.mhead;
       await shot(`${width}-start`);
+      if (width === 1200) {
+        // the model switch at the field, in the conversation view: its list as the popover draws it
+        const LIST = `[...document.querySelectorAll('#compopts .optpop.model .cmdmodel')].map((b) => ({ id: b.dataset.id, text: b.textContent, cur: b.classList.contains('cur') }))`;
+        type ListRead = { id: string; text: string; cur: boolean }[];
+        const openSwitch = async () => {
+          if (!await evaluate<boolean>("!!document.querySelector('#compopts .optpop.model.open')")) await tap("document.querySelector('#compopts .optswrap.model .optsw')");
+          await wait("!!document.querySelector('#compopts .optpop.model.open .cmdmodel')", 3000);
+          await settle(150);
+          return evaluate<ListRead>(LIST);
+        };
+        await tap("window.__fx.pane().querySelector('.viewtoggle')");
+        await wait("window.__fx.pane().classList.contains('chat') && !!document.querySelector('#compopts .optswrap.model')", 3000);
+        const today = await openSwitch();
+        await shot("1200-modell-schalter");
+        const todayClaim = "the model switch at the field offers no superseded model (neither Opus 5 nor Sonnet 5): one entry per name of today's models, Opus 5.5 current";
+        claims[todayClaim] = !!today?.length && today.every((m) => !superseded.has(m.id))
+          && JSON.stringify(today.map((m) => modelLabel(m.id).split(" · ")[0])) === JSON.stringify(todayNames)
+          && JSON.stringify(today.filter((m) => m.cur).map((m) => m.id)) === JSON.stringify(["claude-opus-5-5"]);
+        detail[todayClaim] = { today, todayNames };
+        await escape();
+        await moveAlpha(OLD_MODEL);
+        await settle(400);
+        const old = await openSwitch();
+        const oldVal = await evaluate<string>("document.querySelector('#compopts .optswrap.model .optval')?.textContent ?? ''");
+        await shot("1200-modell-schalter-opus5");
+        const oldClaim = `a session running on ${OLD_MODEL} keeps it in the switch's list, current and with its notice (${OLD_NOTICE}); no other superseded model is offered`;
+        claims[oldClaim] = !!old?.length && JSON.stringify(old.filter((m) => superseded.has(m.id)).map((m) => m.id)) === JSON.stringify([OLD_MODEL])
+          && old.some((m) => m.id === OLD_MODEL && m.cur && m.text.endsWith(` · ${OLD_NOTICE}`)) && oldVal.endsWith(` · ${OLD_NOTICE}`);
+        detail[oldClaim] = { old, oldVal };
+        await escape();
+        await moveAlpha("claude-opus-5-5");
+        facts.modelSwitch = { today, old, oldVal };
+      }
       facts.missing = [...missing]; missing.length = 0;
       results.push({ width, height, claims, facts, detail });
     }
@@ -6628,7 +6680,6 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
     };
     const sheetIs = (which: string) => `document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === '${which}'`;
     const openVia = async (id: string, which: string) => { await tap("document.querySelector('#mpill')"); await tap(`document.querySelector('${id}')`); const ok = await wait(sheetIs(which), 3000); await settle(250); return ok; };
-    const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(400); };
 
     // --- the phone upright, 390 × 844: without and with the on-screen keyboard
     const W = 390, H = 844;
@@ -6892,11 +6943,12 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-werkzeuge-konversation`);
       facts.toolsChat = tc;
       const chatWords = ["History", "Schedule", ...(anyCoarse ? ["Live"] : []), "Voriger Prompt", "Nächster Prompt", "Referenzen erklären", "Schrift und Spalte", "Einstellungen"];
-      // one segment per model NAME of the adapter's list (the composer's rule), the slot's own pressed;
-      // a register notice after " · " is the switch's business, the name is what is compared here
-      const names = [...new Set(modelsForHarness("claude").map((m) => modelLabel(m).split(" · ")[0]))];
+      // one segment per model NAME of the adapter's list that is not superseded (the composer's rule),
+      // the slot's own pressed; a register notice after " · " is the switch's business, the name is
+      // what is compared here
+      const names = todayNames;
       const segNames = (tc.segs[0]?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
-      const chatClaim = `${tag}in the conversation: Modell and Effort as segments (one per model name, the running one pressed), prompt jumps, no Neu verbinden`;
+      const chatClaim = `${tag}in the conversation: Modell and Effort as segments (one per name of today's models — neither Opus 5 nor Sonnet 5 —, the running one pressed), prompt jumps, no Neu verbinden`;
       claims[chatClaim] = JSON.stringify(tc.secs) === JSON.stringify(["Modell", "Effort", "Diese Session", "Dieses Gerät"])
         && tc.segs[0]?.field === "model" && tc.segs[0].apply === false && JSON.stringify(segNames) === JSON.stringify(names.map((n) => n === "Opus 5.5" ? "Opus 5.5*" : n))
         && JSON.stringify(tc.segs[1]) === JSON.stringify({ field: "effort", values: ["low", "medium", "high*", "xhigh"], apply: false })
@@ -6946,6 +6998,22 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const modelClaim = `${tag}Übernehmen on a model asks first in the switch's own popover, on screen, and sends nothing before the answer`;
       claims[modelClaim] = asks && modelPosts === 0 && !!askBox && askBox.y >= 0 && askBox.b <= bottom && popGone;
       detail[modelClaim] = facts.model;
+      if (!keyboard) {
+        // the same session moved onto claude-opus-5: the sheet keeps it as the pressed segment, with its notice
+        await moveAlpha(OLD_MODEL);
+        await settle(400);
+        await openVia("#mmore", "tools");
+        const oldSegs = (await readSheet()).segs[0];
+        await shot(`${W}-blatt-werkzeuge-opus5`);
+        await escape();
+        await moveAlpha("claude-opus-5-5");
+        await settle(400);
+        const oldNames = (oldSegs?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
+        const oldClaim = `Werkzeuge · a session running on ${OLD_MODEL} sees Opus 5 as the pressed segment with its notice (${OLD_NOTICE}), and no other superseded model`;
+        claims[oldClaim] = oldSegs?.field === "model" && (oldSegs.values ?? []).includes(`Opus 5 · ${OLD_NOTICE}*`)
+          && JSON.stringify(oldNames) === JSON.stringify(oldOffer.map((n) => n === "Opus 5" ? "Opus 5*" : n));
+        detail[oldClaim] = { oldSegs, oldOffer };
+      }
       await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
       await wait("!window.__fx.pane().classList.contains('chat')", 3000);
       await settle(300);

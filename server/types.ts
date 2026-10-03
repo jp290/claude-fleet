@@ -419,12 +419,22 @@ interface HarnessBlockFleetEvent extends FleetEventBase {
 // receiver — and owner-addressable for harness-block's reason: a lane with no live Program-MAIN
 // must still reach someone. NOT a lane kind for subject-gone: the verdict describes a diff, and a
 // lane that landed or died meanwhile leaves that fact exactly as true as it was.
+interface AnsatzReview {
+  ansatz: "ok" | "ueberdenken";
+  begruendung: string;
+  anker: string | null;
+}
 interface LaneReviewFleetEvent extends FleetEventBase {
   subjectSlot: number;
   subjectBranch: string;
   subjectOpenedAt: number;
   kind: "lane-review";
-  payload: LaneReviewEventPayload;
+  payload: LaneReviewEventPayload & Partial<AnsatzReview> & {
+    answer?: { text: string; at: number; slot: number; commentId: string };
+    changedAfterReview?: boolean | null;
+    followupPatchId?: string | null;
+    followupAt?: number;
+  };
   subjectName?: string; // S3d, see LaneFleetEvent
 }
 interface ClarificationFleetEvent extends FleetEventBase {
@@ -1038,12 +1048,27 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       || !Number.isInteger(p.findingCount) || (p.findingCount ?? -1) < 0
       || !Array.isArray(p.findings) || p.findings.length > LANE_REVIEW_FINDINGS_MAX || !p.findings.every(finding)
       || typeof p.notes !== "string" || p.notes.length > LANE_REVIEW_NOTES_MAX) return null;
+    const a = e.payload as LaneReviewFleetEvent["payload"];
+    if (a.ansatz !== undefined && (a.ansatz !== "ok" && a.ansatz !== "ueberdenken"
+      || typeof a.begruendung !== "string" || a.begruendung.length > 1000
+      || !(a.anker === null || typeof a.anker === "string" && a.anker.length <= 500))) return null;
+    if (a.answer !== undefined && (!a.answer || typeof a.answer.text !== "string" || !a.answer.text
+      || a.answer.text.length > 2000 || !Number.isFinite(a.answer.at) || !Number.isInteger(a.answer.slot)
+      || a.answer.slot <= 0 || typeof a.answer.commentId !== "string")) return null;
+    if (a.changedAfterReview !== undefined && a.changedAfterReview !== null && typeof a.changedAfterReview !== "boolean") return null;
+    if (a.followupPatchId !== undefined && !sha(a.followupPatchId)) return null;
+    if (a.followupAt !== undefined && !Number.isFinite(a.followupAt)) return null;
     return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
       subjectOpenedAt: e.subjectOpenedAt, kind: e.kind,
       payload: { taskId: p.taskId, programId: p.programId ?? null, diffSha: p.diffSha ?? null, head: p.head ?? null, model: p.model,
         describedThisDiff: p.describedThisDiff, raw: p.raw, findingCount: p.findingCount!,
         findings: p.findings.map((f) => ({ title: f.title, file: f.file, line: f.line, impact: f.impact })),
-        notes: p.notes }, ...subjectNameFrom(e.subjectName) };
+        notes: p.notes,
+        ...(a.ansatz ? { ansatz: a.ansatz, begruendung: a.begruendung, anker: a.anker } : {}),
+        ...(a.answer ? { answer: { ...a.answer } } : {}),
+        ...(a.changedAfterReview !== undefined ? { changedAfterReview: a.changedAfterReview } : {}),
+        ...(a.followupPatchId !== undefined ? { followupPatchId: a.followupPatchId } : {}),
+        ...(a.followupAt !== undefined ? { followupAt: a.followupAt } : {}) }, ...subjectNameFrom(e.subjectName) };
   }
   return null;
 }
@@ -1487,6 +1512,7 @@ interface Task {
   // with the fleet-wide tick off (FLEET_AUTO_REVIEW_MS=0), and the verdict is filed as a `lane-review`
   // FleetEvent to the live Program-MAIN, else the owner inbox (server.ts#fileLaneReview). It GATES
   // NOTHING: no land, dispatch or report reads it. Absent = no review asked for (never stored "none").
+  reviewDefaultOff?: true;
   comments?: TaskComment[]; // the owner's own words ON this row, addressed to whoever picks it up
   // (the gap it closed: server-narrativ-archiv.md#task). Deliberately NOT folded into the brief:
   // the brief is the exact bytes a lane receives and is approved as such, so appending to it behind
@@ -3495,7 +3521,7 @@ export type {
   DeployWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
-  HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
+  HelperCmdCheck, HarnessBlockFleetEvent, AnsatzReview, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
   FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportFulfilled, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,

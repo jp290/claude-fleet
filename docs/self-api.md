@@ -1940,6 +1940,42 @@ er überlebt einen Restart mit dieser Herkunft. Der gemeinsame Kommentar-Deckel 
 Die Antwort enthält `{ok, sessionIdMatch, comment}`. Diese Tür fügt einen Kommentar hinzu;
 sie liefert ihn nicht in eine Lane-Pane aus. Fremde Zeile/Repo oder Lane: 409; unbekannte Id: 404.
 
+### Ansatzantwort auf den Advisory-Review
+
+Eine gültige Karte mittlerer oder großer Größe setzt bei ihrer Geburt (Author-Karte an beiden
+Create-Türen oder Text-Kopfzeilen im Karten-Sweep) `review:"advisory"`, sofern die Aufgabe
+`pending|queued` ist und noch keine Review-Entscheidung hat. Kleine Karten bleiben unverändert;
+`review:"none"` beziehungsweise `null` entfernt weiter das Feld und speichert `reviewDefaultOff:true`
+als Opt-out, auch über Restart. Die Owner-Create-Tür akzeptiert die Review-Wahl; die MAIN setzt sie an ihrer bestehenden Brief-Tür. Gesendete Zeilen
+werden vom Default nicht berührt; der vorhandene Reviewer und seine Ticks bleiben die Ausführer.
+
+Der Reviewer bekommt ZIEL, DONE, Dateien und Symbole der FLAECHE wörtlich als Kartendaten im
+bestehenden Prompt. Zusätzlich zum unveränderten Code-Review beantwortet er die binäre Frage
+`ansatz:"ok"|"ueberdenken"`. Im Zweifel gilt `ok`. Ein `ueberdenken` zählt nur, wenn `anker` exakt
+`ZIEL: <Kartenwert>` oder `DONE: <Kartenwert>` zitiert oder einen realen Diff-Dateipfad außerhalb
+der Karten-Dateifläche (einschließlich deklarierter neuer Dateien) nennt. Sonst führt der Parser
+es als `ok`. `begruendung` enthält bei `ueberdenken` genau einen Satz ohne Fix-Vorschlag;
+bei `ok` bleibt sie leer. Alte oder unlesbare Reviews tragen keinen Ansatzbefund.
+
+Das `lane-review`-Event speichert diese drei Felder neben `diffSha`. Je Task zeigen die
+Program-Projektion und die erfolgreiche MAIN-Land-Antwort `ansatzReviews` mit `eventId`,
+`answerOwed`, `answerDoor` und `answerPrefix`. `ueberdenken` blockiert keinen Land.
+Die Pflicht bleibt auch nach Event-Ack, Land und MAIN-Wechsel sichtbar. Nur die aktuell gebundene
+MAIN schließt sie über die vorhandene Kommentar-Tür mit
+`{"text":"Ansatz <eventId>: <ein Satz>"}`. Event, Task und Program müssen exakt zusammenpassen;
+falsche Referenzen oder mehrere Sätze sind 400. Ein gewöhnlicher Kommentar oder Owner-Kommentar
+schließt nichts. Die erste passende Antwort wird am Event als `answer{text,at,slot,commentId}`
+gespeichert und überlebt Kommentar-Kappung und Restart.
+
+Bei Lane-Ende misst der bestehende Outcome-Pfad für jedes `ueberdenken` den Folge-Diff:
+`changedAfterReview:true|false|null`, `followupPatchId` und `followupAt` am Event.
+`null` bedeutet nicht gemessen, niemals keine Änderung. Gemessen wird die Inhaltsänderung per
+Patch-ID, keine Wirkung oder Kausalität einer Reparatur. Alle vorhandenen Ansatzbefunde samt
+Änderungsmessung werden zusätzlich in `LaneOutcome.ansatzReviews` archiviert, damit Action-Rate
+und `ueberdenken`-Quote nach Event-Kappung auswertbar bleiben. Ein Review, das beim Lane-Ende noch
+läuft, bleibt eine ungemessene Grenze. Offene Antwortpflichten werden nicht durch Event-Kappung
+entfernt; geschlossene und am Ende gemessene Events folgen der bestehenden Retention.
+
 ## task withdraw — `POST /api/self/tasks/:id/withdraw`
 
 Body: `{"grund":"<Pflicht-Grund>","beleg":"<optionaler Beleg>"}`. Die gebundene MAIN archiviert

@@ -21474,7 +21474,19 @@ function parseAnsatzReview(j: { ansatz?: unknown; begruendung?: unknown; anker?:
   if (/\n|[.!?]\s+\S/.test(reason)) return ok;
   const quote = j.anker;
   const goal = quote === `ZIEL: ${card.ziel}` || quote === `DONE: ${card.done}`;
-  const diffFiles = [...diff.matchAll(/^(?:\+\+\+ b\/|--- a\/)(.+)$/gm)].map((m) => m[1]);
+  const diffFiles: string[] = [];
+  let header = false;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      header = true;
+      const paths = /^diff --git a\/(\S+) b\/(\S+)$/.exec(line);
+      if (paths) diffFiles.push(paths[1]!, paths[2]!);
+    } else if (line.startsWith("@@")) header = false;
+    else if (header) {
+      const path = /^(?:\+\+\+ b\/|--- a\/|rename from |rename to |copy from |copy to )(.+)$/.exec(line);
+      if (path) diffFiles.push(path[1]!);
+    }
+  }
   const inSurface = [...card.surface.files, ...(card.surface.creates ?? [])];
   const outside = diffFiles.includes(quote) && !inSurface.includes(quote);
   return goal || outside ? { ansatz: "ueberdenken", begruendung: reason, anker: quote } : ok;

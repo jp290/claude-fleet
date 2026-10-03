@@ -731,11 +731,11 @@ export async function run(ctx: Ctx): Promise<void> {
     check("ansatz prompt: exact ZIEL/DONE/FLAECHE and binary question reach the stand-in; ok is recorded",
       prompt.includes(`ZIEL: ${card.ziel}`) && prompt.includes(`DONE: ${card.done}`) && prompt.includes("FLAECHE:\ncode.txt")
         && prompt.includes('"ok|ueberdenken"') && okEvents[0]?.payload?.ansatz === "ok", "prompt and verdict");
-    const change = async (n: number): Promise<void> => { if (lane) { await Bun.write(`${lane.cwd}/approach.txt`, `revision ${n}\n`);
+    const change = async (n: number): Promise<void> => { if (lane) { await Bun.write(`${lane.cwd}/approach.txt`, `revision ${n}\n${n === 2 ? "++ b/phantom.txt\n" : ""}`);
       oGit(lane.cwd, "add", "approach.txt"); oGit(lane.cwd, "commit", "-qm", `approach revision ${n}`); } };
-    await answer("ueberdenken", "vague opinion"); await change(2);
+    await answer("ueberdenken", "phantom.txt"); await change(2);
     const unanchored = await waitReview(2);
-    check("ansatz parser: unanchored ueberdenken becomes ok", unanchored[1]?.payload?.ansatz === "ok", "rejected vague anchor");
+    check("ansatz parser: a fake file header in a hunk is no real diff path and becomes ok", unanchored[1]?.payload?.ansatz === "ok", "rejected phantom path");
     await answer("invalid", null); await change(25);
     const unknown = await waitReview(3);
     check("ansatz parser: an invalid verdict stays unmeasured", unknown[2]?.payload?.ansatz === undefined, "no invented ok");

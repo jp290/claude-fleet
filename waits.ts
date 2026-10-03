@@ -24,7 +24,6 @@ export interface BlockerSection { art: BlockerArt; adressat: string; wurzel: str
 export interface BlockerHistory {
   freigabe: number | null;
   dispatch: number | null;
-  observedAt: number;
   abschnitte: BlockerSection[];
 }
 export interface BlockerTotals { freigabe: number | null; dispatch: number | null; ms: Partial<Record<BlockerArt, number>>; unknown: boolean }
@@ -34,7 +33,7 @@ export function loadBlockerHistory(value: unknown): BlockerHistory | undefined {
   const r = value as Record<string, unknown>;
   const timestamp = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
   if (!(r.freigabe === null || timestamp(r.freigabe)) || !(r.dispatch === null || timestamp(r.dispatch))
-    || !timestamp(r.observedAt) || !Array.isArray(r.abschnitte)) return undefined;
+    || !Array.isArray(r.abschnitte)) return undefined;
   const arts: readonly string[] = ["hold", "release", "after", "wave", "unchecked", "collision", "cap", "tick", "unknown"];
   const abschnitte: BlockerSection[] = [];
   for (const [index, raw] of r.abschnitte.entries()) {
@@ -43,20 +42,23 @@ export function loadBlockerHistory(value: unknown): BlockerHistory | undefined {
     if (typeof section.art !== "string" || !arts.includes(section.art) || typeof section.adressat !== "string"
       || typeof section.wurzel !== "string" || !timestamp(section.von)
       || !(section.bis === null || (timestamp(section.bis) && section.bis >= section.von))) return undefined;
-    if (section.bis === null && (index !== r.abschnitte.length - 1 || r.observedAt < section.von)) return undefined;
+    if (section.bis === null && index !== r.abschnitte.length - 1) return undefined;
     const previous = abschnitte.at(-1);
     if (previous && (previous.bis === null || previous.bis !== section.von)) return undefined;
     abschnitte.push({ art: section.art as BlockerArt, adressat: section.adressat, wurzel: section.wurzel,
-      von: section.von, bis: section.bis === null ? r.observedAt : section.bis });
+      von: section.von, bis: section.bis === null ? section.von : section.bis });
   }
-  return { freigabe: r.freigabe, dispatch: r.dispatch, observedAt: r.observedAt, abschnitte };
+  return { freigabe: r.freigabe, dispatch: r.dispatch, abschnitte };
 }
 
 export function observeBlocker(history: BlockerHistory, wait: WaitRow | undefined, now: number): BlockerHistory {
-  const abschnitte = history.abschnitte.map((s) => ({ ...s }));
-  const last = abschnitte.at(-1);
   const reason = wait ? { art: wait.art, adressat: wait.adressat, wurzel: wait.wurzel }
     : { art: "unknown" as const, adressat: "unknown", wurzel: "startbereit; kein Wartegrund im Register, Dispatch noch nicht beobachtet" };
+  const current = history.abschnitte.at(-1);
+  if (current?.bis === null && current.art === reason.art && current.adressat === reason.adressat
+    && current.wurzel === reason.wurzel) return history;
+  const abschnitte = history.abschnitte.map((s) => ({ ...s }));
+  const last = abschnitte.at(-1);
   const from = last?.bis ?? history.freigabe;
   if ((!last || last.bis !== null) && from !== null && from !== undefined && from < now)
     abschnitte.push({ art: "unknown", adressat: "unknown", wurzel: "keine Beobachtung", von: from, bis: now });
@@ -64,7 +66,7 @@ export function observeBlocker(history: BlockerHistory, wait: WaitRow | undefine
     if (last?.bis === null) last.bis = now;
     abschnitte.push({ ...reason, von: now, bis: null });
   }
-  return { ...history, dispatch: null, observedAt: now, abschnitte };
+  return { ...history, dispatch: null, abschnitte };
 }
 
 export function finishBlockers(history: BlockerHistory, now: number): BlockerHistory {
@@ -74,13 +76,14 @@ export function finishBlockers(history: BlockerHistory, now: number): BlockerHis
   else if ((last?.bis ?? history.freigabe) !== null && (last?.bis ?? history.freigabe)! < now)
     abschnitte.push({ art: "unknown", adressat: "unknown", wurzel: "keine Beobachtung",
       von: (last?.bis ?? history.freigabe)!, bis: now });
-  return { ...history, dispatch: now, observedAt: now, abschnitte };
+  return { ...history, dispatch: now, abschnitte };
 }
 
 export function blockerTotals(history: BlockerHistory): BlockerTotals {
   const ms: BlockerTotals["ms"] = {};
   for (const section of history.abschnitte) {
-    const end = section.bis ?? history.observedAt;
+    if (section.bis === null) continue;
+    const end = section.bis;
     ms[section.art] = (ms[section.art] ?? 0) + Math.max(0, end - section.von);
   }
   return { freigabe: history.freigabe, dispatch: history.dispatch, ms,

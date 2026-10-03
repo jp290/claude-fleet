@@ -12030,9 +12030,13 @@ export async function run(ctx: Ctx): Promise<void> {
     const bHeld = traceWait("hold");
     const bAfter = traceWait("after");
     const bCollision = traceWait("collision");
-    let history: BlockerHistory = { freigabe: 100, dispatch: null, observedAt: 100, abschnitte: [] };
+    let history: BlockerHistory = { freigabe: 100, dispatch: null, abschnitte: [] };
     history = observeBlocker(history, bHeld, 100);
+    const heldHistory = history;
+    const heldBytes = JSON.stringify(history);
     history = observeBlocker(history, bHeld, 150);
+    check("(blockers) unchanged reason retains the same history and persisted bytes without a clock write",
+      history === heldHistory && JSON.stringify(history) === heldBytes && !Object.hasOwn(history, "observedAt"), JSON.stringify(history));
     history = observeBlocker(history, bAfter, 200);
     history = observeBlocker(history, bCollision, 300);
     history = finishBlockers(history, 400);
@@ -12042,20 +12046,43 @@ export async function run(ctx: Ctx): Promise<void> {
         && JSON.stringify(blockerTotals(history)) === JSON.stringify({ freigabe: 100, dispatch: 400,
           ms: { hold: 100, after: 100, collision: 100 }, unknown: false }), JSON.stringify(history));
     const gap = observeBlocker(loadBlockerHistory({ ...history, dispatch: null,
-      abschnitte: history.abschnitte.slice(0, 2).map((s, i) => i === 1 ? { ...s, bis: null } : s), observedAt: 250 })!, bCollision, 300);
+      abschnitte: history.abschnitte.slice(0, 2).map((s, i) => i === 1 ? { ...s, bis: null } : s) })!, bCollision, 300);
     check("(blockers) restart preserves recorded spans and names the unobserved gap unknown, never zero",
       JSON.stringify(gap.abschnitte.map((s) => [s.art, s.von, s.bis])) === JSON.stringify([
-        ["hold", 100, 200], ["after", 200, 250], ["unknown", 250, 300], ["collision", 300, null]])
-        && blockerTotals(gap).ms.unknown === 50 && blockerTotals(gap).unknown === true, JSON.stringify(gap));
-    const ready = finishBlockers(observeBlocker({ freigabe: 100, dispatch: null, observedAt: 100, abschnitte: [] }, undefined, 100), 200);
+        ["hold", 100, 200], ["after", 200, 200], ["unknown", 200, 300], ["collision", 300, null]])
+        && blockerTotals(gap).ms.unknown === 100 && blockerTotals(gap).unknown === true, JSON.stringify(gap));
+    const ready = finishBlockers(observeBlocker({ freigabe: 100, dispatch: null, abschnitte: [] }, undefined, 100), 200);
     check("(blockers) ready without a deriveWaits reason is unknown until actual dispatch",
       blockerTotals(ready).ms.unknown === 100 && blockerTotals(ready).unknown === true, JSON.stringify(ready));
-    const legacy = finishBlockers(observeBlocker({ freigabe: null, dispatch: null, observedAt: 100, abschnitte: [] }, bHeld, 100), 200);
+    const legacy = finishBlockers(observeBlocker({ freigabe: null, dispatch: null, abschnitte: [] }, bHeld, 100), 200);
     check("(blockers) legacy release stays unknown and malformed overlapping persistence is rejected",
       blockerTotals(legacy).unknown === true && blockerTotals(legacy).freigabe === null
         && loadBlockerHistory({ ...history, abschnitte: [...history.abschnitte, history.abschnitte[0]] }) === undefined,
       JSON.stringify(blockerTotals(legacy)));
     const outcomeSource = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const recorder = outcomeSource.match(/function recordBlockersNow\(view:[\s\S]*?\n\}/)?.[0] ?? "";
+    const recordCode = new Bun.Transpiler({ loader: "ts" }).transformSync(recorder);
+    const recordedRow: { id: string; status: string; blockers?: BlockerHistory } = { id: "trace", status: "queued",
+      blockers: { freigabe: 100, dispatch: null, abschnitte: [] } };
+    const observations = new Map<string, number>();
+    let saves = 0;
+    let observationTime = 100;
+    const record = new Function("tasks", "observeBlocker", "blockerObservedAt", "saveState", "Date",
+      `${recordCode}; return recordBlockersNow;`)([recordedRow], observeBlocker, observations, () => { saves++; },
+      { now: () => observationTime }) as (view: unknown) => void;
+    const recordView = { waits: [bHeld], repos: [{ waves: [{ rows: [{ id: "trace" }] }] }] };
+    record(recordView);
+    const recordedBytes = JSON.stringify(recordedRow);
+    observationTime = 150;
+    record(recordView);
+    check("(blockers) the actual server recorder saves once for a new reason and never for an unchanged sample",
+      saves === 1 && observations.get("trace") === 150 && JSON.stringify(recordedRow) === recordedBytes, JSON.stringify({ saves, recordedRow }));
+    observationTime = 200;
+    record({ ...recordView, waits: [bAfter] });
+    check("(blockers) the actual server recorder persists the next reason with an exact shared boundary",
+      saves === 2 && recordedRow.blockers?.abschnitte[0]?.bis === 200
+        && recordedRow.blockers.abschnitte[1]?.von === 200 && recordedRow.blockers.abschnitte[1]?.art === "after",
+      JSON.stringify({ saves, recordedRow }));
     const emitter = outcomeSource.match(/function emitLaneOutcome\(o:[\s\S]*?\n\}/)?.[0] ?? "";
     const emitCode = new Bun.Transpiler({ loader: "ts" }).transformSync(emitter);
     const runEmit = async (reject: boolean, replace = false) => {
@@ -14353,7 +14380,7 @@ export async function run(ctx: Ctx): Promise<void> {
         const now = Date.now();
         row.status = "queued";
         row.releasedBy = "owner";
-        row.blockers = { freigabe: now, dispatch: null, observedAt: now, abschnitte: [] };
+        row.blockers = { freigabe: now, dispatch: null, abschnitte: [] };
         row.hold = { by: "main", slot: mSlot, at: now, grund: "Blocker-Verlauf" };
         row.card = { ziel: "f-stau.ts", rolle: { harness: null, model: null, effort: null },
           surface: { files: ["f-stau.ts"], symbols: [], ranges: null }, done: "the line stands", verify: "bun e2e/pins.ts",
@@ -14361,7 +14388,7 @@ export async function run(ctx: Ctx): Promise<void> {
       }
     });
     const stHistory = async () => ((await (await get("/api/start-plan")).json()) as
-      { blockers: { id: string; history: BlockerHistory | null }[] }).blockers.find((b) => b.id === stB)?.history;
+      { blockers: { id: string; history: (BlockerHistory & { observedAt: number | null }) | null }[] }).blockers.find((b) => b.id === stB)?.history;
     const holdRecorded = await stUntil(async () => (await stHistory())?.abschnitte.at(-1)?.art === "hold");
     await post(`/api/tasks/${stB}/queue`, {});
     const afterRecorded = await stUntil(async () => (await stHistory())?.abschnitte.at(-1)?.art === "after");
@@ -14381,6 +14408,18 @@ export async function run(ctx: Ctx): Promise<void> {
         && JSON.stringify((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
           { tasks: { id: string; blockers?: BlockerHistory }[] }).tasks.find((t) => t.id === stB)?.blockers?.abschnitte) === JSON.stringify(trace?.abschnitte),
       JSON.stringify(trace ?? null));
+    const taskProjection = ((await (await get("/api/tasks")).json()) as { tasks: Record<string, unknown>[] }).tasks.find((t) => t.id === stB);
+    check("(blockers-live) start-plan exposes the retained telemetry while the ordinary task view preserves its fields and stable shape",
+      !!trace && !!taskProjection && taskProjection.id === stB && taskProjection.status === "queued"
+        && typeof taskProjection.text === "string" && !!taskProjection.card
+        && !Object.hasOwn(taskProjection, "blockers") && !Object.hasOwn(taskProjection, "blockerZeiten"), JSON.stringify(taskProjection ?? null));
+    const persistedTrace = () => (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { tasks: { id: string; blockers?: BlockerHistory }[] }).tasks.find((t) => t.id === stB)?.blockers;
+    const traceBytes = JSON.stringify(persistedTrace());
+    const sampledAgain = await stUntil(async () => ((await stHistory())?.observedAt ?? 0) > (trace?.observedAt ?? 0));
+    check("(blockers-live) another unchanged observation advances the read view but never writes a timestamp or changes persisted sections",
+      sampledAgain && !!traceBytes && JSON.stringify(persistedTrace()) === traceBytes
+        && !Object.hasOwn(persistedTrace() ?? {}, "observedAt"), JSON.stringify(await stHistory()));
     await post("/api/dispatch", { on: true });
     await stUntil(async () => ((await stOf(stB))?.note ?? "").startsWith("waiting: collides"));
     await stUntil(async () => ((await stPlan()).stau?.open ?? []).length > 0, 40);

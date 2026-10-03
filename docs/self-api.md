@@ -1816,17 +1816,23 @@ ein hängendes X kann weiter Stau auslösen. Holds ohne `until`, andere Selektor
 fehlendes, `pending` oder terminales X geben diese Ausnahme nicht. `STALL_MS` und Eskalation
 bleiben unverändert.
 
-`GET /api/start-plan` führt daneben `blockers:[{id,history,zeiten}]`. Die Task-Zeile hält in
-`blockers` dieselbe `history`: `{freigabe,dispatch,observedAt,abschnitte}`; jeder Abschnitt ist
+`GET /api/start-plan` führt daneben `blockers:[{id,history,zeiten}]`. Diese Tür exponiert die
+Warte-Messfelder; `GET /api/tasks` behält seine bisherige Task-Projektion. Die gespeicherte Task-Zeile hält in
+`blockers` die `history`: `{freigabe,dispatch,abschnitte}`; jeder Abschnitt ist
 `{art,adressat,wurzel,von,bis}` mit Millisekunden-Zeitpunkten, `bis:null` für den offenen Abschnitt.
 `art` ist `hold`, `release`, `after`, `wave`, `unchecked`, `collision`, `cap`, `tick` oder `unknown`.
 Der bestehende Dispatch-/Sensor-Lauf beobachtet den Plan; nur ein Wechsel von Art, Adressat oder
-Wurzel eröffnet einen neuen Abschnitt. Freigabe und tatsächlicher Dispatch werden separat gestempelt.
+Wurzel eröffnet einen neuen Abschnitt. Unveränderte Lesungen schreiben weder die Task-Zeile noch
+einen Zeitstempel und rufen dafür kein `saveState` auf. Die Lese-Tür ergänzt `history.observedAt`
+aus der letzten Beobachtung im Speicher, dem Dispatch oder der letzten dauerhaften Abschnittsgrenze;
+ohne diese Basis bleibt es `null`. Freigabe und tatsächlicher Dispatch werden separat gestempelt.
 Die Beobachtung ist diskret im Dispatch-Takt: kurzlebige Gründe zwischen zwei Lesungen sind unknown.
 Vor der ersten Beobachtung und über einen Neustart hinweg steht eine messbare Lücke ausdrücklich
 als `unknown`; das gilt auch für eine startbereite Welle ohne Wartegrund im Register bis zu ihrem
 tatsächlichen Dispatch. Bei alten oder erstmals unter Policy beobachteten Zeilen ist `freigabe:null`, niemals
-0 Minuten. Die Lese-Tür schreibt nichts und verlängert keinen Abschnitt bis zur Lesezeit.
+0 Minuten. Nach einem Neustart ist das Ende eines zuvor offenen Abschnitts nur bis zu seiner
+letzten gespeicherten Grenze bekannt; sein ungespeicherter Rest wird `unknown`. Die Lese-Tür
+schreibt nichts und verlängert keinen Abschnitt bis zur Lesezeit.
 
 Der vorhandene `lane-outcomes.jsonl` erhält `blockerZeiten:[{taskId,zeiten}]`, auch für Wellenfolger.
 `zeiten:{freigabe,dispatch,ms,unknown}` summiert die beobachteten Millisekunden je Art; fehlende

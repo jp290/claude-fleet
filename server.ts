@@ -4890,7 +4890,7 @@ function capTasks(list: Task[]): Task[] {
 function releaseTask(t: Task, by: "owner" | "machine"): void {
   t.status = "queued";
   t.releasedBy = by;
-  if (!t.blockers) t.blockers = { freigabe: Date.now(), dispatch: null, observedAt: Date.now(), abschnitte: [] };
+  if (!t.blockers) t.blockers = { freigabe: Date.now(), dispatch: null, abschnitte: [] };
   // a release is the act a hold waits for (TaskHold) — whoever releases, the stop is lifted with it
   t.hold = undefined;
   // …and the act a PARKED row waits for: a fresh queue starts the screen streak at zero
@@ -5295,7 +5295,8 @@ function taskView(t: Task): Task & { absorbed?: string[] } {
   // the code, and a stored one would be the one field here that can be wrong about a tree that
   // never changed.
   const cluster = surface ? clusterForFiles(surface.files, project) : undefined;
-  return { ...t,
+  const { blockers: _blockers, blockerZeiten: _blockerZeiten, ...row } = t;
+  return { ...row,
     ...(["pending", "queued", "sent"].includes(t.status) ? { absorbed: absorbedTaskIds(t.id, tasks) } : {}),
     files: surface?.files, filesOrigin: surface?.origin, cluster,
     ...(t.refine ? { refine: { ...t.refine, ...refineValidationFor(t, snapshot) } } : {}) };
@@ -16803,7 +16804,8 @@ function bundleRowsNow(): BundleRowInput[] {
   });
 }
 
-type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles>; blockers: { id: string; history: BlockerHistory | null; zeiten: BlockerTotals | null }[] };
+const blockerObservedAt = new Map<string, number>();
+type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles>; blockers: { id: string; history: (BlockerHistory & { observedAt: number | null }) | null; zeiten: BlockerTotals | null }[] };
 function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlanView {
   const baseCache = new Map<string, string | null>();
   const baseOf = (repo: string | null): string | null => {
@@ -16870,7 +16872,9 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
   const buendel = proposeBundles({ tasks: bundleRowsNow() });
   return { ...plan, buendel, waits: waitsOf(plan), stau: stallView(),
     blockers: tasks.filter((t) => t.blockers || t.blockerZeiten).map((t) =>
-      ({ id: t.id, history: t.blockers ?? null, zeiten: t.blockerZeiten ?? null })) };
+      ({ id: t.id, history: t.blockers ? { ...t.blockers,
+        observedAt: t.blockers.dispatch ?? blockerObservedAt.get(t.id) ?? t.blockers.abschnitte.at(-1)?.bis
+          ?? t.blockers.abschnitte.at(-1)?.von ?? null } : null, zeiten: t.blockerZeiten ?? null })) };
 }
 // THE FACTS the wait register reads (waits.ts#deriveWaits), taken off the live state in one pass:
 // every row (an `after` target that left the plan is still a fact), every occupied slot's park —
@@ -16880,19 +16884,23 @@ function recordBlockersNow(view: StartPlanView): void {
   const now = Date.now();
   const waits = new Map(view.waits.map((w) => [w.id, w]));
   let dirty = false;
+  const observed = new Set<string>();
   for (const repo of view.repos) for (const wave of repo.waves) for (const row of wave.rows) {
     const t = tasks.find((t) => t.id === row.id);
     if (!t || (t.status !== "queued" && !row.release?.released && !(t.hold && t.blockers))) continue;
-    const history = t.blockers ?? { freigabe: null, dispatch: null, observedAt: now, abschnitte: [] };
-    t.blockers = observeBlocker(history, waits.get(t.id), now);
-    dirty = true;
+    const history = t.blockers ?? { freigabe: null, dispatch: null, abschnitte: [] };
+    const next = observeBlocker(history, waits.get(t.id), now);
+    blockerObservedAt.set(t.id, now);
+    observed.add(t.id);
+    if (next !== t.blockers) { t.blockers = next; dirty = true; }
   }
+  for (const id of blockerObservedAt.keys()) if (!observed.has(id)) blockerObservedAt.delete(id);
   if (dirty) saveState();
 }
 function recordBlockerDispatch(t: Task): void {
   const now = Date.now();
   t.blockers = finishBlockers(t.blockers ?? { freigabe: null,
-    dispatch: null, observedAt: now, abschnitte: [] }, now);
+    dispatch: null, abschnitte: [] }, now);
 }
 function waitsOf(plan: StartPlan): WaitRow[] {
   const rowFacts: Record<string, WaitRowFacts> = {};
@@ -45439,7 +45447,7 @@ Bun.serve<WSData>({
         ...(body.queue === true ? { releasedBy: "owner" as const } : {}),
         ...(variantChoice.variants ? { variants: variantChoice.variants } : {}),
       };
-      if (body.queue === true) t.blockers = { freigabe: t.created, dispatch: null, observedAt: t.created, abschnitte: [] };
+      if (body.queue === true) t.blockers = { freigabe: t.created, dispatch: null, abschnitte: [] };
       // the author card's ROLLE fills an absent spawn here, at its birth (adoptSpawnFromCard) — a
       // body triple above already won, and a variant group keeps its `variants`
       adoptSpawnFromCard(t);

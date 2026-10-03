@@ -1014,7 +1014,7 @@ export async function run(): Promise<void> {
   // nothing here may change the bundle's timing.
   {
     type Held = { count: number; dueAt: number | null; paths: string[] };
-    type HeldAudit = { event?: string; slot?: number; path?: string; dueAt?: number };
+    type HeldAudit = { event?: string; slot?: number; path?: string; dueAt?: number; detail?: string };
     const statePath = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
     const turnsOf = (): string => { try { return readFileSync(`${statePath}.turns`, "utf8"); } catch { return ""; } };
     const countIn = (hay: string, needle: string): number => hay.split(needle).length - 1;
@@ -1026,7 +1026,9 @@ export async function run(): Promise<void> {
     const auditTail = (from: number): HeldAudit[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").slice(from)
       .flatMap((l) => { try { return l ? [JSON.parse(l) as HeldAudit] : []; } catch { return []; } });
     const autoText = `held-bundle-auto-${Date.now()}`, ownerText = `held-bundle-owner-${Date.now()}`;
-    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "30" });
+    // FLEET_HARNESS_AUTOMATION: slot 3 runs the pi stand-in, and an auto on a named harness is
+    // skipped (auto_skip, gate "harness") without it — the auto would never reach the bundle
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "30", FLEET_HARNESS_AUTOMATION: "1" });
     let agent: string | null | undefined;
     for (let i = 0; i < 80 && agent !== "alive"; i++) {
       agent = (await modelRowOf(3))?.agent;
@@ -1039,10 +1041,12 @@ export async function run(): Promise<void> {
       JSON.stringify({ statePath: statePath !== "", agent, before }));
     const auditFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").length - 1;
     const scheduled = await post("/api/slots/3/autos", { text: autoText, inSec: 1, idleSec: 0 });
-    let queued: HeldAudit | undefined;
-    for (let i = 0; i < 200 && !queued; i++) {
-      queued = auditTail(auditFrom).find((r) => r.event === "delivery_bundle_queued" && r.slot === 3 && r.path === "auto");
-      if (!queued) await Bun.sleep(100);
+    let queued: HeldAudit | undefined, skipped: HeldAudit | undefined;
+    for (let i = 0; i < 200 && !queued && !skipped; i++) {
+      const tail = auditTail(auditFrom);
+      queued = tail.find((r) => r.event === "delivery_bundle_queued" && r.slot === 3 && r.path === "auto");
+      skipped = tail.find((r) => r.event === "auto_skip" && r.slot === 3);
+      if (!queued && !skipped) await Bun.sleep(100);
     }
     const held = await heldOf();
     // BREAKS IF: the slot row omits a held bundle, counts it wrong, or names another deadline than
@@ -1051,7 +1055,7 @@ export async function run(): Promise<void> {
       scheduled.ok && !!queued && typeof queued.dueAt === "number" && held.held?.count === 1
         && held.held.dueAt === queued.dueAt && queued.dueAt - Date.now() > 15_000
         && JSON.stringify(held.held.paths) === JSON.stringify(["auto"]) && countIn(turnsOf(), autoText) === 0,
-      JSON.stringify({ scheduled: scheduled.status, queued: queued ?? null, held, now: Date.now() }));
+      JSON.stringify({ scheduled: scheduled.status, queued: queued ?? null, skipped: skipped?.detail ?? null, held, now: Date.now() }));
     const sent = await post("/send", { slot: 3, text: ownerText, submit: true });
     let after = await heldOf();
     for (let i = 0; i < 100 && after.present; i++) { await Bun.sleep(50); after = await heldOf(); }

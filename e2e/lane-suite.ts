@@ -15,7 +15,7 @@
 // see: THE TREE THAT LEAVES IS THE LANE'S WORKING TREE. A bundle of HEAD is the plausible wrong
 // implementation, and it fails SILENTLY: the suite runs, it passes, and it answers a question about
 // code the lane has not got. (LS.3) is that assertion.
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -24,17 +24,19 @@ import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
 import { suiteMeter, calmCase, laneDisplayName, laneTail, laneTitleOf, meterKind, meterLine, shortTitle, type MeterInput } from "../src/suitemeter";
 import { DAEMON_FEATURES, modulesEnv } from "../helper-daemon/daemon";
+import { localProofFor, verificationProportionFor, type LocalProof, type LocalProofContext } from "../verify-proportion";
+import { modulePlanFor, SERVER_MODULE_ANCHORS } from "../suite-modules";
 
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
   oldestAt: number; claim: { name: string; claimedAt: number; expiresAt: number } | null;
-  localRunning: boolean; untracked?: number; modules?: string[];
+  localRunning: boolean; untracked?: number; modules?: string[]; shard?: string;
 }
 interface HelperJobs { claimTimeoutMs: number; configured: boolean; jobs: HelperJob[] }
 interface ClaimedJob {
   id: string; kind?: string; repo: string; main: string; mainSha: string; treeSha?: string;
   branch?: string; untracked?: number; claimedAt: number; expiresAt: number; name: string;
-  modules?: string[];
+  modules?: string[]; shard?: string;
 }
 interface OfferView {
   id: string; state: string; branch: string; offeredAt: number; modules?: string[];
@@ -52,9 +54,12 @@ interface OfferView {
     // stopped writing the names must fail the named check, not take the module down with a TypeError.
     fails?: string[];
     remote?: { name: string; claimedAt: number; reportedAt: number; clonedSha?: string;
+      reason?: string; timeoutMs?: number;
       artifact?: { bytes: number; sha256: string; url: string } };
     treeSha?: string; ms?: number;
   } | null;
+  // present on a SHARDED offer only (LS.shard) — OPTIONAL for the reason `remote` is
+  shards?: { k: number; n: number; jobId: string; state: string; result?: string; ms?: number; name?: string }[];
 }
 interface HelperPresenceView {
   online: boolean; name: string | null; mode: string | null; lastSeenAgeMs: number | null;
@@ -140,6 +145,61 @@ async function selfTokenOf(slot: number): Promise<string> {
 }
 
 export async function run(): Promise<void> {
+  {
+    const known = (branch: string): LocalProofContext["target"] =>
+      ({ state: "known", branch, sha: "a".repeat(40), via: "laneBaseRef" });
+    const checks = { "e2e/tasks.ts": 'export function run() { check("task spec", true); }' };
+    const context = (branch: string): LocalProofContext => ({ target: known(branch), footprint: { checks } });
+    const main = localProofFor(["e2e/tasks.ts"], context("main"));
+    const integration = localProofFor(["e2e/tasks.ts"], context("overhaul"));
+    check("(LP.spec main) the same covered diff on main defaults to a full preview",
+      main.preview?.default === "full" && main.modules === undefined && main.preview.reason.includes("main-bound"),
+      JSON.stringify(main));
+    check("(LP.spec closure) a non-main target defaults to the exact transitive fixture closure",
+      integration.preview?.default === "modules"
+        && JSON.stringify(integration.modules) === '["self-token","outcomes","tasks"]'
+        && JSON.stringify(integration.preview.plan) === JSON.stringify(modulePlanFor(["tasks"])), JSON.stringify(integration));
+    const before = "function laneSuiteView(j: {state:string}) {\n  return { state: j.state };\n}\n";
+    const after = before.replace("state: j.state", "state: String(j.state)");
+    const anchor = SERVER_MODULE_ANCHORS.find((a) => a.symbol === "laneSuiteView")!;
+    const source = (checkSource: string, beforeSource = before, afterSource = after, patch = "@@ -2 +2 @@"): LocalProofContext =>
+      ({ target: known("overhaul"), footprint: {
+        server: { before: beforeSource, after: afterSource, patch }, checks: { "e2e/lane-suite.ts": checkSource },
+      } });
+    const call = `export function run() { check(${JSON.stringify(anchor.check)}, true); }`;
+    const covered = localProofFor(["server.ts"], source(call));
+    check("(LP.spec symbol) a changed server symbol requires its executable source and named check anchor",
+      covered.preview?.coverage.state === "covered" && JSON.stringify(covered.modules) === '["lane-suite"]'
+        && covered.preview.coverage.anchors[0]?.source === "server.ts#laneSuiteView", JSON.stringify(covered));
+    const commented = localProofFor(["server.ts"], source(`// ${call}`));
+    check("(LP.spec comment) a check anchor present only in comments cannot prove coverage",
+      commented.preview?.default === "full" && commented.preview.coverage.state === "unknown"
+        && commented.preview.reason.includes("missing executable check anchor"), JSON.stringify(commented));
+    const unproven = localProofFor(["server.ts"], source(call,
+      before.replaceAll("laneSuiteView", "unproven"), after.replaceAll("laneSuiteView", "unproven")));
+    check("(LP.spec unknown symbol) an unmapped symbol is named in the full fallback",
+      unproven.preview?.default === "full" && unproven.preview.reason.includes("server.ts#unproven"), JSON.stringify(unproven));
+    const seam = localProofFor(["server.ts"], source(call, before + "const globalSeam = 1;\n",
+      after + "const globalSeam = 2;\n", "@@ -4 +4 @@"));
+    check("(LP.spec seam) changed globals cannot borrow an adjacent function's coverage",
+      seam.preview?.default === "full" && seam.preview.reason.includes("global or unrecognized"), JSON.stringify(seam));
+    const unknown = localProofFor(["e2e/tasks.ts"], { ...context("overhaul"),
+      target: { state: "unknown", via: "laneBaseRef", reason: "no target metadata" } });
+    check("(LP.spec unknown target) missing target provenance keeps a covered diff full",
+      unknown.preview?.default === "full" && unknown.modules === undefined && unknown.preview.reason.includes("no target metadata"),
+      JSON.stringify(unknown));
+    const wrapper = localProofFor(["e2e-isolated.sh"], context("overhaul"));
+    check("(LP.spec wrapper) a wrapper is a named full fallback even on a non-main target",
+      wrapper.preview?.default === "full" && wrapper.preview.reason.includes("e2e-isolated.sh"), JSON.stringify(wrapper));
+    const docs = localProofFor(["docs/guide.md"], context("main"));
+    check("(LP.spec docs) docs-only still owes install,pins and no preview",
+      docs.preview?.default === "none" && docs.isolatedPreview === false && docs.steps.join(",") === "install,pins", JSON.stringify(docs));
+    check("(LP.spec gates) preview selection never makes source work docs-proportional",
+      verificationProportionFor(["e2e/tasks.ts"]).proportional === false
+        && verificationProportionFor(["server.ts"]).proportional === false
+        && verificationProportionFor(["docs/guide.md"]).proportional === true);
+  }
+
   // ===== (LS.meter) THE SUITE METER'S STATION MODEL, RUN — no server, no DOM ====================
   // src/suitemeter.ts decides which station every suite row sits at on the board's thermometer and
   // how its lane is named. The rules are the owner's reading of the meter: one ball per wire row,
@@ -419,8 +479,8 @@ export async function run(): Promise<void> {
     fetch(BASE + path, { headers: { "x-fleet-self-token": token } });
   const offerOf = async (token: string): Promise<OfferPayload> =>
     await bodyOf<OfferPayload>(await selfGet("/api/self/suite-offer", token));
-  const gateOf = async (token: string): Promise<{ helper?: HelperPresenceView; error?: string }> =>
-    await bodyOf<{ helper?: HelperPresenceView }>(await selfGet("/api/self/gate", token));
+  const gateOf = async (token: string): Promise<{ helper?: HelperPresenceView; localProof?: LocalProof & { offerBody?: { modules?: string[] } }; verify?: { cmd: string } | null; error?: string }> =>
+    await bodyOf<{ helper?: HelperPresenceView; localProof?: LocalProof & { offerBody?: { modules?: string[] } }; verify?: { cmd: string } | null }>(await selfGet("/api/self/gate", token));
   // ONE heartbeat, sent immediately before an offer is MINTED. The offer door refuses to mint while
   // nothing is beating (LS.0), and the harness runs with a deliberately short online window
   // (FLEET_DEVICE_ONLINE_MS in e2e-isolated.sh) so that refusal is observable at all — which means
@@ -1494,6 +1554,152 @@ export async function run(): Promise<void> {
         && modRead.offer.result?.result === "green" && JSON.stringify(modRead.offer.modules) === '["lane-suite","security"]',
       JSON.stringify({ status: modResult.status, state: modRead.offer?.state, modules: modRead.offer?.modules, r: modRead.offer?.result?.result }));
 
+    {
+      const fixture = `${ROOT}/preview-default-repo`;
+      const foreign = `${ROOT}/preview-default-foreign`;
+      const lanes: Lane[] = [];
+      const command = (cwd: string, ...args: string[]) => spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+      const commit = (cwd: string) => {
+        const added = command(cwd, "add", "-A");
+        const committed = command(cwd, "commit", "-qm", "preview default fixture");
+        check("(LP.api fixture) fixture changes commit before the gate reads them", added.status === 0 && committed.status === 0,
+          committed.stderr.slice(0, 160));
+      };
+      const seed = (cwd: string) => {
+        mkdirSync(cwd, { recursive: true });
+        command(cwd, "init", "-q", "-b", "main");
+        command(cwd, "config", "user.name", "Fleet E2E");
+        command(cwd, "config", "user.email", "e2e@example.invalid");
+        command(cwd, "config", "commit.gpgsign", "false");
+      };
+      const attach = async (repo: string, base: string) => {
+        const selected = await bodyOf<{ ok?: boolean; repo?: string; base?: string }>(
+          await post("/api/repo-base", { repo, branch: base }));
+        check("(LP.api fixture) the isolated repo-base door accepts the intended integration target",
+          selected.ok === true && selected.repo === repo && selected.base === base, JSON.stringify(selected));
+        const lane = await bodyOf<Lane>(await post("/api/lanes", { repo }));
+        check("(LP.api fixture) the lane is attached to its explicit integration target", !!lane.cwd && !!lane.slot,
+          JSON.stringify({ slot: lane.slot, error: lane.error }));
+        lanes.push(lane);
+        const token = await selfTokenOf(lane.slot);
+        const sessions = await bodyOf<{ slots?: { id: number; worktree?: { base?: string } }[] }>(
+          await get("/api/sessions"));
+        const bound = sessions.slots?.find((s) => s.id === lane.slot)?.worktree?.base;
+        check("(LP.api fixture) the newly recorded lane target matches the isolated repo-base selection",
+          bound === base, JSON.stringify({ expected: base, recorded: bound }));
+        return { lane, token };
+      };
+      try {
+        seed(fixture);
+        mkdirSync(`${fixture}/e2e`, { recursive: true });
+        writeFileSync(`${fixture}/fleet-e2e.ts`, "// Fleet chain sentinel\n");
+        writeFileSync(`${fixture}/e2e/tasks.ts`, 'export function run() { check("task spec", true); }\n');
+        writeFileSync(`${fixture}/e2e/lane-suite.ts`, readFileSync(`${ROOT}/e2e/lane-suite.ts`, "utf8"));
+        const source = "function laneSuiteView(j: {state:string}) {\n  return { state: j.state };\n}\n"
+          + "function unproven() {\n  return 1;\n}\n";
+        writeFileSync(`${fixture}/server.ts`, source);
+        commit(fixture);
+        command(fixture, "branch", "overhaul");
+        const m = await attach(fixture, "main");
+        const n = await attach(fixture, "overhaul");
+        for (const { lane } of [m, n]) {
+          writeFileSync(`${lane.cwd}/e2e/tasks.ts`, 'export function run() { check("task changed", true); }\n');
+          commit(lane.cwd);
+        }
+        const mainGate = await gateOf(m.token);
+        const nonMainGate = await gateOf(n.token);
+        check("(LP.api main) main-bound preview defaults to the full offer",
+          mainGate.localProof?.preview?.target.state === "known" && mainGate.localProof.preview.target.branch === "main"
+            && mainGate.localProof.preview.default === "full" && mainGate.localProof.modules === undefined
+            && JSON.stringify(mainGate.localProof.offerBody) === "{}", JSON.stringify(mainGate.localProof));
+        check("(LP.api target) the same committed diff on a non-main target defaults to its fixture closure",
+          nonMainGate.localProof?.preview?.target.state === "known" && nonMainGate.localProof.preview.target.branch === "overhaul"
+            && nonMainGate.localProof.preview.default === "modules"
+            && JSON.stringify(nonMainGate.localProof.modules) === '["self-token","outcomes","tasks"]'
+            && JSON.stringify(nonMainGate.localProof.offerBody) === '{"modules":["self-token","outcomes","tasks"]}'
+            && mainGate.localProof?.preview?.diff?.treeSha === nonMainGate.localProof.preview.diff?.treeSha,
+          JSON.stringify(nonMainGate.localProof));
+        for (const [token, proof] of [[m.token, mainGate.localProof], [n.token, nonMainGate.localProof]] as const) {
+          await beatAsDaemon();
+          const minted = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", token, proof?.offerBody));
+          check("(LP.api offer) posting the ready default mints its exact modules with tree provenance still unknown",
+            !!minted.offer?.id && minted.offer.state === "open"
+              && JSON.stringify(minted.offer.modules) === JSON.stringify(proof?.modules)
+              && minted.offer.commitSha === null && minted.offer.treeSha === null && minted.offer.untracked === null
+              && minted.offer.result === null, JSON.stringify(minted.offer));
+          const claimed = await bodyOf<{ job?: ClaimedJob }>(await hpost("/api/helper/claim",
+            { jobId: minted.offer?.id, deviceId: DEVICE }));
+          check("(LP.api claim) the actual helper claim freezes the gate's exact commit, tree and modules",
+            claimed.job?.id === minted.offer?.id && claimed.job?.kind === "lane-suite"
+              && claimed.job.mainSha === proof?.preview?.diff?.headSha
+              && claimed.job.treeSha === proof?.preview?.diff?.treeSha && claimed.job.untracked === 0
+              && JSON.stringify(claimed.job.modules) === JSON.stringify(proof?.modules), JSON.stringify(claimed.job));
+          const withdrawn = await selfPost("/api/self/suite-offer/withdraw", token, { abandon: true });
+          const ended = await offerOf(token);
+          check("(LP.api offer) fixture claim is abandoned without inventing a green measurement",
+            withdrawn.ok && ended.offer?.id === minted.offer?.id && ended.offer?.state === "abandoned"
+              && ended.offer.result === null && ended.offer.treeSha === proof?.preview?.diff?.treeSha,
+            JSON.stringify(ended.offer));
+        }
+        await beat();
+        const incapable = await gateOf(n.token);
+        const refused = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", n.token, incapable.localProof?.offerBody));
+        check("(LP.api helper) takesModules=false preserves the default and refuses its offer without minting",
+          incapable.helper?.takesModules === false && incapable.localProof?.preview?.default === "modules"
+            && refused.offer === null && refused.reason === "no helper online takes a narrowed preview", JSON.stringify(refused));
+        writeFileSync(`${n.lane.cwd}/server.ts`, source.replace("state: j.state", "state: String(j.state)"));
+        commit(n.lane.cwd);
+        const symbol = await gateOf(n.token);
+        check("(LP.api symbol) a real server diff is mapped by its source and executable check anchors",
+          symbol.localProof?.preview?.coverage.state === "covered"
+            && symbol.localProof.preview.coverage.anchors.some((a) => a.source === "server.ts#laneSuiteView")
+            && JSON.stringify(symbol.localProof.modules) === '["self-token","lane-suite","outcomes","tasks"]',
+          JSON.stringify(symbol.localProof));
+        writeFileSync(`${n.lane.cwd}/server.ts`, source.replace("return 1", "return 2"));
+        commit(n.lane.cwd);
+        const unmapped = await gateOf(n.token);
+        check("(LP.api unknown symbol) an uncovered real symbol yields a named full fallback",
+          unmapped.localProof?.preview?.default === "full" && unmapped.localProof.preview.reason.includes("server.ts#unproven")
+            && JSON.stringify(unmapped.localProof.offerBody) === "{}", JSON.stringify(unmapped.localProof));
+        command(fixture, "branch", "-m", "overhaul", "gone-overhaul");
+        const stale = await gateOf(n.token);
+        check("(LP.api unknown target) a stale branch target cannot borrow the lane's baseSha as a branch",
+          stale.localProof?.preview?.target.state === "unknown" && stale.localProof.preview.default === "full"
+            && stale.localProof.preview.reason.includes("unknown land target") && JSON.stringify(stale.localProof.offerBody) === "{}",
+          JSON.stringify(stale.localProof));
+        const docs = await attach(fixture, "main");
+        mkdirSync(`${docs.lane.cwd}/docs`, { recursive: true });
+        writeFileSync(`${docs.lane.cwd}/docs/guide.md`, "docs-only\n");
+        commit(docs.lane.cwd);
+        const docsGate = await gateOf(docs.token);
+        check("(LP.api docs) a real docs-only diff has no ready offer and still proves install,pins",
+          docsGate.localProof?.isolatedPreview === false && docsGate.localProof.steps.join(",") === "install,pins"
+            && docsGate.localProof.preview?.default === "none" && docsGate.localProof.offerBody === undefined,
+          JSON.stringify(docsGate.localProof));
+        seed(foreign);
+        writeFileSync(`${foreign}/seed.txt`, "foreign\n");
+        commit(foreign);
+        const f = await attach(foreign, "main");
+        const foreignGate = await gateOf(f.token);
+        check("(LP.api foreign) a foreign repo keeps its own verify contract and has no preview default",
+          foreignGate.localProof?.steps.length === 0 && foreignGate.localProof.isolatedPreview === false
+            && foreignGate.localProof.offerBody === undefined && foreignGate.localProof.preview === undefined
+            && (foreignGate.verify === null || !!foreignGate.localProof.note?.includes(foreignGate.verify?.cmd ?? "")),
+          JSON.stringify(foreignGate.localProof));
+      } finally {
+        for (const lane of lanes) if (lane.slot) await post(`/api/slots/${lane.slot}/kill`, {});
+        for (const repo of [fixture, foreign]) {
+          if (existsSync(`${repo}/.git`)) {
+            const cleared = await bodyOf<{ ok?: boolean; repo?: string; base?: string | null }>(
+              await post("/api/repo-base", { repo, branch: "" }));
+            check("(LP.api fixture) only the scratch repo's integration configuration is cleared",
+              cleared.ok === true && cleared.repo === repo && cleared.base === null, JSON.stringify(cleared));
+          }
+          rmSync(repo, { recursive: true, force: true });
+        }
+      }
+    }
+
     // --- THE RESTORE: a narrowed row the table no longer admits is DROPPED at boot, never widened -----
     // Planted as THIS lane's own OPEN offer (its slot and openedAt), so that a restore which kept it
     // would hand it straight back from the offer door — a row on another slot would be reaped by the
@@ -1615,6 +1821,174 @@ export async function run(): Promise<void> {
         && mainBody.job?.state === "withdrawn" && mainBody.mayRunLocally === true,
       `${mainWithdraw.status} ${JSON.stringify(mainBody)}`);
     await post(`/api/slots/${foreignSlot}/kill`, {});
+  }
+
+  // ===== (LS.shard) A FULL PREVIEW THAT OUTLASTS ONE CLAIM WINDOW STILL GETS A VERDICT ===========
+  // MEASURED 2026-10-02 (docs/verify-tiering.md §14, "Die volle Lane-Vorschau"): a full
+  // ./e2e-isolated.sh is 55–70 min since 2026-09-26, the helper claim lapses at
+  // HELPER_CLAIM_TIMEOUT_MS = 45 min, and the two full previews offered that night (lanes 24 and 19)
+  // both ended `unknown — nothing was measured` at 2 702 s / 2 708 s, after which each lane ran the
+  // hour locally. The post-land audit of the same suite already runs as three 11–22 min shards on the
+  // same helper, so the full preview now does too (server.ts#laneSuiteShardCount).
+  // The window here is 8 s instead of 45 min — the property under test is that the PREVIEW may take
+  // longer than ONE window as long as no SHARD does, which no clock length changes. Three claims:
+  //   (a) a full offer with a shard-capable device beating is split into FLEET_AUDIT_SHARDS jobs, and
+  //       the whole-suite id is not claimable; with only an older daemon beating it stays whole;
+  //   (b) a preview whose first claim and last report lie MORE than one claim window apart ends GREEN,
+  //       with the counts of all shards — never `unknown — nothing was measured`;
+  //   (c) a shard that lapses makes the merge `unknown` and NAMES that shard — n−1 greens never speak
+  //       for the missing one — and the lane is told either way.
+  {
+    const SHARD_CLAIM_MS = 8000;
+    await restartSrv({ FLEET_AUDIT_SHARDS: "3", FLEET_HELPER_CLAIM_TIMEOUT_MS: String(SHARD_CLAIM_MS),
+      FLEET_HELPER_SWEEP_MS: "1000" });
+    const beatAsDaemon = (): Promise<Response> =>
+      hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, features: [...DAEMON_FEATURES] });
+    // The lane's earlier preview rows are still open debts — a pane row ends only when its RECEIVER
+    // acknowledges it — and the per-slot delivery cap would turn this block's two lane rows into
+    // budget skips. The lane acks them first, so a missing row below can only be this block's own.
+    for (const e of await eventsOf())
+      if (e.receiverSlot === ln.slot && !["acknowledged", "receiver-gone", "subject-gone"].includes(e.status ?? ""))
+        await selfPost(`/api/self/events/${e.id}/ack`, laneTok);
+    const portal = await bodyOf<HelperJobs>(await hget(`/api/helper/jobs?deviceId=${DEVICE}`));
+    check("(LS.shard) setup: the server restarts with FLEET_AUDIT_SHARDS=3 and an 8 s claim window, and the daemon's own feature list names audit-shard",
+      portal.claimTimeoutMs === SHARD_CLAIM_MS && DAEMON_FEATURES.includes("audit-shard"),
+      `claimTimeoutMs=${portal.claimTimeoutMs} features=[${DAEMON_FEATURES}]`);
+
+    // --- (a) THE COUNTER-PROBE FIRST: an older daemon (no features) beating keeps the offer WHOLE ---
+    await beat();
+    const wholeOffer = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
+    const wholeId = wholeOffer.offer?.id ?? "";
+    check("(LS.shard a) with only a device that cannot run a shard beating, the full offer stays WHOLE — no `shards`, one listed job",
+      wholeOffer.offer?.state === "open" && wholeOffer.offer.shards === undefined
+        && keysOf(wholeOffer.offer) === OFFER_WIRE_KEYS,
+      JSON.stringify(wholeOffer.offer).slice(0, 240));
+    check("(LS.shard a) setup: the whole offer is withdrawn again (open, so 200)",
+      (await selfPost("/api/self/suite-offer/withdraw", laneTok)).ok, `job=${wholeId}`);
+
+    await beatAsDaemon();
+    const shOffer = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
+    const shId = shOffer.offer?.id ?? "";
+    const shardIds = (shOffer.offer?.shards ?? []).map((x) => x.jobId);
+    check("(LS.shard a) with a shard-capable device beating, the full offer is minted as 3 shards, each open, with its own 12-hex job id",
+      shOffer.offer?.state === "open" && shardIds.length === 3 && new Set(shardIds).size === 3
+        && shardIds.every((id) => /^[0-9a-f]{12}$/.test(id) && id !== shId)
+        && (shOffer.offer?.shards ?? []).every((x, i) => x.k === i + 1 && x.n === 3 && x.state === "open"),
+      JSON.stringify(shOffer.offer?.shards));
+    const listedShards = (await jobs()).filter((j) => shardIds.includes(j.id));
+    check("(LS.shard a) the portal lists the three SHARD jobs — kind lane-suite, `shard` k/3 — and not the whole-suite id",
+      listedShards.length === 3 && listedShards.every((j) => j.kind === "lane-suite" && j.main === ln.branch)
+        && listedShards.map((j) => j.shard).sort().join(",") === "1/3,2/3,3/3"
+        && !(await jobs()).some((j) => j.id === shId),
+      JSON.stringify((await jobs()).filter((j) => j.kind === "lane-suite").map((j) => `${j.id}:${j.shard}`)));
+    const wholeClaim = await hpost("/api/helper/claim", { jobId: shId, deviceId: DEVICE });
+    check("(LS.shard a) the whole-suite id of a sharded offer is refused 409 — nobody may run the tree whole beside its shards",
+      wholeClaim.status === 409 && ((await bodyOf(wholeClaim)).error ?? "").includes("3 shards"), `${wholeClaim.status}`);
+    await beat(); // the older daemon again, one heartbeat: features are not sticky
+    const oldClaim = await hpost("/api/helper/claim", { jobId: shardIds[0], deviceId: DEVICE });
+    const oldList = await jobs();
+    check("(LS.shard a) a device whose last heartbeat did not declare audit-shard neither sees nor claims a shard",
+      oldClaim.status === 409 && ((await bodyOf(oldClaim)).error ?? "").includes("audit-shard")
+        && !oldList.some((j) => shardIds.includes(j.id)),
+      `${oldClaim.status} listed=${oldList.filter((j) => shardIds.includes(j.id)).length}`);
+    await beatAsDaemon();
+
+    // --- (b) THE PREVIEW OUTLASTS ONE CLAIM WINDOW, NO SHARD DOES ------------------------------------
+    const c1Res = await hpost("/api/helper/claim", { jobId: shardIds[0], deviceId: DEVICE });
+    const c1 = await bodyOf<{ job?: ClaimedJob }>(c1Res);
+    const firstClaimAt = c1.job?.claimedAt ?? Date.now();
+    check("(LS.shard b) the first shard claim takes the tree once and answers with `shard` 1/3 and the PARENT's clone branch",
+      c1Res.ok && c1.job?.id === shardIds[0] && c1.job.shard === "1/3" && c1.job.kind === "lane-suite"
+        && c1.job.branch === `fleet-suite/${shId}` && /^[0-9a-f]{40}$/.test(c1.job.treeSha ?? ""),
+      `${c1Res.status} ${JSON.stringify(c1).slice(0, 260)}`);
+    const shBundle = await hget(`/api/helper/bundle/${shardIds[0]}`);
+    check("(LS.shard b) the shard id downloads the run's bundle; the whole-suite id has none",
+      shBundle.ok && (await shBundle.arrayBuffer()).byteLength > 0
+        && (await hget(`/api/helper/bundle/${shId}`)).status === 409, `${shBundle.status}`);
+    const SHARD_TAIL = (n: number): string => `PASS  shard check one\nPASS  shard check two\nALL PASS (${n} checks)`;
+    const r1 = await bodyOf<{ result?: string; shard?: string; pending?: number; previewResult?: string; artifactAt?: number }>(
+      await hpost("/api/helper/result", { jobId: shardIds[0], exitCode: 0, tail: SHARD_TAIL(2) }));
+    const between = await offerOf(laneTok);
+    check("(LS.shard b) one shard's green is THAT shard's answer — 2 pending, no preview verdict yet, the offer still claimed",
+      r1.result === "green" && r1.shard === "1/3" && r1.pending === 2 && r1.previewResult === undefined
+        && typeof r1.artifactAt === "number" && between.offer?.state === "claimed" && between.offer.result === null,
+      JSON.stringify({ r1, state: between.offer?.state, result: between.offer?.result }));
+    // the remaining two are claimed late — after more than half a window — so that the first claim and
+    // the last report lie MORE than one window apart while each shard stays well inside its own
+    await Bun.sleep(Math.round(SHARD_CLAIM_MS * 0.6));
+    const c2 = await hpost("/api/helper/claim", { jobId: shardIds[1], deviceId: DEVICE });
+    const c3 = await hpost("/api/helper/claim", { jobId: shardIds[2], deviceId: DEVICE });
+    check("(LS.shard b) setup: shards 2/3 and 3/3 are claimed inside the run's window",
+      c2.ok && c3.ok, `${c2.status} ${c3.status}`);
+    const held = await selfPost("/api/self/suite-offer/withdraw", laneTok);
+    check("(LS.shard b) while a shard is held, withdrawing without abandon is 409 naming the helper — work is taken over, never doubled",
+      held.status === 409 && ((await bodyOf(held)).error ?? "").includes(DEVICE_NAME), `${held.status}`);
+    const outlast = firstClaimAt + SHARD_CLAIM_MS + 500 - Date.now();
+    if (outlast > 0) await Bun.sleep(outlast);
+    const r2 = await hpost("/api/helper/result", { jobId: shardIds[1], exitCode: 0, tail: SHARD_TAIL(2) });
+    const r3Res = await hpost("/api/helper/result", { jobId: shardIds[2], exitCode: 0, tail: SHARD_TAIL(2) });
+    const r3 = await bodyOf<{ result?: string; previewResult?: string }>(r3Res);
+    check("(LS.shard b) setup: both late shards report inside their OWN windows; the last answer carries the merged previewResult",
+      r2.ok && r3Res.ok && r3.result === "green" && r3.previewResult === "green",
+      `${r2.status} ${r3Res.status} ${JSON.stringify(r3)}`);
+    const done = await offerOf(laneTok);
+    const dv = done.offer?.result;
+    const span = (dv?.remote?.reportedAt ?? 0) - firstClaimAt;
+    check("(LS.shard b) A PREVIEW LONGER THAN ONE CLAIM WINDOW ENDS GREEN — first claim to verdict exceeds the window, and the verdict is not `unknown — nothing was measured`",
+      done.offer?.state === "reported" && dv?.result === "green" && dv.exitCode === 0
+        && span > SHARD_CLAIM_MS && !(dv.reason ?? "").includes("nothing was measured")
+        && dv.remote?.name === DEVICE_NAME,
+      JSON.stringify({ state: done.offer?.state, result: dv?.result, reason: dv?.reason, span, window: SHARD_CLAIM_MS }));
+    check("(LS.shard b) …the merge counts every shard's checks, and each shard ran inside its own window",
+      dv?.checks?.ran === 6 && dv.checks.failed === 0 && (done.offer?.shards ?? []).length === 3
+        && (done.offer?.shards ?? []).every((x) => x.state === "reported" && x.result === "green"
+          && typeof x.ms === "number" && x.ms < SHARD_CLAIM_MS),
+      JSON.stringify({ checks: dv?.checks, shards: done.offer?.shards }));
+    const greenEvents = await suiteEventsFor(shId);
+    check("(LS.shard b) the lane is told ONCE, on the parent job, with the merged green",
+      greenEvents.filter((e) => e.receiverSlot === ln.slot).length === 1
+        && greenEvents.find((e) => e.receiverSlot === ln.slot)?.payload?.result === "green",
+      JSON.stringify(greenEvents.map((e) => ({ to: e.receiverSlot, r: e.payload?.result, s: e.status }))));
+
+    // --- (c) A LAPSED SHARD: the merge is unknown, names the shard, and the lane is still told -------
+    await beatAsDaemon();
+    const lapOffer = await bodyOf<OfferPayload>(await selfPost("/api/self/suite-offer", laneTok));
+    const lapId = lapOffer.offer?.id ?? "";
+    const lapShards = (lapOffer.offer?.shards ?? []).map((x) => x.jobId);
+    const l1 = await hpost("/api/helper/claim", { jobId: lapShards[0], deviceId: DEVICE });
+    const l1r = await hpost("/api/helper/result", { jobId: lapShards[0], exitCode: 0, tail: SHARD_TAIL(2) });
+    const l2 = await hpost("/api/helper/claim", { jobId: lapShards[1], deviceId: DEVICE });
+    check("(LS.shard c) setup: a second sharded offer — shard 1/3 green, shard 2/3 claimed and never reported, 3/3 never claimed",
+      lapShards.length === 3 && l1.ok && l1r.ok && l2.ok, `${l1.status} ${l1r.status} ${l2.status}`);
+    let lapped: OfferPayload | null = null;
+    try {
+      lapped = await until(async () => {
+        const o = await offerOf(laneTok);
+        return o.offer?.id === lapId && o.offer.state !== "claimed" ? o : null;
+      }, { timeoutMs: SHARD_CLAIM_MS + 10_000, what: "the sharded preview with a lapsed shard to settle" });
+    } catch (e) {
+      if (!(e instanceof UntilTimeout)) throw e; // the check below reports the miss
+    }
+    const lv = lapped?.offer?.result;
+    check("(LS.shard c) A LAPSED SHARD MAKES THE PREVIEW `unknown`, NAMING IT — two of three never read as green",
+      lapped?.offer?.state === "lapsed" && lv?.result === "unknown" && lv.exitCode === null
+        && (lv.reason ?? "").includes("shard 2/3 lapsed") && (lv.reason ?? "").includes("shard 3/3 ")
+        && lv.remote?.reason === "timeout" && lv.remote.timeoutMs === SHARD_CLAIM_MS,
+      JSON.stringify({ state: lapped?.offer?.state, result: lv?.result, reason: lv?.reason, remote: lv?.remote }));
+    const late = await hpost("/api/helper/result", { jobId: lapShards[1], exitCode: 0, tail: SHARD_TAIL(2) });
+    check("(LS.shard c) …a late verdict from the lapsed shard is refused 409 — the settled unknown stays the one answer",
+      late.status === 409, `${late.status}`);
+    let lapEvent: EventRow | undefined;
+    try {
+      lapEvent = await until(async () => (await suiteEventsFor(lapId)).find((e) => e.receiverSlot === ln.slot),
+        { timeoutMs: 5000, what: "the lane row for the lapsed sharded preview" });
+    } catch (e) {
+      if (!(e instanceof UntilTimeout)) throw e;
+    }
+    check("(LS.shard c) …and the lane is TOLD, through the sweep's mint queue, with result unknown — never left waiting",
+      lapEvent?.payload?.result === "unknown", JSON.stringify(lapEvent?.payload));
+
+    await restartSrv(); // back to the suite's own env: FLEET_AUDIT_SHARDS unset, the default window
   }
 
   // ===== (LS.10) THE OWNER ROW CLOSES ITSELF WHEN THE LANE IS GONE ===============================

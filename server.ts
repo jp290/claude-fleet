@@ -1,6 +1,6 @@
 import { historySource } from "./src/drafts";
-import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
-import { appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
+import { stat, rm, readdir, appendFile, mkdtemp, access } from "node:fs/promises";
+import { constants as fsConstants, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
@@ -82,7 +82,7 @@ import { isTaskCardSize, type TaskCardSize, type TaskWaveRange } from "./task-wa
 import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
 // The START PLAN: which land wave starts next, and what its rows passed. GET /api/start-plan shows it,
 // tickDispatch starts by it and the wave door resolves its ids in it (pinned in e2e/pins.ts).
-import { projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan,
+import { orderTextOf, projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan,
   type StartPlanLane, type StartPlanReleaseVerdict, type StartPlanRepoCaps, type StartPlanRow, type StartPlanWave } from "./start-plan";
 import { renderWaveBrief, withCardHead } from "./wave-brief";
 // THE WAIT REGISTER: which row waits on what and whose move it is — derived from the plan on every
@@ -129,7 +129,7 @@ import {
   type LineageHandoverLoss,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
-  PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold, TASK_HOLD_GRUND_MAX,
+  PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold, loadTaskHoldUntil, TASK_HOLD_GRUND_MAX,
   REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview, loadCandidateReview,
   loadStallSensor, type StallSensorState,
   type TaskDisposition, loadTaskDisposition, TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX,
@@ -149,7 +149,7 @@ import {
   type AttentionRequest, type AttentionStage, type AttentionDelivery, type AttentionNudgeReading, type TaskKind, type TaskKindChange, type Task, type TaskVariantDecision, type TaskBrief, type BriefAuthor, type TaskComment,
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
-  type TaskCard, type TaskCriterion, type TaskFilesProposal,
+  type TaskHoldUntil, type TaskCard, type TaskCriterion, type TaskFilesProposal,
   type RefineChild, type RefineProposal,
   type TaskRefine, type TaskBriefReview, type BriefReviewFinding, type LaneForm, type LaneRef, type LaneReviewCandidate, type LanePreview, type CandidateReview, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
@@ -5889,11 +5889,43 @@ async function laneLocalProof(s: Slot): Promise<LaneLocalProof | null> {
           : "verify = nothing is configured for this repo (`verify` is null above): name the proof you ran in your report"),
     };
   }
-  const base = s.worktree.baseSha ?? await laneBaseRef(s);
-  if (!base) return null;
-  const changed = await gitRead(s.cwd, "diff", "--no-renames", "--name-only", `${base}...HEAD`);
+  const targetRef = await laneBaseRef(s);
+  const targetTip = targetRef && targetRef !== s.worktree.branch
+    ? await gitRead(s.worktree.repo, "rev-parse", "--verify", `refs/heads/${targetRef}`) : null;
+  const head = await gitRead(s.cwd, "rev-parse", "HEAD");
+  const tree = await gitRead(s.cwd, "rev-parse", `${head.out}^{tree}`);
+  const base = s.worktree.baseSha ?? targetRef;
+  if (!base || head.code !== 0 || tree.code !== 0) return null;
+  const diffBase = await gitRead(s.cwd, "merge-base", base, head.out);
+  if (diffBase.code !== 0 || !diffBase.out) return null;
+  const range = `${diffBase.out}...${head.out}`;
+  const changed = await gitRead(s.cwd, "diff", "--no-renames", "--name-only", range);
   if (changed.code !== 0) return null;
-  return withOfferBody(localProofFor(changed.out.split("\n").filter(Boolean)));
+  const files = changed.out.split("\n").filter(Boolean);
+  const checks: Record<string, string> = {};
+  for (const file of new Set([...files.filter((f) => /^e2e\/[\w-]+\.ts$/.test(f)), "e2e/lane-suite.ts"])) {
+    const source = await gitRead(s.cwd, "show", `${head.out}:${file}`);
+    if (source.code === 0) checks[file] = source.out;
+  }
+  let server: NonNullable<Parameters<typeof localProofFor>[1]>["footprint"]["server"];
+  if (files.includes("server.ts")) {
+    const before = await gitRead(s.cwd, "show", `${diffBase.out}:server.ts`);
+    const after = await gitRead(s.cwd, "show", `${head.out}:server.ts`);
+    const patch = await gitRead(s.cwd, "diff", "--no-renames", "--unified=0", range, "--", "server.ts");
+    if (before.code === 0 && after.code === 0 && patch.code === 0)
+      server = { before: before.out, after: after.out, patch: patch.out };
+  }
+  const freshRef = await laneBaseRef(s);
+  const freshTip = freshRef ? await gitRead(s.worktree.repo, "rev-parse", "--verify", `refs/heads/${freshRef}`) : null;
+  const target: NonNullable<Parameters<typeof localProofFor>[1]>["target"] =
+    targetTip?.code === 0 && targetTip.out && freshRef === targetRef && freshTip?.code === 0 && freshTip.out === targetTip.out
+      ? { state: "known", branch: targetRef!, sha: targetTip.out, via: "laneBaseRef" }
+      : { state: "unknown", via: "laneBaseRef", reason: !targetRef ? "land resolution returned no target"
+        : targetRef === s.worktree.branch ? "land target contradicts lane branch"
+        : "land target is missing, unresolvable or changed during the reading" };
+  return withOfferBody(localProofFor(files, {
+    target, diff: { baseSha: diffBase.out, headSha: head.out, treeSha: tree.out }, footprint: { checks, ...(server ? { server } : {}) },
+  }));
 }
 // --- the slot's commits, for the review window's left column ---
 // ONE list, used twice: the client renders it, and the per-commit diff route checks a requested
@@ -6034,7 +6066,8 @@ async function diffPayload(cwd: string, base: string | null): Promise<{ branch: 
 
 // the deterministic session overview — recent commits, changed files, uncommitted
 // summary — shared by the owner sideboard and the guest info tab. Fresh git output per
-// request (never cached) so neither view can drift from reality. null = not a git repo.
+// request (never cached) so neither view can drift from reality. null = the git read failed — a
+// plain folder, a gone/unreadable one or a git error; cwdGitState tells the routes which.
 // THE COUNTS ARE THE TRUE ONES, the lists are the capped ones — and the two are separate fields
 // for exactly that reason. `uncommitted` used to be the length of the ALREADY CAPPED list, so a
 // tree with 300 changed files reported "200 uncommitted files" and no reader could tell (the
@@ -6055,6 +6088,53 @@ async function repoRecentCommits(cwd: string, ref: string | null): Promise<Commi
   if (!ref) return [];
   const lg = await git(cwd, "log", "--no-color", ref, "--format=%h%x09%ct%x09%s", "-10");
   return lg.code === 0 ? parseCommitLog(lg.out) : [];
+}
+// WHY a git read of a session's folder came back empty-handed — asked only AFTER the read failed,
+// so a healthy repo never pays for it. Four answers, and only the first is a normal state: a plain
+// folder without git (an ordinary session the owner opened anywhere) has no changes, history or
+// lanes, and that is not-applicable, not a failure. A folder that is gone or cannot be read, and a
+// git that fails inside a real repo, stay errors — none of them may pass for "no git here".
+// `detail` is git's own first stderr line and can name a path, so it is for the OWNER's wire only.
+// any `.git` (file, dir or dangling link) at `dir` or above — lstat, so a dangling link still counts
+function gitEntryAbove(dir: string): boolean {
+  for (let d = dir; ; d = dirname(d)) {
+    try { lstatSync(`${d}/.git`); return true; } catch { /* none at this level */ }
+    if (dirname(d) === d) return false;
+  }
+}
+type CwdGit = { kind: "none" } | { kind: "gone" } | { kind: "unreadable" } | { kind: "error"; detail: string };
+async function cwdGitState(cwd: string): Promise<CwdGit> {
+  try {
+    if (!(await stat(cwd)).isDirectory()) return { kind: "gone" };
+  } catch {
+    return { kind: "gone" };
+  }
+  try {
+    await access(cwd, fsConstants.R_OK | fsConstants.X_OK);
+  } catch {
+    return { kind: "unreadable" };
+  }
+  const r = await gitRead(cwd, "rev-parse", "--git-dir");
+  // "No repo here" is decided STRUCTURALLY, never from git's stderr: that sentence is localized
+  // (measured on the helper: "Schwerwiegend: Kein Git-Repository …" matched no English pattern and
+  // turned every plain folder into an error). A failed read with no `.git` entry in this folder or
+  // any parent is a plain folder; with one (a `.git` file pointing nowhere, a worktree whose repo
+  // moved, a damaged repo) it is a broken repo — an error, never "no git here".
+  if (r.code !== 0 && !gitEntryAbove(cwd)) return { kind: "none" };
+  // rev-parse found a repo (the status read failed for another reason), or failed some other way
+  return { kind: "error", detail: (r.code === 0 ? "git status failed" : r.err.split("\n")[0]) || `git exited ${r.code}` };
+}
+// the one body every brief/diff route answers when briefPayload/diffPayload came back null.
+// `git` is the discriminator a reader branches on; `error` is the sentence it may print. The
+// status stays 400 for all four so every reader that branches on `res.ok` keeps treating the
+// git half as absent — `git: "none"` is what tells it the absence is the normal kind.
+// guest = true drops `detail` (git's stderr names the folder; the guest wire carries no paths).
+function cwdGitBody(g: CwdGit, guest: boolean): { error: string; git: CwdGit["kind"] } {
+  const error = g.kind === "none" ? "not a git repository"
+    : g.kind === "gone" ? "the session's folder no longer exists"
+    : g.kind === "unreadable" ? "the session's folder cannot be read"
+    : guest ? "git could not read the session's folder" : `git could not read the session's folder: ${g.detail}`;
+  return { error, git: g.kind };
 }
 async function briefPayload(s: Slot): Promise<BriefPayload | null> {
   const st = await statusLines(s.cwd!); // column-preserving — see statusLines
@@ -7294,7 +7374,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   //
   // The bound Program-MAIN's subscription is armed HERE, immediately before that mint, because
   // this is the last instant at which the lane identity it binds to still exists.
-  armProgramMainLandWatch(s, path, branch);
+  armProgramMainLandWatch(s, path, branch, landed?.ts);
   if (beforeTeardown) await beforeTeardown();
   // …and a caller that passes NO callback still owes the same event. The ⏏ door tore a lane down
   // without ever minting a merge terminal, so every armed subscription on it — the implicit one
@@ -9295,7 +9375,10 @@ function deliveryRecipient(address: DeliveryAddress): Slot | null {
     return s?.cwd && s.openedAt === main?.openedAt ? s : null;
   }
   if (address.kind === "orchestrator") {
-    const candidates = slots.filter((s) => s.cwd && isOrchestratorLabel(s.label));
+    // non-lane only, the same predicate deliveryAddress uses on the sender side: a lane labelled
+    // "⎇ task orchestratorinnen-karte-…" matched the label and made the role ambiguous, so a bundle
+    // for the real Orchestratorin fell with "no current role occupant" (Slot 22, 2026-10-02)
+    const candidates = slots.filter((s) => s.cwd && !s.worktree && isOrchestratorLabel(s.label));
     return candidates.length === 1 ? candidates[0]! : null;
   }
   const s = slotFrom(address.id);
@@ -9409,9 +9492,16 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       return;
     }
+    if (immediate && (immediate.slot.openedAt !== immediate.origin.openedAt
+      || s.id !== immediate.origin.slot || s.openedAt !== immediate.origin.openedAt)) {
+      scheduleDeliveryBundle(key, bundle);
+      throw new DeliveryCancelled("slot occupant changed before immediate delivery");
+    }
     const entries = bundle.entries.splice(0);
     if (!entries.length && !immediate) { deliveryBundles.delete(key); return; }
     const recipientOpenedAt = s.openedAt;
+    let ownerGateBlocked = false;
+    let sent: { acceptance: Acceptance } | undefined;
     if (!immediate) {
       bundle.entries.unshift(...entries);
       const next = bundleDeadline(bundle, s, Date.now());
@@ -9466,6 +9556,10 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       if (!gate.ok && entries.length) {
         const reason = `gate=${gate.gate}${gate.detail ? `: ${gate.detail}` : ""} — nothing typed`;
+        if (immediate?.options.path === "owner") {
+          ownerGateBlocked = true;
+          throw new SendRefused(reason);
+        }
         if (gate.gate === "not-alive") {
           const agent = await paneAgentAt(sess(s.id), commsFor(s));
           throw new DeliveryGateDropped(`gate=${agent === "no-pane" ? "no-pane" : "no-agent"} — nothing typed`);
@@ -9481,18 +9575,24 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       const payload = bundleText(ordered, s);
       // a single entry keeps its own path: the header then carries its own sentence, and the send
       // row names the channel it came through rather than a bundle of one
+      // the immediate send's own ids ride the one paste's send row: the restart seeds of
+      // tickOrphanReports, tickFastProgramInbox and notifyOrchestratorOfProgramLoss read exactly
+      // these, and a hint typed inside a merged paste is as delivered as one typed alone
       const { acceptance } = await sendText(s, payload, true,
         { path: "bundle", ...(ordered.length === 1 ? { path: ordered[0]!.options.path } : {}),
           rollbackOwnPayload: true, requireAgent: true,
           deliveryClass: immediate ? "sofort" : "buendelbar", bypassQueue: true,
-          paneInboxNotice: bundleNotice(ordered) });
+          paneInboxNotice: bundleNotice(ordered),
+          ...(immediate?.options.reportId ? { reportId: immediate.options.reportId } : {}),
+          ...(immediate?.options.inboxId ? { inboxId: immediate.options.inboxId } : {}),
+          ...(immediate?.options.programEventId ? { programEventId: immediate.options.programEventId } : {}) });
       audit("delivery_bundle_sent", s.id, `${key} count=${entries.length}`,
         { count: entries.length + (immediate ? 1 : 0),
           paths: [...entries.map((e) => e.options.path), ...(immediate ? [immediate.options.path] : [])].join(","),
           deliveryClass: immediate ? "sofort" : "buendelbar",
           ...deliveryAuditCache(s) });
       for (const entry of entries) entry.resolve({ acceptance });
-      if (immediate) return { acceptance };
+      if (immediate) sent = { acceptance };
     } catch (error) {
       if (error instanceof DeliveryGateDropped || error instanceof SendAgentNotAlive) {
         const reason = error instanceof SendAgentNotAlive ? `gate=${error.agent} — nothing typed` : error.message;
@@ -9512,7 +9612,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
           try { await entry.options.onRefused?.(s); }
           catch (rollbackError) { logError("bundleRefusalRollback", rollbackError); }
         }
-        if (immediate) await immediate.options.onRefused?.(s);
+        if (immediate && !ownerGateBlocked) await immediate.options.onRefused?.(s);
         if (Number.isFinite(bundle.dueAt)) bundle.dueAt = bundle.retryAt;
         audit("delivery_bundle_refused", s.id, `${key} ${error.message}`,
           { count: entries.length, reason: error.message, deliveryClass: immediate ? "sofort" : "buendelbar",
@@ -9526,11 +9626,20 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       if (immediate) {
         if (bundle.entries.length) scheduleDeliveryBundle(key, bundle);
+        else deliveryBundles.delete(key);
+        if (ownerGateBlocked) {
+          if (immediate.slot.openedAt !== immediate.origin.openedAt)
+            throw new DeliveryCancelled("slot occupant changed before immediate delivery");
+          return;
+        }
         throw error;
       }
     }
+    // an immediate flush ends here too: an emptied bundle left in the map would pull every later
+    // "sofort" send to this key through a bundle of none (delivery_bundle_sent count=0)
     if (bundle.entries.length) scheduleDeliveryBundle(key, bundle);
     else deliveryBundles.delete(key);
+    return sent;
   };
   bundle.inflight = run().finally(() => { bundle.inflight = null; });
   return bundle.inflight;
@@ -9612,6 +9721,12 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       throw new SendRefused("slot pane unavailable or changed before send — nothing typed");
     const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms, bootSettleMs };
     const observes = !!bound.composer;
+    if (options.path === "owner") {
+      const readiness = await paneReadiness(s);
+      if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed during send readiness probe — nothing typed");
+      if (readiness?.state === "blocked")
+        throw new SendRefused(`gate=blocked-screen: ${readiness.why} — nothing typed`);
+    }
     if (observes) {
       // Fleet's own delivery header identifies an unsent previous paste. Submit that residue once
       // before the next paste; every other occupied composer remains untouched.
@@ -9923,6 +10038,7 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
     runsLeft: runs,
     ...(perpetual ? { perpetual: true } : {}),
     idleSec,
+    slotOpenedAt: s.openedAt,
     enabled: true,
     created: Date.now(),
     lastRun: 0,
@@ -9985,6 +10101,7 @@ function slotDeliveryBudget(slotId: number): DeliveryBudgetKnown {
 // refused at CREATE time, loudly.
 async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   if (!s.cwd) return json({ error: "slot not active" }, 400);
+  const receiverOpenedAt = s.openedAt;
   const b = body ?? {};
   const kind = b.kind === undefined ? "lane" : b.kind;
   if (kind !== "lane" && kind !== "merge" && kind !== "audit" && kind !== "deploy"
@@ -10085,6 +10202,7 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     return fired?.kind === laneWatchEventKind(laneSignal) && fired.status !== "acknowledged"
       && fired.subjectOpenedAt === identity!.t.openedAt && now - laneSig.idleMs <= w.firedAt;
   };
+  if (!s.cwd || s.openedAt !== receiverOpenedAt) return json({ error: "receiver occupant changed while validating watch" }, 400);
   const dup = watches.find((w) => {
     if (w.slot !== s.id || watchKind(w) !== kind) return false;
     if (kind === "audit") return watchKind(w) === "audit" && "repo" in w
@@ -10191,15 +10309,23 @@ function spendWatch(w: Watch, event: FleetEvent): boolean {
   return true;
 }
 
-async function mintMergeEvents(target: number, cwd: string, branch: string, outcome: MergeLast): Promise<void> {
+async function mintMergeEvents(target: number, cwd: string, branch: string, outcome: MergeLast, land?: { repo: string; task?: string }): Promise<void> {
   let dirty = false;
   const now = Date.now();
   const subject = slotFrom(target) ?? undefined;
+  if (!land && outcome.landed && subject?.cwd === cwd && subject.worktree?.branch === branch)
+    land = { repo: repoCanon(subject.worktree.repo), ...(subject.taskId ? { task: subject.taskId } : {}) };
   for (const w of watches) {
-    if (!w.armed || watchKind(w) !== "merge" || !("target" in w)
-      || w.target !== target || w.targetCwd !== cwd || w.targetBranch !== branch) continue;
+    if (!w.armed || watchKind(w) !== "merge" || !("target" in w)) continue;
+    if ("land" in w && w.land) {
+      const carriedTask = w.land.task ? tasks.find((t) => t.id === w.land!.task) : null;
+      const taskMatches = w.land.task === land?.task
+        || (carriedTask?.slot === target && w.targetBranch === branch);
+      if (!outcome.landed || outcome.status !== "merged" || w.land.repo !== land?.repo
+        || (w.land.task ? !taskMatches : w.land.branch !== branch)) continue;
+    } else if (w.target !== target || w.targetCwd !== cwd || w.targetBranch !== branch) continue;
     const receiver = slotFrom(w.slot);
-    if (!receiver?.cwd) continue;
+    if (!receiver?.cwd || (w.slotOpenedAt !== undefined && w.slotOpenedAt !== receiver.openedAt)) continue;
     const event: MergeFleetEvent = {
       id: randomBytes(12).toString("hex"), watchId: w.id,
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
@@ -10223,14 +10349,20 @@ async function mintMergeEvents(target: number, cwd: string, branch: string, outc
 // lane-watch fallback is deliberately NOT honoured (a subscriber already owns a row here). The
 // EXACTLY-ONE argument per guard: server-narrativ-archiv.md#armprogrammainlandwatch
 const PROGRAM_MAIN_LAND_IDLE_SEC = 60; // createWatchForSlot's own default: deliver at rest
-function armProgramMainLandWatch(lane: Slot, cwd: string, branch: string): void {
+function armProgramMainLandWatch(lane: Slot, cwd: string, branch: string, landedAt?: number): void {
   if (!lane.programId) return;
   const resolved = clarificationReceiverFor(lane);
   if ("error" in resolved || resolved.basis !== "program-main") return;
   const { receiver } = resolved;
   if (receiver.slot === lane.id) return; // a session watching itself learns nothing
+  // The ledger tick may have spent the hold Watch while landLane awaited note settlement.
+  if (landedAt !== undefined && fleetEvents.some((e) => e.kind === "merge-terminal"
+    && e.receiverSlot === receiver.slot && e.receiverOpenedAt === receiver.openedAt
+    && e.subjectBranch === branch && e.payload.landed && e.payload.at === landedAt)) return;
   if (watches.some((w) => w.armed && watchKind(w) === "merge" && "target" in w
-    && w.target === lane.id && w.targetCwd === cwd && w.targetBranch === branch
+    && ((w.target === lane.id && w.targetCwd === cwd && w.targetBranch === branch)
+      || ("land" in w && w.land && w.land.repo === repoCanon(lane.worktree!.repo)
+        && (w.land.task ? w.land.task === lane.taskId : w.land.branch === branch)))
     && w.slot === receiver.slot && w.slotOpenedAt === receiver.openedAt)) return;
   const budget = slotDeliveryBudget(receiver.slot);
   if (budget.free === 0) {
@@ -10750,8 +10882,8 @@ async function lineagePointerCommitted(cwd: string, pointer: string): Promise<bo
 }
 
 // WHAT DIES WITH THE PREDECESSOR, by id. Joined on the occupant pair wherever the row carries one
-// (a watch, an event, a report); an Auto carries no openedAt and teardown deletes every Auto of the
-// SLOT, so the slot is exactly what dies with it (captureProgramHandover's same exception).
+// (a watch, an event, a report); an Auto's slotOpenedAt is absent on legacy rows and teardown deletes
+// every Auto of the SLOT, so the slot is exactly what dies with it (captureProgramHandover's same exception).
 // A watch also names its SUBJECT (server/types.ts#LineageWatchTarget): its row dies here too, and the
 // id alone would leave the successor nothing to rebuild the re-arm body from.
 const lineageWatchTarget = (w: Watch): LineageWatchTarget | null => {
@@ -11898,7 +12030,7 @@ async function notifyOrchestratorOfProgramLoss(key: string, programId: string, m
   try {
     if (!programEventNotifiedSeeded) {
       for (const row of (await readEventLog(AUDIT_FILE)).rows)
-        if (row.event === "send" && row.path === "program-event-orphan"
+        if (row.event === "send" && (row.path === "program-event-orphan" || row.path === "bundle")
           && typeof row.programEventId === "string" && typeof row.bytes === "number" && row.bytes > 0)
           programEventNotified.add(row.programEventId);
       programEventNotifiedSeeded = true;
@@ -12202,7 +12334,7 @@ async function tickOrphanReports(): Promise<void> {
     if (!orphanReportSeeded) {
       const { rows } = await readEventLog(AUDIT_FILE);
       for (const row of rows)
-        if (row.event === "send" && row.path === "report-orphan"
+        if (row.event === "send" && (row.path === "report-orphan" || row.path === "bundle")
           && typeof row.reportId === "string" && typeof row.bytes === "number" && row.bytes > 0)
           orphanReportNotified.add(row.reportId);
       orphanReportSeeded = true;
@@ -13448,8 +13580,7 @@ function reapLaneSuiteOffersFor(slotId: number): void {
     // lapse sweep already read; succeedLane's finally removes it, and a succession that fails
     // honestly re-opens this reaper then.
     if (laneSpawn.has(slotId)) continue;
-    if (j.claim) { try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ } }
-    j.claim = null;
+    releaseLaneSuiteClaims(j);
     j.state = "reaped";
   }
 }
@@ -13472,7 +13603,7 @@ function dropWatchesFor(slotId: number, why?: SlotEnding): void {
   reconcileAttention(slotId, why);
   watches = watches.filter((w) => w.slot !== slotId);
   for (const w of watches) {
-    if (!("target" in w) || w.target !== slotId || !w.armed) continue;
+    if (!("target" in w) || w.target !== slotId || !w.armed || ("land" in w && w.land)) continue;
     w.armed = false;
     w.lastResult = watchKind(w) === "merge"
       ? "target session ended before a terminal merge event was recorded — no notification will come"
@@ -14565,9 +14696,11 @@ function releaseCardRefusal(t: Task): string | null {
 // verdict (start-plan.ts#releaseVerdict through the one row builder). The plan reads a row's order
 // from card.after ALONE, so a text ordering the row after a queue row the card does not carry would
 // start out of order wherever the card is trusted — same sentence at every door
-// (waits.ts#afterOrderRefusal).
+// (waits.ts#afterOrderRefusal). WHICH text names the order is start-plan.ts#orderTextOf, the reading
+// both start-plan builders make: a brief the owner or a MAIN wrote by hand replaces the original
+// request's order, every other brief is read beside it.
 function namedAfterRefusal(t: Task): string | null {
-  const named = namedAfterIds([t.text, t.brief?.text ?? ""].join("\n"))
+  const named = namedAfterIds(orderTextOf(t.text, t.brief))
     .filter((id) => id !== t.id && tasks.some((x) => x.id === id));
   const missing = named.filter((id) => !(t.card?.after ?? []).includes(id));
   return missing.length ? afterOrderRefusal(missing, t.card?.after) : null;
@@ -14726,21 +14859,82 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
     task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
 }
 
-// THE HOLD ROUTE'S ONE FIELD. The body is closed: `{grund}` or nothing — an empty body is a hold
-// without a reason, exactly the pre-2026-09-18 call. Any other key is a 400, so a body can never
-// nominate a program, a repo or a policy (the release policy is never read from a self body).
-function holdGrundFrom(raw: string): string | null | { error: string } {
-  if (!raw.trim()) return null;
+// The closed hold body cannot nominate a program, repository or start authority.
+function holdGrundFrom(raw: string): { grund: string | null; until?: TaskHoldUntil } | { error: string } {
+  if (!raw.trim()) return { grund: null };
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return { error: "body must be JSON {\"grund\": \"…\"} or empty" }; }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { error: "body must be an object {grund}" };
-  const extra = Object.keys(parsed).filter((k) => k !== "grund");
-  if (extra.length) return { error: `the hold reads grund only — [${extra.join(", ")}] is not read` };
-  const g = (parsed as { grund?: unknown }).grund;
-  if (g === undefined || g === null) return null;
-  if (typeof g !== "string" || !g.trim()) return { error: "grund must be a non-empty string or null" };
-  if (g.trim().length > TASK_HOLD_GRUND_MAX) return { error: `grund must be at most ${TASK_HOLD_GRUND_MAX} chars` };
-  return g.trim();
+  try { parsed = JSON.parse(raw); } catch { return { error: "body must be JSON {grund, until?} or empty" }; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { error: "body must be an object {grund, until?}" };
+  const extra = Object.keys(parsed).filter((k) => k !== "grund" && k !== "until");
+  if (extra.length) return { error: `the hold reads grund and until only — [${extra.join(", ")}] is not read` };
+  const r = parsed as { grund?: unknown; until?: unknown };
+  const g = r.grund;
+  if (g !== undefined && g !== null && (typeof g !== "string" || !g.trim()))
+    return { error: "grund must be a non-empty string or null" };
+  const grund = typeof g === "string" ? g.trim() : null;
+  if (grund && grund.length > TASK_HOLD_GRUND_MAX) return { error: `grund must be at most ${TASK_HOLD_GRUND_MAX} chars` };
+  if (r.until === undefined) return { grund };
+  const until = loadTaskHoldUntil(r.until);
+  if (!until) return { error: 'until must be {kind:"land",task|slot|branch}, {kind:"merge",slot}, or {kind:"audit",sha}; exactly one selector' };
+  if (!grund) return { error: "grund must be a non-empty string when until is set" };
+  return { grund, until };
+}
+
+async function holdWatchFor(s: Slot, id: string, repo: string, until: TaskHoldUntil): Promise<Watch | { error: string }> {
+  const openedAt = s.openedAt;
+  if (until.kind !== "land") {
+    const response = await createWatchForSlot(s, until.kind === "merge"
+      ? { kind: "merge", target: until.slot }
+      : { kind: "audit", repo, mainAfter: until.sha });
+    const result = await response.json() as { watch?: Watch; error?: string };
+    return result.watch ?? { error: `until.${until.kind}: ${result.error ?? "watch was not created"}` };
+  }
+  const { rows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+  let task: Task | null = null;
+  let lane: Slot | undefined;
+  let branch: string | undefined;
+  if ("task" in until) {
+    if (until.task === id) return { error: "until.land: a held task cannot wait for its own land" };
+    task = tasks.find((t) => t.id === until.task) ?? await youngestArchivedTask(until.task);
+    if (!task || task.kind !== "auftrag") return { error: "until.land: task is unknown or advisory — no land can exist" };
+    if (repoCanon(task.repo ?? DISPATCH_REPO) !== repo) return { error: "until.land: task targets another repository" };
+    const visited = new Set([id]);
+    for (let dependency: Task | null | undefined = task; dependency;) {
+      if (visited.has(dependency.id)) return { error: "until.land: cyclic held-task dependency cannot land" };
+      visited.add(dependency.id);
+      const next: TaskHoldUntil | undefined = dependency.hold?.until;
+      dependency = next?.kind === "land" && "task" in next ? tasks.find((t) => t.id === next.task) : null;
+    }
+    lane = task.status === "sent" && task.slot !== null ? slotFrom(task.slot) ?? undefined : undefined;
+  } else if ("slot" in until) {
+    lane = slotFrom(until.slot) ?? undefined;
+    if (!lane?.cwd || !lane.worktree) return { error: "until.land: slot is not an active lane" };
+    branch = lane.worktree.branch;
+  } else {
+    branch = until.branch;
+    lane = slots.find((t) => t.cwd && t.worktree && t.worktree.branch === branch && repoCanon(t.worktree.repo) === repo);
+  }
+  if (lane?.worktree && repoCanon(lane.worktree.repo) !== repo) return { error: "until.land: lane targets another repository" };
+  const landed = rows.findLast((r) => r.disposition === "landed" && r.repo === repo
+    && (task ? r.taskId === task.id : r.branch === branch));
+  if (task && task.status !== "pending" && task.status !== "queued" && task.status !== "sent" && !landed)
+    return { error: "until.land: terminal task has no persisted land" };
+  if (!task && !lane && !landed) return { error: "until.land: branch has no active lane or persisted land" };
+  const historicalSlot = !lane && !task && landed && branch ? (await laneDossier(branch, repo)).slot : null;
+  if (!task && !lane && historicalSlot === null) return { error: "until.land: persisted branch has no identifiable lane slot" };
+  if (!s.cwd || s.openedAt !== openedAt) return { error: "until.land: receiver occupant changed" };
+  const land = task ? { repo, task: task.id } : { repo, branch: branch! };
+  const dup = watches.find((w) => w.slot === s.id && w.slotOpenedAt === openedAt
+    && "land" in w && w.land && JSON.stringify(w.land) === JSON.stringify(land));
+  if (dup) return dup;
+  if (slotDeliveryBudget(s.id).free === 0) return { error: "until.land: no watch delivery budget" };
+  const w: MergeWatch = { id: randomBytes(4).toString("hex"), kind: "merge", land,
+    slot: s.id, slotOpenedAt: openedAt, idleSec: PROGRAM_MAIN_LAND_IDLE_SEC,
+    created: Date.now(), armed: true, firedAt: null, lastResult: null,
+    target: lane?.id ?? task?.slot ?? historicalSlot ?? 0, targetCwd: lane?.cwd ?? repo,
+    targetBranch: branch ?? lane?.worktree?.branch ?? "" };
+  watches = [...watches, w];
+  return w;
 }
 
 // THE HOLD (Schnitt 3) — a bound Program-MAIN's stop on one row of its OWN program, over its
@@ -14750,12 +14944,13 @@ function holdGrundFrom(raw: string): string | null | { error: string } {
 // binding, the repo from the caller's checkout, nothing from a body. Idempotent — a second hold on
 // a held row answers ok and writes nothing. A running or terminal row is not held: a hold stops a
 // START, and those rows have started or ended.
-// `grund` is the MAIN's sentence why (TaskHold.grund), parsed by the route (holdGrundFrom) and never
-// anything else: the program still comes from the binding and the repo from the checkout. A hold
+// `grund` is the MAIN's sentence why (TaskHold.grund), parsed by the route (holdGrundFrom).
+// Optional `until` arms its one-shot Watch; program and repo still come from binding and checkout. A hold
 // without one is ACCEPTED and stored as grund:null — visible on the row, in the audit line and in the
 // wait register — because refusing it would strand every MAIN that holds a row the old way. A second
-// hold on a held row writes only a NEW reason (the way to name one after the fact), else nothing.
-async function holdTaskForMain(s: Slot, id: string, grund: string | null): Promise<Response> {
+// hold may add a reason or an until, but cannot replace a standing until. The Watch never releases it.
+async function holdTaskForMain(s: Slot, id: string, grund: string | null, until?: TaskHoldUntil): Promise<Response> {
+  const openedAt = s.openedAt;
   const bound = boundProgramForMain(s);
   if (!bound.ok) return json({ error: bound.error }, 409);
   const { program, sessionIdMatch } = bound;
@@ -14773,12 +14968,23 @@ async function holdTaskForMain(s: Slot, id: string, grund: string | null): Promi
   const target = t.repo ?? DISPATCH_REPO;
   if (!target || repoCanon(target) !== mainRepo)
     return json({ error: `task does not target ${basename(mainRepo)}, where this MAIN is bound — a hold never reaches across repositories` }, 409);
+  if (!s.cwd || s.openedAt !== openedAt) return json({ error: "hold receiver occupant changed" }, 409);
+  if (until && t.hold?.until && JSON.stringify(t.hold.until) !== JSON.stringify(until))
+    return json({ error: "until already set — release the hold before changing its condition" }, 400);
+  let watchId = t.hold?.watchId;
+  if (until && !t.hold?.until) {
+    const watch = await holdWatchFor(s, id, mainRepo, until);
+    if ("error" in watch) return json({ error: watch.error }, 400);
+    if (!s.cwd || s.openedAt !== openedAt || !["pending", "queued"].includes(t.status))
+      return json({ error: "hold receiver or task changed while validating until" }, 409);
+    watchId = watch.id;
+  }
   if (!t.hold) {
-    t.hold = { by: "main", slot: s.id, at: Date.now(), grund };
+    t.hold = { by: "main", slot: s.id, at: Date.now(), grund, ...(until ? { until, watchId } : {}) };
     audit("task_hold", s.id, `${t.id} program=${program.id} held grund=${JSON.stringify(grund)}`);
     await saveStateNow();
-  } else if (grund !== null && grund !== t.hold.grund) {
-    t.hold = { ...t.hold, grund };
+  } else if ((grund !== null && grund !== t.hold.grund) || (until && !t.hold.until)) {
+    t.hold = { ...t.hold, ...(grund !== null ? { grund } : {}), ...(until ? { until, watchId } : {}) };
     audit("task_hold", s.id, `${t.id} program=${program.id} regrund grund=${JSON.stringify(grund)}`);
     await saveStateNow();
   }
@@ -16066,6 +16272,15 @@ async function tickAutos(): Promise<void> {
         dirty = true;
         continue;
       }
+      // AN AUTO BELONGS TO ITS OCCUPANT, not to the slot number or a role: a slot id that holds a
+      // different session than the one that scheduled it gets nothing typed, and the row says why.
+      if (typeof a.slotOpenedAt === "number" && a.slotOpenedAt !== s.openedAt) {
+        a.enabled = false;
+        a.lastResult = `skipped — slot occupant changed (scheduled by openedAt=${a.slotOpenedAt}, now ${s.openedAt})`;
+        audit("auto_skip", a.slot, a.lastResult);
+        dirty = true;
+        continue;
+      }
       // the shared choke-point (killSwitch already handled by the tick-level early return above;
       // quiet hours mute the PERIODIC surface only — one-shots are a specific owner intent and
       // always fire, so quiet-hours is honored only for a recurring auto).
@@ -16121,7 +16336,11 @@ async function tickAutos(): Promise<void> {
       void (async () => {
         let recipient = s;
         try {
-          await sendText(s, a.text, true, { path: "auto",
+          // addressed to THIS slot, never re-resolved by role: deliveryAddress would turn an
+          // Orchestratorin slot into {kind:"orchestrator"}, which resolves to nobody while zero or two
+          // slots carry the label ("no current role occupant", Slot 9, 2026-10-02). The slot address
+          // also makes the bundle drop the entry if the occupant changes before the paste.
+          await sendText(s, a.text, true, { path: "auto", address: { kind: "slot", id: s.id },
             bundleGate: { quietHours: a.everySec === null ? false : undefined,
               idleMs: a.idleSec * 1000 }, beforeSend: async (current) => {
             if (!a.enabled || !autos.includes(a)) throw new DeliveryCancelled(`auto ${a.id} was cancelled before paste`);
@@ -16140,6 +16359,12 @@ async function tickAutos(): Promise<void> {
             a.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
             audit("auto_skip", a.slot, a.lastResult);
             advanceAuto(a, Date.now());
+          } else if (a.enabled && autos.includes(a)) {
+            // cancelled by the occupant check (the row itself was not cancelled): the scheduling
+            // session is gone, so the row is spent with the reason, never handed to its successor
+            a.enabled = false;
+            a.lastResult = `skipped — ${e.message}`.slice(0, 160);
+            audit("auto_skip", a.slot, a.lastResult);
           }
         } finally {
           pendingAutoSends.delete(a.id);
@@ -16346,7 +16571,7 @@ const startPlanRowOf = (t: Task): StartPlanRow => {
   return { id: t.id, status: t.status, programId: t.programId ?? null, ...startPlanSurfaceOf(t),
     after: src.card?.after ?? [],
     checks: startPlanChecks({ text: src.text, source: t.source, card: src.card ?? null,
-      briefText: src.brief?.text ?? null, briefAt: src.brief?.at ?? null,
+      briefText: src.brief?.text ?? null, briefEdited: src.brief?.edited, briefBy: src.brief?.by, briefAt: src.brief?.at ?? null,
       queueKnown: (id) => tasks.some((x) => x.id === id), selfId: t.id }),
     // a PARKED row reads as `manual`: pending and waiting for a release, which is exactly what it does
     ...(policy !== "manual" && !dispatchParked(t) ? { release: policy } : {}), ...(t.hold ? { held: true } : {}),
@@ -16714,7 +16939,7 @@ function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
     if (live?.cwd && live.openedAt === main?.openedAt)
       receiver = { role: "program-main", slot: live.id, openedAt: live.openedAt };
   } else if (role === "program-main") {
-    const candidates = slots.filter((x) => x.cwd && x.id !== s.id && isOrchestratorLabel(x.label));
+    const candidates = slots.filter((x) => x.cwd && !x.worktree && x.id !== s.id && isOrchestratorLabel(x.label));
     if (candidates.length === 1) {
       const orchestrator = candidates[0]!;
       receiver = { role: "orchestrator", slot: orchestrator.id, openedAt: orchestrator.openedAt };
@@ -21885,7 +22110,7 @@ async function tickFastProgramInbox(): Promise<void> {
     if (!fastInboxSeeded) {
       const { rows } = await readEventLog(AUDIT_FILE);
       for (const row of rows)
-        if (row.event === "send" && row.path === "inbox-nudge"
+        if (row.event === "send" && (row.path === "inbox-nudge" || row.path === "bundle")
           && typeof row.inboxId === "string" && typeof row.bytes === "number" && row.bytes > 0)
           fastInboxNotified.add(row.inboxId);
       fastInboxSeeded = true;
@@ -22997,6 +23222,7 @@ async function tickWatches(): Promise<void> {
   try {
     const now = Date.now();
     let dirty = false;
+    let landRows: Record<string, unknown>[] | null = null;
     // Every hold whose row stopped being probeable ends here, with its totals, before the round
     // that could mint new ones. Writes trail lines only, never state.
     sweepComposerHolds();
@@ -23016,6 +23242,35 @@ async function tickWatches(): Promise<void> {
         w.armed = false;
         w.lastResult = "receiver session gone or replaced — no notification will come";
         dirty = true;
+        continue;
+      }
+      if (watchKind(w) === "merge" && "land" in w && w.land) {
+        if (w.slotOpenedAt !== s.openedAt) {
+          w.armed = false;
+          w.lastResult = "hold receiver occupant changed — no notification will come";
+          dirty = true;
+          continue;
+        }
+        const selector = w.land;
+        const task = selector.task ? tasks.find((t) => t.id === selector.task) ?? await youngestArchivedTask(selector.task) : null;
+        const lane = task?.status === "sent" && task.slot !== null ? slotFrom(task.slot) : null;
+        if (lane?.cwd && lane.worktree && repoCanon(lane.worktree.repo) === selector.repo
+          && (w.target !== lane.id || w.targetBranch !== lane.worktree.branch || w.targetCwd !== lane.cwd)) {
+          w.target = lane.id;
+          w.targetBranch = lane.worktree.branch;
+          w.targetCwd = lane.cwd;
+          dirty = true;
+        }
+        landRows ??= (await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE)).rows;
+        const row = landRows.findLast((r) => r.disposition === "landed" && r.repo === selector.repo
+          && (selector.task ? r.taskId === selector.task
+            || (task?.status === "done" && task.note === `landed (${r.branch})` && task.slot !== null
+              && tasks.find((t) => t.id === r.taskId)?.slot === task.slot)
+            : r.branch === selector.branch));
+        if (row && typeof row.branch === "string" && typeof row.ts === "number") {
+          await mintMergeEvents(task?.slot ?? w.target, worktreePathFor(w.land.repo, row.branch), row.branch,
+            { status: "merged", landed: true, branch: row.branch, at: row.ts, detail: "persisted land" }, w.land);
+        }
         continue;
       }
       if (watchKind(w) === "deploy" && "deployId" in w) {
@@ -25439,8 +25694,11 @@ let auditGraceTimer: ReturnType<typeof setTimeout> | null = null;
 // own. Nothing on THIS side changed to allow it: the daemon is a client of the same five routes a
 // browser uses, so "the server assigns nothing" is still true, literally, in the code below. The
 // other three non-goals are untouched and are stop lines, not negotiating room.
-// 45 minutes by default — the owner's number, and the right order of magnitude: a full
-// ./e2e-isolated.sh takes 5.8–9.8 min, plus a clone, an install and a human noticing. The floor is
+// 45 minutes by default — the owner's number. It was set when a full ./e2e-isolated.sh took
+// 5.8–9.8 min; MEASURED 2026-10-02 it takes 55–70 min on this box (docs/verify-tiering.md §14, "Die
+// volle Lane-Vorschau"), so ONE claim no longer covers a whole run. What this window covers now is
+// ONE SHARD: the post-land audit and the full lane preview (laneSuiteShardCount) both run as
+// FLEET_AUDIT_SHARDS jobs of 11–22 min each on the helper, every shard on its own claim. The floor is
 // a typo guard (a `0` or a NaN would make every claim dead on arrival), not a policy: the harness
 // runs this rail at a few seconds, because the property under test is the FALLBACK, not the wait.
 const HELPER_CLAIM_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_HELPER_CLAIM_TIMEOUT_MS ?? 2_700_000) | 0);
@@ -25996,6 +26254,34 @@ interface LaneSuiteJob {
   claimWas?: { deviceId: string; name: string; claimedAt: number; expiresAt: number };
   endedAt?: number;
   result: LaneSuiteResult | null;
+  // THE SHARDED PREVIEW (laneSuiteShardCount): present only on a FULL offer minted while
+  // FLEET_AUDIT_SHARDS > 1 and a shard-capable helper was beating. `claim` then stays null for the
+  // job's whole life — every claim lives on a shard — and `result` is the MERGE, written once, when
+  // the last shard is terminal. Absent is the unsharded job, byte for byte.
+  sharded?: LaneSuiteShardRun;
+}
+// WHY A FULL PREVIEW IS SHARDED, measured 2026-10-02 (docs/verify-tiering.md §14, "Die volle
+// Lane-Vorschau"): a full ./e2e-isolated.sh is 55–70 min on this box since 2026-09-26 (trail: lane 24
+// 59,7 min / 6 886 checks, lane 19 55,1 min / 6 750 checks), and the two helper claims of those same
+// previews lapsed at 2 702 s and 2 708 s with nothing reported — HELPER_CLAIM_TIMEOUT_MS is 45 min. The
+// post-land audit of the same suite runs on the same helper as three shards of 11–22 min each
+// (post-land-audits.jsonl, 2026-09-30 → 10-02). So the preview takes the audit's split: n shard jobs,
+// each claimed, run and reported on its own claim clock, merged into ONE verdict. No shard comes near
+// either limit, so neither the claim timeout nor the daemon's suiteTimeoutSec has to move.
+// THE MERGE is the audit's (shardedAuditRowOf): green only when all n shards reported green, red when
+// any did, `unknown` otherwise — a lapsed or never-run shard never lets n−1 greens speak for it.
+interface LaneSuiteShard {
+  k: number;
+  jobId: string;             // what the portal lists and the daemon claims, reports and downloads by
+  claim: { deviceId: string; name: string; claimedAt: number; expiresAt: number } | null;
+  result?: LaneSuiteResult;  // this shard's own verdict, the same shape the unsharded job carries
+  closed?: { at: number; why: "lapsed" | "unclaimed" | "sibling"; name?: string; claimedAt?: number };
+}
+interface LaneSuiteShardRun {
+  n: number;
+  bundle: string | null;     // ONE bundle for all n shards, built by the first claim — one tree
+  openUntil: number | null;  // first claim + HELPER_CLAIM_TIMEOUT_MS: the window an unclaimed shard has
+  shards: LaneSuiteShard[];
 }
 const laneSuiteJobs = new Map<string, LaneSuiteJob>(); // job id -> the offer
 // A settled offer stays readable so the lane that made it can still fetch its verdict after the
@@ -27280,6 +27566,13 @@ function expireHelperClaims(): boolean {
   // preview is NOT requeued anywhere. There is no drain behind it, so the only honest outcome is
   // to book the lapse (a helper that takes jobs and vanishes must stay visible) and close the job.
   for (const [id, j] of [...laneSuiteJobs]) {
+    // A SHARDED preview lapses SHARD BY SHARD, each on its own claim clock — that is the whole point
+    // of splitting it. The run's verdict is owed once every shard is terminal, and it goes down the
+    // same queue the whole job's lapse uses.
+    if (j.sharded && j.state === "claimed" && settleLaneSuiteShardRun(j, now)) {
+      changed = true;
+      if (j.state !== "claimed") { laneSuiteMintQueue.push(j); continue; }
+    }
     const c = j.claim;
     if (c && now >= c.expiresAt) {
       try { rmSync(c.bundle, { force: true }); } catch { /* already gone */ }
@@ -27314,8 +27607,7 @@ function expireHelperClaims(): boolean {
     // de-registered in its finally, and the next sweep reaps honestly then.
     const live = slots.some((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
     if (!live && !laneSpawn.has(j.slot) && (j.state === "open" || j.state === "claimed")) {
-      if (j.claim) { try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ } }
-      j.claim = null;
+      releaseLaneSuiteClaims(j);
       j.state = "reaped";
       audit("helper_claim_expired", j.slot,
         `the lane that offered the preview suite of ${basename(j.repo)} ${j.branch} is gone — offer reaped`);
@@ -27392,8 +27684,168 @@ function expireHelperClaims(): boolean {
 // A lane-suite job is CLAIMED only while its claim is still live — expired counts as absent here for
 // exactly the reason helperClaimOf gives on the audit side: the decision is the clock, the sweep is
 // only bookkeeping, so a late or dead sweep can never strand a job.
+// A SHARDED job answers with its OLDEST live shard claim, carrying the run's one bundle: every
+// reader of this function asks "is this preview somebody's work right now" (withdraw's 409, the
+// view's `claim`, the meter's device), and one live shard is enough to say yes.
 function laneSuiteClaimOf(j: LaneSuiteJob): LaneSuiteJob["claim"] {
+  if (j.sharded) {
+    const now = Date.now();
+    const bundle = j.sharded.bundle;
+    const live = j.sharded.shards.flatMap((s) => (s.claim && now < s.claim.expiresAt ? [s.claim] : []))
+      .sort((a, b) => a.claimedAt - b.claimedAt)[0];
+    return live && bundle ? { ...live, bundle } : null;
+  }
   return j.claim && Date.now() < j.claim.expiresAt ? j.claim : null;
+}
+// --- THE SHARDED PREVIEW (LaneSuiteShardRun) -----------------------------------------------------
+// HOW MANY SHARDS A NEW OFFER GETS, decided ONCE, at the offer door, and never changed afterwards —
+// the first claim freezes the tree, and a run whose n moved under it would merge shards of two
+// different splits. The count is the audit's own FLEET_AUDIT_SHARDS: it is this fleet's one measured
+// split of the same ./e2e-isolated.sh on the same helper, and a second knob would be a second number
+// for one fact. Three conditions, each a refusal to shard:
+//   · a NARROWED offer stays whole — it is minutes, not an hour, and FLEET_E2E_MODULES and
+//     FLEET_E2E_SHARD were never measured together;
+//   · n = 1 is today's job byte for byte (no `sharded` key, no shard ids anywhere);
+//   · no beating device declared AUDIT_SHARD_FEATURE — a daemon without helper-daemon/daemon.ts#shardEnv
+//     would run the whole suite under one shard's name, so the offer stays whole and every device
+//     still takes it.
+function laneSuiteShardCount(modules: string[] | undefined, now = Date.now()): number {
+  if (modules || AUDIT_SHARDS < 2) return 1;
+  for (const d of helperDevices.values())
+    if (now - d.lastSeen < DEVICE_ONLINE_MS && d.features?.includes(AUDIT_SHARD_FEATURE)) return AUDIT_SHARDS;
+  return 1;
+}
+const laneSuiteShardJobId = (jobId: string, k: number, n: number): string =>
+  createHash("sha256").update(`${jobId}\u0000lane-shard:${k}/${n}`).digest("hex").slice(0, 12);
+const laneShardTerminal = (s: LaneSuiteShard): boolean => !!s.result || !!s.closed;
+// Which preview and which shard a shard job id names. Resolved AFTER `laneSuiteJobs.get(id)` at
+// every door, the same lookup order the other id spaces keep.
+function laneSuiteShardOf(jobId: string): { job: LaneSuiteJob; shard: LaneSuiteShard } | null {
+  for (const job of laneSuiteJobs.values()) {
+    const shard = job.sharded?.shards.find((s) => s.jobId === jobId);
+    if (shard) return { job, shard };
+  }
+  return null;
+}
+// EVERY CLAIM AND THE BUNDLE GO, in one place, for every ending that is not a verdict (withdrawn,
+// abandoned, reaped) — the sharded job holds them on its shards, the whole one on `claim`.
+function releaseLaneSuiteClaims(j: LaneSuiteJob): void {
+  for (const b of [j.claim?.bundle, j.sharded?.bundle])
+    if (b) { try { rmSync(b, { force: true }); } catch { /* already gone */ } }
+  j.claim = null;
+  if (j.sharded) {
+    j.sharded.bundle = null;
+    for (const s of j.sharded.shards) s.claim = null;
+  }
+}
+// Close the shards nobody should start any more — the audit's closeOpenShards over a preview: every
+// unclaimed one once green is ruled out (a red, an unmeasured result or a lapse on a sibling), or
+// once the run's window has shut. Claimed ones are never closed here; they report or lapse.
+function closeOpenLaneShards(run: LaneSuiteShardRun, now: number): boolean {
+  const ruledOut = run.shards.some((s) => !!s.closed || (!!s.result && s.result.result !== "green"));
+  const shut = run.openUntil !== null && now >= run.openUntil;
+  if (!ruledOut && !shut) return false;
+  let changed = false;
+  for (const s of run.shards) {
+    if (laneShardTerminal(s) || s.claim) continue;
+    s.closed = { at: now, why: ruledOut ? "sibling" : "unclaimed" };
+    changed = true;
+  }
+  return changed;
+}
+// THE MERGE, shardedAuditRowOf's rule over a preview: green ONLY when all n shards reported green,
+// red when any did, otherwise `unknown` with every non-green shard named. The tail is the shards'
+// tails, each under its own header, greens first and reds LAST — the pane hint quotes the LAST line
+// (laneSuiteEventPayload), and on a red that line must be a red shard's.
+function laneSuiteShardMerge(j: LaneSuiteJob, run: LaneSuiteShardRun, now: number): LaneSuiteResult {
+  const n = run.n;
+  const reported = run.shards.flatMap((s) => (s.result ? [{ s, r: s.result }] : []));
+  const reds = reported.filter((x) => x.r.result === "red");
+  const allGreen = reported.length === n && reported.every((x) => x.r.result === "green");
+  const result: LaneSuiteResult["result"] = reds.length ? "red" : allGreen ? "green" : "unknown";
+  const why = (s: LaneSuiteShard): string =>
+    s.result ? `shard ${s.k}/${n} (${s.result.remote.name}): ${s.result.reason ?? s.result.result}`
+    : s.closed?.why === "lapsed" ? `shard ${s.k}/${n} lapsed — ${s.closed.name ?? "a helper"} held it past its claim deadline and reported nothing`
+    : s.closed?.why === "sibling" ? `shard ${s.k}/${n} was not run — a sibling had already ruled green out`
+    : `shard ${s.k}/${n} was never claimed`;
+  const reason = result === "unknown"
+    ? run.shards.filter((s) => s.result?.result !== "green").map(why).join("; ").slice(0, 600) : undefined;
+  const ordered = [...reported.filter((x) => x.r.result === "green"),
+    ...reported.filter((x) => x.r.result === "unknown"), ...reds];
+  const sections = ordered.map((x) =>
+    `── shard ${x.s.k}/${n} (${x.r.remote.name}) ${x.r.result} exit ${x.r.exitCode ?? "none"} ──\n${x.r.tail}`);
+  // an UNKNOWN merge ends on the sentence that says so, never on a green shard's ALL PASS
+  if (result === "unknown") sections.push(`── no verdict for the whole preview: ${reason} ──`);
+  const tail = retainRunOutput(sections.join("\n"), "", HELPER_TAIL_CAP).trim();
+  const fails = [...new Set([...reds, ...reported.filter((x) => x.r.result !== "red")]
+    .flatMap((x) => x.r.fails))].slice(0, HELPER_FAILS_KEEP);
+  const counted = reported.filter((x) => x.r.checks !== null);
+  const checks: PostLandAuditChecks | null = result === "unknown" || !counted.length ? null : {
+    ran: counted.reduce((a, x) => a + (x.r.checks?.ran ?? 0), 0),
+    failed: counted.reduce((a, x) => a + (x.r.checks?.failed ?? 0), 0),
+    ...(counted.length < n || counted.some((x) => x.r.checks?.ranIsLowerBound) ? { ranIsLowerBound: true as const } : {}),
+  };
+  const claimTimes = run.shards.flatMap((s) => (s.result ? [s.result.remote.claimedAt]
+    : s.closed?.claimedAt !== undefined ? [s.closed.claimedAt] : []));
+  const start = claimTimes.length ? Math.min(...claimTimes) : now;
+  const end = reported.length === n ? Math.max(...reported.map((x) => x.r.remote.reportedAt)) : now;
+  const names = [...new Set(run.shards.flatMap((s) => (s.result ? [s.result.remote.name] : s.closed?.name ? [s.closed.name] : [])))];
+  // a DIVERGENT clone sha wins, because the divergence is the fact a reader must not miss
+  const shas = reported.flatMap((x) => (x.r.remote.clonedSha ? [x.r.remote.clonedSha] : []));
+  const clonedSha = shas.find((s) => s !== j.commitSha) ?? shas[0];
+  const trail = (reds[0] ?? reported[0])?.r.trail;
+  // the no-measurement half: a lapse is a timeout at the claim deadline, exactly as the whole job's
+  // (laneSuiteLapseResult); otherwise the first unmeasured shard's own words
+  const lapsed = run.shards.some((s) => s.closed?.why === "lapsed");
+  const unmeasured = reported.find((x) => x.r.result === "unknown")?.r.remote;
+  const noMeasure: HelperNoMeasure = result !== "unknown" ? {}
+    : lapsed ? { reason: "timeout", timeoutMs: HELPER_CLAIM_TIMEOUT_MS }
+    : unmeasured?.reason ? { reason: unmeasured.reason, ...(unmeasured.timeoutMs ? { timeoutMs: unmeasured.timeoutMs } : {}) } : {};
+  return {
+    exitCode: result === "green" ? 0 : result === "red" ? reds[0]?.r.exitCode ?? null : null,
+    result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}), checks, fails,
+    remote: { name: names.length ? names.join(", ") : "(nobody claimed it)", claimedAt: start, reportedAt: now,
+      ...(clonedSha ? { clonedSha } : {}), ...noMeasure },
+    treeSha: j.treeSha ?? "", ms: end - start,
+  };
+}
+// THE RUN ENDS when every shard is terminal: the merge becomes the job's one verdict, the bundle
+// goes, and the state says which kind of ending it was — `lapsed` when nothing could be measured
+// because a shard was lost (the whole job's lapse word), `reported` for every measured verdict.
+// It mints nothing: the result door awaits the mint itself, the sweep queues it.
+function finishLaneSuiteShardRun(j: LaneSuiteJob, now: number): void {
+  const run = j.sharded!;
+  j.result = laneSuiteShardMerge(j, run, now);
+  j.state = j.result.result === "unknown"
+    && run.shards.some((s) => s.closed?.why === "lapsed" || s.closed?.why === "unclaimed") ? "lapsed" : "reported";
+  j.endedAt = now;
+  if (run.bundle) { try { rmSync(run.bundle, { force: true }); } catch { /* the helper has its copy */ } }
+  run.bundle = null;
+  audit("helper_result", j.slot,
+    `${j.result.result} sharded preview (${run.n} shards) of ${basename(j.repo)} ${j.branch}`
+    + ` tree ${(j.treeSha ?? "").slice(0, 8)} from ${j.result.remote.name}`
+    + `${j.result.reason ? ` — ${j.result.reason}` : ""}`.slice(0, 240));
+}
+// The sweep's half for one sharded job: book every lapsed shard, close what can no longer start,
+// and end the run once it is complete. Synchronous by construction, like the whole sweep.
+function settleLaneSuiteShardRun(j: LaneSuiteJob, now: number): boolean {
+  const run = j.sharded!;
+  let changed = false;
+  for (const s of run.shards) {
+    if (laneShardTerminal(s) || !s.claim || now < s.claim.expiresAt) continue;
+    const c = s.claim;
+    s.closed = { at: now, why: "lapsed", name: c.name, claimedAt: c.claimedAt };
+    s.claim = null;
+    helperLapses = [{ id: s.jobId, repo: j.repo, name: c.name, deviceId: c.deviceId,
+      claimedAt: c.claimedAt, expiredAt: now, covers: 0 }, ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
+    audit("helper_claim_expired", j.slot,
+      `${c.name} held shard ${s.k}/${run.n} of the preview suite of ${basename(j.repo)} ${j.branch} for `
+      + `${Math.round((now - c.claimedAt) / 1000)}s without a result — the preview's verdict will be unknown`);
+    changed = true;
+  }
+  if (closeOpenLaneShards(run, now)) changed = true;
+  if (run.shards.every(laneShardTerminal)) { finishLaneSuiteShardRun(j, now); changed = true; }
+  return changed;
 }
 // The one open offer of a slot. At most one exists by construction (the offer door returns the
 // existing one instead of minting a second), and this is where that is read back.
@@ -27413,11 +27865,14 @@ function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
   // (the rail is a side file; the verdict it belongs to is not rewritten). It rides on `remote`
   // because that is where the audit row carries it and where it belongs on either: the log is a
   // fact about the machine that ran the suite. ABSENT means no log arrived — never "there is none".
-  const art = j.result ? artifactViewFor(j.result.remote.reportedAt) : undefined;
+  // A SHARDED verdict has no log of its own — each shard filed its own under its own reportedAt, and
+  // they ride on `shards[]` below; joining the merge's key would hand one shard's log out as the run's.
+  const art = j.result && !j.sharded ? artifactViewFor(j.result.remote.reportedAt) : undefined;
   return {
     // an EXPIRED claim reads as lapsed here and not as "claimed", without waiting for the sweep —
-    // the same split as helperClaimOf: the clock decides, the sweep only books
-    id: j.id, state: j.state === "claimed" && !c ? "lapsed" : j.state, branch: j.branch, offeredAt: j.offeredAt,
+    // the same split as helperClaimOf: the clock decides, the sweep only books. A sharded run is
+    // still "claimed" between two shards' claims: the run is somebody's, the shard clocks decide.
+    id: j.id, state: j.state === "claimed" && !c && !j.sharded ? "lapsed" : j.state, branch: j.branch, offeredAt: j.offeredAt,
     // present on a NARROWED offer only — a full offer keeps its closed key set (e2e/lane-suite.ts
     // OFFER_WIRE_KEYS), and the verdict beside a list is a verdict about those modules alone
     ...(j.modules ? { modules: j.modules } : {}),
@@ -27426,7 +27881,26 @@ function laneSuiteView(j: LaneSuiteJob): Record<string, unknown> {
     result: j.result && art
       ? { ...j.result, remote: { ...j.result.remote, artifact: art } }
       : j.result,
+    // …and on a SHARDED offer only, one row per shard: where each one stands, and on a reported one
+    // its own verdict in brief and its own log
+    ...(j.sharded ? { shards: laneSuiteShardsView(j.sharded) } : {}),
   };
+}
+function laneSuiteShardsView(run: LaneSuiteShardRun): Record<string, unknown>[] {
+  const now = Date.now();
+  return run.shards.map((s) => {
+    const live = s.claim && now < s.claim.expiresAt ? s.claim : null;
+    const art = s.result ? artifactViewFor(s.result.remote.reportedAt) : undefined;
+    return {
+      k: s.k, n: run.n, jobId: s.jobId,
+      state: s.result ? "reported" : s.closed ? s.closed.why : live ? "claimed" : s.claim ? "lapsed" : "open",
+      ...(live ? { claim: { name: live.name, claimedAt: live.claimedAt, expiresAt: live.expiresAt } } : {}),
+      ...(s.result ? { result: s.result.result, exitCode: s.result.exitCode, checks: s.result.checks,
+        fails: s.result.fails.length, name: s.result.remote.name, ms: s.result.ms,
+        ...(art ? { artifact: art } : {}) } : {}),
+      ...(s.closed?.name ? { name: s.closed.name } : {}),
+    };
+  });
 }
 // THE ONE ANLAGE OF A LANE-SUITE JOB, read and mint, behind all three doors that may hand a lane's
 // tree to the portal: the lane's own (POST /api/self/suite-offer), the owner's
@@ -27508,9 +27982,14 @@ async function laneSuiteOfferDoor(s: Slot, wt: NonNullable<Slot["worktree"]>, re
     programId: s.programId, ...(modules ? { modules } : {}), offeredAt: Date.now(),
     state: "open", commitSha: null, treeSha: null, untracked: null, claim: null, result: null,
   };
+  // THE SPLIT, decided here and frozen (laneSuiteShardCount): a full preview outlasts one claim
+  // window, n shards of it do not
+  const n = laneSuiteShardCount(modules);
+  if (n > 1) job.sharded = { n, bundle: null, openUntil: null,
+    shards: Array.from({ length: n }, (_, i) => ({ k: i + 1, jobId: laneSuiteShardJobId(job.id, i + 1, n), claim: null })) };
   laneSuiteJobs.set(job.id, job);
   audit("helper_claim", s.id, `offered the preview suite of ${basename(job.repo)} ${job.branch} to the portal`
-    + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}${by ? ` (offered by ${by})` : ""}`);
+    + `${modules ? ` narrowed to [${modules.join(" ")}]` : ""}${n > 1 ? ` as ${n} shards` : ""}${by ? ` (offered by ${by})` : ""}`);
   await saveStateNow();
   return json({ offer: laneSuiteView(job), existing: false, helper: presence,
     waitPolicy: suiteOfferWait(job.offeredAt) });
@@ -27772,6 +28251,12 @@ function helperJobsView(forDevice?: string): {
   for (const j of laneSuiteJobs.values()) {
     if (j.state !== "open" && j.state !== "claimed") continue;
     if (j.modules && !modulesCapable) continue;
+    // A SHARDED preview is listed as its shards, and to a shard-capable device only — the audit's
+    // shard handshake, unchanged: a device without the feature sees no job for this offer at all.
+    if (j.sharded) {
+      if (shardCapable) jobs.push(...laneSuiteShardJobViews(j, j.sharded));
+      continue;
+    }
     const c = laneSuiteClaimOf(j);
     if (!c && j.state === "claimed") continue; // lapsed but not yet swept — not offerable
     jobs.push({
@@ -27908,6 +28393,13 @@ function heldClaimsByDevice(): Map<string, HelperDeviceClaimView[]> {
   // a sentence about another machine's next 13 minutes, and it may not survive one forgotten null.
   for (const j of laneSuiteJobs.values()) {
     if (j.state !== "claimed") continue;
+    // ONE ROW PER LIVE SHARD CLAIM, as for the audit's shards: each is one suite on that machine
+    if (j.sharded) {
+      for (const s of j.sharded.shards)
+        if (s.claim && now < s.claim.expiresAt)
+          push(s.claim.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, claimedAt: s.claim.claimedAt, expiresAt: s.claim.expiresAt });
+      continue;
+    }
     const c = laneSuiteClaimOf(j);
     if (c) push(c.deviceId, { kind: "lane-suite", repo: basename(j.repo), ref: j.branch, claimedAt: c.claimedAt, expiresAt: c.expiresAt });
   }
@@ -27994,8 +28486,17 @@ function helperWorkAwaitingClaim(deviceId: string): boolean {
     return true;
   }
   // a narrowed preview wakes only a machine that would be SHOWN it (helperJobsView's same guard)
-  for (const j of laneSuiteJobs.values())
+  for (const j of laneSuiteJobs.values()) {
+    // a SHARDED preview wakes only a machine its shards are shown to, and stays a reason to wake while
+    // a shard of a running run is still unclaimed inside the run's window
+    if (j.sharded) {
+      if (!helperDevices.get(deviceId)?.features?.includes(AUDIT_SHARD_FEATURE)) continue;
+      if (laneSuiteShardJobViews(j, j.sharded).some((v) => !v.claim)
+        && (j.state === "open" || j.state === "claimed")) return true;
+      continue;
+    }
     if (j.state === "open" && (!j.modules || helperTakesModules(deviceId))) return true;
+  }
   for (const j of commandJobs.values()) if (j.state === "open") return true;
   return helperUpdates.get(deviceId)?.state === "open";
 }
@@ -28041,6 +28542,10 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
     return json({ error: "the lane that offered this preview is gone — nothing to run it for" }, 404);
   if (j.state === "reported") return json({ error: "this preview was already reported" }, 404);
   if (j.state === "lapsed") return json({ error: "this preview offer lapsed and was not renewed" }, 404);
+  // the whole-suite id of a SHARDED offer is never claimable: a client that knows its shape must not
+  // run the tree whole beside, or instead of, its shards
+  if (j.sharded)
+    return json({ error: `this preview is offered as ${j.sharded.n} shards — claim a shard job, not the whole suite` }, 409);
   const held = laneSuiteClaimOf(j);
   if (held) return json({ error: `already claimed by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
   // the same door rule as helperJobsView's, on the door and not only on the list: a device may POST
@@ -28098,6 +28603,106 @@ async function claimLaneSuite(j: LaneSuiteJob, deviceId: string): Promise<Respon
     // validated module names, which it joins into FLEET_E2E_MODULES and nothing else
     ...(j.modules ? { modules: j.modules } : {}),
     claimedAt: now, expiresAt: j.claim.expiresAt, name: j.claim.name } });
+}
+// THE SHARDED PREVIEW ON THE PORTAL: one job per shard that could still be claimed or is claimed right
+// now. A terminal shard, one whose claim ran out but is not swept yet, and an unclaimed one past the
+// run's window are not offerable — the audit's three exclusions (auditShardJobViews), one kind over.
+function laneSuiteShardJobViews(j: LaneSuiteJob, run: LaneSuiteShardRun): HelperJobView[] {
+  const now = Date.now();
+  const out: HelperJobView[] = [];
+  for (const s of run.shards) {
+    if (laneShardTerminal(s)) continue;
+    const live = s.claim && now < s.claim.expiresAt ? s.claim : null;
+    if (s.claim && !live) continue;
+    if (!live && run.openUntil !== null && now >= run.openUntil) continue;
+    out.push({
+      id: s.jobId, kind: "lane-suite", repo: basename(j.repo), main: j.branch,
+      branches: [j.branch], covers: 0, oldestAt: j.offeredAt,
+      claim: live ? { name: live.name, claimedAt: live.claimedAt, expiresAt: live.expiresAt } : null,
+      localRunning: false,
+      ...(j.untracked !== null ? { untracked: j.untracked } : {}),
+      shard: `${s.k}/${run.n}`,
+    });
+  }
+  return out;
+}
+// THE FIRST SHARD CLAIM TAKES THE TREE, and takes it ONCE: a daemon with three free slots POSTs three
+// claims in one tick, and every claim that arrives while the bundle is being built waits on the same
+// build rather than taking a second, possibly different, tree (auditShardOpening, the same joint).
+const laneSuiteShardOpening = new Map<string, Promise<{ ok: true } | { error: string; status: number }>>();
+function openLaneSuiteShardRun(j: LaneSuiteJob): Promise<{ ok: true } | { error: string; status: number }> {
+  const opening = (async (): Promise<{ ok: true } | { error: string; status: number }> => {
+    const file = `${HELPER_BUNDLE_DIR}/${j.id}-${randomBytes(4).toString("hex")}.bundle`;
+    const built = await buildLaneSuiteBundle(j, file);
+    laneSuiteShardOpening.delete(j.id);
+    if ("error" in built) {
+      try { rmSync(file, { force: true }); } catch { /* never written */ }
+      return { error: built.error, status: 500 };
+    }
+    // RE-CHECKED after the await, as claimLaneSuite re-checks: the lane may have withdrawn meanwhile
+    if (j.state !== "open" || !j.sharded || j.sharded.bundle) {
+      try { rmSync(file, { force: true }); } catch { /* nothing to clean */ }
+      return { error: "the offer changed while the bundle was being built — try again", status: 409 };
+    }
+    const now = Date.now();
+    j.commitSha = built.commitSha;
+    j.treeSha = built.treeSha;
+    j.untracked = built.untracked;
+    j.state = "claimed";
+    j.sharded.bundle = file;
+    j.sharded.openUntil = now + HELPER_CLAIM_TIMEOUT_MS;
+    return { ok: true };
+  })();
+  laneSuiteShardOpening.set(j.id, opening);
+  return opening;
+}
+// One shard of a sharded preview. The refusals are claimLaneSuite's (the offer's own state, the lane's
+// liveness) plus the audit shard's (the device must declare the feature; a shard is claimed once and
+// never re-offered after a lapse — its verdict is then owed as unknown).
+async function claimLaneSuiteShard(j: LaneSuiteJob, shard: LaneSuiteShard, deviceId: string): Promise<Response> {
+  const run = j.sharded!;
+  if (j.state === "withdrawn" || j.state === "abandoned")
+    return json({ error: "the lane withdrew this preview offer — it is running the suite itself" }, 404);
+  if (j.state === "reaped")
+    return json({ error: "the lane that offered this preview is gone — nothing to run it for" }, 404);
+  if (j.state === "reported" || j.state === "lapsed") return json({ error: "this preview already has its verdict" }, 404);
+  if (!helperDevices.get(deviceId)?.features?.includes(AUDIT_SHARD_FEATURE))
+    return json({ error: `this preview is offered as ${run.n} shards, and this device's last heartbeat did not declare`
+      + ` "${AUDIT_SHARD_FEATURE}" — a daemon that cannot run one shard would run the whole suite under its name` }, 409);
+  const live = slots.find((x) => x.id === j.slot && x.openedAt === j.slotOpenedAt && x.cwd);
+  if (!live) {
+    if (laneSpawn.has(j.slot))
+      return json({ error: "this preview's lane is handing the baton over — try again in a moment" }, 409);
+    return json({ error: "the lane that offered this preview is gone — nothing to run it for" }, 409);
+  }
+  if (!run.bundle) {
+    const opened = await (laneSuiteShardOpening.get(j.id) ?? openLaneSuiteShardRun(j));
+    if ("error" in opened) return json({ error: opened.error }, opened.status);
+  }
+  if (j.state !== "claimed" || !run.bundle) return json({ error: "the offer changed while the claim waited — try again" }, 409);
+  const now = Date.now();
+  closeOpenLaneShards(run, now);
+  const label = `${shard.k}/${run.n}`;
+  if (shard.result) return json({ error: `shard ${label} was already reported` }, 409);
+  if (shard.closed) return json({ error: `shard ${label} is closed (${shard.closed.why}) — the verdict is owed without it` }, 409);
+  if (shard.claim && now < shard.claim.expiresAt)
+    return json({ error: `shard ${label} is already claimed by ${shard.claim.name} — it expires ${new Date(shard.claim.expiresAt).toISOString()}` }, 409);
+  if (shard.claim) return json({ error: `shard ${label} lapsed and is being booked — it is not offered again` }, 409);
+  const name = helperDeviceName(deviceId);
+  shard.claim = { deviceId, name, claimedAt: now, expiresAt: now + HELPER_CLAIM_TIMEOUT_MS };
+  if (helperDevices.has(deviceId)) setHelperDevice(deviceId, name); // touch lastSeen
+  audit("helper_claim", j.slot,
+    `${name} claimed shard ${label} of the preview suite of ${basename(j.repo)} ${j.branch}`
+    + `@${(j.commitSha ?? "").slice(0, 8)} tree ${(j.treeSha ?? "").slice(0, 8)}`
+    + `${j.untracked ? ` (${j.untracked} untracked file(s) NOT included)` : ""}`);
+  await saveStateNow();
+  // the claim answer the daemon reads: the whole job's, plus `shard` — the one string it turns into
+  // FLEET_E2E_SHARD (helper-daemon/daemon.ts#shardEnv, already applied to every non-command kind).
+  // `branch` is the PARENT's clone branch: the bundle was built through the parent job's ref.
+  return json({ job: { id: shard.jobId, kind: "lane-suite", repo: basename(j.repo), main: j.branch,
+    mainSha: j.commitSha, treeSha: j.treeSha, untracked: j.untracked,
+    branch: laneSuiteBranch(j.id), branches: [j.branch], covers: 0, shard: label,
+    claimedAt: now, expiresAt: shard.claim.expiresAt, name } });
 }
 // THE VINTAGE MEASUREMENT, and the reason the presence of `daemonSha` was never the whole guard.
 // A sha PROVES the daemon measured its own tree; it does not prove that tree knows `kind`. Between
@@ -28262,6 +28867,8 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   // branch is the audit path, byte for byte as it was.
   const lane = laneSuiteJobs.get(jobId);
   if (lane) return await claimLaneSuite(lane, deviceId);
+  const laneShard = laneSuiteShardOf(jobId);
+  if (laneShard) return await claimLaneSuiteShard(laneShard.job, laneShard.shard, deviceId);
   const cmdJob = commandJobs.get(jobId);
   if (cmdJob) return await claimCommandJob(cmdJob, deviceId);
   const upd = helperUpdateById(jobId);
@@ -28366,44 +28973,10 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   // the lane has been told to stop waiting and may already be running the suite itself, so a late
   // verdict would be a second answer about a tree somebody is measuring right now.
   if (!claim) return json({ error: "no live claim for this preview — it lapsed, was withdrawn, or was already reported" }, 409);
-  const rawExit = body?.exitCode;
-  const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
-  const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
-  // TWO SOURCES FOR THE NAMES, in this order, and never merged:
-  //   · what the DAEMON parsed (helper-daemon/daemon.ts#failNamesOf) — read from the COMPLETE log
-  //     and, where the run wrote one, from the per-check trail jsonl. Strictly stronger than
-  //     anything derivable on this box, which holds only the tail.
-  //   · else the tail, through `localFailNames` — the SAME parser the local audit path uses
-  //     (server.ts#runPostLandAudit), so a preview and an audit name a failure identically and
-  //     there is one parser to keep right. It is what a pre-3974883 daemon, a hand-typed portal
-  //     report (src/helper.ts#doReport sends no `fails`) and any red whose FAIL lines happen to be
-  //     inside the retained window still yield.
-  // An EMPTY list from either source is kept as empty: `result` already says green or red, and
-  // inventing a name for a failure nobody could read would be worse than the absence.
-  const reportedFails = helperFailNames(body?.fails);
-  const fails = reportedFails ?? helperFailNames(localFailNames(tail)) ?? [];
-  const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
-  const { result, reason } = remoteVerdictOf(exitCode);
-  const measured = result !== "unknown";
   const now = Date.now();
-  // Same field, same reason as on the audit path, and here the pair it can be compared against is
-  // `commitSha` — the commit this server bundled out of the lane's `stash create`. The preview
-  // verdict is the one a lane quotes in its own report, so "which tree did that green describe?"
-  // has to be answerable from the job and not from the daemon's log on another machine.
-  const clonedSha = typeof body?.clonedSha === "string" && /^[0-9a-f]{40}$/.test(body.clonedSha)
-    ? body.clonedSha : undefined;
-  j.result = {
-    exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
-    // `reportedFails` and NOT the fallback list: this argument reconciles an "N FAILURES" summary
-    // against a tail that shows fewer FAIL lines, and only a list read from the COMPLETE log can
-    // do that. A tail-derived list has by construction exactly the lines the tail shows, so
-    // passing it here would answer the reconciliation with the very number it is checking.
-    checks: measured ? postLandAuditChecks(tail, exitCode as number, reportedFails) : null,
-    fails,
-    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
-      ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode) },
-    treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
-  };
+  const { verdict, fails, trail, clonedSha } = laneSuiteVerdictOf(j, claim, body, now);
+  const { result, reason } = verdict;
+  j.result = verdict;
   j.state = "reported";
   j.claim = null;
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
@@ -28426,6 +28999,85 @@ async function reportLaneSuite(j: LaneSuiteJob, body: Record<string, unknown> | 
   // about a fact nobody can read back.
   await mintLaneSuiteEvents(j);
   return json({ ok: true, kind: "lane-suite", result, ...(reason ? { reason } : {}), artifactAt: now });
+}
+// ONE PREVIEW VERDICT out of one result body — the whole job's and each shard's, so a shard and a
+// whole run are classified, named and counted by the same lines.
+function laneSuiteVerdictOf(j: LaneSuiteJob, claim: { name: string; claimedAt: number },
+  body: Record<string, unknown> | null, now: number): { verdict: LaneSuiteResult; fails: string[];
+    trail: string | undefined; clonedSha: string | undefined } {
+  const rawExit = body?.exitCode;
+  const exitCode = typeof rawExit === "number" && Number.isFinite(rawExit) ? Math.trunc(rawExit) : null;
+  const tail = retainRunOutput(typeof body?.tail === "string" ? body.tail : "", "", HELPER_TAIL_CAP).trim();
+  // TWO SOURCES FOR THE NAMES, in this order, and never merged:
+  //   · what the DAEMON parsed (helper-daemon/daemon.ts#failNamesOf) — read from the COMPLETE log
+  //     and, where the run wrote one, from the per-check trail jsonl. Strictly stronger than
+  //     anything derivable on this box, which holds only the tail.
+  //   · else the tail, through `localFailNames` — the SAME parser the local audit path uses
+  //     (server.ts#runPostLandAudit), so a preview and an audit name a failure identically and
+  //     there is one parser to keep right. It is what a pre-3974883 daemon, a hand-typed portal
+  //     report (src/helper.ts#doReport sends no `fails`) and any red whose FAIL lines happen to be
+  //     inside the retained window still yield.
+  // An EMPTY list from either source is kept as empty: `result` already says green or red, and
+  // inventing a name for a failure nobody could read would be worse than the absence.
+  const reportedFails = helperFailNames(body?.fails);
+  const fails = reportedFails ?? helperFailNames(localFailNames(tail)) ?? [];
+  const trail = typeof body?.trail === "string" && body.trail.trim() ? body.trail.trim().slice(0, 120) : undefined;
+  const { result, reason } = remoteVerdictOf(exitCode);
+  const measured = result !== "unknown";
+  // Same field, same reason as on the audit path, and here the pair it can be compared against is
+  // `commitSha` — the commit this server bundled out of the lane's `stash create`. The preview
+  // verdict is the one a lane quotes in its own report, so "which tree did that green describe?"
+  // has to be answerable from the job and not from the daemon's log on another machine.
+  const clonedSha = typeof body?.clonedSha === "string" && /^[0-9a-f]{40}$/.test(body.clonedSha)
+    ? body.clonedSha : undefined;
+  const verdict: LaneSuiteResult = {
+    exitCode, result, ...(reason ? { reason } : {}), tail, ...(trail ? { trail } : {}),
+    // `reportedFails` and NOT the fallback list: this argument reconciles an "N FAILURES" summary
+    // against a tail that shows fewer FAIL lines, and only a list read from the COMPLETE log can
+    // do that. A tail-derived list has by construction exactly the lines the tail shows, so
+    // passing it here would answer the reconciliation with the very number it is checking.
+    checks: measured ? postLandAuditChecks(tail, exitCode as number, reportedFails) : null,
+    fails,
+    remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now,
+      ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode) },
+    treeSha: j.treeSha ?? "", ms: now - claim.claimedAt,
+  };
+  return { verdict, fails, trail, clonedSha };
+}
+// ONE SHARD'S VERDICT. Classified by the same lines as a whole preview (laneSuiteVerdictOf), kept on
+// the shard, and turned into the job's verdict only when the last shard of the run is terminal. A
+// lapsed, closed or already-reported shard is refused for the whole job's reason: past its deadline
+// the shard is booked, and a late verdict would contradict a merge that may already be written.
+async function reportLaneSuiteShard(j: LaneSuiteJob, shard: LaneSuiteShard,
+  body: Record<string, unknown> | null): Promise<Response> {
+  const run = j.sharded!;
+  const c = shard.claim;
+  const now = Date.now();
+  if (j.state !== "claimed" || !c || now >= c.expiresAt || laneShardTerminal(shard))
+    return json({ error: "no live claim for this preview shard — it lapsed, was closed or withdrawn, or was already reported" }, 409);
+  const { verdict, fails, trail, clonedSha } = laneSuiteVerdictOf(j, c, body, now);
+  shard.result = verdict;
+  shard.claim = null;
+  const label = `${shard.k}/${run.n}`;
+  audit("helper_result", j.slot,
+    `${verdict.result} shard ${label} of the preview of ${basename(j.repo)} ${j.branch} tree ${(j.treeSha ?? "").slice(0, 8)} from ${c.name}`
+    + `${fails.length ? ` — ${fails.slice(0, 3).join(", ")}${fails.length > 3 ? ` +${fails.length - 3}` : ""}` : ""}`
+    + `${clonedSha ? ` (ran ${clonedSha.slice(0, 8)})` : " (the helper named no clone sha)"}`
+    + `${trail ? ` [${trail}]` : ""}${verdict.reason ? ` — ${verdict.reason}` : ""}`.slice(0, 240));
+  closeOpenLaneShards(run, now);
+  // `result` is THIS shard's verdict in every answer, and `artifactAt` this shard's own row key — each
+  // shard files its own suite.log, joined back on the offer's `shards[]`. `previewResult` is the
+  // merge, present only on the answer that wrote it.
+  if (run.shards.every(laneShardTerminal)) {
+    finishLaneSuiteShardRun(j, now);
+    await saveStateNow();
+    await mintLaneSuiteEvents(j); // after the save, for the reason reportLaneSuite gives
+    return json({ ok: true, kind: "lane-suite", result: verdict.result, ...(verdict.reason ? { reason: verdict.reason } : {}),
+      shard: label, previewResult: j.result?.result, artifactAt: now });
+  }
+  await saveStateNow();
+  return json({ ok: true, kind: "lane-suite", result: verdict.result, ...(verdict.reason ? { reason: verdict.reason } : {}),
+    shard: label, pending: run.shards.filter((s) => !laneShardTerminal(s)).length, artifactAt: now });
 }
 // The command verdict. Same shape and same rules as the preview's — it lands in the JOB, no ledger
 // row, no drain kick — plus the ONE thing this kind adds: THE ARTEFACT ROWS ARE VALIDATED, NEVER
@@ -28512,6 +29164,8 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   // kickAuditDrain) has run.
   const lane = laneSuiteJobs.get(jobId);
   if (lane) return await reportLaneSuite(lane, body);
+  const laneShard = laneSuiteShardOf(jobId);
+  if (laneShard) return await reportLaneSuiteShard(laneShard.job, laneShard.shard, body);
   const cmdJob = commandJobs.get(jobId);
   if (cmdJob) return await reportCommandJob(cmdJob, body);
   const shardHit = auditShardSlotOf(jobId);
@@ -29120,7 +29774,10 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       await drainBody(req);
       return json({ error: `suite.log is larger than the ${capMb} MB cap` }, 413);
     }
-    const lane = laneSuiteJobs.get(jobId);
+    // a SHARD of a sharded preview files its log under its OWN verdict — the shard's row key
+    const laneShardHit = laneSuiteShardOf(jobId);
+    const lane = laneSuiteJobs.get(jobId) ?? (laneShardHit
+      ? { result: laneShardHit.shard.result ?? null } : undefined);
     // `verdict` is the word echoed back at the end — the same confirmation the audit half returns,
     // and for the same reason: the caller sees that handing over a log did not move the result.
     let verdict: string;
@@ -29192,9 +29849,16 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
     // prevent.
     // BOTH KINDS come out of this one route — that is the point of the second source not having its
     // own perimeter (S7): the pre-auth surface e2e/security.ts §1 pins is unchanged by this feature.
-    const laneJob = laneSuiteJobs.get(bundle[1]!);
+    // A SHARD id downloads the run's ONE bundle, and only while that shard's own claim is live; the
+    // parent id of a sharded offer is never claimed, so it never has a bundle to hand out.
+    const laneShardHit = laneSuiteShardOf(bundle[1]!);
+    const laneJob = laneSuiteJobs.get(bundle[1]!) ?? laneShardHit?.job;
     if (laneJob) {
-      const lc = laneSuiteClaimOf(laneJob);
+      const sc = laneShardHit?.shard.claim;
+      const lc = laneShardHit
+        ? (sc && Date.now() < sc.expiresAt && laneJob.state === "claimed" && laneJob.sharded?.bundle
+          ? { ...sc, bundle: laneJob.sharded.bundle } : null)
+        : laneJob.sharded ? null : laneSuiteClaimOf(laneJob);
       if (!lc) return json({ error: "no live claim for this job" }, 409);
       if (!existsSync(lc.bundle)) return json({ error: "the bundle is gone — let the claim lapse and take it again" }, 410);
       return new Response(Bun.file(lc.bundle), {
@@ -30875,10 +31539,24 @@ function writeDisposition(body: Record<string, unknown> | null): Response {
 // Two changes: both calls go through gitRetry's index.lock backoff, and `halted` reports the two
 // outcomes that are NOT "a conflict for the agent to resolve" but used to be treated as one.
 async function tryScriptRebase(cwd: string, main: string): Promise<{ clean: boolean; conflicted: string[]; halted: string | null }> {
+  const st = await gitRead(cwd, "status", "--porcelain");
+  const gd = await gitRead(cwd, "rev-parse", "--absolute-git-dir");
+  if (st.code !== 0 || gd.code !== 0 || !gd.out)
+    return { clean: false, conflicted: [], halted: "the lane's clean Git state could not be read" };
+  if (st.out || ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
+    .some((f) => existsSync(resolve(gd.out, f))))
+    return { clean: false, conflicted: [], halted: "the lane is dirty or a Git operation is already in progress" };
+  const target = await gitRead(cwd, "rev-parse", "--verify", `${main}^{commit}`);
+  if (target.code !== 0 || !/^[0-9a-f]{40,64}$/.test(target.out))
+    return { clean: false, conflicted: [], halted: `the integration ref ${main} could not be resolved` };
+  const ancestry = await gitRead(cwd, "merge-base", "--is-ancestor", target.out, "HEAD");
+  if (ancestry.code === 0) return { clean: true, conflicted: [], halted: null };
+  if (ancestry.code !== 1)
+    return { clean: false, conflicted: [], halted: `ancestry of the integration ref ${main} could not be read` };
   // rerere.enabled would silently replay recorded resolutions and exit 0, landing an
   // unreviewed conflict resolution — disable it just for this pre-pass so exit 0 means
   // genuinely no conflicts to review.
-  const rb = await gitRetry(cwd, "-c", "rerere.enabled=false", "rebase", main);
+  const rb = await gitRetry(cwd, "-c", "rerere.enabled=false", "rebase", target.out);
   if (rb.code === 0) return { clean: true, conflicted: [], halted: null };
   const files = await gitRead(cwd, "diff", "--name-only", "--diff-filter=U"); // read WHILE mid-rebase
   const ab = await gitRetry(cwd, "rebase", "--abort");
@@ -31998,9 +32676,12 @@ function suiteOffersView(now: number): SuiteOfferRow[] {
   for (const j of laneSuiteJobs.values()) {
     const s = slots.find((x) => x.id === j.slot);
     if (!s?.cwd || s.openedAt !== j.slotOpenedAt) continue;
-    if (j.state === "open" || j.state === "claimed")
-      rows.push({ slot: j.slot, branch: j.branch, state: j.state, device: j.claim?.name ?? null,
-        at: j.claim?.claimedAt ?? j.offeredAt, result: null });
+    if (j.state === "open" || j.state === "claimed") {
+      // through laneSuiteClaimOf, so a SHARDED run (whose `claim` is always null) names its helper too
+      const c = j.sharded ? laneSuiteClaimOf(j) : j.claim;
+      rows.push({ slot: j.slot, branch: j.branch, state: j.state, device: c?.name ?? null,
+        at: c?.claimedAt ?? j.offeredAt, result: null });
+    }
     else if (j.state === "reported" && j.result) {
       // READ DEFENSIVELY: this view rides the 2 s owner poll, so it is the last place that may
       // throw on a shape. A verdict whose remote block is unreadable falls back to the job's own
@@ -32178,23 +32859,27 @@ function freshConfirmRefusal(fresh: MergeLast["verify"]): string {
 // It returns `{status, body}` rather than a Response so the two callers can render it in their own
 // vocabulary: the owner route as JSON, the MAIN's background job as a merge verdict + event.
 type ConfirmLandResult = { status: number; body: Record<string, unknown> };
+// The land candidate as it stands NOW — target tip, lane tip, canonical diff hash — read the way
+// mergeJob's bindCandidate bound it, so confirm and re-verify compare like with like. null = unknown.
+async function landCandidateIdentity(repo: string, cwd: string, main: string):
+  Promise<{ mainSha: string; candidateSha: string; diffHash: string } | null> {
+  const [mainNow, tipNow] = await Promise.all([
+    git(repo, "rev-parse", main), git(cwd, "rev-parse", "HEAD"),
+  ]);
+  if (mainNow.code !== 0 || tipNow.code !== 0
+    || !/^[0-9a-f]{40,64}$/.test(mainNow.out) || !/^[0-9a-f]{40,64}$/.test(tipNow.out)) return null;
+  const diff = await git(cwd, "diff", "--binary", `${mainNow.out}...${tipNow.out}`, "--");
+  if (diff.code !== 0) return null;
+  const diffHash = await patchIdOf(cwd, diff.out, "");
+  return diffHash ? { mainSha: mainNow.out, candidateSha: tipNow.out, diffHash } : null;
+}
 async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main: string,
   branch: string, opts: { byHuman: boolean; actor: LandActor }): Promise<ConfirmLandResult> {
   // the "resolved" verdict the caller is confirming — its resolver detail, conflicted
   // files, and verify result are the review story this land is owning. Read it BEFORE
   // the delete below so the provenance note carries what the confirmer actually reviewed.
   const reviewed = mergeLast.get(s.id);
-  const readCandidateIdentity = async (): Promise<{ mainSha: string; candidateSha: string; diffHash: string } | null> => {
-    const [mainNow, tipNow] = await Promise.all([
-      git(repo, "rev-parse", main), git(cwd, "rev-parse", "HEAD"),
-    ]);
-    if (mainNow.code !== 0 || tipNow.code !== 0
-      || !/^[0-9a-f]{40,64}$/.test(mainNow.out) || !/^[0-9a-f]{40,64}$/.test(tipNow.out)) return null;
-    const diff = await git(cwd, "diff", "--binary", `${mainNow.out}...${tipNow.out}`, "--");
-    if (diff.code !== 0) return null;
-    const diffHash = await patchIdOf(cwd, diff.out, "");
-    return diffHash ? { mainSha: mainNow.out, candidateSha: tipNow.out, diffHash } : null;
-  };
+  const readCandidateIdentity = () => landCandidateIdentity(repo, cwd, main);
   const identityKnown = reviewed !== undefined
     && /^[0-9a-f]{40,64}$/.test(reviewed.mainSha ?? "")
     && /^[0-9a-f]{40,64}$/.test(reviewed.candidateSha ?? "")
@@ -32378,6 +33063,96 @@ async function confirmResolvedCandidate(s: Slot, cwd: string, repo: string, main
   return { status: 200, body: { status: "merged", landed: true, branch,
     detail: opts.byHuman ? "reviewed resolution — landed"
       : "resolved candidate confirmed by the bound MAIN, re-verified fresh — landed" } };
+}
+
+// --- RE-MEASURE A HELD CANDIDATE: the owner's `{reverify:true}` door (2026-10-02). Measured gap:
+// lane 0A (slot 24) stood at resolved / resolvedBy author / verify ok:false at 01:32, and the red
+// was FOREIGN (pins E9/E10, repaired 01:33 outside the lane). From then on every ⏫ was held by the
+// ⏸ guard (carriedFromPendingVerdict: a resolution, main still an ancestor) and every confirm was
+// refused by the verify bar (578e8975: a recorded verify that is not green never lands). The two
+// rules are each right and together a dead end: the only way to measure the SAME bytes again was
+// for main to move, which happened by accident at 02:17.
+//
+// This door is that one missing act and nothing else: it runs the gate over the candidate the
+// verdict already bound, and writes the result as the new verdict. It never rebases, never lands
+// and never touches the resolution — green leaves a verdict the existing confirm accepts, red
+// leaves the lane held exactly as before with the new measurement on it. Three refusals keep it
+// from being a second ⏫: the verdict must HOLD a resolution (without one the ⏫ re-run is not held
+// and already re-measures), the target must not have moved (then the hold has lapsed and ⏫ is the
+// way), and lane tip + canonical diff must be exactly what the verdict bound (`stale`, as confirm).
+// Owner route only — why the Program-MAIN door does not take it: docs/self-api.md §Re-Verify.
+type ReviewedCandidate = MergeLast & { mainSha: string; candidateSha: string; diffHash: string };
+async function reverifyRefusal(s: Slot, cwd: string, repo: string, main: string):
+  Promise<{ refuse: ConfirmLandResult } | { reviewed: ReviewedCandidate }> {
+  const pend = mergeLast.get(s.id);
+  const refuse = (detail: string, extra: Record<string, unknown> = {}): { refuse: ConfirmLandResult } =>
+    ({ refuse: { status: 409, body: { status: pend?.status ?? null, landed: false, reverify: false, detail, ...extra } } });
+  const holdsResolution = (pend?.conflicted?.length ?? 0) > 0 || !!pend?.resolvedBy;
+  if (!pend || pend.status !== "resolved" || pend.landed === true || !holdsResolution)
+    return refuse("re-verify measures a HELD resolved candidate — this lane's verdict holds no unreviewed resolution, so ⏫ merge is not held and re-measures by itself");
+  if (!pend.verify)
+    return refuse("the verdict records no verify — no gate was configured when it was written, so there is nothing to re-measure");
+  if (pend.verify.ok === true)
+    return refuse("the recorded verify is already green — confirm the candidate instead", { verify: pend.verify });
+  const { mainSha, candidateSha, diffHash } = pend;
+  if (!mainSha || !candidateSha || !diffHash || !/^[0-9a-f]{40,64}$/.test(mainSha)
+    || !/^[0-9a-f]{40,64}$/.test(candidateSha) || !/^[0-9a-f]{40,64}$/.test(diffHash))
+    return refuse("the verdict bound no candidate identity — a re-measure could not prove it measured the reviewed candidate");
+  const reviewed: ReviewedCandidate = { ...pend, mainSha, candidateSha, diffHash };
+  const current = await landCandidateIdentity(repo, cwd, main);
+  if (current === null)
+    return refuse("the lane's candidate identity could not be read — an unknown candidate is never re-measured");
+  const bound = { mainSha: reviewed.mainSha, candidateSha: reviewed.candidateSha, diffHash: reviewed.diffHash };
+  if (current.mainSha !== reviewed.mainSha)
+    return refuse(`${main} moved since the verdict — the ⏸ hold has lapsed; re-run ⏫ merge, which rebases and measures the new candidate`,
+      { reviewed: bound, current });
+  if (current.candidateSha !== reviewed.candidateSha || current.diffHash !== reviewed.diffHash)
+    return { refuse: { status: 409, body: { status: "stale", landed: false, reverify: false,
+      detail: "the reviewed lane tip or canonical diff changed — run merge again and review the new candidate",
+      reviewed: bound, current } } };
+  return { reviewed };
+}
+async function reverifyJob(s: Slot, cwd: string, repo: string, main: string, branch: string,
+  reviewed: ReviewedCandidate, actor: LandActor): Promise<void> {
+  let next: MergeLast;
+  try {
+    const plan = await verifyPlanFor(cwd, repo, reviewed.mainSha);
+    const fresh = await reportServerRun(`land:${s.id}`,
+      { slot: s.id, label: s.label, branch, suite: "re-verify gate", cwd, repo },
+      () => runVerify(cwd, reviewed.mainSha, plan));
+    // the measurement is about the candidate only if the candidate is still the one it bound: a
+    // commit or a main move during the run makes it a measurement of something nobody reviewed
+    const after = await landCandidateIdentity(repo, cwd, main);
+    const same = after !== null && after.mainSha === reviewed.mainSha
+      && after.candidateSha === reviewed.candidateSha && after.diffHash === reviewed.diffHash;
+    next = !fresh || !same ? { ...reviewed, at: Date.now(),
+      detail: (!fresh ? "re-verify could not run: no verify command is configured for this repo now — the recorded verify stands"
+        : "the candidate or its target changed while re-verify ran — the measurement was discarded and the recorded verify stands; run merge again").slice(0, 600) }
+      : { ...reviewed, at: Date.now(), verify: fresh,
+        detail: (fresh.ok === true
+          ? `re-verified the same candidate ${reviewed.candidateSha.slice(0, 8)}: GREEN — the resolution still awaits review; confirm lands it`
+          : fresh.ok === false
+            ? `re-verified the same candidate ${reviewed.candidateSha.slice(0, 8)}: still RED (${fresh.cmd}) — held; repair the lane, or re-verify once the failure outside it is fixed`
+            : `re-verified the same candidate ${reviewed.candidateSha.slice(0, 8)}, but the gate measured nothing (${fresh.timedOut ? "timed out" : fresh.waitedOut ? "never started" : fresh.serverDown ? "a suite server did not come up" : "skipped"}) — held, unknown is never green`).slice(0, 600) };
+  } catch (e) {
+    next = { ...reviewed, at: Date.now(),
+      detail: `re-verify threw — the recorded verify stands: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600) };
+  }
+  // the same occupant guard as every job that outlives its request: a slot recycled onto another
+  // lane mid-run gets nothing written over its own verdict
+  if (s.cwd === cwd && s.worktree?.branch === branch) {
+    mergeLast.set(s.id, next);
+    // one ledger row per verdict, in mergeJob's columns, marked so a count can tell it from a run
+    audit("merge_verdict", s.id, branch, {
+      status: next.status, landed: false, actor: actor.kind, reverify: true,
+      verifyOk: next.verify?.ok ?? null,
+      stopKind: next.verify?.ok === false ? "red" : next.verify?.ok === null ? "unmeasured"
+        : (next.conflicted?.length ?? 0) > 0 ? "conflict" : "review",
+      ...(next.verify?.ms !== undefined ? { ms: next.verify.ms } : {}),
+    } as unknown as NonNullable<Parameters<typeof audit>[3]>);
+    await mintMergeEvents(s.id, cwd, branch, next);
+    await saveStateNow();
+  }
 }
 
 // --- WHAT A FRESH RUN CARRIES OUT OF THE VERDICT IT SUPERSEDES, and the ⏸ guard that sometimes
@@ -33121,7 +33896,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       graphs.main = mainGraph;
     }
     const r = pre.clean
-      ? { status: "rebased" as const, detail: "clean rebase — no conflicts, agent not needed" }
+      ? { status: "rebased" as const, detail: "clean integration — no conflicts, agent not needed" }
       : await runMerge(cwd, root, branch, main, pre.conflicted, laneTask, graphs,
           (run) => resolverRuns.push(run));
     if (r.status === "blocked") {
@@ -33756,7 +34531,7 @@ const PROGRAM_CONTENT_KEYS: (keyof ProgramContent)[] = ["title", "intent", "succ
   "nonGoals", "decisions", "evidence", "openQuestions", "promotionRequest"];
 
 const BOOTSTRAP_CONTEXT_MODE: ContextPackMode = "mutating"; // Program-MAIN is founded to act on the owner's confirmed Program.
-const BOOTSTRAP_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification"]; // The founding contract promises grounding + proof, not a land/deploy act.
+const BOOTSTRAP_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification", "orchestration"]; // Grounding + proof + orchestration guidance at a founding (Owner-Entscheid 2026-10-02); `task-queue` stays dormant so the hard seed pack of that name never rides along.
 // These are Fleet-control capabilities only. A target repository gets a smaller honest capability
 // set and, independently, omits every Fleet-owned pack because those source pointers are absent.
 const FLEET_CONTROL_CONTEXT_CAPABILITIES: readonly ContextPackCapability[] = [
@@ -34499,8 +35274,8 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
   successor: { slot: number; openedAt: number }, at: number, auditRows: PostLandAuditRow[]): ProgramHandover {
   // joined on the full occupant PAIR, never the slot alone: slot ids are recycled, and a successor
   // told about a stranger's obligations would re-ask a stranger's question. `autos` is the one
-  // exception and it is the row's own shape, not a shortcut — an Auto carries no openedAt, and
-  // teardown deletes every row of the SLOT, so the slot is exactly what dies with it.
+  // exception and it is the row's own shape, not a shortcut — an Auto's slotOpenedAt is absent on
+  // legacy rows, and teardown deletes every row of the SLOT, so the slot is exactly what dies with it.
   const armed = watches.filter((w) => w.armed && w.slot === predecessor.slot
     && w.slotOpenedAt === predecessor.openedAt);
   const checkIns = autos.filter((a) => a.slot === predecessor.slot);
@@ -34776,7 +35551,7 @@ const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: uebersetzt Owner-A
 --- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit Owner-Delegation) · deploy (Verdikt am naechsten Boot lesen).
 --- DER LOOP --- state.sh --brief → register.sh --brief → Board; kleinster Akt → Zeile im Format → Karte gueltig? → Rueckweg als Mechanismus legen, warten ohne Beobachten → ein Report ist eine Behauptung, bis Diff und Pruefung gelesen sind → naechster Akt.
 --- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
---- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Entscheidung bei 25 % gemessen, keine neue Tiefenarbeit ab 30 %.`;
+--- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Entscheidung an der Schwelle FLEET_MIGRATE_PCT (gemessen mit ctl.sh ctx), darunter keine Nachfolge, spaetestens bei 45 %.`;
 
 // WHICH LABEL IS THE ROLE. The owner names the role in the pane label and always has — the live
 // fleet carries „[Zitat entfernt]“, so an exact-equality test the way STEWARD_LABEL uses one
@@ -36207,6 +36982,19 @@ if (existsSync(STATE_FILE)) {
           if (j.modules !== undefined) {
             const m = moduleListFrom(j.modules);
             if (!m.ok) { console.error(`lane-suite job ${j.id}: restored modules refused (${m.error.slice(0, 120)}) — row dropped`); continue; }
+          }
+          // …and a SHARDED row comes back whole or not at all: a run whose shards do not line up
+          // 1..n, or a shard verdict without its provenance, would merge into a verdict about shards
+          // nobody can name. A narrowed row is never sharded (laneSuiteShardCount), so both is foreign.
+          if (j.sharded !== undefined) {
+            const r = j.sharded as LaneSuiteShardRun | null;
+            const shardOk = !!r && j.modules === undefined && Number.isInteger(r.n) && r.n >= 2 && r.n <= AUDIT_SHARDS_MAX
+              && (r.bundle === null || typeof r.bundle === "string") && (r.openUntil === null || typeof r.openUntil === "number")
+              && Array.isArray(r.shards) && r.shards.length === r.n
+              && r.shards.every((s, i) => !!s && s.k === i + 1 && typeof s.jobId === "string" && /^[0-9a-f]{12}$/.test(s.jobId)
+                && (!s.result || (!!s.result.remote && typeof s.result.remote.reportedAt === "number"
+                  && typeof s.result.remote.name === "string")));
+            if (!shardOk) { console.error(`lane-suite job ${j.id}: restored shard run unreadable — row dropped`); continue; }
           }
           laneSuiteJobs.set(j.id, readable ? j : { ...j, result: null });
         }
@@ -40180,7 +40968,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     const s = slotFrom(briefMatch[1]);
     if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
     const p = await briefPayload(s);
-    if (!p) return json({ error: "not a git repository" }, 400);
+    if (!p) return json(cwdGitBody(await cwdGitState(s.cwd), false), 400);
     return json({ ...p, worktree: s.worktree, merge: stewardMergeView(s.id), task: stewardTaskView(s.id) });
   }
   const trMatch = /^\/api\/steward\/slots\/(\d+)\/transcript$/.exec(url.pathname);
@@ -41116,8 +41904,8 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not hold a queue row — holding is the bracket above lanes, like releasing" }, 409);
       const grund = holdGrundFrom(await req.text());
-      if (typeof grund === "object" && grund !== null) return json({ error: grund.error }, 400);
-      return holdTaskForMain(s, selfTaskHold[1], grund);
+      if ("error" in grund) return json({ error: grund.error }, 400);
+      return holdTaskForMain(s, selfTaskHold[1], grund.grund, grund.until);
     }
 
     // ACP · Program-MAIN land. Non-lane only for the same "one edge per role" reason as its three
@@ -41465,6 +42253,9 @@ Bun.serve<WSData>({
       }
       job.endedAt = Date.now();
       job.claim = null;
+      // …and a SHARDED run's claims, which `claim` never held: its shard jobs leave the portal list
+      // with the state below, which is what makes the daemon abort them (withdrawnRuns)
+      if (job.sharded) releaseLaneSuiteClaims(job);
       job.state = held ? "abandoned" : "withdrawn";
       audit("helper_result", s.id,
         `${held ? "abandoned" : "withdrew"} the preview offer of ${basename(job.repo)} ${job.branch}`
@@ -41727,7 +42518,7 @@ Bun.serve<WSData>({
         // because it types nothing into the pty, PR-review feel without repo access
         if (!s.cwd) return json({ error: "session gone" }, 404);
         const p = await diffPayload(s.cwd, await slotBase(s));
-        if (!p) return json({ error: "not a git repository" }, 400);
+        if (!p) return json(cwdGitBody(await cwdGitState(s.cwd), true), 400);
         return json({ ...p, commits: await sessionCommits(s) });
       }
       if (shareApi[2] === "brief") {
@@ -41735,7 +42526,12 @@ Bun.serve<WSData>({
         // document minus local filesystem details (worktree/repo paths stay private)
         if (!s.cwd) return json({ error: "session gone" }, 404);
         const p = await briefPayload(s);
-        if (!p) return json({ error: "not a git repository" }, 400);
+        if (!p) {
+          // a plain folder keeps the one non-git fact the guest tab shows (how long the session
+          // runs); a gone/unreadable folder or a git error stays an error, its path never named
+          const g = await cwdGitState(s.cwd);
+          return json({ ...cwdGitBody(g, true), ...(g.kind === "none" ? { sessionStart: sessionStart(s) } : {}) }, 400);
+        }
         // repoCommits is the OWNER's board field (§F4's second commit subhead): the base branch's
         // recent history. A guest is shared into ONE session — handing them main's last ten commit
         // subjects would widen the share to work they were never shown. Dropped here, not merely
@@ -42615,7 +43411,7 @@ Bun.serve<WSData>({
       const s = slotFrom(diffMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       const p = await diffPayload(s.cwd, await slotBase(s));
-      if (!p) return json({ error: "not a git repository" }, 400);
+      if (!p) return json(cwdGitBody(await cwdGitState(s.cwd), false), 400);
       return json({ ...p, worktree: s.worktree });
     }
     // guest comments, owner side: read the thread, reply into it, delete single comments
@@ -42652,7 +43448,15 @@ Bun.serve<WSData>({
       const s = slotFrom(briefMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       const p = await briefPayload(s);
-      if (!p) return json({ error: "not a git repository" }, 400);
+      if (!p) {
+        // a plain folder without git is an ORDINARY session: the git half is not-applicable, and
+        // the non-git half (setup, succession, start) is still this session's and still served.
+        // Still a 400, so every `res.ok` reader keeps the git half absent (cwdGitBody).
+        const g = await cwdGitState(s.cwd);
+        if (g.kind !== "none") return json(cwdGitBody(g, false), 400);
+        return json({ ...cwdGitBody(g, false), sessionStart: sessionStart(s),
+          setup: await sessionSetup(s, null), succession: successionFacts(s) }, 400);
+      }
       // …and the non-git half: what this session was BUILT from (profile + delivered packs), plus
       // what the succession rail has already done with it (successionFacts — read-only).
       return json({ ...p, worktree: s.worktree, setup: await sessionSetup(s, p.branch),
@@ -43463,6 +44267,20 @@ Bun.serve<WSData>({
         const main = await laneBaseRef(s);
         if (!main) return json({ error: "cannot resolve this lane's integration branch" }, 400);
         if (main === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
+        if (body?.reverify === true && body?.confirm === true)
+          return json({ error: "confirm and reverify are two acts — re-verify measures, confirm lands; send one" }, 400);
+        // re-verify: the gate over the SAME held candidate, nothing else (reverifyRefusal). Asked
+        // ahead of the dirty-main stop because a measurement never touches the main checkout. In the
+        // background like the merge job, on the same reservation, so ⏫/confirm answer running:true
+        // meanwhile and the board's poll and merge watches read its verdict like any other.
+        if (body?.reverify === true) {
+          const pre = await reverifyRefusal(s, cwd, repo, main);
+          if ("refuse" in pre) return json(pre.refuse.body, pre.refuse.status);
+          const job: Promise<void> = reverifyJob(s, cwd, repo, main, branch, pre.reviewed, ownerActor)
+            .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
+          mergeInflight.set(s.id, job);
+          return json({ running: true, reverify: true, candidate: pre.reviewed.candidateSha });
+        }
         // the collision guard only matters when the integration branch is checked out somewhere: an ff-merge
         // THERE rewrites files on disk. Checked out nowhere (primary parked off it), landing advances the
         // ref with branch -f and touches no working tree — skip the guard entirely.
@@ -45360,7 +46178,7 @@ Bun.serve<WSData>({
             receipt: { sendId, at, delivery: "refused", receiver } }, 409);
           return json({ ok: true, receipt: parkedReceipt(sendId) }, 202);
         }
-        if (e instanceof SendRefused)
+        if (e instanceof SendRefused || e instanceof DeliveryCancelled)
           return json({ error: e.message, ...(e instanceof SendAgentNotAlive ? { agent: e.agent } : {}),
             receipt: { sendId, at: Date.now(), delivery: "refused", receiver } }, 409);
         // tmux may have accepted part of the paste, or the composer was OBSERVED still holding the text

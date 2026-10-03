@@ -20,3 +20,32 @@ export function pendingSettledBy(pending: string, entry: string): boolean {
   const p = norm(pending);
   return p !== "" && p === norm(splitDeliveryHeader(entry).body);
 }
+
+export function sendFailureMessage(status: number, body: unknown): string {
+  const record = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown> : null;
+  const response = record(body);
+  const receipt = record(response?.receipt);
+  const error = typeof response?.error === "string" ? response.error : "";
+  if (receipt?.delivery === "uncertain") {
+    return receipt.acceptance === "not-observed"
+      ? "prompt acceptance not observed — check the pane; do not paste again"
+      : "send outcome uncertain — check the pane; do not paste again";
+  }
+  if (status === 409 && record(response?.occupant)
+    && /^slot \d+ is held by a different occupant /.test(error))
+    return "send refused — slot occupant changed; nothing was typed";
+  if (receipt?.delivery === "refused") {
+    if (/^composer occupied \(\d+ chars\) — nothing typed(?:;|$)/.test(error))
+      return "send refused — the composer already holds a draft; nothing was typed";
+    if (/^no agent alive in the pane \(agent=(?:no-agent|no-pane)\) — nothing typed$/.test(error))
+      return "send refused — no live agent in the pane; nothing was typed";
+    if (/^slot (?:occupant changed|changed|pane unavailable or changed)/.test(error))
+      return "send refused — slot occupant changed or unavailable; nothing was typed";
+    const gate = /^gate=(kill-switch|harness|not-alive|no-agent|no-pane|blocked-screen|quiet-hours|busy)(?=:| — nothing typed$)/.exec(error)?.[1];
+    if (gate) return `send refused — delivery gate=${gate}; nothing was typed`;
+    return "send refused — nothing was typed; reason unavailable";
+  }
+  return `send rejected (HTTP ${status}) — delivery not confirmed; text kept`;
+}

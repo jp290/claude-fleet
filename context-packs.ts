@@ -14,6 +14,9 @@ export type ContextPackAudience = (typeof CONTEXT_PACK_AUDIENCES)[number];
 
 export const CONTEXT_PACK_TRIGGERS = [
   "always", "verification", "landing", "harness-selection", "jev-use", "rulebook-edit", "measurement",
+  // Passed by server.ts#BOOTSTRAP_CONTEXT_TRIGGERS only: founding sessions carry orchestration
+  // guidance without any queue seed riding along (the task-queue trigger and pack are removed).
+  "orchestration",
 ] as const;
 export type ContextPackTrigger = (typeof CONTEXT_PACK_TRIGGERS)[number];
 

@@ -97,6 +97,21 @@ Rechnung. Er ist kein Urteil: ob der Lauf geschuldet ist, sagt `isolatedPreview`
 (auch in jedem Fremdrepo, `steps: []`) und mit `localProof: null`. Ein eingeengter Body braucht
 `helper.takesModules`, sonst antwortet die Tür `offer: null` (§suite-offer).
 
+**Automatischer Preview-Default (Land-Ziel + belegter Diff).** `localProof.preview` nennt
+`default: none|full|modules`, `reason`, `target` (`state: known|unknown`, `via: laneBaseRef`,
+bei known `branch`/`sha`, sonst `reason`), den fest gelesenen `diff{baseSha,headSha,treeSha}`
+und `coverage{state,named,anchors,reasons}`. `baseSha` ist nur Diffanker, kein Land-Ziel.
+Bei geschuldeter Preview nach `main` ist `offerBody` immer `{}`. Ein belegter Nicht-main-Diff
+bekommt automatisch die Module aus `suite-modules.ts`, einschließlich `modulePlanFor`-Fixture-Hülle
+(`preview.plan` benennt hinzugezogene Writer und gepflanzte Fixtures). Unknown-Ziel, unbekannte
+Symbole, globale Seams, Wrapper oder fehlende ausführbare Checkanker ergeben einen begründeten
+vollen Fallback. Fehlende alte Zielmetadaten erfinden kein Nicht-main-Ziel: die bestehende
+Land-Auflösung wird gefragt und ihr nicht auflösbares Ergebnis bleibt unknown.
+Docs-only/keine geschuldete Preview und Fremdrepo-Verify behalten ihren Vertrag. Die bestehende
+MAIN-Abweichung über validierte Modulnamen bleibt mit Begründung möglich; sie ändert weder
+Land-Gate noch Audit. `helper.takesModules:false` lässt die Empfehlung bestehen und die bestehende
+Offer-Tür verweigert deren Minting mit Grund; lokal gezielt laufen oder begründet voll anbieten.
+
 ## Operative gehaltene Sicht — `GET /api/operational-view`
 
 Ein Owner-GET hinter der bestehenden Owner-Auth, auch für die Orchestratorin mit ihrer
@@ -186,6 +201,18 @@ flushedBy:"sofort-Zustellung oder Cache-Kante"}`. `auto.nextAt` ist der Fälligk
 die Paste kann durch die Bündelung bis zu `delivery.maxDelaySec` Sekunden später kommen
 (Default 900, Bündelung d6d75307, `server.ts#deliveryClass`). Eine sofort-Zustellung an denselben
 Slot oder die Cache-Kante spült das Bündel früher; `idleSec:0` hebt dieses Bündelfenster nicht auf.
+
+Empfänger ist **dein Slot mit deinem Occupant**, nie eine Rolle: das Auto trägt `slotOpenedAt` (der
+Occupant, der es angelegt hat), und `server.ts#tickAutos` stellt es mit `address:{kind:"slot"}` zu.
+Ein Orchestratorinnen-Label macht es also nicht zur Rollen-Zustellung — vorher löste
+`server.ts#deliveryAddress` einen solchen Slot zu `{kind:"orchestrator"}` auf, und bei null oder zwei
+Slots mit diesem Label endete das Auto in `failed: no current role occupant — nothing typed`
+(Self-Auto `0b781fcc`, Slot 9, 2026-10-02: eine Lane mit „orchestratorinnen" im Label war der
+zweite Kandidat). Hält der Slot inzwischen einen anderen Occupant, wird das Auto verworfen statt
+zugestellt: `enabled:false`, `lastResult: "skipped — slot occupant changed (…)"`, Audit `auto_skip`.
+Dieselbe Zustellung gilt für Owner-Autos (`POST /api/slots/:id/autos`), weil beide Türen
+`server.ts#createAutoForSlot` und `tickAutos` teilen. Ein Altbestand ohne `slotOpenedAt` geht ohne
+Occupant-Prüfung an den Slot.
 
 
 ## watch — `POST /api/self/watch`
@@ -579,6 +606,18 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   nicht feuern kann. Die Stups-Zahl ist prozesslokal wie `migrateTried`: nach einem Neustart steht
   dort 0, während das Prompt-Ledger den Stups behält. Gemessen in `e2e/watch.ts` an derselben
   Fixture, an der der Tick selbst gemessen wird.
+- **Eine Session in einem Ordner OHNE git ist ein normaler Zustand, kein Lesefehler** (seit 2026-10-02):
+  scheitert der git-Teil von `GET /api/slots/:id/brief`, `…/diff`, `/api/steward/slots/:id/brief` oder
+  der Gast-Routen `/s/:id/brief` und `/s/:id/diff`, fragt `server.ts#cwdGitState` nach dem GRUND, und
+  die Antwort trägt ihn als `git` (`server.ts#cwdGitBody`, weiter Status 400, damit jeder `res.ok`-Leser
+  die git-Hälfte abwesend lässt): `none` = der Ordner existiert, hat aber kein Repo — nicht anwendbar;
+  `gone` = Ordner weg; `unreadable` = nicht lesbar; `error` = git scheitert in einem Repo (auch ein
+  `.git`-Verweis ins Leere). Nur `none` ist normal; die drei anderen bleiben Fehler und gelten NIE als
+  „kein git". Zu `none` liefert die Owner-Brief-Route die nicht-git Hälfte weiter (`sessionStart`,
+  `setup`, `succession`), der Gast nur `sessionStart`; keine Antwort trägt ein git-Faktum (kein
+  `branch`, kein `uncommitted: 0`). Der Gast-Wortlaut nennt nie einen Pfad (gits stderr bleibt beim
+  Owner). Der Puls bleibt ohne git-Fakten aus (`renderStewardMessage`, kein Modellturn). Gemessen in
+  `e2e/slots.ts` (Owner + Steward, sechs eigene Ordner-Fixtures + inaktiver Slot) und `e2e/share.ts`.
 - **Die Linie Session für Session** (Owner-Route, seit 2026-09-21, für das Zieh-Band der Leiste):
   `GET /api/slots/:id/succession` antwortet `{session, taken, cap, past}` — `past` hat genau
   `session - 1` Einträge `{session, startedAt, handedAt, report, ctx}` (`server.ts#successionChain`;
@@ -765,8 +804,9 @@ Rollenkarten in `docs/rollenkarten.md` sagen es für beide Seiten). Mechanik (`s
 `#escalateAttention`, `#attentionWaitsOn`, `server/types.ts#AttentionRequest`):
 
 - **Die Stufe wird beim Anlegen gewählt, einmal.** `POST /api/self/attention` fragt
-  `server.ts#deliveryRecipient` mit `{kind:"orchestrator"}`: genau ein lebender Slot mit
-  Orchestrator-Label (`isOrchestratorLabel`: `🎛`, „Orchestrator…") → `stage:"orchestrator"`; keiner
+  `server.ts#deliveryRecipient` mit `{kind:"orchestrator"}`: genau ein lebender Nicht-Lane-Slot mit
+  Orchestrator-Label (`isOrchestratorLabel`: `🎛`, „Orchestrator…"; eine Lane zählt nie mit, auch wenn
+  ihr Label das Wort trägt) → `stage:"orchestrator"`; keiner
   oder zwei → `stage:"owner"` (die nächsthöhere Stufe). Ist die fragende MAIN selbst diese eine
   Orchestratorin, geht die Frage an den Owner. Die serverseitig erhobenen Zeilen (Nachfolge-Warnung,
   Kriteriums-Bitte, Stall-Sensor) sind immer `stage:"owner"`.
@@ -1461,6 +1501,18 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
   trägt, die Text oder Brief als Reihenfolge nennen — eine `NACH:`-Kopfzeile ganz, inline
   `nach|after|wartet auf <8-hex>` (`waits.ts#namedAfterIds`; eine Sha in der Prosa, die keine
   Queue-Zeile ist, zählt nicht). Sonst 409 `a release needs a valid card — <welcher der vier>`.
+  **Welcher Text die Reihenfolge nennt, entscheidet die Urheberschaft des Briefs**
+  (`start-plan.ts#orderTextOf`, dieselbe Lesung an beiden Release-Türen und in beiden
+  Startplan-Buildern, Route und `bun start-plan.ts --state`): ein von Hand geschriebener Brief mit
+  `edited === true` und `by` genau `"main"` oder `"owner"` ist der aktuelle Auftrag und ERSETZT die
+  Reihenfolge des Originaltexts — ein `NACH`, das der Autor gestrichen hat, hält die Zeile nicht mehr
+  (Zeile 15d3c2a5: `afterMissing` nannte den alten Vorgänger unter einer frisch vom Brief gelesenen
+  Karte). Jede andere Form liest Text UND Brief: ein kompilierter Brief (`edited` nicht `true`) darf
+  kein Original-`NACH` verlieren, ein gepinnter Brief ohne `by` (vor 2026-09-11) bekommt keine
+  Autorschaft zugeschrieben, und ein fehlerhafter oder widersprüchlicher Stempel (`edited` kein
+  Boolean `true`, unbekanntes `by`, `by` ohne `edited`) zählt als kein Autor. Ein Inline-`NACH` des
+  wirksamen Briefs bleibt eine Reihenfolge, eine veraltete oder ungültige Karte bleibt ein 409, und
+  eine Variante liest Brief und Karte ihrer Gruppe.
   Die Autoren-Karte (`card{…}` beim Filen) kennt kein `after`; eine Zeile mit Reihenfolge wird mit
   der `NACH:`-Kopfzeile des Filing-Formats gefilet, die der Karten-Sweep ohne Modell liest. Geprüft
   NACH Harness-Gate und VOR dem Deckel; ein gehaltenes `queued` wird ohne Kartenprüfung entsperrt
@@ -1576,13 +1628,15 @@ Bindung wird nach dem Lesen des Bodys erneut gegen Slot und `openedAt` geprüft.
 ## hold — `POST /api/self/tasks/:id/hold`
 
 Die Gegen-Tür zur Politik: die gebundene Program-MAIN sperrt eine `pending`- oder `queued`-Zeile
-ihres EIGENEN Programs gegen jeden Start des Ticks. Body leer oder `{"grund":"…"}` (≤ 500 Zeichen) —
+ihres EIGENEN Programs gegen jeden Start des Ticks. Body leer oder `{"grund":"…","until":…}`
+(`grund` ≤ 500 Zeichen, `until` optional) — nur diese beiden Schlüssel sind erlaubt;
 jedes andere Feld ist 400, nichts gehalten (`server.ts#holdGrundFrom`); Program aus der Bindung, Repo
 aus dem Checkout, `slot`/`at` aus dem Token. **Ein Hold ohne Grund wird angenommen und trägt
 `grund:null` sichtbar** (an der Zeile, im Audit, im Warte-Register von `GET /api/start-plan`): am
 2026-09-17 setzten zwei MAIN-Slots 42 Holds in 50 min ohne Grund, und einen Tag später konnte
 niemand sagen, was sie aufhebt (`docs/messungen/2026-09-18-queue-durchsatz.md` §b). Idempotent: ein
-zweiter Aufruf schreibt nur einen NEUEN Grund (Nachtrag, `at` bleibt), sonst nichts. Aufheben:
+zweiter Aufruf schreibt einen NEUEN Grund oder ergänzt erstmals `until` (`at` bleibt), sonst nichts.
+Eine gesetzte Bedingung lässt sich erst nach Aufheben des Holds ändern. Aufheben:
 `POST /api/self/tasks/:id/release` (oder der `▸ queue` des Owners). Eine gehaltene `queued`-Zeile
 entlastet den `manual`-Freigabedeckel; das Aufheben über die Self-Route braucht einen freien Platz.
 Nicht-Lane-only wie `release`.
@@ -1590,10 +1644,33 @@ Nicht-Lane-only wie `release`.
 ```
 curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/hold \
   -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
-  -d '{"grund":"wartet auf das Land von <id>, danach frei"}'
+  -d '{"grund":"wartet auf das Land von <id>, danach prüfen","until":{"kind":"land","task":"<id>"}}'
 ```
 
-Antwort: `{ok:true, sessionIdMatch, hold:{by:"main",slot,at,grund}, task:{id,kind,status,programId}}`,
+`until` ist eine geschlossene Bedingung mit genau einem Selektor:
+
+- `{kind:"land",task:"<id>"}` wartet auf das Land einer bekannten Auftragszeile, auch bevor deren
+  Lane startet; `{kind:"land",slot:<n>}` bindet den Branch der jetzt aktiven Lane;
+  `{kind:"land",branch:"fleet/…"}` benennt eine aktive Lane oder ein persistiertes Land im Repo
+  der MAIN. Unbekannte/advisory Tasks, ein terminaler Task ohne Land, Selbstbezug, zyklische
+  Hold-Abhängigkeiten und unbekannte Branches werden mit benanntem `400 until.land: …` abgelehnt.
+- `{kind:"merge",slot:<n>}` nutzt die bestehende Merge-Watch-Zulassung: aktiver Lane-Slot mit
+  laufendem oder persistiertem terminalem Merge. Ein schon wahres Terminal feuert sofort.
+- `{kind:"audit",sha:"<vollständige Git-Objekt-ID>"}` nutzt die bestehende Audit-Watch-Zulassung
+  im Repo der MAIN: persistiertes, laufendes oder eingereihtes Audit dieses Lands. Ein schon
+  vorliegendes Audit feuert sofort. Die Watch-Ablehnungen heißen hier `400 until.merge: …` bzw.
+  `400 until.audit: …`; ungültige Formen und zusätzliche Selektoren sind ebenfalls 400.
+
+Mit `until` ist ein nichtleerer `grund` Pflicht. Ohne `until` bleibt der bisherige Hold unverändert.
+Der Hold speichert `until` und `watchId`; der Watch reserviert das übliche Zustellbudget, erscheint
+in `GET /api/self` und mintet genau ein bestehendes `merge-terminal`- bzw. `post-land-audit`-Event
+für die haltende MAIN. Land-Watches lesen in `tickWatches` den dauerhaften Land-Beleg, überleben
+also das Ende des Ziel-Slots und feuern bei einem bereits belegten Land im nächsten Tick.
+Zustellung und Bestätigung laufen wie bei §watch, einschließlich des 60-Sekunden-Idle-Gates.
+**Das Event hebt den Halt nicht auf:** Release bleibt ein eigener Akt der MAIN. Ein erneuter Hold
+mit derselben Bedingung erzeugt keinen weiteren Watch; eine Freigabe löscht keine Watch-Abos.
+
+Antwort: `{ok:true, sessionIdMatch, hold:{by:"main",slot,at,grund,until?,watchId?}, task:{id,kind,status,programId}}`,
 beim ersten Setzen ein `task_hold`-Event (`… held grund="…"` bzw. `grund=null`), beim Nachtrag
 `… regrund grund="…"`; das Aufheben durch die MAIN schreibt `… lifted grund=…`, durch den
 `▸ queue` des Owners `… lifted by=owner grund=…`. Ablehnungen: Lane (409 `a lane may not hold a
@@ -1783,6 +1860,11 @@ Schärfung.
 Begründung `TaskNotePin.by`. `edited:true` bleibt, was es immer war: der PIN gegen den
 Brief-Sweep (`briefDue`); `by` ist die Urheberschaft. Die beiden Fakten ritten bis hierher auf einem
 Boolean.
+
+**Ein so gestempelter Brief ist auch die Reihenfolge der Zeile:** `edited:true` mit `by:"main"` (diese
+Tür) oder `by:"owner"` (die Owner-Tür) ersetzt die `NACH`-Angaben des Originaltexts an beiden
+Release-Türen und im Startplan (`start-plan.ts#orderTextOf`, Abschnitt `release` oben); ein Brief ohne
+`by` liest weiter Text und Brief zusammen.
 
 **ABWESENHEIT IST EIN DATUM, KEIN DRITTER AUTOR.** Ein Brief ohne `by` wurde geschrieben, bevor es
 das Feld gab; jede Renderstelle liest diese Abwesenheit exakt so, wie sie vorher `edited` allein las,
@@ -2525,6 +2607,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 (§watch). Der Default von 15 min würgte einen vollen Lauf ab (gemessen 2 120 s,
 `suite-modules.ts`); mehr als 2 700 000 kauft nichts, weil der Claim nach
 `server.ts#HELPER_CLAIM_TIMEOUT_MS` (45 min) verfällt und ein späteres Verdikt dann abgelehnt wird.
+**Ein voller Lauf passt seit 2026-09-26 nicht mehr hinein** (55–70 min, `docs/verify-tiering.md`
+§14.0) — anders als die Lane-Vorschau wird ein Command-Job NICHT geteilt; für die volle Suite einer
+MAIN ist das offen.
 Ein Gate-Suite-Lauf geht genauso: `{"cmd":"./e2e-claude-gate.sh"}` oder
 `{"cmd":"./e2e-clean-review.sh"}`.
 
@@ -2811,6 +2896,32 @@ terminal und bindet den Baum nicht mehr — die Lane entscheidet (lokal fahren, 
 liegen lassen). Ein später eintreffendes Verdikt des verlorenen Runners wird mit **409**
 `no live claim for this preview` abgelehnt; das gesettlte `unknown` bleibt die eine Wahrheit über
 diesen Baum. Beweis: `e2e/helper-portal.ts` (K12) in `./e2e-postland-audit.sh`.
+
+**DIE VOLLE VORSCHAU LÄUFT GETEILT (seit 2026-10-02).** Ein voller `./e2e-isolated.sh` dauert 55–70 min,
+eine Claim-Frist 45 min — jede volle Vorschau über den Helfer verfiel deshalb als `unknown`
+(gemessen: Lanes 24 und 19, Claims nach 2 702 s / 2 708 s verfallen; Zahlen in
+`docs/verify-tiering.md` §14.0). Ein Angebot OHNE `modules` wird darum beim Prägen in
+`FLEET_AUDIT_SHARDS` Shard-Jobs geteilt (`server.ts#laneSuiteShardCount`), sofern die Zahl > 1 ist
+und ein Gerät schlägt, das `audit-shard` erklärt — sonst bleibt es ganz, wie bisher. Was die Lane
+davon sieht:
+
+- `offer.shards[]` (nur auf einem geteilten Angebot; ein ganzes behält seine geschlossene
+  Schlüsselmenge): je Shard `k`, `n`, `jobId`, `state` (`open` · `claimed` · `reported` · `lapsed`
+  · `unclaimed` · `sibling`) und nach dem Bericht dessen Kurzverdikt samt eigenem `artifact`.
+- `offer.state` bleibt `claimed`, solange der Lauf jemandes ist — auch zwischen zwei Shard-Claims.
+  `offer.claim` nennt den ältesten live beanspruchten Shard; `withdraw` ohne `abandon` ist 409,
+  solange einer live beansprucht ist.
+- `offer.result` ist EIN Verdikt, geschrieben wenn der letzte Shard terminal ist: grün nur, wenn
+  alle grün meldeten; rot, wenn einer rot meldete; sonst `unknown` mit jedem nicht-grünen Shard
+  beim Namen (ein verfallener Shard: `state: "lapsed"`, `remote.reason: "timeout"`). `checks` ist
+  die Summe. Die Pane-Zeile kommt einmal, auf der Eltern-Job-ID.
+- Jeder Shard hat seine EIGENE Claim-Frist; die ganze Vorschau darf länger dauern als eine Frist.
+  Unbeanspruchte Shards haben ab dem ersten Claim eine Frist lang Zeit, dann schließen sie.
+
+Auf dem Portal erscheint ein geteiltes Angebot als n Jobs `kind: "lane-suite"` mit `shard: "k/n"` —
+nur für ein Gerät mit `audit-shard`; die Eltern-ID ist nicht beanspruchbar (409). Der Daemon braucht
+dafür nichts Neues (`helper-daemon/daemon.ts#shardEnv` gilt für jede Nicht-Command-Claim). Beweis:
+`e2e/lane-suite.ts` (LS.shard) in `./e2e-isolated.sh`.
 
 **UND EIN ROTES VERDIKT BEKOMMT EINEN ZWEITEN EMPFÄNGER: den Owner.** Dieselbe Mint-Stelle legt
 für `result: "red"` zusätzlich eine Zeile in den **Owner-Posteingang** (`receiverSlot: null`,
@@ -4161,7 +4272,7 @@ tun. Es gibt dafür **keine zweite Merge- oder Land-Implementierung**: es ist di
 | | Board-⏸ (`byHuman:true`) | MAIN unter `guarded` |
 | --- | --- | --- |
 | Verify | wird als `stale` MARKIERT, nie neu gefahren | wird FRISCH auf dem Kandidaten gefahren |
-| Landet bei | Owner-Ermessen (auch bei `ok:false`) | **ausschließlich `ok:true`** |
+| Landet bei | nur über einem aufgezeichneten `ok:true` (seit `578e8975`; Rot/unbekannt → 409) | **ausschließlich frisches `ok:true`** |
 | `confirmedByHuman` | `true` | `false` (wer es war, steht auf dem Actor-Rail) |
 
 **Sie läuft im HINTERGRUND** wie der Merge-Job und aus demselben Grund: ein frischer `runVerify`
@@ -4207,6 +4318,45 @@ durch den sauberer Auto-Land, Owner-Confirm und Boot-Nachholung gleichermassen l
 `hubPush` faellt das Land nicht: `verify` und `landed` bleiben, was sie waren, und es gibt weder
 Retry noch Rebase gegen die Nabe. Begruendung und Beweis:
 `docs/dual-host-topologie-entscheidung-2026-09-05.md` §6.
+
+### Re-Verify: denselben gehaltenen Kandidaten neu messen (Owner-Route)
+
+Gemessene Lücke (Orchestratorin 2026-10-02): Lane 0A (Slot 24) stand 01:32 auf
+`resolved` / `resolvedBy:"author"` / `verify.ok:false`, und das Rot war FREMD (Pins E9/E10, 01:33
+außerhalb der Lane behoben). Danach hielt jeder `POST /api/slots/24/merge` im ⏸-Guard
+(`server.ts#carriedFromPendingVerdict`: Auflösung + Ziel noch Vorfahr), und jedes Confirm
+verweigerte das aufgezeichnete Rot (`server.ts#confirmResolvedCandidate`, `578e8975`). Neu messen
+ging erst, als das Ziel 02:17 durch ein fremdes Land weiterzog.
+
+Die Tür dafür ist **`POST /api/slots/:id/merge` mit `{"reverify":true}`** (Owner-Token), neben
+`{"confirm":true}` und nie zusammen mit ihm (400). Sie fährt das Gate über den Kandidaten, den das
+Verdikt schon gebunden hat — kein Rebase, kein Land, die Auflösung bleibt unangetastet — und schreibt
+das Ergebnis als neues Verdikt (`server.ts#reverifyRefusal`, `server.ts#reverifyJob`):
+
+| Lage | Antwort |
+| --- | --- |
+| Verdikt `resolved` mit Auflösung, Verify nicht grün, Ziel unbewegt, gleiche `candidateSha` + `diffHash` | `{running:true, reverify:true, candidate}`; Ausgang über `GET …/merge` und das merge-terminal-Event |
+| frisch GRÜN | Verdikt bleibt `resolved` (die Auflösung wartet weiter auf Review), jetzt mit `verify.ok:true` — das **bestehende** `{"confirm":true}` landet es |
+| frisch ROT oder unbekannt | weiter gehalten, neues Verdikt mit neuem `at` und neuer Messung |
+| Lane-Tip oder kanonischer Diff weicht ab | 409 `status:"stale"`, nichts gemessen, Verdikt unverändert |
+| Ziel hat sich bewegt | 409 — der ⏸-Hold ist verfallen, ⏫ rebaset und misst neu |
+| keine Auflösung im Verdikt / Verify schon grün / kein Verify / keine Identität | 409 mit dem Satz, welche andere Tür gilt |
+
+Jede Messung schreibt eine `merge_verdict`-Zeile mit `reverify:true`; eine Verweigerung schreibt
+keine. Kein Tick ruft die Tür: sie ist ein Owner-Akt, und ein Confirm landet weiterhin nie ein
+nicht-grünes Verify. Ändert sich der Kandidat oder das Ziel WÄHREND des Laufs, wird die Messung
+verworfen und das alte Verify bleibt stehen.
+
+**Warum nicht an der Program-MAIN-Land-Tür** (`POST /api/self/tasks/:id/land`): die MAIN nimmt einen
+anderen Pfad. Unter `green-only` darf sie eine Auflösung gar nicht bestätigen — neu messen öffnete
+ihr nichts. Unter `guarded` IST ihr Confirm schon ein frisches Re-Verify (`byHuman:false`), einmal pro
+Kandidat (`selfConfirmSpent`); dieser Deckel ist der Schutz gegen Zyklen über identischen Bytes, und
+der Server kann ein fremdes Rot nicht von einem echten unterscheiden. Nach einem fremden Rot
+eskaliert die MAIN also an den Owner, der diese Tür fährt und danach bestätigt.
+
+Beweis: `e2e/merge.ts#reverifyHeldCandidate` (erzwungenes Fremd-Rot per Flag-Datei, die Lücke vor der
+Tür, 409 für einen abweichenden Kandidaten und ein bewegtes Ziel, Rot gehalten, Grün → Confirm
+landet genau den Kandidaten).
 
 ### Aktor-Provenienz: wer den Integrations-Branch bewegt hat
 
@@ -4841,6 +4991,12 @@ Eine abgewiesene Zustellung an den lebenden Insassen bleibt im Buendel. Ein bere
 `send` im Audit nennt
 `deliveryClass`, `ttlSec`, `ttlQuelle` (`1h`, `5m`, `codex`, `unknown`) und `cache` (`warm` oder
 `kalt`); `delivery_bundle_*` trennt Queue, Send, Abweisung, Umleitung und Drop.
+
+Ein sofortiger Owner-Send übernimmt keine Sperre eines wartenden Maschinenbündels. Verweigert
+dessen Gate die gemeinsame Zustellung, bleiben die Maschinenentries mit ihren Promises und
+Empfängerbindungen im bestehenden Retrypfad; nur der Ownerpayload geht separat durch `sendText`.
+Draft-, Agent-, Occupant- und Readinessprüfungen gelten dabei weiterhin. Ein sendbares Bündel
+benutzt weiterhin die gemeinsame Zustellung. Der Owner-Send hebt keine Automatikgate auf.
 Der Flush prueft die Gates fuer den aktuellen Empfaenger erneut, mit der strengsten Policy aller
 enthaltenen Eintraege, und verlangt bei etablierter Pane einen frischen Agenten-Nachweis vor dem
 Paste. Busy, Kill-Switch und Quiet Hours halten das Buendel fuer einen spaeteren Versuch.
@@ -4848,6 +5004,16 @@ No-Agent, No-Pane und Blockschirm verwerfen es vor dem Paste; `delivery_bundle_d
 das Gate und die Aufrufer erhalten den bestehenden Reject.
 
 ## send whenFree — `POST /send` (OWNER-Route, nicht `/api/self/*`)
+
+Die beiden Chat-Eingaben verwenden denselben `deliver`-Pfad und behalten bei Ablehnung ihren
+lokalen Text. `receipt.delivery:"refused"` belegt null getippte Bytes, keinen Draftgrund:
+die Anzeige unterscheidet belegtes `error:"composer occupied (…) — nothing typed"`, No-Agent,
+`gate=…` und einen Occupantwechsel. Unbekannte Gründe und fehlende/kaputte Receipts behaupten
+weder Draft noch Erfolg; die Meldung gibt keine Rohfehlermeldung oder Credentials aus.
+`delivery:"uncertain"` mit `acceptance:"not-observed"` heißt ausdrücklich nicht beobachtete
+Annahme; plain `uncertain` bezeichnet den ungewissen Transportausgang. Beide bleiben getrennt,
+ohne erneuten Paste oder automatische Wiederholung. Ein Occupantwechsel vor dem Paste ist
+eine Verweigerung, ein Wechsel nach dem Paste bleibt uncertain.
 
 Anlass (2026-09-19, Orchestratorin Slot 4): ein `/send` an Slot 3 kam mit
 `409 composer occupied (2 chars) — nothing typed` zurück, weil „Ok" ungesendet im Eingabefeld stand;

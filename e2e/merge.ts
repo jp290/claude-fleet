@@ -206,6 +206,196 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
   }
 }
 
+async function preserveMergeHistory(): Promise<void> {
+  const repo = `${ROOT}/preserve-merge-repo`;
+  const verify = `${ROOT}/preserve-merge-verify`;
+  const gateLog = `${ROOT}/preserve-merge-gates`;
+  const bin = `${ROOT}/preserve-merge-bin`;
+  const errorMode = `${ROOT}/preserve-merge-error`;
+  const errorHit = `${ROOT}/preserve-merge-error-hit`;
+  const realGit = spawnSync("which", ["git"]).stdout.toString().trim();
+  const git = (cwd: string, ...args: string[]): string => {
+    const r = spawnSync(realGit, ["-C", cwd, ...args]);
+    if (r.status !== 0) throw new Error(`merge preservation fixture ${args.join(" ")}: ${r.stderr.toString()}`);
+    return r.stdout.toString().trim();
+  };
+  mkdirSync(repo, { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  git(repo, "init", "-b", "main");
+  git(repo, "config", "user.name", "E2E");
+  git(repo, "config", "user.email", "e2e@example.invalid");
+  git(repo, "config", "commit.gpgsign", "false");
+  writeFileSync(`${repo}/code.txt`, "root\n");
+  git(repo, "add", "code.txt");
+  git(repo, "commit", "-m", "root");
+  const primary = git(repo, "rev-parse", "main");
+  git(repo, "checkout", "-b", "overhaul");
+  writeFileSync(`${repo}/code.txt`, "integration\n");
+  git(repo, "commit", "-am", "integration parent");
+  const integration = git(repo, "rev-parse", "HEAD");
+  git(repo, "checkout", "-b", "side", primary);
+  writeFileSync(`${repo}/code.txt`, "side\n");
+  git(repo, "commit", "-am", "side parent");
+  const side = git(repo, "rev-parse", "HEAD");
+  git(repo, "checkout", "main");
+  writeFileSync(verify, `#!/bin/sh
+git rev-parse HEAD HEAD^{tree} >> '${gateLog}' || exit 1
+echo 'ALL PASS'
+`, { mode: 0o755 });
+  writeFileSync(`${bin}/git`, `#!/bin/sh
+if [ -f '${errorMode}' ]; then
+  case "$*" in
+    *"merge-base --is-ancestor "*" HEAD")
+      printf '%s\\n' "$*" > '${errorHit}'
+      echo 'controlled ancestry read failure' >&2; exit 128 ;;
+  esac
+fi
+exec '${realGit}' "$@"
+`, { mode: 0o755 });
+  type Lane = { slot: number; cwd: string; branch: string };
+  let lane: Lane | null = null;
+  type Verdict = NonNullable<Awaited<ReturnType<typeof waitMerge>>["last"]> & { resolverRuns?: unknown[] };
+  const wait = (slot: number, requireVerdict = false): Promise<{ gone: boolean; last: Verdict | null }> =>
+    waitMerge(slot, { requireVerdict });
+  const open = async (): Promise<Lane> => {
+    const selectedR = await post("/api/repo-base", { repo, branch: "overhaul" });
+    const selected = await selectedR.json() as { ok?: boolean; repo?: string; base?: string };
+    const selectedOk = selectedR.ok && selected.ok === true
+      && selected.repo === realpathSync(repo) && selected.base === "overhaul";
+    check("merge preservation setup: the isolated repo-base door selects overhaul", selectedOk, JSON.stringify(selected));
+    if (!selectedOk) throw new Error("merge preservation setup: integration target selection failed");
+    const r = await post("/api/lanes", { repo });
+    const l = await r.json() as Lane;
+    if (!r.ok || !l.slot || !l.cwd) throw new Error(`merge preservation lane: ${JSON.stringify(l)}`);
+    lane = l;
+    const sessions = await (await get("/api/sessions")).json() as
+      { slots: { id: number; worktree?: { base?: string; baseSha?: string } }[] };
+    const recorded = sessions.slots.find((s) => s.id === l.slot)?.worktree;
+    const target = git(repo, "rev-parse", "overhaul");
+    const forkOk = recorded?.base === "overhaul" && recorded.baseSha === target
+      && git(l.cwd, "rev-parse", "HEAD") === target;
+    check("merge preservation setup: recorded base and exact fork match overhaul before any merge or gate",
+      forkOk, JSON.stringify({ recorded, target }));
+    if (!forkOk) throw new Error("merge preservation setup: the lane's integration binding or fork is wrong");
+    return l;
+  };
+  const gates = (): string => existsSync(gateLog) ? readFileSync(gateLog, "utf8") : "";
+  try {
+    await restartSrv({ PATH: `${bin}:${process.env.PATH}`, FLEET_VERIFY_CMD: verify,
+      FLEET_VERIFY_CMD_REPOS: JSON.stringify({ [repo]: verify }) });
+    await setMergeMode("blocked");
+    lane = await open();
+    const merge = spawnSync(realGit, ["-C", lane.cwd, "merge", "--no-ff", "side", "-m", "real merge"]);
+    const conflictSetup = merge.status === 1 && git(lane.cwd, "diff", "--name-only", "--diff-filter=U") === "code.txt";
+    check("merge preservation setup: the two parents require an actual conflict resolution", conflictSetup, merge.stderr.toString());
+    if (!conflictSetup) throw new Error("merge preservation setup: no actual conflict to resolve");
+    writeFileSync(`${lane.cwd}/code.txt`, "integration and side resolved\n");
+    git(lane.cwd, "add", "code.txt");
+    git(lane.cwd, "commit", "-m", "resolved real merge");
+    const candidate = git(lane.cwd, "rev-parse", "HEAD");
+    const tree = git(lane.cwd, "rev-parse", "HEAD^{tree}");
+    const parents = git(lane.cwd, "show", "-s", "--format=%P", "HEAD");
+    check("merge preservation setup: exact integration and side parents are present",
+      parents === `${integration} ${side}`, parents);
+    if (parents !== `${integration} ${side}`) throw new Error("merge preservation setup: the real merge parents are missing");
+    await settleForMerge(lane.slot);
+    const request = await post(`/api/slots/${lane.slot}/merge`, {});
+    const verdict = await wait(lane.slot);
+    const landed = git(repo, "rev-parse", "overhaul");
+    const noteRaw = spawnSync(realGit, ["-C", repo, "notes", "--ref=fleet/land", "show", landed]);
+    const note = noteRaw.status === 0 ? JSON.parse(noteRaw.stdout.toString()) as
+      { base?: string; mainBefore?: string; mainAfter?: string; verify?: { ok?: boolean; out?: string } } : null;
+    check("merge preservation: ordinary land keeps the exact merge HEAD and tree",
+      request.ok && verdict.gone && landed === candidate && git(repo, "rev-parse", "overhaul^{tree}") === tree,
+      JSON.stringify({ request: request.status, verdict, candidate, landed, tree }));
+    check("merge preservation: both parents and ancestors survive on the target ref",
+      git(repo, "show", "-s", "--format=%P", "overhaul") === parents
+        && spawnSync(realGit, ["-C", repo, "merge-base", "--is-ancestor", integration, "overhaul"]).status === 0
+        && spawnSync(realGit, ["-C", repo, "merge-base", "--is-ancestor", side, "overhaul"]).status === 0,
+      git(repo, "show", "-s", "--format=%P", "overhaul"));
+    check("merge preservation: a fresh green gate measures the unchanged candidate before FF",
+      gates() === `${candidate}\n${tree}\n` && note?.verify?.ok === true
+        && note.verify.out?.trim() === "ALL PASS" && note.base === "overhaul"
+        && note.mainBefore === integration && note.mainAfter === candidate,
+      JSON.stringify({ gates: gates(), note }));
+    check("merge preservation: primary main remains identical for an overhaul land",
+      git(repo, "rev-parse", "main") === primary, git(repo, "rev-parse", "main"));
+    if (!verdict.gone) await post(`/api/slots/${lane.slot}/kill`, {});
+    lane = await open();
+    const beforeErrorBase = git(repo, "rev-parse", "overhaul");
+    writeFileSync(`${lane.cwd}/ancestry-error.txt`, "unintegrated candidate\n");
+    git(lane.cwd, "add", "ancestry-error.txt");
+    git(lane.cwd, "commit", "-m", "candidate for ancestry read failure");
+    const beforeError = git(lane.cwd, "rev-parse", "HEAD");
+    const beforeErrorTree = git(lane.cwd, "rev-parse", "HEAD^{tree}");
+    const errorCandidateOk = beforeError !== beforeErrorBase
+      && git(lane.cwd, "rev-list", "--count", "overhaul..HEAD") === "1"
+      && git(lane.cwd, "status", "--porcelain") === ""
+      && git(repo, "rev-parse", "overhaul") === beforeErrorBase;
+    check("merge preservation error setup: a clean ahead candidate leaves the integration ref unchanged",
+      errorCandidateOk, JSON.stringify({ beforeError, beforeErrorBase, beforeErrorTree }));
+    if (!errorCandidateOk) throw new Error("merge preservation error setup: no clean unintegrated candidate");
+    const beforeGates = gates();
+    writeFileSync(errorMode, "error\n");
+    await settleForMerge(lane.slot);
+    const errorRequest = await post(`/api/slots/${lane.slot}/merge`, {});
+    const errorResponse = await errorRequest.json() as { running?: boolean };
+    const errorStarted = errorRequest.ok && errorResponse.running === true;
+    check("merge preservation error setup: the route actually accepts a merge job", errorStarted, JSON.stringify(errorResponse));
+    if (!errorStarted) throw new Error("merge preservation error setup: the prepass was not started");
+    const error = await wait(lane.slot, true);
+    rmSync(errorMode);
+    const hit = existsSync(errorHit) ? readFileSync(errorHit, "utf8").trim() : "";
+    const injected = hit === `-C ${lane.cwd} merge-base --is-ancestor ${beforeErrorBase} HEAD`;
+    check("merge preservation error setup: the server prepass consumes the controlled ancestry exit 128", injected, hit);
+    if (!injected) throw new Error("merge preservation error setup: controlled ancestry error was not injected");
+    check("merge preservation: ancestry read error halts without a gate, resolver or ref change",
+      error.last?.status === "error" && error.last.landed === false
+        && error.last.detail.includes("ancestry of the integration ref overhaul could not be read")
+        && !error.last.resolverRuns?.length && gates() === beforeGates
+        && git(lane.cwd, "rev-parse", "HEAD") === beforeError
+        && git(lane.cwd, "rev-parse", "HEAD^{tree}") === beforeErrorTree
+        && git(repo, "rev-parse", "overhaul") === beforeErrorBase,
+      JSON.stringify(error));
+    const gd = git(lane.cwd, "rev-parse", "--absolute-git-dir");
+    writeFileSync(`${gd}/MERGE_HEAD`, `${side}\n`);
+    const op = await post(`/api/slots/${lane.slot}/merge`, {});
+    const opBody = await op.json() as { status?: string; detail?: string };
+    check("merge preservation: an existing Git operation cannot become a clean land",
+      opBody.status === "blocked" && opBody.detail?.includes("in progress") === true
+        && gates() === beforeGates && git(repo, "rev-parse", "overhaul") === beforeErrorBase,
+      JSON.stringify(opBody));
+    rmSync(`${gd}/MERGE_HEAD`);
+    writeFileSync(`${lane.cwd}/code.txt`, "divergent lane\n");
+    git(lane.cwd, "commit", "-am", "divergent lane");
+    const divergentTip = git(lane.cwd, "rev-parse", "HEAD");
+    git(repo, "checkout", "overhaul");
+    writeFileSync(`${repo}/code.txt`, "divergent integration\n");
+    git(repo, "commit", "-am", "divergent integration");
+    const divergentBase = git(repo, "rev-parse", "HEAD");
+    git(repo, "checkout", "main");
+    await settleForMerge(lane.slot);
+    await post(`/api/slots/${lane.slot}/merge`, {});
+    const conflict = await wait(lane.slot, true);
+    check("merge preservation: divergent real conflict still aborts and stops through the resolver",
+      conflict.last?.status === "blocked" && conflict.last.landed === false
+        && conflict.last.resolverRuns?.length === 1
+        && git(lane.cwd, "rev-parse", "HEAD") === divergentTip
+        && git(repo, "rev-parse", "overhaul") === divergentBase && gates() === beforeGates
+        && !existsSync(`${gd}/rebase-merge`) && !existsSync(`${gd}/rebase-apply`),
+      JSON.stringify(conflict));
+  } finally {
+    rmSync(errorMode, { force: true });
+    if (lane) await post(`/api/slots/${lane.slot}/kill`, {});
+    const clearedR = await post("/api/repo-base", { repo, branch: "" });
+    const cleared = await clearedR.json() as { ok?: boolean; repo?: string; base?: string | null };
+    check("merge preservation cleanup: only the scratch repo's integration configuration is cleared",
+      clearedR.ok && cleared.ok === true && cleared.repo === realpathSync(repo) && cleared.base === null,
+      JSON.stringify(cleared));
+    await restartSrv();
+  }
+}
+
 export async function run(lc: LaneCtx): Promise<void> {
   const receiverA = await freeSlot();
   const openReceiverA = receiverA ? await post(`/api/slots/${receiverA}/open`, { cwd: REPO }) : null;
@@ -2642,4 +2832,171 @@ export async function run(lc: LaneCtx): Promise<void> {
   await post(`/api/slots/${receiverA}/kill`, {});
   await post(`/api/slots/${receiverB}/kill`, {});
   await codexWritingWorkers();
+  await preserveMergeHistory();
+  await reverifyHeldCandidate();
+}
+
+// THE RE-VERIFY DOOR (`{reverify:true}`, server.ts#reverifyRefusal/#reverifyJob), against the shape
+// lane 0A stood in on 2026-10-02: resolved, resolvedBy author, verify RED — and the red FOREIGN, a
+// failure outside the tree that was repaired without the candidate or main moving. The foreign red
+// is forced by a flag file the gate reads and the tree never contains; the lane carries the marker
+// only so no other tree in this run can be reddened by it. The resolution is written onto the
+// persisted verdict with the server stopped (the Q4 legacy fixture's method): the author round trip
+// is proved in ② above, and the door under test is about the verdict, not about who wrote it.
+async function reverifyHeldCandidate(): Promise<void> {
+  const delegate = process.env.FLEET_VERIFY_CMD ?? "";
+  const verify = `${ROOT}/reverify-foreign-verify`;
+  const foreign = `${ROOT}/reverify-foreign-red`;
+  const git = (cwd: string, ...args: string[]): string =>
+    spawnSync("git", ["-C", cwd, ...args]).stdout.toString().trim();
+  const commitIn = async (cwd: string, msg: string): Promise<boolean> => {
+    for (let i = 0; i < 20; i++) {
+      if (spawnSync("git", ["-C", cwd, "commit", "-qm", msg]).status === 0) return true;
+      await Bun.sleep(150);
+    }
+    return false;
+  };
+  type Lane = { slot: number; cwd: string; branch: string };
+  type Held = { resolvedBy?: string; at?: number };
+  let lane: Lane | null = null;
+  let landed = false;
+  try {
+    check("re-verify setup: the run's own verify command is known, so the foreign-red gate can delegate to it",
+      delegate !== "" && existsSync(delegate), delegate);
+    if (!delegate) return;
+    writeFileSync(verify, `#!/bin/sh
+if [ -f '${foreign}' ] && git grep -qI REVERIFYFOREIGN -- . 2>/dev/null; then
+  echo "verify FAIL: foreign red — the failure is outside this tree"
+  exit 1
+fi
+exec '${delegate}' "$@"
+`, { mode: 0o755 });
+    writeFileSync(foreign, "red\n");
+    await restartSrv({ FLEET_VERIFY_CMD: verify });
+    await setMergeMode("blocked");
+    lane = (await (await post("/api/lanes", { repo: REPO })).json()) as Lane;
+    await Bun.write(`${lane.cwd}/reverify-held.txt`, "held candidate, REVERIFYFOREIGN fixture\n");
+    spawnSync("git", ["-C", lane.cwd, "add", "reverify-held.txt"]);
+    const laneCommit = await commitIn(lane.cwd, "reverify held candidate");
+    await Bun.write(`${REPO}/reverify-main.txt`, "main side\n"); // different file → clean rebase
+    spawnSync("git", ["-C", REPO, "add", "reverify-main.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "reverify main work"]);
+    await settleForMerge(lane.slot);
+    await post(`/api/slots/${lane.slot}/merge`, {});
+    const first = await waitMerge(lane.slot);
+    const candidate = first.last?.candidateSha ?? "";
+    const firstOk = laneCommit && first.last?.status === "resolved" && first.last.verify?.ok === false
+      && first.last.verify.out.includes("foreign red") && /^[0-9a-f]{40,64}$/.test(candidate)
+      && /^[0-9a-f]{40,64}$/.test(first.last.diffHash ?? "");
+    check("re-verify setup: the forced foreign red stops the candidate as resolved with verify ok:false and a bound identity",
+      firstOk, JSON.stringify(first.last));
+    if (!firstOk) return;
+    await stopSrv();
+    const state = (await Bun.file(`${ROOT}/fleet.json`).json()) as { merges?: Record<string, Record<string, unknown>> };
+    const row = state.merges?.[String(lane.slot)];
+    if (row) { row.conflicted = ["reverify-held.txt"]; row.resolvedBy = "author"; }
+    await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(state, null, 2));
+    await restartSrv({ FLEET_VERIFY_CMD: verify });
+    const held = await waitMerge(lane.slot);
+    const mainSha = git(REPO, "rev-parse", "main");
+    const heldOk = row !== undefined && (held.last as Held | null)?.resolvedBy === "author"
+      && held.last?.candidateSha === candidate && held.last.mainSha === mainSha;
+    check("re-verify setup: the persisted verdict now holds the author resolution 0A carried, bound to the unmoved main",
+      heldOk, JSON.stringify({ held: held.last, mainSha }));
+    const heldV = held.last;
+    if (!heldOk || !heldV) return;
+
+    // the gap itself, measured before the door: ⏫ is held, confirm refuses the red
+    await settleForMerge(lane.slot);
+    const holdR = (await (await post(`/api/slots/${lane.slot}/merge`, {})).json()) as
+      { running?: boolean; status?: string; detail?: string };
+    const confR = await post(`/api/slots/${lane.slot}/merge`, { confirm: true });
+    const conf = (await confR.json()) as { detail?: string };
+    check("re-verify gap: without the door ⏫ is held by the ⏸ guard and confirm refuses the recorded red",
+      holdR.running === false && holdR.status === "resolved" && (holdR.detail ?? "").includes("awaits your review")
+        && confR.status === 409 && (conf.detail ?? "").includes("not green"),
+      JSON.stringify({ holdR, confirm: confR.status, conf }));
+    const bothR = await post(`/api/slots/${lane.slot}/merge`, { confirm: true, reverify: true });
+    check("re-verify: confirm and reverify in one request are refused 400 — two acts, never one",
+      bothR.status === 400, String(bothR.status));
+
+    // (1) a DIFFERENT candidate is refused 409 and nothing is measured or written
+    await Bun.write(`${lane.cwd}/reverify-unreviewed.txt`, "committed after the verdict\n");
+    spawnSync("git", ["-C", lane.cwd, "add", "reverify-unreviewed.txt"]);
+    const moved = await commitIn(lane.cwd, "candidate changed after the verdict");
+    await settleForMerge(lane.slot);
+    const staleR = await post(`/api/slots/${lane.slot}/merge`, { reverify: true });
+    const stale = (await staleR.json()) as { status?: string; reverify?: boolean };
+    const afterStale = await waitMerge(lane.slot);
+    check("re-verify (1): a candidate that is not the bound one is refused 409 stale, and the verdict is untouched",
+      moved && staleR.status === 409 && stale.status === "stale" && stale.reverify === false
+        && (afterStale.last as Held | null)?.at === (heldV as Held).at
+        && afterStale.last?.verify?.at === heldV.verify?.at,
+      JSON.stringify({ status: staleR.status, stale, verdict: afterStale.last }));
+    spawnSync("git", ["-C", lane.cwd, "reset", "-q", "--hard", candidate]);
+    // …and a MOVED TARGET is refused too: the hold has lapsed there, ⏫ is the way
+    await Bun.write(`${REPO}/reverify-target-moved.txt`, "main moved\n");
+    spawnSync("git", ["-C", REPO, "add", "reverify-target-moved.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "reverify target moved"]);
+    await settleForMerge(lane.slot);
+    const movedR = await post(`/api/slots/${lane.slot}/merge`, { reverify: true });
+    const movedBody = (await movedR.json()) as { detail?: string };
+    spawnSync("git", ["-C", REPO, "reset", "-q", "--hard", mainSha]);
+    check("re-verify (1b): a moved target is refused 409 and sent to ⏫",
+      movedR.status === 409 && (movedBody.detail ?? "").includes("moved since the verdict")
+        && git(lane.cwd, "rev-parse", "HEAD") === candidate && git(REPO, "rev-parse", "main") === mainSha,
+      JSON.stringify({ status: movedR.status, movedBody }));
+
+    // (2) the foreign failure still stands: re-measured RED, held, with a NEW verdict
+    await settleForMerge(lane.slot);
+    const redR = await post(`/api/slots/${lane.slot}/merge`, { reverify: true });
+    const redStart = (await redR.json()) as { running?: boolean; candidate?: string };
+    const red = await waitMerge(lane.slot);
+    check("re-verify (2): the same candidate re-measured RED stays held with a new verdict, resolution kept, main unmoved",
+      redR.ok && redStart.running === true && redStart.candidate === candidate
+        && red.last?.status === "resolved" && red.last.landed === false && red.last.verify?.ok === false
+        && (red.last.verify.at ?? 0) > (heldV.verify?.at ?? 0)
+        && ((red.last as Held).at ?? 0) > ((heldV as Held).at ?? 0)
+        && red.last.candidateSha === candidate && red.last.diffHash === heldV.diffHash
+        && (red.last as Held).resolvedBy === "author" && (red.last.conflicted ?? []).includes("reverify-held.txt")
+        && red.last.detail.includes("still RED") && git(REPO, "rev-parse", "main") === mainSha,
+      JSON.stringify({ redStart, verdict: red.last }));
+
+    // (3) the foreign failure is repaired outside the tree: re-measured GREEN, then the EXISTING confirm lands
+    rmSync(foreign, { force: true });
+    await settleForMerge(lane.slot);
+    await post(`/api/slots/${lane.slot}/merge`, { reverify: true });
+    const green = await waitMerge(lane.slot);
+    check("re-verify (3): the same candidate re-measured GREEN, still held for review — the door itself never lands",
+      green.last?.status === "resolved" && green.last.landed === false && green.last.verify?.ok === true
+        && green.last.candidateSha === candidate && green.last.diffHash === heldV.diffHash
+        && green.last.detail.includes("GREEN") && git(REPO, "rev-parse", "main") === mainSha,
+      JSON.stringify(green.last));
+    await settleForMerge(lane.slot);
+    const landR = await post(`/api/slots/${lane.slot}/merge`, { confirm: true });
+    const land = (await landR.json()) as { status?: string; landed?: boolean };
+    landed = land.landed === true;
+    check("re-verify (3): green leads into the existing confirm, which lands exactly the re-measured candidate",
+      landR.ok && land.status === "merged" && landed && git(REPO, "rev-parse", "main") === candidate,
+      JSON.stringify({ status: landR.status, land, main: git(REPO, "rev-parse", "main"), candidate }));
+    const rows = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .flatMap((l) => { try { return [JSON.parse(l) as { event?: string; detail?: string; reverify?: boolean;
+        verifyOk?: boolean | null; stopKind?: string | null }]; } catch { return []; } })
+      .filter((r) => r.event === "merge_verdict" && r.detail === lane?.branch && r.reverify === true);
+    check("re-verify: each measurement is one merge_verdict ledger row (red, then green); a refusal writes none",
+      rows.length === 2 && rows[0].verifyOk === false && rows[0].stopKind === "red"
+        && rows[1].verifyOk === true && rows[1].stopKind === "conflict",
+      JSON.stringify(rows));
+  } finally {
+    rmSync(foreign, { force: true });
+    if (lane && !landed) {
+      await post(`/api/slots/${lane.slot}/kill`, {});
+      await post("/api/worktrees/discard", { repo: REPO, path: lane.cwd, branch: lane.branch });
+    }
+    if (landed) {
+      spawnSync("git", ["-C", REPO, "rm", "-q", "reverify-held.txt"]);
+      spawnSync("git", ["-C", REPO, "commit", "-qm", "cleanup: drop the re-verify fixture from main"]);
+    }
+    await restartSrv();
+  }
 }

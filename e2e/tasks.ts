@@ -2936,8 +2936,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const sendSource = sendStart >= 0 && sendEnd > sendStart ? taskServerSource.slice(sendStart, sendEnd) : "";
     check("delivery residue fixture: sendText and its recovery helper are readable", !!sendSource,
       `start=${sendStart} end=${sendEnd}`);
-    type SendTrace = { events: string[]; acceptance?: string; error?: string };
-    const exerciseSend = async (source: string, before: string, afterResidue: string): Promise<SendTrace> => {
+    type SendTrace = { events: string[]; acceptance?: string; error?: string; refused?: boolean };
+    const exerciseSend = async (source: string, before: string, afterResidue: string,
+      readiness: { state: "ready" | "blocked"; why?: string } | null = { state: "ready" }): Promise<SendTrace> => {
       const events: string[] = [];
       let composerReads = 0;
       class Refused extends Error {}
@@ -2955,6 +2956,7 @@ export async function run(ctx: Ctx): Promise<void> {
         wakeSlot: async () => ({ ok: true }), sameSlotStreamOccupant: () => true,
         existingTmuxTarget: async () => ({ paneId: "%1" }), sess: () => "s1",
         readComposer: async () => before, sameBoundPane: () => true,
+        paneReadiness: async () => readiness,
         DELIVERY_HEADER_PREFIX: "[fleet-zustellung · ",
         awaitComposer: async () => { composerReads++; events.push(composerReads === 1 ? "reread" : "accept-read");
           return composerReads === 1 ? afterResidue : ""; },
@@ -2980,7 +2982,7 @@ export async function run(ctx: Ctx): Promise<void> {
         const result = await send({ id: 1, inputChain: Promise.resolve(), sleeping: false }, "next payload", true,
           { path: "owner", bypassQueue: true });
         return { events, acceptance: result.acceptance };
-      } catch (e) { return { events, error: e instanceof Error ? e.message : String(e) }; }
+      } catch (e) { return { events, error: e instanceof Error ? e.message : String(e), refused: e instanceof Refused }; }
     };
     const fleetRest = "[fleet-zustellung · old path] [Pasted text #3]";
     const recovered = sendSource ? await exerciseSend(sendSource, fleetRest, "") : { events: [] };
@@ -3000,6 +3002,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const draft = sendSource ? await exerciseSend(sendSource, "owner draft", "") : { events: [] };
     check("(A) text without a Fleet head stays untouched and blocks the new paste",
       draft.events.length === 0 && /composer occupied/.test(draft.error ?? ""), JSON.stringify(draft));
+    const blocked = sendSource ? await exerciseSend(sendSource, "", "",
+      { state: "blocked", why: "fixture blocked screen" }) : { events: [] };
+    check("(A) a blocked readiness screen refuses before any pane action or acceptance",
+      blocked.refused === true && blocked.events.length === 0 && blocked.acceptance === undefined
+      && /gate=blocked-screen: fixture blocked screen — nothing typed/.test(blocked.error ?? ""),
+      JSON.stringify(blocked));
     const noRecognition = sendSource.replace("before?.startsWith(DELIVERY_HEADER_PREFIX)", "false");
     const noEnter = sendSource.replace("const afterResidue = await submitFleetResidue(s, bound);",
       'const afterResidue = "";');
@@ -3010,11 +3018,15 @@ export async function run(ctx: Ctx): Promise<void> {
     const mutatedOccupied = bypassOccupied !== sendSource
       ? await exerciseSend(bypassOccupied, fleetRest, "still occupied") : { events: [] };
     check("(A) literal mutation without Fleet-head recognition fails the recovery trace",
-      noRecognition !== sendSource && !recovers(mutatedRecognition), JSON.stringify(mutatedRecognition));
+      noRecognition !== sendSource && mutatedRecognition.refused === true
+      && /composer occupied/.test(mutatedRecognition.error ?? "") && !recovers(mutatedRecognition),
+      JSON.stringify(mutatedRecognition));
     check("(A) literal mutation skipping recovery Enter fails the recovery trace",
-      noEnter !== sendSource && !recovers(mutatedEnter), JSON.stringify(mutatedEnter));
+      noEnter !== sendSource && mutatedEnter.acceptance === "observed" && !recovers(mutatedEnter),
+      JSON.stringify(mutatedEnter));
     check("(A) literal mutation bypassing the occupied reread fails the held trace",
-      bypassOccupied !== sendSource && !staysHeld(mutatedOccupied), JSON.stringify(mutatedOccupied));
+      bypassOccupied !== sendSource && mutatedOccupied.acceptance === "observed" && !staysHeld(mutatedOccupied),
+      JSON.stringify(mutatedOccupied));
   }
 
   // --- comments: the owner's own text ON a row. Same two-tier rule as the prompt above (the poll
@@ -13683,6 +13695,256 @@ export async function run(ctx: Ctx): Promise<void> {
         && JSON.stringify(rcWait.kette) === JSON.stringify([`row ${rcPred} (after)`]),
       JSON.stringify({ release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
     for (const id of [rcPred, rcBare, rcNach, rcMainCarry, rcAfter]) await post(`/api/tasks/${id}/delete`, {});
+
+    // --- (ao) AN AUTHORED BRIEF IS THE ROW'S CURRENT ORDER (15d3c2a5, start-plan.ts#orderTextOf). A row
+    // filed `NACH aoOld` and re-briefed by hand to `NACH aoN1, aoN2, aoN3` carries a fresh card read off
+    // the brief's own header block — and the two release doors and both start-plan builders still
+    // unioned the ORIGINAL text into the order, naming aoOld as missing under that fresh card forever
+    // (live: afterMissing [0bd…]). Every row is made through the real doors: filed with a header block,
+    // its card read by the sweep's FORMAT path (no model runs — the stand-in exits 1, so a header-less
+    // row elsewhere on this instance gets no card from it), its brief written through the MAIN self
+    // door or the owner door. Only the two shapes no door mints any more are planted, on the brief's
+    // author fields alone: a pinned brief WITHOUT `by` (legacy) and a compiled one (`edited:false`).
+    // The negatives keep every existing guard: an order the CURRENT brief names inline that the card
+    // does not carry, a stale card, an invalid card, the legacy and the compiled brief (both read as
+    // the union). The CLI half runs `bun start-plan.ts --state` over this instance's state AND over a
+    // fixture state for the shapes no door can write: malformed and contradictory stamps, a self and an
+    // unknown id, and two variant groups read through their group. MUTATION: reading
+    // `${text}\n${brief}` again in orderTextOf turns exactly (ao2), (ao3), (ao4) and (ao6) red (measured).
+    {
+      const aoDir = mkdtempSync(join(tmpdir(), "fleet-ao-"));
+      const aoStandIn = join(aoDir, "fakecard");
+      writeFileSync(aoStandIn, "#!/bin/sh\ncat >/dev/null\nexit 1\n", { mode: 0o755 });
+      interface AoCard { valid?: boolean; after?: string[]; at?: number; model?: string; gaps?: string[] }
+      interface AoTask { id: string; status: string; card?: AoCard;
+        brief?: { text: string; at: number; model: string; edited?: boolean; by?: string } }
+      interface AoPlanRow { id: string; checks?: { afterMissing?: string[]; cardStale?: boolean; cardValid?: boolean | null } }
+      const aoTasks = async (): Promise<AoTask[]> => ((await (await get("/api/tasks")).json()) as { tasks: AoTask[] }).tasks;
+      const aoTask = async (id: string): Promise<AoTask | undefined> => (await aoTasks()).find((t) => t.id === id);
+      // the MAIN's self door answers only once the restarted server holds the slot again — waited on
+      // as a fact, never assumed (the (rc0) note: a release straight after a restart once read 401)
+      const aoMainToken = async (): Promise<string> => {
+        try {
+          return await until(async () => {
+            const token = mState().slots?.[String(mSlot)]?.selfToken ?? "";
+            return token && (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": token } })).ok ? token : "";
+          }, { timeoutMs: 15_000, what: "the MAIN's self door answers after the restart" });
+        } catch (e) { if (e instanceof UntilTimeout) return ""; throw e; }
+      };
+      const aoHead = (tag: string, after: string[], { flaeche = "AGENTS.md", prose = "" } = {}): string => [
+        `[ACP23 AO · ${tag}]`,
+        "ROLLE: claude/claude-opus-5[1m]/high",
+        "GROESSE: klein",
+        `FLAECHE: ${flaeche}`,
+        `NACH: ${after.join(", ")}`,
+        "ZIEL: die Auftragsordnung liest den wirksamen Brief",
+        "VERIFY: bun e2e/pins.ts",
+        "DONE: die Zeile wird in ihrer wirksamen Reihenfolge freigegeben",
+        "VERBOTEN: kein Auto-Dispatch",
+        ...(prose ? ["", prose] : []),
+      ].join("\n");
+      const aoReleaseMain = (token: string, id: string): Promise<Response> =>
+        fetch(`${BASE}/api/self/tasks/${id}/release`, { method: "POST", headers: { "x-fleet-self-token": token } });
+      const aoBriefMain = (token: string, id: string, text: string): Promise<Response> =>
+        fetch(`${BASE}/api/self/tasks/${id}/brief`, { method: "POST",
+          headers: { "content-type": "application/json", "x-fleet-self-token": token }, body: JSON.stringify({ text }) });
+      const aoOwnerFile = async (text: string): Promise<string> =>
+        ((await (await post("/api/tasks", { text, queue: false, programId: mMainProgram, repo: REPO })).json()) as
+          { task?: { id: string } }).task?.id ?? "";
+
+      await restartSrv({ FLEET_CARD_MS: "700", FLEET_CARD_CMD: aoStandIn });
+      await post("/api/dispatch", { on: false });
+      const aoToken1 = await aoMainToken();
+      // the predecessors carry an author card, so the sweep never asks the stand-in about them
+      const aoPred = async (name: string): Promise<string> =>
+        ((await (await rcEarly(`acp23 ao predecessor ${name}`)).json()) as { task?: { id: string } }).task?.id ?? "";
+      const aoOld = await aoPred("old");
+      const aoN1 = await aoPred("n1");
+      const aoN2 = await aoPred("n2");
+      const aoN3 = await aoPred("n3");
+      const aoNew = [aoN1, aoN2, aoN3];
+      const aoMainFile = async (tag: string): Promise<string> =>
+        ((await (await mFile(aoToken1, { text: aoHead(tag, [aoOld]), kind: "auftrag" })).json()) as { task?: { id: string } }).task?.id ?? "";
+      const aoMain = await aoMainFile("MAIN-BRIEF");
+      const aoStale = await aoMainFile("STALE");
+      const aoOwner = await aoOwnerFile(aoHead("OWNER-BRIEF", [aoOld]));
+      const aoLegacy = await aoOwnerFile(aoHead("LEGACY", [aoOld]));
+      const aoCompiled = await aoOwnerFile(aoHead("COMPILED", [aoOld]));
+      const aoInline = await aoOwnerFile(aoHead("INLINE", [aoOld]));
+      const aoInvalid = await aoOwnerFile(aoHead("INVALID", [aoOld]));
+      const aoRows = [aoMain, aoStale, aoOwner, aoLegacy, aoCompiled, aoInline, aoInvalid];
+      const aoFirstCards = async (): Promise<Map<string, AoCard> | null> => {
+        const all = await aoTasks();
+        const cards = new Map(aoRows.map((id) => [id, all.find((t) => t.id === id)?.card]));
+        return [...cards.values()].every((c) => c?.model === "format" && JSON.stringify(c.after) === JSON.stringify([aoOld]))
+          ? cards as Map<string, AoCard> : null;
+      };
+      let aoCards0: Map<string, AoCard> | null = null;
+      try { aoCards0 = await until(aoFirstCards, { timeoutMs: 20_000, stepMs: 250, what: "every ao row carries its format card" }); }
+      catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+      check("(ao0) fixture: the MAIN door answers, seven header rows filed, each carries a valid FORMAT card with after = [the original NACH]",
+        !!aoToken1 && aoRows.every(Boolean) && !!aoOld && aoNew.every(Boolean) && !!aoCards0
+          && [...aoCards0.values()].every((c) => c.valid === true),
+        JSON.stringify({ token: aoToken1.length, rows: aoRows, cards: aoCards0 ? [...aoCards0.entries()] : (await aoTasks())
+          .filter((t) => aoRows.includes(t.id)).map((t) => [t.id, t.card ?? null]) }));
+
+      // the AUTHORED briefs: one through the MAIN self door, five through the owner door. Each replaces
+      // the order with NACH aoN1, aoN2, aoN3; INLINE names aoN3 only in its prose, INVALID breaks FLAECHE.
+      const aoBriefMainRes = await aoBriefMain(aoToken1, aoMain, aoHead("MAIN-BRIEF", aoNew));
+      const aoBriefOwner = async (id: string, text: string): Promise<number> => (await post(`/api/tasks/${id}/brief`, { text })).status;
+      const aoBriefStatuses = [
+        aoBriefMainRes.status,
+        await aoBriefOwner(aoOwner, aoHead("OWNER-BRIEF", aoNew)),
+        await aoBriefOwner(aoLegacy, aoHead("LEGACY", aoNew)),
+        await aoBriefOwner(aoCompiled, aoHead("COMPILED", aoNew)),
+        await aoBriefOwner(aoInline, aoHead("INLINE", [aoN1, aoN2], { prose: `Die Zeile wartet auf ${aoN3}.` })),
+        await aoBriefOwner(aoInvalid, aoHead("INVALID", aoNew, { flaeche: "gibt-es-nicht.ts" })),
+      ];
+      const aoBriefed = [aoMain, aoOwner, aoLegacy, aoCompiled, aoInline, aoInvalid];
+      const aoReread = async (): Promise<AoTask[] | null> => {
+        const all = await aoTasks();
+        const rows = aoBriefed.map((id) => all.find((t) => t.id === id));
+        return rows.every((t) => !!t?.brief && !!t.card && (t.card.at ?? 0) > t.brief.at
+          && (t.card.at ?? 0) > (aoCards0?.get(t.id)?.at ?? 0)) ? rows as AoTask[] : null;
+      };
+      let aoFresh: AoTask[] | null = null;
+      try { aoFresh = await until(aoReread, { timeoutMs: 20_000, stepMs: 250, what: "every briefed ao row carries a card re-read after its brief" }); }
+      catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+      const aoFreshOf = (id: string): AoTask | undefined => aoFresh?.find((t) => t.id === id);
+      check("(ao1) the brief doors stamp their authors honestly and the sweep re-reads each card off the brief: after = [the three new ids] (INLINE: the two of its header), INVALID refused on its path",
+        aoBriefStatuses.every((s) => s === 200) && !!aoFresh
+          && aoFreshOf(aoMain)?.brief?.by === "main" && aoFreshOf(aoMain)?.brief?.edited === true
+          && aoFreshOf(aoOwner)?.brief?.by === "owner" && aoFreshOf(aoOwner)?.brief?.edited === true
+          && [aoMain, aoOwner, aoLegacy, aoCompiled].every((id) => aoFreshOf(id)?.card?.valid === true
+            && JSON.stringify(aoFreshOf(id)?.card?.after) === JSON.stringify(aoNew))
+          && aoFreshOf(aoInline)?.card?.valid === true && JSON.stringify(aoFreshOf(aoInline)?.card?.after) === JSON.stringify([aoN1, aoN2])
+          && aoFreshOf(aoInvalid)?.card?.valid === false
+          && (aoFreshOf(aoInvalid)?.card?.gaps ?? []).some((g) => g.includes("gibt-es-nicht.ts")),
+        JSON.stringify({ statuses: aoBriefStatuses, rows: aoFresh ?? (await aoTasks()).filter((t) => aoBriefed.includes(t.id))
+          .map((t) => ({ id: t.id, brief: t.brief ? { by: t.brief.by, edited: t.brief.edited, at: t.brief.at } : null, card: t.card ?? null })) }));
+
+      // THE PLANT, on the author fields alone and with the sweep switched back off: the legacy brief
+      // loses `by` (pinned, no author — what every brief was before 2026-09-11), the compiled one
+      // becomes a machine brief. Text, `at` and the fresh card stay exactly what the doors wrote.
+      await stopSrv();
+      const aoPlanted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: AoTask[] };
+      for (const t of aoPlanted.tasks ?? []) {
+        if (t.id === aoLegacy && t.brief) { delete t.brief.by; t.brief.edited = true; }
+        if (t.id === aoCompiled && t.brief) { delete t.brief.by; t.brief.edited = false; t.brief.model = "claude-haiku-4-5"; }
+      }
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(aoPlanted, null, 2), { mode: 0o600 });
+      await restartSrv();
+      await post("/api/dispatch", { on: false });
+      const aoToken = await aoMainToken();
+      // STALE: an authored MAIN brief with no sweep to re-read it — the card now speaks for an older text
+      const aoStaleRes = await aoBriefMain(aoToken, aoStale, aoHead("STALE", aoNew));
+      const aoAfterPlant = await aoTasks();
+      const aoBriefOf = (id: string): AoTask["brief"] => aoAfterPlant.find((t) => t.id === id)?.brief;
+      check("(ao1b) the plant is read back as planted: legacy is pinned without an author, compiled is unpinned and authorless; the STALE brief is the MAIN's",
+        !!aoToken && aoStaleRes.status === 200
+          && aoBriefOf(aoLegacy)?.edited === true && aoBriefOf(aoLegacy)?.by === undefined
+          && aoBriefOf(aoCompiled)?.edited === false && aoBriefOf(aoCompiled)?.by === undefined
+          && aoBriefOf(aoStale)?.by === "main",
+        JSON.stringify({ token: aoToken.length, stale: aoStaleRes.status, legacy: aoBriefOf(aoLegacy) ?? null,
+          compiled: aoBriefOf(aoCompiled) ?? null, staleBrief: aoBriefOf(aoStale)?.by ?? null }));
+
+      // THE TWO START-PLAN BUILDERS over the same rows: the route, and the CLI over this instance's
+      // state file once the stale brief has reached it
+      try {
+        await until(() => (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: AoTask[] }).tasks
+          ?.find((t) => t.id === aoStale)?.brief?.by === "main", { timeoutMs: 5000, what: "the stale brief reached the state file" });
+      } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+      const aoPlanRows = (plan: StartPlan): Map<string, AoPlanRow> =>
+        new Map(plan.repos.flatMap((r) => r.waves).flatMap((w) => w.rows as AoPlanRow[]).map((r) => [r.id, r]));
+      const aoRoute = aoPlanRows((await (await get("/api/start-plan")).json()) as StartPlan);
+      const aoCli = spawnSync("bun", [`${ROOT}/start-plan.ts`, "--state", `${ROOT}/fleet.json`, "--default-repo", REPO],
+        { encoding: "utf8", env: { ...process.env, FLEET_DISPATCH_REPO: REPO } });
+      let aoCliRows = new Map<string, AoPlanRow>();
+      try { aoCliRows = aoPlanRows(JSON.parse(aoCli.stdout) as StartPlan); } catch { /* the check below names the exit */ }
+      const aoMissing = (rows: Map<string, AoPlanRow>, id: string): string => JSON.stringify(rows.get(id)?.checks?.afterMissing ?? null);
+      const aoExpect: [string, string[]][] = [[aoMain, []], [aoOwner, []], [aoLegacy, [aoOld]], [aoCompiled, [aoOld]],
+        [aoInline, [aoN3]], [aoStale, aoNew]];
+      const aoSeen = Object.fromEntries(aoExpect.map(([id]) => [id, { route: aoMissing(aoRoute, id), cli: aoMissing(aoCliRows, id) }]));
+      check("(ao2) GET /api/start-plan and a real `bun start-plan.ts --state` agree row by row: an authored brief's old NACH is gone, legacy + compiled keep it, the current inline NACH and the stale card's own ids stay missing",
+        aoCli.status === 0 && aoExpect.every(([id, want]) => aoMissing(aoRoute, id) === JSON.stringify(want)
+          && aoMissing(aoCliRows, id) === JSON.stringify(want))
+          && aoRoute.get(aoStale)?.checks?.cardStale === true && aoCliRows.get(aoStale)?.checks?.cardStale === true
+          && aoRoute.get(aoInvalid)?.checks?.cardValid === false && aoCliRows.get(aoInvalid)?.checks?.cardValid === false,
+        JSON.stringify({ exit: aoCli.status, stderr: aoCli.stderr.slice(0, 300), old: aoOld, n3: aoN3, seen: aoSeen }));
+
+      // BOTH RELEASE DOORS. The authored rows release; every negative is refused in its own words.
+      const aoRead = async (r: Response): Promise<string> => `${r.status}:${r.status === 200 ? "" : ((await r.json()) as { error?: string }).error ?? ""}`;
+      const aoRelMain = await aoRead(await aoReleaseMain(aoToken, aoMain));
+      const aoRelOwner = await aoRead(await post(`/api/tasks/${aoOwner}/queue`, {}));
+      check("(ao3) the MAIN release door releases the MAIN-briefed row, the owner's ▸ door the owner-briefed one — the obsolete NACH holds neither",
+        aoRelMain === "200:" && aoRelOwner === "200:"
+          && (await aoTask(aoMain))?.status === "queued" && (await aoTask(aoOwner))?.status === "queued",
+        JSON.stringify({ main: aoRelMain, owner: aoRelOwner, old: aoOld }));
+      const aoRelLegacy = await aoRead(await post(`/api/tasks/${aoLegacy}/queue`, {}));
+      const aoRelCompiled = await aoRead(await aoReleaseMain(aoToken, aoCompiled));
+      const aoRelLegacyMain = await aoRead(await aoReleaseMain(aoToken, aoLegacy));
+      const aoRelCompiledOwner = await aoRead(await post(`/api/tasks/${aoCompiled}/queue`, {}));
+      const aoRelInline = await aoRead(await post(`/api/tasks/${aoInline}/queue`, {}));
+      const aoRelInlineMain = await aoRead(await aoReleaseMain(aoToken, aoInline));
+      const aoRelStale = await aoRead(await aoReleaseMain(aoToken, aoStale));
+      const aoRelInvalid = await aoRead(await aoReleaseMain(aoToken, aoInvalid));
+      const aoOrders = (r: string, id: string): boolean => r.startsWith("409:") && r.includes(`orders it after ${id}`);
+      check("(ao4) the guards hold at BOTH doors: legacy and compiled briefs still need the original NACH, an inline NACH of the current brief is still an order",
+        aoOrders(aoRelLegacy, aoOld) && aoOrders(aoRelLegacyMain, aoOld) && aoOrders(aoRelCompiled, aoOld) && aoOrders(aoRelCompiledOwner, aoOld)
+          && aoOrders(aoRelInline, aoN3) && aoOrders(aoRelInlineMain, aoN3)
+          && (await Promise.all([aoLegacy, aoCompiled, aoInline].map(aoTask))).every((t) => t?.status === "pending"),
+        JSON.stringify({ legacy: aoRelLegacy, legacyMain: aoRelLegacyMain, compiled: aoRelCompiled, compiledOwner: aoRelCompiledOwner,
+          inline: aoRelInline, inlineMain: aoRelInlineMain, old: aoOld, n3: aoN3 }));
+      check("(ao5) an authored brief buys no way past a stale or an invalid card at the MAIN door",
+        aoRelStale.startsWith("409:") && aoRelStale.includes("the brief changed after the card was read")
+          && aoRelInvalid.startsWith("409:") && aoRelInvalid.includes("its card is not valid"),
+        JSON.stringify({ stale: aoRelStale, invalid: aoRelInvalid }));
+
+      // THE SHAPES NO DOOR WRITES, through the real CLI over a FIXTURE state (never this instance's):
+      // a malformed `edited`, an unknown `by`, a contradictory unpinned `by`, a brief naming its own
+      // id and a non-row id, and two variant groups — each variant reads its GROUP's brief and card.
+      const aoX = { old: "a0b0c0d0", n: "a1b1c1d1" };
+      const aoFxCard = { valid: true, surfaceValid: true, after: [aoX.n], at: 2000, gaps: [], done: "d", verify: "v",
+        surface: { files: ["AGENTS.md"], creates: [] } };
+      const aoFxRow = (id: string, brief: Record<string, unknown>, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+        id, kind: "auftrag", status: "pending", source: "owner", text: `fixture ${id}\nNACH: ${aoX.old}`, card: aoFxCard,
+        brief: { text: `NACH: ${aoX.n}`, at: 1000, model: "owner", ...brief }, ...extra });
+      const aoFxBare = (id: string, text: string, extra: Record<string, unknown> = {}): Record<string, unknown> =>
+        ({ id, kind: "auftrag", status: "pending", source: "owner", text, ...extra });
+      const aoFxState = { token: (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { token?: string }).token, slots: {}, programs: [],
+        tasks: [
+          aoFxBare(aoX.old, "old predecessor"), aoFxBare(aoX.n, "new predecessor"),
+          aoFxRow("b0000001", { edited: true, by: "owner" }),
+          aoFxRow("b0000002", { edited: true, by: "main", model: "main" }),
+          aoFxRow("b0000003", { edited: true }),
+          aoFxRow("b0000004", { edited: false, model: "claude-haiku-4-5" }),
+          aoFxRow("b0000005", { edited: "true", by: "owner" }),
+          aoFxRow("b0000006", { edited: true, by: "Owner" }),
+          aoFxRow("b0000007", { edited: false, by: "main" }),
+          aoFxRow("b0000008", { edited: true, by: "owner", text: `NACH: b0000008, deadbeef, ${aoX.n}` }),
+          aoFxRow("b0000009", { edited: true, by: "owner" }, { variants: ["b000000a"] }),
+          aoFxBare("b000000a", "variant a", { variantOf: "b0000009" }),
+          aoFxRow("b000000b", { edited: false, model: "claude-haiku-4-5" }, { variants: ["b000000c"] }),
+          aoFxBare("b000000c", "variant c", { variantOf: "b000000b" }),
+        ] };
+      const aoFxPath = join(aoDir, "state.json");
+      writeFileSync(aoFxPath, JSON.stringify(aoFxState), { mode: 0o600 });
+      const aoFx = spawnSync("bun", [`${ROOT}/start-plan.ts`, "--state", aoFxPath, "--default-repo", REPO, "--server-url", BASE],
+        { encoding: "utf8", env: { ...process.env, FLEET_DISPATCH_REPO: REPO } });
+      let aoFxRows = new Map<string, AoPlanRow>();
+      try { aoFxRows = aoPlanRows(JSON.parse(aoFx.stdout) as StartPlan); } catch { /* the check below names the exit */ }
+      const aoFxWant: Record<string, string[]> = {
+        b0000001: [], b0000002: [], b0000003: [aoX.old], b0000004: [aoX.old], b0000005: [aoX.old], b0000006: [aoX.old],
+        b0000007: [aoX.old], b0000008: [], b000000a: [], b000000c: [aoX.old] };
+      const aoFxSeen = Object.fromEntries(Object.keys(aoFxWant).map((id) => [id, aoFxRows.get(id)?.checks?.afterMissing ?? null]));
+      check("(ao6) the CLI names an author only for edited===true with by main|owner — a malformed, unknown or contradictory stamp keeps the original NACH; its own id and a non-row id are no order; a variant reads its group",
+        aoFx.status === 0 && Object.entries(aoFxWant).every(([id, want]) => JSON.stringify(aoFxSeen[id]) === JSON.stringify(want))
+          && !aoFxRows.has("b0000009") && !aoFxRows.has("b000000b"),
+        JSON.stringify({ exit: aoFx.status, stderr: aoFx.stderr.slice(0, 300), seen: aoFxSeen }));
+
+      for (const id of [...aoRows, aoOld, ...aoNew]) await post(`/api/tasks/${id}/delete`, {});
+      rmSync(aoDir, { recursive: true, force: true });
+    }
 
     // --- (stau) THE STALL SENSOR (server.ts#tickStallSensor, queue rows 80f61ed8 → 84888f35). On one
     // live instance in REPO2, rows of THIS MAIN's program (an attention needs a live bound MAIN):

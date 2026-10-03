@@ -27,7 +27,8 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 // the terminal status words, taken from the one place that defines them rather than re-listed here:
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
-import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv as restartSrvRaw, results, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
+import { sendFailureMessage } from "../src/pendingsend";
+import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, results, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 
 // A plain `cat` in the pane for the deliveries a check reads back off the screen: the tty echoes what
 // was typed as it arrived, where the shell's line editor redraws a long multibyte line and overwrote
@@ -416,6 +417,7 @@ const programBudget = async (id: string): Promise<ProgramBudgetRow | undefined> 
   (((await (await get("/api/programs")).json()) as { programs: ProgramBudgetRow[] }).programs)
     .find((p) => p.id === id);
 interface AuditRow { event?: string; slot?: number; detail?: string; ts?: number;
+  path?: string; bytes?: number; reason?: string;
   // the machine-readable half `audit()` offers beside the prose detail. `fleet_event_held` uses it
   // for the hold backoff (server.ts#noteComposerHold): which phase this row is, how many refusals
   // this row/occupant pair has collected, the silence the server just promised itself, and how
@@ -2130,6 +2132,532 @@ export async function run(): Promise<void> {
     else rmSync(auditFile, { force: true });
     await post(`/api/slots/${uTgt.slot}/kill`, {});
     await post(`/api/slots/${uId}/kill`, {});
+  }
+
+  // Owner sends and machine bundles share transport, but each keeps its own safety gates.
+  {
+    const modeFile = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+    const stateFile = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
+    const turnsFile = `${stateFile}.turns`;
+    const latch = `${ROOT}/owner-send-before-paste.latch`;
+    const fixturePath = `${ROOT}:${process.env.PATH ?? "/usr/bin:/bin"}`;
+    const pi = Bun.which("pi", { PATH: fixturePath });
+    const { relative, isAbsolute, sep, basename } = await import("node:path");
+    const { statSync, mkdtempSync, symlinkSync } = await import("node:fs");
+    const composerFileIsolation = (file: string, root: string = ROOT): { ok: boolean; reason: string } => {
+      if (!file) return { ok: false, reason: "empty" };
+      try {
+        const canonicalRoot = realpathSync(root);
+        const canonicalFile = realpathSync(file);
+        const descendant = relative(canonicalRoot, canonicalFile);
+        if (!descendant) return { ok: false, reason: "root-itself" };
+        if (isAbsolute(descendant) || descendant === ".." || descendant.startsWith(`..${sep}`))
+          return { ok: false, reason: "outside" };
+        if (!statSync(canonicalFile).isFile()) return { ok: false, reason: "not-file" };
+        return { ok: true, reason: "inside" };
+      } catch (error) {
+        const code = error !== null && typeof error === "object" && "code" in error
+          && typeof error.code === "string" && /^[A-Z0-9_]{1,20}$/.test(error.code) ? error.code : "unknown";
+        return { ok: false, reason: `realpath-or-stat-error:${code}` };
+      }
+    };
+    const pathProbeDir = mkdtempSync(`${ROOT}/owner-composer-path-probes-`);
+    try {
+      const scope = `${pathProbeDir}/root`;
+      mkdirSync(scope);
+      const inside = `${scope}/composer`;
+      const outside = `${pathProbeDir}/outside`;
+      const sibling = `${pathProbeDir}/root-sibling`;
+      writeFileSync(inside, "isolated path probe");
+      writeFileSync(outside, "isolated outside-root probe");
+      writeFileSync(sibling, "isolated sibling probe");
+      symlinkSync(scope, `${pathProbeDir}/alias`, "dir");
+      symlinkSync(outside, `${scope}/escape`, "file");
+      symlinkSync(process.execPath, `${pathProbeDir}/external-escape`, "file");
+      const aliases = [`${pathProbeDir}/alias/composer`, `${pathProbeDir}/./root/composer`];
+      for (const file of aliases) {
+        const actual = composerFileIsolation(file, scope);
+        check("owner composer isolation: existing scratch aliases are accepted by the fixture guard", actual.ok,
+          JSON.stringify({ alias: file.includes("/alias/") ? "symlink" : "lexical-dot", reason: actual.reason }));
+      }
+      for (const [kind, file] of [["empty", ""], ["root", scope], ["missing", `${scope}/missing`],
+        ["outside", outside], ["parent-escape", `${scope}/../outside`], ["sibling-prefix", sibling],
+        ["symlink-escape", `${scope}/escape`]] as const) {
+        const actual = composerFileIsolation(file, scope);
+        check(`owner composer isolation: ${kind} is rejected by the fixture guard`, !actual.ok, actual.reason);
+      }
+      for (const file of [process.execPath, `${pathProbeDir}/external-escape`]) {
+        const actual = composerFileIsolation(file);
+        check("owner composer isolation: a real outer file and symlink escape cannot enter ROOT", !actual.ok, actual.reason);
+      }
+      for (const file of [modeFile, stateFile, `${dirname(ROOT)}/./${basename(ROOT)}/${basename(modeFile)}`]) {
+        const actual = composerFileIsolation(file);
+        check("owner composer isolation: actual composer files and their portable alias stay inside canonical ROOT", actual.ok,
+          actual.reason);
+      }
+    } finally { rmSync(pathProbeDir, { recursive: true, force: true }); }
+    const modeIsolation = composerFileIsolation(modeFile);
+    const stateIsolation = composerFileIsolation(stateFile);
+    const fixtureSafe = existsSync(`${ROOT}/pi`) && pi !== null
+      && realpathSync(pi) === realpathSync(`${ROOT}/pi`)
+      && modeIsolation.ok && stateIsolation.ok;
+    check("owner send fixture: PATH resolves the existing scratch Pi and composer files stay isolated", fixtureSafe,
+      JSON.stringify({ mode: modeIsolation.reason, state: stateIsolation.reason }));
+    if (!fixtureSafe) throw new Error("owner send fixture has no isolated Pi stand-in — no slot opened");
+    const original = await (await get("/api/sessions")).json() as {
+      autosOn?: boolean; quietHours?: { start: number; end: number } | null;
+    };
+    const configObserved = typeof original.autosOn === "boolean"
+      && (original.quietHours === null || (typeof original.quietHours?.start === "number"
+        && typeof original.quietHours.end === "number"));
+    check("owner send fixture: original automation and quiet window are observed", configObserved,
+      JSON.stringify({ autosOn: original.autosOn, quietHours: original.quietHours }));
+    if (!configObserved) throw new Error("owner send fixture cannot restore unobserved settings");
+    const fixtureEnv = { PATH: fixturePath, FLEET_PI_OX_AGENT_DIR: `${ROOT}/owner-send-pi-ox-agent`,
+      FLEET_E2E_COMPOSER_MODE: modeFile, FLEET_E2E_COMPOSER_STATE: stateFile,
+      FLEET_DELIVERY_BUNDLE_SEC: "5", FLEET_HARNESS_AUTOMATION: "1",
+      FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch };
+    const ownedAutos: string[] = [];
+    let slot = 0;
+    try {
+      writeFileSync(modeFile, "normal\n");
+      await restartSrv(fixtureEnv);
+      const enabled = await post("/api/autos/switch", { on: true });
+      const enabledBody = await enabled.json() as { autosOn?: boolean };
+      const cleared = await post("/api/autos/quiet", { start: null });
+      const clearedBody = await cleared.json() as { quietHours?: unknown };
+      check("owner send fixture: real switch/quiet responses prove an enabled, unrestricted test server",
+        enabled.ok && enabledBody.autosOn === true && cleared.ok && clearedBody.quietHours === null);
+      slot = await freeSlot();
+      const open = await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+      check("owner send fixture: scratch Pi opens without a provider turn", open.ok, String(open.status));
+      const stateText = (): string => readFileSync(stateFile, "utf8").split("\n").slice(1).join("\n");
+      const turns = (): string => existsSync(turnsFile) ? readFileSync(turnsFile, "utf8") : "";
+      const count = (text: string): number => turns().split(text).length - 1;
+      await until(async () => {
+        const body = await (await get("/api/sessions")).json() as { slots: { id: number; agent: string }[] };
+        return body.slots.find((s) => s.id === slot)?.agent === "alive" && stateText() === "";
+      }, { timeoutMs: 8000, what: "owner fixture's live agent and empty composer" });
+
+      const client = readFileSync(resolve(realpathSync(`${ROOT}/node_modules`), "..", "src", "client.ts"), "utf8");
+      const deliverSource = client.slice(client.indexOf("export async function deliver("), client.indexOf("async function doSend()"));
+      const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(deliverSource.replace("export ", ""));
+      const replay = async (response: Response, expected: string | null,
+        formatter: typeof sendFailureMessage = sendFailureMessage): Promise<boolean> => {
+        let calls = 0;
+        let flashes = 0;
+        const notices: string[] = [];
+        const deliver = new Function("post", "toast", "flashSendError", "sendFailureMessage",
+          `${compiled}; return deliver;`)(async () => { calls++; return response.clone(); },
+          (text: string) => notices.push(text), () => { flashes++; }, formatter) as
+          (slot: number, text: string) => Promise<boolean>;
+        const outgoing = "local text retained on rejection";
+        let localText = outgoing;
+        const sent = await deliver(slot, localText);
+        if (sent) localText = "";
+        return calls === 1 && sent === response.ok && flashes === (response.ok ? 0 : 1)
+          && localText === (response.ok ? "" : outgoing)
+          && JSON.stringify(notices) === JSON.stringify(expected === null ? [] : [expected]);
+      };
+      const zeroBytes = (since: number): boolean => {
+        const rows = auditRows().slice(since).filter((r) => r.event === "send" && r.slot === slot && r.path === "owner");
+        return rows.length === 1 && rows[0]!.bytes === 0;
+      };
+      const queuedAuto = async (text: string, recurring = false): Promise<string> => {
+        const start = auditRows().length;
+        const response = await post(`/api/slots/${slot}/autos`, {
+          text, inSec: 1, idleSec: recurring ? 0 : 1, ...(recurring ? { everySec: 60, runs: 1 } : {}),
+        });
+        const body = await response.json() as { auto?: { id: string } };
+        check("owner send fixture: a machine auto is accepted", response.ok && !!body.auto?.id, String(response.status));
+        if (!response.ok || !body.auto) throw new Error("owner send fixture: machine auto was rejected");
+        ownedAutos.push(body.auto.id);
+        let observed = "auto state not yet observed";
+        try {
+          await until(async () => {
+            const current = await (await get("/api/sessions")).json() as {
+              autosOn: boolean; quietHours: unknown;
+              autos: { id: string; enabled: boolean; lastResult: string | null; nextAt: number }[];
+            };
+            observed = JSON.stringify({ autosOn: current.autosOn, quietHours: current.quietHours,
+              auto: current.autos.find((a) => a.id === body.auto!.id),
+              gate: auditRows().slice(start).filter((r) => r.slot === slot && ["auto_skip", "delivery_bundle_refused"].includes(r.event ?? ""))
+                .map((r) => ({ event: r.event, reason: r.reason, detail: r.detail })) });
+            return auditRows().slice(start).some((r) => r.event === "delivery_bundle_queued" && r.slot === slot);
+          }, { timeoutMs: 8000, what: `machine bundle queued for ${text}`, last: () => observed });
+        } catch (error) {
+          if (!(error instanceof UntilTimeout)) throw error;
+          check("owner send fixture: an accepted machine reaches its bundle queue", false, error.last);
+          throw error;
+        }
+        return body.auto!.id;
+      };
+      const machineRelease = async (text: string, since: number, what: string): Promise<void> => {
+        let observed = "release state not yet observed";
+        try {
+          await until(async () => {
+            const current = await (await get("/api/sessions")).json() as {
+              now: number; autosOn: boolean; quietHours: unknown;
+              slots: { id: number; openedAt: number; lastOutput: number }[];
+            };
+            const recipient = current.slots.find((s) => s.id === slot);
+            observed = JSON.stringify({ now: current.now, autosOn: current.autosOn, quietHours: current.quietHours,
+              recipient: { id: recipient?.id, openedAt: recipient?.openedAt, lastOutput: recipient?.lastOutput }, machine: count(text),
+              audit: auditRows().slice(since).filter((r) => r.slot === slot).slice(-6)
+                .map((r) => ({ event: r.event, path: r.path, bytes: r.bytes,
+                  gate: /^gate=[a-z-]+/.exec(r.reason ?? "")?.[0] })) });
+            return count(text) === 1;
+          }, { timeoutMs: 15000, what, last: () => observed });
+        } catch (error) {
+          if (!(error instanceof UntilTimeout)) throw error;
+          check(`owner send fixture: ${what}`, false, error.last);
+          throw error;
+        }
+      };
+
+      const machine = "owner-send-machine-busy-once";
+      const autoId = await queuedAuto(machine);
+      const busyPane = (await tmuxOut("display-message", "-p", "-t", `s${slot}`, "#{pane_id}")).out.trim();
+      const busySnapshot = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number }[];
+      };
+      const busyOpenedAt = busySnapshot.slots.find((s) => s.id === slot)?.openedAt;
+      const busyBound = /^%\d+$/.test(busyPane) && typeof busyOpenedAt === "number" && busyOpenedAt > 0;
+      check("owner send fixture: the busy keeper is bound to an observed pane and occupant", busyBound,
+        JSON.stringify({ pane: busyPane, openedAt: busyOpenedAt }));
+      if (!busyBound) throw new Error("owner send fixture has no observed busy pane identity");
+      let keepBusy = true;
+      let keeperCode: number | null = null;
+      const keeper = (async () => {
+        while (keepBusy) {
+          keeperCode = (await tmuxOut("send-keys", "-t", busyPane, "BSpace")).code;
+          await Bun.sleep(50);
+        }
+      })();
+      let busyObserved = "busy state not yet observed";
+      let busyStart = 0;
+      const ownerText = "owner-send-safe-busy-once";
+      let ownerSend: Promise<Response> | null = null;
+      let ownerResponse: Response | null = null;
+      let busyError: unknown = null;
+      try {
+        try {
+          await until(async () => {
+            const body = await (await get("/api/sessions")).json() as {
+              now?: number; slots: { id: number; openedAt: number; lastOutput?: number }[];
+            };
+            const recipient = body.slots.find((s) => s.id === slot);
+            const pane = await tmuxOut("display-message", "-p", "-t", `s${slot}`, "#{pane_id}");
+            const composer = stateText();
+            busyObserved = JSON.stringify({ now: body.now, lastOutput: recipient?.lastOutput, composer,
+              pane: pane.out.trim(), boundPane: busyPane, openedAt: recipient?.openedAt,
+              boundOpenedAt: busyOpenedAt, paneCode: pane.code, keeperCode });
+            return typeof body.now === "number" && typeof recipient?.lastOutput === "number"
+              && recipient.lastOutput > 0 && body.now - recipient.lastOutput >= 0
+              && body.now - recipient.lastOutput < 500 && composer === ""
+              && recipient.openedAt === busyOpenedAt && pane.code === 0
+              && pane.out.trim() === busyPane && keeperCode === 0;
+          }, { timeoutMs: 3000, what: "machine busy gate with an empty owner composer", last: () => busyObserved });
+        } catch (error) {
+          if (!(error instanceof UntilTimeout)) throw error;
+          check("owner send fixture: the bound busy pane has observed output and an empty composer", false, error.last);
+          throw error;
+        }
+        check("owner send fixture: the bound busy pane has observed output and an empty composer", true, busyObserved);
+        busyStart = auditRows().length;
+        rmSync(`${latch}.reached`, { force: true });
+        rmSync(`${latch}.release`, { force: true });
+        writeFileSync(latch, ownerText);
+        ownerSend = post("/send", { slot, text: ownerText });
+        await until(() => existsSync(`${latch}.reached`), {
+          timeoutMs: 5000, what: "the single busy owner request reaches the pre-paste latch",
+          last: () => JSON.stringify({ owner: count(ownerText), machine: count(machine),
+            reason: auditRows().slice(busyStart).find((r) => r.event === "delivery_bundle_refused" && r.slot === slot)?.reason }),
+        });
+        const reached = JSON.parse(readFileSync(`${latch}.reached`, "utf8")) as {
+          phase: string; slot: number; openedAt: number; paneId: string;
+        };
+        const beforePaste = auditRows().slice(busyStart).filter((r) => r.event === "send" && r.slot === slot && r.path === "owner");
+        const heldSafely = reached.phase === "before-paste" && reached.slot === slot
+          && reached.openedAt === busyOpenedAt && reached.paneId === busyPane
+          && auditRows().slice(busyStart).some((r) => r.event === "delivery_bundle_refused" && r.slot === slot
+            && r.reason === "gate=busy — nothing typed")
+          && beforePaste.length === 0 && stateText() === "" && count(ownerText) === 0 && count(machine) === 0;
+        check("owner send fixture: the single owner request is held before any paste after the real busy gate", heldSafely,
+          JSON.stringify({ reached, ownerAuditRows: beforePaste.length, composerBytes: stateText().length,
+            owner: count(ownerText), machine: count(machine) }));
+        if (!heldSafely) throw new Error("owner send fixture: the pre-paste latch did not hold the bound empty pane");
+      } catch (error) {
+        busyError = error;
+        if (error instanceof UntilTimeout && error.what !== "machine busy gate with an empty owner composer")
+          check("owner send fixture: the single busy owner request reaches the pre-paste latch", false, error.last);
+      } finally {
+        keepBusy = false;
+        try { await keeper; } catch (error) { busyError ??= error; }
+        if (ownerSend) {
+          try { writeFileSync(`${latch}.release`, "release"); } catch (error) { busyError ??= error; }
+          try { ownerResponse = await ownerSend; } catch (error) { busyError ??= error; }
+          finally {
+            rmSync(latch, { force: true });
+            rmSync(`${latch}.reached`, { force: true });
+            rmSync(`${latch}.release`, { force: true });
+          }
+        }
+      }
+      const ownerBody = ownerResponse ? await ownerResponse.clone().json().catch(() => null) as {
+        error?: unknown; receipt?: { delivery?: unknown; acceptance?: unknown };
+      } | null : null;
+      const ownerError = typeof ownerBody?.error === "string"
+        ? /^(?:composer occupied \(\d+ chars\) — nothing typed|no agent alive in the pane \(agent=(?:no-agent|no-pane)\) — nothing typed|send outcome uncertain: prompt not accepted — composer still holds \d+ chars after \d+ms)/.exec(ownerBody.error)?.[0]
+          ?? "unrecognized error redacted" : null;
+      const ownerDetail = { http: ownerResponse?.status, error: ownerError,
+        delivery: ["refused", "uncertain"].includes(String(ownerBody?.receipt?.delivery)) ? ownerBody?.receipt?.delivery : null,
+        acceptance: ["observed", "not-observed", "unobservable", "not-applicable"].includes(String(ownerBody?.receipt?.acceptance))
+          ? ownerBody?.receipt?.acceptance : null,
+        message: ownerResponse && !ownerResponse.ok ? sendFailureMessage(ownerResponse.status, ownerBody) : null,
+        owner: count(ownerText), machine: count(machine),
+        ownerBytes: auditRows().slice(busyStart).filter((r) => r.event === "send" && r.slot === slot && r.path === "owner")
+          .map((r) => r.bytes) };
+      if (busyError !== null) {
+        check("owner send fixture: the single busy request finishes with its actual outcome", false, JSON.stringify(ownerDetail));
+        throw busyError;
+      }
+      if (!ownerResponse) throw new Error("owner send fixture: no response for the single busy request");
+      const busyReason = auditRows().slice(busyStart).find((r) => r.event === "delivery_bundle_refused" && r.slot === slot)?.reason;
+      check("owner send: busy machine stays queued, safe owner is typed exactly once",
+        ownerResponse.ok && count(ownerText) === 1 && count(machine) === 0
+        && busyReason === "gate=busy — nothing typed" && await replay(ownerResponse, null),
+        JSON.stringify({ ...ownerDetail, reason: busyReason }));
+      await machineRelease(machine, busyStart, "the same machine bundle after the busy gate opens");
+      await Bun.sleep(AUTOS_TICK_MS * 3);
+      check("owner send: gate release delivers the retained machine exactly once, never repastes the owner",
+        count(machine) === 1 && count(ownerText) === 1, JSON.stringify({ owner: count(ownerText), machine: count(machine) }));
+      await post(`/api/autos/${autoId}/delete`, {});
+      const busyBody = { error: busyReason, receipt: { delivery: "refused" } };
+      check("owner formatter: observed busy reason is a gate, never a draft",
+        sendFailureMessage(409, busyBody) === "send refused — delivery gate=busy; nothing was typed");
+
+      for (const gate of ["quiet-hours", "kill-switch"] as const) {
+        const pending = `owner-send-machine-${gate}-once`;
+        const id = await queuedAuto(pending, true);
+        if (gate === "quiet-hours") {
+          const hour = new Date().getHours();
+          const response = await post("/api/autos/quiet", { start: hour, end: (hour + 1) % 24 });
+          const body = await response.json() as { quietHours?: { start: number; end: number } };
+          check("owner send fixture: quiet window is proven by the real response",
+            response.ok && body.quietHours?.start === hour && body.quietHours.end === (hour + 1) % 24);
+        } else {
+          const response = await post("/api/autos/switch", { on: false });
+          check("owner send fixture: kill switch is proven by the real response",
+            response.ok && (await response.json() as { autosOn?: boolean }).autosOn === false);
+        }
+        const before = auditRows().length;
+        const text = `owner-send-safe-${gate}-once`;
+        const response = await post("/send", { slot, text });
+        check(`owner send: ${gate} retains the machine and delivers only the safe owner`,
+          response.ok && count(text) === 1 && count(pending) === 0
+            && auditRows().slice(before).some((r) => r.event === "delivery_bundle_refused" && r.reason === `gate=${gate} — nothing typed`),
+          JSON.stringify({ http: response.status, owner: count(text), machine: count(pending) }));
+        if (gate === "quiet-hours") {
+          const response = await post("/api/autos/quiet", { start: null });
+          check("owner send fixture: quiet release is proven by the real response",
+            response.ok && (await response.json() as { quietHours?: unknown }).quietHours === null);
+        } else {
+          const response = await post("/api/autos/switch", { on: true });
+          check("owner send fixture: kill-switch release is proven by the real response",
+            response.ok && (await response.json() as { autosOn?: boolean }).autosOn === true);
+        }
+        await machineRelease(pending, before, `${gate} release delivers the retained machine`);
+        check(`owner send: ${gate} release preserves exact-once delivery`, count(text) === 1 && count(pending) === 1);
+        await post(`/api/autos/${id}/delete`, {});
+      }
+
+      const width = Number((await tmuxOut("display-message", "-p", "-t", `s${slot}`, "#{pane_width}")).out.trim());
+      check("owner send fixture: the real pane width is bounded for a second-row draft",
+        Number.isInteger(width) && width >= 40 && width <= 1000, String(width));
+      if (!Number.isInteger(width) || width < 40 || width > 1000) throw new Error("owner draft fixture has no observed pane width");
+      const draftContent = "owner draft on the second visual row";
+      const draft = " ".repeat(width) + draftContent;
+      await tmuxOut("send-keys", "-t", `s${slot}`, "-l", draft);
+      await until(() => stateText() === draft, { timeoutMs: 3000, what: "a real second-row owner draft" });
+      const draftFrame = (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${slot}`)).out;
+      check("owner send fixture: a blank first visual row still exposes the actual second-row draft",
+        composerBuffer({ kind: "rules" }, draftFrame) === draftContent);
+      let start = auditRows().length;
+      const draftResponse = await post("/send", { slot, text: "must-not-overwrite-draft" });
+      const draftBody: unknown = await draftResponse.clone().json();
+      const draftMessage = "send refused — the composer already holds a draft; nothing was typed";
+      check("owner send: a real second-row draft refuses with zero bytes and survives unchanged",
+        draftResponse.status === 409 && zeroBytes(start) && stateText() === draft && count("must-not-overwrite-draft") === 0
+          && sendFailureMessage(409, draftBody) === draftMessage && await replay(draftResponse, draftMessage),
+        JSON.stringify({ http: draftResponse.status, zeroBytes: zeroBytes(start), intact: stateText() === draft }));
+      await tmuxOut("send-keys", "-t", `s${slot}`, "-N", String([...draft].length), "BSpace");
+      await until(() => stateText() === "", { timeoutMs: 3000, what: "fixture draft removed by its author" });
+      writeFileSync(modeFile, "hold\n");
+      const notObserved = await post("/send", { slot, text: "owner-send-not-observed-once" });
+      const notObservedBody = await notObserved.clone().json() as { receipt?: { delivery: string; acceptance?: string } };
+      check("owner send: acceptance not-observed stays distinct, local text stays, client never retries",
+        notObserved.status === 409 && notObservedBody.receipt?.delivery === "uncertain"
+          && notObservedBody.receipt?.acceptance === "not-observed"
+          && stateText().split("owner-send-not-observed-once").length - 1 === 1
+          && await replay(notObserved, "prompt acceptance not observed — check the pane; do not paste again"),
+        JSON.stringify(notObservedBody.receipt));
+      await post(`/api/slots/${slot}/kill`, {});
+      writeFileSync(modeFile, "normal\n");
+      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+      await tmuxOut("respawn-pane", "-k", "-t", `s${slot}`, "exec cat");
+      start = auditRows().length;
+      const noAgent = await post("/send", { slot, text: "must-not-type-to-no-agent" });
+      const noAgentBody = await noAgent.clone().json() as { agent?: string; receipt?: { delivery: string } };
+      const noAgentMessage = "send refused — no live agent in the pane; nothing was typed";
+      const legacy = (_status: number, _body: unknown): string => draftMessage;
+      check("owner send: no-agent refuses zero bytes and the old refused-to-draft formatter fails",
+        noAgent.status === 409 && noAgentBody.agent === "no-agent" && noAgentBody.receipt?.delivery === "refused"
+          && zeroBytes(start) && await replay(noAgent, noAgentMessage) && !await replay(noAgent, noAgentMessage, legacy),
+        JSON.stringify({ http: noAgent.status, agent: noAgentBody.agent, zeroBytes: zeroBytes(start) }));
+      await post(`/api/slots/${slot}/kill`, {});
+      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+
+      rmSync(latch, { force: true });
+      rmSync(`${latch}.reached`, { force: true });
+      rmSync(`${latch}.release`, { force: true });
+      const { BoundAgentError } = await import("./harness");
+      const identityBefore = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number }[];
+      };
+      const identityBeforeOccupant = identityBefore.slots.find((s) => s.id === slot);
+      const identityBeforePane = await tmuxOut("display-message", "-p", "-t", `=s${slot}:`, "#{pane_id}");
+      const identityBeforeAgain = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number }[];
+      };
+      const identityBinding = { slot, openedAt: identityBeforeOccupant?.openedAt ?? 0,
+        pane: identityBeforePane.out.trim() };
+      const identityBeforeBound = identityBinding.openedAt > 0 && identityBeforePane.code === 0
+        && /^%\d+$/.test(identityBinding.pane)
+        && identityBeforeAgain.slots.find((s) => s.id === slot)?.openedAt === identityBinding.openedAt;
+      check("owner send fixture: identity is bound before the readiness restart", identityBeforeBound,
+        JSON.stringify({ binding: identityBinding, paneCode: identityBeforePane.code }));
+      if (!identityBeforeBound) throw new Error("owner send fixture: readiness restart has no bound occupant");
+      const identityObserved: import("./harness").BoundAgentObservation[] = [];
+      const identityTickMs = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_000) | 0);
+      const identityReadiness: import("./harness").BoundAgentWait = {
+        binding: identityBinding, timeoutMs: identityTickMs * 3 + 1500, stepMs: Math.min(100, identityTickMs),
+        observe: (actual) => { identityObserved.push(actual); },
+      };
+      const identityRestartLabel = `restart #${++gateSeq}`;
+      await settleForGate(identityRestartLabel);
+      const identityLive = await gateSnapshot();
+      try {
+        await restartSrvRaw(fixtureEnv, identityReadiness);
+      } catch (error) {
+        check("owner send fixture: bound identity readiness completes without a probe refusal", false,
+          error instanceof BoundAgentError ? `${error.reason}; ${error.actual}`
+            : error instanceof UntilTimeout ? `${error.what}; ${error.last}` : "readiness probe failed without a bounded reason");
+        throw error;
+      } finally {
+        observeDebts.push({ label: identityRestartLabel, pre: identityLive.size ? identityLive : stopSnapshot ?? identityLive });
+        stopSnapshot = null;
+      }
+      const identityReady = identityObserved.at(-1);
+      const identityReadinessProven = identityReady?.agent === "alive" && identityObserved.every((s) =>
+        s.slot === identityBinding.slot && s.openedAt === identityBinding.openedAt && s.pane === identityBinding.pane);
+      check("owner send fixture: restart proves bound agent readiness instead of HTTP only", identityReadinessProven,
+        JSON.stringify({ binding: identityBinding, reads: identityObserved.length, last: identityReady ?? null }));
+      if (!identityReadinessProven) throw new Error("owner send fixture: HTTP-only restart did not prove bound agent readiness");
+      const identitySnapshot = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number; agent: string }[];
+      };
+      const identityOccupant = identitySnapshot.slots.find((s) => s.id === slot);
+      const identityPane = await tmuxOut("display-message", "-p", "-t", `=s${slot}:`, "#{pane_id}");
+      const identityAfter = await (await get("/api/sessions")).json() as {
+        slots: { id: number; openedAt: number; agent: string }[];
+      };
+      const identityAfterOccupant = identityAfter.slots.find((s) => s.id === slot);
+      const identityBound = typeof identityOccupant?.openedAt === "number" && identityOccupant.openedAt > 0
+        && identityOccupant.agent === "alive" && identityPane.code === 0 && /^%\d+$/.test(identityPane.out.trim())
+        && identityOccupant.openedAt === identityBinding.openedAt && identityPane.out.trim() === identityBinding.pane
+        && identityAfterOccupant?.openedAt === identityBinding.openedAt && identityAfterOccupant.agent === "alive"
+        && stateText() === "";
+      check("owner send fixture: identity is freshly observed after resetting the one-shot latch", identityBound,
+        JSON.stringify({ openedAt: identityOccupant?.openedAt, agent: identityOccupant?.agent,
+          pane: identityPane.out.trim(), paneCode: identityPane.code, composerBytes: stateText().length }));
+      if (!identityBound) throw new Error("owner send fixture: identity latch has no freshly observed occupant");
+      writeFileSync(latch, "owner-send-recycle-before-paste");
+      start = auditRows().length;
+      const recycledSend = post("/send", { slot, text: "owner-send-recycle-before-paste" });
+      await until(() => existsSync(`${latch}.reached`), { timeoutMs: 5000, what: "owner bound identity before paste" });
+      const identityReached = JSON.parse(readFileSync(`${latch}.reached`, "utf8")) as {
+        phase: string; slot: number; openedAt: number; paneId: string;
+      };
+      check("owner send fixture: the identity latch holds the freshly observed occupant before paste",
+        identityReached.phase === "before-paste" && identityReached.slot === slot
+          && identityReached.openedAt === identityOccupant?.openedAt && identityReached.paneId === identityPane.out.trim(),
+        JSON.stringify(identityReached));
+      await post(`/api/slots/${slot}/kill`, {});
+      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+      writeFileSync(`${latch}.release`, "release");
+      const recycled = await recycledSend;
+      const recycledBody = await recycled.clone().json() as { receipt?: { delivery: string } };
+      check("owner send: recycle across an await refuses zero bytes to the new occupant",
+        recycled.status === 409 && recycledBody.receipt?.delivery === "refused" && zeroBytes(start)
+          && count("owner-send-recycle-before-paste") === 0
+          && await replay(recycled, "send refused — slot occupant changed or unavailable; nothing was typed"),
+        JSON.stringify({ http: recycled.status, delivery: recycledBody.receipt?.delivery, zeroBytes: zeroBytes(start) }));
+      const occupantResponse = await post("/send", { slot, openedAt: 1, text: "must-not-type-wrong-occupant" });
+      check("owner formatter: the receipt-less occupant response names identity, never a draft",
+        occupantResponse.status === 409 && count("must-not-type-wrong-occupant") === 0
+          && await replay(occupantResponse, "send refused — slot occupant changed; nothing was typed"));
+
+      const afterLatch = `${ROOT}/owner-send-after-paste.latch`;
+      await restartSrv({ ...fixtureEnv, FLEET_TEST_SEND_AFTER_PASTE_LATCH: afterLatch });
+      writeFileSync(afterLatch, "owner-send-uncertain-once");
+      const uncertainSend = post("/send", { slot, text: "owner-send-uncertain-once" });
+      await until(() => existsSync(`${afterLatch}.reached`), { timeoutMs: 5000, what: "owner paste before uncertain transport failure" });
+      await post(`/api/slots/${slot}/kill`, {});
+      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+      writeFileSync(`${afterLatch}.release`, "release");
+      const uncertain = await uncertainSend;
+      const uncertainBody = await uncertain.clone().json() as { receipt?: { delivery: string; acceptance?: string } };
+      check("owner send: post-paste recycle stays plain uncertain, client keeps text and does not paste again",
+        uncertain.status === 409 && uncertainBody.receipt?.delivery === "uncertain"
+          && uncertainBody.receipt.acceptance === undefined && stateText() === ""
+          && await replay(uncertain, "send outcome uncertain — check the pane; do not paste again"),
+        JSON.stringify(uncertainBody.receipt));
+      for (const raw of ["{broken", "null", "{}", '{"receipt":"refused"}', '{"receipt":{"acceptance":"not-observed"}}',
+        '{"error":"SECRET=credential/raw log","receipt":{"delivery":"refused"}}']) {
+        const response = new Response(raw, { status: 409 });
+        const expected = raw.includes("SECRET=") ? "send refused — nothing was typed; reason unavailable"
+          : "send rejected (HTTP 409) — delivery not confirmed; text kept";
+        check("owner formatter: missing/malformed response cannot invent a draft, success or expose raw logs",
+          await replay(response, expected), raw.includes("SECRET=") ? "unrecognized reason redacted" : raw);
+      }
+      check("owner formatter: non-409 rejection keeps text and reports the HTTP boundary",
+        await replay(new Response("{}", { status: 503 }), "send rejected (HTTP 503) — delivery not confirmed; text kept"));
+      await post(`/api/slots/${slot}/kill`, {});
+      await post(`/api/slots/${slot}/open`, { cwd: REPO });
+      const blockedAuto = await queuedAuto("owner-send-machine-blocked-screen");
+      await plantScreen(slot, "Accessing workspace:\n❯ Yes, I trust this folder\nEnter to confirm · Esc to cancel", "owner readiness fixture");
+      start = auditRows().length;
+      const blocked = await post("/send", { slot, text: "must-not-type-to-blocked-screen" });
+      check("owner send: blocked machine never bypasses the owner's own readiness refusal",
+        blocked.status === 409 && zeroBytes(start)
+          && auditRows().slice(start).some((r) => r.event === "delivery_bundle_refused" && r.reason?.startsWith("gate=blocked-screen:"))
+          && await replay(blocked, "send refused — delivery gate=blocked-screen; nothing was typed"),
+        JSON.stringify({ http: blocked.status, zeroBytes: zeroBytes(start) }));
+      await post(`/api/autos/${blockedAuto}/delete`, {});
+      await post(`/api/slots/${slot}/kill`, {});
+    } finally {
+      for (const id of ownedAutos) await post(`/api/autos/${id}/delete`, {});
+      if (slot) await post(`/api/slots/${slot}/kill`, {});
+      const restoredSwitch = await post("/api/autos/switch", { on: original.autosOn });
+      const restoredQuiet = await post("/api/autos/quiet", original.quietHours ?? { start: null });
+      const restored = await (await get("/api/sessions")).json() as { autosOn?: boolean; quietHours?: unknown };
+      check("owner send fixture: finally restores the observed automation and quiet window",
+        restoredSwitch.ok && restoredQuiet.ok && restored.autosOn === original.autosOn
+          && JSON.stringify(restored.quietHours) === JSON.stringify(original.quietHours));
+      writeFileSync(modeFile, "normal\n");
+      await restartSrv();
+    }
   }
 
   // === CLARIFICATION-CHANNEL-V1 ================================================================
@@ -5688,6 +6216,186 @@ export async function run(): Promise<void> {
   if (rOkJ.watch?.id) await post(`/api/watches/${rOkJ.watch.id}/delete`, {});
   await post(`/api/slots/${okTgt.slot}/kill`, {});
 
+  // Holds subscribe through the existing Watch rail; the public land door supplies the fact.
+  {
+    const main = await freeSlot();
+    const opened = main ? await post(`/api/slots/${main}/open`, { cwd: REPO, label: "hold-until-main", harness: "pi-unfenced" }) : null;
+    const token = await paneEnv(`s${main}`, "FLEET_SELF_TOKEN") ?? "";
+    const lane = await (await post("/api/lanes", { repo: REPO })).json() as
+      { slot: number; cwd: string; branch: string };
+    const mergeLane = await (await post("/api/lanes", { repo: REPO })).json() as
+      { slot: number; cwd: string; branch: string };
+    const programId = "1a".repeat(12);
+    const ids = { held: "hu000001", legacy: "hu000002", invalid: "hu000003", prerequisite: "hu000004",
+      terminal: "hu000005", cycle: "hu000006", merge: "hu000007", audit: "hu000008",
+      slot: "hu000009", branch: "hu000010", future: "hu000011", futureHeld: "hu000012" };
+    const sha = "d0".repeat(20);
+    const path = `${ROOT}/fleet.json`;
+    type HoldFixture = { slots: Record<string, Record<string, unknown>>;
+      programs?: Record<string, unknown>[]; tasks?: Record<string, unknown>[];
+      mergeParked?: Record<string, unknown>; watches?: { id: string; slot: number; idleSec: number }[] };
+    check("hold-until fixture: bound MAIN and two isolated target lanes have scoped identities",
+      opened?.ok === true && token.length === 32 && lane.slot > 0 && mergeLane.slot > 0
+        && lane.slot !== mergeLane.slot);
+    await stopSrv();
+    const image = JSON.parse(readFileSync(path, "utf8")) as HoldFixture;
+    const identity = image.slots[String(main)];
+    const at = Date.now();
+    image.programs = [...(image.programs ?? []), {
+      id: programId, title: "Hold until fixture", intent: "Wake a holding MAIN once",
+      successCriterion: "A land wakes without release", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: at - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: at - 900, activatedAt: at - 800,
+      main: { slot: main, openedAt: identity.openedAt, sessionId: identity.sessionId, boundAt: at - 700 },
+    }];
+    image.tasks = [...(image.tasks ?? []), ...Object.values(ids).map((id) => ({
+      id, text: `hold-until fixture ${id}`, source: "owner", kind: "auftrag", repo: REPO,
+      programId, status: id === ids.prerequisite ? "sent" : id === ids.terminal ? "done" : "pending",
+      created: at, slot: id === ids.prerequisite ? lane.slot : null,
+      ...(id === ids.cycle ? { hold: { by: "main", slot: main, at, grund: "cycle counterprobe",
+        until: { kind: "land", task: ids.invalid } } } : {}),
+    }))];
+    image.slots[String(lane.slot)].taskId = ids.prerequisite;
+    image.slots[String(lane.slot)].programId = programId;
+    image.mergeParked = { ...(image.mergeParked ?? {}), [mergeLane.branch]: {
+      status: "resolved", landed: false, branch: mergeLane.branch, at, detail: "hold-until terminal fixture",
+    } };
+    writeFileSync(path, JSON.stringify(image, null, 2), { mode: 0o600 });
+    appendFileSync(`${ROOT}/post-land-audits.jsonl`, `${JSON.stringify({ at, startedAt: at - 1,
+      ms: 1, repo: REPO, main: "main", mainSha: sha, result: "green", cmd: "hold-until fixture",
+      exitCode: 0, out: "ALL PASS", checks: { ran: 1, failed: 0 },
+      covers: [{ branch: "fleet/hold-until-audit", mainAfter: sha }] })}\n`);
+    await restartSrv();
+    const hold = (id: string, payload?: unknown) => fetch(`${BASE}/api/self/tasks/${id}/hold`, {
+      method: "POST", headers: { "x-fleet-self-token": token, "content-type": "application/json" },
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+    });
+    type HoldReply = { hold?: { grund: string | null; at: number; until?: unknown; watchId?: string } };
+    type Event = { id: string; watchId: string; receiverSlot: number; receiverOpenedAt: number;
+      kind: string; subjectBranch?: string; payload: { landed?: boolean; status?: string; result?: string } };
+    const events = async () => (await (await get("/api/events")).json() as { events: Event[] }).events;
+    const tasksNow = async () => (await (await get("/api/tasks")).json() as
+      { tasks: { id: string; status: string; hold?: HoldReply["hold"] }[] }).tasks;
+    const watchStart = (await watchRows()).filter((w) => w.slot === main).length;
+    const rejects: { name: string; payload: unknown; error: string }[] = [
+      { name: "closed outer keys", payload: { grund: "x", until: { kind: "land", task: ids.prerequisite }, repo: REPO }, error: "[repo]" },
+      { name: "closed inner keys", payload: { grund: "x", until: { kind: "land", task: ids.prerequisite, repo: REPO } }, error: "until must be" },
+      { name: "exactly one selector", payload: { grund: "x", until: { kind: "land", task: ids.prerequisite, slot: lane.slot } }, error: "until must be" },
+      { name: "unknown kind", payload: { grund: "x", until: { kind: "lane", slot: lane.slot } }, error: "until must be" },
+      { name: "nonempty reason", payload: { until: { kind: "land", task: ids.prerequisite } }, error: "grund must be a non-empty string when until" },
+      { name: "self dependency", payload: { grund: "x", until: { kind: "land", task: ids.invalid } }, error: "own land" },
+      { name: "cyclic dependency", payload: { grund: "x", until: { kind: "land", task: ids.cycle } }, error: "cyclic" },
+      { name: "unknown task", payload: { grund: "x", until: { kind: "land", task: "missingholdtask" } }, error: "unknown or advisory" },
+      { name: "terminal task without land", payload: { grund: "x", until: { kind: "land", task: ids.terminal } }, error: "terminal task" },
+      { name: "inactive land slot", payload: { grund: "x", until: { kind: "land", slot: 99999 } }, error: "not an active lane" },
+      { name: "unknown branch", payload: { grund: "x", until: { kind: "land", branch: "fleet/missing-hold-branch" } }, error: "no active lane or persisted land" },
+      { name: "merge without operation", payload: { grund: "x", until: { kind: "merge", slot: lane.slot } }, error: "until.merge: no running or persisted terminal merge" },
+      { name: "audit without land", payload: { grund: "x", until: { kind: "audit", sha: "d1".repeat(20) } }, error: "until.audit: no persisted, queued, or running audit" },
+      { name: "short audit sha", payload: { grund: "x", until: { kind: "audit", sha: "d0d0" } }, error: "until must be" },
+    ];
+    for (const counter of rejects) {
+      const response = await hold(ids.invalid, counter.payload);
+      const detail = await response.text();
+      check(`hold-until refuses ${counter.name} with a named 400`, response.status === 400 && detail.includes(counter.error), detail);
+    }
+    check("hold-until refusals write no hold and reserve no watch",
+      !(await tasksNow()).find((t) => t.id === ids.invalid)?.hold
+        && (await watchRows()).filter((w) => w.slot === main).length === watchStart);
+    const legacy = await hold(ids.legacy);
+    const legacyReply = await legacy.json() as HoldReply;
+    const payload = { grund: "wait for prerequisite land", until: { kind: "land", task: ids.prerequisite } };
+    const first = await hold(ids.held, payload);
+    const firstReply = await first.json() as HoldReply;
+    const duplicate = await hold(ids.held, payload);
+    const duplicateReply = await duplicate.json() as HoldReply;
+    const watchId = firstReply.hold?.watchId;
+    check("hold-until creates one merge Watch for the holding MAIN and the duplicate preserves its ID and hold timestamp",
+      first.ok && duplicate.ok && !!watchId && duplicateReply.hold?.watchId === watchId
+        && duplicateReply.hold?.at === firstReply.hold?.at
+        && (await watchRows()).filter((w) => w.id === watchId && w.slot === main && w.kind === "merge" && w.armed).length === 1,
+      JSON.stringify({ first: firstReply, duplicate: duplicateReply }));
+    const changed = await hold(ids.held, { grund: "changed condition", until: { kind: "audit", sha } });
+    check("hold-until cannot silently replace a standing condition", changed.status === 400 && (await changed.text()).includes("until already set"));
+    // Shrink only the receiver's idle clock in the isolated fixture; the real hold keeps 60s.
+    await stopSrv();
+    const timing = JSON.parse(readFileSync(path, "utf8")) as HoldFixture;
+    const timedWatch = timing.watches?.find((w) => w.id === watchId);
+    if (timedWatch) timedWatch.idleSec = 0;
+    writeFileSync(path, JSON.stringify(timing, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const land = await post(`/api/slots/${lane.slot}/land`, {});
+    check("hold-until fixture: prerequisite X actually lands through the public land door", land.ok, await land.text());
+    let received: Event[] = [];
+    await until(async () => {
+      received = (await events()).filter((e) => e.watchId === watchId);
+      return received.length > 0;
+    }, { timeoutMs: 10_000, what: "hold-until land event reaches the holding MAIN" });
+    let prompts: Awaited<ReturnType<typeof plogRead>> = [];
+    await until(async () => {
+      prompts = (await plogRead()).filter((p) => p.slot === main && p.text.includes(received[0]!.id));
+      return prompts.length > 0;
+    }, { timeoutMs: 20_000, what: "holding MAIN receives the existing watch transport" });
+    const read = await fetch(`${BASE}/api/self/events/${received[0]?.id}`, { headers: { "x-fleet-self-token": token } });
+    const heldRow = (await tasksNow()).find((t) => t.id === ids.held);
+    check("hold until land X: the holding MAIN receives exactly one readable landed event and the hold remains pending",
+      received.length === 1 && received[0]?.kind === "merge-terminal" && received[0].receiverSlot === main
+        && received[0].receiverOpenedAt === identity.openedAt && received[0].subjectBranch === lane.branch
+        && received[0].payload.landed === true && read.ok && prompts.length === 1 && heldRow?.status === "pending"
+        && heldRow.hold?.watchId === watchId
+        && (await events()).filter((e) => e.receiverSlot === main && e.subjectBranch === lane.branch).length === 1,
+      JSON.stringify({ received, hold: heldRow?.hold, read: read.status }));
+    await ackEvent(token, received[0]!.id);
+    const repeated = await hold(ids.held, payload);
+    await restartSrv();
+    await until(async () => (await watchRows()).some((w) => w.id === watchId && !w.armed),
+      { timeoutMs: 5000, what: "spent hold Watch survives restart" });
+    await Bun.sleep(AUTOS_TICK_MS * 3);
+    const afterRestart = (await events()).filter((e) => e.watchId === watchId);
+    const legacyRow = (await tasksNow()).find((t) => t.id === ids.legacy);
+    check("hold-until stays spent after Ack, repeated hold and restart; a legacy hold has no until and no watch",
+      repeated.ok && afterRestart.length === 1
+        && (await plogRead()).filter((p) => p.slot === main && p.text.includes(received[0]!.id)).length === 1 && legacy.ok && legacyReply.hold?.grund === null
+        && legacyRow?.hold?.grund === null && legacyRow.hold.until === undefined && legacyRow.hold.watchId === undefined
+        && (await tasksNow()).find((t) => t.id === ids.held)?.hold?.watchId === watchId,
+      JSON.stringify({ events: afterRestart.length, legacy: legacyRow?.hold }));
+    const merge = await hold(ids.merge, { grund: "terminal merge", until: { kind: "merge", slot: mergeLane.slot } });
+    const mergeReply = await merge.json() as HoldReply;
+    const audit = await hold(ids.audit, { grund: "existing audit", until: { kind: "audit", sha } });
+    const auditReply = await audit.json() as HoldReply;
+    const terminalEvents = await events();
+    check("hold-until merge and audit are level-triggered at creation on their existing persisted terminals",
+      merge.ok && audit.ok
+        && terminalEvents.filter((e) => e.watchId === mergeReply.hold?.watchId && e.kind === "merge-terminal" && e.payload.status === "resolved").length === 1
+        && terminalEvents.filter((e) => e.watchId === auditReply.hold?.watchId && e.kind === "post-land-audit" && e.payload.result === "green").length === 1,
+      JSON.stringify({ merge: mergeReply, audit: auditReply }));
+    const slotHold = await hold(ids.slot, { grund: "land this lane identity", until: { kind: "land", slot: mergeLane.slot } });
+    const slotReply = await slotHold.json() as HoldReply;
+    const branchHold = await hold(ids.branch, { grund: "land the same branch", until: { kind: "land", branch: mergeLane.branch } });
+    const branchReply = await branchHold.json() as HoldReply;
+    check("hold-until land slot and branch bind the same concrete branch and share one Watch",
+      slotHold.ok && branchHold.ok && !!slotReply.hold?.watchId && slotReply.hold.watchId === branchReply.hold?.watchId);
+    const branchLand = await post(`/api/slots/${mergeLane.slot}/land`, {});
+    await until(async () => (await events()).some((e) => e.watchId === slotReply.hold?.watchId && e.payload.landed),
+      { timeoutMs: 10_000, what: "hold-until concrete branch land" });
+    check("hold-until branch and slot Watch fires once after target teardown",
+      branchLand.ok && (await events()).filter((e) => e.watchId === slotReply.hold?.watchId && e.payload.landed).length === 1);
+    const future = await hold(ids.futureHeld, { grund: "task has not started", until: { kind: "land", task: ids.future } });
+    const futureReply = await future.json() as HoldReply;
+    check("hold-until may reserve a Watch before a known prerequisite task has a lane",
+      future.ok && (await watchRows()).some((w) => w.id === futureReply.hold?.watchId && w.armed));
+    for (const id of [mergeReply.hold?.watchId, auditReply.hold?.watchId, slotReply.hold?.watchId]) {
+      const event = (await events()).find((e) => e.watchId === id);
+      if (event) await ackEvent(token, event.id);
+    }
+    await post(`/api/slots/${main}/kill`, {});
+    await stopSrv();
+    const cleaned = JSON.parse(readFileSync(path, "utf8")) as HoldFixture;
+    cleaned.programs = (cleaned.programs ?? []).filter((p) => p.id !== programId);
+    cleaned.tasks = (cleaned.tasks ?? []).filter((t) => !Object.values(ids).includes(String(t.id)));
+    writeFileSync(path, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
   // === THE SELF TWIN: POST /api/self/watch =====================================================
   // Same mint (createWatchForSlot), different principal: `s` comes from the token instead of the
   // URL. The delivery machinery is therefore already proven by the owner half above and is not
@@ -7400,112 +8108,227 @@ export async function run(): Promise<void> {
   // pastes again and again; drop the delivery word and prompts.jsonl says nothing about either.
   {
     const holdSlot = await freeSlot();
-    // `pi`, not `pi-unfenced`: this send goes through canDeliver's foreign-harness WORK-PROMPT gate
-    // (tickInboxNudge waives nothing), and pi-unfenced is `automatable: false` FOREVER — the gate
-    // would refuse before sendText and the block would measure the gate instead of the composer.
-    const holdOpen = holdSlot
-      ? await post(`/api/slots/${holdSlot}/open`, { cwd: REPO, label: "inbox-hold-main", harness: "pi" }) : null;
-    const holdRow = (await (await get("/api/sessions")).json() as
-      { slots: { id: number; openedAt: number; sessionId: string | null; harness?: string }[] })
-      .slots.find((s) => s.id === holdSlot);
-    check("unattended-send fixture: a `pi` MAIN with a real stand-in composer is open",
-      !!holdOpen?.ok && holdSlot > 0 && holdRow?.harness === "pi" && (holdRow?.openedAt ?? 0) > 0,
-      JSON.stringify({ slot: holdSlot, status: holdOpen?.status, row: holdRow ?? null }));
-
-    // The Program is planted, not driven: the inbox nudge asks only for an ACTIVE program whose
-    // main binding names this living occupant and whose inbox has unread entries. Minting those
-    // through their real producers (attention, fleet-report, audit ledger) would measure those
-    // paths, which other blocks already do.
-    await stopSrv();
     const holdStatePath = `${ROOT}/fleet.json`;
     const holdProgramId = "c0ffee".repeat(4);
-    const holdImage = JSON.parse(readFileSync(holdStatePath, "utf8")) as
-      { slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[] };
-    const holdSlotRow = holdImage.slots[String(holdSlot)] ?? {};
-    const holdAt = Date.now() - 5000;
-    holdImage.programs = [...(holdImage.programs ?? []), {
-      id: holdProgramId, title: "Unattended send rollback fixture",
-      intent: "Prove a refused paste blocks nothing and is journalled",
-      successCriterion: "The composer is empty, the attempt is stamped, the journal carries delivery",
-      nonGoals: [], decisions: [], evidence: [], openQuestions: [],
-      status: "active", createdAt: holdAt - 1000, proposedBy: { kind: "owner" },
-      confirmedAt: holdAt - 900, activatedAt: holdAt - 800,
-      main: { slot: holdSlot, openedAt: holdSlotRow.openedAt, sessionId: holdSlotRow.sessionId ?? null,
-        boundAt: holdAt - 700 },
-      inbox: { v: 1, dropped: 0, entries: [
-        { id: "a".repeat(24), kind: "audit-red", at: holdAt - 600, ref: String(holdAt - 600), readBy: null, readAt: null },
-        { id: "b".repeat(24), kind: "attention-answer", at: holdAt - 500, ref: "att-hold-fixture", readBy: null, readAt: null },
-      ] },
-    }];
-    writeFileSync(holdStatePath, JSON.stringify(holdImage, null, 2), { mode: 0o600 });
-    // FLEET_HARNESS_AUTOMATION=1 for exactly this restart (the wrapper runs the suite with 0, and
-    // the plain restartSrv at the end of the block puts it back); the idle gate is shrunk because
-    // its default is five minutes, and the tick is shrunk from its 60 s default so the block can
-    // observe more than one round of it.
-    await restartSrv({ FLEET_HARNESS_AUTOMATION: "1", FLEET_INBOX_NUDGE_MS: "250",
-      FLEET_BACKLOG_NUDGE_IDLE_MS: "300" });
-    const holdProgramLive = ((await (await get("/api/programs")).json()) as
-      { programs?: { id: string; status: string; health?: { occupancy?: string };
-        executionStatus?: { inbox?: { unread?: number } } }[] })
-      .programs?.find((p) => p.id === holdProgramId) ?? null;
-    check("unattended-send fixture: the planted program loaded ACTIVE, bound live to that occupant, with two unread inbox entries",
-      holdProgramLive?.status === "active" && holdProgramLive.health?.occupancy === "live"
-        && holdProgramLive.executionStatus?.inbox?.unread === 2,
-      JSON.stringify(holdProgramLive));
-
     const holdMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
     const holdState = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
-    // "hold" matches no branch of the stand-in's Enter handler, so its buffer survives the submit —
-    // the deterministic form of the live "composer still holds N chars" non-acceptance.
-    writeFileSync(holdMode, "hold\n");
-    // The pane must have been OBSERVED (lastOutput !== 0 is a hard guard in tickInboxNudge, and
-    // absence is never idleness), and then be idle past the shrunk gate. One Enter into an EMPTY
-    // composer redraws it and types nothing.
-    await tmuxOut("send-keys", "-t", `s${holdSlot}`, "Enter");
-    await Bun.sleep(1200);
-    const holdPrompts = async () => (await plogRead())
-      .filter((e) => e.slot === holdSlot && e.text.startsWith("[fleet inbox] "));
-    let holdLines = await holdPrompts();
-    for (let i = 0; i < 100 && holdLines.length === 0; i++) {
-      await Bun.sleep(100);
-      holdLines = await holdPrompts();
-    }
-    let holdStateAfter = "";
-    let holdComposerBuf = "";
-    let holdPhase = "";
-    // tmux has queued every BSpace when the send returns; the stand-in records each key as it
-    // consumes it. Wait for its final internal state, not an intermediate prefix on a loaded Mac.
-    for (let i = 0; i < 80; i++) {
-      holdStateAfter = holdState && existsSync(holdState) ? readFileSync(holdState, "utf8") : "";
-      holdComposerBuf = holdStateAfter.slice(holdStateAfter.indexOf("\n") + 1);
-      holdPhase = holdStateAfter.split("\n")[0] ?? "";
-      if (holdPhase.startsWith("backspace:") && holdComposerBuf === "") break;
-      await Bun.sleep(50);
-    }
-    check("an unattended send whose payload is NOT accepted rolls its own payload back out of the composer",
-      holdLines.length >= 1 && holdPhase.startsWith("backspace:") && holdComposerBuf === "",
-      JSON.stringify({ lines: holdLines.length, phase: holdPhase, residue: holdComposerBuf.slice(0, 120) }));
-    check("…and the prompt journal carries the DELIVERY state of that attempt, named by its failure class",
-      holdLines.length >= 1 && holdLines[0]?.delivery === "SendNotAccepted"
-        && holdLines[0]?.source === "auto",
-      JSON.stringify(holdLines.map((l) => ({ delivery: l.delivery ?? null, source: l.source }))));
-    // …and each FAILED path attempts only once: the general hint spends its cooldown, while the
-    // fast entry keeps its own one-entry stamp. Ten ticks must paste neither one again.
-    await Bun.sleep(250 * 10 + 500);
-    const holdAfterTicks = await holdPrompts();
-    check("…and failed fast and general hints are each STAMPED: ten further ticks paste neither one again",
-      holdAfterTicks.filter((l) => l.text.includes("attention-answer")).length === 1
-        && holdAfterTicks.filter((l) => l.text.includes("ungelesene Eintraege")).length === 1
-        && holdAfterTicks.length === 2,
-      `${holdAfterTicks.length} attempt(s): ${JSON.stringify(holdAfterTicks.map((l) => l.delivery ?? null))}`);
+    type HoldIdentity = { slot: number; cwd: string; openedAt: number; sessionId: string };
+    const holdRecord = (value: unknown): value is Record<string, unknown> =>
+      value !== null && typeof value === "object" && !Array.isArray(value);
+    const holdIdentityFrom = (image: unknown): HoldIdentity | null => {
+      if (!holdRecord(image) || !holdRecord(image.slots)) return null;
+      const row = image.slots[String(holdSlot)];
+      if (!holdRecord(row) || typeof row.cwd !== "string" || !row.cwd.trim()
+        || typeof row.openedAt !== "number" || !Number.isFinite(row.openedAt) || row.openedAt <= 0
+        || typeof row.sessionId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(row.sessionId)) return null;
+      return { slot: holdSlot, cwd: row.cwd, openedAt: row.openedAt, sessionId: row.sessionId };
+    };
+    const readHoldIdentity = (): HoldIdentity | null => {
+      try { return holdIdentityFrom(JSON.parse(readFileSync(holdStatePath, "utf8")) as unknown); }
+      catch { return null; }
+    };
+    const holdStateMatches = (actual: HoldIdentity | null, expected: HoldIdentity | null): boolean =>
+      actual !== null && expected !== null && actual.slot === expected.slot && actual.cwd === expected.cwd
+        && actual.openedAt === expected.openedAt && actual.sessionId === expected.sessionId;
+    const holdOccupantMatches = (actual: HoldIdentity | null, expected: HoldIdentity | null, poll: unknown): boolean => {
+      if (!holdStateMatches(actual, expected) || !expected || !holdRecord(poll) || !Array.isArray(poll.slots)) return false;
+      const row: unknown = poll.slots.find((r: unknown) => holdRecord(r) && r.id === expected.slot);
+      return holdRecord(row) && row.id === expected.slot && row.cwd === expected.cwd && row.openedAt === expected.openedAt;
+    };
+    let holdBinding: HoldIdentity | null = null;
+    const holdAssertState = (): void => {
+      const current = readHoldIdentity();
+      if (!holdStateMatches(current, holdBinding)) {
+        check("unattended-send fixture: persisted occupant identity remains exact after an await", false,
+          JSON.stringify({ expected: holdBinding, current }));
+        throw new Error("unattended-send fixture: persisted occupant identity is missing or changed");
+      }
+    };
+    try {
+      // `pi`, not `pi-unfenced`: this send goes through canDeliver's foreign-harness WORK-PROMPT gate
+      // (tickInboxNudge waives nothing), and pi-unfenced is `automatable: false` FOREVER — the gate
+      // would refuse before sendText and the block would measure the gate instead of the composer.
+      const holdOpen = holdSlot
+        ? await post(`/api/slots/${holdSlot}/open`, { cwd: REPO, label: "inbox-hold-main", harness: "pi" }) : null;
+      const holdRow = (await (await get("/api/sessions")).json() as
+        { slots: { id: number; cwd: string | null; openedAt: number; harness?: string }[] })
+        .slots.find((s) => s.id === holdSlot);
+      check("unattended-send fixture: a `pi` MAIN with a real stand-in composer is open",
+        !!holdOpen?.ok && holdSlot > 0 && holdRow?.harness === "pi" && (holdRow?.openedAt ?? 0) > 0,
+        JSON.stringify({ slot: holdSlot, status: holdOpen?.status, row: holdRow ?? null }));
 
-    writeFileSync(holdMode, "normal\n");
-    if (holdSlot) await post(`/api/slots/${holdSlot}/kill`, {});
-    await stopSrv();
-    const holdCleaned = JSON.parse(readFileSync(holdStatePath, "utf8")) as { programs?: { id?: string }[] };
-    holdCleaned.programs = (holdCleaned.programs ?? []).filter((p) => p.id !== holdProgramId);
-    writeFileSync(holdStatePath, JSON.stringify(holdCleaned, null, 2), { mode: 0o600 });
-    await restartSrv(); // back to the wrapper's FLEET_HARNESS_AUTOMATION=0 and the default gates
+      // The Program is planted, not driven: the inbox nudge asks only for an ACTIVE program whose
+      // main binding names this living occupant and whose inbox has unread entries. Minting those
+      // through their real producers (attention, fleet-report, audit ledger) would measure those
+      // paths, which other blocks already do.
+      await stopSrv();
+      const holdImage = JSON.parse(readFileSync(holdStatePath, "utf8")) as
+        { slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[] };
+      holdBinding = holdIdentityFrom(holdImage);
+      const holdIdentityReady = holdOccupantMatches(holdBinding, holdBinding, { slots: holdRow ? [holdRow] : [] });
+      check("unattended-send fixture: persisted occupant identity is valid and matches the Sessions poll", holdIdentityReady,
+        JSON.stringify({ binding: holdBinding, poll: holdRow ? { id: holdRow.id, cwd: holdRow.cwd, openedAt: holdRow.openedAt } : null }));
+      if (!holdIdentityReady || !holdBinding) throw new Error("unattended-send fixture: no valid persisted occupant identity");
+      const holdAt = Date.now() - 5000;
+      holdImage.programs = [...(holdImage.programs ?? []), {
+        id: holdProgramId, title: "Unattended send rollback fixture",
+        intent: "Prove a refused paste blocks nothing and is journalled",
+        successCriterion: "The composer is empty, the attempt is stamped, the journal carries delivery",
+        nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+        status: "active", createdAt: holdAt - 1000, proposedBy: { kind: "owner" },
+        confirmedAt: holdAt - 900, activatedAt: holdAt - 800,
+        main: { slot: holdBinding.slot, openedAt: holdBinding.openedAt, sessionId: holdBinding.sessionId,
+          boundAt: holdAt - 700 },
+        inbox: { v: 1, dropped: 0, entries: [
+          { id: "a".repeat(24), kind: "audit-red", at: holdAt - 600, ref: String(holdAt - 600), readBy: null, readAt: null },
+          { id: "b".repeat(24), kind: "attention-answer", at: holdAt - 500, ref: "att-hold-fixture", readBy: null, readAt: null },
+        ] },
+      }];
+      writeFileSync(holdStatePath, JSON.stringify(holdImage, null, 2), { mode: 0o600 });
+      // FLEET_HARNESS_AUTOMATION=1 for exactly this restart (the wrapper runs the suite with 0, and
+      // the plain restartSrv at the end of the block puts it back); the idle gate is shrunk because
+      // its default is five minutes, and the tick is shrunk from its 60 s default so the block can
+      // observe more than one round of it.
+      await restartSrv({ FLEET_HARNESS_AUTOMATION: "1", FLEET_INBOX_NUDGE_MS: "250",
+        FLEET_BACKLOG_NUDGE_IDLE_MS: "300" });
+      holdAssertState();
+      const holdProgramLive = ((await (await get("/api/programs")).json()) as
+        { programs?: { id: string; status: string; health?: { occupancy?: string };
+          executionStatus?: { inbox?: { unread?: number } } }[] })
+        .programs?.find((p) => p.id === holdProgramId) ?? null;
+      holdAssertState();
+      check("unattended-send fixture: the planted program loaded ACTIVE, bound live to that occupant, with two unread inbox entries",
+        holdProgramLive?.status === "active" && holdProgramLive.health?.occupancy === "live"
+          && holdProgramLive.executionStatus?.inbox?.unread === 2,
+        JSON.stringify(holdProgramLive));
+
+      // "hold" matches no branch of the stand-in's Enter handler, so its buffer survives the submit —
+      // the deterministic form of the live "composer still holds N chars" non-acceptance.
+      holdAssertState();
+      writeFileSync(holdMode, "hold\n");
+      // The pane must have been OBSERVED (lastOutput !== 0 is a hard guard in tickInboxNudge, and
+      // absence is never idleness), and then be idle past the shrunk gate. One Enter into an EMPTY
+      // composer redraws it and types nothing.
+      holdAssertState();
+      await tmuxOut("send-keys", "-t", `s${holdSlot}`, "Enter");
+      holdAssertState();
+      await Bun.sleep(1200);
+      holdAssertState();
+      const holdPrompts = async () => (await plogRead())
+        .filter((e) => e.slot === holdSlot && e.ts >= (holdBinding?.openedAt ?? Infinity)
+          && e.text.startsWith("[fleet inbox] "));
+      let holdLines: Awaited<ReturnType<typeof holdPrompts>> = [];
+      let holdBindingStatus = 0;
+      let holdCurrent: HoldIdentity | null = null;
+      let holdFixtureReason = "waiting-for-both-paths";
+      const holdCounts = () => ({
+        fast: holdLines.filter((l) => l.text.includes("attention-answer")).length,
+        general: holdLines.filter((l) => l.text.includes("ungelesene Eintraege")).length,
+        total: holdLines.length,
+      });
+      const holdFixtureDetail = () => JSON.stringify({ reason: holdFixtureReason, counts: holdCounts(),
+        binding: { slot: holdSlot, openedAt: holdBinding?.openedAt, sessionId: holdBinding?.sessionId },
+        current: holdCurrent ?? null, status: holdBindingStatus,
+        rows: holdLines.map((l) => ({
+          path: l.text.includes("attention-answer") ? "fast"
+            : l.text.includes("ungelesene Eintraege") ? "general" : "unknown",
+          delivery: l.delivery === "SendNotAccepted" ? l.delivery : "unexpected",
+          source: l.source === "auto" ? l.source : "unexpected",
+          bound: l.openedAt === holdBinding?.openedAt && l.sessionId === holdBinding?.sessionId,
+        })) });
+      const holdFixtureName = "unattended-send fixture: both failed hint paths are observed once for the bound occupant before cooldown";
+      try {
+        await until(async () => {
+          holdCurrent = readHoldIdentity();
+          let stateStayed = holdStateMatches(holdCurrent, holdBinding);
+          holdLines = await holdPrompts();
+          holdCurrent = readHoldIdentity();
+          stateStayed = stateStayed && holdStateMatches(holdCurrent, holdBinding);
+          const response = await get("/api/sessions");
+          holdCurrent = readHoldIdentity();
+          stateStayed = stateStayed && holdStateMatches(holdCurrent, holdBinding);
+          holdBindingStatus = response.status;
+          const poll: unknown = response.ok ? await response.json() : null;
+          holdCurrent = readHoldIdentity();
+          const counts = holdCounts();
+          const binding = holdBinding;
+          if (!binding || !stateStayed || !holdOccupantMatches(holdCurrent, binding, poll))
+            holdFixtureReason = "occupant-or-status-changed";
+          else if (counts.fast > 1 || counts.general > 1 || counts.total > 2) holdFixtureReason = "multiple-path-attempts";
+          else if (holdLines.some((l) => l.openedAt !== binding.openedAt || l.sessionId !== binding.sessionId
+            || l.delivery !== "SendNotAccepted" || l.source !== "auto"
+            || l.text.includes("attention-answer") === l.text.includes("ungelesene Eintraege")))
+            holdFixtureReason = "wrong-path-delivery-source-or-binding";
+          else holdFixtureReason = counts.fast === 1 && counts.general === 1 && counts.total === 2
+            ? "both-failed-once" : "waiting-for-both-paths";
+          return holdFixtureReason !== "waiting-for-both-paths";
+        }, { timeoutMs: 10_000, stepMs: 100, what: holdFixtureName, last: holdFixtureDetail });
+      } catch (error) {
+        holdFixtureReason = error instanceof UntilTimeout ? "missing-path-within-budget" : "fixture-observation-failed";
+        check(holdFixtureName, false, holdFixtureDetail());
+        throw error;
+      }
+      holdAssertState();
+      const holdFixtureReady = holdFixtureReason === "both-failed-once";
+      check(holdFixtureName, holdFixtureReady, holdFixtureDetail());
+      if (!holdFixtureReady) throw new Error("unattended-send fixture: failed hint paths were not both bound and observed once");
+      let holdStateAfter = "";
+      let holdComposerBuf = "";
+      let holdPhase = "";
+      // tmux has queued every BSpace when the send returns; the stand-in records each key as it
+      // consumes it. Wait for its final internal state, not an intermediate prefix on a loaded Mac.
+      for (let i = 0; i < 80; i++) {
+        holdStateAfter = holdState && existsSync(holdState) ? readFileSync(holdState, "utf8") : "";
+        holdComposerBuf = holdStateAfter.slice(holdStateAfter.indexOf("\n") + 1);
+        holdPhase = holdStateAfter.split("\n")[0] ?? "";
+        if (holdPhase.startsWith("backspace:") && holdComposerBuf === "") break;
+        await Bun.sleep(50);
+      }
+      holdAssertState();
+      check("an unattended send whose payload is NOT accepted rolls its own payload back out of the composer",
+        holdLines.length >= 1 && holdPhase.startsWith("backspace:") && holdComposerBuf === "",
+        JSON.stringify({ lines: holdLines.length, phase: holdPhase, residue: holdComposerBuf.slice(0, 120) }));
+      check("…and the prompt journal carries the DELIVERY state of that attempt, named by its failure class",
+        holdLines.length >= 1 && holdLines[0]?.delivery === "SendNotAccepted"
+          && holdLines[0]?.source === "auto",
+        JSON.stringify(holdLines.map((l) => ({ delivery: l.delivery ?? null, source: l.source }))));
+      // …and each FAILED path attempts only once: the general hint spends its cooldown, while the
+      // fast entry keeps its own one-entry stamp. Ten ticks must paste neither one again.
+      await Bun.sleep(250 * 10 + 500);
+      holdAssertState();
+      const holdAfterTicks = await holdPrompts();
+      holdAssertState();
+      check("…and failed fast and general hints are each STAMPED: ten further ticks paste neither one again",
+        holdAfterTicks.filter((l) => l.text.includes("attention-answer")).length === 1
+          && holdAfterTicks.filter((l) => l.text.includes("ungelesene Eintraege")).length === 1
+          && holdAfterTicks.length === 2
+          && holdAfterTicks.every((l) => l.openedAt === holdBinding?.openedAt && l.sessionId === holdBinding?.sessionId
+            && l.delivery === "SendNotAccepted" && l.source === "auto"),
+        `${holdAfterTicks.length} attempt(s): ${JSON.stringify(holdAfterTicks.map((l) => l.delivery ?? null))}`);
+
+    } finally {
+      try {
+        if (holdMode && existsSync(holdMode)) writeFileSync(holdMode, "normal\n");
+        if (holdSlot && holdBinding) {
+          const response = await get("/api/sessions");
+          let current = readHoldIdentity();
+          const stateStayed = holdStateMatches(current, holdBinding);
+          const poll: unknown = response.ok ? await response.json() : null;
+          current = readHoldIdentity();
+          const cleanupBound = stateStayed && holdOccupantMatches(current, holdBinding, poll);
+          check("unattended-send fixture: cleanup targets only the exact persisted occupant", cleanupBound,
+            JSON.stringify({ expected: holdBinding, current, status: response.status }));
+          if (cleanupBound) await post(`/api/slots/${holdSlot}/kill`, {});
+        }
+      } finally {
+        await stopSrv();
+        const holdCleaned = JSON.parse(readFileSync(holdStatePath, "utf8")) as { programs?: { id?: string }[] };
+        holdCleaned.programs = (holdCleaned.programs ?? []).filter((p) => p.id !== holdProgramId);
+        writeFileSync(holdStatePath, JSON.stringify(holdCleaned, null, 2), { mode: 0o600 });
+        await restartSrv(); // back to the wrapper's FLEET_HARNESS_AUTOMATION=0 and the default gates
+      }
+    }
   }
 
   // === PI-ZAI IS A WATCH TARGET ONCE THE OPERATOR CONSENTS (2026-09-18) ========================

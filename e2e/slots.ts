@@ -2211,7 +2211,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // the two traps being a board that prints a threshold nobody armed, and one that draws an
   // unmeasurable context as 0 %. Source is the evidence; this suite has no DOM, and the served
   // numbers themselves are measured live in e2e/watch.ts against tickMigrate's own fixture.
-  const succSrc = boardSrc.slice(boardSrc.indexOf("if (brief?.succession) {"),
+  const succSrc = boardSrc.slice(boardSrc.indexOf("if (facts?.succession) {"),
     boardSrc.indexOf("// identifiers: machine strings in mono"));
   check("client: the head names all four succession facts — fill, handover threshold, kind, handoff (G0.5: rail→Kind, MAIN-abgeleitet)",
     /srow\("Fill",/.test(succSrc) && /srow\("Handover",/.test(succSrc)
@@ -2236,7 +2236,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // fact each one was standing in for asserted beside it, so a re-added copy trips this.
   check("client: the session's KIND is said once — the head's state line, not a second Setup row",
     !/row\("Type",/.test(setupSrc)
-    && /brief\?\.worktree \? "lane" : "repo session"\} in slot \$\{slot\}/.test(boardSrc),
+    // a failed read names no kind: "repo session" over a folder that is gone would invent a git fact
+    && /brief\?\.worktree \? "lane" : noGit \? "folder session" : brief \? "repo session" : "session"\} in slot \$\{slot\}/.test(boardSrc),
     "the Type row vs the head's state line");
   check("client: a session with no packs draws no `none` row — absence is the ordinary case",
     !/row\("Packs", "none"/.test(setupSrc) && /if \(packs\.length\) \{/.test(setupSrc),
@@ -3683,6 +3684,169 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     } else check("conversation export: fixture slot 3 opens for the no-transcript probe", false, String(bare.status));
     rmSync(bareCwd, { recursive: true, force: true });
     check("conversation export rejects an inactive slot", (await get("/api/slots/4/export/conversation?probe=1")).status === 400);
+  }
+
+  // --- a session in a folder WITHOUT git is an ordinary session, not a failed read ---
+  // The defect (owner screenshot 2026-09-30, a fresh session opened on a plain folder): the brief
+  // route answered every failed git read with „[Zitat entfernt]“, and the board drew that as a
+  // permanent read error over Changes/History/Lanes. server.ts#cwdGitState now names WHICH absence it
+  // is, and only the plain folder is the normal one. Six fixtures, each its OWN folder under tmpdir
+  // (never a live session's): plain, unborn repo, real repo, gone, unreadable, broken `.git` link —
+  // plus an inactive slot. Slot 3 is free again since the export block killed it.
+  {
+    type NoGitBody = { error?: string; git?: string; sessionStart?: unknown; setup?: unknown; succession?: unknown;
+      branch?: unknown; head?: unknown; uncommitted?: unknown; commits?: unknown; files?: unknown; diff?: unknown };
+    const base = `${tmpdir()}/fleet-e2e-nogit-${process.pid}`;
+    const gitIn = (dir: string, ...a: string[]) => spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+    // the git facts a plain folder must NOT be handed, as zeros or otherwise
+    const gitFacts = ["branch", "head", "uncommitted", "uncommittedFiles", "commits", "files", "shortstat", "diff", "status"];
+    const leaked = (b: Record<string, unknown>) => gitFacts.filter((k) => k in b);
+    const stewTok = ((await (await get("/api/steward/token")).json()) as { token?: string }).token ?? "";
+    const stewGet = (path: string) => fetch(BASE + path, { headers: { authorization: `Bearer ${stewTok}` } });
+    const read = async (r: Response) => ({ status: r.status, body: ((await r.json().catch(() => ({}))) as NoGitBody) });
+    const openAt = async (dir: string): Promise<boolean> => (await post("/api/slots/3/open", { cwd: dir })).ok;
+    const all = async () => ({
+      brief: await read(await get("/api/slots/3/brief")),
+      diff: await read(await get("/api/slots/3/diff")),
+      stew: await read(await stewGet("/api/steward/slots/3/brief")),
+    });
+    rmSync(base, { recursive: true, force: true });
+    try {
+      // (1) PLAIN FOLDER — the normal kind: 400 (so every `res.ok` reader keeps the git half absent)
+      // with git:"none", the session's non-git half still served, no git fact at all
+      const plain = `${base}/plain`;
+      mkdirSync(plain, { recursive: true });
+      writeFileSync(`${plain}/notes.txt`, "a plain folder\n");
+      if (await openAt(plain)) {
+        const r = await all();
+        check("no-git: a plain folder's brief says git:none, keeps sessionStart/setup/succession, and carries no git fact",
+          r.brief.status === 400 && r.brief.body.git === "none" && r.brief.body.error === "not a git repository"
+            && "sessionStart" in r.brief.body && typeof r.brief.body.setup === "object" && r.brief.body.setup !== null
+            && typeof r.brief.body.succession === "object" && r.brief.body.succession !== null
+            && leaked(r.brief.body as Record<string, unknown>).length === 0,
+          JSON.stringify({ status: r.brief.status, git: r.brief.body.git, leaked: leaked(r.brief.body as Record<string, unknown>) }));
+        check("no-git: the owner diff and the steward brief of a plain folder say git:none and invent no git fact",
+          r.diff.status === 400 && r.diff.body.git === "none" && leaked(r.diff.body as Record<string, unknown>).length === 0
+            && r.stew.status === 400 && r.stew.body.git === "none" && leaked(r.stew.body as Record<string, unknown>).length === 0,
+          JSON.stringify({ diff: r.diff, stew: r.stew }));
+        // (4) GONE — the same slot, its folder removed under it: an error, never "no git here"
+        rmSync(plain, { recursive: true, force: true });
+        const g = await all();
+        check("no-git: a folder removed under a live session is git:gone on brief, diff and steward — never git:none",
+          [g.brief, g.diff, g.stew].every((x) => x.status === 400 && x.body.git === "gone"
+            && x.body.error === "the session's folder no longer exists"),
+          JSON.stringify(g));
+        await post("/api/slots/3/kill", {});
+      } else check("no-git: fixture slot 3 opens on the plain folder", false, plain);
+
+      // (5) UNREADABLE — exists, but this user may not enter it: an error, never git:none
+      const locked = `${base}/locked`;
+      mkdirSync(locked, { recursive: true });
+      if (await openAt(locked)) {
+        chmodSync(locked, 0o000);
+        const u = await all();
+        chmodSync(locked, 0o755);
+        check("no-git: an unreadable folder is git:unreadable on brief, diff and steward — never git:none",
+          [u.brief, u.diff, u.stew].every((x) => x.status === 400 && x.body.git === "unreadable"),
+          JSON.stringify(u));
+        await post("/api/slots/3/kill", {});
+      } else check("no-git: fixture slot 3 opens on the locked folder", false, locked);
+
+      // (6) BROKEN REPO — a `.git` file whose gitdir is gone (a worktree whose repo moved). git says
+      // "not a git repository: <path>", which the old route read as a plain folder; it is an error.
+      const broken = `${base}/broken`;
+      mkdirSync(broken, { recursive: true });
+      writeFileSync(`${broken}/.git`, `gitdir: ${base}/no-such-repo/.git/worktrees/x\n`);
+      if (await openAt(broken)) {
+        const b = await all();
+        check("no-git: a broken `.git` link is git:error with git's own sentence on the owner wire — never git:none",
+          [b.brief, b.diff, b.stew].every((x) => x.status === 400 && x.body.git === "error"
+            && (x.body.error ?? "").startsWith("git could not read the session's folder: ")),
+          JSON.stringify(b));
+        await post("/api/slots/3/kill", {});
+      } else check("no-git: fixture slot 3 opens on the broken repo", false, broken);
+
+      // (2) UNBORN REPO and (3) REAL REPO — the git kinds keep the git brief, untouched by this
+      const unborn = `${base}/unborn`;
+      mkdirSync(unborn, { recursive: true });
+      gitIn(unborn, "init", "-q");
+      if (await openAt(unborn)) {
+        const r = await read(await get("/api/slots/3/brief"));
+        check("no-git: an unborn repo (git init, no commit) keeps the git brief — head null, never git:none",
+          r.status === 200 && !("git" in r.body) && r.body.head === null && Array.isArray(r.body.commits),
+          JSON.stringify(r).slice(0, 300));
+        await post("/api/slots/3/kill", {});
+      } else check("no-git: fixture slot 3 opens on the unborn repo", false, unborn);
+      const real = `${base}/real`;
+      mkdirSync(real, { recursive: true });
+      gitIn(real, "init", "-q");
+      writeFileSync(`${real}/a.txt`, "a\n");
+      gitIn(real, "add", "a.txt");
+      const made = gitIn(real, "-c", "user.name=e2e", "-c", "user.email=e2e@localhost", "commit", "-qm", "first");
+      if (made.status === 0 && await openAt(real)) {
+        const r = await read(await get("/api/slots/3/brief"));
+        check("no-git: a real repo keeps the git brief with its head",
+          r.status === 200 && !("git" in r.body) && typeof r.body.head === "string" && Array.isArray(r.body.commits),
+          JSON.stringify(r).slice(0, 300));
+        await post("/api/slots/3/kill", {});
+      } else check("no-git: fixture real repo commits and slot 3 opens on it", false, `commit=${made.status} ${made.stderr}`);
+
+      // (7) UNREACHABLE SESSION — an inactive slot is "slot not active", never a git state
+      const gone = await read(await get("/api/slots/4/brief"));
+      const goneStew = await read(await stewGet("/api/steward/slots/4/brief"));
+      check("no-git: an inactive slot answers `slot not active` with no git kind on owner and steward",
+        gone.status === 400 && gone.body.error === "slot not active" && !("git" in gone.body)
+          && goneStew.status === 400 && goneStew.body.error === "slot not active" && !("git" in goneStew.body),
+        JSON.stringify({ gone, goneStew }));
+    } finally {
+      try { chmodSync(`${base}/locked`, 0o755); } catch { /* never made */ }
+      rmSync(base, { recursive: true, force: true });
+    }
+    // git's "not a git repository" is LOCALIZED (the helper's German git turned every plain folder
+    // into git:error, preview adcd5badccd9): the classifier must decide `none` without reading
+    // stderr. Counted over the CODE lines of cwdGitState only — a comment naming r.err is no read.
+    {
+      const srvSrc = readFileSync(`${ROOT}/server.ts`, "utf8");
+      const fn = srvSrc.slice(srvSrc.indexOf("async function cwdGitState("), srvSrc.indexOf("function cwdGitBody("));
+      const code = fn.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+      const noneLine = code.split("\n").find((l) => /return \{ kind: "none" \}/.test(l)) ?? "";
+      check("no-git: `none` is decided structurally (no `.git` at or above the folder), never from git's localized stderr",
+        fn.length > 0 && /!gitEntryAbove\(cwd\)/.test(noneLine) && !/r\.err/.test(noneLine)
+          && !/not a git repository/i.test(code.replace(/"not a git repository"/g, "")),
+        noneLine.trim() || "(no `none` return found in cwdGitState)");
+    }
+    // the board reads the kind, not the status: git:none draws a quiet not-applicable line, every
+    // other failure keeps the named failed-read section
+    // via sourceRoot: the staged instance carries server.ts but not src/ (see cliSrc above)
+    const boardSrc = readFileSync(`${sourceRoot}/src/board.ts`, "utf8");
+    check("client: the board tells a plain folder (git:none) from a failed brief read",
+      /const noGit = !briefRes\.ok && briefBody\?\.git === "none" \? briefBody : null;/.test(boardSrc)
+        && /const briefErr = briefRes\.ok \|\| noGit \? null :/.test(boardSrc)
+        && /No git in this folder — changes, history and lanes apply only to a repository\./.test(boardSrc),
+      "renderBoard's brief read");
+    // the window's own read (src/client.ts#loadGit) makes the SAME kind decision the board makes:
+    // a plain folder is drawn calmly — the board noGit card's very sentence — while gone,
+    // unreadable and error keep the server's named sentence, and only a body that never parsed
+    // falls back to the generic. The DECISION is lifted from the source and run for real (the
+    // ownerReportAwaiting method above), because a sentence match over the whole cliSrc would
+    // pass off board.ts's copy; the slice is loadGit's body, counted over code lines only.
+    {
+      const fn = cliSrc.slice(cliSrc.indexOf("async function loadGit("), cliSrc.indexOf("// What both homes paint"));
+      const code = fn.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+      const ternary = /error: (e\?\.git === "none"[\s\S]*?"git status could not be read")\s*\}/.exec(code)?.[1] ?? "";
+      const pick = ((): ((e: { error?: string; git?: string } | null) => string) | null => {
+        if (!ternary) return null;
+        try { return new Function(`return (e) => (${ternary});`)() as (e: { error?: string; git?: string } | null) => string; } catch { return null; }
+      })();
+      const calm = "No git in this folder — changes, history and lanes apply only to a repository.";
+      check("client: the file window's loadGit draws git:none with the board's calm sentence and keeps the server's named error for every other kind",
+        pick !== null
+          && pick({ git: "none", error: "not a git repository" }) === calm
+          && pick({ git: "gone", error: "the session's folder no longer exists" }) === "the session's folder no longer exists"
+          && pick({ git: "error", error: "git could not read the session's folder: fatal" }) === "git could not read the session's folder: fatal"
+          && pick(null) === "git status could not be read",
+        `loadGit decision: ${ternary.slice(0, 160) || "(ternary not found in loadGit)"}`);
+    }
   }
 
   // --- the owner /send RECEIPT and its journal attribution (Communication Cut 3) ---

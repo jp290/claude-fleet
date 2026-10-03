@@ -5,7 +5,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { BASE, IP, PORT, ROOT, SOCK, TOKEN, check, get, plogRead, post, readText, restartSrv, tmuxOut, wsUrl } from "./harness";
+import { BASE, IP, PORT, ROOT, SOCK, TOKEN, BoundAgentError, UntilTimeout, check, get, plogRead, post, readText, restartSrv, stopSrv, tmuxOut, until, waitForBoundAgent, wsUrl } from "./harness";
+import type { AgentBinding, BoundAgentObservation, BoundAgentWait } from "./harness";
 import type { Ctx } from "./ctx";
 import { MERGE_IDLE_MS, settleForMerge } from "./lane-helpers";
 
@@ -91,7 +92,139 @@ const codexTokenCount = (total: number, window: number | null): string => JSON.s
  */
 export const newPlantedSid = (): string => crypto.randomUUID();
 
+export async function boundRestartReadiness(): Promise<void> {
+  const binding = { slot: 16, openedAt: 123456, pane: "%123" };
+  const view = (agent: BoundAgentObservation["agent"], openedAt = binding.openedAt): unknown =>
+    ({ slots: [{ id: binding.slot, openedAt, agent }] });
+  const pane = async (): Promise<{ out: string; code: number }> => ({ out: binding.pane, code: 0 });
+  const budget = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_000) | 0);
+  const reject = async (name: string, reason: BoundAgentError["reason"] | "timeout", opts: BoundAgentWait): Promise<void> => {
+    let actual = "resolved";
+    let correct = false;
+    try { await waitForBoundAgent(opts); } catch (error) {
+      correct = reason === "timeout"
+        ? error instanceof UntilTimeout && error.what === `bound agent readiness slot ${binding.slot}`
+        : error instanceof BoundAgentError && error.reason === reason;
+      actual = error instanceof UntilTimeout ? `${error.what}; ${error.last}`
+        : error instanceof BoundAgentError ? `${error.reason}; ${error.actual}` : "unexpected error";
+    }
+    check(`bound agent readiness: ${name}`, correct, actual);
+  };
+  let reads = 0;
+  const seen: (BoundAgentObservation["agent"])[] = [];
+  const observed = await waitForBoundAgent({ binding, timeoutMs: 1000, stepMs: 10,
+    readSessions: async () => { reads++; return view(reads <= 2 ? null : reads <= 4 ? "unprobed" : "alive"); },
+    readPane: pane, readCurrent: () => binding, observe: (actual) => seen.push(actual.agent) });
+  check("bound agent readiness: HTTP-shaped null and unknown never complete before observed alive",
+    reads === 6 && seen.join(",") === ",unprobed,alive" && observed.agent === "alive",
+    JSON.stringify({ reads, seen, agent: observed.agent }));
+  const base = { binding, timeoutMs: 1000, stepMs: 10, readPane: pane, readCurrent: () => binding };
+  await reject("no-agent rejects without waiting for a cache tick", "no-agent",
+    { ...base, readSessions: async () => view("no-agent") });
+  await reject("a different openedAt rejects the foreign occupant", "occupant-changed",
+    { ...base, readSessions: async () => view("alive", binding.openedAt + 1) });
+  await reject("a missing slot rejects the absent occupant", "occupant-changed",
+    { ...base, readSessions: async () => ({ slots: [] }) });
+  let currentOpenedAt = binding.openedAt;
+  await reject("occupant replacement during the tmux await rejects", "occupant-changed", { ...base,
+    readSessions: async () => view("alive", currentOpenedAt),
+    readCurrent: () => ({ ...binding, openedAt: currentOpenedAt }),
+    readPane: async () => { await Promise.resolve(); currentOpenedAt++; return pane(); } });
+  let currentPane = binding.pane;
+  await reject("pane recycle during the sessions await rejects", "pane-changed", { ...base,
+    readSessions: async () => { await Promise.resolve(); currentPane = "%124"; return view("alive"); },
+    readCurrent: () => ({ ...binding, pane: currentPane }),
+    readPane: async () => ({ out: currentPane, code: 0 }) });
+  let paneReads = 0;
+  await reject("pane change on the second bracket rejects", "pane-changed", { ...base,
+    readSessions: async () => view("alive"),
+    readPane: async () => ({ out: ++paneReads === 1 ? binding.pane : "%124", code: 0 }) });
+  currentOpenedAt = binding.openedAt;
+  paneReads = 0;
+  await reject("occupant replacement in the final tmux await rejects", "occupant-changed", { ...base,
+    readSessions: async () => view("alive", currentOpenedAt),
+    readCurrent: () => ({ ...binding, openedAt: currentOpenedAt }),
+    readPane: async () => { await Promise.resolve(); if (++paneReads === 2) currentOpenedAt++; return pane(); } });
+  await reject("null expires under its own named timeout", "timeout",
+    { ...base, timeoutMs: 20, readSessions: async () => view(null) });
+  await reject("a failed external reader is a sanitized probe-read failure", "probe-read",
+    { ...base, readSessions: async () => { throw new Error("private reader data"); } });
+  await reject("a missing binding is its own probe-start failure", "probe-start",
+    { ...base, binding: { ...binding, pane: "" }, readSessions: async () => view("alive") });
+
+  let own: AgentBinding | null = null;
+  let openedSlot: number | null = null;
+  let started = false;
+  const external = async (): Promise<{ status: number; slots: { id: number; cwd: string | null; openedAt: number;
+    agent: BoundAgentObservation["agent"] }[] }> => {
+    const response = await get("/api/sessions");
+    const body = await response.json() as { slots: { id: number; cwd: string | null; openedAt: number;
+      agent: BoundAgentObservation["agent"] }[] };
+    return { status: response.status, slots: body.slots };
+  };
+  try {
+    if (!existsSync(`${ROOT}/pi`)) throw new BoundAgentError("probe-start", "local compiled pi absent");
+    const empty = (await external()).slots.filter((s) => !s.cwd).at(-1);
+    if (!empty) throw new BoundAgentError("probe-start", "no isolated empty slot");
+    const open = await post(`/api/slots/${empty.id}/open`, { cwd: ROOT, harness: "pi-zai" });
+    if (!open.ok) throw new BoundAgentError("probe-start", `slot=${empty.id}; http=${open.status}`);
+    openedSlot = empty.id;
+    const opened = (await external()).slots.find((s) => s.id === empty.id);
+    if (opened?.cwd !== ROOT || !Number.isFinite(opened.openedAt) || opened.openedAt <= 0)
+      throw new BoundAgentError("probe-start", `slot=${empty.id}; occupant=unbound`);
+    own = { slot: empty.id, openedAt: opened.openedAt, pane: "" };
+    const bound = await until(async () => {
+      const row = (await external()).slots.find((s) => s.id === empty.id);
+      if (row?.openedAt !== own?.openedAt)
+        throw new BoundAgentError("occupant-changed", `slot=${empty.id}; openedAt=${row?.openedAt ?? null}`);
+      const exact = await tmuxOut("display-message", "-p", "-t", `=s${empty.id}:`, "#{pane_id}");
+      const again = (await external()).slots.find((s) => s.id === empty.id);
+      return row?.cwd === ROOT && row.agent === "alive" && again?.openedAt === row.openedAt
+        && exact.code === 0 && /^%\d+$/.test(exact.out.trim())
+        ? { slot: empty.id, openedAt: row.openedAt, pane: exact.out.trim() } : null;
+    }, { timeoutMs: budget * 3 + 1500, what: "bound agent readiness probe-start" });
+    own = bound;
+    started = true;
+    const states: { http: number; openedAt: number | null; agent: BoundAgentObservation["agent"] | undefined }[] = [];
+    await restartSrv({}, { binding: bound, timeoutMs: budget * 3 + 1500, stepMs: Math.min(100, budget),
+      readSessions: async () => {
+        const actual = await external();
+        const row = actual.slots.find((s) => s.id === bound.slot);
+        states.push({ http: actual.status, openedAt: row?.openedAt ?? null, agent: row?.agent });
+        return actual;
+      } });
+    const after = await external();
+    const row = after.slots.find((s) => s.id === bound.slot);
+    const exact = await tmuxOut("display-message", "-p", "-t", `=s${bound.slot}:`, "#{pane_id}");
+    const final = (await external()).slots.find((s) => s.id === bound.slot);
+    const first = states[0];
+    check("bound agent readiness: real restart separates HTTP 200/null from the same occupant alive",
+      first?.http === 200 && first.agent === null && first.openedAt === bound.openedAt
+        && states.some((s) => s.agent === "alive") && states.every((s) => s.http === 200 && s.openedAt === bound.openedAt)
+        && row?.agent === "alive" && final?.agent === "alive" && final.openedAt === bound.openedAt
+        && exact.code === 0 && exact.out.trim() === bound.pane,
+      JSON.stringify({ bound, first, last: states.at(-1), reads: states.length,
+        outer: { http: after.status, openedAt: final?.openedAt ?? null, agent: final?.agent ?? null,
+          pane: /^%\d+$/.test(exact.out.trim()) ? exact.out.trim() : null, paneCode: exact.code } }));
+  } catch (error) {
+    check(`bound agent readiness: ${started ? "real restart observation" : "probe-start"}`, false,
+      error instanceof UntilTimeout ? `${error.what}; ${error.last}`
+        : error instanceof BoundAgentError ? `${error.reason}; ${error.actual}` : "external probe failed");
+  } finally {
+    if (openedSlot !== null) {
+      const row = (await external()).slots.find((s) => s.id === openedSlot);
+      const same = row?.cwd === ROOT && own !== null && row.openedAt === own.openedAt;
+      const cleanup = same ? await post(`/api/slots/${openedSlot}/kill`, {}) : null;
+      const restored = (await external()).slots.find((s) => s.id === openedSlot)?.cwd === null;
+      check("bound agent readiness: finally removes only its isolated fixture occupant",
+        same && cleanup?.ok === true && restored,
+        `slot=${openedSlot}; same=${same}; http=${cleanup?.status ?? null}; empty=${restored}`);
+    }
+  }
+}
+
 export async function run(ctx: Ctx): Promise<void> {
+  await boundRestartReadiness();
   let persistedCodex: { anchor: number; disconnectSeenAt: number; id: string } | null = null;
   // --- file permissions ---
   const statePath = `${ROOT}/fleet.json`;
@@ -1434,6 +1567,277 @@ export async function run(ctx: Ctx): Promise<void> {
     !existsSync(`${ROOT}/fleet.json.tmp`)
     && readdirSync(ROOT).filter((f) => f.startsWith("fleet.json.") && f.endsWith(".tmp")).length === 0,
     readdirSync(ROOT).filter((f) => f.startsWith("fleet.json.")).join(","));
+
+  // --- a self-Auto goes to the SLOT that scheduled it, never to a role. Measured 2026-10-02: Slot 9
+  // (Orchestratorin) scheduled 0b781fcc and got "failed: no current role occupant — nothing typed",
+  // because deliveryAddress turned her slot into {kind:"orchestrator"} and a lane labelled
+  // "…orchestratorinnen-karte…" was the second candidate. Only reachable WITH a bundle window (the
+  // wrapper's FLEET_DELIVERY_BUNDLE_SEC=0 sends immediately, bypassing the role resolution), so
+  // this section restarts with one. Half 2 changes the occupant on disk while the server is down —
+  // the only way an Auto row outlives its occupant, since open/kill delete every Auto of the slot.
+  {
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
+    type AutoRow = { id: string; slot: number; enabled: boolean; lastResult: string | null; slotOpenedAt?: number };
+    type SessionsView = { slots: { id: number; cwd: string | null; openedAt: number }[]; autos: AutoRow[] };
+    const sessions = async (): Promise<SessionsView> => (await (await get("/api/sessions")).json()) as SessionsView;
+    const vacant = (await sessions()).slots.filter((s) => !s.cwd).map((s) => s.id);
+    const [roleA, roleB] = vacant;
+    check("precondition: two vacant slots for the two Orchestratorin labels", !!roleA && !!roleB, JSON.stringify(vacant));
+    if (roleA && roleB) {
+      // labelled by rename, not at open: an Orchestratorin label at open also pastes the role card
+      // (deliverOrchestratorSpawnCard), which this section does not test
+      const openA = await post(`/api/slots/${roleA}/open`, { cwd: ROOT });
+      const openB = await post(`/api/slots/${roleB}/open`, { cwd: ROOT });
+      const nameA = await post(`/api/slots/${roleA}/rename`, { label: "🎛 Orchestratorin · e2e auto" });
+      const nameB = await post(`/api/slots/${roleB}/rename`, { label: "Orchestrator zwei · e2e auto" });
+      check("precondition: two non-lane slots carry an Orchestratorin label (role address resolves to nobody)",
+        openA.ok && openB.ok && nameA.ok && nameB.ok,
+        `${openA.status} ${openB.status} ${nameA.status} ${nameB.status}`);
+      const selfToken = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { selfToken?: string }> }).slots?.[String(roleA)]?.selfToken ?? "";
+      const selfAuto = async (text: string, inSec: number): Promise<AutoRow | null> => {
+        const r = await fetch(BASE + "/api/self/autos", { method: "POST",
+          headers: { "content-type": "application/json", "x-fleet-self-token": selfToken },
+          body: JSON.stringify({ text, inSec, idleSec: 0 }) });
+        return r.ok ? ((await r.json()) as { auto: AutoRow }).auto : null;
+      };
+      const openedA = (await sessions()).slots.find((s) => s.id === roleA)?.openedAt ?? 0;
+      const sentMarker = `self-auto-own-slot-${Date.now()}`;
+      const sent = await selfAuto(sentMarker, 1);
+      check("a self-Auto is stamped with the occupant that scheduled it",
+        !!sent && sent.slot === roleA && sent.slotOpenedAt === openedA && openedA > 0,
+        `${JSON.stringify(sent)} openedAt=${openedA}`);
+      // before the fix this row ended "failed: no current role occupant" after the 30 s absent grace
+      const fired = sent ? await until(async () => (await sessions()).autos.find((a) =>
+        a.id === sent.id && a.lastResult !== null) ?? null,
+      { timeoutMs: 15_000, what: "own-slot self-Auto settles" }).catch(() => null) : null;
+      const sentLog = (await plogRead()).filter((p) => p.text === sentMarker);
+      check("with two Orchestratorin labels a self-Auto is sent into its own slot",
+        fired?.lastResult === "sent" && sentLog.length === 1 && sentLog[0]?.slot === roleA,
+        `${JSON.stringify(fired)} log=${JSON.stringify(sentLog.map((p) => p.slot))}`);
+
+      const staleMarker = `self-auto-stale-occupant-${Date.now()}`;
+      const stale = await selfAuto(staleMarker, 3600);
+      check("precondition: the far-future self-Auto for the occupant change exists", !!stale, "");
+      await stopSrv();
+      const stFile = `${ROOT}/fleet.json`;
+      const st = JSON.parse(readFileSync(stFile, "utf8")) as { autos?: (AutoRow & { nextAt: number })[] };
+      const row = st.autos?.find((a) => a.id === stale?.id);
+      // the row of a FORMER occupant: same slot id, another openedAt; due now
+      if (row) { row.slotOpenedAt = openedA - 1; row.nextAt = Date.now() - 1000; }
+      writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
+      await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
+      const dropped = stale ? await until(async () => (await sessions()).autos.find((a) =>
+        a.id === stale.id && a.lastResult !== null) ?? null,
+      { timeoutMs: 10_000, what: "stale-occupant self-Auto settles" }).catch(() => null) : null;
+      await Bun.sleep(2_500); // one bundle window: nothing may have been queued for a later paste
+      const staleLog = (await plogRead()).filter((p) => p.text === staleMarker);
+      const staleCap = await tmuxOut("capture-pane", "-t", `s${roleA}`, "-p", "-J");
+      check("a self-Auto of a former occupant is discarded with its reason, nothing typed",
+        !!row && dropped?.enabled === false
+          && dropped.lastResult?.startsWith("skipped — slot occupant changed") === true
+          && staleLog.length === 0 && !staleCap.out.includes(staleMarker),
+        `${JSON.stringify(dropped)} log=${staleLog.length}`);
+
+      // --- the ROLE address resolves over non-lane slots only. Measured 2026-10-02 (Report e67d865d):
+      // a lane in Slot 22 labelled "⎇ task orchestratorinnen-karte-4dbe" matched the label, so
+      // deliveryRecipient({kind:"orchestrator"}) saw two candidates and a bundle for the real
+      // Orchestratorin (an inbox-nudge among it) fell after 30 s with "no current role occupant".
+      // Measured on the message rail, which resolves through deliveryRecipient, and on its nudge,
+      // which rides a {kind:"orchestrator"} bundle (FLEET_DELIVERY_BUNDLE_SEC > 0).
+      await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2", FLEET_INBOX_NUDGE_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
+      const selfMessages = (method: "GET" | "POST", body?: unknown): Promise<Response> =>
+        fetch(BASE + "/api/self/messages", { method,
+          headers: { "content-type": "application/json", "x-fleet-self-token": selfToken },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      const twoView = await selfMessages("GET");
+      const twoErr = ((await twoView.json()) as { error?: string }).error ?? "";
+      check("two non-lane Orchestratorin slots: the role holds nobody, and the refusal names why",
+        twoView.status === 409 && twoErr.includes("unique live Orchestrator"), `${twoView.status} ${twoErr}`);
+
+      const laneRepo = process.env.FLEET_E2E_REPO ?? "";
+      await post(`/api/slots/${roleB}/kill`, {});
+      const ln = laneRepo ? (await (await post("/api/lanes", { repo: laneRepo })).json()) as
+        { slot?: number; cwd?: string; branch?: string } : {};
+      const lnName = ln.slot ? await post(`/api/slots/${ln.slot}/rename`,
+        { label: "⎇ task orchestratorinnen-karte-e2e" }) : null;
+      const lnRow = ln.slot ? ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; label?: string | null; worktree?: unknown }[] }).slots.find((x) => x.id === ln.slot) : undefined;
+      check("precondition: one Orchestratorin plus a LANE whose label carries the word orchestrator",
+        !!ln.slot && lnName?.ok === true && !!lnRow?.worktree && /orchestratorinnen-karte/.test(lnRow?.label ?? ""),
+        `${JSON.stringify(ln)} rename=${lnName?.status} row=${JSON.stringify(lnRow)}`);
+      if (ln.slot && ln.cwd) {
+        const auditFrom = (await Bun.file(`${ROOT}/audit.jsonl`).text()).length;
+        type Row = { event: string; slot?: number; detail?: string; path?: string; paths?: string; count?: number };
+        const auditSince = async (): Promise<Row[]> =>
+          (await Bun.file(`${ROOT}/audit.jsonl`).text()).slice(auditFrom).trim().split("\n").filter(Boolean)
+            .map((l) => JSON.parse(l) as Row);
+        // the nudge is TYPED into `slot` in one of two shapes, both a real paste with its send row:
+        // alone (the send row keeps path inbox-nudge), or merged with a "sofort" send that met the
+        // waiting bundle (flushDeliveryBundle(key, immediate): one paste, send row path "bundle",
+        // the nudge named in delivery_bundle_sent.paths). The full shard hits the second shape:
+        // report-orphan hints from earlier modules' Program reports go to the Orchestratorin every
+        // tick (post-land audits on cb108971 and 0ef933f6, workhorse shard 2). A sent row with no
+        // send row before it on the same slot counts as nothing.
+        const nudgeTyped = (rows: Row[], slot: number): boolean => rows.some((r, i) => {
+          if (r.event === "send" && r.slot === slot && r.path === "inbox-nudge") return true;
+          if (r.event !== "delivery_bundle_sent" || r.slot !== slot
+            || !(r.paths ?? "").split(",").includes("inbox-nudge") || (r.count ?? 0) < 2) return false;
+          const typed = rows.slice(0, i).reverse().find((x) => x.event === "send" && x.slot === slot);
+          return typed?.path === "bundle";
+        });
+        const oneView = await selfMessages("GET");
+        const oneBody = (await oneView.json()) as { addresses?: { kind: string; role?: string }[]; error?: string };
+        const sentMsg = await selfMessages("POST", { to: { kind: "role", role: "orchestrator" },
+          payload: { kind: "text", text: "role address beside an orchestrator-named lane" },
+          idempotencyKey: `lane-label-${Date.now()}` });
+        const sentBody = (await sentMsg.json()) as { holder?: { slot?: number } | null; escalatedTo?: string | null; error?: string };
+        check("with an orchestrator-named lane beside her, the Orchestratorin holds the role address",
+          oneView.ok && oneBody.addresses?.some((a) => a.kind === "role" && a.role === "orchestrator") === true
+            && sentMsg.ok && sentBody.holder?.slot === roleA && sentBody.escalatedTo === null,
+          `view=${oneView.status} ${JSON.stringify(oneBody.addresses ?? oneBody.error)} send=${sentMsg.status} ${JSON.stringify(sentBody)}`);
+        // before the fix: delivery_bundle_dropped "orchestrator no current role occupant" after 30 s
+        const nudged = await until(async () => nudgeTyped(await auditSince(), roleA) || null,
+        { timeoutMs: 20_000, what: "the role-addressed inbox-nudge reaches the Orchestratorin" }).catch(() => null);
+        const rows = await auditSince();
+        check("the role-addressed bundle is typed into the Orchestratorin, never into the lane, nothing dropped",
+          !!nudged && rows.some((r) => r.event === "delivery_bundle_queued" && r.detail?.startsWith("orchestrator ") === true)
+            && !rows.some((r) => r.event === "delivery_bundle_dropped" && r.detail?.startsWith("orchestrator ") === true)
+            && !nudgeTyped(rows, ln.slot)
+            && !rows.some((r) => r.event.startsWith("delivery_bundle") && r.slot === ln.slot
+              && r.detail?.startsWith("orchestrator ") === true),
+          JSON.stringify(rows.filter((r) => r.event.startsWith("delivery_bundle") || r.path === "inbox-nudge"
+            || (r.event === "send" && r.path === "bundle"))
+            .map((r) => [r.event, r.slot, r.detail, r.paths ?? r.path])));
+        await post(`/api/slots/${ln.slot}/kill`, {});
+        if (existsSync(ln.cwd)) rmSync(ln.cwd, { recursive: true, force: true });
+        spawnSync("git", ["worktree", "prune"], { cwd: laneRepo });
+        if (ln.branch) spawnSync("git", ["branch", "-qD", ln.branch], { cwd: laneRepo });
+      }
+
+      // --- a hint typed inside a MERGED paste is delivered, across a restart too, and an immediate
+      // flush leaves no bundle behind (rest of 669a45ad, Report 300035b7). flushDeliveryBundle(key,
+      // immediate) types the waiting bundle and the "sofort" send as one paste whose send row has
+      // path "bundle"; that row carried no reportId, so tickOrphanReports' restart seed missed the
+      // hint and sent it again. And the immediate branch returned before the delete, so the emptied
+      // bundle pulled every later "sofort" send to the key through a bundle of none
+      // (delivery_bundle_sent "orchestrator count=0"). Fixture: a Program whose live MAIN holds two
+      // planted undecided reports; a role-message nudge waits under "orchestrator" (600 s window),
+      // then the MAIN is killed — the first report's hint meets the bundle, the second comes a tick later.
+      {
+        type ARow = { ts?: number; event: string; slot?: number; detail?: string; path?: string; paths?: string;
+          reportId?: string; bytes?: number };
+        // both generations and by time, never a byte offset: a rotation inside the window moves rows to .1
+        const auditAfter = (since: number): ARow[] => ["audit.jsonl.1", "audit.jsonl"].flatMap((f) =>
+          existsSync(`${ROOT}/${f}`) ? readFileSync(`${ROOT}/${f}`, "utf8").split("\n").filter(Boolean)
+            .map((l) => { try { return JSON.parse(l) as ARow; } catch { return null; } })
+            .filter((r): r is ARow => r !== null) : []).filter((r) => (r.ts ?? 0) >= since);
+        const orphanTyped = (rows: ARow[], id: string): ARow[] => rows.filter((r) => r.event === "send"
+          && r.reportId === id && (r.bytes ?? 0) > 0 && (r.path === "report-orphan" || r.path === "bundle"));
+        const mainSlot = (await sessions()).slots.find((s) => !s.cwd && s.id !== roleA)?.id;
+        const mainOpen = mainSlot ? await post(`/api/slots/${mainSlot}/open`, { cwd: ROOT }) : null;
+        const made = await post("/api/programs", { title: "merged orphan hint", intent: "e2e fixture",
+          successCriterion: "a merged hint is delivered once", nonGoals: ["none"], decisions: ["none"],
+          evidence: ["e2e/restart.ts"], openQuestions: ["none"] });
+        const programId = made.ok ? ((await made.json()) as { program?: { id?: string } }).program?.id ?? "" : "";
+        const confirmed = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
+        const activated = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+        // the probe above leaves roleA's role message unread; after the restart its nudge would wait
+        // in the bundle, the POST below would then queue none, and the merged flush would drop it
+        // ("messages for slot N changed before paste") — the hint typed alone, no merge to measure
+        const inbox = (await (await selfMessages("GET")).json()) as { entries?: { id: string; readBy: unknown }[] };
+        for (const m of inbox.entries ?? []) if (m.readBy === null)
+          await fetch(BASE + `/api/self/messages/${m.id}/read`, { method: "POST",
+            headers: { "content-type": "application/json", "x-fleet-self-token": selfToken }, body: "{}" });
+        const unreadLeft = ((await (await selfMessages("GET")).json()) as { unread?: number }).unread;
+        await stopSrv();
+        type PlantState = { slots?: Record<string, { openedAt?: number }>;
+          programs?: { id: string; main?: unknown }[]; fleetReports?: { id?: string }[] };
+        const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PlantState;
+        const mainOpenedAt = mainSlot ? plant.slots?.[String(mainSlot)]?.openedAt ?? 0 : 0;
+        const programRow = plant.programs?.find((p) => p.id === programId);
+        const reportIds = [0, 1].map(() => createHash("sha256").update(`${Date.now()}-${Math.random()}`)
+          .digest("hex").slice(0, 24));
+        if (programRow && mainSlot && mainOpenedAt > 0) {
+          programRow.main = { slot: mainSlot, openedAt: mainOpenedAt, sessionId: null, boundAt: Date.now() };
+          // at the FRONT: tickOrphanReports takes the first eligible row, so no earlier module's
+          // leftover report can take the first hint's place in the merged paste
+          plant.fleetReports = [...reportIds.map((id, i) => ({ id, reportedAt: Date.now() - 1000 + i,
+            status: "complete", text: `merged orphan fixture ${i}`,
+            worker: { slot: mainSlot, openedAt: mainOpenedAt, sessionId: null, cwd: ROOT, branch: "fleet/e2e-merged-orphan" },
+            provenance: { taskId: null, originId: null, programId, instance: null },
+            receiver: null, basis: "program", eventId: null })), ...(plant.fleetReports ?? [])];
+        }
+        writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(plant, null, 2), { mode: 0o600 });
+        const bundleEnv = { FLEET_DELIVERY_BUNDLE_SEC: "600", FLEET_INBOX_NUDGE_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" };
+        await restartSrv(bundleEnv);
+        const t0 = Date.now();
+        check("precondition: a Program with a live MAIN holds two planted undecided reports, the Orchestratorin is unique",
+          !!mainOpen?.ok && made.ok && !!confirmed?.ok && !!activated?.ok && !!programRow && mainOpenedAt > 0
+            && unreadLeft === 0 && (await selfMessages("GET")).ok,
+          `main=${mainSlot} open=${mainOpen?.status} program=${made.status}/${confirmed?.status}/${activated?.status} openedAt=${mainOpenedAt} unread=${unreadLeft}`);
+        // earlier modules' leftover orphans (full shard) are typed one per tick right after the restart;
+        // the nudge must wait in the bundle only once they are done
+        let typedCount = -1;
+        for (let i = 0; i < 30; i++) {
+          const n = auditAfter(t0).filter((r) => r.event === "send" && (r.path === "report-orphan" || r.path === "bundle")).length;
+          if (n === typedCount) break;
+          typedCount = n;
+          await Bun.sleep(1_250);
+        }
+        const tPost = Date.now();
+        const queuedMsg = await selfMessages("POST", { to: { kind: "role", role: "orchestrator" },
+          payload: { kind: "text", text: "a nudge that waits for the merged orphan hint" },
+          idempotencyKey: `merged-orphan-${Date.now()}` });
+        // the nudge WAITS: its queued row has no orchestrator bundle row after it
+        const queued = await until(async () => {
+          const rows = auditAfter(tPost);
+          const at = rows.findLastIndex((r) => r.event === "delivery_bundle_queued" && r.path === "inbox-nudge"
+            && r.detail?.startsWith("orchestrator ") === true);
+          return at >= 0 && !rows.slice(at + 1).some((r) => r.event !== "delivery_bundle_queued"
+            && r.event.startsWith("delivery_bundle") && r.detail?.startsWith("orchestrator ") === true) || null;
+        }, { timeoutMs: 15_000, what: "the role-message nudge waits in the orchestrator bundle" }).catch(() => null);
+        const tKill = Date.now();
+        if (mainSlot) await post(`/api/slots/${mainSlot}/kill`, {});
+        const bothTyped = await until(async () => {
+          const rows = auditAfter(tKill);
+          return reportIds.every((id) => orphanTyped(rows, id).length > 0) || null;
+        }, { timeoutMs: 15_000, what: "both orphan hints are typed into the Orchestratorin" }).catch(() => null);
+        await Bun.sleep(1_000); // four ticks: a second paste of either hint would land here
+        const before = auditAfter(tKill);
+        const merged = before.filter((r) => r.event === "send" && r.slot === roleA && r.path === "bundle"
+          && typeof r.reportId === "string" && reportIds.includes(r.reportId) && (r.bytes ?? 0) > 0);
+        const mergedSent = before.find((r) => r.event === "delivery_bundle_sent" && r.slot === roleA
+          && (r.paths ?? "").split(",").includes("inbox-nudge") && (r.paths ?? "").split(",").includes("report-orphan"));
+        const evidence = JSON.stringify(before.filter((r) => r.event.startsWith("delivery_bundle")
+          || (r.event === "send" && r.slot === roleA)).map((r) => [r.event, r.slot, r.detail, r.paths ?? r.path, r.reportId]));
+        check("an orphan hint that meets the waiting bundle is typed in ONE paste whose send row carries its reportId",
+          queuedMsg.ok && !!queued && !!bothTyped && merged.length === 1 && !!mergedSent
+            && reportIds.every((id) => orphanTyped(before, id).length === 1), evidence);
+        check("after an immediate flush no emptied bundle stays behind: the next hint is typed alone, no delivery_bundle_sent count=0",
+          !!bothTyped && !before.some((r) => r.event === "delivery_bundle_sent" && r.detail === "orchestrator count=0")
+            && reportIds.some((id) => orphanTyped(before, id).some((r) => r.path === "report-orphan" && r.slot === roleA)),
+          evidence);
+        await restartSrv(bundleEnv);
+        const tBoot = Date.now();
+        await Bun.sleep(3_000); // twelve orphan ticks after the seed
+        const after = auditAfter(tBoot);
+        const sessionsAfter = (await (await get("/api/sessions")).json()) as { reportsAwaitingOwner?: number };
+        check("after a restart the seed counts the merged paste as delivered: neither hint is typed again",
+          !!bothTyped && reportIds.every((id) => orphanTyped(after, id).length === 0)
+            && (sessionsAfter.reportsAwaitingOwner ?? 0) >= 2,
+          JSON.stringify(after.filter((r) => r.event === "send" && r.slot === roleA).map((r) => [r.path, r.reportId])));
+        await stopSrv();
+        const clean = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PlantState;
+        clean.fleetReports = (clean.fleetReports ?? []).filter((r) => !reportIds.includes(r.id ?? ""));
+        clean.programs = (clean.programs ?? []).filter((p) => p.id !== programId);
+        writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(clean, null, 2), { mode: 0o600 });
+        await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
+      }
+      await post(`/api/slots/${roleA}/kill`, {});
+    }
+    await restartSrv();
+  }
 
   ctx.cmdEnv = cmdEnv;
   ctx.gapEnv = gapEnv;

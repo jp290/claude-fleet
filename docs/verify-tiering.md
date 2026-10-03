@@ -2877,7 +2877,8 @@ und die Nachbarfunktionen):
   (`server.ts#drainPostLandAudits`) und das Schreiben des Claims sind je in EINEM Turn atomar; die
   Gegenrichtung schließt `auditRunningRepo`, eine Marke, die synchron neben der Auswahl gesetzt
   wird. Ein Claim auf einen Baum, den der Drain schon angefangen hat, ist 409 — und umgekehrt.
-- **Der Claim VERFÄLLT** (`FLEET_HELPER_CLAIM_TIMEOUT_MS`, Default 45 min). Abgelaufen zählt
+- **Der Claim VERFÄLLT** (`FLEET_HELPER_CLAIM_TIMEOUT_MS`, Default 45 min — seit 2026-10-02 die Frist
+  EINES Shards, nicht eines ganzen Laufs, §14.0). Abgelaufen zählt
   überall sofort als abwesend (`helperClaimOf`), unabhängig davon, ob der Sweep
   (`FLEET_HELPER_SWEEP_MS`) die Verfallszeile schon gebucht hat. Die Fehlerrichtung ist gewählt:
   lieber einmal lokal zu viel als ein Baum, den niemand geprüft hat. Ein Ergebnis, das NACH dem
@@ -2993,6 +2994,60 @@ ER SELBST fallen. Ein `reason` mit „timed out" heißt „diese Sonde konnte ni
 „der Server hat falsch klassifiziert"; solange er beides gleich meldet, verschiebt jede Marge das
 Problem nur. Bis dahin gilt für einen Leser eines roten `./e2e-postland-audit.sh`: **dieses
 Quartett ist kein Urteil über den Baum** — erst das Register befragen, dann attribuieren.
+
+### 14.0 Die volle Lane-Vorschau: 55–70 min, also läuft sie geshardet (2026-10-02)
+
+**Die Zahl, die hier stand, ist veraltet.** Die 45-min-Claim-Frist (`server.ts#HELPER_CLAIM_TIMEOUT_MS`)
+wurde gesetzt, als ein voller `./e2e-isolated.sh` 5,8–9,8 min dauerte. Gemessen am Trail-Register
+(`<Haupt-Checkout>/e2e-trail/isolated-*.jsonl`, nur volle Läufe ≥ 6 000 Zeilen, Dauer = Startstempel
+im Dateinamen bis letzter `ts`) dauert er auf dem Mac seit dem 26.09. **55–70 min**:
+
+| Lauf | Prüfungen | Fails | Dauer |
+| --- | ---: | ---: | ---: |
+| `isolated-20260928T165836Z-5220` (overhaul) | 6 326 | 7 | 65,4 min |
+| `isolated-20260928T205539Z-98711` | 6 354 | 1 | 61,5 min |
+| `isolated-20260929T120701Z-34726` | 6 424 | 8 | 70,2 min |
+| `isolated-20261001T223240Z-36599` (Lane 24) | 6 886 | 0 | 59,7 min |
+| `isolated-20261002T010007Z-7629` (Lane 19) | 6 750 | 0 | 55,1 min |
+
+Die beiden letzten sind die LOKALEN Nachläufe zweier Vorschauen, die zuvor dem Helfer angeboten
+waren — und deren Claims verfielen (`audit.jsonl`, `helper_claim_expired`): „workhorse held the
+preview suite … for **2702s** / **2708s** without a result". Jede volle Vorschau über den Helfer
+endete also als `unknown — nothing was measured`, und die Lane hielt danach ~1 h den Suite-Mutex.
+Der Post-Land-Audit derselben Suite läuft auf demselben Helfer dagegen in `FLEET_AUDIT_SHARDS=3`
+Shards: **11–22 min je Shard** (Shard 2 21,1–22,0 min, Shards 1 und 3 11,2–13,6 min; 16 Remote-Zeilen
+`post-land-audits.jsonl` 30.09. 13:52 – 02.10. 01:22 UTC, 6 823–7 264 Prüfungen, Wand 21,1–22,0 min).
+
+**Die Wahl: Shards, nicht eine längere Frist.** Eine aus der Laufzeit abgeleitete Frist hätte ZWEI
+Grenzen verschieben müssen — die Claim-Frist hier und `suiteTimeoutSec` des Daemons (Default 3 600 s,
+ein Wert in der Workhorse-Konfiguration) — und brächte eine Vorschau, die eine Stunde lang dauert.
+Die Shards brauchen keine der beiden zu bewegen: jeder Shard läuft unter seiner EIGENEN Claim-Frist,
+und der längste misst ein Drittel der Frist. Der Daemon kennt `shard` schon für jede Nicht-Command-Claim
+(`helper-daemon/daemon.ts#shardEnv`); geändert ist nur die Server-Seite:
+
+- **Das Angebot wird beim Prägen geteilt** (`server.ts#laneSuiteShardCount`): eine VOLLE Vorschau (ohne
+  `modules`) wird bei `FLEET_AUDIT_SHARDS` > 1 in so viele Shard-Jobs geteilt, sofern ein Gerät schlägt,
+  das `audit-shard` erklärt. Eine eingeengte Vorschau bleibt ganz; ohne fähiges Gerät bleibt das Angebot
+  ganz, und jedes Gerät nimmt es wie bisher. Die Zahl ist die des Audits, keine zweite Stellschraube.
+- **Jeder Shard hat seine eigene Claim-Frist**, der erste Claim baut das EINE Bundle (ein Baum für alle
+  Shards); unbeanspruchte Shards haben ab dem ersten Claim eine Frist lang Zeit. Die ganze Vorschau
+  darf so länger dauern als eine Frist — kein Shard darf es.
+- **Die Zusammenführung ist die des Audits** (`server.ts#laneSuiteShardMerge`): grün nur, wenn alle n
+  grün meldeten; rot, wenn einer rot meldete; sonst `unknown` mit jedem nicht-grünen Shard beim Namen.
+  Ein verfallener Shard bleibt `unknown`, nie n−1 grün. Die Lane bekommt EIN Verdikt auf dem
+  Eltern-Job; jeder Shard legt sein eigenes `suite.log` ab (`offer.shards[].artifact`).
+- **Rückzug:** solange ein Shard live beansprucht ist, verweigert `withdraw` ohne `abandon` mit 409.
+
+**Beweis:** `e2e/lane-suite.ts` (LS.shard) im Hauptläufer, also in jedem `./e2e-isolated.sh`: mit
+8-s-Frist liegen erster Claim und letzter Bericht über eine Frist auseinander, jeder Shard darunter, und
+das Verdikt ist grün mit der Summe aller Shard-Prüfungen; ein verfallener Shard ergibt `unknown`, das
+ihn nennt, und die Lane wird in beiden Fällen benachrichtigt.
+
+**Was offen bleibt (benannt, nicht getan):** bei `FLEET_AUDIT_SHARDS` ≤ 1 bleibt eine volle Vorschau
+ganz und verfällt wie zuvor; ein voller Lauf über `POST /api/self/jobs` (`docs/self-api.md`, MAIN-eigene
+Vorschau, `timeoutMs` 2 700 000) ist nicht geshardet und verfällt ebenso; und
+`server.ts#SUITE_HOLD_OVERDUE_MS` (20 min) rechnet noch mit den alten 5,8–9,8 min, warnt bei einem
+lokalen vollen Lauf also immer.
 
 ### 14.1 Ein remote `unknown` mit exit 127 ist zuerst ein leerer Klon, nicht ein fehlendes Kommando (2026-08-29)
 
@@ -5266,13 +5321,56 @@ Karte, weil die Ableitung sie sieht, und erzeugen keine Kante.
 
 ### 16c. Was `GET /api/self/gate` davon liefert
 
-`localProof.modules` nennt die Module, um die der COMMITTETE Fußabdruck dieser Lane geht — und ist
-ABWESEND, sobald der Abdruck nicht vollständig aus Check-Modulen besteht: eine Datei, die die Karte
-nicht platzieren kann (`server.ts`, ein Wrapper, `e2e/harness.ts`, der Runner selbst) kann ändern,
-was JEDES Modul misst, und nimmt darum die ganze Suite mit. Abwesend heißt „keine Verengung", nie
-„keine Module beteiligt" — eine leere LISTE wird deshalb nie geliefert. Der Runner rechnet den
-Schluss aus derselben Tabelle noch einmal und druckt ihn, sodass die Empfehlung und der Lauf nicht
-auseinanderlaufen können.
+`localProof.preview` liefert den eingeschalteten Default samt Ziel-, Diff- und Coverage-Provenienz.
+Die Zielauflösung ist dieselbe `laneBaseRef`, die der Land-Pfad verwendet. Ihr validierter
+Branchname und aktueller Ref-SHA stehen in `preview.target`; `worktree.baseSha` bleibt Diffanker.
+Bei einer geschuldeten main-Preview ist der Default **voll**, also `offerBody: {}`. Auf einem
+Nicht-main-Integrationsziel wird ein vollständig belegter Diff automatisch **gezielt**:
+`localProof.modules` und `offerBody.modules` sind die identische transitive Fixture-Hülle aus
+`suite-modules.ts#modulePlanFor`. `preview.plan` nennt Writer-Kanten und gepflanzte Fixtures.
+Die dateibasierte lokale Schrittauswahl und die Pflicht zur Preview bleiben unverändert.
+
+Der bestehende Mapper `suite-modules.ts#modulesForPaths` hält alle Zuordnungen. Check-Modulpfade
+brauchen ausführbare Checks im fest gelesenen Candidate. Für `server.ts` werden die geänderten
+Zeilen beider Diffseiten vollständigen ausführbaren Funktionskörpern zugeordnet. Die erste
+belegte Symbolmenge ist `laneSuiteView` (LS.6 Wire-Shape), `withOfferBody` (LP.api main) und
+`laneLocalProof` (LP.api target), jeweils in `e2e/lane-suite.ts`. Source- und Checkanker stehen in
+`preview.coverage.anchors`; Kommentare allein genügen nicht. Fehlende/mehrdeutige Deklarationen,
+weitere Symbole, globale Seams, Wrapper und unaufgelöste Fixture-Kanten werden benannt und führen
+zum **vollen Fallback**. Auch ein fehlendes, widersprüchliches oder während der Lesung verändertes
+Land-Ziel bleibt **unknown** mit vollem Default. Ein SHA wird niemals als Nicht-main-Branch erfunden.
+
+Docs-only/keine geschuldete Preview und der eigene Fremdrepo-Verify bleiben unverändert.
+Die bestehende validierte MAIN-Modulabweichung bleibt mit sachlicher Begründung möglich; ein
+Brief muss den Normalfall nicht wiederholen. Ein Helfer ohne `takesModules` mintet kein gezieltes
+Offer: die bestehende Tür nennt den Grund; lokal gezielt oder begründet voll ist der Rückfall.
+Das gilt ausschließlich für Preview. Land-Gate und Post-Land-Audit bekommen keine Modulfilter,
+keinen Runtime-Schalter und keine neue Policy-Ausnahme (§6 und die bestehenden Pins).
+
+Wire/API, Server, Docs und Probes: apply. Rückwärtsfall ohne auflösbares Ziel: benannter voller
+Default. Client: nicht erforderlich; Consumer lesen das bestehende `localProof`/`offerBody`.
+
+### 16c.1 Vorherbestand je Land, Nachher unknown (2026-10-01)
+
+Messpfad: vorhandene `fleet.json:laneSuiteJobs`-Receipts (retained window),
+`lane-outcomes.jsonl` + `.1` und `git notes --ref=fleet/land show <mainAfter>`.
+Je Land zählt die letzte vorher abgeschlossene grüne Preview derselben Branch, nur wenn
+`result.treeSha` exakt dem gelandeten Git-Tree entspricht. `result.ms` ist Arbeitszeit,
+kein Mutex-Warten. Das Land-Ziel kommt aus der Land-Note `base`, nicht aus dem SHA-Feld
+`lane-outcomes.base`. Dieses begrenzte Fenster ist keine vollständige Historie.
+
+| Land | Ziel (Land-Note) | Preview-Receipt | Auswahl | identischer Tree | ms |
+| --- | --- | --- | --- | --- | ---: |
+| `925e5b59497e` | overhaul | `ddeca299804b` | voll | `7de618f9d2f2` | 2624294 |
+| `6ae00645df37` | overhaul | `9d04ebc46b4d` | voll | `f17c3fc3350d` | 2604780 |
+| `62532a3f9fd5` | overhaul | `ef82fa737de3` | voll | `0a56258ce063` | 2608032 |
+| `70355e23428c` | main | `68d3a7e371dd` | ctl,land-durability,tasks (Handauswahl) | `91e0d1ff400e` | 726306 |
+
+Median der vier belegten Lands: **2606406 ms**. Die drei vollen overhaul-Previews:
+**2608032 ms** Median. Die einzelne manuelle main-Auswahl ist kein Beweis für einen neuen
+Default und keine vergleichbare Nachhergruppe. Die älteren Vorherwerte stehen weiterhin in §16d.
+Nachherbestand für den automatischen Default und damit Gewinn je Land: **unknown**.
+Kein neuer Benchmarklauf, keine prognostizierte Ersparnis als Messung.
 
 ### 16d. Die erste Messung (2026-09-17) — und was die Vorschau NICHT finden konnte
 

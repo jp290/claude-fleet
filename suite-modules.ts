@@ -199,22 +199,120 @@ const moduleForPath = (path: string): string | null => {
   return m && byModule.has(m[1]!) ? m[1]! : null;
 };
 
-/**
- * The modules a committed footprint is ABOUT — and null for "no honest narrowing", which is the
- * answer for every footprint that is not entirely check modules. One file the map cannot place
- * (server.ts, a wrapper, e2e/harness.ts, the runner itself) can change what any module measures, so
- * it takes the whole suite with it rather than narrowing to the modules beside it. In table order.
- */
-export const modulesForPaths = (paths: readonly string[]): string[] | null => {
-  if (paths.length === 0) return null;
-  const named = new Set<string>();
-  for (const p of paths) {
-    const mod = moduleForPath(p);
-    if (!mod) return null;
-    named.add(mod);
-  }
-  return MODULE_FIXTURES.filter((m) => named.has(m.module)).map((m) => m.module);
+export interface FootprintEvidence {
+  server?: { before: string; after: string; patch: string };
+  checks?: Record<string, string>;
+}
+export interface FootprintCoverage {
+  state: "covered" | "unknown";
+  named: string[];
+  anchors: { source: string; check: string }[];
+  reasons: string[];
+}
+export const SERVER_MODULE_ANCHORS = [
+  { symbol: "laneSuiteView", module: "lane-suite", check: "(LS.6) the GET, POST and free-withdraw wire shapes stay byte-for-byte closed over their keys" },
+  { symbol: "withOfferBody", module: "lane-suite", check: "(LP.api main) main-bound preview defaults to the full offer" },
+  { symbol: "laneLocalProof", module: "lane-suite", check: "(LP.api target) the same committed diff on a non-main target defaults to its fixture closure" },
+] as const;
+
+const executable = (source: string): string | null => {
+  try { return new Bun.Transpiler({ loader: "ts" }).transformSync(source); }
+  catch { return null; }
 };
+
+// Only complete top-level function bodies are eligible. Both sides must retain the declaration;
+// additions/deletions, imports, routes and globals remain unplaced. Compiling each span rejects
+// comment-shaped boundaries; compiling the file confirms the declaration is executable.
+const functionSpans = (source: string): { name: string; start: number; end: number }[] => {
+  const code = executable(source);
+  if (code === null) return [];
+  const lines = source.split("\n");
+  const spans: { name: string; start: number; end: number }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(?:export )?(?:async )?function (\w+)\(/.exec(lines[i]!);
+    if (!m || !new RegExp(`^(?:export )?(?:async )?function ${m[1]}\\(`, "m").test(code)) continue;
+    let end = i + 1;
+    while (end < lines.length && !/^}/.test(lines[end]!)) {
+      if (/^\S/.test(lines[end]!) && !/^(?:\/\/|\/\*|\*)/.test(lines[end]!)) break;
+      end++;
+    }
+    if (end === lines.length || !/^}/.test(lines[end]!)) continue;
+    const body = executable(lines.slice(i, end + 1).join("\n"));
+    if (body === null || [...body.matchAll(/^(?:export )?(?:async )?function /gm)].length !== 1) continue;
+    spans.push({ name: m[1]!, start: i + 1, end: end + 1 });
+  }
+  return spans;
+};
+
+const changedServerSymbols = (e: NonNullable<FootprintEvidence["server"]>):
+  { symbols: string[]; reasons: string[] } => {
+  const before = functionSpans(e.before), after = functionSpans(e.after);
+  const symbols = new Set<string>(), reasons = new Set<string>();
+  let hunks = 0;
+  for (const m of e.patch.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    hunks++;
+    for (const [spans, start, count, side] of [
+      [before, Number(m[1]), Number(m[2] ?? 1), "before"],
+      [after, Number(m[3]), Number(m[4] ?? 1), "after"],
+    ] as const) {
+      // Empty sides of insertions/deletions still have to sit INSIDE the same function.
+      const end = start + Math.max(count, 1) - 1;
+      const owners = spans.filter((s) => start >= s.start && end <= s.end
+        && (count > 0 || start < s.end));
+      if (owners.length !== 1) reasons.add(`server.ts:${side}:${start}-${end}: global or unrecognized symbol`);
+      else symbols.add(owners[0]!.name);
+    }
+  }
+  if (!hunks) reasons.add("server.ts: diff has no readable hunks");
+  for (const symbol of symbols) {
+    if (before.filter((s) => s.name === symbol).length !== 1 || after.filter((s) => s.name === symbol).length !== 1)
+      reasons.add(`server.ts#${symbol}: missing or ambiguous declaration on one side`);
+  }
+  return { symbols: [...symbols], reasons: [...reasons] };
+};
+
+export function modulesForPaths(paths: readonly string[]): string[] | null;
+export function modulesForPaths(paths: readonly string[], evidence: FootprintEvidence): FootprintCoverage;
+export function modulesForPaths(paths: readonly string[], evidence?: FootprintEvidence): string[] | null | FootprintCoverage {
+  const named = new Set<string>();
+  const anchors: FootprintCoverage["anchors"] = [];
+  const reasons: string[] = [];
+  if (paths.length === 0) reasons.push("empty footprint: no coverage to narrow");
+  for (const path of paths) {
+    const mod = moduleForPath(path);
+    if (mod) {
+      const code = evidence ? executable(evidence.checks?.[path] ?? "") : null;
+      if (evidence && (!code || !/\bcheck\(/.test(code))) {
+        reasons.push(`${path}: missing executable check family`);
+      } else {
+        named.add(mod);
+        anchors.push({ source: path, check: `${path}#run` });
+      }
+      continue;
+    }
+    if (path !== "server.ts" || !evidence?.server) {
+      reasons.push(`${path}: unmapped path, wrapper or global seam`);
+      continue;
+    }
+    const changed = changedServerSymbols(evidence.server);
+    reasons.push(...changed.reasons);
+    for (const symbol of changed.symbols) {
+      const anchor = SERVER_MODULE_ANCHORS.find((a) => a.symbol === symbol);
+      if (!anchor) { reasons.push(`server.ts#${symbol}: no proven check family`); continue; }
+      const code = executable(evidence.checks?.[`e2e/${anchor.module}.ts`] ?? "");
+      const checkCall = `check(${JSON.stringify(anchor.check)}`;
+      if (!code?.includes(checkCall)) {
+        reasons.push(`server.ts#${symbol}: missing executable check anchor ${anchor.check}`);
+        continue;
+      }
+      named.add(anchor.module);
+      anchors.push({ source: `server.ts#${symbol}`, check: `e2e/${anchor.module}.ts#${anchor.check}` });
+    }
+  }
+  const modules = MODULE_FIXTURES.filter((m) => named.has(m.module)).map((m) => m.module);
+  if (!evidence) return reasons.length || !modules.length ? null : modules;
+  return { state: reasons.length || !modules.length ? "unknown" : "covered", named: modules, anchors, reasons };
+}
 
 export interface ModulePlan {
   /** the modules to run, in the runner's own order */

@@ -26,6 +26,7 @@ import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
+import { sendFailureMessage } from "./pendingsend";
 import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
@@ -3643,8 +3644,18 @@ export async function loadTree(slot: number, cwd: string): Promise<void> {
 async function loadGit(slot: number, cwd: string): Promise<void> {
   const res = await api(`/api/slots/${slot}/brief`).catch(() => null);
   const b = res?.ok ? ((await res.json().catch(() => null)) as BriefInfo | null) : null;
-  fxGit.set(cwd, b ? { lines: b.uncommittedFiles, total: b.uncommitted, branch: b.branch }
-    : { error: "git status could not be read" });
+  if (b) {
+    fxGit.set(cwd, { lines: b.uncommittedFiles, total: b.uncommitted, branch: b.branch });
+    return;
+  }
+  // the 400 body names WHY (server.ts#cwdGitBody): git:"none" is a plain folder — the normal
+  // absence, not a failed read — drawn as calmly as the board's noGit card, in its very sentence;
+  // gone/unreadable/error keep the server's named sentence, the generic only when even the body
+  // never parsed.
+  const e = res ? ((await res.json().catch(() => null)) as { error?: string; git?: string } | null) : null;
+  fxGit.set(cwd, { error: e?.git === "none"
+    ? "No git in this folder — changes, history and lanes apply only to a repository."
+    : e?.error ?? "git status could not be read" });
 }
 // What both homes paint, derived in ONE place so the card and the window cannot disagree about
 // which rows exist: the tracked list, plus — with Untracked on — the untracked lines of git status.
@@ -8903,24 +8914,15 @@ function flashSendError() {
 export async function deliver(slot: number, text: string): Promise<boolean> {
   try {
     const res = await post("/send", { slot, text, submit: true });
-    // 409 is the one failure that is not a failure: the paste may have landed in part or in whole,
-    // so the red flash alone would read as "nothing went out" and invite a duplicate send.
-    if (res.status === 409) {
-      // three 409 shapes since ACP-25, told apart by receipt.delivery: "refused" typed NOTHING (an
-      // owner draft occupies the composer — clear or send it first), „[Zitat entfernt]“ with
-      // acceptance:"not-observed" means the text is OBSERVABLY still in the composer (the pane
-      // needs an Enter from the owner, not a second paste), plain „[Zitat entfernt]“ is the tmux case.
-      const body = (await res.clone().json().catch(() => null)) as
-        { receipt?: { delivery?: string; acceptance?: string } } | null;
-      const d = body?.receipt?.delivery;
-      toast(d === "refused" ? "send refused — the composer already holds a draft; nothing was typed"
-        : body?.receipt?.acceptance === "not-observed"
-          ? "prompt not accepted — the text is still in the composer; press Enter in the pane, do not resend"
-          : "send outcome uncertain — check the pane before retrying");
+    if (!res.ok) {
+      const body: unknown = await res.clone().json().catch(() => null);
+      toast(sendFailureMessage(res.status, body));
+      flashSendError();
+      return false;
     }
-    if (!res.ok) throw new Error(`send failed: ${res.status}`);
     return true;
   } catch {
+    toast("send outcome unknown — check the pane; text kept, do not paste again");
     flashSendError(); // text stays in the box so nothing typed is silently lost
     return false;
   }

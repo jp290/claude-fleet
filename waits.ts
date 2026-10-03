@@ -7,8 +7,8 @@
 // already knew each row's `next`; what it did not say was whose move it is. This file says that.
 //
 // PURE: it reads the plan server.ts#startPlanNow projected plus the facts handed in (rows, lanes,
-// bound MAINs) and returns the rows. No state, no clock, no I/O, never persisted — the table is
-// derived on every read, so it cannot drift from the plan it explains.
+// bound MAINs) and returns the rows. No state, no clock, no I/O — the table is
+// derived on every read. The server separately retains observations as blocker sections.
 //
 // THE ADDRESSEE (`adressat`) is one of four words:
 //   owner          the owner acts (a release, a criterion to confirm, a decision on a missing row)
@@ -19,12 +19,80 @@
 // names every link on the way, so a row three deep behind a lane parked on the owner says „[Zitat entfernt]“.
 import type { StartPlan, StartPlanNext, StartPlanReleaseVerdict } from "./start-plan";
 
+export type BlockerArt = "hold" | "release" | "after" | "wave" | "unchecked" | "collision" | "cap" | "tick" | "unknown";
+export interface BlockerSection { art: BlockerArt; adressat: string; wurzel: string; von: number; bis: number | null }
+export interface BlockerHistory {
+  freigabe: number | null;
+  dispatch: number | null;
+  observedAt: number;
+  abschnitte: BlockerSection[];
+}
+export interface BlockerTotals { freigabe: number | null; dispatch: number | null; ms: Partial<Record<BlockerArt, number>>; unknown: boolean }
+
+export function loadBlockerHistory(value: unknown): BlockerHistory | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const r = value as Record<string, unknown>;
+  const timestamp = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  if (!(r.freigabe === null || timestamp(r.freigabe)) || !(r.dispatch === null || timestamp(r.dispatch))
+    || !timestamp(r.observedAt) || !Array.isArray(r.abschnitte)) return undefined;
+  const arts: readonly string[] = ["hold", "release", "after", "wave", "unchecked", "collision", "cap", "tick", "unknown"];
+  const abschnitte: BlockerSection[] = [];
+  for (const [index, raw] of r.abschnitte.entries()) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const section = raw as Record<string, unknown>;
+    if (typeof section.art !== "string" || !arts.includes(section.art) || typeof section.adressat !== "string"
+      || typeof section.wurzel !== "string" || !timestamp(section.von)
+      || !(section.bis === null || (timestamp(section.bis) && section.bis >= section.von))) return undefined;
+    if (section.bis === null && (index !== r.abschnitte.length - 1 || r.observedAt < section.von)) return undefined;
+    const previous = abschnitte.at(-1);
+    if (previous && (previous.bis === null || previous.bis !== section.von)) return undefined;
+    abschnitte.push({ art: section.art as BlockerArt, adressat: section.adressat, wurzel: section.wurzel,
+      von: section.von, bis: section.bis === null ? r.observedAt : section.bis });
+  }
+  return { freigabe: r.freigabe, dispatch: r.dispatch, observedAt: r.observedAt, abschnitte };
+}
+
+export function observeBlocker(history: BlockerHistory, wait: WaitRow | undefined, now: number): BlockerHistory {
+  const abschnitte = history.abschnitte.map((s) => ({ ...s }));
+  const last = abschnitte.at(-1);
+  const reason = wait ? { art: wait.art, adressat: wait.adressat, wurzel: wait.wurzel }
+    : { art: "tick" as const, adressat: "tick", wurzel: "startbereit; Dispatch noch nicht beobachtet" };
+  const from = last?.bis ?? history.freigabe;
+  if ((!last || last.bis !== null) && from !== null && from !== undefined && from < now)
+    abschnitte.push({ art: "unknown", adressat: "unknown", wurzel: "keine Beobachtung", von: from, bis: now });
+  if (!last || last.bis !== null || last.art !== reason.art || last.adressat !== reason.adressat || last.wurzel !== reason.wurzel) {
+    if (last?.bis === null) last.bis = now;
+    abschnitte.push({ ...reason, von: now, bis: null });
+  }
+  return { ...history, dispatch: null, observedAt: now, abschnitte };
+}
+
+export function finishBlockers(history: BlockerHistory, now: number): BlockerHistory {
+  const abschnitte = history.abschnitte.map((s) => ({ ...s }));
+  const last = abschnitte.at(-1);
+  if (last?.bis === null) last.bis = now;
+  else if ((last?.bis ?? history.freigabe) !== null && (last?.bis ?? history.freigabe)! < now)
+    abschnitte.push({ art: "unknown", adressat: "unknown", wurzel: "keine Beobachtung",
+      von: (last?.bis ?? history.freigabe)!, bis: now });
+  return { ...history, dispatch: now, observedAt: now, abschnitte };
+}
+
+export function blockerTotals(history: BlockerHistory): BlockerTotals {
+  const ms: BlockerTotals["ms"] = {};
+  for (const section of history.abschnitte) {
+    const end = section.bis ?? history.observedAt;
+    ms[section.art] = (ms[section.art] ?? 0) + Math.max(0, end - section.von);
+  }
+  return { freigabe: history.freigabe, dispatch: history.dispatch, ms,
+    unknown: history.freigabe === null || history.dispatch === null || (ms.unknown ?? 0) > 0 };
+}
+
 export interface WaitRowFacts {
   status: string;
   programId: string | null;
   // the slot a `sent` row runs on; null otherwise
   slot: number | null;
-  hold: { slot: number; grund: string | null; at: number } | null;
+  hold: { slot: number; grund: string | null; at: number; until?: { kind: string; task?: string } } | null;
 }
 export interface WaitLaneFacts {
   programId: string | null;
@@ -45,6 +113,8 @@ export interface WaitFacts {
 export interface WaitRow {
   repo: string;
   id: string;
+  art: BlockerArt;
+  intentionalHold: boolean;
   // the row's OWN reason, in one sentence
   grund: string;
   // who ends the wait — the head of the chain (see the header)
@@ -59,7 +129,7 @@ export interface WaitRow {
   freigegeben: boolean;
 }
 
-interface Head { adressat: string; wurzel: string; seit: number | null }
+interface Head { adressat: string; wurzel: string; seit: number | null; intentionalHold?: boolean }
 type Edge = { head: Head } | { row: string; label: string } | { lane: number; label: string };
 
 const programAddressee = (programId: string | null, mains: WaitFacts["mains"]): string =>
@@ -91,7 +161,8 @@ export function deriveWaits(facts: WaitFacts): WaitRow[] {
     if (at?.release && !at.release.released) {
       if (row?.hold) return { head: { adressat: programAddressee(programId, mains),
         wurzel: `${id} gehalten von der MAIN (Slot ${row.hold.slot}) — ${row.hold.grund === null ? "ohne Grund" : `Grund: ${row.hold.grund}`}`,
-        seit: row.hold.at || null } };
+        seit: row.hold.at || null, intentionalHold: row.hold.until?.kind === "land"
+          && !!row.hold.until.task && ["queued", "sent"].includes(rows[row.hold.until.task]?.status) } };
       return { head: { adressat: programAddressee(programId, mains),
         wurzel: `${id} nicht freigegeben${at.release.why ? ` — ${at.release.why}` : ""}`, seit: null } };
     }
@@ -121,6 +192,18 @@ export function deriveWaits(facts: WaitFacts): WaitRow[] {
       return { row: other ?? "", label: `row ${other} auf ${on}` };
     }
     return { head: { adressat: "tick", wurzel: next.cap, seit: null } };
+  };
+
+  const ownArt = (id: string): BlockerArt => {
+    const at = inPlan.get(id);
+    if (at?.release && !at.release.released) return rows[id]?.hold ? "hold" : "release";
+    const next = at?.next;
+    if (!next || next === "now") return "tick";
+    if ("after" in next) return "after";
+    if ("unreleased" in next) return "wave";
+    if ("unchecked" in next) return "unchecked";
+    if ("collides" in next) return "collision";
+    return "cap";
   };
 
   const ownReason = (id: string): string => {
@@ -163,7 +246,7 @@ export function deriveWaits(facts: WaitFacts): WaitRow[] {
     if (wave.next === "now") continue;
     for (const row of wave.rows) {
       const { head, kette } = resolve(row.id);
-      out.push({ repo: repo.repo, id: row.id, grund: ownReason(row.id), adressat: head.adressat, kette,
+      out.push({ repo: repo.repo, id: row.id, art: ownArt(row.id), intentionalHold: head.intentionalHold === true, grund: ownReason(row.id), adressat: head.adressat, kette,
         wurzel: head.wurzel, seit: head.seit, freigegeben: row.release?.released === true });
     }
   }
@@ -180,7 +263,7 @@ export interface StallReading { repo: string; stuck: boolean; lanes: number; cap
 export function stallReadings(plan: StartPlan, waits: readonly WaitRow[]): StallReading[] {
   return plan.repos.map((repo) => {
     const now = repo.waves.some((w) => w.next === "now");
-    const stuckRows = waits.filter((w) => w.repo === repo.repo && w.freigegeben && w.adressat !== "tick");
+    const stuckRows = waits.filter((w) => w.repo === repo.repo && w.freigegeben && w.adressat !== "tick" && !w.intentionalHold);
     const free = repo.cap !== null && repo.lanes < repo.cap.max;
     return { repo: repo.repo, stuck: !now && free && stuckRows.length > 0, lanes: repo.lanes,
       cap: repo.cap?.max ?? null, waits: stuckRows };

@@ -5,6 +5,7 @@
 // (docs/sanierung-2026-09/plan-2026-08-31.md §P4 Punkt 1) — a MOVE, every declaration byte-identical
 // to the server.ts line it came from.
 import type { ServerWebSocket } from "bun";
+import type { BlockerHistory, BlockerTotals } from "../waits";
 import type { LaneWatchEventKind, LaneWatchEventPayload, MergeWatchEventPayload, AuditWatchEventPayload,
   DeployWatchEventPayload, CommandJobArtifactPayload, CommandJobWatchEventPayload, ClarificationEventPayload,
   ClarificationBasis } from "../lane-signals";
@@ -1456,6 +1457,8 @@ interface Task {
   // than an absent field, which reads as "nobody looked".
   status: "pending" | "queued" | "sent" | "done" | "archived";
   disposition?: TaskDisposition; // WHY this row was archived — see TaskDisposition
+  blockers?: BlockerHistory;
+  blockerZeiten?: BlockerTotals;
   hold?: TaskHold; // a Program-MAIN's STOP on this row (POST /api/self/tasks/:id/hold) — see TaskHold
   releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
   // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's

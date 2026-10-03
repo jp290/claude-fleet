@@ -1809,6 +1809,31 @@ in `GET /api/self` und mintet genau ein bestehendes `merge-terminal`- bzw. `post
 für die haltende MAIN. Land-Watches lesen in `tickWatches` den dauerhaften Land-Beleg, überleben
 also das Ende des Ziel-Slots und feuern bei einem bereits belegten Land im nächsten Tick.
 Zustellung und Bestätigung laufen wie bei §watch, einschließlich des 60-Sekunden-Idle-Gates.
+
+Die Stau-Lesung nimmt freigegebene Zeilen aus, deren Wartekette an einem MAIN-Hold mit
+`until:{kind:"land",task:X}` endet, solange X `queued` oder `sent` ist. X selbst bleibt messbar:
+ein hängendes X kann weiter Stau auslösen. Holds ohne `until`, andere Selektoren sowie ein
+fehlendes, `pending` oder terminales X geben diese Ausnahme nicht. `STALL_MS` und Eskalation
+bleiben unverändert.
+
+`GET /api/start-plan` führt daneben `blockers:[{id,history,zeiten}]`. Die Task-Zeile hält in
+`blockers` dieselbe `history`: `{freigabe,dispatch,observedAt,abschnitte}`; jeder Abschnitt ist
+`{art,adressat,wurzel,von,bis}` mit Millisekunden-Zeitpunkten, `bis:null` für den offenen Abschnitt.
+`art` ist `hold`, `release`, `after`, `wave`, `unchecked`, `collision`, `cap`, `tick` oder `unknown`.
+Der bestehende Dispatch-/Sensor-Lauf beobachtet den Plan; nur ein Wechsel von Art, Adressat oder
+Wurzel eröffnet einen neuen Abschnitt. Freigabe und tatsächlicher Dispatch werden separat gestempelt.
+Die Beobachtung ist diskret im Dispatch-Takt: kurzlebige Gründe zwischen zwei Lesungen sind unknown.
+Vor der ersten Beobachtung und über einen Neustart hinweg steht eine messbare Lücke ausdrücklich
+als `unknown`; bei alten oder erstmals unter Policy beobachteten Zeilen ist `freigabe:null`, niemals
+0 Minuten. Die Lese-Tür schreibt nichts und verlängert keinen Abschnitt bis zur Lesezeit.
+
+Der vorhandene `lane-outcomes.jsonl` erhält `blockerZeiten:[{taskId,zeiten}]`, auch für Wellenfolger.
+`zeiten:{freigabe,dispatch,ms,unknown}` summiert die beobachteten Millisekunden je Art; fehlende
+historische Messung bleibt `zeiten:null`. Erst nach dem Schreiben des Outcomes werden die Abschnitte
+an der Task-Zeile zu `blockerZeiten` verdichtet (`history:null` im Startplan). Aktive Zeilen behalten
+ihre Abschnitte bis dahin vollständig; terminale Zeilen unterliegen der bestehenden Queue-/Archiv-
+Retention, und der Outcome der bestehenden Ledger-Rotation. Es entsteht kein weiterer Ledger.
+
 **Das Event hebt den Halt nicht auf:** Release bleibt ein eigener Akt der MAIN. Ein erneuter Hold
 mit derselben Bedingung erzeugt keinen weiteren Watch; eine Freigabe löscht keine Watch-Abos.
 

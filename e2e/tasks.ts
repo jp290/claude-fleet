@@ -26,7 +26,7 @@ import { projectLandWaves, LAND_WAVE_COSTS_2026_09, LAND_WAVE_RANGE_GAP,
 import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan, type StartPlanCardFacts, type StartPlanInput,
   type StartPlanLane, type StartPlanLaneClaim, type StartPlanRelease, type StartPlanRow } from "../start-plan";
 import { laneHunkDiffArgs, laneHunkRanges } from "../land-collision-stats";
-import { deriveWaits, namedAfterIds, stallReadings, type WaitFacts } from "../waits";
+import { loadBlockerHistory, observeBlocker, finishBlockers, blockerTotals, deriveWaits, namedAfterIds, stallReadings, type BlockerHistory, type WaitFacts } from "../waits";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
   type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
@@ -11545,8 +11545,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const bdTickSrc = bdSrv.slice(bdSrv.indexOf("async function tickDispatch("), bdSrv.indexOf("\nasync function ownerSeedCapture(")).split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
     check("(buendel) PROBE + wiring: the tick reads no buendel and still walks startPlanWaves · StartPlanView carries the field, startPlanNow attaches it, the route serves it unchanged",
       bdTickSrc.length > 1000 && !/\b(?:buendel|overlap|attach|absorbed)\b/.test(bdTickSrc) && /startPlanWaves\(\)/.test(bdTickSrc)
-      && /type StartPlanView = StartPlan & \{ waits: WaitRow\[\]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles> \};/.test(bdSrv)
-      && /return \{ \.\.\.plan, buendel, waits: waitsOf\(plan\), stau: stallView\(\) \};/.test(bdSrv)
+      && /type StartPlanView = StartPlan & \{ waits: WaitRow\[\]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles>; blockers: .* \};/.test(bdSrv)
+      && /return \{ \.\.\.plan, buendel, waits: waitsOf\(plan\), stau: stallView\(\),\s+blockers: tasks\.filter/.test(bdSrv)
       && /return json\(startPlanNow\(\)\)/.test(bdSrv), `tick=${bdTickSrc.length}`);
     const baTickSafe = (code: string) => !/\b(?:attach|absorbed|overlap|buendel)\b/.test(code);
     const baSweep = bdSrv.slice(bdSrv.indexOf("async function tickCardSweep("), bdSrv.indexOf("// --- ↻ refine"))
@@ -11985,6 +11985,108 @@ export async function run(ctx: Ctx): Promise<void> {
       && wFull[0]?.stuck === false && wFull[0].lanes === 2 && wFull[0].cap === 2
       && wCapWaits.length === 1 && wCapWaits[0]?.adressat === "tick" && stallReadings(wCapPlan, wCapWaits)[0]?.stuck === false,
       JSON.stringify({ free: wFree.map((r) => [r.stuck, r.waits.map((w) => w.id)]), full: wFull.map((r) => [r.stuck, r.lanes, r.cap]), cap: wCapWaits }));
+    const hFixture = [spRow("held", 1, ["h.ts"], { held: true }),
+      spRow("dependent", 2, ["d.ts"], { after: ["held"] }),
+      spRow("target", 3, ["park.ts"])];
+    const hPlan = projectStartPlan(spInput(hFixture, wLanes, { [spRepo]: { max: 5, source: "repo", programs: {} } }));
+    const hRead = (until: WaitFacts["rows"][string]["hold"], status: string) => {
+      const rows: WaitFacts["rows"] = { held: { status: "queued", programId: "p-held", slot: null, hold: until },
+        dependent: { status: "queued", programId: "p-dependent", slot: null, hold: null },
+        target: { status, programId: "p-target", slot: null, hold: null } };
+      const waits = deriveWaits({ ...wFacts, plan: hPlan, rows, mains: { "p-held": 4 } });
+      return { waits, reading: stallReadings(hPlan, waits.filter((w) => w.id === "dependent"))[0] };
+    };
+    const hUntil = { slot: 4, grund: "nach Land", at: 1000, until: { kind: "land", task: "target" } };
+    for (const status of ["queued", "sent"]) {
+      const live = hRead(hUntil, status);
+      check(`(waits-until) MAIN hold on a ${status} target suppresses only its dependent's stall`,
+        live.reading?.stuck === false && live.waits.find((w) => w.id === "dependent")?.intentionalHold === true,
+        JSON.stringify(live));
+    }
+    const bare = hRead({ slot: 4, grund: null, at: 1000 }, "queued");
+    check("(waits-until) hold without until still stalls released dependent work", bare.reading?.stuck === true, JSON.stringify(bare));
+    for (const status of ["done", "archived", "pending", "missing"]) {
+      const terminal = hRead(hUntil, status);
+      check(`(waits-until) target ${status} grants no intentional-wait exemption`, terminal.reading?.stuck === true, JSON.stringify(terminal));
+    }
+    const hanging = hRead(hUntil, "queued");
+    check("(waits-until) hanging X itself remains stuck while a dependent intentionally waits on its land",
+      stallReadings(hPlan, hanging.waits)[0]?.stuck === true
+        && stallReadings(hPlan, hanging.waits)[0]?.waits.map((w) => w.id).join() === "target", JSON.stringify(hanging.waits));
+
+    // t | event | exclusive owner
+    // 100 | released, MAIN hold | MAIN 4
+    // 200 | hold lifted, NACH target | target row
+    // 300 | target landed, collision | lane 8
+    // 400 | dispatch | worker
+    const traceWait = (phase: "hold" | "after" | "collision") => {
+      const fixture = [spRow("trace", 1, ["park.ts"], { held: phase === "hold", after: phase === "after" ? ["target"] : [] })];
+      const plan = projectStartPlan(spInput(fixture, wLanes, { [spRepo]: { max: 5, source: "repo", programs: {} } },
+        { target: "sent" }));
+      return deriveWaits({ ...wFacts, plan, rows: {
+        trace: { status: "queued", programId: "p-trace", slot: null, hold: phase === "hold" ? hUntil : null },
+        target: { status: "sent", programId: null, slot: 7, hold: null } } }).find((w) => w.id === "trace");
+    };
+    const bHeld = traceWait("hold");
+    const bAfter = traceWait("after");
+    const bCollision = traceWait("collision");
+    let history: BlockerHistory = { freigabe: 100, dispatch: null, observedAt: 100, abschnitte: [] };
+    history = observeBlocker(history, bHeld, 100);
+    history = observeBlocker(history, bHeld, 150);
+    history = observeBlocker(history, bAfter, 200);
+    history = observeBlocker(history, bCollision, 300);
+    history = finishBlockers(history, 400);
+    check("(blockers) Hold -> NACH -> collision -> dispatch retains exactly three contiguous sections and exact sums",
+      JSON.stringify(history.abschnitte.map((s) => [s.art, s.von, s.bis]))
+        === JSON.stringify([["hold", 100, 200], ["after", 200, 300], ["collision", 300, 400]])
+        && JSON.stringify(blockerTotals(history)) === JSON.stringify({ freigabe: 100, dispatch: 400,
+          ms: { hold: 100, after: 100, collision: 100 }, unknown: false }), JSON.stringify(history));
+    const gap = observeBlocker(loadBlockerHistory({ ...history, dispatch: null,
+      abschnitte: history.abschnitte.slice(0, 2).map((s, i) => i === 1 ? { ...s, bis: null } : s), observedAt: 250 })!, bCollision, 300);
+    check("(blockers) restart preserves recorded spans and names the unobserved gap unknown, never zero",
+      JSON.stringify(gap.abschnitte.map((s) => [s.art, s.von, s.bis])) === JSON.stringify([
+        ["hold", 100, 200], ["after", 200, 250], ["unknown", 250, 300], ["collision", 300, null]])
+        && blockerTotals(gap).ms.unknown === 50 && blockerTotals(gap).unknown === true, JSON.stringify(gap));
+    const legacy = finishBlockers(observeBlocker({ freigabe: null, dispatch: null, observedAt: 100, abschnitte: [] }, bHeld, 100), 200);
+    check("(blockers) legacy release stays unknown and malformed overlapping persistence is rejected",
+      blockerTotals(legacy).unknown === true && blockerTotals(legacy).freigabe === null
+        && loadBlockerHistory({ ...history, abschnitte: [...history.abschnitte, history.abschnitte[0]] }) === undefined,
+      JSON.stringify(blockerTotals(legacy)));
+    const outcomeSource = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const emitter = outcomeSource.match(/function emitLaneOutcome\(o:[\s\S]*?\n\}/)?.[0] ?? "";
+    const emitCode = new Bun.Transpiler({ loader: "ts" }).transformSync(emitter);
+    const runEmit = async (reject: boolean, replace = false) => {
+      const original = structuredClone(history);
+      const row: { id: string; blockers?: BlockerHistory; blockerZeiten?: ReturnType<typeof blockerTotals> } = { id: "trace", blockers: original };
+      let written: unknown;
+      let saved = 0;
+      let logged = "";
+      let settle!: () => void;
+      const done = new Promise<void>((resolve) => { settle = resolve; });
+      let finishWrite!: () => void;
+      const persisted = new Promise<void>((resolve, fail) => { finishWrite = () => reject ? fail(new Error("disk unavailable")) : resolve(); });
+      const emit = new Function("appendEventStrict", "LANE_OUTCOME_FILE", "tasks", "saveState", "logError",
+        `${emitCode}; return emitLaneOutcome;`)((_path: string, value: unknown) => { written = value; return persisted; },
+        "outcomes", [row], () => { saved++; settle(); }, (_name: string, e: Error) => { logged = e.message; settle(); }) as (o: unknown) => void;
+      emit({ blockerZeiten: [{ taskId: "trace", zeiten: blockerTotals(history) }] });
+      const retainedBeforeWrite = row.blockers === original;
+      if (replace) row.blockers = { ...original, dispatch: null };
+      finishWrite();
+      if (replace) await persisted.then(() => Promise.resolve());
+      else await done;
+      return { row, retainedBeforeWrite, written, saved, logged };
+    };
+    const emitted = await runEmit(false);
+    check("(blockers-outcome) sums are written before sections compact; no new ledger",
+      emitted.retainedBeforeWrite && emitted.row.blockers === undefined && emitted.saved === 1
+        && JSON.stringify(emitted.row.blockerZeiten) === JSON.stringify(blockerTotals(history))
+        && JSON.stringify(emitted.written) === JSON.stringify({ blockerZeiten: [{ taskId: "trace", zeiten: blockerTotals(history) }] }),
+      JSON.stringify(emitted));
+    const failedEmit = await runEmit(true);
+    const replaced = await runEmit(false, true);
+    check("(blockers-outcome) failed persistence retains all sections; an intervening retry's history is never compacted",
+      failedEmit.row.blockers?.abschnitte.length === 3 && failedEmit.saved === 0 && failedEmit.logged === "disk unavailable"
+        && replaced.row.blockers?.dispatch === null && replaced.saved === 0, JSON.stringify({ failedEmit, replaced }));
     check("(waits) namedAfterIds reads a NACH: header line whole and an inline nach/after <id> — a bare sha in prose is no order",
       JSON.stringify(namedAfterIds("NACH: 1a2b3c4d, 5e6f7a8b\nText nach 9c0d1e2f und after `abcdef12`; seit 3d9a73e4 gebaut"))
         === JSON.stringify(["1a2b3c4d", "5e6f7a8b", "9c0d1e2f", "abcdef12"]),
@@ -12021,7 +12123,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // the route carries the wait register and the stall counters BESIDE the plan (server.ts#startPlanNow,
     // waits.ts) — the CLI has neither, so the comparison is the plan half, in the plan's own key order
     const spGet = async (): Promise<{ plan: string; buendel: unknown }> => {
-      const { waits: _waits, stau: _stau, buendel, ...plan } = (await (await get("/api/start-plan")).json()) as Record<string, unknown>;
+      const { waits: _waits, stau: _stau, blockers: _blockers, buendel, ...plan } = (await (await get("/api/start-plan")).json()) as Record<string, unknown>;
       // buendel (Schnitt 3) travels BESIDE the plan, like waits and stau: the CLI prints the plan
       // half only, so the comparison below reads the projection without it — and nothing that
       // starts anything reads it (the tick walks plan.repos; pinned by the source probe below).
@@ -14233,7 +14335,47 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: true });
     await stUntil(async () => (await stOf(stA))?.status === "sent");
     const stSlot = (await stOf(stA))?.slot ?? -1;
+    await post("/api/dispatch", { on: false });
+    const stTraceTarget = await stTask("BLOCKER NACH target pending", ["f-blocker-d.ts"], false);
+    const stRestart = async (extra: Record<string, string>, then: (st: Record<string, unknown>) => void): Promise<void> => {
+      await stopSrv();
+      const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>;
+      then(st);
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+      await restartSrv(extra);
+    };
     await post(`/api/tasks/${stB}/queue`, {});
+    await stRestart({}, (state) => {
+      const row = (state.tasks as { id: string; hold?: unknown; card?: unknown }[]).find((t) => t.id === stB);
+      if (row) {
+        row.hold = { by: "main", slot: mSlot, at: Date.now(), grund: "Blocker-Verlauf" };
+        row.card = { ziel: "f-stau.ts", rolle: { harness: null, model: null, effort: null },
+          surface: { files: ["f-stau.ts"], symbols: [], ranges: null }, done: "the line stands", verify: "bun e2e/pins.ts",
+          verboten: [], after: [stTraceTarget], model: "planted-blocker", at: Date.now(), ms: 0, gaps: [] };
+      }
+    });
+    const stHistory = async () => ((await (await get("/api/start-plan")).json()) as
+      { blockers: { id: string; history: BlockerHistory | null }[] }).blockers.find((b) => b.id === stB)?.history;
+    const holdRecorded = await stUntil(async () => (await stHistory())?.abschnitte.at(-1)?.art === "hold");
+    await post(`/api/tasks/${stB}/queue`, {});
+    const afterRecorded = await stUntil(async () => (await stHistory())?.abschnitte.at(-1)?.art === "after");
+    await post(`/api/tasks/${stTraceTarget}/done`, {});
+    const collisionRecorded = await stUntil(async () => (await stHistory())?.abschnitte.at(-1)?.art === "collision");
+    await stUntil(async () => {
+      const disk = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { tasks: { id: string; blockers?: BlockerHistory }[] }).tasks.find((t) => t.id === stB)?.blockers;
+      return disk?.abschnitte.at(-1)?.art === "collision";
+    });
+    const trace = await stHistory();
+    const reasons = trace?.abschnitte.filter((s) => s.art !== "unknown");
+    check("(blockers-live) one released row records Hold -> NACH -> collision in fleet.json and the existing read door",
+      !!stTraceTarget && holdRecorded && afterRecorded && collisionRecorded
+        && reasons?.map((s) => s.art).join() === "hold,after,collision"
+        && reasons[0]?.bis === reasons[1]?.von && reasons[1]?.bis === reasons[2]?.von
+        && JSON.stringify((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { tasks: { id: string; blockers?: BlockerHistory }[] }).tasks.find((t) => t.id === stB)?.blockers?.abschnitte) === JSON.stringify(trace?.abschnitte),
+      JSON.stringify(trace ?? null));
+    await post("/api/dispatch", { on: true });
     await stUntil(async () => ((await stOf(stB))?.note ?? "").startsWith("waiting: collides"));
     await stUntil(async () => ((await stPlan()).stau?.open ?? []).length > 0, 40);
     const st1 = await stPlan();
@@ -14247,13 +14389,6 @@ export async function run(ctx: Ctx): Promise<void> {
         && !!stClock1 && stClock1.stalled === false && stClock1.attentionId === null
         && (await stBlocked()).filter((a) => a.status === "open").length === 0,
       JSON.stringify({ slot: stSlot, wait: stWaitB ?? null, stau: st1.stau ?? null }));
-    const stRestart = async (extra: Record<string, string>, then: (st: Record<string, unknown>) => void): Promise<void> => {
-      await stopSrv();
-      const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>;
-      then(st);
-      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
-      await restartSrv(extra);
-    };
     const stPlant = async (extra: Record<string, string>, then?: (st: Record<string, unknown>) => void): Promise<void> =>
       stRestart(extra, (st) => {
         st.stallSensor = { detected: 0, msTotal: 0, repos: { [stKey]: { since: Date.now() - 16 * 60_000, attentionId: null, counted: false } } };
@@ -14373,6 +14508,13 @@ export async function run(ctx: Ctx): Promise<void> {
     if (stSlot > 0) await post(`/api/slots/${stSlot}/kill`, {});
     await stUntil(async () => (await stBlocked()).every((a) => a.status !== "open")
       && (await stOf(stB))?.status === "sent", 80);
+    const dispatchedHistory = await stHistory();
+    check("(blockers-live) actual dispatch closes the last section at the stored dispatch timestamp",
+      dispatchedHistory?.dispatch !== null && dispatchedHistory?.dispatch !== undefined
+        && dispatchedHistory.abschnitte.at(-1)?.bis === dispatchedHistory.dispatch
+        && dispatchedHistory.abschnitte.some((s) => s.art === "hold")
+        && dispatchedHistory.abschnitte.some((s) => s.art === "after")
+        && dispatchedHistory.abschnitte.some((s) => s.art === "collision"), JSON.stringify(dispatchedHistory ?? null));
     const stC3 = await stBlocked();
     check("(stau)(c) the blocker gone, a wave starts — the attention is answered by the sensor and none of the program's stays open",
       (await stOf(stB))?.status === "sent" && stC3.length === 1 && stC3[0]?.status === "answered"
@@ -14384,7 +14526,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const stKills = (await stSessions()).slots.filter((x) => x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2));
     for (const x of stKills) await post(`/api/slots/${x.id}/kill`, {});
     await slotsEmptied(stKills.map((x) => x.id));
-    for (const id of [stA, stB, stC]) {
+    for (const id of [stA, stB, stC, stTraceTarget]) {
       const row = await stOf(id);
       if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
       if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});

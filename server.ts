@@ -88,7 +88,7 @@ import { orderTextOf, projectStartPlan, releaseVerdict, startPlanCardPaths, star
 import { renderWaveBrief, withCardHead } from "./wave-brief";
 // THE WAIT REGISTER: which row waits on what and whose move it is — derived from the plan on every
 // read (waits.ts), the stall sensor below reads its heads.
-import { deriveWaits, stallReadings, stallHeads, namedAfterIds, afterOrderRefusal, type WaitRow, type WaitRowFacts, type WaitLaneFacts,
+import { loadBlockerHistory, observeBlocker, finishBlockers, blockerTotals, type BlockerHistory, type BlockerTotals, deriveWaits, stallReadings, stallHeads, namedAfterIds, afterOrderRefusal, type WaitRow, type WaitRowFacts, type WaitLaneFacts,
   type StallReading } from "./waits";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
@@ -1920,6 +1920,7 @@ function variantRowsFor(group: Task, variants: readonly DispatchSpawn[]): Task[]
       ...(group.review ? { review: group.review } : {}),
       status: group.status, created: group.created, slot: null, note: null,
       ...(group.releasedBy ? { releasedBy: group.releasedBy } : {}),
+      ...(group.blockers ? { blockers: structuredClone(group.blockers) } : {}),
       variantOf: group.id, variantIndex: i + 1,
     };
   });
@@ -4889,6 +4890,7 @@ function capTasks(list: Task[]): Task[] {
 function releaseTask(t: Task, by: "owner" | "machine"): void {
   t.status = "queued";
   t.releasedBy = by;
+  if (!t.blockers) t.blockers = { freigabe: Date.now(), dispatch: null, observedAt: Date.now(), abschnitte: [] };
   // a release is the act a hold waits for (TaskHold) — whoever releases, the stop is lifted with it
   t.hold = undefined;
   // …and the act a PARKED row waits for: a fresh queue starts the screen streak at zero
@@ -16801,7 +16803,7 @@ function bundleRowsNow(): BundleRowInput[] {
   });
 }
 
-type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles> };
+type StartPlanView = StartPlan & { waits: WaitRow[]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles>; blockers: { id: string; history: BlockerHistory | null; zeiten: BlockerTotals | null }[] };
 function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()): StartPlanView {
   const baseCache = new Map<string, string | null>();
   const baseOf = (repo: string | null): string | null => {
@@ -16866,16 +16868,36 @@ function startPlanNow(projection: LandWaveProjection = landWaveProjectionNow()):
   // same surface the land fold reads (taskView files plus a surfaceValid card's creates), the
   // card's verified verify text and its size — a proposal is a sensor answer, never a new reading.
   const buendel = proposeBundles({ tasks: bundleRowsNow() });
-  return { ...plan, buendel, waits: waitsOf(plan), stau: stallView() };
+  return { ...plan, buendel, waits: waitsOf(plan), stau: stallView(),
+    blockers: tasks.filter((t) => t.blockers || t.blockerZeiten).map((t) =>
+      ({ id: t.id, history: t.blockers ?? null, zeiten: t.blockerZeiten ?? null })) };
 }
 // THE FACTS the wait register reads (waits.ts#deriveWaits), taken off the live state in one pass:
 // every row (an `after` target that left the plan is still a fact), every occupied slot's park —
 // an unconfirmed criterion of its founding row or `awaiting` owner is the owner's move, awaiting
 // main its MAIN's — and each program's LIVE bound MAIN (programMainLive, the tick's own reading).
+function recordBlockersNow(view: StartPlanView): void {
+  const now = Date.now();
+  const waits = new Map(view.waits.map((w) => [w.id, w]));
+  let dirty = false;
+  for (const repo of view.repos) for (const wave of repo.waves) for (const row of wave.rows) {
+    const t = tasks.find((t) => t.id === row.id);
+    if (!t || (t.status !== "queued" && !row.release?.released && !(t.hold && t.blockers))) continue;
+    const history = t.blockers ?? { freigabe: null, dispatch: null, observedAt: now, abschnitte: [] };
+    t.blockers = observeBlocker(history, waits.get(t.id), now);
+    dirty = true;
+  }
+  if (dirty) saveState();
+}
+function recordBlockerDispatch(t: Task): void {
+  const now = Date.now();
+  t.blockers = finishBlockers(t.blockers ?? { freigabe: null,
+    dispatch: null, observedAt: now, abschnitte: [] }, now);
+}
 function waitsOf(plan: StartPlan): WaitRow[] {
   const rowFacts: Record<string, WaitRowFacts> = {};
   for (const t of tasks) rowFacts[t.id] = { status: t.status, programId: t.programId ?? null, slot: t.slot ?? null,
-    hold: t.hold ? { slot: t.hold.slot, grund: t.hold.grund, at: t.hold.at } : null };
+    hold: t.hold ? { slot: t.hold.slot, grund: t.hold.grund, at: t.hold.at, until: t.hold.until } : null };
   const laneFacts: Record<number, WaitLaneFacts> = {};
   for (const s of slots) {
     if (!s.cwd) continue;
@@ -16904,6 +16926,7 @@ function waitsOf(plan: StartPlan): WaitRow[] {
 function startPlanWaves(): { plan: StartPlanWave; land: LandWave }[] {
   const projection = landWaveProjectionNow();
   const plan = startPlanNow(projection);
+  if (dispatchBusy) recordBlockersNow(plan);
   const createdOf = (ids: readonly string[]): number =>
     Math.min(...ids.map((id) => tasks.find((t) => t.id === id)?.created ?? Infinity));
   const queues = plan.repos.map((repo, r) => repo.waves.map((wave, w) =>
@@ -17015,6 +17038,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     free.taskId = next.id;
     free.originId = next.originId ?? null;
     free.programId = next.programId ?? null;
+    recordBlockerDispatch(next);
     next.status = "sent";
     next.slot = free.id;
     next.note = clarify ? `clarify lane ${wt.branch} — settling the done-criterion with you`
@@ -17025,6 +17049,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // change what "the row this lane is about" means. Their previous status is captured for the
     // catch below in exactly the shape `wasStatus` captures the head's, and for the same reason.
     for (const follower of wave?.followers ?? []) {
+      recordBlockerDispatch(follower);
       follower.status = "sent";
       follower.slot = free.id;
       follower.note = `wave lane ${wt.branch} (with ${next.id})`;
@@ -18866,6 +18891,7 @@ function tickStallSensor(on: boolean): void {
     .map((t) => taskRepoOf(t)).filter((repo): repo is string => !!repo).map(repoCanon));
   stallSentSeen = new Set(sent.map((t) => t.id));
   const view = released ? startPlanNow() : null;
+  if (view) recordBlockersNow(view);
   const eligibleWaits = view?.waits.filter((w) => {
     const t = tasks.find((x) => x.id === w.id);
     return t && !programDispatchStopped(t) && (on || !!programDispatchOn(t));
@@ -30725,6 +30751,7 @@ type OutcomeReview =
       dirty: number; patchId: string | null; landedPatchId: string | null;
       scope: string; notes: string; raw: boolean; findings: ReviewFinding[]; ansatz?: AnsatzReview };
 interface LaneOutcome {
+  blockerZeiten?: { taskId: string; zeiten: BlockerTotals | null }[];
   ts: number;
   branch: string | null;
   base: string | null;   // the lane's fork point (base branch tip when forked)
@@ -31283,6 +31310,8 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     ...(s.taskId ? { taskId: s.taskId } : {}),
     ...(s.originId ? { originId: s.originId } : {}),
     ...(s.programId ? { programId: s.programId } : {}),
+    blockerZeiten: tasks.filter((t) => t.slot === s.id && (t.status === "sent" || t.status === "done"))
+      .map((t) => ({ taskId: t.id, zeiten: t.blockers ? blockerTotals(t.blockers) : t.blockerZeiten ?? null })),
     briefHash: briefHashOf(firstText),
     // read off the SLOT, not off `facts`: this is a lane-provenance fact like model/briefHash, and
     // LandFacts only reaches a "landed" row — routing it there would leave every killed/shelved
@@ -31391,7 +31420,20 @@ async function buildRevertedOutcome(repo: string, rec: LandRecord): Promise<Lane
   };
 }
 function emitLaneOutcome(o: LaneOutcome | null): void {
-  if (o) appendEvent(LANE_OUTCOME_FILE, o as unknown as Record<string, unknown>);
+  if (!o) return;
+  const histories = new Map((o.blockerZeiten ?? []).map((entry) =>
+    [entry.taskId, tasks.find((t) => t.id === entry.taskId)?.blockers]));
+  void appendEventStrict(LANE_OUTCOME_FILE, o as unknown as Record<string, unknown>).then(() => {
+    let dirty = false;
+    for (const entry of o.blockerZeiten ?? []) {
+      const t = tasks.find((t) => t.id === entry.taskId);
+      if (!t || !entry.zeiten || entry.zeiten.dispatch === null || !t.blockers || histories.get(t.id) !== t.blockers) continue;
+      t.blockerZeiten = entry.zeiten;
+      delete t.blockers;
+      dirty = true;
+    }
+    if (dirty) saveState();
+  }).catch((e: unknown) => logError("laneOutcome", e));
 }
 
 function emitMainDirectOutcome(o: MainDirectOutcome): void {
@@ -37609,6 +37651,7 @@ if (existsSync(STATE_FILE)) {
           // pre-field and malformed rows stay ABSENT — never "owner": the field exists so a released
           // row can be told apart from one nobody recorded, and a hand-edit must not mint either.
           releasedBy: t.releasedBy === "owner" || t.releasedBy === "machine" ? t.releasedBy : undefined,
+          blockers: loadBlockerHistory(t.blockers),
           // the review opt-in: the one stored value or ABSENT — a hand-edited "none" or typo asks for nothing
           review: loadTaskReview((t as { review?: unknown }).review),
           ...(t.reviewDefaultOff === true ? { reviewDefaultOff: true as const } : {}),
@@ -45396,6 +45439,7 @@ Bun.serve<WSData>({
         ...(body.queue === true ? { releasedBy: "owner" as const } : {}),
         ...(variantChoice.variants ? { variants: variantChoice.variants } : {}),
       };
+      if (body.queue === true) t.blockers = { freigabe: t.created, dispatch: null, observedAt: t.created, abschnitte: [] };
       // the author card's ROLLE fills an absent spawn here, at its birth (adoptSpawnFromCard) — a
       // body triple above already won, and a variant group keeps its `variants`
       adoptSpawnFromCard(t);

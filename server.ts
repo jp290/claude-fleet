@@ -1,4 +1,5 @@
 import { historySource } from "./src/drafts";
+import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
 import { stat, rm, readdir, appendFile, mkdtemp, access } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
@@ -9585,14 +9586,14 @@ function refreshDeliveryBundles(): void {
 }
 // One entry is no bundle: it is typed as itself, under its own path's header (flushDeliveryBundle).
 // Two or more share the `bundle` header, so each mark carries its entry's own sentence.
+// The marks themselves are written by src/delivery-format.ts, which the chat view reads them back with.
 function bundleText(entries: QueuedDelivery[], s: Slot): string {
   if (entries.length === 1) return entries[0]!.text;
   const headed = headsDelivery(harnessOf(s.harness));
-  return entries.map((entry, i) => {
+  return deliveryBundleText(entries.map((entry) => {
     const path = entry.options.path;
-    const meaning = headed && path !== "model-push" ? ` · ${deliveryMeaning(path, s)}` : "";
-    return `[fleet-buendel ${i + 1}/${entries.length} · path=${path}${meaning}]\n${entry.text}`;
-  }).join("\n\n");
+    return { path, meaning: headed && path !== "model-push" ? deliveryMeaning(path, s) : null, text: entry.text };
+  }));
 }
 function bundleNotice(entries: QueuedDelivery[]): string {
   const classes = entries.map((entry) =>
@@ -23282,10 +23283,10 @@ async function recoverFleetReportDelivery(event: FleetReportFleetEvent): Promise
 
 // THE BUNDLED WAKE-UP: one pane turn with every original event text under its own head.
 // The row keeps its full text for GET as well; the pane reader need not spend one GET per event.
+// (marks and closing line: src/delivery-format.ts, shared with the chat view's reader)
 function fleetEventBundleMessage(events: FleetEvent[]): string {
   if (events.length === 1) return fleetEventMessage(events[0]!);
-  return events.map((event, i) => `[fleet-ereignis ${i + 1}/${events.length} · ${event.id}]\n${fleetEventMessage(event)}`)
-    .join("\n\n") + "\n[fleet] Ende des Buendels.";
+  return fleetEventBundleText(events.map((event) => ({ id: event.id, text: fleetEventMessage(event) })));
 }
 
 // FACT 2's transport for a receiver with MORE THAN ONE ready event, and deliberately the single-event

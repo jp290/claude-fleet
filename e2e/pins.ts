@@ -65,6 +65,7 @@ import {
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 import { DraftBook } from "../src/drafts";
+import { fleetEventBundleText } from "../src/delivery-format";
 import { runningEffort, runningModel } from "../src/running";
 import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole } from "../model-register";
 import { FLEET_DEFAULT_MODEL, WORKER_CONTRACTS } from "../src/protocol";
@@ -9406,6 +9407,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     // form on the re-file instruction. A table that rendered one would leave the other unmeasured.
     fleetReportDecisionAccepted: fleetReportDecisionMessage("a".repeat(24), "accepted", "took the work"),
     fleetReportDecisionRejected: fleetReportDecisionMessage("a".repeat(24), "rejected", null),
+    // the shared bundle writer a server-local builder hands its tail to (half two, `delegated`)
+    fleetEventBundleText: fleetEventBundleText([{ id: "e1", text: "[fleet] one" }, { id: "e2", text: "[fleet] two" }]),
   };
   // BOTH DIRECTIONS. A derived builder that lane-signals exports but this table forgot would
   // otherwise leave the rule green over a hint nobody rendered.
@@ -9473,9 +9476,20 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const unread: string[] = [];
   const badLit: string[] = [];
   const unjudged: string[] = [];
+  // a builder whose LAST return hands the message to an export of src/delivery-format.ts has its
+  // tail written there — importable, so it is RENDERED in half one, not read here (2026-10-03: the
+  // bundle marks moved there so the chat view reads exactly what the server writes). Derived from
+  // that module's export list; a delegate this file forgot to render is `unread`, never a pass.
+  const FORMAT_EXPORTS = new Set([...read("src/delivery-format.ts").matchAll(/export function (\w+)\s*\(/g)].map((m) => m[1]!));
+  const delegated: string[] = [];
   for (const name of serverLocal) {
     const body = new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`).exec(serverU.text)?.[0] ?? "";
     if (!body) { unread.push(name); continue; }
+    const delegate = [...body.matchAll(/\breturn (\w+)\(/g)].at(-1)?.[1];
+    if (delegate && FORMAT_EXPORTS.has(delegate)) {
+      if (delegate in rendered) delegated.push(`${name}→${delegate}`); else unread.push(name);
+      continue;
+    }
     const r = judgeTails(body);
     if (!r.tails) { unread.push(name); continue; }
     for (const lit of r.flagged) badLit.push(`${name}: …${JSON.stringify(lit.slice(-48))}`);
@@ -9484,7 +9498,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // fails as ITSELF: a builder with no readable message tail is NOT a measured builder
   pin(`${RULE_SIGIL} — every server-local derived builder has a readable message tail`,
     unread.length === 0 && serverLocal.length > 0,
-    unread.length ? `no tail found: ${unread.join(", ")}` : `${serverLocal.length} read: [${serverLocal.join(", ")}]`);
+    unread.length ? `no tail found: ${unread.join(", ")}`
+      : `${serverLocal.length - delegated.length} read, ${delegated.length} rendered: [${serverLocal.join(", ")}] delegated=[${delegated.join(", ")}]`);
   pin(`${RULE_SIGIL} — source: no server-local message TAIL ends on $NAME`,
     badLit.length === 0, badLit.length ? badLit.join("; ") : `${serverLocal.length} builder(s) clean`);
   // never a silent pass: a tail whose last characters are a runtime value was not measured, and the

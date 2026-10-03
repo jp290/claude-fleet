@@ -26,6 +26,7 @@ import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
+import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { sendFailureMessage } from "./pendingsend";
 import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
@@ -1773,32 +1774,58 @@ class Pane {
     for (const b of e.blocks) {
       if (b.t === "text") {
         this.toolGroup = null; // a message ends the current work block
-        const raw = e.role === "user" ? unwrapPasted(b.text) : b.text;
-        const arrived = e.role === "user" && this.settlePending(raw);
+        if (e.role !== "user") { this.addMessage(e, b.text, null, null, false); continue; }
+        const raw = unwrapPasted(b.text);
         // Fleet's typed delivery head is transport provenance, not something the owner wrote: it rides
         // in the meta row beside the bubble, and the bubble and its copy carry only the body.
-        const { header, body: text } = e.role === "user" ? splitDeliveryHeader(raw) : { header: null, body: raw };
-        const msg = el("div", `msg ${e.role}`);
-        const body = el("div", "mbody");
-        mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
-        bodySource.set(body, text);
-        for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
-        const meta = el("div", "mmeta");
-        const who = e.role === "user" ? "you" : "claude";
-        meta.appendChild(el("span", "mwho", e.ts ? `${who} · ${fmtClock(e.ts)}` : who));
-        if (header) {
-          const head = el("span", "mhead", header);
-          head.title = `fleet-zustellung · ${header}`;
-          head.style.cssText = "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
-          meta.appendChild(head);
+        const { header, body } = splitDeliveryHeader(raw);
+        // A BUNDLE (src/delivery-format.ts) is several deliveries in one turn: each owner part is
+        // its own bubble and retires its own pending send, every other part is a quiet Fleet line
+        const parts = deliveryParts(body);
+        if (!parts) { this.addMessage(e, body, header, null, this.settlePending(raw)); continue; }
+        for (const part of parts) {
+          if (part.owner) this.addMessage(e, part.text, header, part.mark, this.settlePending(part.text));
+          else this.addFleetLine(part, header);
         }
-        meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
-        msg.append(body, ...(arrived ? [sendState("done")] : []), meta);
-        this.chatAdd(msg);
       } else {
         this.addStep(b);
       }
     }
+  }
+  private addMessage(e: TEntry, text: string, header: string | null, mark: string | null, arrived: boolean) {
+    const msg = el("div", `msg ${e.role}`);
+    const body = el("div", "mbody");
+    mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
+    bodySource.set(body, text);
+    for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
+    const meta = el("div", "mmeta");
+    const who = e.role === "user" ? "you" : "claude";
+    meta.appendChild(el("span", "mwho", e.ts ? `${who} · ${fmtClock(e.ts)}` : who));
+    if (header || mark) {
+      // a bundled owner part shows its own mark; the bundle's head stays in the tooltip
+      const head = el("span", "mhead", mark ?? header ?? "");
+      head.title = [header && `fleet-zustellung · ${header}`, mark].filter(Boolean).join("\n");
+      head.style.cssText = "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+      meta.appendChild(head);
+    }
+    meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
+    msg.append(body, ...(arrived ? [sendState("done")] : []), meta);
+    this.chatAdd(msg);
+  }
+  // A bundle part Fleet wrote (a nudge, an event, the bundle's closing line): one quiet line, not a
+  // bubble — you did not say it, and ↑/↓ and the outline jump between YOUR messages. Its first line
+  // shows; a click opens the rest. Mark and head ride in the tooltip.
+  private addFleetLine(part: DeliveryPart, header: string | null) {
+    const line = document.createElement("details");
+    line.className = "msys";
+    const sum = document.createElement("summary");
+    const [first = "", ...rest] = part.text.replace(/^\s*\n/, "").split("\n");
+    sum.append(el("span", "msyswho", "fleet"), el("span", "msystext", first));
+    sum.title = [header && `fleet-zustellung · ${header}`, part.mark].filter(Boolean).join("\n");
+    line.appendChild(sum);
+    const more = rest.join("\n").trim();
+    if (more) line.appendChild(el("div", "msysbody", more));
+    this.chatAdd(line);
   }
 
   // THE SENT PROMPT, BEFORE THE TRANSCRIPT HAS IT. Measured 2026-09-22

@@ -539,6 +539,19 @@
   .msend.done { color: var(--chat-faint); }
   .msend.done .msenddot { background: var(--q-live); }
   .msg.user.pending .mbody { opacity: 0.7; }
+  /* a bundle part Fleet wrote, not you (Pane#addFleetLine): one quiet line in the faint ink, its
+     first line only — a click opens the rest, the tooltip names the mark (G0.1, G0.3, G2.2) */
+  .msys { margin: 0 0 8px; padding: 0 2px; font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
+    color: var(--chat-faint); }
+  .msys > summary { display: flex; align-items: baseline; gap: 8px; min-width: 0; cursor: pointer;
+    list-style: none; }
+  .msys > summary::-webkit-details-marker { display: none; }
+  .msys > summary:hover, .msys[open] > summary { color: var(--chat-mute); }
+  .msyswho { flex: none; font-family: var(--chat-mono); }
+  .msystext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msys[open] .msystext { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msysbody { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--chat-mute); }
+  .msys + .msg.assistant, .msys + .toolgroup, .msys + .notifgroup { margin-top: 18px; }
   @media (pointer: coarse) { .mmeta { opacity: 1; } }
   .copybtn, .cbbtn { font: inherit; font-size: var(--chat-ui-fs); color: var(--chat-mute); background: transparent;
     border: 1px solid transparent; border-radius: 6px; padding: 1px 8px; cursor: pointer; }

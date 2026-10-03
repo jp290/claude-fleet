@@ -4,6 +4,8 @@
 // Whitespace is the one thing allowed to differ: the transcript keeps the text, the renderer and
 // the TUI may re-wrap it. Nothing else — a pending bubble that retires on a DIFFERENT turn would
 // hide a send that never arrived.
+import { deliveryParts } from "./delivery-format";
+
 const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
 const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
 // Head and body of a typed Fleet delivery. `header` is what stands between the prefix and the closing
@@ -16,9 +18,13 @@ export function splitDeliveryHeader(entry: string): { header: string | null; bod
   if (end < 0) return { header: null, body: entry };
   return { header: entry.slice(DELIVERY_HEADER_PREFIX.length, end), body: entry.slice(end + 2) };
 }
+// A bundle (src/delivery-format.ts) retires the bubble through its OWNER parts only: a Fleet part that
+// happens to repeat the sent text is not the send arriving.
 export function pendingSettledBy(pending: string, entry: string): boolean {
   const p = norm(pending);
-  return p !== "" && p === norm(splitDeliveryHeader(entry).body);
+  if (p === "") return false;
+  const body = splitDeliveryHeader(entry).body;
+  return p === norm(body) || (deliveryParts(body) ?? []).some((part) => part.owner && norm(part.text) === p);
 }
 
 export function sendFailureMessage(status: number, body: unknown): string {

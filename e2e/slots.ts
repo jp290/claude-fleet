@@ -12,6 +12,7 @@ import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
 import { MarkStage, markFacts, markShape, paintMark, type MarkEnv, type MarkFacts } from "../src/marks";
 import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
+import { deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
 import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
@@ -1868,15 +1869,37 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     "doSend in src/client.ts");
   check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
     /import \{ pendingSettledBy, splitDeliveryHeader \} from "\.\/pendingsend"/.test(cliSrc)
-    // (Tranche 2: the retirement also says whether the entry is the same send — "durch")
-    && /const arrived = e\.role === "user" && this\.settlePending\(raw\);/.test(cliSrc)
+    // (Tranche 2: the retirement also says whether the entry is the same send — "durch"; a bundle
+    // retires one bubble per owner part, 2026-10-03)
+    && /if \(!parts\) \{ this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\); continue; \}/.test(cliSrc)
+    && /if \(part\.owner\) this\.addMessage\(e, part\.text, header, part\.mark, this\.settlePending\(part\.text\)\);/.test(cliSrc)
     && /this\.pending\.find\(\(p\) => pendingSettledBy\(p\.text, text\)\)/.test(cliSrc),
     "Pane.appendEntry / settlePending in src/client.ts");
   check("client: the delivery head rides in the meta row beside the bubble, and the bubble and its copy carry the body only",
-    /const \{ header, body: text \} = e\.role === "user" \? splitDeliveryHeader\(raw\)/.test(cliSrc)
-    && /if \(header\) \{[\s\S]*?el\("span", "mhead", header\)[\s\S]*?meta\.appendChild\(head\)/.test(cliSrc)
+    /const \{ header, body \} = splitDeliveryHeader\(raw\);/.test(cliSrc)
+    && /if \(header \|\| mark\) \{[\s\S]*?el\("span", "mhead", mark \?\? header \?\? ""\)[\s\S]*?meta\.appendChild\(head\)/.test(cliSrc)
     && /mdInto\(body, text,/.test(cliSrc),
-    "Pane.appendEntry in src/client.ts");
+    "Pane.appendEntry / addMessage in src/client.ts");
+
+  // --- A BUNDLED OWNER SEND (owner 2026-10-03: „[Zitat entfernt]“
+  // ). pendingSettledBy compared the pending text with the body
+  // after ONE delivery head, and a bundle's body is never the owner text alone — the bubble waited
+  // forever. The bundles below are written by the functions server.ts types with (bundleFixtures),
+  // and the pin after them holds server.ts to those functions.
+  // BREAKS IF: the reader stops knowing a mark the writer writes, or a Fleet part retires a send.
+  const bundleSrvSrc = readFileSync(`${sourceRoot}/server.ts`, "utf8");
+  for (const [claim, ok] of Object.entries(bundleSettleClaims(bundleSrvSrc))) check(`bundled send: ${claim}`, ok);
+  check("bundled send: server.ts types its bundle marks through src/delivery-format.ts and spells none itself",
+    /import \{ deliveryBundleText, fleetEventBundleText \} from "\.\/src\/delivery-format";/.test(bundleSrvSrc)
+    && /function bundleText\(entries: QueuedDelivery\[\], s: Slot\): string \{[\s\S]{0,200}?return deliveryBundleText\(entries\.map\(/.test(bundleSrvSrc)
+    && /function fleetEventBundleMessage\(events: FleetEvent\[\]\): string \{[\s\S]{0,160}?return fleetEventBundleText\(events\.map\(/.test(bundleSrvSrc)
+    && !/fleet-buendel |fleet-ereignis |Ende des Buendels/.test(bundleSrvSrc),
+    "server.ts#bundleText / #fleetEventBundleMessage");
+  check("client: a bundle's parts render through src/delivery-format.ts — owner parts as bubbles, the rest as quiet lines",
+    /import \{ deliveryParts, type DeliveryPart \} from "\.\/delivery-format"/.test(cliSrc)
+    && /const parts = deliveryParts\(body\);/.test(cliSrc) && /else this\.addFleetLine\(part, header\);/.test(cliSrc)
+    && /line\.className = "msys";/.test(cliSrc) && /\.msys \{[^}]*color: var\(--chat-faint\)/.test(indexSrc),
+    "Pane.appendEntry / addFleetLine in src/client.ts, .msys in public/index.html");
   check("client: a composer reshape does not refit a terminal the chat view hides; the way back refits it",
     /for \(const p of panes\) if \(!p\.isChat\) p\.refit\(\);/.test(cliSrc)
     && /else \{ this\.refit\(\); this\.term\.focus\(\); \}/.test(cliSrc),
@@ -2105,6 +2128,21 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     }
   } catch (error) {
     check("send target DOM — PROBE: Chromium runs the real client bundle with two panes behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // A BUNDLED OWNER SEND IN THE CHAT VIEW (owner screenshot 2026-10-03 08:55), same rig: the composer
+  // sends, the transcript brings back the bundle the server writes, and the "wartet" bubble must go
+  // "durch" while every Fleet part stands as a quiet line. A browser that cannot run is the PROBE
+  // line — red, never a skip.
+  try {
+    for (const result of await runBundleChatDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`bundle chat DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("bundle chat DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
       error instanceof Error ? error.message : String(error));
   }
 
@@ -7602,6 +7640,262 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       } finally {
         await cleanup();
       }
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// The pure half of the bundled send, run for real on bundles bundleFixtures writes: which pending
+// text a bundle retires (pendingSettledBy) and which parts the chat view draws as whose (deliveryParts).
+export function bundleSettleClaims(serverSrc: string): Record<string, boolean> {
+  const ownerA = "fix it now\nand then the list", ownerB = "und danach die offenen Lanes";
+  const f = bundleFixtures(serverSrc, ownerA, ownerB);
+  const partsOf = (t: string) => deliveryParts(splitDeliveryHeader(t).body);
+  const first = partsOf(f.ownerFirst), second = partsOf(f.ownerSecond), bare = partsOf(f.bare);
+  return {
+    "PROBE: server.ts names the bundle head and every mark sentence the fixtures are built from": f.ok,
+    "owner part 1/2 retires its pending bubble, re-wrapped whitespace included": pendingSettledBy(ownerA, f.ownerFirst)
+      && pendingSettledBy("fix it  now and\nthen the list ", f.ownerFirst),
+    "owner part 2/2 retires its pending bubble, behind an event bundle as part 1/2": pendingSettledBy(ownerB, f.ownerSecond),
+    "a bundle to a receiver without heads (no head, no sentence) retires it the same way": pendingSettledBy(ownerA, f.bare),
+    "a NON-owner part never retires a pending bubble, even with the same text": !pendingSettledBy(f.nudge, f.ownerFirst)
+      && !pendingSettledBy("[fleet] Lane 3 ist gelandet.", f.ownerSecond) && !pendingSettledBy(f.events, f.ownerSecond)
+      && !pendingSettledBy(f.nudge, f.bare),
+    "another owner text does not retire it — neither a prefix nor the other part's owner text": !pendingSettledBy("fix it now", f.ownerFirst)
+      && !pendingSettledBy(ownerB, f.ownerFirst) && !pendingSettledBy(ownerA, f.ownerSecond) && !pendingSettledBy(`${ownerA} x`, f.ownerFirst),
+    "the parts split as the writer wrote them: owner part with its mark, the nudge as a Fleet part": !!first && first.length === 2
+      && first[0]!.owner && first[0]!.text === ownerA && /^fleet-buendel 1\/2 · path=owner · /.test(first[0]!.mark ?? "")
+      && !first[1]!.owner && first[1]!.text === f.nudge && /^fleet-buendel 2\/2 · path=inbox-nudge · /.test(first[1]!.mark ?? ""),
+    "an event bundle inside a bundle splits into one Fleet part per event plus its closing line": !!second && second.length === 4
+      && second.slice(0, 3).every((p) => !p.owner) && second[0]!.text === "[fleet] Lane 3 ist gelandet."
+      && second[1]!.text === "[fleet] fleet-report von Slot 5: complete\n\nzweiter Absatz des Reports"
+      && second[2]!.text === "[fleet] Ende des Buendels." && second[3]!.owner && second[3]!.text === ownerB,
+    "a bundle without sentences splits the same way": !!bare && bare.length === 2 && bare[0]!.owner && bare[0]!.mark === "fleet-buendel 1/2 · path=owner"
+      && bare[0]!.text === ownerA && !bare[1]!.owner,
+    "text that is no bundle stays whole: a plain send, a lone mark, a mark out of order": partsOf("fix it now") === null
+      && deliveryParts(`[fleet-buendel 1/1 · path=owner]\n${ownerA}`) === null
+      && deliveryParts(`[fleet-buendel 1/2 · path=owner]\n${ownerA}\n\n[fleet-buendel 3/2 · path=auto]\nx`) === null
+      && deliveryParts(`${ownerA}\n\n[fleet-buendel 2/2 · path=auto]\nx`) === null,
+  };
+}
+
+// THE BUNDLES THE CHAT VIEW READS, written by the code server.ts types them with: the marks by
+// src/delivery-format.ts (server.ts#bundleText and #fleetEventBundleMessage call it — pinned in
+// run()), the head's words and every mark's sentence read out of server.ts's own tables. Nothing
+// here re-spells a mark; only the head's frame follows server.ts#deliveryHeader.
+export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string) {
+  const table = (name: string): string => new RegExp(`const ${name}\\b[^=]*= \\{([\\s\\S]*?)\\n\\};`).exec(serverSrc)?.[1] ?? "";
+  const SOURCE = table("DELIVERY_SOURCE"), MEANING = table("DELIVERY_MEANING");
+  const word = (from: string, key: string): string | null => new RegExp(`\\n\\s*"${key}": "([^"]*)"`).exec(from)?.[1] ?? null;
+  const prefix = /const DELIVERY_HEADER_PREFIX = "([^"]+)";/.exec(serverSrc)?.[1] ?? null;
+  const head = `${prefix}${word(SOURCE, "bundle")} · path=bundle · Slot 1 · ${word(MEANING, "bundle")}] `;
+  const part = (path: string, text: string): BundleEntry => ({ path, meaning: word(MEANING, path), text });
+  const nudge = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
+  const events = fleetEventBundleText([{ id: "ev-0001", text: "[fleet] Lane 3 ist gelandet." },
+    { id: "ev-0002", text: "[fleet] fleet-report von Slot 5: complete\n\nzweiter Absatz des Reports" }]);
+  return {
+    ok: !!prefix && [word(SOURCE, "bundle"), ...["bundle", "owner", "inbox-nudge", "fleet-event"].map((k) => word(MEANING, k))].every(Boolean),
+    head, nudge, events,
+    // the owner send first (an immediate send leads its bundle, server.ts#flushDeliveryBundle), then a nudge
+    ownerFirst: head + deliveryBundleText([part("owner", ownerA), part("inbox-nudge", nudge)]),
+    // an event bundle riding as part 1, the owner send as part 2
+    ownerSecond: head + deliveryBundleText([part("fleet-event", events), part("owner", ownerB)]),
+    // a receiver that is not a headed harness: no head, no sentence in the marks
+    bare: deliveryBundleText([{ path: "owner", meaning: null, text: ownerA }, { path: "inbox-nudge", meaning: null, text: nudge }]),
+  };
+}
+
+// A BUNDLED OWNER SEND IN THE CHAT VIEW, measured in a real browser on the real client bundle
+// (owner 2026-10-03: „[Zitat entfernt]“
+// ). The owner sends from the composer, /send is intercepted, and the transcript route
+// hands back the bundle the server would have typed (bundleFixtures). Every claim reads the DOM.
+// Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
+export interface BundleChatDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runBundleChatDom(sourceRoot: string, artifacts?: string): Promise<BundleChatDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-bundle-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const ownerA = "Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erf.";
+  const ownerB = "Das ist ein erfundener Satz ohne echten Inhalt undx.";
+  const fixture = bundleFixtures(readFileSync(resolve(sourceRoot, "server.ts"), "utf8"), ownerA, ownerB);
+  if (!fixture.ok) throw new Error("bundle DOM probe: server.ts names no delivery head or sentence to build the bundle from");
+  const at = (min: number) => new Date(Date.UTC(2026, 9, 3, 7, min)).toISOString();
+  const text = (role: "user" | "assistant", t: string, min: number) => ({ role, ts: at(min), blocks: [{ t: "text", text: t }] });
+  const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[] };
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("bundle DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
+      const url = new URL(request.url), p = url.pathname;
+      if (request.method === "POST") {
+        let body: { text?: string } | null = null;
+        try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
+        // answered like a delivered prompt; the transcript does not have it until the probe says so
+        if (p === "/send") { fx.sends.push(String(body?.text ?? "")); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
+        return void json(requestId, { ok: true });
+      }
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), chips: [], tasks: [],
+        slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+      if (p === "/api/slots/1/transcript") {
+        const after = Number(url.searchParams.get("after") ?? 0);
+        return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
+          source: "/fixture/orch.jsonl", ttlSec: 300 });
+      }
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("bundle DOM probe: evaluate failed: " + expression.replace(/\s+/g, " ").slice(0, 120));
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // the composer, typed and sent the way the owner does it: the text inserted, then the send button
+    const sendFromComposer = async (t: string) => {
+      await evaluate(`(() => { const ta = document.querySelector('#input'); ta.focus(); ta.value = ${JSON.stringify(t)}; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await evaluate(`document.querySelector('#send').click()`);
+    };
+    // what the chat shows, read the way the owner reads it
+    const READ = `(() => { const chat = document.querySelector('.pane .panechat');
+      const own = [...chat.querySelectorAll('.msg.user')].map((m) => ({ text: m.querySelector('.mbody').innerText.trim(), pending: m.classList.contains('pending'),
+        state: m.querySelector('.msend')?.innerText.trim() ?? null, head: m.querySelector('.mhead')?.textContent ?? null, headTitle: m.querySelector('.mhead')?.title ?? null }));
+      const sys = [...chat.querySelectorAll('.msys')].map((d) => { const r = d.getBoundingClientRect(), s = d.querySelector('summary');
+        return { text: d.querySelector('.msystext').textContent, rest: d.querySelector('.msysbody')?.textContent ?? null, title: s.title, open: d.open,
+          inBubble: !!d.closest('.msg'), right: r.right, left: r.left, h: s.getBoundingClientRect().height,
+          fs: getComputedStyle(d).fontSize, color: getComputedStyle(d).color }; });
+      const meta = chat.querySelector('.mmeta');
+      return { own, sys, raw: [...chat.querySelectorAll('.msg')].some((m) => /\\[fleet-(buendel|ereignis|zustellung) /.test(m.innerText)),
+        chatRight: chat.getBoundingClientRect().right, chatLeft: chat.getBoundingClientRect().left,
+        pageScroll: document.documentElement.scrollWidth - innerWidth, metaFs: meta ? getComputedStyle(meta).fontSize : null,
+        faint: (() => { const t = document.createElement('span'); t.style.color = 'var(--chat-faint)'; chat.append(t); const c = getComputedStyle(t).color; t.remove(); return c; })() }; })()`;
+    type Read = { own: { text: string; pending: boolean; state: string | null; head: string | null; headTitle: string | null }[];
+      sys: { text: string; rest: string | null; title: string; open: boolean; inBubble: boolean; right: number; left: number; h: number; fs: string; color: string }[];
+      raw: boolean; chatRight: number; chatLeft: number; pageScroll: number; metaFs: string | null; faint: string };
+    const results: BundleChatDomResult[] = [];
+    let targetId = "";
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
+      fx.sends = [];
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };` });
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
+      if (!booted) throw new Error("bundle DOM probe: the chat view did not show the fixture transcript: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(300);
+
+      // --- 1. the owner sends; the transcript does not have it yet: „[Zitat entfernt]“
+      await sendFromComposer(ownerA);
+      const waits = await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'wartet')`);
+      facts.sent = [...fx.sends];
+      claims["the composer's send goes out as the owner's text, and its bubble says \"wartet\" until the transcript has it"] = waits && fx.sends.at(-1) === ownerA;
+      await shot(`${width}-1-wartet`);
+
+      // --- 2. the transcript brings the BUNDLE the server typed: owner part 1/2, nudge 2/2
+      // (head typed, body pasted — Claude Code keeps the paste in its wrapper, src/client.ts#unwrapPasted)
+      const body = fixture.ownerFirst.slice(fixture.head.length);
+      fx.entries.push(text("user", `${fixture.head}<pasted_content id="p1">\n${body}\n</pasted_content id="p1">`, 55),
+        text("assistant", "Freut mich. Genau so bleibt das Ganze aus einem Guss.", 56));
+      await wait(`document.querySelectorAll('.pane .panechat .msg.assistant').length >= 2`);
+      await settle(300);
+      const r1 = await evaluate<Read>(READ);
+      facts.first = r1;
+      const a = r1.own.filter((m) => m.text === ownerA);
+      claims["owner part 1/2: the waiting bubble is gone — no pending bubble is left"] = r1.own.every((m) => !m.pending);
+      claims["owner part 1/2: the owner text stands ONCE, as its own bubble, and says \"durch\""] = a.length === 1 && a[0]!.state === "durch";
+      claims["owner part 1/2: the part's mark rides in the meta row, the bundle's head in its tooltip"] = a.length === 1
+        && /^fleet-buendel 1\/2 · path=owner · /.test(a[0]!.head ?? "") && (a[0]!.headTitle ?? "").startsWith("fleet-zustellung · gebuendelte");
+      claims["no bubble shows a raw bundle mark or delivery head"] = !r1.raw;
+      claims["the nudge part is ONE quiet line outside every bubble, showing the nudge's text"] = r1.sys.length === 1
+        && !r1.sys[0]!.inBubble && r1.sys[0]!.text === fixture.nudge && /fleet-buendel 2\/2 · path=inbox-nudge/.test(r1.sys[0]!.title);
+      claims["the quiet line is quiet: the meta row's size and the faint ink, one line high, inside the chat column"] = r1.sys.length === 1
+        && r1.sys[0]!.fs === r1.metaFs && r1.sys[0]!.color === r1.faint && r1.sys[0]!.h < 30 && r1.sys[0]!.left >= r1.chatLeft - 1 && r1.sys[0]!.right <= r1.chatRight + 1
+        && r1.pageScroll <= 0;
+      await shot(`${width}-2-durch`);
+
+      // --- 3. a second send arrives as owner part 2/2, behind an event bundle riding as part 1/2
+      await sendFromComposer(ownerB);
+      await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'wartet')`);
+      fx.entries.push(text("user", fixture.ownerSecond, 58));
+      await wait(`[...document.querySelectorAll('.pane .panechat .msg.user')].filter((m) => !m.classList.contains('pending')).length >= 3`);
+      await settle(300);
+      const r2 = await evaluate<Read>(READ);
+      facts.second = r2;
+      const b = r2.own.filter((m) => m.text === ownerB);
+      claims["owner part 2/2: its waiting bubble is gone and the owner text stands once, \"durch\""] = r2.own.every((m) => !m.pending)
+        && b.length === 1 && b[0]!.state === "durch" && /^fleet-buendel 2\/2 · path=owner/.test(b[0]!.head ?? "");
+      claims["the event bundle is quiet lines: one per event and one for its closing line, no bubble"] = !r2.raw && r2.sys.length === 4
+        && r2.sys[1]!.text === "[fleet] Lane 3 ist gelandet." && r2.sys[2]!.text === "[fleet] fleet-report von Slot 5: complete"
+        && r2.sys[3]!.text === "[fleet] Ende des Buendels." && r2.sys.every((s) => !s.inBubble);
+      claims["↑/↓ jump between YOUR messages only: three bubbles, the Fleet parts are none of them"] =
+        r2.own.length === 3 && r2.own.map((m) => m.text).join("|") === ["Wie weit ist die Messung?", ownerA, ownerB].join("|");
+      // --- 4. a click opens a quiet line: the rest of the event stands below its first line
+      const clicked = await evaluate<boolean>(`(() => { const s = document.querySelectorAll('.pane .panechat .msys')[2]?.querySelector('summary'); s?.click(); return !!s; })()`);
+      await settle(100);
+      const r3 = await evaluate<Read>(READ);
+      claims["a click on a quiet line opens the rest of its text"] = clicked && r3.sys[2]?.open === true && r3.sys[2]?.rest === "zweiter Absatz des Reports";
+      await shot(`${width}-3-ereignisse`);
       results.push({ width, height, claims, facts });
     }
     return results;

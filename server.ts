@@ -8381,7 +8381,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   const prior = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
-  const current = (cwd: string | null): boolean => s.cwd === cwd && s.openedAt === prior.openedAt && s.selfToken === prior.selfToken;
+  let expectedOpenedAt = prior.openedAt;
+  const current = (cwd: string | null): boolean => s.cwd === cwd && s.openedAt === expectedOpenedAt && s.selfToken === prior.selfToken;
   await waitForSlotTeardown(s.id);
   if (!current(prior.cwd)) throw new Error("slot occupant changed before open");
   await waitForSlotSpawn(s.id);
@@ -8424,6 +8425,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
     const priorStreamOccupant = slotStreamOccupant(s);
     if (priorStreamOccupant) {
       await killSlot(s, "reopen");
+      expectedOpenedAt = 0;
       if (!current(null)) throw new Error("slot occupant changed during recycle");
     }
     else {

@@ -595,7 +595,8 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const profile = {sandbox:"read-only",approval:"on-request"};
       const s = { id:1,cwd:"/fixture",openedAt:100,selfToken:"old",sessionId: scenario === "resume" ? "10000000-0000-4000-8000-000000000001" : null,
         model:null,harness:"codex",effort:null,browser:false,remote:false,context:null,container:null,containerContext:null,
-        permissions: scenario === "invalid" ? {state:"invalid"} : {...profile},sleeping:null,codexRecoveryState:null,worktree:null };
+        permissions: scenario === "invalid" ? {state:"invalid"} : scenario.startsWith("open-recycle")
+          ? {sandbox:"danger-full-access",approval:"never"} : {...profile},sleeping:null,codexRecoveryState:null,worktree:null };
       const commands = [], publications = [];
       const PATH_EXPORT="",CODEX_TEXT_LANE_MCP="",SHELL="/usr/bin/true";
       const realpathSync = (p) => p, shellSingleQuote = (v) => "'" + v.replaceAll("'", "'\\\\''") + "'";
@@ -633,6 +634,29 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const resolve=(v)=>v,expandCwd=(v)=>v,NO_BOX={};
       const waitForSlotTeardown=async()=>{await Promise.resolve();awaited=true;if(scenario === "open-replaced") Object.assign(s,{openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});};
       const waitForSlotSpawn=async()=>{};
+      const assertProgramFoundingTargetOpen=()=>{},repoCanon=(v)=>v,assertGameMakerTreeOpen=()=>{};
+      const openSlotIntents=new Set(),SEPARATE_LANE_SLOTS=false,BAND_SLOTS=16,FLEET_MAX_SESSIONS=64;
+      const slots=[s],laneSpawn=new Set(),singletonSpawn=new Set();
+      const detachSlotTasks=()=>{},closeShareClients=()=>{};
+      let shares=[],autos=[],recents=[];
+      const slotStreamOccupant=()=>s.cwd ? {slot:s.id,openedAt:s.openedAt,selfToken:s.selfToken} : null;
+      const killSlot=async()=>{
+        await Promise.resolve();awaited=true;
+        // t | event | exclusive owner
+        // 0 | open snapshot and new restrictive request | old@100/full-access
+        // 1 | own teardown finishes OR target is replaced during its await | empty@0/old-token OR new@200
+        // 2 | open may publish only against its known teardown end-state | new request OR no spawn
+        if(scenario === "open-recycle-replaced") Object.assign(s,{cwd:"/replacement",openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else if(scenario === "open-recycle-empty-replaced") Object.assign(s,{cwd:null,openedAt:0,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else Object.assign(s,{cwd:null,openedAt:0,permissions:null});
+      };
+      const waitForGameMakerOpenTestLatch=async()=>{await Promise.resolve();if(scenario === "open-recycle-later-replaced")
+        Object.assign(s,{cwd:"/replacement",openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});};
+      const randomBytes=()=>({toString:()=>"successor"}),historyPath=()=>"/history",rm=async()=>{};
+      const harvest=new Map(),startCache=new Map(),mergeParked=new Map(),mergeLast=new Map(),mergeInflight=new Map(),mergeStart=new Map();
+      const aliveInfo=new Map(),paneModelInfo=new Map(),gitOpInfo=new Map(),laneHunkInfo=new Map(),gitInfo=new Map(),repoInfo=new Map();
+      const backlogNudgeTried=new Set(),inboxNudgeTried=new Set();
+      const parkMergeVerdict=()=>{},dropWatchesFor=()=>{},reapLaneSuiteOffersFor=()=>{},MAX_RECENTS=10;
       ${open}
       let error=null; try {
         if(scenario.startsWith("open-")) await openSlot(s,"/fixture",null,null,null,"codex",null,{},null,false,null,false,
@@ -647,11 +671,22 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
   const fresh = await exercise("fresh"), resume = await exercise("resume");
   const replaced = await exercise("replaced"), changed = await exercise("changed-profile"), invalid = await exercise("invalid");
   const openReplaced = await exercise("open-replaced"), openInvalid = await exercise("open-invalid");
+  const recycle = await exercise("open-recycle"), recycleReplaced = await exercise("open-recycle-replaced");
+  const recycleLaterReplaced = await exercise("open-recycle-later-replaced"), recycleEmptyReplaced = await exercise("open-recycle-empty-replaced");
   const promptPattern = source.match(/\{ re: (\/Would you like[^\n]+?\/), why: "codex permission prompt" \}/)?.[1];
   const promptBlock = promptPattern ? new Function(`return ${promptPattern}`)() as RegExp : null;
   const promptFrame = ">_ OpenAI Codex (v0.159.0)\nWould you like to run the following command?\nEnvironment: local\nReason: Allow the isolated fixture command?\n$ printf permission-probe\n1. Yes, proceed (y)\n3. No, and tell Codex what to do differently (esc)";
   return {
     "Codex on-request command approval frame is a named readiness block despite the ready header": promptBlock?.test(promptFrame) === true,
+    "openSlot own teardown accepts exactly empty@0/old-token and spawns only the new restrictive profile": recycle.error === null
+      && recycle.commands.length === 1 && recycle.commands[0].includes("--sandbox read-only --ask-for-approval on-request")
+      && recycle.profile.sandbox === "read-only" && !recycle.commands[0].includes("bypass"),
+    "openSlot replacement during own teardown cannot spawn or overwrite the replacement profile": recycleReplaced.error !== null
+      && recycleReplaced.commands.length === 0 && recycleReplaced.publications.length === 0 && recycleReplaced.profile.sandbox === "workspace-write",
+    "openSlot empty@0 still requires the exact predecessor token after teardown": recycleEmptyReplaced.error !== null
+      && recycleEmptyReplaced.commands.length === 0 && recycleEmptyReplaced.publications.length === 0 && recycleEmptyReplaced.profile.sandbox === "workspace-write",
+    "openSlot re-proves the known teardown end-state after its next external await": recycleLaterReplaced.error !== null
+      && recycleLaterReplaced.commands.length === 0 && recycleLaterReplaced.publications.length === 0 && recycleLaterReplaced.profile.sandbox === "workspace-write",
     "openSlot refuses a replaced target after teardown await without spawn or profile overwrite": openReplaced.error !== null
       && openReplaced.awaited && openReplaced.commands.length === 0 && openReplaced.profile.sandbox === "workspace-write",
     "openSlot invalid new profile refuses before teardown or occupant mutation": openInvalid.error?.includes("bad permissions") === true

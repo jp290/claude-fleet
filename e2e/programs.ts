@@ -8562,7 +8562,9 @@ export async function run(ctx: Ctx): Promise<void> {
   await post("/api/dispatch", { on: false });
   await post("/api/autos/switch", { on: false });
 
-  // (1) A MAIN filing stores a VALID triple, validated at set time and persisted on the row.
+  // (1) A MAIN filing stores a VALID triple, validated at set time and persisted on the row. A Codex
+  // choice that names no permissions stores the normalized default profile it will actually spawn
+  // with (server.ts#taskSpawnFromBody), so the expected row names that exact object, not a wildcard.
   const spawnOkRes = await spawnFile({ text: "task-spawn: main files a codex triple", kind: "auftrag",
     harness: "codex", model: "gpt-5.5", effort: "high" });
   const spawnOkBody = await spawnOkRes.json() as { ok?: boolean; task?: SpawnRow };
@@ -8570,7 +8572,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const spawnOkRow = spawnOkBody.task?.id ? await spawnRowOf(spawnOkBody.task.id) : undefined;
   check("task-spawn (1): a MAIN filing persists the validated harness/model/effort triple on a still-pending row",
     spawnOkRes.status === 200 && spawnOkBody.ok === true
-      && JSON.stringify(spawnOkRow?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high" })
+      && JSON.stringify(spawnOkRow?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high", permissions: { sandbox: "danger-full-access", approval: "never" } })
       && spawnOkRow?.status === "pending",
     `${spawnOkRes.status} ${JSON.stringify(spawnOkRow ?? null)}`);
 
@@ -8604,7 +8606,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const spawnOwnerRow = await spawnOwnerMake({ text: "task-spawn owner codex row",
     harness: "codex", model: "gpt-5.5", effort: "low" });
   check("task-spawn (1d): the owner create door persists the same validated triple",
-    JSON.stringify(spawnOwnerRow.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "low" }),
+    JSON.stringify(spawnOwnerRow.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "low", permissions: { sandbox: "danger-full-access", approval: "never" } }),
     JSON.stringify(spawnOwnerRow));
 
   // (1e) the choice SURVIVES a restart byte-for-byte, and the legacy row stays legacy-shaped —
@@ -8613,7 +8615,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const spawnOkAfterRestart = await spawnRowOf(spawnOkBody.task!.id);
   const spawnPlainAfterRestart = await spawnRowOf(spawnPlainBody.task!.id);
   check("task-spawn (1e): a stored choice survives restart unchanged and an absent one is not backfilled",
-    JSON.stringify(spawnOkAfterRestart?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high" })
+    JSON.stringify(spawnOkAfterRestart?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high", permissions: { sandbox: "danger-full-access", approval: "never" } })
       && !!spawnPlainAfterRestart && !("spawn" in spawnPlainAfterRestart),
     `ok=${JSON.stringify(spawnOkAfterRestart?.spawn)} plain=${JSON.stringify(spawnPlainAfterRestart ?? null)}`);
   // the restart reloads persisted switch state — re-assert the stops for the release half below

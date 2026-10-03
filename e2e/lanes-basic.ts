@@ -76,15 +76,18 @@ export async function run(lc: LaneCtx): Promise<void> {
     const lnCmd = (await tmuxOut("display-message", "-p", "-t", `s${lnJson.slot}`, "#{pane_start_command}")).out;
     const lnFlat = lnCmd.replaceAll("\\", "");
     check("a lane spawned with harness=codex runs codex full-access, disables startup update checks, and passes --model",
-      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(lnFlat)
+      /(^|\s|;)codex --no-daemon --sandbox danger-full-access --ask-for-approval never /.test(lnFlat) && !lnFlat.includes("bypass")
       && lnFlat.includes("-c check_for_update_on_startup=false")
       && lnFlat.includes("--model 'gpt-5-codex'"), lnFlat.slice(-220));
-    // the trust prelude rides the same line: without the persisted per-path entry codex blocks on
-    // its own "Do you trust this directory?" prompt (measured 2026-08-12 — the bypass flag does
-    // NOT cover it) and an unattended brief lands in a dead prompt instead of an agent
-    check("the codex spawn line writes the lane's trust entry before starting codex",
-      lnFlat.includes('trust_level = "trusted"') && lnFlat.indexOf("trust_level") < lnFlat.indexOf("codex --dangerously"),
-      lnFlat.slice(0, 200));
+    // trust rides the same line: without it codex blocks on its own "Do you trust this directory?"
+    // prompt (measured 2026-08-12) and an unattended brief lands in a dead prompt. Since 0bdc70bc it is
+    // a session-local whole-table override for the lane's realpath — nothing is written to any
+    // config.toml, so the line carries no write and no file name at all.
+    const lnTrust = `-c 'projects={"${lnJson.cwd ? realpathSync(lnJson.cwd) : ""}"={trust_level="trusted"}}'`;
+    check("the codex spawn line carries the lane's session-local trust override and writes no config",
+      !!lnJson.cwd && lnFlat.includes(lnTrust) && lnFlat.indexOf("codex --no-daemon") < lnFlat.indexOf(lnTrust)
+        && !lnFlat.includes("config.toml") && !lnFlat.includes(">>"),
+      lnFlat.slice(-260));
     // THE TEXT-LANE MCP PROFILE (Slot.browser, 2026-09-14): a lane that names no browser starts codex with
     // the FULL playwright server definition switched off — the only override measured to leave no
     // Playwright children (server.ts#CODEX_TEXT_LANE_MCP). Every other -c key stays as it was.
@@ -151,7 +154,8 @@ export async function run(lc: LaneCtx): Promise<void> {
   if (lnB.slot) {
     const lnBFlat = (await tmuxOut("display-message", "-p", "-t", `s${lnB.slot}`, "#{pane_start_command}")).out.replaceAll("\\", "");
     check("MCP profile precondition: the codex browser lane's pane carries the codex line",
-      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(lnBFlat), lnBFlat.slice(-160) || "no pane command");
+      /(^|\s|;)codex --no-daemon --sandbox danger-full-access --ask-for-approval never /.test(lnBFlat) && !lnBFlat.includes("bypass"),
+      lnBFlat.slice(-160) || "no pane command");
     check("a codex lane with browser:true spawns WITHOUT the playwright override (ambient MCPs kept)",
       !lnBFlat.includes("mcp_servers.playwright"), lnBFlat.slice(-260));
     // modelResolved, positive half, on this lane because it is UNPINNED and already exists (a second

@@ -341,6 +341,10 @@ export async function run(ctx: Ctx): Promise<void> {
   // put on a spawn line (server.ts#CODEX_HARNESS). Spelled here, never derived from the server.
   const CTX_PROFILE = { window: 700_000, compactAt: 600_000 };
   const CTX_FLAGS = "-c model_context_window=700000 -c model_auto_compact_token_limit=600000 -c model_auto_compact_token_limit_scope='total'";
+  // The fresh Codex start form with no explicit selection: the explicit full-access default profile
+  // (server.ts#CODEX_HARNESS), never the bypass flag. Resume forms put `resume '<id>'` after `codex`.
+  const CODEX_DEFAULT_FLAGS = "--no-daemon --sandbox danger-full-access --ask-for-approval never";
+  const CODEX_FRESH = `codex ${CODEX_DEFAULT_FLAGS}`;
   const SUB = "10000000-0000-4000-8000-000000000001";
   const FOREIGN = "10000000-0000-4000-8000-000000000002";
   const AMB_A = "10000000-0000-4000-8000-000000000003";
@@ -397,7 +401,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const captureBefore = await tmuxOut("capture-pane", "-p", "-t", "s16");
   const freshCtxCmd = liveBefore.out.replaceAll("\\", "");
   check("a FRESH Codex spawn with context {700000, 600000} carries all three -c context overrides and no experiment switch",
-    liveBefore.code === 0 && freshCtxCmd.includes("codex --dangerously-bypass-approvals-and-sandbox")
+    liveBefore.code === 0 && freshCtxCmd.includes(CODEX_FRESH) && !freshCtxCmd.includes("bypass")
       && !freshCtxCmd.includes("codex resume") && freshCtxCmd.includes(CTX_FLAGS)
       && !freshCtxCmd.includes("context_management"), freshCtxCmd.slice(-360));
   const ownerBind = await post("/api/slots/16/codex-bind", { sessionId: OLD_A });
@@ -470,7 +474,7 @@ export async function run(ctx: Ctx): Promise<void> {
   do {
     ambiguousHealCmd = (await tmuxOut("display-message", "-p", "-t", "s15", "#{pane_start_command}"))
       .out.replaceAll("\\", "");
-    if (ambiguousHealCmd.includes("codex --dangerously-bypass-approvals-and-sandbox")) break;
+    if (ambiguousHealCmd.includes(CODEX_FRESH)) break;
     await Bun.sleep(100);
   } while (Date.now() < ambiguousHealUntil);
   const ambiguousAfterHeal = (await codexRow(15))?.codexRecovery ?? null;
@@ -534,7 +538,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("a bound id whose rollout vanished is visible as lost", lost?.state === "lost" && lost.sessionId === LOST,
     JSON.stringify(lost));
   check("a missing exact rollout never reaches codex resume and only boots the unchanged fresh form",
-    !lostCmd.includes("codex resume") && lostCmd.includes("codex --dangerously-bypass-approvals-and-sandbox"),
+    !lostCmd.includes("codex resume") && lostCmd.includes(CODEX_FRESH) && !lostCmd.includes("bypass"),
     lostCmd.slice(-220));
 
   const cr = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
@@ -678,7 +682,7 @@ export async function run(ctx: Ctx): Promise<void> {
   } while (Date.now() < resumeUntil);
   const resumed = (await codexRow(16))?.codexRecovery ?? null;
   check("a dead bound Codex pane resumes the exact UUID through ensureSlot's only spawn seam",
-    resumeCmd.includes(`codex resume '${OLD_A}' --dangerously-bypass-approvals-and-sandbox`)
+    resumeCmd.includes(`codex resume '${OLD_A}' ${CODEX_DEFAULT_FLAGS} `) && !resumeCmd.includes("bypass")
       && resumeCmd.includes("--model 'gpt-5-codex'")
       && resumeCmd.includes("-c model_reasoning_effort='high'"), resumeCmd.slice(-260));
   // a PLAIN (non-lane) Codex slot keeps its ambient MCPs on the resume line too — the text-lane override
@@ -727,15 +731,15 @@ export async function run(ctx: Ctx): Promise<void> {
   };
   const maskSelfToken = (cmd: string): string => cmd.replace(/FLEET_SELF_TOKEN='[^']*'/g, "FLEET_SELF_TOKEN=…");
   const plainCtxOpen = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex", model: "gpt-5-codex", effort: "high" });
-  const plainCtxCmd = await paneStartCmd(15, "codex --dangerously-bypass-approvals-and-sandbox");
+  const plainCtxCmd = await paneStartCmd(15, CODEX_FRESH);
   const plainCtxRow = await ctxSlotRow(15);
   const plainCtxStored = await storedContext(15, "null");
   const budgetOpen = await post("/api/slots/15/open",
     { cwd: codexCwd, harness: "codex", model: "gpt-5-codex", effort: "high", context: CTX_PROFILE });
   const budgetCmd = await paneStartCmd(15, CTX_FLAGS);
   check("context fixture: slot 15 opened without and then with a budget, both panes on the fresh Codex line",
-    plainCtxOpen.ok && budgetOpen.ok && plainCtxCmd.includes("codex --dangerously-bypass-approvals-and-sandbox")
-      && budgetCmd.includes("codex --dangerously-bypass-approvals-and-sandbox"),
+    plainCtxOpen.ok && budgetOpen.ok && plainCtxCmd.includes(CODEX_FRESH) && budgetCmd.includes(CODEX_FRESH)
+      && !plainCtxCmd.includes("bypass") && !budgetCmd.includes("bypass"),
     `${plainCtxOpen.status}/${budgetOpen.status} / ${plainCtxCmd.slice(-120)} / ${budgetCmd.slice(-120)}`);
   check("a Codex slot without context names no context override, shows no context and stores none",
     plainCtxCmd.length > 0 && !plainCtxCmd.includes("model_context_window") && !plainCtxCmd.includes("model_auto_compact")

@@ -22,8 +22,40 @@ import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-regis
 import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
 
+// A section that stops srv and kills the last pane ends the suite's tmux server; the next restartSrv
+// starts it from THIS runner, whose env carries FLEET_VERIFY_CMD (e2e-isolated.sh evals SRV_ENV into
+// it), and every later pane inherits that global — e2e/restart.ts's deliberately unconfigured server
+// included. Such a section snapshots these keys before it starts and restores them exactly, unset
+// included, when it ends.
+const TMUX_ENV_KEYS = ["FLEET_VERIFY_CMD", "FLEET_SEPARATE_LANE_SLOTS", "FLEET_MAX_SESSIONS"];
+const tmuxEnvSnapshot = (): Promise<(string | null)[]> => Promise.all(TMUX_ENV_KEYS.map(async (key) => {
+  const shown = await tmuxOut("show-environment", "-g", key);
+  return shown.code === 0 ? shown.out.slice(key.length + 1).trimEnd() : null;
+}));
+const restoreTmuxEnv = async (before: (string | null)[]): Promise<void> => {
+  for (const [i, key] of TMUX_ENV_KEYS.entries()) {
+    const value = before[i];
+    if (value === null) await tmuxOut("set-environment", "-gu", key);
+    else await tmuxOut("set-environment", "-g", key, value);
+  }
+};
+
 export async function run(): Promise<void> {
-  await runCodexPermissions();
+  const permissionsEnvBefore = await tmuxEnvSnapshot();
+  let permissionsEnvDuring: (string | null)[] = [];
+  try {
+    await runCodexPermissions();
+  } finally {
+    permissionsEnvDuring = await tmuxEnvSnapshot();
+    await restoreTmuxEnv(permissionsEnvBefore);
+  }
+  const permissionsEnvAfter = await tmuxEnvSnapshot();
+  const setOrUnset = (values: (string | null)[]): (string | null)[] => values.map((v) => v === null ? null : "set");
+  // `during` is evidence, not the claim: it says whether this run's section did end the tmux server
+  check("the Codex permissions section leaves the tmux global env exactly as it found it (unset stays unset)",
+    JSON.stringify(permissionsEnvAfter) === JSON.stringify(permissionsEnvBefore),
+    JSON.stringify({ keys: TMUX_ENV_KEYS, before: setOrUnset(permissionsEnvBefore),
+      during: setOrUnset(permissionsEnvDuring), after: setOrUnset(permissionsEnvAfter) }));
   // --- slots ---
   const fixed = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
   check("the sidebar API exposes all 16 fixed slots in order",
@@ -31,11 +63,7 @@ export async function run(): Promise<void> {
     JSON.stringify(fixed.slots.map((s) => s.id)));
 
   const separateLanes: { slot: number; cwd: string }[] = [];
-  const tmuxEnvKeys = ["FLEET_VERIFY_CMD", "FLEET_SEPARATE_LANE_SLOTS", "FLEET_MAX_SESSIONS"];
-  const tmuxEnvBefore = await Promise.all(tmuxEnvKeys.map(async (key) => {
-    const shown = await tmuxOut("show-environment", "-g", key);
-    return shown.code === 0 ? shown.out.slice(key.length + 1).trimEnd() : null;
-  }));
+  const tmuxEnvBefore = await tmuxEnvSnapshot();
   const restartSeparate = (enabled: boolean, max: number): Promise<void> => restartSrv({
     FLEET_SEPARATE_LANE_SLOTS: enabled ? "1" : "0", FLEET_MAX_SESSIONS: String(max),
     FLEET_E2E_COMPOSER_MODE: process.env.FLEET_E2E_COMPOSER_MODE ?? "",
@@ -107,11 +135,7 @@ export async function run(): Promise<void> {
     }
     for (let id = 1; id <= 16; id++) await post(`/api/slots/${id}/kill`, {});
     await restartSeparate(false, 16);
-    for (const [i, key] of tmuxEnvKeys.entries()) {
-      const value = tmuxEnvBefore[i];
-      if (value === null) await tmuxOut("set-environment", "-gu", key);
-      else await tmuxOut("set-environment", "-g", key, value);
-    }
+    await restoreTmuxEnv(tmuxEnvBefore);
     const legacy = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
     check("switch off restores the exact 16-row slot board",
       legacy.slots.length === 16 && legacy.slots.every((s, i) => s.id === i + 1),
@@ -255,7 +279,7 @@ export async function run(): Promise<void> {
   // observed live 2026-07-25 on the steward slot. Slot 3 is free here (its open was rejected
   // above) and is killed again at the end of this block. ---
   const HOME = process.env.HOME ?? "";
-  type PersistedSlot3 = { label?: string | null; cwd?: string | null; openedAt?: number; selfToken?: string } | null | undefined;
+  type PersistedSlot3 = { label?: string | null; cwd?: string | null; openedAt?: number; selfToken?: string; permissions?: unknown } | null | undefined;
   const persistedSlot3 = async (): Promise<PersistedSlot3> => {
     try {
       return ((await Bun.file(`${ROOT}/fleet.json`).json()) as
@@ -362,6 +386,7 @@ export async function run(): Promise<void> {
     const openedB = await post("/api/slots/3/open", { cwd: "~/claude-fleet", label: "stream-race-B" });
     check("slot-stream fixture: B opens in the same reusable slot while A remains paused",
       openedB.ok, `${openedB.status} ${await openedB.text()}`);
+    const bOpened = await waitForPersistedSlot3((row) => row?.label === "stream-race-B");
     const bRaw = readdirSync(streamDir)
       .filter((name) => name.startsWith("s3-") && name.endsWith(".raw") && `${streamDir}/${name}` !== aFinal)
       .map((name) => `${streamDir}/${name}`);
@@ -373,8 +398,13 @@ export async function run(): Promise<void> {
     if (bFinal) appendFileSync(bFinal, `${beforeMarker}\n`);
     writeFileSync(releasePath, "release\n", { mode: 0o600 });
     const staleResult = await staleOpen;
+    // A's open RETURNS (does not hang) and says the truth about itself: its occupant was replaced
+    // while it spawned, so it answers 400 with the post-spawn identity refusal (server.ts#openSlot)
+    // instead of a 200 carrying B's row. B's identity, stream and label are the check below.
+    const staleBody = await staleResult.text();
     check("slot-stream fixture: releasing A lets its stale open return without hanging B",
-      staleResult.ok, `${staleResult.status} ${await staleResult.text()}`);
+      staleResult.status === 400 && staleBody === JSON.stringify({ error: "slot occupant changed during open spawn" }),
+      `${staleResult.status} ${staleBody}`);
     await tmuxOut("send-keys", "-t", "s3", `printf '${afterMarker}\\n'`, "Enter");
     let bBody = "";
     for (let i = 0; i < 60; i++) {
@@ -391,6 +421,12 @@ export async function run(): Promise<void> {
         && !bBody.includes("stream-race-A") && !readdirSync(streamDir).includes("s3.raw")
         && !readdirSync(streamDir).includes(aFinal.split("/").pop() ?? "") && leftovers.length === 0,
       JSON.stringify({ raceState, bBody: bBody.slice(-200), leftovers }));
+    check("the stale A refusal leaves B's occupant identity and its absent profile exactly as B opened them",
+      !!bOpened?.openedAt && raceState?.openedAt === bOpened.openedAt && raceState.selfToken === bOpened.selfToken
+        && (raceState.permissions ?? null) === null && (bOpened.permissions ?? null) === null,
+      JSON.stringify({ opened: bOpened && { openedAt: bOpened.openedAt, permissions: bOpened.permissions ?? null },
+        after: raceState && { openedAt: raceState.openedAt, permissions: raceState.permissions ?? null },
+        sameToken: raceState?.selfToken === bOpened?.selfToken }));
     await post("/api/slots/3/kill", {});
     const raceKillPersisted = await waitForPersistedSlot3((row) => row === null);
     check("slot-stream fixture: B kill is durable before the latch restart", raceKillPersisted === null,
@@ -7993,13 +8029,29 @@ async function runCodexPermissions(): Promise<void> {
       const fresh = await row();
       check(`${title}: fresh/recycle stores only the new selection and spawns its exact flags`, opened.ok
         && profileIs(fresh?.permissions, profile) && fresh?.codexRecovery?.sessionId === null && flagsAre(await nextArgs(n), profile), JSON.stringify(fresh));
+      // The rollout sits where Codex writes it and server.ts#codexRolloutForId looks: the Y/M/D tree
+      // under the isolated sessions root, the id in the filename suffix and in session_meta, the
+      // slot's own cwd. Stamped before the pane spawned, so lazy discovery cannot hand it out — only
+      // the exact owner bind below can.
       const sid = crypto.randomUUID();
-      mkdirSync(sessions, { recursive: true });
-      const rollout = `${sessions}/rollout-profile-${sid}.jsonl`;
-      writeFileSync(rollout, JSON.stringify({ type: "session_meta", payload: { id: sid, cwd,
-        timestamp: new Date(Date.now() - 10000).toISOString(), thread_source: "user", originator: "codex-tui" } }) + "\n");
+      const day = new Date();
+      const dayDir = `${sessions}/${day.getFullYear()}/${String(day.getMonth() + 1).padStart(2, "0")}/${String(day.getDate()).padStart(2, "0")}`;
+      mkdirSync(dayDir, { recursive: true });
+      const rollout = `${dayDir}/rollout-${Date.now()}-${sid}.jsonl`;
+      const meta = { id: sid, cwd: fresh?.cwd ?? null, timestamp: new Date(Date.now() - 10000).toISOString(),
+        thread_source: "user", originator: "codex-tui" };
+      writeFileSync(rollout, JSON.stringify({ type: "session_meta", payload: meta }) + "\n");
+      const staged = ((): { type?: string; payload?: typeof meta } | null => {
+        try { return JSON.parse(readFileSync(rollout, "utf8").split("\n")[0]) as { type?: string; payload?: typeof meta }; }
+        catch { return null; }
+      })();
+      check(`${title}: bind fixture is one dated user rollout naming exactly this id and the slot's cwd`,
+        !!fresh?.cwd && staged?.type === "session_meta" && staged.payload?.id === sid && staged.payload.cwd === fresh.cwd
+          && staged.payload.thread_source === "user" && rollout.endsWith(`-${sid}.jsonl`)
+          && /\/\d{4}\/\d{2}\/\d{2}\/rollout-/.test(rollout), JSON.stringify({ rollout, payload: staged?.payload }));
       const bind = await post("/api/slots/16/codex-bind", { sessionId: sid });
-      check(`${title}: exact conversation bind succeeds`, bind.ok, String(bind.status));
+      const bindBody = await bind.text();
+      check(`${title}: exact conversation bind succeeds`, bind.ok, `${bind.status} ${bindBody}`);
       n = args().length;
       const restarted = await post("/api/slots/16/restart", { permissions: profile });
       const after = await row();

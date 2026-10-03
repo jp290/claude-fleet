@@ -632,7 +632,19 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const console={log:()=>{}};
       ${ensure}
       const resolve=(v)=>v,expandCwd=(v)=>v,NO_BOX={};
-      const waitForSlotTeardown=async()=>{await Promise.resolve();awaited=true;if(scenario === "open-replaced") Object.assign(s,{openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});};
+      // t | event | exclusive owner
+      // 0 | open captures A@100/old and the teardown latch already running | A (own latch) OR other@50 (foreign latch)
+      // 1 | the awaited teardown ends | empty@0/old-token, OR replaced by new@200, OR empty@0/new-token
+      // 2 | open may adopt the empty end-state only on its own captured latch | new request OR no spawn
+      if(scenario.startsWith("open-teardown-")) slotTeardownInflight.set(1,{occupant: scenario === "open-teardown-foreign-latch"
+        ? {slot:1,openedAt:50,selfToken:"other"} : {slot:1,openedAt:100,selfToken:"old"},promise:Promise.resolve()});
+      const waitForSlotTeardown=async()=>{await Promise.resolve();awaited=true;
+        if(scenario === "open-replaced") Object.assign(s,{openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else if(scenario === "open-teardown-replaced") Object.assign(s,{cwd:"/replacement",openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else if(scenario === "open-teardown-empty-foreign-token") Object.assign(s,{cwd:null,openedAt:0,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else if(scenario.startsWith("open-teardown-")) Object.assign(s,{cwd:null,openedAt:0,permissions:null});
+        slotTeardownInflight.delete(1);};
+      const observeTmuxSlots=async()=>({detail:"fixture"}),tmuxSlotObservation=()=>({presence:"absent"});
       const waitForSlotSpawn=async()=>{};
       const assertProgramFoundingTargetOpen=()=>{},repoCanon=(v)=>v,assertGameMakerTreeOpen=()=>{};
       const openSlotIntents=new Set(),SEPARATE_LANE_SLOTS=false,BAND_SLOTS=16,FLEET_MAX_SESSIONS=64;
@@ -673,6 +685,8 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
   const openReplaced = await exercise("open-replaced"), openInvalid = await exercise("open-invalid");
   const recycle = await exercise("open-recycle"), recycleReplaced = await exercise("open-recycle-replaced");
   const recycleLaterReplaced = await exercise("open-recycle-later-replaced"), recycleEmptyReplaced = await exercise("open-recycle-empty-replaced");
+  const waitingOwn = await exercise("open-teardown-own"), waitingForeignLatch = await exercise("open-teardown-foreign-latch");
+  const waitingReplaced = await exercise("open-teardown-replaced"), waitingEmptyForeign = await exercise("open-teardown-empty-foreign-token");
   const promptPattern = source.match(/\{ re: (\/Would you like[^\n]+?\/), why: "codex permission prompt" \}/)?.[1];
   const promptBlock = promptPattern ? new Function(`return ${promptPattern}`)() as RegExp : null;
   const promptFrame = ">_ OpenAI Codex (v0.159.0)\nWould you like to run the following command?\nEnvironment: local\nReason: Allow the isolated fixture command?\n$ printf permission-probe\n1. Yes, proceed (y)\n3. No, and tell Codex what to do differently (esc)";
@@ -687,6 +701,15 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       && recycleEmptyReplaced.commands.length === 0 && recycleEmptyReplaced.publications.length === 0 && recycleEmptyReplaced.profile.sandbox === "workspace-write",
     "openSlot re-proves the known teardown end-state after its next external await": recycleLaterReplaced.error !== null
       && recycleLaterReplaced.commands.length === 0 && recycleLaterReplaced.publications.length === 0 && recycleLaterReplaced.profile.sandbox === "workspace-write",
+    "openSlot waiting behind exactly its predecessor's running teardown adopts empty@0/old-token and spawns only the new profile": waitingOwn.error === null
+      && waitingOwn.awaited && waitingOwn.commands.length === 1 && waitingOwn.commands[0].includes("--sandbox read-only --ask-for-approval on-request")
+      && !waitingOwn.commands[0].includes("bypass") && waitingOwn.profile.sandbox === "read-only",
+    "openSlot waiting behind a foreign occupant's teardown latch refuses the empty end-state without spawn": waitingForeignLatch.error !== null
+      && waitingForeignLatch.commands.length === 0 && waitingForeignLatch.publications.length === 0 && waitingForeignLatch.profile === null,
+    "openSlot waiting behind its own teardown refuses a new occupant published after it without spawn or profile overwrite": waitingReplaced.error !== null
+      && waitingReplaced.commands.length === 0 && waitingReplaced.publications.length === 0 && waitingReplaced.profile.sandbox === "workspace-write",
+    "openSlot waiting behind its own teardown refuses empty@0 under a foreign token without spawn or profile overwrite": waitingEmptyForeign.error !== null
+      && waitingEmptyForeign.commands.length === 0 && waitingEmptyForeign.publications.length === 0 && waitingEmptyForeign.profile.sandbox === "workspace-write",
     "openSlot refuses a replaced target after teardown await without spawn or profile overwrite": openReplaced.error !== null
       && openReplaced.awaited && openReplaced.commands.length === 0 && openReplaced.profile.sandbox === "workspace-write",
     "openSlot invalid new profile refuses before teardown or occupant mutation": openInvalid.error?.includes("bad permissions") === true

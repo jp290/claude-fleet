@@ -8383,7 +8383,17 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   const prior = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
   let expectedOpenedAt = prior.openedAt;
   const current = (cwd: string | null): boolean => s.cwd === cwd && s.openedAt === expectedOpenedAt && s.selfToken === prior.selfToken;
+  // A teardown already running for exactly this occupant ends it on purpose. Its known end-state
+  // (cwd null, openedAt 0, the same token) is the only change this open may adopt, and only on the
+  // latch captured here before the await — never re-derived from a later read of the slot.
+  const teardown = slotTeardownInflight.get(s.id);
+  const ownTeardown = !!teardown && prior.cwd !== null && teardown.occupant.slot === s.id
+    && teardown.occupant.openedAt === prior.openedAt && teardown.occupant.selfToken === prior.selfToken;
   await waitForSlotTeardown(s.id);
+  if (ownTeardown && s.cwd === null && s.openedAt === 0 && s.selfToken === prior.selfToken) {
+    prior.cwd = null;
+    expectedOpenedAt = 0;
+  }
   if (!current(prior.cwd)) throw new Error("slot occupant changed before open");
   await waitForSlotSpawn(s.id);
   if (!current(prior.cwd)) throw new Error("slot occupant changed while open waited for spawn");

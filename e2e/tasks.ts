@@ -6719,7 +6719,8 @@ export async function run(ctx: Ctx): Promise<void> {
       ? (await tmuxOut("display-message", "-p", "-t", `s${xdJ.slot}`, "#{pane_start_command}")).out : "";
     const xCmdFlat = xCmd.replaceAll("\\", "");
     check("a DISPATCHED lane spawns the named harness — codex runs full-access, update-disabled, with the given model",
-      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(xCmdFlat)
+      /(^|\s|;)codex --no-daemon --sandbox danger-full-access --ask-for-approval never /.test(xCmdFlat)
+      && !xCmdFlat.includes("bypass")
       && xCmdFlat.includes("-c check_for_update_on_startup=false")
       && xCmdFlat.includes("--model 'openai/gpt-5-codex'"),
       xCmd.slice(-220));
@@ -12898,6 +12899,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // accessor cannot hide a second line before the count starts
     const kLogAt = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
 
+    // a Codex spawn stores the normalized profile it will actually start with (server.ts#taskSpawnFromBody):
+    // the card's role names none, so the row carries the explicit full-access default beside the triple
+    const CODEX_DEFAULT_PERMISSIONS = { sandbox: "danger-full-access", approval: "never" };
     // (kr1) SET time, at the create door: the card's role IS the row's spawn (a bare "claude" collapses
     // to null, the one representation of the default harness); the live row's codex triple likewise;
     // a body triple is the choice and the card fills nothing; a role the validators refuse (claude has
@@ -12909,7 +12913,7 @@ export async function run(ctx: Ctx): Promise<void> {
       kCard("code.txt", { harness: "claude", model: "claude-sonnet-5-5[1m]", effort: "ultra" }));
     check("(kr1) POST /api/tasks with an author card: Task.spawn carries the card's harness/model/effort at birth (the live codex triple too)",
       k1?.card?.valid === true && JSON.stringify(k1.spawn) === JSON.stringify({ harness: null, model: SONNET.model, effort: SONNET.effort })
-      && k1Live?.card?.valid === true && JSON.stringify(k1Live.spawn) === JSON.stringify(LIVE),
+      && k1Live?.card?.valid === true && JSON.stringify(k1Live.spawn) === JSON.stringify({ ...LIVE, permissions: CODEX_DEFAULT_PERMISSIONS }),
       JSON.stringify({ k1: { card: k1?.card?.rolle, spawn: k1?.spawn }, live: { card: k1Live?.card?.rolle, spawn: k1Live?.spawn } }));
     check("(kr1) a body triple beside the card is the choice, and a role the validators refuse adopts nothing — the card stays valid, spawn absent",
       JSON.stringify(k1Body?.spawn) === JSON.stringify({ harness: null, model: "k-body-model", effort: null })
@@ -13430,7 +13434,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(kr6) POST /api/self/tasks with a valid card role: Task.spawn carries the card's harness/model/effort at birth",
       mRoleRes.status === 200 && mRoleRow?.card?.valid === true
       && JSON.stringify(mRoleRow.card.rolle) === JSON.stringify(mRole)
-      && JSON.stringify(mRoleRow.spawn) === JSON.stringify(mRole),
+      && JSON.stringify(mRoleRow.spawn) === JSON.stringify({ ...mRole, permissions: { sandbox: "danger-full-access", approval: "never" } }),
       `${mRoleRes.status} ${JSON.stringify({ card: mRoleRow?.card, spawn: mRoleRow?.spawn })}`);
     // A pending MAIN auftrag spends PROGRAM_MAX_PENDING (5): left standing, this row fills the cap
     // one filing early and (rc2b)'s MAIN filing is refused 409.

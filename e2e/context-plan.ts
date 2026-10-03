@@ -9,6 +9,7 @@ import {
 } from "../context-packs";
 import { CONTEXT_PLAN_OMISSION_REASONS, PRIVATE_PACK_VERDICTS, PROGRAM_CONTEXT_PACKS_MAX, planContext, planProgramContext,
   programContextPacksFrom, renderPrivatePackLines, resolvePrivatePack, validateProgramContextPacks } from "../context-plan";
+import { run as contextBorrowChecks } from "./context-borrow";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -632,6 +633,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
 
   taskCatalogChecks(check);
   privatePackChecks(check);
+  await contextBorrowChecks(check);
 
   orchestrationTriggerChecks(check);
 

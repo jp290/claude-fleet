@@ -39,7 +39,7 @@ import {
 } from "./rulebook";
 import { validateRefineProposal, briefReviewArm, briefReviewEligible, isBriefReviewKind,
   type RefineValidation } from "./refine-validate";
-import { planContext, planProgramContext, programContextPacksFrom, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack,
+import { planContext, planProgramContext, programContextPacksFrom, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
   validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
   PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
   type PrivatePackResolution, type ProgramContextPack } from "./context-plan";
@@ -49,7 +49,7 @@ import {
   stampObservedSourceHashes, type ContextManifestRead,
 } from "./context-manifest";
 import {
-  CONTEXT_PACKS,
+  CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS,
   type ContextPackCapability,
   type ContextPackMode,
   type ContextPackTrigger,
@@ -225,6 +225,7 @@ const TASK_ARCHIVE_FILE = `${import.meta.dir}/tasks-archive.jsonl`;
 // Immutable evidence of the exact ContextPlan pointers delivered with a founding brief. Selection
 // is always freshly derived; only this delivery receipt is historical and append-only.
 const CONTEXT_RECEIPT_FILE = `${import.meta.dir}/context-receipts.jsonl`;
+const CONTEXT_BORROW_FILE = `${import.meta.dir}/context-borrows.jsonl`;
 // Which anchor renderer wrote the delivered block. Every row written from here carries it; a row
 // WITHOUT it predates the field and is v1 — that is the only honest way to keep the ledger's
 // byte-reconstruction promise across a renderer change.
@@ -3197,6 +3198,120 @@ async function memoryWorkView(s: Slot, scope: Extract<MemoryScope, { ok: true }>
   }));
 }
 
+async function contextCatalogFor(s: Slot, scope: Extract<MemoryScope, { ok: true }>, requested = false) {
+  const program = scope.principal === "program-main" ? scope.program
+    : scope.programId ? programs.find((p) => p.id === scope.programId) ?? null : null;
+  const repoPath = s.worktree?.repo ?? s.cwd;
+  if (!repoPath) throw new Error("this session names no repository");
+  let repoRoot: string; let head: string | null; let facts: ContextPlanInput;
+  if (scope.principal === "lane") {
+    repoRoot = await repoRootOf(repoPath);
+    head = await integrationHead(repoRoot);
+    const taskTexts = tasks.filter((row) => row.slot === s.id && row.status === "sent")
+      .flatMap((row) => {
+        const source = variantSourceOf(row);
+        return [source.text, source.brief?.text ?? "", source.card?.ziel ?? "",
+          ...(source.comments ?? []).map((comment) => comment.text)];
+      });
+    facts = { sourceTree: await dispatchSourceTree(repoPath), harness: s.harness ?? null, mode: DISPATCH_CONTEXT_MODE,
+      triggers: taskContextTriggers(taskTexts, DISPATCH_CONTEXT_TRIGGERS),
+      capabilities: DISPATCH_CONTEXT_CAPABILITIES };
+  } else {
+    const pre = await preflightProgramMain(repoPath);
+    if (!pre.ok) throw new Error(pre.error);
+    repoRoot = pre.value.repoRoot; head = pre.value.head;
+    facts = programMainContextFacts(pre.value.frame, s.harness ?? null);
+  }
+  if (!head) throw new Error(`the integration HEAD of ${basename(repoRoot)} could not be read`);
+  if (requested) facts = { ...facts, triggers: [...CONTEXT_PACK_TRIGGERS] };
+  const base = planContext(facts);
+  const { repoPlan, blobShas, blobModes, manifest } = await repoManifestContextPlan(repoRoot, head, facts);
+  const programPlan = planProgramContext({ program, trackedPaths: new Set(blobShas.keys()) });
+  return { repoRoot, head, facts, base, repoPlan, programPlan, blobShas, blobModes, manifest, program };
+}
+
+async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<Response> {
+  const principal = resolveSelfPrincipal(req);
+  const s = principal?.kind === "session" ? slots[principal.slot - 1] : undefined;
+  if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+  const identity = { slot: s.id, openedAt: s.openedAt, taskId: s.taskId ?? null, programId: s.programId ?? null };
+  const bound = s.worktree ? null : boundProgramForMain(s);
+  const unchanged = () => {
+    const still = resolveSelfPrincipal(req);
+    return s.openedAt === identity.openedAt && still?.kind === "session"
+      && still.slot === identity.slot && still.openedAt === identity.openedAt
+      && (s.taskId ?? null) === identity.taskId && (s.programId ?? null) === identity.programId
+      && (!bound?.ok || (() => { const now = boundProgramForMain(s); return now.ok && now.program === bound.program; })());
+  };
+  const refused = (refusal: string, error: string, status = 409) => ({ status, body: { refusal, error } });
+  type BorrowSource = { path?: string; anchor?: string; privateSourceId?: string; version?: number;
+    content: string; sha256: string; bytes: number };
+  let sources: BorrowSource[] = [];
+  let head: string | null = null;
+  let repo: string | null = null;
+  let origin: string | null = null;
+  let programId = identity.programId;
+  const resolve = async (): Promise<{ status: number; body: Record<string, unknown> }> => {
+    const scope = await memoryScopeFor(s, url);
+    if (!scope.ok) return { status: scope.response.status, body: await scope.response.json() };
+    programId = scope.principal === "program-main" ? scope.program.id : scope.programId;
+    const catalog = await contextCatalogFor(s, scope, true);
+    head = catalog.head; repo = catalog.repoRoot;
+    const plans = [catalog.base, catalog.repoPlan, catalog.programPlan];
+    const matches = plans.flatMap((plan, index) => plan.selected.filter((pack) => pack.id === id).map((pack) => ({ pack, index })));
+    if (matches.length > 1) return refused("ambiguous-id", "more than one catalogue entry names this id");
+    const selected = matches[0];
+    if (!selected) {
+      const omitted = plans.flatMap((plan) => plan.omitted).find((pack) => pack.id === id);
+      if (omitted) return refused(omitted.why, "the pack is unavailable under this session's context rules");
+      if (programs.some((p) => p.id !== catalog.program?.id && p.contextPacks?.some((pack) => pack.id === id)))
+        return refused("foreign-program", "this pack is outside the session's Program");
+      return refused("unknown-id", "no pack in this catalogue names this id", 404);
+    }
+    origin = ["fleet-seed", "repo-manifest", "program"][selected.index]!;
+    const pack = selected.pack;
+    const resolved: BorrowSource[] = [];
+    if (!Array.isArray(pack.sources)) {
+      const source = readPrivatePack(KONZEPT_ROOT,
+        (pack.sources as { privateSourceId: string }).privateSourceId, declaredSourceHash(pack));
+      if (!source.ok) return refused(source.refusal, source.error);
+      const { ok: _, ...content } = source;
+      resolved.push(content);
+    } else {
+      for (const source of pack.sources) {
+        if (!catalog.blobShas.has(source.path)) return refused("source-unavailable", "a source is not tracked at HEAD");
+        if (!["100644", "100755"].includes(catalog.blobModes.get(source.path) ?? ""))
+          return refused("source-not-regular", "a source is not a regular tracked file");
+        const size = await gitRead(repo, "cat-file", "-s", `${head}:${source.path}`);
+        if (size.code !== 0 || !/^\d+$/.test(size.out) || Number(size.out) > CONTEXT_MANIFEST_MAX_SOURCE_BYTES)
+          return refused("source-unreadable", "a source cannot be read within its byte bound");
+        const blob = await gitReadRaw(repo, "show", `${head}:${source.path}`);
+        if (blob.code !== 0 || blob.out.includes("\0") || Buffer.byteLength(blob.out) !== Number(size.out))
+          return refused("source-unreadable", "a source is unreadable, binary or not UTF-8");
+        if (!blob.out.includes(source.anchor)) return refused("source-anchor-missing", "a source no longer contains its anchor at HEAD");
+        resolved.push({ ...source, content: blob.out, sha256: createHash("sha256").update(blob.out).digest("hex"),
+          bytes: Buffer.byteLength(blob.out) });
+      }
+    }
+    sources = resolved;
+    return { status: 200, body: { schema: "fleet.context.borrow/v1", id, useWhen: pack.useWhen ?? null, origin, repo, head, sources } };
+  };
+  let answer: { status: number; body: Record<string, unknown> };
+  try { answer = await resolve(); }
+  catch { answer = refused("source-unavailable", "the context catalogue could not be resolved at HEAD"); }
+  const changed = () => json({ refusal: "occupant-changed", error: "the session binding changed during this read" }, 409);
+  if (!unchanged()) return changed();
+  const at = Date.now();
+  const borrowedAt = answer.status === 200 ? at : null;
+  try {
+    await appendEventStrict(CONTEXT_BORROW_FILE, { ...identity, programId, at, borrowedAt, id, repo, head, origin,
+      status: answer.status, refusal: answer.body.refusal ?? null,
+      sources: sources.map(({ content: _, ...source }) => source), bytes: sources.reduce((sum, source) => sum + source.bytes, 0) });
+  } catch { return json({ refusal: "borrow-ledger-unavailable", error: "the borrow could not be recorded; no content served" }, 503); }
+  if (!unchanged()) return changed();
+  return json({ ...answer.body, borrowedAt }, answer.status);
+}
+
 // DECLARED NOW against DELIVERED THEN, and never merged: today's plan is derived from git at the
 // current integration HEAD (the same three planners the dispatch seam runs); the receipts are what
 // the ledger says was delivered at founding. `readByAgent` is always unknown — a receipt proves
@@ -3212,29 +3327,7 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
     fromProgram ? "program" : fromSeed ? "fleet-seed" : "repo-manifest";
   try {
     if (!repoPath) throw new Error("this session names no repository");
-    let repoRoot: string; let head: string | null; let facts: ContextPlanInput;
-    if (scope.principal === "lane") {
-      repoRoot = await repoRootOf(repoPath);
-      head = await integrationHead(repoRoot);
-      const taskTexts = tasks.filter((row) => row.slot === s.id && row.status === "sent")
-        .flatMap((row) => {
-          const source = variantSourceOf(row);
-          return [source.text, source.brief?.text ?? "", source.card?.ziel ?? "",
-            ...(source.comments ?? []).map((comment) => comment.text)];
-        });
-      facts = { sourceTree: await dispatchSourceTree(repoPath), harness: s.harness ?? null, mode: DISPATCH_CONTEXT_MODE,
-        triggers: taskContextTriggers(taskTexts, DISPATCH_CONTEXT_TRIGGERS),
-        capabilities: DISPATCH_CONTEXT_CAPABILITIES };
-    } else {
-      const pre = await preflightProgramMain(repoPath);
-      if (!pre.ok) throw new Error(pre.error);
-      repoRoot = pre.value.repoRoot; head = pre.value.head;
-      facts = programMainContextFacts(pre.value.frame, s.harness ?? null);
-    }
-    if (!head) throw new Error(`the integration HEAD of ${basename(repoRoot)} could not be read`);
-    const base = planContext(facts);
-    const { repoPlan, blobShas, manifest } = await repoManifestContextPlan(repoRoot, head, facts);
-    const programPlan = planProgramContext({ program, trackedPaths: new Set(blobShas.keys()) });
+    const { repoRoot, head, facts, base, repoPlan, programPlan, blobShas, manifest } = await contextCatalogFor(s, scope);
     const seeds = new Set(base.selected.map((p) => p.id));
     const fromProgram = new Set(programPlan.selected.map((p) => p.id));
     const selected = contextReceiptSelections(stampObservedSourceHashes(
@@ -3269,6 +3362,19 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
   if (receiptLedger.malformed > 0)
     unknown.push(`${receiptLedger.malformed} malformed context-receipts rows: a delivery in scope may be missing from deliveredThen.`);
   if (!mine.length) missing.push("no context receipt in the readable generations (.1 + active) names this scope: what was delivered at founding is not on record here");
+  const borrowLedger = await readLedger<Record<string, unknown>>(CONTEXT_BORROW_FILE);
+  const borrowed = borrowLedger.rows.filter((row) => row.slot === s.id && row.openedAt === s.openedAt
+    && row.status === 200 && typeof row.id === "string" && typeof row.borrowedAt === "number"
+    && row.programId === (program?.id ?? null)
+    && (scope.taskIds === null || (typeof row.taskId === "string" && scope.taskIds.includes(row.taskId))))
+    .sort((a, b) => Number(b.borrowedAt) - Number(a.borrowedAt));
+  const borrowedAtFor = new Map(borrowed.slice().reverse().map((row) => [row.id, row.borrowedAt]));
+  const withBorrow = (rows: unknown): unknown[] => Array.isArray(rows) ? rows.map((row: unknown) => {
+    if (typeof row !== "object" || row === null || !("id" in row) || !borrowedAtFor.has(row.id)) return row;
+    return { ...row, borrowedAt: borrowedAtFor.get(row.id) };
+  }) : [];
+  if (declaredNow) declaredNow.selected = withBorrow(declaredNow.selected);
+  if (borrowLedger.malformed > 0) unknown.push(`${borrowLedger.malformed} malformed context-borrows rows: an in-scope borrow may be missing.`);
   const body = {
     schema: "fleet.memory.sources/v1", view: "sources",
     scope: { principal: scope.principal, slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null,
@@ -3279,11 +3385,13 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
       basis: "ledger context-receipts.jsonl (.1 + active) — what reached a pane at founding",
       receipts: mine.slice(0, MEMORY_RECEIPTS_MAX).map((r) => ({ id: r.id, at: r.at, head: r.head, repo: r.repo,
         branch: r.branch, slot: r.slot, taskId: r.taskId ?? null, programId: r.programId ?? null,
-        selected: Array.isArray(r.selected) ? r.selected : [], briefHash: r.briefHash ?? null })),
+        selected: withBorrow(r.selected), briefHash: r.briefHash ?? null })),
       total: mine.length, malformed: receiptLedger.malformed,
     },
     readByAgent: "unknown",
-    coverage: declaredNow === null || receiptLedger.malformed > 0 ? "incomplete" : "complete",
+    borrowed: { basis: "ledger context-borrows.jsonl (.1 + active) — retrieved, not read",
+      rows: borrowed.slice(0, MEMORY_RECEIPTS_MAX), total: borrowed.length, malformed: borrowLedger.malformed },
+    coverage: declaredNow === null || receiptLedger.malformed > 0 || borrowLedger.malformed > 0 ? "incomplete" : "complete",
     missing, unknown,
   };
   return body;
@@ -41327,6 +41435,9 @@ Bun.serve<WSData>({
         return json({ error: "programs are brackets above lanes; a lane cannot read execution as its own" }, 409);
       return programExecutionView(s);
     }
+
+    const selfContext = /^\/api\/self\/context\/([^/]+)$/.exec(url.pathname);
+    if (selfContext && req.method === "GET") return contextBorrowRoute(req, url, selfContext[1]!);
 
     // THE PROJECT MEMORY DOOR (docs/self-api.md §memory). Read-only and slot-bound like its neighbour
     // above, but open to BOTH principals: the scope is derived in memoryScopeFor (a lane's own task, a

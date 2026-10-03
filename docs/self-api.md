@@ -897,6 +897,45 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   -d '{"packs":[{"id":"grok-antwort-1","useWhen":"Bevor du eine Delegations-Zeile baust","sources":[{"path":"docs/messungen/INDEX.md","anchor":"# Index der Messnotizen"}]}]}'
 ```
 
+## context — `GET /api/self/context/<id>`
+
+Eine Session holt eine Katalogkarte per Pack-ID nach: Fleet-Seed, Pack aus dem getrackten
+Repo-Manifest oder Pack ihres eigenen Programs. Header: `x-fleet-self-token`. Scope und optionale
+Verengung durch `task=`/`program=` kommen aus `memoryScopeFor`, wie bei `memory`. Owner-Token:
+401; ungebundene Session: 409 `no-scope`; fremdes Program-Pack: 409 `foreign-program`;
+unbekannte ID: 404 `unknown-id`. Mehrdeutige IDs: 409 `ambiguous-id`.
+
+Der explizite Abruf ersetzt nur den Trigger der Katalogauswahl: Status, Harness, Mode,
+Capabilities und Quellverfügbarkeit bleiben Grenzen. Die Auswahl im Spawn-Brief bleibt gleich.
+Eine verletzte Grenze antwortet 409 mit ihrem benannten `refusal`. Öffentliche Quellen sind
+vollständige reguläre, getrackte UTF-8-Dateien am Integrations-HEAD, mit `path`, `anchor`,
+`content`, `sha256` und `bytes`; Arbeitsbaumänderungen werden nicht gelesen. Je Quelle gilt der
+bestehende 4-MiB-Deckel. Fehlende Anker, Symlinks, binäre oder unlesbare Quellen werden benannt
+abgelehnt, ohne Teilinhalt zu liefern. Private Quellen laufen ausschließlich durch
+`context-plan.ts#resolvePrivatePack`: nur `match` liefert Inhalt der aktuellen Fassung samt
+`privateSourceId` und `version`; `private-missing`/`private-drift` antworten 409.
+
+Erfolg: `{schema:"fleet.context.borrow/v1", id, useWhen, origin, repo, head, sources[], borrowedAt}`.
+Pro authentifiziertem Abruf wird genau eine Zeile in `context-borrows.jsonl` geschrieben:
+`slot`, `openedAt`, `taskId`, `programId`, `id`, `at`, `borrowedAt`, `repo`, `head`, `origin`,
+`status`, `refusal`, Quellen ohne Inhalt (mit SHA-256 und Bytes) und gesamte `bytes`.
+Ablehnungen tragen `borrowedAt:null`, keine Quellen und 0 Bytes. Ein Credential- oder
+Occupant-Wechsel wird vor dem Append und nach dem Await abgefangen (409 `occupant-changed`).
+Nicht authentifizierte Requests schreiben keine Ausleihzeile. Scheitert das Ledger,
+antwortet die Tür 503 `borrow-ledger-unavailable` und liefert keinen Inhalt.
+
+`borrowedAt` bedeutet abgerufen, niemals gelesen oder wirksam. `memory?view=sources` ergänzt
+ausgeliehene IDs in `declaredNow.selected` und `deliveredThen.receipts[].selected` um das neueste
+`borrowedAt` dieses exakten Occupants und zeigt einen separaten `borrowed`-Ledger-Ausschnitt
+(.1 + aktiv, höchstens 20 Zeilen). Fremde oder frühere Occupants werden nicht zugerechnet.
+Ein fehlender Eintrag beweist keine Nicht-Ausleihe; fehlerhafte Zeilen machen die Coverage
+`incomplete`. `readByAgent` bleibt `unknown`.
+
+```sh
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/context/portable-core
+```
+
 ## memory — `GET /api/self/memory` (seit 2026-09-23, Zeile 42da6bdc)
 
 Das Projektgedächtnis einer Session, gelesen über die EIGENE Self-Tür — in jedem Repo, ohne
@@ -936,7 +975,9 @@ wird gezählt (`omitted`, `coverage:"truncated"`), nie still verworfen.
 Dispatch-Naht bzw. die MAIN-Gründung; `selected[].origin` = `fleet-seed` | `repo-manifest` |
 `program`; `nativeRules:{path:"AGENTS.md", trackedAtHead}` — die Repo-Regeln bleiben Originalquelle
 und werden nie kopiert). `deliveredThen` sind die Receipts aus `context-receipts.jsonl` (.1 + aktiv).
-`readByAgent` ist IMMER `"unknown"`: ein Receipt belegt Bytes in einer Pane, keine Lektüre. Fehlende
+`readByAgent` ist IMMER `"unknown"`: ein Receipt belegt Bytes in einer Pane, keine Lektüre.
+Ausleihen werden separat aus `context-borrows.jsonl` gelesen (`borrowed`, `borrowedAt`, §context);
+auch ein Abruf belegt keine Lektüre. Fehlende
 Träger stehen benannt in `missing[]` (kein Manifest, kein AGENTS.md, keine Program-Packs, kein
 Receipt, fremder Baum); ist die Deklaration nicht ableitbar (z. B. Ziel-Repo ohne AGENTS.md), ist
 `declaredNow: null` mit Grund in `unknown[]` und `coverage:"incomplete"` — nie eine leere Liste.

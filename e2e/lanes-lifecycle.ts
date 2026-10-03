@@ -1344,9 +1344,13 @@ export async function run(lc: LaneCtx): Promise<void> {
           && lhAfter.worktree?.branch === batonBranch && lhAfter.taskId === batonTaskId && lhAfter.programId === batonProgramId
           && lhAfter.laneSuccessions === 1 && lhAfter.openedAt !== lhBefore?.openedAt && lhAfter.selfToken !== heirTok,
         JSON.stringify(lhAfter).slice(0, 300));
-      check("(lane-harness) the pane was spawned as codex with the chosen model",
-        /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(lhCmd) && lhCmd.includes("--model 'gpt-6.1-sol'"),
-        lhCmd.slice(-220));
+      const lhCodexDefault = (cmd: string): boolean =>
+        /(^|\s|;)codex --no-daemon --sandbox danger-full-access --ask-for-approval never(?:\s|$)/.test(cmd)
+          && cmd.includes("--model 'gpt-6.1-sol'") && !cmd.includes("--dangerously-bypass-approvals-and-sandbox");
+      check("(lane-harness) the pane was spawned as codex with the explicit full-access default and chosen model, without bypass",
+        lhCodexDefault(lhCmd), lhCmd.slice(-220));
+      check("(lane-harness) the start-form claim rejects a bypass added to the actual command",
+        lhCodexDefault(lhCmd) && !lhCodexDefault(`${lhCmd} --dangerously-bypass-approvals-and-sandbox`));
       const statusAfter = spawnSync("git", ["-C", batonCwd, "status", "--porcelain"]).stdout.toString();
       check("(lane-harness) the uncommitted edit and the untracked file survive BYTE for byte, on the same HEAD",
         readFileSync(`${batonCwd}/baton.txt`, "utf8") === dirtyTracked

@@ -2188,6 +2188,20 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // THE TERMINAL SEARCH'S PLACE (card 746e381b), same rig: ⌘/Ctrl+F at 1200 opens the bar top right,
+  // off the corner row and the first 60 columns; at 390 a visible control of the pane opens it by
+  // taps alone. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runTermFindDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`terminal search DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("terminal search DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
   // THE PHONE UPRIGHT'S TWO ISLANDS (card "Auf dem Telefon steht oben klein", docs/design/
   // mobil-insel-notiz.md §1c), same rig: the two steps of the top island, closing by name, by a tap
   // outside and by every action, the 40-px targets, the terminal above the bottom island, the grip's
@@ -7974,6 +7988,205 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       const r3 = await evaluate<Read>(READ);
       claims["a click on a quiet line opens the rest of its text"] = clicked && r3.sys[2]?.open === true && r3.sys[2]?.rest === "zweiter Absatz des Reports";
       await shot(`${width}-3-ereignisse`);
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE TERMINAL SEARCH'S PLACE (card 746e381b): measured in a real browser on the real client bundle,
+// a terminal full of numbered rows behind a fake socket. At 1200 ⌘/Ctrl+F (the platform's own
+// modifier, read from navigator.platform as the client does) must open the bar top right, off the
+// corner row and off the first 60 terminal columns; at 390 a visible control of the pane — no
+// hardware keyboard — must open it, inside the screen and under the island's pill. Every claim
+// reads the DOM. Exported so a lane can drive it with an artefact folder and against an older tree.
+export interface TermFindDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runTermFindDom(sourceRoot: string, artifacts?: string): Promise<TermFindDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-termfind-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  // forty numbered rows of 120 columns: the column under any point of the bar can be read off a screenshot
+  const screen = Array.from({ length: 40 }, (_, i) => `${String(i + 1).padStart(3, "0")} ${"0123456789".repeat(12)}`).join("\r\n");
+  const FAKE = `(() => { class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.binaryType = 'blob';
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          this.onmessage?.({ data: new TextEncoder().encode(${JSON.stringify(screen)}).buffer }); }, 0); }
+      send() {} close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS; })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("terminal search DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), chips: [], tasks: [],
+        slots: [{ id: 1, cwd: "/fixture/term", label: "Terminal", openedAt: 1000, harness: "claude", lastOutput: 0 }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+      if (p === "/api/slots/1/transcript") return void json(requestId, { entries: [], total: 0, source: null, ttlSec: 300 });
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("terminal search DOM probe: evaluate failed: " + expression.replace(/\s+/g, " ").slice(0, 120));
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // where the bar, the corner row's visible buttons, the terminal's first 60 columns and the pill are
+    const GEOM = `(() => { const pane = document.querySelector('.pane'), bar = pane.querySelector('.termfind');
+      const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height }; };
+      const shown = (e) => { const s = getComputedStyle(e); const r = e.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
+      // xterm sizes its helper textarea to exactly one cell (the IME anchor): the column width, read from xterm itself
+      const scr = pane.querySelector('.xterm-screen'), ta = pane.querySelector('.xterm-helper-textarea');
+      const cell = ta ? parseFloat(ta.style.width) || 0 : 0;
+      const s = box(scr);
+      return { open: bar.classList.contains('open'), bar: box(bar), pane: box(pane), tools: [...pane.querySelectorAll('.panetools button')].filter(shown).map(box),
+        cols60: s && cell ? { l: s.l, t: s.t, r: s.l + 60 * cell, b: s.b } : null, cell,
+        focus: document.activeElement === pane.querySelector('.termfindin'), termFocus: !!document.activeElement?.closest('.paneterm'),
+        pill: box(document.querySelector('#mpill')), pageScroll: document.documentElement.scrollWidth - innerWidth }; })()`;
+    type Box = { l: number; t: number; r: number; b: number; w: number; h: number };
+    type Geom = { open: boolean; bar: Box | null; pane: Box | null; tools: Box[]; cols60: { l: number; t: number; r: number; b: number } | null; cell: number;
+      focus: boolean; termFocus: boolean; pill: Box | null; pageScroll: number };
+    const meets = (a: { l: number; t: number; r: number; b: number }, b: { l: number; t: number; r: number; b: number }) =>
+      a.l < b.r - 0.5 && b.l < a.r - 0.5 && a.t < b.b - 0.5 && b.t < a.b - 0.5;
+    const results: TermFindDomResult[] = [];
+    let targetId = "";
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: FAKE });
+      const phone = width < 700;
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: phone });
+      if (phone) await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [false] })); localStorage.setItem('fleet.board', '0'); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelector('.pane:not(.chat) .xterm-screen') && parseFloat(document.querySelector('.pane .xterm-helper-textarea')?.style.width ?? '') > 0`, 15000);
+      if (!booted) throw new Error("terminal search DOM probe: the terminal did not boot: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(500);
+      await shot(`${width}-0-terminal`);
+      if (!phone) {
+        // --- the keyboard path: the platform's own modifier + F on the focused terminal
+        const apple = await evaluate<boolean>(`/Mac|iPhone|iPad|iPod/.test(navigator.platform)`);
+        await evaluate(`document.querySelector('.pane .xterm-helper-textarea')?.focus()`);
+        const modifiers = apple ? 4 : 2;
+        await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "f", code: "KeyF", windowsVirtualKeyCode: 70, modifiers });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: "f", code: "KeyF", windowsVirtualKeyCode: 70, modifiers });
+        await wait(`document.querySelector('.pane .termfind.open')`, 3000);
+        await evaluate(`(() => { const i = document.querySelector('.pane .termfindin'); i.value = '0123'; i.dispatchEvent(new Event('input')); })()`);
+        await settle(200);
+        const g = await evaluate<Geom>(GEOM);
+        facts.desktop = { apple, ...g };
+        claims[`${apple ? "⌘" : "Ctrl"}+F on the focused terminal opens the search with the caret in its field`] = g.open && g.focus;
+        claims["the bar sits top right: its right edge within 16 px of the pane's, its top in the pane's upper 100 px"] = !!g.bar && !!g.pane
+          && g.open && g.pane.r - g.bar.r <= 16 && g.pane.r - g.bar.r >= 0 && g.bar.t - g.pane.t <= 100;
+        claims["it covers no button of the corner row (.panetools)"] = !!g.bar && g.open && g.tools.length > 0 && g.tools.every((t) => !meets(g.bar!, t));
+        claims["it covers none of the first 60 terminal columns"] = !!g.bar && g.open && !!g.cols60 && g.cell > 0 && !meets(g.bar, g.cols60);
+        claims["no sideways page scroll"] = g.pageScroll <= 0;
+        await shot(`${width}-1-suche`);
+        await evaluate(`document.querySelector('.pane .termfindin')?.focus()`);
+        await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await settle(100);
+        const after = await evaluate<Geom>(GEOM);
+        claims["Escape closes it and the keys go back to the terminal"] = !after.open && after.termFocus;
+      } else {
+        // --- no hardware keyboard: a visible control of the pane, reached by taps alone. It is found
+        // by what it SAYS (its text or aria-label), never by a tooltip that merely lists "Suche" (⋯)
+        const before = await evaluate<{ controls: string[] }>(`(() => ({ controls: [...document.querySelectorAll('#mtop button, .pane .panetools button')]
+          .filter((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && getComputedStyle(b).visibility !== 'hidden'; }).map((b) => b.id || b.className) }))()`);
+        facts.closedControls = before.controls;
+        await evaluate(`document.querySelector('#mpill')?.click()`);
+        await settle(150);
+        const ctl = await evaluate<{ found: boolean; label: string; w: number; h: number; inView: boolean }>(`(() => {
+          const b = [...document.querySelectorAll('#mtop button, .pane .panetools button')].find((x) => {
+            const r = x.getBoundingClientRect(); return r.width > 0 && getComputedStyle(x).visibility !== 'hidden' && /such/i.test((x.textContent ?? '') + ' ' + (x.getAttribute('aria-label') ?? '')) && !x.classList.contains('panehover'); });
+          if (!b) return { found: false, label: '', w: 0, h: 0, inView: false };
+          window.__find = b; const r = b.getBoundingClientRect();
+          return { found: true, label: (b.textContent ?? '').trim() || b.title, w: r.width, h: r.height, inView: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
+        facts.control = ctl;
+        await shot(`${width}-1-insel`);
+        await evaluate(`window.__find?.click()`);
+        await wait(`document.querySelector('.pane .termfind.open')`, 3000);
+        await evaluate(`(() => { const i = document.querySelector('.pane .termfindin'); i.value = '0123'; i.dispatchEvent(new Event('input')); })()`);
+        await settle(200);
+        const g = await evaluate<Geom>(GEOM);
+        facts.phone = g;
+        claims["a visible control of the pane, one tap away in the island, is at least 40 px high and inside the screen"] = ctl.found && ctl.h >= 40 && ctl.inView;
+        claims["tapping it opens the search with the caret in its field — no hardware keyboard"] = ctl.found && g.open && g.focus;
+        claims["the open bar lies inside the screen and under the pill, not on it"] = !!g.bar && g.open && g.bar.l >= 0 && g.bar.r <= width
+          && (!g.pill || g.pill.h === 0 || g.bar.t >= g.pill.b - 0.5) && g.pageScroll <= 0;
+        await shot(`${width}-2-suche`);
+        // the conversation has no terminal to search: the island offers no search there
+        await evaluate(`document.querySelector('.pane .termfind .termfindbtn:last-child')?.click()`);
+        await evaluate(`document.querySelector('#mpill')?.click()`);
+        await settle(100);
+        await evaluate(`document.querySelector('#mview')?.click()`);
+        await wait(`document.querySelector('.pane.chat')`, 3000);
+        await evaluate(`document.querySelector('#mpill')?.click()`);
+        await settle(150);
+        claims["in the conversation view the island offers no terminal search"] = await evaluate<boolean>(`!!document.querySelector('.pane.chat')
+          && ![...document.querySelectorAll('#mtop button')].some((x) => x.getBoundingClientRect().width > 0 && /such/i.test((x.textContent ?? '') + ' ' + (x.getAttribute('aria-label') ?? '')))`);
+      }
       results.push({ width, height, claims, facts });
     }
     return results;

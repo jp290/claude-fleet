@@ -4359,6 +4359,12 @@ const portrait = () => isMobile() && !LANDSCAPE_MQ.matches;
 const mTop = $("mtop"), mPill = $("mpill") as HTMLButtonElement, mName = $("mname") as HTMLButtonElement;
 const mSlot = $("mslot") as HTMLButtonElement, mInfo = $("minfo") as HTMLButtonElement, mView = $("mview") as HTMLButtonElement;
 const mMore = $("mmore") as HTMLButtonElement, mGrip = $("mgrip") as HTMLButtonElement;
+// the terminal search on a phone (card 746e381b): ⌘/Ctrl+F needs a hardware keyboard, so the open
+// island carries it beside ℹ — a pane action outside the terminal text (G6.4), terminal view only.
+// Not a word in the tools row: there it pushed Schedule under ⋯. It opens the bar Pane#openSearch
+// opens; the search itself is unchanged.
+const mFind = $("mfind") as HTMLButtonElement;
+mFind.appendChild(icon("search"));
 mInfo.appendChild(icon("info"));
 mMore.appendChild(icon("dots"));
 const paneControl = (cls: string): HTMLButtonElement | null => {
@@ -4386,7 +4392,7 @@ function renderIsland(): void {
   const meta = [model ? modelLabel(model).split(" · ")[0] : "", effort].filter(Boolean).join(" · ");
   const view = paneControl("viewtoggle"), info = paneControl("boardtoggle");
   const chat = !!pane?.isChat, more = document.body.classList.contains("keyboard-options");
-  const key = [name, state, addr, meta, !!view, chat, !!info, more].join("|");
+  const key = [name, state, addr, meta, !!view, chat, !!info, more, slot].join("|");
   if (key === islandKey) return;
   islandKey = key;
   const dot = () => { const d = el("span", `act ${state}`); d.title = state ? STATE_WORD[state] : ""; return d; };
@@ -4398,6 +4404,7 @@ function renderIsland(): void {
   line1.append(...(state ? [dot()] : []), el("span", "mnm", name));
   mName.replaceChildren(line1, el("span", "mrp", meta));
   mView.hidden = !view;
+  mFind.hidden = !slot || chat;
   mView.textContent = chat ? "Terminal" : "Konversation";
   mView.title = chat ? "Zum Terminal zurück" : "Konversation anzeigen";
   mInfo.hidden = !info;
@@ -4415,6 +4422,7 @@ const islandAction = (run: () => void) => () => { setIsland(false); run(); };
 mSlot.onclick = islandAction(() => openSheet("sessions"));
 mInfo.onclick = islandAction(() => paneControl("boardtoggle")?.click());
 mView.onclick = islandAction(() => paneControl("viewtoggle")?.click());
+mFind.onclick = islandAction(() => panes[focused]?.openSearch());
 $("mhist").onclick = islandAction(() => $("histbtn").click());
 $("mauto").onclick = islandAction(() => $("autobtn").click());
 mMore.onclick = islandAction(() => openSheet("tools"));

@@ -6734,6 +6734,7 @@ export async function run(ctx: Ctx): Promise<void> {
           const row = { id: created.task.id, slot: undefined as number | undefined };
           made.push(row);
           rmSync(invoked, { force: true });
+          const promptsBefore = (await plogRead()).length;
           const dispatch = await post(`/api/tasks/${row.id}/dispatch`, {});
           const started = (await dispatch.json()) as { ok?: boolean; slot?: number };
           row.slot = started.slot;
@@ -6747,20 +6748,28 @@ export async function run(ctx: Ctx): Promise<void> {
             + ' -c \'mcp_servers.playwright={command="npx",args=["@playwright/mcp@latest"],enabled=false}\'';
           const command = async (): Promise<string> => {
             const out = (await tmuxOut("display-message", "-p", "-t", `s${row.slot}`, "#{pane_start_command}")).out;
-            return out.slice(out.lastIndexOf("; codex ") + 2).split("; exec ")[0]?.trim() ?? "";
+            const at = out.lastIndexOf("; codex ");
+            return at < 0 ? "" : out.slice(at + 2).split("; exec ")[0]?.trim() ?? "";
           };
           const observe = async (id?: string, phase = id ? "resume" : "fresh"): Promise<void> => {
             await until(() => existsSync(invoked), { timeoutMs: 10_000, what: "web stand-in invocation" });
             const actual = await command();
+            const wanted = expected(id).replaceAll('"', '\\"');
             const args = readFileSync(invoked, "utf8").trim().split("\n");
             check(`(web) ${search ? "search" : "absent"} ${phase}: generated command is byte-exact`,
-              actual === expected(id), `matches=${actual === expected(id)}`);
+              actual === wanted, JSON.stringify({ actual, wanted }));
             check(`(web) ${search ? "search" : "absent"} ${phase}: stand-in receives the exact search selection`,
               args.filter((arg) => arg === "--search").length === (search ? 1 : 0)
               && (id ? args[0] === "resume" && args[1] === id : args[0] === "--dangerously-bypass-approvals-and-sandbox"),
               `searchFlags=${args.filter((arg) => arg === "--search").length}`);
           };
           await observe();
+          await until(async () => (await plogRead()).slice(promptsBefore).some((e) =>
+            e.slot === row.slot && e.text.includes("code.txt bekommt eine Recherchezeile.")),
+          { timeoutMs: 15_000, what: "initial web dispatch brief finishes before lane restart" });
+          check(`(web) ${search ? "search" : "absent"}: initial dispatch delivery completes before lane restart`,
+            (await plogRead()).slice(promptsBefore).some((e) => e.slot === row.slot
+              && e.text.includes("code.txt bekommt eine Recherchezeile.")), `slot=${row.slot}`);
           rmSync(invoked, { force: true });
           const laneRestart = await post(`/api/slots/${row.slot}/lane-harness`, { harness: "codex", model: "gpt-6-astra", effort: "high" });
           const laneRestarted = (await laneRestart.json()) as { slot?: number; delivered?: boolean; error?: string };
@@ -6779,10 +6788,11 @@ export async function run(ctx: Ctx): Promise<void> {
             const done = await post(`/api/tasks/${row.id}/done`, {});
             check(`(web) ${search ? "search" : "absent"}: row leaves sent before recovery`, done.ok, `status=${done.status}`);
             await restartSrv({ PATH: webPath, FLEET_CODEX_SESSIONS_DIR: join(webDir, "sessions"), FLEET_DISPATCH_REPO: REPO });
-            const persisted = (await (await get(`/api/tasks/${row.id}`)).json()) as { task?: { status?: string; card?: { web?: string } } };
+            const persistedTasks = (await (await get("/api/tasks")).json()) as { tasks: { id: string; status?: string; card?: { web?: string } }[] };
+            const persisted = persistedTasks.tasks.find((t) => t.id === row.id);
             check(`(web) ${search ? "search" : "absent"}: declaration survives server restart`,
-              persisted.task?.card?.web === (search ? "search" : undefined) && persisted.task?.status === "done",
-              `web=${persisted.task?.card?.web ?? "absent"} status=${persisted.task?.status}`);
+              persisted?.card?.web === (search ? "search" : undefined) && persisted?.status === "done",
+              `web=${persisted?.card?.web ?? "absent"} status=${persisted?.status}`);
             const restored = (await (await get("/api/sessions")).json()) as { slots: { id: number; webSearch?: true }[] };
             check(`(web) ${search ? "search" : "absent"}: persisted Slot profile survives without a sent row`,
               restored.slots.find((s) => s.id === row.slot)?.webSearch === (search ? true : undefined), `search=${search}`);

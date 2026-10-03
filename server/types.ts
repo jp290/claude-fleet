@@ -650,8 +650,8 @@ interface FleetReport {
 
 // THE OWNER-FACING TWIN of ClarificationRequest, with the roles flipped: there a worker asks its
 // bound Program-MAIN, here the bound Program-MAIN asks the OWNER. The owner is a PRINCIPAL, not a
-// slot — there is no occupant triple to bind an answer to and none is invented, which is why
-// `answer.by` is the literal "owner" rather than the receiver occupant a clarification carries.
+// slot — Owner-Bearer answers carry `by: „[Zitat entfernt]“` without an invented occupant triple. A scoped
+// Orchestratorin answer carries `by: "orchestrator"` and her server-observed slot instead.
 // Everything else is deliberately the same shape, including `send-uncertain`: the answer travels
 // into the requester's pane over the same transport, so it inherits the same crash boundary.
 type AttentionKind = "decision" | "blocked" | "review-ready";
@@ -675,7 +675,7 @@ interface AttentionRequest {
   stage: AttentionStage;
   // present once POST /api/attention/:id/escalate handed the row from the Orchestratorin to the owner
   escalation?: { reason: string; at: number };
-  answer: { text: string; at: number; by: "owner" } | null;
+  answer: ({ text: string; at: number } & ({ by: "owner" } | { by: "orchestrator"; slot: number })) | null;
   refusedReason: string | null;
   closedAt: number | null;
 }
@@ -1250,7 +1250,9 @@ function attentionFrom(raw: unknown): AttentionRequest | null {
     || !(a.refusedReason === null || typeof a.refusedReason === "string")) return null;
   const answerShaped = (): boolean => !!answer && typeof answer.text === "string" && !!answer.text.trim()
     && answer.text.length <= MAX_ATTENTION_ANSWER && typeof answer.at === "number"
-    && Number.isFinite(answer.at) && answer.at > 0 && answer.by === "owner";
+    && Number.isFinite(answer.at) && answer.at > 0
+    && (answer.by === "owner" || (answer.by === "orchestrator"
+      && Number.isInteger(answer.slot) && answer.slot > 0 && a.stage === "orchestrator"));
   if (a.status === "open" && (answer !== null || a.refusedReason !== null || a.closedAt !== null)) return null;
   if (a.status === "answered") {
     if (!answerShaped() || a.refusedReason !== null || a.closedAt === null) return null;

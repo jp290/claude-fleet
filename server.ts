@@ -13784,8 +13784,8 @@ function dropWatchesFor(slotId: number, why?: SlotEnding): void {
 // the clarification reply proved, because the answer travels the same way (into a pane).
 //
 // The asymmetry that shapes every function below: the owner is a PRINCIPAL, not an occupant. There
-// is no owner slot to bind to, so nothing here tries to invent one — `answer.by` is the literal
-// "owner", and the only occupant this channel binds exactly is the REQUESTER.
+// is no owner slot to bind to, so Owner-Bearer answers keep `answer.by: „[Zitat entfernt]“`. The scoped
+// Orchestratorin answer records her slot; the REQUESTER remains bound by its exact occupant.
 
 // Terminal is answered|refused ONLY, for exactly the reason it is in pruneClarifications: a
 // send-uncertain row carries the one record that this text may already be in the requester's pane.
@@ -16193,9 +16193,11 @@ function attentionOwnerView(): (AttentionRequest & { programTitle: string | null
       delivery: attentionDelivery(a) }));
 }
 
-async function answerAttention(id: string, body: Record<string, unknown> | null): Promise<Response> {
+async function answerAttention(id: string, body: Record<string, unknown> | null, orchestrator?: Slot): Promise<Response> {
   const request = attentionRequests.find((a) => a.id === id);
   if (!request) return json({ error: "unknown attention request" }, 404);
+  if (orchestrator && request.stage !== "orchestrator")
+    return json({ error: "this attention waits on the owner" }, 403);
   if (!body || typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
   const answer = body.text.trim();
   if (!answer) return json({ error: "text must not be empty" }, 400);
@@ -16220,7 +16222,8 @@ async function answerAttention(id: string, body: Record<string, unknown> | null)
   const at = Date.now();
   const entry = appendProgramInbox(program, "attention-answer", request.id);
   request.status = "answered";
-  request.answer = { text: answer, at, by: "owner" };
+  request.answer = orchestrator ? { text: answer, at, by: "orchestrator", slot: orchestrator.id }
+    : { text: answer, at, by: "owner" };
   request.refusedReason = null;
   request.closedAt = at;
   audit("attention_answered", request.requester.slot,
@@ -42957,6 +42960,18 @@ Bun.serve<WSData>({
     const st = STATIC[url.pathname];
     if (st) return staticResponse(req, url, st);
 
+    const attentionAnswer = /^\/api\/attention\/([0-9a-f]{24})\/answer$/.exec(url.pathname);
+    if (attentionAnswer && req.method === "POST" && !tokenOk(tokenFrom(req))) {
+      const body = await readJson(req);
+      const principal = resolveSelfPrincipal(req);
+      const orchestrator = principal?.kind === "session" ? slots[principal.slot - 1] : undefined;
+      if (!orchestrator || deliveryRecipient({ kind: "orchestrator" }) !== orchestrator) {
+        await tokenGate(tokenFrom(req));
+        return json({ error: "unauthorized" }, 401);
+      }
+      return answerAttention(attentionAnswer[1], body, orchestrator);
+    }
+
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
 
@@ -45173,7 +45188,6 @@ Bun.serve<WSData>({
     // refusing is the receipt that the owner declined, which is why its reason is mandatory.
     if (url.pathname === "/api/attention" && req.method === "GET")
       return json({ requests: attentionOwnerView() });
-    const attentionAnswer = /^\/api\/attention\/([0-9a-f]{24})\/answer$/.exec(url.pathname);
     if (attentionAnswer && req.method === "POST")
       return answerAttention(attentionAnswer[1], await readJson(req));
     const attentionRefuse = /^\/api\/attention\/([0-9a-f]{24})\/refuse$/.exec(url.pathname);

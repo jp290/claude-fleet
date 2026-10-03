@@ -835,10 +835,15 @@ Rollenkarten in `docs/rollenkarten.md` sagen es für beide Seiten). Mechanik (`s
   400) setzt `stage:"owner"` und `escalation:{reason, at}`, Audit `attention_escalated`. Nur eine
   Stufe aufwärts: eine Zeile, die schon beim Owner liegt, ist 409, außer derselbe Grund wird
   wiederholt (`existing:true`). Eine geschlossene Zeile ist 409, eine unbekannte Id 404.
-- **Beantworten** geht in beiden Stufen durch `POST /api/attention/:id/answer`, unverändert: ein
-  `attention-answer`-Zeiger in der Program-Inbox, `answer.by:"owner"`. Beide Türen liegen hinter
-  dem Owner-Bearer. Nach Zeile 923f771e ist die handelnde Session in der Audit-Zeile erkennbar; bis dahin
-  kann der Server die Orchestratorin nicht vom Owner unterscheiden und behauptet es auch nicht.
+- **Beantworten** geht durch `POST /api/attention/:id/answer` mit `{"text":"…"}`. Die genau eine
+  lebende Nicht-Lane-Orchestratorin (`deliveryRecipient({kind:"orchestrator"})`, derselbe
+  `isOrchestratorLabel`-Filter wie beim Anlegen) darf mit ihrem `x-fleet-self-token` eine
+  `stage:"orchestrator"`-Zeile beantworten. Der Record trägt `answer.by:"orchestrator"` und
+  `answer.slot` mit ihrem Slot. Andere Session-Token und Lane-Token sind 401; ihr Token auf einer
+  `stage:"owner"`-Zeile ist 403. Diese Ablehnungen ändern weder Zeile noch Program-Inbox.
+  Der Owner-Bearer antwortet weiterhin in beiden Stufen mit `answer.by:„[Zitat entfernt]“`. Jede Antwort
+  schreibt genau einen `attention-answer`-Zeiger in die Program-Inbox; identische Wiederholungen
+  erhalten die gespeicherte Provenienz. Escalate bleibt hinter dem Owner-Bearer.
 - **Altbestand:** eine persistierte Zeile ohne `stage` lädt als `"owner"`.
 
 ## attention withdraw — `POST /api/self/attention/:id/withdraw`

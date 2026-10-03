@@ -77,6 +77,8 @@ const PRE_AUTH_ROUTES = [
   // lane reads its own task, the bound MAIN of an active Program reads that Program, everyone else
   // is refused 409 `no-scope`. Query parameters only narrow; a foreign task/program is a named 409.
   '= /api/self/memory',
+  // Self credential via resolveSelfPrincipal, read-only and slot-bound; each context borrow is logged.
+  String.raw`~ /^\/api\/self\/context\/([^/]+)$/`,
   // Program-scoped context pointers (2026-09-15, Task b28b9d89). Writes ONE field of ONE Program: the
   // Program the caller is bound MAIN of (boundProgramForMain), never one a body names; a lane 409s.
   // It stores tracked path/anchor pointers only, validated against the caller's own integration HEAD,
@@ -814,6 +816,19 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // self token, whoever holds it); a real LANE's token is exercised against the self routes it CAN
   // reach in §3 below and throughout e2e/self-token.ts.
   const plainSelf = await selfTokenOf(2);
+  const borrowLedger = `${ROOT}/context-borrows.jsonl`;
+  const borrowBytes = () => existsSync(borrowLedger) ? readFileSync(borrowLedger, "utf8") : "";
+  for (const [name, headers] of [
+    ["no token", {}],
+    ["unknown token", { "x-fleet-self-token": "00000000000000000000000000000000" }],
+  ] as const) {
+    const before = borrowBytes();
+    const denied = await fetch(BASE + "/api/self/context/portable-core", { headers });
+    const body: unknown = await denied.json();
+    check(`§2 context borrow: ${name} receives 401 without content or a borrow line`,
+      denied.status === 401 && JSON.stringify(body) === '{"error":"unauthorized"}' && borrowBytes() === before,
+      `status=${denied.status} ledgerUnchanged=${borrowBytes() === before}`);
+  }
   const mainDoorProbes = [
     { path: "/api/self/tasks/deadbeef", method: "GET" },
     { path: "/api/self/tasks/deadbeef/comment", method: "POST", body: { text: "probe" } },

@@ -14344,11 +14344,14 @@ export async function run(ctx: Ctx): Promise<void> {
       writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
       await restartSrv(extra);
     };
-    await post(`/api/tasks/${stB}/queue`, {});
     await stRestart({}, (state) => {
-      const row = (state.tasks as { id: string; hold?: unknown; card?: unknown }[]).find((t) => t.id === stB);
+      const row = (state.tasks as { id: string; status: string; releasedBy?: string; blockers?: BlockerHistory; hold?: unknown; card?: unknown }[]).find((t) => t.id === stB);
       if (row) {
-        row.hold = { by: "main", slot: mSlot, at: Date.now(), grund: "Blocker-Verlauf" };
+        const now = Date.now();
+        row.status = "queued";
+        row.releasedBy = "owner";
+        row.blockers = { freigabe: now, dispatch: null, observedAt: now, abschnitte: [] };
+        row.hold = { by: "main", slot: mSlot, at: now, grund: "Blocker-Verlauf" };
         row.card = { ziel: "f-stau.ts", rolle: { harness: null, model: null, effort: null },
           surface: { files: ["f-stau.ts"], symbols: [], ranges: null }, done: "the line stands", verify: "bun e2e/pins.ts",
           verboten: [], after: [stTraceTarget], model: "planted-blocker", at: Date.now(), ms: 0, gaps: [] };

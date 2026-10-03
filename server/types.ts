@@ -32,8 +32,21 @@ const MAX_SLOTS = BAND_SLOTS + (SEPARATE_LANE_SLOTS ? FLEET_MAX_SESSIONS : 0);
 // `context`: the pane's context budget (Slot.context) — Codex only, validated at set time (server.ts#contextOf).
 // Absent on every row that names none, the same byte-identity rule as `browser`.
 type SlotContext = { window: number; compactAt: number };
+type CodexPermissions = { sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  approval: "on-request" | "never" };
+type SlotPermissions = CodexPermissions | { state: "invalid" };
+const CODEX_PERMISSIONS_DEFAULT: Readonly<CodexPermissions> = { sandbox: "danger-full-access", approval: "never" };
+function codexPermissionsFrom(value: unknown): CodexPermissions | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes("sandbox") || !keys.includes("approval")) return null;
+  const { sandbox, approval } = value as { sandbox: unknown; approval: unknown };
+  if (sandbox !== "read-only" && sandbox !== "workspace-write" && sandbox !== "danger-full-access") return null;
+  if (approval !== "on-request" && approval !== "never") return null;
+  return { sandbox, approval };
+}
 type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null; browser?: true;
-  context?: SlotContext };
+  context?: SlotContext; permissions?: SlotPermissions };
 
 interface SlotStreamOccupant { slot: number; openedAt: number; selfToken: string }
 
@@ -2061,6 +2074,7 @@ interface Slot {
   // flag, today's spawn line byte for byte. Validated 0 < compactAt < window <= the client's catalog
   // maximum (server.ts#CODEX_CONTEXT_WINDOW_MAX); a stored value that fails it reloads as null. Same
   // lifetime as `effort`. A budget, not a quality promise: docs/messungen/2026-09-15-codex-kontextfenster-profile.md.
+  permissions: SlotPermissions | null;
   taskId: string | null; // the queue row that spawned this lane. Carried because the outcome
   // recorder runs at TEARDOWN — by then the slot is the only object that still names the run.
   // null for a hand-opened lane and cleared with the occupant, exactly like releasedBy below.
@@ -3509,7 +3523,7 @@ export type {
   ProgramHandoverRead, ProgramRecordLoss, ProgramRecordLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,
-  ProgramValidation, ProgramDigest, DispatchSpawn, SlotContext, SlotStreamOccupant,
+  ProgramValidation, ProgramDigest, DispatchSpawn, SlotContext, CodexPermissions, SlotPermissions, SlotStreamOccupant,
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, TaskHoldUntil, StallRepoClock, StallSensorState,
@@ -3517,6 +3531,7 @@ export type {
   LineageHandoverRead, LineageHandoverLoss, MemoryGrant, MemoryGrantView, MemoryGrantOccupant, ReportDelegate,
 };
 export {
+  CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, loadReportDelegate,
   loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
   MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, watchFrom, FLEET_EVENT_TERMINAL,

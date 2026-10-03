@@ -300,6 +300,7 @@ export interface SlotInfo {
   succession?: { session: number; taken: number | null; cap: number | null };
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
+  permissions?: { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" } | { state: "invalid" };
   harness?: string; effort?: string;
   // what the session is for (server.ts, the /api/sessions slot row) — absent means none set
   mission?: string; awaiting?: "owner" | "main"; taskId?: string; taskHead?: string; programId?: string;
@@ -338,7 +339,9 @@ interface CodexCandidatesView {
 // the static harness catalogue (GET /api/harnesses, fetched once). `supports` is the server's,
 // never a second copy maintained here: a feature this client hides must be hidden because the
 // registry says the harness cannot do it, not because someone wrote the same list twice.
-export interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boolean; model: boolean;
+export interface HarnessInfo { id: string; permissions?: { status: "unsupported" } | { status: "supported";
+  sandbox: ("read-only" | "workspace-write" | "danger-full-access")[]; approval: ("on-request" | "never")[];
+  default: { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" } }; supports: { resume: boolean; transcript: boolean; model: boolean;
   effort: boolean; selfSchedule: boolean; container: boolean;
   // the conversation view has something to read: a Claude transcript OR the adapter's own reader
   // (codex rollout, pi session — server.ts#Harness.conversation). Optional for an older server,
@@ -4708,7 +4711,7 @@ export function labelled(text: string, control: HTMLElement): HTMLElement {
 // the options a founding sends with the slot's /open door. Absent fields mean "the default", which
 // is exactly what the server reads them as. src/founding.ts builds it.
 // `branch` only on the worktree doors (/open-worktree, /api/lanes): the owner's named lane
-export interface SpawnBody { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[]; branch?: string }
+export interface SpawnBody { permissions?: { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" }; harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[]; branch?: string }
 
 // --- the file view: one renderer for every file list in the app ---------------------------------
 //

@@ -51,7 +51,7 @@ import {
   harnessBlockMessage, laneReviewMessage,
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
-import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName } from "../server/types";
+import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName, codexPermissionsFrom, CODEX_PERMISSIONS_DEFAULT } from "../server/types";
 import { modulesEnv } from "../helper-daemon/daemon";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
@@ -3213,10 +3213,10 @@ await import(pathToFileURL(process.argv[2]).href);
   // field, `browser?: true` (2026-09-14), is the exception by design: its absence already HAS its
   // meaning — a text lane, the default — so DEFAULT_SPAWN carries none and the tick spawns text lanes.
   // `context?` (2026-09-15) follows the same rule: absent = no context flag, today's spawn line.
-  pin("the attended dispatch carries model+harness+effort+browser+context, while the tick default keeps all three null and no browser or context",
-    /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null; browser\?: true;\s+context\?: SlotContext \};/.test(server)
+  pin("the attended dispatch carries model+harness+effort+browser+context+permissions, while the tick default keeps all three null and no browser or context",
+    /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null; browser\?: true;\s+context\?: SlotContext; permissions\?: SlotPermissions \};/.test(server)
     && /const DEFAULT_SPAWN: DispatchSpawn = \{ harness: null, model: null, effort: null \};/.test(server)
-    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true,\s+spawn\.context \?\? null\)/.test(dBody),
+    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true,\s+spawn\.context \?\? null, false, spawn\.permissions\)/.test(dBody),
     dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 180) ?? "no openSlot call");
   const tStart = server.indexOf("async function tickDispatch");
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
@@ -3728,7 +3728,7 @@ await import(pathToFileURL(process.argv[2]).href);
       && /landWaveProjectionNow\(\)\.repos/.test(crBody)
       && /dispatchRepos\.has\(requested\)/.test(crBody)
       && /if \(body\.programId !== undefined\)/.test(crBody)
-      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo"\];/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "permissions", "card", "variants", "files", "repo"\];/.test(crBody)
       && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
     crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
   // …and the `files` the set above admits is a PROPOSAL, held over the source because nothing at
@@ -4110,59 +4110,53 @@ await import(pathToFileURL(process.argv[2]).href);
   // it silently changed.
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
-  pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",
-    /codex --dangerously-bypass-approvals-and-sandbox/.test(xCode) && !/--sandbox workspace-write/.test(xCode),
-    xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
-  pin("the codex spawn disables startup update checks through the documented config override",
-    (xCode.match(/-c check_for_update_on_startup=false/g) ?? []).length === 2,
-    xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
-  // The trust prelude is what keeps that spawn UNATTENDED-bootable: codex blocks on its per-path
-  // trust prompt for any cwd absent from ~/.codex/config.toml, and the bypass flag does NOT skip
-  // it (measured 2026-08-12). Losing the prelude or the charset guard is invisible at runtime on a
-  // suite fleet, so both are rules over the source.
-  pin("the codex spawn writes its idempotent trust entry, guarded by the spawn-path charset",
-    /grep -qxF '\[projects\."\$\{o\.cwd\}"\]'/.test(xCode) && /trust_level = "trusted"/.test(xCode)
-    && /SPAWN_PATH_RE\.test\(o\.cwd\)/.test(xCode),
-    xCode.match(/const trust = [^\n]*/)?.[0] ?? "no trust prelude");
-  // ...and it writes where codex READS: `${CODEX_HOME:-$HOME/.codex}`. A suite exports CODEX_HOME
-  // into its instance, so its temp cwds stop piling into the owner's config (9 883 entries, 8 502
-  // of them suite temp paths, docs/messungen/2026-09-14-codex-lane-verdrahtung.md). Executed, not
-  // just matched: the prelude as the source spells it runs under each available shell, and without
-  // CODEX_HOME it must leave exactly the bytes the old `$HOME/.codex` prelude left, once.
-  const trustSrc = xBody.match(/\? `(grep -qxF [^`]*)`\n\s*: "";/)?.[1] ?? "";
-  pin("the codex trust prelude reads and appends ${CODEX_HOME:-$HOME/.codex}/config.toml, never a bare $HOME path",
-    (trustSrc.match(/"\\\$\{CODEX_HOME:-\$HOME\/\.codex\}\/config\.toml"/g) ?? []).length === 2
-    && !trustSrc.includes('"$HOME/.codex/config.toml"'), trustSrc.slice(0, 200) || "no trust prelude");
-  {
-    const trustCwd = "/tmp/fleet-pin-trust/repo.worktrees/x-1";
-    const trustRun = trustSrc.replaceAll("${o.cwd}", trustCwd).replaceAll("\\${", "${").replaceAll("\\n", "\n");
-    const want = `\n[projects."${trustCwd}"]\ntrust_level = "trusted"\n`;
-    const shells = ["/bin/sh", "/bin/zsh"].filter((s) => existsSync(s));
-    const seen: string[] = [];
-    let ok = trustSrc !== "" && shells.length > 0;
-    for (const sh of shells) {
-      const home = mkdtempSync(`${tmpdir()}/fleet-pin-trust-`);
-      try {
-        mkdirSync(`${home}/.codex`);
-        mkdirSync(`${home}/codex-home`);
-        const run = (env: Record<string, string>) =>
-          spawnSync(sh, ["-c", trustRun], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, ...env } }).status;
-        const cfg = (p: string) => existsSync(p) ? readFileSync(p, "utf8") : "";
-        const s1 = run({}); const s2 = run({});
-        const bare = cfg(`${home}/.codex/config.toml`);
-        const s3 = run({ CODEX_HOME: `${home}/codex-home` });
-        const scoped = cfg(`${home}/codex-home/config.toml`);
-        const bareAfter = cfg(`${home}/.codex/config.toml`);
-        const shOk = s1 === 0 && s2 === 0 && s3 === 0 && bare === want && scoped === want && bareAfter === want;
-        ok &&= shOk;
-        seen.push(`${sh}:${shOk ? "ok" : JSON.stringify({ s1, s2, s3, bare, scoped, bareAfter })}`);
-      } finally {
-        rmSync(home, { recursive: true, force: true });
+  pin("Codex permission defaults and the documented six forms agree without a bypass flag",
+    JSON.stringify(CODEX_PERMISSIONS_DEFAULT) === JSON.stringify({ sandbox: "danger-full-access", approval: "never" })
+      && !xCode.includes("--dangerously-bypass-approvals-and-sandbox")
+      && xCode.includes("--sandbox ${permissions.sandbox} --ask-for-approval ${permissions.approval}")
+      && read("docs/harness-adapter.md").includes("permissions:{sandbox,approval}"),
+    "explicit sandbox/approval and documented profile");
+  pin("the Codex spawn disables startup update checks once after the fresh/resume choice",
+    (xCode.match(/-c check_for_update_on_startup=false/g) ?? []).length === 1
+      && xCode.indexOf("check_for_update_on_startup=false") > xCode.indexOf("let cmd = o.resume"), "shared override");
+  pin("Codex trust is a whole-table, shell-quoted session override, never a global config prelude",
+    xCode.includes('const trust = `projects={${JSON.stringify(realpathSync(o.cwd))}={trust_level="trusted"}}`;')
+      && xCode.includes("shellSingleQuote(trust)") && !/config\.toml|grep -qxF|printf/.test(xCode)
+      && xCode.includes("--no-daemon"), "session-only trust with isolated execution");
+  const spawnStart = xCode.indexOf("  spawnCmd: (o) => {") + "  spawnCmd: (o) => {".length;
+  const spawnEnd = xCode.indexOf("\n  },", spawnStart);
+  type Permissions = { sandbox: string; approval: string };
+  const spawnCmd = new Function("codexPermissionsFrom", "shellSingleQuote", "realpathSync", "PATH_EXPORT",
+    "CODEX_TEXT_LANE_MCP", "SHELL", `return (o) => {${xCode.slice(spawnStart, spawnEnd)}}`)(
+    codexPermissionsFrom, (v: string) => `'${v.replaceAll("'", "'\\''")}'`, realpathSync, "", "", "/usr/bin/true") as
+    (o: { permissions: Permissions; resume: boolean; sessionId: string; cwd: string; browserMcp: boolean }) => string;
+  const home = mkdtempSync(`${tmpdir()}/fleet-pin-permissions-`);
+  try {
+    mkdirSync(`${home}/.codex`); mkdirSync(`${home}/codex-home`); mkdirSync(`${home}/bin`);
+    writeFileSync(`${home}/.codex/config.toml`, "owner config\n");
+    writeFileSync(`${home}/codex-home/config.toml`, "scoped config\n");
+    writeFileSync(`${home}/bin/codex`, '#!/bin/sh\nprintf "%s\\n" "$@" > "$PERMISSIONS_ARGV"\n');
+    chmodSync(`${home}/bin/codex`, 0o700);
+    const fixtureReady = existsSync("/usr/bin/true") && (statSync("/usr/bin/true").mode & 0o111) !== 0;
+    pin("Codex argv fixture precondition: the shell completion executable exists and is executable", fixtureReady, "/usr/bin/true");
+    if (fixtureReady) for (const sandbox of ["read-only", "workspace-write", "danger-full-access"]) for (const approval of ["on-request", "never"]) {
+      const profile = { sandbox, approval };
+      for (const resume of [false, true]) {
+        const line = spawnCmd({ permissions: profile, resume, sessionId: "10000000-0000-4000-8000-000000000001",
+          cwd: home, browserMcp: true });
+        const env = { PATH: `${home}/bin:/usr/bin:/bin`, HOME: home, CODEX_HOME: `${home}/codex-home`, PERMISSIONS_ARGV: `${home}/argv` };
+        const run = spawnSync("/bin/sh", ["-c", line], { env });
+        const argv = existsSync(`${home}/argv`) ? readFileSync(`${home}/argv`, "utf8").trimEnd().split("\n") : [];
+        pin(`Codex ${sandbox}/${approval} ${resume ? "resume" : "fresh"}: exact flags, no bypass and config bytes unchanged`,
+          run.status === 0 && argv[argv.indexOf("--sandbox") + 1] === sandbox
+            && argv[argv.indexOf("--ask-for-approval") + 1] === approval
+            && (resume ? argv[0] === "resume" && argv[1] === "10000000-0000-4000-8000-000000000001" : argv[0] === "--no-daemon")
+            && !line.includes("bypass") && argv.includes(`projects={${JSON.stringify(realpathSync(home))}={trust_level="trusted"}}`)
+            && readFileSync(`${home}/.codex/config.toml`, "utf8") === "owner config\n"
+            && readFileSync(`${home}/codex-home/config.toml`, "utf8") === "scoped config\n", `status=${run.status} stderr=${run.stderr.toString().trim()} argv=${JSON.stringify(argv)}`);
       }
     }
-    pin("the codex trust prelude, executed: no CODEX_HOME -> exactly the old $HOME/.codex bytes once; CODEX_HOME set -> there, $HOME untouched",
-      ok, seen.join(" ") || "no shell ran");
-  }
+  } finally { rmSync(home, { recursive: true, force: true }); }
   // The suite half: e2e-isolated.sh opens codex slots on temp cwds, so it must EXPORT an instance
   // CODEX_HOME before its tmux server exists (a pane's env is that server's global env), and must
   // not bend HOME, which claude and bun caches live under.
@@ -5004,7 +4998,7 @@ await import(pathToFileURL(process.argv[2]).href);
     cxTernary > 0 && cxAppend > cxTernary && (cxCode.match(/CODEX_TEXT_LANE_MCP/g) ?? []).length === 1,
     `ternary@${cxTernary} append@${cxAppend}`);
   pin("ensureSlot resolves the profile for LANES only — a slot without a worktree keeps its ambient MCPs",
-    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context, rulebookRole[,\s}]/.test(server), "browserMcp: !s.worktree || occupant.browser");
+    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context, permissions: po\.permissions, rulebookRole[,\s}]/.test(server), "browserMcp: !s.worktree || occupant.browser");
   // the context ceiling is the measured catalog maximum as a literal, never an env knob
   // (docs/messungen/2026-09-15-codex-kontextfenster-profile.md §2)
   pin("CODEX_CONTEXT_WINDOW_MAX is the literal 872_000 and no env read names it",
@@ -5013,18 +5007,13 @@ await import(pathToFileURL(process.argv[2]).href);
   const applies = [...server.matchAll(/\n  browserProfile: "(apply|not-applicable|unsupported)",/g)].map((m) => m[1]);
   pin("exactly claude and codex apply the browser profile; the other adapter literals dispose it explicitly",
     applies.filter((a) => a === "apply").length === 2 && applies.length === 6, applies.join(",") || "no browserProfile literal");
-  // THE NEGATIVE PROMISE. Code lines only (comments explain these files and may name them). The one
-  // config.toml writer that exists is codex's per-path TRUST prelude, and it may append nothing but a
-  // `[projects."…"]` table with `trust_level` — no `plugins`, no `mcp_servers`, no `enabled` key.
   const codeLines = server.split("\n").filter((l) => !l.trim().startsWith("//"));
   const settingsJson = codeLines.filter((l) => /settings\.json/.test(l));
   const configToml = codeLines.filter((l) => /config\.toml/.test(l));
   pin("Fleet writes no global plugin settings: no code line names ~/.claude/settings.json",
     settingsJson.length === 0, settingsJson.map((l) => l.trim().slice(0, 80)).join(" | "));
-  pin("Fleet writes no global plugin settings: the only config.toml code line is the codex trust prelude",
-    configToml.length === 1 && /printf '\\n\[projects\."%s"\]\\ntrust_level = "trusted"\\n'/.test(configToml[0] ?? "")
-    && !/plugins|mcp_servers|enabled/.test(configToml[0] ?? ""),
-    configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
+  pin("Fleet writes no global Codex configuration: no code line names config.toml",
+    configToml.length === 0, configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
   pin("Fleet writes no global plugin settings: enabledPlugins is never named in code",
     !codeLines.some((l) => /enabledPlugins/.test(l)), "");
 }
@@ -7531,12 +7520,12 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     bootstrapBody.indexOf("reserveProgramFounding") >= 0
       && bootstrapBody.indexOf("reserveProgramFounding") < bootstrapBody.indexOf("await preflightProgramMain")
       && bootstrapBody.indexOf("canonicalizeGameMakerTreeLease") > bootstrapBody.indexOf("await preflightProgramMain")
-      && /openSlot\([\s\S]*?treeLease\)/.test(bootstrapBody)
+      && /openSlot\([\s\S]*?treeLease(?:, false, null, false, (?:pe|spawn)\.permissions)?\)/.test(bootstrapBody)
       && /releaseGameMakerTreeLease\(treeLease\)/.test(bootstrapBody)
       && succeedBody.indexOf("reserveProgramFounding") >= 0
       && succeedBody.indexOf("reserveProgramFounding") < succeedBody.indexOf("await preflightProgramMain")
       && succeedBody.indexOf("canonicalizeGameMakerTreeLease") > succeedBody.indexOf("await preflightProgramMain")
-      && /openSlot\([\s\S]*?treeLease\)/.test(succeedBody)
+      && /openSlot\([\s\S]*?treeLease(?:, false, null, false, (?:pe|spawn)\.permissions)?\)/.test(succeedBody)
       && /releaseGameMakerTreeLease\(treeLease\)/.test(succeedBody),
     `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
   pin(`${RULE_GM_TREE} — openSlot checks the shared Game-Maker gate and holds one intent until its finally`,

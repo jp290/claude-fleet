@@ -1742,6 +1742,36 @@ Owner-Token, **keine** Self-Route; Entwurf B aus `docs/messungen/2026-09-15-frei
   Route lässt Status, Hold, Karte, Program und Kommentare stehen; `sent` und Variantengruppen sind 409.
   Jede tatsächliche Änderung schreibt `task_spawn` mit alter und neuer Wahl ins Audit.
 
+## Codex permissions — Gründung und Wiederanlauf
+
+`permissions:{sandbox,approval}` ist eine optionale Ausführungsauswahl an den bestehenden Türen:
+Owner `POST /api/slots/:id/open` (auch Recycle), `…/open-worktree`, `/api/lanes` (auch Attach),
+Program-MAIN-Gründung und Task-`spawn` bei Create/Dispatch. Genau zwei Schlüssel sind erlaubt:
+`sandbox: "read-only"|"workspace-write"|"danger-full-access"` und `approval: "on-request"|"never"`.
+Absenz wählt für Codex explizit `{sandbox:"danger-full-access",approval:"never"}`; jeder andere
+Harness verweigert eine explizite Auswahl mit 400 `permissions unsupported` vor Spawn.
+Ungültige Form oder Enum wird mit 400 verweigert; kein Null-Reset, kein Schema-Enum-Passthrough.
+
+`GET /api/sessions` zeigt die gewählte Auswahl als Slot-`permissions`; `GET /api/harnesses` zeigt
+`permissions:{status:"supported",sandbox:[…],approval:[…],default:{…}}` für Codex und
+`{status:"unsupported"}` für andere Harnesses. Persistenz, Fresh, exakter Resume, Heal, Wake und
+Restart halten dasselbe normalisierte Profil. `POST /api/slots/:id/restart` und Self-Succession
+akzeptieren optional nur das identische Profil; ein anderes ist 409, Auswahländerung benötigt
+Owner-Recycle. Der Owner-Harnesswechsel nimmt bei gleichem Harness ohne Feld dessen Profil mit,
+bei neuem Harness validiert er die neue Auswahl; keine Profilübertragung auf neue Worker.
+
+Alte Codex-Slotdaten ohne das Feld werden mit dem bisherigen Vollzugriffsprofil migriert.
+Vorhandene fehlerhafte Daten bleiben sichtbar/persistiert als `permissions:{state:"invalid"}` und
+verhindern Spawn/Restart, bis ein Owner-Recycle eine gültige Auswahl liefert. Recycle validiert
+vor Teardown und übernimmt ausschließlich den neuen Request. Nach externem await muss der exakte
+Occupant weiter gelten, bevor Profil oder Spawn publiziert wird.
+
+Die Auswahl steuert nur Codex-Ausführung, keine Fleet-Datensicht, MemoryGrants, Rollen oder Packs.
+Kein CLI-`--profile` und keine globale Konfigurationsänderung: Sandbox/Approval und CWD-Trust
+laufen über sitzungsbezogene CLI-Overrides. Supported/Refusal und die begrenzten Werte sind in
+`docs/harness-adapter.md` beim Codex-Profil beschrieben; ein unerwarteter Trust-Dialog bleibt ein
+Readiness-Refusal, kein automatisches Ja.
+
 ## spawn — `POST /api/self/tasks/:id/spawn`
 
 Die exakt gebundene MAIN eines aktiven Programs kann die Worker-Wahl einer eigenen `pending`- oder

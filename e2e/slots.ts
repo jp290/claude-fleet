@@ -23,6 +23,7 @@ import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
 
 export async function run(): Promise<void> {
+  await runCodexPermissions();
   // --- slots ---
   const fixed = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
   check("the sidebar API exposes all 16 fixed slots in order",
@@ -6106,11 +6107,12 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
   const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
-  type Row = { id: number; cwd: string | null; label?: string; openedAt?: number; repo?: string };
+  type Row = { id: number; cwd: string | null; label?: string; openedAt?: number; repo?: string; harness?: string;
+    permissions?: { sandbox: string; approval: string } };
   const fx = { slots: [] as Row[], sends: [] as { slot: number; text: string }[], sessions: 0, inputs: [] as string[] };
   const fresh = (): Row[] => [
     { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000 },
-    { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000 },
+    { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, harness: "codex", permissions: { sandbox: "workspace-write", approval: "on-request" } },
     ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
   ];
   // one fake socket per pane: opens on the next tick, seeds one line, keeps every byte the page sends
@@ -6293,7 +6295,32 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         facts.native = { slot1: await evaluate<string>("window.__fx.sent(1)"), slot2: await evaluate<string>("window.__fx.sent(2)"), draft: await evaluate<string>("document.querySelector('#input').value") };
         claims["native typing in that terminal reaches only slot 2's socket, never the composer"] = (facts.native as { slot2: string }).slot2.includes("xyz")
           && (facts.native as { slot1: string }).slot1 === before1 && (facts.native as { draft: string }).draft === "";
-        await shot(width, "terminal-2-focused");
+        const approvalFrame = 'Would you like to run the following command?\r\n  printf permission-probe\r\n  1. Yes, proceed\r\n  2. Yes, and don\'t ask again\r\n  3. No, and tell Codex what to do differently (esc)\r\n';
+        await evaluate(`(() => { const w = window.__ws.filter(w => /\\/ws\\/2(?:[/?]|$)/.test(w.url) && w.readyState === 1).at(-1); w.onmessage({ data: new TextEncoder().encode(${JSON.stringify(approvalFrame)}).buffer }); })()`);
+        const sendsBeforeApproval = sendsAt();
+        const alphaBeforeApproval = await evaluate<string>("window.__fx.sent(1)");
+        await typeText("1"); await key("Enter");
+        facts.permissionPrompt = { profile: fx.slots[1]?.permissions, where: await evaluate<string>("window.__fx.where()"),
+          target: await tgt(), beta: await evaluate<string>("window.__fx.sent(2)") };
+        claims["Codex workspace-write/on-request approval input stays in Beta's terminal, target and draft survive"] =
+          JSON.stringify(fx.slots[1]?.permissions) === '{"sandbox":"workspace-write","approval":"on-request"}'
+          && (facts.permissionPrompt as { where: string }).where === "terminal1"
+          && (facts.permissionPrompt as { beta: string }).beta.includes("1\r")
+          && await evaluate<string>("window.__fx.sent(1)") === alphaBeforeApproval
+          && await evaluate<string>("document.querySelector('#input').value") === "" && sendsAt() === sendsBeforeApproval
+          && names((facts.permissionPrompt as { target: Target }).target, 2, 2000, "Beta");
+        const oldSocketCount = await evaluate<number>("window.__ws.length");
+        await evaluate(`window.__ws.filter(w => /\\/ws\\/2(?:[/?]|$)/.test(w.url) && w.readyState === 1).at(-1).close()`);
+        const reconnected = await wait(`window.__ws.length > ${oldSocketCount} && window.__ws.at(-1).readyState === 1`, 5000);
+        await typeText("n"); await key("Enter");
+        facts.permissionReconnect = { reconnected, where: await evaluate<string>("window.__fx.where()"), target: await tgt(),
+          input: await evaluate<string>("window.__ws.at(-1).sent") };
+        claims["approval terminal reconnect preserves Beta focus, send target and socket destination"] = reconnected
+          && (facts.permissionReconnect as { where: string }).where === "terminal1"
+          && names((facts.permissionReconnect as { target: Target }).target, 2, 2000, "Beta")
+          && (facts.permissionReconnect as { input: string }).input.includes("n\r")
+          && await evaluate<string>("window.__fx.sent(1)") === alphaBeforeApproval && sendsAt() === sendsBeforeApproval;
+        await shot(width, "terminal-2-permission-reconnected");
 
         // --- 3. Enter sends to the target on screen, and only there
         await click("document.querySelector('#input')");
@@ -7912,5 +7939,190 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
     return results;
   } finally {
     socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+type PermissionProfile = { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" };
+type PermissionRow = { id: number; cwd: string | null; openedAt: number; permissions?: PermissionProfile | { state: "invalid" };
+  codexRecovery?: { sessionId: string | null }; };
+
+async function runCodexPermissions(): Promise<void> {
+  const bin = `${ROOT}/permissions-bin`, argvLog = `${ROOT}/permissions-argv.jsonl`;
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(`${bin}/codex`, `#!/usr/bin/env bun\nimport {appendFileSync} from "node:fs";\nappendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2))+"\\n");\nconsole.log(">_ OpenAI Codex (vfixture)\\n› ");\nsetInterval(()=>{},1000);\n`);
+  chmodSync(`${bin}/codex`, 0o700);
+  const path = `${bin}:${process.env.PATH ?? ""}`;
+  const args = (): string[][] => exists(argvLog) ? readFileSync(argvLog, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]) : [];
+  const nextArgs = async (prior: number): Promise<string[]> => {
+    for (let i = 0; i < 100; i++) { const lines = args(); if (lines.length > prior) return lines[prior]; await Bun.sleep(50); }
+    return [];
+  };
+  const row = async (): Promise<PermissionRow | undefined> => ((await (await get("/api/sessions")).json()) as
+    { slots: PermissionRow[] }).slots.find((s) => s.id === 16);
+  const profileIs = (actual: unknown, expected: PermissionProfile): boolean => JSON.stringify(actual) === JSON.stringify(expected);
+  const flagsAre = (argv: string[], profile: PermissionProfile, sid?: string): boolean =>
+    argv[argv.indexOf("--sandbox") + 1] === profile.sandbox
+      && argv[argv.indexOf("--ask-for-approval") + 1] === profile.approval
+      && !argv.some((arg) => arg.includes("bypass"))
+      && argv.includes("--no-daemon") && argv.includes('approvals_reviewer="user"')
+      && argv.includes('sandbox_workspace_write={writable_roots=[],network_access=false,exclude_tmpdir_env_var=false,exclude_slash_tmp=false}')
+      && (!sid || argv[0] === "resume" && argv[1] === sid);
+  const configPath = process.env.CODEX_HOME ? `${process.env.CODEX_HOME}/config.toml` : null;
+  const configBefore = configPath && exists(configPath) ? readFileSync(configPath) : null;
+  const cwd = resolve(REPO);
+  const sessions = process.env.FLEET_CODEX_SESSIONS_DIR;
+  check("Codex permissions fixture has an isolated rollout root", !!sessions && sessions !== `${process.env.HOME}/.codex/sessions`, sessions ?? "missing");
+  if (!sessions) return;
+  await restartSrv({ PATH: path });
+  try {
+    const capability = (await (await get("/api/harnesses")).json()) as { harnesses: { id: string;
+      permissions?: { status: string; sandbox?: string[]; approval?: string[]; default?: PermissionProfile } }[] };
+    check("Codex permissions capability publishes the closed choices and full-access default",
+      JSON.stringify(capability.harnesses.find((h) => h.id === "codex")?.permissions) === JSON.stringify({
+        status: "supported", sandbox: ["read-only", "workspace-write", "danger-full-access"], approval: ["on-request", "never"],
+        default: { sandbox: "danger-full-access", approval: "never" } }), JSON.stringify(capability));
+    const defaultProfile: PermissionProfile = { sandbox: "danger-full-access", approval: "never" };
+    let n = args().length;
+    const defaultOpen = await post("/api/slots/16/open", { cwd, harness: "codex", packs: [] });
+    check("Codex absence stores and spawns the explicit legacy full-access profile", defaultOpen.ok
+      && profileIs((await row())?.permissions, defaultProfile) && flagsAre(await nextArgs(n), defaultProfile));
+    for (const sandbox of ["read-only", "workspace-write", "danger-full-access"] as const) for (const approval of ["on-request", "never"] as const) {
+      const profile = { sandbox, approval }; const title = `Codex ${sandbox}/${approval}`;
+      n = args().length;
+      const opened = await post("/api/slots/16/open", { cwd, harness: "codex", permissions: profile, packs: [] });
+      const fresh = await row();
+      check(`${title}: fresh/recycle stores only the new selection and spawns its exact flags`, opened.ok
+        && profileIs(fresh?.permissions, profile) && fresh?.codexRecovery?.sessionId === null && flagsAre(await nextArgs(n), profile), JSON.stringify(fresh));
+      const sid = crypto.randomUUID();
+      mkdirSync(sessions, { recursive: true });
+      const rollout = `${sessions}/rollout-profile-${sid}.jsonl`;
+      writeFileSync(rollout, JSON.stringify({ type: "session_meta", payload: { id: sid, cwd,
+        timestamp: new Date(Date.now() - 10000).toISOString(), thread_source: "user", originator: "codex-tui" } }) + "\n");
+      const bind = await post("/api/slots/16/codex-bind", { sessionId: sid });
+      check(`${title}: exact conversation bind succeeds`, bind.ok, String(bind.status));
+      n = args().length;
+      const restarted = await post("/api/slots/16/restart", { permissions: profile });
+      const after = await row();
+      check(`${title}: restart resumes only the exact ID with the same profile`, restarted.ok
+        && after?.codexRecovery?.sessionId === sid && profileIs(after?.permissions, profile)
+        && flagsAre(await nextArgs(n), profile, sid), JSON.stringify(after));
+      const durable = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, PermissionRow> };
+      check(`${title}: persistence records the chosen profile`, profileIs(durable.slots[16]?.permissions, profile));
+      await tmuxOut("kill-session", "-t", "=s16");
+      n = args().length;
+      await restartSrv({ PATH: path });
+      const reloaded = await row();
+      check(`${title}: persisted reload and heal retain profile and exact resume`, profileIs(reloaded?.permissions, profile)
+        && reloaded?.codexRecovery?.sessionId === sid && flagsAre(await nextArgs(n), profile, sid), JSON.stringify(reloaded));
+      rmSync(rollout, { force: true });
+    }
+    const retained = await row(); n = args().length;
+    for (const permissions of [null, [], {}, { sandbox: "read-only" }, { sandbox: "unknown", approval: "never" },
+      { sandbox: "read-only", approval: "untrusted" }, { sandbox: "workspace-write", approval: "on-failure" },
+      { sandbox: "read-only", approval: { granular: {} } }, { sandbox: "read-only", approval: "never", extra: true }]) {
+      const response = await post("/api/slots/16/open", { cwd, harness: "codex", permissions });
+      const current = await row();
+      check("malformed/unsupported Codex permissions refuse before recycle or spawn", response.status === 400
+        && current?.openedAt === retained?.openedAt && profileIs(current?.permissions, defaultProfile) && args().length === n,
+        JSON.stringify(permissions));
+    }
+    for (const harness of capability.harnesses.filter((h) => h.id !== "codex")) {
+      const response = await post("/api/slots/16/open", { cwd, harness: harness.id, permissions: defaultProfile });
+      const error = await response.json() as { error?: string };
+      check(`${harness.id}: explicit permissions are unsupported before spawn`, response.status === 400
+        && error.error === `harness ${harness.id} permissions unsupported` && (await row())?.openedAt === retained?.openedAt
+        && args().length === n, JSON.stringify(error));
+    }
+    const different = await post("/api/slots/16/restart", { permissions: { sandbox: "read-only", approval: "never" } });
+    check("restart cannot silently change permissions or spawn", different.status === 409 && args().length === n);
+    await stopSrv(); await tmuxOut("kill-session", "-t", "=s16");
+    const legacy = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, { permissions?: unknown }> };
+    delete legacy.slots[16].permissions;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(legacy)); n = args().length;
+    await restartSrv({ PATH: path });
+    check("legacy Codex absence reloads the explicit historical full-access default", profileIs((await row())?.permissions, defaultProfile)
+      && flagsAre(await nextArgs(n), defaultProfile));
+    for (const permissions of [null, { sandbox: "read-only", approval: "untrusted" }, { state: "invalid" }]) {
+      await stopSrv(); await tmuxOut("kill-session", "-t", "=s16");
+      const durable = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, { permissions: unknown }> };
+      durable.slots[16].permissions = permissions;
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(durable)); n = args().length;
+      await restartSrv({ PATH: path });
+      const invalid = await row();
+      const restart = await post("/api/slots/16/restart", {});
+      const snapshot = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof durable;
+      check("invalid stored permissions stay explicit across reload and refuse heal/restart without full-access fallback",
+        JSON.stringify(invalid?.permissions) === '{"state":"invalid"}' && restart.status === 400 && args().length === n
+          && (await tmuxOut("has-session", "-t", "=s16")).code !== 0
+          && JSON.stringify(snapshot.slots[16].permissions) === '{"state":"invalid"}', JSON.stringify(permissions));
+    }
+    const repaired: PermissionProfile = { sandbox: "read-only", approval: "on-request" }; n = args().length;
+    const recycled = await post("/api/slots/16/open", { cwd, harness: "codex", permissions: repaired, packs: [] });
+    check("owner recycle replaces invalid predecessor with only the new profile", recycled.ok
+      && profileIs((await row())?.permissions, repaired) && flagsAre(await nextArgs(n), repaired));
+    const programId = crypto.randomUUID().replaceAll("-", "").slice(0, 24);
+    await post("/api/dispatch", { on: false });
+    await stopSrv();
+    type PermissionFixtureState = { slots: Record<string, { cwd: string; openedAt: number; selfToken: string; sessionId: string | null }>;
+      programs: { id: string }[]; tasks: { id: string; programId?: string }[] };
+    const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PermissionFixtureState;
+    const actor = state.slots[16];
+    state.programs.push({ id: programId, title: "permissions API fixture", intent: "exercise the existing task founding door",
+      successCriterion: "exact profile or explicit refusal", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: Date.now(), confirmedAt: Date.now(), activatedAt: Date.now(), proposedBy: { kind: "owner" },
+      main: { slot: 16, openedAt: actor.openedAt, sessionId: actor.sessionId, boundAt: Date.now() } } as { id: string });
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state));
+    await restartSrv({ PATH: path });
+    const selfPost = (token: string, endpoint: string, body: Record<string, unknown>): Promise<Response> => fetch(`${BASE}${endpoint}`, {
+      method: "POST", headers: { "x-fleet-self-token": token, "content-type": "application/json" }, body: JSON.stringify(body) });
+    const taskRows = async (): Promise<{ id: string; programId?: string; repo?: string; spawn?: { permissions?: unknown } }[]> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: { id: string; programId?: string; repo?: string; spawn?: { permissions?: unknown } }[] }).tasks;
+    try {
+      const request = { text: "profile task founding fixture", kind: "auftrag", harness: "codex", permissions: repaired };
+      const filed = await selfPost(actor.selfToken, "/api/self/tasks", request);
+      const filedBody = await filed.json() as { task?: { id: string; programId?: string; repo?: string; spawn?: { permissions?: unknown } } };
+      const task = filedBody.task;
+      check("bound Program-MAIN task founding derives program/repo and stores exactly the selected Codex profile",
+        filed.status === 200 && task?.programId === programId && task.repo === realpathSync(cwd)
+          && profileIs(task.spawn?.permissions, repaired), JSON.stringify(task));
+      const taskCount = (await taskRows()).length;
+      const argvCount = args().length;
+      for (const patch of [{ permissions: null }, { permissions: { sandbox: "read-only", approval: "untrusted" } },
+        { harness: "claude" }, { surprise: true }, { programId: "foreign" }, { repo: `${cwd}-not-known` }]) {
+        const refused = await selfPost(actor.selfToken, "/api/self/tasks", { ...request, ...patch });
+        const detail = await refused.text();
+        check("Program-MAIN profile founding rejects shape/enum/unsupported/body/program/repo before row or spawn",
+          refused.status === 400 && (await taskRows()).length === taskCount && args().length === argvCount,
+          `${JSON.stringify(patch)} status=${refused.status} ${detail}`);
+      }
+      const foreignActor = await selfPost("not-a-self-token", "/api/self/tasks", request);
+      check("profile task founding does not admit an unauthenticated actor", foreignActor.status === 401
+        && (await taskRows()).length === taskCount && args().length === argvCount, String(foreignActor.status));
+      if (task?.id) {
+        const changed = await selfPost(actor.selfToken, `/api/self/tasks/${task.id}/spawn`, { harness: "codex", permissions: repaired });
+        check("bound MAIN worker-choice door accepts and preserves the exact profile", changed.ok
+          && profileIs((await taskRows()).find((t) => t.id === task.id)?.spawn?.permissions, repaired), String(changed.status));
+        n = args().length;
+        const dispatched = await post(`/api/tasks/${task.id}/dispatch`, {});
+        const dispatchBody = await dispatched.json() as { slot?: number; spawn?: { permissions?: unknown }; error?: string };
+        check("attended dispatch forwards the stored task profile through the real Fleet spawn command", dispatched.ok
+          && profileIs(dispatchBody.spawn?.permissions, repaired) && flagsAre(await nextArgs(n), repaired), JSON.stringify(dispatchBody));
+        if (dispatchBody.slot) await post(`/api/slots/${dispatchBody.slot}/kill`, {});
+      }
+    } finally {
+      await stopSrv();
+      const cleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PermissionFixtureState;
+      cleanup.programs = cleanup.programs.filter((p) => p.id !== programId);
+      cleanup.tasks = cleanup.tasks.filter((t) => t.programId !== programId);
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(cleanup));
+      await restartSrv({ PATH: path });
+    }
+    const configAfter = configPath && exists(configPath) ? readFileSync(configPath) : null;
+    check("all Fleet Codex lifecycle probes leave global config byte-identical", configBefore === null
+      ? configAfter === null : configAfter !== null && configBefore.equals(configAfter));
+  } finally {
+    await post("/api/slots/16/kill", {});
+    await restartSrv({ PATH: process.env.PATH ?? "" });
+    rmSync(bin, { recursive: true, force: true }); rmSync(argvLog, { force: true });
   }
 }

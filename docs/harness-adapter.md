@@ -671,6 +671,31 @@ Netzwerkkosten werden nicht als null behauptet.
     weder `~/.claude/settings.json` noch `~/.codex/config.toml` (Pin in `e2e/pins.ts`). Gemessen am
     2026-09-14 auf eigenem tmux-Socket, Kinder nach Executable-/Skriptposition gezählt: claude ambient 2 →
     strict 0; codex frisch ambient 2 → Override 0; `codex resume <id>` mit Override 0.
+  - **Codex-Ausführungsrechte: `permissions:{sandbox,approval}`.** Genau zwei Schlüssel;
+    `sandbox` ist `read-only|workspace-write|danger-full-access`, `approval` ist `on-request|never`.
+    Alle sechs Kombinationen sind unterstützt. Absenz bei einer neuen Codex-Gründung nimmt explizit
+    `{sandbox:"danger-full-access",approval:"never"}`; andere Harnesses behalten ihre Defaults und
+    verweigern jede explizite Auswahl als `unsupported` vor Spawn. Dies sind Fleet-Sessiondaten,
+    kein CLI-`--profile`, kein MemoryGrant, keine Rollen-, Pack- oder Accountberechtigung.
+    Open/Recycling, Lane-Gründung/Attach, Task.spawn/Dispatch und Program-Gründung benutzen dieselbe
+    Validierung. Slot-Persistenz und `GET /api/sessions` zeigen die normalisierte Auswahl.
+    Fresh, exakter Resume, Heal, Wake und Restart geben immer `--sandbox` und `--ask-for-approval`
+    weiter, ohne Bypass; Succession übernimmt das Profil. Restart/Succession verweigern eine andere
+    explizite Auswahl; ein Owner-Recycle wählt ein neues Profil und verwirft das Vorgängerprofil.
+    Ein alter Codex-Datensatz ohne Feld übernimmt den bisherigen Vollzugriffsdefault; ein vorhandenes
+    ungültiges Feld bleibt `{state:"invalid"}`, wird so persistiert/angezeigt und darf nicht spawnen.
+    `untrusted`, `on-failure`, granular, null, Arrays, Zusatzschlüssel und unbekannte Werte sind Refusals.
+    Die CLI-Flags gelten für codex-cli 0.159.0; dessen Offline-Schema enthält weitere Werte und ist
+    allein kein TUI-Supportbeweis. Referenz: [OpenAI Config Reference](https://developers.openai.com/codex/config-reference).
+    Die TUI läuft mit `--no-daemon`. Workspace-write überschreibt ambientes `writable_roots` mit `[]`
+    und `network_access` mit `false`, TMP-Ausnahmen mit den CLI-Defaults; `approvals_reviewer="user"`
+    verhindert eine ambiente Auto-Review-Umschaltung. Trust kommt als shell-quotierter vollständiger
+    `projects`-Inline-TOML-Override für das reale CWD, ausschließlich für diese Ausführung: kein
+    grep/printf-Prelude und kein Schreiben globaler `config.toml`. Dotted Trust-Overrides überspringen
+    den 0.159.0-Dialog nicht. Falls trotzdem Trust/Sign-in/Update blockiert, verweigert die Readiness-Naht
+    die Zustellung; sie bestätigt oder umgeht keinen Dialog. Managed CLI-Refusals bleiben Refusals.
+    `GET /api/harnesses` trägt `permissions:{status:"supported",sandbox:[…],approval:[…],default:{…}}`
+    bzw. `{status:"unsupported"}`. Client-Fläche sind nur Wire-Typen, keine Setup-Formulare.
   - **Kontextbudget je Codex-Slot: `context: {window, compactAt}` (2026-09-15).** Zwei ganze Zahlen in
     Tokens, Spawn-Option wie `effort`: `POST /api/slots/:n/open`, `…/open-worktree`, `POST /api/lanes`
     (auch attach), `Task.spawn` (beide Create-Türen), Dispatch- und Wellen-Tür (Body-Feld gewinnt, sonst die

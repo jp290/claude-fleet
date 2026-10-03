@@ -159,7 +159,8 @@ import {
   type ProgramInboxKind, type ProgramInboxEntry, type ProgramInbox,
   type ProgramFoundingMode, type ProgramFoundingProfileKind, type ProgramFoundingIdentity,
   type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
-  type ProgramValidation, type ProgramDigest, type DispatchSpawn, type SlotContext,
+  type ProgramValidation, type ProgramDigest, type DispatchSpawn, type SlotContext, type CodexPermissions, type SlotPermissions,
+  CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
   loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
@@ -450,6 +451,8 @@ interface HarnessCommand {
 
 interface Harness {
   id: string;
+  permissions?: { sandbox: CodexPermissions["sandbox"][]; approval: CodexPermissions["approval"][];
+    default: Readonly<CodexPermissions> };
   // The spawn line, already shell-safe. Everything interpolated here has been validated at SET
   // time (modelOf/effortOf against THIS adapter's rules) — the same discipline slotCmd documents.
   // `container`/`containerContext` are ALREADY RESOLVED here — never null, never the slot's raw
@@ -457,13 +460,6 @@ interface Harness {
   // pair exactly once, so the spawn line and the row an owner reads on /api/sessions can never
   // disagree about which box and which daemon this session is in. Adapters with no container
   // concept ignore both, the same way an adapter with no effort concept ignores `effort`.
-  //
-  // `cwd` is the slot's OWN working directory, and it is here for one adapter only: codex
-  // persists per-path TRUST, so its spawn line writes the trust entry for exactly this path
-  // (CODEX_HARNESS.spawnCmd). It is the pane's real cwd — tmux is given the same value with `-c`,
-  // so the trust entry and the shell can never disagree about which directory this is. Adapters
-  // without that need ignore it, the same way every adapter but the container one ignores
-  // `container`.
   //
   // `browserMcp` is the lane's MCP profile, already resolved by ensureSlot: false only for a lane that
   // did not ask for a browser (Slot.browser). An adapter whose `browserProfile` is not "apply" ignores it.
@@ -473,7 +469,7 @@ interface Harness {
   // claude's, and a foreign harness never receives a name it could put on its line.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
     container: string; containerContext: string; cwd: string; browserMcp: boolean;
-    context: SlotContext | null; rulebookRole: "main" | "orchestrator" | null;
+    context: SlotContext | null; permissions: SlotPermissions | null; rulebookRole: "main" | "orchestrator" | null;
     remoteName: string | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
@@ -1462,34 +1458,19 @@ const CODEX_HARNESS: Harness = {
   // No subcommand: `codex` alone is the interactive TUI, which is the form a slot wants
   // (`codex exec` is the headless one and is NOT what a pane should run).
   //
-  // `--dangerously-bypass-approvals-and-sandbox` is the owner decision of 2026-08-12 made literal:
-  // full local access is the normal operating mode for local agent harnesses, the same reach this
-  // fleet's own `--dangerously-skip-permissions` grants claude. Its help-text warning is answered
-  // by POLICY next to it, not by a sandbox: what an unattended path may do to this pane is still
-  // gated by `automatable` below and canDeliver's alive gate.
-  //
-  // The grep/printf prelude is the TRUST handshake, and it exists because the bypass flag does NOT
-  // cover it (measured 2026-08-12): codex persists per-path trust in ~/.codex/config.toml, its TUI
-  // blocks on "Do you trust the contents of this directory?" for any cwd not listed there, and
-  // neither the bypass flag nor a `-c projects...` override suppresses that prompt — only the
-  // persisted entry does. The prelude appends exactly the entry codex itself writes when the owner
-  // answers yes, idempotently (`grep -qxF` guards the respawn), and only for a cwd that passes
-  // SPAWN_PATH_RE — the path lands inside a single-quoted shell word and a TOML double-quoted key,
-  // and the charset admits neither quote nor backslash. A cwd that fails the charset gets no
-  // prelude and codex asks its own question in the pane: attended fallback, never a mangled
-  // config line. The target is `${CODEX_HOME:-$HOME/.codex}` — the directory codex itself reads —
-  // so a pane without CODEX_HOME writes byte-for-byte where it always did, and a suite that sets it
-  // keeps its per-run temp paths out of the owner's config (measured: 9 883 entries, 8 502 of them
-  // suite temp dirs, docs/messungen/2026-09-14-codex-lane-verdrahtung.md). The adjacent config
-  // override disables the startup update check on fresh and resumed panes: preselected
-  // "Update now" must never turn a brief into a global install.
+  permissions: { sandbox: ["read-only", "workspace-write", "danger-full-access"],
+    approval: ["on-request", "never"], default: CODEX_PERMISSIONS_DEFAULT },
   spawnCmd: (o) => {
     // SINGLE WRITER: the resume form is reachable only through ensureSlot after that function's
     // has-session miss. A live pane is never resumed beside itself; the owner restart route kills
     // its pane before entering the same seam. Discovery supplies the exact, UUID-validated id.
     let cmd = o.resume && o.sessionId
-      ? `codex resume '${o.sessionId}' --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false`
-      : "codex --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false";
+      ? `codex resume '${o.sessionId}'` : "codex";
+    const permissions = codexPermissionsFrom(o.permissions);
+    if (!permissions) throw new Error("invalid persisted Codex permissions — recycle with a valid profile");
+    cmd += ` --no-daemon --sandbox ${permissions.sandbox} --ask-for-approval ${permissions.approval}`;
+    cmd += ` -c check_for_update_on_startup=false -c ${shellSingleQuote('approvals_reviewer="user"')}`;
+    cmd += ` -c ${shellSingleQuote('sandbox_workspace_write={writable_roots=[],network_access=false,exclude_tmpdir_env_var=false,exclude_slash_tmp=false}')}`;
     // single-quoted under the same rule as slotCmd and PI_HARNESS: HARNESS_MODEL_RE admits `*` and
     // the `[1m]` suffix, and tmux's default-shell here is zsh, which ABORTS the whole line on an
     // unmatched glob ("no matches found") and takes the pane with it. No DEFAULT_MODEL fallback:
@@ -1503,10 +1484,10 @@ const CODEX_HARNESS: Harness = {
     if (o.context) cmd += ` -c model_context_window=${o.context.window} -c model_auto_compact_token_limit=${o.context.compactAt} -c model_auto_compact_token_limit_scope='total'`;
     // a text lane (Slot.browser), fresh AND resume form — see CODEX_TEXT_LANE_MCP
     if (!o.browserMcp) cmd += ` -c ${CODEX_TEXT_LANE_MCP}`;
-    const trust = SPAWN_PATH_RE.test(o.cwd)
-      ? `grep -qxF '[projects."${o.cwd}"]' "\${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null || printf '\n[projects."%s"]\ntrust_level = "trusted"\n' '${o.cwd}' >> "\${CODEX_HOME:-$HOME/.codex}/config.toml"; `
-      : "";
-    return `${PATH_EXPORT}${trust}${cmd}; exec ${SHELL}`;
+    // Whole-table override is session-local; dotted trust overrides do not skip the 0.159.0 TUI dialog.
+    const trust = `projects={${JSON.stringify(realpathSync(o.cwd))}={trust_level="trusted"}}`;
+    cmd += ` -c ${shellSingleQuote(trust)}`;
+    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
   },
   // NULL, and here it is over-determined — worth stating in full, because a reader who fixes only
   // the first reason would still have nothing. (1) `pinsSession: false`: Codex has no --session-id
@@ -1561,7 +1542,8 @@ const CODEX_HARNESS: Harness = {
   readiness: {
     accept: />_ OpenAI Codex \(v/,
     blocks: [
-      { re: /Do you trust the contents of this directory\?/, why: "codex trust prompt" },
+      { re: /Do you trust the contents of this directory\?|Trust this folder\?/, why: "codex trust prompt" },
+      { re: /Would you like to run the following command\?/, why: "codex permission prompt" },
       { re: /Sign in with ChatGPT|Welcome to Codex/, why: "codex sign-in screen" },
       { re: /Update available![\s\S]*Update now \(runs [\s\S]*Skip until next version/,
         why: "codex update prompt" },
@@ -1815,6 +1797,26 @@ function contextOf(body: Record<string, unknown> | null, h: Harness):
     : { ok: false, error: `bad context (expected {window, compactAt}: integers, 0 < compactAt < window <= ${CODEX_CONTEXT_WINDOW_MAX})` };
 }
 
+function permissionsOf(body: Record<string, unknown> | null, h: Harness):
+  { ok: true; permissions: CodexPermissions | null } | { ok: false; error: string } {
+  if (body?.permissions === undefined)
+    return { ok: true, permissions: h.permissions ? { ...h.permissions.default } : null };
+  if (!h.permissions) return { ok: false, error: `harness ${h.id} permissions unsupported` };
+  const permissions = codexPermissionsFrom(body.permissions);
+  return permissions ? { ok: true, permissions }
+    : { ok: false, error: 'bad permissions (expected exactly {sandbox: read-only|workspace-write|danger-full-access, approval: on-request|never})' };
+}
+
+function persistedPermissions(value: unknown, h: Harness): SlotPermissions | null {
+  const chosen = permissionsOf(value === undefined ? null : { permissions: value }, h);
+  return chosen.ok ? chosen.permissions : { state: "invalid" };
+}
+
+function slotPermissionsOf(s: Pick<Slot, "harness" | "permissions">): ReturnType<typeof permissionsOf> {
+  const h = harnessOf(s.harness);
+  return permissionsOf(s.permissions === null && !h.permissions ? null : { permissions: s.permissions }, h);
+}
+
 // The lane's browser profile (Slot.browser). Absent/false/null = a text lane, the default; `true` only
 // for an adapter whose profile applies — refused, not dropped, for the others, for the reason effortOf
 // gives. `undefined` in the answer means "the body did not name it", so a door can fall back per field.
@@ -1861,9 +1863,11 @@ function taskSpawnFromBody(body: Record<string, unknown> | null):
   if (!b.ok) return b;
   const c = contextOf(body, harness);
   if (!c.ok) return c;
+  const p = permissionsOf(body, harness);
+  if (!p.ok) return p;
   return { ok: true, spawn: h.harness === null && m.model === null && e.effort === null && !b.browser && !c.context
     ? undefined : { harness: h.harness, model: m.model, effort: e.effort, ...(b.browser ? { browser: true } : {}),
-      ...(c.context ? { context: c.context } : {}) } };
+      ...(c.context ? { context: c.context } : {}), ...(p.permissions ? { permissions: p.permissions } : {}) } };
 }
 
 // --- THE VARIANT GROUP (E4, docs/messungen/2026-09-14-queue-intelligenz-schichten.md §5 E4): one
@@ -1885,7 +1889,7 @@ function taskVariantsFromBody(body: Record<string, unknown> | null):
   if (raw === undefined) return { ok: true, variants: undefined };
   if (!Array.isArray(raw) || raw.length < TASK_VARIANTS_MIN || raw.length > TASK_VARIANTS_MAX)
     return { ok: false, error: `variants must be a list of ${TASK_VARIANTS_MIN} to ${TASK_VARIANTS_MAX} agent choices {harness, model, effort}` };
-  if (["harness", "model", "effort", "browser", "context"].some((k) => body?.[k] !== undefined && body?.[k] !== null))
+  if (["harness", "model", "effort", "browser", "context", "permissions"].some((k) => body?.[k] !== undefined && body?.[k] !== null))
     return { ok: false, error: "variants and a row-level harness/model/effort are two answers to one question — name every agent inside variants" };
   const out: DispatchSpawn[] = [];
   for (const [i, v] of raw.entries()) {
@@ -2101,7 +2105,7 @@ const taskKindNote = (kind: TaskKind): string | null =>
 // all-null result degrades to ABSENT — the field never reloads as an empty choice.
 const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as { harness?: unknown; model?: unknown; effort?: unknown; browser?: unknown; context?: unknown };
+  const raw = value as { harness?: unknown; model?: unknown; effort?: unknown; browser?: unknown; context?: unknown; permissions?: unknown };
   const harness = typeof raw.harness === "string"
     && HARNESSES.some((h) => h.id === raw.harness && h !== CLAUDE_HARNESS) ? raw.harness : null;
   const h = harnessOf(harness);
@@ -2111,8 +2115,9 @@ const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
     && h.effortLevels.includes(raw.effort) ? raw.effort : null;
   const browser = raw.browser === true && h.browserProfile === "apply";
   const context = takesContext(h) ? slotContextFrom(raw.context) : null;
-  return harness === null && model === null && effort === null && !browser && !context ? undefined
-    : { harness, model, effort, ...(browser ? { browser: true } : {}), ...(context ? { context } : {}) };
+  const permissions = persistedPermissions(raw.permissions, h);
+  return harness === null && model === null && effort === null && !browser && !context && !permissions ? undefined
+    : { harness, model, effort, ...(browser ? { browser: true } : {}), ...(context ? { context } : {}), ...(permissions ? { permissions } : {}) };
 };
 // A GROUP'S `variants` off disk. A present-but-malformed value stays a GROUP (an array, possibly
 // empty) and never degrades to ABSENT: an absent field would turn the bracket into an ordinary
@@ -2233,6 +2238,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   browser: false,
   remote: false,
   context: null,
+  permissions: null,
   taskId: null,
   originId: null,
   programId: null,
@@ -5651,11 +5657,11 @@ function stateSnapshot(): string {
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
     memoryGrant?: MemoryGrant;
     reportDelegate?: ReportDelegate;
-    browser?: true; context?: SlotContext; sleeping?: SlotSleep }> = {};
+    browser?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -7944,11 +7950,22 @@ const releaseLaneLetter = (band: number, letter: string): void => {
   laneLetterReservations.get(band)?.delete(letter);
 };
 
+function slotOpeningGuard(s: Slot): () => void {
+  const expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, permissions: JSON.stringify(s.permissions) };
+  return () => {
+    if (s.cwd !== expected.cwd || s.openedAt !== expected.openedAt || s.selfToken !== expected.selfToken
+      || JSON.stringify(s.permissions) !== expected.permissions) throw new Error("slot occupant changed before opening");
+  };
+}
+
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
   harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree",
   box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined, browser = false,
-  context: SlotContext | null = null): Promise<{ cwd: string; branch: string }> {
+  context: SlotContext | null = null, permissions: SlotPermissions | null | undefined = undefined): Promise<{ cwd: string; branch: string }> {
   const h = harnessOf(harness);
+  const guard = slotOpeningGuard(s);
+  const selected = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
+  if (!selected.ok) throw new Error(selected.error);
   if (SEPARATE_LANE_SLOTS && s.id <= BAND_SLOTS) throw new Error("lane requires a place above bands 1..16");
   if (SEPARATE_LANE_SLOTS && !s.cwd
     && slots.filter((other) => other.id !== s.id && (other.cwd || laneSpawn.has(other.id))).length >= FLEET_MAX_SESSIONS)
@@ -7957,10 +7974,15 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   // side effect of discovering its policy too late.
   if (!h.allowsLanes) throw new Error(`harness ${h.id} is main-session only — it cannot open a lane`);
   const root = await repoRootOf(repo);
+  guard();
   const anchor = await decideLaneAnchor(root, parent);
+  guard();
   const wt = await createWorktree(root, branch, form);
+  guard();
   const base = await integrationBranch(wt.repo);
+  guard();
   const baseSha = await laneForkSha(wt.path, base);
+  guard();
   // reserve+construct is one synchronous step — see laneLetterReservations
   const { band: letterBand, letter } = reserveLaneLetter(anchor);
   const ref: LaneRef = { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha,
@@ -7971,8 +7993,9 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   // tick: until the root has the ref, worktreeRisk and drift read a branch that is not there and
   // would report an absence as a fact about the lane.
   await syncLaneRefs(ref, wt.path);
+  guard();
   try {
-    await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
+    await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context, false, permissions);
   } finally {
     releaseLaneLetter(letterBand, letter);
   }
@@ -8071,6 +8094,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   browser: boolean;
   remote: boolean;
   context: SlotContext | null;
+  permissions: SlotPermissions | null;
   container: string | null;
   containerContext: string | null;
 }
@@ -8078,7 +8102,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
 const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
-  browser: s.browser, remote: s.remote, context: s.context, container: s.container, containerContext: s.containerContext,
+  browser: s.browser, remote: s.remote, context: s.context, permissions: s.permissions ? { ...s.permissions } : null, container: s.container, containerContext: s.containerContext,
 } : null;
 
 // label is a captured spawn input, not occupant identity: the owner may relabel a live session
@@ -8089,6 +8113,7 @@ const sameSlotSpawnOccupant = (s: Slot, expected: SlotSpawnOccupant): boolean =>
   && s.selfToken === expected.selfToken && s.sessionId === expected.sessionId && s.model === expected.model
   && s.harness === expected.harness && s.effort === expected.effort && s.browser === expected.browser
   && s.context?.window === expected.context?.window && s.context?.compactAt === expected.context?.compactAt
+  && JSON.stringify(s.permissions) === JSON.stringify(expected.permissions)
   && s.container === expected.container && s.containerContext === expected.containerContext;
 
 const SLOT_POST_CAPTURE_LATCH = process.env.FLEET_TEST_SLOT_POST_CAPTURE_LATCH ?? null;
@@ -8153,6 +8178,11 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
   if (s.sleeping) return;
   let occupant = slotSpawnOccupant(s);
   if (!occupant) return;
+  const po = slotPermissionsOf(occupant);
+  if (!po.ok) {
+    if (cause === "heal") return;
+    throw new Error(po.error);
+  }
   const entrySpawn = slotSpawnInflight.get(s.id);
   if (entrySpawn) { await entrySpawn; return; }
   const name = sess(s.id);
@@ -8226,7 +8256,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
-          browserMcp: !s.worktree || occupant.browser, context: occupant.context, rulebookRole,
+          browserMcp: !s.worktree || occupant.browser, context: occupant.context, permissions: po.permissions, rulebookRole,
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);
@@ -8343,18 +8373,25 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false, context: SlotContext | null = null, remote = false): Promise<void> {
+  browser = false, context: SlotContext | null = null, remote = false,
+  permissions: SlotPermissions | null | undefined = undefined): Promise<void> {
+  const h = harnessOf(harness);
+  const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
+  if (!po.ok) throw new Error(po.error);
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
+  const prior = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
+  const current = (cwd: string | null): boolean => s.cwd === cwd && s.openedAt === prior.openedAt && s.selfToken === prior.selfToken;
   await waitForSlotTeardown(s.id);
+  if (!current(prior.cwd)) throw new Error("slot occupant changed before open");
   await waitForSlotSpawn(s.id);
+  if (!current(prior.cwd)) throw new Error("slot occupant changed while open waited for spawn");
   assertProgramFoundingTargetOpen(s, treeLease);
   const gameMakerLease = treeLease?.profileKind === "game-maker" ? treeLease : null;
   const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: gameMakerLease };
   assertGameMakerTreeOpen(openIntent.root, gameMakerLease);
   openSlotIntents.add(openIntent);
   try {
-  const h = harnessOf(harness);
   if (SEPARATE_LANE_SLOTS && (worktree
     ? s.id <= BAND_SLOTS && !(s.cwd && s.worktree?.branch === worktree.branch)
     : s.id > BAND_SLOTS))
@@ -8385,9 +8422,13 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // destroy a running session. Incident 2026-07-25: server-narrativ-archiv.md#openslot
   try {
     const priorStreamOccupant = slotStreamOccupant(s);
-    if (priorStreamOccupant) await killSlot(s, "reopen");
+    if (priorStreamOccupant) {
+      await killSlot(s, "reopen");
+      if (!current(null)) throw new Error("slot occupant changed during recycle");
+    }
     else {
       const observed = await observeTmuxSlots();
+      if (!current(prior.cwd)) throw new Error("slot occupant changed during open probe");
       const priorPane = tmuxSlotObservation(observed, s.id);
       if (priorPane.presence === "unknown")
         throw new TmuxNewSessionUnavailable(`slot ${s.id} pane availability is unknown: ${observed.detail}`);
@@ -8395,6 +8436,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
         throw new Error(`slot ${s.id} pane unavailable for open: ${observed.detail}`);
     }
     await waitForGameMakerOpenTestLatch(treeLease);
+    if (!current(null)) throw new Error("slot occupant changed before open publication");
     // The awaits above are an owner-kill window: an exact pre-open kill may have durably removed
     // the marker after orphan teardown. Recheck before publishing
     // even one byte of the new occupant; the process-local lease alone is not durable authority.
@@ -8428,6 +8470,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.effort = effort;   // would silently spawn the previous occupant's agent for a new session
   s.browser = browser; // ...and a text lane must not inherit a browser lane's MCP profile, or back
   s.remote = remote; // ...nor a session the previous occupant's Remote Control
+  s.permissions = po.permissions;
   s.context = context; // ...nor a pane the previous occupant's context budget
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
   s.containerContext = box.containerContext; // which is the same rule one step further out
@@ -8477,7 +8520,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   dropWatchesFor(s.id); // nor an inherited subscription, in either direction
   reapLaneSuiteOffersFor(s.id); // …nor an offer of a tree the previous occupant held
+  const published = slotSpawnOccupant(s);
   await rm(historyPath(s.id), { force: true });
+  if (!published || !sameSlotSpawnOccupant(s, published)) throw new Error("slot occupant changed during open history cleanup");
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   audit("slot_open", s.id, cwd);
   if (treeLease?.founding) {
@@ -8488,12 +8533,14 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
     // The marker was durable before open. This second barrier publishes the matching Slot row
     // before ensureSlot can create a pane, so restart sees either no candidate or one exact candidate.
     await saveStateNow();
+    if (!sameSlotSpawnOccupant(s, published)) throw new Error("slot occupant changed during open persistence");
     assertProgramFoundingTargetOpen(s, treeLease);
     if (s.openedAt !== treeLease.founding.target.openedAt
       || hashSelfToken(s.selfToken) !== treeLease.founding.target.selfTokenHash)
       throw new GameMakerTreeConflict("Program-MAIN target identity changed during candidate persistence");
   } else saveState();
   await ensureSlot(s, "open");
+  if (!sameSlotSpawnOccupant(s, { ...published, sessionId: s.sessionId })) throw new Error("slot occupant changed during open spawn");
   } finally {
     openSlotIntents.delete(openIntent);
   }
@@ -8631,6 +8678,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.browser = false;
   s.remote = false;
   s.context = null;
+  s.permissions = null;
   s.taskId = null;
   s.originId = null;
   s.programId = null;
@@ -10652,7 +10700,7 @@ interface SuccessionPredecessorIdentity {
 // what the successor is SPAWNED as. Resolved once in handleSelfSucceed (body override, else the
 // predecessor's record) and handed to all three succession paths, so none of them can quietly go
 // on reading s.model/s.effort and reintroduce the inheritance-only behaviour for one path.
-interface SuccessionSpawn { readonly model: string | null; readonly effort: string | null }
+interface SuccessionSpawn { readonly model: string | null; readonly effort: string | null; readonly permissions: CodexPermissions | null }
 
 const sameSuccessionOccupant = (s: Slot, expected: SuccessionPredecessorIdentity): boolean =>
   !!s.cwd && s.id === expected.slot && s.openedAt === expected.openedAt
@@ -11441,7 +11489,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   // profile and Remote Control as the lane it continues; only model/effort may move (handleSelfSucceed).
   return await restartLaneSession(s, { cwd, ref, label, harness: s.harness, model: spawn.model,
     effort: spawn.effort, box: { container: s.container, containerContext: s.containerContext },
-    browser: s.browser, remote: s.remote, hold, brief, context, event: "lane_succession",
+    browser: s.browser, remote: s.remote, permissions: spawn.permissions, hold, brief, context, event: "lane_succession",
     detail: `${ref.branch} session=${session}`, succession: { successions: s.laneSuccessions + 1 },
     answer: { session } });
 }
@@ -11456,7 +11504,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
 interface LaneRestart {
   cwd: string; ref: LaneRef; label: string | null;
   harness: string | null; model: string | null; effort: string | null;
-  box: BoxPin; browser: boolean; remote: boolean;
+  box: BoxPin; browser: boolean; remote: boolean; permissions: CodexPermissions | null;
   hold: LaneRowHold[]; brief: string; context?: LaneContextDelivery;
   event: "lane_succession" | "lane_harness"; detail: string;
   succession: { successions: number } | null;
@@ -11478,7 +11526,7 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
   laneSpawn.add(s.id);
   try {
     try {
-      await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote);
+      await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote, r.permissions);
     } catch (e) {
       // The predecessor's pane is already gone at this point and its rows went back to the queue
       // with detachSlotTasks' reason, which is the recoverable state: the worktree and its commits
@@ -11601,7 +11649,9 @@ const spawnName = (harness: string | null, model: string | null, effort: string 
 async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
   if (!s.cwd) return json({ error: "slot not active" }, 400);
   if (!s.worktree) return json({ error: "not a lane — a harness switch keeps a worktree, and this slot has none (open a session with the harness you want instead)" }, 409);
+  const guard = slotOpeningGuard(s);
   const body = await readJson(req);
+  guard();
   if (!body || body.harness === undefined)
     return json({ error: "expected { harness, model?, effort? }" }, 400);
   // harness FIRST — it is what the model and the effort are judged by (same order as open)
@@ -11615,6 +11665,8 @@ async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
   if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
   const bo = boxOf(body, hh);
   if (!bo.ok) return json({ error: bo.why }, 400);
+  const pe = body.permissions === undefined && hh.id === harnessOf(s.harness).id ? slotPermissionsOf(s) : permissionsOf(body, hh);
+  if (!pe.ok) return json({ error: pe.error }, 400);
   // the same reservations the baton honours: a merge/land owns this tree, and a restart already in
   // flight (a baton, a dispatch) owns this slot — recycling under either orphans its job.
   if (mergeInflight.has(s.id))
@@ -11648,6 +11700,7 @@ async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
     model: mo.model, effort: eo.effort,
     box: bo.box !== NO_BOX ? bo.box : hh.supports.container ? { container: s.container, containerContext: s.containerContext } : NO_BOX,
     browser: s.browser && hh.browserProfile === "apply", remote: s.remote && hh.id === CLAUDE_HARNESS.id,
+    permissions: pe.permissions,
     hold, brief, event: "lane_harness", detail: `${ref.branch} ${from} -> ${to} task=${s.taskId ?? "-"} `
       + `uncommitted=${status.code === 0 ? status.lines.length : "unknown"}`,
     succession: null, answer: { harness: hh.id, model: mo.model, effort: eo.effort } });
@@ -11687,7 +11740,16 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     if (!mo.ok) return json({ error: mo.error }, 400);
     const eo = effortOf(body, hh);
     if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+    const pe = slotPermissionsOf(s);
+    if (!pe.ok) return json({ error: pe.error }, 400);
+    if (body?.permissions !== undefined) {
+      const requested = permissionsOf(body, hh);
+      if (!requested.ok) return json({ error: requested.error }, 400);
+      if (JSON.stringify(requested.permissions) !== JSON.stringify(pe.permissions))
+        return json({ error: "succession keeps its permissions — owner recycle selects a new profile" }, 409);
+    }
     const spawn: SuccessionSpawn = {
+      permissions: pe.permissions,
       model: body?.model !== undefined ? mo.model : s.model,
       effort: body?.effort !== undefined ? eo.effort : s.effort,
     };
@@ -11795,7 +11857,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     try {
       const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
         { brief, path: "succession", draft, label },
-        () => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box),
+        () => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box, null, false, null, false, spawn.permissions),
         async () => {});
       if (!respawned.ok) return respawned.response;
       // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -15718,10 +15780,10 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // words the attended ▸ start button sends, validated below by the same validators. The refusal
   // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
   // separately because it is optional and travels as a unit, not three independent fields.
-  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo"];
+  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "permissions", "card", "variants", "files", "repo"];
   const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k)).filter((k) => k !== "base");
   if (extra.length)
-    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants, an optional files PROPOSAL, optional base and optional repo — [${extra.join(", ")}] is not read; a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), optional permissions, an optional card, optional variants, an optional files PROPOSAL, optional base and optional repo — [${extra.join(", ")}] is not read; a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
   if (typeof body.text !== "string" || !body.text.trim())
     return json({ error: "text must be a non-empty string" }, 400);
   // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
@@ -16648,8 +16710,8 @@ async function setTaskSpawn(id: string, req: Request, actor?: { slot: number; op
   if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
   const body = await readJson(req);
   if (!body || Array.isArray(body)) return json({ error: "invalid json" }, 400);
-  const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort");
-  if (extra.length) return json({ error: `this door reads harness, model and effort only — [${extra.join(", ")}] is not read` }, 400);
+  const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort" && k !== "permissions");
+  if (extra.length) return json({ error: `this door reads harness, model, effort and permissions only — [${extra.join(", ")}] is not read` }, 400);
   const choice = taskSpawnFromBody(body);
   if (!choice.ok) return json({ error: choice.error }, 400);
   if (!tasks.includes(t) || t.kind !== "auftrag" || t.variants?.length || t.variantOf !== undefined
@@ -16918,7 +16980,10 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   // call answers to the same two conditions as every other unattended path, in the same order, so
   // the refusal reason is the specific one. The tick's own row gate refuses the same rows BEFORE a
   // slot is reserved; this lock stays for any caller that skips that gate (pinned in e2e/pins.ts).
+  const guard = slotOpeningGuard(free);
   const spawnH = harnessOf(spawn.harness);
+  const spawnPermissions = permissionsOf(spawn.permissions === undefined ? null : { permissions: spawn.permissions }, spawnH);
+  if (!spawnPermissions.ok) return { ok: false, error: spawnPermissions.error };
   if (spawnH !== CLAUDE_HARNESS && !ownerAct && !(HARNESS_AUTOMATION && spawnH.automatable))
     return { ok: false, error: `harness ${spawnH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` };
   if (dispatchingTasks.has(next.id)) return { ok: false, error: "task is already being dispatched" };
@@ -16941,20 +17006,26 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // the task's own target repo wins; the env default covers every unbound row. Resolve and choose
     // the parent BEFORE materialising the tree, exactly like openLaneInSlot.
     const dispatchRepo = await repoRootOf(next.repo ?? DISPATCH_REPO);
+    guard();
     const anchor = await decideLaneAnchor(dispatchRepo, undefined);
+    guard();
     if (wave?.followers.some((t) => t.base !== next.base))
       throw new Error("one wave cannot mix task integration bases");
     const base = variantBase?.ref ?? await integrationBranch(dispatchRepo, next.base);
+    guard();
     const baseTip = variantBase?.sha ?? (base
       ? (await git(dispatchRepo, "rev-parse", `refs/heads/${base}`)).out
       : undefined);
+    guard();
     if (base && !baseTip) throw new Error(`base branch does not exist at dispatch: ${base}`);
     const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined);
+    guard();
     // `base` from the same source and with the same omission as openLaneInSlot: a dispatched lane
     // that left it out sent every `worktree.base` reader (laneBaseRef, the plan CLI's lane read) to
     // its fallback in the normal case — all four open lanes on the live fleet.json, 2026-09-22.
     // Unresolvable → undefined → no key, so that record stays byte-identical to before.
     const baseSha = base ? await laneForkSha(wt.path, base) ?? baseTip : undefined;
+    guard();
     // same synchronous reserve as openLaneInSlot: the tick can open a lane while an owner click
     // opens another into the same band
     const { band: letterBand, letter } = reserveLaneLetter(anchor);
@@ -16968,9 +17039,10 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // A fresh clone's branch exists only in the clone — mirror it up NOW: until the root has the
     // ref, every root-side reader (drift, risk, the land path) reports an absence. No-op for a worktree.
     await syncLaneRefs(dRef, wt.path);
+    guard();
     try {
       await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
-        spawn.context ?? null);
+        spawn.context ?? null, false, spawn.permissions);
     } finally {
       releaseLaneLetter(letterBand, letter);
     }
@@ -36250,7 +36322,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     try {
       const respawned = await respawnInPlace(s, predecessor, `program ${program.id}`,
         { brief: deliveredBrief, path: "founding", draft: null, label },
-        () => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease),
+        () => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease, false, null, false, spawn.permissions),
         // the predecessor is gone and no successor stands: drop the marker (stopping an exact
         // candidate the open left behind), which also closes the ended holding as `retire`. The
         // binding is then stale — the state bootstrapProgramMain re-founds over, loudly.
@@ -36423,6 +36495,8 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
   if (!mo.ok) return json({ error: mo.error }, 400);
   const eo = effortOf(body, hh);
   if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+  const pe = permissionsOf(body, hh);
+  if (!pe.ok) return json({ error: pe.error }, 400);
   if (typeof body.cwd !== "string" || !body.cwd.trim()) return json({ error: "cwd is required" }, 400);
   if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
     return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
@@ -36484,7 +36558,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         : `Program-MAIN: ${program.title}`.slice(0, MAX_LABEL);
       try {
         await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : body.cwd,
-          null, mo.model, label, ho.harness, eo.effort, NO_BOX, treeLease);
+          null, mo.model, label, ho.harness, eo.effort, NO_BOX, treeLease, false, null, false, pe.permissions);
       } catch (e) {
         if (e instanceof TmuxNewSessionUnavailable)
           return unavailableFoundingResponse(program, founding, e);
@@ -38006,6 +38080,7 @@ if (existsSync(STATE_FILE)) {
         // ...and the context budget, re-judged by the same shape check as the doors: a broken or
         // hand-edited value loads as absent (today's spawn line), the slot itself stays
         if (takesContext(hOf)) s.context = slotContextFrom((v as { context?: unknown }).context);
+        s.permissions = persistedPermissions((v as { permissions?: unknown }).permissions, hOf);
         // Queue provenance survives a server restart with the lane. Old slot rows omit both and
         // therefore retain the initialized nulls; no branch-name or git inference fills them in.
         const pti = (v as { taskId?: unknown }).taskId;
@@ -43222,6 +43297,7 @@ Bun.serve<WSData>({
             ...(s.remote ? { remote: true } : {}),
             // the pane's context budget (Slot.context); omitted when none was chosen
             ...(s.context ? { context: s.context } : {}),
+            ...(s.permissions ? { permissions: s.permissions } : {}),
             // asleep on purpose (sleepSlot): omitted while awake, the common case on this 2 s poll
             ...(s.sleeping ? { sleeping: { at: s.sleeping.at, sessionId: s.sleeping.sessionId } } : {}),
             // Codex binds its rollout lazily after the first prompt. This typed advisory is the
@@ -43995,6 +44071,8 @@ Bun.serve<WSData>({
       if (!laneBrowser.ok) return json({ error: laneBrowser.error }, 400);
       const laneContext = contextOf(body, laneHarness);
       if (!laneContext.ok) return json({ error: laneContext.error }, 400);
+      const lanePermissions = permissionsOf(body, harnessOf(laneH.harness));
+      if (!lanePermissions.ok) return json({ error: lanePermissions.error }, 400);
       const laneBox = boxOf(body, laneHarness);
       if (!laneBox.ok) return json({ error: laneBox.why }, 400);
       const laneForm = laneFormOf(body, laneHarness); // explicit form wins; absent → the adapter's
@@ -44048,6 +44126,7 @@ Bun.serve<WSData>({
       if (attachPath && laneParent.parent)
         return json({ error: "parent cannot be set when attaching an existing worktree" }, 400);
       if (attachPath && attachBusy.has(attachPath)) return json({ error: "worktree is being attached" }, 409);
+      const guard = slotOpeningGuard(free);
       laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
       if (attachPath) attachBusy.add(attachPath);
       try {
@@ -44068,13 +44147,14 @@ Bun.serve<WSData>({
           // an attached lane is adopted without a parent — its band is 0, same reserve as every open
           const { band: attachLetterBand, letter: attachLetter } = reserveLaneLetter(null);
           const resumedAt = Date.now();
+          guard();
           try {
             await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
               baseSha: attachSha ?? undefined, letter: attachLetter,
               ...(parked ? { resumedFrom: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
                 parkedAt: parked.parkedAt, resumedAt, verify: "stale" as const } } : {}) },
               laneModel.model, null, laneH.harness, laneEffort.effort,
-              NO_BOX, null, laneBrowser.browser === true, laneContext.context);
+              NO_BOX, null, laneBrowser.browser === true, laneContext.context, false, lanePermissions.permissions);
           } finally {
             releaseLaneLetter(attachLetterBand, attachLetter);
           }
@@ -44108,7 +44188,7 @@ Bun.serve<WSData>({
             ...(parked ? { resumed: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
               taskIds: rebound, verify: "stale" } } : {}) });
         }
-        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent, laneBrowser.browser === true, laneContext.context);
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent, laneBrowser.browser === true, laneContext.context, lanePermissions.permissions);
         const lanePacksResult = laneFounding
           ? await deliverFoundingPacks(free, laneFounding, laneChosen)
           : lanePo.packs !== null ? { packsDelivered: true } : null;
@@ -44791,7 +44871,8 @@ Bun.serve<WSData>({
           // `chat`: whether the conversation view (💬) has something to read — a Claude Code
           // transcript, or an adapter's own conversation reader (codex, pi). Derived, so it can
           // never disagree with the two facts it is made of.
-          id: h.id, supports: { ...h.supports, chat: h.supports.transcript || !!h.conversation }, models: h.models, effortLevels: h.effortLevels, note: h.note,
+          id: h.id, permissions: h.permissions ? { status: "supported", ...h.permissions } : { status: "unsupported" },
+          supports: { ...h.supports, chat: h.supports.transcript || !!h.conversation }, models: h.models, effortLevels: h.effortLevels, note: h.note,
           // the TUI's safely-sendable slash commands (Harness.commands) — the ⌘-overlay's third
           // list, read from this same one-shot catalogue, never from the 2 s slot poll
           commands: h.commands,
@@ -45486,6 +45567,8 @@ Bun.serve<WSData>({
       if (!wBrowser.ok) return json({ error: wBrowser.error }, 400);
       const wContext = contextOf(wBody?.context !== undefined ? wBody : { context: wRowSpawn.context }, wHarness);
       if (!wContext.ok) return json({ error: wContext.error }, 400);
+      const wPermissions = permissionsOf(wBody?.permissions !== undefined ? wBody : { permissions: wRowSpawn.permissions }, wHarness);
+      if (!wPermissions.ok) return json({ error: wPermissions.error }, 400);
       const wFree = freeSessionSlot("lane");
       if (!wFree) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot") }, 409);
       // captured BEFORE dispatchTask mutates anything, for the reason its own `wasStatus` is: a
@@ -45494,7 +45577,7 @@ Bun.serve<WSData>({
       const wWas = new Map(wFollowers.map((t) => [t.id, t.status] as const));
       const wr = await dispatchTask(wHead, wFree, true, false,
         { harness: wHarnessId, model: wModel.model, effort: wEffort.effort, ...(wBrowser.browser ? { browser: true } : {}),
-          ...(wContext.context ? { context: wContext.context } : {}) },
+          ...(wContext.context ? { context: wContext.context } : {}), ...(wPermissions.permissions ? { permissions: wPermissions.permissions } : {}) },
         { followers: wFollowers, wasStatus: wWas, sharedFiles: wWave.sharedFiles, klasse: wWave.klasse,
           units: wWave.units });
       if (!wr.ok) return json({ error: wr.error }, 500);
@@ -45521,7 +45604,7 @@ Bun.serve<WSData>({
       if (t.variantOf) return json({ error: `a variant starts only with its whole group — start the group row ${t.variantOf}` }, 409);
       if (t.variants) {
         const gBody = await readJson(req);
-        if (gBody && ["harness", "model", "effort", "browser", "context", "clarify"].some((k) => gBody[k] !== undefined && gBody[k] !== null && gBody[k] !== false))
+        if (gBody && ["harness", "model", "effort", "browser", "context", "permissions", "clarify"].some((k) => gBody[k] !== undefined && gBody[k] !== null && gBody[k] !== false))
           return json({ error: "a variant group runs the agents it was filed with — name no harness, model, effort, browser, context or clarify here" }, 400);
         const g = await startVariantGroup(t, true);
         if (!g.started) return json({ error: g.why }, 409);
@@ -45573,6 +45656,8 @@ Bun.serve<WSData>({
       // ...and the context budget the same way, re-judged against the EFFECTIVE harness
       const dContext = contextOf(dBody?.context !== undefined ? dBody : { context: dRowSpawn.context }, dHarness);
       if (!dContext.ok) return json({ error: dContext.error }, 400);
+      const dPermissions = permissionsOf(dBody?.permissions !== undefined ? dBody : { permissions: dRowSpawn.permissions }, dHarness);
+      if (!dPermissions.ok) return json({ error: dPermissions.error }, 400);
       const free = freeSessionSlot("lane");
       if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot") }, 409);
       // A RAW START is one where the lane receives the owner's DRAFT rather than a brief — the
@@ -45585,7 +45670,7 @@ Bun.serve<WSData>({
       const rawAck = dBody?.acknowledged === true && !t.brief;
       const r = await dispatchTask(t, free, true, clarify,
         { harness: dHarnessId, model: dModel.model, effort: dEffort.effort, ...(dBrowser.browser ? { browser: true } : {}),
-          ...(dContext.context ? { context: dContext.context } : {}) });
+          ...(dContext.context ? { context: dContext.context } : {}), ...(dPermissions.permissions ? { permissions: dPermissions.permissions } : {}) });
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
       // the mode and the EFFECTIVE harness ride in the audit detail, never a second event name: one "an
@@ -45595,7 +45680,7 @@ Bun.serve<WSData>({
       // WHICH AGENT this start handed the lane, per field with its origin, so a hand start says what
       // it ran instead of leaving the footer to tell (ctl.sh dispatch prints it). An absent model is
       // resolved the way the slot's own records resolve it (resolvedModel: the harness's default).
-      const dSpawn = { harness: dHarness.id, model: dModel.model ?? harnessDefaultModel(dHarness), effort: dEffort.effort,
+      const dSpawn = { harness: dHarness.id, model: dModel.model ?? harnessDefaultModel(dHarness), effort: dEffort.effort, ...(dPermissions.permissions ? { permissions: dPermissions.permissions } : {}),
         from: { harness: dFrom("harness"), model: dFrom("model"), effort: dFrom("effort") } };
       return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck, spawn: dSpawn });
     }
@@ -46227,7 +46312,9 @@ Bun.serve<WSData>({
       // its own executor would be a session widening its own grant.
       if (slotMatch[2] === "lane-harness") return await switchLaneHarness(s, req);
       if (slotMatch[2] === "open") {
+        const guard = slotOpeningGuard(s);
         const body = await readJson(req);
+        guard();
         if (!body) return json({ error: "expected application/json" }, 400);
         // harness FIRST — it is what the model and the effort are judged by
         const ho = harnessIdOf(body);
@@ -46241,6 +46328,8 @@ Bun.serve<WSData>({
         if (!bo.ok) return json({ error: bo.why }, 400);
         const co = contextOf(body, hh);
         if (!co.ok) return json({ error: co.error }, 400);
+        const pe = permissionsOf(body, hh);
+        if (!pe.ok) return json({ error: pe.error }, 400);
         const po = packsOf(body);
         if (!po.ok) return json({ error: po.error }, 400);
         const ro = remoteOf(body, hh);
@@ -46261,6 +46350,7 @@ Bun.serve<WSData>({
           ? { packsDelivered: true } : null;
         if (po.packs !== null && po.packs.length > 0) {
           const fp = await foundingPlanOf(typeof body.cwd === "string" ? body.cwd : "~", ho.harness, "main");
+          guard();
           if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
           const pick = chooseFoundingPacks(fp.value.plan, po.packs);
           if (!pick.ok) return json({ error: pick.error }, pick.code);
@@ -46269,7 +46359,7 @@ Bun.serve<WSData>({
         }
         try {
           await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
-            null, false, co.context, ro.remote);
+            null, false, co.context, ro.remote, pe.permissions);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}) },
@@ -46283,13 +46373,15 @@ Bun.serve<WSData>({
         // open returns the same bytes it always did.
         const roleCard = isOrchestratorLabel(s.label) ? await deliverOrchestratorSpawnCard(s) : null;
         if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
-        return json({ ok: true, cwd: s.cwd, label: s.label, ...(s.remote ? { remote: true } : {}), ...(roleCard ? { roleCard } : {}),
+        return json({ ok: true, cwd: s.cwd, label: s.label, ...(s.permissions ? { permissions: s.permissions } : {}), ...(s.remote ? { remote: true } : {}), ...(roleCard ? { roleCard } : {}),
           ...(packsResult ? packsResult : {}),
           ...(adopted ? { successionDebt: { id: adopted.id, adopted: true,
             resend: `POST /api/succession-debts/${adopted.id}/resend` } } : {}) });
       }
       if (slotMatch[2] === "open-worktree") {
+        const guard = slotOpeningGuard(s);
         const body = await readJson(req);
+        guard();
         if (!body || typeof body.repo !== "string") return json({ error: "expected { repo }" }, 400);
         if (s.cwd || laneSpawn.has(s.id)) return json({ error: "slot already active — use a free slot" }, 400);
         const parent = laneParentOf(body);
@@ -46307,6 +46399,8 @@ Bun.serve<WSData>({
         if (!wo.ok) return json({ error: wo.error }, 400);
         const co = contextOf(body, hh);
         if (!co.ok) return json({ error: co.error }, 400);
+        const pe = permissionsOf(body, hh);
+        if (!pe.ok) return json({ error: pe.error }, 400);
         const fo = laneFormOf(body, hh); // explicit form wins; absent → the adapter's
         if (!fo.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
         const po = packsOf(body);
@@ -46321,6 +46415,7 @@ Bun.serve<WSData>({
           ? { packsDelivered: true } : null;
         if (po.packs !== null && po.packs.length > 0) {
           const fp = await foundingPlanOf(body.repo, ho.harness, "lane");
+          guard();
           if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
           const pick = chooseFoundingPacks(fp.value.plan, po.packs);
           if (!pick.ok) return json({ error: pick.error }, pick.code);
@@ -46329,7 +46424,7 @@ Bun.serve<WSData>({
         }
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
-          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true, co.context);
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true, co.context, pe.permissions);
           if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form,
             ...(packsResult ? packsResult : {}) });
@@ -46361,25 +46456,36 @@ Bun.serve<WSData>({
         return json({ ok: true, resumed: w.resumed, sessionId: s.sessionId });
       }
       if (slotMatch[2] === "restart") {
+        const guard = slotOpeningGuard(s);
         if (!s.cwd) return json({ error: "slot not active" }, 400);
         if (s.sleeping || slotWakeInflight.has(s.id)) return json({ error: "slot is asleep — POST /api/slots/:id/wake brings it back" }, 409);
         if (slotTeardownInflight.has(s.id)) return json({ error: "slot is stopping" }, 409);
         if (restarting.has(s.id)) return json({ error: "a restart is already in flight" }, 409);
+        const body = await readJson(req);
+        guard();
+        const selected = slotPermissionsOf(s);
+        if (!selected.ok) return json({ error: selected.error }, 400);
+        if (body?.permissions !== undefined) {
+          const requested = permissionsOf(body, harnessOf(s.harness));
+          if (!requested.ok) return json({ error: requested.error }, 400);
+          if (JSON.stringify(requested.permissions) !== JSON.stringify(selected.permissions))
+            return json({ error: "restart keeps its permissions — recycle selects a new profile" }, 409);
+        }
         const pinned = s.sessionId;
-        const occupant = slotStreamOccupant(s);
+        const occupant = slotSpawnOccupant(s);
         if (!occupant) return json({ error: "slot not active" }, 409);
         restarting.add(s.id);
         try {
           const target = await existingTmuxTarget(sess(occupant.slot));
-          if (!target || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+          if (!target || !sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id))
             return json({ error: "slot pane unavailable or changed during restart" }, 409);
           const stopped = await tmux("kill-pane", "-t", target.paneId);
-          if (stopped.code !== 0 || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+          if (stopped.code !== 0 || !sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id))
             return json({ error: "slot changed while restart stopped its pane" }, 409);
           // rebuilt INLINE rather than left to the 2s self-heal loop: the button promises a session that is
           // back, and a route that only kills cannot say whether it is.
           await ensureSlot(s, "restart");
-          if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+          if (!sameSlotSpawnOccupant(s, { ...occupant, sessionId: s.sessionId }) || slotTeardownInflight.has(s.id))
             return json({ error: "slot changed while restart rebuilt its pane" }, 409);
         } catch (e) {
           if (e instanceof TmuxNewSessionUnavailable)
@@ -46390,7 +46496,7 @@ Bun.serve<WSData>({
         }
         // read off what ensureSlot DID rather than re-deriving its resume formula (two copies drift): a fresh
         // uuid (pin, no transcript) and no pin at all both answer false, which is the truth in both cases.
-        return json({ ok: true, resumed: pinned !== null && s.sessionId === pinned });
+        return json({ ok: true, resumed: pinned !== null && s.sessionId === pinned, ...(s.permissions ? { permissions: s.permissions } : {}) });
       }
       if (slotMatch[2] === "land") {
         const land = await landLane(s, { ...OWNER_LAND_FACTS, landedBy: ownerLandActor(req, s) });

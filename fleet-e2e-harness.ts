@@ -24,7 +24,11 @@
 // Run via ./e2e-claude-gate.sh. Do not run directly against a live fleet — e2e/harness.ts refuses
 // the live socket and the live port on import, before anything here can act.
 import { readFileSync } from "node:fs";
+import { codexPermissionsFrom } from "./server/types";
 import { AUTOS_TICK_MS, ROOT, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
+
+for (const [claim, pass] of Object.entries(await codexPermissionSpawnClaims(readFileSync(`${ROOT}/server.ts`, "utf8"))))
+  check(claim, pass);
 
 // server.ts's two send-boot constants, mirrored the way e2e/harness.ts mirrors AUTO_MIN_EVERY_SEC:
 // neither is env-exposed, and every fixture below is a statement ABOUT them, so a fixture that
@@ -577,3 +581,91 @@ check("...and it refuses BEFORE spawning, not after a timeout", took < 10_000, `
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
 process.exit(failures() ? 1 : 0);
+
+export async function codexPermissionSpawnClaims(source: string): Promise<Record<string, boolean>> {
+  const span = (start: string, end: string): string => { const a = source.indexOf(start); return source.slice(a, source.indexOf(end, a)); };
+  const occupant = span("interface SlotSpawnOccupant", "const SLOT_POST_CAPTURE_LATCH");
+  const validators = span("function permissionsOf(", "// The lane's browser profile");
+  const ensure = span("async function ensureSlot(", "function expandCwd(");
+  const open = span("async function openSlot(", "// a task\'s `sent` state");
+  const adapterStart = source.indexOf("  spawnCmd: (o) => {", source.indexOf("const CODEX_HARNESS"));
+  const adapter = source.slice(adapterStart + "  spawnCmd: (o) => {".length, source.indexOf("\n  },", adapterStart));
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(`
+    return async (scenario) => {
+      const profile = {sandbox:"read-only",approval:"on-request"};
+      const s = { id:1,cwd:"/fixture",openedAt:100,selfToken:"old",sessionId: scenario === "resume" ? "10000000-0000-4000-8000-000000000001" : null,
+        model:null,harness:"codex",effort:null,browser:false,remote:false,context:null,container:null,containerContext:null,
+        permissions: scenario === "invalid" ? {state:"invalid"} : {...profile},sleeping:null,codexRecoveryState:null,worktree:null };
+      const commands = [], publications = [];
+      const PATH_EXPORT="",CODEX_TEXT_LANE_MCP="",SHELL="/usr/bin/true";
+      const realpathSync = (p) => p, shellSingleQuote = (v) => "'" + v.replaceAll("'", "'\\\\''") + "'";
+      const h = {id:"codex",permissions:{default:{sandbox:"danger-full-access",approval:"never"}},supports:{resume:true},pinsSession:false,
+        spawnCmd:(o)=>{${adapter}}};
+      const harnessOf = () => h;
+      ${validators}
+      ${occupant}
+      const slotTeardownInflight = new Map(),slotSpawnInflight = new Map();
+      const sess = () => "s1",sessTarget = (v) => v;
+      let awaited = false;
+      const tmux = async (...args) => {
+        if(args[0] === "has-session") {
+          // t | event | exclusive owner
+          // 0 | snapshot captured | old@100
+          // 1 | external has-session await completes; slot reused/profile changed | new@200 / old@100
+          // 2 | continuation may spawn only after exact snapshot proof | current occupant
+          await Promise.resolve();
+          if(scenario === "replaced") Object.assign(s,{openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+          if(scenario === "changed-profile") s.permissions.sandbox="danger-full-access";
+          awaited=true; return {code:1,out:""};
+        }
+        return {code:0,out:args[0] === "display-message" ? args.at(-1) === "#{pane_pipe}" ? "1" : "200 50" : ""};
+      };
+      const tmuxNewSession = async (...args) => {commands.push(args.at(-1)); return {code:0,out:"%1\\t@1",timedOut:false};};
+      const parseTmuxTarget = () => ({paneId:"%1",windowId:"@1"}),codexRolloutForId=async()=>"/rollout";
+      const CODEX_UUID_RE=/^[0-9a-f-]{36}$/, RULEBOOK_AB_RENDERS=null;
+      const saveState=()=>publications.push(JSON.stringify(s.permissions)),audit=()=>{},noteSessionIdLearned=()=>{},backfillProgramMainSessionId=()=>{};
+      const HOST="fixture",PORT=1,stewardToken=null,STEWARD_LABEL="steward",BASE_CMD="claude";
+      const boxFor=()=>({container:"",containerContext:""});
+      const existsSync=()=>true,statSync=()=>({mode:384,isDirectory:()=>true});
+      const occupantStreamPath=()=>"/stream",occupantStreamStagePath=()=>"/stage",legacyStreamPath=()=>"/legacy";
+      const console={log:()=>{}};
+      ${ensure}
+      const resolve=(v)=>v,expandCwd=(v)=>v,NO_BOX={};
+      const waitForSlotTeardown=async()=>{await Promise.resolve();awaited=true;if(scenario === "open-replaced") Object.assign(s,{openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});};
+      const waitForSlotSpawn=async()=>{};
+      ${open}
+      let error=null; try {
+        if(scenario.startsWith("open-")) await openSlot(s,"/fixture",null,null,null,"codex",null,{},null,false,null,false,
+          scenario === "open-invalid" ? {sandbox:"read-only",approval:"untrusted"} : profile);
+        else await ensureSlot(s,scenario === "invalid" ? "restart" : "heal");
+      } catch(e) {error=String(e);}
+      return {commands,publications,awaited,error,profile:s.permissions};
+    };`);
+  const exercise = new Function("codexPermissionsFrom", code)(codexPermissionsFrom) as
+    (scenario: string) => Promise<{ commands: string[]; publications: string[]; awaited: boolean; error: string | null;
+      profile: { sandbox?: string; approval?: string; state?: string } }>;
+  const fresh = await exercise("fresh"), resume = await exercise("resume");
+  const replaced = await exercise("replaced"), changed = await exercise("changed-profile"), invalid = await exercise("invalid");
+  const openReplaced = await exercise("open-replaced"), openInvalid = await exercise("open-invalid");
+  const promptPattern = source.match(/\{ re: (\/Would you like[^\n]+?\/), why: "codex permission prompt" \}/)?.[1];
+  const promptBlock = promptPattern ? new Function(`return ${promptPattern}`)() as RegExp : null;
+  const promptFrame = ">_ OpenAI Codex (v0.159.0)\nWould you like to run the following command?\nEnvironment: local\nReason: Allow the isolated fixture command?\n$ printf permission-probe\n1. Yes, proceed (y)\n3. No, and tell Codex what to do differently (esc)";
+  return {
+    "Codex on-request command approval frame is a named readiness block despite the ready header": promptBlock?.test(promptFrame) === true,
+    "openSlot refuses a replaced target after teardown await without spawn or profile overwrite": openReplaced.error !== null
+      && openReplaced.awaited && openReplaced.commands.length === 0 && openReplaced.profile.sandbox === "workspace-write",
+    "openSlot invalid new profile refuses before teardown or occupant mutation": openInvalid.error?.includes("bad permissions") === true
+      && !openInvalid.awaited && openInvalid.commands.length === 0 && openInvalid.profile.sandbox === "read-only",
+    "ensureSlot fresh uses the captured restrictive profile without bypass": fresh.commands.length === 1
+      && fresh.commands[0].includes("--sandbox read-only --ask-for-approval on-request") && !fresh.commands[0].includes("bypass"),
+    "ensureSlot exact resume uses the same restrictive profile": resume.commands.length === 1
+      && resume.commands[0].includes("codex resume '10000000-0000-4000-8000-000000000001'")
+      && resume.commands[0].includes("--sandbox read-only --ask-for-approval on-request"),
+    "ensureSlot external await with a replaced occupant spawns and publishes nothing": replaced.awaited
+      && replaced.commands.length === 0 && replaced.publications.length === 0 && replaced.profile.sandbox === "workspace-write",
+    "ensureSlot external await with changed permissions spawns and publishes nothing": changed.awaited
+      && changed.commands.length === 0 && changed.publications.length === 0,
+    "ensureSlot invalid persisted permissions refuses before any external await or spawn": invalid.error !== null
+      && !invalid.awaited && invalid.commands.length === 0 && invalid.publications.length === 0 && invalid.profile.state === "invalid",
+  };
+}

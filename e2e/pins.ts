@@ -1556,26 +1556,8 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       `nach=${readsNach} validated=${validatesRow}`);
   }
 
-  // THE SHARP ONE, both directions. A suite the gate runs that AGENTS.md omits sends a Codex lane
-  // into the land under-verified; a suite AGENTS.md lists that the gate does not run makes the file
-  // claim coverage nobody has. Same for the tsc entry list — the exact drift that left the tier-2
-  // harness with no type coverage at all. Scoped to the fenced ```sh block so that prose ABOUT a
-  // suite (this file names ./e2e-isolated.sh in the paragraph below it, correctly, as NOT a gate)
-  // is not read as a claim to run it.
-  // AND "EXACTLY" NOW MEANS THE WHOLE CHAIN, not two of its subsets. Until 2026-08-15 this rule
-  // compared the SUITE names and the tsc entry list and nothing else, so the two steps that are
-  // neither — `bun install` and `bun run build` — were unpinned in a rule whose name said
-  // "exactly". `bun run build` had drifted out of VERIFY_CMD and stayed green here for as long as
-  // anyone had looked: a break only the bundler can see (src/client.ts, src/share.ts) walked
-  // through the land gate untouched, and AGENTS.md meanwhile told every lane to run it. A pin that
-  // claims more than it compares is worse than none, because it makes the hole look guarded.
-  //
-  // The fix is to compare the ORDERED STEP SEQUENCE, and to do it against a THIRD side that
-  // already had the answer: verify-proportion.ts's LOCAL_PROOF_STEPS is the vocabulary the server
-  // hands a lane in `localProof.steps`, so it was recommending `build` to lanes the gate never ran.
-  // Steps are located by first occurrence of an unambiguous marker and sorted by position, which
-  // is why VERIFY_CMD's repo guard, its `|| { echo … }` handlers and its `;`/`&&` mix need no
-  // parsing: what is compared is which steps appear and in what order, in all three files.
+  // The ordered step names in AGENTS.md §Verify, Lane are the reader's view of the live
+  // command. Compare all three sides: documentation, watchdog.sh and LOCAL_PROOF_STEPS.
   const STEP_MARKERS: readonly [string, string][] = [
     ["install", "bun install"],
     ["pins", "bun e2e/pins.ts"],
@@ -1600,38 +1582,31 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   })();
 
   const RULE_VERIFY = "AGENTS.md, watchdog.sh's VERIFY_CMD and LOCAL_PROOF_STEPS are the same ordered chain";
-  const fence = agents === null ? null : /```sh\n([\s\S]*?)```/.exec(agents)?.[1] ?? null;
-  if (fence === null) pin(RULE_VERIFY, false, agents === null ? "no AGENTS.md" : "no ```sh verify block");
+  const verifySection = agents === null ? null : /\n## Verify\n([\s\S]*?)(?=\n## |$)/.exec(agents)?.[1] ?? null;
+  const laneSection = verifySection === null ? null : /\n### Lane\n([\s\S]*?)(?=\n### |$)/.exec(verifySection)?.[1] ?? null;
+  const names = laneSection === null ? null : /The names are links of `verify\.cmd` in the same answer:\s*((?:`[a-z-]+`\s*)+)\./.exec(laneSection)?.[1] ?? null;
+  if (names === null) pin(RULE_VERIFY, false, agents === null ? "no AGENTS.md" : "no step names in §Verify, Lane");
   else {
     const same = (a: string[], b: string[]): string =>
       [...new Set(a.filter((x) => !b.includes(x)))].sort().join(",");
-    const docSuites = [...fence.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => m[1]);
-    // the tsc invocation only: from `bunx tsc` to the end of its backslash continuation, so a future
-    // `bun something.ts` line elsewhere in the block is not mistaken for a type-gate entry
-    const tscLines = ((): string => {
-      const ls = fence.split("\n");
-      const at = ls.findIndex((l) => l.includes("bunx tsc"));
-      if (at < 0) return "";
-      let to = at;
-      while (to < ls.length - 1 && ls[to].trimEnd().endsWith("\\")) to++;
-      return ls.slice(at, to + 1).join(" ");
-    })();
-    const docTsc = tscLines.split(/\s+/).filter((t) => /\.ts$/.test(t));
-    // recomputed rather than borrowed from the block above: these rows must keep working whoever
-    // edits the neighbouring family, and the expression is the same one line either way
+    const docSteps = [...names.matchAll(/`([a-z-]+)`/g)].map((m) => m[1]);
+    const docSuites = docSteps.flatMap((step) => {
+      const marker = STEP_MARKERS.find(([name]) => name === step)?.[1];
+      return marker?.startsWith("./e2e-") ? [marker.slice(2)] : [];
+    });
+    // The command owns the tsc entries; the tree-coverage rule above holds their completeness.
+    // Keep the effective deployment's entry list and suites held to that same command below.
     const gateTsc = /--types bun ([^&]+?)(?:&&|$)/.exec(verifyCmd)?.[1]?.trim().split(/\s+/) ?? [];
     const missSuite = same(gateSuites, docSuites), extraSuite = same(docSuites, gateSuites);
-    const missTsc = same(gateTsc, docTsc), extraTsc = same(docTsc, gateTsc);
-    // the step sequences, as strings so a failure names the drift instead of a boolean
-    const docChain = stepsOf(fence).join(">");
+    const docChain = docSteps.join(">");
     const gateChain = stepsOf(verifyCmd).join(">");
     const proofChain = proportion.join(">");
     pin(RULE_VERIFY,
-      docSuites.length > 0 && docTsc.length > 0
-      && !missSuite && !extraSuite && !missTsc && !extraTsc
+      docSuites.length > 0 && gateTsc.length > 0
+      && !missSuite && !extraSuite
       && proofChain.length > 0 && docChain === gateChain && docChain === proofChain,
       `chain doc=[${docChain}] gate=[${gateChain}] localProof=[${proofChain}]; `
-      + `suites missing=[${missSuite}] extra=[${extraSuite}]; tsc missing=[${missTsc}] extra=[${extraTsc}]`);
+      + `suites missing=[${missSuite}] extra=[${extraSuite}]`);
 
     // THE CHAIN THAT ACTUALLY RUNS. The rule above holds three FILES together, but the server
     // resolves a repo's gate entry-then-global (server.ts#VERIFY_CMD_REPOS): an entry for this repo
@@ -1667,8 +1642,8 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
         const effChain = stepsOf(effective).join(">");
         const diffs = [
           effChain !== docChain ? `chain effective=[${effChain}] doc=[${docChain}]` : "",
-          same(docTsc, effTsc) ? `tsc the doc names but the gate does not check=[${same(docTsc, effTsc)}]` : "",
-          same(effTsc, docTsc) ? `tsc the gate checks beyond the doc=[${same(effTsc, docTsc)}]` : "",
+          same(gateTsc, effTsc) ? `tsc watchdog.sh names but the effective gate does not check=[${same(gateTsc, effTsc)}]` : "",
+          same(effTsc, gateTsc) ? `tsc the effective gate checks beyond watchdog.sh=[${same(effTsc, gateTsc)}]` : "",
           same(docSuites, effSuites) ? `suites the doc names but the gate does not run=[${same(docSuites, effSuites)}]` : "",
           same(effSuites, docSuites) ? `suites the gate runs beyond the doc=[${same(effSuites, docSuites)}]` : "",
         ].filter(Boolean);

@@ -142,103 +142,33 @@ anything was read.
 
 ## Verify
 
-Ask `GET /api/self/gate` first with the lane's self token. Run the commands corresponding to
-`localProof.steps`, in the returned order; the step names map one-to-one to the full-chain lines
-below (`install`, `pins`, `tsc`, `build`, `clean-review`, `security`, `claude-gate`). The response's
-`classifiedAs` explains which rule each changed file selected. If `localProof` is `null` or the
-route is unreachable, run the full chain below. Every selected step must pass; stop at the first
-failure.
+### Kern
 
-An EMPTY `localProof.steps` is not `null` and never means "nothing to prove": it is served only in
-a repo that does not run this chain at all, and it always carries `localProof.note`, which names
-that repo's own verify command instead. Run THAT, not the chain below — the step names below are
-lines of this repo's chain and do not exist elsewhere.
+1. What gates you is the live `GET /api/self/gate` answer: where they differ, the answer wins.
+2. In this repo a docs-only land runs `install` + `pins` in the gate; every other land runs the full chain.
+3. Only `ALL PASS` at a suite's tail is green; an early end is red, a remembered check count proves nothing.
+4. A `waitedOut` never looked at the tree: it is neither red nor green.
+5. Never stop a run by name pattern, never kill a PID from the suite lock or `suiteLock.pid`: it can be the live server.
 
-The server-side land gate remains authoritative: it runs its full configured chain except that,
-since 2026-08-25, a docs-only land in THIS repo runs the short `install` + `pins` proof; since
-2026-09-04 a docs-only land gets that same short chain in the post-land audit as well, and there
-the question is asked of the whole coalesced entry — EVERY land it covers must have passed the
-docs-only gate, otherwise the audit runs the full suite. A proportional entry is never offered to a
-remote helper and never waits for one. Local proof and the land gate use the same classification
-source.
-The short proof is this repo's own chain — `bun e2e/pins.ts` is a file only this tree has — so
-since 2026-08-26 it is only ever chosen here: a land in another repo runs that repo's configured
-chain unchanged, docs-only or not. Its note stamps no step names at all: the step names are lines
-of this chain, and the note's `cmd` is the only honest record of what a foreign chain ran.
-The guard inside the short proof stays as a second line: a tree it does not recognise makes it
-decline out loud — verdict SKIPPED, never a red gate over a tree nothing looked at.
+More: borrow `verify-e2e` for its section "More" and the knowledge parts `gate-vs-audit` and `proportion`, each cut from its home with its own hash.
 
-The full chain, copyable and in order:
+### Lane
 
-```sh
-bun install --frozen-lockfile
-bun e2e/pins.ts
-bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun \
-  e2e/pins.ts src/client.ts src/share.ts src/helper.ts src/hub.ts server.ts fleet-e2e.ts \
-  fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts \
-  fleet-e2e-harness.ts merge-prompt.ts acceptance-probe.ts graph-coverage.ts land-collision-stats.ts \
-  land-quality.ts lane-context-cost.ts drills/drill-3-clean-review.ts
-bun run build
-./e2e-clean-review.sh
-./e2e-security.sh
-./e2e-claude-gate.sh
-```
+6. Run `localProof.steps` in the returned order; stop at the first failure. The names are links of `verify.cmd` in the same answer: `install` `pins` `tsc` `build` `clean-review` `security` `claude-gate`. `localProof: null`: all of `verify.cmd`; no answer: the full chain in `watchdog.sh#VERIFY_CMD`. Empty `steps`: the command in `localProof.note`.
+7. `./e2e-isolated.sh` is a preview, not a gate, owed only for `e2e/`, a suite wrapper, the merge/land path or a statement a check asserts. Owed and `helper.online`: offer it (`POST /api/self/suite-offer`, body `localProof.offerBody`) and go idle; run it locally only if the offer came back `null` or a withdraw answered 200.
+8. An offer whose budget runs out unclaimed sends nothing: before going idle, arm one one-shot `POST /api/self/autos` at `waitPolicy.unclaimedMs` (`heldMs` while `suiteLock` is held); when it fires and `GET /api/self/suite-offer` still reads `open`, withdraw.
 
-**Judge a suite by its TAIL, never by a remembered check count.** A clean run ends in `ALL PASS`.
-Anything else is a failure, including a run that ended early. Quote the tail in your report; do not
-paraphrase it.
+### MAIN
 
-For the recommendation flag, `isolatedPreview: true` means run the preview; `"self-assess"` means
-apply the existing merge-/land-path self-assessment in the rule below.
+6. You have no `self/gate` and no suite-offer: your own preview goes through `POST /api/self/jobs` with `{"cmd":"./e2e-isolated.sh"}` and a job watch.
 
-`./e2e-isolated.sh` is the slow tier and is NOT part of the above. It is owed only if you touched
-the `e2e/` lifecycle, a suite wrapper, the merge/land path, or a statement some check asserts
-(`supports.*`, `effortLevels`, a contract default) — a brief line demanding it does not widen this
-rule, and a docs-only lane never owes it.
+### More
 
-**Offer before you run.** When the preview is owed and the gate's `helper.online` is `true`, a lane
-offers it (`POST /api/self/suite-offer`) instead of taking this machine's suite mutex. The body is
-served ready as `localProof.offerBody` (present unless `isolatedPreview` is `false`): `{}` is the
-full run, `{"modules":[…]}` the narrowed run of `localProof.modules`, which needs
-`helper.takesModules`.
-
-```bash
-curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
-  -d '<localProof.offerBody>' "$FLEET_SELF_URL/api/self/suite-offer"
-```
-
-`offer: null` plus a `reason` minted nothing: run it locally. Otherwise go idle — the terminal
-verdict (green, red, or `unknown` when a claim lapses) is delivered into your pane; do not poll.
-Nothing arrives when an UNCLAIMED offer's budget runs out, so arm one return path for that (a
-one-shot `POST /api/self/autos`): the answer's `waitPolicy.unclaimedMs` while `suiteLock` is
-`null`, `waitPolicy.heldMs` while the mutex is held. If `GET /api/self/suite-offer` still reads
-`open` then, withdraw it (`POST /api/self/suite-offer/withdraw`): that 200 is the only permission
-to run locally; a claimed offer answers 409 unless `{"abandon":true}`. The only other local run is
-one that proves a repair to the suites themselves.
-
-**Gate suites, and a MAIN's preview, go through the jobs door.** `POST /api/self/jobs` takes an
-exact `server/types.ts#HELPER_CMD_ALLOW` key: `{"cmd":"./e2e-clean-review.sh"}`,
-`{"cmd":"./e2e-security.sh"}`, `{"cmd":"./e2e-claude-gate.sh"}`. A lane may not subscribe to the
-job and reads `GET /api/self/jobs/<jobId>`. A MAIN has no suite-offer (it is lane-only): it posts
-`{"cmd":"./e2e-isolated.sh","timeoutMs":2700000}` and arms a `{"kind":"job","target":"<jobId>"}`
-watch (`docs/self-api.md` §jobs).
-Before running a gate suite locally, withdraw its own open command job with
-`POST /api/self/jobs/<jobId>/withdraw`; only the 200 with `mayRunLocally: true` permits the local run.
-
-**Running locally.** Output goes to a file in your scratch directory, never into the tree or your
-context; once the run has exited, read its tail:
-`./e2e-isolated.sh > <scratch>/suite.log 2>&1; tail -n 40 <scratch>/suite.log`. Run it in the
-foreground with a timeout, or in the background (note `$!`) and wait for its completion event —
-never a `sleep` loop over the log, which is block-buffered. Suites take a shared mutex, so a run
-may wait a long time before it starts — that is normal, not a hang.
-
-**Stopping a run.** Never by name pattern: the server runs the same scripts for its post-land
-audit, and a pattern kill records a red audit that measured nothing. Only by the PID you noted —
-and the wrapper alone is not enough: its `bun fleet-e2e*.ts` runner survives it and respawns its
-tmux server. Take the runner first (`pgrep -P <pid>`), kill both, then
-`tmux -L <SOCK><pid> kill-server` (the prefix is the wrapper's `SOCK=` line, e.g. `fleettest`),
-and check lock and socket. Never kill a PID read from `/tmp/fleet-e2e.lock/pid` or from
-`suiteLock.pid`: the lock holder can be the live server itself.
+- Gate suites can run on the helper: `POST /api/self/jobs` with `{"cmd":"./e2e-clean-review.sh"}` (or `e2e-security`, `e2e-claude-gate`). Before running one locally, withdraw its open job; run only on `mayRunLocally: true`.
+- A local suite run logs to a scratch file; read its tail after it exits. A long wait for the suite mutex is normal, not a hang.
+- With an offer open or claimed, the only local preview is a run that proves a repair to the suites themselves.
+- Stopping your own run: by the PID you noted only. Take the runner first (`pgrep -P <pid>`), kill both, then `tmux -L <SOCK><pid> kill-server`; check lock and socket.
+- Writing or changing a check: `AGENTS.md` §How a check is written.
 
 ## Landing
 

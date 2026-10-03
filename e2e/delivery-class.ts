@@ -63,11 +63,32 @@ export async function run(): Promise<void> {
     check("delivery-class fixture: slot 2 remains open after the isolated restart",
       session.slots.some((s) => s.id === 2 && !!s.cwd));
     check("delivery-class fixture: slot 2 runs a plain cat for the header read-backs", await catPane("s2"));
+    const oneShotText = `${marker}: sofortiger One-Shot`;
+    const oneShotAuditBefore = auditRows().length;
+    const oneShotPlBefore = (await plogRead()).length;
+    const oneShot = await post("/api/slots/2/autos", { text: oneShotText, everySec: null, inSec: 1, idleSec: 0 });
+    const oneShotBody = await oneShot.json() as { auto?: { id: string; everySec: number | null } };
+    check("immediate auto fixture is a one-shot", oneShot.ok && !!oneShotBody.auto?.id
+      && oneShotBody.auto.everySec === null, `${oneShot.status}`);
+    const oneShotFire = await until(() => auditRows().slice(oneShotAuditBefore).find((r) =>
+      r.event === "auto_fire" && r.slot === 2 && r.detail === oneShotBody.auto?.id) ?? null,
+    { timeoutMs: 8_000, what: "one-shot reaches its audit receipt" });
+    const oneShotAudit = auditRows().slice(oneShotAuditBefore);
+    const oneShotSends = oneShotAudit.filter((r) => r.event === "send" && r.slot === 2 && r.path === "auto");
+    check("a due one-shot is sent with deliveryClass sofort", oneShotSends.length === 1
+      && oneShotSends[0]?.deliveryClass === "sofort" && !!oneShotFire,
+      JSON.stringify(oneShotSends));
+    check("a one-shot never enters the auto bundle window", !oneShotAudit.some((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto"), JSON.stringify(oneShotAudit));
+    check("the immediate one-shot delivers its full text once", (await plogRead()).slice(oneShotPlBefore)
+      .filter((p) => p.slot === 2 && p.text === oneShotText).length === 1);
     const before = (await plogRead()).length;
     const sendsBefore = auditRows().filter((r) => r.event === "send" && r.slot === 2).length;
-    const scheduled = await post("/api/slots/2/autos", { text: autoText, inSec: 1, idleSec: 0 });
-    check("delivery-class fixture: one-shot check-in is scheduled", scheduled.ok, `${scheduled.status}`);
-    const queued = await until(() => auditRows().find((r) => r.event === "delivery_bundle_queued"
+    const scheduled = await post("/api/slots/2/autos", { text: autoText, everySec: 60, runs: 1, inSec: 1, idleSec: 0 });
+    const scheduledBody = await scheduled.json() as { auto?: { everySec: number | null } };
+    check("delivery-class fixture: recurring check-in is scheduled", scheduled.ok
+      && scheduledBody.auto?.everySec === 60, `${scheduled.status}`);
+    const queued = await until(() => auditRows().slice(oneShotAuditBefore).find((r) => r.event === "delivery_bundle_queued"
       && r.slot === 2 && r.path === "auto" && r.cache === "kalt"),
     { timeoutMs: 8_000, what: "cold auto enters a nonzero bundle window" });
     check("cold bundle audit names its delivery class",
@@ -106,7 +127,7 @@ export async function run(): Promise<void> {
     const timedAuto = `${marker}: kalter Auto-Termin`;
     const timedAutoAuditBefore = auditRows().length;
     const timedAutoPlBefore = (await plogRead()).length;
-    const timedAutoScheduled = await post("/api/slots/2/autos", { text: timedAuto, inSec: 1, idleSec: 0 });
+    const timedAutoScheduled = await post("/api/slots/2/autos", { text: timedAuto, everySec: 60, runs: 1, inSec: 1, idleSec: 0 });
     check("cold auto window fixture is scheduled", timedAutoScheduled.ok, `${timedAutoScheduled.status}`);
     const timedAutoQueued = await until(() => auditRows().slice(timedAutoAuditBefore).find((r) =>
       r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto" && r.cache === "kalt") ?? null,
@@ -144,7 +165,7 @@ export async function run(): Promise<void> {
     const loneText = `${marker}: allein im leeren Buendel`;
     const loneAuditBefore = auditRows().length;
     const loneScheduled = await post("/api/slots/2/autos", { text: `${marker}: geloeschter Check-in`,
-      inSec: 1, idleSec: 0 });
+      everySec: 60, runs: 1, inSec: 1, idleSec: 0 });
     const loneAutoId = ((await loneScheduled.json()) as { auto?: { id: string } }).auto?.id ?? "";
     await until(() => auditRows().slice(loneAuditBefore).find((r) =>
       r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto") ?? null,
@@ -174,7 +195,7 @@ export async function run(): Promise<void> {
     const slashText = `/fleet-probe-${marker}`;
     const slashAutoText = `${marker}: Check-in neben einem Befehl`;
     const slashAuditBefore = auditRows().length;
-    const slashScheduled = await post("/api/slots/2/autos", { text: slashAutoText, inSec: 1, idleSec: 0 });
+    const slashScheduled = await post("/api/slots/2/autos", { text: slashAutoText, everySec: 60, runs: 1, inSec: 1, idleSec: 0 });
     await until(() => auditRows().slice(slashAuditBefore).find((r) =>
       r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto") ?? null,
     { timeoutMs: 8_000, what: "an auto waits in the window beside the coming command" });

@@ -16522,6 +16522,7 @@ async function tickAutos(): Promise<void> {
           // slots carry the label ("no current role occupant", Slot 9, 2026-10-02). The slot address
           // also makes the bundle drop the entry if the occupant changes before the paste.
           await sendText(s, a.text, true, { path: "auto", address: { kind: "slot", id: s.id },
+            deliveryClass: a.everySec === null ? "sofort" : "buendelbar",
             bundleGate: { quietHours: a.everySec === null ? false : undefined,
               idleMs: a.idleSec * 1000 }, beforeSend: async (current) => {
             if (!a.enabled || !autos.includes(a)) throw new DeliveryCancelled(`auto ${a.id} was cancelled before paste`);

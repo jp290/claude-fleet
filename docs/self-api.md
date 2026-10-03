@@ -201,6 +201,7 @@ flushedBy:"sofort-Zustellung oder Cache-Kante"}`. `auto.nextAt` ist der Fälligk
 die Paste kann durch die Bündelung bis zu `delivery.maxDelaySec` Sekunden später kommen
 (Default 900, Bündelung d6d75307, `server.ts#deliveryClass`). Eine sofort-Zustellung an denselben
 Slot oder die Cache-Kante spült das Bündel früher; `idleSec:0` hebt dieses Bündelfenster nicht auf.
+Bei einem One-Shot (`everySec:null`) setzt `tickAutos` jedoch `deliveryClass:"sofort"` statt der oben beschriebenen Standardklasse, sodass er bei Fälligkeit ohne Bündelfenster zugestellt wird; wiederkehrende Autos bleiben `buendelbar`, und Busy-, Quiet-Hours- und Harness-Gates gelten unverändert.
 
 Empfänger ist **dein Slot mit deinem Occupant**, nie eine Rolle: das Auto trägt `slotOpenedAt` (der
 Occupant, der es angelegt hat), und `server.ts#tickAutos` stellt es mit `address:{kind:"slot"}` zu.

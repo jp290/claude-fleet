@@ -1490,6 +1490,102 @@ bereits der persistierte Program-Lebenszyklus (`proposed|confirmed|active|comple
 `GET /api/sessions` trägt `programsStale` nur, wenn mindestens ein aktives Program eine stale
 MAIN-Bindung hat; bei null ist das Feld wegen des Poll-Budgets abwesend.
 
+### Landbereit-Liste und einmaliges Wecken (`GET /api/self/program-execution`)
+
+Je Program führt `landbereit = {rows, nudgeAfterMs}` die angenommenen `complete`-Reports
+laufender Aufträge, deren aktuelle Lane done-looking ist und für die noch kein Land-Lauf
+begonnen hat. `rows` sortiert älteste Report-Eingänge zuerst, bei Gleichstand nach Task-ID.
+Jede Zeile enthält `taskId`, `reportId`, `slot`, `openedAt`, `branch`, `reportedAt`,
+`acceptedAt`, `ageMs` (Serverzeit minus Report-Eingang) und `nudgeEventId` (anfangs `null`).
+Der Report muss der aktuelle sein und exakt Task, Program, Lane-Belegung, Branch und
+Arbeitsverzeichnis zuordnen. Unbeurteilte, abgelehnte oder überholte Reports, unbekannte
+Lane-Fakten und bereits begonnene Lands stehen nicht in der Liste. Sie erteilt keine Land-Rechte.
+
+Der vorhandene Watch-Tick erzeugt für jede Zeile **ein** bestehendes `lane-ready`-Event,
+sobald `ageMs > FLEET_LAND_READY_NUDGE_MS` (Default **900000 ms / 15 Minuten**).
+Empfänger ist die aktuell exakt gebundene, lebende Program-MAIN, Adresse `{kind:"program",id}`.
+Der Volltext verweist auf die Liste und die ausstehende Entscheidung. Zustellung und ACK laufen
+über die bestehenden Event-Türen; kein neuer Tick, Zustellweg oder Auto-Land entsteht.
+Der Report speichert `landReadyNudgeEventId` zusammen mit dem Event vor jeder Zustellung.
+Damit erzeugen ACK, Event-Retention und Server-Neustart keinen zweiten Weck-Event für diesen Report.
+`landCalledAt` wird beim Beginn eines Merge-/Confirm-/Land-Laufs für die aktuelle Lane gespeichert.
+Ein noch ausstehender Nudge wird dann `subject-gone`: seine Land-Pflicht besteht nicht mehr.
+Die Event-Zustellung prüft diese Pflicht auch nach ihren externen Awaits. Ein bereits zugestelltes
+Event bleibt als Zustellbeleg erhalten. Nach dem Land entsteht kein neuer Nudge.
+
+**Vorhermessung reproduzieren.** Die folgende Rechnung nimmt ausschließlich einen eingefrorenen
+Auszug mit `MANIFEST.json` (`frozenAt`, `files{name:{bytes,sha256}}`), `audit.jsonl` und
+`lane-outcomes.jsonl`. Das Fenster endet bei `frozenAt` und beginnt 14 Tage davor. Cohort sind
+abgeschlossene Lands in diesem Fenster, deren letzter Complete-Report ebenfalls im Fenster liegt;
+Start ist der erste beobachtete `self_land_start` nach diesem Report. Ein dazwischenliegendes
+`needs-main`/`failed` schließt das Intervall aus. Lane-Slots werden durch beobachtete
+`slot_open`/`slot_kill` begrenzt; fehlende Identität bleibt unknown. Program-ID stammt explizit
+aus dem Land-Aufruf, MAIN-Slot aus dessen Audit-Zeile. Aggregiert wird je Program-MAIN über
+Nachfolgen desselben Programs; Slotnummern sind diagnostisch, kein Beweis gleicher Sessions.
+Median mittelt die beiden zentralen Werte; p90 ist nearest-rank (`ceil(0.9*n)`).
+Das misst Eingang bis Aufruf einschließlich Prüfung und Entscheidungen, keine bewiesene Leerlaufzeit.
+Offene Lanes und nicht zuordenbare Lands werden nicht zu Nullintervallen.
+
+```sh
+python3 - /Users/someone/fleet-extracts/2026-10-04-a2 <<'PY'
+import json, re, hashlib, math, statistics
+from pathlib import Path
+import sys
+from collections import defaultdict, Counter
+from datetime import datetime, timezone
+root=Path(sys.argv[1])
+manifest=json.loads((root/'MANIFEST.json').read_text()); end=manifest['frozenAt']; begin=end-14*86400000
+for name,expected in manifest['files'].items():
+ data=(root/name).read_bytes()
+ assert len(data)==expected['bytes'] and hashlib.sha256(data).hexdigest()==expected['sha256'], name
+rows=[dict(json.loads(raw),line=i) for i,raw in enumerate((root/'audit.jsonl').open(),1)]
+rows.sort(key=lambda r:(r['ts'],r['line']))
+occupants={}; reports=defaultdict(list); starts=defaultdict(list); exclusions=Counter()
+for r in rows:
+ event=r['event']; detail=r.get('detail',''); slot=r.get('slot')
+ if event=='slot_open':
+  match=re.search(r'/fleet-([^ /]+)(?:\s|$)',detail)
+  occupants[slot]=(match and 'fleet/'+match[1],r['ts'])
+ elif event=='slot_kill': occupants.pop(slot,None)
+ elif event=='fleet_report_open':
+  occ=occupants.get(slot); status=re.search(r'\bstatus=([^ ]+)',detail)
+  if occ and occ[0] and status: reports[occ].append((r,status[1]))
+ elif event=='self_land_start':
+  lane=re.search(r'\blane=(\d+)',detail); program=re.search(r'\bprogram=([0-9a-f]+)',detail)
+  occ=occupants.get(int(lane[1])) if lane else None
+  if occ and occ[0] and program: starts[occ].append((r,program[1]))
+  else: exclusions['land_identity_unknown']+=1
+outcomes=defaultdict(list)
+for raw in (root/'lane-outcomes.jsonl').open():
+ r=json.loads(raw)
+ if r.get('disposition')=='landed' and begin<=r.get('landAt',r.get('ts',0))<=end: outcomes[r['branch']].append(r)
+samples=[]
+for branch, outs in outcomes.items():
+ if len(outs)!=1: exclusions['duplicate_branch']+=1; continue
+ out=outs[0]; at=out.get('landAt') or out['ts']
+ pairs=[]
+ for occ, calls in starts.items():
+  if occ[0]!=branch: continue
+  for report,status in reports[occ]:
+   following=[(r,p) for r,p in calls if report['ts']<=r['ts']<=at]
+   if status=='complete' and following: pairs.append((report,following[0],occ))
+ if not pairs: exclusions['complete_or_land_unknown']+=1; continue
+ report,(call,program),occ=max(pairs,key=lambda pair:pair[0]['ts'])
+ if not begin<=report['ts']<=end: exclusions['report_outside_window']+=1; continue
+ if any(status in ('needs-main','failed') and report['ts']<r['ts']<call['ts'] for r,status in reports[occ]):
+  exclusions['superseded_complete']+=1; continue
+ samples.append(dict(program=program,mainSlot=call['slot'],branch=branch,reportLine=report['line'],landLine=call['line'],ms=call['ts']-report['ts']))
+groups=defaultdict(list)
+for s in samples: groups[s['program']].append(s['ms']/60000)
+print('manifest_sha256',hashlib.sha256((root/'MANIFEST.json').read_bytes()).hexdigest())
+print('window',*[datetime.fromtimestamp(t/1000,timezone.utc).isoformat() for t in (begin,end)])
+for program,values in sorted(groups.items()):
+ values.sort(); print(program,'slots',sorted({s['mainSlot'] for s in samples if s['program']==program}),'n',len(values),'median_min',round(statistics.median(values),3),'p90_min',round(values[math.ceil(.9*len(values))-1],3))
+print('total',len(samples),'sum_min',round(sum(s['ms'] for s in samples)/60000,3),'unknown',dict(exclusions))
+
+PY
+```
+
 ### Der Übergabe-Record `handover` (`GET /api/self/program-execution`)
 
 Jede Program-Zeile trägt `handover`: `null`, solange keine Standard-Nachfolge stattfand, sonst

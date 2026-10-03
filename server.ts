@@ -2722,6 +2722,72 @@ function lanePreviewFact(lane: Slot): { state: "offered" | "running" | "red"; id
   return settled?.result?.result === "red" ? { state: "red", id: settled.id } : null;
 }
 
+const LAND_READY_NUDGE_MS = Math.max(0, Number(process.env.FLEET_LAND_READY_NUDGE_MS ?? 15 * 60_000));
+const LAND_READY_WATCH_PREFIX = "land-ready:";
+
+function landReadyRows(programId: string, now: number) {
+  const rows: { taskId: string; reportId: string; slot: number; openedAt: number; branch: string;
+    reportedAt: number; acceptedAt: number; ageMs: number; nudgeEventId: string | null }[] = [];
+  for (const t of tasks) {
+    if (t.programId !== programId || t.kind !== "auftrag" || t.status !== "sent" || t.slot === null) continue;
+    const lane = slotFrom(t.slot);
+    if (!lane?.cwd || !lane.worktree || lane.programId !== programId
+      || !(lane.taskId === t.id || waveRowsOf(lane.id).some((row) => row.id === t.id))) continue;
+    const report = fleetReports.filter((r) => r.provenance.taskId === t.id
+      && r.provenance.programId === programId).sort((a, b) => b.reportedAt - a.reportedAt)[0];
+    if (!report || report.status !== "complete" || report.decision?.disposition !== "accepted"
+      || report.worker.slot !== lane.id || report.worker.openedAt !== lane.openedAt
+      || report.worker.branch !== lane.worktree.branch || report.worker.cwd !== lane.cwd
+      || report.landCalledAt !== undefined || mergeInflight.has(lane.id) || mergeStart.has(lane.id)
+      || mergeLast.get(lane.id)?.branch === lane.worktree.branch
+      || !laneDoneLooking(laneSignalView(lane, now, "fact"), AUTO_REVIEW_IDLE_MS)) continue;
+    rows.push({ taskId: t.id, reportId: report.id, slot: lane.id, openedAt: lane.openedAt,
+      branch: lane.worktree.branch, reportedAt: report.reportedAt, acceptedAt: report.decision.at,
+      ageMs: Math.max(0, now - report.reportedAt), nudgeEventId: report.landReadyNudgeEventId ?? null });
+  }
+  return rows.sort((a, b) => a.reportedAt - b.reportedAt || a.taskId.localeCompare(b.taskId));
+}
+
+async function recordLandCalled(lane: Slot): Promise<void> {
+  let dirty = false;
+  for (const report of fleetReports) {
+    if (report.worker.slot !== lane.id || report.worker.openedAt !== lane.openedAt
+      || report.worker.branch !== lane.worktree?.branch || report.landCalledAt !== undefined) continue;
+    report.landCalledAt = Date.now();
+    dirty = true;
+  }
+  if (markFleetEventsSubjectGone()) dirty = true;
+  if (dirty) await saveStateNow();
+}
+
+function mintLandReadyNudges(now: number): boolean {
+  let dirty = false;
+  for (const program of programs) {
+    if (program.status !== "active" || !program.main || !programMainLive(program.id)) continue;
+    const main = slotFrom(program.main.slot);
+    if (!main?.cwd || main.openedAt !== program.main.openedAt || main.sessionId !== program.main.sessionId) continue;
+    for (const row of landReadyRows(program.id, now)) {
+      if (row.ageMs <= LAND_READY_NUDGE_MS || row.nudgeEventId !== null) continue;
+      const report = fleetReports.find((r) => r.id === row.reportId)!;
+      const lane = slotFrom(row.slot)!;
+      const event: LaneFleetEvent = {
+        id: randomBytes(12).toString("hex"), watchId: `${LAND_READY_WATCH_PREFIX}${report.id}`,
+        receiverSlot: main.id, receiverOpenedAt: main.openedAt, receiverSessionId: main.sessionId,
+        receiverAddress: { kind: "program", id: program.id }, receiverIdleSec: 3,
+        subjectSlot: lane.id, subjectOpenedAt: lane.openedAt, subjectBranch: row.branch,
+        ...subjectNameStamp(lane, row.branch), kind: "lane-ready",
+        payload: laneWatchPayload(laneSignalView(lane, now, "fact")), createdAt: now,
+        status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+      };
+      report.landReadyNudgeEventId = event.id;
+      fleetEvents = [...fleetEvents, event];
+      audit("watch_fire", main.id, `land-ready ${row.taskId} program=${program.id} report=${report.id} event=${event.id} ageMs=${row.ageMs}`);
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
 // The row-level pointer that rides beside `phase`. Fact-only by construction: every branch is a
 // function of the phase, the row's own status and the Program's owner-granted promotion record —
 // no pane text, no quality judgement, nothing stored. `null` is a real answer and means "no door
@@ -2885,6 +2951,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
       handover: p.handover ? { at: p.handover.at, from: p.handover.from, to: p.handover.to,
         obligations: p.handover.obligations, settled: p.handover.settled, lost: p.handover.lost,
         dropped: p.handover.dropped } : null,
+      landbereit: { rows: landReadyRows(p.id, now), nudgeAfterMs: LAND_READY_NUDGE_MS },
       tasks: {
         rows: programTasks.map((t) => {
           // DERIVED per request, stored nowhere. `phase` says where the row sits on the rail; it
@@ -4248,7 +4315,8 @@ let autos: Auto[] = [];
 let watches: Watch[] = [];
 let fleetEvents: FleetEvent[] = [];
 let clarifications: ClarificationRequest[] = [];
-let fleetReports: FleetReport[] = [];
+type LandReadyReport = FleetReport & { landReadyNudgeEventId?: string; landCalledAt?: number };
+let fleetReports: LandReadyReport[] = [];
 let attentionRequests: AttentionRequest[] = [];
 let stallSensor: StallSensorState = { detected: 0, msTotal: 0, repos: {} };
 // THE ADDRESSED MESSAGE RAIL (see Message). Fleet-level rather than a Program field: a message has
@@ -7131,6 +7199,11 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   // question before their gate runs, so on those paths this never fires after main has moved.
   const variantRefusal = variantLandRefusal(s);
   if (variantRefusal) return { error: variantRefusal, code: 409 };
+  const landOpenedAt = s.openedAt;
+  const landCwd = s.cwd;
+  await recordLandCalled(s);
+  if (s.openedAt !== landOpenedAt || s.cwd !== landCwd || !s.worktree)
+    return { error: "lane occupant changed while recording the land call", code: 409 };
   const { repo, branch } = s.worktree;
   const path = s.cwd;
   // assemble the "landed" outcome while the worktree still exists (git reads need the tree);
@@ -11783,6 +11856,13 @@ const isLaneFleetEvent = (e: FleetEvent): e is LaneFleetEvent =>
   e.kind === "lane-ready" || e.kind === "host-commit-ready";
 function laneEventSubject(e: FleetEvent): LaneEventSubject {
   if (!isLaneFleetEvent(e)) return "not-a-lane";
+  if (e.watchId?.startsWith(LAND_READY_WATCH_PREFIX)) {
+    const report = fleetReports.find((r) => r.id === e.watchId!.slice(LAND_READY_WATCH_PREFIX.length));
+    const task = tasks.find((t) => t.id === report?.provenance.taskId);
+    const latest = task ? latestReportFor(task.id, task.programId ?? "") : null;
+    if (!report || report.landCalledAt !== undefined || task?.status !== "sent"
+      || latest?.id !== report.id || latest.status !== "complete" || latest.disposition !== "accepted") return "gone";
+  }
   const t = slotFrom(e.subjectSlot);
   // THE BRANCH IS THE FLOOR, and it answers for legacy rows too: the same test the watch tick
   // already applies to a target (`t.worktree?.branch !== w.targetBranch` disarms it) — an empty
@@ -14965,6 +15045,9 @@ async function guardedConfirmJob(lane: Slot, cwd: string, repo: string, main: st
   // the verdict as it stands BEFORE the confirm — it is what a non-land outcome must preserve.
   // Dropping `conflicted`/`resolvedBy` here would lift the ⏸ guard off a lane that still holds
   // unreviewed resolutions, i.e. let the next ordinary merge run auto-land them.
+  const landOpenedAt = lane.openedAt;
+  await recordLandCalled(lane);
+  if (lane.openedAt !== landOpenedAt || lane.cwd !== cwd || lane.worktree?.branch !== branch) return;
   const prev = mergeLast.get(lane.id);
   let res: MergeLast;
   try {
@@ -22868,6 +22951,12 @@ async function deliverFleetEventBundle(s: Slot, events: FleetEvent[]): Promise<v
 // THE PANE TEXT OF ONE EVENT, rendered from its row at the moment it is needed — by the transport
 // below and by GET /api/self/events/:id, where a receiver reads what a bundled wake-up only named.
 function fleetEventMessage(event: FleetEvent): string {
+  const landReadyReport = event.watchId?.startsWith(LAND_READY_WATCH_PREFIX)
+    ? fleetReports.find((r) => r.id === event.watchId!.slice(LAND_READY_WATCH_PREFIX.length)) : null;
+  if (landReadyReport) return `[fleet landbereit] Report ${landReadyReport.id} fuer Task ${landReadyReport.provenance.taskId}`
+    + ` ist angenommen und wartet seit ${Math.max(0, Date.now() - landReadyReport.reportedAt)} ms auf den ersten Land-Aufruf.`
+    + ` GET /api/self/program-execution zeigt die nach Alter sortierte Liste; entscheide nach Diff und Verify.`
+    + ` Danach Event ${event.id} quittieren: POST /api/self/events/${event.id}/ack.`;
   const text = event.kind === "clarification-request"
     ? clarificationWatchMessage(event.subjectSlot, event.subjectBranch, event)
     : event.kind === "fleet-report"
@@ -22938,11 +23027,13 @@ async function markFleetEventSend(event: FleetEvent, receiver: Slot): Promise<vo
 }
 
 async function tickWatches(): Promise<void> {
+  if (watchTickBusy) return;
   refreshDeliveryBundles();
+  const landReadyDirty = mintLandReadyNudges(Date.now());
   const verdictsDue = verdictRetryDue();
   // …and an outstanding hold entry is work too: without it the round that ends a hold could be the
   // one the cheap guard below skips, and the END row would never be written.
-  if (!verdictsDue.length && !composerHolds.size && !watches.some((w) => w.armed)
+  if (!landReadyDirty && !verdictsDue.length && !composerHolds.size && !watches.some((w) => w.armed)
     && !fleetEvents.some((e) => e.status === "pending"
       || (e.kind === "fleet-report" && e.status === "send-uncertain"
         && e.recovery?.state === "retryable"))
@@ -22951,7 +23042,8 @@ async function tickWatches(): Promise<void> {
   watchTickBusy = true;
   try {
     const now = Date.now();
-    let dirty = false;
+    let dirty = landReadyDirty;
+    if (dirty) await saveStateNow();
     let landRows: Record<string, unknown>[] | null = null;
     // Every hold whose row stopped being probeable ends here, with its totals, before the round
     // that could mint new ones. Writes trail lines only, never state.
@@ -33422,6 +33514,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   actor: LandActor = { kind: "owner", via: "cookie" }): Promise<void> {
   // WHO THE VERDICT AT THE END BELONGS TO, decided HERE and not down there: the route that called
   // this has just verified the asker's identity, and the gate below runs for minutes.
+  const landOpenedAt = s.openedAt;
+  await recordLandCalled(s);
+  if (s.openedAt !== landOpenedAt || s.cwd !== cwd || s.worktree?.branch !== branch) return;
   const verdictTo = verdictReceiverOf(actor);
   let res: MergeLast;
   let candidateMainSha: string | null = null;

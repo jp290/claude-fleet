@@ -4248,6 +4248,19 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && cxCode.includes('sandbox_workspace_write.network_access=false')
       && !cxCode.includes("danger-full-access") && !cxCode.includes("bypass"),
     "closed writer set, read-only default, no escalation or temporary-directory roots");
+  const gitRootsExpression = cxCode.match(/const roots = ([\s\S]*?);/)?.[1];
+  const linkedCommon = "/scratch/repo/.git";
+  const linkedPrivate = `${linkedCommon}/worktrees/lane`;
+  const rootsFor = (gitDir: string, commonDir: string): unknown => gitRootsExpression
+    ? new Function("gitDir", "commonDir", "resolve", `return ${gitRootsExpression};`)(gitDir, commonDir, resolve)
+    : null;
+  pin("Codex linked-worktree writers grant packed-ref files without the common root or sibling worktrees",
+    JSON.stringify(rootsFor(linkedPrivate, linkedCommon)) === JSON.stringify([
+      linkedPrivate, ...["objects", "refs", "logs", "packed-refs", "packed-refs.lock"].map((p) => resolve(linkedCommon, p)),
+    ]), gitRootsExpression ?? "Git roots expression absent");
+  pin("Codex primary-worktree writers retain their existing Git directory root",
+    JSON.stringify(rootsFor(linkedCommon, linkedCommon)) === JSON.stringify([linkedCommon]),
+    gitRootsExpression ?? "Git roots expression absent");
   for (const worker of ["merge", "repair"]) {
     const start = server.indexOf(`async function run${worker === "merge" ? "Merge" : "Repair"}(`);
     const code = server.slice(start, server.indexOf("\n}\n", start)).split("\n")

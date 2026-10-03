@@ -20450,9 +20450,10 @@ async function workerViaCodexExec(prompt: string, cwd: string,
       const gitDir = realpathSync(gd.out);
       const commonDir = realpathSync(cd.out);
       // The private directory holds index, HEAD and rebase state. Shared objects, refs and
-      // reflogs receive commits; the common .git root (including other worktrees) stays read-only.
+      // reflogs receive commits; packed ref transactions need only these two root files.
+      // The common .git root, config and other worktrees stay read-only.
       const roots = gitDir === commonDir ? [gitDir]
-        : [gitDir, ...["objects", "refs", "logs"].map((d) => resolve(commonDir, d))];
+        : [gitDir, ...["objects", "refs", "logs", "packed-refs", "packed-refs.lock"].map((d) => resolve(commonDir, d))];
       sandboxArgs.push("-c", 'approval_policy="never"',
         "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`,
         "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",

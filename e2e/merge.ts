@@ -149,6 +149,7 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
       git(lane.cwd, "commit", "-am", `lane ${mode}`);
       writeFileSync(`${repo}/code.txt`, `root\nmain-${mode}\n`);
       git(repo, "commit", "-am", `main ${mode}`);
+      git(repo, "pack-refs", "--all", "--prune");
       await settleForMerge(lane.slot);
       await post(`/api/slots/${lane.slot}/merge`, {});
       const verdict = await waitMerge(lane.slot);
@@ -186,8 +187,9 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
             && pair("-s", "workspace-write") && r.argv.includes("--ephemeral") && r.argv.at(-1) === "-"
             && configs.includes('model_reasoning_effort=medium') && r.cwd === realpathSync(lane.cwd)
             && r.prompt.includes(WORKER_CONTRACTS[r.worker].mark), JSON.stringify({ argv: r.argv, cwd: r.cwd }));
-        check(`${mode} ${r.worker}: only private Git state plus shared objects/refs/logs are added`,
-          configs.includes(`sandbox_workspace_write.writable_roots=${JSON.stringify([gd, `${cd}/objects`, `${cd}/refs`, `${cd}/logs`])}`)
+        check(`${mode} ${r.worker}: exact Git roots allow packed ref files, excluding common root/config/other worktrees`,
+          configs.filter((c) => c.startsWith("sandbox_workspace_write.writable_roots=")).length === 1
+            && configs.includes(`sandbox_workspace_write.writable_roots=${JSON.stringify([gd, `${cd}/objects`, `${cd}/refs`, `${cd}/logs`, `${cd}/packed-refs`, `${cd}/packed-refs.lock`])}`)
             && configs.includes('approval_policy="never"')
             && configs.includes("sandbox_workspace_write.exclude_tmpdir_env_var=true")
             && configs.includes("sandbox_workspace_write.exclude_slash_tmp=true")

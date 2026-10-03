@@ -4256,7 +4256,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     : null;
   pin("Codex linked-worktree writers grant packed-ref files without the common root or sibling worktrees",
     JSON.stringify(rootsFor(linkedPrivate, linkedCommon)) === JSON.stringify([
-      linkedPrivate, ...["objects", "refs", "logs", "packed-refs", "packed-refs.lock"].map((p) => resolve(linkedCommon, p)),
+      linkedPrivate, ...["objects", "refs", "logs", "packed-refs", "packed-refs.lock", "packed-refs.new"].map((p) => resolve(linkedCommon, p)),
     ]), gitRootsExpression ?? "Git roots expression absent");
   pin("Codex primary-worktree writers retain their existing Git directory root",
     JSON.stringify(rootsFor(linkedCommon, linkedCommon)) === JSON.stringify([linkedCommon]),

@@ -189,7 +189,7 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
             && r.prompt.includes(WORKER_CONTRACTS[r.worker].mark), JSON.stringify({ argv: r.argv, cwd: r.cwd }));
         check(`${mode} ${r.worker}: exact Git roots allow packed ref files, excluding common root/config/other worktrees`,
           configs.filter((c) => c.startsWith("sandbox_workspace_write.writable_roots=")).length === 1
-            && configs.includes(`sandbox_workspace_write.writable_roots=${JSON.stringify([gd, `${cd}/objects`, `${cd}/refs`, `${cd}/logs`, `${cd}/packed-refs`, `${cd}/packed-refs.lock`])}`)
+            && configs.includes(`sandbox_workspace_write.writable_roots=${JSON.stringify([gd, `${cd}/objects`, `${cd}/refs`, `${cd}/logs`, `${cd}/packed-refs`, `${cd}/packed-refs.lock`, `${cd}/packed-refs.new`])}`)
             && configs.includes('approval_policy="never"')
             && configs.includes("sandbox_workspace_write.exclude_tmpdir_env_var=true")
             && configs.includes("sandbox_workspace_write.exclude_slash_tmp=true")

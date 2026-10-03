@@ -2500,7 +2500,7 @@ export async function run(): Promise<void> {
           && notObservedBody.receipt?.acceptance === "not-observed"
           && stateText().split("owner-send-not-observed-once").length - 1 === 1
           && await replay(notObserved, "prompt acceptance not observed — check the pane; do not paste again"),
-        JSON.stringify(notObservedBody.receipt));
+        JSON.stringify({ status: notObserved.status, body: notObservedBody }));
       await post(`/api/slots/${slot}/kill`, {});
       writeFileSync(modeFile, "normal\n");
       await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });

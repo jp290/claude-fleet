@@ -1848,14 +1848,17 @@ function renderProof() {
     packCell.append(el("div", "fdproofnote", `zugestellt ${new Date(p.receipt.at).toLocaleTimeString("de-DE")} · ${headSay(stand, p.receipt.head)}`));
     for (const pack of p.receipt.selected) {
       const item = el("div", "fdreceiptpack");
-      item.append(el("div", "mono", pack.id), el("div", "fdproofnote", fassungSay(pack.id)));
+      item.append(el("div", "mono", pack.id));
       if (pack.useWhen) item.append(el("div", "fdproofnote", pack.useWhen));
       const anchors = Array.isArray(pack.anchors) ? pack.anchors.map((a) => `${a.path} | ${a.anchor}`)
         : pack.anchors?.privateSourceId ? [pack.anchors.privateSourceId] : [];
       for (const anchor of anchors) item.append(el("div", "mono", anchor));
       item.append(el("div", "mono", pack.sourceHash ? `Hash: ${pack.sourceHash.slice(0, 12)}` : "Hash: nicht gemeldet"));
       if (!anchors.length || !pack.sourceHash) item.classList.add("warn");
-      if (pack.private) item.append(el("div", "fdproofnote", `Urteil: ${pack.private.verdict} · Konzept-Fassung: ${pack.private.version ?? "nicht gemeldet"}`));
+      // the receipt names a fassung only where the id declares one; the private line's "Fassung" is
+      // the konzept ledger's count, said in its existing words and never mixed with this one
+      if (packIdFassung(pack.id) !== null) item.append(el("div", "fdproofnote", fassungSay(pack.id)));
+      if (pack.private) item.append(el("div", "fdproofnote", `Urteil: ${pack.private.verdict} · Fassung: ${pack.private.version ?? "nicht gemeldet"}`));
       const r = standOf(pack.id);
       if (r) {
         const line = el("div", `fdproofnote${r.stand === "same" ? "" : " warn"}`, standSay(r.stand, r.preview, r.delivered));

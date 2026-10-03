@@ -1906,7 +1906,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     /const pending = pane\.addPending\(outgoing\);\s*try \{\s*if \(!await deliver\(slot, outgoing\)\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
     "doSend in src/client.ts");
   check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
-    /import \{ pendingSettledBy, splitDeliveryHeader \} from "\.\/pendingsend"/.test(cliSrc)
+    // (the Esc marker joined the import, card "wartet in der Chat-Ansicht")
+    /import \{ isInterruptMark, pendingSettledBy, splitDeliveryHeader \} from "\.\/pendingsend"/.test(cliSrc)
     // (Tranche 2: the retirement also says whether the entry is the same send — "durch"; a bundle
     // retires one bubble per owner part, 2026-10-03)
     && /if \(!parts\) \{ this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\); continue; \}/.test(cliSrc)

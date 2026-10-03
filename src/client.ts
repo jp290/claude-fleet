@@ -4440,7 +4440,8 @@ function sessionsSheet(): HTMLElement[] {
   const title = el("b", "", "Sessions");
   title.id = "msheettitle";
   head.append(title, el("span", "mshsub", `${rows.length} offen${waiting ? ` · ${waiting} ${waiting === 1 ? "wartet" : "warten"} auf dich` : ""}`));
-  // the head row's buttons in words, scrolling sideways; each one shows when its source shows
+  // the head row's buttons in words, breaking into a second line on a narrow phone (never scrolling
+  // a word off the edge); each one shows when its source shows
   const tray = el("div", "mshtray");
   tray.setAttribute("role", "group");
   tray.setAttribute("aria-label", "Werkzeuge der Fleet");
@@ -5066,8 +5067,8 @@ function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
 // The shape is the reading; this is the same reading in words, for the tooltip and for anyone who
 // has to name the state out loud. Not decoration: a shape nobody can name is a shape nobody learns.
 const STATE_WORD: Record<SlotState, string> = {
-  work: "working", rest: "resting", sleep: "asleep — nothing for half an hour or more",
-  bad: "broken — stalled, or a pane with no agent behind it",
+  work: "arbeitet", rest: "ruht", sleep: "schläft — seit einer halben Stunde oder länger nichts",
+  bad: "kaputt — hängt, oder eine Pane ohne Agent dahinter",
   wait: "wartet auf MAIN", "wait owner": "wartet auf dich" };
 
 // "how long since this session last said anything", short enough for a 250px line. Takes the AGE,

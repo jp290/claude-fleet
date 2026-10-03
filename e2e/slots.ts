@@ -2112,7 +2112,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // mobil-insel-notiz.md §1c), same rig: the two steps of the top island, closing by name, by a tap
   // outside and by every action, the 40-px targets, the terminal above the bottom island, the grip's
   // keys without focus loss and with #keys' bytes — at 390 × 844 with and without a simulated
-  // keyboard; at 1200 and on its side only that no island exists. A browser that cannot run is the
+  // keyboard; at 360 × 780 that the sheets cut no word off; at 1200 and on its side only that no
+  // island exists. A browser that cannot run is the
   // PROBE line — red, never a skip.
   try {
     for (const result of await runPhoneIslandDom(sourceRoot)) {
@@ -6395,7 +6396,8 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
 // claim that no island and no sheet exists there and what the field's placeholder reads; their pixels
 // are compared before/after by the lane, not here. Upright the slot button and ⋯ open the sheets
 // Sessions and Werkzeuge (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene Blätter"):
-// their place, words, 40-px targets, and that each row does what the board's own control does.
+// their place, words, 40-px targets, and that each row does what the board's own control does;
+// at 390 and at 360 × 780 that their tool row and segments break into lines with no word cut off.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 // `detail` holds the facts one claim was judged on — the whole `facts` outgrows a check line
 interface PhoneIslandDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown>; detail: Record<string, unknown> }
@@ -6580,6 +6582,54 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       results.push({ width, height, claims, facts, detail });
     }
 
+    // NOTHING CUT OFF (card "Auf dem Telefon ist in den Blaettern Sessions und Werkzeuge kein Wort
+    // mehr abgeschnitten"): the Sessions sheet's tool row and the tools sheet's model and effort
+    // segments break into a second line instead of scrolling sideways. Per row: nothing scrolls
+    // sideways; per tool and per segment: it stands whole (scrollWidth ≤ clientWidth) and its edges
+    // lie inside its row and inside the sheet — a word scrolled off the edge, or clipped by its own
+    // row while still inside the sheet (the model row's "Son…" beside Übernehmen), fails there.
+    type FitRead = { sheet: { l: number; r: number }; rows: { row: string; sw: number; cw: number; l: number; r: number;
+      items: { word: string; sw: number; cw: number; l: number; r: number; top: number }[] }[] };
+    const FIT = `(() => { const f = window.__fx, sh = document.querySelector('#msheet'), s = sh.getBoundingClientRect();
+      const word = (b) => (b.querySelector('.mshw')?.textContent ?? b.textContent).trim();
+      return { sheet: { l: Math.round(s.left), r: Math.round(s.right) },
+        rows: [...sh.querySelectorAll('.mshtray, .mshsegs')].map((row) => ({ row: row.classList.contains('mshtray') ? 'tray' : row.closest('.mshseg').dataset.field,
+          sw: row.scrollWidth, cw: row.clientWidth, l: Math.round(row.getBoundingClientRect().left), r: Math.round(row.getBoundingClientRect().right),
+          items: [...row.children].filter(f.shown).map((b) => { const r = b.getBoundingClientRect();
+            return { word: word(b), sw: b.scrollWidth, cw: b.clientWidth, l: Math.round(r.left), r: Math.round(r.right), top: Math.round(r.top) }; }) })) }; })()`;
+    // Übernehmen as a finger meets it: brought into view the way the list scrolls (up and down only),
+    // then its height, its edges inside the sheet and the target at its centre; the list goes back up
+    type ApplyRead = { field: string; h: number; l: number; r: number; hit: boolean }[];
+    const APPLY = `(() => { const sh = document.querySelector('#msheet'), s = sh.getBoundingClientRect();
+      const out = [...sh.querySelectorAll('.mshseg')].map((row) => { const b = row.querySelector('.mshapply');
+        b.scrollIntoView({ block: 'nearest', inline: 'nearest' }); const r = b.getBoundingClientRect();
+        return { field: row.dataset.field, h: Math.round(r.height), l: Math.round(r.left - s.left), r: Math.round(s.right - r.right),
+          hit: b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; });
+      sh.querySelector('.mshbody').scrollTop = 0; return out; })()`;
+    const fitClaims = (claims: Record<string, boolean>, detail: Record<string, unknown>, tag: string, sheet: string, fit: FitRead, rows: string[]) => {
+      for (const name of rows) {
+        const row = fit.rows.find((r) => r.row === name);
+        const what = name === "tray" ? "the tools" : `the ${name === "model" ? "Modell" : "Effort"} segments`;
+        const rowClaim = `${tag}${sheet} · ${what} break into lines, nothing scrolls sideways`;
+        claims[rowClaim] = !!row && row.items.length > 0 && row.sw <= row.cw;
+        detail[rowClaim] = row ?? fit;
+        if (!row) continue;
+        for (const it of row.items) {
+          const one = `${tag}${sheet} · "${it.word}" stands whole, its right edge inside its row and the sheet`;
+          claims[one] = it.sw <= it.cw && it.l >= Math.max(row.l, fit.sheet.l) && it.r <= Math.min(row.r, fit.sheet.r);
+          detail[one] = { ...it, row: { l: row.l, r: row.r }, sheet: fit.sheet };
+        }
+      }
+    };
+    const applyClaim = (claims: Record<string, boolean>, detail: Record<string, unknown>, tag: string, apply: ApplyRead) => {
+      const c = `${tag}Werkzeuge · Übernehmen stays reachable beside or under both segment rows: 40 px high, inside the sheet, met by a finger at its centre`;
+      claims[c] = apply?.length === 2 && apply.every((a) => a.h >= 40 && a.l >= 0 && a.r >= 0 && a.hit);
+      detail[c] = apply;
+    };
+    const sheetIs = (which: string) => `document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === '${which}'`;
+    const openVia = async (id: string, which: string) => { await tap("document.querySelector('#mpill')"); await tap(`document.querySelector('${id}')`); const ok = await wait(sheetIs(which), 3000); await settle(250); return ok; };
+    const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(400); };
+
     // --- the phone upright, 390 × 844: without and with the on-screen keyboard
     const W = 390, H = 844;
     for (const keyboard of [false, true]) {
@@ -6672,9 +6722,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         if (undo) await undo();
         return { was, done, closed };
       };
-      const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(400); };
       const actions: Record<string, { was: boolean; done: boolean; closed: boolean }> = {};
-      const sheetIs = (which: string) => `document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === '${which}'`;
       const sheetGone = async () => { await escape(); await wait("!document.body.classList.contains('msheet')"); await settle(200); };
       actions.slot = await act("#mslot", sheetIs("sessions"), sheetGone);
       actions.view = await act("#mview", "window.__fx.pane().classList.contains('chat')");
@@ -6696,7 +6744,6 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       // docs/design/mobil-insel-notiz.md §1 and §3). With the keyboard up, the field holds it until a
       // sheet opens; the simulated keyboard stays at 336 px, the case where it has not left yet.
       const kbUp = async () => { if (!keyboard) return; await tap("document.querySelector('#input')"); await wait("document.body.classList.contains('keyboard-open')", 2000); await settle(200); };
-      const openVia = async (id: string, which: string) => { await tap("document.querySelector('#mpill')"); await tap(`document.querySelector('${id}')`); const ok = await wait(sheetIs(which), 3000); await settle(250); return ok; };
       // the sheet as a finger meets it: boxes, its words, the targets under 40 px and those a finger
       // at the centre misses (a target scrolled out of its own row or list is not counted — it scrolls in)
       const SHEET = `(() => { const f = window.__fx, sh = document.querySelector('#msheet');
@@ -6728,7 +6775,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const readSheet = () => evaluate<SheetRead>(SHEET);
       // a row of the open sheet by its word (or a session row by its slot), tapped where a finger meets it
       const rowSel = (word: string) => `[...document.querySelectorAll('#msheet button')].find((b) => (b.querySelector('.mshw')?.textContent ?? b.textContent).trim() === ${JSON.stringify(word)})`;
-      // a word in the sideways tool row is first brought into view, as a finger would swipe it in
+      // a word is first brought into view, as a finger would scroll the list to it
       const tapRow = async (word: string) => { await evaluate(`${rowSel(word)}?.scrollIntoView({ inline: 'nearest', block: 'nearest' })`); await settle(100); return tap(rowSel(word)); };
       const placed = (r: SheetRead) => !!r.sheet && !!r.shade && r.sheet.x === 0 && r.sheet.r === W && r.sheet.b === bottom
         && r.shade.x === 0 && r.shade.y === 0 && r.shade.w === W && r.shade.b === bottom && !r.islandOpen;
@@ -6756,6 +6803,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const sessTargets = `${tag}every target in the Sessions sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
       claims[sessTargets] = sess.small.length === 0 && sess.missed.length === 0 && !sess.sideways;
       detail[sessTargets] = { small: sess.small, missed: sess.missed, sideways: sess.sideways };
+      fitClaims(claims, detail, tag, "Sessions", await evaluate<FitRead>(FIT), ["tray"]);
       // Escape closes and hands the focus to the pill; a tap on the shade closes too
       await escape();
       const escClosed = await evaluate<boolean>("!document.body.classList.contains('msheet')"), escWhere = await evaluate<string>("window.__fx.where()");
@@ -6857,6 +6905,8 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const chatTargets = `${tag}every target in the conversation's tools sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
       claims[chatTargets] = tc.small.length === 0 && tc.missed.length === 0 && !tc.sideways;
       detail[chatTargets] = { small: tc.small, missed: tc.missed, sideways: tc.sideways };
+      fitClaims(claims, detail, tag, "Werkzeuge", await evaluate<FitRead>(FIT), ["model", "effort"]);
+      applyClaim(claims, detail, tag, await evaluate<ApplyRead>(APPLY));
       const posts0 = fx.posts.length;
       await tap(`document.querySelector('#msheet .mshseg[data-field="effort"] button[data-v="low"]')`);
       const staged = await readSheet();
@@ -6878,7 +6928,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       // the model asks first, exactly as the switch at the field does — nothing goes out before the answer
       await openVia("#mmore", "tools");
       const posts1 = fx.posts.length;
-      // the model row scrolls sideways like the sketch's: the finger brings Sonnet 5.5 into view first
+      // the finger brings Sonnet 5.5 into view first (with the keyboard up the list scrolls)
       const sonnet = `[...document.querySelectorAll('#msheet .mshseg[data-field="model"] .mshsegs button')].find((b) => b.textContent.startsWith('Sonnet 5.5'))`;
       await evaluate(`${sonnet}?.scrollIntoView({ inline: 'center', block: 'nearest' })`);
       await settle(150);
@@ -6931,6 +6981,39 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (artifacts) { await send("Page.stopScreencast"); recording = null; }
       facts.inputs = [...fx.inputs]; facts.missing = [...missing]; missing.length = 0;
       results.push({ width: W, height: keyboard ? H - 336 : H, claims, facts, detail });
+    }
+
+    // --- the narrow phone upright, 360 × 780: only that both sheets cut nothing off
+    {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
+      const NW = 360, NH = 780;
+      // two more sessions for the state words: Gamma silent for 40 minutes, Delta stalled — put back
+      // below, so the waiting block further down reads the fixture it was written on
+      Object.assign(slots[2], { cwd: "/fixture/gamma", repo: "/fixture/gamma", label: "Gamma", openedAt: 3000, lastOutput: -30 * 60_000 });
+      Object.assign(slots[3], { cwd: "/fixture/delta", repo: "/fixture/delta", label: "Delta", openedAt: 4000, lastOutput: 0, stalled: true });
+      await boot(NW, NH, true);
+      const sessOpened = await openVia("#mslot", "sessions");
+      fitClaims(claims, detail, "", "Sessions", await evaluate<FitRead>(FIT), ["tray"]);
+      await shot(`${NW}-blatt-sessions`);
+      // the row's state shape names itself in German (src/client.ts#STATE_WORD; the two waiting words
+      // are read by the waiting block below)
+      const words = await evaluate<Record<string, string>>("Object.fromEntries([...document.querySelectorAll('#msheet .mshrow[data-slot]')].map((r) => [r.dataset.slot, r.querySelector('.act')?.title ?? '']))");
+      slots.splice(2, 2, { id: 3, cwd: null }, { id: 4, cwd: null });
+      const wordsClaim = "the state shapes name themselves in German: arbeitet · ruht · schläft — seit einer halben Stunde oder länger nichts · kaputt — hängt, oder eine Pane ohne Agent dahinter";
+      claims[wordsClaim] = JSON.stringify(words) === JSON.stringify({ 1: "arbeitet", 2: "ruht", 3: "schläft — seit einer halben Stunde oder länger nichts",
+        4: "kaputt — hängt, oder eine Pane ohne Agent dahinter" });
+      detail[wordsClaim] = words;
+      await escape();
+      await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
+      const chat = await wait("window.__fx.pane().classList.contains('chat')", 3000);
+      const toolsOpened = await openVia("#mmore", "tools");
+      fitClaims(claims, detail, "", "Werkzeuge", await evaluate<FitRead>(FIT), ["model", "effort"]);
+      applyClaim(claims, detail, "", await evaluate<ApplyRead>(APPLY));
+      await shot(`${NW}-blatt-werkzeuge-konversation`);
+      Object.assign(facts, { sessOpened, chat, toolsOpened, missing: [...missing] });
+      claims["both sheets open here: Sessions from the slot button, Werkzeuge from ⋯ in the conversation"] = sessOpened && chat && toolsOpened;
+      missing.length = 0;
+      results.push({ width: NW, height: NH, claims, facts, detail });
     }
 
     // --- THE FIFTH READING, WAITING (card "Eine Session, die auf ihre MAIN oder auf dich wartet,

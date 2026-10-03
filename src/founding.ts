@@ -1368,6 +1368,7 @@ function packList(plan: Plan): HTMLElement {
     more.setAttribute("aria-expanded", String(shown));
     more.setAttribute("aria-label", `Quellen von ${p.id} ${shown ? "schließen" : "zeigen"}`);
     more.dataset.src = p.id;
+    more.style.alignSelf = "flex-start";
     more.onclick = () => {
       if (shown) s.srcOpen.delete(p.id); else s.srcOpen.add(p.id);
       renderContext();
@@ -1858,8 +1859,8 @@ function renderProof() {
       const r = standOf(pack.id);
       if (r) {
         const line = el("div", `fdproofnote${r.stand === "same" ? "" : " warn"}`, standSay(r.stand, r.preview, r.delivered));
+        // only the stand line warns: the anchors and the hash above it are the delivered facts, not a gap
         item.append(line);
-        if (r.stand !== "same") item.classList.add("warn");
       }
       packCell.append(item);
     }

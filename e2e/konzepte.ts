@@ -380,7 +380,7 @@ const FREMD = "k-fremd-projekt";
 const SENTINEL = `# Konzept-Fixture\nSENTINEL-${randomBytes(6).toString("hex")} — kein echter Konzeptinhalt\n`;
 const FREMD_SENTINEL = `# Fremdes Konzept\nFREMD-${randomBytes(6).toString("hex")}\n`;
 
-interface ReaderRecord { tag: string; slot: string; line: string; path: string | null; verdict: string | null; bytes: string | null }
+interface ReaderRecord { tag: string; slot: string; line: string | null; path: string | null; verdict: string | null; bytes: string | null }
 
 // The pane reader. It is the RECEIVER: it holds only what the pane was pasted, finds the first private
 // pack line, and reads the path that line names ONLY under `hash match`. One JSON record per pane.
@@ -388,6 +388,7 @@ const READER_TS = String.raw`import { readFileSync, renameSync, writeFileSync } 
 const [outDir, tag] = process.argv.slice(2);
 const slot = process.env.FLEET_SELF_SLOT ?? "unknown";
 const RE = /^ {2}(?:(\/.+?) \| )?(k-[a-z0-9-]+)(?: v\d+)? · privat, lesen statt kopieren · hash (match|drift|missing)\b/;
+process.stdout.write("\x1b[?2004h");
 let buf = "";
 let done = false;
 process.stdin.on("data", (chunk) => {
@@ -406,6 +407,12 @@ process.stdin.on("data", (chunk) => {
     renameSync(out + ".tmp", out);
     done = true;
     return;
+  }
+  if (buf.includes("\x1b[201~") && buf.includes("beratende Anker, kein Quelltext:")) {
+    const out = outDir + "/read-" + slot + ".json";
+    writeFileSync(out + ".tmp", JSON.stringify({ tag, slot, line: null, path: null, verdict: null, bytes: null }));
+    renameSync(out + ".tmp", out);
+    done = true;
   }
 });
 setInterval(() => {}, 1 << 30);
@@ -527,7 +534,8 @@ async function privatePackHandover(): Promise<void> {
     };
     const receiptFor = async (slot: number) => {
       const body = (await call("/api/context-receipts", "GET")).json as { receipts?: { slot: number; harness: string | null;
-        selected: { id: string; anchors: unknown; private?: { verdict: string; version: number | null } }[] }[] };
+        selected: { id: string; anchors: unknown; private?: { verdict: string; version: number | null } }[];
+        omitted: { id: string; why: string; reason?: string | null }[] }[] };
       return body.receipts?.filter((row) => row.slot === slot).at(-1) ?? null;
     };
     // ONE founding with the pack chosen, and the reader's record of what the pane received. The record
@@ -605,7 +613,7 @@ async function privatePackHandover(): Promise<void> {
     const driftRow = drifted.receipt?.selected.find((sel) => sel.id === SEED_ID);
     check("konzepte handover (hash drift): an edited v1.md is delivered as hash drift with its reason, the receipt says drift, and the read claim is red",
       drifted.open?.status === 200 && drifted.record !== null && drifted.record.verdict === "drift"
-        && drifted.record.line.includes("v1.md no longer hashes to its versionen.jsonl row") && !readClaim(drifted.record)
+        && drifted.record.line?.includes("v1.md no longer hashes to its versionen.jsonl row") === true && !readClaim(drifted.record)
         && driftRow?.private?.verdict === "drift",
       `record=${JSON.stringify(drifted.record)} receipt=${JSON.stringify(driftRow ?? null)}`);
 
@@ -613,11 +621,12 @@ async function privatePackHandover(): Promise<void> {
     renameSync(`${konzeptRoot}/${PK}/v1.md`, `${konzeptRoot}/${PK}/v1.md.away`);
     const noFile = await found("claude");
     renameSync(`${konzeptRoot}/${PK}/v1.md.away`, `${konzeptRoot}/${PK}/v1.md`);
-    check("konzepte handover (missing file): an absent v1.md is delivered as hash missing naming the file, with no path, and the read claim is red",
-      noFile.open?.status === 200 && noFile.record !== null && noFile.record.verdict === "missing" && noFile.record.path === null
-        && noFile.record.line.includes("v1.md is absent under the root") && !readClaim(noFile.record)
-        && noFile.receipt?.selected.find((sel) => sel.id === SEED_ID)?.private?.verdict === "missing",
-      `record=${JSON.stringify(noFile.record)}`);
+    check("konzepte handover (missing file): no anchor reaches the pane, and the receipt omits the pack with the absent-file reason",
+      noFile.open?.status === 200 && noFile.record !== null && noFile.record.verdict === null && noFile.record.path === null
+        && !readClaim(noFile.record) && !noFile.receipt?.selected.some((sel) => sel.id === SEED_ID)
+        && noFile.receipt?.omitted.some((sel) => sel.id === SEED_ID && sel.why === "source-unavailable"
+          && sel.reason?.includes("v1.md is absent under the root")) === true,
+      `record=${JSON.stringify(noFile.record)} receipt=${JSON.stringify(noFile.receipt)}`);
 
     // ---- MISSING ROOT, and the mutation "root not handed over": the same founding on an instance
     // without FLEET_KONZEPT_ROOT turns the same read claim red, by name
@@ -627,11 +636,12 @@ async function privatePackHandover(): Promise<void> {
     check("konzepte handover fixture: the instance boots again WITHOUT a konzept root", up, i.log.slice(-300));
     if (!up) return;
     const noRoot = await found("claude");
-    check("konzepte handover (missing root): without FLEET_KONZEPT_ROOT the founding names the unset env, renders no path, and the same read claim is red",
-      noRoot.open?.status === 200 && noRoot.record !== null && noRoot.record.verdict === "missing" && noRoot.record.path === null
-        && noRoot.record.line.includes("FLEET_KONZEPT_ROOT is not set on this server") && !readClaim(noRoot.record)
-        && noRoot.receipt?.selected.find((sel) => sel.id === SEED_ID)?.private?.verdict === "missing",
-      `record=${JSON.stringify(noRoot.record)}`);
+    check("konzepte handover (missing root): no anchor reaches the pane, and the receipt omits the pack naming the unset env",
+      noRoot.open?.status === 200 && noRoot.record !== null && noRoot.record.verdict === null && noRoot.record.path === null
+        && !readClaim(noRoot.record) && !noRoot.receipt?.selected.some((sel) => sel.id === SEED_ID)
+        && noRoot.receipt?.omitted.some((sel) => sel.id === SEED_ID && sel.why === "source-unavailable"
+          && sel.reason?.includes("FLEET_KONZEPT_ROOT is not set on this server")) === true,
+      `record=${JSON.stringify(noRoot.record)} receipt=${JSON.stringify(noRoot.receipt)}`);
   } finally {
     await stop(i);
     spawnSync("tmux", ["-L", i.sock, "kill-server"]);

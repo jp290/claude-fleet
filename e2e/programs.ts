@@ -228,7 +228,7 @@ interface ContextReceipt {
   mode: string; triggers: string[];
   selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string;
     private?: { verdict: string; version: number | null } }[];
-  omitted: { id: string; why: string }[];
+  omitted: { id: string; why: string; reason?: string | null }[];
   deliveredBytes: number; truncated: boolean;
   // absent on a row written before the renderer was named — that row's block is v1 by date
   renderer?: string;
@@ -929,7 +929,13 @@ export async function run(ctx: Ctx): Promise<void> {
     !!fleetReceipt && fleetReceiptRows.total === fleetReceiptsBefore.total + 1
       && fleetBody.program?.main?.slot === fleetSlot && fleetReceipt.repo === ROOT
       && fleetReceipt.head === fleetExpectedHead && fleetReceipt.branch === fleetExpectedBranch
-      && fleetReceipt.selected.length === 4 && fleetReceipt.omitted.length === CONTEXT_PACKS.length - 3
+      && fleetReceipt.selected.map((selection) => selection.id).sort().join(",")
+        === "fleet-frame-carrier-probe,portable-core,verify-e2e"
+      && fleetReceipt.omitted.length === CONTEXT_PACKS.length - 2
+      && fleetReceipt.omitted.filter((entry) => entry.id === "konzept-claude-fleet").length === 1
+      && fleetReceipt.omitted.some((entry) => entry.id === "konzept-claude-fleet"
+        && entry.why === "source-unavailable" && entry.reason === "FLEET_KONZEPT_ROOT is not set on this server")
+      && !fleetPrompt.includes("- konzept-claude-fleet") && !fleetPrompt.includes("k-claude-fleet")
       && fleetReceipt.selected.length + fleetReceipt.omitted.length === CONTEXT_PACKS.length + 1
       && anchorsResolve(fleetReceipt) && fleetReceipt.hash === promptHash(fleetPrompt, fleetReceipt)
       && fleetReceipt.deliveredBytes === new TextEncoder().encode(fleetPrompt).byteLength,
@@ -946,7 +952,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && !fleetReceipt.omitted.some((entry) => entry.id === "@manifest")
       // the manifest row is an ADDITION, never a replacement: the seeds keep their own verdict
       && fleetReceipt.selected.filter((selection) => selection.id !== "fleet-frame-carrier-probe")
-        .map((selection) => selection.id).sort().join(",") === "konzept-claude-fleet,portable-core,verify-e2e",
+        .map((selection) => selection.id).sort().join(",") === "portable-core,verify-e2e"
+      && fleetReceipt.omitted.some((entry) => entry.id === "konzept-claude-fleet"
+        && entry.why === "source-unavailable" && entry.reason === "FLEET_KONZEPT_ROOT is not set on this server"),
     `${fleetManifestCommit.status} ${JSON.stringify(fleetReceipt?.selected ?? null)}`);
 
   // THE FLEET FRAME SUCCEEDS WITH NO HANDOFF COMMIT AT ALL. This checkout has a HANDOFF.md at its
@@ -1056,8 +1064,16 @@ export async function run(ctx: Ctx): Promise<void> {
     fleetSuccessionResponse.ok
       && JSON.stringify(fleetSuccessionPrompt.split("\n").filter((line) => /^\d+\./.test(line)))
         === JSON.stringify(successionGroundingSteps)
-      && fleetSuccessionPrompt.includes(fleetCarry) && fleetSuccessionReceipt?.selected.length === 4
-      && fleetSuccessionReceipt.omitted.length === CONTEXT_PACKS.length - 3 && anchorsResolve(fleetSuccessionReceipt)
+      && fleetSuccessionPrompt.includes(fleetCarry)
+      && fleetSuccessionReceipt?.selected.map((selection) => selection.id).sort().join(",")
+        === "fleet-frame-carrier-probe,portable-core,verify-e2e"
+      && fleetSuccessionReceipt.omitted.length === CONTEXT_PACKS.length - 2
+      && fleetSuccessionReceipt.selected.length + fleetSuccessionReceipt.omitted.length === CONTEXT_PACKS.length + 1
+      && fleetSuccessionReceipt.omitted.filter((entry) => entry.id === "konzept-claude-fleet").length === 1
+      && fleetSuccessionReceipt.omitted.some((entry) => entry.id === "konzept-claude-fleet"
+        && entry.why === "source-unavailable" && entry.reason === "FLEET_KONZEPT_ROOT is not set on this server")
+      && !fleetSuccessionPrompt.includes("- konzept-claude-fleet") && !fleetSuccessionPrompt.includes("k-claude-fleet")
+      && anchorsResolve(fleetSuccessionReceipt)
       && fleetSuccessionReceipt.hash === promptHash(fleetSuccessionPrompt, fleetSuccessionReceipt)
       && fleetSuccessionReceipt.deliveredBytes === new TextEncoder().encode(fleetSuccessionPrompt).byteLength,
     `${fleetSuccessionResponse.status} ${fleetSuccessionPrompt.slice(0, 500)}`);

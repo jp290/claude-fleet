@@ -17377,9 +17377,9 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   // Program, or of one without packs, gets the empty plan — its receipt keeps its exact bytes. The
   // path check runs against the same listing that stamps the versions, so nothing extra is read.
   const programPlan = planProgramContext({ program: laneProgram ?? null, trackedPaths: new Set(blobShas.keys()) });
-  const plan: ContextPlan = {
+  const plan = availableContextPlan({
     selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected, ...programPlan.selected], blobShas),
-    omitted: [...base.omitted, ...repoPlan.omitted, ...programPlan.omitted] };
+    omitted: [...base.omitted, ...repoPlan.omitted, ...programPlan.omitted] });
   const anchorBlock = renderContextAnchorBlock(plan);
   // THE LANE'S HALF OF THE STUDIO RECORD. The founding brief's half is folded into railBlockFor;
   // a worker lane never passes through that selector, so its half is read here — through the
@@ -17569,13 +17569,30 @@ function privatePackResolutionOf(selection: ContextPlanSelection, privateSourceI
   return resolved;
 }
 
+function availableContextPlan(plan: ContextPlan): ContextPlan {
+  const selected: ContextPlanSelection[] = [];
+  const omitted: (ContextPlan["omitted"][number] & { reason?: string | null })[] = [...plan.omitted];
+  for (const selection of plan.selected) {
+    if ("privateSourceId" in selection.sources) {
+      const resolution = privatePackResolutionOf(selection, selection.sources.privateSourceId);
+      if (resolution.verdict === "missing") {
+        omitted.push({ id: selection.id, why: "source-unavailable", reason: resolution.why });
+        continue;
+      }
+    }
+    selected.push(selection);
+  }
+  return { selected, omitted };
+}
+
 // v2 renders PURPOSE beside the pointer: useWhen once per pack, pointers indented beneath it. A
 // selection WITHOUT useWhen (a repo-declared pack from before the field) keeps every pointer.
 // A PRIVATE pack renders its resolved local path, the hash verdict and its Anmerkung door
 // (context-plan.ts#renderPrivatePackLines) — the one part of the block a receipt row does not carry
 // byte for byte: the private root is the server's local fact and stays out of the ledger on purpose,
 // the verdict and the version are on the row.
-function renderContextAnchorBlock(plan: ContextPlan): string {
+function renderContextAnchorBlock(input: ContextPlan): string {
+  const plan = availableContextPlan(input);
   if (plan.selected.length === 0) return "";
   const lines = ["ContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"];
   for (const pack of plan.selected) {
@@ -35863,8 +35880,9 @@ async function orchestratorFoundingContext(cwd: string, harness: string | null):
   if (!preflight.ok) return { ok: false, error: preflight.error };
   const facts = programMainContextFacts(preflight.value.frame, harness);
   const plan = await programMainContextPlan(preflight.value, facts);
-  return { ok: true, value: { anchorBlock: renderContextAnchorBlock(plan), preflight: preflight.value,
-    facts, selected: contextReceiptSelections(plan.selected), omitted: plan.omitted.map((entry) => ({ ...entry })) } };
+  const deliveryPlan = availableContextPlan(plan);
+  return { ok: true, value: { anchorBlock: renderContextAnchorBlock(deliveryPlan), preflight: preflight.value,
+    facts, selected: contextReceiptSelections(deliveryPlan.selected), omitted: deliveryPlan.omitted.map((entry) => ({ ...entry })) } };
 }
 
 async function appendOrchestratorReceipt(s: Slot, ctx: OrchestratorFoundingContext,
@@ -35937,7 +35955,8 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
     return { packsDelivered: false, reason: `delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` };
   const readiness = await waitForFoundingReadiness(s, stillCurrent);
   if (!readiness.ok) return { packsDelivered: false, reason: readiness.reason };
-  const anchorBlock = renderContextAnchorBlock({ selected: chosen, omitted: [] });
+  const deliveryPlan = availableContextPlan({ selected: chosen, omitted: founding.plan.omitted });
+  const anchorBlock = renderContextAnchorBlock(deliveryPlan);
   const deliveredBrief = "[fleet] Diese Gruendung traegt die beim Spawn gewaehlten Kontext-Packs — Owner-Wahl,"
     + " beratende Anker, kein Quelltext:\n" + anchorBlock;
   if (!stillCurrent()) return { packsDelivered: false, reason: "the slot changed before the packs were sent" };
@@ -35951,8 +35970,8 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
       reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
   }
   const at = Date.now();
-  const selected = contextReceiptSelections(chosen);
-  const omitted = founding.plan.omitted.map((entry) => ({ ...entry }));
+  const selected = contextReceiptSelections(deliveryPlan.selected);
+  const omitted = deliveryPlan.omitted.map((entry) => ({ ...entry }));
   const hash = createHash("sha256").update(JSON.stringify({
     anchorBlock,
     planFacts: { harness: s.harness, mode: founding.mode, triggers: founding.triggers, selected, omitted },
@@ -36139,7 +36158,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     // rows are still whole.
     const harness = s.harness;
     const planFacts = programMainContextFacts(preflight.value.frame, harness);
-    const plan = await programMainContextPlan(preflight.value, planFacts);
+    const plan = availableContextPlan(await programMainContextPlan(preflight.value, planFacts));
     if (!predecessorCurrent())
       return await refuse(409, "Program-MAIN predecessor authority changed during context planning", "predecessor-revoked-before-open");
     const anchorBlock = renderContextAnchorBlock(plan);
@@ -36452,7 +36471,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       }
 
       const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
-      const plan = await programMainContextPlan(preflight.value, planFacts);
+      const plan = availableContextPlan(await programMainContextPlan(preflight.value, planFacts));
       const anchorBlock = renderContextAnchorBlock(plan);
       const deliveredBrief = buildProgramMainBrief(program, preflight.value.frame, anchorBlock);
       const selected = contextReceiptSelections(plan.selected);

@@ -791,6 +791,49 @@ function privatePackChecks(check: ContextPlanCheck): void {
     const resolve = (r: string | null = root) => resolvePrivatePack(r, K, declared);
     const block = (r: ReturnType<typeof resolve>): string => renderPrivatePackLines(r).join("\n");
 
+    const server = readFileSync(join(import.meta.dir, "..", "server.ts"), "utf8");
+    const functions = ["declaredSourceHash", "privatePackResolutionOf", "availableContextPlan",
+      "renderContextAnchorBlock", "contextReceiptSelections"].map((name) => {
+      const from = server.indexOf(`function ${name}(`);
+      return server.slice(from, server.indexOf("\n}", from) + 2);
+    }).join("\n");
+    const delivery = (konzeptRoot: string | null) => new Function("KONZEPT_ROOT", "CONTEXT_PACKS",
+      "resolvePrivatePack", "renderPrivatePackLines", new Bun.Transpiler({ loader: "ts" }).transformSync(
+        `const privatePackResolutions = new WeakMap();\n${functions}\n`
+        + "return { availableContextPlan, renderContextAnchorBlock, contextReceiptSelections };"))(
+      konzeptRoot, CONTEXT_PACKS, resolvePrivatePack, renderPrivatePackLines) as {
+        availableContextPlan: (plan: ReturnType<typeof planContext>) => ReturnType<typeof planContext> & {
+          omitted: readonly { id: string; why: string; reason?: string | null }[] };
+        renderContextAnchorBlock: (plan: ReturnType<typeof planContext>) => string;
+        contextReceiptSelections: (selected: ReturnType<typeof planContext>["selected"]) => { id: string }[];
+      };
+    const deliveredPlan = (konzeptRoot: string | null) => {
+      const seam = delivery(konzeptRoot);
+      const plan = seam.availableContextPlan({ selected: [{ id: "konzept-claude-fleet",
+        sources: { privateSourceId: K }, sourceHash: declared, estimatedBytes: 0 }], omitted: [] });
+      return { plan, block: seam.renderContextAnchorBlock(plan), receipt: seam.contextReceiptSelections(plan.selected) };
+    };
+    const unavailable = deliveredPlan(null);
+    check("private delivery: unset root omits the anchor and receipt selection, naming source-unavailable and env",
+      unavailable.block === "" && unavailable.receipt.length === 0
+      && unavailable.plan.omitted[0]?.why === "source-unavailable"
+      && unavailable.plan.omitted[0]?.reason?.includes("FLEET_KONZEPT_ROOT") === true, JSON.stringify(unavailable));
+    writeFileSync(join(dir, "versionen.jsonl"), "");
+    const noVersion = deliveredPlan(root);
+    writeFileSync(join(dir, "versionen.jsonl"), row(1, v1) + row(2, v2));
+    check("private delivery: no published version omits the anchor with its reason; publishing restores it automatically",
+      noVersion.block === "" && noVersion.receipt.length === 0
+      && noVersion.plan.omitted[0]?.why === "source-unavailable"
+      && noVersion.plan.omitted[0]?.reason?.includes("no published version") === true
+      && deliveredPlan(root).block.includes("hash match") && deliveredPlan(root).receipt[0]?.id === "konzept-claude-fleet",
+      JSON.stringify(noVersion));
+    appendFileSync(join(dir, "v2.md"), "drift\n");
+    const driftDelivery = deliveredPlan(root);
+    writeFileSync(join(dir, "v2.md"), v2);
+    check("private delivery: drift remains visible and selected",
+      driftDelivery.block.includes("hash drift") && driftDelivery.receipt[0]?.id === "konzept-claude-fleet"
+      && driftDelivery.plan.omitted.length === 0, JSON.stringify(driftDelivery));
+
     const matched = resolve();
     const matchBlock = block(matched);
     check("private pack (match): the current fassung v2 resolves to its readable local path with verdict match",

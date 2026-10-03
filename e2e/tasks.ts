@@ -112,7 +112,7 @@ export async function run(ctx: Ctx): Promise<void> {
     mode: string; triggers: string[];
     selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string;
       private?: { verdict: string; version: number | null } }[];
-    omitted: { id: string; why: string }[];
+    omitted: { id: string; why: string; reason?: string | null }[];
     deliveredBytes: number; truncated: boolean;
     // the ids of the queue notes the block carried. `[]` is a real answer (no hit, or a clarify
     // lane); ABSENT means the row predates the join, which is a different fact.
@@ -5481,11 +5481,15 @@ export async function run(ctx: Ctx): Promise<void> {
       !!fReceipt && fPrompt.includes("\n\nQuellpaket")
       && fReceipt.deliveredBytes === new TextEncoder().encode(fPrompt).byteLength,
       JSON.stringify({ deliveredBytes: fReceipt?.deliveredBytes ?? null, prompt: new TextEncoder().encode(fPrompt).byteLength }));
-    check("a dispatch INSIDE the Fleet checkout still renders the three-pack anchor block (the derivation is not a blanket refusal)",
+    check("a dispatch INSIDE the Fleet checkout renders both public seeds and omits the unavailable private seed",
       fd.ok && fdJ.ok === true && fPrompt.startsWith(fBrief) && fPrompt.includes("\n\nContextPlan v2 anchors")
-      && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "konzept-claude-fleet,portable-core,verify-e2e"
+      && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
       && fReceipt.omitted.length === CONTEXT_PACKS.length - fReceipt.selected.length
-      && fReceipt.omitted.every((entry) => entry.why !== "source-unavailable"),
+      && fReceipt.omitted.filter((entry) => entry.id === "konzept-claude-fleet").length === 1
+      && fReceipt.omitted.some((entry) => entry.id === "konzept-claude-fleet"
+        && entry.why === "source-unavailable" && entry.reason === "FLEET_KONZEPT_ROOT is not set on this server")
+      && fReceipt.omitted.filter((entry) => entry.id !== "konzept-claude-fleet")
+        .every((entry) => entry.why !== "source-unavailable"),
       `${fd.status} ${JSON.stringify(fReceipt ?? null)} ${fPrompt.slice(0, 200)}`);
     check("the Fleet-frame receipt is one row, names this checkout at its integration head, and every anchor it names is in the delivered bytes",
       !!fReceipt && (await contextReceipts()).total === fBefore.total + 1
@@ -5500,26 +5504,20 @@ export async function run(ctx: Ctx): Promise<void> {
     // two-source pack like verify-e2e would otherwise take.
     const useWhenLines = fPrompt.split("\n").filter((line) => line.startsWith("- ") && line.includes(" — "));
     check("the v2 block states each selected pack's purpose exactly once, whatever its source count",
-      !!fReceipt && fReceipt.selected.length === 3
+      !!fReceipt && fReceipt.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
       && fReceipt.selected.every((pack) => typeof pack.useWhen === "string" && pack.useWhen.length > 0
         && useWhenLines.filter((line) => line === `- ${pack.id} — ${pack.useWhen}`).length === 1)
-      && useWhenLines.length === 3,
+      && useWhenLines.length === 2,
       `${JSON.stringify(useWhenLines)} ${JSON.stringify(fReceipt?.selected ?? null)}`);
-    // THE PRIVATE KONZEPT PACK in a real lane brief (Program 31aa88ea, Schnitt 4). Which verdict this
-    // instance renders depends on whether its env names a private root — so the probe holds the
-    // CONSISTENCY, not one verdict: the receipt's verdict is the one the delivered line states, and a
-    // local path the line shows never reaches the receipt row. The three verdicts themselves are
-    // proven against a fixture root in e2e/context-plan.ts.
     const konzeptRow = fReceipt?.selected.find((pack) => pack.id === "konzept-claude-fleet");
+    const konzeptOmissions = fReceipt?.omitted.filter((pack) => pack.id === "konzept-claude-fleet") ?? [];
     const konzeptLine = fPrompt.split("\n").find((line) => line.startsWith("  ") && line.includes("k-claude-fleet")) ?? "";
-    const konzeptPath = konzeptLine.includes(" | ") ? konzeptLine.trim().split(" | ")[0]! : null;
-    check("the Fleet lane brief carries the private konzept pack as a hash verdict the receipt repeats, and the receipt carries no local path",
-      !!konzeptRow && !Array.isArray(konzeptRow.anchors) && konzeptRow.anchors.privateSourceId === "k-claude-fleet"
-      && ["match", "drift", "missing"].includes(konzeptRow.private?.verdict ?? "")
-      && konzeptLine.includes(`hash ${konzeptRow.private!.verdict}`)
-      && (konzeptRow.private!.verdict === "missing") === (konzeptPath === null)
-      && (konzeptPath === null || !JSON.stringify(fReceipt).includes(konzeptPath)),
-      `${konzeptLine} ${JSON.stringify(konzeptRow ?? null)}`);
+    check("the Fleet lane brief omits the unavailable private konzept anchor, and the receipt names source-unavailable and the unset root",
+      konzeptRow === undefined && konzeptOmissions.length === 1 && konzeptLine === ""
+      && !fPrompt.includes("- konzept-claude-fleet")
+      && konzeptOmissions[0]?.why === "source-unavailable"
+      && konzeptOmissions[0]?.reason === "FLEET_KONZEPT_ROOT is not set on this server",
+      `${konzeptLine} ${JSON.stringify(konzeptOmissions)}`);
     // The row must NAME the renderer that wrote the block it receipts, or "reconstruct every byte
     // from the row" silently becomes "…with whichever renderer ships today".
     check("the receipt names the renderer that produced the delivered block",

@@ -1824,7 +1824,8 @@ Der bestehende Dispatch-/Sensor-Lauf beobachtet den Plan; nur ein Wechsel von Ar
 Wurzel eröffnet einen neuen Abschnitt. Freigabe und tatsächlicher Dispatch werden separat gestempelt.
 Die Beobachtung ist diskret im Dispatch-Takt: kurzlebige Gründe zwischen zwei Lesungen sind unknown.
 Vor der ersten Beobachtung und über einen Neustart hinweg steht eine messbare Lücke ausdrücklich
-als `unknown`; bei alten oder erstmals unter Policy beobachteten Zeilen ist `freigabe:null`, niemals
+als `unknown`; das gilt auch für eine startbereite Welle ohne Wartegrund im Register bis zu ihrem
+tatsächlichen Dispatch. Bei alten oder erstmals unter Policy beobachteten Zeilen ist `freigabe:null`, niemals
 0 Minuten. Die Lese-Tür schreibt nichts und verlängert keinen Abschnitt bis zur Lesezeit.
 
 Der vorhandene `lane-outcomes.jsonl` erhält `blockerZeiten:[{taskId,zeiten}]`, auch für Wellenfolger.

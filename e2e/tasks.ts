@@ -12047,6 +12047,9 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(gap.abschnitte.map((s) => [s.art, s.von, s.bis])) === JSON.stringify([
         ["hold", 100, 200], ["after", 200, 250], ["unknown", 250, 300], ["collision", 300, null]])
         && blockerTotals(gap).ms.unknown === 50 && blockerTotals(gap).unknown === true, JSON.stringify(gap));
+    const ready = finishBlockers(observeBlocker({ freigabe: 100, dispatch: null, observedAt: 100, abschnitte: [] }, undefined, 100), 200);
+    check("(blockers) ready without a deriveWaits reason is unknown until actual dispatch",
+      blockerTotals(ready).ms.unknown === 100 && blockerTotals(ready).unknown === true, JSON.stringify(ready));
     const legacy = finishBlockers(observeBlocker({ freigabe: null, dispatch: null, observedAt: 100, abschnitte: [] }, bHeld, 100), 200);
     check("(blockers) legacy release stays unknown and malformed overlapping persistence is rejected",
       blockerTotals(legacy).unknown === true && blockerTotals(legacy).freigabe === null

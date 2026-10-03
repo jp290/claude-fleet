@@ -56,7 +56,7 @@ export function observeBlocker(history: BlockerHistory, wait: WaitRow | undefine
   const abschnitte = history.abschnitte.map((s) => ({ ...s }));
   const last = abschnitte.at(-1);
   const reason = wait ? { art: wait.art, adressat: wait.adressat, wurzel: wait.wurzel }
-    : { art: "tick" as const, adressat: "tick", wurzel: "startbereit; Dispatch noch nicht beobachtet" };
+    : { art: "unknown" as const, adressat: "unknown", wurzel: "startbereit; kein Wartegrund im Register, Dispatch noch nicht beobachtet" };
   const from = last?.bis ?? history.freigabe;
   if ((!last || last.bis !== null) && from !== null && from !== undefined && from < now)
     abschnitte.push({ art: "unknown", adressat: "unknown", wurzel: "keine Beobachtung", von: from, bis: now });

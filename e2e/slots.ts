@@ -1644,7 +1644,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("chat senden (C): a sent message shows \"wartet\" until the transcript has it, then \"durch\"",
     /msg\.append\(body, sendState\("sending"\), meta\)/.test(cliSrc)
       && /pending\?\.querySelector\("\.msend"\)\?\.replaceWith\(sendState\("wait"\)\)/.test(cliSrc)
-      && /const arrived = e\.role === "user" && this\.settlePending\(raw\);/.test(cliSrc)
+      && /this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\)/.test(cliSrc)
+      && /this\.addMessage\(e, part\.text, header, part\.mark, this\.settlePending\(part\.text\)\)/.test(cliSrc)
       && /msg\.append\(body, \.\.\.\(arrived \? \[sendState\("done"\)\] : \[\]\), meta\)/.test(cliSrc)
       && /wait: "wartet", done: "durch"/.test(cliSrc),
     "addPending / doSend / appendEntry / sendState in src/client.ts");

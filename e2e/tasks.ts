@@ -10651,15 +10651,18 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(delegationCard.body.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"]),
       JSON.stringify({ gaps: delegationCard.gaps, delegation: delegationCard.body.delegation,
         verboten: delegationCard.body.verboten }));
-    const webText = vbText.replace("VERBOTEN:", "WEB: search\nVERBOTEN:");
+    const webBaseText = vbText.replaceAll("fleet-e2e.ts", "server.ts");
+    const webBaseRaw = parseFormattedCard(webBaseText);
+    const webText = webBaseText.replace("VERBOTEN:", "WEB: search\nVERBOTEN:");
     const webCard = validateCard(parseFormattedCard(webText) ?? {}, { ...cardCtx, sourceText: webText });
+    const webAbsent = validateCard(webBaseRaw ?? {}, { ...cardCtx, sourceText: webBaseText });
     check("(web) WEB: search survives the formatted parser and validator; absence grants no web field",
-      webCard.valid && webCard.body.web === "search" && parseFormattedCard(vbText)?.web === undefined
-      && validateCard(vbRaw ?? {}, { ...cardCtx, sourceText: vbText }).body.web === undefined,
-      JSON.stringify({ web: webCard.body.web, gaps: webCard.gaps }));
+      webCard.valid && webCard.body.web === "search" && webBaseRaw?.web === undefined
+      && webAbsent.valid && webAbsent.body.web === undefined,
+      JSON.stringify({ web: webCard.body.web, gaps: webCard.gaps, absentGaps: webAbsent.gaps }));
     const badWebText = webText.replace("WEB: search", "WEB: auto");
     const badWeb = validateCard(parseFormattedCard(badWebText) ?? {}, { ...cardCtx, sourceText: badWebText });
-    const inventedWeb = validateCard({ ...vbRaw, web: "search" }, { ...cardCtx, sourceText: vbText });
+    const inventedWeb = validateCard({ ...webBaseRaw, web: "search" }, { ...cardCtx, sourceText: webBaseText });
     check("(web) an unsupported web value and an undeclared extractor value both refuse the card",
       !badWeb.valid && badWeb.gaps.includes('web: only "search" is supported') && badWeb.body.web === undefined
       && !inventedWeb.valid && inventedWeb.gaps.includes('web: WEB: search is not declared in the request')

@@ -2772,6 +2772,17 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         // …and an agent Fleet simply has not probed yet is NOT an error
         && slotState?.({ lastOutput: NOW - 60_000, agent: "unprobed" }, NOW, false) === "rest",
       "slotState bad");
+    // the fifth reading: `awaiting` (K5 of the Theo threads measurement of 2026-10-02).
+    // After broken, before every freshness reading — a waiting session on screen still waits; the
+    // owner's case carries its own class, the one the colour hangs on.
+    check("waiting on someone is a fifth reading, after broken and before working/resting/asleep",
+      slotState?.({ lastOutput: NOW - 29 * 60_000, awaiting: "main" }, NOW, false) === "wait"
+        && slotState?.({ lastOutput: NOW - 31 * 60_000, awaiting: "main" }, NOW, false) === "wait"
+        && slotState?.({ lastOutput: NOW, awaiting: "main" }, NOW, true) === "wait"
+        && slotState?.({ lastOutput: NOW - 60_000, awaiting: "owner" }, NOW, true) === "wait owner"
+        && slotState?.({ lastOutput: NOW, awaiting: "owner", stalled: true }, NOW, true) === "bad"
+        && slotState?.({ lastOutput: NOW - 1_000, awaiting: "main", agent: "no-pane" }, NOW, false) === "bad",
+      "slotState wait");
 
     const deps = cut("const isActive = ", "// A LANE'S ONE ADDRESS")
       + cut("function projectOf(", "// Eight hues");
@@ -3022,18 +3033,27 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       // of its own would not be found here
       const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}(?:,\\s*#mtop \\.act${sel})?(?:,\\s*#msheet \\.act${sel})?\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
       const base = glyph(""), rest = glyph("\\.rest"), sleep = glyph("\\.sleep"), bad = glyph("\\.bad");
+      const wait = glyph("\\.wait"), waitOwner = glyph("\\.wait\\.owner");
       check("client: the four states differ in SHAPE, and resting and asleep differ from each other",
         /border-radius: 50%/.test(base) && /background: var\(/.test(base)
           && /background: none/.test(rest) && /box-shadow: inset/.test(rest)
           && /8px 2px/.test(sleep) && !/box-shadow/.test(sleep)
           && /clip-path: polygon/.test(bad),
         JSON.stringify({ base: base.trim(), rest: rest.trim(), sleep: sleep.trim(), bad: bad.trim() }));
+      // the fifth, waiting: a shape of its own (not the cross's polygon), in ink — and the owner's
+      // case changes the COLOUR only, to --q-wait, the one ink that means "waits for you" (G0.2)
+      const polygonOf = (g: string) => /clip-path: (polygon\([^)]*\))/.exec(g)?.[1] ?? "";
+      check("client: waiting is a fifth shape in ink; only waiting on the owner turns it --q-wait",
+        /clip-path: polygon/.test(wait) && polygonOf(wait) !== polygonOf(bad) && !/box-shadow/.test(wait)
+          && /background: var\(--chat-mute\)/.test(wait)
+          && waitOwner.trim() === "background: var(--q-wait);",
+        JSON.stringify({ wait: wait.trim(), waitOwner: waitOwner.trim() }));
       // ONE BOX FOR ALL FOUR (owner 2026-09-21: „[Zitat entfernt]“, on the 4/8 grid). The shape is
       // what changes; a state whose rule set its own width or height would move the row the moment a
       // session falls asleep — the old 9×2 bar was exactly that.
       check("client: the four state glyphs share one 8px box — no state sets its own width or height",
         /width: 8px; height: 8px/.test(base)
-          && [rest, sleep, bad].every((g) => !/(^|[;\s])(width|height):/.test(g)),
+          && [rest, sleep, bad, wait, waitOwner].every((g) => !/(^|[;\s])(width|height):/.test(g)),
         JSON.stringify({ base: base.trim(), sleep: sleep.trim() }));
       check("client: the row paints one of those four and names it in words",
         /el\("span", `act \$\{state\}`\)/.test(rowSrc) && /live\.title = STATE_WORD\[state\]/.test(rowSrc)
@@ -6911,6 +6931,63 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (artifacts) { await send("Page.stopScreencast"); recording = null; }
       facts.inputs = [...fx.inputs]; facts.missing = [...missing]; missing.length = 0;
       results.push({ width: W, height: keyboard ? H - 336 : H, claims, facts, detail });
+    }
+
+    // --- THE FIFTH READING, WAITING (card "Eine Session, die auf ihre MAIN oder auf dich wartet,
+    // sagt das auf ihrer Zeile", K5 of the Theo threads measurement of 2026-10-02): last,
+    // so every claim above was read on the fixture without `awaiting`. Alpha (in the pane, so its
+    // freshness reads "working") waits on the owner, Beta on its MAIN, Gamma waits on nobody. The
+    // glyph's ink is read off the page and compared with the page's own --q-wait / --chat-mute.
+    Object.assign(slots[0], { awaiting: "owner" });
+    Object.assign(slots[1], { awaiting: "main" });
+    Object.assign(slots[2], { cwd: "/fixture/gamma", repo: "/fixture/gamma", label: "Gamma", openedAt: 3000, lastOutput: 0 });
+    type Glyph = { cls: string; title: string; ink: string; w: number; h: number } | null;
+    const glyphAt = (sel: string) => evaluate<Glyph>(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return { cls: e.className, title: e.title, ink: getComputedStyle(e).backgroundColor, w: r.width, h: r.height }; })()`);
+    const inkOf = (v: string) => evaluate<string>(`(() => { const t = document.createElement('i'); t.style.color = 'var(${v})';
+      document.body.appendChild(t); const c = getComputedStyle(t).color; t.remove(); return c; })()`);
+    {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
+      await boot(1200, 900, false);
+      await wait(`!!document.querySelector('.slot[data-slot="3"] .act')`, 4000);
+      const owner = await glyphAt('.slot[data-slot="1"] .r1 .act'), main = await glyphAt('.slot[data-slot="2"] .r1 .act');
+      const none = await glyphAt('.slot[data-slot="3"] .r1 .act');
+      const qWait = await inkOf("--q-wait"), mute = await inkOf("--chat-mute");
+      Object.assign(facts, { owner, main, none, qWait, mute, missing: [...missing] });
+      const mainClaim = 'wait · a session waiting on its MAIN paints .act.wait in ink (--chat-mute), titled "wartet auf MAIN"';
+      claims[mainClaim] = !!main && main.cls === "act wait" && main.title.startsWith("wartet auf MAIN") && main.ink === mute;
+      detail[mainClaim] = { main, mute };
+      const ownerClaim = 'wait · a session waiting on the owner paints .act.wait in --q-wait, titled "wartet auf dich" — even on screen';
+      claims[ownerClaim] = !!owner && owner.cls === "act wait owner" && owner.title.startsWith("wartet auf dich") && owner.ink === qWait;
+      detail[ownerClaim] = { owner, qWait };
+      claims["wait · a session without awaiting keeps its freshness glyph (Gamma rests)"] = !!none && none.cls === "act rest";
+      claims["wait · the waiting glyph sits in the same 8 × 8 box as every other state"] =
+        [owner, main, none].every((g) => !!g && g.w === 8 && g.h === 8);
+      await shot("1200-wartet");
+      missing.length = 0;
+      results.push({ width: 1200, height: 900, claims, facts, detail });
+    }
+    {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
+      await boot(W, H, true);
+      const qWait = await inkOf("--q-wait"), mute = await inkOf("--chat-mute");
+      const owner = await glyphAt("#mpill .act");
+      const ownerLabel = await evaluate<string>("document.querySelector('#mpill').getAttribute('aria-label')");
+      await shot(`${W}-wartet-dich`);
+      // the island repaints on the next poll when the fact moves — nothing re-renders it by hand
+      Object.assign(slots[0], { awaiting: "main" });
+      const repainted = await wait(`document.querySelector('#mpill .act')?.className === 'act wait'`, 6000);
+      await settle(200);
+      const main = await glyphAt("#mpill .act");
+      await shot(`${W}-wartet-main`);
+      Object.assign(facts, { owner, ownerLabel, main, repainted, qWait, mute, missing: [...missing] });
+      claims['wait · the island pill inherits the reading: .act.wait in --q-wait, "wartet auf dich" in its title and label'] = !!owner
+        && owner.cls === "act wait owner" && owner.title === "wartet auf dich" && owner.ink === qWait && /· wartet auf dich —/.test(ownerLabel ?? "");
+      claims['wait · when the slot moves to waiting on its MAIN, the next poll repaints the pill in ink, "wartet auf MAIN"'] = repainted
+        && !!main && main.title === "wartet auf MAIN" && main.ink === mute;
+      missing.length = 0;
+      results.push({ width: W, height: H, claims, facts, detail });
     }
     return results;
   } finally {

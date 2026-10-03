@@ -328,6 +328,12 @@
   .slot .act.bad, #mtop .act.bad, #msheet .act.bad { border-radius: 1px; background: var(--danger);
     clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%,
       50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
+  /* the fifth reading, WAITS ON SOMEONE (client.ts#slotState): an hourglass in the same box, still,
+     in ink when it waits on its MAIN — and in --q-wait only when it waits on the owner, the one
+     thing that colour means (docs/design/grammatik.md G0.2) */
+  .slot .act.wait, #mtop .act.wait, #msheet .act.wait { border-radius: 0; background: var(--chat-mute);
+    clip-path: polygon(0 0, 100% 0, 62% 50%, 100% 100%, 0 100%, 38% 50%); }
+  .slot .act.wait.owner, #mtop .act.wait.owner, #msheet .act.wait.owner { background: var(--q-wait); }
   /* Actions replace the row's right edge on a solid matching surface, never overpaint facts. */
   /* ...and it HIDES the reading zone (ctx + state) instead of painting over a guessed width of it.
      It used to be a solid strip of min-width 62px ("ctx 78%" + gap + the state box) — which on a

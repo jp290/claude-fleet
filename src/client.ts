@@ -4491,7 +4491,7 @@ function sessionsSheet(): HTMLElement[] {
     const act = el("span", `act ${state}`);
     act.title = STATE_WORD[state];
     r.replaceChildren(el("span", "maddr", addr), nm, act);
-    r.setAttribute("aria-label", `${addr} ${laneLabel(s)} — ${STATE_WORD[state]}${s.awaiting === "owner" ? ", wartet auf dich" : ""}`);
+    r.setAttribute("aria-label", `${addr} ${laneLabel(s)} — ${STATE_WORD[state]}`);
     if (s.id === cur) r.setAttribute("aria-current", "true");
     list.appendChild(r);
   }
@@ -5045,17 +5045,30 @@ export function laneNameOfBranch(branch: string): string {
 // are one fact read at two distances: a session that produced nothing for half an hour is not the
 // same thing as one that paused between two answers, and the bar had no way to say so.
 const SLEEP_MS = 30 * 60_000;
-type SlotState = "work" | "rest" | "sleep" | "bad";
-function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
+type OutputState = "work" | "rest" | "sleep" | "bad";
+function outputState(s: SlotInfo, now: number, awake: boolean): OutputState {
   if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane") return "bad";
   if (awake || now - s.lastOutput < RECENT_MS) return "work";
   return now - s.lastOutput >= SLEEP_MS ? "sleep" : "rest";
+}
+// THE FIFTH READING: a session that waits on someone (`awaiting`, a server fact — an open
+// clarification sets "main", a clarify lane "owner") says so on its row, not only in the hover card
+// (the Theo threads measurement of 2026-10-02, K5). It ranks after broken and before the
+// output's freshness: a waiting session on screen still waits. The value is the glyph's class list —
+// the owner's case is the same shape plus the one colour that means „[Zitat entfernt]“ (grammatik
+// G0.2), so every reader of slotState/STATE_WORD gets both without a second branch.
+type SlotState = OutputState | "wait" | "wait owner";
+function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
+  const out = outputState(s, now, awake);
+  if (out === "bad" || !s.awaiting) return out;
+  return s.awaiting === "owner" ? "wait owner" : "wait";
 }
 // The shape is the reading; this is the same reading in words, for the tooltip and for anyone who
 // has to name the state out loud. Not decoration: a shape nobody can name is a shape nobody learns.
 const STATE_WORD: Record<SlotState, string> = {
   work: "working", rest: "resting", sleep: "asleep — nothing for half an hour or more",
-  bad: "broken — stalled, or a pane with no agent behind it" };
+  bad: "broken — stalled, or a pane with no agent behind it",
+  wait: "wartet auf MAIN", "wait owner": "wartet auf dich" };
 
 // "how long since this session last said anything", short enough for a 250px line. Takes the AGE,
 // not a timestamp: the caller has the server's clock and the client's is allowed to disagree with
@@ -5885,13 +5898,14 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
             + " (or runs a harness/model Fleet cannot measure). Not an empty context.";
         r1.appendChild(cx);
       }
-      // The state, in one glyph and FOUR readings. Each has its own SHAPE (the CSS), so the four
+      // The state, in one glyph and FIVE readings. Each has its own SHAPE (the CSS), so the five
       // survive a greyscale screenshot; how long ago the session last spoke — line 2's other reading
       // — is in the tooltip beside the word.
       const hidHot = !!stack && !open && stack.lanes.some(
         (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
       const state = slotState(s, serverNow, visible || hidHot);
-      markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", state) });
+      // the mark reads the output's freshness and `awaiting` itself (src/marks.ts#markFacts)
+      markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", outputState(s, serverNow, visible || hidHot)) });
       const live = el("span", `act ${state}`);
       live.title = STATE_WORD[state]
         + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")

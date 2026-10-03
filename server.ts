@@ -99,7 +99,7 @@ import {
   type GitInfo, type InstanceIdentity, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus, type SuiteOfferRow,
-  normalizeRolePresets, type RolePresets,
+  normalizeRolePresets, type RolePresets, type FoundingPlanOmission, type FoundingPlanPack,
 } from "./src/protocol";
 import { opsPollRow, opsPollVisible } from "./src/opsevents";
 import { laneTitleOf } from "./src/suitemeter";
@@ -35193,6 +35193,8 @@ type FoundingPlan = {
   readonly mode: ContextPackMode;
   readonly triggers: readonly ContextPackTrigger[];
   readonly plan: ContextPlan;
+  /** the repo manifest as read at `head` — the plan route reads a repo pack's declared rule facts off it */
+  readonly manifest: ContextManifestRead;
 };
 async function foundingPlanOf(repo: string, harness: string | null,
   foundingMode: FoundingPlanMode): Promise<{ ok: true; value: FoundingPlan } | { ok: false; error: string }> {
@@ -35217,14 +35219,28 @@ async function foundingPlanOf(repo: string, harness: string | null,
         capabilities: DISPATCH_CONTEXT_CAPABILITIES }
     : programMainContextFacts(frame, harness);
   const base = planContext(facts);
-  const { repoPlan, blobShas } = await repoManifestContextPlan(repoRoot, head, facts);
+  const { repoPlan, blobShas, manifest } = await repoManifestContextPlan(repoRoot, head, facts);
   return { ok: true, value: { repoRoot, head,
     branch: branchRead.code === 0 && branchRead.out ? branchRead.out : null,
-    mode: facts.mode, triggers: facts.triggers,
+    mode: facts.mode, triggers: facts.triggers, manifest,
     plan: {
       selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected], blobShas),
       omitted: [...base.omitted, ...repoPlan.omitted],
     } } };
+}
+
+// A planned pack's DECLARED rule facts, for the founding window: a Fleet seed's from its code entry, a
+// repo pack's from the manifest the plan read at its head. Only arrays of strings are carried — the
+// ladder already judged this declaration, and a shape it could not have read is no fact to show.
+function declaredPackRule(id: string, manifest: ContextManifestRead): { harnesses: string[]; triggers: string[] } | null {
+  const strings = (v: unknown): string[] | null => Array.isArray(v) && v.every((x) => typeof x === "string") ? [...v] : null;
+  const seed = CONTEXT_PACKS.find((pack) => pack.id === id);
+  const raw: Record<string, unknown> | undefined = seed ?? (manifest.kind === "packs"
+    ? manifest.packs.find((pack): pack is Record<string, unknown> =>
+      !!pack && typeof pack === "object" && !Array.isArray(pack) && (pack as Record<string, unknown>).id === id)
+    : undefined);
+  const harnesses = strings(raw?.harnesses), triggers = strings(raw?.triggers);
+  return harnesses && triggers ? { harnesses, triggers } : null;
 }
 
 // THE `packs` FIELD at the three founding doors (owner answer F4): the name is `packs`, never
@@ -45266,16 +45282,34 @@ Bun.serve<WSData>({
       const fp = await foundingPlanOf(repo, ho.harness, mode);
       if (!fp.ok) return json({ error: fp.error }, 400);
       const seedIds = new Set<string>(CONTEXT_PACKS.map((pack) => pack.id));
-      const { plan } = fp.value;
-      return json({
-        repo: fp.value.repoRoot, head: fp.value.head, branch: fp.value.branch,
-        mode, harness: resolveContextHarness(ho.harness),
-        selected: plan.selected.map((pack) => ({
+      const { plan, manifest } = fp.value;
+      const plannedAt = Date.now();
+      // Every field below is the PLAN'S OWN: anchors and sourceHash exactly as the receipt would write
+      // them (contextReceiptSelections reads the same declaredSourceHash), harnesses and triggers off
+      // the declaration the ladder judged. A private pack's hash verdict is NOT here — it is taken at
+      // delivery, and the window says so instead of reading the private root for a preview.
+      const selected: FoundingPlanPack[] = plan.selected.map((pack) => {
+        const rule = declaredPackRule(pack.id, manifest);
+        const sourceHash = declaredSourceHash(pack);
+        return {
           id: pack.id, bytes: pack.estimatedBytes,
           source: seedIds.has(pack.id) ? "fleet-seed" : "repo-manifest",
           ...(pack.useWhen !== undefined ? { useWhen: pack.useWhen } : {}),
-        })),
-        omitted: plan.omitted.map((entry) => ({ id: entry.id, reason: entry.why })),
+          ...(rule ? { harnesses: rule.harnesses, triggers: rule.triggers } : {}),
+          anchors: "privateSourceId" in pack.sources ? { privateSourceId: pack.sources.privateSourceId }
+            : pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })),
+          ...(sourceHash !== undefined ? { sourceHash } : {}),
+        };
+      });
+      // harness-unsupported says WHICH agents the pack is for — the window explains a switched-off
+      // pack after an agent change with it; no other omission carries a fact the ladder trusted
+      const omitted: FoundingPlanOmission[] = plan.omitted.map((entry) => {
+        const rule = entry.why === "harness-unsupported" ? declaredPackRule(entry.id, manifest) : null;
+        return { id: entry.id, reason: entry.why, ...(rule ? { harnesses: rule.harnesses } : {}) };
+      });
+      return json({
+        repo: fp.value.repoRoot, head: fp.value.head, branch: fp.value.branch,
+        mode, harness: resolveContextHarness(ho.harness), plannedAt, selected, omitted,
       });
     }
     // what the folder under the picker's cursor actually IS. A SEPARATE route from /api/dirs on purpose:

@@ -582,3 +582,85 @@ export function normalizeRolePresets(x: unknown): RolePresets | null {
   }
   return out;
 }
+
+// --- the founding plan's pack rows, and the preview held against the receipt ---------------------
+// GET /api/founding-plan writes one row per selected pack (server.ts, the route) and the founding
+// window reads it (src/founding.ts#validPlan); after a start the window holds that PREVIEW against the
+// receipt the delivery wrote (GET /api/context-receipts). The fields come from the plan itself — the
+// stamped source hash and the declared rule facts — never from a second read of a source.
+// `harnesses` is the pack's ALLOWED list, never a claim about who wrote it or which model fits: the
+// pack schema has no model field (context-pack-validator.ts refuses one), so no row names a model.
+export type PackAnchors = readonly { readonly path: string; readonly anchor: string }[] | { readonly privateSourceId: string };
+export interface FoundingPlanPack {
+  id: string; bytes: number; source: "fleet-seed" | "repo-manifest"; useWhen?: string;
+  // absent on a server older than these fields — the window says "nicht gemeldet", never guesses
+  harnesses?: string[]; triggers?: string[]; anchors?: PackAnchors; sourceHash?: string;
+}
+export interface FoundingPlanOmission { id: string; reason: string; harnesses?: string[] }
+
+// A pack's FASSUNG exists only where its id declares one, by the suffix `-v<N>` (codex-native-context-v1).
+// A source hash is the version of the bytes a pointer points INTO, a konzept ledger version is the
+// private file's own count — neither is a pack fassung, and an id without the suffix has none.
+const PACK_ID_FASSUNG_RE = /-v([1-9]\d{0,3})$/;
+export function packIdFassung(id: string): number | null {
+  const m = PACK_ID_FASSUNG_RE.exec(id);
+  return m ? Number(m[1]) : null;
+}
+
+// PREVIEW AGAINST RECEIPT. The preview is the source state when the window PLANNED; the receipt is the
+// state the delivery seam stamped when it SENT. Per requested pack:
+//  same          both sides name a hash and the anchors, and they agree
+//  changed       both sides name them and they differ — the receipt's is what was delivered
+//  unknown       one side names no hash (an old receipt, an old server, an unobservable source)
+//  drift         a private pack whose file at delivery is not the declared fassung
+//  not-delivered requested, but the receipt carries it as omitted, or not at all
+//  extra         in the receipt without having been requested
+// `unknown` is never `same`: a missing fact is never a compatibility pass. Delivered says the pointer
+// was in the brief — whether the agent read it is not a fact either side has.
+export type PackStandKind = "same" | "changed" | "unknown" | "drift" | "not-delivered" | "extra";
+export interface PackStandRow { id: string; stand: PackStandKind; preview: string | null; delivered: string | null; why: string | null }
+export interface PackStandPreview {
+  head: string | null;
+  packs: readonly { id: string; anchors?: PackAnchors; sourceHash?: string }[];
+}
+export interface PackStandReceipt {
+  head?: unknown;
+  selected: readonly { id: string; anchors?: unknown; sourceHash?: unknown; private?: { verdict?: unknown; version?: unknown } }[];
+  omitted?: readonly { id: string; why?: unknown; reason?: unknown }[];
+}
+export interface PackStand { head: "same" | "changed" | "unknown"; previewHead: string | null; deliveredHead: string | null; packs: PackStandRow[] }
+
+export function standSincePreview(preview: PackStandPreview | null, receipt: PackStandReceipt, requested: readonly string[]): PackStand {
+  const str = (v: unknown): string | null => typeof v === "string" && v ? v : null;
+  const previewHead = preview?.head ?? null;
+  const deliveredHead = str(receipt.head);
+  const head = previewHead === null || deliveredHead === null ? "unknown" : previewHead === deliveredHead ? "same" : "changed";
+  const packs: PackStandRow[] = [];
+  for (const id of requested) {
+    const got = receipt.selected.find((p) => p.id === id);
+    const before = preview?.packs.find((p) => p.id === id);
+    const was = before?.sourceHash ?? null;
+    if (!got) {
+      const o = receipt.omitted?.find((p) => p.id === id);
+      const why = o ? [str(o.why), str(o.reason)].filter(Boolean).join(": ") || null : null;
+      packs.push({ id, stand: "not-delivered", preview: was, delivered: null, why });
+      continue;
+    }
+    const now = str(got.sourceHash);
+    if (got.private && typeof got.private === "object") {
+      const verdict = str(got.private.verdict);
+      const stand: PackStandKind = verdict === "match" ? "same" : verdict === "drift" ? "drift"
+        : verdict === "missing" ? "not-delivered" : "unknown";
+      packs.push({ id, stand, preview: was, delivered: now, why: verdict });
+      continue;
+    }
+    if (was === null || now === null) { packs.push({ id, stand: "unknown", preview: was, delivered: now, why: null }); continue; }
+    const anchorsMoved = before?.anchors !== undefined && got.anchors !== undefined
+      && JSON.stringify(before.anchors) !== JSON.stringify(got.anchors);
+    packs.push({ id, stand: was !== now || anchorsMoved ? "changed" : "same", preview: was, delivered: now,
+      why: anchorsMoved ? "anchors" : was !== now ? "sourceHash" : null });
+  }
+  for (const got of receipt.selected)
+    if (!requested.includes(got.id)) packs.push({ id: got.id, stand: "extra", preview: null, delivered: str(got.sourceHash), why: null });
+  return { head, previewHead, deliveredHead, packs };
+}

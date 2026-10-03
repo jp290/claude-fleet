@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, CONTEXT_MANIFEST_PATH, observedSourceHash, planRepoContext,
   readContextManifest, stampObservedSourceHashes, taskContextTriggers } from "../context-manifest";
+import { packIdFassung, standSincePreview, type PackStandPreview, type PackStandReceipt } from "../src/protocol";
 import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_HIT_MAX_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
   planSnippets, renderSnippetBlock, snippetPathRefusal, symbolSpan,
   type SnippetFile, type SnippetRow } from "../context-snippets";
@@ -636,6 +637,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   await contextBorrowChecks(check);
 
   orchestrationTriggerChecks(check);
+  foundingStandChecks(check);
 
   if (!externalCheck) {
     console.log(rows.join("\n"));
@@ -1014,6 +1016,80 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
       && !(CONTEXT_PACKS as readonly { id: string }[]).some((pack) => pack.id === "task-queue"),
     JSON.stringify({ selected: seedPlan.selected.map((pack) => pack.id),
       taskQueue: seedPlan.omitted.find((pack) => pack.id === "task-queue") }));
+}
+
+
+
+// --- THE FOUNDING WINDOW'S PREVIEW AGAINST THE RECEIPT (card 91b52b3a). src/protocol.ts#standSincePreview
+// is the one rule the window applies after a start; each fixture is one receipt shape the ledger can
+// hold, and every row a missing fact touches must come out `unknown` — never `same`. The server-backed
+// half (e2e/context-packs.ts) feeds it a real preview and a real receipt; this half pins the rule.
+function foundingStandChecks(check: ContextPlanCheck): void {
+  const H1 = "a".repeat(64), H2 = "b".repeat(64), HEAD1 = "1".repeat(40), HEAD2 = "2".repeat(40);
+  const anchors = [{ path: "AGENTS.md", anchor: "## Repo contract" }];
+  const preview: PackStandPreview = { head: HEAD1, packs: [
+    { id: "promise-anchor", anchors, sourceHash: H1 },
+    { id: "konzept-claude-fleet", anchors: { privateSourceId: "k-claude-fleet" }, sourceHash: H2 },
+  ] };
+  const receipt = (over: Partial<PackStandReceipt> = {}): PackStandReceipt => ({
+    head: HEAD1, selected: [{ id: "promise-anchor", anchors, sourceHash: H1 }], omitted: [], ...over });
+  const row = (r: ReturnType<typeof standSincePreview>, id: string) => r.packs.find((p) => p.id === id);
+
+  const same = standSincePreview(preview, receipt(), ["promise-anchor"]);
+  check("founding stand: an unchanged source is `same`, and so is the HEAD",
+    same.head === "same" && row(same, "promise-anchor")?.stand === "same" && same.packs.length === 1, JSON.stringify(same));
+
+  const moved = standSincePreview(preview, receipt({ head: HEAD2, selected: [{ id: "promise-anchor", anchors, sourceHash: H2 }] }), ["promise-anchor"]);
+  check("founding stand: a source changed between preview and start is `changed`, the receipt's hash is the delivered one",
+    moved.head === "changed" && row(moved, "promise-anchor")?.stand === "changed"
+      && row(moved, "promise-anchor")?.preview === H1 && row(moved, "promise-anchor")?.delivered === H2, JSON.stringify(moved));
+
+  const headOnly = standSincePreview(preview, receipt({ head: HEAD2 }), ["promise-anchor"]);
+  check("founding stand: a HEAD that moved without touching the pack's source keeps the pack `same` and the HEAD `changed`",
+    headOnly.head === "changed" && row(headOnly, "promise-anchor")?.stand === "same", JSON.stringify(headOnly));
+
+  const reanchored = standSincePreview(preview, receipt({ selected: [{ id: "promise-anchor",
+    anchors: [{ path: "AGENTS.md", anchor: "## Other" }], sourceHash: H1 }] }), ["promise-anchor"]);
+  check("founding stand: a moved anchor with the same blob is `changed`, named as anchors",
+    row(reanchored, "promise-anchor")?.stand === "changed" && row(reanchored, "promise-anchor")?.why === "anchors", JSON.stringify(reanchored));
+
+  // AN OLD RECEIPT without head and sourceHash, and an old server's preview without them: unknown on
+  // every row they touch. Mutation: let a missing hash fall through to the comparison → `same` here.
+  const old = standSincePreview(preview, { selected: [{ id: "promise-anchor", anchors }] }, ["promise-anchor"]);
+  const oldPreview = standSincePreview({ head: null, packs: [{ id: "promise-anchor" }] }, receipt(), ["promise-anchor"]);
+  const noPreview = standSincePreview(null, receipt(), ["promise-anchor"]);
+  check("founding stand: an old receipt, an old preview and no preview at all are `unknown` — never `same`",
+    old.head === "unknown" && row(old, "promise-anchor")?.stand === "unknown"
+      && oldPreview.head === "unknown" && row(oldPreview, "promise-anchor")?.stand === "unknown"
+      && noPreview.head === "unknown" && row(noPreview, "promise-anchor")?.stand === "unknown",
+    JSON.stringify({ old, oldPreview, noPreview }));
+
+  const privateRow = (verdict: unknown) => row(standSincePreview(preview, receipt({ selected: [{ id: "konzept-claude-fleet",
+    anchors: { privateSourceId: "k-claude-fleet" }, sourceHash: H2, private: { verdict, version: 1 } }] }), ["konzept-claude-fleet"]),
+    "konzept-claude-fleet")?.stand;
+  check("founding stand: a private pack follows its delivery verdict — match same, drift drift, an unreadable verdict unknown",
+    privateRow("match") === "same" && privateRow("drift") === "drift" && privateRow(undefined) === "unknown",
+    `${privateRow("match")} ${privateRow("drift")} ${privateRow(undefined)}`);
+
+  const missing = standSincePreview(preview, receipt({ selected: [], omitted: [{ id: "konzept-claude-fleet",
+    why: "source-unavailable", reason: "FLEET_KONZEPT_ROOT is not set on this server" }] }), ["konzept-claude-fleet"]);
+  const silent = standSincePreview(preview, receipt({ selected: [], omitted: [] }), ["promise-anchor"]);
+  check("founding stand: a requested pack the delivery omitted is `not-delivered` with the receipt's own reason, or with none",
+    row(missing, "konzept-claude-fleet")?.stand === "not-delivered"
+      && row(missing, "konzept-claude-fleet")?.why === "source-unavailable: FLEET_KONZEPT_ROOT is not set on this server"
+      && row(silent, "promise-anchor")?.stand === "not-delivered" && row(silent, "promise-anchor")?.why === null,
+    JSON.stringify({ missing, silent }));
+
+  const extra = standSincePreview(preview, receipt({ selected: [{ id: "promise-anchor", anchors, sourceHash: H1 },
+    { id: "uninvited", anchors, sourceHash: H1 }] }), ["promise-anchor"]);
+  check("founding stand: a receipt pack nobody requested is `extra`",
+    row(extra, "uninvited")?.stand === "extra" && row(extra, "promise-anchor")?.stand === "same", JSON.stringify(extra));
+
+  // A FASSUNG IS DECLARED BY THE ID, or there is none — never read off a hash, a harness or a ledger.
+  const fassungen = ["codex-native-context-v1", "x-v12", "portable-core", "konzept-claude-fleet", "x-v0", "x-v1x", "v1"]
+    .map((id) => packIdFassung(id));
+  check("founding stand: the fassung comes from an explicit -v<N> id suffix only",
+    JSON.stringify(fassungen) === JSON.stringify([1, 12, null, null, null, null, null]), JSON.stringify(fassungen));
 }
 
 if (import.meta.main) await run();

@@ -3946,6 +3946,20 @@ Das Tripel ist aus `.fleet/klassen.json` aufgelöst; ein gültiges `ROLLE:`-Trip
 im Receipt Vorrang. Der Spawn liest weiterhin ausschließlich die bestehende Wahl aus
 `Task.spawn`. Legacy-Receipts ohne Klasse tragen keines der beiden Felder.
 
+**Vorschau gegen Beleg im Gründungsfenster (seit 2026-10-03, Karte 91b52b3a).** Die Owner-Route
+`GET /api/founding-plan` nennt je gewähltem Pack zusätzlich `anchors` und `sourceHash` — genau so,
+wie das Receipt sie schreiben würde (`server.ts#declaredSourceHash` über dem gestempelten Plan) —,
+die deklarierten `harnesses` und `triggers` und je Plan `plannedAt`; eine Auslassung
+`harness-unsupported` nennt ihre `harnesses`. Ein privater Pack trägt dort nur `privateSourceId` und
+den deklarierten Hash: sein Urteil fällt erst bei der Zustellung, die Vorschau liest die private
+Wurzel nicht. Die Receipt-Zeile selbst ist unverändert. Das Fenster hält nach dem Start seine
+Vorschau gegen sie (`src/protocol.ts#standSincePreview`: `same` · `changed` · `unknown` · `drift` ·
+`not-delivered` · `extra`); fehlt einer Seite `head` oder `sourceHash` (Altbeleg, älterer Server),
+ist der Stand `unknown`, nie `same`. „Zugestellt" heißt, der Zeiger stand im Brief — gelesen ist
+unbekannt. Eine Fassung nennt das Fenster nur aus dem Suffix `-v<N>` der Paket-ID
+(`src/protocol.ts#packIdFassung`, erstes echtes: `codex-native-context-v1`); kein Pack nennt ein
+Modell, die Harness-Liste ist erlaubt, nicht Herkunft.
+
 ### `tasks-archive.jsonl` — archivieren löscht nicht (seit 2026-09-15)
 
 `server.ts#capTasks` verdrängt ab `MAX_TASKS` terminale Zeilen (`done`/`archived`) aus

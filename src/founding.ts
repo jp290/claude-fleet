@@ -41,7 +41,8 @@ import { Flakes } from "./flakes";
 import { icon } from "./icons";
 import { projectHue } from "./marks";
 import { modelLabel } from "./modelname";
-import { normalizeRolePresets, type FoundingRole, type LaneAnchor, type RolePreset } from "./protocol";
+import { normalizeRolePresets, packIdFassung, standSincePreview, type FoundingPlanOmission, type FoundingPlanPack,
+  type FoundingRole, type LaneAnchor, type PackAnchors, type PackStand, type RolePreset } from "./protocol";
 import { openShell, type Shell } from "./shell";
 import { dropGrantMount, foundingRights, proofGrantRow } from "./rights";
 
@@ -121,8 +122,9 @@ const OMIT_SAY: Record<string, string> = {
 type Entry = { kind: "slot"; slot: number } | { kind: "lane"; repo: string; parent?: LaneAnchor; from: string };
 
 interface Repo { repo: string; name: string; slots: SlotInfo[] }
-interface PlanPack { id: string; bytes: number; source: string; useWhen?: string }
-interface Plan { selected: PlanPack[]; omitted: { id: string; reason: string }[] }
+// the plan route's answer (shapes: src/protocol.ts#FoundingPlanPack); head and plannedAt are the
+// PREVIEW's source state, which the start receipt is later held against
+interface Plan { head?: string; branch?: string | null; harness?: string; plannedAt?: number; selected: FoundingPlanPack[]; omitted: FoundingPlanOmission[] }
 interface DirList { path: string; parent: string | null; dirs: string[]; repos?: string[]; capped?: boolean; total?: number }
 interface FindHit { path: string; name: string; repo: boolean }
 // one Program as the MAIN choice reads it off GET /api/programs. `state` is the server's own
@@ -145,6 +147,7 @@ interface State {
   place: string | null;
   info: DirInfoResp | null; infoErr: string | null; infoSeq: number;
   plan: Plan | null; planErr: string | null; planFor: string | null; planSeq: number;
+  planHarness: string | null;           // the agent the last read plan was made for — a change re-plans visibly
   packs: Set<string>;                   // switched-on pack ids — empty sends no packs at all
   touched: Map<string, boolean>;        // the owner's own switches against the role's preset
   presetDue: boolean;                   // a role change waits for the plan it applies to
@@ -152,6 +155,8 @@ interface State {
   delta: { plus: string[]; minus: string[]; why: string } | null;
   compare: boolean;
   listOpen: boolean;                    // every pack of this start as a row, on demand
+  srcOpen: Set<string>;                 // the packs whose sources, hash and plan HEAD are unfolded in the list
+  dropped: { id: string; why: string }[]; // packs the last plan switched off, each with the plan's reason
   presetState: "idle" | "saving" | "saved" | "error";
   presetNote: string | null;            // why the stored presets could not be read or written
   orphan: string | null;
@@ -320,8 +325,8 @@ function open(entry: Entry) {
   S = {
     shell, flakes, entry, role: laneEntry ? "lane" : "leer", mode: laneEntry ? "new" : "repo", name: "", note: null,
     repos, view: repos.length ? "repos" : "folders", place: null,
-    info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0,
-    packs: new Set(), touched: new Map(), presetDue: true, fresh: new Set(), gone: [], delta: null, compare: false, listOpen: false, presetState: "idle", presetNote: null,
+    info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0, planHarness: null,
+    packs: new Set(), touched: new Map(), presetDue: true, fresh: new Set(), gone: [], delta: null, compare: false, listOpen: false, srcOpen: new Set(), dropped: [], presetState: "idle", presetNote: null,
     orphan: null, progs: null, progOther: 0, progErr: null, progSeq: 0, program: null, harness: null, model: "", effort: "", container: "", containerContext: "",
     profileFill: null, dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
     findTimer: null, paintFolders: null, error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
@@ -931,6 +936,10 @@ function applyPreset(why: string) {
   s.packs = next;
   const plus = [...next].filter((x) => !before.has(x));
   const minus = [...before].filter((x) => !next.has(x));
+  s.dropped = minus.flatMap((id) => {
+    const o = s.plan!.omitted.find((x) => x.id === id);
+    return o ? [{ id, why: `${OMIT_SAY[o.reason] ?? o.reason}${o.harnesses?.length ? ` (nur ${o.harnesses.join(", ")})` : ""}` }] : [];
+  });
   s.fresh = new Set(plus);
   s.gone = minus;
   const label = why || s.delta?.why || "";
@@ -1123,22 +1132,43 @@ async function loadPlan() {
     if (S === s && seq === s.planSeq) {
       // a plan that cannot be read switches everything off: the start then carries no packs
       if (s.planErr) { s.packs = new Set(); s.presetDue = true; }
-      else if (s.plan) applyPreset("");
+      else if (s.plan) {
+        // AN AGENT CHANGE RE-PLANS, and says so: what arrives and what leaves is named in the delta,
+        // what leaves for a reason of the plan is named with that reason (s.dropped) — never a swap
+        const now = s.plan.harness ?? null;
+        const moved = s.planHarness !== null && now !== null && now !== s.planHarness;
+        s.planHarness = now;
+        applyPreset(moved ? `Agent → ${now}` : "");
+      }
       renderRole(); renderContext(); renderFoot();
     }
   }
 }
 
+// the newer fields are OPTIONAL: an older server omits them, and the window then says "nicht gemeldet";
+// a field that is present in a wrong shape makes the whole plan unreadable, never half-believed
+const strs = (v: unknown): boolean => Array.isArray(v) && v.every((x) => typeof x === "string");
+const optional = (o: object, k: string, ok: (v: unknown) => boolean): boolean =>
+  !(k in o) || (o as Record<string, unknown>)[k] === undefined || ok((o as Record<string, unknown>)[k]);
+function validAnchors(v: unknown): v is PackAnchors {
+  if (Array.isArray(v)) return v.every((a: unknown) => !!a && typeof a === "object"
+    && typeof (a as Record<string, unknown>).path === "string" && typeof (a as Record<string, unknown>).anchor === "string");
+  return !!v && typeof v === "object" && typeof (v as Record<string, unknown>).privateSourceId === "string";
+}
 function validPlan(j: unknown): j is Plan {
   if (!j || typeof j !== "object" || !("selected" in j) || !("omitted" in j)) return false;
   return Array.isArray(j.selected) && Array.isArray(j.omitted)
+    && optional(j, "head", (v) => typeof v === "string") && optional(j, "plannedAt", (v) => typeof v === "number" && Number.isFinite(v))
     && j.selected.every((p: unknown) => !!p && typeof p === "object"
       && "id" in p && typeof p.id === "string" && "bytes" in p && typeof p.bytes === "number"
       && Number.isFinite(p.bytes) && p.bytes >= 0 && "source" in p
       && (p.source === "fleet-seed" || p.source === "repo-manifest")
-      && (!("useWhen" in p) || p.useWhen === undefined || typeof p.useWhen === "string"))
+      && (!("useWhen" in p) || p.useWhen === undefined || typeof p.useWhen === "string")
+      && optional(p, "harnesses", strs) && optional(p, "triggers", strs) && optional(p, "anchors", validAnchors)
+      && optional(p, "sourceHash", (v) => typeof v === "string"))
     && j.omitted.every((p: unknown) => !!p && typeof p === "object"
-      && "id" in p && typeof p.id === "string" && "reason" in p && typeof p.reason === "string");
+      && "id" in p && typeof p.id === "string" && "reason" in p && typeof p.reason === "string"
+      && optional(p, "harnesses", strs));
 }
 
 function renderContext() {
@@ -1183,7 +1213,7 @@ function renderContext() {
     if (!p) continue;
     const mine = s.touched.has(id);
     const chip = el("span", `fdcx${s.fresh.has(id) ? " in" : ""}${mine ? " mine" : ""}`);
-    chip.title = `${p.useWhen ?? "Zweck im Plan nicht angegeben."}\n${p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"}${mine ? " · von dir dazugenommen" : ""}`;
+    chip.title = `${p.useWhen ?? "Zweck im Plan nicht angegeben."}\n${originSay(p)} · ${fassungSay(id)}${mine ? " · von dir dazugenommen" : ""}`;
     chip.append(el("span", "fdcxid mono", id));
     const rm = btn("fdcxrm");
     rm.append(icon("x"));
@@ -1210,6 +1240,7 @@ function renderContext() {
   line.append(add);
   if (!plan.selected.length && !s.packs.size) line.append(el("span", "fdnote", "Dieses Repo erklärt keine Packs, die hier passen."));
   body.append(line);
+  for (const d of s.dropped) body.append(el("div", "fdnote warn", `${d.id} fällt mit diesem Plan weg: ${d.why}.`));
   if (s.listOpen) line.classList.add("all"); else fitLine(line);
   if (s.pop === "add") body.append(addPop(plan));
 
@@ -1265,11 +1296,54 @@ function fitLine(line: HTMLElement) {
   more.setAttribute("aria-label", `${folded} weitere Packs zeigen`);
 }
 
-// THE LIST — every pack of this start as one row with its switch, its purpose and where it comes
-// from; on demand only, the line above stays the resting state
+// WHAT A PACK IS, in the words the list and the receipt share. Each sentence says only what its field
+// carries: a fassung only where the id declares one (src/protocol.ts#packIdFassung), the ALLOWED agents
+// apart from the model — no pack names one, so none is matched to the agent's model — and the delivery
+// moment, which for every founding pack is the start (a verification trigger is a hint delivered at the
+// start, not a later hook).
+const isPrivate = (a: PackAnchors | undefined): a is { privateSourceId: string } => !!a && !Array.isArray(a);
+const fassungSay = (id: string): string => {
+  const n = packIdFassung(id);
+  return n === null ? "keine Fassung deklariert" : `Fassung v${n} · laut Paket-ID`;
+};
+const originSay = (p: FoundingPlanPack): string =>
+  isPrivate(p.anchors) ? "privat · aus der Fleet" : p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo";
+const whenSay = (triggers: readonly string[] | undefined): string =>
+  !triggers ? "Zeitpunkt nicht gemeldet" : triggers.includes("verification") ? "beim Start · als Verify-Hinweis" : "beim Start";
+const short = (sha: string | undefined | null, n: number): string => sha ? sha.slice(0, n) : "nicht gemeldet";
+
+// one pack's facts line, and its sources on demand: anchors, the source hash the plan observed and the
+// HEAD it observed it at — a private pack shows its opaque id and its declared hash, never a path or a
+// byte of it, and says its verdict is taken at delivery
+function packFacts(p: FoundingPlanPack, plan: Plan, open: boolean): HTMLElement[] {
+  const facts = [fassungSay(p.id),
+    p.harnesses ? `Agenten: ${p.harnesses.join(", ")}` : "Agenten: nicht gemeldet",
+    "Modell: nicht gebunden", whenSay(p.triggers)];
+  const out = [el("div", "fdluse", facts.join(" · "))];
+  if (!open) return out;
+  const src = el("div", "fdluse");
+  if (p.triggers) src.append(el("div", "", `Trigger: ${p.triggers.join(", ")}`));
+  if (isPrivate(p.anchors)) {
+    src.append(el("div", "mono", `${p.anchors.privateSourceId} · privat, Inhalt wird nie gezeigt`),
+      el("div", "mono", `Hash ${short(p.sourceHash, 12)} deklariert · Urteil erst bei der Zustellung`));
+  } else {
+    if (Array.isArray(p.anchors)) for (const a of p.anchors) src.append(el("div", "mono", `${a.path} | ${a.anchor}`));
+    if (!p.anchors) src.append(el("div", "", "Quellen: nicht gemeldet"));
+    src.append(el("div", "mono", `Quellstand ${short(p.sourceHash, 12)} · an HEAD ${short(plan.head, 8)}`));
+  }
+  out.push(src);
+  return out;
+}
+
+// THE LIST — every pack of this start as one row with its switch, its purpose, where it comes from and
+// what it is; its sources unfold per row. On demand only, the line above stays the resting state
 function packList(plan: Plan): HTMLElement {
   const s = S!;
   const box = el("div", "fdlist");
+  // the PREVIEW's state, said once above the rows: the commit the plan read and when
+  const at = plan.plannedAt ? new Date(plan.plannedAt).toLocaleTimeString("de-DE") : null;
+  box.append(el("div", "fdlrow fdluse", `Plan-Stand: HEAD ${short(plan.head, 8)}${plan.branch ? ` · ${plan.branch}` : ""}`
+    + `${plan.harness ? ` · für ${plan.harness}` : ""} · ${at ? `gelesen ${at}` : "Zeitpunkt nicht gemeldet"}`));
   for (const p of plan.selected) {
     const on = s.packs.has(p.id);
     const row = el("div", `fdlrow${on ? " on" : ""}`);
@@ -1285,10 +1359,21 @@ function packList(plan: Plan): HTMLElement {
     };
     const t = el("div", "fdlt");
     const head = el("div", "fdlh");
-    head.append(el("span", "mono", p.id), el("span", "fdlsrc", p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"));
+    head.append(el("span", "mono", p.id), el("span", "fdlsrc", originSay(p)));
     if (s.touched.has(p.id)) head.append(el("span", "fdlmine", on ? "von dir dazu" : "von dir weggelassen"));
     else if (presetHas(presets[s.role], p.id)) head.append(el("span", "fdlrole", ROLES.find((r) => r.id === s.role)!.name));
-    t.append(head, el("div", "fdluse", p.useWhen ?? "Zweck im Plan nicht angegeben."));
+    const shown = s.srcOpen.has(p.id);
+    // the sources fold like the list itself; the button keeps the focus across the repaint
+    const more = btn("fdghost", shown ? "Quellen schließen" : "Quellen");
+    more.setAttribute("aria-expanded", String(shown));
+    more.setAttribute("aria-label", `Quellen von ${p.id} ${shown ? "schließen" : "zeigen"}`);
+    more.dataset.src = p.id;
+    more.onclick = () => {
+      if (shown) s.srcOpen.delete(p.id); else s.srcOpen.add(p.id);
+      renderContext();
+      S?.fContext.querySelector<HTMLElement>(`[data-src="${CSS.escape(p.id)}"]`)?.focus();
+    };
+    t.append(head, el("div", "fdluse", p.useWhen ?? "Zweck im Plan nicht angegeben."), ...packFacts(p, plan, shown), more);
     row.append(sw, t);
     box.append(row);
   }
@@ -1298,7 +1383,7 @@ function packList(plan: Plan): HTMLElement {
     const t = el("div", "fdlt");
     const head = el("div", "fdlh");
     head.append(el("span", "mono", o.id));
-    t.append(head, el("div", "fdluse", `Nicht dabei: ${OMIT_SAY[o.reason] ?? o.reason}`));
+    t.append(head, el("div", "fdluse", `Nicht dabei: ${OMIT_SAY[o.reason] ?? o.reason}${o.harnesses?.length ? ` (nur ${o.harnesses.join(", ")})` : ""}`));
     row.append(el("span", "fdsw off"), t);
     box.append(row);
   }
@@ -1526,6 +1611,11 @@ async function start() {
     const before = new Map(fleet.map((row) => [row.id, row.openedAt]));
     const requestedRole = s.role, requestedMode = s.mode;
     const requestedPlace = s.mode === "old" ? s.orphan! : s.place;
+    // THE PREVIEW the owner saw for the chosen packs: the receipt is held against it after the start
+    const plan = s.plan && s.planFor === planKey() ? s.plan : null;
+    const preview: StartPreview | null = plan && body.packs?.length
+      ? { head: plan.head ?? null, plannedAt: plan.plannedAt ?? null, packs: plan.selected.filter((p) => body.packs!.includes(p.id)) }
+      : null;
     let result: StartResult;
     let bound: number | null = null;
     if (s.role === "main") {
@@ -1565,7 +1655,7 @@ async function start() {
     } else {
       result = await startSession(s.place, roleLabel(s.role), onError, { slot: s.entry.slot, body });
     }
-    if (result.ok && S === s) await captureProof(s, s.role === "main" ? mainSpawn() : body, before.get(result.slot), result, requestedRole, requestedMode, requestedPlace, bound);
+    if (result.ok && S === s) await captureProof(s, s.role === "main" ? mainSpawn() : body, before.get(result.slot), result, requestedRole, requestedMode, requestedPlace, bound, preview);
   } finally {
     // a start answers seconds later (packs: boot grace plus readiness); by then the owner may have
     // closed this window and opened the next — only the window that asked shows the receipt
@@ -1607,20 +1697,22 @@ interface ReceiptPack {
   anchors: { path: string; anchor: string }[] | { privateSourceId: string };
   sourceHash?: string; private?: { verdict: string; version: number | null };
 }
+interface StartPreview { head: string | null; plannedAt: number | null; packs: FoundingPlanPack[] }
 interface StartProof {
   result: Extract<StartResult, { ok: true }>;
   body: SpawnBody; role: Role; mode: Mode; place: string;
   bound: number | null;                 // a MAIN: the slot the Program's binding names after the door
+  preview: StartPreview | null;         // the plan's state of the chosen packs when the start was pressed
   occupant: SlotInfo | null;
-  receipt: { slot: number; at: number; selected: ReceiptPack[] } | null;
+  receipt: { slot: number; at: number; head?: string; selected: ReceiptPack[]; omitted?: { id: string; why?: string; reason?: string | null }[] } | null;
   receiptCount: number; receiptError: string | null; stale: boolean;
 }
 
-async function captureProof(s: State, body: SpawnBody, before: number | undefined, result: Extract<StartResult, { ok: true }>, role: Role, mode: Mode, place: string, bound: number | null) {
+async function captureProof(s: State, body: SpawnBody, before: number | undefined, result: Extract<StartResult, { ok: true }>, role: Role, mode: Mode, place: string, bound: number | null, preview: StartPreview | null) {
   const row = fleet.find((r) => r.id === result.slot);
   const occupant = row?.cwd && Number.isFinite(row.openedAt) && row.openedAt! > 0 && row.openedAt !== before
     ? structuredClone(row) : null;
-  const proof: StartProof = { result, body, role, mode, place, bound, occupant,
+  const proof: StartProof = { result, body, role, mode, place, bound, preview, occupant,
     receipt: null, receiptCount: 0, receiptError: null, stale: false };
   s.proof = proof;
   closePop(false);
@@ -1661,6 +1753,24 @@ async function captureProof(s: State, body: SpawnBody, before: number | undefine
       }
     } catch (error) { proof.receiptError = error instanceof Error ? error.message : String(error); }
     if (S === s) renderProof();
+  }
+}
+
+// the receipt's HEAD against the preview's, said as a fact of each side
+function headSay(stand: PackStand | null, head: string | undefined): string {
+  const h = `HEAD ${short(head, 8)}`;
+  if (!stand || stand.head === "unknown")
+    return `${h} · Vergleich mit der Vorschau unbekannt${stand?.previewHead ? ` (Vorschau HEAD ${short(stand.previewHead, 8)})` : ""}`;
+  return stand.head === "same" ? `${h} · wie in der Vorschau` : `${h} · seit der Vorschau bewegt (dort HEAD ${short(stand.previewHead, 8)})`;
+}
+function standSay(stand: PackStand["packs"][number]["stand"], before: string | null, now: string | null): string {
+  switch (stand) {
+    case "same": return "Stand wie in der Vorschau";
+    case "changed": return `Stand seit der Vorschau geändert: ${short(before, 12)} → ${short(now, 12)} — zugestellt ist der neue`;
+    case "drift": return "Urteil drift: die Datei bei der Zustellung ist nicht die deklarierte Fassung";
+    case "not-delivered": return "nicht zugestellt";
+    case "extra": return "nicht angefragt";
+    default: return `Stand unbekannt: ${before === null && now === null ? "weder Vorschau noch Beleg nennen" : before === null ? "die Vorschau nennt" : "der Beleg nennt"} keinen Hash`;
   }
 }
 
@@ -1729,22 +1839,38 @@ function renderProof() {
   if (p.result.packsDelivered === false) packCell.classList.add("warn");
   else if (p.receipt) {
     packCell.replaceChildren();
+    // THE RECEIPT AGAINST THE PREVIEW (src/protocol.ts#standSincePreview): the receipt's hash and HEAD
+    // are what the delivery stamped; where they moved since the plan, the delivered one is shown as
+    // the fact and the preview's beside it. Where either side names nothing, the stand is unknown.
+    const stand = p.body.packs ? standSincePreview(p.preview, p.receipt, p.body.packs) : null;
+    const standOf = (id: string) => stand?.packs.find((r) => r.id === id);
+    packCell.append(el("div", "fdproofnote", `zugestellt ${new Date(p.receipt.at).toLocaleTimeString("de-DE")} · ${headSay(stand, p.receipt.head)}`));
     for (const pack of p.receipt.selected) {
       const item = el("div", "fdreceiptpack");
-      item.append(el("div", "mono", pack.id));
+      item.append(el("div", "mono", pack.id), el("div", "fdproofnote", fassungSay(pack.id)));
       if (pack.useWhen) item.append(el("div", "fdproofnote", pack.useWhen));
       const anchors = Array.isArray(pack.anchors) ? pack.anchors.map((a) => `${a.path} | ${a.anchor}`)
         : pack.anchors?.privateSourceId ? [pack.anchors.privateSourceId] : [];
       for (const anchor of anchors) item.append(el("div", "mono", anchor));
       item.append(el("div", "mono", pack.sourceHash ? `Hash: ${pack.sourceHash.slice(0, 12)}` : "Hash: nicht gemeldet"));
       if (!anchors.length || !pack.sourceHash) item.classList.add("warn");
-      if (pack.private) item.append(el("div", "fdproofnote", `Urteil: ${pack.private.verdict} · Fassung: ${pack.private.version ?? "nicht gemeldet"}`));
+      if (pack.private) item.append(el("div", "fdproofnote", `Urteil: ${pack.private.verdict} · Konzept-Fassung: ${pack.private.version ?? "nicht gemeldet"}`));
+      const r = standOf(pack.id);
+      if (r) {
+        const line = el("div", `fdproofnote${r.stand === "same" ? "" : " warn"}`, standSay(r.stand, r.preview, r.delivered));
+        item.append(line);
+        if (r.stand !== "same") item.classList.add("warn");
+      }
       packCell.append(item);
     }
-    const missing = p.body.packs?.filter((id) => !p.receipt!.selected.some((pack) => pack.id === id));
-    if (missing?.length) { packCell.append(el("div", "warn", `Beleg fehlt: ${missing.join(", ")}`)); packCell.classList.add("warn"); }
-    const extra = p.body.packs ? p.receipt.selected.filter((pack) => !p.body.packs!.includes(pack.id)) : [];
-    if (extra.length) { packCell.append(el("div", "warn", `Abweichung: zusätzliche Packs ${extra.map((pack) => pack.id).join(", ")}`)); packCell.classList.add("warn"); }
+    // requested and not in the receipt: the receipt's own omission reason where it has one
+    for (const r of stand?.packs.filter((x) => x.stand === "not-delivered") ?? []) {
+      packCell.append(el("div", "warn", `nicht zugestellt: ${r.id}${r.why ? ` — ${r.why}` : " — der Beleg nennt keinen Grund"}`));
+      packCell.classList.add("warn");
+    }
+    const extra = stand?.packs.filter((x) => x.stand === "extra") ?? [];
+    if (extra.length) { packCell.append(el("div", "warn", `Abweichung: zusätzliche Packs ${extra.map((x) => x.id).join(", ")}`)); packCell.classList.add("warn"); }
+    if (p.body.packs?.length) packCell.append(el("div", "fdproofnote", "Zugestellt heißt: der Zeiger stand im Brief. Ob er gelesen wurde, sagt kein Beleg."));
     if (p.receiptCount > 1) packCell.append(el("div", "fdproofnote", `${p.receiptCount} Startbelege — der jüngste gilt.`));
   }
   if (p.receiptError) packCell.append(el("div", "fdproofnote", p.receiptError));

@@ -167,6 +167,201 @@ function folded(l: Ledgers): KonzeptAnmerkung[] {
   });
 }
 
+// THE OWNER'S CORRECTIONS (Program 31aa88ea, Karte 1 von 3; Entwurf
+// docs/messungen/2026-10-02-owner-korrekturen-regal-entwurf.md §Empfehlung). ONE konzept whose fassungen
+// only the owner publishes — `ebene: owner` names where an entry comes from, this id names who may make it
+// current. Every other konzept keeps the write rules above unchanged.
+//
+// THE FORMAT LIVES IN THE FASSUNG, not in the body: v<N>.md carries exactly one fenced block
+// ```owner-korrekturen with a JSON heft {eintraege: [{id, aussage, quelle, geltung, ersetzt}],
+// zurueckgezogen?: [{id, grund}]}. The route already reads those bytes for the hash, so the checked
+// entries are the hashed ones — a body could only ever restate them. Each fassung is the WHOLE heft,
+// history included: an entry once published stays byte-equal in every later fassung (a change gets a new
+// id), and replacing or withdrawing it is a new entry's `ersetzt` or a `zurueckgezogen` row of the same
+// publication — ONE append, nothing rewritten (Entwurf §Ablösung in einem Veröffentlichungsakt).
+export const OWNER_KORREKTUREN = "k-owner-korrekturen";
+export const EINTRAG_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+// who an entry is for, axis by axis: "*" is ALL on purpose, a list names its members, and an empty list
+// is refused — it would apply nowhere, and "nothing said" must never read as "everywhere"
+export const GELTUNG_ACHSEN = ["projekte", "rollen", "harnesses", "modi"] as const;
+export type KorrekturGeltung = Record<typeof GELTUNG_ACHSEN[number], "*" | string[]>;
+export interface KorrekturEintrag { id: string; aussage: string; quelle: string | TraceDetailRef;
+  geltung: KorrekturGeltung; ersetzt: string[] }
+export interface KorrekturHeft { eintraege: KorrekturEintrag[]; zurueckgezogen: { id: string; grund: string }[] }
+export type GefalteterEintrag = KorrekturEintrag & ({ status: "gilt" } | { status: "veraltet"; abgeloestDurch: string }
+  | { status: "verworfen"; grund: string });
+const HEFT_MAX = { eintraege: 500, ersetzt: 50, achse: 32, wert: 64 } as const;
+const HEFT_FENCE = /^```owner-korrekturen[ \t]*\n([\s\S]*?)^```[ \t]*$/gm;
+
+function geltungOf(v: unknown, at: string): KorrekturGeltung | string {
+  if (!isObj(v) || Object.keys(v).length !== GELTUNG_ACHSEN.length || GELTUNG_ACHSEN.some((k) => !(k in v)))
+    return `${at}.geltung must be {${GELTUNG_ACHSEN.join(", ")}}, each "*" or a list`;
+  const out = {} as KorrekturGeltung;
+  for (const k of GELTUNG_ACHSEN) {
+    const a = v[k];
+    if (a === "*") { out[k] = "*"; continue; }
+    if (!Array.isArray(a) || !a.length || a.length > HEFT_MAX.achse
+      || a.some((x) => typeof x !== "string" || !x.trim() || x.length > HEFT_MAX.wert || x.trim() === "*"))
+      return `${at}.geltung.${k} must be "*" or a list of 1–${HEFT_MAX.achse} names (1–${HEFT_MAX.wert} chars) — an empty list applies nowhere`;
+    out[k] = [...new Set((a as string[]).map((x) => x.trim()))].sort();
+  }
+  return out;
+}
+
+// the heft of one fassung's bytes, or the reason it is none — closed keys at every level
+export function parseKorrekturHeft(text: string): KorrekturHeft | string {
+  const blocks = [...text.matchAll(HEFT_FENCE)];
+  if (blocks.length !== 1) return `the fassung must carry exactly one \`\`\`owner-korrekturen block (found ${blocks.length})`;
+  let raw: unknown;
+  try { raw = JSON.parse(blocks[0]![1]!); } catch { return "the ```owner-korrekturen block is not JSON"; }
+  if (!isObj(raw) || Object.keys(raw).some((k) => k !== "eintraege" && k !== "zurueckgezogen"))
+    return "the heft must be {eintraege, zurueckgezogen?}";
+  if (!Array.isArray(raw.eintraege) || raw.eintraege.length > HEFT_MAX.eintraege)
+    return `eintraege must be a list of at most ${HEFT_MAX.eintraege} entries`;
+  const eintraege: KorrekturEintrag[] = [];
+  for (const [n, e] of raw.eintraege.entries()) {
+    const at = `eintraege[${n}]`;
+    if (!isObj(e) || Object.keys(e).sort().join() !== "aussage,ersetzt,geltung,id,quelle")
+      return `${at} must be exactly {id, aussage, quelle, geltung, ersetzt}`;
+    if (typeof e.id !== "string" || !EINTRAG_ID_RE.test(e.id)) return `${at}.id must match ${EINTRAG_ID_RE.source}`;
+    const aussage = str(e, "aussage", KONZEPT_MAX.text);
+    if (isAnswer(aussage)) return `${at}.${String(aussage.body.error)}`;
+    let quelle: string | TraceDetailRef;
+    if (isObj(e.quelle)) {
+      const d = detailRefOf({ detailRef: e.quelle });
+      if (isAnswer(d)) return `${at}.quelle: ${String(d.body.error)}`;
+      quelle = d!;
+    } else {
+      const q = str(e, "quelle", KONZEPT_MAX.locator);
+      if (isAnswer(q)) return `${at}.${String(q.body.error)} or a detailRef`;
+      quelle = q!;
+    }
+    const geltung = geltungOf(e.geltung, at);
+    if (typeof geltung === "string") return geltung;
+    if (!Array.isArray(e.ersetzt) || e.ersetzt.length > HEFT_MAX.ersetzt
+      || e.ersetzt.some((x) => typeof x !== "string" || !EINTRAG_ID_RE.test(x)))
+      return `${at}.ersetzt must be a list of at most ${HEFT_MAX.ersetzt} entry ids (empty when it replaces none)`;
+    eintraege.push({ id: e.id, aussage: aussage!, quelle, geltung, ersetzt: [...new Set(e.ersetzt as string[])] });
+  }
+  const zr = raw.zurueckgezogen ?? [];
+  if (!Array.isArray(zr) || zr.length > HEFT_MAX.eintraege) return "zurueckgezogen must be a list of {id, grund}";
+  const zurueckgezogen: KorrekturHeft["zurueckgezogen"] = [];
+  for (const [n, z] of zr.entries()) {
+    if (!isObj(z) || Object.keys(z).sort().join() !== "grund,id" || typeof z.id !== "string" || !EINTRAG_ID_RE.test(z.id))
+      return `zurueckgezogen[${n}] must be {id, grund} with an entry id`;
+    const grund = str(z, "grund", KONZEPT_MAX.grund);
+    if (isAnswer(grund)) return `zurueckgezogen[${n}].${String(grund.body.error)}`;
+    zurueckgezogen.push({ id: z.id, grund: grund! });
+  }
+  return { eintraege, zurueckgezogen };
+}
+
+// the graph rules of ONE publication, against the fassung it follows (null for the first). Each refusal
+// is named by its own sentence, in this order — a test reads the first one that applies.
+export function checkKorrekturHeft(heft: KorrekturHeft, prior: KorrekturHeft | null): string | null {
+  const byId = new Map<string, KorrekturEintrag>();
+  for (const e of heft.eintraege) {
+    if (byId.has(e.id)) return `entry id ${e.id} appears twice — an id names one entry for good`;
+    byId.set(e.id, e);
+  }
+  const withdrawn = new Map<string, string>();
+  for (const z of heft.zurueckgezogen) {
+    if (!byId.has(z.id)) return `zurueckgezogen names unknown entry ${z.id}`;
+    if (withdrawn.has(z.id)) return `entry ${z.id} is withdrawn twice`;
+    withdrawn.set(z.id, z.grund);
+  }
+  const successor = new Map<string, string>();
+  for (const e of heft.eintraege)
+    for (const old of e.ersetzt) {
+      if (old === e.id) return `entry ${e.id} ersetzt itself`;
+      const target = byId.get(old);
+      if (!target) return `entry ${e.id} ersetzt unknown entry ${old} — the fassung carries the whole heft, the replaced entry included`;
+      if (successor.has(old)) return `entry ${old} has two successors: ${successor.get(old)} and ${e.id}`;
+      if (withdrawn.has(old)) return `entry ${old} is withdrawn and replaced by ${e.id} at once — one end per entry`;
+      if (JSON.stringify(target.geltung) !== JSON.stringify(e.geltung))
+        return `entry ${e.id} ersetzt ${old} with a different geltung — in this cut only an identical geltung replaces an entry; split it into entries first`;
+      successor.set(old, e.id);
+    }
+  for (const start of successor.keys()) {
+    const path = [start];
+    for (let at = successor.get(start); at !== undefined; at = successor.get(at)) {
+      path.push(at);
+      if (at === start) return `ersetzt forms a cycle: ${path.join(" → ")}`;
+      if (path.length > byId.size + 1) break;
+    }
+  }
+  if (prior) {
+    for (const p of prior.eintraege)
+      if (JSON.stringify(byId.get(p.id)) !== JSON.stringify(p))
+        return `entry ${p.id} of the previous fassung is missing or changed — a published entry stays as it was, a change is a new id that ersetzt it`;
+    for (const z of prior.zurueckgezogen)
+      if (withdrawn.get(z.id) !== z.grund) return `the withdrawal of ${z.id} in the previous fassung is missing or changed`;
+  }
+  return null;
+}
+
+// the fold the reader serves: gilt, veraltet with abgeloestDurch, or verworfen with its grund — from ONE
+// fassung's heft, nothing written twice
+export function foldKorrekturHeft(heft: KorrekturHeft): GefalteterEintrag[] {
+  const successor = new Map<string, string>();
+  for (const e of heft.eintraege) for (const old of e.ersetzt) successor.set(old, e.id);
+  const withdrawn = new Map(heft.zurueckgezogen.map((z) => [z.id, z.grund]));
+  return heft.eintraege.map((e) => successor.has(e.id) ? { ...e, status: "veraltet" as const, abgeloestDurch: successor.get(e.id)! }
+    : withdrawn.has(e.id) ? { ...e, status: "verworfen" as const, grund: withdrawn.get(e.id)! }
+    : { ...e, status: "gilt" as const });
+}
+
+// THE READ VIEW (Karte 2 von 3, Entwurf §Dieselbe Lesetür für Claude, Codex und pi-zai): the entries of the
+// LAST fassung that apply to ONE reader, whose three coordinates the server derives from the session's
+// current binding — never from the request. `projekt` is the opaque projectKey of the bound repository,
+// `rolle` the server's positionRole (lane · program-main · orchestrator), `harness` the slot's adapter id.
+// A list axis holds when it names the reader's value, "*" holds for everyone; `modi` is NOT filtered — no
+// binding names a working mode — and each served entry carries its geltung, so the reader sees that axis.
+export interface KorrekturLeser { projekt: string; rolle: string; harness: string }
+const gilt = (achse: "*" | string[], wert: string): boolean => achse === "*" || achse.includes(wert);
+export const geltungTrifft = (g: KorrekturGeltung, l: KorrekturLeser): boolean =>
+  gilt(g.projekte, l.projekt) && gilt(g.rollen, l.rolle) && gilt(g.harnesses, l.harness);
+
+// Every way this view can fail is a NAMED refusal with no entry list in it: an unreadable heft must never
+// look like an empty one (Entwurf: „nie als leeres Korrektur-Regal"). Only a 200 carries geltendeEintraege,
+// and a 200 with [] means the current owner fassung has no gilt entry for THIS binding — nothing else.
+// The private `quelle` of an entry is never served; neither is any entry outside the reader's geltung.
+export async function konzeptLeseansicht(root: string | null, konzept: string, leser: KorrekturLeser): Promise<KonzeptAnswer> {
+  if (!KONZEPT_ID_RE.test(konzept)) return refuse(400, `konzept id must match ${KONZEPT_ID_RE.source}`);
+  if (konzept !== OWNER_KORREKTUREN)
+    return refuse(404, `the leseansicht reads ${OWNER_KORREKTUREN} only — ${konzept} is read through /versionen and /anmerkungen`);
+  const dir = await rootDir(root);
+  if (isAnswer(dir)) return dir;
+  const kdir = `${dir}/${konzept}`;
+  try { if (!(await stat(kdir)).isDirectory()) throw new Error("not a directory"); }
+  catch { return refuse(404, `${konzept} has no directory under the root — no owner fassung exists yet, which is not an empty heft`); }
+  const l = await readLedgers(kdir, konzept);
+  const n = lastVersion(l);
+  const row = l.versionen.find((v) => v.version === n);
+  if (!row) return refuse(404, `${konzept} has no published fassung yet — that is not an empty heft`);
+  // the reader checks the owner actor itself: the write door's 403 is one guard, a ledger line is another
+  // claim, and a newest row from anyone else is no current owner fassung — never fall back to an older one
+  if (!isObj(row.actor) || row.actor.kind !== "owner")
+    return refuse(409, `${konzept} v${n} was not published by the owner (actor ${isObj(row.actor) ? String(row.actor.kind) : "missing"}) — there is no current owner fassung to read`);
+  let bytes: Buffer;
+  try { bytes = await readFile(`${kdir}/v${n}.md`); }
+  catch { return refuse(409, `${konzept}/v${n}.md is missing — the ledger names a fassung the root does not hold`); }
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  if (sha256 !== row.sha256)
+    return refuse(409, `hash drift: ${konzept}/v${n}.md hashes to ${sha256}, its ledger row names ${String(row.sha256)} — the file changed after the owner published it`);
+  const heft = parseKorrekturHeft(bytes.toString("utf8"));
+  if (typeof heft === "string") return refuse(409, `${konzept}/v${n}.md: ${heft}`);
+  const mine = foldKorrekturHeft(heft).filter((e) => geltungTrifft(e.geltung, leser));
+  const geltendeEintraege = mine.filter((e) => e.status === "gilt")
+    .map(({ id, aussage, geltung, ersetzt }) => ({ id, aussage, geltung, ersetzt }));
+  const status = {
+    gilt: geltendeEintraege.length,
+    veraltet: mine.flatMap((e) => e.status === "veraltet" ? [{ id: e.id, abgeloestDurch: e.abgeloestDurch }] : []),
+    verworfen: mine.flatMap((e) => e.status === "verworfen" ? [{ id: e.id, grund: e.grund }] : []),
+  };
+  return { status: 200, body: { konzept, version: n, sha256, geltendeEintraege, status, bindung: leser, nichtGefiltert: ["modi"] } };
+}
+
 async function append(path: string, row: unknown): Promise<void> {
   await appendFile(path, `${JSON.stringify(row)}\n`, { mode: 0o600 });
 }
@@ -203,12 +398,13 @@ export async function konzeptIndex(root: string | null): Promise<KonzeptAnswer> 
 }
 
 export type KonzeptOp =
-  | { op: "read-versionen" } | { op: "read-anmerkungen" }
+  | { op: "read-versionen" } | { op: "read-anmerkungen" } | { op: "read-leseansicht" }
   | { op: "write-version" } | { op: "write-anmerkung" } | { op: "verwerfen"; anmerkung: string };
 
-// `/versionen`, `/anmerkungen` or `/anmerkungen/<id>/verwerfen` after the konzept id, with its method —
-// null for anything else, so the caller answers its own 404
+// `/versionen`, `/anmerkungen`, `/anmerkungen/<id>/verwerfen` or (GET only) `/leseansicht` after the
+// konzept id, with its method — null for anything else, so the caller answers its own 404
 export function konzeptOpOf(method: string, rest: string): KonzeptOp | null {
+  if (rest === "leseansicht") return method === "GET" ? { op: "read-leseansicht" } : null;
   if (rest === "versionen") return method === "GET" ? { op: "read-versionen" } : method === "POST" ? { op: "write-version" } : null;
   if (rest === "anmerkungen") return method === "GET" ? { op: "read-anmerkungen" } : method === "POST" ? { op: "write-anmerkung" } : null;
   const m = /^anmerkungen\/([^/]+)\/verwerfen$/.exec(rest);
@@ -226,6 +422,11 @@ export async function konzeptRequest(input: {
   const now = input.now ?? Date.now;
   if (!KONZEPT_ID_RE.test(konzept)) return refuse(400, `konzept id must match ${KONZEPT_ID_RE.source}`);
 
+  // the read view filters by a SESSION's binding (konzeptLeseansicht, called by the self door); this
+  // handler holds no binding — the owner door reads the whole heft through /versionen
+  if (op.op === "read-leseansicht")
+    return refuse(409, `the leseansicht filters by a session's binding — the owner reads ${konzept} through /versionen and its fassung files`);
+
   if (op.op === "read-versionen" || op.op === "read-anmerkungen") {
     const root = await rootDir(input.root);
     if (isAnswer(root)) return root;
@@ -239,9 +440,18 @@ export async function konzeptRequest(input: {
   }
 
   if (op.op === "write-version") {
-    const closed = closedBody(body, ["sha256", "anlass", "detailRef", "arbeitetEin", "quellen", "ebene", "geltung"]);
+    // the owner's heft takes a fassung from the owner ALONE — named before the body is read, so a session
+    // learns the door, never the shape of a fassung it may not publish (anmerkungen stay open to it)
+    const owners = konzept === OWNER_KORREKTUREN;
+    if (owners && writer.actor.kind !== "owner")
+      return refuse(403, `${konzept} takes a fassung only from the owner (POST /api/konzepte/${konzept}/versionen) — a ${writer.actor.kind === "session" ? writer.actor.role : writer.actor.kind} proposes through an anmerkung or the clarification chain`);
+    const closed = closedBody(body, ["sha256", "anlass", "detailRef", "arbeitetEin", "quellen", "ebene", "geltung", "erwartet"]);
     if (closed) return closed;
     const b = body!;
+    // optional compare-and-append: the version the writer read as latest (null = none yet). Absent, the
+    // write behaves as before — N is simply last+1.
+    if (b.erwartet !== undefined && b.erwartet !== null && (!Number.isInteger(b.erwartet) || (b.erwartet as number) < 1))
+      return refuse(400, "erwartet must be the version you read as latest (integer ≥ 1), or null for none yet");
     if (typeof b.sha256 !== "string" || !HEX64.test(b.sha256))
       return refuse(400, "sha256 must be the 64 lowercase hex of v<N>.md");
     const anlass = str(b, "anlass", KONZEPT_MAX.anlass);
@@ -250,7 +460,9 @@ export async function konzeptRequest(input: {
     if (isAnswer(geltung)) return geltung;
     if (b.ebene !== undefined && !KONZEPT_EBENEN.includes(b.ebene as KonzeptEbene))
       return refuse(400, `ebene must be one of ${KONZEPT_EBENEN.join("|")} (absent = ${KONZEPT_EBENE_DEFAULT})`);
-    const ebene = (b.ebene as KonzeptEbene | undefined) ?? KONZEPT_EBENE_DEFAULT;
+    if (owners && b.ebene !== undefined && b.ebene !== "owner")
+      return refuse(400, `${konzept} is the owner's heft — its ebene is owner (absent = owner)`);
+    const ebene = (b.ebene as KonzeptEbene | undefined) ?? (owners ? "owner" : KONZEPT_EBENE_DEFAULT);
     const detailRef = detailRefOf(b);
     if (isAnswer(detailRef)) return detailRef;
     const ein = b.arbeitetEin ?? [];
@@ -270,6 +482,9 @@ export async function konzeptRequest(input: {
     return serial(konzept, async () => {
       const l = await readLedgers(dir, konzept);
       const last = lastVersion(l);
+      // checked under the same lock that hands out N, so "nobody published since I read" holds at the append
+      if (b.erwartet !== undefined && (last || null) !== b.erwartet)
+        return refuse(409, `${konzept} is at ${last ? `version ${last}` : "no version yet"}, the body expects ${b.erwartet === null ? "none yet" : `version ${String(b.erwartet)}`} — re-read and decide again`);
       const n = last + 1;
       let bytes: Buffer;
       try { bytes = await readFile(`${dir}/v${n}.md`); }
@@ -277,6 +492,26 @@ export async function konzeptRequest(input: {
       const sha256 = createHash("sha256").update(bytes).digest("hex");
       if (sha256 !== b.sha256)
         return refuse(409, `${konzept}/v${n}.md hashes to ${sha256}, the body names ${b.sha256} — the file changed or the wrong one was named`);
+      let heft: KorrekturHeft | null = null;
+      if (owners) {
+        const parsed = parseKorrekturHeft(bytes.toString("utf8"));
+        if (typeof parsed === "string") return refuse(409, `${konzept}/v${n}.md: ${parsed}`);
+        let prior: KorrekturHeft | null = null;
+        if (last) {
+          // the fassung this one follows, as PUBLISHED: a file changed after its append is no basis
+          const row = l.versionen.find((v) => v.version === last);
+          let priorBytes: Buffer | null = null;
+          try { priorBytes = await readFile(`${dir}/v${last}.md`); } catch { /* named below */ }
+          if (!row || !priorBytes || createHash("sha256").update(priorBytes).digest("hex") !== row.sha256)
+            return refuse(409, `${konzept}/v${last}.md is missing or no longer hashes to its ledger row — the previous fassung is no basis for v${n}`);
+          const p = parseKorrekturHeft(priorBytes.toString("utf8"));
+          if (typeof p === "string") return refuse(409, `${konzept}/v${last}.md: ${p}`);
+          prior = p;
+        }
+        const graph = checkKorrekturHeft(parsed, prior);
+        if (graph) return refuse(409, `${konzept}/v${n}.md: ${graph}`);
+        heft = parsed;
+      }
       const known = new Set(l.anmerkungen.map((a) => a.id));
       const unknown = [...new Set(ein as string[])].filter((id) => !known.has(id));
       if (unknown.length) return refuse(409, `arbeitetEin names anmerkungen ${konzept} does not have: ${unknown.join(", ")}`);
@@ -284,7 +519,7 @@ export async function konzeptRequest(input: {
         actor: writer.actor, kontext: writer.kontext, anlass: anlass!, ...(detailRef ? { detailRef } : {}),
         arbeitetEin: [...new Set(ein as string[])], quellen, ebene, geltung: geltung! };
       await append(`${dir}/versionen.jsonl`, row);
-      return { status: 200, body: { ok: true, version: row } };
+      return { status: 200, body: { ok: true, version: row, ...(heft ? { eintraege: foldKorrekturHeft(heft) } : {}) } };
     });
   }
 

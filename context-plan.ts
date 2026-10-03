@@ -340,6 +340,23 @@ export function resolvePrivatePack(root: string | null, privateSourceId: string,
   return { privateSourceId, verdict: "match", why: null, version: current.version, path };
 }
 
+export function readPrivatePack(root: string | null, privateSourceId: string, declaredHash: string | undefined):
+  { ok: true; privateSourceId: string; version: number; content: string; sha256: string; bytes: number }
+  | { ok: false; refusal: string; error: string } {
+  const resolved = resolvePrivatePack(root, privateSourceId, declaredHash);
+  if (resolved.verdict !== "match" || resolved.path === null || resolved.version === null)
+    return { ok: false, refusal: `private-${resolved.verdict}`, error: resolved.why ?? "private source unavailable" };
+  try {
+    const bytes = readFileSync(resolved.path);
+    const hash = sha256Hex(bytes);
+    if (hash !== declaredHash)
+      return { ok: false, refusal: "private-drift", error: "private source changed after resolution" };
+    return { ok: true, privateSourceId, version: resolved.version, content: bytes.toString("utf8"), sha256: hash, bytes: bytes.length };
+  } catch {
+    return { ok: false, refusal: "private-missing", error: "resolved private source is no longer readable" };
+  }
+}
+
 /**
  * The indented lines one private pack contributes to the anchor block. The id stays on the first line
  * in every verdict, so a receipt row's privateSourceId is always findable in the delivered bytes; the

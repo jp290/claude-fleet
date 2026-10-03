@@ -42,7 +42,7 @@
 
   #mhead { display: none; }
   #mread { display: none; }
-  #mtop, #mgrip { display: none; }
+  #mtop, #mgrip, #msheetwrap { display: none; }
   #shade { display: none; position: fixed; inset: 0; background: #0009; z-index: 29; }
   /* verification tier 2 — the post-land check alarm (grammatik G2.1): IN FLOW, never an overlay.
      On the desktop it is the first card of the board's machine zone — the same place as the
@@ -321,13 +321,19 @@
      whose session falls asleep does not move by a pixel. The flat bar is drawn INSIDE the square
      (a centred 8×2 gradient) instead of shrinking the element to 2px — which is what made it
      "a different size" than the disc beside it. */
-  .slot .act, #mtop .act { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--q-live); }
-  .slot .act.rest, #mtop .act.rest { background: none; box-shadow: inset 0 0 0 1.5px var(--chat-mute); }
-  .slot .act.sleep, #mtop .act.sleep { border-radius: 0;
+  .slot .act, #mtop .act, #msheet .act { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--q-live); }
+  .slot .act.rest, #mtop .act.rest, #msheet .act.rest { background: none; box-shadow: inset 0 0 0 1.5px var(--chat-mute); }
+  .slot .act.sleep, #mtop .act.sleep, #msheet .act.sleep { border-radius: 0;
     background: linear-gradient(var(--chat-faint), var(--chat-faint)) center / 8px 2px no-repeat; }
-  .slot .act.bad, #mtop .act.bad { border-radius: 1px; background: var(--danger);
+  .slot .act.bad, #mtop .act.bad, #msheet .act.bad { border-radius: 1px; background: var(--danger);
     clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%,
       50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
+  /* the fifth reading, WAITS ON SOMEONE (client.ts#slotState): an hourglass in the same box, still,
+     in ink when it waits on its MAIN — and in --q-wait only when it waits on the owner, the one
+     thing that colour means (docs/design/grammatik.md G0.2) */
+  .slot .act.wait, #mtop .act.wait, #msheet .act.wait { border-radius: 0; background: var(--chat-mute);
+    clip-path: polygon(0 0, 100% 0, 62% 50%, 100% 100%, 0 100%, 38% 50%); }
+  .slot .act.wait.owner, #mtop .act.wait.owner, #msheet .act.wait.owner { background: var(--q-wait); }
   /* Actions replace the row's right edge on a solid matching surface, never overpaint facts. */
   /* ...and it HIDES the reading zone (ctx + state) instead of painting over a guessed width of it.
      It used to be a solid strip of min-width 62px ("ctx 78%" + gap + the state box) — which on a
@@ -533,6 +539,19 @@
   .msend.done { color: var(--chat-faint); }
   .msend.done .msenddot { background: var(--q-live); }
   .msg.user.pending .mbody { opacity: 0.7; }
+  /* a bundle part Fleet wrote, not you (Pane#addFleetLine): one quiet line in the faint ink, its
+     first line only — a click opens the rest, the tooltip names the mark (G0.1, G0.3, G2.2) */
+  .msys { margin: 0 0 8px; padding: 0 2px; font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
+    color: var(--chat-faint); }
+  .msys > summary { display: flex; align-items: baseline; gap: 8px; min-width: 0; cursor: pointer;
+    list-style: none; }
+  .msys > summary::-webkit-details-marker { display: none; }
+  .msys > summary:hover, .msys[open] > summary { color: var(--chat-mute); }
+  .msyswho { flex: none; font-family: var(--chat-mono); }
+  .msystext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msys[open] .msystext { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msysbody { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--chat-mute); }
+  .msys + .msg.assistant, .msys + .toolgroup, .msys + .notifgroup { margin-top: 18px; }
   @media (pointer: coarse) { .mmeta { opacity: 1; } }
   .copybtn, .cbbtn { font: inherit; font-size: var(--chat-ui-fs); color: var(--chat-mute); background: transparent;
     border: 1px solid transparent; border-radius: 6px; padding: 1px 8px; cursor: pointer; }
@@ -2767,6 +2786,11 @@
   .rgoptn.on { color: var(--chat-ink); }
   .rgoptd { display: block; margin-top: 1px; color: var(--chat-mute); overflow-wrap: anywhere; }
   .rgoptd.rgmono { color: var(--chat-faint); font-size: 11px; }
+  /* a project is two lines at every width: its name, and its path cut in the middle (src/rights.ts#pathLine) */
+  .rgoptn1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rgpath { display: flex; min-width: 0; overflow: hidden; overflow-wrap: normal; white-space: nowrap; }
+  .rgpaths { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .rgpathe { flex: none; max-width: calc(100% - 5ch); overflow: hidden; text-overflow: ellipsis; white-space: pre; }
   .rgopt.add .rgoptn::after { content: " · neu"; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
   .rgopt.drop .rgoptn { text-decoration: line-through; color: var(--chat-mute); }
   .rgdelta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font: 500 var(--chat-code-fs)/1.5 var(--chat-mono); }
@@ -3344,9 +3368,9 @@
        id more where a keyboard rule above already names two.
        TOP: #mtop floats over the pane. Closed it is a pill — state shape + name, 32 px seen, 40 px
        hit (G0.7) — and the conversation starts 18 px under it, the terminal 6 px. Open it is two
-       40-px rows that COVER the top of the pane (nothing moves): ☰'s drawer, name with
-       model · effort, ℹ; under the name the view, History, Schedule and ⋯ (= #mobmore's options:
-       the corner group's own buttons under the pill, model/effort and Live in the bottom island).
+       40-px rows that COVER the top of the pane (nothing moves): the slot button (sheet Sessions),
+       name with model · effort, ℹ; under the name the view, History, Schedule and ⋯ (sheet
+       Werkzeuge). The sheets: #msheet, full width at the foot of the visible screen (G4.1 mobil).
        BOTTOM: #bar itself is the island, in flow (so the terminal ends above it by construction):
        + field send in one row, the grip over it folds #chips and #keys in. Live line, a dropped
        socket (.panedown) and the alarm stay in flow as before; #mhead only keeps the alarm. */
@@ -3389,7 +3413,7 @@
       #mslot { grid-column: 1; grid-row: 1; position: relative; }
       #minfo { grid-column: 3; grid-row: 1; }
       #minfo .ico { width: 18px; height: 18px; }
-      #mslot .maddr { min-width: 26px; padding: 1px 5px; border-radius: var(--r1); background: var(--chat-surface);
+      #mslot .maddr, #msheet .maddr { flex: none; min-width: 26px; padding: 1px 5px; border-radius: var(--r1); background: var(--chat-surface);
         box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); font: 400 var(--chat-code-fs) / 1.45 var(--chat-mono);
         font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
       #mslot .act { position: absolute; right: 3px; top: 5px; box-shadow: 0 0 0 2px var(--chat-raised); }
@@ -3411,22 +3435,15 @@
       #mtools #mmore .ico { width: 18px; height: 18px; }
       #mtools [hidden], #minfo[hidden] { display: none; }
 
-      /* the pane's corner group: its view toggle and ℹ live in the island; the rest waits behind ⋯ —
-         only the end mark stays, resting over the bottom island while the conversation is released */
+      /* the pane's corner group: its view toggle and ℹ live in the island; the rest is a row of the
+         sheet behind ⋯ — only the end mark stays, resting over the bottom island while the
+         conversation is released */
       #panes .pane .panetools { top: auto; bottom: 10px; right: 10px; left: auto; flex-direction: row; }
       /* !important: ↻ ℹ 💬 ⇔ carry their visibility inline (Pane#syncCornerButtons) */
       .panetools .ptboth > *, .panetools .ptview > * { display: none !important; }
       .pane.chat .panetools .ptview > .promptnav.end[aria-pressed="false"] { display: flex !important; height: 40px; min-width: 40px;
         border-radius: 20px; color: var(--chat-ink); border-color: var(--chat-mute);
         box-shadow: 0 6px 18px color-mix(in srgb, var(--chat-void) 70%, transparent); }
-      body.keyboard-options #panes .pane .panetools { top: calc(44px + env(safe-area-inset-top)); bottom: auto; right: 6px;
-        gap: 2px; padding: 4px; border-radius: var(--r3); background: var(--chat-raised);
-        box-shadow: inset 0 0 0 1px var(--chat-edge), 0 10px 30px color-mix(in srgb, var(--chat-void) 70%, transparent); }
-      body.keyboard-options .panetools .ptrow { display: contents; }
-      body.keyboard-options .pane:not(.past) .panetools .panegear, body.keyboard-options .panetools .panehover,
-      body.keyboard-options .pane.chat .panetools .promptnav, body.keyboard-options .pane.chat .panetools .chatsizebtn,
-      body.keyboard-options .pane:not(.chat) .panetools .panereload[style*="flex"] { display: flex !important; }
-      body.keyboard-options .panetools button { border-color: transparent; background: none; }
 
       /* the bottom island: #bar, in flow, 6 px from the edges; 18 px above it hold the grip clear of
          the terminal's last row (the session's own input line) */
@@ -3472,12 +3489,64 @@
       #main #comp #comptarget { order: 1; align-self: center; max-width: 30%; }
       #main #comp #comptarget:not(.none) .ctname { display: none; }
       #main #comp #send { order: 3; width: 40px; height: 40px; }
-      /* ⋯: model/effort (conversation) and Live join the island as rows above the field */
+      /* model/effort and Live are rows of the sheet behind ⋯; the switches' row comes back into the
+         island only while one of its popovers is open — the sheet's Übernehmen opens the switch's
+         own popover, which asks and answers as it does at the desk */
       #main #comp #compopts, #main #comp #comptray { display: none; }
-      body.keyboard-options #main #comp #compopts:not(:empty) { display: flex; order: -3; flex: 1 0 100%;
+      #main #comp #compopts:has(.optpop.open) { display: flex; order: -3; flex: 1 0 100%;
         justify-content: space-between; min-width: 0; }
-      body.keyboard-options #main #comp #comptray { display: flex; order: -1; padding: 0 2px; }
-      #main #comp #comptray > button:not(#live) { display: none; }
+
+      /* THE SHEETS (G4.1 mobil): a shade over everything, the sheet full width at the foot of the
+         VISIBLE screen (the wrap is --vvh tall), radius --r2 on top, finger rows (G0.7), words
+         (G0.5), glyphs from src/icons.ts (G0.6); current = surface, a marked pick = ink edge (G4.4) */
+      body.msheet #msheetwrap { display: flex; flex-direction: column; justify-content: flex-end; position: fixed; z-index: 30;
+        left: 0; right: 0; top: 0; height: var(--vvh, 100dvh); font-family: var(--chat-sans); }
+      #msheetshade { position: absolute; inset: 0; background: color-mix(in srgb, var(--chat-void) 60%, transparent); }
+      #msheet { position: relative; display: flex; flex-direction: column; max-height: 78%; min-height: 0;
+        padding: 6px 6px calc(8px + env(safe-area-inset-bottom)); border-radius: var(--r2) var(--r2) 0 0;
+        background: var(--chat-raised); color: var(--chat-prose); outline: none;
+        box-shadow: inset 0 1px 0 var(--chat-edge), 0 -8px 22px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+      #msheet button { border: 0; background: none; color: inherit; font-family: var(--chat-sans); cursor: pointer; }
+      #msheet button:active, #msheet button:focus-visible { outline: none; background: var(--c-hover); color: var(--chat-ink); }
+      #msheet button:disabled { color: var(--chat-faint); cursor: default; background: none; }
+      #msheet .ico { flex: none; width: 18px; height: 18px; color: var(--chat-mute); }
+      .mshhead { flex: none; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 10px 4px; min-width: 0; }
+      .mshhead b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        color: var(--chat-ink); font: 500 var(--chat-fs) / 1.2 var(--chat-sans); letter-spacing: -0.01em; }
+      .mshsub { flex: none; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+      /* the tool row and the segments break into a second line rather than scroll a word off the edge
+         (Abnahme 2026-10-03: a cut word is a fault, not a rest) */
+      .mshtray { flex: none; display: flex; flex-wrap: wrap; gap: 2px; padding: 0 0 6px; margin-bottom: 4px;
+        border-bottom: 1px solid var(--chat-edge-soft); }
+      .mshtray > button, .mshtray > span { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 10px;
+        border-radius: var(--r1); color: var(--chat-mute); font-size: var(--chat-fs); white-space: nowrap; }
+      #msheet .mshtray > [aria-pressed="true"] { color: var(--chat-ink); background: var(--chat-surface); box-shadow: inset 0 0 0 1px var(--chat-mute); }
+      .mshn { font: 500 var(--chat-ui-fs) / 1 var(--chat-sans); color: var(--q-wait); }
+      .mshtray > .mshinst { color: var(--chat-prose); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+      .mshtray > .mshinst[aria-expanded="true"] .ico { transform: rotate(180deg); }
+      .mshbody { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 2px; }
+      #msheet .mshrow { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 40px; padding: 4px 10px; flex: none;
+        border-radius: var(--r1); font-size: var(--chat-fs); line-height: 1.25; text-align: left; }
+      #msheet .mshrow.lane { padding-left: 24px; }
+      #msheet .mshrow.current { background: var(--chat-surface); color: var(--chat-ink); }
+      .mshrow .mshw { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .mshval { margin-left: auto; flex: none; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+      .mshnm { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .mshname, .mshwhy { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .mshwhy { font-size: var(--chat-ui-fs); color: var(--q-wait); }
+      .mshinstrow .mshval { max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--chat-mono); }
+      .mshsec { padding: 10px 10px 2px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+      .mshpair { display: flex; gap: 2px; }
+      #msheet .mshpair > .mshrow { flex: 1 1 0; width: auto; min-width: 0; }
+      .mshseg { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 6px 6px; }
+      .mshsegs { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; gap: 2px; }
+      #msheet .mshsegs button { flex: none; min-height: 40px; padding: 0 11px; border-radius: var(--r1); color: var(--chat-mute);
+        font-size: var(--chat-fs); white-space: nowrap; }
+      #msheet .mshsegs button[aria-pressed="true"] { color: var(--chat-ink); background: var(--c-hover); }
+      #msheet .mshsegs button.staged { color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-ink); }
+      #msheet .mshapply { flex: none; margin-left: auto; min-height: 40px; padding: 0 12px; border-radius: var(--r1); background: var(--chat-ink);
+        color: var(--chat-void); font-weight: 500; font-size: var(--chat-ui-fs); }
+      #msheet .mshapply:disabled { background: var(--chat-edge); color: var(--chat-faint); }
     }
   }
 
@@ -3739,19 +3808,19 @@
     </div>
     <!-- the phone upright only (index.html, the island block): the top island in two steps — the
          pill to read (state + name), opened to act. Every button hands over to a control the board
-         already has (src/client.ts#renderIsland): ☰'s drawer, the pane's ℹ and view toggle, the
-         tray's History and Schedule, ⋯ = #mobmore's options -->
+         already has (src/client.ts#renderIsland): the pane's ℹ and view toggle, the tray's History
+         and Schedule; the slot button and ⋯ open the sheets Sessions and Werkzeuge (#msheet) -->
     <div id="mtop" role="group" aria-label="Session und Werkzeuge">
       <button id="mpill" type="button" aria-expanded="false" title="Insel aufklappen — Sessions, Info und Werkzeuge"></button>
       <div id="mopen">
-        <button id="mslot" type="button" title="Sessions öffnen — wechseln, starten, Tasks"></button>
+        <button id="mslot" type="button" aria-haspopup="dialog" title="Sessions öffnen — wechseln, starten, Tasks"></button>
         <button id="mname" type="button" aria-expanded="true" title="Insel zuklappen — mehr Platz zum Lesen"></button>
         <button id="minfo" type="button" title="Info öffnen — Brief, Änderungen, Checks, Verlauf"></button>
         <div id="mtools">
           <button id="mview" type="button"></button>
           <button id="mhist" type="button" title="Prompt-Verlauf dieser Session">History</button>
           <button id="mauto" type="button" title="Geplante Prompts für diese Session">Schedule</button>
-          <button id="mmore" type="button" aria-expanded="false" title="Weitere Werkzeuge — Modell, Effort, Live, Suche, Schrift, Einstellungen"></button>
+          <button id="mmore" type="button" aria-haspopup="dialog" title="Weitere Werkzeuge — Modell, Effort, Live, Suche, Schrift, Einstellungen"></button>
         </div>
       </div>
     </div>
@@ -3764,6 +3833,12 @@
   </div>
 </div>
 <div id="shade"></div>
+<!-- the phone upright only (the island block): the top island's two sheets, Sessions and Werkzeuge,
+     full width at the foot of the visible screen over a shade (src/client.ts#renderSheet) -->
+<div id="msheetwrap" aria-hidden="true">
+  <div id="msheetshade"></div>
+  <div id="msheet" role="dialog" aria-modal="true" tabindex="-1"></div>
+</div>
 
 <div id="attndlg" class="overlay">
   <div class="panel" id="attnpanel"></div>

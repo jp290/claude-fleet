@@ -112,6 +112,65 @@ MAIN-Abweichung über validierte Modulnamen bleibt mit Begründung möglich; sie
 Land-Gate noch Audit. `helper.takesModules:false` lässt die Empfehlung bestehen und die bestehende
 Offer-Tür verweigert deren Minting mit Grund; lokal gezielt laufen oder begründet voll anbieten.
 
+## Operative gehaltene Sicht — `GET /api/operational-view`
+
+Ein Owner-GET hinter der bestehenden Owner-Auth, auch für die Orchestratorin mit ihrer
+Owner-Credential. Ein Orchestrator-Label oder Self-Token erteilt kein neues Recht.
+Lane-, Share-, fehlende und falsche Credentials werden vor dem Datenzugriff abgewiesen;
+auf einem Share-Host existiert die Route nicht. Projektgrants und Portfolio-Memory bleiben
+separat: diese Sicht liest keine Memorytabellen und liefert keine Memoryinhalte.
+
+`schema: "fleet.operational-view/v1"`, `scope: "owner-metadata"`, `bootEpoch`, `computedAt`,
+`revision` (berechneter Stand), `observedRevision`, `freshness: "fresh" | "unknown"`,
+`pending`, `inflight`, `failed` und `sources` unterscheiden Boot, Beobachtung und Berechnung.
+Je Quelle (`queue`, `bindings`, `addresses`, `git`, `gateAudit`) stehen Revision,
+`computedRevision`, `observedAt`, `cadenceMs`, `ageMs`, `basis` und
+`state: fresh | pending | failed | stale | unknown`. Revisionen sind Hashes der Quellenstände,
+keine geschätzten Zeitmessungen. `unknown` nennt betroffene Quellen und Gründe.
+
+Die Erneuerung hängt an `saveState`/`saveStateNow`, dem Abschluss von `tickGit` und einem
+Beobachter im bestehenden `AUTOS_TICK_MS`-Takt. Bursts werden über eine Microtask gebündelt;
+während eines Produzenten läuft höchstens eine nachfolgende Erneuerung. Unveränderte Revisionen
+erneuern nur die Quellenbeobachtung, ohne neue Folds, Git- oder Ledgerarbeit. Externe Ref- und
+Ledgeränderungen werden im Hintergrund an Dateistempeln erkannt. Git-Beobachtung stammt
+ausschließlich aus dem abgeschlossenen bestehenden Git-Tick (`GIT_TICK_MS`); die Revision
+enthält auch den beobachteten Occupant. Ein GET beobachtet keine Quelle und rechnet nichts nach.
+
+Frisch bedeutet: Berechnung passt zur beobachteten Revision, kein Refresh wartet/läuft/ist
+fehlgeschlagen, und jede Quellenbeobachtung ist jünger als ihr benannter Takt. Genau am
+Taktalter ist die Quelle `stale`; ein verpasster Tick kann alten Stand daher nicht frisch nennen.
+Boot, fehlende Ledgerquelle und gescheiterte Erneuerung bleiben ausdrücklich `unknown`.
+Der alte berechnete Stand darf als solcher lesbar bleiben; `data.startable` ist dabei leer.
+`snapshot.ts` bleibt der tatsächliche Berechnungszeitpunkt: beispielsweise `idleS` wird nicht
+bei jedem GET hochgezählt und als neue Messung verkauft. Beobachtetes Output wechselt die
+Quellenrevision; unveränderte Quellenbeobachtung ist keine neue Snapshot-Messung.
+
+`data` hält die unveränderte Metadatenform von `buildStateSnapshot`, Queue-IDs/Status/Program/Hold/
+`after`, Program-Bindungen, Nachrichten-IDs mit Lesestatus und aufgelöstem Occupant, Auditstände,
+`exceptions` mit IDs/benannten Gründen und vom vorhandenen Startplan bereits autorisierte
+`startable`-IDs mit `by: release | policy`. Bindungen ohne passende `openedAt` **und**
+`sessionId` sind `unknown`, nie die heutige Besetzung einer recycelten Slotnummer.
+Es gibt keine Nachrichten-, Brief-, Hold- oder freien Fehlertexte und keine Credentials.
+Ein fehlender Ledger oder roter/unbekannter Audit nennt seine offene Grenze.
+
+Diese Sicht ist kein Ledger und keine Policy. Start-, Reverse-, Land- und Deploytüren prüfen
+ihre Quellen weiterhin selbst; keine Handlung liest cached readiness.
+Wire/Server/CLI/Docs/Probes: apply; Browser-UI: not-applicable.
+
+`./state.sh --brief` und `./register.sh --brief` lesen direkt diese Route, höchstens 40 Zeilen.
+Beide rufen `./ctl.sh get /api/operational-view --json` auf und parsen dessen Ausgabe.
+Die bestehende Controller-Auflösung findet den Haupt-Checkout auch aus einer Lane;
+`FLEET_CTL_HOME` überschreibt dieses Home. Host/Port kommen aus dessen `.env` (oder
+`FLEET_CTL_URL`), die Owner-Credential aus `FLEET_CTL_TOKEN`, `FLEET_TOKEN` oder
+`<home>/fleet.json`; Credentials bleiben außerhalb von argv und Output.
+Fehlende Credential, abgewiesener Lane-Zugriff, unerreichbare Quelle oder ein alter
+Server/ein anderes Schema ergeben `unknown`, ohne Vollfallback. Die unknown-Zeile nennt
+ausdrücklich `./state.sh --full` beziehungsweise `./register.sh --full`.
+Die Kurzformen nennen Schema, Scope, Revisionen, Frische, IDs, Gründe und ausgelassene Zeilen.
+`--full` ruft die volle Diagnose ausdrücklich auf; Standard, `--since` und `--archived`
+behalten ihre bisherige Bedeutung. Die Kurzsicht hat keine Vollausgabe-Bytezählung mehr:
+ihre Kostenprobe misst tatsächliche Fixture-Arbeit und Bytes separat.
+
 ## autos delete — `DELETE /api/self/autos/:id`
 
 Die Session löscht ausschließlich ein Auto ihres eigenen Slots; der Slot wird aus dem lebendigen
@@ -848,6 +907,54 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   -d '{"packs":[{"id":"grok-antwort-1","useWhen":"Bevor du eine Delegations-Zeile baust","sources":[{"path":"docs/messungen/INDEX.md","anchor":"# Index der Messnotizen"}]}]}'
 ```
 
+## context — `GET /api/self/context/<id>`
+
+Eine Session holt eine Katalogkarte per Pack-ID nach: Fleet-Seed, Pack aus dem getrackten
+Repo-Manifest oder Pack ihres eigenen Programs. Header: `x-fleet-self-token`. Scope und optionale
+Verengung durch `task=`/`program=` kommen aus `memoryScopeFor`, wie bei `memory`. Owner-Token:
+401; ungebundene Session: 409 `no-scope`; fremdes Program-Pack: 409 `foreign-program`;
+unbekannte ID: 404 `unknown-id`. Mehrdeutige IDs: 409 `ambiguous-id`.
+
+Der explizite Abruf ersetzt nur den Trigger der Katalogauswahl: Status, Harness, Mode,
+Capabilities und Quellverfügbarkeit bleiben Grenzen. Die Auswahl im Spawn-Brief bleibt gleich.
+Eine verletzte Grenze antwortet 409 mit ihrem benannten `refusal`. Öffentliche Quellen stammen
+aus regulären, getrackten UTF-8-Dateien am Integrations-HEAD, mit `path`, `anchor`, `content`,
+`sha256` und `bytes`; Arbeitsbaumänderungen werden nicht gelesen. Markdown (`.md`/`.markdown`)
+liefert ab der ersten Zeile, die außerhalb eines Codeblocks mit dem Anker beginnt, bis vor die
+nächste Überschrift gleicher oder höherer Ebene. Unterüberschriften bleiben enthalten; ATX-
+und Setext-Überschriften werden erkannt. Ist der Anker ein Absatzanfang, endet der Abschnitt vor
+der nächsten Überschrift überhaupt. Ohne folgende Grenze reicht er bis ans Dateiende. Zwei
+Anker derselben Datei liefern ihre jeweiligen Abschnitte. Nicht-Markdown-Quellen liefern
+konservativ ab der Ankerzeile bis ans Dateiende, ohne eine Symbol-Endgrenze zu behaupten.
+`sha256` und `bytes` messen exakt den gelieferten Inhalt, einschließlich seiner UTF-8-Bytes
+und Zeilenenden; es gibt keinen Volltext-Parameter. Je Quelldatei gilt weiterhin der
+bestehende 4-MiB-Deckel. Fehlende Anker, Symlinks, binäre oder unlesbare Quellen werden benannt
+abgelehnt, ohne Teilinhalt zu liefern. Private Quellen laufen ausschließlich durch
+`context-plan.ts#resolvePrivatePack`: nur `match` liefert Inhalt der aktuellen Fassung samt
+`privateSourceId` und `version`; `private-missing`/`private-drift` antworten 409.
+
+Erfolg: `{schema:"fleet.context.borrow/v1", id, useWhen, origin, repo, head, sources[], borrowedAt}`.
+Pro authentifiziertem Abruf wird genau eine Zeile in `context-borrows.jsonl` geschrieben:
+`slot`, `openedAt`, `taskId`, `programId`, `id`, `at`, `borrowedAt`, `repo`, `head`, `origin`,
+`status`, `refusal`, Quellen ohne Inhalt (mit Abschnitts-SHA-256 und gelieferten Bytes) und
+gesamte gelieferte `bytes`.
+Ablehnungen tragen `borrowedAt:null`, keine Quellen und 0 Bytes. Ein Credential- oder
+Occupant-Wechsel wird vor dem Append und nach dem Await abgefangen (409 `occupant-changed`).
+Nicht authentifizierte Requests schreiben keine Ausleihzeile. Scheitert das Ledger,
+antwortet die Tür 503 `borrow-ledger-unavailable` und liefert keinen Inhalt.
+
+`borrowedAt` bedeutet abgerufen, niemals gelesen oder wirksam. `memory?view=sources` ergänzt
+ausgeliehene IDs in `declaredNow.selected` und `deliveredThen.receipts[].selected` um das neueste
+`borrowedAt` dieses exakten Occupants und zeigt einen separaten `borrowed`-Ledger-Ausschnitt
+(.1 + aktiv, höchstens 20 Zeilen). Fremde oder frühere Occupants werden nicht zugerechnet.
+Ein fehlender Eintrag beweist keine Nicht-Ausleihe; fehlerhafte Zeilen machen die Coverage
+`incomplete`. `readByAgent` bleibt `unknown`.
+
+```sh
+curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  http://<fleet-host>:<port>/api/self/context/portable-core
+```
+
 ## memory — `GET /api/self/memory` (seit 2026-09-23, Zeile 42da6bdc)
 
 Das Projektgedächtnis einer Session, gelesen über die EIGENE Self-Tür — in jedem Repo, ohne
@@ -887,7 +994,9 @@ wird gezählt (`omitted`, `coverage:"truncated"`), nie still verworfen.
 Dispatch-Naht bzw. die MAIN-Gründung; `selected[].origin` = `fleet-seed` | `repo-manifest` |
 `program`; `nativeRules:{path:"AGENTS.md", trackedAtHead}` — die Repo-Regeln bleiben Originalquelle
 und werden nie kopiert). `deliveredThen` sind die Receipts aus `context-receipts.jsonl` (.1 + aktiv).
-`readByAgent` ist IMMER `"unknown"`: ein Receipt belegt Bytes in einer Pane, keine Lektüre. Fehlende
+`readByAgent` ist IMMER `"unknown"`: ein Receipt belegt Bytes in einer Pane, keine Lektüre.
+Ausleihen werden separat aus `context-borrows.jsonl` gelesen (`borrowed`, `borrowedAt`, §context);
+auch ein Abruf belegt keine Lektüre. Fehlende
 Träger stehen benannt in `missing[]` (kein Manifest, kein AGENTS.md, keine Program-Packs, kein
 Receipt, fremder Baum); ist die Deklaration nicht ableitbar (z. B. Ziel-Repo ohne AGENTS.md), ist
 `declaredNow: null` mit Grund in `unknown[]` und `coverage:"incomplete"` — nie eine leere Liste.
@@ -1037,7 +1146,9 @@ Report, Attention-Antwort); ihn nennt der Schreiber.
 **Wer:** die Self-Tuer ist offen fuer eine **Lane** und fuer die **gebundene MAIN eines aktiven
 Programs** (`boundProgramForMain`); jede andere Session bekommt **409** `a konzept is read and written by a
 lane or by the bound MAIN of an active Program — this session is neither (role <role>)` — auch
-Orchestratorin (Rolle `generic` im Principal). Ohne erkannte Credential 401 nach 400 ms.
+Orchestratorin (Rolle `generic` im Principal). Einzige Ausnahme ist die reine Lesetuer
+`GET …/k-owner-korrekturen/leseansicht` (unten), die auch die Orchestratorin liest; an allen anderen
+Pfaden und an jedem Schreibakt bleibt es bei 409. Ohne erkannte Credential 401 nach 400 ms.
 Nach dem Body-Lesen wird der Occupant erneut geprueft; ein recycelter Slot bekommt 409 und nichts wird
 geschrieben.
 
@@ -1103,6 +1214,9 @@ still verworfen.
   `projekt` (Owner-Richtung b04fd193, Notiz d7edfbea: EIN Eintragsmodell mit Ebene als Feld; `team` kommt
   spaeter nur ins Modell). Keine Aufstiegslogik — nur das Feld.
 - `geltung` ist Pflicht: Freitext 1–200 Zeichen, wofuer der Eintrag gilt.
+- `erwartet` ist optional: die Version, die der Schreiber als `letzte` gelesen hat (`null` = noch keine).
+  Die Route vergleicht sie unter derselben Konzept-Sperre, die N vergibt; weicht sie ab, **409** und
+  nichts wird angehaengt. Fehlt das Feld, gilt das bisherige Verhalten (N = `letzte + 1`, kein Vergleich).
 
 Ablehnungen: **400** `sha256 must be the 64 lowercase hex of v<N>.md` · **400** `anlass must be a string of
 1–500 chars` · **400** `geltung must be a string of 1–200 chars` · **400** `ebene must be one of
@@ -1110,7 +1224,78 @@ arbeit|strang|projekt|portfolio|owner (absent = projekt)` · **400** `arbeitetEi
 100 anmerkung ids (16 hex)` · **400** `quellen must be {korpus?: <64 hex>, neu: [...]}` · **400**
 `detailRef must be {source, locator, fp?}` · **409** `<konzept>/v<N>.md does not exist — the next version
 is <N>; place the file under the root first` · **409** `<konzept>/v<N>.md hashes to <x>, the body names <y>`
-· **409** `arbeitetEin names anmerkungen <konzept> does not have: <ids>` · **404** (GET) `unknown konzept`.
+· **409** `arbeitetEin names anmerkungen <konzept> does not have: <ids>` · **400** `erwartet must be the
+version you read as latest (integer ≥ 1), or null for none yet` · **409** `<konzept> is at version <M>|no
+version yet, the body expects version <E>|none yet — re-read and decide again` · **404** (GET) `unknown konzept`.
+
+#### Das Owner-Heft `k-owner-korrekturen` (seit 2026-10-03, Program 31aa88ea)
+
+Entwurf `docs/messungen/2026-10-02-owner-korrekturen-regal-entwurf.md` §Empfehlung, Karte 1 (Schreibseite).
+Eine Fassung dieses einen Konzepts nimmt NUR der Owner an (`POST /api/konzepte/k-owner-korrekturen/versionen`);
+Lane und gebundene MAIN bekommen auf der Self-Tuer **403** `k-owner-korrekturen takes a fassung only from the
+owner (…) — a lane|main proposes through an anmerkung or the clarification chain`, bevor der Body gelesen
+wird. Anmerkungen an einer veroeffentlichten Fassung bleiben ihnen offen. `ebene` ist hier `owner` (fehlt
+sie, gilt `owner`; jede andere **400**). Alle anderen Konzepte behalten ihre Schreiber unveraendert.
+
+Das Eintragsformat lebt IN der Fassung, nicht im Body: `v<N>.md` traegt genau einen Block
+```` ```owner-korrekturen ```` mit JSON `{eintraege: [{id, aussage, quelle, geltung, ersetzt}],
+zurueckgezogen?: [{id, grund}]}` — geschlossene Schluessel auf jeder Ebene (`konzept-ledger.ts#parseKorrekturHeft`).
+`id` `^[a-z0-9][a-z0-9-]{0,63}$`; `quelle` ein String (≤500) oder ein `detailRef`; `geltung`
+`{projekte, rollen, harnesses, modi}`, je Achse `"*"` (bewusst alle) oder eine nicht-leere Namensliste —
+eine leere Liste gilt nirgends und wird abgelehnt; `ersetzt` eine Liste aelterer ids (leer, wenn keine).
+
+Jede Fassung ist das GANZE Heft samt Geschichte: ein veroeffentlichter Eintrag steht in jeder spaeteren
+Fassung unveraendert, eine Aenderung bekommt eine neue id, die die alte `ersetzt`. Unter der Sperre prueft
+die Route (`konzept-ledger.ts#checkKorrekturHeft`), dass die Vorgaenger-Fassung noch auf ihre Ledger-Zeile
+hasht, und lehnt mit **409** `k-owner-korrekturen/v<N>.md: …` ab: doppelte id · Selbstabloesung · unbekannte
+id in `ersetzt` oder `zurueckgezogen` · zwei Nachfolger fuer dieselbe id · zugleich zurueckgezogen und
+ersetzt · Zyklus · andere `geltung` als der ersetzte Eintrag (in diesem Schnitt ersetzt nur identische
+Geltung) · ein Eintrag oder Rueckzug der Vorgaenger-Fassung fehlt oder ist veraendert · kein oder mehr als
+ein Block. Die Antwort traegt zusaetzlich `eintraege[]`, gefaltet (`#foldKorrekturHeft`): `gilt` ·
+`veraltet` mit `abgeloestDurch` · `verworfen` mit `grund` — aus EINER Fassung, nichts wird zweimal
+geschrieben.
+
+#### Die Leseansicht — `GET /api/self/konzepte/k-owner-korrekturen/leseansicht` (seit 2026-10-03)
+
+Karte 2 (Leseseite), Entwurf §Dieselbe Lesetuer fuer Claude, Codex und pi-zai. Eine Tuer fuer jeden Harness:
+
+```sh
+curl -s http://<fleet-host>:<port>/api/self/konzepte/k-owner-korrekturen/leseansicht \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+```
+
+**Antwort (200):** `{konzept, version, sha256, geltendeEintraege, status, bindung, nichtGefiltert}` aus der
+LETZTEN Fassung (`konzept-ledger.ts#konzeptLeseansicht`). `geltendeEintraege` sind die `gilt`-Eintraege,
+deren `geltung` die Bindung trifft, je `{id, aussage, geltung, ersetzt}` — die private `quelle` wird nie
+ausgeliefert. `status` ist `{gilt: <Anzahl>, veraltet: [{id, abgeloestDurch}], verworfen: [{id, grund}]}`
+ueber die Eintraege derselben Geltung: abgeloeste ids bleiben nachvollziehbar, ihr Text nicht. `bindung`
+`{projekt, rolle, harness}` nennt, wonach gefiltert wurde; `nichtGefiltert: ["modi"]` — keine Bindung nennt
+einen Arbeitsmodus, darum traegt jeder Eintrag seine `geltung.modi` sichtbar. Ein 200 mit `[]` heisst NUR:
+die aktuelle Owner-Fassung hat fuer DIESE Bindung keinen geltenden Eintrag.
+
+**Die Bindung kommt vom Server, nie aus der Anfrage** (`server.ts#korrekturLeserFor`): `rolle` aus
+`positionRole` (`lane` · `program-main` · `orchestrator`), `projekt` der opake projectKey (16 hex ueber den
+kanonischen Repo-Pfad) des gebundenen Repositoriums — die Lane ihr Worktree-Repo, sonst das Git-Toplevel des
+cwd —, `harness` die Adapter-id des Slots (`claude` bei keiner). Eine Achse trifft, wenn sie `"*"` ist oder
+den Wert nennt. Claude-, Codex- und pi-zai-Lanes gleicher Bindung lesen also dieselben Eintraege. Lesen
+duerfen Lane, gebundene Program-MAIN und Orchestratorin; das erweitert KEIN Schreibrecht — die Fassung
+bleibt Owner-Sache (403 oben), die Orchestratorin bleibt an allen anderen Konzept-Pfaden 409.
+
+**Abweisungen, jede benannt und ohne Eintragsliste** — eine unlesbare Sicht erscheint nie als leeres Regal:
+**409** `the owner's corrections are read by a lane, a bound Program-MAIN or the Orchestratorin — this
+session is none of them (…)` (freie Session) · **409** `this session's working directory is in no git
+repository — …` · **400** `the leseansicht takes its scope from your binding, never from the request —
+[<params>] is not read` (jeder Query-Parameter) · **401** fuer ein rotiertes Token eines recycelten Slots ·
+**409** wenn der Slot waehrend des Lesens den Occupant wechselt · **503** wie oben (Wurzel) · **404**
+`k-owner-korrekturen has no directory under the root — no owner fassung exists yet, which is not an empty
+heft` · **404** `… has no published fassung yet — that is not an empty heft` · **409** `… v<N> was not
+published by the owner (actor <kind>) — there is no current owner fassung to read` (kein Rueckfall auf eine
+aeltere Fassung) · **409** `…/v<N>.md is missing — …` · **409** `hash drift: k-owner-korrekturen/v<N>.md
+hashes to <x>, its ledger row names <y> — …` · **409** `…/v<N>.md: <Formatfehler>` · **404** `the leseansicht
+reads k-owner-korrekturen only — …` fuer jedes andere Konzept · **404** `not found` fuer jedes andere Verb.
+Die Owner-Tuer `GET /api/konzepte/k-owner-korrekturen/leseansicht` antwortet **409** `the leseansicht
+filters by a session's binding — …`: der Owner hat keine Bindung und liest das ganze Heft ueber `/versionen`
+und die Fassungsdateien. Beweis: `e2e/konzepte.ts` §leseansicht, synthetische Eintraege je Geltungsachse.
 
 ### Anmerkungen — `GET|POST /api/self/konzepte/:id/anmerkungen`
 

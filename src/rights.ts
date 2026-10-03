@@ -123,6 +123,15 @@ const occupantOf = (slot: number): number | null => {
 };
 const repoName = (repo: string): string => repo.replace(/\/+$/, "").split("/").pop() || repo;
 const tilde = (p: string): string => p.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~");
+// a project's path in ONE line under its name: home as ~, and a middle too long for the width gives
+// way as … while the last segment stays — the attachment chip's cut (src/client.ts, .attstart/.attend)
+// done in CSS, so the width decides. The full path stands only in the option's tooltip.
+function pathLine(repo: string): HTMLElement {
+  const t = tilde(repo.replace(/\/+$/, "")), cut = t.lastIndexOf("/");
+  const line = el("span", "rgoptd rgmono rgpath");
+  line.append(el("span", "rgpaths", cut > 0 ? t.slice(0, cut) : ""), el("span", "rgpathe", cut > 0 ? t.slice(cut) : t));
+  return line;
+}
 
 let uids = 0;
 function fresh(slot: number, openedAt: number | null, keep?: Pane): Pane {
@@ -381,9 +390,9 @@ function editor(p: Pane, row: SlotInfo): HTMLElement {
   for (const k of d.known) {
     const on = dr.keys.has(k.projectKey), was = dr.base.keys.includes(k.projectKey);
     const label = el("span", "rgoptl");
-    label.append(el("span", `rgoptn${on ? " on" : ""}`, repoName(k.repo)), el("span", "rgoptd rgmono", tilde(k.repo)));
+    label.append(el("span", `rgoptn rgoptn1${on ? " on" : ""}`, repoName(k.repo)), pathLine(k.repo));
     ed.append(option(on, `${on && !was ? " add" : ""}${!on && was ? " drop" : ""}`, `p:${k.projectKey}`, [label],
-      `${tilde(k.repo)} (intern: projectKey ${k.projectKey})`, flip(dr.keys, k.projectKey)));
+      `${k.repo} (intern: projectKey ${k.projectKey})`, flip(dr.keys, k.projectKey)));
   }
   // a key of the standing grant the server no longer names stays visible — and can only be dropped
   for (const k of dr.base.keys.filter((x) => !knownName(d, x))) {

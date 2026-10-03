@@ -7795,9 +7795,27 @@ export async function run(): Promise<void> {
     const piOpen = piId
       ? await post(`/api/slots/${piId}/open`, { cwd: REPO, label: "migrate-pi", harness: "pi", model: "openai-codex/gpt-5.6-sol" })
       : null;
-    check("migration tick setup: main, lane, steward, ctx-unknown, bound-main and pi controls are all active",
-      mainId > 0 && lane.slot > 0 && stewardId > 0 && unknownId > 0 && boundId > 0 && piId > 0 && !!piOpen?.ok,
-      JSON.stringify({ mainId, lane: lane.slot, stewardId, unknownId, boundId, piId, piStatus: piOpen?.status }));
+    // CODEX ITSELF, not pi standing in for it (owner correction 2026-09-30: codex compacts natively,
+    // no Fleet context succession for it). Same shape as the pi control: 50 % on its own window,
+    // and a pane that answers as a live codex agent — the founding fixtures' planted ready screen
+    // over the `codex`-named stand-in — so canDeliver would admit it and only the tick's harness
+    // gate can keep it silent. It also carries the steward handoff probes further down.
+    const codexId = await freeSlot();
+    const codexOpen = codexId
+      ? await post(`/api/slots/${codexId}/open`, { cwd: REPO, label: "migrate-codex", harness: "codex" })
+      : null;
+    let codexPaneUp = false;
+    for (let i = 0; i < 200 && codexId && codexOpen?.ok && !codexPaneUp; i++) {
+      if ((await tmuxOut("has-session", "-t", `=s${codexId}`)).code === 0) codexPaneUp = true;
+      else await Bun.sleep(50);
+    }
+    const codexScreen = codexPaneUp
+      && await plantScreen(codexId, ">_ OpenAI Codex (v0.147.0)\n›", "migration tick codex control");
+    check("migration tick setup: main, lane, steward, ctx-unknown, bound-main, pi and codex controls are all active",
+      mainId > 0 && lane.slot > 0 && stewardId > 0 && unknownId > 0 && boundId > 0 && piId > 0 && !!piOpen?.ok
+        && codexId > 0 && !!codexOpen?.ok && codexScreen,
+      JSON.stringify({ mainId, lane: lane.slot, stewardId, unknownId, boundId, piId, piStatus: piOpen?.status,
+        codexId, codexStatus: codexOpen?.status, codexScreen }));
 
     // the three panes whose migrate-nudge header is read back below (catPane: why not the shell)
     const catReady = await Promise.all([mainId, lane.slot, boundId].map((id) => catPane(`s${id}`)));
@@ -7823,7 +7841,8 @@ export async function run(): Promise<void> {
       [boundId, "e2e0feed-0000-4000-8000-000000000104"],
     ]);
     const piSid = "e2e0feed-0000-4000-8000-000000000105";
-    for (const [id, sid] of [...ids, [piId, piSid] as const])
+    const codexSid = "e2e0feed-0000-4000-8000-000000000106";
+    for (const [id, sid] of [...ids, [piId, piSid] as const, [codexId, codexSid] as const])
       if (state?.slots?.[String(id)]) state.slots[String(id)]!.sessionId = sid;
     // Planted, not driven, for the hold block's reason further down: the tick reads only an ACTIVE
     // Program whose main names this living occupant (boundProgramForMain), and minting one through
@@ -7865,6 +7884,19 @@ export async function run(): Promise<void> {
           cacheWrite: 0, reasoning: 0, totalTokens: 9_129_200 } } })}\n`);
       usageFiles.push(file);
     }
+    // Codex's own usage format (readCodexContext): the newest token_count event carries the turn's
+    // total AND the window, so 129 200 of 258 400 is the same 50 % with no model lookup at all.
+    const codexRoot = process.env.FLEET_CODEX_SESSIONS_DIR ?? "";
+    if (state && codexRoot) {
+      const d = new Date();
+      const dayDir = `${codexRoot}/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+      mkdirSync(dayDir, { recursive: true });
+      const file = `${dayDir}/rollout-${Date.now()}-${codexSid}.jsonl`;
+      writeFileSync(file, `${JSON.stringify({ timestamp: new Date().toISOString(), type: "event_msg",
+        payload: { type: "token_count", info: { last_token_usage: { total_tokens: 129_200 },
+          model_context_window: 258_400 } } })}\n`);
+      usageFiles.push(file);
+    }
     const migrateCrossedAt = Date.now();
     await restartSrv({ FLEET_HARNESS_AUTOMATION: "1", FLEET_DELIVERY_BUNDLE_SEC: "900" });
 
@@ -7891,6 +7923,18 @@ export async function run(): Promise<void> {
         && migrateProgramLive.health?.occupancy === "live"
         && ctxOf(piId)?.pct === 50 && ctxOf(piId)?.windowTokens === 258_400 && piAgent === "alive",
       JSON.stringify({ bound: ctxOf(boundId), program: migrateProgramLive, pi: ctxOf(piId), piAgent }));
+    // …and the codex control is the same kind of DELIVERABLE subject: its own rollout says 50 % of
+    // 258 400, and the pane probes alive as codex. Without both, its "no prompt" row below would
+    // measure an unreadable fill or a dead pane instead of the tick's harness gate.
+    let codexAgent: string | null = null;
+    for (let i = 0; i < 60 && codexAgent !== "alive"; i++) {
+      codexAgent = ((await (await get("/api/sessions")).json()) as { slots: { id: number; agent: string | null }[] })
+        .slots.find((x) => x.id === codexId)?.agent ?? null;
+      if (codexAgent !== "alive") await Bun.sleep(200);
+    }
+    check("migration tick setup: the codex control is 50% of 258400 read from its own rollout and probes alive",
+      ctxOf(codexId)?.pct === 50 && ctxOf(codexId)?.windowTokens === 258_400 && codexAgent === "alive",
+      JSON.stringify({ codex: ctxOf(codexId), codexAgent }));
 
     const migratePrompts = async (slot: number) => (await plogRead())
       .filter((e) => e.slot === slot && e.text.startsWith("[fleet] Dein Kontext ist bei "));
@@ -8017,6 +8061,11 @@ export async function run(): Promise<void> {
       check("succession facts: a non-claude slot at the same 50% is served its fill and NO threshold, named as the harness gate",
         piSucc?.fill?.pct === 50 && piSucc.thresholdPct === null && piSucc.thresholdOff === "harness"
           && piSucc.nudges === 0, JSON.stringify(piSucc));
+      // the codex reading is SHOWN — the measured fill is honest display — and nothing follows from it
+      const codexSucc = await succOf(codexId);
+      check("succession facts: a codex slot at 50% is served its measured fill and NO threshold, off as the harness gate",
+        codexSucc?.fill?.pct === 50 && codexSucc.thresholdPct === null && codexSucc.thresholdOff === "harness"
+          && codexSucc.nudges === 0, JSON.stringify(codexSucc));
       const stewardSucc = await succOf(stewardId);
       check("succession facts: the ⚙ steward is off the band BY NAME, not by a missing number",
         stewardSucc?.thresholdPct === null && stewardSucc.thresholdOff === "steward"
@@ -8027,6 +8076,36 @@ export async function run(): Promise<void> {
       check("succession facts: an unmeasurable context is null and never 0%, and the threshold is off as unpinned",
         unknownSucc?.fill === null && unknownSucc.thresholdPct === null
           && unknownSucc.thresholdOff === "unpinned", JSON.stringify(unknownSucc));
+    }
+
+    // === THE STEWARD'S CONTEXT-ONLY HANDOFF (server.ts#renderStewardMessage) ===================
+    // lifecycle_op/handoff says "Kontext nähert sich der Grenze — schreib ein /handoff": a context
+    // nudge and nothing else. For codex it is refused BY NAME at render (400, nothing sent); every
+    // other harness still renders it, and a legitimate steward act on the codex slot still renders.
+    // The master stop is held for the probes so a rendered send ends at the policy gate (409
+    // "paused") instead of reaching a pane or the steward's hourly send count, which
+    // e2e/steward-core.ts measures exactly. 400 = refused by the template; 409 = rendered, then held.
+    {
+      const stewardTok = ((await (await get("/api/steward/token")).json()) as { token?: string }).token ?? "";
+      const stewardSend = async (slot: number, kind: string, ref: string): Promise<{ status: number; error: string }> => {
+        const r = await fetch(`${BASE}/api/steward/send`, { method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${stewardTok}` },
+          body: JSON.stringify({ slot, kind, ref }) });
+        return { status: r.status, error: ((await r.json().catch(() => ({}))) as { error?: string }).error ?? "" };
+      };
+      await post("/api/autos/switch", { on: false });
+      const codexHandoff = await stewardSend(codexId, "lifecycle_op", "handoff");
+      const claudeHandoff = await stewardSend(unknownId, "lifecycle_op", "handoff");
+      const piHandoff = await stewardSend(piId, "lifecycle_op", "handoff");
+      const codexNudge = await stewardSend(codexId, "continue_nudge", "continue");
+      await post("/api/autos/switch", { on: true });
+      check("steward handoff: a context-only lifecycle_op handoff to a codex slot is refused at render, naming the harness and its native compaction",
+        stewardTok !== "" && codexHandoff.status === 400 && codexHandoff.error.includes("harness codex")
+          && codexHandoff.error.includes("compacts its own window natively"),
+        JSON.stringify(codexHandoff));
+      check("steward handoff: the same ref still renders for a claude and a pi slot, and a continue_nudge to the codex slot still renders — held only by the master stop",
+        [claudeHandoff, piHandoff, codexNudge].every((r) => r.status === 409 && r.error.includes("paused")),
+        JSON.stringify({ claude: claudeHandoff, pi: piHandoff, codexNudge }));
     }
 
     const tickMs = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
@@ -8041,6 +8120,14 @@ export async function run(): Promise<void> {
       (await migratePrompts(piId)).length === 0 && (await migratePrompts(mainId)).length === 1
         && (await migratePrompts(boundId)).length === 1,
       `pi=${(await migratePrompts(piId)).length} main=${(await migratePrompts(mainId)).length} bound=${(await migratePrompts(boundId)).length}`);
+    // THE DIRECT CODEX CASE, read over the same ticks: a live, deliverable codex pane at a measured
+    // 50 % gets no context nudge of any kind. BREAKS IF: tickMigrate's claude gate (both the scan
+    // and the post-await re-check) is narrowed or dropped — the stand-in accepts the paste or the
+    // send fails on it, and either way the prompt journal counts 1.
+    check("tickMigrate never nudges a CODEX slot above the threshold — native compaction, no Fleet context succession",
+      (await migratePrompts(codexId)).length === 0
+        && !(await plogRead()).some((e) => e.slot === codexId && /Kontext|context/i.test(e.text)),
+      `codex=${(await migratePrompts(codexId)).length}`);
 
     // TWO THRESHOLDS, NOT ONE KNOB WITH TWO READERS. The restart resets the process-local marker,
     // so both 50% slots are eligible again; zeroing only the LANE threshold must therefore move
@@ -8158,7 +8245,7 @@ export async function run(): Promise<void> {
           && e.text.includes("The context nudge arrived; open work is inherited on this same worktree.")),
       JSON.stringify({ status: migrateSucceeded.status, success: migrateSuccess, heir: migrateHeir }));
 
-    for (const id of [mainId, lane.slot, stewardId, unknownId, boundId, piId]) if (id) await post(`/api/slots/${id}/kill`, {});
+    for (const id of [mainId, lane.slot, stewardId, unknownId, boundId, piId, codexId]) if (id) await post(`/api/slots/${id}/kill`, {});
     for (const file of usageFiles) rmSync(file, { force: true });
   }
 

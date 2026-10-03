@@ -12,12 +12,14 @@ import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
 import { MarkStage, markFacts, markShape, paintMark, type MarkEnv, type MarkFacts } from "../src/marks";
 import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
+import { deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
 import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
-import { MODEL_DEFAULTS } from "../model-register";
+import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-register";
+import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
 
 export async function run(): Promise<void> {
@@ -1642,7 +1644,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("chat senden (C): a sent message shows \"wartet\" until the transcript has it, then \"durch\"",
     /msg\.append\(body, sendState\("sending"\), meta\)/.test(cliSrc)
       && /pending\?\.querySelector\("\.msend"\)\?\.replaceWith\(sendState\("wait"\)\)/.test(cliSrc)
-      && /const arrived = e\.role === "user" && this\.settlePending\(raw\);/.test(cliSrc)
+      && /this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\)/.test(cliSrc)
+      && /this\.addMessage\(e, part\.text, header, part\.mark, this\.settlePending\(part\.text\)\)/.test(cliSrc)
       && /msg\.append\(body, \.\.\.\(arrived \? \[sendState\("done"\)\] : \[\]\), meta\)/.test(cliSrc)
       && /wait: "wartet", done: "durch"/.test(cliSrc),
     "addPending / doSend / appendEntry / sendState in src/client.ts");
@@ -1867,15 +1870,37 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     "doSend in src/client.ts");
   check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
     /import \{ pendingSettledBy, splitDeliveryHeader \} from "\.\/pendingsend"/.test(cliSrc)
-    // (Tranche 2: the retirement also says whether the entry is the same send — "durch")
-    && /const arrived = e\.role === "user" && this\.settlePending\(raw\);/.test(cliSrc)
+    // (Tranche 2: the retirement also says whether the entry is the same send — "durch"; a bundle
+    // retires one bubble per owner part, 2026-10-03)
+    && /if \(!parts\) \{ this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\); continue; \}/.test(cliSrc)
+    && /if \(part\.owner\) this\.addMessage\(e, part\.text, header, part\.mark, this\.settlePending\(part\.text\)\);/.test(cliSrc)
     && /this\.pending\.find\(\(p\) => pendingSettledBy\(p\.text, text\)\)/.test(cliSrc),
     "Pane.appendEntry / settlePending in src/client.ts");
   check("client: the delivery head rides in the meta row beside the bubble, and the bubble and its copy carry the body only",
-    /const \{ header, body: text \} = e\.role === "user" \? splitDeliveryHeader\(raw\)/.test(cliSrc)
-    && /if \(header\) \{[\s\S]*?el\("span", "mhead", header\)[\s\S]*?meta\.appendChild\(head\)/.test(cliSrc)
+    /const \{ header, body \} = splitDeliveryHeader\(raw\);/.test(cliSrc)
+    && /if \(header \|\| mark\) \{[\s\S]*?el\("span", "mhead", mark \?\? header \?\? ""\)[\s\S]*?meta\.appendChild\(head\)/.test(cliSrc)
     && /mdInto\(body, text,/.test(cliSrc),
-    "Pane.appendEntry in src/client.ts");
+    "Pane.appendEntry / addMessage in src/client.ts");
+
+  // --- A BUNDLED OWNER SEND (owner 2026-10-03: „[Zitat entfernt]“
+  // ). pendingSettledBy compared the pending text with the body
+  // after ONE delivery head, and a bundle's body is never the owner text alone — the bubble waited
+  // forever. The bundles below are written by the functions server.ts types with (bundleFixtures),
+  // and the pin after them holds server.ts to those functions.
+  // BREAKS IF: the reader stops knowing a mark the writer writes, or a Fleet part retires a send.
+  const bundleSrvSrc = readFileSync(`${sourceRoot}/server.ts`, "utf8");
+  for (const [claim, ok] of Object.entries(bundleSettleClaims(bundleSrvSrc))) check(`bundled send: ${claim}`, ok);
+  check("bundled send: server.ts types its bundle marks through src/delivery-format.ts and spells none itself",
+    /import \{ deliveryBundleText, fleetEventBundleText \} from "\.\/src\/delivery-format";/.test(bundleSrvSrc)
+    && /function bundleText\(entries: QueuedDelivery\[\], s: Slot\): string \{[\s\S]{0,200}?return deliveryBundleText\(entries\.map\(/.test(bundleSrvSrc)
+    && /function fleetEventBundleMessage\(events: FleetEvent\[\]\): string \{[\s\S]{0,160}?return fleetEventBundleText\(events\.map\(/.test(bundleSrvSrc)
+    && !/fleet-buendel |fleet-ereignis |Ende des Buendels/.test(bundleSrvSrc),
+    "server.ts#bundleText / #fleetEventBundleMessage");
+  check("client: a bundle's parts render through src/delivery-format.ts — owner parts as bubbles, the rest as quiet lines",
+    /import \{ deliveryParts, type DeliveryPart \} from "\.\/delivery-format"/.test(cliSrc)
+    && /const parts = deliveryParts\(body\);/.test(cliSrc) && /else this\.addFleetLine\(part, header\);/.test(cliSrc)
+    && /line\.className = "msys";/.test(cliSrc) && /\.msys \{[^}]*color: var\(--chat-faint\)/.test(indexSrc),
+    "Pane.appendEntry / addFleetLine in src/client.ts, .msys in public/index.html");
   check("client: a composer reshape does not refit a terminal the chat view hides; the way back refits it",
     /for \(const p of panes\) if \(!p\.isChat\) p\.refit\(\);/.test(cliSrc)
     && /else \{ this\.refit\(\); this\.term\.focus\(\); \}/.test(cliSrc),
@@ -2094,7 +2119,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   }
 
   // THE SEND TARGET AND THE TWO PANES' INPUTS (card 929fdbe7, Grammatik G2.4), same rig: two
-  // sessions in two panes (one pane and the drawer at 390), native clicks and typing, a fake socket
+  // sessions in two panes (one pane and the Sessions sheet at 390), native clicks and typing, a fake socket
   // per pane, /send intercepted. A browser that cannot run is the PROBE line — red, never a skip.
   try {
     for (const result of await runComposerTargetDom(sourceRoot)) {
@@ -2107,11 +2132,27 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // A BUNDLED OWNER SEND IN THE CHAT VIEW (owner screenshot 2026-10-03 08:55), same rig: the composer
+  // sends, the transcript brings back the bundle the server writes, and the "wartet" bubble must go
+  // "durch" while every Fleet part stands as a quiet line. A browser that cannot run is the PROBE
+  // line — red, never a skip.
+  try {
+    for (const result of await runBundleChatDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`bundle chat DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("bundle chat DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
   // THE PHONE UPRIGHT'S TWO ISLANDS (card "Auf dem Telefon steht oben klein", docs/design/
   // mobil-insel-notiz.md §1c), same rig: the two steps of the top island, closing by name, by a tap
   // outside and by every action, the 40-px targets, the terminal above the bottom island, the grip's
   // keys without focus loss and with #keys' bytes — at 390 × 844 with and without a simulated
-  // keyboard; at 1200 and on its side only that no island exists. A browser that cannot run is the
+  // keyboard; at 360 × 780 that the sheets cut no word off; at 1200 and on its side only that no
+  // island exists. A browser that cannot run is the
   // PROBE line — red, never a skip.
   try {
     for (const result of await runPhoneIslandDom(sourceRoot)) {
@@ -2771,6 +2812,17 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         // …and an agent Fleet simply has not probed yet is NOT an error
         && slotState?.({ lastOutput: NOW - 60_000, agent: "unprobed" }, NOW, false) === "rest",
       "slotState bad");
+    // the fifth reading: `awaiting` (K5 of the Theo threads measurement of 2026-10-02).
+    // After broken, before every freshness reading — a waiting session on screen still waits; the
+    // owner's case carries its own class, the one the colour hangs on.
+    check("waiting on someone is a fifth reading, after broken and before working/resting/asleep",
+      slotState?.({ lastOutput: NOW - 29 * 60_000, awaiting: "main" }, NOW, false) === "wait"
+        && slotState?.({ lastOutput: NOW - 31 * 60_000, awaiting: "main" }, NOW, false) === "wait"
+        && slotState?.({ lastOutput: NOW, awaiting: "main" }, NOW, true) === "wait"
+        && slotState?.({ lastOutput: NOW - 60_000, awaiting: "owner" }, NOW, true) === "wait owner"
+        && slotState?.({ lastOutput: NOW, awaiting: "owner", stalled: true }, NOW, true) === "bad"
+        && slotState?.({ lastOutput: NOW - 1_000, awaiting: "main", agent: "no-pane" }, NOW, false) === "bad",
+      "slotState wait");
 
     const deps = cut("const isActive = ", "// A LANE'S ONE ADDRESS")
       + cut("function projectOf(", "// Eight hues");
@@ -3016,22 +3068,32 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     // so each state must change the GEOMETRY of the glyph — and resting and asleep must not be the
     // same means twice (two brightnesses of one dot is the failure this forbids).
     {
-      // the phone's top island reads the same four shapes from the SAME rule (`, #mtop .act…`), so a
-      // second selector in that rule is allowed — a second rule of its own would not be found here
-      const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}(?:,\\s*#mtop \\.act${sel})?\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
+      // the phone's top island and its sheets read the same four shapes from the SAME rule
+      // (`, #mtop .act…, #msheet .act…`), so those selectors in that rule are allowed — a second rule
+      // of its own would not be found here
+      const glyph = (sel: string) => new RegExp(`\\.slot \\.act${sel}(?:,\\s*#mtop \\.act${sel})?(?:,\\s*#msheet \\.act${sel})?\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
       const base = glyph(""), rest = glyph("\\.rest"), sleep = glyph("\\.sleep"), bad = glyph("\\.bad");
+      const wait = glyph("\\.wait"), waitOwner = glyph("\\.wait\\.owner");
       check("client: the four states differ in SHAPE, and resting and asleep differ from each other",
         /border-radius: 50%/.test(base) && /background: var\(/.test(base)
           && /background: none/.test(rest) && /box-shadow: inset/.test(rest)
           && /8px 2px/.test(sleep) && !/box-shadow/.test(sleep)
           && /clip-path: polygon/.test(bad),
         JSON.stringify({ base: base.trim(), rest: rest.trim(), sleep: sleep.trim(), bad: bad.trim() }));
+      // the fifth, waiting: a shape of its own (not the cross's polygon), in ink — and the owner's
+      // case changes the COLOUR only, to --q-wait, the one ink that means "waits for you" (G0.2)
+      const polygonOf = (g: string) => /clip-path: (polygon\([^)]*\))/.exec(g)?.[1] ?? "";
+      check("client: waiting is a fifth shape in ink; only waiting on the owner turns it --q-wait",
+        /clip-path: polygon/.test(wait) && polygonOf(wait) !== polygonOf(bad) && !/box-shadow/.test(wait)
+          && /background: var\(--chat-mute\)/.test(wait)
+          && waitOwner.trim() === "background: var(--q-wait);",
+        JSON.stringify({ wait: wait.trim(), waitOwner: waitOwner.trim() }));
       // ONE BOX FOR ALL FOUR (owner 2026-09-21: „[Zitat entfernt]“, on the 4/8 grid). The shape is
       // what changes; a state whose rule set its own width or height would move the row the moment a
       // session falls asleep — the old 9×2 bar was exactly that.
       check("client: the four state glyphs share one 8px box — no state sets its own width or height",
         /width: 8px; height: 8px/.test(base)
-          && [rest, sleep, bad].every((g) => !/(^|[;\s])(width|height):/.test(g)),
+          && [rest, sleep, bad, wait, waitOwner].every((g) => !/(^|[;\s])(width|height):/.test(g)),
         JSON.stringify({ base: base.trim(), sleep: sleep.trim() }));
       check("client: the row paints one of those four and names it in words",
         /el\("span", `act \$\{state\}`\)/.test(rowSrc) && /live\.title = STATE_WORD\[state\]/.test(rowSrc)
@@ -3149,7 +3211,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       // showRiskPreview) is gone on purpose with the six copies. Same reachability guarantee.
       const drawerClosedByHelper = dlgSrc !== null
         && dlgSrc.includes("closeDrawer?.()")
-        && /onDialogWillOpen\(\(\) => setDrawer\(false\)\)/.test(cliSrc)
+        && /onDialogWillOpen\(\(\) => (?:setDrawer\(false\)|\{ setDrawer\(false\);[^}]*\})\)/.test(cliSrc)
         && /askRisk\(/.test(riskSrc);
       // Since row 69bdf591 the phone reaches it one tap further: the strip's ✕ hides under
       // MOBILE_MQ and the row's ⋯ menu carries "Kill session" — the same killSlot, last in the list.
@@ -5637,13 +5699,17 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const section = (word) => { const b = [...(W()?.querySelectorAll('[data-settings-tab]') ?? [])].find((x) => x.textContent === word); return b ? W().querySelector('.setsec[data-sec="' + b.dataset.settingsTab + '"]') ?? [...W().querySelectorAll('.setsec')][[...W().querySelectorAll('[data-settings-tab]')].indexOf(b)] : null; };
       return { W, shown, focusables, desc, inside, row, section };
     })()`;
-    const gear = `[...document.querySelectorAll('#mset, .panegear')].find((e) => window.__fx.shown(e))`;
-    // the phone upright keeps the gear behind the top island's ⋯ (index.html, the island block): the
-    // client is ready when either is drawn, and the gear is reached through pill → ⋯ there
-    const ready = `(${gear}) || window.__fx.shown(document.querySelector('#mpill'))`;
+    const deskGear = `[...document.querySelectorAll('#mset, .panegear')].find((e) => window.__fx.shown(e))`;
+    // the phone upright keeps the gear as the row "Einstellungen" of the tools sheet behind the top
+    // island's ⋯ (src/client.ts#renderSheet): the client is ready when the gear or the pill is drawn,
+    // the gear is reached through pill → ⋯ → the row, and the focus goes back to the pill
+    const gear = `((${deskGear}) ?? document.querySelector('#msheet [data-tool="settings"]'))`;
+    const opener = `((${deskGear}) ?? document.querySelector('#mpill'))`;
+    const ready = `(${deskGear}) || window.__fx.shown(document.querySelector('#mpill'))`;
     const toGear = async () => {
-      if (await evaluate<boolean>(`!!(${gear})`)) return;
+      if (await evaluate<boolean>(`!!(${deskGear})`)) return;
       await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#mmore')`);
+      await wait("document.body.classList.contains('msheet')");
     };
     const results: SettingsDomResult[] = [];
     for (const [width, height] of [[1200, 900], [390, 844]] as const) {
@@ -5866,7 +5932,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await click(`window.__fx.W().querySelector('.shellclose')`);
       await evaluate(`[...window.__fx.W().querySelectorAll('.setdiscard button')].find((b) => /Verwerfen/.test(b.textContent)).focus()`);
       await key("Enter");
-      const dropped = { closed: await evaluate<boolean>("!window.__fx.W()"), onGear: await evaluate<boolean>(`document.activeElement === ${gear}`),
+      const dropped = { closed: await evaluate<boolean>("!window.__fx.W()"), onGear: await evaluate<boolean>(`document.activeElement === ${opener}`),
         writes: settingsWrites(sinceOpen).length };
       facts.dropped = dropped;
       claims["Verwerfen closes with zero writes and returns the focus to the opener"] = dropped.closed && dropped.onGear && dropped.writes === 0;
@@ -5910,10 +5976,13 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       facts.repaint = { polls: fx.sessions - polls, focus: await evaluate<string>("window.__fx.desc(document.activeElement)") };
       claims["two background polls later the focus is still on the same control"] = fx.sessions - polls >= 2 && await evaluate<boolean>(`document.activeElement === ${capInput}`);
       await key("Escape");
-      claims["Escape without staged values closes and returns the focus to the opener"] = await evaluate<boolean>(`!window.__fx.W() && document.activeElement === ${gear}`);
-      await key("Enter"); // the opener is focused: Enter reopens through its native activation
+      claims["Escape without staged values closes and returns the focus to the opener"] = await evaluate<boolean>(`!window.__fx.W() && document.activeElement === ${opener}`);
+      // the opener is focused: at the desk Enter reopens through its native activation; upright the
+      // opener is the pill, and the window is one ⋯ and one row away again
+      if (await evaluate<boolean>(`!!(${deskGear})`)) await key("Enter");
+      else { await toGear(); await click(gear); }
       await wait("window.__fx.W()");
-      claims["reopening by keyboard focuses the window again, one window only"] = await evaluate<boolean>("document.querySelectorAll('#shell-settings').length === 1 && window.__fx.inside()");
+      claims["reopening (by keyboard at the desk, through the sheet upright) focuses the window again, one window only"] = await evaluate<boolean>("document.querySelectorAll('#shell-settings').length === 1 && window.__fx.inside()");
 
       // --- 8. the unknown/old server: no plan, no `bases`, no autos flag → said, never guessed
       await key("Escape");
@@ -6025,7 +6094,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
 // (card 929fdbe7, Grammatik G2.4): two sessions in two panes, native clicks, native typing, a fake
 // socket per pane and an intercepted /send — nothing reaches a server. Every claim reads the DOM,
 // the socket bytes or the request the page sent, never the source. At 390 px the phone shows one
-// pane, so the same claims run over a slot switch from the drawer. Exported so a lane can drive it
+// pane, so the same claims run over a slot switch from the Sessions sheet. Exported so a lane can drive it
 // with an artefact folder (screenshots + screencast frames) and against a mutated copy of the tree.
 interface ComposerTargetDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runComposerTargetDom(sourceRoot: string, artifacts?: string): Promise<ComposerTargetDomResult[]> {
@@ -6320,24 +6389,22 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         await shot(width, "chat-view");
         await click("window.__fx.pane(0).querySelector('.viewtoggle')");
       } else {
-        // --- the phone: one pane, the slot switch comes from the drawer; the keyboard never opens by itself
-        // the drawer opens from the top island: the pill opens it, its slot button hands over to ☰
+        // --- the phone: one pane, the slot switch comes from the Sessions sheet; the keyboard never opens by itself
+        // the sheet opens from the top island: the pill opens it, its slot button opens the sheet
         await click("document.querySelector('#mpill')");
         await click("document.querySelector('#mslot')");
-        // the drawer slides in: the row is clicked where it finally rests, not mid-flight
-        await wait("document.body.classList.contains('drawer') && document.querySelector('#slots .slot[data-slot=\"2\"]')?.getBoundingClientRect().left >= 0", 3000);
-        await settle(400);
-        await click("document.querySelector('#slots .slot[data-slot=\"2\"] .lbl') ?? document.querySelector('#slots .slot[data-slot=\"2\"]')");
+        await wait("document.body.classList.contains('msheet') && !!document.querySelector('#msheet .mshrow[data-slot=\"2\"]')", 3000);
+        await settle(200);
+        await click("document.querySelector('#msheet .mshrow[data-slot=\"2\"]')");
         await wait("document.querySelector('#comptarget')?.dataset.slot === '2'", 3000);
         facts.switched = { where: await evaluate<string>("window.__fx.where()"), draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
-        claims["a slot switch from the drawer moves the target to slot 2 · Beta with Beta's own draft"] = names((facts.switched as { target: Target }).target, 2, 2000, "Beta")
+        claims["a slot switch from the Sessions sheet moves the target to slot 2 · Beta with Beta's own draft"] = names((facts.switched as { target: Target }).target, 2, 2000, "Beta")
           && (facts.switched as { draft: string }).draft === "";
         claims["the switch opens no keyboard (the composer does not take the focus)"] = (facts.switched as { where: string }).where !== "composer";
-        // …and the drawer slides out before the next tap: a tap during the slide lands on a free row
-        // under the finger and opens the founding window (measured on this probe, 2026-10-02)
-        const drawerGone = await wait("!document.body.classList.contains('drawer') && document.querySelector('#side').getBoundingClientRect().right <= 0", 3000);
+        // …and the sheet is gone before the next tap (it has no slide: nothing lands on a row mid-flight)
+        const sheetGone = await wait("!document.body.classList.contains('msheet') && !window.__fx.shown(document.querySelector('#msheetwrap'))", 3000);
         await settle(300);
-        claims["the slot switch closes the drawer"] = drawerGone;
+        claims["the slot switch closes the Sessions sheet"] = sheetGone;
         await click("document.querySelector('#input')");
         await typeText("phone beta");
         const shownAtSend = await tgt();
@@ -6375,7 +6442,11 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
 // that loses 336 px (iOS upright with the suggestion row) and fires its resize — so the real
 // sync path sets body.keyboard-open and --vvh. Every claim reads the DOM, the socket bytes or the
 // page's geometry, never the source. 1200 × 900 and the phone on its side (844 × 390, touch) only
-// claim that no island exists there; their pixels are compared before/after by the lane, not here.
+// claim that no island and no sheet exists there and what the field's placeholder reads; their pixels
+// are compared before/after by the lane, not here. Upright the slot button and ⋯ open the sheets
+// Sessions and Werkzeuge (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene Blätter"):
+// their place, words, 40-px targets, and that each row does what the board's own control does;
+// at 390 and at 360 × 780 that their tool row and segments break into lines with no word cut off.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 // `detail` holds the facts one claim was judged on — the whole `facts` outgrows a check line
 interface PhoneIslandDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown>; detail: Record<string, unknown> }
@@ -6388,12 +6459,35 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
   const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  const alpha = { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000, model: "claude-opus-5-5", effort: "high", lastOutput: 0 };
   const slots = [
-    { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000, model: "claude-opus-5-5", effort: "high", lastOutput: 0 },
+    alpha,
     { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, lastOutput: 0 },
     ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
   ];
-  const fx = { sessions: 0, inputs: [] as string[] };
+  const fx = { sessions: 0, inputs: [] as string[], posts: [] as { path: string; body: string }[] };
+  // one harness with the composer's two switches, so the tools sheet has model and effort to show —
+  // its pick list is the register's (model-register.ts), as the server hands it out — the register's
+  // statuses with it (server.ts /api/harnesses → modelRegistry), so a superseded id reads as one
+  const HARNESSES = { harnesses: [{ id: "claude", default: true, note: null, effortLevels: ["low", "medium", "high", "xhigh"],
+    models: modelsForHarness("claude"),
+    supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
+    modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) };
+  // THE PICK LIST OFFERS ONLY TODAY'S MODELS (card "Der Modellwaehler bietet nur noch Modelle an, die
+  // man heute waehlen soll"): a session on Opus 5.5 is offered no id the register marks superseded;
+  // one running ON such an id (claude-opus-5) keeps it, marked current and carrying its notice. The
+  // fixture's slot 1 is moved onto claude-opus-5 through the 2 s poll and back, the way a /model
+  // typed in the pane would reach the record.
+  const superseded = new Set(MODEL_REGISTER.filter((e) => e.harness === "claude" && e.status === "superseded").map((e) => e.id));
+  const todayNames = [...new Set(modelsForHarness("claude").filter((m) => !superseded.has(m)).map((m) => modelLabel(m).split(" · ")[0]))];
+  const OLD_MODEL = "claude-opus-5";
+  const oldOffer = [...new Set(modelsForHarness("claude").filter((m) => !superseded.has(m) || m === OLD_MODEL).map((m) => modelLabel(m).split(" · ")[0]))];
+  const OLD_NOTICE = `superseded → ${MODEL_REGISTER.find((e) => e.id === OLD_MODEL)?.supersededBy}`;
+  const moveAlpha = async (model: string) => {
+    alpha.model = model;
+    const seen = fx.sessions, until = Date.now() + 8000;
+    while (fx.sessions <= seen + 1 && Date.now() < until) await Bun.sleep(50);
+  };
   // the bytes the nine keys must send — src/client.ts KEYS, in the row's order (^C first)
   const KEY_BYTES = "\x03\x1b\t\x1b[Z\x1b[A\x1b[B\x1b[D\x1b[C\r";
   const FAKE = `(() => { window.__ws = [];
@@ -6461,14 +6555,14 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
       if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
       if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
-      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
       const p = new URL(request.url).pathname;
-      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (request.method === "POST") { fx.posts.push({ path: p, body: request.postData ?? "" }); return void json(requestId, { ok: true }); }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
       if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
       if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: 10 * 60_000, chips: ["/review", "/compact"], slots, tasks: [] }); }
-      if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
+      if (p === "/api/harnesses") return void json(requestId, HARNESSES);
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
     let targetId = "";
@@ -6533,6 +6627,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (!booted) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
       await settle(500);
     };
+    const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(400); };
     const results: PhoneIslandDomResult[] = [];
 
     // --- the desktop and the phone on its side: no island, the heads they had
@@ -6544,12 +6639,96 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         side: await shown("#side"), bar: await box("#bar") };
       const seen = facts.seen as { mtop: boolean; grip: boolean; mhead: boolean; mread: boolean; side: boolean };
       claims["no island exists here: neither the top island nor the grip is drawn"] = !seen.mtop && !seen.grip;
+      facts.placeholder = await evaluate<string>("document.querySelector('#input').placeholder");
+      facts.sheet = await shown("#msheetwrap");
+      claims[`no sheet is drawn here, and the field reads "Prompt für Alpha …"${width === 1200 ? " (Enter sendet)" : ""}`] = !facts.sheet
+        && facts.placeholder === (width === 1200 ? "Prompt für Alpha … (Enter sendet)" : "Prompt für Alpha …");
       if (width === 1200) claims["the desktop keeps its sidebar and no phone head"] = seen.side && !seen.mhead && !seen.mread;
       else claims["the phone on its side keeps the reading mode (#mread) and no phone head"] = facts.coarse === true && seen.mread && !seen.mhead;
       await shot(`${width}-start`);
+      if (width === 1200) {
+        // the model switch at the field, in the conversation view: its list as the popover draws it
+        const LIST = `[...document.querySelectorAll('#compopts .optpop.model .cmdmodel')].map((b) => ({ id: b.dataset.id, text: b.textContent, cur: b.classList.contains('cur') }))`;
+        type ListRead = { id: string; text: string; cur: boolean }[];
+        const openSwitch = async () => {
+          if (!await evaluate<boolean>("!!document.querySelector('#compopts .optpop.model.open')")) await tap("document.querySelector('#compopts .optswrap.model .optsw')");
+          await wait("!!document.querySelector('#compopts .optpop.model.open .cmdmodel')", 3000);
+          await settle(150);
+          return evaluate<ListRead>(LIST);
+        };
+        await tap("window.__fx.pane().querySelector('.viewtoggle')");
+        await wait("window.__fx.pane().classList.contains('chat') && !!document.querySelector('#compopts .optswrap.model')", 3000);
+        const today = await openSwitch();
+        await shot("1200-modell-schalter");
+        const todayClaim = "the model switch at the field offers no superseded model (neither Opus 5 nor Sonnet 5): one entry per name of today's models, Opus 5.5 current";
+        claims[todayClaim] = !!today?.length && today.every((m) => !superseded.has(m.id))
+          && JSON.stringify(today.map((m) => modelLabel(m.id).split(" · ")[0])) === JSON.stringify(todayNames)
+          && JSON.stringify(today.filter((m) => m.cur).map((m) => m.id)) === JSON.stringify(["claude-opus-5-5"]);
+        detail[todayClaim] = { today, todayNames };
+        await escape();
+        await moveAlpha(OLD_MODEL);
+        await settle(400);
+        const old = await openSwitch();
+        const oldVal = await evaluate<string>("document.querySelector('#compopts .optswrap.model .optval')?.textContent ?? ''");
+        await shot("1200-modell-schalter-opus5");
+        const oldClaim = `a session running on ${OLD_MODEL} keeps it in the switch's list, current and with its notice (${OLD_NOTICE}); no other superseded model is offered`;
+        claims[oldClaim] = !!old?.length && JSON.stringify(old.filter((m) => superseded.has(m.id)).map((m) => m.id)) === JSON.stringify([OLD_MODEL])
+          && old.some((m) => m.id === OLD_MODEL && m.cur && m.text.endsWith(` · ${OLD_NOTICE}`)) && oldVal.endsWith(` · ${OLD_NOTICE}`);
+        detail[oldClaim] = { old, oldVal };
+        await escape();
+        await moveAlpha("claude-opus-5-5");
+        facts.modelSwitch = { today, old, oldVal };
+      }
       facts.missing = [...missing]; missing.length = 0;
       results.push({ width, height, claims, facts, detail });
     }
+
+    // NOTHING CUT OFF (card "Auf dem Telefon ist in den Blaettern Sessions und Werkzeuge kein Wort
+    // mehr abgeschnitten"): the Sessions sheet's tool row and the tools sheet's model and effort
+    // segments break into a second line instead of scrolling sideways. Per row: nothing scrolls
+    // sideways; per tool and per segment: it stands whole (scrollWidth ≤ clientWidth) and its edges
+    // lie inside its row and inside the sheet — a word scrolled off the edge, or clipped by its own
+    // row while still inside the sheet (the model row's "Son…" beside Übernehmen), fails there.
+    type FitRead = { sheet: { l: number; r: number }; rows: { row: string; sw: number; cw: number; l: number; r: number;
+      items: { word: string; sw: number; cw: number; l: number; r: number; top: number }[] }[] };
+    const FIT = `(() => { const f = window.__fx, sh = document.querySelector('#msheet'), s = sh.getBoundingClientRect();
+      const word = (b) => (b.querySelector('.mshw')?.textContent ?? b.textContent).trim();
+      return { sheet: { l: Math.round(s.left), r: Math.round(s.right) },
+        rows: [...sh.querySelectorAll('.mshtray, .mshsegs')].map((row) => ({ row: row.classList.contains('mshtray') ? 'tray' : row.closest('.mshseg').dataset.field,
+          sw: row.scrollWidth, cw: row.clientWidth, l: Math.round(row.getBoundingClientRect().left), r: Math.round(row.getBoundingClientRect().right),
+          items: [...row.children].filter(f.shown).map((b) => { const r = b.getBoundingClientRect();
+            return { word: word(b), sw: b.scrollWidth, cw: b.clientWidth, l: Math.round(r.left), r: Math.round(r.right), top: Math.round(r.top) }; }) })) }; })()`;
+    // Übernehmen as a finger meets it: brought into view the way the list scrolls (up and down only),
+    // then its height, its edges inside the sheet and the target at its centre; the list goes back up
+    type ApplyRead = { field: string; h: number; l: number; r: number; hit: boolean }[];
+    const APPLY = `(() => { const sh = document.querySelector('#msheet'), s = sh.getBoundingClientRect();
+      const out = [...sh.querySelectorAll('.mshseg')].map((row) => { const b = row.querySelector('.mshapply');
+        b.scrollIntoView({ block: 'nearest', inline: 'nearest' }); const r = b.getBoundingClientRect();
+        return { field: row.dataset.field, h: Math.round(r.height), l: Math.round(r.left - s.left), r: Math.round(s.right - r.right),
+          hit: b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; });
+      sh.querySelector('.mshbody').scrollTop = 0; return out; })()`;
+    const fitClaims = (claims: Record<string, boolean>, detail: Record<string, unknown>, tag: string, sheet: string, fit: FitRead, rows: string[]) => {
+      for (const name of rows) {
+        const row = fit.rows.find((r) => r.row === name);
+        const what = name === "tray" ? "the tools" : `the ${name === "model" ? "Modell" : "Effort"} segments`;
+        const rowClaim = `${tag}${sheet} · ${what} break into lines, nothing scrolls sideways`;
+        claims[rowClaim] = !!row && row.items.length > 0 && row.sw <= row.cw;
+        detail[rowClaim] = row ?? fit;
+        if (!row) continue;
+        for (const it of row.items) {
+          const one = `${tag}${sheet} · "${it.word}" stands whole, its right edge inside its row and the sheet`;
+          claims[one] = it.sw <= it.cw && it.l >= Math.max(row.l, fit.sheet.l) && it.r <= Math.min(row.r, fit.sheet.r);
+          detail[one] = { ...it, row: { l: row.l, r: row.r }, sheet: fit.sheet };
+        }
+      }
+    };
+    const applyClaim = (claims: Record<string, boolean>, detail: Record<string, unknown>, tag: string, apply: ApplyRead) => {
+      const c = `${tag}Werkzeuge · Übernehmen stays reachable beside or under both segment rows: 40 px high, inside the sheet, met by a finger at its centre`;
+      claims[c] = apply?.length === 2 && apply.every((a) => a.h >= 40 && a.l >= 0 && a.r >= 0 && a.hit);
+      detail[c] = apply;
+    };
+    const sheetIs = (which: string) => `document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === '${which}'`;
+    const openVia = async (id: string, which: string) => { await tap("document.querySelector('#mpill')"); await tap(`document.querySelector('${id}')`); const ok = await wait(sheetIs(which), 3000); await settle(250); return ok; };
 
     // --- the phone upright, 390 × 844: without and with the on-screen keyboard
     const W = 390, H = 844;
@@ -6643,32 +6822,250 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         if (undo) await undo();
         return { was, done, closed };
       };
-      const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(400); };
       const actions: Record<string, { was: boolean; done: boolean; closed: boolean }> = {};
-      actions.slot = await act("#mslot", "document.body.classList.contains('drawer')", async () => { await escape(); await wait("!document.body.classList.contains('drawer')"); await settle(300); });
+      const sheetGone = async () => { await escape(); await wait("!document.body.classList.contains('msheet')"); await settle(200); };
+      actions.slot = await act("#mslot", sheetIs("sessions"), sheetGone);
       actions.view = await act("#mview", "window.__fx.pane().classList.contains('chat')");
-      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').textContent"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')") };
+      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').textContent"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')"),
+        placeholder: await evaluate<string>("document.querySelector('#input').placeholder") };
       actions.viewBack = await act("#mview", "!window.__fx.pane().classList.contains('chat')");
       actions.info = await act("#minfo", "window.__fx.shown(document.querySelector('#shell-board'))", escape);
       actions.hist = await act("#mhist", "getComputedStyle(document.querySelector('#hist')).display === 'flex'", escape);
-      if (keyboard) { await tap("document.querySelector('#input')"); await wait("document.body.classList.contains('keyboard-open')", 2000); }
-      actions.more = await act("#mmore", "document.body.classList.contains('keyboard-options')");
-      await settle(300); // a keyboard that left with the focus would have folded the options away by now (sync)
-      // Live is a touch affordance (index.html: #comptray > #live only under any-pointer: coarse)
-      facts.more = { gear: await evaluate<boolean>("[...document.querySelectorAll('.panegear')].some((e) => window.__fx.shown(e))"),
-        live: await shown("#live"), still: await evaluate<boolean>("document.body.classList.contains('keyboard-options')"),
-        where: await evaluate<string>("window.__fx.where()"), anyCoarse: await evaluate<boolean>("matchMedia('(any-pointer: coarse)').matches"),
-        tools: await box("document.querySelector('#panes .pane .panetools')") };
-      await tapAt({ x: W / 2, y: Math.round((bottom - 60) * 0.6) }, "outside ⋯");
-      const moreClosed = await evaluate<boolean>("!document.body.classList.contains('keyboard-options')");
+      actions.more = await act("#mmore", sheetIs("tools"), sheetGone);
       facts.actions = actions;
-      const actionsClaim = `${tag}every action closes the island and does what the board's own control does (drawer, view, ℹ, History, ⋯)`;
+      const actionsClaim = `${tag}every action closes the island and does what it names (Sessions sheet, view, ℹ, History, tools sheet)`;
       claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
       detail[actionsClaim] = { actions, chatView: facts.chatView, missing: [...missing] };
-      const moreClaim = `${tag}⋯ brings the corner group's tools (with the gear) and, on a touch screen, Live; a tap outside folds them away`;
-      const more = facts.more as { gear: boolean; live: boolean; still: boolean; where: string; anyCoarse: boolean };
-      claims[moreClaim] = more.gear && more.still && more.live === more.anyCoarse && moreClosed && (!keyboard || more.where === "#input");
-      detail[moreClaim] = { ...more, moreClosed };
+      facts.placeholder = { term: await evaluate<string>("document.querySelector('#input').placeholder"), chat: (facts.chatView as { placeholder: string }).placeholder };
+      claims[`${tag}the field reads "Prompt für Alpha …" in the terminal and in the conversation`] =
+        (facts.placeholder as { term: string; chat: string }).term === "Prompt für Alpha …" && (facts.placeholder as { term: string; chat: string }).chat === "Prompt für Alpha …";
+
+      // THE TWO SHEETS (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene Blätter",
+      // docs/design/mobil-insel-notiz.md §1 and §3). With the keyboard up, the field holds it until a
+      // sheet opens; the simulated keyboard stays at 336 px, the case where it has not left yet.
+      const kbUp = async () => { if (!keyboard) return; await tap("document.querySelector('#input')"); await wait("document.body.classList.contains('keyboard-open')", 2000); await settle(200); };
+      // the sheet as a finger meets it: boxes, its words, the targets under 40 px and those a finger
+      // at the centre misses (a target scrolled out of its own row or list is not counted — it scrolls in)
+      const SHEET = `(() => { const f = window.__fx, sh = document.querySelector('#msheet');
+        const btns = [...sh.querySelectorAll('button')].filter(f.shown);
+        // excused only along the axis its row or list scrolls: the tool rows and segments sideways,
+        // the list up and down — a row cut off sideways in the list is a fault, not a scroll
+        const inView = (b) => { const r = b.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+          const box = b.parentElement.closest('.mshtray, .mshbody, .mshsegs'); if (!box) return true;
+          const c = box.getBoundingClientRect();
+          return box.classList.contains('mshbody') ? y >= c.top && y <= c.bottom : x >= c.left && x <= c.right; };
+        const word = (b) => (b.querySelector('.mshw')?.textContent ?? b.textContent).trim();
+        const body = sh.querySelector('.mshbody');
+        return { sheet: f.box(sh), shade: f.box(document.querySelector('#msheetshade')), where: f.where(),
+          sideways: !!body && body.scrollWidth > body.clientWidth,
+          keyboardOpen: document.body.classList.contains('keyboard-open'), islandOpen: document.body.classList.contains('mopen'),
+          head: [...sh.querySelectorAll('.mshhead > *')].map((e) => e.textContent),
+          tray: [...sh.querySelectorAll('.mshtray > *')].filter(f.shown).map((b) => word(b) + (b.querySelector('.mshn')?.textContent ?? '') + (b.getAttribute('aria-pressed') === 'true' ? '*' : '')),
+          secs: [...sh.querySelectorAll('.mshsec')].map((e) => e.textContent),
+          rows: [...sh.querySelectorAll('.mshbody .mshrow')].filter(f.shown).map((b) => b.dataset.slot
+            ? { addr: b.querySelector('.maddr')?.textContent, name: b.querySelector('.mshname')?.textContent, shape: b.querySelector('.act')?.className ?? '', current: b.getAttribute('aria-current') === 'true' }
+            : { word: word(b), value: b.querySelector('.mshval')?.textContent ?? null, disabled: b.disabled }),
+          segs: [...sh.querySelectorAll('.mshseg')].map((r) => ({ field: r.dataset.field, values: [...r.querySelectorAll('.mshsegs button')].map((b) => b.textContent + (b.getAttribute('aria-pressed') === 'true' ? '*' : '') + (b.classList.contains('staged') ? '+' : '')),
+            apply: !r.querySelector('.mshapply').disabled })),
+          small: btns.filter((b) => b.getBoundingClientRect().height < 40).map(word),
+          missed: btns.filter((b) => inView(b) && (() => { const r = b.getBoundingClientRect(); return !b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })()).map(word) }; })()`;
+      type SheetRead = { sheet: Box; shade: Box; where: string; sideways: boolean; keyboardOpen: boolean; islandOpen: boolean; head: string[]; tray: string[]; secs: string[];
+        rows: { addr?: string; name?: string; shape?: string; current?: boolean; word?: string; value?: string | null; disabled?: boolean }[];
+        segs: { field: string; values: string[]; apply: boolean }[]; small: string[]; missed: string[] };
+      const readSheet = () => evaluate<SheetRead>(SHEET);
+      // a row of the open sheet by its word (or a session row by its slot), tapped where a finger meets it
+      const rowSel = (word: string) => `[...document.querySelectorAll('#msheet button')].find((b) => (b.querySelector('.mshw')?.textContent ?? b.textContent).trim() === ${JSON.stringify(word)})`;
+      // a word is first brought into view, as a finger would scroll the list to it
+      const tapRow = async (word: string) => { await evaluate(`${rowSel(word)}?.scrollIntoView({ inline: 'nearest', block: 'nearest' })`); await settle(100); return tap(rowSel(word)); };
+      const placed = (r: SheetRead) => !!r.sheet && !!r.shade && r.sheet.x === 0 && r.sheet.r === W && r.sheet.b === bottom
+        && r.shade.x === 0 && r.shade.y === 0 && r.shade.w === W && r.shade.b === bottom && !r.islandOpen;
+
+      // --- the Sessions sheet
+      await kbUp();
+      const sessOpened = await openVia("#mslot", "sessions");
+      const sess = await readSheet();
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-sessions`);
+      facts.sessions = sess;
+      const sessPlaced = `${tag}the slot button opens the sheet Sessions: full width, set at the foot of the visible screen, over a shade; the island closes`;
+      claims[sessPlaced] = sessOpened && placed(sess);
+      detail[sessPlaced] = { sheet: sess.sheet, shade: sess.shade, bottom, islandOpen: sess.islandOpen };
+      claims[`${tag}the sheet takes the focus — a keyboard goes with it`] = sess.where === "#msheet" && !sess.keyboardOpen;
+      const drawerHidden = await evaluate<boolean>("['attnbtn', 'opsbtn', 'devbtn'].every((id) => document.getElementById(id).style.display === 'none')");
+      const trayClaim = `${tag}its tools stand in words in the drawer's order, only those the drawer shows (Für dich, Eingang, Geräte hidden here), Datensparen off`;
+      claims[trayClaim] = drawerHidden && JSON.stringify(sess.tray) === JSON.stringify(["Tasks", "Lands", "Protokoll", "Datensparen"]);
+      detail[trayClaim] = { tray: sess.tray, drawerHidden };
+      const rowsClaim = `${tag}one row per session — address, name, state shape — the current one marked, and "Neue Session" last`;
+      const sr = sess.rows;
+      claims[rowsClaim] = sr.length === 3 && sr[0].addr === "1" && sr[0].name === "Alpha" && sr[0].current === true && /\bact (work|rest|sleep|bad)\b/.test(sr[0].shape ?? "")
+        && sr[1].addr === "2" && sr[1].name === "Beta" && sr[1].current === false && /\bact (work|rest|sleep|bad)\b/.test(sr[1].shape ?? "")
+        && sr[2].word === "Neue Session" && sr[2].disabled === false && sess.head[0] === "Sessions" && sess.head[1] === "2 offen";
+      detail[rowsClaim] = { rows: sr, head: sess.head };
+      const sessTargets = `${tag}every target in the Sessions sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      claims[sessTargets] = sess.small.length === 0 && sess.missed.length === 0 && !sess.sideways;
+      detail[sessTargets] = { small: sess.small, missed: sess.missed, sideways: sess.sideways };
+      fitClaims(claims, detail, tag, "Sessions", await evaluate<FitRead>(FIT), ["tray"]);
+      // Escape closes and hands the focus to the pill; a tap on the shade closes too
+      await escape();
+      const escClosed = await evaluate<boolean>("!document.body.classList.contains('msheet')"), escWhere = await evaluate<string>("window.__fx.where()");
+      await openVia("#mslot", "sessions");
+      await tapAt({ x: W / 2, y: 40 }, "shade");
+      const shadeClosed = await evaluate<boolean>("!document.body.classList.contains('msheet')");
+      facts.sessClose = { escClosed, escWhere, shadeClosed };
+      claims[`${tag}Escape closes the sheet and gives the focus to the pill; a tap on the shade closes it too`] = escClosed && escWhere === "#mpill" && shadeClosed;
+      // each row does what the board's own control does: a session row switches (showSlot) …
+      await openVia("#mslot", "sessions");
+      await tap(`document.querySelector('#msheet .mshrow[data-slot="2"]')`);
+      const toBeta = await wait("document.querySelector('#comptarget')?.dataset.slot === '2' && document.querySelector('#mtitle').textContent === 'Beta'", 3000);
+      facts.toBeta = { toBeta, sheet: await shown("#msheetwrap"), placeholder: await evaluate<string>("document.querySelector('#input').placeholder") };
+      await openVia("#mslot", "sessions");
+      await tap(`document.querySelector('#msheet .mshrow[data-slot="1"]')`);
+      const toAlpha = await wait("document.querySelector('#comptarget')?.dataset.slot === '1' && document.querySelector('#mtitle').textContent === 'Alpha'", 3000);
+      await settle(300);
+      const tb = facts.toBeta as { toBeta: boolean; sheet: boolean; placeholder: string };
+      claims[`${tag}a session row switches the pane (showSlot), closes the sheet, and the field reads "Prompt für Beta …"`] = tb.toBeta && !tb.sheet && tb.placeholder === "Prompt für Beta …" && toAlpha;
+      // … Datensparen is the drawer's own switch …
+      await openVia("#mslot", "sessions");
+      await tapRow("Datensparen");
+      const saverOn = await evaluate<boolean>("document.querySelector('#saverbtn').classList.contains('active') && localStorage.getItem('fleet.datasaver') === '1' && !document.body.classList.contains('msheet')");
+      await openVia("#mslot", "sessions");
+      const pressed = (await readSheet()).tray;
+      await tapRow("Datensparen");
+      const saverOff = await evaluate<boolean>("!document.querySelector('#saverbtn').classList.contains('active')");
+      facts.saver = { saverOn, pressed, saverOff };
+      claims[`${tag}Datensparen switches the drawer's data saver and reads its state`] = saverOn && pressed.includes("Datensparen*") && saverOff;
+      // … and "Neue Session" opens the founding window on the first free place
+      await openVia("#mslot", "sessions");
+      await tap(rowSel("Neue Session"));
+      const founding = await wait("window.__fx.shown(document.querySelector('#shell-found'))", 3000);
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-neu`);
+      await escape();
+      await wait("!document.querySelector('#shell-found') || !window.__fx.shown(document.querySelector('#shell-found'))", 3000);
+      facts.founding = founding;
+      claims[`${tag}"Neue Session" opens the founding window`] = founding;
+
+      // --- the tools sheet, in the terminal
+      await kbUp();
+      const ws0 = await evaluate<number>("window.__ws.filter((w) => w.url.includes('/ws/1?')).length");
+      const toolsOpened = await openVia("#mmore", "tools");
+      const tt = await readSheet();
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-werkzeuge-terminal`);
+      facts.toolsTerm = tt;
+      const anyCoarse = await evaluate<boolean>("matchMedia('(any-pointer: coarse)').matches");
+      const termWords = ["History", "Schedule", ...(anyCoarse ? ["Live"] : []), "Referenzen erklären", "Neu verbinden", "Schrift und Spalte", "Einstellungen"];
+      const toolsPlaced = `${tag}⋯ opens the sheet Werkzeuge: full width, at the foot of the visible screen, over a shade; head address and name`;
+      claims[toolsPlaced] = toolsOpened && placed(tt) && tt.where === "#msheet" && tt.head[0] === "1" && tt.head[1] === "Alpha";
+      detail[toolsPlaced] = { sheet: tt.sheet, shade: tt.shade, bottom, head: tt.head, where: tt.where };
+      const termClaim = `${tag}in the terminal: Diese Session (History, Schedule, Live, Referenzen erklären, Neu verbinden) and Dieses Gerät (Schrift und Spalte, Einstellungen) — no model, no effort, no prompt jumps`;
+      claims[termClaim] = tt.segs.length === 0 && JSON.stringify(tt.secs) === JSON.stringify(["Diese Session", "Dieses Gerät"])
+        && JSON.stringify(tt.rows.map((r) => r.word)) === JSON.stringify(termWords);
+      detail[termClaim] = { rows: tt.rows, secs: tt.secs, segs: tt.segs, anyCoarse };
+      const termTargets = `${tag}every target in the tools sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      claims[termTargets] = tt.small.length === 0 && tt.missed.length === 0 && !tt.sideways;
+      detail[termTargets] = { small: tt.small, missed: tt.missed, sideways: tt.sideways };
+      // Neu verbinden is the pane's ↻ (a fresh socket for slot 1)
+      await tap(rowSel("Neu verbinden"));
+      const reconnected = await wait(`window.__ws.filter((w) => w.url.includes('/ws/1?')).length > ${ws0}`, 3000);
+      // Referenzen erklären is the pane's loupe; the sheet reads its state
+      await openVia("#mmore", "tools");
+      await tap(rowSel("Referenzen erklären"));
+      const hoverOn = await evaluate<boolean>("window.__fx.pane().querySelector('.panehover').getAttribute('aria-pressed') === 'true'");
+      await openVia("#mmore", "tools");
+      const hoverRead = (await readSheet()).rows.find((r) => r.word === "Referenzen erklären")?.value ?? null;
+      await tap(rowSel("Referenzen erklären"));
+      // Einstellungen opens the settings window; Escape gives the focus back to the pill
+      await openVia("#mmore", "tools");
+      await tap(rowSel("Einstellungen"));
+      const settingsOpen = await wait("window.__fx.shown(document.querySelector('#shell-settings'))", 3000);
+      await escape();
+      const settingsBack = await evaluate<string>("window.__fx.where()");
+      facts.termActs = { reconnected, hoverOn, hoverRead, settingsOpen, settingsBack, sheetAfter: await shown("#msheetwrap") };
+      const termActs = `${tag}its rows do what the board's own controls do: Neu verbinden reconnects, Referenzen erklären switches the loupe (and reads "an"), Einstellungen opens the settings`;
+      claims[termActs] = reconnected && hoverOn && hoverRead === "an" && settingsOpen && settingsBack === "#mpill" && !(facts.termActs as { sheetAfter: boolean }).sheetAfter;
+      detail[termActs] = facts.termActs;
+
+      // --- the tools sheet, in the conversation: model and effort as segments, a press only marks
+      await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
+      await wait("window.__fx.pane().classList.contains('chat')", 3000);
+      await kbUp();
+      await openVia("#mmore", "tools");
+      const tc = await readSheet();
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-werkzeuge-konversation`);
+      facts.toolsChat = tc;
+      const chatWords = ["History", "Schedule", ...(anyCoarse ? ["Live"] : []), "Voriger Prompt", "Nächster Prompt", "Referenzen erklären", "Schrift und Spalte", "Einstellungen"];
+      // one segment per model NAME of the adapter's list that is not superseded (the composer's rule),
+      // the slot's own pressed; a register notice after " · " is the switch's business, the name is
+      // what is compared here
+      const names = todayNames;
+      const segNames = (tc.segs[0]?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
+      const chatClaim = `${tag}in the conversation: Modell and Effort as segments (one per name of today's models — neither Opus 5 nor Sonnet 5 —, the running one pressed), prompt jumps, no Neu verbinden`;
+      claims[chatClaim] = JSON.stringify(tc.secs) === JSON.stringify(["Modell", "Effort", "Diese Session", "Dieses Gerät"])
+        && tc.segs[0]?.field === "model" && tc.segs[0].apply === false && JSON.stringify(segNames) === JSON.stringify(names.map((n) => n === "Opus 5.5" ? "Opus 5.5*" : n))
+        && JSON.stringify(tc.segs[1]) === JSON.stringify({ field: "effort", values: ["low", "medium", "high*", "xhigh"], apply: false })
+        && JSON.stringify(tc.rows.map((r) => r.word)) === JSON.stringify(chatWords);
+      detail[chatClaim] = { secs: tc.secs, segs: tc.segs, names, rows: tc.rows };
+      const chatTargets = `${tag}every target in the conversation's tools sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      claims[chatTargets] = tc.small.length === 0 && tc.missed.length === 0 && !tc.sideways;
+      detail[chatTargets] = { small: tc.small, missed: tc.missed, sideways: tc.sideways };
+      fitClaims(claims, detail, tag, "Werkzeuge", await evaluate<FitRead>(FIT), ["model", "effort"]);
+      applyClaim(claims, detail, tag, await evaluate<ApplyRead>(APPLY));
+      const posts0 = fx.posts.length;
+      await tap(`document.querySelector('#msheet .mshseg[data-field="effort"] button[data-v="low"]')`);
+      const staged = await readSheet();
+      const postsAfterPress = fx.posts.length - posts0;
+      await tap(`document.querySelector('#msheet .mshseg[data-field="effort"] .mshapply')`);
+      await wait(`window.__fx.shown(document.querySelector('#compopts .optpop.effort.open'))`, 3000);
+      await settle(400);
+      const effortPosts = fx.posts.slice(posts0).filter((x) => x.path === "/api/slots/1/model").map((x) => x.body);
+      const effortPop = await box("document.querySelector('#compopts .optpop.effort.open')");
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-effort-uebernommen`);
+      await tapAt({ x: W / 2, y: Math.round(bottom * 0.4) }, "outside the effort popover"); // the verdict repaint took its focus
+      facts.effort = { staged: staged.segs, still: staged.where, postsAfterPress, effortPosts, effortPop,
+        popGone: await evaluate<boolean>("!document.querySelector('#compopts .optpop.open')") };
+      const effortClaim = `${tag}a press on an effort only marks it (ink edge, Übernehmen ready, nothing sent); Übernehmen closes the sheet and the switch's own Apply writes it`;
+      claims[effortClaim] = JSON.stringify(staged.segs[1]) === JSON.stringify({ field: "effort", values: ["low+", "medium", "high*", "xhigh"], apply: true })
+        && postsAfterPress === 0 && JSON.stringify(effortPosts) === JSON.stringify([JSON.stringify({ effort: "low" })]) && !!effortPop && effortPop.y >= 0 && effortPop.b <= bottom
+        && (facts.effort as { popGone: boolean }).popGone;
+      detail[effortClaim] = facts.effort;
+      // the model asks first, exactly as the switch at the field does — nothing goes out before the answer
+      await openVia("#mmore", "tools");
+      const posts1 = fx.posts.length;
+      // the finger brings Sonnet 5.5 into view first (with the keyboard up the list scrolls)
+      const sonnet = `[...document.querySelectorAll('#msheet .mshseg[data-field="model"] .mshsegs button')].find((b) => b.textContent.startsWith('Sonnet 5.5'))`;
+      await evaluate(`${sonnet}?.scrollIntoView({ inline: 'center', block: 'nearest' })`);
+      await settle(150);
+      await tap(sonnet);
+      const stagedModel = (await readSheet()).segs[0];
+      await tap(`document.querySelector('#msheet .mshseg[data-field="model"] .mshapply')`);
+      const asks = await wait("window.__fx.shown(document.querySelector('#compopts .optpop.model.open .optconfirm'))", 3000);
+      const askBox = await box("document.querySelector('#compopts .optpop.model.open .optconfirm')");
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-modell-fragt`);
+      const modelPosts = fx.posts.slice(posts1).filter((x) => x.path === "/api/slots/1/model").length;
+      await tap("document.querySelector('#compopts .optpop.model.open .cmdcancel')");
+      await escape();
+      const popGone = await evaluate<boolean>("!document.querySelector('#compopts .optpop.open')");
+      facts.model = { staged: stagedModel, asks, askBox, modelPosts, popGone, missing: [...missing] };
+      const modelClaim = `${tag}Übernehmen on a model asks first in the switch's own popover, on screen, and sends nothing before the answer`;
+      claims[modelClaim] = asks && modelPosts === 0 && !!askBox && askBox.y >= 0 && askBox.b <= bottom && popGone;
+      detail[modelClaim] = facts.model;
+      if (!keyboard) {
+        // the same session moved onto claude-opus-5: the sheet keeps it as the pressed segment, with its notice
+        await moveAlpha(OLD_MODEL);
+        await settle(400);
+        await openVia("#mmore", "tools");
+        const oldSegs = (await readSheet()).segs[0];
+        await shot(`${W}-blatt-werkzeuge-opus5`);
+        await escape();
+        await moveAlpha("claude-opus-5-5");
+        await settle(400);
+        const oldNames = (oldSegs?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
+        const oldClaim = `Werkzeuge · a session running on ${OLD_MODEL} sees Opus 5 as the pressed segment with its notice (${OLD_NOTICE}), and no other superseded model`;
+        claims[oldClaim] = oldSegs?.field === "model" && (oldSegs.values ?? []).includes(`Opus 5 · ${OLD_NOTICE}*`)
+          && JSON.stringify(oldNames) === JSON.stringify(oldOffer.map((n) => n === "Opus 5" ? "Opus 5*" : n));
+        detail[oldClaim] = { oldSegs, oldOffer };
+      }
+      await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
+      await wait("!window.__fx.pane().classList.contains('chat')", 3000);
+      await settle(300);
       // 5. the terminal ends above the bottom island and its grip
       const term = await box("document.querySelector('.paneterm')"), grip = await box("#mgrip"), bar2 = await box("#bar");
       facts.terminal = { term, grip, bar: bar2 };
@@ -6701,6 +7098,96 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (artifacts) { await send("Page.stopScreencast"); recording = null; }
       facts.inputs = [...fx.inputs]; facts.missing = [...missing]; missing.length = 0;
       results.push({ width: W, height: keyboard ? H - 336 : H, claims, facts, detail });
+    }
+
+    // --- the narrow phone upright, 360 × 780: only that both sheets cut nothing off
+    {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
+      const NW = 360, NH = 780;
+      // two more sessions for the state words: Gamma silent for 40 minutes, Delta stalled — put back
+      // below, so the waiting block further down reads the fixture it was written on
+      Object.assign(slots[2], { cwd: "/fixture/gamma", repo: "/fixture/gamma", label: "Gamma", openedAt: 3000, lastOutput: -30 * 60_000 });
+      Object.assign(slots[3], { cwd: "/fixture/delta", repo: "/fixture/delta", label: "Delta", openedAt: 4000, lastOutput: 0, stalled: true });
+      await boot(NW, NH, true);
+      const sessOpened = await openVia("#mslot", "sessions");
+      fitClaims(claims, detail, "", "Sessions", await evaluate<FitRead>(FIT), ["tray"]);
+      await shot(`${NW}-blatt-sessions`);
+      // the row's state shape names itself in German (src/client.ts#STATE_WORD; the two waiting words
+      // are read by the waiting block below)
+      const words = await evaluate<Record<string, string>>("Object.fromEntries([...document.querySelectorAll('#msheet .mshrow[data-slot]')].map((r) => [r.dataset.slot, r.querySelector('.act')?.title ?? '']))");
+      slots.splice(2, 2, { id: 3, cwd: null }, { id: 4, cwd: null });
+      const wordsClaim = "the state shapes name themselves in German: arbeitet · ruht · schläft — seit einer halben Stunde oder länger nichts · kaputt — hängt, oder eine Pane ohne Agent dahinter";
+      claims[wordsClaim] = JSON.stringify(words) === JSON.stringify({ 1: "arbeitet", 2: "ruht", 3: "schläft — seit einer halben Stunde oder länger nichts",
+        4: "kaputt — hängt, oder eine Pane ohne Agent dahinter" });
+      detail[wordsClaim] = words;
+      await escape();
+      await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
+      const chat = await wait("window.__fx.pane().classList.contains('chat')", 3000);
+      const toolsOpened = await openVia("#mmore", "tools");
+      fitClaims(claims, detail, "", "Werkzeuge", await evaluate<FitRead>(FIT), ["model", "effort"]);
+      applyClaim(claims, detail, "", await evaluate<ApplyRead>(APPLY));
+      await shot(`${NW}-blatt-werkzeuge-konversation`);
+      Object.assign(facts, { sessOpened, chat, toolsOpened, missing: [...missing] });
+      claims["both sheets open here: Sessions from the slot button, Werkzeuge from ⋯ in the conversation"] = sessOpened && chat && toolsOpened;
+      missing.length = 0;
+      results.push({ width: NW, height: NH, claims, facts, detail });
+    }
+
+    // --- THE FIFTH READING, WAITING (card "Eine Session, die auf ihre MAIN oder auf dich wartet,
+    // sagt das auf ihrer Zeile", K5 of the Theo threads measurement of 2026-10-02): last,
+    // so every claim above was read on the fixture without `awaiting`. Alpha (in the pane, so its
+    // freshness reads "working") waits on the owner, Beta on its MAIN, Gamma waits on nobody. The
+    // glyph's ink is read off the page and compared with the page's own --q-wait / --chat-mute.
+    Object.assign(slots[0], { awaiting: "owner" });
+    Object.assign(slots[1], { awaiting: "main" });
+    Object.assign(slots[2], { cwd: "/fixture/gamma", repo: "/fixture/gamma", label: "Gamma", openedAt: 3000, lastOutput: 0 });
+    type Glyph = { cls: string; title: string; ink: string; w: number; h: number } | null;
+    const glyphAt = (sel: string) => evaluate<Glyph>(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return { cls: e.className, title: e.title, ink: getComputedStyle(e).backgroundColor, w: r.width, h: r.height }; })()`);
+    const inkOf = (v: string) => evaluate<string>(`(() => { const t = document.createElement('i'); t.style.color = 'var(${v})';
+      document.body.appendChild(t); const c = getComputedStyle(t).color; t.remove(); return c; })()`);
+    {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
+      await boot(1200, 900, false);
+      await wait(`!!document.querySelector('.slot[data-slot="3"] .act')`, 4000);
+      const owner = await glyphAt('.slot[data-slot="1"] .r1 .act'), main = await glyphAt('.slot[data-slot="2"] .r1 .act');
+      const none = await glyphAt('.slot[data-slot="3"] .r1 .act');
+      const qWait = await inkOf("--q-wait"), mute = await inkOf("--chat-mute");
+      Object.assign(facts, { owner, main, none, qWait, mute, missing: [...missing] });
+      const mainClaim = 'wait · a session waiting on its MAIN paints .act.wait in ink (--chat-mute), titled "wartet auf MAIN"';
+      claims[mainClaim] = !!main && main.cls === "act wait" && main.title.startsWith("wartet auf MAIN") && main.ink === mute;
+      detail[mainClaim] = { main, mute };
+      const ownerClaim = 'wait · a session waiting on the owner paints .act.wait in --q-wait, titled "wartet auf dich" — even on screen';
+      claims[ownerClaim] = !!owner && owner.cls === "act wait owner" && owner.title.startsWith("wartet auf dich") && owner.ink === qWait;
+      detail[ownerClaim] = { owner, qWait };
+      claims["wait · a session without awaiting keeps its freshness glyph (Gamma rests)"] = !!none && none.cls === "act rest";
+      claims["wait · the waiting glyph sits in the same 8 × 8 box as every other state"] =
+        [owner, main, none].every((g) => !!g && g.w === 8 && g.h === 8);
+      await shot("1200-wartet");
+      missing.length = 0;
+      results.push({ width: 1200, height: 900, claims, facts, detail });
+    }
+    {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
+      await boot(W, H, true);
+      const qWait = await inkOf("--q-wait"), mute = await inkOf("--chat-mute");
+      const owner = await glyphAt("#mpill .act");
+      const ownerLabel = await evaluate<string>("document.querySelector('#mpill').getAttribute('aria-label')");
+      await shot(`${W}-wartet-dich`);
+      // the island repaints on the next poll when the fact moves — nothing re-renders it by hand
+      Object.assign(slots[0], { awaiting: "main" });
+      const repainted = await wait(`document.querySelector('#mpill .act')?.className === 'act wait'`, 6000);
+      await settle(200);
+      const main = await glyphAt("#mpill .act");
+      await shot(`${W}-wartet-main`);
+      Object.assign(facts, { owner, ownerLabel, main, repainted, qWait, mute, missing: [...missing] });
+      claims['wait · the island pill inherits the reading: .act.wait in --q-wait, "wartet auf dich" in its title and label'] = !!owner
+        && owner.cls === "act wait owner" && owner.title === "wartet auf dich" && owner.ink === qWait && /· wartet auf dich —/.test(ownerLabel ?? "");
+      claims['wait · when the slot moves to waiting on its MAIN, the next poll repaints the pill in ink, "wartet auf MAIN"'] = repainted
+        && !!main && main.title === "wartet auf MAIN" && main.ink === mute;
+      missing.length = 0;
+      results.push({ width: W, height: H, claims, facts, detail });
     }
     return results;
   } finally {
@@ -6785,7 +7272,12 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         localStorage.removeItem('probe.failGrant'); row.status = 502;
         return new Response(JSON.stringify({ error: 'probe: one injected failure' }), { status: 502, headers: { 'content-type': 'application/json' } });
       }
-      const res = await f0(input, init); row.status = res.status; return res; }; })()`;
+      const res = await f0(input, init); row.status = res.status;
+      // the one injected project: a long path the server cannot have here, added to a read that answered
+      const extra = g[2] === 'memory-grant' && m === 'GET' && res.ok ? localStorage.getItem('probe.longProject') : null;
+      if (!extra) return res;
+      const j = await res.json(); j.knownProjects = [...(j.knownProjects || []), JSON.parse(extra)];
+      return new Response(JSON.stringify(j), { status: res.status, headers: { 'content-type': 'application/json' } }); }; })()`;
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("rights DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -6878,13 +7370,14 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
     const net = <T = { m: string; slot: number; door: string; body: Record<string, unknown> | null; status: number | null }[]>() => evaluate<T>(`window.__net`);
     const patches = async (slot: number) => (await net()).filter((r) => r.door === "memory-grant" && r.m === "PATCH" && r.slot === slot);
     // the page opened on ONE session, with the Info shown: the column at 1200, the ℹ window at 390
-    const openOn = async (width: number, height: number, slot: number, failFirstRead = false) => {
+    const openOn = async (width: number, height: number, slot: number, failFirstRead = false, longProject?: { projectKey: string; repo: string }) => {
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
       const phone = width < 700;
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${slot}], focused: 0 }));
-        localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); ${failFirstRead ? `localStorage.setItem('probe.failGrant', '${slot}');` : ""} })()`);
+        localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); ${failFirstRead ? `localStorage.setItem('probe.failGrant', '${slot}');` : ""}
+        ${longProject ? `localStorage.setItem('probe.longProject', ${JSON.stringify(JSON.stringify(longProject))});` : ""} })()`);
       await navigate(`${o.base}/`);
       if (!await wait(`document.querySelector('#panes .pane .xterm')`, 15000))
         throw new Error("client did not boot against the instance: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
@@ -7063,6 +7556,39 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
           && a4.grant?.revision === 4 && a4.grant.revokedAt !== null && !a4.inForce;
         await shot(width, "widerrufen");
 
+        // --- the project choice reads a project by its name (App-JA 2026-10-02: „[Zitat entfernt]“
+        // ): name, then ONE line of path — home as ~, a middle too long as …, the last segment
+        // whole — and the full path only in the tooltip. The long path is injected into the page's read
+        // (NET, probe.longProject): no folder outside the scratch, and it is under a home on every host.
+        const LONG = { projectKey: "probe-long-path", repo: "/Users/probe-owner/Developer/kunden/archiv-2026-herbst/ein-sehr-langer-ordnername-der-die-mitte-fuellt/noch-eine-ebene-tiefer/projekt-mit-langem-namen" };
+        claims["PROBE: the Info opens on slot A with a long fixture path among the known projects"] = await openOn(width, height, A.slot, false, LONG);
+        await wait(`${GR}?.innerText.includes('Fassung 4')`);
+        await click(rk("open"));
+        const picked = await wait(`${rk(`p:${LONG.projectKey}`)}`);
+        type Pick = { rk: string; title: string; text: string; name: string; nameLines: number; pathLines: number;
+          start: string | null; tail: string | null; cut: boolean; tailWhole: boolean; pathFits: boolean };
+        const picks = await evaluate<Pick[]>(`(() => {
+          const lines = (e) => e ? Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight)) : 0;
+          return [...${RB}.querySelectorAll('.rgopt[data-rk^="p:"]')].map((o) => {
+            const n = o.querySelector('.rgoptn'), p = o.querySelector('.rgpath'), s = o.querySelector('.rgpaths'), t = o.querySelector('.rgpathe');
+            return { rk: o.dataset.rk, title: o.title, text: o.innerText, name: n?.textContent ?? '', nameLines: lines(n), pathLines: lines(p),
+              start: s?.textContent ?? null, tail: t?.textContent ?? null, cut: !!s && s.scrollWidth > s.clientWidth,
+              tailWhole: !!t && t.scrollWidth <= t.clientWidth + 1, pathFits: !!p && p.scrollWidth <= p.clientWidth + 1 }; }); })()`) ?? [];
+        await shot(width, "projektauswahl");
+        await click(rk("cancel"));
+        const repoOf = new Map([...(await grantOf(A.slot)).knownProjects, LONG].map((p) => [`p:${p.projectKey}`, p.repo]));
+        const long = picks.find((x) => x.rk === `p:${LONG.projectKey}`);
+        facts.projectChoice = picks.map(({ rk: k, name, nameLines, pathLines, start, tail, cut, tailWhole, pathFits }) => ({ k, name, nameLines, pathLines, start, tail, cut, tailWhole, pathFits }));
+        claims["board: in the project choice every project is its name over one line of path — never more than two lines, nothing sent"] = picked
+          && picks.length >= 2 && picks.every((x) => x.nameLines === 1 && x.pathLines === 1 && x.pathFits && x.name === basename(repoOf.get(x.rk) ?? ""))
+          && (await patches(A.slot)).length === 0;
+        claims["board: a long path is cut — home as ~, the middle as …, the last segment whole"] = !!long && long.name === "projekt-mit-langem-namen"
+          && long.start === "~/Developer/kunden/archiv-2026-herbst/ein-sehr-langer-ordnername-der-die-mitte-fuellt/noch-eine-ebene-tiefer"
+          && long.tail === "/projekt-mit-langem-namen" && long.cut && long.tailWhole && !long.text.includes("/Users/");
+        claims["board: the full path stands only in the tooltip — every project's title opens with it, the long one's text never holds it"] =
+          picks.length >= 2 && picks.every((x) => x.title.startsWith(`${repoOf.get(x.rk) ?? "\0"} (intern: projectKey `))
+          && !!long && long.title.startsWith(`${LONG.repo} (`) && !long.text.includes(LONG.repo);
+
         // --- a lane: no button, no read
         claims["PROBE: the Info opens on the lane"] = await openOn(width, height, lane.slot);
         const laneBlock = await evaluate<string>(`${RB}?.innerText ?? ''`);
@@ -7125,6 +7651,262 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       } finally {
         await cleanup();
       }
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// The pure half of the bundled send, run for real on bundles bundleFixtures writes: which pending
+// text a bundle retires (pendingSettledBy) and which parts the chat view draws as whose (deliveryParts).
+export function bundleSettleClaims(serverSrc: string): Record<string, boolean> {
+  const ownerA = "fix it now\nand then the list", ownerB = "und danach die offenen Lanes";
+  const f = bundleFixtures(serverSrc, ownerA, ownerB);
+  const partsOf = (t: string) => deliveryParts(splitDeliveryHeader(t).body);
+  const first = partsOf(f.ownerFirst), second = partsOf(f.ownerSecond), bare = partsOf(f.bare);
+  return {
+    "PROBE: server.ts names the bundle head and every mark sentence the fixtures are built from": f.ok,
+    "owner part 1/2 retires its pending bubble, re-wrapped whitespace included": pendingSettledBy(ownerA, f.ownerFirst)
+      && pendingSettledBy("fix it  now and\nthen the list ", f.ownerFirst),
+    "owner part 2/2 retires its pending bubble, behind an event bundle as part 1/2": pendingSettledBy(ownerB, f.ownerSecond),
+    "a bundle to a receiver without heads (no head, no sentence) retires it the same way": pendingSettledBy(ownerA, f.bare),
+    "a NON-owner part never retires a pending bubble, even with the same text": !pendingSettledBy(f.nudge, f.ownerFirst)
+      && !pendingSettledBy("[fleet] Lane 3 ist gelandet.", f.ownerSecond) && !pendingSettledBy(f.events, f.ownerSecond)
+      && !pendingSettledBy(f.nudge, f.bare),
+    "another owner text does not retire it — neither a prefix nor the other part's owner text": !pendingSettledBy("fix it now", f.ownerFirst)
+      && !pendingSettledBy(ownerB, f.ownerFirst) && !pendingSettledBy(ownerA, f.ownerSecond) && !pendingSettledBy(`${ownerA} x`, f.ownerFirst),
+    "the parts split as the writer wrote them: owner part with its mark, the nudge as a Fleet part": !!first && first.length === 2
+      && first[0]!.owner && first[0]!.text === ownerA && /^fleet-buendel 1\/2 · path=owner · /.test(first[0]!.mark ?? "")
+      && !first[1]!.owner && first[1]!.text === f.nudge && /^fleet-buendel 2\/2 · path=inbox-nudge · /.test(first[1]!.mark ?? ""),
+    "an event bundle inside a bundle splits into one Fleet part per event plus its closing line": !!second && second.length === 4
+      && second.slice(0, 3).every((p) => !p.owner) && second[0]!.text === "[fleet] Lane 3 ist gelandet."
+      && second[1]!.text === "[fleet] fleet-report von Slot 5: complete\n\nzweiter Absatz des Reports"
+      && second[2]!.text === "[fleet] Ende des Buendels." && second[3]!.owner && second[3]!.text === ownerB,
+    "a bundle without sentences splits the same way": !!bare && bare.length === 2 && bare[0]!.owner && bare[0]!.mark === "fleet-buendel 1/2 · path=owner"
+      && bare[0]!.text === ownerA && !bare[1]!.owner,
+    "text that is no bundle stays whole: a plain send, a lone mark, a mark out of order": partsOf("fix it now") === null
+      && deliveryParts(`[fleet-buendel 1/1 · path=owner]\n${ownerA}`) === null
+      && deliveryParts(`[fleet-buendel 1/2 · path=owner]\n${ownerA}\n\n[fleet-buendel 3/2 · path=auto]\nx`) === null
+      && deliveryParts(`${ownerA}\n\n[fleet-buendel 2/2 · path=auto]\nx`) === null,
+  };
+}
+
+// THE BUNDLES THE CHAT VIEW READS, written by the code server.ts types them with: the marks by
+// src/delivery-format.ts (server.ts#bundleText and #fleetEventBundleMessage call it — pinned in
+// run()), the head's words and every mark's sentence read out of server.ts's own tables. Nothing
+// here re-spells a mark; only the head's frame follows server.ts#deliveryHeader.
+export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string) {
+  const table = (name: string): string => new RegExp(`const ${name}\\b[^=]*= \\{([\\s\\S]*?)\\n\\};`).exec(serverSrc)?.[1] ?? "";
+  const SOURCE = table("DELIVERY_SOURCE"), MEANING = table("DELIVERY_MEANING");
+  const word = (from: string, key: string): string | null => new RegExp(`\\n\\s*"${key}": "([^"]*)"`).exec(from)?.[1] ?? null;
+  const prefix = /const DELIVERY_HEADER_PREFIX = "([^"]+)";/.exec(serverSrc)?.[1] ?? null;
+  const head = `${prefix}${word(SOURCE, "bundle")} · path=bundle · Slot 1 · ${word(MEANING, "bundle")}] `;
+  const part = (path: string, text: string): BundleEntry => ({ path, meaning: word(MEANING, path), text });
+  const nudge = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
+  const events = fleetEventBundleText([{ id: "ev-0001", text: "[fleet] Lane 3 ist gelandet." },
+    { id: "ev-0002", text: "[fleet] fleet-report von Slot 5: complete\n\nzweiter Absatz des Reports" }]);
+  return {
+    ok: !!prefix && [word(SOURCE, "bundle"), ...["bundle", "owner", "inbox-nudge", "fleet-event"].map((k) => word(MEANING, k))].every(Boolean),
+    head, nudge, events,
+    // the owner send first (an immediate send leads its bundle, server.ts#flushDeliveryBundle), then a nudge
+    ownerFirst: head + deliveryBundleText([part("owner", ownerA), part("inbox-nudge", nudge)]),
+    // an event bundle riding as part 1, the owner send as part 2
+    ownerSecond: head + deliveryBundleText([part("fleet-event", events), part("owner", ownerB)]),
+    // a receiver that is not a headed harness: no head, no sentence in the marks
+    bare: deliveryBundleText([{ path: "owner", meaning: null, text: ownerA }, { path: "inbox-nudge", meaning: null, text: nudge }]),
+  };
+}
+
+// A BUNDLED OWNER SEND IN THE CHAT VIEW, measured in a real browser on the real client bundle
+// (owner 2026-10-03: „[Zitat entfernt]“
+// ). The owner sends from the composer, /send is intercepted, and the transcript route
+// hands back the bundle the server would have typed (bundleFixtures). Every claim reads the DOM.
+// Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
+export interface BundleChatDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runBundleChatDom(sourceRoot: string, artifacts?: string): Promise<BundleChatDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-bundle-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const ownerA = "Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erf.";
+  const ownerB = "Das ist ein erfundener Satz ohne echten Inhalt undx.";
+  const fixture = bundleFixtures(readFileSync(resolve(sourceRoot, "server.ts"), "utf8"), ownerA, ownerB);
+  if (!fixture.ok) throw new Error("bundle DOM probe: server.ts names no delivery head or sentence to build the bundle from");
+  const at = (min: number) => new Date(Date.UTC(2026, 9, 3, 7, min)).toISOString();
+  const text = (role: "user" | "assistant", t: string, min: number) => ({ role, ts: at(min), blocks: [{ t: "text", text: t }] });
+  const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[] };
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("bundle DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
+      const url = new URL(request.url), p = url.pathname;
+      if (request.method === "POST") {
+        let body: { text?: string } | null = null;
+        try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
+        // answered like a delivered prompt; the transcript does not have it until the probe says so
+        if (p === "/send") { fx.sends.push(String(body?.text ?? "")); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
+        return void json(requestId, { ok: true });
+      }
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), chips: [], tasks: [],
+        slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+      if (p === "/api/slots/1/transcript") {
+        const after = Number(url.searchParams.get("after") ?? 0);
+        return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
+          source: "/fixture/orch.jsonl", ttlSec: 300 });
+      }
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("bundle DOM probe: evaluate failed: " + expression.replace(/\s+/g, " ").slice(0, 120));
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // the composer, typed and sent the way the owner does it: the text inserted, then the send button
+    const sendFromComposer = async (t: string) => {
+      await evaluate(`(() => { const ta = document.querySelector('#input'); ta.focus(); ta.value = ${JSON.stringify(t)}; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await evaluate(`document.querySelector('#send').click()`);
+    };
+    // what the chat shows, read the way the owner reads it
+    const READ = `(() => { const chat = document.querySelector('.pane .panechat');
+      const own = [...chat.querySelectorAll('.msg.user')].map((m) => ({ text: m.querySelector('.mbody').innerText.trim(), pending: m.classList.contains('pending'),
+        state: m.querySelector('.msend')?.innerText.trim() ?? null, head: m.querySelector('.mhead')?.textContent ?? null, headTitle: m.querySelector('.mhead')?.title ?? null }));
+      const sys = [...chat.querySelectorAll('.msys')].map((d) => { const r = d.getBoundingClientRect(), s = d.querySelector('summary');
+        return { text: d.querySelector('.msystext').textContent, rest: d.querySelector('.msysbody')?.textContent ?? null, title: s.title, open: d.open,
+          inBubble: !!d.closest('.msg'), right: r.right, left: r.left, h: s.getBoundingClientRect().height,
+          fs: getComputedStyle(d).fontSize, color: getComputedStyle(d).color }; });
+      const meta = chat.querySelector('.mmeta');
+      return { own, sys, raw: [...chat.querySelectorAll('.msg')].some((m) => /\\[fleet-(buendel|ereignis|zustellung) /.test(m.innerText)),
+        chatRight: chat.getBoundingClientRect().right, chatLeft: chat.getBoundingClientRect().left,
+        pageScroll: document.documentElement.scrollWidth - innerWidth, metaFs: meta ? getComputedStyle(meta).fontSize : null,
+        faint: (() => { const t = document.createElement('span'); t.style.color = 'var(--chat-faint)'; chat.append(t); const c = getComputedStyle(t).color; t.remove(); return c; })() }; })()`;
+    type Read = { own: { text: string; pending: boolean; state: string | null; head: string | null; headTitle: string | null }[];
+      sys: { text: string; rest: string | null; title: string; open: boolean; inBubble: boolean; right: number; left: number; h: number; fs: string; color: string }[];
+      raw: boolean; chatRight: number; chatLeft: number; pageScroll: number; metaFs: string | null; faint: string };
+    const results: BundleChatDomResult[] = [];
+    let targetId = "";
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
+      fx.sends = [];
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };` });
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
+      if (!booted) throw new Error("bundle DOM probe: the chat view did not show the fixture transcript: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(300);
+
+      // --- 1. the owner sends; the transcript does not have it yet: „[Zitat entfernt]“
+      await sendFromComposer(ownerA);
+      const waits = await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'wartet')`);
+      facts.sent = [...fx.sends];
+      claims["the composer's send goes out as the owner's text, and its bubble says \"wartet\" until the transcript has it"] = waits && fx.sends.at(-1) === ownerA;
+      await shot(`${width}-1-wartet`);
+
+      // --- 2. the transcript brings the BUNDLE the server typed: owner part 1/2, nudge 2/2
+      // (head typed, body pasted — Claude Code keeps the paste in its wrapper, src/client.ts#unwrapPasted)
+      const body = fixture.ownerFirst.slice(fixture.head.length);
+      fx.entries.push(text("user", `${fixture.head}<pasted_content id="p1">\n${body}\n</pasted_content id="p1">`, 55),
+        text("assistant", "Freut mich. Genau so bleibt das Ganze aus einem Guss.", 56));
+      await wait(`document.querySelectorAll('.pane .panechat .msg.assistant').length >= 2`);
+      await settle(300);
+      const r1 = await evaluate<Read>(READ);
+      facts.first = r1;
+      const a = r1.own.filter((m) => m.text === ownerA);
+      claims["owner part 1/2: the waiting bubble is gone — no pending bubble is left"] = r1.own.every((m) => !m.pending);
+      claims["owner part 1/2: the owner text stands ONCE, as its own bubble, and says \"durch\""] = a.length === 1 && a[0]!.state === "durch";
+      claims["owner part 1/2: the part's mark rides in the meta row, the bundle's head in its tooltip"] = a.length === 1
+        && /^fleet-buendel 1\/2 · path=owner · /.test(a[0]!.head ?? "") && (a[0]!.headTitle ?? "").startsWith("fleet-zustellung · gebuendelte");
+      claims["no bubble shows a raw bundle mark or delivery head"] = !r1.raw;
+      claims["the nudge part is ONE quiet line outside every bubble, showing the nudge's text"] = r1.sys.length === 1
+        && !r1.sys[0]!.inBubble && r1.sys[0]!.text === fixture.nudge && /fleet-buendel 2\/2 · path=inbox-nudge/.test(r1.sys[0]!.title);
+      claims["the quiet line is quiet: the meta row's size and the faint ink, one line high, inside the chat column"] = r1.sys.length === 1
+        && r1.sys[0]!.fs === r1.metaFs && r1.sys[0]!.color === r1.faint && r1.sys[0]!.h < 30 && r1.sys[0]!.left >= r1.chatLeft - 1 && r1.sys[0]!.right <= r1.chatRight + 1
+        && r1.pageScroll <= 0;
+      await shot(`${width}-2-durch`);
+
+      // --- 3. a second send arrives as owner part 2/2, behind an event bundle riding as part 1/2
+      await sendFromComposer(ownerB);
+      await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'wartet')`);
+      fx.entries.push(text("user", fixture.ownerSecond, 58));
+      await wait(`[...document.querySelectorAll('.pane .panechat .msg.user')].filter((m) => !m.classList.contains('pending')).length >= 3`);
+      await settle(300);
+      const r2 = await evaluate<Read>(READ);
+      facts.second = r2;
+      const b = r2.own.filter((m) => m.text === ownerB);
+      claims["owner part 2/2: its waiting bubble is gone and the owner text stands once, \"durch\""] = r2.own.every((m) => !m.pending)
+        && b.length === 1 && b[0]!.state === "durch" && /^fleet-buendel 2\/2 · path=owner/.test(b[0]!.head ?? "");
+      claims["the event bundle is quiet lines: one per event and one for its closing line, no bubble"] = !r2.raw && r2.sys.length === 4
+        && r2.sys[1]!.text === "[fleet] Lane 3 ist gelandet." && r2.sys[2]!.text === "[fleet] fleet-report von Slot 5: complete"
+        && r2.sys[3]!.text === "[fleet] Ende des Buendels." && r2.sys.every((s) => !s.inBubble);
+      claims["↑/↓ jump between YOUR messages only: three bubbles, the Fleet parts are none of them"] =
+        r2.own.length === 3 && r2.own.map((m) => m.text).join("|") === ["Wie weit ist die Messung?", ownerA, ownerB].join("|");
+      // --- 4. a click opens a quiet line: the rest of the event stands below its first line
+      const clicked = await evaluate<boolean>(`(() => { const s = document.querySelectorAll('.pane .panechat .msys')[2]?.querySelector('summary'); s?.click(); return !!s; })()`);
+      await settle(100);
+      const r3 = await evaluate<Read>(READ);
+      claims["a click on a quiet line opens the rest of its text"] = clicked && r3.sys[2]?.open === true && r3.sys[2]?.rest === "zweiter Absatz des Reports";
+      await shot(`${width}-3-ereignisse`);
       results.push({ width, height, claims, facts });
     }
     return results;

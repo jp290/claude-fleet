@@ -21,8 +21,25 @@ export const CONTEXT_MANIFEST_MAX_PACKS = 64;
 export const CONTEXT_MANIFEST_MAX_SOURCE_PATHS = 64;
 
 export function taskContextTriggers(texts: readonly string[], possible: readonly ContextPackTrigger[]): ContextPackTrigger[] {
-  const relevant = texts.some((value) => /\bjev\b/i.test(value));
-  return possible.filter((trigger) => trigger !== "jev-use" || relevant);
+  const rulebook = String.raw`\b(?:regelbuch|rulebook|CLAUDE\.md)\b`;
+  const edit = String.raw`(?<![\p{L}\p{N}_])(?:aender\w*|änder\w*|bearbeit\w*|edit\w*|update\w*|change\w*|fix\w*|repair\w*|reparier\w*|render\w*)\b`;
+  const rulebookEdit = new RegExp([
+    `${edit}[^\\n,;.!?]{0,100}${rulebook}`,
+    `${rulebook}(?:\\s+|\\([^\\n)]*\\)|[-:]){1,30}${edit}`,
+    String.raw`\b(?:FLAECHE|Fläche|surface)\s*:[^\n]*\b(?:rulebook(?:\.ts|\/)|CLAUDE\.md)\b`,
+    String.raw`^(?:rulebook\.ts|rulebook\/[^\n]+|CLAUDE\.md)$`,
+  ].join("|"), "iu");
+  const taskTriggers: readonly [ContextPackTrigger, RegExp][] = [
+    ["jev-use", /\bjev\b/i],
+    ["harness-selection", /\bharness(?:es|[- ](?:adapter|selection|auswahl))?\b(?!\.ts)|\b(?:HARNESSES|CONTAINER_HARNESS)\b/i],
+    ["measurement", /\b(?:mess(?:en|e|t|auftrag|ung(?:en)?|notiz(?:en)?)|misst|vermess\w*|measur(?:e(?:ment(?:s)?|s|d)?|ing))\b|docs\/messungen\//i],
+    ["rulebook-edit", rulebookEdit],
+  ];
+  const selected = new Set(possible.filter((trigger) => !taskTriggers.some(([taskTrigger]) => taskTrigger === trigger)));
+  for (const [trigger, pattern] of taskTriggers) {
+    if (texts.some((value) => pattern.test(value))) selected.add(trigger);
+  }
+  return [...selected];
 }
 
 export type ContextManifestRead =

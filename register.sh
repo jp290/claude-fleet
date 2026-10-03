@@ -1,6 +1,7 @@
 #!/bin/sh
 # Fleet's open WORK, computed at read time — the counterpart to state.sh, which does the same for
 # the machine's state.
+# The full diagnosis computes at read time; --brief reads the server-held metadata view.
 #
 # WHY THIS EXISTS: this repository ran two registers. The queue (live, machine-readable) and the
 # documents (prose, hand-maintained), with nothing joining them — so the same work stood under
@@ -23,45 +24,72 @@
 # must not read as a zero.
 #
 # Usage:  ./register.sh          (from the main checkout or from any lane)
-#         ./register.sh --brief       (max 40 lines: the queue numbers plus a map of the full output)
+#         ./register.sh --brief       (held metadata, max 40 lines; full diagnosis: --full)
 #         ./register.sh --archived <muster>
 #                                (rows that left the queue: done, archived or evicted by the cap)
 set -u
 cd "$(dirname "$0")" || exit 1
 export GIT_OPTIONAL_LOCKS=0
 
-# --brief: the same digest contract as state.sh's — at most 40 lines, line 1 names the full output's
-# line and byte count plus the command. Exact self-replay with no arguments: the full path below is
-# untouched, --archived stays byte-for-byte what it was, and an unknown flag is exit 2, named.
-REGISTER_KEYRE='^  (source: |[0-9]+ open of |no open rows|no file is named|UNBEKANNT vs everything|BUSY |[0-9]+ line\(s\)\.|[0-9]+ pointer\(s\)|broken pointers:|not in the index:)|^  [0-9]+× |^  [0-9a-f]{8}  |^        surface '
+# --brief reads the held owner metadata view; --full explicitly selects the diagnosis below.
 case "${1:-}" in
 "" | --archived) ;;
+--full) shift ;;
 --brief)
-  brief_tmp=$(mktemp "${TMPDIR:-/tmp}/register-full.XXXXXX") || exit 1
-  trap 'rm -f "$brief_tmp"' EXIT HUP INT TERM
-  "$0" > "$brief_tmp"
-  brief_rc=$?
-  if [ "$brief_rc" -ne 0 ]; then
-    echo "register.sh --brief: the full render exited $brief_rc — shown unabridged, not digested:" >&2
-    cat "$brief_tmp"
-    exit "$brief_rc"
-  fi
-  brief_map=$(grep -E '^=== ' "$brief_tmp" | sed 's/^/  /')
-  brief_keys=$(grep -E "$REGISTER_KEYRE" "$brief_tmp")
-  brief_n=$(wc -l < "$brief_tmp" | tr -d ' ')
-  brief_m=$(wc -c < "$brief_tmp" | tr -d ' ')
-  brief_cap=$((36 - $(printf '%s\n' "$brief_map" | grep -c .)))
-  echo "KURZFORM der Vollausgabe: $brief_n Zeilen · $brief_m Bytes — $0"
-  sed -n '1p' "$brief_tmp"
-  echo "  (Auswahl: Kopfzeile, Sektionskarten, Queue-Zeilen, Kollisionen, jedes UNKNOWN — der Rest: $0)"
-  printf '%s\n' "$brief_map"
-  printf '%s\n' "$brief_keys" | awk -v cap="$brief_cap" 'NF && NR <= cap'
-  brief_gesamt=$(printf '%s\n' "$brief_keys" | grep -c .)
-  if [ "$brief_gesamt" -gt "$brief_cap" ]; then
-    echo "  (… weitere $((brief_gesamt - brief_cap)) Zeilen: $0)"
-  fi
-  exit 0 ;;
-*) echo "register.sh: unbekanntes Flag '$1' — gueltig: (kein Flag) | --archived <muster> | --brief" >&2
+  python3 - <<'PYBRIEF'
+import json, subprocess
+
+schema = 'fleet.operational-view/v1'
+lines = []
+reason = 'invalid-held-source'
+try:
+    result = subprocess.run(['./ctl.sh', 'get', '/api/operational-view', '--json'],
+                            capture_output=True, text=True, timeout=10)
+    if result.returncode:
+        reason = 'ctl-read-failed'
+        raise ValueError('held source unavailable')
+    view = json.loads(result.stdout)
+    if view.get('schema') != schema or view.get('scope') != 'owner-metadata':
+        reason = 'unsupported-schema'
+        raise ValueError('held operational source unsupported (old server/schema)')
+    lines.append(f"{schema} scope={view['scope']} freshness={view.get('freshness', 'unknown')} full: ./register.sh --full")
+    lines.append(f"boot={view.get('bootEpoch')} computedAt={view.get('computedAt')} revision={view.get('revision')}")
+    lines.append(f"observedRevision={view.get('observedRevision')} pending={view.get('pending')} inflight={view.get('inflight')} failed={view.get('failed')}")
+    for name, source in view.get('sources', {}).items():
+        lines.append(f"source {name} revision={source.get('revision')} computed={source.get('computedRevision')} "
+                     f"observedAt={source.get('observedAt')} cadenceMs={source.get('cadenceMs')} "
+                     f"ageMs={source.get('ageMs')} state={source.get('state', 'unknown')}")
+    for item in view.get('unknown', []):
+        lines.append(f"unknown {item.get('id')} reason={item.get('reason')}")
+    data = view.get('data') or {}
+    rows = data.get('rows', [])
+    lines.append(f"queue rows={len(rows)} held={sum(bool(row.get('held')) for row in rows)} "
+                 f"exceptions={len(data.get('exceptions', []))} startable={len(data.get('startable', []))}")
+    for row in data.get('startable', []):
+        lines.append(f"startable {row.get('id')} by={row.get('by')} (action door rechecks)")
+    for row in data.get('exceptions', []):
+        lines.append(f"boundary {row.get('kind')} {row.get('id')} reason={row.get('reason')} related={','.join(row.get('relatedIds', []))}")
+    for row in rows:
+        lines.append(f"row {row.get('id')} status={row.get('status')} program={row.get('programId')} "
+                     f"held={row.get('held')} after={','.join(row.get('after', []))}")
+except subprocess.TimeoutExpired:
+    lines = []
+    reason = 'source-timeout'
+except OSError:
+    lines = []
+    reason = 'ctl-unavailable'
+except (ValueError, TypeError, KeyError, AttributeError):
+    lines = []
+if not lines:
+    # Only named reasons leave the interpreter; exceptions may contain URLs or credentials.
+    lines = [schema + ' freshness=unknown',
+             'unknown source /api/operational-view reason=' + reason + '; full diagnosis: ./register.sh --full']
+if len(lines) > 40:
+    lines = lines[:39] + [f"omitted={len(lines) - 39} metadata lines; held detail: GET /api/operational-view"]
+print('\n'.join(lines))
+PYBRIEF
+  exit $? ;;
+*) echo "register.sh: unbekanntes Flag '$1' — gueltig: (kein Flag) | --full | --brief | --archived <muster>" >&2
    exit 2 ;;
 esac
 

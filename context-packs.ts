@@ -13,9 +13,9 @@ export const CONTEXT_PACK_AUDIENCES = ["agent", "user", "maintainer", "private-o
 export type ContextPackAudience = (typeof CONTEXT_PACK_AUDIENCES)[number];
 
 export const CONTEXT_PACK_TRIGGERS = [
-  "always", "verification", "landing", "task-queue", "harness-selection", "deployment", "jev-use",
+  "always", "verification", "landing", "harness-selection", "jev-use", "rulebook-edit", "measurement",
   // Passed by server.ts#BOOTSTRAP_CONTEXT_TRIGGERS only: founding sessions carry orchestration
-  // guidance, while `task-queue` stays dormant so the hard seed pack of that name never rides along.
+  // guidance without any queue seed riding along (the task-queue trigger and pack are removed).
   "orchestration",
 ] as const;
 export type ContextPackTrigger = (typeof CONTEXT_PACK_TRIGGERS)[number];
@@ -166,25 +166,6 @@ export const CONTEXT_PACKS = [
     status: "active",
   },
   {
-    id: "task-queue",
-    useWhen: "Wenn du Queue-Zeilen liest, erzeugst oder disponierst: das Refinement-System hinter der Queue.",
-    scope: "task-queue",
-    audience: "maintainer",
-    triggers: ["task-queue"],
-    hardness: "hard",
-    sources: [{
-      path: "docs/plan-queue-refinement-2026-08-11.md",
-      anchor: "# Plan: Queue-Refinement-System + Task-Dashboard (2026-08-11)",
-    }],
-    requiredCapabilities: ["tracked-source-read", "task-queue-read"],
-    harnesses: ALL_HARNESSES,
-    modes: ["read-only", "mutating", "monitoring"],
-    estimatedBytes: 8800,
-    evidence: "tree-anchor",
-    owner: "owner",
-    status: "active",
-  },
-  {
     id: "harness-adapter",
     useWhen: "Wenn du einen Harness auswaehlst oder den Adapter-Kontrakt anfasst: Probe-Mengen und Automations-Grenzen.",
     scope: "harness-adapter",
@@ -200,24 +181,6 @@ export const CONTEXT_PACKS = [
     modes: ["read-only", "mutating"],
     estimatedBytes: 4600,
     evidence: "tree-anchor",
-    owner: "owner",
-    status: "active",
-  },
-  {
-    id: "private-deploy-overlay",
-    useWhen: "Wenn du deployen oder die Live-Instanz anfassen willst: das private Betriebs-Overlay (nur als Hash-Referenz).",
-    scope: "private-deploy",
-    audience: "private-ops",
-    triggers: ["deployment"],
-    hardness: "hard",
-    privateSourceId: "opaque-3f4c19d8a6e2b701",
-    sourceHash: "0e0ca068c46bd02cf825d853ba76d8e8121826b591a1ad6bc86b778781e0cc57",
-    observedAt: "2026-08-12T08:52:35Z",
-    requiredCapabilities: ["private-overlay-read", "deploy-observe"],
-    harnesses: ["claude", "pi-unfenced"],
-    modes: ["read-only", "mutating", "monitoring"],
-    estimatedBytes: 99108,
-    evidence: "private-content-hash",
     owner: "owner",
     status: "active",
   },

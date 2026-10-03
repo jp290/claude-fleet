@@ -78,6 +78,10 @@ Owner die Pane, nicht die Karte.
 
 Die Karte steht ausschließlich in [docs/rollenkarten.md](rollenkarten.md#orchestratorin).
 `server.ts#ORCHESTRATOR_ROLE_CARD` übernimmt ihren Text bytegleich; `bun e2e/pins.ts` prüft das.
+Dahinter hängt jeder der beiden Briefe genau eine KONTEXT-Zeile, gewählt nach dem Harness der
+Session (`server.ts#orchestratorRoleCard`): codex bekommt die native Verdichtung ohne Schwelle,
+jeder andere Harness die Schwelle unten — beide Zeilen stehen bytegleich in
+[rollenkarten.md §Kontext je Harness](rollenkarten.md#kontext-je-harness).
 Die Nachfolge
 ändert daran nichts: sie nennt weiter den **Linien-Record** als die eine Übergabe (§Nachfolge unten,
 `e3e5084a`); die Karte ist ein zusätzlicher TEXT, kein zweiter Kanal.
@@ -206,7 +210,10 @@ gemessen, keine neue Tiefenarbeit ab 30 %") das so sagte. `.env` sagt `FLEET_MIG
 der Owner fand die frühe Nachfolge „[Zitat entfernt]“. Seit der Owner-Promotion am selben Tag gilt: Die
 Schwelle ist `FLEET_MIGRATE_PCT` (MAINs und Orchestratorin) bzw. `FLEET_LANE_MIGRATE_PCT` (Lanes).
 Darunter wird nicht übergeben, über 45 % wird die Nachfolge aktiv gefahren. Die Zahl liest man aus
-`.env` und den eigenen Füllstand misst man mit `./ctl.sh ctx`.
+`.env` und den eigenen Füllstand misst man mit `./ctl.sh ctx`. **Das gilt für claude, nicht für
+codex** (Owner-Korrektur 2026-09-30): eine codex-Orchestratorin verdichtet nativ, ihr gemessener
+Füllstand ist Anzeige, und weder Schwelle noch 45 % lösen bei ihr einen Arbeitsstopp oder eine
+Nachfolge aus. Eine bewusste Nachfolge schuldet trotzdem den vollen Linien-Record der Karte.
 
 **Fünf armierte Watches heißen: kein Report kann dich erreichen.** `server.ts#slotDeliveryBudget`
 rechnet `free = cap − offene Events − armierte Watches`, und `cap` ist

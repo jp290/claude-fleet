@@ -130,9 +130,15 @@ so the row carries eight items (`docs/messungen/2026-09-15-fremdrepo-annahmen-la
 
 ### Context self-management (§6, §8)
 
-Your context is your job: quality degrades from ~25 % of the window (owner measurement,
-2026-08-30), long before the compaction cliff. Know or honestly estimate your fill and name the
-call visibly; thresholds and handover stand on your card in `docs/rollenkarten.md`.
+Your context is your job, and WHEN a session hands over is a fact of its harness, not of its role.
+A **Claude** session degrades in quality from ~25 % of the window (owner measurement, 2026-08-30),
+long before the compaction cliff: know or honestly estimate your fill and name the call visibly;
+thresholds stand on your card in `docs/rollenkarten.md`. A **Codex** session compacts its own window
+natively and automatically (owner correction, 2026-09-30): a measured fill is a reading, never a
+reason to stop work, to stop starting work, or to succeed, and no percentage on a card or in this
+file applies to it. On every harness a DELIBERATE succession keeps what its card's UEBERGABE names
+— line record, open obligations by ID, the report — and compaction is never a receipt that
+anything was read.
 
 ## Verify
 

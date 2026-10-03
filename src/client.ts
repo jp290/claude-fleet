@@ -1,6 +1,6 @@
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
 import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
-import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, fitTextarea, growComposer, reshapeSurface, mountComposer, renderParkHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS } from "./composer";
+import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
 import { Terminal } from "@xterm/xterm";
@@ -26,6 +26,7 @@ import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
+import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { sendFailureMessage } from "./pendingsend";
 import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
@@ -99,14 +100,15 @@ export function setDrawer(open: boolean) {
   document.body.classList.toggle("drawer", open);
 }
 // a dialog opened while the drawer is out would land UNDER it (#side z 30 > .overlay z 20) — the
-// dialog helper closes it first, through this one handover, so the mechanism stays setDrawer's
-onDialogWillOpen(() => setDrawer(false));
+// dialog helper closes it first, through this one handover, so the mechanism stays setDrawer's.
+// The phone's sheets (closeSheet, the island block) sit at the same height and go the same way.
+onDialogWillOpen(() => { setDrawer(false); closeSheet(); });
 $("menu").onclick = () => setDrawer(true);
 $("shade").onclick = () => setDrawer(false);
 // mobile's settings gear (#mset, on the place the duplicate #refresh freed — the reconnect lives
 // on the pane's own ↻ now, which the phone shows in the corner group). Desktop's gear sits in each
-// pane's group; both open the same window. The phone upright has no #mhead: there the pane's gear
-// comes back behind the top island's ⋯ (renderIsland), still one gear.
+// pane's group; both open the same window. The phone upright has no #mhead: there the gear is the
+// row "Einstellungen" of the tools sheet behind the top island's ⋯ (renderSheet), still one gear.
 $("mset").appendChild(icon("gear"));
 $("mset").onclick = () => openSettings($("mset"));
 
@@ -1772,32 +1774,58 @@ class Pane {
     for (const b of e.blocks) {
       if (b.t === "text") {
         this.toolGroup = null; // a message ends the current work block
-        const raw = e.role === "user" ? unwrapPasted(b.text) : b.text;
-        const arrived = e.role === "user" && this.settlePending(raw);
+        if (e.role !== "user") { this.addMessage(e, b.text, null, null, false); continue; }
+        const raw = unwrapPasted(b.text);
         // Fleet's typed delivery head is transport provenance, not something the owner wrote: it rides
         // in the meta row beside the bubble, and the bubble and its copy carry only the body.
-        const { header, body: text } = e.role === "user" ? splitDeliveryHeader(raw) : { header: null, body: raw };
-        const msg = el("div", `msg ${e.role}`);
-        const body = el("div", "mbody");
-        mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
-        bodySource.set(body, text);
-        for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
-        const meta = el("div", "mmeta");
-        const who = e.role === "user" ? "you" : "claude";
-        meta.appendChild(el("span", "mwho", e.ts ? `${who} · ${fmtClock(e.ts)}` : who));
-        if (header) {
-          const head = el("span", "mhead", header);
-          head.title = `fleet-zustellung · ${header}`;
-          head.style.cssText = "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
-          meta.appendChild(head);
+        const { header, body } = splitDeliveryHeader(raw);
+        // A BUNDLE (src/delivery-format.ts) is several deliveries in one turn: each owner part is
+        // its own bubble and retires its own pending send, every other part is a quiet Fleet line
+        const parts = deliveryParts(body);
+        if (!parts) { this.addMessage(e, body, header, null, this.settlePending(raw)); continue; }
+        for (const part of parts) {
+          if (part.owner) this.addMessage(e, part.text, header, part.mark, this.settlePending(part.text));
+          else this.addFleetLine(part, header);
         }
-        meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
-        msg.append(body, ...(arrived ? [sendState("done")] : []), meta);
-        this.chatAdd(msg);
       } else {
         this.addStep(b);
       }
     }
+  }
+  private addMessage(e: TEntry, text: string, header: string | null, mark: string | null, arrived: boolean) {
+    const msg = el("div", `msg ${e.role}`);
+    const body = el("div", "mbody");
+    mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
+    bodySource.set(body, text);
+    for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
+    const meta = el("div", "mmeta");
+    const who = e.role === "user" ? "you" : "claude";
+    meta.appendChild(el("span", "mwho", e.ts ? `${who} · ${fmtClock(e.ts)}` : who));
+    if (header || mark) {
+      // a bundled owner part shows its own mark; the bundle's head stays in the tooltip
+      const head = el("span", "mhead", mark ?? header ?? "");
+      head.title = [header && `fleet-zustellung · ${header}`, mark].filter(Boolean).join("\n");
+      head.style.cssText = "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+      meta.appendChild(head);
+    }
+    meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
+    msg.append(body, ...(arrived ? [sendState("done")] : []), meta);
+    this.chatAdd(msg);
+  }
+  // A bundle part Fleet wrote (a nudge, an event, the bundle's closing line): one quiet line, not a
+  // bubble — you did not say it, and ↑/↓ and the outline jump between YOUR messages. Its first line
+  // shows; a click opens the rest. Mark and head ride in the tooltip.
+  private addFleetLine(part: DeliveryPart, header: string | null) {
+    const line = document.createElement("details");
+    line.className = "msys";
+    const sum = document.createElement("summary");
+    const [first = "", ...rest] = part.text.replace(/^\s*\n/, "").split("\n");
+    sum.append(el("span", "msyswho", "fleet"), el("span", "msystext", first));
+    sum.title = [header && `fleet-zustellung · ${header}`, part.mark].filter(Boolean).join("\n");
+    line.appendChild(sum);
+    const more = rest.join("\n").trim();
+    if (more) line.appendChild(el("div", "msysbody", more));
+    this.chatAdd(line);
   }
 
   // THE SENT PROMPT, BEFORE THE TRANSCRIPT HAS IT. Measured 2026-09-22
@@ -4137,8 +4165,7 @@ function focusPane(index: number) {
   for (const p of panes) p.root.classList.toggle("focused", p.index === focused);
   const slot = panes[focused]?.slot;
   switchDraft(slot ?? 0);
-  const hint = isMobile() ? "" : " (Enter sends)";
-  ta.placeholder = slot ? `Prompt for slot ${slot}…${hint}` : "Prompt… (no session in focused pane)";
+  ta.placeholder = promptPlaceholder();
   updateTitle();
   mountComposer(); // the composer addresses the focused pane, so its size follows the focus
   // a no-op focus must not rebuild the sidebar: the first click of a double-click on a
@@ -4213,6 +4240,7 @@ window.addEventListener("keydown", (e) => {
     if (codexdlg.style.display === "flex") closeCodexDlg();
     setDrawer(false);
     setIsland(false);
+    closeSheet(true);
   }
 });
 window.addEventListener("resize", () => { for (const p of panes) p.refit(); });
@@ -4222,6 +4250,7 @@ window.addEventListener("resize", () => { for (const p of panes) p.refit(); });
 MOBILE_MQ.addEventListener("change", () => {
   setDrawer(false);
   setIsland(false);
+  closeSheet();
   setLive(false); // the live bar is a mobile-only surface
   if (!isMobile() && boardShell?.isOpen()) setBoard(false); // the info WINDOW is the phone's surface
   applyCollapsed(); // strip the rail on mobile, restore it on desktop
@@ -4233,7 +4262,6 @@ MOBILE_MQ.addEventListener("change", () => {
 // iOS Safari: the on-screen keyboard shrinks the visual viewport but not the layout
 // viewport — track it so the compose bar stays visible above the keyboard
 const vv = window.visualViewport;
-let keyboardPlaceholder: string | null = null;
 let keyboardWasOpen = false;
 const mobileMore = $("mobmore") as HTMLButtonElement;
 mobileMore.appendChild(icon("dots"));
@@ -4270,8 +4298,9 @@ mreadWrite.onclick = () => {
 // with the state shape and the name (to read); open, the controls (to act). A tap on the pill opens
 // it; a tap on the name, on its free surface or anywhere outside closes it, and so does every
 // action in it. It invents no way of its own: each button hands over to the control the board
-// already has — ☰'s drawer, the focused pane's ℹ and view toggle, the tray's History and Schedule,
-// ⋯ = #mobmore's options. Body classes only; the CSS decides that they mean anything (portrait).
+// already has — the focused pane's ℹ and view toggle, the tray's History and Schedule — and the
+// slot button and ⋯ open the two sheets below (openSheet), which do the same row by row. Body
+// classes only; the CSS decides that they mean anything (portrait).
 const portrait = () => isMobile() && !LANDSCAPE_MQ.matches;
 const mTop = $("mtop"), mPill = $("mpill") as HTMLButtonElement, mName = $("mname") as HTMLButtonElement;
 const mSlot = $("mslot") as HTMLButtonElement, mInfo = $("minfo") as HTMLButtonElement, mView = $("mview") as HTMLButtonElement;
@@ -4329,20 +4358,17 @@ mTop.addEventListener("click", (e) => {
   if (e.target === mTop || e.target === $("mopen") || e.target === $("mtools")) setIsland(false);
 });
 const islandAction = (run: () => void) => () => { setIsland(false); run(); };
-mSlot.onclick = islandAction(() => $("menu").click());
+mSlot.onclick = islandAction(() => openSheet("sessions"));
 mInfo.onclick = islandAction(() => paneControl("boardtoggle")?.click());
 mView.onclick = islandAction(() => paneControl("viewtoggle")?.click());
 $("mhist").onclick = islandAction(() => $("histbtn").click());
 $("mauto").onclick = islandAction(() => $("autobtn").click());
-mMore.onclick = islandAction(() => mobileMore.click());
-// a tap outside closes the open island, and — upright only — ⋯'s options outside their own
-// surfaces; a window over the board (outside #app) is not "outside", its focus return needs them
+mMore.onclick = islandAction(() => openSheet("tools"));
+// a tap outside closes the open island (upright only)
 document.addEventListener("pointerdown", (e) => {
   const t = e.target as Element | null;
   if (!t || !portrait()) return;
   if (document.body.classList.contains("mopen") && !mTop.contains(t)) setIsland(false);
-  if (document.body.classList.contains("keyboard-options") && $("app").contains(t)
-    && !t.closest("#bar, #mtop, .panetools")) mobileMore.click();
 }, true);
 // the grip folds the chips and the nine keys in and out of the bottom island; like the keys, it
 // never takes the field's focus, so the on-screen keyboard stays up
@@ -4352,8 +4378,244 @@ mGrip.onclick = () => {
   mGrip.setAttribute("aria-expanded", String(on));
   mGrip.title = on ? "Eigene Tasten einklappen" : "Eigene Tasten aufklappen — deine Befehls-Chips und ^C, esc, tab, Pfeile, Enter";
 };
-// turning the phone (MOBILE_MQ holds, its arm changes) leaves no island open behind the reading mode
-LANDSCAPE_MQ.addEventListener("change", () => setIsland(false));
+// turning the phone (MOBILE_MQ holds, its arm changes) leaves no island and no sheet open behind
+// the reading mode — and upright, ⋯ is the sheet: the side's ⋯ options do not ride along
+LANDSCAPE_MQ.addEventListener("change", () => {
+  setIsland(false);
+  closeSheet();
+  if (portrait()) { document.body.classList.remove("keyboard-options"); mobileMore.setAttribute("aria-expanded", "false"); }
+});
+
+// THE TWO SHEETS OF THE TOP ISLAND (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene
+// Blätter"; docs/design/mobil-insel-notiz.md §1 and §3, sketch mobil-insel-skizze.html?v=oben&blatt=…).
+// The slot button opens Sessions, ⋯ opens Werkzeuge: each a sheet over a shade, full width and set
+// at the foot of the VISIBLE screen (G4.1 mobil; #msheetwrap is --vvh tall, so a keyboard that has
+// not left yet never covers it). Like the island it invents no way of its own — every row hands over
+// to what the board already has: the drawer's head buttons, showSlot, openPicker, the instance
+// menu's own rows, the tray, the pane's corner group, the composer's switches, openSettings. A
+// conditional control stays conditional: its row shows exactly when its source does. Every row
+// closes the sheet before it acts (the island's rule); only a model/effort press stays, because it
+// only marks a pick — Übernehmen then presses the switch's own Apply, which asks as it does today.
+// The sheet takes the focus like any modal surface (on a phone the keyboard goes with it); Escape and
+// the shade close it and give the focus to the pill, the island's one control that is always drawn.
+type Sheet = "sessions" | "tools";
+const mSheetWrap = $("msheetwrap"), mSheet = $("msheet");
+let sheetOpen: Sheet | null = null;
+let sheetInst = false; // Sessions: the instance list folded out under its chip
+let sheetKey = "";
+function openSheet(which: Sheet): void {
+  if (!portrait()) return;
+  sheetOpen = which;
+  sheetInst = false;
+  sheetKey = "";
+  document.body.classList.add("msheet");
+  mSheetWrap.setAttribute("aria-hidden", "false");
+  renderSheet();
+  mSheet.focus({ preventScroll: true });
+}
+function closeSheet(refocus = false): void {
+  if (!sheetOpen) return;
+  sheetOpen = null;
+  sheetKey = "";
+  document.body.classList.remove("msheet");
+  mSheetWrap.setAttribute("aria-hidden", "true");
+  mSheet.replaceChildren();
+  if (refocus) mPill.focus({ preventScroll: true });
+}
+$("msheetshade").onclick = () => closeSheet(true);
+// one row of a sheet: an icon, the word, a quiet value; the click closes the sheet, then acts
+function sheetRow(cls: string, ico: IconName | null, word: string, run: () => void, value?: string): HTMLButtonElement {
+  const b = el("button", cls) as HTMLButtonElement;
+  b.type = "button";
+  if (ico) b.appendChild(icon(ico));
+  b.appendChild(el("span", "mshw", word));
+  if (value) b.appendChild(el("span", "mshval", value));
+  b.onclick = () => { closeSheet(); run(); };
+  return b;
+}
+// the sessions in the drawer's order — a stack's anchor, then its lanes — none folded away: the
+// sheet is the phone's whole list
+function sheetSessions(): ActiveSlot[] {
+  const stacks = stacksOf();
+  const at = new Map(stacks.map((g) => [g.at, g]));
+  const stacked = new Set(stacks.flatMap((g) => g.lanes.map((lane) => lane.id)));
+  const out: ActiveSlot[] = [], seen = new Set<number>();
+  const add = (s: ActiveSlot) => { if (!seen.has(s.id)) { seen.add(s.id); out.push(s); } };
+  for (const s of fleet) {
+    if (!isActive(s)) continue;
+    const g = at.get(s.id);
+    if (g) { if (g.anchor) add(g.anchor); for (const lane of g.lanes) add(lane); continue; }
+    if (!stacked.has(s.id)) add(s);
+  }
+  return out;
+}
+// the drawer's head row in words (#sidetools; HEAD_BTNS holds the same buttons as glyphs)
+const SHEET_TOOLS: ReadonlyArray<{ id: string; icon: IconName; word: string }> = [
+  { id: "queuebtn", icon: "list", word: "Tasks" },
+  { id: "attnbtn", icon: "megaphone", word: "Für dich" },
+  { id: "opsbtn", icon: "inbox", word: "Eingang" },
+  { id: "outcomebtn", icon: "receipt", word: "Lands" },
+  { id: "auditbtn", icon: "shield", word: "Protokoll" },
+  { id: "devbtn", icon: "laptop", word: "Geräte" },
+  { id: "saverbtn", icon: "saver", word: "Datensparen" },
+];
+function sessionsSheet(): HTMLElement[] {
+  const refs = laneBandNames(stacksOf());
+  const rows = sheetSessions();
+  const waiting = rows.filter((s) => s.awaiting === "owner").length;
+  const head = el("div", "mshhead");
+  const title = el("b", "", "Sessions");
+  title.id = "msheettitle";
+  head.append(title, el("span", "mshsub", `${rows.length} offen${waiting ? ` · ${waiting} ${waiting === 1 ? "wartet" : "warten"} auf dich` : ""}`));
+  // the head row's buttons in words, breaking into a second line on a narrow phone (never scrolling
+  // a word off the edge); each one shows when its source shows
+  const tray = el("div", "mshtray");
+  tray.setAttribute("role", "group");
+  tray.setAttribute("aria-label", "Werkzeuge der Fleet");
+  for (const t of SHEET_TOOLS) {
+    const src = $(t.id) as HTMLButtonElement;
+    if (src.style.display === "none") continue;
+    const b = sheetRow("", t.icon, t.word, () => src.click());
+    b.dataset.tool = t.id;
+    b.title = src.title;
+    const n = headBadge(src);
+    if (n) b.appendChild(el("span", "mshn", n));
+    if (t.id === "saverbtn") b.setAttribute("aria-pressed", String(dataSaver));
+    tray.appendChild(b);
+  }
+  // the instance chip: with a list it folds the list's own rows out (each forwards to its #instmenu
+  // row — the one navigation of this client); a single host has nothing to pick, so it is a word
+  const instRows = [...instMenu.querySelectorAll<HTMLButtonElement>(".instrow")];
+  if (instRows.length) {
+    const b = el("button", "mshinst") as HTMLButtonElement;
+    b.type = "button";
+    b.dataset.tool = "instbtn";
+    b.append(el("span", "mshw", instanceName ?? "Computer"), icon("chevron"));
+    b.title = instBtn.title;
+    b.setAttribute("aria-expanded", String(sheetInst));
+    b.onclick = () => { sheetInst = !sheetInst; renderSheet(); };
+    tray.appendChild(b);
+  } else if (instanceName) {
+    const w = el("span", "mshinst", instanceName);
+    w.title = instBtn.title;
+    tray.appendChild(w);
+  }
+  const list = el("div", "mshbody");
+  if (sheetInst) for (const r of instRows) {
+    const b = sheetRow("mshrow mshinstrow", null, r.querySelector(".instname")?.textContent ?? "", () => r.click(),
+      r.querySelector(".insturl")?.textContent ?? "");
+    b.title = r.title;
+    list.appendChild(b);
+  }
+  const cur = panes[focused]?.slot ?? 0;
+  for (const s of rows) {
+    const addr = s.worktree ? refs.get(s.id) ?? String(s.id) : String(s.id);
+    const state = slotState(s, serverNow, panes.some((p) => p.slot === s.id));
+    const r = sheetRow(`mshrow${s.worktree ? " lane" : ""}${s.id === cur ? " current" : ""}`, null, "", () => showSlot(s.id));
+    r.dataset.slot = String(s.id);
+    const nm = el("span", "mshnm");
+    nm.appendChild(el("span", "mshname", laneLabel(s)));
+    if (s.awaiting === "owner") nm.appendChild(el("span", "mshwhy", "wartet auf dich"));
+    const act = el("span", `act ${state}`);
+    act.title = STATE_WORD[state];
+    r.replaceChildren(el("span", "maddr", addr), nm, act);
+    r.setAttribute("aria-label", `${addr} ${laneLabel(s)} — ${STATE_WORD[state]}`);
+    if (s.id === cur) r.setAttribute("aria-current", "true");
+    list.appendChild(r);
+  }
+  // a new session starts in the first free place — the same founding window an empty drawer row opens
+  const free = fleet.find((s) => s.id <= 16 && !isActive(s));
+  const neu = sheetRow("mshrow mshnew", "plus", "Neue Session", () => { if (free) openPicker(free.id); });
+  neu.dataset.tool = "new";
+  neu.disabled = !free;
+  neu.title = free ? `Eine Session in Slot ${free.id} gründen` : "Alle 16 Plätze sind belegt";
+  list.appendChild(neu);
+  return [head, tray, list];
+}
+function toolsSheet(): HTMLElement[] {
+  const pane = panes[focused];
+  const slot = pane?.slot ?? 0;
+  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
+  const lane = s?.cwd && s.worktree ? laneBandNames(stacksOf()).get(slot) : undefined;
+  const head = el("div", "mshhead");
+  const title = el("b", "", mtitle.textContent ?? "");
+  title.id = "msheettitle";
+  head.append(el("span", "maddr", !slot ? "—" : lane ?? String(slot)), title);
+  const body = el("div", "mshbody");
+  const sec = (word: string) => body.appendChild(el("div", "mshsec", word));
+  const corner = (sel: string) => pane?.root.querySelector<HTMLButtonElement>(`.panetools ${sel}`) ?? null;
+  // model and effort as segments — where the composer has its switches (the conversation, or a
+  // harness without one); a press marks a pick, Übernehmen hands it to the switch's own Apply
+  for (const c of optChoices()) {
+    sec(c.field === "model" ? "Modell" : "Effort");
+    const row = el("div", "mshseg");
+    row.dataset.field = c.field;
+    const segs = el("div", "mshsegs");
+    segs.setAttribute("role", "group");
+    segs.setAttribute("aria-label", c.field === "model" ? "Modell" : "Effort");
+    for (const o of c.values) {
+      const b = el("button", "", o.label) as HTMLButtonElement;
+      b.type = "button";
+      b.title = o.title;
+      b.dataset.v = o.v;
+      b.setAttribute("aria-pressed", String(o.v === c.current));
+      b.classList.toggle("staged", o.v === c.staged && o.v !== c.current);
+      b.onclick = () => { stageOpt(c.field, o.v); renderSheet(); };
+      segs.appendChild(b);
+    }
+    const apply = el("button", "mshapply", "Übernehmen") as HTMLButtonElement;
+    apply.type = "button";
+    apply.disabled = !c.staged || c.staged === c.current;
+    apply.title = "Die vorgemerkte Wahl übernehmen — fragt wie der Schalter am Feld";
+    apply.onclick = () => { closeSheet(); applyOpt(c.field); };
+    row.append(segs, apply);
+    body.appendChild(row);
+  }
+  sec("Diese Session");
+  body.appendChild(sheetRow("mshrow", "history", "History", () => $("histbtn").click()));
+  body.appendChild(sheetRow("mshrow", "clock", "Schedule", () => $("autobtn").click()));
+  // Live is a touch affordance (index.html: #comptray > #live under any-pointer: coarse only)
+  if (getComputedStyle(live).display !== "none") body.appendChild(sheetRow("mshrow", "keys", "Live", () => live.click(), liveOn ? "an" : "aus"));
+  const up = corner(".promptnav.up"), dn = corner(".promptnav.dn");
+  if (pane?.isChat && up && dn) {
+    const pair = el("div", "mshpair");
+    pair.append(sheetRow("mshrow", "up", "Voriger Prompt", () => up.click()), sheetRow("mshrow", "down", "Nächster Prompt", () => dn.click()));
+    body.appendChild(pair);
+  }
+  const hover = corner(".panehover");
+  if (slot && hover) body.appendChild(sheetRow("mshrow", "search", "Referenzen erklären", () => hover.click(), hover.getAttribute("aria-pressed") === "true" ? "an" : "aus"));
+  const reload = corner(".panereload");
+  if (pane && !pane.isChat && reload && reload.style.display !== "none") body.appendChild(sheetRow("mshrow", "reload", "Neu verbinden", () => reload.click()));
+  // the harness's sendable commands (the composer's ⌘ switch) — today's ⋯ reached them too
+  const cmds = compOpts.querySelector<HTMLButtonElement>(".optswrap.cmds .optsw");
+  if (cmds) body.appendChild(sheetRow("mshrow", "list", "Befehle", () => cmds.click()));
+  sec("Dieses Gerät");
+  body.appendChild(sheetRow("mshrow", "width", "Schrift und Spalte", () => openSettings(mPill, "schrift")));
+  const gear = sheetRow("mshrow", "gear", "Einstellungen", () => openSettings(mPill));
+  gear.dataset.tool = "settings";
+  body.appendChild(gear);
+  return [head, body];
+}
+// what a built sheet shows, as one string: tags, attributes and text, read off the nodes (no HTML
+// serialiser — the client has no HTML sink, fleet-e2e-security.ts §7)
+const nodeSig = (n: Node): string => n instanceof Element
+  ? `<${n.tagName}${[...n.attributes].map((a) => ` ${a.name}=${a.value}`).join("")}>${[...n.childNodes].map(nodeSig).join("")}</>`
+  : n.textContent ?? "";
+// painted on open, after every press that stays, and on each poll (updateTitle) — but only when
+// what it shows moved, so a list under the finger is never rebuilt for nothing
+function renderSheet(): void {
+  if (!sheetOpen) return;
+  const parts = sheetOpen === "sessions" ? sessionsSheet() : toolsSheet();
+  const key = sheetOpen + parts.map(nodeSig).join("");
+  if (key === sheetKey) return;
+  sheetKey = key;
+  const scroll = mSheet.querySelector(".mshbody")?.scrollTop ?? 0;
+  mSheet.dataset.sheet = sheetOpen;
+  mSheet.setAttribute("aria-labelledby", "msheettitle");
+  mSheet.replaceChildren(...parts);
+  const body = mSheet.querySelector(".mshbody");
+  if (body) body.scrollTop = scroll;
+}
 if (vv) {
   let vvRefitTimer: ReturnType<typeof setTimeout> | undefined;
   const sync = () => {
@@ -4363,17 +4625,8 @@ if (vv) {
     const keyboardOpen = isMobile() && focusedInput && window.innerHeight - vv.height > 120;
     if (!focusedInput) document.body.classList.remove("landwrite");
     document.body.classList.toggle("keyboard-open", keyboardOpen);
-    if (keyboardOpen && keyboardPlaceholder === null) {
-      keyboardPlaceholder = ta.placeholder;
-      ta.placeholder = "Prompt…";
-      fitTextarea();
-    } else if (!keyboardOpen && keyboardPlaceholder !== null) {
-      ta.placeholder = keyboardPlaceholder;
-      keyboardPlaceholder = null;
-      fitTextarea();
-    }
-    // ⋯'s options fold away as the keyboard goes — upright they are also reachable without one
-    // (the island's ⋯), so only the keyboard's own leaving closes them, not every sync without it
+    // ⋯'s options (the phone on its side) fold away as the keyboard goes — only the keyboard's own
+    // leaving closes them, not every sync without it
     if (!keyboardOpen && keyboardWasOpen) {
       document.body.classList.remove("keyboard-options");
       mobileMore.setAttribute("aria-expanded", "false");
@@ -4820,17 +5073,30 @@ export function laneNameOfBranch(branch: string): string {
 // are one fact read at two distances: a session that produced nothing for half an hour is not the
 // same thing as one that paused between two answers, and the bar had no way to say so.
 const SLEEP_MS = 30 * 60_000;
-type SlotState = "work" | "rest" | "sleep" | "bad";
-function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
+type OutputState = "work" | "rest" | "sleep" | "bad";
+function outputState(s: SlotInfo, now: number, awake: boolean): OutputState {
   if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane") return "bad";
   if (awake || now - s.lastOutput < RECENT_MS) return "work";
   return now - s.lastOutput >= SLEEP_MS ? "sleep" : "rest";
 }
+// THE FIFTH READING: a session that waits on someone (`awaiting`, a server fact — an open
+// clarification sets "main", a clarify lane "owner") says so on its row, not only in the hover card
+// (the Theo threads measurement of 2026-10-02, K5). It ranks after broken and before the
+// output's freshness: a waiting session on screen still waits. The value is the glyph's class list —
+// the owner's case is the same shape plus the one colour that means „[Zitat entfernt]“ (grammatik
+// G0.2), so every reader of slotState/STATE_WORD gets both without a second branch.
+type SlotState = OutputState | "wait" | "wait owner";
+function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
+  const out = outputState(s, now, awake);
+  if (out === "bad" || !s.awaiting) return out;
+  return s.awaiting === "owner" ? "wait owner" : "wait";
+}
 // The shape is the reading; this is the same reading in words, for the tooltip and for anyone who
 // has to name the state out loud. Not decoration: a shape nobody can name is a shape nobody learns.
 const STATE_WORD: Record<SlotState, string> = {
-  work: "working", rest: "resting", sleep: "asleep — nothing for half an hour or more",
-  bad: "broken — stalled, or a pane with no agent behind it" };
+  work: "arbeitet", rest: "ruht", sleep: "schläft — seit einer halben Stunde oder länger nichts",
+  bad: "kaputt — hängt, oder eine Pane ohne Agent dahinter",
+  wait: "wartet auf MAIN", "wait owner": "wartet auf dich" };
 
 // "how long since this session last said anything", short enough for a 250px line. Takes the AGE,
 // not a timestamp: the caller has the server's clock and the client's is allowed to disagree with
@@ -5293,7 +5559,10 @@ function updateTitle() {
   mtitle.textContent = s?.cwd ? (s.label ?? baseName(s.cwd)) : "Claude Fleet";
   mreadTitle.textContent = mtitle.textContent;
   renderTarget(); // the composer's send target reads the same focused slot (G2.4)
+  const ph = promptPlaceholder(); // …the placeholder names it (a rename, the first poll)…
+  if (ta.placeholder !== ph) ta.placeholder = ph;
   renderIsland(); // …and so does the phone's top island
+  renderSheet(); // …and an open sheet
 }
 
 // --- attended Codex bind ---------------------------------------------------------------
@@ -5657,13 +5926,14 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
             + " (or runs a harness/model Fleet cannot measure). Not an empty context.";
         r1.appendChild(cx);
       }
-      // The state, in one glyph and FOUR readings. Each has its own SHAPE (the CSS), so the four
+      // The state, in one glyph and FIVE readings. Each has its own SHAPE (the CSS), so the five
       // survive a greyscale screenshot; how long ago the session last spoke — line 2's other reading
       // — is in the tooltip beside the word.
       const hidHot = !!stack && !open && stack.lanes.some(
         (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
       const state = slotState(s, serverNow, visible || hidHot);
-      markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", state) });
+      // the mark reads the output's freshness and `awaiting` itself (src/marks.ts#markFacts)
+      markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", outputState(s, serverNow, visible || hidHot)) });
       const live = el("span", `act ${state}`);
       live.title = STATE_WORD[state]
         + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")
@@ -7642,7 +7912,20 @@ interface Dossier {
   outcomes: Measured<Capped<Record<string, unknown>>>;
   landNotes: Measured<LandNoteRead[]>;
   audits: Measured<Capped<DossierAudit>>;
+  context?: DossierContext;
 }
+// chosen / delivered / borrowed, each with its own third state: `absent` is a ledger that was read
+// and holds no row for this lane — a named fact, drawn as one, never as an empty column
+type ContextColumn<T> = { state: "read"; rows: T[]; total: number }
+  | { state: "absent"; why: string } | { state: "unknown"; why: string };
+type DossierContext = {
+  chosen: ContextColumn<{ receipt: string; at: number; head: string | null;
+    selected: { id: string; origin: string | null; privateVerdict: string | null }[]; omitted: { id: string; why: string }[] }>;
+  delivered: ContextColumn<{ receipt: string; at: number; packs: string[]; bytes: number | null; notes: string[]; source: string | null }>;
+  borrowed: ContextColumn<{ at: number; id: string; bytes: number | null; origin: string | null; head: string | null }>;
+  read: "unknown";
+  unknown: string[];
+};
 let akteData: LaneIndexRow[] = [];
 let akteTotal = 0;
 let aktePick: string | null = null;
@@ -7747,8 +8030,95 @@ async function loadAkteDoc(branch: string) {
   if (shell?.isOpen() && actLens === "akte") renderAkteDetail(akteDoc);
 }
 
-// The trail itself, in the four movements a lane actually has: what it was asked to do, what it
-// did, how it landed, and what was measured afterwards.
+// ② THE CONTEXT, three narrow columns that are never merged: what the founding receipt CHOSE, what
+// it says reached the pane, and what the lane fetched through the borrow door later. A fourth
+// fact — whether anything was read — is not on any ledger, and the movement says so in words.
+const AKTE_CTX_ID = "font-size:12px;color:#ddd";
+const AKTE_CTX_META = "font-size:10.5px;color:#6f6f6f";
+// one pack per line: the id, and beside it the fact that belongs to it (bytes, time, why left out)
+function akteCtxLine(col: HTMLElement, id: string, meta = "", dim = false) {
+  const row = el("div", "aktectxrow");
+  row.style.cssText = "display:flex;flex-wrap:wrap;gap:0 8px;align-items:baseline;line-height:1.5";
+  row.appendChild(el("span", "", id)).style.cssText = dim ? AKTE_CTX_META : AKTE_CTX_ID;
+  if (meta) row.appendChild(el("span", "", meta)).style.cssText = AKTE_CTX_META;
+  col.appendChild(row);
+}
+function akteCtxNote(col: HTMLElement, text: string) {
+  col.appendChild(el("div", "", text)).style.cssText = `${AKTE_CTX_META};margin-top:2px`;
+}
+
+function akteContextColumn<T>(col: HTMLElement, title: string, src: ContextColumn<T>,
+  rows: (rows: T[]) => void) {
+  col.appendChild(el("div", "aktectxhead", title)).style.cssText =
+    "font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--dim);margin-bottom:4px";
+  if (src.state === "unknown") {
+    const box = el("div", "akteunknown");
+    box.appendChild(el("div", "akteunknownw", "not measured"));
+    box.appendChild(el("div", "shrsub", src.why));
+    col.appendChild(box);
+    return;
+  }
+  if (src.state === "absent") {
+    akteCtxLine(col, "none on record");
+    akteCtxNote(col, src.why);
+    return;
+  }
+  rows(src.rows);
+  if (src.total > src.rows.length) akteCtxNote(col, `${src.total - src.rows.length} older not shown`);
+}
+
+function renderAkteContext(host: HTMLElement, c: DossierContext | undefined) {
+  host.appendChild(el("div", "aktehead", "② the context it was given"));
+  if (!c) {
+    const box = el("div", "akteunknown");
+    box.appendChild(el("div", "akteunknownw", "not measured"));
+    box.appendChild(el("div", "shrsub", "this server sends no context section with the dossier"));
+    host.appendChild(box);
+    return;
+  }
+  host.appendChild(el("div", "hint shellhint",
+    "Read is not measured: these ledgers record what was chosen, sent and fetched — never whether the lane read it."));
+  const grid = el("div", "aktectx");
+  grid.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:8px 0 4px;padding:0 3px";
+  const column = () => {
+    const col = el("div", "aktectxcol");
+    col.style.cssText = "min-width:0;word-break:break-word";
+    grid.appendChild(col);
+    return col;
+  };
+  // a lane re-founded on its worktree has more than one receipt; the time keeps them apart
+  const when = (at: number) => (at ? fmtTs(at) : "—");
+
+  const chosen = column();
+  akteContextColumn(chosen, "chosen", c.chosen, (rows) => {
+    for (const r of rows) {
+      if (rows.length > 1) akteCtxNote(chosen, when(r.at));
+      for (const p of r.selected)
+        akteCtxLine(chosen, p.id, [p.origin === "program" ? "program" : "", p.privateVerdict ? `private · ${p.privateVerdict}` : ""]
+          .filter(Boolean).join(" · "));
+      for (const p of r.omitted) akteCtxLine(chosen, p.id, `left out · ${p.why}`, true);
+      if (!r.selected.length && !r.omitted.length) akteCtxNote(chosen, "the receipt lists no pack");
+    }
+  });
+  const delivered = column();
+  akteContextColumn(delivered, "delivered", c.delivered, (rows) => {
+    for (const r of rows) {
+      akteCtxNote(delivered, `${when(r.at)}${r.bytes !== null ? ` · ${fmtSize(r.bytes)} into the pane` : ""}`
+        + `${r.notes.length ? ` · ${r.notes.length} note${r.notes.length === 1 ? "" : "s"}` : ""}`);
+      for (const id of r.packs) akteCtxLine(delivered, id);
+      if (!r.packs.length) akteCtxNote(delivered, "no pack crossed");
+    }
+  });
+  const borrowed = column();
+  akteContextColumn(borrowed, "borrowed", c.borrowed, (rows) => {
+    for (const r of rows) akteCtxLine(borrowed, r.id, `${when(r.at)}${r.bytes !== null ? ` · ${fmtSize(r.bytes)}` : ""}`);
+  });
+  host.appendChild(grid);
+  for (const u of c.unknown) host.appendChild(el("div", "hint shellhint", u));
+}
+
+// The trail itself, in the five movements a lane actually has: what it was asked to do, the context
+// it was given, what it did, how it landed, and what was measured afterwards.
 function renderAkteDetail(d: Dossier) {
   const shell = ocShell;
   if (!shell) return;
@@ -7785,9 +8155,11 @@ function renderAkteDetail(d: Dossier) {
     }
   }
 
-  // ② WHAT IT DID — prompts, slot events and commits merged into one chronological stream, which
+  renderAkteContext(host, d.context);
+
+  // ③ WHAT IT DID — prompts, slot events and commits merged into one chronological stream, which
   // is the whole point: they are three files today and one story in fact.
-  const prompts = akteSource(host, "② what it did", d.prompts, "no prompt was ever sent to this lane");
+  const prompts = akteSource(host, "③ what it did", d.prompts, "no prompt was ever sent to this lane");
   const events = d.events.state === "read" ? d.events.value : null;
   const commits = d.commits.state === "read" ? d.commits.value : null;
   type Step = { ts: number; kind: string; title: string; sub?: string };
@@ -7808,14 +8180,14 @@ function renderAkteDetail(d: Dossier) {
   ].filter(Boolean);
   if (cut.length) host.appendChild(el("div", "hint shellhint", `not shown: ${cut.join(", ")} — this trail is capped at its most recent entries`));
   for (const s of steps) akteStep(host, s.kind, s.ts, s.title, s.sub);
-  // the two sources that ride inside ② still get their own verdict line when they could not be read
+  // the two sources that ride inside ③ still get their own verdict line when they could not be read
   if (d.events.state === "unknown") akteSource(host, "slot events", d.events, "");
   if (d.commits.state === "unknown") akteSource(host, "commits", d.commits, "");
 
-  // ③ HOW IT LANDED — the outcome row, and the git note that says WHY it was allowed to. The note
+  // ④ HOW IT LANDED — the outcome row, and the git note that says WHY it was allowed to. The note
   // is the reason this window exists: it carries the verbatim verify command and its output, and
   // before this reader nothing in the product could show it.
-  const outcomes = akteSource(host, "③ how it ended", d.outcomes, "this lane has not ended yet — no outcome row");
+  const outcomes = akteSource(host, "④ how it ended", d.outcomes, "this lane has not ended yet — no outcome row");
   for (const o of (outcomes as Capped<Record<string, unknown>> | null)?.rows ?? []) {
     const dispo = typeof o.disposition === "string" ? o.disposition : "?";
     const r = akteStep(host, "outcome", typeof o.ts === "number" ? o.ts : 0, dispo,
@@ -7855,9 +8227,9 @@ function renderAkteDetail(d: Dossier) {
     if (v.out) host.appendChild(el("div", "aktepre akteout", v.out));
   }
 
-  // ④ WHAT IT COST AFTERWARDS — tier 2, which gates nothing and is therefore only ever as useful
+  // ⑤ WHAT IT COST AFTERWARDS — tier 2, which gates nothing and is therefore only ever as useful
   // as its reader. This is that reader, per lane.
-  const audits = akteSource(host, "④ what was measured after it landed", d.audits,
+  const audits = akteSource(host, "⑤ what was measured after it landed", d.audits,
     "no post-land audit run names this lane");
   for (const a of (audits as Capped<DossierAudit> | null)?.rows ?? []) {
     const r = akteStep(host, `audit-${a.result}`, a.at, `tier-2 audit: ${a.result.toUpperCase()}`,

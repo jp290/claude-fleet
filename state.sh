@@ -1,5 +1,6 @@
 #!/bin/sh
 # Fleet's derivable state, computed at read time — never written down, so it cannot rot.
+# This describes the full diagnosis; --brief reads the server-held metadata view.
 #
 # WHY THIS EXISTS: a handoff that states state is wrong by the next land. Session 8's was wrong
 # by six ledger rows within a day; two of session 9's own errors were stale numbers quoted from
@@ -8,44 +9,70 @@
 # order and its reasoning — i.e. the things git genuinely cannot carry.
 #
 # Usage:  ./state.sh            (run it at the start of a session, before believing anything)
-#         ./state.sh --brief         (max 40 lines: the key numbers plus a map of the full output)
+#         ./state.sh --brief         (held metadata, max 40 lines; full diagnosis: --full)
 #         ./state.sh --since <ref>   (default: the last handoff commit)
 set -u
 cd "$(dirname "$0")" || exit 1
 
-# --brief: at most 40 lines, and line 1 names the full output's line and byte count plus the command
-# that prints it. The full render is produced by exact self-replay with no arguments — the full path
-# below stays untouched, so the two modes cannot drift: what the digest announces, the digest itself
-# just rendered. An unknown flag is exit 2 with the flag named, never a silent full run.
-BRIEF_KEYRE='^  (outcomes |main-direct |post-land audits |newest audit: |check-trail runs |land-quality |land notes |merge verdicts |audit\.jsonl: |hub |lanes [0-9]|slot [0-9]+  |lane slots |a worktree with no slot|e2e tmux sockets: |other tmux sockets|orphaned codex|TMPDIR e2e scratch|suites running now: |HANDOFF\.md |UNKNOWN: )|^  /.+\[|^    (model: |size: |gate |landed [0-9]|conflict resolver |resolver|unowned beside)'
+# --brief reads the held owner metadata view; --full explicitly selects the diagnosis below.
 case "${1:-}" in
 "" | --since) ;;
+--full) shift ;;
 --brief)
-  brief_tmp=$(mktemp "${TMPDIR:-/tmp}/state-full.XXXXXX") || exit 1
-  trap 'rm -f "$brief_tmp"' EXIT HUP INT TERM
-  "$0" > "$brief_tmp"
-  brief_rc=$?
-  if [ "$brief_rc" -ne 0 ]; then
-    echo "state.sh --brief: the full render exited $brief_rc — shown unabridged, not digested:" >&2
-    cat "$brief_tmp"
-    exit "$brief_rc"
-  fi
-  brief_map=$(grep -E '^=== ' "$brief_tmp" | sed 's/^/  /')
-  brief_keys=$(grep -E "$BRIEF_KEYRE" "$brief_tmp")
-  brief_n=$(wc -l < "$brief_tmp" | tr -d ' ')
-  brief_m=$(wc -c < "$brief_tmp" | tr -d ' ')
-  brief_cap=$((36 - $(printf '%s\n' "$brief_map" | grep -c .)))
-  echo "KURZFORM der Vollausgabe: $brief_n Zeilen · $brief_m Bytes — $0"
-  sed -n '1p' "$brief_tmp"
-  echo "  (Auswahl: Kopfzeile, Sektionskarten, Kennzahlen, jedes UNKNOWN — der Rest: $0)"
-  printf '%s\n' "$brief_map"
-  printf '%s\n' "$brief_keys" | awk -v cap="$brief_cap" 'NF && NR <= cap'
-  brief_gesamt=$(printf '%s\n' "$brief_keys" | grep -c .)
-  if [ "$brief_gesamt" -gt "$brief_cap" ]; then
-    echo "  (… weitere $((brief_gesamt - brief_cap)) Kennzahl-Zeilen: $0)"
-  fi
-  exit 0 ;;
-*) echo "state.sh: unbekanntes Flag '$1' — gueltig: (kein Flag) | --since <ref> | --brief" >&2
+  python3 - <<'PYBRIEF'
+import json, subprocess
+
+schema = 'fleet.operational-view/v1'
+lines = []
+reason = 'invalid-held-source'
+try:
+    result = subprocess.run(['./ctl.sh', 'get', '/api/operational-view', '--json'],
+                            capture_output=True, text=True, timeout=10)
+    if result.returncode:
+        reason = 'ctl-read-failed'
+        raise ValueError('held source unavailable')
+    view = json.loads(result.stdout)
+    if view.get('schema') != schema or view.get('scope') != 'owner-metadata':
+        reason = 'unsupported-schema'
+        raise ValueError('held operational source unsupported (old server/schema)')
+    lines.append(f"{schema} scope={view['scope']} freshness={view.get('freshness', 'unknown')} full: ./state.sh --full")
+    lines.append(f"boot={view.get('bootEpoch')} computedAt={view.get('computedAt')} revision={view.get('revision')}")
+    lines.append(f"observedRevision={view.get('observedRevision')} pending={view.get('pending')} inflight={view.get('inflight')} failed={view.get('failed')}")
+    for name, source in view.get('sources', {}).items():
+        lines.append(f"source {name} revision={source.get('revision')} computed={source.get('computedRevision')} "
+                     f"observedAt={source.get('observedAt')} cadenceMs={source.get('cadenceMs')} "
+                     f"ageMs={source.get('ageMs')} state={source.get('state', 'unknown')}")
+    for item in view.get('unknown', []):
+        lines.append(f"unknown {item.get('id')} reason={item.get('reason')}")
+    data = view.get('data') or {}
+    rows = data.get('rows', [])
+    lines.append(f"queue rows={len(rows)} held={sum(bool(row.get('held')) for row in rows)} "
+                 f"exceptions={len(data.get('exceptions', []))} startable={len(data.get('startable', []))}")
+    for row in data.get('startable', []):
+        lines.append(f"startable {row.get('id')} by={row.get('by')} (action door rechecks)")
+    for row in data.get('exceptions', []):
+        lines.append(f"boundary {row.get('kind')} {row.get('id')} reason={row.get('reason')} related={','.join(row.get('relatedIds', []))}")
+    for row in rows:
+        lines.append(f"row {row.get('id')} status={row.get('status')} program={row.get('programId')} "
+                     f"held={row.get('held')} after={','.join(row.get('after', []))}")
+except subprocess.TimeoutExpired:
+    lines = []
+    reason = 'source-timeout'
+except OSError:
+    lines = []
+    reason = 'ctl-unavailable'
+except (ValueError, TypeError, KeyError, AttributeError):
+    lines = []
+if not lines:
+    # Only named reasons leave the interpreter; exceptions may contain URLs or credentials.
+    lines = [schema + ' freshness=unknown',
+             'unknown source /api/operational-view reason=' + reason + '; full diagnosis: ./state.sh --full']
+if len(lines) > 40:
+    lines = lines[:39] + [f"omitted={len(lines) - 39} metadata lines; held detail: GET /api/operational-view"]
+print('\n'.join(lines))
+PYBRIEF
+  exit $? ;;
+*) echo "state.sh: unbekanntes Flag '$1' — gueltig: (kein Flag) | --full | --brief | --since <ref>" >&2
    exit 2 ;;
 esac
 

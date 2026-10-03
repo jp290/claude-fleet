@@ -65,6 +65,7 @@ import {
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 import { DraftBook } from "../src/drafts";
+import { fleetEventBundleText } from "../src/delivery-format";
 import { runningEffort, runningModel } from "../src/running";
 import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole } from "../model-register";
 import { FLEET_DEFAULT_MODEL, WORKER_CONTRACTS } from "../src/protocol";
@@ -218,6 +219,96 @@ pin("the client universe is derived and holds its bundle entry",
     pin("role cards: server constants are byte-equal to docs/rollenkarten.md text blocks",
       changed.length === 0, changed.map(({ symbol }) => symbol).join(", "));
   }
+
+  // ROLE DUTY vs HARNESS RUNTIME (owner correction 2026-09-30: codex compacts natively, no Fleet
+  // context succession for it). A role card reaches EVERY harness, so a percentage or a context
+  // stop inside one is a stop for codex too — that is the rule, not a snapshot of today's wording.
+  // The WHEN lives in a separately chosen text: the Orchestratorin's KONTEXT line and the lane
+  // footer's `handoff = …` definition, one per harness kind, picked by server.ts#nativeCompaction.
+  const RULE_CTX = "role cards carry role duty for every harness; the WHEN of a handover is harness runtime, and codex gets no percentage stop or context succession";
+  const constant = (name: string): string | null => {
+    const all = [...server.matchAll(new RegExp("const " + name + " = `([^`]*)`;", "g"))];
+    return all.length === 1 ? all[0]![1]! : null;
+  };
+  const docBlock = (heading: string): string | null => {
+    const all = [...doc.matchAll(new RegExp("^### " + heading + "\\n\\n```text\\n([^`]*)\\n```", "gm"))];
+    return all.length === 1 ? all[0]![1]! : null;
+  };
+  const CONTEXT_STOP = /%|_PCT\b|Schwelle|Kontextgrenze|context is filling/;
+  const roleCards = cards.map(([, symbol]) => [symbol, constant(symbol)] as const);
+  const stops = roleCards.filter(([, text]) => text === null || CONTEXT_STOP.test(text) || /succeed ohne carry/.test(text));
+  pin(`${RULE_CTX} — no role card names a percentage, a threshold or a context-triggered succeed (A)`,
+    stops.length === 0,
+    stops.map(([symbol, text]) => `${symbol}: ${text === null ? "not found" : text.match(CONTEXT_STOP)?.[0] ?? "succeed ohne carry"}`).join("; "));
+  // …and the duty half survived the split: what a DELIBERATE succession owes is still on the card.
+  const orchCard = roleCards.find(([s]) => s === "ORCHESTRATOR_ROLE_CARD")?.[1] ?? "";
+  const laneCard = roleCards.find(([s]) => s === "LANE_ROLE_CARD")?.[1] ?? "";
+  pin(`${RULE_CTX} — the cards keep their succession duties: line record, open obligations by ID, intent cap, explicit model/effort; commit + handoff report (B)`,
+    /--- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen/.test(orchCard)
+      && /succeed mit model\/effort explizit/.test(orchCard)
+      && /--- UEBERGABE --- [^\n]*committet[^\n]*fleet-report mit status handoff/.test(laneCard)
+      && /HOW THIS LANE ENDS/.test(laneCard),
+    `orch=${orchCard.length} lane=${laneCard.length}`);
+  const ctxClaude = constant("ORCHESTRATOR_CONTEXT_LINE");
+  const ctxCodex = constant("ORCHESTRATOR_CONTEXT_LINE_CODEX");
+  const docClaude = docBlock("Orchestratorin · jeder andere Harness");
+  const docCodex = docBlock("Orchestratorin · codex");
+  pin(`${RULE_CTX} — both Orchestratorin KONTEXT lines are byte-equal to docs/rollenkarten.md §Kontext je Harness (C)`,
+    ctxClaude !== null && ctxCodex !== null && ctxClaude === docClaude && ctxCodex === docCodex,
+    `server=${ctxClaude !== null}/${ctxCodex !== null} doc=${docClaude !== null}/${docCodex !== null} `
+      + `equal=${ctxClaude === docClaude}/${ctxCodex === docCodex}`);
+  // THE TWO HARNESS TEXTS a codex session reads, and the claude reference beside them. Codex: names
+  // native compaction, no percentage, no threshold, no baton door. Default: keeps today's measured
+  // band and its exit, because this cut changes codex and nothing else.
+  const footClaude = constant("LANE_EXIT_HANDOFF");
+  const footCodex = constant("LANE_EXIT_HANDOFF_CODEX");
+  const codexTexts = [["ORCHESTRATOR_CONTEXT_LINE_CODEX", ctxCodex], ["LANE_EXIT_HANDOFF_CODEX", footCodex]] as const;
+  const badCodex = codexTexts.filter(([, t]) => t === null || CONTEXT_STOP.test(t) || /\/api\/self\/succeed/.test(t)
+    || !/nativ/.test(t));
+  pin(`${RULE_CTX} — the codex texts name native compaction and carry no percentage, threshold, context stop or succeed door (D)`,
+    badCodex.length === 0, badCodex.map(([n, t]) => `${n}: ${t === null ? "not found" : t.slice(0, 80)}`).join("; "));
+  pin(`${RULE_CTX} — the default texts keep the claude band: FLEET_MIGRATE_PCT + 45 % for the Orchestratorin, "context is filling" → succeed for a lane (E)`,
+    !!ctxClaude && /FLEET_MIGRATE_PCT/.test(ctxClaude) && /45 %/.test(ctxClaude)
+      && !!footClaude && /context is filling/.test(footClaude) && /POST \/api\/self\/succeed/.test(footClaude),
+    `orch=${ctxClaude?.slice(0, 60)} lane=${footClaude?.slice(0, 60)}`);
+  // THE SELECTION. One predicate, asked of the HARNESS (never a provider or model string), and every
+  // codex-facing seam goes through it: both Orchestratorin builders, the lane footer, the steward's
+  // context-only handoff. A builder that dropped its harness parameter would hand codex the default.
+  const fnBody = (head: string): string => server.match(new RegExp(head.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[\\s\\S]*?\\n\\}\\n"))?.[0] ?? "";
+  const predicate = fnBody("function nativeCompaction(");
+  const spawnB = fnBody("function buildOrchestratorSpawnBrief(");
+  const succB = fnBody("function buildOrchestratorSuccessionBrief(");
+  const footer = fnBody("function laneExitFooter(");
+  const steward = fnBody("async function renderStewardMessage(");
+  const selector = server.match(/const orchestratorRoleCard = \(harness: string \| null\): string =>\n[^\n]*\n/)?.[0] ?? "";
+  pin(`${RULE_CTX} — one harness predicate selects every codex text: both Orchestratorin builders, the lane footer and the steward handoff (F)`,
+    /return harnessOf\(harness \?\? ""\)\.id === CODEX_HARNESS\.id;/.test(predicate) && !/model|provider/i.test(predicate.split("\n").slice(1).join("\n"))
+      && /nativeCompaction\(harness\) \? ORCHESTRATOR_CONTEXT_LINE_CODEX : ORCHESTRATOR_CONTEXT_LINE/.test(selector)
+      && /^function buildOrchestratorSpawnBrief\(harness: string \| null,/.test(spawnB) && /orchestratorRoleCard\(harness\)/.test(spawnB)
+      && /^function buildOrchestratorSuccessionBrief\(harness: string \| null,/.test(succB) && /orchestratorRoleCard\(harness\)/.test(succB)
+      && !/ORCHESTRATOR_ROLE_CARD/.test(spawnB + succB)
+      && server.includes("buildOrchestratorSpawnBrief(s.harness, ") && server.includes("buildOrchestratorSuccessionBrief(harness, ")
+      && /nativeCompaction\(harness\) \? LANE_EXIT_HANDOFF_CODEX : LANE_EXIT_HANDOFF/.test(footer)
+      && /if \(ref === "handoff"\)\n\s*return nativeCompaction\(s\.harness\)\n\s*\? \{ error:/.test(steward),
+    `predicate=${predicate !== ""} selector=${selector !== ""} spawn=${spawnB !== ""} succ=${succB !== ""} footer=${footer !== ""} steward=${steward !== ""}`);
+}
+
+// THE LOADED RULE, not only the delivered brief. Codex and Pi load AGENTS.md automatically, so a
+// "~25 %" sentence there reaches a codex session whatever its card says (owner correction
+// 2026-09-30). The rule: the context paragraph scopes the band to Claude and names codex's native
+// compaction, and a deliberate succession keeps its duties there too.
+{
+  const agents = read("AGENTS.md");
+  const at = agents.indexOf("### Context self-management");
+  const section = at < 0 ? "" : agents.slice(at, agents.indexOf("\n## ", at) < 0 ? undefined : agents.indexOf("\n## ", at));
+  const paras = section.split("\n\n").slice(1);
+  const banded = paras.filter((p) => /%/.test(p));
+  pin("AGENTS.md's context rule scopes every percentage to Claude and gives Codex native compaction without a stop or succeed",
+    section !== "" && banded.length > 0 && banded.every((p) => /\*\*Claude\*\* session degrades/.test(p))
+      && /\*\*Codex\*\* session compacts its own window\s+natively and automatically/.test(section)
+      && /never a\s+reason to stop work, to stop starting work, or to succeed/.test(section)
+      && /DELIBERATE succession keeps/.test(section),
+    section === "" ? "### Context self-management not found in AGENTS.md" : section.slice(0, 160));
 }
 
 // THE CROSS-MODULE SLICE TRIPWIRE, and it is the other half of `span()`. ~95 rows below still cut
@@ -2199,12 +2290,12 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && !releaseBody.includes("task_override") && !releaseBody.includes(".analysis"),
     releaseSlice === "" ? "the queue action was not found" : `${releaseBody.split("\n").length} code lines`);
 
-  // register is the offline view of the queue. Visibility in the browser must not turn that shell
-  // path into an API client; comments are excluded so a warning about curl would not trip the rule.
-  const registerCode = read("register.sh").split("\n")
+  // Full diagnosis retains the offline queue projector; only --brief reads the held source.
+  const registerSource = read("register.sh");
+  const registerCode = registerSource.slice(registerSource.indexOf("\nesac\n") + 7).split("\n")
     .filter((l) => !l.trim().startsWith("#")).join("\n");
-  pin("register remains offline and API-independent",
-    !/\b(curl|wget|fetch)\b|https?:\/\/|\/api\//.test(registerCode));
+  pin("register full diagnosis remains offline and API-independent; brief uses the held Owner source",
+    registerSource.includes("/api/operational-view") && !/\b(curl|wget|fetch)\b|https?:\/\/|\/api\//.test(registerCode));
 }
 
 // ================================================================================================
@@ -2456,16 +2547,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // ============================================================================================
   // TRIGGER REACHABILITY — a pack whose trigger no seam ever passes is shelf-ware
   // ============================================================================================
-  // MEASURED 2026-08-19 over every context receipt on the ledger: the trigger histogram contains
-  // `always` and `verification` and nothing else. Three call sites in server.ts are the entire
-  // supply of triggers, and only these three:
-  //   DISPATCH_CONTEXT_TRIGGERS   — the dispatch delivery seam
-  //   BOOTSTRAP_CONTEXT_TRIGGERS  — Program-MAIN / Supervisor founding and succession
-  //   landingAnchorBlock          — the two mutating merge workers, `triggers: ["landing"]`
-  // A pack whose triggers all lie outside that union can never be selected anywhere. That is a
-  // legitimate state (a seam that will pass them is not built yet) but it must be DECLARED, not
-  // discovered — otherwise a pack is authored, validated, committed, and silently never delivered.
-  //
+  // Baseline triggers come from the three delivery seams; task triggers additionally come from
+  // taskContextTriggers' pattern table, which the dispatch seam evaluates against the brief.
   // WHY THIS PIN GREPS THE THREE NAMED CALL SITES AND NEVER A BARE LITERAL — do not "simplify" it:
   // counting `"verification"` across server.ts is counting phantoms. That literal also appears as a
   // JSON KEY inside a WORKER_CONTRACTS template (the worker-contract block, unrelated to context
@@ -2489,14 +2572,20 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     pin(`${RULE_REACH} — PROBE: all three delivery call sites were located`, false,
       `dispatch=${dispatchTriggers ?? "not found"} bootstrap=${bootstrapTriggers ?? "not found"} landing=${landingTriggers ?? "not found"}`);
   else {
-    const reaching = new Set([...dispatchTriggers, ...bootstrapTriggers, ...landingTriggers]);
-    // DORMANT — triggers with ZERO literals at those three call sites, listed in full and on
-    // purpose. Each is ruled by a seam Fleet has not built and the owner has not decided on:
-    // `task-queue` (no queue-reading seam plans context), `harness-selection` (adapter choice
-    // happens before any plan is derived), `deployment` (Verb 2 derives no plan at all).
-    // A SHORT list here would be worse than none: it would pass while asserting that the trigger
-    // it forgot is reachable, so the set is held EXACTLY equal to the complement of the union.
-    const DORMANT = ["task-queue", "harness-selection", "deployment"];
+    const taskSource = read("context-manifest.ts").replace(/^\s*\/\/.*$/gm, "");
+    const taskFrom = taskSource.indexOf("export function taskContextTriggers(");
+    const taskBody = taskFrom < 0 ? "" : taskSource.slice(taskFrom, taskSource.indexOf("\n}", taskFrom));
+    const taskTriggers = [...taskBody.matchAll(/^\s*\["([a-z-]+)",/gm)].map((m) => m[1]);
+    const taskSeam = server.replace(/^\s*\/\/.*$/gm, "")
+      .includes("triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS)");
+    const taskLoop = /for \(const \[trigger, pattern\] of taskTriggers\)/.test(taskBody)
+      && /if \(texts\.some\(\(value\) => pattern\.test\(value\)\)\) selected\.add\(trigger\);/.test(taskBody);
+    pin(`${RULE_REACH} — PROBE: task triggers are produced by the dispatch text path`,
+      taskSeam && taskLoop && taskTriggers.length > 0,
+      `seam=${taskSeam} loop=${taskLoop} task-triggers=[${taskTriggers}]`);
+    const reaching = new Set([...dispatchTriggers, ...bootstrapTriggers, ...landingTriggers,
+      ...(taskSeam && taskLoop ? taskTriggers : [])]);
+    const DORMANT: readonly string[] = [];
     const complement = CONTEXT_PACK_TRIGGERS.filter((trigger) => !reaching.has(trigger));
     pin(`${RULE_REACH} — the dormant list is exactly the triggers no seam passes`,
       JSON.stringify([...complement].sort()) === JSON.stringify([...DORMANT].sort()),
@@ -2517,7 +2606,6 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       }
     } catch { manifestRead = "manifest unreadable"; }
     const stranded = active.filter((pack) => !pack.triggers.some((trigger) => reaching.has(trigger)))
-      .filter((pack) => !pack.triggers.every((trigger) => (DORMANT as readonly string[]).includes(trigger)))
       .map((pack) => `${pack.id}[${pack.triggers}]`);
     if (manifestRead)
       pin(`${RULE_REACH} — PROBE: the Fleet manifest's active packs were read`, false, manifestRead);
@@ -2864,6 +2952,120 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && /state\.sh --brief/.test(ctl) && /register\.sh --brief/.test(ctl),
       `state=${dispatch(state)}/${rejects(state)} register=${dispatch(register)}/${rejects(register)} `
         + `doc=${/state\.sh --brief/.test(ctl)}/${/register\.sh --brief/.test(ctl)}`);
+    const dir = mkdtempSync(join(tmpdir(), "fleet-held-cli-"));
+    try {
+      const python = spawnSync("python3", ["-c", "import sys;print(sys.executable)"], {encoding: "utf8"});
+      pin("held CLI fixture precondition: Python interpreter executes", python.status === 0 && !!python.stdout.trim(), python.stderr);
+      const log = join(dir, "calls");
+      writeFileSync(join(dir, "python3"), `#!${python.stdout.trim()}
+import os, sys
+with open(os.environ['HELD_PROBE_LOG'], 'a') as f: f.write('python\\n')
+exec(compile(sys.stdin.read(), '<held-cli>', 'exec'))
+`);
+      chmodSync(join(dir, "python3"), 0o755);
+      writeFileSync(join(dir, "ctl.sh"), read("ctl.sh"));
+      chmodSync(join(dir, "ctl.sh"), 0o755);
+      const home = join(dir, "owner-home");
+      mkdirSync(home);
+      writeFileSync(join(home, ".env"), "FLEET_HOST='held.fixture'\nFLEET_PORT=8765\n");
+      writeFileSync(join(home, "fleet.json"), JSON.stringify({token: "PROBE_CREDENTIAL_MARKER"}, null, 2));
+      writeFileSync(join(home, "server.ts"), "");
+      writeFileSync(join(dir, "git"), `#!/bin/sh
+printf 'git-home\\n' >> "$HELD_PROBE_LOG"
+[ "$2" = "$HELD_PROBE_DIR" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--path-format=absolute" ] && [ "$5" = "--git-common-dir" ] || exit 91
+printf '%s/.git\\n' "$HELD_PROBE_HOME"
+`);
+      chmodSync(join(dir, "git"), 0o755);
+      writeFileSync(join(dir, "bun"), `#!${process.execPath}
+import {appendFileSync} from "node:fs";
+import {pathToFileURL} from "node:url";
+const note = (s) => appendFileSync(process.env.HELD_PROBE_LOG, s + "\\n");
+note("bun");
+if (process.argv.join(" ").includes("PROBE_CREDENTIAL_MARKER")) throw new Error("credential in argv");
+globalThis.fetch = async (url, opts) => {
+  note("http");
+  if (url !== "http://held.fixture:8765/api/operational-view") throw new Error("wrong home/.env host");
+  if (opts.headers.authorization !== "Bearer PROBE_CREDENTIAL_MARKER") throw new Error("wrong home owner credential");
+  const mode = process.env.HELD_PROBE_MODE;
+  if (mode === "offline") throw new Error("PROBE_CREDENTIAL_MARKER private error");
+  if (mode === "denied") return new Response('{"error":"PROBE_CREDENTIAL_MARKER refused"}', {status:401});
+  return new Response(mode === "old" ? '{"version":0}' : process.env.HELD_PROBE_VIEW, {headers:{"content-type":"application/json"}});
+};
+await import(pathToFileURL(process.argv[2]).href);
+`);
+      chmodSync(join(dir, "bun"), 0o755);
+      const fixture = {schema: "fleet.operational-view/v1", scope: "owner-metadata", bootEpoch: 1, computedAt: 2,
+        revision: "queue:r1/bindings:b1/addresses:a1/git:g1/gateAudit:u1", observedRevision: "queue:r1/bindings:b1/addresses:a1/git:g1/gateAudit:u1",
+        freshness: "fresh", pending: false, inflight: false, failed: null,
+        sources: {queue: {revision: "r1", computedRevision: "r1", observedAt: 2, cadenceMs: 100, ageMs: 0, state: "fresh"}}, unknown: [],
+        data: {rows: [{id: "row1", status: "queued", programId: "program1", held: false, after: []}],
+          startable: [{id: "row1", by: "release"}], exceptions: [{kind: "audit", id: "row2", reason: "unknown", relatedIds: []}]} };
+      const env: NodeJS.ProcessEnv = {...process.env, PATH: `${dir}:${process.env.PATH}`, FLEET_CTL_HOME: home,
+        FLEET_SELF_URL: "http://wrong-pane-host",
+        HELD_PROBE_LOG: log, HELD_PROBE_DIR: realpathSync(dir), HELD_PROBE_HOME: home,
+        HELD_PROBE_MODE: "fresh", HELD_PROBE_VIEW: JSON.stringify(fixture)};
+      for (const key of ["FLEET_TOKEN", "FLEET_CTL_TOKEN", "FLEET_CTL_URL", "FLEET_SELF_TOKEN"]) delete env[key];
+      const run = (script: string, flag: string, mode = "fresh", view: unknown = fixture, credential = true, anchor = true) => {
+        writeFileSync(log, "");
+        writeFileSync(join(home, "fleet.json"), JSON.stringify(credential ? {token: "PROBE_CREDENTIAL_MARKER"} : {}, null, 2));
+        const result = spawnSync("/bin/sh", [script, flag], {encoding: "utf8", timeout: 10_000,
+          env: {...env, HELD_PROBE_MODE: mode, HELD_PROBE_VIEW: JSON.stringify(view), FLEET_CTL_HOME: anchor ? home : ""}});
+        return {...result, calls: readFileSync(log, "utf8").trim().split("\n").filter(Boolean)};
+      };
+      for (const [name, source] of [["state.sh", state], ["register.sh", register]]) {
+        const end = source.indexOf("\nesac\n");
+        const prefix = source.slice(0, end + 7);
+        const script = join(dir, name);
+        // The executed dispatch chooses a full-path tripwire. Full diagnostics themselves retain
+        // their existing body; this probe must fail if any brief success/failure enters that body.
+        writeFileSync(script, prefix + `\nprintf 'full\\n' >> "$HELD_PROBE_LOG"\nprintf '__FULL_PATH__\\n'\n`);
+        chmodSync(script, 0o755);
+        const fresh = run(script, "--brief");
+        pin(`${name} --brief without environment Owner token/URL executes ctl.sh get with home/.env and fleet.json, never the full path`,
+          fresh.status === 0 && fresh.calls.join(",") === "python,bun,http" && fresh.stdout.includes(fixture.revision)
+          && fresh.stdout.includes("startable row1 by=release") && fresh.stdout.includes("boundary audit row2 reason=unknown")
+          && !fresh.stdout.includes("__FULL_PATH__") && !/PROBE_CREDENTIAL_MARKER/.test(fresh.stdout + fresh.stderr),
+          `${Buffer.byteLength(fresh.stdout)} CLI bytes; calls=${fresh.calls.join(",")}`);
+        for (const mode of ["offline", "old", "denied"])
+          { const result = run(script, "--brief", mode);
+            pin(`${name} --brief ${mode} source is concretely unknown without a full fallback or secret output`,
+              result.status === 0 && result.stdout.includes("unknown source /api/operational-view")
+              && result.calls.join(",") === "python,bun,http" && !result.stdout.includes("__FULL_PATH__")
+              && result.stdout.includes(`full diagnosis: ./${name} --full`)
+              && !/PROBE_CREDENTIAL_MARKER/.test(result.stdout + result.stderr)); }
+        const laneHome = run(script, "--brief", "fresh", fixture, true, false);
+        pin(`${name} --brief finds the same Owner home from the lane common git directory (no history read)`,
+          laneHome.status === 0 && laneHome.calls.join(",") === "python,git-home,bun,http"
+          && laneHome.stdout.includes(fixture.revision) && !/PROBE_CREDENTIAL_MARKER/.test(laneHome.stdout + laneHome.stderr),
+          `calls=${laneHome.calls.join(",")}; exit=${laneHome.status}`);
+        const missing = run(script, "--brief", "fresh", fixture, false);
+        pin(`${name} --brief missing Owner credential is unknown before any HTTP or full work`,
+          missing.status === 0 && missing.calls.join(",") === "python" && missing.stdout.includes("freshness=unknown")
+          && missing.stdout.includes(`unknown source /api/operational-view reason=ctl-read-failed; full diagnosis: ./${name} --full`));
+        const stale = run(script, "--brief", "fresh", {...fixture, freshness: "unknown", data: null,
+          unknown: [{id: "git", reason: "stale"}]});
+        pin(`${name} --brief carries stale source ID/reason and claims no startable row`,
+          stale.status === 0 && stale.stdout.includes("unknown git reason=stale") && !stale.stdout.includes("startable row1"));
+        const many = run(script, "--brief", "fresh", {...fixture, data: {...fixture.data,
+          exceptions: Array.from({length: 100}, (_, i) => ({kind: "audit", id: `row${i}`, reason: "unknown"}))}});
+        pin(`${name} --brief is capped at exactly 40 lines with an explicit omission count`,
+          many.status === 0 && many.stdout.trim().split("\n").length === 40 && many.stdout.includes("omitted="));
+        const full = run(script, "--full"), invalid = run(script, "--not-a-flag");
+        pin(`${name} --full selects diagnosis, unknown flag rejects before either producer`,
+          full.calls.join(",") === "full" && full.stdout.includes("__FULL_PATH__") && invalid.status === 2 && invalid.calls.length === 0);
+        writeFileSync(script, prefix.replace("--brief)\n", '--brief)\n  "$0" --full\n')
+          + `\nprintf 'full\\n' >> "$HELD_PROBE_LOG"\nprintf '__FULL_PATH__\\n'\n`);
+        const mutant = run(script, "--brief");
+        pin(`${name} full-replay mutation makes the no-full-work claim fail (executed negative control)`,
+          mutant.calls.includes("full") && mutant.stdout.includes("__FULL_PATH__"));
+      }
+      const operationalRoute = /if \(url\.pathname === "\/api\/operational-view" && req\.method === "GET"\)[\s\S]{0,250}/.exec(server)?.[0] ?? "";
+      const ownerGate = server.lastIndexOf('if (!(await tokenGate(tokenFrom(req))))', server.indexOf(operationalRoute));
+      pin("held view wire/docs agree on the sole Owner-auth GET and no GET-triggered refresh",
+        operationalRoute.includes("operationalView?.read()") && ownerGate >= 0
+        && read("docs/self-api.md").includes('schema: "fleet.operational-view/v1"')
+        && !/observe\(|produceOperationalData\(|invalidate\(/.test(operationalRoute));
+    } finally { rmSync(dir, {recursive: true, force: true}); }
   }
   // THE REPORT LEDGER: every place that opens a report or stamps a verdict writes its row. A fourth
   // decision site without the line would leave that verdict only in the prunable live list.
@@ -9222,6 +9424,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     // form on the re-file instruction. A table that rendered one would leave the other unmeasured.
     fleetReportDecisionAccepted: fleetReportDecisionMessage("a".repeat(24), "accepted", "took the work"),
     fleetReportDecisionRejected: fleetReportDecisionMessage("a".repeat(24), "rejected", null),
+    // the shared bundle writer a server-local builder hands its tail to (half two, `delegated`)
+    fleetEventBundleText: fleetEventBundleText([{ id: "e1", text: "[fleet] one" }, { id: "e2", text: "[fleet] two" }]),
   };
   // BOTH DIRECTIONS. A derived builder that lane-signals exports but this table forgot would
   // otherwise leave the rule green over a hint nobody rendered.
@@ -9289,9 +9493,20 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const unread: string[] = [];
   const badLit: string[] = [];
   const unjudged: string[] = [];
+  // a builder whose LAST return hands the message to an export of src/delivery-format.ts has its
+  // tail written there — importable, so it is RENDERED in half one, not read here (2026-10-03: the
+  // bundle marks moved there so the chat view reads exactly what the server writes). Derived from
+  // that module's export list; a delegate this file forgot to render is `unread`, never a pass.
+  const FORMAT_EXPORTS = new Set([...read("src/delivery-format.ts").matchAll(/export function (\w+)\s*\(/g)].map((m) => m[1]!));
+  const delegated: string[] = [];
   for (const name of serverLocal) {
     const body = new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`).exec(serverU.text)?.[0] ?? "";
     if (!body) { unread.push(name); continue; }
+    const delegate = [...body.matchAll(/\breturn (\w+)\(/g)].at(-1)?.[1];
+    if (delegate && FORMAT_EXPORTS.has(delegate)) {
+      if (delegate in rendered) delegated.push(`${name}→${delegate}`); else unread.push(name);
+      continue;
+    }
     const r = judgeTails(body);
     if (!r.tails) { unread.push(name); continue; }
     for (const lit of r.flagged) badLit.push(`${name}: …${JSON.stringify(lit.slice(-48))}`);
@@ -9300,7 +9515,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // fails as ITSELF: a builder with no readable message tail is NOT a measured builder
   pin(`${RULE_SIGIL} — every server-local derived builder has a readable message tail`,
     unread.length === 0 && serverLocal.length > 0,
-    unread.length ? `no tail found: ${unread.join(", ")}` : `${serverLocal.length} read: [${serverLocal.join(", ")}]`);
+    unread.length ? `no tail found: ${unread.join(", ")}`
+      : `${serverLocal.length - delegated.length} read, ${delegated.length} rendered: [${serverLocal.join(", ")}] delegated=[${delegated.join(", ")}]`);
   pin(`${RULE_SIGIL} — source: no server-local message TAIL ends on $NAME`,
     badLit.length === 0, badLit.length ? badLit.join("; ") : `${serverLocal.length} builder(s) clean`);
   // never a silent pass: a tail whose last characters are a runtime value was not measured, and the

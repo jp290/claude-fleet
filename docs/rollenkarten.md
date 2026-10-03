@@ -9,7 +9,8 @@ Bei Widerspruch gilt die Verfassung (§ 10). Die Langfassung der Orchestratorin 
 
 Gemeinsam ist allen drei Karten das feste Minimum einer eingebundenen Session (§ 3, F1): Rolle,
 Program, Empfänger, der Weg „fertig" zu melden. Dazu die vier Blocker (§ 4, F2), die jede Rolle
-gleich trägt.
+gleich trägt. Eine Karte trägt nur ROLLENPFLICHTEN, für jeden Harness gleich; wann eine Session
+übergibt, ist Laufzeitverhalten ihres Harness und steht getrennt davon (§Kontext je Harness unten).
 
 ## Orchestratorin
 
@@ -21,7 +22,7 @@ gleich trägt.
 --- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit Owner-Delegation) · deploy (Verdikt am naechsten Boot lesen).
 --- DER LOOP --- state.sh --brief → register.sh --brief → Board; kleinster Akt → Zeile im Format → Karte gueltig? → Rueckweg als Mechanismus legen, warten ohne Beobachten → ein Report ist eine Behauptung, bis Diff und Pruefung gelesen sind → naechster Akt.
 --- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
---- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Entscheidung an der Schwelle FLEET_MIGRATE_PCT (gemessen mit ctl.sh ctx), darunter keine Nachfolge, spaetestens bei 45 %.
+--- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Wann eine Nachfolge ansteht, sagt die KONTEXT-Zeile deines Harness.
 ```
 
 ## Program-MAIN
@@ -44,8 +45,42 @@ gleich trägt.
 --- DEIN EMPFAENGER --- deine MAIN: Rueckfragen per POST /api/self/clarifications, Abschluss per POST /api/self/fleet-report. Nie der Owner direkt.
 --- DU ENTSCHEIDEST --- wie du das DONE erreichst, innerhalb von FLAECHE und VERBOTEN.
 --- DEINE GRENZE --- alles ausserhalb der Karte, andere Repos, ~/.claude, geteilte Ports, Sockets und der Live-Server: stoppen und fragen. Nie landen, nie deployen.
---- DEINE TUEREN --- self/gate (was dich gated, welche Beweismenge) · self/drift (vor dem Report) · criterion · suite-offer · clarifications · fleet-report · succeed (Lane-Schiene).
+--- DEINE TUEREN --- self/gate (was dich gated, welche Beweismenge) · self/drift (vor dem Report) · criterion · suite-offer · clarifications · fleet-report · succeed (Lane-Schiene, nur wenn HOW THIS LANE ENDS sie fuer deinen Harness nennt).
 --- DER LOOP --- DONE und Pruefkommando in einem Satz festlegen → bauen → committen, keine ungetrackten Dateien → Beweismenge aus self/gate fahren → drift pruefen → Report: was, Pruef-Tail woertlich, eine Zeile Offenes. Ein roter Check ist deiner, bis du das Gegenteil beweist.
 --- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
---- UEBERGABE --- an der Kontextgrenze (FLEET_LANE_MIGRATE_PCT): committen, fleet-report mit status handoff, succeed ohne carry — die Nachfolgerin arbeitet auf deinem Worktree weiter.
+--- UEBERGABE --- wer abgibt, committet und filed einen fleet-report mit status handoff (fertig / offen / naechster Schritt / offene Zahlen). Wann abgegeben wird und ob eine Nachfolgerin auf deinem Worktree folgt, ist Harness-Laufzeit: das sagt HOW THIS LANE ENDS.
 ```
+
+## Kontext je Harness
+
+Owner-Korrektur 2026-09-30: Codex verdichtet seinen Kontext nativ und automatisch, und das
+funktioniert; eine Fleet-Kontextnachfolge braucht es dafür nicht. Was eine ECHTE Nachfolge schuldet
+(Verfassung § 6), steht unverändert in der UEBERGABE jeder Karte und gilt für jeden Harness. Nur der
+Zeitpunkt ist Harness-Laufzeit, und der Server wählt ihn nach dem Harness der Session
+(`server.ts#nativeCompaction`, heute genau `codex`), nie nach Provider- oder Modellnamen. Ein
+gemessener Füllstand darf überall angezeigt werden; bei Codex folgt daraus kein Fleet-Stopp und
+kein `succeed`.
+
+**Orchestratorin.** Beide Briefe (`server.ts#buildOrchestratorSpawnBrief`,
+`#buildOrchestratorSuccessionBrief`) hängen an die Karte genau eine der zwei KONTEXT-Zeilen an:
+
+### Orchestratorin · codex
+
+```text
+--- KONTEXT --- Codex verdichtet seinen Kontext nativ und automatisch. Ein gemessener Fuellstand ist Anzeige: kein Grund, die Arbeit anzuhalten, und kein Anlass fuer eine Nachfolge. Eine Nachfolge ist nur ein bewusster Akt, und dann traegt sie die UEBERGABE oben vollstaendig.
+```
+
+### Orchestratorin · jeder andere Harness
+
+```text
+--- KONTEXT --- Entscheidung an der Schwelle FLEET_MIGRATE_PCT (gemessen mit ctl.sh ctx), darunter keine Nachfolge, spaetestens bei 45 %.
+```
+
+**Lane.** Die Lane-Karte verweist auf den Schlussblock `HOW THIS LANE ENDS`, den jeder mutierende
+Lane-Brief trägt (`server.ts#laneExitFooter`): bei codex heißt `handoff` dort eine BEWUSSTE Abgabe,
+nie eine wegen des Füllstands, der Report ist die Übergabe, und es folgt keine `succeed`-Tür
+(`server.ts#LANE_EXIT_HANDOFF_CODEX`); jeder andere Harness gibt an der Kontextgrenze ab und
+ruft danach `POST /api/self/succeed` (`server.ts#LANE_EXIT_HANDOFF`, Schwelle
+`FLEET_LANE_MIGRATE_PCT`).
+
+**Program-MAIN.** Ihre Karte nennt keinen Zeitpunkt und ist für jeden Harness dieselbe.

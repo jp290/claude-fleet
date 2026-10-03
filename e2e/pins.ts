@@ -218,6 +218,96 @@ pin("the client universe is derived and holds its bundle entry",
     pin("role cards: server constants are byte-equal to docs/rollenkarten.md text blocks",
       changed.length === 0, changed.map(({ symbol }) => symbol).join(", "));
   }
+
+  // ROLE DUTY vs HARNESS RUNTIME (owner correction 2026-09-30: codex compacts natively, no Fleet
+  // context succession for it). A role card reaches EVERY harness, so a percentage or a context
+  // stop inside one is a stop for codex too — that is the rule, not a snapshot of today's wording.
+  // The WHEN lives in a separately chosen text: the Orchestratorin's KONTEXT line and the lane
+  // footer's `handoff = …` definition, one per harness kind, picked by server.ts#nativeCompaction.
+  const RULE_CTX = "role cards carry role duty for every harness; the WHEN of a handover is harness runtime, and codex gets no percentage stop or context succession";
+  const constant = (name: string): string | null => {
+    const all = [...server.matchAll(new RegExp("const " + name + " = `([^`]*)`;", "g"))];
+    return all.length === 1 ? all[0]![1]! : null;
+  };
+  const docBlock = (heading: string): string | null => {
+    const all = [...doc.matchAll(new RegExp("^### " + heading + "\\n\\n```text\\n([^`]*)\\n```", "gm"))];
+    return all.length === 1 ? all[0]![1]! : null;
+  };
+  const CONTEXT_STOP = /%|_PCT\b|Schwelle|Kontextgrenze|context is filling/;
+  const roleCards = cards.map(([, symbol]) => [symbol, constant(symbol)] as const);
+  const stops = roleCards.filter(([, text]) => text === null || CONTEXT_STOP.test(text) || /succeed ohne carry/.test(text));
+  pin(`${RULE_CTX} — no role card names a percentage, a threshold or a context-triggered succeed (A)`,
+    stops.length === 0,
+    stops.map(([symbol, text]) => `${symbol}: ${text === null ? "not found" : text.match(CONTEXT_STOP)?.[0] ?? "succeed ohne carry"}`).join("; "));
+  // …and the duty half survived the split: what a DELIBERATE succession owes is still on the card.
+  const orchCard = roleCards.find(([s]) => s === "ORCHESTRATOR_ROLE_CARD")?.[1] ?? "";
+  const laneCard = roleCards.find(([s]) => s === "LANE_ROLE_CARD")?.[1] ?? "";
+  pin(`${RULE_CTX} — the cards keep their succession duties: line record, open obligations by ID, intent cap, explicit model/effort; commit + handoff report (B)`,
+    /--- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen/.test(orchCard)
+      && /succeed mit model\/effort explizit/.test(orchCard)
+      && /--- UEBERGABE --- [^\n]*committet[^\n]*fleet-report mit status handoff/.test(laneCard)
+      && /HOW THIS LANE ENDS/.test(laneCard),
+    `orch=${orchCard.length} lane=${laneCard.length}`);
+  const ctxClaude = constant("ORCHESTRATOR_CONTEXT_LINE");
+  const ctxCodex = constant("ORCHESTRATOR_CONTEXT_LINE_CODEX");
+  const docClaude = docBlock("Orchestratorin · jeder andere Harness");
+  const docCodex = docBlock("Orchestratorin · codex");
+  pin(`${RULE_CTX} — both Orchestratorin KONTEXT lines are byte-equal to docs/rollenkarten.md §Kontext je Harness (C)`,
+    ctxClaude !== null && ctxCodex !== null && ctxClaude === docClaude && ctxCodex === docCodex,
+    `server=${ctxClaude !== null}/${ctxCodex !== null} doc=${docClaude !== null}/${docCodex !== null} `
+      + `equal=${ctxClaude === docClaude}/${ctxCodex === docCodex}`);
+  // THE TWO HARNESS TEXTS a codex session reads, and the claude reference beside them. Codex: names
+  // native compaction, no percentage, no threshold, no baton door. Default: keeps today's measured
+  // band and its exit, because this cut changes codex and nothing else.
+  const footClaude = constant("LANE_EXIT_HANDOFF");
+  const footCodex = constant("LANE_EXIT_HANDOFF_CODEX");
+  const codexTexts = [["ORCHESTRATOR_CONTEXT_LINE_CODEX", ctxCodex], ["LANE_EXIT_HANDOFF_CODEX", footCodex]] as const;
+  const badCodex = codexTexts.filter(([, t]) => t === null || CONTEXT_STOP.test(t) || /\/api\/self\/succeed/.test(t)
+    || !/nativ/.test(t));
+  pin(`${RULE_CTX} — the codex texts name native compaction and carry no percentage, threshold, context stop or succeed door (D)`,
+    badCodex.length === 0, badCodex.map(([n, t]) => `${n}: ${t === null ? "not found" : t.slice(0, 80)}`).join("; "));
+  pin(`${RULE_CTX} — the default texts keep the claude band: FLEET_MIGRATE_PCT + 45 % for the Orchestratorin, "context is filling" → succeed for a lane (E)`,
+    !!ctxClaude && /FLEET_MIGRATE_PCT/.test(ctxClaude) && /45 %/.test(ctxClaude)
+      && !!footClaude && /context is filling/.test(footClaude) && /POST \/api\/self\/succeed/.test(footClaude),
+    `orch=${ctxClaude?.slice(0, 60)} lane=${footClaude?.slice(0, 60)}`);
+  // THE SELECTION. One predicate, asked of the HARNESS (never a provider or model string), and every
+  // codex-facing seam goes through it: both Orchestratorin builders, the lane footer, the steward's
+  // context-only handoff. A builder that dropped its harness parameter would hand codex the default.
+  const fnBody = (head: string): string => server.match(new RegExp(head.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[\\s\\S]*?\\n\\}\\n"))?.[0] ?? "";
+  const predicate = fnBody("function nativeCompaction(");
+  const spawnB = fnBody("function buildOrchestratorSpawnBrief(");
+  const succB = fnBody("function buildOrchestratorSuccessionBrief(");
+  const footer = fnBody("function laneExitFooter(");
+  const steward = fnBody("async function renderStewardMessage(");
+  const selector = server.match(/const orchestratorRoleCard = \(harness: string \| null\): string =>\n[^\n]*\n/)?.[0] ?? "";
+  pin(`${RULE_CTX} — one harness predicate selects every codex text: both Orchestratorin builders, the lane footer and the steward handoff (F)`,
+    /return harnessOf\(harness \?\? ""\)\.id === CODEX_HARNESS\.id;/.test(predicate) && !/model|provider/i.test(predicate.split("\n").slice(1).join("\n"))
+      && /nativeCompaction\(harness\) \? ORCHESTRATOR_CONTEXT_LINE_CODEX : ORCHESTRATOR_CONTEXT_LINE/.test(selector)
+      && /^function buildOrchestratorSpawnBrief\(harness: string \| null,/.test(spawnB) && /orchestratorRoleCard\(harness\)/.test(spawnB)
+      && /^function buildOrchestratorSuccessionBrief\(harness: string \| null,/.test(succB) && /orchestratorRoleCard\(harness\)/.test(succB)
+      && !/ORCHESTRATOR_ROLE_CARD/.test(spawnB + succB)
+      && server.includes("buildOrchestratorSpawnBrief(s.harness, ") && server.includes("buildOrchestratorSuccessionBrief(harness, ")
+      && /nativeCompaction\(harness\) \? LANE_EXIT_HANDOFF_CODEX : LANE_EXIT_HANDOFF/.test(footer)
+      && /if \(ref === "handoff"\)\n\s*return nativeCompaction\(s\.harness\)\n\s*\? \{ error:/.test(steward),
+    `predicate=${predicate !== ""} selector=${selector !== ""} spawn=${spawnB !== ""} succ=${succB !== ""} footer=${footer !== ""} steward=${steward !== ""}`);
+}
+
+// THE LOADED RULE, not only the delivered brief. Codex and Pi load AGENTS.md automatically, so a
+// "~25 %" sentence there reaches a codex session whatever its card says (owner correction
+// 2026-09-30). The rule: the context paragraph scopes the band to Claude and names codex's native
+// compaction, and a deliberate succession keeps its duties there too.
+{
+  const agents = read("AGENTS.md");
+  const at = agents.indexOf("### Context self-management");
+  const section = at < 0 ? "" : agents.slice(at, agents.indexOf("\n## ", at) < 0 ? undefined : agents.indexOf("\n## ", at));
+  const paras = section.split("\n\n").slice(1);
+  const banded = paras.filter((p) => /%/.test(p));
+  pin("AGENTS.md's context rule scopes every percentage to Claude and gives Codex native compaction without a stop or succeed",
+    section !== "" && banded.length > 0 && banded.every((p) => /\*\*Claude\*\* session degrades/.test(p))
+      && /\*\*Codex\*\* session compacts its own window\s+natively and automatically/.test(section)
+      && /never a\s+reason to stop work, to stop starting work, or to succeed/.test(section)
+      && /DELIBERATE succession keeps/.test(section),
+    section === "" ? "### Context self-management not found in AGENTS.md" : section.slice(0, 160));
 }
 
 // THE CROSS-MODULE SLICE TRIPWIRE, and it is the other half of `span()`. ~95 rows below still cut

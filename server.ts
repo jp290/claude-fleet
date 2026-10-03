@@ -11741,7 +11741,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     const orchCtx = orchestrator
       ? await orchestratorFoundingContext(predecessor.cwd, harness) : null;
     const brief = orchestrator
-      ? buildOrchestratorSuccessionBrief(await successionInitSteps(predecessor.cwd), carry,
+      ? buildOrchestratorSuccessionBrief(harness, await successionInitSteps(predecessor.cwd), carry,
         lineageFacts, orchCtx?.ok ? orchCtx.value.anchorBlock : "")
       : await buildSuccessionBrief(predecessor.cwd, carry, lineageFacts);
     const box: BoxPin = { container: s.container, containerContext: s.containerContext };
@@ -17034,12 +17034,30 @@ const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";
 // assembly seam below so a brief cannot be delivered without them. A clarify lane is exempt by
 // construction: it must STOP and let the owner answer. The status list is read from the route's
 // own constant — a footer naming a status the route rejects would teach the lane a 400.
-// ONE BODY, TWO EXITS (Fremdrepo-Befund 4, docs/messungen/2026-09-15-fremdrepo-annahmen-lanes.md):
+// ONE BODY, TWO MEANINGS OF `handoff` (Fremdrepo-Befund 4, docs/messungen/2026-09-15-fremdrepo-annahmen-lanes.md):
 // the footer taught every harness `handoff` → POST /api/self/succeed, but a codex session compacts
-// its own window — the baton door is not its exit, and the hint was the lie. The one sentence is
-// all that differs; everything else stays a single text so the two cannot drift.
-const LANE_EXIT_HANDOFF_EXIT = "file it, then POST /api/self/succeed";
-const LANE_EXIT_HANDOFF_EXIT_CODEX = "your report IS the handover — a codex session compacts itself, and no baton door follows it";
+// its own window — the baton door is not its exit, and the hint was the lie. Since the owner's
+// codex correction (2026-09-30) the WHY differs too: „[Zitat entfernt]“ is a claude fact,
+// and a codex lane that read it would stop on a fill its harness compacts by itself. So the one
+// `handoff = …` definition is all that differs; the default keeps its bytes, and everything else
+// stays a single text so the two cannot drift. LANE_ROLE_CARD defers to this block by name.
+const LANE_EXIT_HANDOFF = `your context is filling and you are laying the baton down
+   (done / open / next step / open numbers) for a fresh session that continues on THIS worktree —
+   file it, then POST /api/self/succeed`;
+const LANE_EXIT_HANDOFF_CODEX = `you are laying the baton down DELIBERATELY (done / open / next
+   step / open numbers), never because of a context reading: a codex session compacts its own
+   window natively, so a measured fill is no reason to stop or to hand over — your report IS the
+   handover, and no baton door follows it`;
+// WHICH HARNESS COMPACTS ITS OWN WINDOW, asked of the harness itself and never of a provider or a
+// model name: codex is the one adapter whose native auto-compaction Fleet relies on (owner,
+// 2026-09-30) and whose spawn line carries its compaction budget (CODEX_HARNESS, Slot.context).
+// Every seam that would otherwise hand a codex session a context-derived stop or succession — the
+// lane footer, the Orchestratorin's KONTEXT line, the steward's context-only handoff — asks this one
+// predicate. tickMigrate and the pulse band keep their own CLAUDE-only gate: they are a claude
+// fact, and narrowing them to "not codex" would hand pi a band its owner ruled out (2026-09-06).
+function nativeCompaction(harness: string | null): boolean {
+  return harnessOf(harness ?? "").id === CODEX_HARNESS.id;
+}
 function positionRole(s: Slot, bound = boundProgramForMain(s)): "program-main" | "lane" | "orchestrator" | "generic" {
   return bound.ok ? "program-main"
     : s.worktree ? "lane"
@@ -17096,9 +17114,7 @@ function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
     receiver, harness: s.harness, model: s.model, waitingOnMe };
 }
 function laneExitFooter(harness: string | null, receiver: { role: string; slot: number; openedAt: number } | null): string {
-  const handoffExit = harnessOf(harness ?? "").id === CODEX_HARNESS.id
-    ? LANE_EXIT_HANDOFF_EXIT_CODEX
-    : LANE_EXIT_HANDOFF_EXIT;
+  const handoffMeaning = nativeCompaction(harness) ? LANE_EXIT_HANDOFF_CODEX : LANE_EXIT_HANDOFF;
   return `
 
 --- HOW THIS LANE ENDS (three acts, in this order — they are the deliverable, not paperwork)
@@ -17118,9 +17134,7 @@ Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self
 
    status is exactly one of: ${FLEET_REPORT_STATUSES.join(" · ")} — complete = the slice is done and
    verified, needs-main = you finished what you could and a decision is owed, failed = it did not
-   work and you are saying so, handoff = your context is filling and you are laying the baton down
-   (done / open / next step / open numbers) for a fresh session that continues on THIS worktree —
-   ${handoffExit}. \`text\` is prose for a human reader, at most
+   work and you are saying so, handoff = ${handoffMeaning}. \`text\` is prose for a human reader, at most
    ${MAX_FLEET_REPORT_TEXT} characters (write it to your scratchpad, check \`wc -c\`, then POST once):
    what you did, the quoted verification result, and one line for anything left unresolved. The
    body takes ONLY those two fields. A report is a MESSAGE, never a state change — it does not move
@@ -35674,10 +35688,10 @@ const LANE_ROLE_CARD = `--- ROLLE --- Lane: fuehrst genau eine Karte aus und mel
 --- DEIN EMPFAENGER --- deine MAIN: Rueckfragen per POST /api/self/clarifications, Abschluss per POST /api/self/fleet-report. Nie der Owner direkt.
 --- DU ENTSCHEIDEST --- wie du das DONE erreichst, innerhalb von FLAECHE und VERBOTEN.
 --- DEINE GRENZE --- alles ausserhalb der Karte, andere Repos, ~/.claude, geteilte Ports, Sockets und der Live-Server: stoppen und fragen. Nie landen, nie deployen.
---- DEINE TUEREN --- self/gate (was dich gated, welche Beweismenge) · self/drift (vor dem Report) · criterion · suite-offer · clarifications · fleet-report · succeed (Lane-Schiene).
+--- DEINE TUEREN --- self/gate (was dich gated, welche Beweismenge) · self/drift (vor dem Report) · criterion · suite-offer · clarifications · fleet-report · succeed (Lane-Schiene, nur wenn HOW THIS LANE ENDS sie fuer deinen Harness nennt).
 --- DER LOOP --- DONE und Pruefkommando in einem Satz festlegen → bauen → committen, keine ungetrackten Dateien → Beweismenge aus self/gate fahren → drift pruefen → Report: was, Pruef-Tail woertlich, eine Zeile Offenes. Ein roter Check ist deiner, bis du das Gegenteil beweist.
 --- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
---- UEBERGABE --- an der Kontextgrenze (FLEET_LANE_MIGRATE_PCT): committen, fleet-report mit status handoff, succeed ohne carry — die Nachfolgerin arbeitet auf deinem Worktree weiter.`;
+--- UEBERGABE --- wer abgibt, committet und filed einen fleet-report mit status handoff (fertig / offen / naechster Schritt / offene Zahlen). Wann abgegeben wird und ob eine Nachfolgerin auf deinem Worktree folgt, ist Harness-Laufzeit: das sagt HOW THIS LANE ENDS.`;
 
 const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: uebersetzt Owner-Absicht in Programs und Karten, beaufsichtigt die MAINs und bringt dem Owner nur echte Grenzfragen. Fuehrt keine Lane, landet nicht.
 --- DEIN EMPFAENGER --- der Owner. Fragen der MAINs kommen zu dir: was du beantworten kannst, beantwortest du; den Rest bringst du dem Owner zweimal, als Push und im Gespraech.
@@ -35686,7 +35700,20 @@ const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: uebersetzt Owner-A
 --- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit Owner-Delegation) · deploy (Verdikt am naechsten Boot lesen).
 --- DER LOOP --- state.sh --brief → register.sh --brief → Board; kleinster Akt → Zeile im Format → Karte gueltig? → Rueckweg als Mechanismus legen, warten ohne Beobachten → ein Report ist eine Behauptung, bis Diff und Pruefung gelesen sind → naechster Akt.
 --- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
---- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Entscheidung an der Schwelle FLEET_MIGRATE_PCT (gemessen mit ctl.sh ctx), darunter keine Nachfolge, spaetestens bei 45 %.`;
+--- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Wann eine Nachfolge ansteht, sagt die KONTEXT-Zeile deines Harness.`;
+
+// THE HARNESS HALF OF THE CARD (owner correction 2026-09-30: „[Zitat entfernt]“
+// ). The card above is the
+// ROLE: what a succession owes, for every harness alike. WHEN a session hands over is runtime
+// behaviour of the harness it runs on, so it is a second, separately chosen line — never folded
+// into the role text, or a codex Orchestratorin reads a percentage stop its harness does not have.
+// Both lines stand verbatim in docs/rollenkarten.md §Kontext je Harness; e2e/pins.ts holds them.
+const ORCHESTRATOR_CONTEXT_LINE = `--- KONTEXT --- Entscheidung an der Schwelle FLEET_MIGRATE_PCT (gemessen mit ctl.sh ctx), darunter keine Nachfolge, spaetestens bei 45 %.`;
+
+const ORCHESTRATOR_CONTEXT_LINE_CODEX = `--- KONTEXT --- Codex verdichtet seinen Kontext nativ und automatisch. Ein gemessener Fuellstand ist Anzeige: kein Grund, die Arbeit anzuhalten, und kein Anlass fuer eine Nachfolge. Eine Nachfolge ist nur ein bewusster Akt, und dann traegt sie die UEBERGABE oben vollstaendig.`;
+
+const orchestratorRoleCard = (harness: string | null): string =>
+  `${ORCHESTRATOR_ROLE_CARD}\n${nativeCompaction(harness) ? ORCHESTRATOR_CONTEXT_LINE_CODEX : ORCHESTRATOR_CONTEXT_LINE}`;
 
 // WHICH LABEL IS THE ROLE. The owner names the role in the pane label and always has — the live
 // fleet carries „[Zitat entfernt]“, so an exact-equality test the way STEWARD_LABEL uses one
@@ -35697,10 +35724,10 @@ const ORCHESTRATOR_LABEL_RE = /(^|[^\p{L}])orchestrator/iu;
 const isOrchestratorLabel = (label: string | null | undefined): boolean =>
   !!label && (label.includes("🎛") || ORCHESTRATOR_LABEL_RE.test(label));
 
-function buildOrchestratorSpawnBrief(anchorBlock: string): string {
+function buildOrchestratorSpawnBrief(harness: string | null, anchorBlock: string): string {
   return [
     "[fleet Orchestrator] Diese Session ist die Orchestratorin dieses Fleets. Was folgt, ist deine Rollenkarte — Owner-Text, keine Empfehlung; die Langfassung steht in docs/controller.md.",
-    ORCHESTRATOR_ROLE_CARD,
+    orchestratorRoleCard(harness),
     "Beginne exakt in dieser Reihenfolge:",
     "1. Führe ./state.sh --brief aus.",
     "2. Führe ./register.sh --brief aus.",
@@ -35713,7 +35740,7 @@ function buildOrchestratorSpawnBrief(anchorBlock: string): string {
 // The succession twin. `carry` keeps its exact meaning on this rail; the RECORD is the handover and
 // is named as such, because the card's own UEBERGABE block points at the same one channel and a
 // brief that offered a second would be the disagreement e3e5084a exists to prevent.
-function buildOrchestratorSuccessionBrief(steps: readonly string[], carry: string | null,
+function buildOrchestratorSuccessionBrief(harness: string | null, steps: readonly string[], carry: string | null,
   lineage: LineageBriefFacts, anchorBlock: string): string {
   const next = carry ? [``, `Das Erste, was die Vorgängerin als Nächstes täte (max. ${MAX_SUCCESSION_CARRY} Zeichen):`, carry] : [];
   const briefSteps = steps.map((step) => step.replace("./state.sh aus.", "./state.sh --brief aus.")
@@ -35721,7 +35748,7 @@ function buildOrchestratorSuccessionBrief(steps: readonly string[], carry: strin
   return [
     `[fleet Orchestrator succession] Du bist die FORTGESETZTE Orchestratorin dieses Fleets; die Vorgängerin ist auf diesem Slot beendet; die Übergabe ist der Linien-Record ${lineage.lineageId} (GET /api/self, Feld \`lineage\`): ${lineageBriefContent(lineage)}`,
     "Was folgt, ist deine Rollenkarte — Owner-Text, keine Empfehlung; die Langfassung steht in docs/controller.md.",
-    ORCHESTRATOR_ROLE_CARD,
+    orchestratorRoleCard(harness),
     "Beginne exakt in dieser Reihenfolge:",
     ...briefSteps,
     ...next,
@@ -35779,7 +35806,7 @@ async function deliverOrchestratorSpawnCard(s: Slot): Promise<Record<string, unk
   const readiness = await waitForFoundingReadiness(s, stillCurrent);
   if (!readiness.ok) return { delivered: false, reason: readiness.reason };
   const ctx = await orchestratorFoundingContext(s.cwd!, s.harness);
-  const brief = buildOrchestratorSpawnBrief(ctx.ok ? ctx.value.anchorBlock : "");
+  const brief = buildOrchestratorSpawnBrief(s.harness, ctx.ok ? ctx.value.anchorBlock : "");
   if (!stillCurrent()) return { delivered: false, reason: "the slot changed before the card was sent" };
   try {
     await sendText(s, brief, true, { path: "founding" });
@@ -38863,8 +38890,14 @@ async function renderStewardMessage(kind: StewardKind, ref: string, s: Slot, que
       if (!gi || gi.dirty === 0) return { error: "no uncommitted changes on record for this lane" };
       return { text: `[steward] Committe deine Arbeit, bevor du weitermachst.${STEWARD_VERIFY_SUFFIX}` };
     }
+    // a CONTEXT-ONLY nudge, so it is refused BY NAME where the harness compacts its own window
+    // (nativeCompaction): sending it would be the percentage stop the owner struck for codex on
+    // 2026-09-30. Refused, not rewritten — this ref never was a deliberate succession, and widening
+    // lifecycle_op into an identity change is not the steward's to do. Every other ref stays.
     if (ref === "handoff")
-      return { text: `[steward] Kontext nähert sich der Grenze — schreib ein /handoff.${STEWARD_VERIFY_SUFFIX}` };
+      return nativeCompaction(s.harness)
+        ? { error: `lifecycle_op handoff is a context-only nudge and harness ${harnessOf(s.harness).id} compacts its own window natively — not sent; a deliberate handover stays the session's own act` }
+        : { text: `[steward] Kontext nähert sich der Grenze — schreib ein /handoff.${STEWARD_VERIFY_SUFFIX}` };
     if (ref === "verify") {
       // the land CLAIM is gated on the land FACT — `landed`, the one field of MergeLast that says
       // this merge actually completed. The predecessor read "a verdict exists and is not

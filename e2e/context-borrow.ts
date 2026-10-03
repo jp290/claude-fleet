@@ -67,7 +67,7 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       MEMORY_RECEIPTS_MAX: 20, SERVER_BOOT_AT: 1, privatePackResolutions: new WeakMap(), KONZEPT_ROOT: null,
     };
     const functions = [fn("secretEq", auth), fn("resolveSelfPrincipal", auth), ...["sessionIdMatchOf", "boundProgramForMain", "waveRowsOf",
-      "memoryScopeFor", "contextCatalogFor", "contextBorrowRoute", "memorySourcesView", "treeListingAt", "showAtHead", "repoManifestContextPlan",
+      "memoryScopeFor", "contextCatalogFor", "contextBorrowRoute", "contextLedgersFor", "memorySourcesView", "treeListingAt", "showAtHead", "repoManifestContextPlan",
       "declaredSourceHash", "privatePackResolutionOf", "contextReceiptSelections"].map((name) => fn(name))].join("\n");
     const refusal = source.slice(source.indexOf("const memoryRefusal ="), source.indexOf("async function memoryScopeFor"));
     const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(`${refusal}\n${functions}`);

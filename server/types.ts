@@ -2047,6 +2047,7 @@ interface Slot {
   // silently falling back to the default one.
   effort: string | null; // per-slot reasoning level for harnesses that have one (Pi's --thinking);
   // null = pass no flag. Validated against the HARNESS's own closed set, never a charset.
+  webSearch: boolean;
   browser: boolean; // THIS LANE's MCP profile: true = it starts with the ambient Playwright MCP
   // (the state before 2026-09-14), false = a text lane that starts without it. Read ONLY for a slot
   // with a worktree — a MAIN or plain session keeps its ambient MCPs whatever this says (ensureSlot).

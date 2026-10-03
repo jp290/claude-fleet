@@ -6718,7 +6718,7 @@ export async function run(ctx: Ctx): Promise<void> {
     try {
       if (cat) {
         await restartSrv({ PATH: webPath, FLEET_CODEX_SESSIONS_DIR: join(webDir, "sessions"), FLEET_DISPATCH_REPO: REPO });
-        for (const search of [false, true]) {
+        for (const search of [true, false]) {
           const text = ["ROLLE: codex/gpt-6-astra/high", "GROESSE: klein", "FLAECHE: code.txt",
             ...(search ? ["WEB: search"] : []), "VERIFY: bun e2e/pins.ts", "DONE: code.txt enthaelt eine Zeile",
             "", "code.txt bekommt eine Recherchezeile."].join("\n");
@@ -6769,10 +6769,16 @@ export async function run(ctx: Ctx): Promise<void> {
           const bind = await post(`/api/slots/${row.slot}/codex-bind`, { sessionId: id });
           check(`(web) ${search ? "search" : "absent"}: exact rollout binding succeeds before resume`, bind.ok, `status=${bind.status}`);
           if (bind.ok) {
+            const done = await post(`/api/tasks/${row.id}/done`, {});
+            check(`(web) ${search ? "search" : "absent"}: row leaves sent before recovery`, done.ok, `status=${done.status}`);
             await restartSrv({ PATH: webPath, FLEET_CODEX_SESSIONS_DIR: join(webDir, "sessions"), FLEET_DISPATCH_REPO: REPO });
-            const persisted = (await (await get(`/api/tasks/${row.id}`)).json()) as { task?: { card?: { web?: string } } };
+            const persisted = (await (await get(`/api/tasks/${row.id}`)).json()) as { task?: { status?: string; card?: { web?: string } } };
             check(`(web) ${search ? "search" : "absent"}: declaration survives server restart`,
-              persisted.task?.card?.web === (search ? "search" : undefined) && !!persisted.task, `web=${persisted.task?.card?.web ?? "absent"}`);
+              persisted.task?.card?.web === (search ? "search" : undefined) && persisted.task?.status === "done",
+              `web=${persisted.task?.card?.web ?? "absent"} status=${persisted.task?.status}`);
+            const restored = (await (await get("/api/sessions")).json()) as { slots: { id: number; webSearch?: true }[] };
+            check(`(web) ${search ? "search" : "absent"}: persisted Slot profile survives without a sent row`,
+              restored.slots.find((s) => s.id === row.slot)?.webSearch === (search ? true : undefined), `search=${search}`);
             rmSync(invoked, { force: true });
             const resume = await post(`/api/slots/${row.slot}/restart`, {});
             check(`(web) ${search ? "search" : "absent"}: restart creates the resume pane`, resume.ok, `status=${resume.status}`);
@@ -10851,8 +10857,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v10) CARD_VALIDATOR_VERSION is 10, so cards refused before KLASSE or earlier rules are read once more",
-      CARD_VALIDATOR_VERSION === 10, String(CARD_VALIDATOR_VERSION));
+    check("(v11) CARD_VALIDATOR_VERSION is 11, so cards refused before WEB or earlier rules are read once more",
+      CARD_VALIDATOR_VERSION === 11, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the

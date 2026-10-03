@@ -677,10 +677,12 @@ Netzwerkkosten werden nicht als null behauptet.
     nichts. Parser und Validator bewahren das Feld; ein anderer Wert verweigert die Karte.
     **Codex `apply`**: Dispatch reicht die gültige Karte bis `CODEX_HARNESS.spawnCmd` weiter;
     frische UND exakt-ID-resumierte Kommandozeilen erhalten `--search`. Ohne Deklaration bleibt
-    die Kommandozeile bytegleich. Bei einer Welle genügt eine deklarierende Karte; Heal, Restart
-    und Server-Neustart lesen die persistierten, an den Slot gebundenen Karten erneut.
-    Die vorhandene Kartenansicht zeigt die Deklaration im Auftrag; ein eigener Web-Schalter im
-    Client ist **not-applicable**. Plain-Sessions und handgeöffnete Lanes ohne Queue-Karte wählen
+    die Kommandozeile bytegleich. Bei einer Welle genügt eine deklarierende Karte. Die Auswahl
+    wird als `Slot.webSearch` persistiert und im Spawn-Occupant mitverglichen; Heal, Restart
+    und Resume erhalten sie auch dann, wenn die Queue-Zeile nicht mehr `sent` ist.
+    Open und Teardown setzen das Profil zurück, sodass ein neuer Occupant es nicht erbt.
+    `GET /api/sessions` zeigt das gewählte Profil als `webSearch: true`; ohne Auswahl fehlt das Feld.
+    Ein eigener Web-Schalter im Client ist **not-applicable**. Plain-Sessions und handgeöffnete Lanes ohne Queue-Karte wählen
     hier kein Web-Profil. **claude/pi/container `not-applicable`**: deren Kommandozeilen bleiben
     unverändert. Keine Änderung an globaler Codex-Konfiguration oder Trust-Prelude.
     `e2e/tasks.ts` prüft Parser-Refusals sowie erzeugte frische und Resume-Zeilen mit/ohne Auswahl

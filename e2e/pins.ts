@@ -3089,8 +3089,10 @@ await import(pathToFileURL(process.argv[2]).href);
   const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten, size, after\?\}`/.test(read("AGENTS.md"));
   const classCardDocs = /`card\.klasse` und optional `card\.rolle`/.test(read("docs/self-api.md"));
   pin("the card template and class extension name the fields the create doors read",
-    cardDoorFields.replace(/\s/g, "") === '"ziel","rolle","klasse","surface","done","verify","verboten","size","after"'
+    cardDoorFields.replace(/\s/g, "") === '"ziel","rolle","klasse","surface","done","verify","verboten","size","after","web"'
     && agentsCard && classCardDocs
+    && read("docs/harness-adapter.md").includes('`card.web: "search"`')
+    && read("docs/harness-adapter.md").includes('`WEB: search`')
     && /ZIEL: [^\n]*\nFLAECHE: [^\n]*\nDONE: [^\n]*\nVERIFY: [^\n]*\nVERBOTEN: [^\n]*\nROLLE: /.test(read("AGENTS.md")),
     `door=[${cardDoorFields}] agents=${agentsCard}`);
   const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";
@@ -3216,7 +3218,7 @@ await import(pathToFileURL(process.argv[2]).href);
   pin("the attended dispatch carries model+harness+effort+browser+context, while the tick default keeps all three null and no browser or context",
     /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null; browser\?: true;\s+context\?: SlotContext \};/.test(server)
     && /const DEFAULT_SPAWN: DispatchSpawn = \{ harness: null, model: null, effort: null \};/.test(server)
-    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true,\s+spawn\.context \?\? null\)/.test(dBody),
+    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true,\s+spawn\.context \?\? null, false, \[next, \.\.\.\(wave\?\.followers \?\? \[\]\)\]\.some\(\(t\) =>\s+t\.card\?\.valid === true && t\.card\.web === "search"\)\)/.test(dBody),
     dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 180) ?? "no openSlot call");
   const tStart = server.indexOf("async function tickDispatch");
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
@@ -10520,8 +10522,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_CARD_V2 = "a card is refused by the tree, not by a stale graph or a foreign field";
   const cx = read("card-extract.ts");
   // v6 (2026-09-18): POST /api/self/criterion is a clarify row's verify.
-  const versionConst = /^export const CARD_VALIDATOR_VERSION = 10;$/m.test(cx);
-  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 10 (bump it when a rule change can turn a refusal into an acceptance)`,
+  const versionConst = /^export const CARD_VALIDATOR_VERSION = 11;$/m.test(cx);
+  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 11 (bump it when a rule change can turn a refusal into an acceptance)`,
     versionConst, `const=${versionConst}`);
   // v3 (2026-09-13): the filing format. A formatted row is read by the PARSER before the extractor
   // is ever started, and the ledger says which of the two produced each card.
@@ -10539,7 +10541,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     declFallback, `declFallback=${declFallback}`);
   // v6 (2026-09-17): the re-read may not make the row poorer. A field the filing format cannot
   // spell is DROPPED by the sweep's unconditional overwrite the moment a brief moves the row.
-  const formatVerboten = /const FORMAT_KEYS = \["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"\] as const;/.test(cx)
+  const formatVerboten = /const FORMAT_KEYS = \["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "WEB", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"\] as const;/.test(cx)
     && /verboten: formatPhrases\(field\("VERBOTEN"\)\),/.test(cx) && !/verboten: \[\],\n/.test(cx.split("parseFormattedCard")[1] ?? "");
   pin(`${RULE_CARD_V2} — VERBOTEN is a FORMAT_KEY, so a re-read through the format path cannot drop the card's forbidding half`,
     formatVerboten, `formatVerboten=${formatVerboten}`);

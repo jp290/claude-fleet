@@ -2232,6 +2232,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   containerContext: null,
   effort: null,
   browser: false,
+  webSearch: false,
   remote: false,
   context: null,
   taskId: null,
@@ -5652,11 +5653,11 @@ function stateSnapshot(): string {
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
     memoryGrant?: MemoryGrant;
     reportDelegate?: ReportDelegate;
-    browser?: true; context?: SlotContext; sleeping?: SlotSleep }> = {};
+    browser?: true; webSearch?: true; context?: SlotContext; sleeping?: SlotSleep }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -8077,12 +8078,11 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   webSearch: boolean;
 }
 
-const slotSpawnOccupant = (s: Slot, webSearch = !!s.worktree && tasks.some((t) =>
-  t.slot === s.id && t.status === "sent" && t.card?.valid === true && t.card.web === "search")): SlotSpawnOccupant | null => s.cwd ? {
+const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
   browser: s.browser, remote: s.remote, context: s.context, container: s.container, containerContext: s.containerContext,
-  webSearch,
+  webSearch: s.webSearch,
 } : null;
 
 // label is a captured spawn input, not occupant identity: the owner may relabel a live session
@@ -8092,6 +8092,7 @@ const sameSlotSpawnOccupant = (s: Slot, expected: SlotSpawnOccupant): boolean =>
   s.id === expected.slot && s.cwd === expected.cwd && s.openedAt === expected.openedAt
   && s.selfToken === expected.selfToken && s.sessionId === expected.sessionId && s.model === expected.model
   && s.harness === expected.harness && s.effort === expected.effort && s.browser === expected.browser
+  && s.webSearch === expected.webSearch
   && s.context?.window === expected.context?.window && s.context?.compactAt === expected.context?.compactAt
   && s.container === expected.container && s.containerContext === expected.containerContext;
 
@@ -8150,12 +8151,12 @@ function rulebookRoleForSpawn(s: Slot, occupant: SlotSpawnOccupant): "main" | "o
   return positionRole(s) === "orchestrator" ? "orchestrator" : null;
 }
 
-async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal", webSearch?: boolean): Promise<void> {
+async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal"): Promise<void> {
   if (slotTeardownInflight.has(s.id)) return;
   // ASLEEP ON PURPOSE (sleepSlot): the absent pane is the state, not damage. Every caller — the 2 s
   // self-heal first of all — must leave it absent; only wakeSlot clears the mark and then calls here.
   if (s.sleeping) return;
-  let occupant = slotSpawnOccupant(s, webSearch);
+  let occupant = slotSpawnOccupant(s);
   if (!occupant) return;
   const entrySpawn = slotSpawnInflight.get(s.id);
   if (entrySpawn) { await entrySpawn; return; }
@@ -8432,6 +8433,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.harness = harness; // ...and this one decides WHICH BINARY the pane runs, so inheriting it
   s.effort = effort;   // would silently spawn the previous occupant's agent for a new session
   s.browser = browser; // ...and a text lane must not inherit a browser lane's MCP profile, or back
+  s.webSearch = !!worktree && h.id === "codex" && webSearch;
   s.remote = remote; // ...nor a session the previous occupant's Remote Control
   s.context = context; // ...nor a pane the previous occupant's context budget
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
@@ -8498,7 +8500,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
       || hashSelfToken(s.selfToken) !== treeLease.founding.target.selfTokenHash)
       throw new GameMakerTreeConflict("Program-MAIN target identity changed during candidate persistence");
   } else saveState();
-  await ensureSlot(s, "open", webSearch);
+  await ensureSlot(s, "open");
   } finally {
     openSlotIntents.delete(openIntent);
   }
@@ -8634,6 +8636,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.harness = null;
   s.effort = null;
   s.browser = false;
+  s.webSearch = false;
   s.remote = false;
   s.context = null;
   s.taskId = null;
@@ -38095,6 +38098,7 @@ if (existsSync(STATE_FILE)) {
             // …and the resume record by the same law: whole or absent, never a lane killed over it
             ...(resumedFrom ? { resumedFrom } : {}) };
         }
+        if ((v as { webSearch?: unknown }).webSearch === true && hOf.id === "codex" && s.worktree) s.webSearch = true;
       }
     }
     // THE FOURTH LEARN SITE: heals a MAIN sessionId that was persisted as null. Runs AFTER the slot
@@ -43241,6 +43245,7 @@ Bun.serve<WSData>({
             ...(parked ? { parkedSend: parked } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
+            ...(s.worktree && s.webSearch ? { webSearch: true } : {}),
             // started with Remote Control (Slot.remote) — the next spawn's truth; omitted when off
             ...(s.remote ? { remote: true } : {}),
             // the pane's context budget (Slot.context); omitted when none was chosen

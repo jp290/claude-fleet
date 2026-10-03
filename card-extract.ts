@@ -57,6 +57,7 @@ export const CARD_KEY = "card";
 //                    MAX_SENTENCE cut, so an inline command longer than 400 chars validates
 //   9 (2026-09-26) — DELEGATION is a filing header and survives card re-reads
 //  10 (2026-09-26) — KLASSE is a checked header; its registry is supplied by the caller
+//  11 — WEB: search is an optional, explicitly checked research declaration
 // Bump it whenever a change here can turn a refusal into an acceptance.
 export const CARD_VALIDATOR_VERSION = 11;
 

@@ -695,9 +695,8 @@ async function runFoundingWordWatch(): Promise<void> {
   if (fwGit?.ahead !== 1 || fwGit.dirty !== 0 || !fwTok) return;
 
   // THE BATON NOW COSTS A TICKET (2026-09-18): the newest report of THIS occupant must be the
-  // handoff. This lane was hand-opened — no row, no program — and a report-less lane cannot file
-  // at all (nothing dispatched it, owner-inbox fallback needs a taskId), so the fixture plants the
-  // row through the state file exactly as the baton fixture does, and files through the REAL door.
+  // handoff. This fixture plants a task row through the state file exactly as the baton fixture
+  // does, and files through the REAL door. The migration fixture below covers the taskless rail.
   const fwTask = (await (await post("/api/tasks",
     { text: "founding-word fixture row: the cut the heir inherits", queue: false })).json()) as
     { task?: { id?: string } };
@@ -7783,7 +7782,7 @@ export async function run(): Promise<void> {
       return r.ok ? id : 0;
     };
     const mainId = await openPlain("migrate-main");
-    const lane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    const lane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
     const stewardId = await openPlain("⚙ steward");
     const unknownId = await openPlain("migrate-unknown");
     // TWO MORE CONTROLS, 2026-09-13. `boundId` is a claude MAIN the planted Program below binds, so
@@ -7866,7 +7865,8 @@ export async function run(): Promise<void> {
           cacheWrite: 0, reasoning: 0, totalTokens: 9_129_200 } } })}\n`);
       usageFiles.push(file);
     }
-    await restartSrv({ FLEET_HARNESS_AUTOMATION: "1" });
+    const migrateCrossedAt = Date.now();
+    await restartSrv({ FLEET_HARNESS_AUTOMATION: "1", FLEET_DELIVERY_BUNDLE_SEC: "900" });
 
     type CtxRow = { id: number; ctx: { pct: number; windowTokens: number } | null };
     const ctxRows = ((await (await get("/api/sessions")).json()) as { slots: CtxRow[] }).slots;
@@ -7921,6 +7921,10 @@ export async function run(): Promise<void> {
       laneNudges = await migratePrompts(lane.slot);
     }
     const laneNudge = laneNudges[0]?.text ?? "";
+    check("a taskless lane's context nudge arrives within two minutes despite the 900-second bundle window",
+      laneNudges.length === 1 && laneNudges[0]!.ts >= migrateCrossedAt
+        && laneNudges[0]!.ts - migrateCrossedAt <= 120_000,
+      `nudges=${laneNudges.length} delayMs=${laneNudges[0] ? laneNudges[0].ts - migrateCrossedAt : "unknown"}`);
     check("tickMigrate nudges an above-threshold LANE exactly once — same measured opening, the lane's own three acts",
       laneNudges.length === 1 && laneNudge.includes("50%")
         && laneNudge.includes("1000000 Tokens im Fenster")
@@ -8065,7 +8069,7 @@ export async function run(): Promise<void> {
     const migrateCleaned = JSON.parse(readFileSync(statePath, "utf8")) as { programs?: { id?: string }[] };
     migrateCleaned.programs = (migrateCleaned.programs ?? []).filter((p) => p.id !== migrateProgramId);
     writeFileSync(statePath, JSON.stringify(migrateCleaned, null, 2), { mode: 0o600 });
-    await restartSrv({ FLEET_MIGRATE_PCT: "0" });
+    await restartSrv({ FLEET_MIGRATE_PCT: "0", FLEET_DELIVERY_BUNDLE_SEC: "0" });
     await Bun.sleep(tickMs * 4 + 500);
     check("FLEET_MIGRATE_PCT=0 registers no migration tick — neither rail sends, whatever the lane threshold is",
       (await migratePrompts(mainId)).length === 2 && (await migratePrompts(lane.slot)).length === 1,
@@ -8084,6 +8088,70 @@ export async function run(): Promise<void> {
       (await succOf(lane.slot))?.nudges === 0 && (await succOf(lane.slot))?.nudgedAt === null
       && (await migratePrompts(lane.slot)).length === 1,
       JSON.stringify({ succ: await succOf(lane.slot), ledger: (await migratePrompts(lane.slot)).length }));
+
+    const migrateToken = await paneEnv(`s${lane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const migrateHeaders = { "content-type": "application/json", "x-fleet-self-token": migrateToken };
+    const migrateSelf = await fetch(`${BASE}/api/self`, { headers: migrateHeaders });
+    const migrateIdentity = await migrateSelf.json() as {
+      position?: { role: string; taskId: string | null; programId: string | null; harness: string };
+      lane?: { branch: string };
+    };
+    check("migration succession fixture is the owner's direct claude lane without task, program or receiver watch",
+      migrateSelf.ok && migrateIdentity.position?.role === "lane"
+        && migrateIdentity.position.harness === "claude" && migrateIdentity.position.taskId === null
+        && migrateIdentity.position.programId === null && migrateIdentity.lane?.branch === lane.branch
+        && !(await watchRows()).some((w) => w.kind === "lane" && w.target === lane.slot && w.armed),
+      JSON.stringify(migrateIdentity.position));
+    for (const status of ["complete", "needs-main", "failed"] as const) {
+      const refused = await selfFleetReport(migrateToken, { status, text: "no dispatched terminal result" });
+      const detail = await refused.text();
+      check(`taskless lane still refuses terminal status ${status}`,
+        refused.status === 409 && detail.includes("no exact clarification receiver evidence"),
+        `${refused.status} ${detail}`);
+    }
+    const migrateQuestion = await selfClarify(migrateToken, { question: "Who can answer a direct lane?" });
+    const migrateQuestionText = await migrateQuestion.text();
+    check("taskless lane clarification still needs a living receiver",
+      migrateQuestion.status === 409 && migrateQuestionText.includes("no exact clarification receiver evidence"),
+      `${migrateQuestion.status} ${migrateQuestionText}`);
+    const migrateNoTicket = await fetch(`${BASE}/api/self/succeed`, {
+      method: "POST", headers: migrateHeaders, body: "{}",
+    });
+    const migrateNoTicketText = await migrateNoTicket.text();
+    check("taskless lane succession still requires its own handoff report",
+      migrateNoTicket.status === 409 && migrateNoTicketText.includes("no fleet report yet"),
+      `${migrateNoTicket.status} ${migrateNoTicketText}`);
+    const migrateFiled = await selfFleetReport(migrateToken, { status: "handoff",
+      text: "The context nudge arrived; open work is inherited on this same worktree." });
+    const migrateReport = (await migrateFiled.json() as { report?: FleetReportRow }).report;
+    const migrateEvent = (await fleetReportEventRows()).find((e) => e.id === migrateReport?.eventId);
+    check("taskless lane handoff is filed in the owner operations inbox with null task and program provenance",
+      migrateFiled.ok && migrateReport?.status === "handoff" && migrateReport.basis === "owner-inbox"
+        && migrateReport.receiver === null && migrateReport.provenance.taskId === null
+        && migrateReport.provenance.programId === null && migrateEvent?.status === "inbox"
+        && migrateEvent.delivery === "inbox" && migrateEvent.attempts === 0
+        && migrateEvent.receiverSlot === null && migrateEvent.receiverOpenedAt === null
+        && migrateEvent.receiverSessionId === null && migrateEvent.payload.basis === "owner-inbox",
+      JSON.stringify({ response: migrateFiled.status, report: migrateReport, event: migrateEvent }));
+    const migrateSucceeded = await fetch(`${BASE}/api/self/succeed`, {
+      method: "POST", headers: migrateHeaders, body: "{}",
+    });
+    const migrateSuccess = await migrateSucceeded.json() as { delivered?: boolean; successions?: number };
+    const migrateHeirToken = await paneEnv(`s${lane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const migrateHeirSelf = await fetch(`${BASE}/api/self`, {
+      headers: { "x-fleet-self-token": migrateHeirToken },
+    });
+    const migrateHeir = await migrateHeirSelf.json() as {
+      cwd?: string; lane?: { branch: string }; position?: { taskId: string | null; programId: string | null };
+    };
+    check("the nudged taskless lane succeeds without carry and its fresh heir inherits the same worktree and handoff",
+      migrateSucceeded.ok && migrateSuccess.delivered === true && migrateSuccess.successions === 1
+        && migrateHeirSelf.ok && migrateHeirToken !== migrateToken && migrateHeir.cwd === lane.cwd
+        && migrateHeir.lane?.branch === lane.branch && migrateHeir.position?.taskId === null
+        && migrateHeir.position.programId === null
+        && (await plogRead()).some((e) => e.slot === lane.slot && e.text.includes("[fleet staffelstab]")
+          && e.text.includes("The context nudge arrived; open work is inherited on this same worktree.")),
+      JSON.stringify({ status: migrateSucceeded.status, success: migrateSuccess, heir: migrateHeir }));
 
     for (const id of [mainId, lane.slot, stewardId, unknownId, boundId, piId]) if (id) await post(`/api/slots/${id}/kill`, {});
     for (const file of usageFiles) rmSync(file, { force: true });

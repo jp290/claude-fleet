@@ -529,6 +529,8 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   auch Lanes, mit eigener Schwelle `FLEET_LANE_MIGRATE_PCT` (Default 40, 0 = aus) und eigenem Text.
   `FLEET_MIGRATE_PCT` bleibt der Hauptschalter — ist er 0, wird der Timer gar nicht registriert und keine
   der beiden Schienen feuert. Live ist er 0, also ist die Schiene ARMIERBAR, nicht armiert.
+  `migrate-nudge` ist eine sofortige Zustellung: nach den bestehenden Zustell-Gates wartet der
+  Kontext-Hinweis auf keiner Schiene auf `FLEET_DELIVERY_BUNDLE_SEC`.
 - **Beide Schienen sind claude-only (seit 2026-09-13):** `tickMigrate` überspringt jeden Slot, dessen
   Harness nicht claude ist, bevor es den Füllstand liest — Codex kompaktiert selbst, und das
   Übergabeband gilt nur für claude. Die MAIN-Nachricht trägt die Nachfolge-Schiene
@@ -2992,6 +2994,8 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report \
   Report keine Zeile, braucht keinen `HANDOFF.md`-Commit (das ist die Datei des Haupt-Checkouts,
   nicht die einer Lane) und liegt genau dort, wo das Ergebnis derselben Lane ohnehin landet: in der
   Program-Inbox. Die MAIN sieht also eine Lane mit einem Nachfolge-Eintrag, kein neues Land.
+  Eine task- und programlose Lane ohne Empfänger-Evidenz filet nur `handoff` in die
+  Owner-Operations-Inbox und kann danach auf demselben Worktree `POST /api/self/succeed` nutzen.
 - **`text` ist PROSA für einen menschlichen Leser**, nicht-leer und ≤ `MAX_FLEET_REPORT_TEXT`
   (4000 Zeichen). Es gibt bewusst keinen JSON-Ergebniskörper: der Empfänger ist eine Session, die
   liest, kein Reducer.
@@ -3123,7 +3127,7 @@ Fehlt beides, geht der Report daher in die **bestehende Owner-Operations-Inbox (
 | Lane MIT `programId` | unverändert 409 | ihr Ergebnis gehört der MAIN, die sie geschickt hat; ein geschlossener Rückweg dort ist ein Program-Fakt (`programReturnPath`), kein Grund, den Koordinator zu umgehen |
 | zwei widersprüchliche Watch-Occupants | unverändert 409 | ABWESENDE und MEHRDEUTIGE Evidenz sind Gegenteile |
 | nur Legacy-Watch ohne `slotOpenedAt` | unverändert 409 | dito |
-| Lane ohne `taskId` | unverändert 409 | nichts hat sie dispatcht, also schuldet sie kein terminales Ergebnis — und es gäbe keinen Join-Key |
+| Lane ohne `taskId` und ohne Program | `complete`, `needs-main`, `failed` unverändert 409; `handoff` darf bei fehlender Empfänger-Evidenz in die Owner-Inbox | die Übergabe beschreibt offene Arbeit für dieselbe Branch, kein terminales Ergebnis |
 | `POST /api/self/clarifications` | unverändert 409 | **eine Inbox kann nicht antworten.** Ein dorthin geleiteter Worker würde ewig warten statt ein sichtbares 409 zu bekommen |
 
 **Die Inbox-Schuld ist hart gedeckelt.** `FLEET_EVENT_MAX_OPEN_OWNER_INBOX = 25` nicht-terminale
@@ -4899,8 +4903,8 @@ wird beim Confirm FALLEN GELASSEN, also waere „Sprosse" ein Versprechen und �
 ## Pane-Zustellungen und Buendelfenster
 
 Jede Pane-Zustellung traegt am Transportpfad die Klasse `sofort` oder `buendelbar`. Owner-Nachrichten,
-Gruendung/Nachfolge, Rueckfragen, Land-Bitten, Entscheidungen/Attention sowie rote Verify- und
-Audit-Ereignisse sind sofort. Quittungen, Infos und gruene Ereignisse koennen pro Empfaenger in
+Gruendung/Nachfolge, Kontext-/Nachfolge-Erinnerungen (`migrate-nudge`), Rueckfragen, Land-Bitten,
+Entscheidungen/Attention sowie rote Verify- und Audit-Ereignisse sind sofort. Quittungen, Infos und gruene Ereignisse koennen pro Empfaenger in
 einem Turn mit ihren vollstaendigen Originaltexten und Kopfzeilen zugestellt werden. Eine sofortige
 Zustellung loest ein wartendes Buendel im selben Turn aus; sie wartet nie auf dessen Zeitfenster.
 Ihr Original steht im Buendel zuerst. Ueber 32 KiB speichert der bestehende Pane-Inbox-Pfad das

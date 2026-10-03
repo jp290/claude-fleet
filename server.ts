@@ -8926,7 +8926,7 @@ type SendPath =
 type DeliveryClass = "sofort" | "buendelbar";
 function deliveryClass(path: SendPath): DeliveryClass {
   return path === "bundle" || path === "inbox-nudge" || path === "backlog-nudge"
-    || path === "migrate-nudge" || path === "auto" ? "buendelbar" : "sofort";
+    || path === "auto" ? "buendelbar" : "sofort";
 }
 function deliveryCacheState(s: Slot, now = Date.now()): DeliveryCacheFact & { cache: "warm" | "kalt"; edgeAt: number | null } {
   const fact = deliveryCacheReading(s);
@@ -12671,8 +12671,8 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   //    so the owner inbox receives the terminal fact with its original programId provenance.
   //  · a lane with contradictory or legacy-only watch evidence keeps its loud refusal. Absent
   //    evidence and ambiguous evidence are opposite facts.
-  //  · a programless lane with no task keeps its 409: nothing dispatched it, so nothing is owed a
-  //    terminal result. A completed Program's own binding is sufficient provenance.
+  //  · a programless lane with no task keeps its 409 for terminal results. Its handoff describes
+  //    open work for succession, so it may use the owner inbox without a dispatched task.
   //  · clarifications are untouched. An inbox cannot answer, so `/api/self/clarifications` keeps
   //    this exact 409 — a worker routed there would wait on a receiver that cannot speak.
   const completedProgram = program?.status === "complete";
@@ -12681,7 +12681,8 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
     : resolved as ClarificationReceiver & { basis: Exclude<ClarificationBasis, "orchestrator"> };
   if (!bound) {
     const reason = resolved ? (resolved as { error: string }).error : NO_RECEIVER_EVIDENCE;
-    if (!completedProgram && (reason !== NO_RECEIVER_EVIDENCE || s.programId || !s.taskId))
+    if (!completedProgram && (reason !== NO_RECEIVER_EVIDENCE || s.programId
+      || (!s.taskId && body.status !== "handoff")))
       return json({ error: reason }, 409);
     if (ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX)
       return json({ error: "owner operations inbox has no FleetEvent delivery budget" }, 409);

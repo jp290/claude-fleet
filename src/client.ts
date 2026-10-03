@@ -7885,7 +7885,20 @@ interface Dossier {
   outcomes: Measured<Capped<Record<string, unknown>>>;
   landNotes: Measured<LandNoteRead[]>;
   audits: Measured<Capped<DossierAudit>>;
+  context?: DossierContext;
 }
+// chosen / delivered / borrowed, each with its own third state: `absent` is a ledger that was read
+// and holds no row for this lane — a named fact, drawn as one, never as an empty column
+type ContextColumn<T> = { state: "read"; rows: T[]; total: number }
+  | { state: "absent"; why: string } | { state: "unknown"; why: string };
+type DossierContext = {
+  chosen: ContextColumn<{ receipt: string; at: number; head: string | null;
+    selected: { id: string; origin: string | null; privateVerdict: string | null }[]; omitted: { id: string; why: string }[] }>;
+  delivered: ContextColumn<{ receipt: string; at: number; packs: string[]; bytes: number | null; notes: string[]; source: string | null }>;
+  borrowed: ContextColumn<{ at: number; id: string; bytes: number | null; origin: string | null; head: string | null }>;
+  read: "unknown";
+  unknown: string[];
+};
 let akteData: LaneIndexRow[] = [];
 let akteTotal = 0;
 let aktePick: string | null = null;
@@ -7990,8 +8003,95 @@ async function loadAkteDoc(branch: string) {
   if (shell?.isOpen() && actLens === "akte") renderAkteDetail(akteDoc);
 }
 
-// The trail itself, in the four movements a lane actually has: what it was asked to do, what it
-// did, how it landed, and what was measured afterwards.
+// ② THE CONTEXT, three narrow columns that are never merged: what the founding receipt CHOSE, what
+// it says reached the pane, and what the lane fetched through the borrow door later. A fourth
+// fact — whether anything was read — is not on any ledger, and the movement says so in words.
+const AKTE_CTX_ID = "font-size:12px;color:#ddd";
+const AKTE_CTX_META = "font-size:10.5px;color:#6f6f6f";
+// one pack per line: the id, and beside it the fact that belongs to it (bytes, time, why left out)
+function akteCtxLine(col: HTMLElement, id: string, meta = "", dim = false) {
+  const row = el("div", "aktectxrow");
+  row.style.cssText = "display:flex;flex-wrap:wrap;gap:0 8px;align-items:baseline;line-height:1.5";
+  row.appendChild(el("span", "", id)).style.cssText = dim ? AKTE_CTX_META : AKTE_CTX_ID;
+  if (meta) row.appendChild(el("span", "", meta)).style.cssText = AKTE_CTX_META;
+  col.appendChild(row);
+}
+function akteCtxNote(col: HTMLElement, text: string) {
+  col.appendChild(el("div", "", text)).style.cssText = `${AKTE_CTX_META};margin-top:2px`;
+}
+
+function akteContextColumn<T>(col: HTMLElement, title: string, src: ContextColumn<T>,
+  rows: (rows: T[]) => void) {
+  col.appendChild(el("div", "aktectxhead", title)).style.cssText =
+    "font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--dim);margin-bottom:4px";
+  if (src.state === "unknown") {
+    const box = el("div", "akteunknown");
+    box.appendChild(el("div", "akteunknownw", "not measured"));
+    box.appendChild(el("div", "shrsub", src.why));
+    col.appendChild(box);
+    return;
+  }
+  if (src.state === "absent") {
+    akteCtxLine(col, "none on record");
+    akteCtxNote(col, src.why);
+    return;
+  }
+  rows(src.rows);
+  if (src.total > src.rows.length) akteCtxNote(col, `${src.total - src.rows.length} older not shown`);
+}
+
+function renderAkteContext(host: HTMLElement, c: DossierContext | undefined) {
+  host.appendChild(el("div", "aktehead", "② the context it was given"));
+  if (!c) {
+    const box = el("div", "akteunknown");
+    box.appendChild(el("div", "akteunknownw", "not measured"));
+    box.appendChild(el("div", "shrsub", "this server sends no context section with the dossier"));
+    host.appendChild(box);
+    return;
+  }
+  host.appendChild(el("div", "hint shellhint",
+    "Read is not measured: these ledgers record what was chosen, sent and fetched — never whether the lane read it."));
+  const grid = el("div", "aktectx");
+  grid.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:8px 0 4px;padding:0 3px";
+  const column = () => {
+    const col = el("div", "aktectxcol");
+    col.style.cssText = "min-width:0;word-break:break-word";
+    grid.appendChild(col);
+    return col;
+  };
+  // a lane re-founded on its worktree has more than one receipt; the time keeps them apart
+  const when = (at: number) => (at ? fmtTs(at) : "—");
+
+  const chosen = column();
+  akteContextColumn(chosen, "chosen", c.chosen, (rows) => {
+    for (const r of rows) {
+      if (rows.length > 1) akteCtxNote(chosen, when(r.at));
+      for (const p of r.selected)
+        akteCtxLine(chosen, p.id, [p.origin === "program" ? "program" : "", p.privateVerdict ? `private · ${p.privateVerdict}` : ""]
+          .filter(Boolean).join(" · "));
+      for (const p of r.omitted) akteCtxLine(chosen, p.id, `left out · ${p.why}`, true);
+      if (!r.selected.length && !r.omitted.length) akteCtxNote(chosen, "the receipt lists no pack");
+    }
+  });
+  const delivered = column();
+  akteContextColumn(delivered, "delivered", c.delivered, (rows) => {
+    for (const r of rows) {
+      akteCtxNote(delivered, `${when(r.at)}${r.bytes !== null ? ` · ${fmtSize(r.bytes)} into the pane` : ""}`
+        + `${r.notes.length ? ` · ${r.notes.length} note${r.notes.length === 1 ? "" : "s"}` : ""}`);
+      for (const id of r.packs) akteCtxLine(delivered, id);
+      if (!r.packs.length) akteCtxNote(delivered, "no pack crossed");
+    }
+  });
+  const borrowed = column();
+  akteContextColumn(borrowed, "borrowed", c.borrowed, (rows) => {
+    for (const r of rows) akteCtxLine(borrowed, r.id, `${when(r.at)}${r.bytes !== null ? ` · ${fmtSize(r.bytes)}` : ""}`);
+  });
+  host.appendChild(grid);
+  for (const u of c.unknown) host.appendChild(el("div", "hint shellhint", u));
+}
+
+// The trail itself, in the five movements a lane actually has: what it was asked to do, the context
+// it was given, what it did, how it landed, and what was measured afterwards.
 function renderAkteDetail(d: Dossier) {
   const shell = ocShell;
   if (!shell) return;
@@ -8028,9 +8128,11 @@ function renderAkteDetail(d: Dossier) {
     }
   }
 
-  // ② WHAT IT DID — prompts, slot events and commits merged into one chronological stream, which
+  renderAkteContext(host, d.context);
+
+  // ③ WHAT IT DID — prompts, slot events and commits merged into one chronological stream, which
   // is the whole point: they are three files today and one story in fact.
-  const prompts = akteSource(host, "② what it did", d.prompts, "no prompt was ever sent to this lane");
+  const prompts = akteSource(host, "③ what it did", d.prompts, "no prompt was ever sent to this lane");
   const events = d.events.state === "read" ? d.events.value : null;
   const commits = d.commits.state === "read" ? d.commits.value : null;
   type Step = { ts: number; kind: string; title: string; sub?: string };
@@ -8051,14 +8153,14 @@ function renderAkteDetail(d: Dossier) {
   ].filter(Boolean);
   if (cut.length) host.appendChild(el("div", "hint shellhint", `not shown: ${cut.join(", ")} — this trail is capped at its most recent entries`));
   for (const s of steps) akteStep(host, s.kind, s.ts, s.title, s.sub);
-  // the two sources that ride inside ② still get their own verdict line when they could not be read
+  // the two sources that ride inside ③ still get their own verdict line when they could not be read
   if (d.events.state === "unknown") akteSource(host, "slot events", d.events, "");
   if (d.commits.state === "unknown") akteSource(host, "commits", d.commits, "");
 
-  // ③ HOW IT LANDED — the outcome row, and the git note that says WHY it was allowed to. The note
+  // ④ HOW IT LANDED — the outcome row, and the git note that says WHY it was allowed to. The note
   // is the reason this window exists: it carries the verbatim verify command and its output, and
   // before this reader nothing in the product could show it.
-  const outcomes = akteSource(host, "③ how it ended", d.outcomes, "this lane has not ended yet — no outcome row");
+  const outcomes = akteSource(host, "④ how it ended", d.outcomes, "this lane has not ended yet — no outcome row");
   for (const o of (outcomes as Capped<Record<string, unknown>> | null)?.rows ?? []) {
     const dispo = typeof o.disposition === "string" ? o.disposition : "?";
     const r = akteStep(host, "outcome", typeof o.ts === "number" ? o.ts : 0, dispo,
@@ -8098,9 +8200,9 @@ function renderAkteDetail(d: Dossier) {
     if (v.out) host.appendChild(el("div", "aktepre akteout", v.out));
   }
 
-  // ④ WHAT IT COST AFTERWARDS — tier 2, which gates nothing and is therefore only ever as useful
+  // ⑤ WHAT IT COST AFTERWARDS — tier 2, which gates nothing and is therefore only ever as useful
   // as its reader. This is that reader, per lane.
-  const audits = akteSource(host, "④ what was measured after it landed", d.audits,
+  const audits = akteSource(host, "⑤ what was measured after it landed", d.audits,
     "no post-land audit run names this lane");
   for (const a of (audits as Capped<DossierAudit> | null)?.rows ?? []) {
     const r = akteStep(host, `audit-${a.result}`, a.at, `tier-2 audit: ${a.result.toUpperCase()}`,

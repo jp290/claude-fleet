@@ -3312,6 +3312,26 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
   return json({ ...answer.body, borrowedAt }, answer.status);
 }
 
+// THE TWO CONTEXT LEDGERS, read the same way for every reader that shows them — the session's own
+// view (memorySourcesView) and the owner's Akte (laneDossier). WHICH rows belong to the reader is
+// the caller's predicate; WHAT counts as borrowed is not: only a served row (200, with an id and a
+// borrowedAt) was retrieved — a refusal crossed nothing. Both lists come back newest first.
+type ContextLedgerRow = Record<string, unknown>;
+async function contextLedgersFor(receiptMine: (row: ContextLedgerRow) => boolean,
+  borrowMine: (row: ContextLedgerRow) => boolean) {
+  const [receiptLedger, borrowLedger] = await Promise.all([
+    readLedger<ContextLedgerRow>(CONTEXT_RECEIPT_FILE), readLedger<ContextLedgerRow>(CONTEXT_BORROW_FILE)]);
+  return {
+    receipts: receiptLedger.rows.filter(receiptMine)
+      .sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0)),
+    receiptsMalformed: receiptLedger.malformed,
+    borrowed: borrowLedger.rows.filter((row) => row.status === 200 && typeof row.id === "string"
+      && typeof row.borrowedAt === "number" && borrowMine(row))
+      .sort((a, b) => Number(b.borrowedAt) - Number(a.borrowedAt)),
+    borrowsMalformed: borrowLedger.malformed,
+  };
+}
+
 // DECLARED NOW against DELIVERED THEN, and never merged: today's plan is derived from git at the
 // current integration HEAD (the same three planners the dispatch seam runs); the receipts are what
 // the ledger says was delivered at founding. `readByAgent` is always unknown — a receipt proves
@@ -3353,28 +3373,24 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
   }
   if (program && !(program.contextPacks?.length)) missing.push(`program ${program.id} carries no context packs`);
   if (!program) missing.push("no Program is in scope, so no Program packs apply");
-  const receiptLedger = await readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE);
-  const mine = receiptLedger.rows.filter((r) => scope.principal === "lane"
+  const ledgers = await contextLedgersFor((r) => scope.principal === "lane"
     ? (typeof r.taskId === "string" && scope.taskIds.includes(r.taskId))
       || (r.slot === s.id && r.branch === s.worktree?.branch)
-    : r.programId === program?.id && (scope.taskIds === null || (typeof r.taskId === "string" && scope.taskIds.includes(r.taskId))))
-    .sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
-  if (receiptLedger.malformed > 0)
-    unknown.push(`${receiptLedger.malformed} malformed context-receipts rows: a delivery in scope may be missing from deliveredThen.`);
+    : r.programId === program?.id && (scope.taskIds === null || (typeof r.taskId === "string" && scope.taskIds.includes(r.taskId))),
+  (row) => row.slot === s.id && row.openedAt === s.openedAt && row.programId === (program?.id ?? null)
+    && (scope.taskIds === null || (typeof row.taskId === "string" && scope.taskIds.includes(row.taskId))));
+  const mine = ledgers.receipts;
+  if (ledgers.receiptsMalformed > 0)
+    unknown.push(`${ledgers.receiptsMalformed} malformed context-receipts rows: a delivery in scope may be missing from deliveredThen.`);
   if (!mine.length) missing.push("no context receipt in the readable generations (.1 + active) names this scope: what was delivered at founding is not on record here");
-  const borrowLedger = await readLedger<Record<string, unknown>>(CONTEXT_BORROW_FILE);
-  const borrowed = borrowLedger.rows.filter((row) => row.slot === s.id && row.openedAt === s.openedAt
-    && row.status === 200 && typeof row.id === "string" && typeof row.borrowedAt === "number"
-    && row.programId === (program?.id ?? null)
-    && (scope.taskIds === null || (typeof row.taskId === "string" && scope.taskIds.includes(row.taskId))))
-    .sort((a, b) => Number(b.borrowedAt) - Number(a.borrowedAt));
+  const borrowed = ledgers.borrowed;
   const borrowedAtFor = new Map(borrowed.slice().reverse().map((row) => [row.id, row.borrowedAt]));
   const withBorrow = (rows: unknown): unknown[] => Array.isArray(rows) ? rows.map((row: unknown) => {
     if (typeof row !== "object" || row === null || !("id" in row) || !borrowedAtFor.has(row.id)) return row;
     return { ...row, borrowedAt: borrowedAtFor.get(row.id) };
   }) : [];
   if (declaredNow) declaredNow.selected = withBorrow(declaredNow.selected);
-  if (borrowLedger.malformed > 0) unknown.push(`${borrowLedger.malformed} malformed context-borrows rows: an in-scope borrow may be missing.`);
+  if (ledgers.borrowsMalformed > 0) unknown.push(`${ledgers.borrowsMalformed} malformed context-borrows rows: an in-scope borrow may be missing.`);
   const body = {
     schema: "fleet.memory.sources/v1", view: "sources",
     scope: { principal: scope.principal, slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null,
@@ -3386,12 +3402,12 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
       receipts: mine.slice(0, MEMORY_RECEIPTS_MAX).map((r) => ({ id: r.id, at: r.at, head: r.head, repo: r.repo,
         branch: r.branch, slot: r.slot, taskId: r.taskId ?? null, programId: r.programId ?? null,
         selected: withBorrow(r.selected), briefHash: r.briefHash ?? null })),
-      total: mine.length, malformed: receiptLedger.malformed,
+      total: mine.length, malformed: ledgers.receiptsMalformed,
     },
     readByAgent: "unknown",
     borrowed: { basis: "ledger context-borrows.jsonl (.1 + active) — retrieved, not read",
-      rows: borrowed.slice(0, MEMORY_RECEIPTS_MAX), total: borrowed.length, malformed: borrowLedger.malformed },
-    coverage: declaredNow === null || receiptLedger.malformed > 0 || borrowLedger.malformed > 0 ? "incomplete" : "complete",
+      rows: borrowed.slice(0, MEMORY_RECEIPTS_MAX), total: borrowed.length, malformed: ledgers.borrowsMalformed },
+    coverage: declaredNow === null || ledgers.receiptsMalformed > 0 || ledgers.borrowsMalformed > 0 ? "incomplete" : "complete",
     missing, unknown,
   };
   return body;
@@ -31384,6 +31400,80 @@ interface LaneDossier {
   outcomes: Measured<Capped<Record<string, unknown>>>;
   landNotes: Measured<LandNoteRead[]>;
   audits: Measured<Capped<DossierAudit>>;
+  context: DossierContext;
+}
+
+// THE LANE'S CONTEXT, three ledger facts kept apart and a fourth that is never measured. CHOSEN is
+// what a founding receipt lists as selected and omitted; DELIVERED is what that receipt says crossed
+// into the pane (when, how many bytes, which packs and notes); BORROWED is a served row of the
+// borrow door — retrieved, not read. `read` is the literal "unknown": no ledger here observes
+// reading. A column with no row is a NAMED absence (`absent` + why), never an empty list — a lane
+// opened by hand without packs writes no receipt, and that is a fact the reader must see said.
+type ContextColumn<T> = { state: "read"; rows: T[]; total: number }
+  | { state: "absent"; why: string } | { state: "unknown"; why: string };
+interface DossierContextChoice { receipt: string; at: number; head: string | null;
+  selected: { id: string; origin: string | null; privateVerdict: string | null }[];
+  omitted: { id: string; why: string }[] }
+interface DossierContextDelivery { receipt: string; at: number; packs: string[]; bytes: number | null;
+  notes: string[]; source: string | null }
+interface DossierContextBorrow { at: number; id: string; bytes: number | null; origin: string | null;
+  head: string | null }
+interface DossierContext {
+  basis: { receipts: string; borrows: string };
+  chosen: ContextColumn<DossierContextChoice>;
+  delivered: ContextColumn<DossierContextDelivery>;
+  borrowed: ContextColumn<DossierContextBorrow>;
+  read: "unknown";
+  unknown: string[];
+}
+
+// Receipts join by BRANCH — every lane receipt carries the branch it founded, and a successor on the
+// same worktree is the same lane. Borrows carry no branch, so they join by slot OCCUPATION: the live
+// binding (slot + openedAt) or a window this lane held the slot for (laneSlotWindows). A borrow of
+// the slot's previous or next occupant falls outside both and never appears here.
+async function laneContext(branch: string, repo: string | null, live: Slot | null,
+  windows: SlotWindow[]): Promise<DossierContext> {
+  const occupied = live !== null || windows.length > 0;
+  const ledgers = await contextLedgersFor(
+    (r) => r.branch === branch && (repo === null || typeof r.repo !== "string" || r.repo === repo),
+    (r) => typeof r.slot === "number" && ((live !== null && r.slot === live.id && r.openedAt === live.openedAt)
+      || windows.some((w) => r.slot === w.slot && typeof r.at === "number" && r.at >= w.from && r.at < w.to)));
+  const unknown: string[] = [];
+  if (ledgers.receiptsMalformed > 0)
+    unknown.push(`${ledgers.receiptsMalformed} malformed context-receipts rows: a receipt of this lane may be missing`);
+  if (ledgers.borrowsMalformed > 0)
+    unknown.push(`${ledgers.borrowsMalformed} malformed context-borrows rows: a borrow of this lane may be missing`);
+  const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const objs = (v: unknown): Record<string, unknown>[] => (Array.isArray(v)
+    ? v.filter((x): x is Record<string, unknown> => typeof x === "object" && x !== null && typeof (x as { id?: unknown }).id === "string")
+    : []);
+  const receipts = ledgers.receipts;
+  const noReceipt = "no context receipt in the readable generations (.1 + active) names this lane's branch";
+  const column = <T>(rows: T[], absent: string): ContextColumn<T> =>
+    rows.length ? { state: "read", rows: rows.slice(0, DOSSIER_MAX_ROWS), total: rows.length } : { state: "absent", why: absent };
+  const chosen = column(receipts.map((r): DossierContextChoice => ({
+    receipt: str(r.id) ?? "", at: num(r.at) ?? 0, head: str(r.head),
+    selected: objs(r.selected).map((p) => ({ id: p.id as string, origin: str(p.origin),
+      privateVerdict: str((p.private as { verdict?: unknown } | undefined)?.verdict) })),
+    omitted: objs(r.omitted).map((p) => ({ id: p.id as string, why: str(p.why) ?? "unstated" })),
+  })), `${noReceipt} — nothing is on record as chosen for it; a lane opened by hand without packs writes none`);
+  const delivered = column(receipts.map((r): DossierContextDelivery => ({
+    receipt: str(r.id) ?? "", at: num(r.at) ?? 0, packs: objs(r.selected).map((p) => p.id as string),
+    bytes: num(r.deliveredBytes), notes: Array.isArray(r.notes) ? r.notes.filter((n): n is string => typeof n === "string") : [],
+    source: str(r.briefSource),
+  })), `${noReceipt} — nothing is on record as delivered into its pane`);
+  const borrowRows = ledgers.borrowed.map((r): DossierContextBorrow => ({ at: num(r.borrowedAt) ?? 0, id: r.id as string,
+    bytes: num(r.bytes), origin: str(r.origin), head: str(r.head) }));
+  const borrowed: ContextColumn<DossierContextBorrow> = occupied
+    ? column(borrowRows, "no served borrow in the readable generations (.1 + active) falls in this lane's slot occupation — nothing was retrieved through the borrow door")
+    : { state: "unknown", why: "borrows are keyed by slot occupation, and neither a live slot nor a slot_open row names this lane" };
+  if (borrowed.state === "unknown") unknown.push(borrowed.why);
+  return {
+    basis: { receipts: "ledger context-receipts.jsonl (.1 + active) — chosen and delivered at founding",
+      borrows: "ledger context-borrows.jsonl (.1 + active) — retrieved, not read" },
+    chosen, delivered, borrowed, read: "unknown", unknown,
+  };
 }
 
 // Which queue row ordered this lane. Live lanes answer this the way the rest of the server does
@@ -31552,6 +31642,7 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
     audits: (repo && auditCmdFor(repo)) || audits.length
       ? measured(capped(audits, DOSSIER_MAX_ROWS))
       : unmeasured("no post-land audit command is configured on this server — tier 2 never ran"),
+    context: await laneContext(branch, repo, live, windows),
   };
 }
 

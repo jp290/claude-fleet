@@ -988,6 +988,69 @@ export async function run(): Promise<void> {
         && dOpen.outcomes.state === "read" && dOpen.outcomes.value.rows.length === 0
         && dOpen.repo === realpathSync(oRepo), JSON.stringify({ live: dOpen.liveSlot, o: dOpen.outcomes, r: dOpen.repo }));
 
+      // (7c2) THE CONTEXT MOVEMENT (server.ts#laneContext): chosen, delivered and borrowed read back
+      // from context-receipts.jsonl and context-borrows.jsonl, kept apart, with `read` never
+      // measured. Three lanes, three answers: the open lane gets a seeded receipt and a served borrow
+      // of its own occupation; oc7 has neither and must NAME each absence instead of rendering an
+      // empty green; and borrows of another occupation of the same slot, of another slot, and a
+      // refused one of its own must not appear, because only a served row was retrieved.
+      type CtxCol<T> = { state: "read"; rows: T[]; total: number } | { state: "absent"; why: string }
+        | { state: "unknown"; why: string };
+      type Ctx = { chosen: CtxCol<{ receipt: string; selected: { id: string }[]; omitted: { id: string; why: string }[] }>;
+        delivered: CtxCol<{ receipt: string; packs: string[]; bytes: number | null }>;
+        borrowed: CtxCol<{ id: string; at: number; bytes: number | null }>; read: string; unknown: string[] };
+      const ctxOf = async (branch: string): Promise<Ctx | undefined> =>
+        ((await dossier(branch)) as Dossier & { context?: Ctx }).context;
+      let openOpenedAt = 0;
+      for (let i = 0; i < 50 && !openOpenedAt; i++) {
+        try {
+          openOpenedAt = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+            { slots?: Record<string, { openedAt?: number }> }).slots?.[String(openLane.slot)]?.openedAt ?? 0;
+        } catch { /* atomic state rename can race this read; retry */ }
+        if (!openOpenedAt) await Bun.sleep(100);
+      }
+      check("dossier context setup: the open lane's occupation (openedAt) is readable from fleet.json",
+        openOpenedAt > 0, String(openOpenedAt));
+      const ctxNow = Date.now();
+      appendFileSync(`${ROOT}/context-receipts.jsonl`, `${JSON.stringify({
+        id: "e2e-ctx-receipt", hash: "e2e", at: ctxNow, repo: dOpen.repo, head: "e2e0head", taskId: null, originId: null,
+        programId: null, slot: openLane.slot, branch: openLane.branch, mode: "e2e", triggers: [],
+        selected: [{ id: "e2e-ctx-chosen", anchors: [] }], omitted: [{ id: "e2e-ctx-left-out", why: "source-unavailable" }],
+        deliveredBytes: 2345, truncated: false, notes: [], briefSource: "e2e" })}\n`);
+      const borrowRow = (over: Record<string, unknown>) => `${JSON.stringify({ slot: openLane.slot, openedAt: openOpenedAt,
+        taskId: null, programId: null, at: ctxNow, borrowedAt: ctxNow, id: "e2e-ctx-borrowed", repo: dOpen.repo,
+        head: "e2e0head", origin: "fleet-seed", status: 200, refusal: null, sources: [], bytes: 4096, ...over })}\n`;
+      appendFileSync(`${ROOT}/context-borrows.jsonl`, borrowRow({})
+        + borrowRow({ id: "e2e-ctx-foreign-occupant", openedAt: 1, at: 1000, borrowedAt: 1000 })
+        + borrowRow({ id: "e2e-ctx-foreign-slot", slot: openLane.slot + 1000, openedAt: openOpenedAt + 1 })
+        + borrowRow({ id: "e2e-ctx-refused", status: 409, refusal: "unknown-id", borrowedAt: null, bytes: 0 }));
+      const cOpen = await ctxOf(openLane.branch);
+      check("dossier context: a lane with a receipt shows CHOSEN (selected + omitted with why) and DELIVERED (packs + bytes) apart",
+        !!cOpen && cOpen.chosen.state === "read" && cOpen.chosen.rows.some((r) => r.receipt === "e2e-ctx-receipt"
+          && r.selected.some((p) => p.id === "e2e-ctx-chosen")
+          && r.omitted.some((p) => p.id === "e2e-ctx-left-out" && p.why === "source-unavailable"))
+        && cOpen.delivered.state === "read" && cOpen.delivered.rows.some((r) => r.receipt === "e2e-ctx-receipt"
+          && r.packs.includes("e2e-ctx-chosen") && !r.packs.includes("e2e-ctx-left-out") && r.bytes === 2345),
+        JSON.stringify(cOpen && { chosen: cOpen.chosen, delivered: cOpen.delivered }));
+      check("dossier context: its own served borrow appears with time and bytes, and read stays the literal \"unknown\"",
+        !!cOpen && cOpen.borrowed.state === "read"
+        && cOpen.borrowed.rows.some((r) => r.id === "e2e-ctx-borrowed" && r.at === ctxNow && r.bytes === 4096)
+        && cOpen.read === "unknown", JSON.stringify(cOpen && { borrowed: cOpen.borrowed, read: cOpen.read }));
+      check("dossier context: a borrow of another occupation, of another slot, or a refused one does NOT appear",
+        !!cOpen && cOpen.borrowed.state === "read" && cOpen.borrowed.rows.every((r) => r.id === "e2e-ctx-borrowed"),
+        JSON.stringify(cOpen?.borrowed));
+      const c7 = await ctxOf(oc7.branch);
+      check("dossier context: a lane with no ledger rows NAMES each absence (absent + why) — never an empty list",
+        !!c7 && c7.read === "unknown"
+        && c7.chosen.state === "absent" && /no context receipt/.test(c7.chosen.why)
+        && c7.delivered.state === "absent" && /no context receipt/.test(c7.delivered.why)
+        && c7.borrowed.state === "absent" && /no served borrow/.test(c7.borrowed.why),
+        JSON.stringify(c7));
+      const cGhost = await ctxOf("fleet/never-existed");
+      check("dossier context: with no slot occupation on record the borrow column is UNKNOWN with a reason, not absent",
+        !!cGhost && cGhost.borrowed.state === "unknown" && cGhost.unknown.includes(cGhost.borrowed.why)
+        && cGhost.chosen.state === "absent", JSON.stringify(cGhost));
+
       // (7d) THE SAME DOSSIER, KEYED BY THE TASK ID (server.ts#resolveTaskLane). Four rows, four
       // answers: a LIVE sent row resolves through its slot; a DONE row whose slot number another
       // lane now holds must still resolve to ITS OWN branch (the recycled-slot trap — its `slot`
@@ -1369,6 +1432,15 @@ export async function run(): Promise<void> {
     check("client: the dossier's source classifier prints \"not measured\" + the reason and yields NO rows",
       /function akteSource[\s\S]{0,600}?src\.state === "unknown"[\s\S]{0,300}?"not measured"[\s\S]{0,200}?src\.why[\s\S]{0,120}?return null/.test(cliSrc),
       "akteSource in src/client.ts");
+    // the context movement: three columns, each with its own absent and unknown branch, and the
+    // sentence that reading is not measured — a borrowed pack is fetched, not read
+    const ctxRender = cliSrc.slice(cliSrc.indexOf("function akteContextColumn"), cliSrc.indexOf("// The trail itself"));
+    check("client: the dossier's context movement draws chosen/delivered/borrowed apart and says read is not measured",
+      /src\.state === "unknown"[\s\S]{0,240}?"not measured"/.test(ctxRender)
+      && /src\.state === "absent"[\s\S]{0,120}?"none on record"[\s\S]{0,80}?src\.why/.test(ctxRender)
+      && ["\"chosen\", c.chosen", "\"delivered\", c.delivered", "\"borrowed\", c.borrowed"].every((k) => ctxRender.includes(k))
+      && ctxRender.includes("Read is not measured"),
+      ctxRender.slice(0, 200) || "no akteContextColumn in src/client.ts");
     // …and the verify verdict on a land note keeps the six states apart, for the same reason the
     // merge verdict does: a skip, a timeout and a never-started run are each "nothing was measured",
     // and none of the three may render as a pass.

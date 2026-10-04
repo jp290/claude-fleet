@@ -8073,12 +8073,13 @@ interface GlassDriver {
   type(text: string): Promise<void>;
   key(key: "Escape" | "ArrowLeft" | "ArrowRight"): Promise<void>;
   media(m: { motion?: boolean; contrast?: boolean; transparency?: boolean }): Promise<{ transparency: boolean }>;
+  consoleErrors(): string[];
   shot(file: string): Promise<void>;
   close(): Promise<void>;
 }
 type GlassServe = (path: string, method: string) => { status: number; type: string; body: string };
 const GLASS_W = 390, GLASS_H = 844;
-const GLASS_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+const GLASS_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36";
 async function glassChromium(serve: GlassServe, init: string, scratch: string): Promise<GlassDriver> {
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) throw new Error("glass island DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable);
@@ -8109,6 +8110,7 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
   }
   const cdp = socket;
   let serial = 0, sessionId: string | undefined, targetId = "", loaded: (() => void) | null = null;
+  const errors: string[] = [];
   const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
   const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
     const id = ++serial;
@@ -8125,6 +8127,16 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
       return;
     }
     if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+    if (msg.method === "Runtime.consoleAPICalled" && msg.params) {
+      const p = msg.params as { type?: string; args?: { value?: unknown; description?: string }[] };
+      if (p.type === "error") errors.push((p.args ?? []).map((a) => String(a.value ?? a.description ?? "")).join(" "));
+      return;
+    }
+    if (msg.method === "Log.entryAdded" && msg.params) {
+      const entry = (msg.params as { entry?: { level?: string; text?: string } }).entry;
+      if (entry?.level === "error") errors.push(entry.text ?? "");
+      return;
+    }
     if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
     const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
     const a = serve(new URL(request.url).pathname, request.method);
@@ -8139,7 +8151,7 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
       sessionId = undefined;
       sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
       await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
-      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.enable"); await send("Runtime.enable"); await send("Log.enable");
       await send("Page.addScriptToEvaluateOnNewDocument", { source: init });
       await send("Emulation.setDeviceMetricsOverride", { width: GLASS_W, height: GLASS_H, deviceScaleFactor: 3, mobile: true });
       await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
@@ -8176,6 +8188,7 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
       await send("Emulation.setEmulatedMedia", { features: media });
       return { transparency: true };
     },
+    consoleErrors() { return [...errors]; },
     async shot(file) { writeFileSync(file, Buffer.from(String((await send("Page.captureScreenshot", { format: "png" })).data), "base64")); },
     async close() { cdp.close(); browser.kill(); await browser.exited; },
   };
@@ -8183,6 +8196,7 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
 async function glassWebkit(playwright: string, serve: GlassServe, init: string): Promise<GlassDriver> {
   const mod = await import(playwright) as { default?: unknown };
   type PwPage = { goto(u: string): Promise<unknown>; evaluate(e: string): Promise<unknown>; screenshot(o: { path: string }): Promise<unknown>;
+    on(event: "console", listener: (message: { type(): string; text(): string }) => void): void;
     keyboard: { press(k: string): Promise<void>; type(t: string): Promise<void> }; touchscreen: { tap(x: number, y: number): Promise<void> };
     setViewportSize(s: { width: number; height: number }): Promise<void>; emulateMedia(o: Record<string, unknown>): Promise<void>; _connection: { toImpl(p: unknown): { delegate: { _pageProxySession: { send(m: string, p: unknown): Promise<unknown> } } } } };
   type PwContext = { newPage(): Promise<PwPage>; close(): Promise<void>; addInitScript(s: string): Promise<void>;
@@ -8190,6 +8204,7 @@ async function glassWebkit(playwright: string, serve: GlassServe, init: string):
   const pw = (mod.default ?? mod) as { webkit: { launch(): Promise<{ newContext(o: unknown): Promise<PwContext>; close(): Promise<void> }> }; devices: Record<string, unknown> };
   const browser = await pw.webkit.launch();
   let context: PwContext | null = null, page: PwPage | null = null;
+  const errors: string[] = [];
   const pg = () => { if (!page) throw new Error("no page"); return page; };
   return {
     async open() {
@@ -8198,6 +8213,7 @@ async function glassWebkit(playwright: string, serve: GlassServe, init: string):
       await context.route("http://fleet.fixture/**", async (route) => { const r = route.request(); const a = serve(new URL(r.url()).pathname, r.method()); await route.fulfill({ status: a.status, contentType: a.type, body: a.body }); });
       await context.addInitScript(init);
       page = await context.newPage();
+      page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
       await page.goto("http://fleet.fixture/blank");
       await page.evaluate("localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 }))");
       await page.goto("http://fleet.fixture/");
@@ -8216,6 +8232,7 @@ async function glassWebkit(playwright: string, serve: GlassServe, init: string):
       await pg().emulateMedia({ reducedMotion: m.motion ? "reduce" : "no-preference", contrast: m.contrast ? "more" : "no-preference" });
       return { transparency: false };
     },
+    consoleErrors() { return [...errors]; },
     async shot(file) { await pg().screenshot({ path: file }); },
     async close() { await browser.close(); },
   };
@@ -8226,6 +8243,22 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();
+  const clientPath = resolve(sourceRoot, "src/client.ts");
+  let mutationApplied = false;
+  const mutated = await Bun.build({
+    entrypoints: [clientPath], target: "browser",
+    plugins: [{ name: "remove-layout-keyboard-height-fallback", setup(build) {
+      build.onLoad({ filter: /client\.ts$/ }, ({ path }) => {
+        if (path !== clientPath) return;
+        const source = readFileSync(path, "utf8");
+        const needle = "lastUnfocusedHeight - window.innerHeight > 120";
+        mutationApplied = source.includes(needle);
+        return { contents: source.replace(needle, "false"), loader: "ts" };
+      });
+    } }],
+  });
+  if (!mutated.success || !mutationApplied) throw new Error("layout keyboard mutation probe could not remove its height fallback");
+  const mutantAppJs = await mutated.outputs[0].text();
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
   const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
@@ -8237,12 +8270,13 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
     supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
     modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) };
   const posts: string[] = [];
+  let servedAppJs = appJs;
   const serve: GlassServe = (p, method) => {
     const json = (v: unknown, status = 200) => ({ status, type: "application/json", body: JSON.stringify(v) });
     if (method === "POST") { posts.push(p); return json({ ok: true }); }
     if (p === "/") return { status: 200, type: "text/html", body: indexHtml };
     if (p === "/blank") return { status: 200, type: "text/html", body: "<!doctype html><title>blank</title>" };
-    if (p === "/app.js") return { status: 200, type: "text/javascript", body: appJs };
+    if (p === "/app.js") return { status: 200, type: "text/javascript", body: servedAppJs };
     if (p === "/xterm.css") return { status: 200, type: "text/css", body: xtermCss };
     if (p === "/api/sessions") return json({ now: 10 * 60_000, chips: [], slots, tasks: [] });
     if (p === "/api/harnesses") return json(HARNESSES);
@@ -8331,6 +8365,39 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
         await warm();
       };
       try {
+        await boot(SHORT);
+        const viewportMeta = await ev<string>(`document.querySelector('meta[name="viewport"]')?.content ?? ""`);
+        const viewportErrors = d.consoleErrors().filter((message) => /interactive-widget|viewport/i.test(message));
+        say("the viewport directive stays on Blink and loading reports no viewport-meta error",
+          engine === "chromium" ? /interactive-widget=resizes-content/.test(viewportMeta) && viewportErrors.length === 0
+            : !/interactive-widget/.test(viewportMeta) && viewportErrors.length === 0,
+          { viewportMeta, viewportErrors });
+        await ev(`document.querySelector('#input').focus()`);
+        await d.resize(390, 500);
+        const shrunkKeyboard = await wait(`document.body.classList.contains('keyboard-open')`);
+        const shrinkFacts = await ev<{ open: boolean; inner: number; visual: number }>(
+          `({ open: document.body.classList.contains('keyboard-open'), inner: innerHeight, visual: visualViewport.height })`);
+        await d.resize(390, 844);
+        await d.resize(844, 390);
+        await pause(150);
+        const landscapeClosed = await wait(`!document.body.classList.contains('keyboard-open')`);
+        say("a focused field detects a layout-viewport keyboard resize, while the same landscape viewport without a keyboard stays closed",
+          shrunkKeyboard && shrinkFacts.open && shrinkFacts.inner === shrinkFacts.visual && landscapeClosed,
+          { shrinkFacts, landscape: await ev<{ inner: number; visual: number; open: boolean }>(
+            `({ inner: innerHeight, visual: visualViewport.height, open: document.body.classList.contains('keyboard-open') })`) });
+        await ev(`document.querySelector('#input').blur()`);
+        await d.resize(GLASS_W, GLASS_H);
+        await pause(150);
+        servedAppJs = mutantAppJs;
+        await boot(SHORT);
+        await ev(`document.querySelector('#input').focus()`);
+        await d.resize(390, 500);
+        await pause(150);
+        const mutantState = await ev<{ open: boolean; inner: number; visual: number }>(
+          `({ open: document.body.classList.contains('keyboard-open'), inner: innerHeight, visual: visualViewport.height })`);
+        say("mutation probe: removing the layout-height fallback makes the layout-viewport keyboard claim fail",
+          !mutantState.open && mutantState.inner === mutantState.visual, mutantState);
+        servedAppJs = appJs;
         await boot(SHORT);
         // touch: the page has touch events (WebKit's build reports maxTouchPoints 0 even with touch on)
         const env = await ev<{ w: number; h: number; dpr: number; coarse: boolean; touch: boolean; mobile: boolean }>(

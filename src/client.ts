@@ -5410,11 +5410,17 @@ function renderSheet(): void {
 }
 if (vv) {
   let vvRefitTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastUnfocusedHeight = window.innerHeight;
+  let lastViewportWidth = window.innerWidth;
   const sync = () => {
     if (isMobile()) document.documentElement.style.setProperty("--vvh", `${Math.round(vv.height)}px`);
     else document.documentElement.style.removeProperty("--vvh");
     const focusedInput = document.activeElement === ta || document.activeElement === $("livein");
-    const keyboardOpen = isMobile() && focusedInput && window.innerHeight - vv.height > 120;
+    const widthChanged = Math.abs(window.innerWidth - lastViewportWidth) > 2;
+    if (!focusedInput || widthChanged) lastUnfocusedHeight = window.innerHeight;
+    if (widthChanged) lastViewportWidth = window.innerWidth;
+    const keyboardOpen = isMobile() && focusedInput
+      && (window.innerHeight - vv.height > 120 || lastUnfocusedHeight - window.innerHeight > 120);
     if (!focusedInput) document.body.classList.remove("landwrite");
     document.body.classList.toggle("keyboard-open", keyboardOpen);
     // ⋯'s options (the phone on its side) fold away as the keyboard goes — only the keyboard's own
@@ -5433,6 +5439,7 @@ if (vv) {
     vvRefitTimer = setTimeout(() => { for (const p of panes) p.refit(); }, 200);
   };
   vv.addEventListener("resize", sync);
+  window.addEventListener("resize", sync);
   document.addEventListener("focusin", sync);
   document.addEventListener("focusout", () => requestAnimationFrame(sync));
   sync();

@@ -197,6 +197,7 @@ export async function checkCodexSpawnFixtures(source: string,
       resolve: (p: string) => p, expandCwd: (p: string) => p, existsSync: () => true,
       statSync: () => ({ isDirectory: () => true }),
       slotTeardownInflight: new Map(fixture.joined ? [[17, { occupant: { openedAt: 10, selfToken: oldToken } }]] : []),
+      slotSpawnInflight: new Map(), laneSpawn: new Set([17]),
       waitForSlotTeardown: async () => { if (fixture.joined) Object.assign(slot, { cwd: null, openedAt: 0 }); await barrier("teardown"); },
       waitForSlotSpawn: () => barrier("spawn"), assertProgramFoundingTargetOpen: () => {},
       repoCanon: (p: string) => p, assertGameMakerTreeOpen: () => {}, openSlotIntents: new Set(),
@@ -238,6 +239,7 @@ export async function checkCodexSpawnFixtures(source: string,
           sameSuccessionOccupant: () => slot.openedAt === 10 && slot.selfToken === oldToken,
           json: (body: unknown, status: number) => new Response(JSON.stringify(body), { status }),
           restarting: new Set(), SUCCESSION_RESPAWN_FAIL_LATCH: null,
+          SUCCESSION_AFTER_KILL_OCCUPANT_LATCH: null,
           rebindLaneAnchors: () => {}, TmuxNewSessionUnavailable: class extends Error {}, GameMakerTreeConflict: class extends Error {},
           respawnLost: async () => { effects.push("lost"); return new Response("respawnLost", { status: 500 }); },
         });
@@ -249,7 +251,7 @@ export async function checkCodexSpawnFixtures(source: string,
             open: (support: CodexModelSupport | null) => Promise<unknown>, onLost: () => Promise<void>) =>
             Promise<{ ok: true; modelSupport?: CodexModelSupport } | { ok: false; response: Response }>;
         let observed: CodexModelSupport | null = null;
-        const result = await respawn(slot, {}, "fixture", {}, { cwd: "/new", model: available.model, harness: "codex" },
+        const result = await respawn(slot, { slot: 17, cwd: "/old", openedAt: 10, selfToken: oldToken }, "fixture", {}, { cwd: "/new", model: available.model, harness: "codex" },
           async (support) => { observed = await open(slot, "/new", null, available.model, null, "codex", null,
             { container: null, containerContext: null }, null, false, null, false, false, support); return observed; }, async () => {});
         checkFixture("Codex succession freezes one pre-teardown decision when support flips after kill",
@@ -287,7 +289,7 @@ export async function checkCodexSpawnFixtures(source: string,
   const respawnCode = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(respawnAt, respawnEnd + 3));
   for (const fixture of [{ name: "available", support: available }, { name: "unknown", support: unknown },
     { name: "unavailable", support: unavailable }, { name: "replaced-during-support", support: unavailable }]) {
-    const slot = { cwd: "/old", openedAt: 10, selfToken: "old-fixture-token" };
+    const slot = { id: 17, cwd: "/old" as string | null, openedAt: 10, selfToken: "old-fixture-token" };
     const effects: string[] = [];
     const scope = {
       sameSuccessionOccupant: () => slot.openedAt === 10 && slot.selfToken === "old-fixture-token",
@@ -298,13 +300,15 @@ export async function checkCodexSpawnFixtures(source: string,
       },
       CodexModelUnavailable: class extends Error { constructor() { super("catalog-excluded"); } },
       json: (value: unknown, status: number) => new Response(JSON.stringify(value), { status }),
-      slotTeardownInflight: new Map(), restarting: new Set(), killSlot: async () => { effects.push("kill"); },
-      SUCCESSION_RESPAWN_FAIL_LATCH: null, audit: () => {}, rebindLaneAnchors: () => {},
+      slotTeardownInflight: new Map(), slotSpawnInflight: new Map(), laneSpawn: new Set([17]), restarting: new Set(),
+      killSlot: async () => { effects.push("kill"); Object.assign(slot, { cwd: null, openedAt: 0 }); },
+      SUCCESSION_RESPAWN_FAIL_LATCH: null, SUCCESSION_AFTER_KILL_OCCUPANT_LATCH: null,
+      audit: () => {}, rebindLaneAnchors: () => {},
     };
     const respawn = new Function("scope", `with (scope) { ${respawnCode}; return respawnInPlace; }`)(scope) as
       (s: unknown, predecessor: unknown, rail: string, stranded: unknown, target: unknown,
         open: () => Promise<void>, onLost: () => Promise<void>) => Promise<{ ok: true } | { ok: false; response: Response }>;
-    const result = await respawn(slot, {}, "fixture", {}, { cwd: "/new", model: fixture.support.model, harness: "codex" },
+    const result = await respawn(slot, { slot: 17, cwd: "/old", openedAt: 10, selfToken: "old-fixture-token" }, "fixture", {}, { cwd: "/new", model: fixture.support.model, harness: "codex" },
       async () => { effects.push("open"); }, async () => {});
     if (fixture.name === "unavailable") {
       const body: unknown = !result.ok ? await result.response.json() : null;
@@ -317,6 +321,57 @@ export async function checkCodexSpawnFixtures(source: string,
     } else {
       checkFixture(`Codex succession proceeds on ${fixture.name}`, result.ok && effects.join(",") === "kill,open", `effects=${effects}`);
     }
+  }
+
+  const lostAt = source.indexOf("async function respawnLost(");
+  const lostEnd = source.indexOf("\n}\n", lostAt);
+  const lostCode = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(lostAt, lostEnd + 3));
+  for (const race of ["latch", "identity", "lane-spawn", "slot-spawn"]) {
+    const slot = { id: 17, cwd: "/old" as string | null, openedAt: 10, selfToken: "old-fixture-token" };
+    const predecessor = { slot: 17, cwd: "/old", openedAt: 10, selfToken: slot.selfToken };
+    const stranded = { brief: "retained fixture brief", path: "succession", draft: null, label: "fixture" };
+    const effects: string[] = [];
+    const laneReservations = new Set<number>();
+    const spawns = new Map<number, Promise<void>>();
+    let endedState = "";
+    let retained: unknown = null;
+    const scope = {
+      sameSuccessionOccupant: () => slot.cwd === predecessor.cwd && slot.openedAt === predecessor.openedAt
+        && slot.selfToken === predecessor.selfToken,
+      harnessOf: () => ({ id: "codex" }), codexSpawnSupport: async () => available,
+      TmuxNewSessionUnavailable: class extends Error {}, GameMakerTreeConflict: class extends Error {},
+      json: (value: unknown, status: number) => new Response(JSON.stringify(value), { status }),
+      slotTeardownInflight: new Map(), restarting: new Set(), laneSpawn: laneReservations, slotSpawnInflight: spawns,
+      SUCCESSION_RESPAWN_FAIL_LATCH: null,
+      SUCCESSION_AFTER_KILL_OCCUPANT_LATCH: race === "latch" ? "/fixture-latch" : null,
+      existsSync: () => true, Date: { now: () => 99 },
+      killSlot: async (_slot: unknown, why: string) => {
+        effects.push(`kill:${why}`);
+        Object.assign(slot, { cwd: null, openedAt: 0 });
+        if (race === "identity") slot.selfToken = "foreign-fixture-token";
+        if (race === "lane-spawn") laneReservations.add(17);
+        if (race === "slot-spawn") spawns.set(17, Promise.resolve());
+        endedState = JSON.stringify(slot);
+      },
+      audit: () => {}, rebindLaneAnchors: () => {}, logError: () => {}, saveStateNow: async () => {},
+      recordSuccessionDebt: (_s: unknown, _rail: string, _pred: unknown, _successor: unknown, _reason: string, debt: unknown) => {
+        retained = debt; return { id: "fixture-debt", at: 99 };
+      },
+    };
+    const respawn = new Function("scope", `with (scope) { ${lostCode}; ${respawnCode}; return respawnInPlace; }`)(scope) as
+      (s: unknown, predecessor: unknown, rail: string, stranded: unknown, target: unknown,
+        open: () => Promise<void>, onLost: () => Promise<void>) => Promise<{ ok: true } | { ok: false; response: Response }>;
+    const result = await respawn(slot, predecessor, "fixture", stranded,
+      { cwd: "/new", model: available.model, harness: "codex" },
+      async () => { effects.push("open"); }, async () => { effects.push("lost"); });
+    const untouched = race === "latch" ? slot.cwd === "/fleet-test-succession-foreign" && slot.openedAt === 99
+      && slot.selfToken === "fleet-test-succession-foreign" : JSON.stringify(slot) === endedState;
+    const body: unknown = result.ok ? null : await result.response.json();
+    checkFixture(`Codex succession preserves foreign act after teardown: ${race}`,
+      !result.ok && result.response.status === 409 && effects.join(",") === "kill:handoff,lost"
+        && untouched && retained === stranded && !!body && typeof body === "object" && "error" in body
+        && typeof body.error === "string" && body.error.includes("slot was taken by another act after the predecessor ended — nothing reopened"),
+      `status=${result.ok ? 200 : result.response.status}; opened=${effects.includes("open")}; foreign untouched=${untouched}; debt retained=${retained === stranded}; effects=${effects}`);
   }
 
 }

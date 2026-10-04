@@ -10700,6 +10700,8 @@ function scheduleSuccessionRetirement(s: Slot, pending: SuccessionRetirement): v
 // TEST-ONLY fault injection, absent in every real deployment: an existing file at this path fails
 // the open between the kill and the respawn — the one window no external probe can reach by timing.
 const SUCCESSION_RESPAWN_FAIL_LATCH = process.env.FLEET_TEST_SUCCESSION_RESPAWN_FAIL_LATCH ?? null;
+// TEST-ONLY: replace the slot record at the synchronous boundary after kill, without a live pane.
+const SUCCESSION_AFTER_KILL_OCCUPANT_LATCH = process.env.FLEET_TEST_SUCCESSION_AFTER_KILL_OCCUPANT_LATCH ?? null;
 type InPlaceRespawn = { ok: true; modelSupport?: CodexModelSupport } | { ok: false; response: Response };
 // what a failed respawn leaves behind as a debt instead of losing it: the brief as built, and the
 // role-lineage record the rail would have written (null where the rail has none — Program-MAIN)
@@ -10733,12 +10735,27 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   // owner had just emptied. Asked synchronously right before the call, so nothing can slip between.
   if (slotTeardownInflight.has(s.id) || restarting.has(s.id))
     return refused(json({ error: "the predecessor is already being ended or restarted by another act — nothing was handed over and nothing is reopened" }, 409));
+  const ownLaneReservation = laneSpawn.has(s.id); // the caller holds this reservation through the respawn
+  let ownEndedSlot = false;
   try {
     await killSlot(s, "handoff");
+    if (SUCCESSION_AFTER_KILL_OCCUPANT_LATCH !== null && existsSync(SUCCESSION_AFTER_KILL_OCCUPANT_LATCH)) {
+      s.cwd = "/fleet-test-succession-foreign";
+      s.openedAt = Date.now();
+      s.selfToken = "fleet-test-succession-foreign";
+    }
+    ownEndedSlot = s.id === predecessor.slot && s.cwd === null && s.openedAt === 0
+      && s.selfToken === predecessor.selfToken && laneSpawn.has(s.id) === ownLaneReservation
+      && !slotSpawnInflight.has(s.id);
   } catch (e) {
     if (sameSuccessionOccupant(s, predecessor))
       return refused(json({ error: `the predecessor could not be ended for the in-place respawn (${msg(e)}) — it is still standing and nothing was handed over` }, 500));
     return { ok: false, response: await respawnLost(s, predecessor, rail, `teardown: ${msg(e)}`, stranded, () => onLost(e)) };
+  }
+  if (!ownEndedSlot) {
+    const reason = "slot was taken by another act after the predecessor ended — nothing reopened";
+    return { ok: false, response: await respawnLost(s, predecessor, rail, reason, stranded,
+      () => onLost(new Error(reason)), 409, true) };
   }
   let openedSupport: CodexModelSupport | null = null;
   try {
@@ -10807,14 +10824,15 @@ function healLaneAnchorsOnLoad(): void {
   }
 }
 async function respawnLost(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string, reason: string,
-  stranded: SuccessionStranded, onLost: () => Promise<void>, status = 500): Promise<Response> {
+  stranded: SuccessionStranded, onLost: () => Promise<void>, status = 500, preserveOccupant = false): Promise<Response> {
   try {
     await onLost();
   } catch (e) {
     logError("successionRespawnLost", e);
   }
-  // whatever the open left behind that is not the predecessor is not a session anyone can reach
-  if (s.cwd && s.openedAt !== predecessor.openedAt) await killSlot(s, "reopen").catch((e: unknown) => logError("successionRespawnLost", e));
+  // Clean up a failed open's candidate, but never the foreign occupant detected before any open.
+  if (!preserveOccupant && s.cwd && s.openedAt !== predecessor.openedAt)
+    await killSlot(s, "reopen").catch((e: unknown) => logError("successionRespawnLost", e));
   const holds = s.cwd ? `still holds an occupant (openedAt ${s.openedAt})` : "is empty";
   audit("main_succession", s.id, `${rail} respawn FAILED after the predecessor ended: ${reason} — slot ${s.id} ${holds}; reopen it on ${predecessor.cwd}`);
   // THE HANDOVER OUTLIVES THE FAILED OPEN: brief and record are held as a debt, the line carries a

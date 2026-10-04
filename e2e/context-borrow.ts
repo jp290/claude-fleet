@@ -1,4 +1,4 @@
-import { sectionAt } from "../context-sections";
+import { sectionAt, sourceSection } from "../context-sections";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -33,6 +33,22 @@ export async function run(check: ContextPlanCheck): Promise<void> {
     return result.stdout.trim();
   };
   try {
+    const exactSection = "  ### Kern\r\nExact section.\r\n";
+    const prefixSection = "### Kern — Extended heading\nUnique section.\n";
+    const exactText = `### Kernel\r\nWrong section.\r\n${exactSection}### After\r\n`;
+    const prefixText = `~~~md\n### Kern fake\n~~~\n    ### Kern indented\n${prefixSection}### After\n`;
+    check("context borrow: an exact anchor wins over an earlier prefix and preserves section bytes",
+      sectionAt(exactText, "exact.md", "### Kern") === exactSection);
+    check("context borrow: one prefix outside code resolves a shortened anchor",
+      sectionAt(prefixText, "prefix.md", "### Kern") === prefixSection);
+    const ambiguousText = "### Kernel\nFirst section.\n### Kern — Extended heading\nSecond section.\n";
+    for (const read of [sectionAt, sourceSection]) {
+      let error: unknown;
+      try { read(ambiguousText, "ambiguous.md", "### Kern"); } catch (caught) { error = caught; }
+      check(`context borrow: ${read.name} rejects ambiguous prefixes with a named error`,
+        error instanceof Error && error.name === "source-anchor-ambiguous"
+        && error.message.includes("ambiguous.md") && error.message.includes("### Kern"));
+    }
     g("init", "-q", "-b", "main"); g("config", "user.name", "e2e"); g("config", "user.email", "e2e@fleet");
     const section = "## Section\nGrüße vom HEAD.\n### Child\nKept child.\n````md\n## Fenced sibling\n```\n# Still fenced\n````\n~~~md\n# Tilde fenced\n~~~\n\n";
     const contract = "## Portable operating contract\nFixture contract.";
@@ -197,6 +213,22 @@ export async function run(check: ContextPlanCheck): Promise<void> {
     const code = await borrow("code-symbol");
     check("context borrow: a non-Markdown symbol serves conservatively from its line to EOF, excluding earlier code",
       code.status === 200 && code.body.sources?.[0]?.content === codeTail);
+    writeFileSync(join(root, "exact.md"), exactText);
+    writeFileSync(join(root, "prefix.md"), prefixText);
+    writeFileSync(join(root, "ambiguous.md"), ambiguousText);
+    g("add", "exact.md", "prefix.md", "ambiguous.md"); g("commit", "-q", "-m", "anchor resolution");
+    addPack("anchor-resolution", [{ path: "exact.md", anchor: "### Kern" }, { path: "prefix.md", anchor: "### Kern" }]);
+    addPack("ambiguous-anchor", [{ path: "exact.md", anchor: "### Kern" }, { path: "ambiguous.md", anchor: "### Kern" }]);
+    const anchors = await borrow("anchor-resolution");
+    check("context borrow: exact and unique prefix anchors serve their selected sections at HEAD",
+      anchors.status === 200 && anchors.body.sources?.[0]?.content === exactSection
+      && anchors.body.sources?.[1]?.content === prefixSection);
+    const ambiguous = await borrow("ambiguous-anchor");
+    const ambiguousLine = (await readLedger<Record<string, unknown>>(borrowFile)).rows.at(-1);
+    check("context borrow: ambiguous prefixes return named 409 without partial content or delivered bytes",
+      ambiguous.status === 409 && ambiguous.body.refusal === "source-anchor-ambiguous" && !ambiguous.body.sources
+      && ambiguousLine?.refusal === "source-anchor-ambiguous" && ambiguousLine.bytes === 0
+      && ambiguousLine.borrowedAt === null && JSON.stringify(ambiguousLine.sources) === "[]");
     writeFileSync(join(root, "AGENTS.md"), readFileSync(join(sourceRoot, "AGENTS.md")));
     mkdirSync(join(root, "docs"));
     writeFileSync(join(root, "docs/verify-tiering.md"), readFileSync(join(sourceRoot, "docs/verify-tiering.md")));

@@ -23,7 +23,16 @@ function sectionSpan(text: string, path: string, anchor: string): { start: numbe
     if (/^ {0,3}(?:=+|-+)[ \t]*$/.test(line.text) && previous?.text.trim() && !previous.code && !previous.level)
       previous.level = line.text.trimStart()[0] === "=" ? 1 : 2;
   }
-  const start = lines.findIndex((line) => !line.code && line.text.trimStart().startsWith(anchor));
+  let start = lines.findIndex((line) => !line.code && line.text.trimStart() === anchor);
+  if (start < 0) {
+    const matches = lines.flatMap((line, index) => !line.code && line.text.trimStart().startsWith(anchor) ? [index] : []);
+    if (matches.length > 1) {
+      const error = new Error(`more than one line in ${path} starts with anchor ${JSON.stringify(anchor)}`);
+      error.name = "source-anchor-ambiguous";
+      throw error;
+    }
+    start = matches[0] ?? -1;
+  }
   if (start < 0) return null;
   const first = lines[start]!;
   const next = markdown ? lines.slice(start + 1).find((line) => line.level > 0 && (!first.level || line.level <= first.level)) : undefined;

@@ -3378,7 +3378,11 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
   };
   let answer: { status: number; body: Record<string, unknown> };
   try { answer = await resolve(); }
-  catch { answer = refused("source-unavailable", "the context catalogue could not be resolved at HEAD"); }
+  catch (error) {
+    answer = error instanceof Error && error.name === "source-anchor-ambiguous"
+      ? refused(error.name, error.message)
+      : refused("source-unavailable", "the context catalogue could not be resolved at HEAD");
+  }
   const changed = () => json({ refusal: "occupant-changed", error: "the session binding changed during this read" }, 409);
   if (!unchanged()) return changed();
   const at = Date.now();

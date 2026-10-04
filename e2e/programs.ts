@@ -4547,6 +4547,12 @@ export async function run(ctx: Ctx): Promise<void> {
   }
   const secondOrch = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
   const secondOpen = await post(`/api/slots/${secondOrch}/open`, { cwd: REPO, label: "🎛 second receiver" });
+  const ambiguousOrchView = await selfMessages(slotToken(orchFree));
+  const ambiguousOrchSend = await selfSend(slotToken(orchFree), { to: orchAddress,
+    payload: { kind: "text", text: "ambiguous role stays refused" }, idempotencyKey: "ambiguous-orchestrator" });
+  check("An ambiguous Orchestrator binding never gains an unbound session address",
+    secondOpen.ok && ambiguousOrchView.response.status === 409 && ambiguousOrchSend.status === 409,
+    `read=${ambiguousOrchView.response.status} send=${ambiguousOrchSend.status}`);
   const twoOrch = await selfSend(slotToken(successorSlot), { to: orchAddress,
     payload: { kind: "text", text: "Ambiguous Orchestrator occupancy" }, idempotencyKey: "escalate-two" });
   const twoBody = await twoOrch.json() as { escalatedTo?: string; holder?: unknown; message?: { id?: string } };

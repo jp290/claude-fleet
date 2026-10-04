@@ -2756,7 +2756,8 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Eine ungebundene Nicht-Lane-Nicht-Steward-Session sendet als
   `{kind:"session",slot,openedAt}` ausschließlich an `role:"orchestrator"` (sonst 409).
   Die Lane sendet weiterhin nie (409 mit dem bisherigen Satz); der Steward wird mit eigenem
-  Satz abgelehnt. Eine mehrdeutige Program-Bindung wird nicht zur ungebundenen Session.
+  Satz abgelehnt. Eine mehrdeutige Program- oder Orchestratorin-Bindung wird nicht zur
+  ungebundenen Session.
 - **Adress-Union, geschlossen (`server/types.ts#MessageAddress`, `#loadMessageAddress`):**
   `{kind:"program",id}` | `{kind:"role",role}` | `{kind:"session",slot,openedAt}` |
   `{kind:"lane",slot,openedAt}`. Occupant-Adressen enthalten genau diese drei Felder, einen

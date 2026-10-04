@@ -14439,7 +14439,7 @@ function messageSenderFor(s: Slot): MessageSender {
   if (bound.ok) return { ok: true, from: { kind: "program", id: bound.program.id } };
   if (deliveryRecipient({ kind: "orchestrator" }) === s)
     return { ok: true, from: { kind: "role", role: "orchestrator" } };
-  if (s.cwd && s.openedAt > 0 && !programs.some((p) => p.status === "active"
+  if (s.cwd && s.openedAt > 0 && !isOrchestratorLabel(s.label) && !programs.some((p) => p.status === "active"
     && p.main?.slot === s.id && p.main.openedAt === s.openedAt))
     return { ok: true, from: { kind: "session", slot: s.id, openedAt: s.openedAt } };
   return { ok: false, response: json({ error: bound.error }, 409) };
@@ -14457,7 +14457,7 @@ function messageAddressesFor(s: Slot): MessageAddress[] {
   if (bound.ok) out.push({ kind: "program", id: bound.program.id });
   if (!bound.ok && deliveryRecipient({ kind: "orchestrator" }) === s)
     out.push({ kind: "role", role: "orchestrator" });
-  if (!out.length && !programs.some((p) => p.status === "active"
+  if (!out.length && !isOrchestratorLabel(s.label) && !programs.some((p) => p.status === "active"
     && p.main?.slot === s.id && p.main.openedAt === s.openedAt))
     out.push({ kind: "session", slot: s.id, openedAt: s.openedAt });
   return out;

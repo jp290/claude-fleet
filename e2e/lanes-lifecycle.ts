@@ -208,21 +208,6 @@ async function workplacesChecks(): Promise<void> {
     check("workplaces short cache avoids repeated status and carries measurement time", again.measuredAt === value.measuredAt
       && again.cacheMs === 3000 && readFileSync(trace, "utf8") === "status --json\n");
     const source = readFileSync(`${ROOT}/server.ts`, "utf8");
-    const start = source.indexOf("async function workplaceRepo("), end = source.indexOf("async function workplaces()", start);
-    const body = source.slice(start, end);
-    const mutant = body.replace("return { ahead, behind };", "return { ahead: behind, behind: ahead };");
-    const evaluate = (code: string) => {
-      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
-      return new Function("gitRead", "listWorktrees", "workplaceSession", "WORKPLACES_GRAPH_CAP", "lstatSync", "workplaceInstance", "testinstanzPathIdentity", `${js}\nreturn workplaceRepo;`)(
-        async (repo: string, ...args: string[]) => { const r = git(repo, ...args); return { code: r.status, out: r.stdout.trim() }; },
-        async (repo: string) => { const r = git(repo, "worktree", "list", "--porcelain"); return r.stdout.trim().split("\n\n").map((block, i) => {
-          const lines = block.split("\n"); return { path: lines[0].slice(9), primary: i === 0,
-            head: lines.find((l) => l.startsWith("HEAD "))?.slice(5), branch: lines.find((l) => l.startsWith("branch "))?.slice(18) ?? "(detached)" };
-        }); }, () => undefined, 100_000, lstatSync, async () => null, (path: string) => { try { return realpathSync(`${path}/.git`); } catch { return null; } }) as (repo: string) => Promise<WorkplaceRepo>;
-    };
-    const claim = (r: WorkplaceRepo) => { const d = r.branches?.find((x) => x.branch === "overhaul")?.distance; return d?.ahead === 0 && d.behind === 1; };
-    const baseline = await evaluate(body)(b), mutated = await evaluate(mutant)(b);
-    check("workplaces mutation probe catches swapped ahead/behind on the fixture graph", body !== mutant && claim(baseline) && !claim(mutated), JSON.stringify({ baseline: baseline.branches, mutated: mutated.branches }));
     const blocks = [
       ["function knownRepos()", "async function slotCommits("],
       ["function testinstanzPathIdentity(", "async function testinstanzTarget("],
@@ -237,11 +222,13 @@ async function workplacesChecks(): Promise<void> {
     type FixtureOccupant = { id: number; openedAt: number; cwd: string; worktree: { repo: string; base: string; baseSha: string } };
     const holderFixture = (): FixtureOccupant => ({ id: 42, openedAt: 100, cwd: realpathSync(b),
       worktree: { repo: realpathSync(b), base: "overhaul", baseSha: bOverhaul } });
-    const compile = (code: string, occupants: FixtureOccupant[], graphFails = false, statusAwait?: () => Promise<void>) => {
+    const compile = (code: string, occupants: FixtureOccupant[], graphFails = false, statusAwait?: () => Promise<void>, notesFail = false, gitCalls?: string[]) => {
       const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
       return new Function("slots", "DISPATCH_REPO", "gitRead", "testinstanzCommand", "existsSync", "realpathSync", "statSync", "lstatSync", "HOST",
         `${js}\nreturn { repo: workplaceRepo, read: workplaces };`)(occupants, realpathSync(b),
         async (repo: string, ...args: string[]) => {
+          gitCalls?.push(args[0]);
+          if (notesFail && args[0] === "log") return { code: 128, out: "" };
           if (graphFails && args[0] === "rev-list") return { code: 128, out: "" };
           const r = git(repo, ...args); return { code: r.status, out: r.stdout.trim() };
         }, async (path: string, args: string[]) => {
@@ -250,6 +237,10 @@ async function workplacesChecks(): Promise<void> {
           return { code: r.status, out: r.stdout };
         }, existsSync, realpathSync, statSync, lstatSync, "") as { repo: (repo: string) => Promise<WorkplaceRepo>; read: () => Promise<Workplaces> };
     };
+    const distanceMutant = functions.replace("return { ahead, behind };", "return { ahead: behind, behind: ahead };");
+    const claim = (r: WorkplaceRepo) => { const d = r.branches?.find((x) => x.branch === "overhaul")?.distance; return d?.ahead === 0 && d.behind === 1; };
+    const baseline = await compile(functions, []).repo(b), mutated = await compile(distanceMutant, []).repo(b);
+    check("workplaces mutation probe catches swapped ahead/behind on the fixture graph", functions !== distanceMutant && claim(baseline) && !claim(mutated), JSON.stringify({ baseline: baseline.branches, mutated: mutated.branches }));
     const retainsBasis = (repo: WorkplaceRepo, head: string) => {
       const row = repo.worktrees?.find((w) => w.primary);
       return row?.base?.head === head && row.distance === null
@@ -301,13 +292,88 @@ async function workplacesChecks(): Promise<void> {
       }
     } finally { rmSync(instanceScript, { force: true }); }
 
+    const targetPaths = ["wp-landed", "wp-unlanded", "wp-empty"].map((branch) => ({ branch, path: `${dir}/${branch}` }));
+    for (const [i, fixture] of targetPaths.entries()) {
+      git(b, "worktree", "add", "-qb", fixture.branch, fixture.path, bOverhaul);
+      if (i < 2) git(fixture.path, "commit", "--allow-empty", "-qm", fixture.branch);
+    }
+    git(b, "update-ref", "refs/heads/overhaul", bMain);
+    git(b, "notes", "--ref=fleet/land", "add", "-m", JSON.stringify({ branch: "wp-landed", task: "aabbccdd", at: 1000 }), bMain);
+    git(b, "notes", "--ref=fleet/land", "add", "-m", JSON.stringify({ branch: "wp-unlanded", task: "eeff0011", at: 2000 }), git(targetPaths[0].path, "rev-parse", "HEAD").stdout.trim());
+    git(b, "branch", "side-target", git(targetPaths[0].path, "rev-parse", "HEAD").stdout.trim());
+    const targetHolders = targetPaths.map((fixture, i): FixtureOccupant => ({ id: 50 + i, openedAt: 100,
+      cwd: realpathSync(fixture.path), worktree: { repo: realpathSync(b), base: "overhaul", baseSha: bOverhaul } }));
+    targetHolders.push({ id: 53, openedAt: 100, cwd: realpathSync(b), worktree: { repo: realpathSync(b), base: "side-target", baseSha: bOverhaul } });
+    const gitCalls: string[] = [];
+    const targetRepo = await compile(functions, targetHolders, false, undefined, false, gitCalls).repo(b);
+    check("workplaces notes are read once per repo within the five Git call budget", gitCalls.length === 5
+      && gitCalls.filter((cmd) => cmd === "log").length === 1 && (targetRepo.worktrees?.length ?? 0) > 3, JSON.stringify(gitCalls));
+    const targetRow = (repo: WorkplaceRepo, i: number) => repo.worktrees?.find((row) => row.path === realpathSync(targetPaths[i].path));
+    const yes = (repo: WorkplaceRepo) => { const row = targetRow(repo, 0); return row?.target.branch === "overhaul" && row.target.head === bMain
+      && row.target.behind === 1 && row.target.landed === "yes" && row.target.landedAs === bMain && row.target.basis === "land-note"; };
+    const no = (repo: WorkplaceRepo) => { const row = targetRow(repo, 1); return row?.distance?.ahead === 1 && row.target.landed === "no"
+      && row.target.landedAs === null && row.reasons.some((r) => r.field === "target.landedAs" && r.reason === "no-matching-land-note"); };
+    const empty = (repo: WorkplaceRepo) => { const row = targetRow(repo, 2); return row?.distance?.ahead === 0 && row.target.landed === null
+      && row.reasons.some((r) => r.field === "target.landed" && r.reason === "nothing-to-land"); };
+    check("workplaces target yes names the overhaul tip and its exact land-note SHA", yes(targetRepo), JSON.stringify(targetRow(targetRepo, 0)));
+    check("workplaces target no excludes matching notes on another branch of history", no(targetRepo), JSON.stringify(targetRow(targetRepo, 1)));
+    check("workplaces target with no own commits is unknown with nothing-to-land reason", empty(targetRepo), JSON.stringify(targetRow(targetRepo, 2)));
+    const targetMutants = [
+      ["land-note branch", functions.replace("note.branch === branch && onTarget(note.sha)", "onTarget(note.sha)"), no],
+      ["land-note lineage", functions.replace("note.branch === branch && onTarget(note.sha)", "note.branch === branch"), no],
+      ["nothing to land", functions.replace('else if (d.ahead === 0) landedReason = "nothing-to-land";', ''), empty],
+      ["target advancement", functions.replace("distance(targetHead, baseHead)?.ahead ?? null", "0"), yes],
+    ] as const;
+    for (const [name, code, predicate] of targetMutants) {
+      const mutantRepo = await compile(code, targetHolders).repo(b);
+      check(`workplaces target mutation rejects dropping ${name}`, code !== functions && !predicate(mutantRepo), JSON.stringify(mutantRepo.worktrees));
+    }
+    const failedTarget = await compile(functions, targetHolders, true).repo(b);
+    check("workplaces target graph failure retains its readable target tip and nulls only unprovable facts", targetRow(failedTarget, 1)?.target.head === bMain
+      && targetRow(failedTarget, 1)?.target.behind === null && targetRow(failedTarget, 1)?.target.landed === null
+      && targetRow(failedTarget, 1)?.reasons.some((r) => r.field === "target.behind" && r.reason === "commit-graph-unreadable"), JSON.stringify(targetRow(failedTarget, 1)));
+    const unreadNotes = await compile(functions, targetHolders, false, undefined, true).repo(b);
+    check("workplaces unreadable target notes cannot claim an unlanded branch", targetRow(unreadNotes, 1)?.target.landed === null
+      && targetRow(unreadNotes, 1)?.reasons.some((r) => r.field === "target.landed" && r.reason === "land-notes-unreadable"), JSON.stringify(targetRow(unreadNotes, 1)));
+    const cappedNotes = functions.replace("return { rows, truncated };", "return { rows, truncated: true };");
+    const limited = await compile(cappedNotes, targetHolders).repo(b);
+    check("workplaces truncated target notes keep positive evidence but refuse negative claims", limited.landNotes.truncated === true
+      && targetRow(limited, 0)?.target.landed === "yes" && targetRow(limited, 1)?.target.landed === null
+      && targetRow(limited, 1)?.reasons.some((r) => r.field === "target.landed" && r.reason === "land-notes-truncated"), JSON.stringify(limited.worktrees));
+    const scanCapped = await compile(functions.replace("const LAND_NOTES_SCAN_CAP = 200;", "const LAND_NOTES_SCAN_CAP = 1;"), targetHolders).repo(b);
+    check("workplaces note scan cap exposes truncation and never claims no from a partial scan", scanCapped.landNotes.truncated === true
+      && targetRow(scanCapped, 1)?.target.landed === null, JSON.stringify(scanCapped.worktrees));
+    await Bun.sleep(3100);
+    const targetWire = await (await get("/api/worktrees")).json() as Workplaces;
+    const wireRepo = targetWire.repos.find((repo) => repo.repo === realpathSync(b));
+    check("workplaces owner wire carries yes no and nothing-to-land from one repo note scan", !!wireRepo
+      && targetRow(wireRepo, 0)?.target.landed === "yes" && no(wireRepo) && empty(wireRepo)
+      && wireRepo.landNotes.truncated === false, JSON.stringify(wireRepo));
+
     renameSync(`${b}/.git`, `${b}/.git-hidden`);
     try {
+      const escaped = git(b, "rev-parse", "--show-toplevel");
+      check("workplaces unreadable fixture proves Git would discover the enclosing repo", escaped.status === 0
+        && realpathSync(escaped.stdout.trim()) === realpathSync(ROOT), escaped.stdout.trim());
+      const withoutBoundary = functions.replace('if (strict && !existsSync(`${root}/.git`)) throw new Error("worktree-list-unreadable");', '')
+        .replace('if (top.code !== 0 || realpathSync(top.out) !== realpathSync(repo)) throw new Error("repo-toplevel-mismatch");', '');
+      const guarded = await compile(functions, []).repo(b), escapedRepo = await compile(withoutBoundary, []).repo(b);
+      check("workplaces pre-fix red/post-fix green rejects reading an enclosing repo when its own Git boundary disappears", withoutBoundary !== functions
+        && guarded.worktrees === null && guarded.reasons.some((r) => r.reason === "worktree-list-unreadable")
+        && escapedRepo.worktrees !== null, JSON.stringify({ guarded, escapedRepo: escapedRepo.repo }));
       await Bun.sleep(3100);
       const unreadable = await (await get("/api/worktrees")).json() as Workplaces;
       const broken = unreadable.repos.find((r) => r.repo === realpathSync(b));
       check("workplaces unreadable repo is null with its reason, never an empty worktree list", broken?.worktrees === null && broken.branches === null
         && broken.reasons.some((r) => r.reason === "worktree-list-unreadable"), JSON.stringify(broken));
+      writeFileSync(`${b}/.git`, `gitdir: ${realpathSync(ROOT)}/.git\n`);
+      try {
+        const topMutant = functions.replace('if (top.code !== 0 || realpathSync(top.out) !== realpathSync(repo)) throw new Error("repo-toplevel-mismatch");', '');
+        const mismatch = await compile(functions, []).repo(b), wrongRepo = await compile(topMutant, []).repo(b);
+        check("workplaces rejects an existing Git pointer whose toplevel is another repo", mismatch.worktrees === null
+          && mismatch.reasons.some((r) => r.reason === "worktree-list-unreadable"), JSON.stringify(mismatch));
+        check("workplaces toplevel mutation probe rejects substituting an enclosing repo", topMutant !== functions && wrongRepo.worktrees !== null, JSON.stringify(wrongRepo.repo));
+      } finally { rmSync(`${b}/.git`, { force: true }); }
     } finally { renameSync(`${b}/.git-hidden`, `${b}/.git`); }
 
   } finally {

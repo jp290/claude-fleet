@@ -2946,6 +2946,17 @@ Eine aus Ref oder gespeicherter `baseSha` bekannte Basis bleibt auch bei Graphfe
 nur der Abstand hängt vom Graph ab. `session:{slot,openedAt}` wird zusammen mit der Basis vor
 dem Status-Await festgehalten und beim Antworten nur übernommen, wenn der aktuelle Occupant
 beide Identitätswerte unverändert trägt. Sonst session:null mit session-changed-since-measurement.
+`target:{branch,head,behind,landed,landedAs,basis}` nennt das aktuelle Lane-Ziel (gespeichertes
+base, sonst main) und dessen Ref-Spitze. behind zählt Ziel-Commits seit der gespeicherten Basis,
+unabhängig vom Abstand Worktree-HEAD..Basis. basis ist land-note: landed:yes braucht eine
+fleet/land-Note mit dem Worktree-Branch auf einem Commit in der Ziel-Historie; landedAs ist
+dieser Commit. Das beweist die genannte Land-Notiz, keine Gleichheit mit dem heutigen HEAD.
+landed:no setzt bekannte eigene Commits (ahead>0), lesbare vollständige Notizen und keinen
+Treffer voraus. Ohne eigene Commits bleibt landed:null mit nothing-to-land. Unlesbare,
+malformierte oder gedeckelte Notizen, unbekanntes ahead oder unbekannte Ziel-Historie liefern
+null mit benanntem Grund. Positive Notizbelege bleiben auch bei Deckel gültig, wenn ihre
+Zugehörigkeit zum Ziel belegbar ist. `landNotes:{truncated}` benennt je Repo den Notizdeckel;
+unlesbar ist truncated:null mit land-notes-unreadable.
 Clone-Lanes gehören nicht zur Git-Worktree-Liste.
 
 ```json
@@ -2955,8 +2966,10 @@ Clone-Lanes gehören nicht zur Git-Worktree-Liste.
 ],"worktrees":[{"path":"/fixture/worktree","primary":false,"branch":"overhaul",
   "head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "base":{"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-  "distance":{"ahead":1,"behind":0},"session":null,"template":"missing","testinstanz":null,
-  "reasons":[{"field":"testinstanz","reason":"missingScript"}]}],"reasons":[]}],
+  "distance":{"ahead":1,"behind":0},"session":null,
+  "target":{"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","behind":0,
+    "landed":"no","landedAs":null,"basis":"land-note"},"template":"missing","testinstanz":null,
+  "reasons":[{"field":"testinstanz","reason":"missingScript"},{"field":"target.landedAs","reason":"no-matching-land-note"}]}],"landNotes":{"truncated":false},"reasons":[]}],
  "measuredAt":2000000000000,"cacheMs":3000}
 ```
 
@@ -2973,8 +2986,12 @@ template-unreadable, missingScript, instance-unreadable-or-busy oder instance-fi
 `session:null` ohne Grund ist beobachtete Nichtbelegung; ein Wechsel nennt seinen Grund.
 `branch:null` mit detached-head bezeichnet einen Detached-HEAD.
 
-Kosten: maximal drei lockfreie Git-Aufrufe je bekanntem Repo bei einer Cache-Neuberechnung:
-worktree list, show-ref und ein gemeinsamer rev-list --parents für Ref-/Worktree-/Basis-Spitzen.
+Kosten: maximal fünf lockfreie Git-Aufrufe je bekanntem Repo bei einer Cache-Neuberechnung:
+rev-parse --show-toplevel, worktree list, show-ref, ein gemeinsamer rev-list --parents für
+Ref-/Worktree-/Basis-Spitzen und EIN git log --notes=fleet/land für alle Ziel-Spitzen gemeinsam.
+Der Toplevel muss dem kanonischen Repo-Pfad entsprechen; ein fehlendes eigenes Git-Verzeichnis
+liest dadurch niemals Worktrees eines Elternrepos. Notizen werden höchstens einmal je Repo
+und Neuberechnung gelesen, mit denselben Deckeln wie deployGap (20 Notizen, 200 Commits).
 Der Graph hat einen Deckel von 100000 Commits; bei Überschreitung bleiben alle Abstände null.
 Instanzstatus benötigt höchstens einen begrenzten status-Aufruf je vorhandener Vorlage,
 mit maximal sechs gleichzeitig je Repo. Der 3-s-Cache teilt gleichzeitige Reads und bindet sich

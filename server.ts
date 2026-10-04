@@ -7106,6 +7106,7 @@ async function laneRefsStale(w: LaneRef | null, cwd: string | null): Promise<boo
 // previously invisible anywhere in the UI) stay findable
 interface WtEntry { path: string; branch: string; primary: boolean; head?: string | null }
 async function listWorktrees(root: string, strict = false): Promise<WtEntry[]> {
+  if (strict && !existsSync(`${root}/.git`)) throw new Error("worktree-list-unreadable");
   const ls = await gitRead(root, "worktree", "list", "--porcelain");
   if (ls.code !== 0) { if (strict) throw new Error("worktree-list-unreadable"); return []; }
   const out: WtEntry[] = [];
@@ -7124,6 +7125,8 @@ async function listWorktrees(root: string, strict = false): Promise<WtEntry[]> {
 
 const WORKPLACES_CACHE_MS = 3000;
 const WORKPLACES_GRAPH_CAP = 100_000;
+const LAND_NOTES_CAP = 20;
+const LAND_NOTES_SCAN_CAP = 200;
 let workplacesCache: { key: string; value: Promise<Workplaces>; at: number } | null = null;
 function workplaceSession(path: string): Slot | undefined {
   return slots.find((s) => { try { return !!s.cwd && realpathSync(s.cwd) === path; } catch { return false; } });
@@ -7139,23 +7142,56 @@ async function workplaceInstance(target: TestinstanzTarget): Promise<WorkplaceRo
   const instance = testinstanzObservation(result.out, target);
   return { state: String(instance.state), instance };
 }
+interface WorkplaceLandNotes { rows: Array<{ sha: string; branch: string | null }> | null; truncated: boolean | null }
+async function workplaceLandNotes(repo: string, heads: string[]): Promise<WorkplaceLandNotes> {
+  if (!heads.length) return { rows: null, truncated: null };
+  const r = await gitRead(repo, "log", "--no-color", "--no-show-signature", "--notes=fleet/land",
+    `--max-count=${LAND_NOTES_SCAN_CAP + 1}`, "--format=%H%x00%N%x00", ...heads, "--");
+  if (r.code !== 0) return { rows: null, truncated: null };
+  const parts = r.out.split("\0"), rows: NonNullable<WorkplaceLandNotes["rows"]> = [];
+  let scanned = 0, truncated = false;
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const sha = parts[i].trim(), raw = parts[i + 1].trim();
+    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
+    if (++scanned > LAND_NOTES_SCAN_CAP) { truncated = true; break; }
+    if (!raw) continue;
+    if (rows.length >= LAND_NOTES_CAP) { truncated = true; break; }
+    let note: Record<string, unknown> | null = null;
+    try { note = testinstanzRecord(JSON.parse(raw)); } catch { /* the branch remains unreadable */ }
+    rows.push({ sha, branch: typeof note?.branch === "string" && note.branch ? note.branch : null });
+  }
+  return { rows, truncated };
+}
+
 async function workplaceRepo(repo: string): Promise<WorkplaceRepo> {
   const reasons: FactReason[] = [];
   let rows: WtEntry[];
-  try { rows = await listWorktrees(repo, true); }
-  catch { return { repo, branches: null, worktrees: null, reasons: [{ field: "repo", reason: "worktree-list-unreadable" }] }; }
+  try {
+    const top = await gitRead(repo, "rev-parse", "--show-toplevel");
+    if (top.code !== 0 || realpathSync(top.out) !== realpathSync(repo)) throw new Error("repo-toplevel-mismatch");
+    rows = await listWorktrees(repo, true);
+  }
+  catch { return { repo, branches: null, worktrees: null, landNotes: { truncated: null },
+    reasons: [{ field: "repo", reason: "worktree-list-unreadable" }, { field: "landNotes.truncated", reason: "land-notes-unreadable" }] }; }
   const refs = await gitRead(repo, "show-ref", "--heads");
   const heads = new Map<string, string>();
   if (refs.code === 0) for (const line of refs.out.split("\n")) {
     const m = /^([0-9a-f]{40}) refs\/heads\/(.+)$/.exec(line);
     if (m) heads.set(m[2], m[1]);
   }
-  const roots = new Set([...heads.values(), ...rows.map((w) => w.head).filter((x): x is string => !!x)]);
-  for (const w of rows) {
-    const s = workplaceSession(w.path);
-    if (s?.worktree?.baseSha && /^[0-9a-f]{40}$/.test(s.worktree.baseSha)) roots.add(s.worktree.baseSha);
-  }
-  const graph = roots.size ? await gitRead(repo, "rev-list", "--parents", `--max-count=${WORKPLACES_GRAPH_CAP + 1}`, ...roots, "--") : null;
+  const bindings = new Map(rows.map((w) => {
+    const holder = workplaceSession(w.path), baseBranch = holder?.worktree?.base ?? "main";
+    return [w.path, { session: holder ? { slot: holder.id, openedAt: holder.openedAt } : null,
+      baseBranch, baseHead: holder?.worktree?.baseSha ?? heads.get(baseBranch) ?? null }] as const;
+  }));
+  const roots = new Set([...heads.values(), ...rows.map((w) => w.head).filter((x): x is string => !!x),
+    ...[...bindings.values()].map((b) => b.baseHead).filter((x): x is string => !!x && /^[0-9a-f]{40}$/.test(x))]);
+  const targetHeads = [...new Set([...bindings.values()].map((b) => heads.get(b.baseBranch)).filter((x): x is string => !!x))];
+  const [graph, notes] = await Promise.all([
+    roots.size ? gitRead(repo, "rev-list", "--parents", `--max-count=${WORKPLACES_GRAPH_CAP + 1}`, ...roots, "--") : null,
+    workplaceLandNotes(repo, targetHeads),
+  ]);
+  if (notes.truncated === null) reasons.push({ field: "landNotes.truncated", reason: "land-notes-unreadable" });
   const lines = graph?.out.split("\n").filter(Boolean) ?? [];
   const parents = new Map<string, string[]>();
   const graphReason = !graph || graph.code !== 0 ? "commit-graph-unreadable" : lines.length > WORKPLACES_GRAPH_CAP ? "commit-graph-capped" : null;
@@ -7185,17 +7221,36 @@ async function workplaceRepo(repo: string): Promise<WorkplaceRepo> {
   });
   if (!branches) reasons.push({ field: "branches", reason: "branch-refs-unreadable" });
   const readRow = async (w: WtEntry): Promise<WorkplaceRow> => {
-    const why: FactReason[] = [], holder = workplaceSession(w.path);
-    const session = holder ? { slot: holder.id, openedAt: holder.openedAt } : null;
+    const why: FactReason[] = [];
+    const { session, baseBranch, baseHead } = bindings.get(w.path)!;
     const branch = w.branch === "(detached)" ? null : w.branch;
-    const baseBranch = holder?.worktree?.base ?? "main";
-    const baseHead = holder?.worktree?.baseSha ?? heads.get(baseBranch) ?? null;
     const base = baseHead ? { branch: baseBranch, head: baseHead } : null;
     const d = distance(w.head ?? null, base?.head ?? null);
     if (!branch) why.push({ field: "branch", reason: "detached-head" });
     if (!w.head) why.push({ field: "head", reason: "worktree-head-unreadable" });
     if (!base) why.push({ field: "base", reason: "base-unreadable" });
     if (!d) why.push({ field: "distance", reason: graphReason ?? "base-or-head-unreadable" });
+    const targetHead = heads.get(baseBranch) ?? null;
+    const behind = distance(targetHead, baseHead)?.ahead ?? null;
+    const targetAncestors = targetHead ? ancestors(targetHead) : null;
+    const onTarget = (sha: string) => sha === targetHead || targetAncestors?.has(sha) === true;
+    const landedAs = branch === null ? null : notes.rows?.find((note) => note.branch === branch && onTarget(note.sha))?.sha ?? null;
+    let landed: WorkplaceRow["target"]["landed"] = null, landedReason: string | null = null;
+    if (landedAs) landed = "yes";
+    else if (!branch) landedReason = "worktree-branch-unreadable";
+    else if (!targetHead) landedReason = "target-head-unreadable";
+    else if (!notes.rows) landedReason = "land-notes-unreadable";
+    else if (!targetAncestors) landedReason = graphReason ?? "target-lineage-unreadable";
+    else if (notes.rows.some((note) => note.branch === null && onTarget(note.sha))) landedReason = "land-note-branch-unreadable";
+    else if (notes.truncated) landedReason = "land-notes-truncated";
+    else if (!d) landedReason = "worktree-ahead-unreadable";
+    else if (d.ahead === 0) landedReason = "nothing-to-land";
+    else landed = "no";
+    const target: WorkplaceRow["target"] = { branch: baseBranch, head: targetHead, behind, landed, landedAs, basis: "land-note" };
+    if (!targetHead) why.push({ field: "target.head", reason: "target-head-unreadable" });
+    if (behind === null) why.push({ field: "target.behind", reason: graphReason ?? "base-or-target-unreadable" });
+    if (landedReason) why.push({ field: "target.landed", reason: landedReason });
+    if (!landedAs) why.push({ field: "target.landedAs", reason: landedReason ?? "no-matching-land-note" });
     let template: WorkplaceRow["template"] = null, testinstanz: WorkplaceRow["testinstanz"] = null;
     if (!testinstanzPathIdentity(w.path)) why.push({ field: "template", reason: "worktree-unreadable" });
     else try {
@@ -7220,22 +7275,22 @@ async function workplaceRepo(repo: string): Promise<WorkplaceRepo> {
       if (testinstanz.state === "unknown") why.push({ field: "testinstanz.state", reason: "instance-state-unproven" });
     }
     return { path: w.path, primary: w.primary, branch, head: w.head ?? null, base, distance: d,
-      session, template, testinstanz, reasons: why };
+      session, target, template, testinstanz, reasons: why };
   };
   const worktrees: WorkplaceRow[] = new Array(rows.length);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(6, rows.length) }, async () => {
     for (;;) { const i = next++; if (i >= rows.length) return; worktrees[i] = await readRow(rows[i]); }
   }));
-  return { repo, branches, worktrees, reasons };
+  return { repo, branches, worktrees, landNotes: { truncated: notes.truncated }, reasons };
 }
 async function workplaces(): Promise<Workplaces> {
   const repos = [...new Set(knownRepos().map((r) => { try { return realpathSync(r); } catch { return r; } }))];
   const key = JSON.stringify([repos, slots.filter((s) => s.cwd).map((s) => [s.id, s.openedAt, s.cwd, s.worktree?.base, s.worktree?.baseSha])]);
   if (!workplacesCache || workplacesCache.key !== key || Date.now() - workplacesCache.at >= WORKPLACES_CACHE_MS) {
     const entry: NonNullable<typeof workplacesCache> = { key, at: Number.POSITIVE_INFINITY, value: Promise.all(repos.map(async (repo): Promise<WorkplaceRepo> => {
-      try { return await workplaceRepo(repo); } catch { return { repo, branches: null, worktrees: null,
-        reasons: [{ field: "repo", reason: "repo-observation-failed" }] }; }
+      try { return await workplaceRepo(repo); } catch { return { repo, branches: null, worktrees: null, landNotes: { truncated: null },
+        reasons: [{ field: "repo", reason: "repo-observation-failed" }, { field: "landNotes.truncated", reason: "land-notes-unreadable" }] }; }
     }))
       .then((rows) => { entry.at = Date.now(); return { repos: rows, measuredAt: entry.at, cacheMs: WORKPLACES_CACHE_MS }; }) };
     workplacesCache = entry;
@@ -40443,23 +40498,21 @@ let BOOT_HEAD: string | null = null;
 const bootHeadReady = git(REPO_DIR, "rev-parse", "HEAD")
   .then((r) => { BOOT_HEAD = r.code === 0 && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null; })
   .catch(() => { BOOT_HEAD = null; }); // a boot-time throw must leave the fact unknown, not kill the server
-const DEPLOY_LANDS_CAP = 20;
-const DEPLOY_SCAN_CAP = 200;
 const DEPLOY_LANDS_CACHE_MS = 3000;
 let deployLandsCache: { head: string; at: number; value: Pick<DeployGap, "lands" | "truncated" | "reasons"> } | null = null;
 async function deployLands(head: string): Promise<Pick<DeployGap, "lands" | "truncated" | "reasons">> {
   if (deployLandsCache?.head === head && Date.now() - deployLandsCache.at < DEPLOY_LANDS_CACHE_MS) return deployLandsCache.value;
   const r = await gitRead(REPO_DIR, "log", "--no-color", "--no-show-signature", "--notes=fleet/land",
-    `--max-count=${DEPLOY_SCAN_CAP + 1}`, "--format=%H%x00%N%x00", `${BOOT_HEAD}..${head}`, "--");
+    `--max-count=${LAND_NOTES_SCAN_CAP + 1}`, "--format=%H%x00%N%x00", `${BOOT_HEAD}..${head}`, "--");
   if (r.code !== 0) return { lands: null, truncated: null, reasons: [{ field: "lands", reason: "land-notes-unreadable" }] };
   const parts = r.out.split("\0"), lands: DeployLand[] = [];
   let scanned = 0, truncated = false;
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const sha = parts[i].trim(), raw = parts[i + 1].trim();
     if (!/^[0-9a-f]{40}$/.test(sha)) continue;
-    if (++scanned > DEPLOY_SCAN_CAP) { truncated = true; break; }
+    if (++scanned > LAND_NOTES_SCAN_CAP) { truncated = true; break; }
     if (!raw) continue;
-    if (lands.length >= DEPLOY_LANDS_CAP) { truncated = true; break; }
+    if (lands.length >= LAND_NOTES_CAP) { truncated = true; break; }
     let note: Record<string, unknown> | null = null;
     try { note = testinstanzRecord(JSON.parse(raw)); } catch { /* unreadable note remains a named land */ }
     const actor = testinstanzRecord(note?.actor);

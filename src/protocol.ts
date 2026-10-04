@@ -704,13 +704,15 @@ export interface WorkplaceRow {
   path: string; primary: boolean; branch: string | null; head: string | null;
   base: { branch: string; head: string } | null; distance: WorktreeDistance | null;
   session: { slot: number; openedAt: number } | null;
+  target: { branch: string; head: string | null; behind: number | null;
+    landed: "yes" | "no" | null; landedAs: string | null; basis: "land-note" };
   template: "present" | "missing" | null;
   testinstanz: { state: string; instance: Record<string, unknown> } | null;
   reasons: FactReason[];
 }
 export interface WorkplaceRepo {
   repo: string; branches: WorkplaceBranch[] | null;
-  worktrees: WorkplaceRow[] | null; reasons: FactReason[];
+  worktrees: WorkplaceRow[] | null; landNotes: { truncated: boolean | null }; reasons: FactReason[];
 }
 export interface Workplaces { repos: WorkplaceRepo[]; measuredAt: number; cacheMs: number }
 export interface DeployLand {

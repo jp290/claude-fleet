@@ -25,6 +25,7 @@
 // the live socket and the live port on import, before anything here can act.
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
+import { codexModelSupport, type CodexModelSupport } from "./model-register";
 import { AUTOS_TICK_MS, ROOT, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
 
 export async function checkPaneAgentAtFixtures(source: string, checkFixture: (name: string, ok: boolean, detail: string) => void): Promise<void> {
@@ -144,6 +145,139 @@ export async function checkPaneAgentAtFixtures(source: string, checkFixture: (na
 }
 
 await checkPaneAgentAtFixtures(readFileSync(`${ROOT}/server.ts`, "utf8"), check);
+
+export async function checkCodexSpawnFixtures(source: string,
+  checkFixture: (name: string, ok: boolean, detail: string) => void): Promise<void> {
+  const start = source.indexOf("async function openSlot(");
+  const end = source.indexOf("\n}\n", start);
+  if (start < 0 || end < 0) {
+    checkFixture("Codex spawn fixture precondition", false, "original openSlot absent");
+    return;
+  }
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end + 3));
+  const now = 1_000_000;
+  const cli = { binary: "fixture-binary", version: "0.153.4", observedAt: now, reason: null };
+  const cache = { fetched_at: new Date(now - 10).toISOString(), client_version: cli.version,
+    models: [{ slug: "fixture-present" }] };
+  const available = codexModelSupport(cache, "fixture-present", cli, true, now);
+  const unavailable = codexModelSupport(cache, "fixture-absent", cli, true, now);
+  const unknown = codexModelSupport(cache, "fixture-absent", cli, false, now);
+  type Fixture = { name: string; support: CodexModelSupport; race?: string; joined?: boolean; empty?: boolean; founding?: boolean };
+  const fixtures: Fixture[] = [
+    { name: "available", support: available },
+    { name: "unavailable", support: unavailable },
+    { name: "unknown-provider", support: unknown },
+    { name: "unknown-version", support: codexModelSupport({ ...cache, client_version: "0.1.0" }, "fixture-absent", cli, true, now) },
+    { name: "unknown-expired", support: codexModelSupport(cache, "fixture-absent", cli, true, now + 300_001) },
+    { name: "joined-own-teardown", support: available, joined: true },
+    ...["teardown", "spawn", "support", "kill", "observe", "latch", "history", "persist", "ensure"].map((race): Fixture =>
+      ({ name: `replaced-at-${race}`, support: available, race, empty: race === "observe", founding: race === "persist" })),
+  ];
+  for (const fixture of fixtures) {
+    const slot: Record<string, unknown> = { id: 17, cwd: fixture.empty ? null : "/old", openedAt: fixture.empty ? 0 : 10,
+      selfToken: "old-fixture-token", clients: new Set(), history: [] };
+    const effects: string[] = [];
+    const oldToken = slot.selfToken;
+    const foreign = { cwd: "/foreign", openedAt: 999, selfToken: "foreign-fixture-token" };
+    const barrier = async (name: string): Promise<void> => {
+      if (fixture.race === name) Object.assign(slot, foreign);
+    };
+    const maps = ["mergeVerdict", "laneReviewParked", "mergeInflight", "mergeStart", "aliveInfo", "paneModelInfo",
+      "gitOpInfo", "laneHunkInfo", "gitInfo", "repoInfo", "backlogNudgeTried", "inboxNudgeTried",
+      "harvest", "startCache", "mergeParked", "mergeLast"];
+    const scope: Record<string, unknown> = Object.fromEntries(maps.map((name) => [name, new Map()]));
+    const lease = fixture.founding ? { founding: { target: { openedAt: 20, selfTokenHash: "hash" } } } : null;
+    class Refusal extends Error { constructor(readonly modelSupport: CodexModelSupport) { super("catalog-excluded"); } }
+    Object.assign(scope, {
+      resolve: (p: string) => p, expandCwd: (p: string) => p, existsSync: () => true,
+      statSync: () => ({ isDirectory: () => true }),
+      slotTeardownInflight: new Map(fixture.joined ? [[17, { occupant: { openedAt: 10, selfToken: oldToken } }]] : []),
+      waitForSlotTeardown: async () => { if (fixture.joined) Object.assign(slot, { cwd: null, openedAt: 0 }); await barrier("teardown"); },
+      waitForSlotSpawn: () => barrier("spawn"), assertProgramFoundingTargetOpen: () => {},
+      repoCanon: (p: string) => p, assertGameMakerTreeOpen: () => {}, openSlotIntents: new Set(),
+      harnessOf: () => ({ id: "codex", allowsLanes: true, singleton: false }),
+      modelOf: () => ({ ok: true }), codexSpawnSupport: async () => { await barrier("support"); return fixture.support; },
+      CodexModelUnavailable: Refusal, SEPARATE_LANE_SLOTS: false, slots: [],
+      detachSlotTasks: () => effects.push("detach"), shares: [{ slot: 17, id: "fixture-share" }], closeShareClients: () => effects.push("share"),
+      slotStreamOccupant: () => slot.cwd ? { openedAt: slot.openedAt, selfToken: slot.selfToken } : null,
+      killSlot: async () => { effects.push("kill"); Object.assign(slot, { cwd: null, openedAt: 0 }); await barrier("kill"); },
+      observeTmuxSlots: async () => { await barrier("observe"); return {}; },
+      tmuxSlotObservation: () => ({ presence: "absent" }), waitForGameMakerOpenTestLatch: () => barrier("latch"),
+      hashSelfToken: () => "hash", randomBytes: () => ({ toString: () => "new-fixture-token" }),
+      autos: [], dropWatchesFor: () => {}, reapLaneSuiteOffersFor: () => {},
+      rm: () => barrier("history"), historyPath: () => "/fixture-history", recents: [], MAX_RECENTS: 10,
+      parkMergeVerdict: () => {}, audit: () => {}, saveState: () => {}, saveStateNow: () => barrier("persist"),
+      ensureSlot: async () => { effects.push("ensure"); await barrier("ensure"); },
+      NO_BOX: { container: null, containerContext: null }, singletonSpawn: new Set(),
+    });
+    try {
+      const open = new Function("scope", `with (scope) { ${code}; return openSlot; }`)(scope) as
+        (s: Record<string, unknown>, cwd: string, wt: null, model: string, label: null, harness: string,
+          effort: null, box: { container: null; containerContext: null }, treeLease: unknown) => Promise<CodexModelSupport | null>;
+      let result: CodexModelSupport | null = null;
+      let error: unknown = null;
+      try { result = await open(slot, "/new", null, fixture.support.model!, null, "codex", null,
+        { container: null, containerContext: null }, lease); } catch (caught) { error = caught; }
+      if (fixture.race) {
+        checkFixture(`Codex open occupant: ${fixture.name}`, error instanceof Error
+          && error.message === "slot occupant changed during open" && slot.cwd === foreign.cwd
+          && slot.openedAt === foreign.openedAt && slot.selfToken === foreign.selfToken,
+        `refused=${error instanceof Error ? error.message : "no"}; foreign occupant preserved=${slot.cwd === foreign.cwd}`);
+        if (["teardown", "spawn", "support"].includes(fixture.race))
+          checkFixture(`Codex open before teardown: ${fixture.name}`, effects.length === 0, `effects=${effects}`);
+      } else if (fixture.support.availability === "unavailable") {
+        checkFixture("Codex unavailable refuses before every teardown effect", error instanceof Refusal && effects.length === 0
+          && slot.cwd === "/old" && slot.openedAt === 10 && slot.selfToken === oldToken
+          && error.modelSupport.availability === "unavailable", `effects=${effects}`);
+      } else {
+        checkFixture(`Codex spawn: ${fixture.name}`, error === null && result?.availability === fixture.support.availability
+          && slot.cwd === "/new" && effects.includes("ensure"),
+        `availability=${result?.availability}; error=${error instanceof Error ? error.message : "none"}`);
+      }
+    } catch (error) {
+      checkFixture(`Codex spawn fixture execution: ${fixture.name}`, false, error instanceof Error ? error.message : "unknown");
+    }
+  }
+  const respawnAt = source.indexOf("async function respawnInPlace(");
+  const respawnEnd = source.indexOf("\n}\n", respawnAt);
+  const respawnCode = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(respawnAt, respawnEnd + 3));
+  for (const fixture of [{ name: "available", support: available }, { name: "unknown", support: unknown },
+    { name: "unavailable", support: unavailable }, { name: "replaced-during-support", support: unavailable }]) {
+    const slot = { cwd: "/old", openedAt: 10, selfToken: "old-fixture-token" };
+    const effects: string[] = [];
+    const scope = {
+      sameSuccessionOccupant: () => slot.openedAt === 10 && slot.selfToken === "old-fixture-token",
+      harnessOf: () => ({ id: "codex" }),
+      codexSpawnSupport: async () => {
+        if (fixture.name === "replaced-during-support") Object.assign(slot, { cwd: "/foreign", openedAt: 99, selfToken: "foreign" });
+        return fixture.support;
+      },
+      CodexModelUnavailable: class extends Error { constructor() { super("catalog-excluded"); } },
+      json: (value: unknown, status: number) => new Response(JSON.stringify(value), { status }),
+      slotTeardownInflight: new Map(), restarting: new Set(), killSlot: async () => { effects.push("kill"); },
+      SUCCESSION_RESPAWN_FAIL_LATCH: null, audit: () => {}, rebindLaneAnchors: () => {},
+    };
+    const respawn = new Function("scope", `with (scope) { ${respawnCode}; return respawnInPlace; }`)(scope) as
+      (s: unknown, predecessor: unknown, rail: string, stranded: unknown, target: unknown,
+        open: () => Promise<void>, onLost: () => Promise<void>) => Promise<{ ok: true } | { ok: false; response: Response }>;
+    const result = await respawn(slot, {}, "fixture", {}, { cwd: "/new", model: fixture.support.model, harness: "codex" },
+      async () => { effects.push("open"); }, async () => {});
+    if (fixture.name === "unavailable") {
+      const body: unknown = !result.ok ? await result.response.json() : null;
+      checkFixture("Codex succession refuses before teardown with typed model evidence", !result.ok && result.response.status === 400
+        && effects.length === 0 && slot.cwd === "/old" && !!body && typeof body === "object" && "modelSupport" in body
+        && JSON.stringify(body.modelSupport) === JSON.stringify(unavailable), `effects=${effects}`);
+    } else if (fixture.name === "replaced-during-support") {
+      checkFixture("Codex succession rechecks occupant after support await", !result.ok && result.response.status === 409
+        && effects.length === 0 && slot.cwd === "/foreign" && slot.openedAt === 99, `effects=${effects}`);
+    } else {
+      checkFixture(`Codex succession proceeds on ${fixture.name}`, result.ok && effects.join(",") === "kill,open", `effects=${effects}`);
+    }
+  }
+
+}
+
+await checkCodexSpawnFixtures(readFileSync(`${ROOT}/server.ts`, "utf8"), check);
 
 // server.ts's two send-boot constants, mirrored the way e2e/harness.ts mirrors AUTO_MIN_EVERY_SEC:
 // neither is env-exposed, and every fixture below is a statement ABOUT them, so a fixture that

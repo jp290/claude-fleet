@@ -4,7 +4,7 @@ import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:f
 import { constants as fsConstants, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
+import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
 import { makeModelScanTick, modelScanStateFrom, scanModels } from "./model-scan";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -1553,6 +1553,60 @@ function makeCodexCliObserver(
   };
 }
 const codexCliObserver = makeCodexCliObserver();
+
+function readCodexModelsCache(): unknown {
+  try {
+    return JSON.parse(readFileSync(resolve(process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), "models_cache.json"), "utf8"));
+  } catch { return null; }
+}
+function codexDefaultProviderBound(cwd: string): boolean {
+  if (Object.keys(process.env).some((name) => name !== "CODEX_HOME"
+    && (/^CODEX_.*(?:PROVIDER|PROFILE|CONFIG|MODEL|URL)/.test(name) || /^OPENAI_.*(?:PROVIDER|PROFILE|CONFIG|MODEL|URL)/.test(name)))) return false;
+  const configs: Record<string, unknown>[] = [];
+  for (const path of [resolve(process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), "config.toml"), resolve(cwd, ".codex/config.toml")]) {
+    try { configs.push(Bun.TOML.parse(readFileSync(path, "utf8")) as Record<string, unknown>); }
+    catch (error) {
+      if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") return false;
+    }
+  }
+  let profile: string | null = null;
+  for (const config of configs) {
+    if (config.model_provider !== undefined && config.model_provider !== "openai") return false;
+    if (config.profile !== undefined) {
+      if (typeof config.profile !== "string" || !config.profile) return false;
+      profile = config.profile;
+    }
+  }
+  if (profile !== null) {
+    let found = false;
+    for (const config of configs) {
+      const profiles = config.profiles;
+      if (profiles === undefined) continue;
+      if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) return false;
+      if (!(profile in profiles)) continue;
+      const active: unknown = (profiles as Record<string, unknown>)[profile];
+      if (!active || typeof active !== "object" || Array.isArray(active)) return false;
+      found = true;
+      if ("model_provider" in active && active.model_provider !== "openai") return false;
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+async function codexSpawnSupport(model: string | null, cwd: string): Promise<CodexModelSupport> {
+  await codexCliObserver.tick();
+  const cli = codexCliObserver.read();
+  if (resolveCodexCliBinary()?.identity !== cli.binary) {
+    cli.version = null;
+    cli.reason = "binary-changed";
+  }
+  return codexModelSupport(readCodexModelsCache(), model, cli, codexDefaultProviderBound(cwd));
+}
+class CodexModelUnavailable extends Error {
+  constructor(readonly modelSupport: CodexModelSupport) {
+    super("Codex model is unavailable in the fresh catalogue for the target CLI/default provider (catalog-excluded); the existing slot was preserved");
+  }
+}
 
 const CODEX_HARNESS: Harness = {
   id: "codex",
@@ -7817,7 +7871,7 @@ const releaseLaneLetter = (band: number, letter: string): void => {
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
   harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree",
   box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined, browser = false,
-  context: SlotContext | null = null): Promise<{ cwd: string; branch: string }> {
+  context: SlotContext | null = null): Promise<{ cwd: string; branch: string; modelSupport?: CodexModelSupport }> {
   const h = harnessOf(harness);
   if (SEPARATE_LANE_SLOTS && s.id <= BAND_SLOTS) throw new Error("lane requires a place above bands 1..16");
   if (SEPARATE_LANE_SLOTS && !s.cwd
@@ -7841,8 +7895,9 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   // tick: until the root has the ref, worktreeRisk and drift read a branch that is not there and
   // would report an absence as a fact about the lane.
   await syncLaneRefs(ref, wt.path);
+  let modelSupport: CodexModelSupport | null;
   try {
-    await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
+    modelSupport = await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
   } finally {
     releaseLaneLetter(letterBand, letter);
   }
@@ -7855,7 +7910,7 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
     : `⎇ ${basename(wt.repo)} ${wt.branch.split("-").pop() ?? ""}`.trimEnd().slice(0, MAX_LABEL);
   saveState();
   void tickGit().catch(() => {}); // badge should appear on the next sessions poll
-  return { cwd: s.cwd ?? wt.path, branch: wt.branch };
+  return { cwd: s.cwd ?? wt.path, branch: wt.branch, ...(modelSupport ? { modelSupport } : {}) };
 }
 
 async function retargetLaneBase(s: Slot, requested: string): Promise<
@@ -8217,11 +8272,24 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false, context: SlotContext | null = null, remote = false, webSearch = false): Promise<void> {
+  browser = false, context: SlotContext | null = null, remote = false, webSearch = false): Promise<CodexModelSupport | null> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
+  let expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
+  const pendingTeardown = slotTeardownInflight.get(s.id);
+  const assertOpenOccupant = (ended = false): void => {
+    if (s.cwd === expected.cwd && s.openedAt === expected.openedAt && s.selfToken === expected.selfToken) return;
+    if (ended && s.cwd === null && s.openedAt === 0 && s.selfToken === expected.selfToken) {
+      expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
+      return;
+    }
+    throw new Error("slot occupant changed during open");
+  };
   await waitForSlotTeardown(s.id);
+  assertOpenOccupant(!!pendingTeardown && pendingTeardown.occupant.openedAt === expected.openedAt
+    && pendingTeardown.occupant.selfToken === expected.selfToken);
   await waitForSlotSpawn(s.id);
+  assertOpenOccupant();
   assertProgramFoundingTargetOpen(s, treeLease);
   const gameMakerLease = treeLease?.profileKind === "game-maker" ? treeLease : null;
   const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: gameMakerLease };
@@ -8229,6 +8297,11 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   openSlotIntents.add(openIntent);
   try {
   const h = harnessOf(harness);
+  const selection = modelOf({ model }, h);
+  if (!selection.ok) throw new Error(selection.error);
+  const modelSupport = h.id === "codex" ? await codexSpawnSupport(model, cwd) : null;
+  assertOpenOccupant();
+  if (modelSupport?.availability === "unavailable") throw new CodexModelUnavailable(modelSupport);
   if (SEPARATE_LANE_SLOTS && (worktree
     ? s.id <= BAND_SLOTS && !(s.cwd && s.worktree?.branch === worktree.branch)
     : s.id > BAND_SLOTS))
@@ -8259,9 +8332,13 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // destroy a running session. Incident 2026-07-25: server-narrativ-archiv.md#openslot
   try {
     const priorStreamOccupant = slotStreamOccupant(s);
-    if (priorStreamOccupant) await killSlot(s, "reopen");
+    if (priorStreamOccupant) {
+      await killSlot(s, "reopen");
+      assertOpenOccupant(true);
+    }
     else {
       const observed = await observeTmuxSlots();
+      assertOpenOccupant();
       const priorPane = tmuxSlotObservation(observed, s.id);
       if (priorPane.presence === "unknown")
         throw new TmuxNewSessionUnavailable(`slot ${s.id} pane availability is unknown: ${observed.detail}`);
@@ -8269,6 +8346,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
         throw new Error(`slot ${s.id} pane unavailable for open: ${observed.detail}`);
     }
     await waitForGameMakerOpenTestLatch(treeLease);
+    assertOpenOccupant();
     // The awaits above are an owner-kill window: an exact pre-open kill may have durably removed
     // the marker after orphan teardown. Recheck before publishing
     // even one byte of the new occupant; the process-local lease alone is not durable authority.
@@ -8352,7 +8430,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   dropWatchesFor(s.id); // nor an inherited subscription, in either direction
   reapLaneSuiteOffersFor(s.id); // …nor an offer of a tree the previous occupant held
+  expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
   await rm(historyPath(s.id), { force: true });
+  assertOpenOccupant();
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   audit("slot_open", s.id, cwd);
   if (treeLease?.founding) {
@@ -8363,12 +8443,15 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
     // The marker was durable before open. This second barrier publishes the matching Slot row
     // before ensureSlot can create a pane, so restart sees either no candidate or one exact candidate.
     await saveStateNow();
+    assertOpenOccupant();
     assertProgramFoundingTargetOpen(s, treeLease);
     if (s.openedAt !== treeLease.founding.target.openedAt
       || hashSelfToken(s.selfToken) !== treeLease.founding.target.selfTokenHash)
       throw new GameMakerTreeConflict("Program-MAIN target identity changed during candidate persistence");
   } else saveState();
   await ensureSlot(s, "open");
+  assertOpenOccupant();
+  return modelSupport;
   } finally {
     openSlotIntents.delete(openIntent);
   }
@@ -10610,7 +10693,8 @@ type InPlaceRespawn = { ok: true } | { ok: false; response: Response };
 interface SuccessionStranded { brief: string; path: "succession" | "founding"; draft: LineageHandover | null;
   label: string | null }
 async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string,
-  stranded: SuccessionStranded, open: () => Promise<void>, onLost: (error: unknown) => Promise<void>,
+  stranded: SuccessionStranded, target: { cwd: string; model: string | null; harness: string | null },
+  open: () => Promise<unknown>, onLost: (error: unknown) => Promise<void>,
   // a refusal BEFORE the kill: the predecessor still stands, only the rail's own intent falls
   onRefused: () => Promise<void> = async () => {}): Promise<InPlaceRespawn> {
   // tmux stderr is not an API-safe diagnostic (unavailableFoundingResponse's rule): only the typed
@@ -10623,6 +10707,13 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   };
   if (!sameSuccessionOccupant(s, predecessor))
     return refused(json({ error: "predecessor session changed before the in-place respawn — retry from the current occupant" }, 409));
+  if (harnessOf(target.harness).id === "codex") {
+    const modelSupport = await codexSpawnSupport(target.model, target.cwd);
+    if (!sameSuccessionOccupant(s, predecessor))
+      return refused(json({ error: "predecessor changed during Codex support observation" }, 409));
+    if (modelSupport.availability === "unavailable")
+      return refused(json({ error: new CodexModelUnavailable(modelSupport).message, modelSupport }, 400));
+  }
   // ANOTHER ACT IS ALREADY ENDING THIS OCCUPANT (an owner kill, a restart). killSlot would wait for
   // that teardown and return as if it were ours, and the open below would then bring back a slot the
   // owner had just emptied. Asked synchronously right before the call, so nothing can slip between.
@@ -11702,6 +11793,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     try {
       const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
         { brief, path: "succession", draft, label },
+        { cwd: predecessor.cwd, model: spawn.model, harness },
         () => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box),
         async () => {});
       if (!respawned.ok) return respawned.response;
@@ -36071,6 +36163,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     try {
       const respawned = await respawnInPlace(s, predecessor, `program ${program.id}`,
         { brief: deliveredBrief, path: "founding", draft: null, label },
+        { cwd: openRoot, model: spawn.model, harness },
         () => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease),
         // the predecessor is gone and no successor stands: drop the marker (stopping an exact
         // candidate the open left behind), which also closes the ended holding as `retire`. The
@@ -43888,8 +43981,9 @@ Bun.serve<WSData>({
           // an attached lane is adopted without a parent — its band is 0, same reserve as every open
           const { band: attachLetterBand, letter: attachLetter } = reserveLaneLetter(null);
           const resumedAt = Date.now();
+          let modelSupport: CodexModelSupport | null;
           try {
-            await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
+            modelSupport = await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
               baseSha: attachSha ?? undefined, letter: attachLetter,
               ...(parked ? { resumedFrom: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
                 parkedAt: parked.parkedAt, resumedAt, verify: "stale" as const } } : {}) },
@@ -43924,6 +44018,7 @@ Bun.serve<WSData>({
           await saveStateNow(); // the rebound rows and the resume record are on disk before the answer
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch,
+            ...(modelSupport ? { modelSupport } : {}),
             ...(lanePo.packs !== null ? { packsDelivered: true } : {}),
             ...(parked ? { resumed: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
               taskIds: rebound, verify: "stale" } } : {}) });
@@ -43933,9 +44028,11 @@ Bun.serve<WSData>({
           ? await deliverFoundingPacks(free, laneFounding, laneChosen)
           : lanePo.packs !== null ? { packsDelivered: true } : null;
         return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form,
+          ...(r.modelSupport ? { modelSupport: r.modelSupport } : {}),
           ...(lanePacksResult ? lanePacksResult : {}) });
       } catch (e) {
-        return json({ error: e instanceof Error ? e.message : "lane failed" },
+        return json({ error: e instanceof Error ? e.message : "lane failed",
+          ...(e instanceof CodexModelUnavailable ? { modelSupport: e.modelSupport } : {}) },
           e instanceof GameMakerTreeConflict ? 409 : 400);
       } finally {
         laneSpawn.delete(free.id);
@@ -44578,10 +44675,7 @@ Bun.serve<WSData>({
     // the harness catalogue: STATIC, fetched once instead of per slot per poll. Without it the client
     // would hardcode a second copy of `supports` — exactly the drift the registry exists to prevent.
     if (url.pathname === "/api/harnesses" && req.method === "GET") {
-      let codexCache: unknown = null;
-      try {
-        codexCache = JSON.parse(readFileSync(resolve(process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), "models_cache.json"), "utf8"));
-      } catch { /* missing or unreadable sensor: availability remains unknown */ }
+      const codexCache = readCodexModelsCache();
       return json({
         harnesses: HARNESSES.map((h) => ({
           // `chat`: whether the conversation view (💬) has something to read — a Claude Code
@@ -45967,12 +46061,14 @@ Bun.serve<WSData>({
           founding = fp.value;
           chosen = pick.chosen;
         }
+        let modelSupport: CodexModelSupport | null = null;
         try {
-          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
+          modelSupport = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
             null, false, co.context, ro.remote);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed",
-            ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}) },
+            ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}),
+            ...(e instanceof CodexModelUnavailable ? { modelSupport: e.modelSupport } : {}) },
           e instanceof TmuxNewSessionUnavailable ? 503 : e instanceof GameMakerTreeConflict ? 409 : 400);
         }
         void tickGit().catch(() => {}); // refresh the badge now, not on the next 10s tick
@@ -45984,6 +46080,7 @@ Bun.serve<WSData>({
         const roleCard = isOrchestratorLabel(s.label) ? await deliverOrchestratorSpawnCard(s) : null;
         if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
         return json({ ok: true, cwd: s.cwd, label: s.label, ...(s.remote ? { remote: true } : {}), ...(roleCard ? { roleCard } : {}),
+          ...(modelSupport ? { modelSupport } : {}),
           ...(packsResult ? packsResult : {}),
           ...(adopted ? { successionDebt: { id: adopted.id, adopted: true,
             resend: `POST /api/succession-debts/${adopted.id}/resend` } } : {}) });
@@ -46032,9 +46129,11 @@ Bun.serve<WSData>({
           const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true, co.context);
           if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form,
+            ...(r.modelSupport ? { modelSupport: r.modelSupport } : {}),
             ...(packsResult ? packsResult : {}) });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed",
+            ...(e instanceof CodexModelUnavailable ? { modelSupport: e.modelSupport } : {}),
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}) },
           e instanceof TmuxNewSessionUnavailable ? 503 : e instanceof GameMakerTreeConflict ? 409 : 400);
         } finally {

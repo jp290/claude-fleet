@@ -67,7 +67,7 @@ import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 import { DraftBook } from "../src/drafts";
 import { fleetEventBundleText } from "../src/delivery-format";
 import { runningEffort, runningModel } from "../src/running";
-import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelEntry, modelsForHarness, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole } from "../model-register";
+import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, modelEntry, modelsForHarness, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole } from "../model-register";
 import { FLEET_DEFAULT_MODEL, WORKER_CONTRACTS } from "../src/protocol";
 import { modelLabel, modelWindow } from "../src/modelname";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
@@ -5015,10 +5015,19 @@ await import(pathToFileURL(process.argv[2]).href);
   // `[projects."…"]` table with `trust_level` — no `plugins`, no `mcp_servers`, no `enabled` key.
   const codeLines = server.split("\n").filter((l) => !l.trim().startsWith("//"));
   const settingsJson = codeLines.filter((l) => /settings\.json/.test(l));
-  const configToml = codeLines.filter((l) => /config\.toml/.test(l));
+  const providerReadAt = server.indexOf("function codexDefaultProviderBound(");
+  const providerReadEnd = server.indexOf("\n}\n", providerReadAt);
+  const providerRead = providerReadAt >= 0 && providerReadEnd > providerReadAt
+    ? server.slice(providerReadAt, providerReadEnd + 3) : "";
+  const configToml = server.replace(providerRead, "").split("\n")
+    .filter((l) => !l.trim().startsWith("//") && /config\.toml/.test(l));
+  pin("Codex provider config inspection is read-only and excludes credential files",
+    providerRead.includes('Bun.TOML.parse(readFileSync(path, "utf8"))')
+      && !/write|append|truncate|unlink|auth\.json|base_url|api_key|console|audit|json\(/i.test(providerRead),
+    "bounded TOML reader only");
   pin("Fleet writes no global plugin settings: no code line names ~/.claude/settings.json",
     settingsJson.length === 0, settingsJson.map((l) => l.trim().slice(0, 80)).join(" | "));
-  pin("Fleet writes no global plugin settings: the only config.toml code line is the codex trust prelude",
+  pin("Fleet writes no global plugin settings: the only config.toml writer is the codex trust prelude",
     configToml.length === 1 && /printf '\\n\[projects\."%s"\]\\ntrust_level = "trusted"\\n'/.test(configToml[0] ?? "")
     && !/plugins|mcp_servers|enabled/.test(configToml[0] ?? ""),
     configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
@@ -11451,6 +11460,76 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && codexAvailability(null, "gpt-6-sol") === "unknown"
       && codexAvailability({ models: [{}] }, "gpt-6-sol") === "unknown",
     "synthetic present, absent, missing and malformed cache");
+}
+
+{
+  const source = read("fleet-e2e-harness.ts");
+  const at = source.indexOf("export async function checkCodexSpawnFixtures(");
+  const end = source.indexOf("\n}\n", at);
+  pin("Codex spawn fixture source is bounded", at >= 0 && end > at, `start=${at} end=${end}`);
+  if (at >= 0 && end > at) {
+    const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(at, end + 3).replace("export ", ""));
+    const run = new Function("Bun", "codexModelSupport", `${code}; return checkCodexSpawnFixtures;`)(Bun, codexModelSupport) as
+      (source: string, check: typeof pin) => Promise<void>;
+    await run(server, pin);
+  }
+  const now = 1_000_000;
+  const cli = { binary: "fixture", version: "0.153.4", observedAt: now, reason: null };
+  const cache = { fetched_at: new Date(now - 100).toISOString(), client_version: cli.version, models: [{ slug: "fixture-model" }] };
+  const support = codexModelSupport(cache, "fixture-model", cli, true, now);
+  pin("Codex evidence separates register validity from measured CLI support and bounds metadata",
+    support.registerValid && !support.registered && support.availability === "available"
+      && support.cacheAgeMs === 100 && support.cliVersion === cli.version && support.binary === "fixture"
+      && support.observedAt === now - 100 && support.provider === "openai"
+      && support.reason === "catalog-listed" && support.source === "CODEX_HOME/models_cache.json",
+    JSON.stringify(support));
+  const invalid: [unknown, string][] = [
+    [null, "cache-missing-or-malformed"], [{ ...cache, models: [{}] }, "cache-missing-or-malformed"],
+    [{ ...cache, fetched_at: "bad" }, "cache-time-unproven"],
+    [{ ...cache, fetched_at: new Date(now + 1).toISOString() }, "cache-time-unproven"],
+    [{ ...cache, fetched_at: new Date(now - 300_001).toISOString() }, "cache-expired"],
+    [{ ...cache, client_version: "0.1.0" }, "cli-version-mismatch"],
+    [{ ...cache, identity: "opaque-do-not-emit" }, "provider-binding-unproven"],
+  ];
+  for (const [bad, reason] of invalid) {
+    const got = codexModelSupport(bad, "fixture-absent", cli, true, now);
+    pin(`Codex unknown evidence: ${reason}`, got.availability === "unknown" && got.reason === reason, JSON.stringify(got));
+  }
+  for (const changed of [{ ...cli, version: null }, { ...cli, binary: null }, { ...cli, observedAt: now - 60_001 },
+    { ...cli, reason: "binary-changed" }]) {
+    const got = codexModelSupport(cache, "fixture-absent", changed, true, now);
+    pin("Codex missing, stale or changed binary evidence stays unknown", got.availability === "unknown"
+      && got.reason === "cli-unproven", JSON.stringify(got));
+  }
+  const providerAt = server.indexOf("function codexDefaultProviderBound(");
+  const providerEnd = server.indexOf("\n}\n", providerAt);
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(server.slice(providerAt, providerEnd + 3));
+  const cases = [
+    { name: "missing configs use default", global: null, local: null, env: {}, want: true },
+    { name: "explicit default", global: 'model_provider = "openai"', local: null, env: {}, want: true },
+    { name: "foreign global provider", global: 'model_provider = "foreign"', local: null, env: {}, want: false },
+    { name: "foreign project provider", global: null, local: 'model_provider = "foreign"', env: {}, want: false },
+    { name: "active foreign profile", global: 'profile = "test"\n[profiles.test]\nmodel_provider = "foreign"', local: null, env: {}, want: false },
+    { name: "active default profile", global: 'profile = "test"\n[profiles.test]\nmodel_provider = "openai"', local: null, env: {}, want: true },
+    { name: "missing active profile", global: 'profile = "test"', local: null, env: {}, want: false },
+    { name: "malformed config", global: 'invalid [[', local: null, env: {}, want: false },
+    { name: "provider env override", global: null, local: null, env: { CODEX_MODEL_PROVIDER: "never-output-this" }, want: false },
+    { name: "endpoint env override", global: null, local: null, env: { OPENAI_BASE_URL: "never-output-this" }, want: false },
+  ];
+  for (const fixture of cases) {
+    const readConfig = (path: string): string => {
+      const content = path.startsWith("/spawn/") ? fixture.local : fixture.global;
+      if (content === null) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return content;
+    };
+    const bound = new Function("Bun", "process", "resolve", "homedir", "readFileSync",
+      `${code}; return codexDefaultProviderBound;`)(Bun, { env: fixture.env }, (...parts: string[]) => parts.join("/"),
+      () => "/home", readConfig) as (cwd: string) => boolean;
+    pin(`Codex provider binding: ${fixture.name}`, bound("/spawn") === fixture.want, `expected=${fixture.want}`);
+  }
+  const client = read("src/client.ts");
+  pin("Codex spawn refusal reaches existing client error display", client.includes('onError(j.error ?? `the server answered ${res.status}`)'),
+    "existing open error renderer");
 }
 
 {

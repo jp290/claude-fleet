@@ -96,6 +96,52 @@ export function codexAvailability(cache: unknown, id: string): ModelAvailability
   return cache.models.some((model: { slug: string }) => model.slug === id) ? "available" : "unavailable";
 }
 
+export const CODEX_MODEL_CACHE_MAX_AGE_MS = 300_000;
+export interface CodexModelSupport {
+  model: string | null;
+  registerValid: true;
+  registered: boolean;
+  availability: ModelAvailability;
+  source: "CODEX_HOME/models_cache.json";
+  observedAt: number | null;
+  cacheAgeMs: number | null;
+  maxAgeMs: number;
+  cliVersion: string | null;
+  binary: string | null;
+  cliObservedAt: number | null;
+  provider: "openai" | null;
+  reason: "model-unspecified" | "cache-missing-or-malformed" | "cache-time-unproven" | "cache-expired"
+    | "cli-unproven" | "cli-version-mismatch" | "provider-binding-unproven" | "catalog-listed" | "catalog-excluded";
+}
+export function codexModelSupport(cache: unknown, id: string | null,
+  cli: { binary: string | null; version: string | null; observedAt: number | null; reason: string | null },
+  providerBound: boolean, now = Date.now()): CodexModelSupport {
+  const fetched = cache && typeof cache === "object" && "fetched_at" in cache && typeof cache.fetched_at === "string"
+    ? Date.parse(cache.fetched_at) : NaN;
+  const observedAt = Number.isFinite(fetched) ? fetched : null;
+  const age = observedAt === null ? null : now - observedAt;
+  const base: CodexModelSupport = {
+    model: id, registerValid: true, registered: id !== null && !!modelEntry("codex", id), availability: "unknown",
+    source: "CODEX_HOME/models_cache.json", observedAt, cacheAgeMs: age,
+    maxAgeMs: CODEX_MODEL_CACHE_MAX_AGE_MS, cliVersion: cli.version, binary: cli.binary,
+    cliObservedAt: cli.observedAt, provider: providerBound ? "openai" : null, reason: "cache-missing-or-malformed",
+  };
+  const unknown = (reason: CodexModelSupport["reason"]): CodexModelSupport => ({ ...base, reason });
+  if (id === null) return unknown("model-unspecified");
+  const availability = codexAvailability(cache, id);
+  if (availability === "unknown") return unknown("cache-missing-or-malformed");
+  if (age === null || age < 0) return unknown("cache-time-unproven");
+  // Freshness is measured from the catalogue fetch clock, never file mtime or the server's read.
+  if (age > CODEX_MODEL_CACHE_MAX_AGE_MS) return unknown("cache-expired");
+  if (!cli.binary || !cli.version || cli.reason !== null || cli.observedAt === null
+    || now - cli.observedAt < 0 || now - cli.observedAt > 60_000) return unknown("cli-unproven");
+  if (!cache || typeof cache !== "object" || !("client_version" in cache) || cache.client_version !== cli.version)
+    return unknown("cli-version-mismatch");
+  if (!providerBound || ("identity" in cache && cache.identity !== undefined && cache.identity !== null))
+    return unknown("provider-binding-unproven");
+  return { ...base, availability, reason: availability === "available" ? "catalog-listed" : "catalog-excluded" };
+}
+
 export function resolveWorkerModel(role: ModelRole, envModel?: string, envEffort?: string) {
   const fallback = MODEL_DEFAULTS[role];
   const entry = envModel ? modelEntry(fallback.harness, envModel) : undefined;

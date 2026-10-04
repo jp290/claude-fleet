@@ -678,53 +678,58 @@ const watchdog = read("watchdog.sh");
 const server = serverU.text;
 
 {
-  // THREE FleetEvent kinds carry no Watch, and the third joined them for a different reason than
-  // the first two: a clarification and a fleet-report are ASKED for, while a `lane-suite` verdict
-  // reaches a lane that COULD NOT have subscribed (/api/self/watch answers a lane 409). Keep both
-  // directions of that persisted discriminant coupled: accepting null on any Watch-backed kind
-  // loses provenance, while requiring a string on any of the three invents a Watch that does not
-  // exist — and THAT direction is not hypothetical, it dropped both preview rows at every boot
-  // until e2e/lane-suite.ts (LS.9) measured a restart.
+  // Watchless kinds require null; Watch-backed kinds require a valid id. Command jobs are the
+  // mixed exception: a subscriber's Watch or the offering lane's automatic verdict may mint them.
+  // Requiring a Watch for the latter loses the persisted event at boot, as the preview rail's
+  // earlier failure and the command-job restart checks both measured.
   // CUT THROUGH THE UNIVERSE'S span(), not through two bare indexOf calls on the joined text:
   // once the parser lives in `server/persist.ts` and its terminator in the core, a raw slice
   // between them would hand this rule a body spanning half the server — and a body that big makes
   // every `includes` below true. `null` is the honest answer to a missing anchor, and it FAILS.
   const parserSpan = serverU.span("function fleetEventFrom(", "function clarificationFrom(");
   const mintSpan = serverU.span("async function openClarification(", "async function replyClarification(");
-  const parser = parserSpan?.text ?? "";
-  const mint = mintSpan?.text ?? "";
+  const executable = (source: string): string => source.split("\n")
+    .filter((line) => !/^\s*\/\//.test(line)).join("\n");
+  const parser = executable(parserSpan?.text ?? "");
+  const mint = executable(mintSpan?.text ?? "");
   const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"\n'
     + '    || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review"\n'
     + '    || e.kind === "succession-debt" || e.kind === "message";';
+  const mixedCommandBinding = 'const watchBindingValid = e.kind === "command-job" || watchless === (e.watchId === null);';
   const watchlessEquivalence = parser.includes(watchlessKinds)
-    && parser.includes('    || (watchless !== (e.watchId === null))\n'
+    && parser.split(mixedCommandBinding).length - 1 === 1
+    && parser.includes('    || !(e.watchId === null || (typeof e.watchId === "string" && /^[a-z0-9]+$/.test(e.watchId)))')
+    && parser.includes('    || !watchBindingValid\n'
       + "    || !(ownerReceiver || (Number.isInteger(e.receiverSlot)");
   const nullMints = (mint.match(/watchId: null/g) ?? []).length;
+  const commandNullMints = (executable(serverU.span("async function mintCommandJobEvents(",
+    "// The main-session succession rail.")?.text ?? "").match(/watchId: null/g) ?? []).length;
   const missingAnchor = [parserSpan === null ? "fleetEventFrom" : "", mintSpan === null ? "openClarification" : ""]
     .filter(Boolean);
-  pin("FleetEvent watchId is null exactly for clarification-request, fleet-report, lane-suite, harness-block, lane-review, succession-debt and message, and a string for every Watch event",
+  pin("FleetEvent watchId is null for the watchless kinds, a valid string for Watch events, and either only for the mixed command-job kind",
     missingAnchor.length === 0
       && /watchId: string \| null/.test(server)
       && watchlessEquivalence
       && mint.includes("const event: ClarificationFleetEvent")
       && mint.includes("const event: FleetReportFleetEvent")
       && nullMints === 2
+      && commandNullMints === 1
       // the third watchless mint lives in its own function and is counted there rather than
       // widened into `mint`'s span: one `watchId: null`, shared by both rows it can produce.
-      && (serverU.span("async function mintLaneSuiteEvents(", "// THE OPEN RED PREVIEWS")?.text
+      && (executable(serverU.span("async function mintLaneSuiteEvents(", "// THE OPEN RED PREVIEWS")?.text ?? "")
         .match(/watchId: null/g) ?? []).length === 1
       // …and the fourth in openHarnessBlock, the one row a lane's hook mints for itself
-      && (serverU.span("async function openHarnessBlock(", "async function openClarification(")?.text
+      && (executable(serverU.span("async function openHarnessBlock(", "async function openClarification(")?.text ?? "")
         .match(/watchId: null/g) ?? []).length === 1
       // …and the fifth in fileLaneReview, the verdict a task row asked for (Task.review)
-      && (serverU.span("async function fileLaneReview(", "// --- THE AUTOMATIC LANE CLOSE")?.text
+      && (executable(serverU.span("async function fileLaneReview(", "// --- THE AUTOMATIC LANE CLOSE")?.text ?? "")
         .match(/watchId: null/g) ?? []).length === 1
-      && (serverU.span("async function sendMessageFor(", "// POST /api/self/messages/:id/read")?.text
+      && (executable(serverU.span("async function sendMessageFor(", "// POST /api/self/messages/:id/read")?.text ?? "")
         .match(/watchId: null/g) ?? []).length === 1
       && (server.match(/watchId: w\.id/g) ?? []).length >= 4,
     missingAnchor.length > 0
       ? `anchor not found in the server universe: ${missingAnchor.join(", ")}`
-      : `equivalence=${watchlessEquivalence} nullMints=${nullMints} in=${parserSpan!.file}/${mintSpan!.file}`);
+      : `equivalence=${watchlessEquivalence} nullMints=${nullMints} commandNullMints=${commandNullMints} in=${parserSpan!.file}/${mintSpan!.file}`);
 
   // The reply's truth boundary is tmux acceptance. Any answered assignment before sendText would
   // recreate the original bug: an API success/terminal row while the worker never got the text.

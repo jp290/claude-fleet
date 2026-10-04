@@ -8488,20 +8488,29 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
     // RESUME when the harness's own conversation evidence still exists (transcript .jsonl, pi's
     // create-or-attach id, codex's exact rollout file) — asking claude's question of another
     // harness loses work. Narrativ: server-narrativ-archiv.md#ensureslot
-    if (s.worktree && !existsSync(`${occupant.cwd}/AGENTS.override.md`)) {
-      const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
+    let projectDocMaxBytes: number | undefined;
+    try {
+      if (s.worktree && !existsSync(`${occupant.cwd}/AGENTS.override.md`)) {
+        const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
+        if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+        if (!planned.ok) throw new Error(planned.error);
+        const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
+        if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
+        const agents = await foundingSessionAgents({ ...planned.value, repoRoot: occupant.cwd, head: head.out },
+          occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver)}\n\n${memoryPointer("lane")}`);
+        if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+        await writeLaneSessionAgents(occupant.cwd, agents);
+        if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+      }
+      const projectBytes = s.worktree ? Buffer.byteLength(readFileSync(`${occupant.cwd}/AGENTS.override.md`)) : 0;
+      projectDocMaxBytes = s.worktree && projectBytes > SESSION_AGENTS_LIMIT ? projectBytes : undefined;
+    } catch (e) {
       if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
-      if (!planned.ok) throw new Error(planned.error);
-      const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
-      if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
-      const agents = await foundingSessionAgents({ ...planned.value, repoRoot: occupant.cwd, head: head.out },
-        occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver)}\n\n${memoryPointer("lane")}`);
-      if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
-      await writeLaneSessionAgents(occupant.cwd, agents);
-      if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(`slot ${s.id}: session rules unavailable; spawn refused (${cause}): ${message}`);
+      if (cause !== "heal") throw new Error(`session rules unavailable: ${message}`);
+      return;
     }
-    const projectBytes = s.worktree ? Buffer.byteLength(readFileSync(`${occupant.cwd}/AGENTS.override.md`)) : 0;
-    const projectDocMaxBytes = s.worktree && projectBytes > SESSION_AGENTS_LIMIT ? projectBytes : undefined;
     const codex = h.id === "codex";
     const priorSessionId = occupant.sessionId;
     const priorCodexState = s.codexRecoveryState;

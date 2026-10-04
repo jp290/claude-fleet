@@ -606,6 +606,31 @@ export async function run(lc: LaneCtx): Promise<void> {
       rmSync(stateDir, { recursive: true, force: true });
     }
   }
+  {
+    const lane = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string };
+    const pointer = `${lane.cwd}/.git`, original = readFileSync(pointer);
+    await stopSrv();
+    await tmuxOut("kill-session", "-t", `=s${lane.slot}`);
+    rmSync(`${lane.cwd}/AGENTS.override.md`);
+    rmSync(`${lane.cwd}/CLAUDE.local.md`);
+    writeFileSync(pointer, `gitdir: ${ROOT}/native-missing-git\n`);
+    const before = readFileSync(`${ROOT}/server.log`).length;
+    try {
+      const unreadable = spawnSync("git", ["-C", lane.cwd, "rev-parse", "HEAD"], { encoding: "utf8" });
+      check("native rules restart fixture has an unreadable lane HEAD", unreadable.status !== 0, unreadable.stderr.trim());
+      await restartSrv();
+      const api = await get("/api/sessions"), pane = await tmuxOut("has-session", "-t", `=s${lane.slot}`);
+      const log = readFileSync(`${ROOT}/server.log`).subarray(before).toString("utf8");
+      check("native rules restart keeps the server available and names the failed slot", api.ok
+        && log.includes(`slot ${lane.slot}: session rules unavailable`)
+        && log.includes("could not read lane HEAD for session rules"), `HTTP ${api.status}; named failure=${log.includes(`slot ${lane.slot}: session rules unavailable`)}`);
+      check("native rules restart refuses a lane spawn without its rules", pane.code !== 0
+        && !existsSync(`${lane.cwd}/AGENTS.override.md`) && !existsSync(`${lane.cwd}/CLAUDE.local.md`), `pane=${pane.code}`);
+    } finally {
+      writeFileSync(pointer, original);
+      await post(`/api/slots/${lane.slot}/kill`, {}).catch(() => undefined);
+    }
+  }
   const emptyBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   for (const harness of ["claude", "codex", "pi", "pi-zai"] as const) {
     const lane = harness === "claude" ? emptyBranch

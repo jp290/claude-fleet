@@ -16,7 +16,8 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { check, IP, PORT, ROOT, SOCK } from "./harness";
+import { createServer } from "node:net";
+import { check, IP, ROOT, SOCK } from "./harness";
 
 const TMP = process.env.TMPDIR ?? "/tmp";
 const FIX = `${TMP}/fleet-e2e-snapshot-${process.pid}`;
@@ -44,26 +45,61 @@ function stage(name: string): string {
 }
 
 // `dir` given = a REBOOT of an instance already staged there (its state and ledgers stay)
-async function boot(name: string, off: number, snapMs: string, rotateBytes = ROTATE_BYTES, dir = stage(name)): Promise<Instance> {
-  const port = PORT + off;
+async function boot(name: string, off: number, snapMs: string, rotateBytes = ROTATE_BYTES, dir = stage(name)): Promise<Instance | null> {
+  const probe = createServer();
+  const port = await new Promise<number>((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(0, IP, () => {
+      const address = probe.address();
+      probe.close((err) => {
+        if (err) reject(err);
+        else if (address && typeof address !== "string") resolve(address.port);
+        else reject(new Error("bind probe returned no port"));
+      });
+    });
+  });
   const sock = `${SOCK}snap${off}`;
+  const identity = `snapshot-${randomBytes(12).toString("hex")}`;
   let out = "";
   const proc = Bun.spawn(["bun", "server.ts"], {
     cwd: dir, stdout: "pipe", stderr: "pipe",
-    env: { ...process.env, FLEET_HOST: IP, FLEET_PORT: String(port), FLEET_SOCK: sock, FLEET_TOKEN: TOKEN,
+    env: { ...process.env, FLEET_HOST: IP, FLEET_PORT: String(port), FLEET_SOCK: sock, FLEET_TOKEN: TOKEN, FLEET_INSTANCE: identity,
       FLEET_CMD: "true", FLEET_AUTO_REVIEW_MS: "0", FLEET_STATE_SNAPSHOT_MS: snapMs,
       FLEET_AUDIT_ROTATE_BYTES: String(rotateBytes) },
   });
   const drain = async (s: ReadableStream<Uint8Array>) => { for await (const c of s) out += new TextDecoder().decode(c); };
-  void drain(proc.stdout as ReadableStream<Uint8Array>);
-  void drain(proc.stderr as ReadableStream<Uint8Array>);
-  for (let i = 0; i < 150; i++) {
-    const ok = await fetch(`http://${IP}:${port}/api/sessions`, { headers: { authorization: `Bearer ${TOKEN}` } })
-      .then((r) => r.ok, () => false);
-    if (ok) break;
+  const drained = Promise.all([drain(proc.stdout as ReadableStream<Uint8Array>), drain(proc.stderr as ReadableStream<Uint8Array>)]);
+  const instance = { dir, port, sock, proc, log: () => out };
+  let reason = "readiness timed out after 15000 ms";
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      reason = `process exited (code=${proc.exitCode}, signal=${proc.signalCode})`;
+      break;
+    }
+    const response = await fetch(`http://${IP}:${port}/api/sessions`, {
+      headers: { authorization: `Bearer ${TOKEN}` }, signal: AbortSignal.timeout(1000),
+    }).catch(() => null);
+    if (response) {
+      const body: unknown = await response.json().catch(() => null);
+      const own = response.ok && body !== null && typeof body === "object" && "instance" in body
+        && body.instance !== null && typeof body.instance === "object" && "name" in body.instance
+        && body.instance.name === identity;
+      if (own && proc.exitCode === null && proc.signalCode === null) {
+        check(`state snapshot setup (${name}): fixture server started`, true);
+        return instance;
+      }
+      reason = own ? "fixture process exited while answering" : `foreign server answered HTTP ${response.status} or instance identity differed`;
+      break;
+    }
     await Bun.sleep(100);
   }
-  return { dir, port, sock, proc, log: () => out };
+  await reap(instance);
+  await drained;
+  const lines = out.trim().split("\n").filter(Boolean);
+  const cause = lines.findLast((line) => /EADDRINUSE|REFUSING TO START|error:|Error:/.test(line)) ?? lines.at(-1) ?? "no server log output";
+  check(`state snapshot setup (${name}): fixture server did not start: ${reason}; ${cause.replaceAll(TOKEN, "<token>")}`, false);
+  return null;
 }
 
 // `keepPanes`: stop the server only, as a deploy does — the lanes' panes survive for the reboot
@@ -115,6 +151,7 @@ export async function run(): Promise<void> {
   spawnSync("sh", ["-c", "git init -q -b main && git add a.txt && git -c user.email=e2e@x -c user.name=e2e commit -qm init"], { cwd: repo });
 
   const on = await boot("on", 23, String(SNAP_MS));
+  if (!on) { rmSync(FIX, { recursive: true, force: true }); return; }
   try {
     const H = { "content-type": "application/json", authorization: `Bearer ${TOKEN}` };
     const base = `http://${IP}:${on.port}`;
@@ -177,6 +214,7 @@ export async function run(): Promise<void> {
 
   // §e — 0 registers no tick
   const off = await boot("off", 24, "0");
+  if (!off) { rmSync(FIX, { recursive: true, force: true }); return; }
   try {
     check("state snapshot: FLEET_STATE_SNAPSHOT_MS=0 boots with the 'off' line",
       off.log().includes("[fleet] state snapshot off (FLEET_STATE_SNAPSHOT_MS=0) — no tick registered"), off.log().slice(-400));
@@ -211,7 +249,9 @@ async function observations(repo: string): Promise<void> {
     lanes: [1, 2, 3].map((n) => ({ s: n, alive: true, idleS: 5, ahead: 0, dirty: false, merge: null })),
     rep: { open: 0 }, att: { open: 0 }, clar: { open: 0 }, ev: { held: 0, undelivered: 0 }, programs: { active: 0 } })).join("\n") + "\n";
   writeFileSync(`${dir}/${LEDGER}`, legacy, { mode: 0o600 });
-  let inst = await boot("obs", 26, String(SNAP_MS), 50_000_000, dir);
+  const initial = await boot("obs", 26, String(SNAP_MS), 50_000_000, dir);
+  if (!initial) return;
+  let inst = initial;
   const base = () => `http://${IP}:${inst.port}`;
   const H = { "content-type": "application/json", authorization: `Bearer ${TOKEN}` };
   const post = (path: string, body: unknown) => fetch(base() + path, { method: "POST", headers: H, body: JSON.stringify(body) });
@@ -302,7 +342,9 @@ async function observations(repo: string): Promise<void> {
     // observed quiet phase — the samples say so, and the reader turns them into activity unknown
     const boot1 = rows(dir).at(-1)?.bootEpoch;
     await reap(inst, true);
-    inst = await boot("obs", 26, String(SNAP_MS), 50_000_000, dir);
+    const rebootedInstance = await boot("obs", 26, String(SNAP_MS), 50_000_000, dir);
+    if (!rebootedInstance) return;
+    inst = rebootedInstance;
     const rebooted = await until(() => rows(dir).some((r) => r.bootEpoch !== boot1 && r.lanes.some((l) => l.taskId === T2)), 5000);
     const r3 = await read(L2.tok);
     const post3 = r3.all.filter((x) => x.bootEpoch !== boot1);

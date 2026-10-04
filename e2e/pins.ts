@@ -24,7 +24,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import {
   FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_AUDIENCES, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
   RULEBOOK_BACKREF_HEADING,
@@ -676,6 +676,24 @@ const watchdog = read("watchdog.sh");
 // below now searches and counts across `server.ts` + `server/*.ts`, so an "and nowhere else" row
 // keeps its meaning after the split instead of going vacuum-green on a moved subject.
 const server = serverU.text;
+
+{
+  const harness = read("fleet-e2e-harness.ts");
+  const start = harness.indexOf("export async function checkPaneAgentAtFixtures(");
+  const end = harness.indexOf("\nawait checkPaneAgentAtFixtures(", start);
+  pin("paneAgentAt original-function fixtures are shared with the isolated harness",
+    start >= 0 && end > start, `start=${start} end=${end}`);
+  if (start >= 0 && end > start) {
+    try {
+      const code = new Bun.Transpiler({ loader: "ts" }).transformSync(harness.slice(start, end).replace(/^export /, ""));
+      const run = new Function("Bun", "Response", "basename", code + "\nreturn checkPaneAgentAtFixtures;")(Bun, Response, basename) as
+        (source: string, checkFixture: typeof pin) => Promise<void>;
+      await run(serverU.module("server.ts"), pin);
+    } catch (error) {
+      pin("paneAgentAt original-function fixture runner executes", false, error instanceof Error ? error.message : "unknown error");
+    }
+  }
+}
 
 {
   // Watchless kinds require null; Watch-backed kinds require a valid id. Command jobs are the

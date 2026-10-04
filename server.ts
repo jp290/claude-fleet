@@ -1,6 +1,6 @@
 import { historySource } from "./src/drafts";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
-import { stat, rm, readdir, appendFile, mkdtemp, access } from "node:fs/promises";
+import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -1525,10 +1525,10 @@ const CODEX_HARNESS: Harness = {
   // discovery seam binds the id from Codex's rollout after the first prompt; only then may the
   // resume form above receive it. `--last` is never used: recency is not slot identity.
   pinsSession: false,
-  // MEASURED, and this is the one field a reader will want to argue with. The process tree is
-  // `zsh → node (bin/codex.js) → <native codex>`, and the native child's comm is the FULL vendor
-  // path (…/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex). paneAgentAt takes the
-  // basename, but it walks the pane pid and its DIRECT children only — so on a slot the native
+  // The process tree is `shell → node (bin/codex.js) → <native codex>`. On macOS, ps comm
+  // supplies a path whose basename identifies the process; on Linux, the node wrapper can rename
+  // its comm to MainThread, so paneAgentAt also reads the basename of /proc/<pid>/exe.
+  // The probe walks the pane pid and its DIRECT children only — so on a slot the native
   // binary sits on depth 2 and is out of reach. `["codex"]` alone would therefore report a
   // perfectly healthy Codex pane as `no-agent`: exactly the defect 4955444 repaired for Pi, and it
   // would be re-introduced here by a comms list that reads right.
@@ -9859,18 +9859,26 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
   const p = await tmux("display-message", "-p", "-t", exact, "#{pane_pid}");
   const panePid = Number(p.out);
   if (!panePid) return "no-pane";
-  const commOf = async (pid: string): Promise<string> => {
+  const isAgent = (comm: string) => comms.some((c) => comm.startsWith(c));
+  const agentAt = async (pid: string): Promise<boolean> => {
     const c = Bun.spawn(["ps", "-o", "comm=", "-p", pid], { stdout: "pipe" });
     const out = (await new Response(c.stdout).text()).trim();
-    await c.exited;
-    return out.split("/").pop() ?? "";
+    if (await c.exited !== 0 || !out) return false;
+    const comm = basename(out);
+    if (process.platform !== "linux") return isAgent(comm);
+    // A failed executable measurement (including a PID that vanished after ps) cannot prove life.
+    try {
+      const exe = basename(await readlink(`/proc/${pid}/exe`));
+      return isAgent(comm) || isAgent(exe);
+    } catch {
+      return false;
+    }
   };
-  const isAgent = (comm: string) => comms.some((c) => comm.startsWith(c));
-  if (isAgent(await commOf(String(panePid)))) return "alive";
+  if (await agentAt(String(panePid))) return "alive";
   const pg = Bun.spawn(["pgrep", "-P", String(panePid)], { stdout: "pipe" });
   const kids = (await new Response(pg.stdout).text()).split("\n").filter(Boolean);
   await pg.exited;
-  for (const pid of kids) if (isAgent(await commOf(pid))) return "alive";
+  for (const pid of kids) if (await agentAt(pid)) return "alive";
   return "no-agent";
 }
 

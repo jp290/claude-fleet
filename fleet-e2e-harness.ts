@@ -24,7 +24,126 @@
 // Run via ./e2e-claude-gate.sh. Do not run directly against a live fleet — e2e/harness.ts refuses
 // the live socket and the live port on import, before anything here can act.
 import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { AUTOS_TICK_MS, ROOT, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
+
+export async function checkPaneAgentAtFixtures(source: string, checkFixture: (name: string, ok: boolean, detail: string) => void): Promise<void> {
+  const start = source.indexOf("async function paneAgentAt(");
+  const end = source.indexOf("\n}\n", start);
+  if (start < 0 || end < 0) {
+    checkFixture("paneAgentAt fixture precondition: original function is bounded", false, "source function absent");
+    return;
+  }
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end + 3));
+  type ProbeState = "alive" | "no-agent" | "no-pane" | "unprobed";
+  type ProcessFixture = { comm: string; exe?: string; exeError?: "ENOENT" | "EACCES"; code?: number };
+  type Fixture = {
+    name: string; platform: "linux" | "darwin"; processes: Record<string, ProcessFixture>;
+    children?: string[]; panePid?: string; target?: string; comms?: string[];
+    want: ProbeState; exePids: string[]; commPids: string[];
+  };
+  const shell = { comm: "sh", exe: "/bin/sh" };
+  const fixtures: Fixture[] = [
+    { name: "Linux node-MainThread wrapper above native codex", platform: "linux",
+      processes: { "100": shell, "101": { comm: "MainThread", exe: "/test/bin/node" },
+        "102": { comm: "codex", exe: "/test/bin/codex" } }, children: ["101"],
+      want: "alive", exePids: ["100", "101"], commPids: ["100", "101"] },
+    { name: "Linux node-MainThread as pane process", platform: "linux",
+      processes: { "100": { comm: "MainThread", exe: "/test/bin/node" } }, target: "%17",
+      want: "alive", exePids: ["100"], commPids: ["100"] },
+    { name: "Linux direct codex", platform: "linux",
+      processes: { "100": { comm: "codex", exe: "/test/bin/codex" } },
+      want: "alive", exePids: ["100"], commPids: ["100"] },
+    { name: "Linux renamed native codex child", platform: "linux",
+      processes: { "100": shell, "101": { comm: "MainThread", exe: "/test/bin/codex" } }, children: ["101"],
+      want: "alive", exePids: ["100", "101"], commPids: ["100", "101"] },
+    { name: "Linux foreign MainThread executable", platform: "linux",
+      processes: { "100": shell, "101": { comm: "MainThread", exe: "/test/bin/foreign" } }, children: ["101"],
+      want: "no-agent", exePids: ["100", "101"], commPids: ["100", "101"] },
+    { name: "Linux codex grandchild behind foreign MainThread stays out of scope", platform: "linux",
+      processes: { "100": shell, "101": { comm: "MainThread", exe: "/test/bin/foreign" },
+        "102": { comm: "codex", exe: "/test/bin/codex" } }, children: ["101"],
+      want: "no-agent", exePids: ["100", "101"], commPids: ["100", "101"] },
+    { name: "Linux PID vanishes between ps and exe despite matching comm", platform: "linux",
+      processes: { "100": shell, "101": { comm: "codex", exeError: "ENOENT" } }, children: ["101"],
+      want: "no-agent", exePids: ["100", "101"], commPids: ["100", "101"] },
+    { name: "Linux unreadable MainThread executable", platform: "linux",
+      processes: { "100": shell, "101": { comm: "MainThread", exeError: "EACCES" } }, children: ["101"],
+      want: "no-agent", exePids: ["100", "101"], commPids: ["100", "101"] },
+    { name: "Linux unreadable executable despite matching node comm", platform: "linux",
+      processes: { "100": { comm: "node", exeError: "EACCES" } },
+      want: "no-agent", exePids: ["100"], commPids: ["100"] },
+    { name: "Linux PID gone before ps", platform: "linux", processes: { "100": shell }, children: ["101"],
+      want: "no-agent", exePids: ["100"], commPids: ["100", "101"] },
+    { name: "Linux failed ps with stale matching output", platform: "linux",
+      processes: { "100": { comm: "codex", exe: "/test/bin/codex", code: 1 } },
+      want: "no-agent", exePids: [], commPids: ["100"] },
+    { name: "macOS node wrapper path", platform: "darwin",
+      processes: { "100": { comm: "/bin/zsh" }, "101": { comm: "/test/bin/node" } }, children: ["101"],
+      want: "alive", exePids: [], commPids: ["100", "101"] },
+    { name: "macOS direct native codex path", platform: "darwin",
+      processes: { "100": { comm: "/test/native/bin/codex" } },
+      want: "alive", exePids: [], commPids: ["100"] },
+    { name: "macOS foreign MainThread", platform: "darwin", processes: { "100": { comm: "MainThread" } },
+      want: "no-agent", exePids: [], commPids: ["100"] },
+    { name: "absent pane", platform: "linux", processes: {}, panePid: "",
+      want: "no-pane", exePids: [], commPids: [] },
+    { name: "undeclared harness", platform: "linux", processes: {}, comms: [],
+      want: "unprobed", exePids: [], commPids: [] },
+  ];
+  for (const fixture of fixtures) {
+    const commPids: string[] = [];
+    const exePids: string[] = [];
+    const tmuxCalls: string[][] = [];
+    const parentPids: string[] = [];
+    const spawn = (argv: string[]) => {
+      let out: string;
+      let status: number;
+      if (argv[0] === "ps" && argv.length === 5 && argv[1] === "-o" && argv[2] === "comm=" && argv[3] === "-p") {
+        const pid = argv[4]!;
+        commPids.push(pid);
+        const proc = fixture.processes[pid];
+        out = proc?.comm ?? "";
+        status = proc?.code ?? (proc ? 0 : 1);
+      } else if (argv[0] === "pgrep" && argv.length === 3 && argv[1] === "-P" && argv[2] === "100") {
+        parentPids.push(argv[2]);
+        out = (fixture.children ?? []).join("\n");
+        status = out ? 0 : 1;
+      } else throw new Error("probe issued an unexpected process command");
+      return { stdout: new Response(out).body, exited: Promise.resolve(status) };
+    };
+    const readlink = async (path: string): Promise<string> => {
+      const pid = /^\/proc\/(\d+)\/exe$/.exec(path)?.[1];
+      if (!pid) throw new Error("probe requested a non-executable path");
+      exePids.push(pid);
+      const proc = fixture.processes[pid];
+      if (!proc?.exe || proc.exeError) throw Object.assign(new Error("executable measurement failed"), { code: proc?.exeError ?? "ENOENT" });
+      return proc.exe;
+    };
+    const tmux = async (...args: string[]) => {
+      tmuxCalls.push(args);
+      return { out: fixture.panePid ?? "100", code: 0 };
+    };
+    try {
+      const probe = new Function("Bun", "process", "readlink", "basename", "tmux", "paneTarget", "Response",
+        code + "\nreturn paneAgentAt;")({ spawn }, { platform: fixture.platform }, readlink, basename, tmux,
+          (target: string) => `=${target}:`, Response) as (target: string, comms: string[]) => Promise<ProbeState>;
+      const got = await probe(fixture.target ?? "s1", fixture.comms ?? ["codex", "node"]);
+      checkFixture(`paneAgentAt: ${fixture.name}`, got === fixture.want, `expected=${fixture.want} actual=${got}`);
+      const expectedTmux = fixture.comms?.length === 0 ? []
+        : [["display-message", "-p", "-t", fixture.target ?? "=s1:", "#{pane_pid}"]];
+      checkFixture(`paneAgentAt scope: ${fixture.name}`,
+        JSON.stringify(commPids) === JSON.stringify(fixture.commPids)
+        && JSON.stringify(exePids) === JSON.stringify(fixture.exePids)
+        && JSON.stringify(tmuxCalls) === JSON.stringify(expectedTmux) && parentPids.length <= 1,
+        `commPids=${commPids} exePids=${exePids} parentPids=${parentPids}`);
+    } catch (error) {
+      checkFixture(`paneAgentAt fixture execution: ${fixture.name}`, false, error instanceof Error ? error.message : "unknown error");
+    }
+  }
+}
+
+await checkPaneAgentAtFixtures(readFileSync(`${ROOT}/server.ts`, "utf8"), check);
 
 // server.ts's two send-boot constants, mirrored the way e2e/harness.ts mirrors AUTO_MIN_EVERY_SEC:
 // neither is env-exposed, and every fixture below is a statement ABOUT them, so a fixture that

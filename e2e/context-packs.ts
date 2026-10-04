@@ -116,6 +116,12 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
     ];
     check("context packs: invalid group, sorte, position and duplicate part IDs are rejected",
       metadataCases.every((pack) => validateContextPacks({ packs: [pack], repo: fixture.facts!, capabilities }).verdict === "fail"));
+    const arrayPosition = { ...CONTEXT_PACKS[0], sources: [{ ...CONTEXT_PACKS[0].sources[0],
+      positions: { ...CONTEXT_PACKS[0].sources[0].positions, lane: ["box"] } }] };
+    const arrayPositionResult = validateContextPacks({ packs: [arrayPosition], repo: fixture.facts, capabilities });
+    check("context packs: an array-valued position is refused without string coercion",
+      arrayPositionResult.verdict === "fail" && hasCode(arrayPositionResult, "SOURCE_SHAPE_INVALID"),
+      issueSummary(arrayPositionResult));
     const missingPath = clonePacks();
     missingPath[0].sources[0].path = "docs/not-a-tracked-context-source.md";
     const missingPathResult = validateContextPacks({ packs: missingPath, repo: fixture.facts, capabilities });

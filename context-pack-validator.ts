@@ -277,8 +277,11 @@ export function validateContextPacks(input: ContextPackValidationInput): Context
             emit("SOURCE_SHAPE_INVALID", "error", packId, `source ${sourceIndex} sorte must be anleitung or wissen`);
           if ("positions" in source && (!isRecord(source.positions)
             || Object.keys(source.positions).length !== CONTEXT_POSITIONS.length
-            || CONTEXT_POSITIONS.some((position) => !isRecord(source.positions)
-              || !["box", "ausleihe"].includes(String(source.positions[position])))))
+            || CONTEXT_POSITIONS.some((position) => {
+              if (!isRecord(source.positions)) return true;
+              const ort = source.positions[position];
+              return typeof ort !== "string" || !["box", "ausleihe"].includes(ort);
+            })))
             emit("SOURCE_SHAPE_INVALID", "error", packId, `source ${sourceIndex} positions must state box or ausleihe for lane, main and orchestratorin`);
           const path = source.path;
           const anchor = source.anchor;

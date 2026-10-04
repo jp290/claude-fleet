@@ -3,6 +3,7 @@ import {
   CONTEXT_PACK_GROUPS,
   CONTEXT_PART_SORTEN,
   CONTEXT_POSITIONS,
+  contextPartId,
   CONTEXT_PACK_CAPABILITIES,
   CONTEXT_PACK_EVIDENCE,
   CONTEXT_PACK_HARDNESS,
@@ -268,11 +269,10 @@ export function validateContextPacks(input: ContextPackValidationInput): Context
               emit("SOURCE_CONTENT_FORBIDDEN", "error", packId, `source content field is forbidden: ${key}`);
             else emit("SOURCE_UNKNOWN_KEY", "error", packId, `unknown source key: ${key}`);
           }
-          if ("id" in source) {
-            if (typeof source.id !== "string" || !/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)?$/.test(source.id) || partIds.has(source.id))
-              emit("SOURCE_SHAPE_INVALID", "error", packId, `source ${sourceIndex} id must be a unique part identifier`);
-            else partIds.add(source.id);
-          }
+          const partId = contextPartId(packId, { id: typeof source.id === "string" ? source.id : undefined }, sourceIndex);
+          if (("id" in source && (typeof source.id !== "string" || !/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)?$/.test(source.id))) || partIds.has(partId))
+            emit("SOURCE_SHAPE_INVALID", "error", packId, `source ${sourceIndex} id must be a unique part identifier`);
+          else partIds.add(partId);
           if ("sorte" in source && !inVocabulary(source.sorte, CONTEXT_PART_SORTEN))
             emit("SOURCE_SHAPE_INVALID", "error", packId, `source ${sourceIndex} sorte must be anleitung or wissen`);
           if ("positions" in source && (!isRecord(source.positions)

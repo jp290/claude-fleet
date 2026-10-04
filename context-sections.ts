@@ -1,3 +1,4 @@
+// context-sections.ts — exact source sections shared by borrowing and session rendering.
 import { createHash } from "node:crypto";
 
 function sectionSpan(text: string, path: string, anchor: string): { start: number; end: number } | null {

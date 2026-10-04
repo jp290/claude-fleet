@@ -111,6 +111,8 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
       { ...CONTEXT_PACKS[0], sources: [{ ...CONTEXT_PACKS[0].sources[0], sorte: "prose" }] },
       { ...CONTEXT_PACKS[0], sources: [{ ...CONTEXT_PACKS[0].sources[0], positions: { lane: "box", main: "elsewhere", orchestratorin: "ausleihe" } }] },
       { ...CONTEXT_PACKS[0], sources: [CONTEXT_PACKS[0].sources[0], CONTEXT_PACKS[0].sources[0]] },
+      { ...CONTEXT_PACKS[0], sources: [{ path: "AGENTS.md", anchor: "## Portable operating contract" },
+        { ...CONTEXT_PACKS[0].sources[0], id: "source-1" }] },
     ];
     check("context packs: invalid group, sorte, position and duplicate part IDs are rejected",
       metadataCases.every((pack) => validateContextPacks({ packs: [pack], repo: fixture.facts!, capabilities }).verdict === "fail"));

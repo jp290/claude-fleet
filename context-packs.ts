@@ -59,6 +59,11 @@ export interface ContextPackSource {
   readonly positions?: ContextPartPositions;
 }
 
+export function contextPartId(packId: string, source: Pick<ContextPackSource, "id">, index: number): string {
+  const id = source.id ?? `source-${index + 1}`;
+  return id.startsWith(`${packId}.`) ? id : `${packId}.${id}`;
+}
+
 interface ContextPackBase {
   readonly id: string;
   // One human line of PURPOSE — when a reader needs this pack, never what it says. The anchor block

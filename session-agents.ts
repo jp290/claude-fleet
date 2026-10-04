@@ -1,5 +1,6 @@
+// session-agents.ts — pure session AGENTS rendering with measured part receipts.
 import { createHash } from "node:crypto";
-import { CONTEXT_PACKS, type ContextPackGroup, type ContextPackSource, type ContextPartOrt,
+import { CONTEXT_PACKS, contextPartId, type ContextPackGroup, type ContextPartOrt,
   type ContextPartSorte, type ContextPosition } from "./context-packs";
 import { resolveContextHarness, type ContextPlan } from "./context-plan";
 import { sourceSection } from "./context-sections";
@@ -39,10 +40,7 @@ export interface SessionAgents {
   readonly projectDocMaxBytes?: number;
 }
 
-export function contextPartId(packId: string, source: ContextPackSource, index: number): string {
-  const id = source.id ?? `source-${index + 1}`;
-  return id.startsWith(`${packId}.`) ? id : `${packId}.${id}`;
-}
+export { contextPartId } from "./context-packs";
 
 export function contextPackGroup(packId: string): ContextPackGroup {
   return CONTEXT_PACKS.find((pack) => pack.id === packId)?.group

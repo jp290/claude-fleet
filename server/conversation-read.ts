@@ -26,7 +26,7 @@ export interface CacheRef { at: number; provider: string }
 export interface CodexFirstTurn {
   state: "running" | "succeeded" | "failed" | "unknown";
   turnId: string;
-  acceptedAt: number;
+  acceptedAt: number | null;
   completedAt: number | null;
   error: { message: string; code: string | null } | null;
   unknownReason?: "oversized-row-skipped" | "unreadable-row" | "turn-before-start" | "user-before-start" | "event-without-time";
@@ -240,31 +240,37 @@ export function readCodexFirstTurnEvidence(lines: string[], since: number,
       continue;
     }
     if (!row || typeof row !== "object") continue;
+    const p = row.payload && typeof row.payload === "object" ? row.payload : null;
+    const userInput = row.type === "response_item" && p?.type === "message" && p.role === "user"
+      && !CODEX_INJECTED.test(Array.isArray(p.content)
+        ? p.content.map((c) => str((c as { text?: unknown } | null)?.text)).join("\n") : "");
     const at = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
     if (!Number.isFinite(at)) {
       if (!first && row.type === "event_msg") unknownReason ??= "event-without-time";
+      else if (!first && userInput) unknownReason ??= "user-before-start";
       continue;
     }
-    if (at < since || !row.payload || typeof row.payload !== "object") continue;
-    const p = row.payload;
-    if (!first && row.type === "response_item" && p.type === "message" && p.role === "user") {
-      const text = Array.isArray(p.content) ? p.content.map((c) => str((c as { text?: unknown } | null)?.text)).join("\n") : "";
-      if (!CODEX_INJECTED.test(text)) unknownReason ??= "user-before-start";
-    }
+    if (at < since || !p) continue;
+    if (!first && userInput) unknownReason ??= "user-before-start";
     if (row.type !== "event_msg") continue;
     if (!first && (p.type === "task_started" || p.type === "turn_started") && str(p.turn_id)) {
       first = { state: unknownReason ? "unknown" : "running", turnId: str(p.turn_id), acceptedAt: at,
         completedAt: null, error: null, ...(unknownReason ? { unknownReason } : {}) };
-    } else if (!first) {
+      continue;
+    }
+    const terminal = p.type === "task_complete" || p.type === "turn_complete";
+    if (!first && terminal && p.error && typeof p.error === "object") {
+      first = { state: "failed", turnId: str(p.turn_id), acceptedAt: null, completedAt: null, error: null };
+    }
+    if (!first) {
       if (p.type === "user_message") unknownReason ??= "user-before-start";
       else if (str(p.turn_id)) unknownReason ??= "turn-before-start";
-    } else if (first && at >= first.acceptedAt && str(p.turn_id) === first.turnId
-      && (p.type === "task_complete" || p.type === "turn_complete")) {
+    } else if (terminal && at >= (first.acceptedAt ?? since) && str(p.turn_id) === first.turnId) {
       const error = p.error;
       if (error && typeof error === "object") {
         const e = error as Record<string, unknown>;
         const info = e.codex_error_info;
-        first = { ...first, state: unknownReason ? "unknown" : "failed", completedAt: at,
+        first = { ...first, state: unknownReason && first.acceptedAt !== null ? "unknown" : "failed", completedAt: at,
           error: { message: str(e.message) || "Codex turn failed",
             code: typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] ?? null : null } };
       } else {

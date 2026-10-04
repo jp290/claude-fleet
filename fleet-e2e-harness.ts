@@ -261,6 +261,7 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
       ["orphan-event", event(21, { type: "task_complete", turn_id: "missing-first" }), "turn-before-start"],
       ["timeless-start", JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "missing-first" } }), "event-without-time"],
       ["invalid-time", JSON.stringify({ type: "event_msg", timestamp: "not-a-time", payload: { type: "task_started", turn_id: "missing-first" } }), "event-without-time"],
+      ["timeless-user", JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ text: "first request" }] } }), "user-before-start"],
     ] as const) {
       const lines = [gap, start(24, "later"), success(25, "later")];
       const turn = readCodexFirstTurn(lines, epoch + 20);
@@ -281,6 +282,29 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
     checkFixture("first model turn: a timeless event after the observed start remains ignored",
       timelessAfterStart?.state === "succeeded" && timelessAfterStart.turnId === "A" && !timelessAfterStart.unknownReason,
       JSON.stringify(timelessAfterStart));
+    for (const terminal of ["task_complete", "turn_complete"] as const) {
+      const orphanFailure = event(23, { type: terminal, turn_id: "orphan", last_agent_message: null,
+        error: { message: "HTTP 400: model fixture unsupported", codex_error_info: "bad_request" } });
+      const turn = readCodexFirstTurn([orphanFailure, start(24, "later"), success(25, "later")], epoch + 20);
+      checkFixture(`first model turn: ${terminal} error without start is failed with unobserved acceptance`,
+        turn?.state === "failed" && turn.acceptedAt === null && turn.completedAt === epoch + 23
+        && turn.turnId === "orphan" && turn.error?.code === "bad_request", JSON.stringify(turn));
+      const lane = { ...b, id: 41, selfToken: terminal, sessionId: `orphan-${terminal}`, codexFirstTurn: null } as Slot;
+      put(lane.sessionId!, [orphanFailure]); scan.tickCodexFirstTurn(lane);
+      const hit = scan.codexFirstTurnView(lane);
+      checkFixture(`first model turn: ${terminal} orphan error has source and event time at its own slot`,
+        hit?.source === "codex-rollout" && hit.sessionId === lane.sessionId && hit.openedAt === lane.openedAt
+        && hit.turn.state === "failed" && hit.turn.acceptedAt === null && hit.turn.completedAt === epoch + 23,
+        JSON.stringify(hit));
+      const uiOrphan = { ...uiA, codexFirstTurn: lane.codexFirstTurn,
+        codexRecovery: { ...uiA.codexRecovery, sessionId: lane.sessionId } };
+      checkFixture(`first model turn: ${terminal} orphan error remains visible despite alive`,
+        display.outputState(uiOrphan, epoch + 24, true) === "bad" && display.codexTurnLine(uiOrphan).includes("bad_request")
+        && display.codexTurnLine(uiOrphan).includes("Quelle: codex-rollout"), display.codexTurnLine(uiOrphan));
+    }
+    const orphanSuccess = readCodexFirstTurn([success(23, "orphan"), start(24, "later"), success(25, "later")], epoch + 20);
+    checkFixture("first model turn: success without start cannot become a later first success",
+      orphanSuccess?.state === "unknown" && orphanSuccess.unknownReason === "turn-before-start", JSON.stringify(orphanSuccess));
     const long = { ...b, id: 19, selfToken: "token-long", sessionId: "session-long", codexFirstTurn: null } as Slot;
     const oversized = JSON.stringify({ type: "response_item", payload: {
       type: "message", role: "user", content: [{ text: "x".repeat(2_097_152) + success(22, "A") }] } });

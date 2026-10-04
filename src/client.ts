@@ -5094,7 +5094,7 @@ function codexTurnLine(s: SlotInfo): string {
   const word = { running: "angenommen, läuft", succeeded: "erfolgreich", failed: "fehlgeschlagen", unknown: "Ergebnis unbekannt" }[t.state];
   return `Erster Modellturn ${word}${t.error ? `: ${t.error.code ? t.error.code + " · " : ""}${t.error.message}` : ""}`
     + (t.unknownReason ? `\nGrund: ${t.unknownReason}` : "")
-    + `\nQuelle: ${hit.source} · Ereignis ${new Date(t.completedAt ?? t.acceptedAt).toLocaleString()}`
+    + `\nQuelle: ${hit.source} · Ereignis ${new Date(t.completedAt ?? t.acceptedAt ?? hit.observedAt).toLocaleString()}`
     + ` · beobachtet ${new Date(hit.observedAt).toLocaleString()}`;
 }
 function outputState(s: SlotInfo, now: number, awake: boolean): OutputState {
@@ -5970,7 +5970,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       if (firstTurn && (firstTurn.turn.state === "failed" || firstTurn.turn.error)) {
         const failure = el("div", "needline", `Erster Modellturn: Fehler beobachtet · ${firstTurn.turn.error?.code ?? "Fehler"}`
           + (firstTurn.turn.unknownReason ? " · Ergebnis unbekannt" : "")
-          + ` · ${firstTurn.source} · ${new Date(firstTurn.turn.completedAt ?? firstTurn.turn.acceptedAt).toLocaleString()}`);
+          + ` · ${firstTurn.source} · ${new Date(firstTurn.turn.completedAt ?? firstTurn.turn.acceptedAt ?? firstTurn.observedAt).toLocaleString()}`);
         failure.title = codexTurnLine(s);
         row.appendChild(failure);
       }

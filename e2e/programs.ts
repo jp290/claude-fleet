@@ -8,6 +8,7 @@ import { AUTOS_TICK_MS, BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, fleetReportDecisionMessage, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
+import type { SessionAgentsPart } from "../session-agents";
 import { fleetEventFrom } from "../server/types";
 import { CONTEXT_PACKS } from "../context-packs";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
@@ -229,11 +230,11 @@ interface ContextReceipt {
   taskId: string | null; originId: string | null; programId: string | null;
   slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
   mode: string; triggers: string[];
-  selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string;
+  selected: { id: string; parts?: Omit<SessionAgentsPart, "content">[]; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string;
     private?: { verdict: string; version: number | null } }[];
   omitted: { id: string; why: string; reason?: string | null }[];
   deliveredBytes: number; truncated: boolean;
-  sessionAgents?: { path: string; sha256: string; bytes: number };
+  sessionAgents?: { path: string; sha256: string; bytes: number; parts?: Omit<SessionAgentsPart, "content">[] };
   // absent on a row written before the renderer was named — that row's block is v1 by date
   renderer?: string;
   // optional because rows written before this field exist and are served unchanged (the legacy
@@ -9112,13 +9113,31 @@ export async function run(ctx: Ctx): Promise<void> {
     "PROGRAM-CONTEXT-PACKS FIXTURE — a lane of the Program that carries a pack");
   const cpProgramReceipt = cpProgramLane.receipt;
   const cpBlob = cpProgramReceipt ? gitIn(cpProgramReceipt.repo, "rev-parse", `${cpProgramReceipt.head}:AGENTS.md`).stdout.trim() : "";
-  const cpExpectedRow = { id: cpPack.id, useWhen: cpPack.useWhen, anchors: cpPack.sources,
+  const cpDelivered = (await plogRead()).findLast((row) => row.slot === cpProgramReceipt?.slot
+    && row.text.startsWith("PROGRAM-CONTEXT-PACKS FIXTURE — a lane of the Program that carries a pack"));
+  const cpRules = cpDelivered?.cwd ? readFileSync(`${cpDelivered.cwd}/AGENTS.override.md`, "utf8") : "";
+  const cpSource = cpDelivered?.cwd ? readFileSync(`${cpDelivered.cwd}/AGENTS.md`, "utf8") : "";
+  const cpPart = { id: `${cpPack.id}.source-1`, packId: cpPack.id, path: "AGENTS.md", anchor: cpHeading,
+    sorte: "wissen", ort: "ausleihe", sha256: createHash("sha256").update(cpSource).digest("hex"), bytes: Buffer.byteLength(cpSource), refusal: null };
+  const cpExpectedRow = { id: cpPack.id, parts: [cpPart], useWhen: cpPack.useWhen, anchors: cpPack.sources,
     sourceHash: observedSourceHash(cpPack.sources, new Map([["AGENTS.md", cpBlob]])), origin: "program" };
   check("program-context-packs (4a): the Program's dispatched lane receipts the pack with origin:\"program\" and its observed source version — and no other row claims that origin",
     cpProgramLane.status === 200 && !!cpProgramReceipt && cpProgramReceipt.programId === mainProgram.id
       && JSON.stringify(cpProgramReceipt.selected.filter((row) => row.id === cpPack.id)) === JSON.stringify([cpExpectedRow])
       && cpProgramReceipt.selected.filter((row) => "origin" in row).length === 1,
     `${cpProgramLane.status} ${JSON.stringify(cpProgramReceipt ?? null)}`);
+  check("program-context-packs (4a-native): the actual file receipts its source part and carries the pack once, absent from the order",
+    cpProgramReceipt?.sessionAgents?.path === "AGENTS.override.md"
+      && cpProgramReceipt.sessionAgents.bytes === Buffer.byteLength(cpRules)
+      && cpProgramReceipt.sessionAgents.sha256 === createHash("sha256").update(cpRules).digest("hex")
+      && JSON.stringify(cpProgramReceipt.sessionAgents.parts?.filter((part) => part.packId === cpPack.id)) === JSON.stringify([cpPart])
+      && cpSource.startsWith(`${cpHeading}\n`) && !/\n# /.test(cpSource)
+      && cpRules.includes(cpPack.useWhen) && cpRules.includes(`AGENTS.md | ${cpHeading}`)
+      && cpRules.split(`- ${cpPack.id} —`).length === 2
+      && cpDelivered?.text.endsWith("\n\nSession-Regeln: ./AGENTS.override.md") === true
+      && !cpDelivered.text.includes(cpPack.id) && !cpDelivered.text.includes("--- ROLLE ---")
+      && !cpDelivered.text.includes("ContextPlan v2 anchors") && !cpDelivered.text.includes("HOW THIS LANE ENDS"),
+    JSON.stringify({ receipt: cpProgramReceipt?.sessionAgents, fileBytes: Buffer.byteLength(cpRules), part: cpPart, prompt: cpDelivered?.text }));
 
   // (1a) the Program's OWN lane may not write its Program's packs — its token is the one credential
   // that is closest to the MAIN's without being it

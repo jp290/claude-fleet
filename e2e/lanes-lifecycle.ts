@@ -331,15 +331,15 @@ async function workplacesChecks(): Promise<void> {
     const failedTarget = await compile(functions, targetHolders, true).repo(b);
     check("workplaces target graph failure retains its readable target tip and nulls only unprovable facts", targetRow(failedTarget, 1)?.target.head === bMain
       && targetRow(failedTarget, 1)?.target.behind === null && targetRow(failedTarget, 1)?.target.landed === null
-      && targetRow(failedTarget, 1)?.reasons.some((r) => r.field === "target.behind" && r.reason === "commit-graph-unreadable"), JSON.stringify(targetRow(failedTarget, 1)));
+      && targetRow(failedTarget, 1)?.reasons.some((r) => r.field === "target.behind" && r.reason === "commit-graph-unreadable") === true, JSON.stringify(targetRow(failedTarget, 1)));
     const unreadNotes = await compile(functions, targetHolders, false, undefined, true).repo(b);
     check("workplaces unreadable target notes cannot claim an unlanded branch", targetRow(unreadNotes, 1)?.target.landed === null
-      && targetRow(unreadNotes, 1)?.reasons.some((r) => r.field === "target.landed" && r.reason === "land-notes-unreadable"), JSON.stringify(targetRow(unreadNotes, 1)));
+      && targetRow(unreadNotes, 1)?.reasons.some((r) => r.field === "target.landed" && r.reason === "land-notes-unreadable") === true, JSON.stringify(targetRow(unreadNotes, 1)));
     const cappedNotes = functions.replace("return { rows, truncated };", "return { rows, truncated: true };");
     const limited = await compile(cappedNotes, targetHolders).repo(b);
     check("workplaces truncated target notes keep positive evidence but refuse negative claims", limited.landNotes.truncated === true
       && targetRow(limited, 0)?.target.landed === "yes" && targetRow(limited, 1)?.target.landed === null
-      && targetRow(limited, 1)?.reasons.some((r) => r.field === "target.landed" && r.reason === "land-notes-truncated"), JSON.stringify(limited.worktrees));
+      && targetRow(limited, 1)?.reasons.some((r) => r.field === "target.landed" && r.reason === "land-notes-truncated") === true, JSON.stringify(limited.worktrees));
     const scanCapped = await compile(functions.replace("const LAND_NOTES_SCAN_CAP = 200;", "const LAND_NOTES_SCAN_CAP = 1;"), targetHolders).repo(b);
     check("workplaces note scan cap exposes truncation and never claims no from a partial scan", scanCapped.landNotes.truncated === true
       && targetRow(scanCapped, 1)?.target.landed === null, JSON.stringify(scanCapped.worktrees));

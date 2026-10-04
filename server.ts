@@ -1,4 +1,4 @@
-import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorktreeDistance, DeployGap, DeployLand, FactReason } from "./src/protocol";
+import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, DeployGap, DeployLand, FactReason } from "./src/protocol";
 import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents } from "./session-agents";
 import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
@@ -164,6 +164,7 @@ import {
   type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
   type ProgramValidation, type ProgramDigest, type DispatchSpawn, type SlotContext, type CodexPermissions, type SlotPermissions,
   CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
+  type WorkplaceCheckObservation,
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
   loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
@@ -7117,7 +7118,7 @@ async function workplaceInstance(target: TestinstanzTarget): Promise<WorkplaceRo
   const instance = testinstanzObservation(result.out, target);
   return { state: String(instance.state), instance };
 }
-interface WorkplaceLandNotes { rows: Array<{ sha: string; branch: string | null }> | null; truncated: boolean | null }
+interface WorkplaceLandNotes { rows: Array<{ sha: string; branch: string | null; at?: number; verify?: { ok: boolean | null; out: string; timedOut?: true; waitedOut?: true; serverDown?: true } }> | null; truncated: boolean | null }
 async function workplaceLandNotes(repo: string, heads: string[]): Promise<WorkplaceLandNotes> {
   if (!heads.length) return { rows: null, truncated: null };
   const r = await gitRead(repo, "log", "--no-color", "--no-show-signature", "--notes=fleet/land",
@@ -7133,12 +7134,148 @@ async function workplaceLandNotes(repo: string, heads: string[]): Promise<Workpl
     if (rows.length >= LAND_NOTES_CAP) { truncated = true; break; }
     let note: Record<string, unknown> | null = null;
     try { note = testinstanzRecord(JSON.parse(raw)); } catch { /* the branch remains unreadable */ }
-    rows.push({ sha, branch: typeof note?.branch === "string" && note.branch ? note.branch : null });
+    const verify = testinstanzRecord(note?.verify);
+    rows.push({ sha, branch: typeof note?.branch === "string" && note.branch ? note.branch : null,
+      ...(typeof note?.at === "number" ? { at: note.at } : {}),
+      ...(verify && (typeof verify.ok === "boolean" || verify.ok === null)
+        ? { verify: { ok: verify.ok, out: typeof verify.out === "string" ? verify.out : "",
+          ...(verify.timedOut === true ? { timedOut: true as const } : {}),
+          ...(verify.waitedOut === true ? { waitedOut: true as const } : {}),
+          ...(verify.serverDown === true ? { serverDown: true as const } : {}) } } : {}) });
   }
   return { rows, truncated };
 }
 
-async function workplaceRepo(repo: string): Promise<WorkplaceRepo> {
+const WORKPLACE_AUDIT_BYTES = 262_144;
+const WORKPLACE_AUDIT_ROWS = 200;
+interface WorkplaceAuditReading { rows: PostLandAuditRow[]; reason: string }
+async function workplaceAuditReading(): Promise<WorkplaceAuditReading> {
+  const rows: PostLandAuditRow[] = [];
+  let reason = "audit-not-retained";
+  for (const path of [POSTLAND_AUDIT_FILE, `${POSTLAND_AUDIT_FILE}.1`]) {
+    try {
+      const file = Bun.file(path);
+      if (!await file.exists()) continue;
+      const start = Math.max(0, file.size - WORKPLACE_AUDIT_BYTES);
+      const text = await file.slice(start).text();
+      const lines = text.split("\n");
+      if (start) { lines.shift(); reason = "audit-history-capped"; }
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].trim()) continue;
+        if (rows.length >= WORKPLACE_AUDIT_ROWS) return { rows, reason: "audit-history-capped" };
+        let row: PostLandAuditRow | null = null;
+        try { row = validAuditRow(JSON.parse(lines[i])); } catch { /* named below */ }
+        if (row && Number.isFinite(row.at)) rows.push(row);
+        else reason = "audit-history-malformed";
+      }
+    } catch { reason = "audit-history-unreadable"; }
+  }
+  return { rows, reason };
+}
+function workplaceGateState(v: { ok: boolean | null; timedOut?: true; waitedOut?: true; serverDown?: true } | undefined): WorkplaceCheckObservation["state"] {
+  return !v ? null : v.ok === true ? "green" : v.ok === false ? "red"
+    : v.timedOut || v.waitedOut || v.serverDown ? null : "skipped";
+}
+function workplaceCheckObservations(repo: string, notes: WorkplaceLandNotes, audits: WorkplaceAuditReading): WorkplaceCheckObservation[] {
+  const out: WorkplaceCheckObservation[] = [];
+  const sameRepo = (value: string) => repoCanon(value) === repoCanon(repo);
+  const job = (j: CommandJob | LaneSuiteJob, stage: "local" | "preview") => {
+    if (!sameRepo(j.repo)) return;
+    const result = j.result;
+    const active = j.state === "claimed" && (j.claim ? j.claim.expiresAt > Date.now()
+      : "sharded" in j && j.sharded?.shards.some((s) => s.claim && s.claim.expiresAt > Date.now()));
+    const pendingShards = "sharded" in j && j.sharded && (!j.sharded.openUntil || j.sharded.openUntil > Date.now())
+      && j.sharded.shards.some((s) => !s.claim && !s.result && !s.closed);
+    const state = result ? result.result === "unknown" ? null : result.result
+      : active ? "running" : j.state === "open" || pendingShards ? "waiting" : null;
+    out.push({ repo, branch: j.branch, stage, state, head: result?.remote.clonedSha ?? j.commitSha,
+      at: result?.remote.reportedAt ?? j.claim?.claimedAt ?? j.offeredAt, order: j.offeredAt,
+      fails: result?.fails ?? [], ...(stage === "local" && "cmd" in j ? { command: j.cmd } : {}),
+      ...(!state ? { reason: "job-unmeasured" } : {}) });
+  };
+  for (const j of commandJobs.values()) job(j, "local");
+  for (const j of laneSuiteJobs.values()) job(j, "preview");
+  const merges = [...mergeLast.entries(), ...[...mergeParked.values()].map((m) => [null, m] as const)];
+  for (const [slot, m] of merges) {
+    const holder = slot === null ? null : slots.find((s) => s.id === slot && s.worktree?.branch === m.branch && sameRepo(s.worktree.repo));
+    if (!holder && !notes.rows?.some((n) => n.branch === m.branch && n.sha === m.candidateSha)) continue;
+    const v = m.verify;
+    out.push({ repo, branch: m.branch, stage: "gate", at: m.at, head: m.candidateSha ?? null,
+      state: workplaceGateState(v),
+      fails: v ? localFailNames(v.out) : [], reason: v ? "gate-unmeasured" : "gate-verify-unrecorded" });
+  }
+  for (const note of notes.rows ?? []) if (note.branch) {
+    const v = note.verify;
+    out.push({ repo, branch: note.branch, stage: "gate", at: note.at ?? 0, head: note.sha,
+      state: workplaceGateState(v),
+      fails: v ? localFailNames(v.out) : [], reason: "land-note-verify-unrecorded-or-unmeasured" });
+  }
+  for (const r of serverRuns.values()) if (r.repo && sameRepo(r.repo) && r.suite.includes("gate"))
+    out.push({ repo, branch: r.branch, stage: "gate", state: "running", head: null, at: r.at, fails: [] });
+  const addAudit = (branch: string, head: string | null, at: number, state: WorkplaceCheckObservation["state"], fails: string[] = []) =>
+    out.push({ repo, branch, stage: "audit", head, at, state, fails, reason: "audit-unmeasured" });
+  for (const r of audits.rows) if (sameRepo(r.repo))
+    for (const c of r.covers) addAudit(c.branch, r.mainSha, r.at,
+      r.result === "not-applicable" ? "skipped" : r.result === "unknown" ? null : r.result, r.fails ?? []);
+  const running = runningPostLandAudit;
+  if (running && sameRepo(running.repo)) for (const c of running.covers)
+    addAudit(c.branch, running.mainSha, running.startedAt, "running");
+  const inflight = new Set((running?.covers ?? []).map(coverKey));
+  for (const c of helperClaims.values()) if (sameRepo(c.repo)) for (const cover of c.covers) {
+    inflight.add(coverKey(cover));
+    addAudit(cover.branch, c.mainSha, c.claimedAt, c.expiresAt > Date.now() ? "running" : null);
+  }
+  for (const r of auditShardRuns.values()) if (sameRepo(r.repo)) {
+    const active = r.shards.some((s) => s.claim && s.claim.expiresAt > Date.now() && !s.result && !s.closed);
+    for (const c of r.covers) {
+      inflight.add(coverKey(c));
+      addAudit(c.branch, r.mainSha, r.firstClaimAt, active ? "running" : r.openUntil > Date.now() ? "waiting" : null);
+    }
+  }
+  for (const [qRepo, q] of auditQueue) if (sameRepo(qRepo))
+    for (const g of auditQueueGroups(q)) for (const c of g.covers) if (!inflight.has(coverKey(c)))
+      addAudit(c.branch, c.mainAfter, c.at, auditCmdFor(qRepo) ? "waiting" : "skipped");
+  return out;
+}
+function workplaceChecks(repo: string, branch: string | null, head: string | null,
+  observations: WorkplaceCheckObservation[], auditReason: string, reasons: FactReason[]): WorkplaceChecks {
+  const checks: WorkplaceChecks = { local: null, preview: null, gate: null, audit: null };
+  for (const stage of ["local", "preview", "gate", "audit"] as const) {
+    const matches = observations.filter((o) => o.repo === repo && o.branch === branch && o.stage === stage)
+      .sort((a, b) => (b.order ?? b.at) - (a.order ?? a.at));
+    const latest = matches[0];
+    if (!latest?.state) {
+      reasons.push({ field: `checks.${stage}`, reason: !branch ? "worktree-branch-unreadable"
+        : latest?.reason ?? (stage === "audit" ? auditReason : `${stage}-not-retained`) });
+      continue;
+    }
+    let selected = [latest];
+    if (stage === "local") {
+      const commands = new Set<string>();
+      selected = matches.filter((o) => {
+        if (commands.has(o.command ?? "")) return false;
+        commands.add(o.command ?? ""); return o.head === latest.head;
+      });
+    }
+    const states = selected.map((o) => o.state);
+    if (states.includes(null)) {
+      reasons.push({ field: `checks.${stage}`, reason: "job-unmeasured" }); continue;
+    }
+    const state = stage === "local" ? (["running", "waiting", "red", "skipped", "green"] as const).find((s) => states.includes(s))! : latest.state;
+    const fails = [...new Set(selected.flatMap((o) => o.fails))].slice(0, 20).map((name) =>
+      name.replace(/https?:\/\/\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:token|secret|authorization)\s*[:=]\s*\S+/gi, "[redacted]")
+        .replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 160));
+    const sha = latest.head && /^[0-9a-f]{40,64}$/.test(latest.head) ? latest.head : null;
+    checks[stage] = { state, head: sha, at: Number.isFinite(latest.at) && latest.at > 0 ? latest.at : null,
+      fails, stale: sha && head ? sha !== head : null };
+    if (!sha) reasons.push({ field: `checks.${stage}.head`, reason: "checked-head-unrecorded" });
+    if (!sha || !head) reasons.push({ field: `checks.${stage}.stale`, reason: "checked-or-worktree-head-unreadable" });
+    if (!checks[stage]!.at) reasons.push({ field: `checks.${stage}.at`, reason: "check-time-unrecorded" });
+  }
+  return checks;
+}
+
+async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { rows: [], reason: "audit-not-retained" }): Promise<WorkplaceRepo> {
   const reasons: FactReason[] = [];
   let rows: WtEntry[];
   try {
@@ -7195,6 +7332,7 @@ async function workplaceRepo(repo: string): Promise<WorkplaceRepo> {
     return { branch, head, distance: d, reasons: why };
   });
   if (!branches) reasons.push({ field: "branches", reason: "branch-refs-unreadable" });
+  const observations = workplaceCheckObservations(repo, notes, audits);
   const readRow = async (w: WtEntry): Promise<WorkplaceRow> => {
     const why: FactReason[] = [];
     const { session, baseBranch, baseHead } = bindings.get(w.path)!;
@@ -7250,7 +7388,7 @@ async function workplaceRepo(repo: string): Promise<WorkplaceRepo> {
       if (testinstanz.state === "unknown") why.push({ field: "testinstanz.state", reason: "instance-state-unproven" });
     }
     return { path: w.path, primary: w.primary, branch, head: w.head ?? null, base, distance: d,
-      session, target, template, testinstanz, reasons: why };
+      session, target, checks: workplaceChecks(repo, branch, w.head ?? null, observations, audits.reason, why), template, testinstanz, reasons: why };
   };
   const worktrees: WorkplaceRow[] = new Array(rows.length);
   let next = 0;
@@ -7263,10 +7401,10 @@ async function workplaces(): Promise<Workplaces> {
   const repos = [...new Set(knownRepos().map((r) => { try { return realpathSync(r); } catch { return r; } }))];
   const key = JSON.stringify([repos, slots.filter((s) => s.cwd).map((s) => [s.id, s.openedAt, s.cwd, s.worktree?.base, s.worktree?.baseSha])]);
   if (!workplacesCache || workplacesCache.key !== key || Date.now() - workplacesCache.at >= WORKPLACES_CACHE_MS) {
-    const entry: NonNullable<typeof workplacesCache> = { key, at: Number.POSITIVE_INFINITY, value: Promise.all(repos.map(async (repo): Promise<WorkplaceRepo> => {
-      try { return await workplaceRepo(repo); } catch { return { repo, branches: null, worktrees: null, landNotes: { truncated: null },
+    const entry: NonNullable<typeof workplacesCache> = { key, at: Number.POSITIVE_INFINITY, value: workplaceAuditReading().then((audits) => Promise.all(repos.map(async (repo): Promise<WorkplaceRepo> => {
+      try { return await workplaceRepo(repo, audits); } catch { return { repo, branches: null, worktrees: null, landNotes: { truncated: null },
         reasons: [{ field: "repo", reason: "repo-observation-failed" }, { field: "landNotes.truncated", reason: "land-notes-unreadable" }] }; }
-    }))
+    })))
       .then((rows) => { entry.at = Date.now(); return { repos: rows, measuredAt: entry.at, cacheMs: WORKPLACES_CACHE_MS }; }) };
     workplacesCache = entry;
   }

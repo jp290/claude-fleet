@@ -2957,6 +2957,49 @@ malformierte oder gedeckelte Notizen, unbekanntes ahead oder unbekannte Ziel-His
 null mit benanntem Grund. Positive Notizbelege bleiben auch bei Deckel gültig, wenn ihre
 Zugehörigkeit zum Ziel belegbar ist. `landNotes:{truncated}` benennt je Repo den Notizdeckel;
 unlesbar ist truncated:null mit land-notes-unreadable.
+`checks:{local,preview,gate,audit}` sitzt auf jeder Worktree-Zeile. Jede Stufe ist null oder
+`{state,head,at,fails,stale}`. state ist running|green|red|skipped|waiting; head ist die
+auf der Quelle aufgezeichnete Commit-SHA, at deren Ergebnis-/Start-/Angebotszeit (Millisekunden).
+`stale:true` heißt head ungleich dem gemessenen Worktree-HEAD, false heißt Gleichheit. Eine
+fehlende SHA oder Zeit bleibt null mit `checks.<stufe>.head|at|stale` in reasons; insbesondere
+hält ein laufender Land-Gate heute keine gemessene Kandidaten-SHA und erfindet keine.
+Zuordnung geschieht nach kanonischem Repo und Branch, niemals allein nach Slot. Historische
+Ergebnisse bleiben bei abweichender SHA sichtbar und werden stale, auch nach Slot-Recycling.
+
+- local: die jeweils neuesten `/api/self/jobs`-Beweise pro Kommando auf der SHA des neuesten
+  Angebots. running/waiting geht vor red, danach skipped/green. Grün behauptet nur diese
+  gehaltenen Kommandos, keine vollständige lokale Verify-Kette. Vor-Ort-Kommandos ohne Job
+  sind nicht gehalten und fehlen hier. Ein später eintreffendes altes Ergebnis ersetzt kein
+  neueres Angebot.
+- preview: das neueste Suite-Angebot nach offeredAt, einschließlich geteilter Läufe und
+  Ergebnis. Eine gemessene remote.clonedSha hat Vorrang vor der angebotenen commitSha.
+- gate: letzter zuordenbarer Merge-Versuch aus mergeLast/mergeParked oder dessen fleet/land-Note;
+  ein laufender branchgebundener Server-Gate kann running melden. candidateSha trägt die
+  Kandidatenidentität; verify.mainSha ist die Integrationsbasis und wird nicht als Kandidat
+  ausgegeben. Ein explizites ok:null ohne Timeout-/Wait-/Server-Ausfall ist skipped;
+  diese drei Ausfälle und eine fehlende Verify-Quittung bleiben null mit Grund.
+- audit: neuestes gehaltenes Audit mit covers für diesen Branch, oder sein laufender/geplanter
+  Audit, einschließlich ungeteilter und geteilter Helper-Claims. head ist mainSha beziehungsweise das wartende mainAfter; diese Integrations-SHA
+  ersetzt nicht die Lane-SHA. not-applicable und eine geparkte Queue ohne Audit-Kommando
+  sind skipped. unknown wird null mit audit-unmeasured.
+
+Fehlende/entfallene Angebote heißen local-not-retained beziehungsweise preview-not-retained,
+ein fehlender Gate gate-not-retained. Das Audit nennt audit-not-retained oder die eingeschränkte
+Lesung audit-history-capped|malformed|unreadable. Diese Gründe beweisen keine historische
+Abwesenheit. Fail-Namen sind auf 20 Einträge und je 160 Zeichen gedeckelt und redigiert;
+keine rohen Tails, Helper-Namen, Netzwerkadressen oder Zugangsdaten werden übernommen.
+
+Fixture-Ausschnitt bei Worktree-HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:
+
+```json
+{"checks":{
+  "local":{"state":"green","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","at":300,"fails":[],"stale":false},
+  "preview":{"state":"red","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","at":300,"fails":["fixture rejection"],"stale":true},
+  "gate":null,
+  "audit":{"state":"waiting","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","at":100,"fails":[],"stale":false}
+},"reasons":[{"field":"checks.gate","reason":"gate-not-retained"}]}
+```
+
 Clone-Lanes gehören nicht zur Git-Worktree-Liste.
 
 ```json
@@ -2968,8 +3011,11 @@ Clone-Lanes gehören nicht zur Git-Worktree-Liste.
   "base":{"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
   "distance":{"ahead":1,"behind":0},"session":null,
   "target":{"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","behind":0,
-    "landed":"no","landedAs":null,"basis":"land-note"},"template":"missing","testinstanz":null,
-  "reasons":[{"field":"testinstanz","reason":"missingScript"},{"field":"target.landedAs","reason":"no-matching-land-note"}]}],"landNotes":{"truncated":false},"reasons":[]}],
+    "landed":"no","landedAs":null,"basis":"land-note"},
+  "checks":{"local":null,"preview":null,"gate":null,"audit":null},"template":"missing","testinstanz":null,
+  "reasons":[{"field":"testinstanz","reason":"missingScript"},{"field":"target.landedAs","reason":"no-matching-land-note"},
+    {"field":"checks.local","reason":"local-not-retained"},{"field":"checks.preview","reason":"preview-not-retained"},
+    {"field":"checks.gate","reason":"gate-not-retained"},{"field":"checks.audit","reason":"audit-not-retained"}]}],"landNotes":{"truncated":false},"reasons":[]}],
  "measuredAt":2000000000000,"cacheMs":3000}
 ```
 
@@ -2996,7 +3042,12 @@ Der Graph hat einen Deckel von 100000 Commits; bei Überschreitung bleiben alle 
 Instanzstatus benötigt höchstens einen begrenzten status-Aufruf je vorhandener Vorlage,
 mit maximal sechs gleichzeitig je Repo. Der 3-s-Cache teilt gleichzeitige Reads und bindet sich
 an Repo- und Occupant-/Basis-Auswahl; Git-/Script-Werte behalten ihre Messzeit bis zum Ablauf.
-Es gibt keinen neuen Tick und keine Hintergrund-Pollschleife.
+Die Prüfstände werden im selben Cache aus den bestehenden, bereits gedeckelten Job-Registern,
+Merge-Verdikten, Server-Läufen und der Audit-Queue gelesen. Ein gemeinsamer Ledger-Read je
+Neuberechnung liest nur die letzten 256 KiB aus active und .1 von post-land-audits.jsonl,
+höchstens 200 valide Zeilen insgesamt; angeschnittene Zeilen werden verworfen. Keine zusätzlichen
+Git-Aufrufe für checks, keine neue Speicherung. Es gibt keinen neuen Tick und keine
+Hintergrund-Pollschleife.
 
 `deployGap` trägt zusätzlich `lands:[{sha,branch,task,at,reasons}]` und `truncated`.
 Die Lands sind ausschließlich Commits mit einer `fleet/land`-Note im Bereich bootHead..head,

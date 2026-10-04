@@ -3465,3 +3465,9 @@ export {
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,
   helperArtifactGlobsFrom, helperArtifactsFrom,
 };
+
+export interface WorkplaceCheckObservation {
+  repo: string; branch: string; stage: "local" | "preview" | "gate" | "audit";
+  state: "running" | "green" | "red" | "skipped" | "waiting" | null;
+  head: string | null; at: number; fails: string[]; reason?: string; command?: string; order?: number;
+}

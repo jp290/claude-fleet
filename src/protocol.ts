@@ -710,12 +710,18 @@ export interface WorkplaceBranch {
   branch: "main" | "overhaul"; head: string | null;
   distance: WorktreeDistance | null; reasons: FactReason[];
 }
+export interface WorkplaceCheck {
+  state: "running" | "green" | "red" | "skipped" | "waiting";
+  head: string | null; at: number | null; fails: string[]; stale: boolean | null;
+}
+export type WorkplaceChecks = Record<"local" | "preview" | "gate" | "audit", WorkplaceCheck | null>;
 export interface WorkplaceRow {
   path: string; primary: boolean; branch: string | null; head: string | null;
   base: { branch: string; head: string } | null; distance: WorktreeDistance | null;
   session: { slot: number; openedAt: number } | null;
   target: { branch: string; head: string | null; behind: number | null;
     landed: "yes" | "no" | null; landedAs: string | null; basis: "land-note" };
+  checks: WorkplaceChecks;
   template: "present" | "missing" | null;
   testinstanz: { state: string; instance: Record<string, unknown> } | null;
   reasons: FactReason[];

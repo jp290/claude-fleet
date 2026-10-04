@@ -1,7 +1,8 @@
-import type { Workplaces, WorkplaceRepo } from "../src/protocol";
+import type { WorkplaceChecks, Workplaces, WorkplaceRepo } from "../src/protocol";
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
+import type { WorkplaceCheckObservation } from "../server/types";
 import { spawnSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -191,6 +192,8 @@ async function workplacesChecks(): Promise<void> {
     check("workplaces overhaul ahead is exclusive reachability against main", up?.head === aOverhaul && up.distance?.ahead === 1 && up.distance.behind === 0, JSON.stringify(up));
     check("workplaces overhaul behind is exclusive reachability against main", down?.head === bOverhaul && down.distance?.ahead === 0 && down.distance.behind === 1, JSON.stringify(down));
     const row = first?.worktrees?.find((w) => w.path === realpathSync(orphan));
+    check("workplaces wire carries all four missing check stages with reasons", !!row && ["local", "preview", "gate", "audit"].every((stage) =>
+      stage in row.checks && row.checks[stage as keyof WorkplaceChecks] === null && row.reasons.some((r) => r.field === `checks.${stage}`)));
     check("workplaces slotless row includes its actual HEAD and measured main basis", row?.session === null && row.head === aOverhaul
       && row.branch === "overhaul" && row.base?.head === aMain && row.distance?.ahead === 1 && row.distance.behind === 0, JSON.stringify(row));
     const sessions = await (await get("/api/sessions")).json() as { slots: Array<{ id: number; openedAt: number }> };
@@ -219,13 +222,14 @@ async function workplacesChecks(): Promise<void> {
       if (first < 0 || last <= first) throw new Error(`workplaces source fixture cannot resolve ${from}`);
       return source.slice(first, last);
     }).join("\n");
-    type FixtureOccupant = { id: number; openedAt: number; cwd: string; worktree: { repo: string; base: string; baseSha: string } };
+    type FixtureOccupant = { id: number; openedAt: number; cwd: string; worktree: { repo: string; base: string; baseSha: string; branch?: string } };
     const holderFixture = (): FixtureOccupant => ({ id: 42, openedAt: 100, cwd: realpathSync(b),
       worktree: { repo: realpathSync(b), base: "overhaul", baseSha: bOverhaul } });
-    const compile = (code: string, occupants: FixtureOccupant[], graphFails = false, statusAwait?: () => Promise<void>, notesFail = false, gitCalls?: string[]) => {
+    const compile = (code: string, occupants: FixtureOccupant[], graphFails = false, statusAwait?: () => Promise<void>, notesFail = false, gitCalls?: string[], sources: Record<string, unknown> = {}) => {
       const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
-      return new Function("slots", "DISPATCH_REPO", "gitRead", "testinstanzCommand", "existsSync", "realpathSync", "statSync", "lstatSync", "HOST",
-        `${js}\nreturn { repo: workplaceRepo, read: workplaces };`)(occupants, realpathSync(b),
+      return new Function("slots", "DISPATCH_REPO", "gitRead", "testinstanzCommand", "existsSync", "realpathSync", "statSync", "lstatSync", "HOST", "commandJobs", "laneSuiteJobs", "mergeLast", "mergeParked", "serverRuns",
+        "runningPostLandAudit", "auditQueue", "auditQueueGroups", "auditCmdFor", "repoCanon", "localFailNames", "POSTLAND_AUDIT_FILE", "validAuditRow", "helperClaims", "auditShardRuns", "coverKey",
+        `${js}\nreturn { repo: workplaceRepo, read: workplaces, observations: workplaceCheckObservations, checks: workplaceChecks, audits: workplaceAuditReading };`)(occupants, realpathSync(b),
         async (repo: string, ...args: string[]) => {
           gitCalls?.push(args[0]);
           if (notesFail && args[0] === "log") return { code: 128, out: "" };
@@ -235,8 +239,126 @@ async function workplacesChecks(): Promise<void> {
           await statusAwait?.();
           const r = spawnSync(`${path}/testinstanz.sh`, args, { cwd: path, encoding: "utf8" });
           return { code: r.status, out: r.stdout };
-        }, existsSync, realpathSync, statSync, lstatSync, "") as { repo: (repo: string) => Promise<WorkplaceRepo>; read: () => Promise<Workplaces> };
+        }, existsSync, realpathSync, statSync, lstatSync, "", sources.jobs ?? new Map(), sources.previews ?? new Map(), sources.merges ?? new Map(), sources.parked ?? new Map(),
+        sources.runs ?? new Map(), sources.running ?? null, sources.queue ?? new Map(),
+        (q: unknown) => [q], () => sources.configured !== false, (r: string) => r,
+        (text: string) => text.split("\n").filter((l) => l.startsWith("FAIL  ")).map((l) => l.slice(6).split("  (")[0]),
+        sources.auditFile ?? `${dir}/absent-audits`, (row: unknown) => {
+          if (!row || typeof row !== "object" || !("covers" in row) || !Array.isArray(row.covers)) return null;
+          return row;
+        }, sources.claims ?? new Map(), sources.auditShards ?? new Map(),
+        (c: { branch: string; mainAfter: string; at: number }) => JSON.stringify([c.branch, c.mainAfter, c.at])) as { observations: (repo: string, notes: { rows: unknown[] }, audits: { rows: unknown[]; reason: string }) => WorkplaceCheckObservation[];
+          checks: (repo: string, branch: string | null, head: string | null, observations: WorkplaceCheckObservation[], auditReason: string,
+            reasons: Array<{ field: string; reason: string }>) => WorkplaceChecks;
+          audits: () => Promise<{ rows: unknown[]; reason: string }>;
+          repo: (repo: string) => Promise<WorkplaceRepo>; read: () => Promise<Workplaces> };
     };
+    const checkHead = "a".repeat(40), oldHead = "b".repeat(40), checkBranch = "fixture-lane", checkRepo = realpathSync(b);
+    const checkHolder = { ...holderFixture(), worktree: { ...holderFixture().worktree, branch: checkBranch } };
+    const fixtureSources = (stage: keyof WorkplaceChecks, state: "green" | "red" | "running" | "waiting" | "skipped", sha = checkHead): Record<string, unknown> => {
+      const result = state === "green" || state === "red" ? { result: state, fails: state === "red" ? ["fixture rejection"] : [], remote: { reportedAt: 300 } } : null;
+      const j = { repo: checkRepo, branch: checkBranch, slot: 99, slotOpenedAt: 1, cmd: "bun run build", commitSha: sha,
+        offeredAt: 100, state: result ? "reported" : state === "running" ? "claimed" : "open",
+        claim: state === "running" ? { claimedAt: 200, expiresAt: Number.MAX_SAFE_INTEGER } : null, result };
+      if (stage === "local") return { jobs: new Map([["fixture", j]]) };
+      if (stage === "preview") return { previews: new Map([["fixture", j]]) };
+      if (stage === "gate") return state === "running" ? { runs: new Map([["land:42", { repo: checkRepo, branch: checkBranch, suite: "land gate", at: 200 }]]) }
+        : { merges: new Map([[42, { branch: checkBranch, candidateSha: sha, at: 300,
+          verify: { ok: state === "green", out: state === "red" ? "FAIL  fixture rejection" : "" } }]]) };
+      const covers = [{ branch: checkBranch, mainAfter: sha, at: 100 }];
+      return state === "running" ? { running: { repo: checkRepo, mainSha: sha, startedAt: 200, covers } }
+        : state === "waiting" || state === "skipped" ? { queue: new Map([[checkRepo, { covers }]]), configured: state !== "skipped" }
+        : {};
+    };
+    const observe = (stage: keyof WorkplaceChecks, state: "green" | "red" | "running" | "waiting" | "skipped", sha = checkHead,
+      override: Record<string, unknown> = {}, code = functions) => {
+      const fixture = compile(code, [checkHolder], false, undefined, false, undefined, { ...fixtureSources(stage, state, sha), ...override });
+      const auditRows = stage === "audit" && (state === "green" || state === "red") ? [{ repo: checkRepo, mainSha: sha, at: 300, result: state,
+        covers: [{ branch: checkBranch, mainAfter: sha, at: 100 }], fails: state === "red" ? ["fixture rejection"] : [] }] : [];
+      const observations = fixture.observations(checkRepo, { rows: [] }, { rows: auditRows, reason: "audit-not-retained" });
+      const reasons: Array<{ field: string; reason: string }> = [];
+      return { checks: fixture.checks(checkRepo, checkBranch, checkHead, observations, "audit-not-retained", reasons), reasons, observations };
+    };
+    for (const stage of ["local", "preview", "gate", "audit"] as const) {
+      const green = observe(stage, "green"), red = observe(stage, "red"), running = observe(stage, "running"), stale = observe(stage, "green", oldHead);
+      check(`workplaces checks ${stage} green retains measured SHA and time`, green.checks[stage]?.state === "green"
+        && green.checks[stage]?.head === checkHead && green.checks[stage]?.at === 300 && green.checks[stage]?.stale === false);
+      check(`workplaces checks ${stage} red names the failed fixture`, red.checks[stage]?.state === "red" && red.checks[stage]?.fails[0] === "fixture rejection");
+      check(`workplaces checks ${stage} running is distinct from a prior result`, running.checks[stage]?.state === "running" && running.checks[stage]?.at === 200);
+      check(`workplaces checks ${stage} stale compares the recorded SHA to worktree HEAD`, stale.checks[stage]?.stale === true && stale.checks[stage]?.head === oldHead);
+      const missing = compile(functions, []).checks(checkRepo, checkBranch, checkHead, [], "audit-not-retained", []);
+      const why: Array<{ field: string; reason: string }> = [];
+      compile(functions, []).checks(checkRepo, checkBranch, checkHead, [], "audit-not-retained", why);
+      check(`workplaces checks ${stage} missing stays null with a named reason`, missing[stage] === null && why.some((r) => r.field === `checks.${stage}` && r.reason === `${stage}-not-retained`));
+      const staleMutant = functions.replace("sha !== head", "false");
+      check(`workplaces checks ${stage} mutation rejects masking stale evidence`, staleMutant !== functions && observe(stage, "green", oldHead, {}, staleMutant).checks[stage]?.stale !== true);
+      const branchMutant = functions.replace("o.branch === branch &&", "");
+      const other = { ...green.observations[0], branch: "another-branch" };
+      const rejectsOther = (code: string) => compile(code, []).checks(checkRepo, checkBranch, checkHead, [other], "audit-not-retained", [])[stage] === null;
+      check(`workplaces checks ${stage} branch mutation rejects another lane's evidence`, rejectsOther(functions) && !rejectsOther(branchMutant));
+    }
+    for (const stage of ["local", "preview", "audit"] as const)
+      check(`workplaces checks ${stage} waiting names queued work`, observe(stage, "waiting").checks[stage]?.state === "waiting");
+    check("workplaces checks parked audit is skipped rather than waiting", observe("audit", "skipped").checks.audit?.state === "skipped");
+    const recycled = observe("gate", "green", checkHead, { merges: new Map([[42, { branch: "previous-lane", candidateSha: checkHead, at: 300, verify: { ok: true, out: "" } }]]) });
+    check("workplaces checks recycled slot never lends its old gate to the current branch", recycled.checks.gate === null);
+    const remoteCovers = [{ branch: checkBranch, mainAfter: checkHead, at: 100 }];
+    const remoteClaim = { repo: checkRepo, mainSha: checkHead, claimedAt: 200, expiresAt: Number.MAX_SAFE_INTEGER, covers: remoteCovers };
+    const remoteAudit = observe("audit", "waiting", checkHead, { claims: new Map([[checkRepo, remoteClaim]]) });
+    check("workplaces checks remote audit claim masks its queued cover by value", remoteAudit.checks.audit?.state === "running" && remoteAudit.checks.audit.at === 200);
+    const remoteShard = { repo: checkRepo, mainSha: checkHead, firstClaimAt: 200, openUntil: Number.MAX_SAFE_INTEGER,
+      covers: remoteCovers, shards: [{ claim: { expiresAt: Number.MAX_SAFE_INTEGER } }] };
+    const shardedAudit = observe("audit", "waiting", checkHead, { auditShards: new Map([[checkRepo, remoteShard]]) });
+    check("workplaces checks sharded remote audit running masks its queued cover", shardedAudit.checks.audit?.state === "running");
+    const expiredAudit = observe("audit", "waiting", checkHead, { claims: new Map([[checkRepo, { ...remoteClaim, expiresAt: 1 }]]) });
+    check("workplaces checks expired remote audit cannot claim running or queued measurement", expiredAudit.checks.audit === null);
+    const missingSha = observe("gate", "running");
+    check("workplaces checks live gate never invents a candidate SHA", missingSha.checks.gate?.head === null && missingSha.checks.gate?.stale === null
+      && missingSha.reasons.some((r) => r.field === "checks.gate.head" && r.reason === "checked-head-unrecorded"));
+    const noteFixture = compile(functions, []);
+    const noteObservations = noteFixture.observations(checkRepo, { rows: [{ branch: checkBranch, sha: checkHead, at: 300, verify: { ok: true, out: "" } }] }, { rows: [], reason: "audit-not-retained" });
+    check("workplaces checks land-note gate survives a slotless lane", noteFixture.checks(checkRepo, checkBranch, checkHead, noteObservations, "audit-not-retained", []).gate?.state === "green");
+    const unownedMerge = compile(functions, [{ ...checkHolder, worktree: { ...checkHolder.worktree, repo: a } }], false, undefined, false, undefined, fixtureSources("gate", "green"));
+    const mismatchedMerge = unownedMerge.observations(checkRepo, { rows: [] }, { rows: [], reason: "audit-not-retained" });
+    check("workplaces checks merge slot with matching branch in another repo cannot join", unownedMerge.checks(checkRepo, checkBranch, checkHead, mismatchedMerge, "audit-not-retained", []).gate === null);
+    const skipGate = observe("gate", "green", checkHead, { merges: new Map([[42, { branch: checkBranch, candidateSha: checkHead, at: 300, verify: { ok: null, out: "" } }]]) });
+    check("workplaces checks explicit gate skip is skipped", skipGate.checks.gate?.state === "skipped");
+    for (const flag of ["timedOut", "waitedOut", "serverDown"] as const) {
+      const unmeasured = observe("gate", "green", checkHead, { merges: new Map([[42, { branch: checkBranch, candidateSha: checkHead, at: 300,
+        verify: { ok: null, out: "", [flag]: true } }]]) });
+      check(`workplaces checks gate ${flag} is null with a reason`, unmeasured.checks.gate === null && unmeasured.reasons.some((r) => r.field === "checks.gate"));
+    }
+    const projection = compile(functions, []);
+    const localBase = observe("local", "green").observations[0];
+    const aggregated = projection.checks(checkRepo, checkBranch, checkHead, [localBase, { ...localBase, command: "bun test", state: "red", fails: ["reject case"], at: 299 }], "audit-not-retained", []);
+    check("workplaces checks local aggregates latest distinct command proofs at one SHA", aggregated.local?.state === "red" && aggregated.local.fails[0] === "reject case");
+    const replacement = projection.checks(checkRepo, checkBranch, checkHead, [localBase, { ...localBase, state: "green", head: oldHead, at: 310, order: 50 },
+      { ...localBase, state: "waiting", head: null, at: 250, order: 250 }], "audit-not-retained", []);
+    check("workplaces checks newest offer supersedes older late-arriving verdict", replacement.local?.state === "waiting" && replacement.local.head === null);
+    const fixture = compile(functions, []), reasons: Array<{ field: string; reason: string }> = [];
+    const leakNames = Array.from({ length: 30 }, (_, i) => `fixture ${i} ` + "x".repeat(200));
+    const capped = fixture.checks(checkRepo, checkBranch, checkHead, [{ repo: checkRepo, branch: checkBranch, stage: "preview", head: checkHead,
+      state: "red", at: 300, fails: leakNames }], "audit-not-retained", reasons);
+    check("workplaces checks failure names have both count and character caps", capped.preview?.fails.length === 20 && capped.preview.fails.every((n) => n.length === 160));
+    const otherRepo = observe("local", "green").observations.map((o) => ({ ...o, repo: a }));
+    check("workplaces checks equal branch and SHA in another repo cannot join", fixture.checks(checkRepo, checkBranch, checkHead, otherRepo, "audit-not-retained", []).local === null);
+    const protectedNames = fixture.checks(checkRepo, checkBranch, checkHead, [{ repo: checkRepo, branch: checkBranch, stage: "preview", head: checkHead,
+      state: "red", at: 300, fails: ["fixture https://fixture.invalid/ 192.0.2.1 token=SYNTHETIC_CHECK_SECRET"] }], "audit-not-retained", []);
+    check("workplaces checks redacts network addresses and credential-shaped fail details", protectedNames.preview?.fails[0] === "fixture [redacted] [redacted] [redacted]");
+    const unknownReason: Array<{ field: string; reason: string }> = [];
+    const unknown = fixture.checks(checkRepo, checkBranch, checkHead, [{ ...localBase, state: null, reason: "job-unmeasured" }], "audit-not-retained", unknownReason);
+    check("workplaces checks unknown result never becomes red or green", unknown.local === null && unknownReason.some((r) => r.reason === "job-unmeasured"));
+    const auditFile = `${dir}/audit-fixture`;
+    const auditRow = { repo: checkRepo, mainSha: checkHead, result: "green", at: 300, covers: [{ branch: checkBranch, mainAfter: checkHead, at: 100 }] };
+    writeFileSync(auditFile, JSON.stringify(auditRow) + "\n");
+    const readAudit = await compile(functions, [], false, undefined, false, undefined, { auditFile }).audits();
+    check("workplaces checks reads retained audit fixture from its existing ledger", readAudit.rows.length === 1);
+    writeFileSync(auditFile, "x".repeat(270_000) + "\n" + JSON.stringify(auditRow) + "\n");
+    const boundedAudit = await compile(functions, [], false, undefined, false, undefined, { auditFile }).audits();
+    check("workplaces checks audit byte cap keeps complete latest rows and names the history limit", boundedAudit.rows.length === 1 && boundedAudit.reason === "audit-history-capped");
+    writeFileSync(auditFile, Array.from({ length: 210 }, () => JSON.stringify(auditRow)).join("\n") + "\n");
+    const boundedRows = await compile(functions, [], false, undefined, false, undefined, { auditFile }).audits();
+    check("workplaces checks audit row cap is observable", boundedRows.rows.length === 200 && boundedRows.reason === "audit-history-capped");
     const distanceMutant = functions.replace("return { ahead, behind };", "return { ahead: behind, behind: ahead };");
     const claim = (r: WorkplaceRepo) => { const d = r.branches?.find((x) => x.branch === "overhaul")?.distance; return d?.ahead === 0 && d.behind === 1; };
     const baseline = await compile(functions, []).repo(b), mutated = await compile(distanceMutant, []).repo(b);

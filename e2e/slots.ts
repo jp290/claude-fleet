@@ -1081,7 +1081,7 @@ export async function run(): Promise<void> {
       statePath !== "" && agent === "alive" && !before.present,
       JSON.stringify({ statePath: statePath !== "", agent, before }));
     const auditFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").length - 1;
-    const scheduled = await post("/api/slots/3/autos", { text: autoText, inSec: 1, idleSec: 0 });
+    const scheduled = await post("/api/slots/3/autos", { text: autoText, everySec: 10, runs: 1, inSec: 1, idleSec: 0 });
     let queued: HeldAudit | undefined, skipped: HeldAudit | undefined;
     for (let i = 0; i < 200 && !queued && !skipped; i++) {
       const tail = auditTail(auditFrom);
@@ -1106,6 +1106,19 @@ export async function run(): Promise<void> {
     check("held bundle: the owner's send takes the held auto along, and afterwards the slot row carries no heldDeliveries",
       sent.ok && !after.present && countIn(turns, autoText) === 1 && countIn(turns, ownerText) === 1,
       JSON.stringify({ sent: sent.status, after, auto: countIn(turns, autoText), owner: countIn(turns, ownerText) }));
+    const oneShotText = `immediate-one-shot-${Date.now()}`;
+    const oneShotAuditFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").length - 1;
+    const oneShotStartedAt = Date.now();
+    const oneShot = await post("/api/slots/3/autos", { text: oneShotText, everySec: null, inSec: 1, idleSec: 0 });
+    for (let i = 0; i < 200 && countIn(turnsOf(), oneShotText) === 0; i++) await Bun.sleep(100);
+    const oneShotHeld = await heldOf();
+    const oneShotQueued = auditTail(oneShotAuditFrom).filter((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === 3 && r.path === "auto");
+    check("held bundle counterprobe: a one-shot arrives exactly once before the 30 s bundle deadline and is never held",
+      oneShot.ok && countIn(turnsOf(), oneShotText) === 1 && !oneShotHeld.present
+        && oneShotQueued.length === 0 && Date.now() - oneShotStartedAt < 30_000,
+      JSON.stringify({ scheduled: oneShot.status, turns: countIn(turnsOf(), oneShotText), held: oneShotHeld,
+        queued: oneShotQueued, elapsedMs: Date.now() - oneShotStartedAt }));
     await restartSrv();
   }
   await post("/api/slots/3/kill", {});

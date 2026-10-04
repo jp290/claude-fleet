@@ -6739,11 +6739,30 @@ export async function run(ctx: Ctx): Promise<void> {
           check(`(web) ${search ? "search" : "absent"}: dispatch starts the declared Codex lane`,
             dispatch.ok && started.ok === true && typeof row.slot === "number", `status=${dispatch.status}`);
           if (typeof row.slot !== "number") continue;
+          const slots = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string }[] };
+          const cwd = slots.slots.find((s) => s.id === row.slot)?.cwd;
+          check(`(web) ${search ? "search" : "absent"}: dispatched lane has its exact cwd for session trust`,
+            typeof cwd === "string" && existsSync(cwd), `cwd=${cwd ?? "absent"}`);
+          if (!cwd || !existsSync(cwd)) continue;
+          const reviewer = 'approvals_reviewer="user"';
+          const workspace = 'sandbox_workspace_write={writable_roots=[],network_access=false,exclude_tmpdir_env_var=false,exclude_slash_tmp=false}';
+          const mcp = 'mcp_servers.playwright={command="npx",args=["@playwright/mcp@latest"],enabled=false}';
+          const trust = `projects={${JSON.stringify(realpathSync(cwd))}={trust_level="trusted"}}`;
           const expected = (id?: string): string => `${id ? `codex resume '${id}'` : "codex"}`
-            + " --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false"
+            + " --no-daemon --sandbox danger-full-access --ask-for-approval never"
+            + ` -c check_for_update_on_startup=false -c ${q(reviewer)} -c ${q(workspace)}`
             + " --model 'gpt-6-astra' -c model_reasoning_effort='high'"
-            + (search ? " --search" : "")
-            + ' -c \'mcp_servers.playwright={command="npx",args=["@playwright/mcp@latest"],enabled=false}\'';
+            + (search ? " --search" : "") + ` -c ${q(mcp)} -c ${q(trust)}`;
+          const expectedArgv = (id?: string): string[] => [
+            ...(id ? ["resume", id] : []), "--no-daemon", "--sandbox", "danger-full-access",
+            "--ask-for-approval", "never", "-c", "check_for_update_on_startup=false", "-c", reviewer,
+            "-c", workspace, "--model", "gpt-6-astra", "-c", "model_reasoning_effort=high",
+            ...(search ? ["--search"] : []), "-c", mcp, "-c", trust,
+          ];
+          const exactArgv = (args: string[], id?: string): boolean =>
+            JSON.stringify(args) === JSON.stringify(expectedArgv(id))
+              && !args.includes("--dangerously-bypass-approvals-and-sandbox")
+              && args.filter((arg) => arg === "--search").length === (search ? 1 : 0);
           const command = async (): Promise<string> => {
             const out = (await tmuxOut("display-message", "-p", "-t", `s${row.slot}`, "#{pane_start_command}")).out;
             const at = out.lastIndexOf("; codex ");
@@ -6756,10 +6775,27 @@ export async function run(ctx: Ctx): Promise<void> {
             const args = readFileSync(invoked, "utf8").trim().split("\n");
             check(`(web) ${search ? "search" : "absent"} ${phase}: generated command is byte-exact`,
               actual === wanted, JSON.stringify({ actual, wanted }));
-            check(`(web) ${search ? "search" : "absent"} ${phase}: stand-in receives the exact search selection`,
-              args.filter((arg) => arg === "--search").length === (search ? 1 : 0)
-              && (id ? args[0] === "resume" && args[1] === id : args[0] === "--dangerously-bypass-approvals-and-sandbox"),
-              `searchFlags=${args.filter((arg) => arg === "--search").length}`);
+            check(`(web) ${search ? "search" : "absent"} ${phase}: stand-in receives exact permissions, trust and search argv`,
+              exactArgv(args, id), JSON.stringify({ args, expected: expectedArgv(id) }));
+            const correct = expectedArgv(id);
+            const mutations: [string, string[]][] = [
+              ["bypass", [...correct, "--dangerously-bypass-approvals-and-sandbox"]],
+              ["daemon", correct.filter((arg) => arg !== "--no-daemon")],
+              ["sandbox", correct.map((arg) => arg === "danger-full-access" ? "workspace-write" : arg)],
+              ["approval", correct.map((arg) => arg === "never" ? "on-request" : arg)],
+              ["update", correct.map((arg) => arg === "check_for_update_on_startup=false" ? "check_for_update_on_startup=true" : arg)],
+              ["reviewer", correct.map((arg) => arg === reviewer ? 'approvals_reviewer="auto"' : arg)],
+              ["workspace", correct.map((arg) => arg === workspace ? 'sandbox_workspace_write={network_access=true}' : arg)],
+              ["model", correct.map((arg) => arg === "gpt-6-astra" ? "wrong-model" : arg)],
+              ["effort", correct.map((arg) => arg === "model_reasoning_effort=high" ? "model_reasoning_effort=low" : arg)],
+              ["MCP", correct.map((arg) => arg === mcp ? 'mcp_servers.playwright={enabled=true}' : arg)],
+              ["trust", correct.map((arg) => arg === trust ? 'projects={"/other"={trust_level="trusted"}}' : arg)],
+              ["search", search ? correct.filter((arg) => arg !== "--search") : [...correct, "--search"]],
+              ...(id ? [["resume ID", correct.map((arg) => arg === id ? "10000000-0000-4000-8000-000000000099" : arg)] as [string, string[]]] : []),
+            ];
+            const acceptedMutations = mutations.filter(([, changed]) => exactArgv(changed, id)).map(([name]) => name);
+            check(`(web) ${search ? "search" : "absent"} ${phase}: argv oracle rejects every changed contract field`,
+              acceptedMutations.length === 0, `accepted=${JSON.stringify(acceptedMutations)}`);
           };
           await observe();
           await until(async () => (await plogRead()).slice(promptsBefore).some((e) =>
@@ -6775,8 +6811,6 @@ export async function run(ctx: Ctx): Promise<void> {
             laneRestart.ok && laneRestarted.slot === row.slot && laneRestarted.delivered === true,
             `status=${laneRestart.status} error=${laneRestarted.error ?? "none"}`);
           if (laneRestart.ok) await observe(undefined, "lane restart");
-          const slots = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string }[] };
-          const cwd = slots.slots.find((s) => s.id === row.slot)?.cwd;
           const id = crypto.randomUUID();
           writeFileSync(join(sessionsDir, `rollout-web-${id}.jsonl`), JSON.stringify({ type: "session_meta",
             payload: { id, cwd, timestamp: new Date().toISOString(), thread_source: "user" } }) + "\n");

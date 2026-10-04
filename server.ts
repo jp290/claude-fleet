@@ -1,3 +1,4 @@
+import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorktreeDistance, DeployGap, DeployLand, FactReason } from "./src/protocol";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
 import type { SubscriptionUsage } from "./src/protocol";
@@ -7103,21 +7104,146 @@ async function laneRefsStale(w: LaneRef | null, cwd: string | null): Promise<boo
 // every open worktree of a repo, primary checkout first — `git worktree list` is the
 // single source of truth, so lanes whose slot was killed (worktree still on disk,
 // previously invisible anywhere in the UI) stay findable
-interface WtEntry { path: string; branch: string; primary: boolean }
-async function listWorktrees(root: string): Promise<WtEntry[]> {
+interface WtEntry { path: string; branch: string; primary: boolean; head?: string | null }
+async function listWorktrees(root: string, strict = false): Promise<WtEntry[]> {
   const ls = await gitRead(root, "worktree", "list", "--porcelain");
-  if (ls.code !== 0) return [];
+  if (ls.code !== 0) { if (strict) throw new Error("worktree-list-unreadable"); return []; }
   const out: WtEntry[] = [];
-  let cur: { path?: string; branch?: string } = {};
+  let cur: { path?: string; branch?: string; head?: string } = {};
   for (const line of [...ls.out.split("\n"), ""]) {
     if (line.startsWith("worktree ")) cur = { path: line.slice(9) };
+    else if (line.startsWith("HEAD ")) cur.head = line.slice(5);
     else if (line.startsWith("branch ")) cur.branch = line.slice(7).replace(/^refs\/heads\//, "");
     else if (!line.trim() && cur.path) {
-      out.push({ path: cur.path, branch: cur.branch ?? "(detached)", primary: out.length === 0 });
+      out.push({ path: cur.path, branch: cur.branch ?? "(detached)", primary: out.length === 0, head: cur.head && /^[0-9a-f]{40}$/.test(cur.head) ? cur.head : null });
       cur = {};
     }
   }
   return out;
+}
+
+const WORKPLACES_CACHE_MS = 3000;
+const WORKPLACES_GRAPH_CAP = 100_000;
+let workplacesCache: { key: string; value: Promise<Workplaces>; at: number } | null = null;
+function workplaceSession(path: string): Slot | undefined {
+  return slots.find((s) => { try { return !!s.cwd && realpathSync(s.cwd) === path; } catch { return false; } });
+}
+async function workplaceInstance(target: TestinstanzTarget): Promise<WorkplaceRow["testinstanz"]> {
+  const pathIdentity = testinstanzPathIdentity(target.path);
+  const script = lstatSync(`${target.path}/testinstanz.sh`);
+  if (!script.isFile() || (script.mode & 0o111) === 0 || testinstanzBusy.has(target.path)) return null;
+  const result = await testinstanzCommand(target.path, ["status", "--json"], 15_000);
+  const after = lstatSync(`${target.path}/testinstanz.sh`);
+  if (result.code < 0 || result.code > 1 || testinstanzPathIdentity(target.path) !== pathIdentity
+    || script.dev !== after.dev || script.ino !== after.ino || script.mtimeMs !== after.mtimeMs || script.size !== after.size) return null;
+  const instance = testinstanzObservation(result.out, target);
+  return { state: String(instance.state), instance };
+}
+async function workplaceRepo(repo: string): Promise<WorkplaceRepo> {
+  const reasons: FactReason[] = [];
+  let rows: WtEntry[];
+  try { rows = await listWorktrees(repo, true); }
+  catch { return { repo, branches: null, worktrees: null, reasons: [{ field: "repo", reason: "worktree-list-unreadable" }] }; }
+  const refs = await gitRead(repo, "show-ref", "--heads");
+  const heads = new Map<string, string>();
+  if (refs.code === 0) for (const line of refs.out.split("\n")) {
+    const m = /^([0-9a-f]{40}) refs\/heads\/(.+)$/.exec(line);
+    if (m) heads.set(m[2], m[1]);
+  }
+  const roots = new Set([...heads.values(), ...rows.map((w) => w.head).filter((x): x is string => !!x)]);
+  for (const w of rows) {
+    const s = workplaceSession(w.path);
+    if (s?.worktree?.baseSha && /^[0-9a-f]{40}$/.test(s.worktree.baseSha)) roots.add(s.worktree.baseSha);
+  }
+  const graph = roots.size ? await gitRead(repo, "rev-list", "--parents", `--max-count=${WORKPLACES_GRAPH_CAP + 1}`, ...roots, "--") : null;
+  const lines = graph?.out.split("\n").filter(Boolean) ?? [];
+  const parents = new Map<string, string[]>();
+  const graphReason = !graph || graph.code !== 0 ? "commit-graph-unreadable" : lines.length > WORKPLACES_GRAPH_CAP ? "commit-graph-capped" : null;
+  if (!graphReason) for (const line of lines) { const [sha, ...ps] = line.split(" "); parents.set(sha, ps); }
+  const reachable = new Map<string, Set<string>>();
+  const ancestors = (sha: string): Set<string> | null => {
+    if (graphReason || !parents.has(sha)) return null;
+    const cached = reachable.get(sha); if (cached) return cached;
+    const seen = new Set<string>(), stack = [sha];
+    while (stack.length) { const h = stack.pop()!; if (seen.has(h)) continue; seen.add(h); stack.push(...(parents.get(h) ?? [])); }
+    reachable.set(sha, seen); return seen;
+  };
+  const distance = (head: string | null, base: string | null): WorktreeDistance | null => {
+    const h = head ? ancestors(head) : null, b = base ? ancestors(base) : null;
+    if (!h || !b) return null;
+    let ahead = 0, behind = 0;
+    for (const sha of h) if (!b.has(sha)) ahead++;
+    for (const sha of b) if (!h.has(sha)) behind++;
+    return { ahead, behind };
+  };
+  const main = heads.get("main") ?? null;
+  const branches: WorkplaceRepo["branches"] = refs.code !== 0 && refs.code !== 1 ? null : (["main", ...(heads.has("overhaul") ? ["overhaul"] : [])] as Array<"main" | "overhaul">).map((branch) => {
+    const head = heads.get(branch) ?? null, d = distance(head, main), why: FactReason[] = [];
+    if (!head) why.push({ field: "head", reason: "branch-missing" });
+    if (!d) why.push({ field: "distance", reason: graphReason ?? "main-missing" });
+    return { branch, head, distance: d, reasons: why };
+  });
+  if (!branches) reasons.push({ field: "branches", reason: "branch-refs-unreadable" });
+  const readRow = async (w: WtEntry): Promise<WorkplaceRow> => {
+    const why: FactReason[] = [], holder = workplaceSession(w.path);
+    const branch = w.branch === "(detached)" ? null : w.branch;
+    const baseBranch = holder?.worktree?.base ?? "main";
+    const baseHead = holder?.worktree?.baseSha ?? heads.get(baseBranch) ?? null;
+    const base = baseHead && ancestors(baseHead) ? { branch: baseBranch, head: baseHead } : null;
+    const d = distance(w.head ?? null, base?.head ?? null);
+    if (!branch) why.push({ field: "branch", reason: "detached-head" });
+    if (!w.head) why.push({ field: "head", reason: "worktree-head-unreadable" });
+    if (!base) why.push({ field: "base", reason: graphReason ?? "base-unreadable" });
+    if (!d) why.push({ field: "distance", reason: graphReason ?? "base-or-head-unreadable" });
+    let template: WorkplaceRow["template"] = null, testinstanz: WorkplaceRow["testinstanz"] = null;
+    if (!testinstanzPathIdentity(w.path)) why.push({ field: "template", reason: "worktree-unreadable" });
+    else try {
+      const script = lstatSync(`${w.path}/testinstanz.sh`);
+      template = script.isFile() && (script.mode & 0o111) !== 0 ? "present" : "missing";
+    } catch (e: unknown) {
+      if (e !== null && typeof e === "object" && "code" in e && e.code === "ENOENT") template = "missing";
+      else why.push({ field: "template", reason: "template-unreadable" });
+    }
+    if (template === "present") {
+      try { testinstanz = await workplaceInstance({ repo, path: w.path, primary: w.primary, identity: "" }); } catch { /* named below */ }
+    }
+    if (!testinstanz) why.push({ field: "testinstanz", reason: template === "missing" ? "missingScript" : "instance-unreadable-or-busy" });
+    else {
+      const nulls = (value: Record<string, unknown>, prefix: string) => {
+        for (const [key, v] of Object.entries(value)) {
+          if (v === null) why.push({ field: `${prefix}.${key}`, reason: key === "copyHead" ? "copy-version-unproven" : "instance-field-unrecorded" });
+          else if (v && typeof v === "object" && !Array.isArray(v)) nulls(v as Record<string, unknown>, `${prefix}.${key}`);
+        }
+      };
+      nulls(testinstanz.instance, "testinstanz.instance");
+      if (testinstanz.state === "unknown") why.push({ field: "testinstanz.state", reason: "instance-state-unproven" });
+    }
+    return { path: w.path, primary: w.primary, branch, head: w.head ?? null, base, distance: d,
+      session: null, template, testinstanz, reasons: why };
+  };
+  const worktrees: WorkplaceRow[] = new Array(rows.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(6, rows.length) }, async () => {
+    for (;;) { const i = next++; if (i >= rows.length) return; worktrees[i] = await readRow(rows[i]); }
+  }));
+  return { repo, branches, worktrees, reasons };
+}
+async function workplaces(): Promise<Workplaces> {
+  const repos = [...new Set(knownRepos().map((r) => { try { return realpathSync(r); } catch { return r; } }))];
+  const key = JSON.stringify([repos, slots.filter((s) => s.cwd).map((s) => [s.id, s.openedAt, s.cwd, s.worktree?.base, s.worktree?.baseSha])]);
+  if (!workplacesCache || workplacesCache.key !== key || Date.now() - workplacesCache.at >= WORKPLACES_CACHE_MS) {
+    const entry: NonNullable<typeof workplacesCache> = { key, at: Number.POSITIVE_INFINITY, value: Promise.all(repos.map(async (repo): Promise<WorkplaceRepo> => {
+      try { return await workplaceRepo(repo); } catch { return { repo, branches: null, worktrees: null,
+        reasons: [{ field: "repo", reason: "repo-observation-failed" }] }; }
+    }))
+      .then((rows) => { entry.at = Date.now(); return { repos: rows, measuredAt: entry.at, cacheMs: WORKPLACES_CACHE_MS }; }) };
+    workplacesCache = entry;
+  }
+  const value = await workplacesCache.value;
+  return { ...value, repos: value.repos.map((r) => ({ ...r, worktrees: r.worktrees?.map((w) => {
+    const holder = workplaceSession(w.path);
+    return { ...w, session: holder ? { slot: holder.id, openedAt: holder.openedAt } : null };
+  }) ?? null })) };
 }
 
 // the real risk behind a destructive action, computed once and shared by every surface
@@ -40314,37 +40440,66 @@ let BOOT_HEAD: string | null = null;
 const bootHeadReady = git(REPO_DIR, "rev-parse", "HEAD")
   .then((r) => { BOOT_HEAD = r.code === 0 && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null; })
   .catch(() => { BOOT_HEAD = null; }); // a boot-time throw must leave the fact unknown, not kill the server
-interface DeployGap {
-  bootHead: string | null; head: string | null; behindCount: number | null;
-  codeBehind: boolean | null;
-  // the third value made visible: paths in the range that the import graph could place on NEITHER
-  // side. They are counted in codeBehind (unknown is never an all-clear) but are not claimed to be
-  // server code. `null` wherever codeBehind itself is null — an unmeasured range names nothing.
-  codeBehindUnknown: string[] | null;
+const DEPLOY_LANDS_CAP = 20;
+const DEPLOY_SCAN_CAP = 200;
+const DEPLOY_LANDS_CACHE_MS = 3000;
+let deployLandsCache: { head: string; at: number; value: Pick<DeployGap, "lands" | "truncated" | "reasons"> } | null = null;
+async function deployLands(head: string): Promise<Pick<DeployGap, "lands" | "truncated" | "reasons">> {
+  if (deployLandsCache?.head === head && Date.now() - deployLandsCache.at < DEPLOY_LANDS_CACHE_MS) return deployLandsCache.value;
+  const r = await gitRead(REPO_DIR, "log", "--no-color", "--no-show-signature", "--notes=fleet/land",
+    `--max-count=${DEPLOY_SCAN_CAP + 1}`, "--format=%H%x00%N%x00", `${BOOT_HEAD}..${head}`, "--");
+  if (r.code !== 0) return { lands: null, truncated: null, reasons: [{ field: "lands", reason: "land-notes-unreadable" }] };
+  const parts = r.out.split("\0"), lands: DeployLand[] = [];
+  let scanned = 0, truncated = false;
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const sha = parts[i].trim(), raw = parts[i + 1].trim();
+    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
+    if (++scanned > DEPLOY_SCAN_CAP) { truncated = true; break; }
+    if (!raw) continue;
+    if (lands.length >= DEPLOY_LANDS_CAP) { truncated = true; break; }
+    let note: Record<string, unknown> | null = null;
+    try { note = testinstanzRecord(JSON.parse(raw)); } catch { /* unreadable note remains a named land */ }
+    const actor = testinstanzRecord(note?.actor);
+    const branch = typeof note?.branch === "string" && /^[a-zA-Z0-9/_.-]+$/.test(note.branch) ? note.branch : null;
+    const taskValue = note?.task ?? actor?.task;
+    const task = typeof taskValue === "string" && /^[0-9a-f]{8,64}$/.test(taskValue) ? taskValue : null;
+    const at = typeof note?.at === "number" && Number.isSafeInteger(note.at) && note.at > 0 ? note.at : null;
+    const reasons: FactReason[] = [];
+    if (branch === null) reasons.push({ field: "branch", reason: "land-branch-unreadable" });
+    if (task === null) reasons.push({ field: "task", reason: "land-task-unrecorded-or-unreadable" });
+    if (at === null) reasons.push({ field: "at", reason: "land-time-unreadable" });
+    lands.push({ sha, branch, task, at, reasons });
+  }
+  const value = { lands, truncated, reasons: [] };
+  deployLandsCache = { head, at: Date.now(), value };
+  return value;
 }
 async function deployGap(): Promise<DeployGap> {
   await bootHeadReady;
   const unknown: DeployGap = {
     bootHead: BOOT_HEAD, head: null, behindCount: null, codeBehind: null, codeBehindUnknown: null,
+    lands: null, truncated: null, reasons: [{ field: "deployGap", reason: "boot-head-unreadable" }],
   };
   if (!BOOT_HEAD) return unknown;
   const hd = await git(REPO_DIR, "rev-parse", "HEAD");
-  if (hd.code !== 0 || !/^[0-9a-f]{40}$/.test(hd.out)) return unknown;
+  if (hd.code !== 0 || !/^[0-9a-f]{40}$/.test(hd.out)) return { ...unknown, reasons: [{ field: "deployGap", reason: "head-unreadable" }] };
   const head = hd.out;
   if (head === BOOT_HEAD) {
-    return { bootHead: BOOT_HEAD, head, behindCount: 0, codeBehind: false, codeBehindUnknown: [] };
+    return { bootHead: BOOT_HEAD, head, behindCount: 0, codeBehind: false, codeBehindUnknown: [], lands: [], truncated: false, reasons: [] };
   }
   const [cnt, names] = await Promise.all([
     git(REPO_DIR, "rev-list", "--count", `${BOOT_HEAD}..${head}`),
     git(REPO_DIR, "diff", "--name-only", BOOT_HEAD, head),
   ]);
   const n = Number(cnt.out);
-  if (cnt.code !== 0 || !Number.isInteger(n) || names.code !== 0) return { ...unknown, head };
+  const lands = await deployLands(head);
+  if (cnt.code !== 0 || !Number.isInteger(n) || names.code !== 0) return { ...unknown, head, ...lands,
+    reasons: [...lands.reasons, { field: "behindCount/codeBehind", reason: "deploy-range-unreadable" }] };
   // keyed on `head`, so the graph is walked once per land and not once per 10 s git tick
   const graph = repoGraph(REPO_DIR, head);
   const roles = names.out.split("\n").filter(Boolean).map((p) => [p, roleOf(p, graph)] as const);
   return {
-    bootHead: BOOT_HEAD, head, behindCount: n,
+    bootHead: BOOT_HEAD, head, behindCount: n, ...lands,
     codeBehind: roles.some(([, role]) => role !== "non-server"),
     codeBehindUnknown: roles.filter(([, role]) => role === "unknown")
       .map(([p]) => p).slice(0, CODE_BEHIND_UNKNOWN_CAP),
@@ -43034,6 +43189,11 @@ Bun.serve<WSData>({
 
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
+
+    if (url.pathname === "/api/worktrees" && req.method === "GET") {
+      if ([...url.searchParams.keys()].some((key) => key !== "token")) return json({ error: "worktrees accepts no selectors" }, 400);
+      return json(await workplaces());
+    }
 
     if (url.pathname === "/api/subscription-usage" && req.method === "GET") {
       if (url.search) return json({ error: "subscription usage accepts no query parameters" }, 400);

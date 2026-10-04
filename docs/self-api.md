@@ -2928,6 +2928,67 @@ Die Antwort bleibt an die Program- oder Rollenadresse des ursprünglichen Absend
 jeweiligen Lesen/Zustellen auf die dann gebundene Session auf. Die Owner-Route quittiert den
 Elterneintrag nicht. Fragen an den Owner laufen weiterhin über die Rückfrage-Kette.
 
+## Arbeitsorte — `GET /api/worktrees` (Owner)
+
+Eine reine Leseroute ohne Slot-Auswahl: `repos` kommt aus `server.ts#knownRepos`
+(Dispatch-Repo plus Repos belegter Slots), kanonische Duplikate werden zusammengeführt.
+Repos ohne diese Registrierung werden nicht durchsucht. Query-Selektoren, insbesondere freie
+`repo`/`path`-Werte, werden mit 400 verweigert; der vorhandene Owner-Auth-Kanal bleibt gültig.
+Self-, Share- und Steward-Credentials geben keine Leseberechtigung.
+
+Wire-Typ: `src/protocol.ts#Workplaces`. Die Antwort trägt `measuredAt` und `cacheMs:3000`.
+Je Repo stehen `branches` (immer main, overhaul nur bei vorhandenem lokalen Ref) und alle
+`worktrees` aus `listWorktrees`, einschließlich Haupt-Checkout, Detached- und slotloser Einträge.
+Branch-`distance` zählt `{ahead,behind}` exklusiv erreichbare Commits gegen main, keine
+Zeit- oder First-Parent-Schätzung. Worktree-`base` ist die gespeicherte Lane-Basis samt `baseSha`,
+sonst main; `distance` misst HEAD gegen genau diese Spitze. Eine fehlende Basis bleibt null.
+`session:{slot,openedAt}` wird beim Antworten aus dem aktuellen Occupant gejoint, sonst null.
+Clone-Lanes gehören nicht zur Git-Worktree-Liste.
+
+```json
+{"repos":[{"repo":"/fixture/repo","branches":[
+  {"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","distance":{"ahead":0,"behind":0},"reasons":[]},
+  {"branch":"overhaul","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","distance":{"ahead":1,"behind":0},"reasons":[]}
+],"worktrees":[{"path":"/fixture/worktree","primary":false,"branch":"overhaul",
+  "head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "base":{"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "distance":{"ahead":1,"behind":0},"session":null,"template":"missing","testinstanz":null,
+  "reasons":[{"field":"testinstanz","reason":"missingScript"}]}],"reasons":[]}],
+ "measuredAt":2000000000000,"cacheMs":3000}
+```
+
+`template` ist present bei einer ausführbaren regulären `testinstanz.sh`, missing bei fehlender
+oder nicht ausführbarer Vorlage, null bei nicht lesbarer Metadatenmessung. `testinstanz`
+enthält `{state,instance}` aus demselben `status --json` und `testinstanzObservation` wie der
+bestehende Testinstanz-Vertrag unten. `recordedSource.before/after` bleibt der damalige Stand;
+Worktree-HEAD ersetzt ihn nicht, `copyHead` bleibt null. Ablauf bleibt expired. Die Liste misst
+keine zusätzliche aktuelle Dirty-/Source-Beobachtung; dafür dient der vorhandene Read/Refresh.
+Sie startet, öffnet, stoppt und bereinigt keine Instanz. URLs und rohe Script-Ausgaben fehlen.
+Nicht lesbare Werte sind null mit `reasons:[{field,reason}]`, etwa worktree-list-unreadable,
+branch-refs-unreadable, commit-graph-unreadable, commit-graph-capped, base-unreadable,
+template-unreadable, missingScript, instance-unreadable-or-busy oder instance-field-unrecorded.
+`session:null` ist beobachtete Nichtbelegung, `branch:null` mit detached-head ein Detached-HEAD.
+
+Kosten: maximal drei lockfreie Git-Aufrufe je bekanntem Repo bei einer Cache-Neuberechnung:
+worktree list, show-ref und ein gemeinsamer rev-list --parents für Ref-/Worktree-/Basis-Spitzen.
+Der Graph hat einen Deckel von 100000 Commits; bei Überschreitung bleiben alle Abstände null.
+Instanzstatus benötigt höchstens einen begrenzten status-Aufruf je vorhandener Vorlage,
+mit maximal sechs gleichzeitig je Repo. Der 3-s-Cache teilt gleichzeitige Reads und bindet sich
+an Repo- und Occupant-/Basis-Auswahl; Git-/Script-Werte behalten ihre Messzeit bis zum Ablauf.
+Es gibt keinen neuen Tick und keine Hintergrund-Pollschleife.
+
+`deployGap` trägt zusätzlich `lands:[{sha,branch,task,at,reasons}]` und `truncated`.
+Die Lands sind ausschließlich Commits mit einer `fleet/land`-Note im Bereich bootHead..head,
+neueste zuerst; branch und at kommen aus der Note, task aus task oder actor.task.
+Fehlende Legacy-Taskbindung bleibt null mit land-task-unrecorded-or-unreadable. Unlesbare JSON-
+Notizen behalten ihre Commit-Sha und nennen die unlesbaren Felder. Andere Notizfelder fehlen.
+Deckel: 20 Lands und 200 untersuchte Commits; `truncated:true` bedeutet, dass mindestens einer
+der Deckel die vollständige Aufzählung verhindert. Ein zusätzlicher lockfreier git log liest
+Notizen und Bereich gemeinsam; Cache 3 Sekunden, an head gebunden. Fehlende Notiz ist kein
+Land. Unlesbarer Bereich/Notizref: lands und truncated null mit land-notes-unreadable; ein
+unlesbarer Boot-/Head-Stand nennt boot-head-unreadable/head-unreadable. Beim leeren Deploy-
+Abstand stehen lands:[], truncated:false. Land-, Verify- und Deploy-Aktionen bleiben getrennt.
+
 ## Testinstanz — bekannte Arbeitsorte, Lesen und ausdrückliche Gesten
 
 Eine Testinstanz ist eine isolierte Vorschau, kein Verify-Signal. Haupt-Checkout und slotlose

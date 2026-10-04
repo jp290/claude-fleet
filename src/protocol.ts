@@ -693,3 +693,32 @@ export function standSincePreview(preview: PackStandPreview | null, receipt: Pac
     if (!requested.includes(got.id)) packs.push({ id: got.id, stand: "extra", preview: null, delivered: str(got.sourceHash), why: null });
   return { head, previewHead, deliveredHead, packs };
 }
+
+export interface FactReason { field: string; reason: string }
+export interface WorktreeDistance { ahead: number; behind: number }
+export interface WorkplaceBranch {
+  branch: "main" | "overhaul"; head: string | null;
+  distance: WorktreeDistance | null; reasons: FactReason[];
+}
+export interface WorkplaceRow {
+  path: string; primary: boolean; branch: string | null; head: string | null;
+  base: { branch: string; head: string } | null; distance: WorktreeDistance | null;
+  session: { slot: number; openedAt: number } | null;
+  template: "present" | "missing" | null;
+  testinstanz: { state: string; instance: Record<string, unknown> } | null;
+  reasons: FactReason[];
+}
+export interface WorkplaceRepo {
+  repo: string; branches: WorkplaceBranch[] | null;
+  worktrees: WorkplaceRow[] | null; reasons: FactReason[];
+}
+export interface Workplaces { repos: WorkplaceRepo[]; measuredAt: number; cacheMs: number }
+export interface DeployLand {
+  sha: string; branch: string | null; task: string | null; at: number | null;
+  reasons: FactReason[];
+}
+export interface DeployGap {
+  bootHead: string | null; head: string | null; behindCount: number | null;
+  codeBehind: boolean | null; codeBehindUnknown: string[] | null;
+  lands: DeployLand[] | null; truncated: boolean | null; reasons: FactReason[];
+}

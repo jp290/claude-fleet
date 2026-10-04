@@ -1,9 +1,10 @@
+import type { Workplaces, WorkplaceRepo } from "../src/protocol";
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plantScreen, plogRead, post, restartSrv,
@@ -148,7 +149,99 @@ esac
   }
 }
 
+async function workplacesChecks(): Promise<void> {
+  const dir = mkdtempSync(`${ROOT}/workplaces-`), a = `${dir}/a`, b = `${dir}/b`, orphan = `${dir}/orphan`;
+  const git = (repo: string, ...args: string[]) => spawnSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], { encoding: "utf8" });
+  const commit = (repo: string) => { git(repo, "commit", "--allow-empty", "-qm", "fixture"); return git(repo, "rev-parse", "HEAD").stdout.trim(); };
+  const opened: Array<{ slot: number; cwd: string }> = [];
+  try {
+    for (const repo of [a, b]) { mkdirSync(repo); git(repo, "init", "-qb", "main"); commit(repo); }
+    const aMain = git(a, "rev-parse", "HEAD").stdout.trim();
+    git(a, "worktree", "add", "-qb", "overhaul", orphan, "main");
+    const aOverhaul = commit(orphan);
+    const bOverhaul = git(b, "rev-parse", "HEAD").stdout.trim();
+    git(b, "branch", "overhaul"); const bMain = commit(b);
+    for (const repo of [a, b]) {
+      const response = await post("/api/lanes", { repo });
+      const lane = await response.json() as { slot: number; cwd: string };
+      check("workplaces fixture repo is represented by its own occupied lane", response.status === 200 && !!lane.slot);
+      if (lane.slot) opened.push(lane);
+    }
+    if (opened.length !== 2) return;
+    const state = { state: "expired", expiresAt: 1000, procStatus: "alive", httpStatus: "healthy", identity: "matched",
+      recordedSource: { path: realpathSync(orphan), before: { head: aMain, branch: "overhaul", dirty: 1, measuredAt: 100 }, after: null },
+      token: "SYNTHETIC_WORKPLACES_SECRET", url: "http://fixture.invalid/" };
+    const trace = `${dir}/trace`;
+    writeFileSync(`${orphan}/testinstanz.sh`, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${trace}'\nprintf '%s' '${JSON.stringify(state)}'\n`);
+    chmodSync(`${orphan}/testinstanz.sh`, 0o700);
+    const anonymous = await fetch(BASE + "/api/worktrees");
+    check("workplaces owner reader refuses anonymous callers", anonymous.status === 401);
+    const laneToken = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { selfToken?: string }> }).slots?.[opened[0].slot]?.selfToken;
+    const laneRead = await fetch(BASE + "/api/worktrees", { headers: { "x-fleet-self-token": laneToken ?? "" } });
+    check("workplaces owner reader refuses a self principal", !!laneToken && laneRead.status === 401);
+    const selector = await get("/api/worktrees?repo=/arbitrary/path");
+    check("workplaces refuses request paths rather than selecting arbitrary repositories", selector.status === 400);
+    const response = await get("/api/worktrees");
+    const text = await response.text(), value = JSON.parse(text) as Workplaces;
+    const first = value.repos.find((r) => r.repo === realpathSync(a)), second = value.repos.find((r) => r.repo === realpathSync(b));
+    check("workplaces covers two known repos with their actual main tips", response.status === 200
+      && first?.branches?.find((r) => r.branch === "main")?.head === aMain
+      && second?.branches?.find((r) => r.branch === "main")?.head === bMain, text.slice(0, 1000));
+    const up = first?.branches?.find((r) => r.branch === "overhaul"), down = second?.branches?.find((r) => r.branch === "overhaul");
+    check("workplaces overhaul ahead is exclusive reachability against main", up?.head === aOverhaul && up.distance?.ahead === 1 && up.distance.behind === 0, JSON.stringify(up));
+    check("workplaces overhaul behind is exclusive reachability against main", down?.head === bOverhaul && down.distance?.ahead === 0 && down.distance.behind === 1, JSON.stringify(down));
+    const row = first?.worktrees?.find((w) => w.path === realpathSync(orphan));
+    check("workplaces slotless row includes its actual HEAD and measured main basis", row?.session === null && row.head === aOverhaul
+      && row.branch === "overhaul" && row.base?.head === aMain && row.distance?.ahead === 1 && row.distance.behind === 0, JSON.stringify(row));
+    const sessions = await (await get("/api/sessions")).json() as { slots: Array<{ id: number; openedAt: number }> };
+    const occupied = first?.worktrees?.find((w) => w.path === realpathSync(opened[0].cwd));
+    check("workplaces occupant joins slot plus exact openedAt", occupied?.session?.slot === opened[0].slot
+      && occupied.session.openedAt === sessions.slots.find((s) => s.id === opened[0].slot)?.openedAt, JSON.stringify(occupied?.session));
+    check("workplaces summary retains expired and recorded source without substituting current HEAD", row?.template === "present"
+      && row.testinstanz?.state === "expired" && row.testinstanz.instance.copyHead === null
+      && (row.testinstanz.instance.recordedSource as { before?: { head?: string } } | null)?.before?.head === aMain, JSON.stringify(row));
+    const foreign = second?.worktrees?.find((w) => w.primary);
+    check("workplaces foreign missing template is typed and instance unknown has a named reason", foreign?.template === "missing" && foreign.testinstanz === null
+      && foreign.reasons.some((r) => r.field === "testinstanz" && r.reason === "missingScript"), JSON.stringify(foreign));
+    check("workplaces summary emits no raw token, URL or host", !text.includes("SYNTHETIC_WORKPLACES_SECRET") && !text.includes("fixture.invalid") && !text.includes('"url"'));
+    const again = await (await get("/api/worktrees")).json() as Workplaces;
+    check("workplaces short cache avoids repeated status and carries measurement time", again.measuredAt === value.measuredAt
+      && again.cacheMs === 3000 && readFileSync(trace, "utf8") === "status --json\n");
+    const source = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const start = source.indexOf("async function workplaceRepo("), end = source.indexOf("async function workplaces()", start);
+    const body = source.slice(start, end);
+    const mutant = body.replace("return { ahead, behind };", "return { ahead: behind, behind: ahead };");
+    const evaluate = (code: string) => {
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
+      return new Function("gitRead", "listWorktrees", "workplaceSession", "WORKPLACES_GRAPH_CAP", "lstatSync", "workplaceInstance", "testinstanzPathIdentity", `${js}\nreturn workplaceRepo;`)(
+        async (repo: string, ...args: string[]) => { const r = git(repo, ...args); return { code: r.status, out: r.stdout.trim() }; },
+        async (repo: string) => { const r = git(repo, "worktree", "list", "--porcelain"); return r.stdout.trim().split("\n\n").map((block, i) => {
+          const lines = block.split("\n"); return { path: lines[0].slice(9), primary: i === 0,
+            head: lines.find((l) => l.startsWith("HEAD "))?.slice(5), branch: lines.find((l) => l.startsWith("branch "))?.slice(18) ?? "(detached)" };
+        }); }, () => undefined, 100_000, lstatSync, async () => null, (path: string) => { try { return realpathSync(`${path}/.git`); } catch { return null; } }) as (repo: string) => Promise<WorkplaceRepo>;
+    };
+    const claim = (r: WorkplaceRepo) => { const d = r.branches?.find((x) => x.branch === "overhaul")?.distance; return d?.ahead === 0 && d.behind === 1; };
+    const baseline = await evaluate(body)(b), mutated = await evaluate(mutant)(b);
+    check("workplaces mutation probe catches swapped ahead/behind on the fixture graph", body !== mutant && claim(baseline) && !claim(mutated), JSON.stringify({ baseline: baseline.branches, mutated: mutated.branches }));
+    renameSync(`${b}/.git`, `${b}/.git-hidden`);
+    try {
+      await Bun.sleep(3100);
+      const unreadable = await (await get("/api/worktrees")).json() as Workplaces;
+      const broken = unreadable.repos.find((r) => r.repo === realpathSync(b));
+      check("workplaces unreadable repo is null with its reason, never an empty worktree list", broken?.worktrees === null && broken.branches === null
+        && broken.reasons.some((r) => r.reason === "worktree-list-unreadable"), JSON.stringify(broken));
+    } finally { renameSync(`${b}/.git-hidden`, `${b}/.git`); }
+
+  } finally {
+    for (const lane of opened) await post(`/api/slots/${lane.slot}/kill`, {});
+    git(a, "worktree", "remove", "--force", orphan);
+    for (const lane of opened) git(lane.cwd.startsWith(a) ? a : b, "worktree", "remove", "--force", lane.cwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function run(lc: LaneCtx): Promise<void> {
+  await workplacesChecks();
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
   // assertions fail on real teardown paths.
   {

@@ -17860,7 +17860,9 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // Every await since the readiness wait was git or state work, and a kill or re-open in that window
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
-    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ${wt.path}/AGENTS.override.md`;
+    const deliveredBrief = clarify
+      ? `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${context.anchorBlock}`
+      : `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ${wt.path}/AGENTS.override.md`;
     await sendText(free, deliveredBrief, true, { path: "brief" });
     for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();

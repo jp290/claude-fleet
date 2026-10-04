@@ -7351,10 +7351,11 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       `tasksCapAt=${tasksCapAt} programsCapAt=${programsCapAt}`);
   }
 
-  const foundingBrief = server.match(/const deliveredBrief = `[^;]+;/)?.[0] ?? "";
+  const foundingBrief = server.match(/const deliveredBrief = clarify[\s\S]*?;/)?.[0] ?? "";
   pin(`${RULE_RECEIVER} — founding lane instructions live in the native file, with one brief pointer`,
     foundingBrief.includes("Session-Regeln:") && foundingBrief.includes("AGENTS.override.md")
-      && !/LANE_ROLE_CARD|laneExitFooter|anchorBlock|memoryBlock/.test(foundingBrief)
+      && !/LANE_ROLE_CARD|laneExitFooter|memoryBlock/.test(foundingBrief)
+      && foundingBrief.includes("${context.anchorBlock}")
       && /footer: footer \?\? \(position === "lane" \? laneExitFooter\(harness, null\)/.test(server)
       && server.includes('await writeLaneSessionAgents(wt.path, context.sessionAgents);'), foundingBrief);
 

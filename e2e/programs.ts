@@ -233,6 +233,7 @@ interface ContextReceipt {
     private?: { verdict: string; version: number | null } }[];
   omitted: { id: string; why: string; reason?: string | null }[];
   deliveredBytes: number; truncated: boolean;
+  sessionAgents?: { path: string; sha256: string; bytes: number };
   // absent on a row written before the renderer was named — that row's block is v1 by date
   renderer?: string;
   // optional because rows written before this field exist and are served unchanged (the legacy
@@ -10351,10 +10352,31 @@ export async function run(ctx: Ctx): Promise<void> {
         if (hit) { text = hit.text ?? ""; break; }
         await Bun.sleep(250);
       }
+      const pointerMark = "\n\nSession-Regeln: ";
+      const pointerPath = text.slice(text.lastIndexOf(pointerMark) + pointerMark.length);
+      const dispatchRules = text.includes(pointerMark) && existsSync(pointerPath) ? readFileSync(pointerPath, "utf8") : "";
+      const receiptBefore = await contextReceipts();
+      const nativeReceipt = receiptBefore.receipts.findLast((r) => r.slot === body.slot && r.taskId === taskId);
+      check("studio lane dispatch: native rules receipt matches the exact file, with no role, anchors, exit or memory copied into the brief",
+        nativeReceipt?.sessionAgents?.path === "AGENTS.override.md"
+          && nativeReceipt.sessionAgents.bytes === Buffer.byteLength(dispatchRules)
+          && nativeReceipt.sessionAgents.sha256 === createHash("sha256").update(dispatchRules).digest("hex")
+          && dispatchRules.includes("--- ROLLE --- Lane:") && dispatchRules.includes("HOW THIS LANE ENDS")
+          && !text.includes("--- ROLLE --- Lane:") && !text.includes("ContextPlan v2 anchors")
+          && !text.includes("HOW THIS LANE ENDS") && !text.includes("YOUR MEMORY"));
       if (succession && typeof body.slot === "number" && text) {
         const slot = body.slot;
         const before = await contextReceipts();
         const dispatchReceipt = before.receipts.findLast((r) => r.slot === slot && r.taskId === taskId);
+        const dispatchAnchorLines = ["ContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"];
+        for (const pack of dispatchReceipt?.selected ?? []) {
+          dispatchAnchorLines.push(pack.useWhen ? `- ${pack.id} — ${pack.useWhen}` : `- ${pack.id}`);
+          if (Array.isArray(pack.anchors)) for (const source of pack.anchors) dispatchAnchorLines.push(`  ${source.path} | ${source.anchor}`);
+        }
+        const dispatchAnchors = dispatchReceipt?.selected.length ? `\n\n${dispatchAnchorLines.join("\n")}` : "";
+        check("studio lane dispatch: every receipted public source anchor appears in its native rule file",
+          !!dispatchReceipt && dispatchReceipt.selected.length > 0 && dispatchReceipt.selected.every((pack) => Array.isArray(pack.anchors)
+            && pack.anchors.every((source) => dispatchRules.includes(source.path) && dispatchRules.includes(source.anchor))));
         const token = slotToken(slot);
         const predecessorAt = readState().slots?.[String(slot)]?.openedAt;
         const handoffText = "SUCCESSION CONTEXT: predecessor claims the next cut is still open.";
@@ -10387,8 +10409,8 @@ export async function run(ctx: Ctx): Promise<void> {
             selected: successorReceipt.selected, omitted: successorReceipt.omitted },
         })).digest("hex") : "";
         check("Lane succession context: same row delivers dispatch anchors and source excerpt, labels the predecessor claim, and writes one exact receipt",
-          report.ok && succeeded.ok && anchors(text).length > 0 && snippets(text).includes("function buildProgramMainBrief(")
-            && anchors(successorBrief) === anchors(text) && snippets(successorBrief) === snippets(text)
+          report.ok && succeeded.ok && dispatchAnchors.length > 0 && snippets(text).includes("function buildProgramMainBrief(")
+            && anchors(successorBrief) === dispatchAnchors && snippets(successorBrief) === snippets(text)
             && successorBrief.includes(handoffText) && successorBrief.includes("Behauptung deiner Vorgängerin")
             && !!dispatchReceipt && !!successorReceipt && after.total === before.total + 1
             && successorReceipt.id !== dispatchReceipt.id && successorReceipt.hash === receiptedHash
@@ -10396,7 +10418,7 @@ export async function run(ctx: Ctx): Promise<void> {
             && successorReceipt.deliveredBytes === new TextEncoder().encode(successorBrief).byteLength
             && JSON.stringify(successorReceipt.selected) === JSON.stringify(dispatchReceipt.selected)
             && JSON.stringify(successorReceipt.omitted) === JSON.stringify(dispatchReceipt.omitted),
-          `report=${report.status} succeed=${succeeded.status} anchors=${anchors(text).length}/${anchors(successorBrief).length} snippets=${snippets(text).length}/${snippets(successorBrief).length} receipts=${before.total}/${after.total}`);
+          `report=${report.status} succeed=${succeeded.status} anchors=${dispatchAnchors.length}/${anchors(successorBrief).length} snippets=${snippets(text).length}/${snippets(successorBrief).length} receipts=${before.total}/${after.total}`);
       } else if (succession) {
         check("Lane succession context fixture: dispatch must deliver before its successor can be measured", false,
           `${res.status} slot=${body.slot ?? "none"} briefBytes=${text.length}`);
@@ -10411,15 +10433,17 @@ export async function run(ctx: Ctx): Promise<void> {
     };
     const laneFree = await laneBriefOf(laneFreeRow.task.id);
     const laneBound = await laneBriefOf(laneBoundRow.task.id, true);
-    const laneFreePrompt = laneFree.text;
-    const laneBoundPrompt = laneBound.text;
+    const lanePromptShape = (prompt: string): string => {
+      const at = prompt.lastIndexOf("\n\nSession-Regeln: ");
+      return at >= 0 ? `${prompt.slice(0, at)}\n\nSession-Regeln: <lane>/AGENTS.override.md` : prompt;
+    };
+    const laneFreePrompt = lanePromptShape(laneFree.text);
+    const laneBoundPrompt = lanePromptShape(laneBound.text);
     // the lane seam: the block sits before the anchors for the rail's reason (the context receipt
     // hashes the anchor block alone), and before the exit footer, whose three acts stay last
     const laneSeam = (prompt: string): number => {
-      const anchors = prompt.indexOf("\n\nContextPlan v2 anchors");
-      if (anchors >= 0) return anchors;
-      const footer = prompt.indexOf("\n\n--- HOW THIS LANE ENDS");
-      return footer >= 0 ? footer : prompt.length;
+      const pointer = prompt.indexOf("\n\nSession-Regeln: ");
+      return pointer >= 0 ? pointer : prompt.length;
     };
     const expectedLaneBlock = [...expectedHead("Brief Studio v2", 2, 2),
       "", "STUDIO BRIEF BLOCKS for this brief (owner text, verbatim):",

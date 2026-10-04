@@ -92,6 +92,40 @@ const freeSlot = async (): Promise<number> =>
     .slots.find((x) => x.cwd === null)?.id ?? 0;
 
 export async function run(): Promise<void> {
+  {
+    const source = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const route = source.match(/    const attentionAnswer =[\s\S]*?(?=    \/\/ everything below carries authority)/)?.[0];
+    const reader = source.match(/async function readJson\(req: Request\)[\s\S]*?\n}/)?.[0];
+    check("attention auth fixture: the answer branch and body reader are executable server source",
+      !!route && !!reader);
+    if (route && reader) {
+      const dependencies = {
+        tokenOk: () => false, tokenFrom: () => "invalid", resolveSelfPrincipal: () => null,
+        slots: [], deliveryRecipient: () => null, tokenGate: async () => false,
+        json: (body: unknown, status: number) => Response.json(body, { status }),
+        answerAttention: () => { throw new Error("unauthorized answer reached mutation"); },
+      };
+      const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(
+        `${reader}\nasync function answer(req: Request, url: URL) { ${route}\nreturn null; }`);
+      const api = new Function(...Object.keys(dependencies), `${compiled}\nreturn { answer, readJson };`)(
+        ...Object.values(dependencies)) as {
+          answer: (req: Request, url: URL) => Promise<Response | null>;
+          readJson: (req: Request) => Promise<unknown>;
+        };
+      const url = new URL(`${BASE}/api/attention/${"0".repeat(24)}/answer`);
+      const req = new Request(url, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "unauthorized body" }) });
+      const response = await api.answer(req, url);
+      const wire = await fetch(url, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "unauthorized body" }) });
+      check("attention answer auth: an unauthorized POST with a body is 401 and leaves the body unread",
+        response?.status === 401 && wire.status === 401 && req.bodyUsed === false,
+        JSON.stringify({ branch: response?.status, wire: wire.status, bodyUsed: req.bodyUsed }));
+      const body = await api.readJson(req) as { text?: string } | null;
+      check("attention answer auth fixture: the same body reader consumes the retained request body",
+        req.bodyUsed && body?.text === "unauthorized body");
+    }
+  }
   // === ATTENTION-CHANNEL-V1 ====================================================================
   // The production default is intentionally on; this isolated process carries the explicit opt-out
   // through every later restart except the one block that measures the timer itself.

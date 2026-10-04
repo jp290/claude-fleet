@@ -10382,11 +10382,33 @@ async function mintDeployEvents(row: DeployRow): Promise<void> {
 // the fleet is restarting is not lost and a subscription made AFTER the verdict fires at once.
 // A job with no result yet mints nothing — that is the "stay armed, ask again" branch, and the
 // sweep guarantees every job eventually gets one (commandJobLapseResult).
-async function mintCommandJobEvents(j: CommandJob): Promise<void> {
+async function mintCommandJobEvents(j: CommandJob, notifyLane = false): Promise<void> {
   const r = j.result;
   if (!r) return;
   let dirty = false;
   const now = Date.now();
+  // Only reportCommandJob requests the automatic row, after consuming the claim synchronously.
+  // Watch re-derivation and rejected duplicate reports therefore cannot mint it a second time.
+  if (notifyLane) {
+    const lane = slots.find((s) => s.id === j.slot && s.openedAt === j.slotOpenedAt && s.cwd && s.worktree);
+    if (lane) {
+      const budget = slotDeliveryBudget(lane.id);
+      if (budget.free === 0) {
+        audit("command_job_event_skipped", lane.id, `job=${j.id} ${r.result} no delivery budget`);
+      } else {
+        const event: CommandJobFleetEvent = {
+          id: randomBytes(12).toString("hex"), watchId: null,
+          receiverSlot: lane.id, receiverOpenedAt: lane.openedAt, receiverSessionId: lane.sessionId,
+          receiverIdleSec: 0, subjectJobId: j.id,
+          kind: "command-job", payload: commandJobEventPayload(j, r), createdAt: now,
+          status: "pending", delivery: "pane", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+        };
+        fleetEvents = [...fleetEvents, event];
+        audit("command_job_event", lane.id, `${event.id} job=${j.id} ${r.result} → slot ${lane.id}`);
+        dirty = true;
+      }
+    }
+  }
   for (const w of watches) {
     if (!w.armed || watchKind(w) !== "job" || !("jobId" in w) || w.jobId !== j.id) continue;
     const receiver = slotFrom(w.slot);
@@ -28978,7 +29000,7 @@ async function reportCommandJob(j: CommandJob, body: Record<string, unknown> | n
     + `${clonedSha && j.commitSha && clonedSha !== j.commitSha
         ? ` — THE HELPER RAN ${clonedSha.slice(0, 8)}, NOT THE ${j.commitSha.slice(0, 8)} HANDED OVER` : ""}`
     + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
-  await mintCommandJobEvents(j);
+  await mintCommandJobEvents(j, true);
   await saveStateNow();
   return json({ ok: true, kind: "command", result, ...(reason ? { reason } : {}), artifacts: artifacts.length });
 }
@@ -42626,13 +42648,13 @@ Bun.serve<WSData>({
 
     const attentionAnswer = /^\/api\/attention\/([0-9a-f]{24})\/answer$/.exec(url.pathname);
     if (attentionAnswer && req.method === "POST" && !tokenOk(tokenFrom(req))) {
-      const body = await readJson(req);
       const principal = resolveSelfPrincipal(req);
       const orchestrator = principal?.kind === "session" ? slots[principal.slot - 1] : undefined;
       if (!orchestrator || deliveryRecipient({ kind: "orchestrator" }) !== orchestrator) {
         await tokenGate(tokenFrom(req));
         return json({ error: "unauthorized" }, 401);
       }
+      const body = await readJson(req);
       return answerAttention(attentionAnswer[1], body, orchestrator);
     }
 

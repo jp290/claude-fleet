@@ -405,9 +405,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   `no such command job — it was never offered, or it has been evicted` (409, das Register hält
   `COMMAND_JOB_KEEP` = 20 settled Zeilen).
 - **Die Nicht-Lane-Regel gilt unverändert.** Diese Art fügt der Route eine `kind` hinzu, keinen
-  Prinzipal: eine Lane bekommt weiter 409 `a lane may not subscribe`. Will eine Lane auf ihren
-  eigenen Command-Job geweckt werden, muss der Owner den Watch über `POST /api/slots/:id/watch`
-  setzen — oder die Lane liest `GET /api/self/jobs/:id`.
+  Prinzipal: eine Lane bekommt weiter 409 `a lane may not subscribe`. Das akzeptierte Verdikt ihres
+  eigenen Command-Jobs erhält sie automatisch ohne Watch über die bestehende FleetEvent-Rail
+  (§jobs).
 
 ## succeed / retire — `POST /api/self/succeed`, `POST /api/self/retire`
 
@@ -841,6 +841,8 @@ Rollenkarten in `docs/rollenkarten.md` sagen es für beide Seiten). Mechanik (`s
   `stage:"orchestrator"`-Zeile beantworten. Der Record trägt `answer.by:"orchestrator"` und
   `answer.slot` mit ihrem Slot. Andere Session-Token und Lane-Token sind 401; ihr Token auf einer
   `stage:"owner"`-Zeile ist 403. Diese Ablehnungen ändern weder Zeile noch Program-Inbox.
+  Die Authentisierung erfolgt vor dem Lesen des Bodys; ein unautorisierter Aufruf erhält 401,
+  ohne dass der JSON-Body gelesen wird.
   Der Owner-Bearer antwortet weiterhin in beiden Stufen mit `answer.by:„[Zitat entfernt]“`. Jede Antwort
   schreibt genau einen `attention-answer`-Zeiger in die Program-Inbox; identische Wiederholungen
   erhalten die gespeicherte Provenienz. Escalate bleibt hinter dem Owner-Bearer.
@@ -2963,6 +2965,14 @@ ein Grün über ein Kommando, das niemand verlangt hat. Der Claim lehnt so ein G
 ab (die Job-Liste allein ist kein Tor).
 
 Deckel: **3 offene Command-Jobs pro Session** (409), 20 settled Zeilen im Register.
+**Eine Lane erhält das akzeptierte terminale Verdikt automatisch in ihre Pane**, green wie red
+(auch ein vom Helfer gemeldetes `unknown`), ohne Watch und mit `receiverIdleSec: 0`. Der
+Result-Handler verbraucht zuerst den Claim und erzeugt genau eine `command-job`-Zeile auf der
+bestehenden FleetEvent-Rail; ein wiederholter Result-POST wird 409, ein späteres Watch-Abo erzeugt
+keine zweite automatische Zeile. Die Zeile bindet Slot, `openedAt` und Session-Id der anbietenden
+Occupation; eine Ersatz-Occupation erhält sie nicht. Die bestehenden Zustell-Gates und der
+Zustell-Deckel gelten weiterhin; bei vollem Budget nennt `command_job_event_skipped` den Grund.
+MAIN-Sessions nutzen weiterhin eine `job`-Watch. Die Quittung bleibt über die Lesetür verfügbar.
 `GET /api/self/jobs/:id` antwortet nur der anbietenden Session (sonst 404, nie fremde Arbeit).
 `POST /api/self/jobs/:id/withdraw` gilt für die anbietende Session (Slot und `openedAt`), Lane
 oder MAIN. Ein offener Job wird `withdrawn`: 200 mit `{ok:true,job:{...},mayRunLocally:true}`;

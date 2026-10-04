@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, ROOT, UntilTimeout, until, check, get, post, restartSrv, stopSrv } from "./harness";
+import { AUTOS_TICK_MS, BASE, REPO, ROOT, UntilTimeout, until, check, get, post, restartSrv, stopSrv, tmuxOut } from "./harness";
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
 import { suiteMeter, calmCase, laneDisplayName, laneTail, laneTitleOf, meterKind, meterLine, shortTitle, type MeterInput } from "../src/suitemeter";
@@ -1845,6 +1845,101 @@ export async function run(): Promise<void> {
         && mainBody.job?.state === "withdrawn" && mainBody.mayRunLocally === true,
       `${mainWithdraw.status} ${JSON.stringify(mainBody)}`);
     await post(`/api/slots/${foreignSlot}/kill`, {});
+
+    const paneLane = await bodyOf<Lane>(await post("/api/lanes", { repo: REPO, harness: "pi" }));
+    const paneToken = await selfTokenOf(paneLane.slot);
+    const paneSelf = await bodyOf<{ position?: { role?: string }; slot?: number }>(
+      await selfGet("/api/self", paneToken));
+    check("(LS.cmd rail) fixture: a distinct pi lane has a current scoped credential",
+      paneSelf.slot === paneLane.slot && paneSelf.position?.role === "lane" && paneLane.slot !== ln.slot);
+    const commandEvents = async (id: string): Promise<EventRow[]> =>
+      (await bodyOf<{ events?: EventRow[] }>(await get("/api/events"))).events
+        ?.filter((e) => e.kind === "command-job" && e.subjectJobId === id) ?? [];
+    const commandHistory = async (id: string) =>
+      (await bodyOf<{ history?: { text: string; openedAt?: number }[] }>(
+        await get(`/api/slots/${paneLane.slot}/history`))).history
+        ?.filter((h) => h.text.includes(` ${id} reached terminal result=`)) ?? [];
+    const offerCommand = async () => {
+      await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME,
+        features: [...DAEMON_FEATURES], daemonSha: git(ROOT, "rev-parse", "HEAD") });
+      const offered = await bodyOf<{ jobId?: string }>(
+        await selfPost("/api/self/jobs", paneToken, { cmd: "./e2e-security.sh" }));
+      const id = offered.jobId ?? "";
+      const claimed = await hpost("/api/helper/claim", { jobId: id, deviceId: DEVICE });
+      check("(LS.cmd rail) fixture: the helper claims the lane's command", claimed.ok && !!id,
+        `${claimed.status} job=${id}`);
+      return id;
+    };
+    try {
+      await restartSrv({ FLEET_HARNESS_AUTOMATION: "1" });
+      await selfGet("/api/self", paneToken);
+      const deniedWatch = await selfPost("/api/self/watch", paneToken, { kind: "job", target: "0".repeat(12) });
+      check("(LS.cmd rail) a lane still cannot subscribe", deniedWatch.status === 409);
+      for (const [result, exitCode] of [["green", 0], ["red", 1]] as const) {
+        const id = await offerCommand();
+        const reported = await hpost("/api/helper/result", { jobId: id, exitCode, artifacts: [],
+          tail: exitCode === 0 ? "ALL PASS" : "FAIL  command rail fixture\n1 FAILURES" });
+        const duplicate = await hpost("/api/helper/result", { jobId: id, exitCode, artifacts: [] });
+        let history = await commandHistory(id);
+        for (let i = 0; i < 150 && history.length === 0; i++) {
+          await Bun.sleep(100);
+          history = await commandHistory(id);
+        }
+        const events = await commandEvents(id);
+        const event = events[0];
+        check(`(LS.cmd rail) ${result} reaches the offering pane exactly once without a watch`,
+          reported.ok && duplicate.status === 409 && events.length === 1
+            && event?.watchId === null && event.delivery === "pane" && event.receiverIdleSec === 0
+            && event.receiverSlot === paneLane.slot && event.payload?.result === result
+            && event.payload.exitCode === exitCode && history.length === 1
+            && history[0]?.openedAt === event.receiverOpenedAt
+            && history[0]?.text.includes(`result=${result};`),
+          JSON.stringify({ reported: reported.status, duplicate: duplicate.status, events, history: history.length }));
+        await restartSrv({ FLEET_HARNESS_AUTOMATION: "1" });
+        await Bun.sleep(2 * AUTOS_TICK_MS + 2000);
+        check(`(LS.cmd rail) ${result} is not replayed after restart`,
+          (await commandEvents(id)).length === 1 && (await commandHistory(id)).length === 1);
+        if (event) await selfPost(`/api/self/events/${event.id}/ack`, paneToken);
+      }
+      await tmuxOut("send-keys", "-t", `s${paneLane.slot}`, "owner draft");
+      let screen = await tmuxOut("capture-pane", "-t", `s${paneLane.slot}`, "-p", "-J");
+      for (let i = 0; i < 50 && !screen.out.includes("owner draft"); i++) {
+        await Bun.sleep(100);
+        screen = await tmuxOut("capture-pane", "-t", `s${paneLane.slot}`, "-p", "-J");
+      }
+      check("(LS.cmd rail) fixture: an owner draft holds pane delivery", screen.out.includes("owner draft"));
+      const pendingId = await offerCommand();
+      const pendingReport = await hpost("/api/helper/result", { jobId: pendingId, exitCode: 0, artifacts: [] });
+      await Bun.sleep(2 * AUTOS_TICK_MS + 2000);
+      const pending = (await commandEvents(pendingId))[0];
+      check("(LS.cmd rail) fixture: the terminal verdict is pending for the original occupant",
+        pendingReport.ok && pending?.status === "pending" && (await commandHistory(pendingId)).length === 0);
+      const staleId = await offerCommand();
+      const before = await bodyOf<{ slots?: { id: number; openedAt?: number }[] }>(await get("/api/sessions"));
+      const oldOpenedAt = before.slots?.find((s) => s.id === paneLane.slot)?.openedAt;
+      await post(`/api/slots/${paneLane.slot}/kill`, {});
+      const replacement = await post(`/api/slots/${paneLane.slot}/open`, { cwd: REPO, harness: "pi" });
+      const replacementToken = await selfTokenOf(paneLane.slot);
+      const after = await bodyOf<{ slots?: { id: number; openedAt?: number }[] }>(await get("/api/sessions"));
+      const newOpenedAt = after.slots?.find((s) => s.id === paneLane.slot)?.openedAt;
+      check("(LS.cmd rail) fixture: the offering slot has a different occupant",
+        replacement.ok && typeof oldOpenedAt === "number" && typeof newOpenedAt === "number"
+          && oldOpenedAt !== newOpenedAt && replacementToken !== paneToken);
+      const staleReport = await hpost("/api/helper/result", { jobId: staleId, exitCode: 0, artifacts: [] });
+      await Bun.sleep(2 * AUTOS_TICK_MS + 2000);
+      check("(LS.cmd rail) a late verdict never reaches the replacement occupant",
+        staleReport.status === 409 && (await commandEvents(staleId)).length === 0
+          && (await commandHistory(staleId)).length === 0,
+        `status=${staleReport.status} job=${staleId}`);
+      const replacedEvents = await commandEvents(pendingId);
+      check("(LS.cmd rail) a pending verdict is never pasted into the replacement pane",
+        replacedEvents.length === 1 && replacedEvents[0]?.receiverOpenedAt === oldOpenedAt
+          && replacedEvents[0]?.status === "receiver-gone" && (await commandHistory(pendingId)).length === 0,
+        JSON.stringify(replacedEvents));
+    } finally {
+      await post(`/api/slots/${paneLane.slot}/kill`, {});
+      await restartSrv();
+    }
   }
 
   // ===== (LS.shard) A FULL PREVIEW THAT OUTLASTS ONE CLAIM WINDOW STILL GETS A VERDICT ===========

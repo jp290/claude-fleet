@@ -1569,13 +1569,16 @@ function codexDefaultProviderBound(cwd: string): boolean {
       if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") return false;
     }
   }
-  let profile: string | null = null;
-  for (const config of configs) {
+  const usesDefaultProvider = (config: Record<string, unknown>): boolean => {
     if (Object.keys(config).some((name) => /base_url$/.test(name))) return false;
     const providers = config.model_providers;
     if (providers !== undefined && (!providers || typeof providers !== "object" || Array.isArray(providers)
       || Object.keys(providers).includes("openai"))) return false;
-    if (config.model_provider !== undefined && config.model_provider !== "openai") return false;
+    return config.model_provider === undefined || config.model_provider === "openai";
+  };
+  let profile: string | null = null;
+  for (const config of configs) {
+    if (!usesDefaultProvider(config)) return false;
     if (config.profile !== undefined) {
       if (typeof config.profile !== "string" || !config.profile) return false;
       profile = config.profile;
@@ -1591,7 +1594,7 @@ function codexDefaultProviderBound(cwd: string): boolean {
       const active: unknown = (profiles as Record<string, unknown>)[profile];
       if (!active || typeof active !== "object" || Array.isArray(active)) return false;
       found = true;
-      if ("model_provider" in active && active.model_provider !== "openai") return false;
+      if (!usesDefaultProvider(active as Record<string, unknown>)) return false;
     }
     if (!found) return false;
   }

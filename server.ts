@@ -8490,7 +8490,6 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.codexRecoveryState = null;
   s.codexDisconnectSeenAt = null;
   s.codexFirstTurn = null;
-  codexFirstTurnCursors.delete(s.id);
   s.sleeping = null; // a new occupant is awake; the old one's sleep named a conversation that is not this one
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0), skipping: 0 }); // sentinel: harvest the NEW transcript from byte 0
@@ -8703,7 +8702,6 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.codexRecoveryState = null;
   s.codexDisconnectSeenAt = null;
   s.codexFirstTurn = null;
-  codexFirstTurnCursors.delete(s.id);
   s.sleeping = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();

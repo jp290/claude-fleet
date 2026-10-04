@@ -743,9 +743,11 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   // preview rows at every boot, silently, and the deploy ritual of this repo is land-then-restart —
   // so every open red would have been erased by the next deploy. e2e/lane-suite.ts (LS.9) is the
   // probe that caught it on the first run that could.
+  // Command jobs are mixed: a Watch or the offering lane's automatic verdict rail may mint them.
   const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"
     || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review"
     || e.kind === "succession-debt" || e.kind === "message";
+  const watchBindingValid = e.kind === "command-job" || watchless === (e.watchId === null);
   // …and the kinds that may name the OWNER instead of a session. Same list on both sides of the
   // equivalence below, so a kind can never be admitted to one half and not the other.
   const ownerAddressable = e.kind === "fleet-report" || e.kind === "lane-suite" || e.kind === "harness-block"
@@ -764,7 +766,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     || !validAddress
     || typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
     || !(e.watchId === null || (typeof e.watchId === "string" && /^[a-z0-9]+$/.test(e.watchId)))
-    || (watchless !== (e.watchId === null))
+    || !watchBindingValid
     || !(ownerReceiver || (Number.isInteger(e.receiverSlot) && (e.receiverSlot ?? 0) > 0
       && typeof e.receiverOpenedAt === "number" && Number.isFinite(e.receiverOpenedAt)
       && e.receiverOpenedAt > 0

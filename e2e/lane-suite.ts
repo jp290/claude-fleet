@@ -26,6 +26,7 @@ import { suiteMeter, calmCase, laneDisplayName, laneTail, laneTitleOf, meterKind
 import { DAEMON_FEATURES, modulesEnv } from "../helper-daemon/daemon";
 import { localProofFor, verificationProportionFor, type LocalProof, type LocalProofContext } from "../verify-proportion";
 import { modulePlanFor, SERVER_MODULE_ANCHORS } from "../suite-modules";
+import { fleetEventFrom } from "../server/types";
 
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
@@ -1897,10 +1898,44 @@ export async function run(): Promise<void> {
             && prompts.length === 1 && prompts[0]?.openedAt === event.receiverOpenedAt
             && history[0]?.text.includes(`result=${result};`),
           JSON.stringify({ reported: reported.status, duplicate: duplicate.status, events, history: history.length }));
+        check(`(LS.cmd rail) ${result} hydrates with and without a watch`,
+          !!event && fleetEventFrom(event)?.id === event.id
+            && fleetEventFrom({ ...event, watchId: "abcd1234" })?.id === event.id,
+          JSON.stringify({ automatic: fleetEventFrom(event), watched: fleetEventFrom({ ...event, watchId: "abcd1234" }) }));
+        check(`(LS.cmd rail) ${result} hydration rejects malformed watch and receiver identities`,
+          !!event && fleetEventFrom({ ...event, watchId: "invalid!" }) === null
+            && fleetEventFrom({ ...event, watchId: undefined }) === null
+            && fleetEventFrom({ ...event, receiverOpenedAt: 0 }) === null
+            && fleetEventFrom({ ...event, receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null }) === null);
+        const onDisk = () => (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { events?: EventRow[] }).events?.find((e) => e.id === event?.id);
+        let persisted = onDisk();
+        for (let i = 0; i < 100 && persisted?.status !== "delivered"; i++) {
+          await Bun.sleep(50);
+          persisted = onDisk();
+        }
+        check(`(LS.cmd rail) ${result} is durably delivered before restart`,
+          !!event && persisted?.id === event.id && persisted.status === "delivered",
+          JSON.stringify({ eventId: event?.id, persisted }));
+        const beforePid = readFileSync(`${ROOT}/fleet.pid`, "utf8").trim();
         await restartSrv({ FLEET_HARNESS_AUTOMATION: "1" });
+        const afterPid = readFileSync(`${ROOT}/fleet.pid`, "utf8").trim();
+        const afterSelf = await bodyOf<{ slot?: number; position?: { role?: string } }>(
+          await selfGet("/api/self", paneToken));
+        check(`(LS.cmd rail) ${result} fixture restarts the server and preserves the lane occupant`,
+          /^[0-9]+$/.test(beforePid) && /^[0-9]+$/.test(afterPid) && beforePid !== afterPid
+            && afterSelf.slot === paneLane.slot && afterSelf.position?.role === "lane",
+          JSON.stringify({ beforePid, afterPid, slot: afterSelf.slot, role: afterSelf.position?.role }));
         await Bun.sleep(2 * AUTOS_TICK_MS + 2000);
+        const restoredEvents = await commandEvents(id);
+        const restoredHistory = await commandHistory(id);
+        const restoredPrompts = (await plogRead()).filter((p) => p.slot === paneLane.slot
+          && p.text.includes(` ${id} reached terminal result=`));
         check(`(LS.cmd rail) ${result} is not replayed after restart`,
-          (await commandEvents(id)).length === 1 && (await commandHistory(id)).length === 1);
+          restoredEvents.length === 1 && restoredEvents[0]?.id === event?.id
+            && restoredEvents[0]?.status === "delivered" && restoredHistory.length === 1
+            && restoredPrompts.length === 1,
+          JSON.stringify({ events: restoredEvents, history: restoredHistory.length, prompts: restoredPrompts.length }));
         if (event) await selfPost(`/api/self/events/${event.id}/ack`, paneToken);
       }
       await tmuxOut("send-keys", "-t", `s${paneLane.slot}`, "owner draft");

@@ -6653,7 +6653,7 @@ let gitTickBusy = false;
 let operationalGitObservedAt: number | null = null;
 const operationalGitOccupants = new Map<number, { openedAt: number; sessionId: string | null }>();
 const codexFirstTurnCursors = new Map<number, { openedAt: number; sessionId: string; selfToken: string;
-  file: string; offset: number; turn: Slot["codexFirstTurn"] }>();
+  file: string; offset: number; skipping: boolean; turn: Slot["codexFirstTurn"] }>();
 function codexFirstTurnView(s: Slot): Slot["codexFirstTurn"] {
   const hit = s.codexFirstTurn;
   const cursor = codexFirstTurnCursors.get(s.id);
@@ -6671,7 +6671,7 @@ function tickCodexFirstTurn(s: Slot): void {
   let cursor = codexFirstTurnCursors.get(s.id);
   if (!cursor || cursor.openedAt !== s.openedAt || cursor.sessionId !== s.sessionId
     || cursor.selfToken !== s.selfToken || cursor.file !== file) {
-    cursor = { openedAt: s.openedAt, sessionId: s.sessionId, selfToken: s.selfToken, file, offset: 0, turn: null };
+    cursor = { openedAt: s.openedAt, sessionId: s.sessionId, selfToken: s.selfToken, file, offset: 0, skipping: false, turn: null };
     codexFirstTurnCursors.set(s.id, cursor);
     s.codexFirstTurn = null;
   }
@@ -6679,15 +6679,24 @@ function tickCodexFirstTurn(s: Slot): void {
   try {
     fd = openSync(file, "r");
     const size = fstatSync(fd).size;
-    if (size < cursor.offset) { cursor.offset = 0; cursor.turn = null; s.codexFirstTurn = null; }
+    if (size < cursor.offset) { cursor.offset = 0; cursor.skipping = false; cursor.turn = null; s.codexFirstTurn = null; }
     if (cursor.turn?.turn.completedAt != null) return;
-    // Bounded incremental scan, including resumed history. A torn line is retried; a line above
-    // 1 MiB, missing start, missing time, or absent terminal model output remains unknown.
+    // Bounded incremental scan, including resumed history. A non-full torn line is retried;
+    // oversized rows are skipped as unknown until their newline, so later events stay observable.
+    // Missing start, missing time or absent terminal model output remains unknown.
     const buffer = Buffer.alloc(Math.min(1_048_576, Math.max(0, size - cursor.offset)));
     const n = readSync(fd, buffer, 0, buffer.length, cursor.offset);
     const end = buffer.subarray(0, n).lastIndexOf(10);
-    if (end < 0) return;
-    const turn = readCodexFirstTurn(buffer.toString("utf8", 0, end + 1).split("\n"), s.openedAt, cursor.turn?.turn ?? null);
+    if (end < 0) {
+      if (cursor.skipping || (buffer.length === 1_048_576 && n === buffer.length)) {
+        cursor.offset += n;
+        cursor.skipping = true;
+      }
+      return;
+    }
+    const from = cursor.skipping ? buffer.subarray(0, n).indexOf(10) + 1 : 0;
+    cursor.skipping = false;
+    const turn = readCodexFirstTurn(buffer.toString("utf8", from, end + 1).split("\n"), s.openedAt, cursor.turn?.turn ?? null);
     cursor.offset += end + 1;
     if (turn && JSON.stringify(turn) !== JSON.stringify(cursor.turn?.turn ?? null)) {
       if (turn.error) {

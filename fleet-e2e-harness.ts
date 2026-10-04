@@ -249,6 +249,24 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
     const parsed = readCodexRollout([start(21, "A"), failure]);
     checkFixture("first model turn: conversation reader retains structured terminal error", parsed.firstTurn?.state === "failed"
       && parsed.firstTurn.error?.code === "bad_request", JSON.stringify(parsed.firstTurn));
+    const long = { ...b, id: 19, selfToken: "token-long", sessionId: "session-long", codexFirstTurn: null } as Slot;
+    const oversized = JSON.stringify({ type: "response_item", payload: {
+      type: "message", role: "user", content: [{ text: "x".repeat(2_097_152) + success(22, "A") }] } });
+    put("session-long", [start(21, "A"), oversized, failure]);
+    for (let tick = 0; tick < 3; tick++) scan.tickCodexFirstTurn(long);
+    checkFixture("first model turn: oversized row itself stays unknown, never a guessed success",
+      long.codexFirstTurn?.turn.state === "running", JSON.stringify(long.codexFirstTurn));
+    for (let tick = 0; tick < 3; tick++) scan.tickCodexFirstTurn(long);
+    checkFixture("first model turn: model-400 after a >1-MiB row is still detected",
+      scan.codexFirstTurnView(long)?.turn.state === "failed" && long.codexFirstTurn?.turn.error?.code === "bad_request",
+      JSON.stringify(long.codexFirstTurn));
+    const torn = { ...long, id: 20, selfToken: "token-torn", sessionId: "session-torn", codexFirstTurn: null } as Slot;
+    files.set("/fixture/session-torn", Buffer.from(start(21, "A").slice(0, -2)));
+    scan.tickCodexFirstTurn(torn); scan.tickCodexFirstTurn(torn);
+    checkFixture("first model turn: a non-full torn row remains unknown", torn.codexFirstTurn === null, JSON.stringify(torn.codexFirstTurn));
+    put("session-torn", [start(21, "A"), failure]); scan.tickCodexFirstTurn(torn);
+    checkFixture("first model turn: a non-full torn row is retried after append",
+      scan.codexFirstTurnView(torn)?.turn.state === "failed", JSON.stringify(torn.codexFirstTurn));
     a.sessionId = "missing";
     scan.tickCodexFirstTurn(a);
     checkFixture("first model turn: rebind to an absent exact rollout is unknown", scan.codexFirstTurnView(a) === null, "no newest-file fallback");

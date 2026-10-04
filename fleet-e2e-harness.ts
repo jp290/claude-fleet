@@ -162,7 +162,7 @@ export async function checkCodexSpawnFixtures(source: string,
   const available = codexModelSupport(cache, "fixture-present", cli, true, now);
   const unavailable = codexModelSupport(cache, "fixture-absent", cli, true, now);
   const unknown = codexModelSupport(cache, "fixture-absent", cli, false, now);
-  type Fixture = { name: string; support: CodexModelSupport; race?: string; joined?: boolean; empty?: boolean; founding?: boolean };
+  type Fixture = { name: string; support: CodexModelSupport; race?: string; joined?: boolean; empty?: boolean; founding?: boolean; succession?: boolean };
   const fixtures: Fixture[] = [
     { name: "available", support: available },
     { name: "unavailable", support: unavailable },
@@ -170,6 +170,7 @@ export async function checkCodexSpawnFixtures(source: string,
     { name: "unknown-version", support: codexModelSupport({ ...cache, client_version: "0.1.0" }, "fixture-absent", cli, true, now) },
     { name: "unknown-expired", support: codexModelSupport(cache, "fixture-absent", cli, true, now + 300_001) },
     { name: "joined-own-teardown", support: available, joined: true },
+    { name: "succession-flips-after-kill", support: available, succession: true },
     ...["teardown", "spawn", "support", "kill", "observe", "latch", "history", "persist", "ensure"].map((race): Fixture =>
       ({ name: `replaced-at-${race}`, support: available, race, empty: race === "observe", founding: race === "persist" })),
   ];
@@ -177,6 +178,8 @@ export async function checkCodexSpawnFixtures(source: string,
     const slot: Record<string, unknown> = { id: 17, cwd: fixture.empty ? null : "/old", openedAt: fixture.empty ? 0 : 10,
       selfToken: "old-fixture-token", clients: new Set(), history: [] };
     const effects: string[] = [];
+    let supportCalls = 0;
+    let killed = false;
     const oldToken = slot.selfToken;
     const foreign = { cwd: "/foreign", openedAt: 999, selfToken: "foreign-fixture-token" };
     const barrier = async (name: string): Promise<void> => {
@@ -196,11 +199,15 @@ export async function checkCodexSpawnFixtures(source: string,
       waitForSlotSpawn: () => barrier("spawn"), assertProgramFoundingTargetOpen: () => {},
       repoCanon: (p: string) => p, assertGameMakerTreeOpen: () => {}, openSlotIntents: new Set(),
       harnessOf: () => ({ id: "codex", allowsLanes: true, singleton: false }),
-      modelOf: () => ({ ok: true }), codexSpawnSupport: async () => { await barrier("support"); return fixture.support; },
+      modelOf: () => ({ ok: true }), codexSpawnSupport: async () => {
+        supportCalls++;
+        await barrier("support");
+        return fixture.succession && killed ? unavailable : fixture.support;
+      },
       CodexModelUnavailable: Refusal, SEPARATE_LANE_SLOTS: false, slots: [],
       detachSlotTasks: () => effects.push("detach"), shares: [{ slot: 17, id: "fixture-share" }], closeShareClients: () => effects.push("share"),
       slotStreamOccupant: () => slot.cwd ? { openedAt: slot.openedAt, selfToken: slot.selfToken } : null,
-      killSlot: async () => { effects.push("kill"); Object.assign(slot, { cwd: null, openedAt: 0 }); await barrier("kill"); },
+      killSlot: async () => { effects.push("kill"); killed = true; Object.assign(slot, { cwd: null, openedAt: 0 }); await barrier("kill"); },
       observeTmuxSlots: async () => { await barrier("observe"); return {}; },
       tmuxSlotObservation: () => ({ presence: "absent" }), waitForGameMakerOpenTestLatch: () => barrier("latch"),
       hashSelfToken: () => "hash", randomBytes: () => ({ toString: () => "new-fixture-token" }),
@@ -212,8 +219,32 @@ export async function checkCodexSpawnFixtures(source: string,
     });
     try {
       const open = new Function("scope", `with (scope) { ${code}; return openSlot; }`)(scope) as
-        (s: Record<string, unknown>, cwd: string, wt: null, model: string, label: null, harness: string,
-          effort: null, box: { container: null; containerContext: null }, treeLease: unknown) => Promise<CodexModelSupport | null>;
+        (s: Record<string, unknown>, cwd: string, ...args: unknown[]) => Promise<CodexModelSupport | null>;
+      if (fixture.succession) {
+        Object.assign(scope, {
+          sameSuccessionOccupant: () => slot.openedAt === 10 && slot.selfToken === oldToken,
+          json: (body: unknown, status: number) => new Response(JSON.stringify(body), { status }),
+          restarting: new Set(), SUCCESSION_RESPAWN_FAIL_LATCH: null,
+          rebindLaneAnchors: () => {}, TmuxNewSessionUnavailable: class extends Error {}, GameMakerTreeConflict: class extends Error {},
+          respawnLost: async () => { effects.push("lost"); return new Response("respawnLost", { status: 500 }); },
+        });
+        const at = source.indexOf("async function respawnInPlace(");
+        const end = source.indexOf("\n}\n", at);
+        const respawnCode = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(at, end + 3));
+        const respawn = new Function("scope", `with (scope) { ${respawnCode}; return respawnInPlace; }`)(scope) as
+          (s: unknown, predecessor: unknown, rail: string, stranded: unknown, target: unknown,
+            open: (support: CodexModelSupport | null) => Promise<unknown>, onLost: () => Promise<void>) =>
+            Promise<{ ok: true; modelSupport?: CodexModelSupport } | { ok: false; response: Response }>;
+        let observed: CodexModelSupport | null = null;
+        const result = await respawn(slot, {}, "fixture", {}, { cwd: "/new", model: available.model, harness: "codex" },
+          async (support) => { observed = await open(slot, "/new", null, available.model, null, "codex", null,
+            { container: null, containerContext: null }, null, false, null, false, false, support); }, async () => {});
+        checkFixture("Codex succession freezes one pre-teardown decision when support flips after kill",
+          result.ok && supportCalls === 1 && observed === available && result.modelSupport === available
+            && slot.cwd === "/new" && effects.includes("ensure") && !effects.includes("lost"),
+          `probes=${supportCalls}; opened=${slot.cwd === "/new"}; respawnLost=${effects.includes("lost")}; status=${result.ok ? 200 : result.response.status}`);
+        continue;
+      }
       let result: CodexModelSupport | null = null;
       let error: unknown = null;
       try { result = await open(slot, "/new", null, fixture.support.model!, null, "codex", null,

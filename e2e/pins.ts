@@ -7787,7 +7787,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     markerSaveAt >= 0
       && bootstrapBody.indexOf("await persistProgramFounding") < bootstrapBody.indexOf("await openSlot")
       && succeedBody.indexOf("await persistProgramFounding") >= 0
-      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("() => openSlot(s, openRoot")
+      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("(preObservedSupport) => openSlot(s, openRoot")
       && openBody.includes("treeLease?.founding?.target.openedAt")
       && openBody.includes("treeLease?.targetSelfToken")
       && slotSaveAt >= 0 && slotSaveAt < ensureAt,
@@ -7864,7 +7864,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && bootstrapBody.indexOf("await persistProgramFounding") >= 0
       && bootstrapBody.indexOf("await persistProgramFounding") < bootstrapBody.indexOf("await openSlot")
       && succeedBody.indexOf("await persistProgramFounding") >= 0
-      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("() => openSlot(s, openRoot")
+      && succeedBody.indexOf("await persistProgramFounding") < succeedBody.indexOf("(preObservedSupport) => openSlot(s, openRoot")
       && server.includes("treeLease?.founding?.target.openedAt ?? Date.now()"),
     `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
   pin(`${RULE_GM_FOUNDING} — bootstrap persists marker plus unbound fallback, while succession retains its exact predecessor`,

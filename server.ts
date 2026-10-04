@@ -8272,7 +8272,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false, context: SlotContext | null = null, remote = false, webSearch = false): Promise<CodexModelSupport | null> {
+  browser = false, context: SlotContext | null = null, remote = false, webSearch = false, preObservedSupport: CodexModelSupport | null = null): Promise<CodexModelSupport | null> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   let expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
@@ -8299,9 +8299,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   const h = harnessOf(harness);
   const selection = modelOf({ model }, h);
   if (!selection.ok) throw new Error(selection.error);
-  const modelSupport = h.id === "codex" ? await codexSpawnSupport(model, cwd) : null;
+  const modelSupport = preObservedSupport ?? (h.id === "codex" ? await codexSpawnSupport(model, cwd) : null);
   assertOpenOccupant();
-  if (modelSupport?.availability === "unavailable") throw new CodexModelUnavailable(modelSupport);
+  if (!preObservedSupport && modelSupport?.availability === "unavailable") throw new CodexModelUnavailable(modelSupport);
   if (SEPARATE_LANE_SLOTS && (worktree
     ? s.id <= BAND_SLOTS && !(s.cwd && s.worktree?.branch === worktree.branch)
     : s.id > BAND_SLOTS))
@@ -10687,14 +10687,14 @@ function scheduleSuccessionRetirement(s: Slot, pending: SuccessionRetirement): v
 // TEST-ONLY fault injection, absent in every real deployment: an existing file at this path fails
 // the open between the kill and the respawn — the one window no external probe can reach by timing.
 const SUCCESSION_RESPAWN_FAIL_LATCH = process.env.FLEET_TEST_SUCCESSION_RESPAWN_FAIL_LATCH ?? null;
-type InPlaceRespawn = { ok: true } | { ok: false; response: Response };
+type InPlaceRespawn = { ok: true; modelSupport?: CodexModelSupport } | { ok: false; response: Response };
 // what a failed respawn leaves behind as a debt instead of losing it: the brief as built, and the
 // role-lineage record the rail would have written (null where the rail has none — Program-MAIN)
 interface SuccessionStranded { brief: string; path: "succession" | "founding"; draft: LineageHandover | null;
   label: string | null }
 async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string,
   stranded: SuccessionStranded, target: { cwd: string; model: string | null; harness: string | null },
-  open: () => Promise<unknown>, onLost: (error: unknown) => Promise<void>,
+  open: (support: CodexModelSupport | null) => Promise<unknown>, onLost: (error: unknown) => Promise<void>,
   // a refusal BEFORE the kill: the predecessor still stands, only the rail's own intent falls
   onRefused: () => Promise<void> = async () => {}): Promise<InPlaceRespawn> {
   // tmux stderr is not an API-safe diagnostic (unavailableFoundingResponse's rule): only the typed
@@ -10707,8 +10707,9 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   };
   if (!sameSuccessionOccupant(s, predecessor))
     return refused(json({ error: "predecessor session changed before the in-place respawn — retry from the current occupant" }, 409));
+  let modelSupport: CodexModelSupport | null = null;
   if (harnessOf(target.harness).id === "codex") {
-    const modelSupport = await codexSpawnSupport(target.model, target.cwd);
+    modelSupport = await codexSpawnSupport(target.model, target.cwd);
     if (!sameSuccessionOccupant(s, predecessor))
       return refused(json({ error: "predecessor changed during Codex support observation" }, 409));
     if (modelSupport.availability === "unavailable")
@@ -10729,7 +10730,7 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   try {
     if (SUCCESSION_RESPAWN_FAIL_LATCH !== null && existsSync(SUCCESSION_RESPAWN_FAIL_LATCH))
       throw new Error("forced respawn failure (FLEET_TEST_SUCCESSION_RESPAWN_FAIL_LATCH)");
-    await open();
+    await open(modelSupport);
   } catch (e) {
     return { ok: false, response: await respawnLost(s, predecessor, rail, msg(e), stranded, () => onLost(e),
       e instanceof GameMakerTreeConflict ? 409 : 500) };
@@ -10740,7 +10741,7 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   // line; a respawn that failed leaves every anchor naming the ended predecessor (respawnLost above).
   rebindLaneAnchors({ slot: predecessor.slot, openedAt: predecessor.openedAt }, { slot: s.id, openedAt: s.openedAt },
     `${rail} succession`);
-  return { ok: true };
+  return { ok: true, ...(modelSupport ? { modelSupport } : {}) };
 }
 
 // S0 (docs/messungen/2026-09-22-slot-baender-stufen-nach-32014c79.md §2.1): a lane's anchor is the
@@ -11794,7 +11795,8 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
         { brief, path: "succession", draft, label },
         { cwd: predecessor.cwd, model: spawn.model, harness },
-        () => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box),
+        (preObservedSupport) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
+          null, false, null, false, false, preObservedSupport),
         async () => {});
       if (!respawned.ok) return respawned.response;
       // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -11845,6 +11847,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       if (orchCtx?.ok) await appendOrchestratorReceipt(s, orchCtx.value, brief, now);
       await saveStateNow();
       return json({ ok: true, slot: s.id, label: s.label,
+        ...(respawned.modelSupport ? { modelSupport: respawned.modelSupport } : {}),
         lineage: { lineageId: record.lineageId, obligations: record.obligations.length },
         ...(orchestrator ? { roleCard: orchCtx?.ok
           ? { delivered: true, receipt: true }
@@ -36164,7 +36167,8 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       const respawned = await respawnInPlace(s, predecessor, `program ${program.id}`,
         { brief: deliveredBrief, path: "founding", draft: null, label },
         { cwd: openRoot, model: spawn.model, harness },
-        () => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease),
+        (preObservedSupport) => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease,
+          false, null, false, false, preObservedSupport),
         // the predecessor is gone and no successor stands: drop the marker (stopping an exact
         // candidate the open left behind), which also closes the ended holding as `retire`. The
         // binding is then stale — the state bootstrapProgramMain re-founds over, loudly.
@@ -36302,6 +36306,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         program.main = { ...program.main, sessionId: s.sessionId };
       await saveStateNow();
       return json({ ok: true, slot: s.id, label: s.label, program: programDigest(program),
+        ...(respawned.modelSupport ? { modelSupport: respawned.modelSupport } : {}),
         ...(receipt ? {} : { receipt: false }) });
     } finally {
       laneSpawn.delete(s.id);

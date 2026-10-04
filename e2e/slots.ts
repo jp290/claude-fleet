@@ -5403,15 +5403,36 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
         const png = await send('Page.captureScreenshot', { format: 'png' });
         writeFileSync(resolve(artifacts, `${width}-${stage}.png`), Buffer.from(String(png.data), 'base64'));
       };
+      // the press goes to a POINT, and the window repaints on its own late answers (the tiles on every
+      // size and preset read): on a loaded host a repaint between press and release replaced the node,
+      // Chromium then fires no click, and the next step met an unopened popover (preview 2629f6335079).
+      // So the point is taken once the target holds still under it, and a press whose click never
+      // reached the target is pressed again — a disabled target fires none by design. A target that
+      // never settles, or three presses that never arrive, is the probe's own red line.
       const click = async (selector: string) => {
-        const point = await evaluate<{ x: number; y: number }>(`(() => {
-          const e = document.querySelector(${JSON.stringify(selector)}); if (!e) throw new Error('missing click target: ' + ${JSON.stringify(selector)});
-          e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect();
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-        })()`);
-        await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
-        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
-        await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+        for (let attempt = 1; ; attempt++) {
+          const point = await evaluate<{ x: number; y: number; disabled: boolean }>(`new Promise((resolve, reject) => {
+            const sel = ${JSON.stringify(selector)}, until = Date.now() + 5000; let last = '';
+            if (!window.fixtureClickHook) { window.fixtureClickHook = true;
+              document.addEventListener('click', (ev) => { if (window.fixtureClickWant && ev.target instanceof Element && ev.target.closest(window.fixtureClickWant)) window.fixtureClickHit = true; }, true); }
+            const step = () => {
+              const e = document.querySelector(sel);
+              if (!e) { if (Date.now() > until) return reject(new Error('missing click target: ' + sel)); return requestAnimationFrame(step); }
+              e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect();
+              const p = { x: r.x + r.width / 2, y: r.y + r.height / 2 }, at = p.x + ',' + p.y, hit = document.elementFromPoint(p.x, p.y);
+              if (at === last && hit && e.contains(hit)) { window.fixtureClickWant = sel; window.fixtureClickHit = false; return resolve({ ...p, disabled: !!e.closest(':disabled') }); }
+              if (Date.now() > until) return reject(new Error('click target never held still under the pointer: ' + sel + ' — the point hits ' + (hit ? hit.tagName.toLowerCase() + '.' + String(hit.className) : 'nothing')));
+              last = at; requestAnimationFrame(step);
+            };
+            step();
+          })`);
+          const at = { x: point.x, y: point.y };
+          await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button: 'left', clickCount: 1 });
+          await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button: 'left', clickCount: 1 });
+          await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+          if (point.disabled || await evaluate<boolean>(`window.fixtureClickHit === true`)) return;
+          if (attempt === 3) throw new Error(`click never reached its target in 3 presses: ${selector}`);
+        }
       };
       const wait = async (condition: string) => evaluate(`new Promise((resolve, reject) => {
         const until = Date.now() + 5000; const ready = () => { if (${condition}) return resolve(true);
@@ -5688,7 +5709,9 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const actual = (name: string) => `document.querySelector('.fdproofrow[data-field="${name}"] .fdactual')`;
       const pick = async (what: string) => {
         if (what === 'effort') { await click('.fdsw2b[data-effort]:not([data-effort=""])'); return; }
-        await click(`[data-pop="${what}"]`); await click('.fdpop .fdprow:nth-child(2)');
+        await click(`[data-pop="${what}"]`);
+        await wait(`document.querySelector('[data-pop="${what}"]')?.getAttribute('aria-expanded') === 'true' && !!document.querySelector('.fdpop .fdprow:nth-child(2)')`);
+        await click('.fdpop .fdprow:nth-child(2)');
       };
       const plain = async () => {
         await setup('equal'); await pick('model'); await pick('effort');

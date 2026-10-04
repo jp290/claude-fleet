@@ -628,7 +628,8 @@ export async function run(lc: LaneCtx): Promise<void> {
       { ok?: boolean; slot?: number; error?: string };
     check(`native dispatch ${harness}: stand-in lane starts`, opened.ok === true && typeof opened.slot === "number", JSON.stringify(opened));
     if (typeof opened.slot !== "number") continue;
-    await plantScreen(opened.slot, harness === "codex" ? "›" : harness === "pi-zai" ? "0%/1.0M" : "❯", "native lane receipt");
+    await plantScreen(opened.slot, harness === "codex" ? ">_ OpenAI Codex (v0.159.0)\n› "
+      : harness === "pi-zai" ? "0%/1.0M" : "❯", "native lane receipt");
     type Part = { id: string; path: string | null; anchor: string | null; sha256: string | null; bytes: number | null; ort: string };
     type Receipt = { taskId?: string; branch?: string; sessionAgents?: { path: string; sha256: string; bytes: number; parts: Part[] } };
     let receipt: Receipt | undefined, prompt = "";

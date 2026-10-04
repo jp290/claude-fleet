@@ -5656,6 +5656,9 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       // with a dot, counted in the foot, and Wie Profil takes them all back. Every size is the route's.
       await reset(); await role('lane'); await wait(`${chips}.length === 2 && !!document.querySelector('.fdtot')`);
       const fileBefore = await evaluate<string>(fileSays);
+      // the size the owner reads, as a number („[Zitat entfernt]“) — a changed text alone is not a grown file (review 5a07f9e5)
+      const fileKb = `parseFloat(${fileSays}.replace(',', '.'))`;
+      const kbBefore = await evaluate<number>(fileKb);
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
       const hvShown = `Array.from(document.querySelectorAll('#shell-found .fdhv')).map(e => getComputedStyle(e).display !== 'none')`;
       g['at rest no technical line is shown: ids and hashes wait for hover or focus'] = await evaluate<boolean>(`${hvShown}.every(x => !x)`);
@@ -5678,8 +5681,10 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await wait(`${fileSays} !== ${JSON.stringify(fileBefore)} && !!document.querySelector('.fdsec2[data-sec="wis"] .fdit')`);
       const partQuery = await evaluate<string>(`JSON.stringify(window.fixtureFileQueries[window.fixtureFileQueries.length - 1])`);
       g['a part switched whole: the file re-reads with parts= naming it, Wissen lists it, the size grows'] =
-        JSON.parse(partQuery).parts.split(',').includes('fixture-beta.one') && await evaluate<boolean>(`document.querySelector('.fdsec2[data-sec="wis"] .fdinm').textContent.length > 0 && document.querySelector('.fdsec2[data-sec="wis"]').classList.contains('dev')`);
+        JSON.parse(partQuery).parts.split(',').includes('fixture-beta.one') && await evaluate<boolean>(`document.querySelector('.fdsec2[data-sec="wis"] .fdinm').textContent.length > 0 && document.querySelector('.fdsec2[data-sec="wis"]').classList.contains('dev')`)
+        && Number.isFinite(kbBefore) && await evaluate<number>(fileKb) > kbBefore;
       detail['part-query'] = partQuery;
+      detail['part-size'] = `${kbBefore} KB → ${await evaluate<number>(fileKb)} KB`;
       const fileWithPart = await evaluate<string>(fileSays);
       await click('.fdsw[data-pack="fixture-alpha"]');
       await wait(`${fileSays} !== ${JSON.stringify(fileWithPart)}`);

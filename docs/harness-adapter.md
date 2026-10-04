@@ -23,7 +23,7 @@ mit temporaeren Fixture-Quellen.
 | --- | --- | --- |
 | `codex` | `$CODEX_HOME/models_cache.json`, Default `~/.codex/models_cache.json` | `models[].slug` ist der von Codex gespeicherte Modellkatalog; optional `fetched_at` datiert den Cache. |
 | `pi-zai` | `$FLEET_PI_ZAI_AGENT_DIR/models-store.json`, Default `~/.config/claude-fleet/pi-zai-agent/models-store.json` | Nur `zai.models[].id` aus dem dynamischen Provider-Katalog; `zai.checkedAt` datiert die letzte Cache-Pruefung. Ein fehlender Provider, leere Modelle oder fehlender Zeitstempel bleiben `unknown`. |
-| `claude` | `$CLAUDE_CONFIG_DIR/cache/model-access.json` und `model-capabilities.json`, Default `~/.claude/cache/` | Bei Claude Code 2.1.288: Access-Schema `version: 1, entries: {scope: {model: {s: "ok"\|"refused", at: number}}}`; Capability-Schema `models: [{id, max_input_tokens?, max_tokens?}], timestamp: number`. Beide Dateien fehlen auf dem gemessenen Host. Auch vorhandene, passende Dateien bilden keinen vollstaendigen Verfuegbarkeitskatalog: Access merkt scoped Provider-Erfahrungen, Capabilities Tokenlimits. Ergebnis bleibt `unknown`. |
+| `claude` | `$CLAUDE_CONFIG_DIR/cache/model-catalog/*-cc.json`, Default `~/.claude/cache/model-catalog/` | Gemessenes Schema: `version: 2, fetchedAt: number, staleAt: number, catalog: {surface: "cc", config: {id: "cc", models: [{id, ...}]}, ...}`. Nur Modell-IDs und Cachezeiten werden ausgegeben. Fehlende, unlesbare, leere, abgelaufene oder widerspruechliche cc-Kataloge bleiben `unknown` mit Grund; publizierte Dokumente und andere Oberflaechen werden nicht als lokale Verfuegbarkeit gewertet. Die bisherigen Access-/Capability-Caches sind kein vollstaendiger Katalog. |
 
 Je Harness nennt `sources` die Quelle ohne aufgeloeste Host-/Override-Pfade.
 `status: "known"` liefert sortierte, deduplizierte `available`, `newlyAvailable`
@@ -46,6 +46,17 @@ Flaechen dieses Vorschlags: CLI/JSON und Dokumentation `apply`, Fixture-Probe `a
 Server/Wire, Client und Reverse-State `not-applicable`, da kein laufender Fleet-Zustand
 geaendert wird. CLI-Updates und regelmaessige Ausfuehrung sind in diesem Scanner
 `unsupported`; ein spaeterer Service braucht dafuer eine eigene Entscheidung.
+
+Der bestehende `tickAutos` ruft den Abgleich bei eingeschalteten Autos hoechstens einmal
+je 24 Stunden auf. `fleet.json.modelScan` bewahrt den Scanzeitpunkt und den zuletzt
+gemeldeten Differenzstand je Harness auch ueber Server-Neustarts. Nur Aenderungen an
+`newlyAvailable`/`registeredButUnavailable` erzeugen zusammen eine einzeilige Nachricht
+ueber `sendText` an die Rollenadresse `{kind: "orchestrator"}`. Ein erster bekannter
+Stand ohne Differenz bleibt still; eine Rueckkehr zu leeren Differenzen nach einer
+Meldung wird gemeldet. `unknown` ueberschreibt keinen bekannten Meldestand und
+behauptet keinen Modell-Wegfall. Fehlt die Rolle oder scheitert die Zustellung,
+bleibt der Stand ungemeldet bis zum naechsten Tageslauf. Der Vorschlag aendert das
+Register nie automatisch.
 
 ## Land-Pfad-Flags
 

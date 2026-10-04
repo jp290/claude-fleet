@@ -2,7 +2,7 @@ import { deepStrictEqual, strictEqual, match } from "node:assert";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scanModels } from "../model-scan";
+import { scanModels, makeModelScanTick, modelScanStateFrom, MODEL_SCAN_INTERVAL_MS } from "../model-scan";
 import { type ModelEntry } from "../model-register";
 
 const fixtureRegister: readonly ModelEntry[] = [
@@ -25,7 +25,8 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
   await Promise.all([mkdir(codex, { recursive: true }), mkdir(claude, { recursive: true }), mkdir(pi, { recursive: true })]);
   const codexPath = join(codex, "models_cache.json");
   const piPath = join(pi, "models-store.json");
-  const scan = () => scanModels({ home, env: {}, register: fixtureRegister });
+  let now = 100000000;
+  const scan = () => scanModels({ home, env: {}, register: fixtureRegister, now });
   try {
     const cache = JSON.stringify({ fetched_at: "2026-10-03T10:00:00Z", identity: "SECRET-IDENTITY",
       models: [{ slug: "codex-present" }, { slug: "codex-new" }, { slug: "codex-new" }] });
@@ -37,8 +38,7 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     deepStrictEqual(result.harnesses.map((row) => row.harness), ["claude", "codex", "pi-zai"]);
     const [claudeResult, codexResult, piResult] = result.harnesses;
     strictEqual(claudeResult.status, "unknown");
-    match(claudeResult.reason ?? "", /model-access.json: missing;/);
-    match(claudeResult.reason ?? "", /model-capabilities.json: missing$/);
+    strictEqual(claudeResult.reason, "CLAUDE_CONFIG_DIR/cache/model-catalog/: missing or unreadable directory");
     deepStrictEqual([claudeResult.available, claudeResult.newlyAvailable, claudeResult.registeredButUnavailable], [null, null, null]);
     strictEqual(codexResult.status, "known");
     deepStrictEqual(codexResult.available, ["codex-new", "codex-present"]);
@@ -84,16 +84,139 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
       entries: { "SECRET-ACCOUNT": { "claude-new": { s: "ok", at: 1234 } } } }));
     const missingCapabilities = (await scan()).harnesses[0];
     strictEqual(missingCapabilities.status, "unknown");
-    match(missingCapabilities.reason ?? "", /model-capabilities.json: missing$/);
+    strictEqual(missingCapabilities.reason, claudeResult.reason);
     await writeFile(join(claude, "model-capabilities.json"), JSON.stringify({ timestamp: 1234,
       models: [{ id: "claude-new", max_input_tokens: 200000 }] }));
     const scoped = (await scan()).harnesses[0];
     strictEqual(scoped.status, "unknown");
-    match(scoped.reason ?? "", /not a complete harness availability catalogue$/);
+    strictEqual(scoped.reason, claudeResult.reason);
     strictEqual(JSON.stringify(scoped).includes("SECRET"), false);
     await writeFile(join(claude, "model-access.json"), '{}');
-    strictEqual((await scan()).harnesses[0].reason, "Claude caches: unknown schema");
+    strictEqual((await scan()).harnesses[0].reason, claudeResult.reason);
     check("model-scan: scoped Claude caches stay unknown without exposing account fields", true);
+
+    const catalogueDir = join(claude, "model-catalog");
+    const cataloguePath = join(catalogueDir, "fixture-cc.json");
+    await mkdir(catalogueDir);
+    const catalogue = (models = ["claude-fixture", "claude-new", "claude-new"]) => ({
+      version: 2, fetchedAt: now - 1000, staleAt: now + 1000,
+      catalog: { surface: "cc", config: { id: "cc", models: models.map((id) => ({ id })) } },
+    });
+    await writeFile(join(catalogueDir, "published-other.json"), "not a local catalogue");
+    await writeFile(join(catalogueDir, "fixture-chat.json"), "not cc");
+    await writeFile(cataloguePath, JSON.stringify(catalogue()));
+    const knownClaude = (await scan()).harnesses[0];
+    strictEqual(knownClaude.status, "known");
+    strictEqual(knownClaude.reason, null);
+    strictEqual(knownClaude.cacheTime, now - 1000);
+    deepStrictEqual(knownClaude.available, ["claude-fixture", "claude-new"]);
+    deepStrictEqual(knownClaude.newlyAvailable, ["claude-new"]);
+    deepStrictEqual(knownClaude.registeredButUnavailable, []);
+    strictEqual(JSON.stringify(knownClaude).includes("fixture-cc.json"), false);
+    check("model-scan: measured Claude v2 cc schema yields exact sorted model IDs", true);
+
+    for (const invalid of ["broken", JSON.stringify({ ...catalogue(), version: 1 }),
+      JSON.stringify(catalogue([])), JSON.stringify({ ...catalogue(), staleAt: now }),
+      JSON.stringify({ ...catalogue(), fetchedAt: now + 500 }),
+      JSON.stringify({ ...catalogue(), catalog: { surface: "chat", config: { id: "cc", models: [{ id: "foreign" }] } } })]) {
+      await writeFile(cataloguePath, invalid);
+      const rejected = (await scan()).harnesses[0];
+      strictEqual(rejected.status, "unknown");
+      deepStrictEqual([rejected.available, rejected.newlyAvailable, rejected.registeredButUnavailable], [null, null, null]);
+    }
+    await rm(cataloguePath);
+    await mkdir(cataloguePath);
+    strictEqual((await scan()).harnesses[0].status, "unknown");
+    await rm(cataloguePath, { recursive: true });
+    await writeFile(cataloguePath, JSON.stringify(catalogue()));
+    const secondPath = join(catalogueDir, "second-cc.json");
+    await writeFile(secondPath, JSON.stringify(catalogue(["claude-other"])));
+    match((await scan()).harnesses[0].reason ?? "", /ambiguous cc catalogues$/);
+    await rm(secondPath);
+    check("model-scan: stale, malformed, unreadable and conflicting Claude catalogues remain unknown", true);
+
+    const state = modelScanStateFrom(null);
+    const sent: string[] = [];
+    let scans = 0;
+    let saves = 0;
+    const tickOptions = { state, now: () => now,
+      scan: async () => { scans++; return scan(); },
+      send: async (message: string) => { sent.push(message); return true; },
+      persist: async () => { saves++; },
+    };
+    const tick = makeModelScanTick(tickOptions);
+    // t | event | exclusive owner: 0 first scan | tick; <24h reentry | none; 24h+ | next tick.
+    await Promise.all([tick(), tick(), tick()]);
+    strictEqual(scans, 1);
+    strictEqual(sent.length, 1);
+    strictEqual(sent[0].includes("\n"), false);
+    match(sent[0], /claude newlyAvailable=\["claude-new"\]/);
+    strictEqual(state.lastScanAt, now);
+    deepStrictEqual(state.reported.claude, { newlyAvailable: ["claude-new"], registeredButUnavailable: [] });
+    const restored = modelScanStateFrom(JSON.parse(JSON.stringify(state)) as unknown);
+    const restart = makeModelScanTick({ ...tickOptions, state: restored });
+    now += MODEL_SCAN_INTERVAL_MS - 1;
+    await restart();
+    strictEqual(scans, 1);
+    now++;
+    await writeFile(cataloguePath, JSON.stringify(catalogue()));
+    await restart();
+    strictEqual(scans, 2);
+    strictEqual(sent.length, 1);
+    check("model-scan tick: change -> exactly one line, unchanged -> zero, 24h bound survives restart", true);
+
+    now += MODEL_SCAN_INTERVAL_MS;
+    await rm(cataloguePath);
+    await mkdir(cataloguePath);
+    await restart();
+    strictEqual(sent.length, 1);
+    deepStrictEqual(restored.reported.claude, state.reported.claude);
+    now += MODEL_SCAN_INTERVAL_MS;
+    await rm(cataloguePath, { recursive: true });
+    await writeFile(cataloguePath, JSON.stringify(catalogue()));
+    await restart();
+    strictEqual(sent.length, 1);
+    now += MODEL_SCAN_INTERVAL_MS;
+    await writeFile(cataloguePath, JSON.stringify(catalogue(["claude-fixture"])));
+    await restart();
+    strictEqual(sent.length, 2);
+    strictEqual(sent[1], 'Modell-Vorschlag (lokaler Cache; Register unveraendert): claude newlyAvailable=[] registeredButUnavailable=[]');
+    strictEqual(scans, 5);
+    strictEqual(saves, 10);
+    check("model-scan tick: unreadable -> no false message; recovery unchanged -> zero; resolved difference -> one", true);
+
+    const undelivered = modelScanStateFrom(null);
+    let attempts = 0;
+    const refusal = makeModelScanTick({ ...tickOptions, state: undelivered,
+      send: async () => { attempts++; return false; } });
+    await refusal();
+    strictEqual(attempts, 1);
+    strictEqual(undelivered.reported.codex, undefined);
+    await refusal();
+    strictEqual(attempts, 1);
+    now += MODEL_SCAN_INTERVAL_MS;
+    await writeFile(cataloguePath, JSON.stringify(catalogue(["claude-fixture"])));
+    await refusal();
+    strictEqual(attempts, 2);
+    const emptyState = modelScanStateFrom(null);
+    const noDiff = makeModelScanTick({ ...tickOptions, state: emptyState,
+      scan: async () => ({ harnesses: [{ ...knownClaude, newlyAvailable: [], registeredButUnavailable: [] }] }),
+      send: async () => { throw new Error("clean initial scan must remain silent"); } });
+    await noDiff();
+    deepStrictEqual(emptyState.reported.claude, { newlyAvailable: [], registeredButUnavailable: [] });
+    const rejectedState = modelScanStateFrom({ lastScanAt: "bad", reported: { claude: { newlyAvailable: ["bad id"], registeredButUnavailable: [] } } });
+    deepStrictEqual(rejectedState, { lastScanAt: null, reported: {} });
+    check("model-scan tick: refused delivery is not recorded, initial clean scan is silent, malformed state is rejected", true);
+
+    const server = (await readFile(new URL("../server.ts", import.meta.url), "utf8"))
+      .split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+    match(server, /async function tickAutos\(\): Promise<void> \{[\s\S]*?void tickModelScan\(\)/);
+    match(server, /modelScan: modelScanState,/);
+    match(server, /Object.assign\(modelScanState, modelScanStateFrom\(/);
+    const wiring = server.slice(server.indexOf("const tickModelScan ="), server.indexOf("function stateSnapshot()"));
+    match(wiring, /scan: \(\) => scanModels\(\), persist: saveStateNow/);
+    match(wiring, /path: "fleet-event", address: \{ kind: "orchestrator" \}/);
+    check("model-scan tick: existing server tick persists scan state and uses the orchestrator role delivery", true);
 
     const override = join(home, "override");
     await mkdir(override);
@@ -104,7 +227,8 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     } });
     deepStrictEqual(redirected.harnesses.map((row) => row.harness), ["claude", "codex", "pi-zai"]);
     deepStrictEqual(redirected.harnesses[1].available, ["codex-present"]);
-    strictEqual(redirected.harnesses[0].reason, "Claude caches: unknown schema");
+    strictEqual(redirected.harnesses[0].status, "unknown");
+    match(redirected.harnesses[0].reason ?? "", /stale cc catalogue$/);
     deepStrictEqual(redirected.harnesses[2].available, ["pi-present"]);
     const subset = await scanModels({ home, env: {}, register: fixtureRegister.filter((entry) => entry.harness === "codex") });
     deepStrictEqual(subset.harnesses.map((row) => row.harness), ["codex"]);

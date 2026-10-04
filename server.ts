@@ -5,6 +5,7 @@ import { constants as fsConstants, appendFileSync, existsSync, statSync, lstatSy
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
+import { makeModelScanTick, modelScanStateFrom, scanModels } from "./model-scan";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServerWebSocket } from "bun";
@@ -5365,6 +5366,39 @@ function boxFor(s: Pick<Slot, "container" | "containerContext">): { container: s
 
 let stateSeq = 0; // makes each temp file's name unique WITHIN this process; the pid makes it unique across
 // the state body as it stands NOW — called by the saver when a write run starts, never per request
+const modelScanState = modelScanStateFrom(null);
+const tickModelScan = makeModelScanTick({
+  state: modelScanState, scan: () => scanModels(), persist: saveStateNow,
+  send: async (message) => {
+    const receiver = deliveryRecipient({ kind: "orchestrator" });
+    if (!receiver) return false;
+    let delivered: { slot: Slot; openedAt: number | null } | null = null;
+    try {
+      const { acceptance } = await sendText(receiver, message, true, {
+        path: "fleet-event", address: { kind: "orchestrator" }, rollbackOwnPayload: true,
+        beforeSend: async (current) => {
+          if (deliveryRecipient({ kind: "orchestrator" }) !== current)
+            throw new DeliveryCancelled("model scan: orchestrator changed before paste");
+          delivered = { slot: current, openedAt: current.openedAt };
+        },
+      });
+      const destination = delivered as { slot: Slot; openedAt: number | null } | null;
+      if (destination && destination.slot.cwd && destination.slot.openedAt === destination.openedAt
+        && slotFrom(destination.slot.id) === destination.slot) {
+        const current = destination.slot;
+        const at = Date.now();
+        current.history = [...current.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
+        saveHistory(current);
+        logPrompt(current, message, "auto", at, undefined, acceptance);
+      }
+      return true;
+    } catch (error: unknown) {
+      if (!(error instanceof DeliveryCancelled)) logError("tickModelScan.send", error);
+      return false;
+    }
+  },
+});
+
 function stateSnapshot(): string {
   const active: Record<string, { cwd: string; label: string | null; openedAt: number;
     successionRetirement: SuccessionRetirement | null; mission: string | null;
@@ -5400,6 +5434,7 @@ function stateSnapshot(): string {
     // running the suite while the lane's own GET said "no offer".
     laneSuiteJobs: [...laneSuiteJobs.values()],
     commandJobs: [...commandJobs.values()],
+    modelScan: modelScanState,
     slots: active, recents, pins, ...(rolePresets ? { rolePresets } : {}), shares, autos, watches,
     events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, studios,
     messages, ...(messagesLost ? { messagesLost } : {}),
@@ -16200,6 +16235,7 @@ async function tickAutos(): Promise<void> {
   if (autoTickBusy) return; // a slow tick (tmux calls) must not overlap the next one
   autoTickBusy = true;
   try {
+    void tickModelScan().catch((error: unknown) => logError("tickModelScan", error));
     const now = Date.now();
     let dirty = false;
     for (const a of autos) {
@@ -36880,6 +36916,7 @@ if (existsSync(STATE_FILE)) {
     const persisted = (await Bun.file(STATE_FILE).json()) as {
       token?: unknown; slots?: Record<string, { cwd?: unknown; label?: unknown }>; recents?: unknown; shares?: unknown;
     };
+    Object.assign(modelScanState, modelScanStateFrom((persisted as { modelScan?: unknown }).modelScan));
     const stateOwner = foreignStateOwner((persisted as { sock?: unknown }).sock, SOCK);
     if (typeof persisted.token === "string") persistedToken = persisted.token;
     if (typeof (persisted as { stewardToken?: unknown }).stewardToken === "string")

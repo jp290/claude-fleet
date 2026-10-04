@@ -2491,7 +2491,10 @@ export async function run(): Promise<void> {
           && sendFailureMessage(409, draftBody) === draftMessage && await replay(draftResponse, draftMessage),
         JSON.stringify({ http: draftResponse.status, zeroBytes: zeroBytes(start), intact: stateText() === draft }));
       await tmuxOut("send-keys", "-t", `s${slot}`, "-N", String([...draft].length), "BSpace");
-      await until(() => stateText() === "", { timeoutMs: 3000, what: "fixture draft removed by its author" });
+      await until(async () => {
+        const frame = await tmuxOut("capture-pane", "-p", "-e", "-t", `s${slot}`);
+        return frame.code === 0 && composerBuffer({ kind: "rules" }, frame.out) === "";
+      }, { timeoutMs: 3000, what: "fixture draft removed by its author" });
       writeFileSync(modeFile, "hold\n");
       const notObserved = await post("/send", { slot, text: "owner-send-not-observed-once" });
       const notObservedBody = await notObserved.clone().json() as { receipt?: { delivery: string; acceptance?: string } };

@@ -29,7 +29,11 @@ export interface CodexFirstTurn {
   acceptedAt: number;
   completedAt: number | null;
   error: { message: string; code: string | null } | null;
-  unknownReason?: "oversized-row-skipped";
+  unknownReason?: "oversized-row-skipped" | "unreadable-row" | "turn-before-start" | "user-before-start";
+}
+export interface CodexFirstTurnEvidence {
+  turn: CodexFirstTurn | null;
+  unknownReason: CodexFirstTurn["unknownReason"] | null;
 }
 export interface ConversationRead {
   entries: TEntry[];
@@ -218,33 +222,54 @@ const CODEX_INJECTED = /^(# AGENTS\.md instructions|<[a-z_]+>)/;
 // commentary, token count or missing error alone proves a successful model turn.
 // https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/protocol.rs
 export function readCodexFirstTurn(lines: string[], since: number, previous: CodexFirstTurn | null = null): CodexFirstTurn | null {
-  let first = previous;
-  for (const line of lines) {
+  return readCodexFirstTurnEvidence(lines, since, { turn: previous, unknownReason: previous?.unknownReason ?? null }).turn;
+}
+
+// Keep pre-start gaps even when a chunk contains no start; a later start cannot prove it was first.
+export function readCodexFirstTurnEvidence(lines: string[], since: number,
+  previous: CodexFirstTurnEvidence = { turn: null, unknownReason: null }): CodexFirstTurnEvidence {
+  let first = previous.turn;
+  let unknownReason = previous.unknownReason;
+  for (let i = 0; i < lines.length; i++) {
     if (first && first.completedAt !== null) break;
+    const line = lines[i];
+    if (!line.trim()) continue;
     let row: { type?: unknown; timestamp?: unknown; payload?: Record<string, unknown> };
-    try { row = JSON.parse(line) as typeof row; } catch { continue; }
-    if (!row || row.type !== "event_msg" || !row.payload) continue;
-    const p = row.payload;
+    try { row = JSON.parse(line) as typeof row; } catch {
+      if (!first && i < lines.length - 1) unknownReason ??= "unreadable-row";
+      continue;
+    }
+    if (!row || typeof row !== "object" || !row.payload || typeof row.payload !== "object") continue;
     const at = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
     if (!Number.isFinite(at) || at < since) continue;
+    const p = row.payload;
+    if (!first && row.type === "response_item" && p.type === "message" && p.role === "user") {
+      const text = Array.isArray(p.content) ? p.content.map((c) => str((c as { text?: unknown } | null)?.text)).join("\n") : "";
+      if (!CODEX_INJECTED.test(text)) unknownReason ??= "user-before-start";
+    }
+    if (row.type !== "event_msg") continue;
     if (!first && (p.type === "task_started" || p.type === "turn_started") && str(p.turn_id)) {
-      first = { state: "running", turnId: str(p.turn_id), acceptedAt: at, completedAt: null, error: null };
+      first = { state: unknownReason ? "unknown" : "running", turnId: str(p.turn_id), acceptedAt: at,
+        completedAt: null, error: null, ...(unknownReason ? { unknownReason } : {}) };
+    } else if (!first) {
+      if (p.type === "user_message") unknownReason ??= "user-before-start";
+      else if (str(p.turn_id)) unknownReason ??= "turn-before-start";
     } else if (first && at >= first.acceptedAt && str(p.turn_id) === first.turnId
       && (p.type === "task_complete" || p.type === "turn_complete")) {
       const error = p.error;
       if (error && typeof error === "object") {
         const e = error as Record<string, unknown>;
         const info = e.codex_error_info;
-        first = { ...first, state: "failed", completedAt: at,
+        first = { ...first, state: unknownReason ? "unknown" : "failed", completedAt: at,
           error: { message: str(e.message) || "Codex turn failed",
             code: typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] ?? null : null } };
       } else {
-        first = { ...first, state: (error === undefined || error === null) && str(p.last_agent_message)
+        first = { ...first, state: !unknownReason && (error === undefined || error === null) && str(p.last_agent_message)
           ? "succeeded" : "unknown", completedAt: at };
       }
     }
   }
-  return first;
+  return { turn: first, unknownReason };
 }
 
 export function readCodexRollout(lines: string[]): ConversationRead {

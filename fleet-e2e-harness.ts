@@ -26,7 +26,7 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { codexModelSupport, type CodexModelSupport } from "./model-register";
-import { readCodexFirstTurn, readCodexRollout } from "./server/conversation-read";
+import { readCodexFirstTurn, readCodexFirstTurnEvidence, readCodexRollout } from "./server/conversation-read";
 import type { Slot } from "./server/types";
 import type { SlotInfo } from "./src/client";
 import { AUTOS_TICK_MS, ROOT, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
@@ -177,11 +177,11 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
   try {
     const scanner = section(source, "const codexFirstTurnCursors =", "async function tickGit()");
     const makeScanner = () => new Function("harnessOf", "codexContextFile", "openSync", "fstatSync", "Buffer",
-      "readSync", "closeSync", "readCodexFirstTurn", "exportRedactor", scanner + "\nreturn {tickCodexFirstTurn,codexFirstTurnView};")(
+      "readSync", "closeSync", "readCodexFirstTurnEvidence", "exportRedactor", scanner + "\nreturn {tickCodexFirstTurn,codexFirstTurnView};")(
         (id: string) => ({ id }), ({ sessionId }: { sessionId: string }) => files.has(`/fixture/${sessionId}`) ? `/fixture/${sessionId}` : null,
         (file: string) => { reads.push(file); return file; }, (file: string) => ({ size: files.get(file)!.length }), Buffer,
         (file: string, buffer: Buffer, offset: number, length: number, position: number) => files.get(file)!.copy(buffer, offset, position, position + length),
-        () => {}, readCodexFirstTurn, () => ({ clean: (s: string) => s.replace("fixture-secret", "[redacted]") })) as {
+        () => {}, readCodexFirstTurnEvidence, () => ({ clean: (s: string) => s.replace("fixture-secret", "[redacted]") })) as {
           tickCodexFirstTurn: (s: Slot) => void; codexFirstTurnView: (s: Slot) => Slot["codexFirstTurn"] };
     const scan = makeScanner();
     const a = { id: 17, cwd: "/repo", harness: "codex", openedAt: epoch + 20, selfToken: "token-A", sessionId: "session-A" } as Slot;
@@ -252,6 +252,28 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
     const parsed = readCodexRollout([start(21, "A"), failure]);
     checkFixture("first model turn: conversation reader retains structured terminal error", parsed.firstTurn?.state === "failed"
       && parsed.firstTurn.error?.code === "bad_request", JSON.stringify(parsed.firstTurn));
+    const user = JSON.stringify({ type: "response_item", timestamp: new Date(epoch + 21).toISOString(),
+      payload: { type: "message", role: "user", content: [{ text: "first request whose start is missing" }] } });
+    for (const [name, gap, reason] of [
+      ["user-input", user, "user-before-start"],
+      ["user-event", event(21, { type: "user_message", message: "first request" }), "user-before-start"],
+      ["unreadable-row", "{broken JSON", "unreadable-row"],
+      ["orphan-event", event(21, { type: "task_complete", turn_id: "missing-first" }), "turn-before-start"],
+    ] as const) {
+      const lines = [gap, start(24, "later"), success(25, "later")];
+      const turn = readCodexFirstTurn(lines, epoch + 20);
+      checkFixture(`first model turn: ${name} before a later start forbids success`, turn?.state === "unknown"
+        && turn.unknownReason === reason, JSON.stringify(turn));
+      const lane = { ...b, id: 40, selfToken: name, sessionId: `gap-${name}`, codexFirstTurn: null } as Slot;
+      put(lane.sessionId!, [gap]); scan.tickCodexFirstTurn(lane);
+      put(lane.sessionId!, lines); scan.tickCodexFirstTurn(lane);
+      checkFixture(`first model turn: ${name} gap survives a tick without a start`, lane.codexFirstTurn?.turn.state === "unknown"
+        && lane.codexFirstTurn.turn.unknownReason === reason, JSON.stringify(lane.codexFirstTurn));
+    }
+    const noGap = readCodexFirstTurn([user.replace(new Date(epoch + 21).toISOString(), new Date(epoch + 1).toISOString()),
+      start(21, "A"), failure, user, start(24, "later"), success(25, "later")], epoch + 20);
+    checkFixture("first model turn: known first failure remains failed despite later input and success",
+      noGap?.state === "failed" && noGap.turnId === "A" && noGap.error?.code === "bad_request", JSON.stringify(noGap));
     const long = { ...b, id: 19, selfToken: "token-long", sessionId: "session-long", codexFirstTurn: null } as Slot;
     const oversized = JSON.stringify({ type: "response_item", payload: {
       type: "message", role: "user", content: [{ text: "x".repeat(2_097_152) + success(22, "A") }] } });
@@ -271,6 +293,17 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
       longSuccess.codexFirstTurn?.turn.state === "unknown"
       && longSuccess.codexFirstTurn.turn.unknownReason === "oversized-row-skipped" && longSuccess.codexFirstTurn.turn.error === null,
       JSON.stringify(longSuccess.codexFirstTurn));
+    const skippedBeforeStart = { ...longSuccess, id: 22, selfToken: "skip-before-start", sessionId: "skip-before-start", codexFirstTurn: null } as Slot;
+    put(skippedBeforeStart.sessionId!, [oversized, start(24, "later"), success(25, "later")]);
+    for (let tick = 0; tick < 6; tick++) scan.tickCodexFirstTurn(skippedBeforeStart);
+    checkFixture("first model turn: skipped row before any observed start forbids later success",
+      skippedBeforeStart.codexFirstTurn?.turn.state === "unknown"
+      && skippedBeforeStart.codexFirstTurn.turn.unknownReason === "oversized-row-skipped", JSON.stringify(skippedBeforeStart.codexFirstTurn));
+    put("session-long-success", [start(21, "replacement-file"), success(23, "replacement-file")]);
+    scan.tickCodexFirstTurn(longSuccess);
+    checkFixture("first model turn: truncation resets the gap as well as offset and turn",
+      longSuccess.codexFirstTurn?.turn.state === "succeeded" && longSuccess.codexFirstTurn.turn.turnId === "replacement-file"
+      && !longSuccess.codexFirstTurn.turn.unknownReason, JSON.stringify(longSuccess.codexFirstTurn));
     const uiLong = { ...uiA, openedAt: long.openedAt, codexFirstTurn: long.codexFirstTurn,
       codexRecovery: { ...uiA.codexRecovery, sessionId: long.sessionId } };
     checkFixture("first model turn: client shows observed failure despite unknown outcome after skip",

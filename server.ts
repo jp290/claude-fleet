@@ -182,7 +182,7 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
-import { readCodexRollout, readCodexFirstTurn, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, type Binding,
+import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
@@ -6653,7 +6653,7 @@ let gitTickBusy = false;
 let operationalGitObservedAt: number | null = null;
 const operationalGitOccupants = new Map<number, { openedAt: number; sessionId: string | null }>();
 const codexFirstTurnCursors = new Map<number, { openedAt: number; sessionId: string; selfToken: string;
-  file: string; offset: number; skipping: boolean; unknownReason: "oversized-row-skipped" | null; turn: Slot["codexFirstTurn"] }>();
+  file: string; offset: number; skipping: boolean; unknownReason: CodexFirstTurnEvidence["unknownReason"]; turn: Slot["codexFirstTurn"] }>();
 function codexFirstTurnView(s: Slot): Slot["codexFirstTurn"] {
   const hit = s.codexFirstTurn;
   const cursor = codexFirstTurnCursors.get(s.id);
@@ -6680,7 +6680,9 @@ function tickCodexFirstTurn(s: Slot): void {
   try {
     fd = openSync(file, "r");
     const size = fstatSync(fd).size;
-    if (size < cursor.offset) { cursor.offset = 0; cursor.skipping = false; cursor.turn = null; s.codexFirstTurn = null; }
+    if (size < cursor.offset) {
+      cursor.offset = 0; cursor.skipping = false; cursor.unknownReason = null; cursor.turn = null; s.codexFirstTurn = null;
+    }
     if (cursor.turn?.turn.completedAt != null) return;
     // Bounded incremental scan, including resumed history. A non-full torn line is retried;
     // Oversized rows leave a permanent gap: later errors remain observable, success stays unknown.
@@ -6705,9 +6707,10 @@ function tickCodexFirstTurn(s: Slot): void {
     }
     const from = cursor.skipping ? buffer.subarray(0, n).indexOf(10) + 1 : 0;
     cursor.skipping = false;
-    const parsed = readCodexFirstTurn(buffer.toString("utf8", from, end + 1).split("\n"), s.openedAt, cursor.turn?.turn ?? null);
-    const turn = parsed && cursor.unknownReason
-      ? { ...parsed, state: "unknown" as const, unknownReason: cursor.unknownReason } : parsed;
+    const parsed = readCodexFirstTurnEvidence(buffer.toString("utf8", from, end + 1).split("\n"), s.openedAt,
+      { turn: cursor.turn?.turn ?? null, unknownReason: cursor.unknownReason });
+    cursor.unknownReason = parsed.unknownReason;
+    const turn = parsed.turn;
     cursor.offset += end + 1;
     if (turn && JSON.stringify(turn) !== JSON.stringify(cursor.turn?.turn ?? null)) {
       if (turn.error) {
@@ -10192,6 +10195,8 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
 // is the send receipt, accepted is task_started, model success needs task_complete without an
 // error AND terminal model output. A living TUI/header proves none of these. The observation adds
 // no send rights, no retry and no model switch; a terminal error does not rewrite delivery history.
+// A gap before the first observed start prevents success for that scan; truncation starts a new
+// scan with no inherited gap. Observed errors remain visible even when first-turn identity is unknown.
 async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "pending"; why?: string } | null> {
   const r = harnessOf(s.harness).readiness;
   if (!r) return null;

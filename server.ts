@@ -7905,7 +7905,7 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   await syncLaneRefs(ref, wt.path);
   let modelSupport: CodexModelSupport | null;
   try {
-    modelSupport = await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
+    modelSupport = (await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context)).modelSupport;
   } finally {
     releaseLaneLetter(letterBand, letter);
   }
@@ -8275,12 +8275,14 @@ function expandCwd(raw: string): string {
 // BOLT: pi has no permission layer (PI_HARNESS.note), and whether an unattended lane may run
 // without one is an owner decision not yet made. tickDispatch passes no `spawn`, and dispatchTask
 // carries the two-condition refusal (e2e/pins.ts). Narrativ: server-narrativ-archiv.md#openslot
+type SlotOpenResult = { superseded: boolean; modelSupport: CodexModelSupport | null;
+  occupant: { cwd: string | null; openedAt: number; selfToken: string } };
 async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null,
   model: string | null = null, label: string | null = null,
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false, context: SlotContext | null = null, remote = false, webSearch = false, preObservedSupport: CodexModelSupport | null = null): Promise<CodexModelSupport | null> {
+  browser = false, context: SlotContext | null = null, remote = false, webSearch = false, preObservedSupport: CodexModelSupport | null = null): Promise<SlotOpenResult> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   let expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
@@ -8466,9 +8468,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   } else saveState();
   await ensureSlot(s, "open");
   // Completion is effect-free: a superseded open retains main's successful return without claiming its target still stands.
-  if (!openOccupantCurrent()) return modelSupport
-    ? { ...modelSupport, availability: "unknown", provider: null, reason: "observation-target-mismatch" } : null;
-  return modelSupport;
+  if (!openOccupantCurrent()) return { superseded: true, occupant: expected, modelSupport: modelSupport
+    ? { ...modelSupport, availability: "unknown", provider: null, reason: "observation-target-mismatch" } : null };
+  return { superseded: false, occupant: expected, modelSupport };
   } finally {
     openSlotIntents.delete(openIntent);
   }
@@ -10713,7 +10715,7 @@ interface SuccessionStranded { brief: string; path: "succession" | "founding"; d
   label: string | null }
 async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string,
   stranded: SuccessionStranded, target: { cwd: string; model: string | null; harness: string | null },
-  open: (support: CodexModelSupport | null) => Promise<CodexModelSupport | null>, onLost: (error: unknown) => Promise<void>,
+  open: (support: CodexModelSupport | null) => Promise<SlotOpenResult>, onLost: (error: unknown) => Promise<void>,
   // a refusal BEFORE the kill: the predecessor still stands, only the rail's own intent falls
   onRefused: () => Promise<void> = async () => {}): Promise<InPlaceRespawn> {
   // tmux stderr is not an API-safe diagnostic (unavailableFoundingResponse's rule): only the typed
@@ -10761,14 +10763,20 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
     return { ok: false, response: await respawnLost(s, predecessor, rail, reason, stranded,
       () => onLost(new Error(reason)), 409, true) };
   }
-  let openedSupport: CodexModelSupport | null = null;
+  let opened: SlotOpenResult;
   try {
     if (SUCCESSION_RESPAWN_FAIL_LATCH !== null && existsSync(SUCCESSION_RESPAWN_FAIL_LATCH))
       throw new Error("forced respawn failure (FLEET_TEST_SUCCESSION_RESPAWN_FAIL_LATCH)");
-    openedSupport = await open(modelSupport);
+    opened = await open(modelSupport);
   } catch (e) {
     return { ok: false, response: await respawnLost(s, predecessor, rail, msg(e), stranded, () => onLost(e),
       e instanceof GameMakerTreeConflict ? 409 : 500) };
+  }
+  if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
+    || s.selfToken !== opened.occupant.selfToken) {
+    const reason = "slot was taken by another act during successor open — nothing handed over";
+    return { ok: false, response: await respawnLost(s, predecessor, rail, reason, stranded,
+      () => onLost(new Error(reason)), 409, true) };
   }
   audit("main_succession", s.id, `${rail} respawned in place (predecessor openedAt ${predecessor.openedAt} → ${s.openedAt})`);
   // THE LANES FOLLOW THEIR MAIN'S LINE, in the same synchronous step as the open and before any rail
@@ -10776,7 +10784,7 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   // line; a respawn that failed leaves every anchor naming the ended predecessor (respawnLost above).
   rebindLaneAnchors({ slot: predecessor.slot, openedAt: predecessor.openedAt }, { slot: s.id, openedAt: s.openedAt },
     `${rail} succession`);
-  return { ok: true, ...(openedSupport ? { modelSupport: openedSupport } : {}) };
+  return { ok: true, ...(opened.modelSupport ? { modelSupport: opened.modelSupport } : {}) };
 }
 
 // S0 (docs/messungen/2026-09-22-slot-baender-stufen-nach-32014c79.md §2.1): a lane's anchor is the
@@ -44024,12 +44032,12 @@ Bun.serve<WSData>({
           const resumedAt = Date.now();
           let modelSupport: CodexModelSupport | null;
           try {
-            modelSupport = await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
+            modelSupport = (await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
               baseSha: attachSha ?? undefined, letter: attachLetter,
               ...(parked ? { resumedFrom: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
                 parkedAt: parked.parkedAt, resumedAt, verify: "stale" as const } } : {}) },
               laneModel.model, null, laneH.harness, laneEffort.effort,
-              NO_BOX, null, laneBrowser.browser === true, laneContext.context);
+              NO_BOX, null, laneBrowser.browser === true, laneContext.context)).modelSupport;
           } finally {
             releaseLaneLetter(attachLetterBand, attachLetter);
           }
@@ -46104,8 +46112,8 @@ Bun.serve<WSData>({
         }
         let modelSupport: CodexModelSupport | null = null;
         try {
-          modelSupport = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
-            null, false, co.context, ro.remote);
+          modelSupport = (await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
+            null, false, co.context, ro.remote)).modelSupport;
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}),

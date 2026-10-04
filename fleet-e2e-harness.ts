@@ -162,7 +162,11 @@ export async function checkCodexSpawnFixtures(source: string,
   const available = codexModelSupport(cache, "fixture-present", cli, true, now, "/new");
   const unavailable = codexModelSupport(cache, "fixture-absent", cli, true, now, "/new");
   const unknown = codexModelSupport(cache, "fixture-absent", cli, false, now, "/new");
-  type Fixture = { name: string; support: CodexModelSupport; race?: string; joined?: boolean; empty?: boolean; founding?: boolean; succession?: boolean; mismatch?: "model" | "cwd" };
+  type FixtureOpenResult = { superseded: boolean; modelSupport: CodexModelSupport | null;
+    occupant: { cwd: string | null; openedAt: number; selfToken: string } };
+  const openEvidence = (result: FixtureOpenResult | CodexModelSupport | null): CodexModelSupport | null =>
+    result && "modelSupport" in result ? result.modelSupport : result;
+  type Fixture = { name: string; support: CodexModelSupport; race?: string; postOpenRace?: boolean; joined?: boolean; empty?: boolean; founding?: boolean; succession?: boolean; mismatch?: "model" | "cwd" };
   const fixtures: Fixture[] = [
     { name: "available", support: available },
     { name: "unavailable", support: unavailable },
@@ -171,6 +175,8 @@ export async function checkCodexSpawnFixtures(source: string,
     { name: "unknown-expired", support: codexModelSupport(cache, "fixture-absent", cli, true, now + 300_001) },
     { name: "joined-own-teardown", support: available, joined: true },
     { name: "succession-flips-after-kill", support: available, succession: true },
+    { name: "succession-replaced-during-open", support: available, succession: true, race: "ensure" },
+    { name: "succession-replaced-after-open-result", support: available, succession: true, postOpenRace: true },
     { name: "preobserved-model-mismatch", support: available, mismatch: "model" },
     { name: "preobserved-cwd-mismatch", support: available, mismatch: "cwd" },
     ...["teardown", "spawn", "support", "kill", "observe", "latch", "history", "persist", "ensure"].map((race): Fixture =>
@@ -235,12 +241,12 @@ export async function checkCodexSpawnFixtures(source: string,
     });
     try {
       const open = new Function("scope", `with (scope) { ${code}; return openSlot; }`)(scope) as
-        (s: Record<string, unknown>, cwd: string, ...args: unknown[]) => Promise<CodexModelSupport | null>;
+        (s: Record<string, unknown>, cwd: string, ...args: unknown[]) => Promise<FixtureOpenResult | CodexModelSupport | null>;
       if (fixture.mismatch) {
         const model = fixture.mismatch === "model" ? "fixture-other" : available.model;
         const cwd = fixture.mismatch === "cwd" ? "/other" : "/new";
-        const result = await open(slot, cwd, null, model, null, "codex", null,
-          { container: null, containerContext: null }, null, false, null, false, false, available);
+        const result = openEvidence(await open(slot, cwd, null, model, null, "codex", null,
+          { container: null, containerContext: null }, null, false, null, false, false, available));
         checkFixture(`Codex preobserved target mismatch: ${fixture.mismatch}`, supportCalls === 0
           && result?.availability === "unknown" && result.reason === "observation-target-mismatch"
           && result.model === model && result.cwd === cwd && slot.cwd === cwd && effects.includes("ensure"),
@@ -248,25 +254,50 @@ export async function checkCodexSpawnFixtures(source: string,
         continue;
       }
       if (fixture.succession) {
+        const anchor = { slot: 17, openedAt: 10 };
+        const lane = { id: 18, worktree: { anchor } };
+        const auditMessages: string[] = [];
+        let debtRetained = false;
+        const stranded = { brief: "fixture brief", draft: null };
         Object.assign(scope, {
           sameSuccessionOccupant: () => slot.openedAt === 10 && slot.selfToken === oldToken,
           json: (body: unknown, status: number) => new Response(JSON.stringify(body), { status }),
           restarting: new Set(), SUCCESSION_RESPAWN_FAIL_LATCH: null,
           SUCCESSION_AFTER_KILL_OCCUPANT_LATCH: null,
-          rebindLaneAnchors: () => {}, TmuxNewSessionUnavailable: class extends Error {}, GameMakerTreeConflict: class extends Error {},
-          respawnLost: async () => { effects.push("lost"); return new Response("respawnLost", { status: 500 }); },
+          TmuxNewSessionUnavailable: class extends Error {}, GameMakerTreeConflict: class extends Error {},
+          slots: [lane], logError: () => {},
+          audit: (_event: string, _slot: number, message: string) => { auditMessages.push(message); },
+          recordSuccessionDebt: (_s: unknown, _rail: unknown, _pred: unknown, _successor: unknown, _reason: unknown, debt: unknown) => {
+            debtRetained = debt === stranded; return { id: "fixture-debt", at: now };
+          },
         });
         const at = source.indexOf("async function respawnInPlace(");
         const end = source.indexOf("\n}\n", at);
         const respawnCode = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(at, end + 3));
-        const respawn = new Function("scope", `with (scope) { ${respawnCode}; return respawnInPlace; }`)(scope) as
+        const extract = (name: string): string => {
+          const at = source.indexOf(name);
+          return new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(at, source.indexOf("\n}\n", at) + 3));
+        };
+        const respawn = new Function("scope", `with (scope) { ${extract("async function respawnLost(")}
+          ${extract("function rebindLaneAnchors(")}; ${respawnCode}; return respawnInPlace; }`)(scope) as
           (s: unknown, predecessor: unknown, rail: string, stranded: unknown, target: unknown,
             open: (support: CodexModelSupport | null) => Promise<unknown>, onLost: () => Promise<void>) =>
             Promise<{ ok: true; modelSupport?: CodexModelSupport } | { ok: false; response: Response }>;
         let observed: CodexModelSupport | null = null;
-        const result = await respawn(slot, { slot: 17, cwd: "/old", openedAt: 10, selfToken: oldToken }, "fixture", {}, { cwd: "/new", model: available.model, harness: "codex" },
-          async (support) => { observed = await open(slot, "/new", null, available.model, null, "codex", null,
-            { container: null, containerContext: null }, null, false, null, false, false, support); return observed; }, async () => {});
+        const result = await respawn(slot, { slot: 17, cwd: "/old", openedAt: 10, selfToken: oldToken }, "fixture", stranded, { cwd: "/new", model: available.model, harness: "codex" },
+          async (support) => { const opened = await open(slot, "/new", null, available.model, null, "codex", null,
+            { container: null, containerContext: null }, null, false, null, false, false, support);
+          if (fixture.postOpenRace) { Object.assign(slot, foreign); foreignInstalled = true; }
+          observed = openEvidence(opened); return opened; }, async () => { effects.push("lost"); });
+        if (fixture.race || fixture.postOpenRace) {
+          checkFixture(`Codex superseded succession preserves foreign occupant and predecessor anchors: ${fixture.name}`,
+            !result.ok && result.response.status === 409 && supportCalls === 1 && effects.filter((e) => e === "kill").length === 1
+              && slot.cwd === foreign.cwd && slot.openedAt === foreign.openedAt && slot.selfToken === foreign.selfToken
+              && writesAfterReplacement.length === 0 && lane.worktree.anchor === anchor
+              && !auditMessages.some((m) => m.includes("respawned in place")) && debtRetained,
+            `status=${result.ok ? 200 : result.response.status}; probes=${supportCalls}; kills=${effects.filter((e) => e === "kill").length}; predecessor anchor=${lane.worktree.anchor === anchor}; foreign untouched=${writesAfterReplacement.length === 0}; debt retained=${debtRetained}`);
+          continue;
+        }
         checkFixture("Codex succession freezes one pre-teardown decision when support flips after kill",
           result.ok && supportCalls === 1 && observed === available && result.modelSupport === available
             && slot.cwd === "/new" && effects.includes("ensure") && !effects.includes("lost"),
@@ -275,8 +306,8 @@ export async function checkCodexSpawnFixtures(source: string,
       }
       let result: CodexModelSupport | null = null;
       let error: unknown = null;
-      try { result = await open(slot, "/new", null, fixture.support.model!, null, "codex", null,
-        { container: null, containerContext: null }, lease); } catch (caught) { error = caught; }
+      try { result = openEvidence(await open(slot, "/new", null, fixture.support.model!, null, "codex", null,
+        { container: null, containerContext: null }, lease)); } catch (caught) { error = caught; }
       if (fixture.race === "ensure") {
         checkFixture("Codex superseded open completes without a late effect or support claim", error === null
           && result?.availability === "unknown" && result.reason === "observation-target-mismatch"
@@ -326,9 +357,10 @@ export async function checkCodexSpawnFixtures(source: string,
     };
     const respawn = new Function("scope", `with (scope) { ${respawnCode}; return respawnInPlace; }`)(scope) as
       (s: unknown, predecessor: unknown, rail: string, stranded: unknown, target: unknown,
-        open: () => Promise<void>, onLost: () => Promise<void>) => Promise<{ ok: true } | { ok: false; response: Response }>;
+        open: () => Promise<FixtureOpenResult>, onLost: () => Promise<void>) => Promise<{ ok: true } | { ok: false; response: Response }>;
     const result = await respawn(slot, { slot: 17, cwd: "/old", openedAt: 10, selfToken: "old-fixture-token" }, "fixture", {}, { cwd: "/new", model: fixture.support.model, harness: "codex" },
-      async () => { effects.push("open"); }, async () => {});
+      async () => { effects.push("open"); Object.assign(slot, { cwd: "/new", openedAt: 20, selfToken: "new-fixture-token" });
+        return { superseded: false, modelSupport: fixture.support, occupant: { ...slot } }; }, async () => {});
     if (fixture.name === "unavailable") {
       const body: unknown = !result.ok ? await result.response.json() : null;
       checkFixture("Codex succession refuses before teardown with typed model evidence", !result.ok && result.response.status === 400
@@ -379,10 +411,10 @@ export async function checkCodexSpawnFixtures(source: string,
     };
     const respawn = new Function("scope", `with (scope) { ${lostCode}; ${respawnCode}; return respawnInPlace; }`)(scope) as
       (s: unknown, predecessor: unknown, rail: string, stranded: unknown, target: unknown,
-        open: () => Promise<void>, onLost: () => Promise<void>) => Promise<{ ok: true } | { ok: false; response: Response }>;
+        open: () => Promise<FixtureOpenResult>, onLost: () => Promise<void>) => Promise<{ ok: true } | { ok: false; response: Response }>;
     const result = await respawn(slot, predecessor, "fixture", stranded,
       { cwd: "/new", model: available.model, harness: "codex" },
-      async () => { effects.push("open"); }, async () => { effects.push("lost"); });
+      async () => { effects.push("open"); return { superseded: false, modelSupport: available, occupant: { ...slot } }; }, async () => { effects.push("lost"); });
     const untouched = race === "latch" ? slot.cwd === "/fleet-test-succession-foreign" && slot.openedAt === 99
       && slot.selfToken === "fleet-test-succession-foreign" : JSON.stringify(slot) === endedState;
     const body: unknown = result.ok ? null : await result.response.json();

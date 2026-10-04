@@ -7920,22 +7920,32 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) throw new Error("glass island DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable);
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/chromium`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
-  let log = "", timer: ReturnType<typeof setTimeout> | undefined;
-  const endpoint = await Promise.race([
-    (async () => { for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + log); })(),
-    new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + log)), 45000); }),
-  ]).finally(() => clearTimeout(timer));
-  const socket = new WebSocket(endpoint);
-  await new Promise<void>((ok, bad) => { socket.onopen = () => ok(); socket.onerror = () => bad(new Error("CDP connection failed")); });
+  // a start that fails (no endpoint, a timeout, a refused socket) takes its browser down before it
+  // throws: a headless Chromium left behind would sit on the machine every suite shares
+  let socket: WebSocket | undefined;
+  try {
+    let log = "", timer: ReturnType<typeof setTimeout> | undefined;
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + log); })(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + log)), 45000); }),
+    ]).finally(() => clearTimeout(timer));
+    const ws = new WebSocket(endpoint);
+    socket = ws;
+    await new Promise<void>((ok, bad) => { ws.onopen = () => ok(); ws.onerror = () => bad(new Error("CDP connection failed")); });
+  } catch (error) {
+    socket?.close(); browser.kill(); await browser.exited;
+    throw error;
+  }
+  const cdp = socket;
   let serial = 0, sessionId: string | undefined, targetId = "", loaded: (() => void) | null = null;
   const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
   const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
     const id = ++serial;
     const t = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
     pending.set(id, { ok: (v) => { clearTimeout(t); ok(v); }, bad: (e) => { clearTimeout(t); bad(e); } });
-    socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    cdp.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
   });
-  socket.onmessage = (event) => {
+  cdp.onmessage = (event) => {
     const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
     if (msg.id !== undefined) {
       const w = pending.get(msg.id); if (!w) return;
@@ -7990,7 +8000,7 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
       return { transparency: true };
     },
     async shot(file) { writeFileSync(file, Buffer.from(String((await send("Page.captureScreenshot", { format: "png" })).data), "base64")); },
-    async close() { socket.close(); browser.kill(); await browser.exited; },
+    async close() { cdp.close(); browser.kill(); await browser.exited; },
   };
 }
 async function glassWebkit(playwright: string, serve: GlassServe, init: string): Promise<GlassDriver> {

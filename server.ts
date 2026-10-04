@@ -14605,7 +14605,7 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
     if (!row?.programId || row.programId !== sender.from.id || lane.programId !== sender.from.id)
       return json({ error: "the addressed lane belongs to a foreign program or has no Program assignment" }, 409);
   }
-  const resolved = resolveMessageAddress(to);
+  let resolved = resolveMessageAddress(to);
   if (!resolved.ok) return json({ error: resolved.error }, 409);
   if (resolved.escalatedTo === "owner" && ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX)
     return json({ error: "owner operations inbox has no FleetEvent delivery budget" }, 409);
@@ -14635,6 +14635,10 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
     fleetEvents = [...fleetEvents, event];
   }
   await saveStateNow();
+  if (to.kind === "session" || to.kind === "lane") {
+    const current = resolveMessageAddress(to);
+    if (current.ok) resolved = current;
+  }
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
   return json({ ok: true, existing: false, message: entry,

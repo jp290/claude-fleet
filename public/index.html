@@ -2616,7 +2616,7 @@
     #shell-found .fdsaycol { flex: 1 1 100%; }
     #shell-found .fdacts { flex: 1 1 100%; }
     #shell-found .fdgo { flex: 1 1 auto; justify-content: center; min-height: 44px; }
-    #shell-found .fdpfw .fdpop { position: fixed; left: 8px; right: 8px; top: auto; bottom: 132px; max-height: 50vh; }
+    #shell-found .fdpfw .fdpop { position: fixed; left: 8px; right: 8px; top: auto; bottom: calc(var(--fdfootgap, 124px) + 8px); max-height: 50vh; }
     #shell-found.fdproved .fdgo { align-self: stretch; flex: none; }
     .fdproofrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
     .fdproofheadrow > span:first-child { display: none; }

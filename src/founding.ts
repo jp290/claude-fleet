@@ -401,9 +401,17 @@ function open(entry: Entry) {
   shell.root.addEventListener("pointerdown", onDown, true);
   // capture: the app's own keyboard (the composer, the panes) must not see an Enter this window took
   window.addEventListener("keydown", onWinKey, true);
+  // on a phone a field's popover stands fixed above the foot, and the foot grows with its sentence and
+  // its deviation line: the popover reads the foot's real distance from the bottom, never a guess
+  const footGap = () => shell.root.style.setProperty("--fdfootgap", `${Math.max(0, Math.round(innerHeight - shell.foot.getBoundingClientRect().top))}px`);
+  const footSeen = new ResizeObserver(footGap);
+  footSeen.observe(shell.foot);
+  window.addEventListener("resize", footGap);
   S.teardown = () => {
     window.removeEventListener("keydown", onKey, true);
     window.removeEventListener("keydown", onWinKey, true);
+    window.removeEventListener("resize", footGap);
+    footSeen.disconnect();
   };
   if (entry.kind === "lane") choosePlace(entry.repo);
   else if (repos.length) choosePlace(repos[0]!.repo);

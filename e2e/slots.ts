@@ -5798,6 +5798,14 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await setup('equal'); await click('[data-pop="container"]');
       await click('.fdpop .fdpin:first-child input'); await send('Input.insertText', {text:'fixture-box'});
       await click('.fdpop .fdpin:nth-child(2) input'); await send('Input.insertText', {text:'fixture-daemon'});
+      // the phone's popover stood fixed 132 px over a foot of 154 px: its second field lay under the
+      // foot (preview fbd1c7109d95). should-reject: a fixed offset — the foot grows by 80 px here
+      const overFoot = `(() => { const p = document.querySelector('.fdpop').getBoundingClientRect(), f = document.querySelector('#shell-found .shellfoot').getBoundingClientRect(); return p.bottom <= f.top + 0.5; })()`;
+      const footFree = await evaluate<boolean>(overFoot);
+      await evaluate(`(() => { const d = document.createElement('div'); d.id = 'fixture-tall'; d.style.height = '80px'; document.querySelector('#shell-found .fdsaycol').append(d); })()`);
+      await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      g2['the open popover stands above the foot, and above a foot that grew'] = footFree && await evaluate<boolean>(overFoot);
+      await evaluate(`document.querySelector('#fixture-tall')?.remove()`);
       await key('Escape'); await click('.fdgo'); await finished();
       g2['container and daemon are exact observed values'] = await evaluate<boolean>(`${actual('Container')}?.textContent==='fixture-box' && ${actual('Docker-Daemon')}?.textContent==='fixture-daemon'`);
       await setup('unreported'); await pick('model'); await click('.fdgo'); await finished();

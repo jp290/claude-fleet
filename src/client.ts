@@ -59,6 +59,12 @@ import { openShell, type Shell, type ShellRow } from "./shell";
 import { openLaneFounding, openPicker } from "./founding";
 import { runningEffort, runningModel } from "./running";
 
+if (/Chrome\/|Chromium\//.test(navigator.userAgent) && !/CriOS\//.test(navigator.userAgent)) {
+  const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+  if (viewport && !viewport.content.includes("interactive-widget="))
+    viewport.content = `${viewport.content}, interactive-widget=resizes-content`;
+}
+
 export const $ = (id: string) => document.getElementById(id)!;
 export const slotsEl = $("slots"), dot = $("dot"),
   ta = $("input") as HTMLTextAreaElement, send = $("send") as HTMLButtonElement,

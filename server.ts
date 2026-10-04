@@ -1,7 +1,7 @@
 import { historySource } from "./src/drafts";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
-import { constants as fsConstants, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
+import { constants as fsConstants, appendFileSync, existsSync, statSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
@@ -182,7 +182,7 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
-import { readCodexRollout, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, type Binding,
+import { readCodexRollout, readCodexFirstTurn, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, type Binding,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
@@ -6594,8 +6594,12 @@ async function codexAttendedCandidates(s: Slot): Promise<{
 
 async function tickCodexRecovery(s: Slot): Promise<void> {
   if (!s.cwd || harnessOf(s.harness).id !== "codex") return;
+  const occupant = { openedAt: s.openedAt, selfToken: s.selfToken, cwd: s.cwd, sessionId: s.sessionId };
+  const current = () => s.openedAt === occupant.openedAt && s.selfToken === occupant.selfToken
+    && s.cwd === occupant.cwd && s.sessionId === occupant.sessionId && !slotTeardownInflight.has(s.id);
   let dirty = false;
   const cap = await tmux("capture-pane", "-p", "-t", paneTarget(sess(s.id)));
+  if (!current()) return;
   if (cap.code === 0 && s.codexDisconnectSeenAt === null
     && /stream disconnected before completion/i.test(cap.out)) {
     s.codexDisconnectSeenAt = Date.now();
@@ -6604,6 +6608,7 @@ async function tickCodexRecovery(s: Slot): Promise<void> {
   if (s.codexRecoveryState === "pending" && s.sessionId === null && s.codexPaneSpawnedAt !== null) {
     const now = Date.now();
     const candidates = await codexCandidates(s, s.codexPaneSpawnedAt - CODEX_BIND_SLACK_MS, now);
+    if (!current()) return;
     if (candidates.length === 1) {
       s.sessionId = candidates[0].id;
       noteSessionIdLearned(s, null);
@@ -6647,19 +6652,74 @@ const laneHunkInfo = new Map<number, Record<string, TaskWaveRange[]>>();
 let gitTickBusy = false;
 let operationalGitObservedAt: number | null = null;
 const operationalGitOccupants = new Map<number, { openedAt: number; sessionId: string | null }>();
+const codexFirstTurnCursors = new Map<number, { openedAt: number; sessionId: string; selfToken: string;
+  file: string; offset: number; turn: Slot["codexFirstTurn"] }>();
+function codexFirstTurnView(s: Slot): Slot["codexFirstTurn"] {
+  const hit = s.codexFirstTurn;
+  const cursor = codexFirstTurnCursors.get(s.id);
+  return s.cwd && harnessOf(s.harness).id === "codex" && hit?.openedAt === s.openedAt
+    && hit.sessionId === s.sessionId && cursor?.selfToken === s.selfToken ? hit : null;
+}
+function tickCodexFirstTurn(s: Slot): void {
+  if (!s.cwd || harnessOf(s.harness).id !== "codex" || !s.sessionId) {
+    s.codexFirstTurn = null;
+    codexFirstTurnCursors.delete(s.id);
+    return;
+  }
+  const file = codexContextFile({ cwd: s.cwd, sessionId: s.sessionId });
+  if (!file) { s.codexFirstTurn = null; codexFirstTurnCursors.delete(s.id); return; }
+  let cursor = codexFirstTurnCursors.get(s.id);
+  if (!cursor || cursor.openedAt !== s.openedAt || cursor.sessionId !== s.sessionId
+    || cursor.selfToken !== s.selfToken || cursor.file !== file) {
+    cursor = { openedAt: s.openedAt, sessionId: s.sessionId, selfToken: s.selfToken, file, offset: 0, turn: null };
+    codexFirstTurnCursors.set(s.id, cursor);
+    s.codexFirstTurn = null;
+  }
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, "r");
+    const size = fstatSync(fd).size;
+    if (size < cursor.offset) { cursor.offset = 0; cursor.turn = null; s.codexFirstTurn = null; }
+    if (cursor.turn?.turn.completedAt != null) return;
+    // Bounded incremental scan, including resumed history. A torn line is retried; a line above
+    // 1 MiB, missing start, missing time, or absent terminal model output remains unknown.
+    const buffer = Buffer.alloc(Math.min(1_048_576, Math.max(0, size - cursor.offset)));
+    const n = readSync(fd, buffer, 0, buffer.length, cursor.offset);
+    const end = buffer.subarray(0, n).lastIndexOf(10);
+    if (end < 0) return;
+    const turn = readCodexFirstTurn(buffer.toString("utf8", 0, end + 1).split("\n"), s.openedAt, cursor.turn?.turn ?? null);
+    cursor.offset += end + 1;
+    if (turn && JSON.stringify(turn) !== JSON.stringify(cursor.turn?.turn ?? null)) {
+      if (turn.error) {
+        const redactor = exportRedactor();
+        turn.error.message = redactor.clean(turn.error.message).slice(0, 1000);
+        turn.error.code = turn.error.code ? redactor.clean(turn.error.code).slice(0, 100) : null;
+      }
+      cursor.turn = { openedAt: s.openedAt, sessionId: s.sessionId, source: "codex-rollout", observedAt: Date.now(), turn };
+      s.codexFirstTurn = cursor.turn;
+    }
+  } catch { s.codexFirstTurn = null; codexFirstTurnCursors.delete(s.id); }
+  finally { if (fd !== null) closeSync(fd); }
+}
 async function tickGit(): Promise<void> {
   if (gitTickBusy) return;
   gitTickBusy = true;
   const occupants = slots.map((s) => ({ slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null }));
   try {
     for (const s of slots) {
-      if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); paneModelInfo.delete(s.id); gitOpInfo.delete(s.id); laneHunkInfo.delete(s.id); continue; }
+      if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); paneModelInfo.delete(s.id); gitOpInfo.delete(s.id); laneHunkInfo.delete(s.id); codexFirstTurnCursors.delete(s.id); s.codexFirstTurn = null; continue; }
+      const turnOccupant = { openedAt: s.openedAt, selfToken: s.selfToken, cwd: s.cwd };
       await tickCodexRecovery(s);
+      if (s.openedAt !== turnOccupant.openedAt || s.selfToken !== turnOccupant.selfToken || s.cwd !== turnOccupant.cwd
+        || slotTeardownInflight.has(s.id)) continue;
       // liveness is independent of git state — compute it before the git branching so a
       // non-repo cwd (st.code !== 0 below) still gets an alive reading. ONE probe feeds both maps:
       // `alive` is this state reduced to canDeliver's question, and computing them separately would
       // pay two rounds of ps/pgrep to let them disagree across the gap between the calls.
       const agentState = await paneAgentAt(sess(s.id), commsFor(s));
+      if (s.openedAt !== turnOccupant.openedAt || s.selfToken !== turnOccupant.selfToken || s.cwd !== turnOccupant.cwd
+        || slotTeardownInflight.has(s.id)) continue;
+      tickCodexFirstTurn(s);
       // THE FACT, per slot and unconditional: what is actually running in that pane, asked about the
       // binary the slot's own harness runs. Before commsFor this asked every slot about claude, so a
       // healthy Pi pane was reported `no-agent` — the board stating something untrue about reality.
@@ -8429,6 +8489,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.codexPaneSpawnedAt = null;
   s.codexRecoveryState = null;
   s.codexDisconnectSeenAt = null;
+  s.codexFirstTurn = null;
+  codexFirstTurnCursors.delete(s.id);
   s.sleeping = null; // a new occupant is awake; the old one's sleep named a conversation that is not this one
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0), skipping: 0 }); // sentinel: harvest the NEW transcript from byte 0
@@ -8640,6 +8702,8 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.codexPaneSpawnedAt = null;
   s.codexRecoveryState = null;
   s.codexDisconnectSeenAt = null;
+  s.codexFirstTurn = null;
+  codexFirstTurnCursors.delete(s.id);
   s.sleeping = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();
@@ -10106,6 +10170,10 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
 // "pending" is neither marker on screen and is deliberately NOT a refusal at the delivery gates
 // (fail-open; only the bounded boot wait in briefAndSend treats it as not-yet-ready). A failed
 // capture is "pending" too: the pane gates beside this one own the no-pane answer.
+// R3b's codexFirstTurnView is a separate observation beside this readiness contract: transported
+// is the send receipt, accepted is task_started, model success needs task_complete without an
+// error AND terminal model output. A living TUI/header proves none of these. The observation adds
+// no send rights, no retry and no model switch; a terminal error does not rewrite delivery history.
 async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "pending"; why?: string } | null> {
   const r = harnessOf(s.harness).readiness;
   if (!r) return null;
@@ -43248,7 +43316,7 @@ Bun.serve<WSData>({
               state: s.codexRecoveryState ?? (s.sessionId ? "lost" : "pending"),
               sessionId: s.sessionId,
               disconnectSeenAt: s.codexDisconnectSeenAt,
-            } } : {}),
+            }, codexFirstTurn: codexFirstTurnView(s) } : {}),
             // WHICH BOX AND WHICH DAEMON — carried whenever the harness has a container concept at all, the
             // default case included: the OPPOSITE rule from harness/effort, because "which VM did I get" is
             // unanswerable if the default sends nothing. Two short strings on the rare boxed slot.

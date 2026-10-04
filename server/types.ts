@@ -19,6 +19,7 @@ import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, 
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
 import type { TaskCardBody } from "../card-extract";
 import type { ProgramContextPack } from "../context-plan";
+import type { CodexFirstTurn } from "./conversation-read";
 
 const BAND_SLOTS = 16;
 const SEPARATE_LANE_SLOTS = process.env.FLEET_SEPARATE_LANE_SLOTS === "1";
@@ -2021,6 +2022,10 @@ interface Slot {
   codexPaneSpawnedAt: number | null; // current Codex pane life's discovery-window anchor
   codexRecoveryState: CodexRecoveryState | null; // null for every non-Codex occupant
   codexDisconnectSeenAt: number | null; // advisory only; a live TUI owns its own retry
+  // Volatile observation of THIS occupation's first model turn. Restart re-reads its exact rollout;
+  // null/absent is unknown, never success. Transport/acceptance and readiness keep their own contracts.
+  codexFirstTurn?: { openedAt: number; sessionId: string; source: "codex-rollout";
+    observedAt: number; turn: CodexFirstTurn } | null;
   // non-null = asleep: ensureSlot (and with it the 2 s self-heal) leaves the pane absent, and every
   // delivery path wakes it first (server.ts#wakeSlot). Cleared by wake, open and teardown. Persisted,
   // so a restart does not silently wake every sleeper.

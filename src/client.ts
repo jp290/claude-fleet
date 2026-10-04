@@ -1,3 +1,4 @@
+import type { CodexFirstTurn } from "../server/conversation-read";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
 import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
@@ -310,6 +311,8 @@ export interface SlotInfo {
   // "no-agent" is the one value that matters: a typeable pane with nothing behind it. null/absent
   // = the slow tick has not reached this slot, which is not an answer and must not paint one.
   agent?: "alive" | "no-agent" | "no-pane" | "unprobed" | null;
+  codexFirstTurn?: { openedAt: number; sessionId: string; source: "codex-rollout";
+    observedAt: number; turn: CodexFirstTurn } | null;
   // omitted unless true / unless armed — see the server's slot row. `autoCloseRefusal: null` on a
   // lane is an ANSWER ("nothing refuses this lane"), absent is "the question does not apply".
   stalled?: true; stalledSince?: number; autoCloseRefusal?: string | null;
@@ -5080,8 +5083,21 @@ export function laneNameOfBranch(branch: string): string {
 // same thing as one that paused between two answers, and the bar had no way to say so.
 const SLEEP_MS = 30 * 60_000;
 type OutputState = "work" | "rest" | "sleep" | "bad";
+function codexTurnOf(s: SlotInfo): SlotInfo["codexFirstTurn"] {
+  const hit = s.codexFirstTurn;
+  return hit && hit.openedAt === s.openedAt && hit.sessionId === s.codexRecovery?.sessionId ? hit : null;
+}
+function codexTurnLine(s: SlotInfo): string {
+  const hit = codexTurnOf(s);
+  if (!hit) return "Erster Modellturn unbekannt — kein passender strukturierter Turn-Beleg";
+  const t = hit.turn;
+  const word = { running: "angenommen, läuft", succeeded: "erfolgreich", failed: "fehlgeschlagen", unknown: "Ergebnis unbekannt" }[t.state];
+  return `Erster Modellturn ${word}${t.error ? `: ${t.error.code ? t.error.code + " · " : ""}${t.error.message}` : ""}`
+    + `\nQuelle: ${hit.source} · Ereignis ${new Date(t.completedAt ?? t.acceptedAt).toLocaleString()}`
+    + ` · beobachtet ${new Date(hit.observedAt).toLocaleString()}`;
+}
 function outputState(s: SlotInfo, now: number, awake: boolean): OutputState {
-  if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane") return "bad";
+  if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane" || codexTurnOf(s)?.turn.state === "failed") return "bad";
   if (awake || now - s.lastOutput < RECENT_MS) return "work";
   return now - s.lastOutput >= SLEEP_MS ? "sleep" : "rest";
 }
@@ -5883,6 +5899,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         facts.push(`Fleet typed ${bytes.toLocaleString()} bytes into this pane today, in ${sends} send${sends === 1 ? "" : "s"}`);
       }
       if (s.parkedSend) facts.push(parkedSendLine(s.parkedSend));
+      if (s.codexRecovery) facts.push(codexTurnLine(s));
       facts.push("open the board for the diff, the files and the actions · double-click to rename");
       lbl.title = facts.join("\n");
       if (s.worktree) {
@@ -5944,8 +5961,16 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       live.title = STATE_WORD[state]
         + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")
         + `\nlast output ${sinceShort(serverNow - s.lastOutput)} ago · ${new Date(s.lastOutput).toLocaleString()}`;
+      if (s.codexRecovery) live.title += `\n${codexTurnLine(s)}`;
       r1.appendChild(live);
       row.appendChild(r1);
+      const firstTurn = codexTurnOf(s);
+      if (firstTurn?.turn.state === "failed") {
+        const failure = el("div", "needline", `Erster Modellturn fehlgeschlagen · ${firstTurn.turn.error?.code ?? "Fehler"}`
+          + ` · ${firstTurn.source} · ${new Date(firstTurn.turn.completedAt ?? firstTurn.turn.acceptedAt).toLocaleString()}`);
+        failure.title = codexTurnLine(s);
+        row.appendChild(failure);
+      }
       // CODEX RECOVERY — only when the OWNER has to act, and then as a SENTENCE on a line of its own.
       // "cx bound" / "cx pending" were the healthy states and the owner never knew what they meant
       // („[Zitat entfernt]“): healthy says nothing now. The two states Fleet will not
@@ -6349,6 +6374,7 @@ export async function refresh() {
         // main's lanes under the orphan header even after the poll has learned the truthful join.
         s.openedAt, s.repo, s.worktree?.anchor?.slot, s.worktree?.anchor?.openedAt,
         s.codexRecovery?.state, s.codexRecovery?.sessionId, s.codexRecovery?.disconnectSeenAt,
+        JSON.stringify(s.codexFirstTurn ?? null),
         // the context chip, at the SAME resolution the row paints it (whole percent). The raw pct
         // moves on nearly every poll; keying on it would rebuild the sidebar continuously, and
         // leaving it out entirely would freeze the chip until some other field moved — the exact

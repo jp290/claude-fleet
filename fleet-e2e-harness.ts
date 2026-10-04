@@ -26,6 +26,8 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { codexModelSupport, type CodexModelSupport } from "./model-register";
+import { readCodexFirstTurn, readCodexRollout } from "./server/conversation-read";
+import type { Slot } from "./server/types";
 import { AUTOS_TICK_MS, ROOT, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
 
 export async function checkPaneAgentAtFixtures(source: string, checkFixture: (name: string, ok: boolean, detail: string) => void): Promise<void> {
@@ -145,6 +147,132 @@ export async function checkPaneAgentAtFixtures(source: string, checkFixture: (na
 }
 
 await checkPaneAgentAtFixtures(readFileSync(`${ROOT}/server.ts`, "utf8"), check);
+
+export async function checkCodexFirstTurnFixtures(source: string, client: string,
+  checkFixture: (name: string, ok: boolean, detail: string) => void): Promise<void> {
+  // Synthetic timeline (ms relative to epoch):
+  // t | event                         | exclusive owner
+  // 1 | historical success            | predecessor
+  // 20| open A / B                    | A / B
+  // 21| task_started                  | A / B
+  // 22| commentary, still alive       | A / B
+  // 23| model-400 / terminal success  | A / B
+  // 30| recycle A                     | replacement C
+  const epoch = 1_790_000_000_000;
+  const event = (t: number, payload: Record<string, unknown>) => JSON.stringify({
+    type: "event_msg", timestamp: new Date(epoch + t).toISOString(), payload });
+  const start = (t: number, id: string) => event(t, { type: "task_started", turn_id: id });
+  const success = (t: number, id: string) => event(t, { type: "task_complete", turn_id: id, last_agent_message: "done" });
+  const failure = event(23, { type: "task_complete", turn_id: "A", last_agent_message: null,
+    error: { message: "HTTP 400: model fixture unsupported", codex_error_info: "bad_request" } });
+  const files = new Map<string, Buffer>();
+  const reads: string[] = [];
+  const put = (id: string, lines: string[]) => files.set(`/fixture/${id}`, Buffer.from(lines.join("\n") + "\n"));
+  const section = (text: string, from: string, to: string) => {
+    const a = text.indexOf(from), b = text.indexOf(to, a);
+    if (a < 0 || b < 0) throw new Error(`missing original ${from}`);
+    return new Bun.Transpiler({ loader: "ts" }).transformSync(text.slice(a, b));
+  };
+  try {
+    const scanner = section(source, "const codexFirstTurnCursors =", "async function tickGit()");
+    const makeScanner = () => new Function("harnessOf", "codexContextFile", "openSync", "fstatSync", "Buffer",
+      "readSync", "closeSync", "readCodexFirstTurn", "exportRedactor", scanner + "\nreturn {tickCodexFirstTurn,codexFirstTurnView};")(
+        (id: string) => ({ id }), ({ sessionId }: { sessionId: string }) => files.has(`/fixture/${sessionId}`) ? `/fixture/${sessionId}` : null,
+        (file: string) => { reads.push(file); return file; }, (file: string) => ({ size: files.get(file)!.length }), Buffer,
+        (file: string, buffer: Buffer, offset: number, length: number, position: number) => files.get(file)!.copy(buffer, offset, position, position + length),
+        () => {}, readCodexFirstTurn, () => ({ clean: (s: string) => s.replace("fixture-secret", "[redacted]") })) as {
+          tickCodexFirstTurn: (s: Slot) => void; codexFirstTurnView: (s: Slot) => Slot["codexFirstTurn"] };
+    const scan = makeScanner();
+    const a = { id: 17, cwd: "/repo", harness: "codex", openedAt: epoch + 20, selfToken: "token-A", sessionId: "session-A" } as Slot;
+    const b = { ...a, id: 18, selfToken: "token-B", sessionId: "session-B" } as Slot;
+    put("foreign", [start(21, "foreign"), success(23, "foreign")]);
+    put("session-A", [start(0, "old"), success(1, "old"), start(21, "A")]);
+    scan.tickCodexFirstTurn(a);
+    checkFixture("first model turn: accepted is running, not successful", a.codexFirstTurn?.turn.state === "running"
+      && a.codexFirstTurn.turn.acceptedAt === epoch + 21, JSON.stringify(a.codexFirstTurn));
+    const commentary = JSON.stringify({ type: "response_item", timestamp: new Date(epoch + 22).toISOString(),
+      payload: { type: "message", role: "assistant", phase: "commentary", content: [{ text: "HTTP 400 in quoted user data" }] } });
+    put("session-A", [start(0, "old"), success(1, "old"), start(21, "A"), commentary]);
+    scan.tickCodexFirstTurn(a);
+    checkFixture("first model turn: commentary and a quoted error prove neither failure nor success",
+      a.codexFirstTurn?.turn.state === "running", JSON.stringify(a.codexFirstTurn));
+    put("session-A", [start(0, "old"), success(1, "old"), start(21, "A"), commentary, failure, start(24, "later"), success(25, "later")]);
+    scan.tickCodexFirstTurn(a);
+    const observed = scan.codexFirstTurnView(a);
+    checkFixture("first model turn: model-400 has source, event time and observer time on A",
+      observed?.source === "codex-rollout" && observed.openedAt === epoch + 20 && observed.sessionId === "session-A"
+      && observed.observedAt >= epoch && observed.turn.state === "failed" && observed.turn.completedAt === epoch + 23
+      && observed.turn.error?.code === "bad_request" && observed.turn.error.message === "HTTP 400: model fixture unsupported",
+      JSON.stringify(observed));
+    const rd = section(source, "async function paneReadiness(", "\n// Fresh founding prompts");
+    const ready = new Function("harnessOf", "tmux", "paneTarget", "sess", rd + "\nreturn paneReadiness;")(
+      () => ({ readiness: { accept: />_ OpenAI Codex \(v/, blocks: [] } }),
+      async () => ({ code: 0, out: ">_ OpenAI Codex (v0.160.0)\nHTTP 400: model fixture unsupported\n›" }),
+      (s: string) => s, (id: number) => `s${id}`) as (s: Slot) => Promise<{ state: string }>;
+    checkFixture("first model turn: a living ready TUI retains readiness, failure is separate",
+      (await ready(a)).state === "ready" && observed?.turn.state === "failed", JSON.stringify(observed));
+    put("session-B", [start(21, "B"), success(23, "B")]);
+    scan.tickCodexFirstTurn(b);
+    checkFixture("first model turn: successful B cannot overwrite failed A", b.codexFirstTurn?.turn.state === "succeeded"
+      && a.codexFirstTurn?.turn.state === "failed" && !reads.includes("/fixture/foreign"), JSON.stringify(b.codexFirstTurn));
+    const ui = section(client, "function codexTurnOf(", "\n// THE FIFTH READING:");
+    const display = new Function("RECENT_MS", "SLEEP_MS", ui + "\nreturn {outputState,codexTurnLine};")(5000, 1_800_000) as {
+      outputState: (s: unknown, now: number, awake: boolean) => string; codexTurnLine: (s: unknown) => string };
+    const uiA = { ...a, agent: "alive", lastOutput: epoch + 23, codexRecovery: { sessionId: a.sessionId } };
+    checkFixture("first model turn: client shows alive model-400 as broken with provenance",
+      display.outputState(uiA, epoch + 24, true) === "bad" && display.codexTurnLine(uiA).includes("bad_request")
+      && display.codexTurnLine(uiA).includes("Quelle: codex-rollout"), display.codexTurnLine(uiA));
+    checkFixture("first model turn: sessions wire projects the occupant-bound observation",
+      source.includes("}, codexFirstTurn: codexFirstTurnView(s) } : {})"), "GET /api/sessions source projection");
+    a.openedAt = epoch + 30; a.selfToken = "token-C";
+    checkFixture("first model turn: recycled occupation hides A before the next tick",
+      scan.codexFirstTurnView(a) === null
+      && display.outputState({ ...uiA, openedAt: a.openedAt }, epoch + 31, true) === "work", "same slot and rollout, new openedAt");
+    scan.tickCodexFirstTurn(a);
+    checkFixture("first model turn: recycled C does not inherit old success or failure", a.codexFirstTurn === null, JSON.stringify(a.codexFirstTurn));
+    put("session-A", [start(0, "old"), success(1, "old"), start(21, "A"), commentary, failure, start(24, "later"), success(25, "later"), start(31, "C"), success(32, "C")]);
+    scan.tickCodexFirstTurn(a);
+    checkFixture("first model turn: recycled C can prove its own successful turn", scan.codexFirstTurnView(a)?.turn.turnId === "C"
+      && a.codexFirstTurn?.turn.state === "succeeded", JSON.stringify(a.codexFirstTurn));
+    const reboot = makeScanner(); reboot.tickCodexFirstTurn(b);
+    checkFixture("first model turn: restart re-reads exact B instead of persisting a cached claim",
+      reboot.codexFirstTurnView(b)?.turn.state === "succeeded" && b.codexFirstTurn?.sessionId === "session-B", JSON.stringify(b.codexFirstTurn));
+    for (const [name, lines] of [
+      ["no-start", [success(23, "B")]], ["torn-terminal", [start(21, "B"), success(23, "B").slice(0, -1)]],
+      ["wrong-turn", [start(21, "B"), success(23, "other")]],
+      ["no-model-output", [start(21, "B"), event(23, { type: "task_complete", turn_id: "B", last_agent_message: null })]],
+      ["no-time", [JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "B" } }), success(23, "B")]],
+    ] as const) {
+      const turn = readCodexFirstTurn([...lines], epoch + 20);
+      checkFixture(`first model turn unknown: ${name}`, !turn || turn.state === "running" || turn.state === "unknown", JSON.stringify(turn));
+    }
+    const parsed = readCodexRollout([start(21, "A"), failure]);
+    checkFixture("first model turn: conversation reader retains structured terminal error", parsed.firstTurn?.state === "failed"
+      && parsed.firstTurn.error?.code === "bad_request", JSON.stringify(parsed.firstTurn));
+    a.sessionId = "missing";
+    scan.tickCodexFirstTurn(a);
+    checkFixture("first model turn: rebind to an absent exact rollout is unknown", scan.codexFirstTurnView(a) === null, "no newest-file fallback");
+    const recovery = section(source, "async function tickCodexRecovery(", "\n// nudge or a bare-shell dispatch");
+    for (const seam of ["capture", "candidates"] as const) {
+      const lane = { ...b, sessionId: null, codexRecoveryState: "pending", codexPaneSpawnedAt: epoch + 20,
+        codexDisconnectSeenAt: null, codexFirstTurn: null } as Slot;
+      let writes = 0;
+      const replace = () => { lane.openedAt = epoch + 40; lane.selfToken = "replacement"; lane.codexDisconnectSeenAt = null; };
+      const tick = new Function("harnessOf", "tmux", "paneTarget", "sess", "slotTeardownInflight", "codexCandidates",
+        "CODEX_BIND_SLACK_MS", "noteSessionIdLearned", "audit", "backfillProgramMainSessionId", "saveState",
+        recovery + "\nreturn tickCodexRecovery;")(
+          () => ({ id: "codex" }), async () => { if (seam === "capture") replace(); return { code: 0, out: "stream disconnected before completion" }; },
+          (s: string) => s, (id: number) => `s${id}`, new Map(), async () => { replace(); return [{ id: "old-candidate" }]; }, 0,
+          () => writes++, () => writes++, () => writes++, () => writes++) as (s: Slot) => Promise<void>;
+      await tick(lane);
+      checkFixture(`first model turn recycle fence: recovery ${seam} await`, lane.sessionId === null
+        && lane.codexDisconnectSeenAt === null && lane.codexFirstTurn === null && writes === 0, `writes=${writes}`);
+    }
+  } catch (error) {
+    checkFixture("first model turn fixture execution", false, error instanceof Error ? error.message : "unknown error");
+  }
+}
+await checkCodexFirstTurnFixtures(readFileSync(`${ROOT}/server.ts`, "utf8"), readFileSync(`${ROOT}/src/client.ts`, "utf8"), check);
 
 export async function checkCodexSpawnFixtures(source: string,
   checkFixture: (name: string, ok: boolean, detail: string) => void): Promise<void> {

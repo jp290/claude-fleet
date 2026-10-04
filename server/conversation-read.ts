@@ -23,6 +23,13 @@ export interface TEntry { n: number; role: "user" | "assistant"; ts: string | nu
 // the cache counter's reference: when the newest model REQUEST ran, and against which provider
 // (the client maps the provider to its measured TTL — src/client.ts#cacheTtlFor)
 export interface CacheRef { at: number; provider: string }
+export interface CodexFirstTurn {
+  state: "running" | "succeeded" | "failed" | "unknown";
+  turnId: string;
+  acceptedAt: number;
+  completedAt: number | null;
+  error: { message: string; code: string | null } | null;
+}
 export interface ConversationRead {
   entries: TEntry[];
   // a key that changes when already-served lines stop being the conversation (pi: the leaf moved
@@ -38,6 +45,7 @@ export interface ConversationRead {
   effort: string | null;
   // lines the reader could use: a torn LAST line (mid-append) is left out so the next poll re-reads it
   total: number;
+  firstTurn?: CodexFirstTurn | null;
 }
 
 // --- native Claude Code questions (row 1e01b4f3) -----------------------------------------------
@@ -204,6 +212,40 @@ function parseLines(lines: string[]): { rows: (Record<string, unknown> | null)[]
 // newest token_usage_record (one per model response, the measurement note's row 6).
 const CODEX_INJECTED = /^(# AGENTS\.md instructions|<[a-z_]+>)/;
 
+// codex-cli 0.160.0: protocol.rs#TurnCompleteEvent carries terminal `error`; rollout/src/policy.rs
+// persists task_started/task_complete, but NOT standalone Error events. No screen text, assistant
+// commentary, token count or missing error alone proves a successful model turn.
+// https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/protocol.rs
+export function readCodexFirstTurn(lines: string[], since: number, previous: CodexFirstTurn | null = null): CodexFirstTurn | null {
+  let first = previous;
+  for (const line of lines) {
+    if (first && first.completedAt !== null) break;
+    let row: { type?: unknown; timestamp?: unknown; payload?: Record<string, unknown> };
+    try { row = JSON.parse(line) as typeof row; } catch { continue; }
+    if (!row || row.type !== "event_msg" || !row.payload) continue;
+    const p = row.payload;
+    const at = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
+    if (!Number.isFinite(at) || at < since) continue;
+    if (!first && (p.type === "task_started" || p.type === "turn_started") && str(p.turn_id)) {
+      first = { state: "running", turnId: str(p.turn_id), acceptedAt: at, completedAt: null, error: null };
+    } else if (first && at >= first.acceptedAt && str(p.turn_id) === first.turnId
+      && (p.type === "task_complete" || p.type === "turn_complete")) {
+      const error = p.error;
+      if (error && typeof error === "object") {
+        const e = error as Record<string, unknown>;
+        const info = e.codex_error_info;
+        first = { ...first, state: "failed", completedAt: at,
+          error: { message: str(e.message) || "Codex turn failed",
+            code: typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] ?? null : null } };
+      } else {
+        first = { ...first, state: (error === undefined || error === null) && str(p.last_agent_message)
+          ? "succeeded" : "unknown", completedAt: at };
+      }
+    }
+  }
+  return first;
+}
+
 export function readCodexRollout(lines: string[]): ConversationRead {
   const { rows, total } = parseLines(lines);
   const entries: TEntry[] = [];
@@ -248,7 +290,7 @@ export function readCodexRollout(lines: string[]): ConversationRead {
       entries.push({ n, role: "assistant", ts, blocks: [{ t: "tool_result", text: trim(text, 3000) }] });
     }
   });
-  return { entries, branch: "", cache, model, effort, total };
+  return { entries, branch: "", cache, model, effort, total, firstTurn: readCodexFirstTurn(lines, 0) };
 }
 
 // --- pi session ---------------------------------------------------------------------------------

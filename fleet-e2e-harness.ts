@@ -259,6 +259,8 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
       ["user-event", event(21, { type: "user_message", message: "first request" }), "user-before-start"],
       ["unreadable-row", "{broken JSON", "unreadable-row"],
       ["orphan-event", event(21, { type: "task_complete", turn_id: "missing-first" }), "turn-before-start"],
+      ["timeless-start", JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "missing-first" } }), "event-without-time"],
+      ["invalid-time", JSON.stringify({ type: "event_msg", timestamp: "not-a-time", payload: { type: "task_started", turn_id: "missing-first" } }), "event-without-time"],
     ] as const) {
       const lines = [gap, start(24, "later"), success(25, "later")];
       const turn = readCodexFirstTurn(lines, epoch + 20);
@@ -274,6 +276,11 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
       start(21, "A"), failure, user, start(24, "later"), success(25, "later")], epoch + 20);
     checkFixture("first model turn: known first failure remains failed despite later input and success",
       noGap?.state === "failed" && noGap.turnId === "A" && noGap.error?.code === "bad_request", JSON.stringify(noGap));
+    const timelessAfterStart = readCodexFirstTurn([start(21, "A"),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "other" } }), success(23, "A")], epoch + 20);
+    checkFixture("first model turn: a timeless event after the observed start remains ignored",
+      timelessAfterStart?.state === "succeeded" && timelessAfterStart.turnId === "A" && !timelessAfterStart.unknownReason,
+      JSON.stringify(timelessAfterStart));
     const long = { ...b, id: 19, selfToken: "token-long", sessionId: "session-long", codexFirstTurn: null } as Slot;
     const oversized = JSON.stringify({ type: "response_item", payload: {
       type: "message", role: "user", content: [{ text: "x".repeat(2_097_152) + success(22, "A") }] } });

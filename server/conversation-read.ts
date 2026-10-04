@@ -29,7 +29,7 @@ export interface CodexFirstTurn {
   acceptedAt: number;
   completedAt: number | null;
   error: { message: string; code: string | null } | null;
-  unknownReason?: "oversized-row-skipped" | "unreadable-row" | "turn-before-start" | "user-before-start";
+  unknownReason?: "oversized-row-skipped" | "unreadable-row" | "turn-before-start" | "user-before-start" | "event-without-time";
 }
 export interface CodexFirstTurnEvidence {
   turn: CodexFirstTurn | null;
@@ -239,9 +239,13 @@ export function readCodexFirstTurnEvidence(lines: string[], since: number,
       if (!first && i < lines.length - 1) unknownReason ??= "unreadable-row";
       continue;
     }
-    if (!row || typeof row !== "object" || !row.payload || typeof row.payload !== "object") continue;
+    if (!row || typeof row !== "object") continue;
     const at = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
-    if (!Number.isFinite(at) || at < since) continue;
+    if (!Number.isFinite(at)) {
+      if (!first && row.type === "event_msg") unknownReason ??= "event-without-time";
+      continue;
+    }
+    if (at < since || !row.payload || typeof row.payload !== "object") continue;
     const p = row.payload;
     if (!first && row.type === "response_item" && p.type === "message" && p.role === "user") {
       const text = Array.isArray(p.content) ? p.content.map((c) => str((c as { text?: unknown } | null)?.text)).join("\n") : "";

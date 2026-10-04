@@ -17886,10 +17886,11 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   // The pack sources are Fleet-owned, so the tree being dispatched into decides whether they
   // exist — derived from git, never assumed (the literal "fleet" once receipted foreign lanes untruly).
   const sourceTree = await dispatchSourceTree(wt.repo);
-  // Read the integration tip at the delivery seam; if it cannot be named, do not deliver a brief
-  // whose receipt would have to invent HEAD. THIS COMES BEFORE THE PLAN, and the order is the
-  // contract: the manifest is read AT this commit and the receipt asserts it.
-  const head = await integrationHead(wt.repo);
+  const laneHead = await gitRead(wt.path, "rev-parse", "--verify", "HEAD^{commit}");
+  if (laneHead.code !== 0 || !/^[0-9a-f]{40,64}$/.test(laneHead.out)) throw new Error("could not read lane HEAD for session rules");
+  // A detached source repo can fork a lane without an integration ref. Its actual lane commit
+  // still names the manifest and receipt source; Clarify retains its integration-only path.
+  const head = await integrationHead(wt.repo) ?? (clarify ? null : laneHead.out);
   if (!head) throw new Error("could not read integration HEAD for context receipt");
   const planFacts = { sourceTree, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
     triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS), capabilities: DISPATCH_CONTEXT_CAPABILITIES };
@@ -17979,8 +17980,6 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   const snippet = clarify ? { block: "", receipt: NO_SNIPPET_RECEIPT }
     : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, sourceRows);
   const snippetBlock = snippet.block;
-  const laneHead = await gitRead(wt.path, "rev-parse", "--verify", "HEAD^{commit}");
-  if (laneHead.code !== 0 || !/^[0-9a-f]{40,64}$/.test(laneHead.out)) throw new Error("could not read lane HEAD for session rules");
   const sessionAgents = await foundingSessionAgents({ repoRoot: wt.path, head: laneHead.out, plan },
     free.harness, "lane", undefined, clarify ? "" : `${laneExitFooter(free.harness, selfPosition(free).receiver)}\n\n${memoryPointer("lane")}`);
   const selected = contextReceiptSelections(plan.selected, sessionAgents);

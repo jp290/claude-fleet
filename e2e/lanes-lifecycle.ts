@@ -667,6 +667,39 @@ export async function run(lc: LaneCtx): Promise<void> {
     await post(`/api/tasks/${task.task.id}/delete`, {});
   }
   {
+    const repo = mkdtempSync(`${ROOT}/native-detached-`);
+    const git = (...args: string[]) => spawnSync("git", ["-C", repo, "-c", "user.name=e2e", "-c", "user.email=e2e@x", ...args], { encoding: "utf8" });
+    const setup = [git("init", "-q"), git("commit", "-q", "--allow-empty", "-m", "native detached source"), git("checkout", "-q", "--detach")];
+    const head = git("rev-parse", "HEAD").stdout.trim();
+    const marker = "native-detached-lane-receipt";
+    const task = await (await post("/api/tasks", { text: marker, queue: false, repo })).json() as { task: { id: string } };
+    const started = await post(`/api/tasks/${task.task.id}/dispatch`, {});
+    const opened = await started.json() as { ok?: boolean; slot?: number; error?: string };
+    check("native detached source dispatches without inventing an integration base", setup.every((row) => row.status === 0)
+      && started.ok && opened.ok === true && typeof opened.slot === "number", `${started.status} ${JSON.stringify(opened)}`);
+    if (typeof opened.slot === "number") {
+      await plantScreen(opened.slot, "❯", "native detached receipt");
+      let receipt: { taskId?: string; head?: string } | undefined;
+      await until(async () => {
+        const rows = existsSync(`${ROOT}/context-receipts.jsonl`) ? readFileSync(`${ROOT}/context-receipts.jsonl`, "utf8")
+          .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { taskId?: string; head?: string }) : [];
+        receipt = rows.findLast((row) => row.taskId === task.task.id);
+        return !!receipt;
+      }, { timeoutMs: 15000, what: "native detached lane receipt" });
+      const sessions = await (await get("/api/sessions")).json() as { slots: { id: number; cwd: string | null; worktree?: Record<string, unknown> | null }[] };
+      const lane = sessions.slots.find((row) => row.id === opened.slot);
+      const agents = lane?.cwd ? readFileSync(`${lane.cwd}/AGENTS.override.md`, "utf8") : "";
+      const local = lane?.cwd ? readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") : "";
+      const status = spawnSync("git", ["-C", lane?.cwd ?? repo, "status", "--porcelain"], { encoding: "utf8" });
+      check("native detached receipt names the actual commit and keeps both native files clean", receipt?.head === head
+        && !!lane?.worktree && !("base" in lane.worktree) && !("baseSha" in lane.worktree)
+        && agents.includes("--- ROLLE --- Lane:") && agents.includes("HOW THIS LANE ENDS")
+        && local === "@AGENTS.override.md\n" && status.status === 0 && status.stdout === "");
+      await post(`/api/slots/${opened.slot}/kill`, {});
+    }
+    await post(`/api/tasks/${task.task.id}/delete`, {});
+  }
+  {
     const route = `/api/slots/${emptyBranch.slot}/testinstanz`;
     const script = `${emptyBranch.cwd}/testinstanz.sh`;
     const missing = await post(route, { action: "up" });

@@ -3671,14 +3671,15 @@
   .autostatusline { margin: 8px 0; color: var(--chat-mute); font: 400 var(--chat-ui-fs) var(--chat-sans); }
   .autostatusline .shrbtn { margin-top: 8px; }
 
-  /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8+3e6342e2): four
+  /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8+3e6342e2+038d2694): five
      sections — "Dieses Gerät" (the src/prefs.ts registry rows, G5.1), "Schrift" (the size panel's
      one home, G5.3), "Fleet" (five server switches over existing routes, G5.2, card D-3 — a changed
      value is staged with an ink edge until Übernehmen, G4.4 — and the parallelism block), "Diese
-     Maschine" (read-only start values). Rows: label left, control right, value in mono, hint under
+     Maschine" (read-only start values), "Verbrauch" (subscription usage, its explicit refresh and the
+     model facts kept apart). Rows: label left, control right, value in mono, hint under
      (G5.3). The window reads in Sans (G0.3: the page body is mono); values, paths and ids stay mono.
-     The four section targets stand at the top at every width and stick while the sections scroll;
-     on the phone each shows its one section (G3.1), on the desktop all four stack. */
+     The five section targets stand at the top at every width and stick while the sections scroll;
+     on the phone each shows its one section (G3.1), on the desktop all five stack. */
   #shell-settings .shellwin { font-family: var(--chat-sans); }
   #shell-settings :focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 2px; } /* G0.2: the composer's ring */
   #shell-settings .shellclose:focus-visible { outline: 1px solid var(--chat-mute); }
@@ -3734,6 +3735,25 @@
   .setwhy summary:hover { color: var(--chat-ink); }
   .setfoot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 0 2px; }
   .setfoot .setnote { flex: 1; margin: 0; }
+  /* "Verbrauch" (card 038d2694): the share of a window is the number; the thin bar beside it is only
+     its shape, and where nothing was measured there is no bar at all (never a 0-wide "0"). A stale
+     window reads faint. The refresh target is a native radio group; the button is aria-disabled,
+     not disabled, so the focus stays on it while it reads and its reason stays reachable. */
+  .usebar { display: inline-block; width: 64px; height: 4px; margin-left: 8px; vertical-align: middle;
+    border-radius: 2px; background: var(--chat-edge-soft); overflow: hidden; }
+  .usebar > i { display: block; height: 100%; background: var(--chat-prose); }
+  .setstat.stale .setstatv { color: var(--chat-mute); }
+  .setstat.stale .usebar > i { background: var(--chat-faint); }
+  .usetarget { margin: 0; padding: 8px 0; border: 0; border-bottom: 1px solid var(--chat-edge-soft); min-width: 0;
+    font-size: var(--chat-ui-fs); }
+  .usetarget legend { padding: 0; font-weight: 500; color: var(--chat-ink); }
+  .useradios { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; }
+  .useradio { display: inline-flex; align-items: center; gap: 6px; color: var(--chat-prose); cursor: pointer; }
+  .useradio input { margin: 0; accent-color: var(--chat-ink); }
+  .usectl { display: flex; align-items: baseline; gap: 10px; margin-top: 6px; }
+  .usectl .usestatus { flex: 1; min-width: 0; margin: 0; color: var(--chat-prose); }
+  .usebtn[aria-disabled="true"] { color: var(--chat-faint); cursor: default; }
+  .usebtn[aria-busy="true"] { cursor: progress; }
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     #shell-settings .settabs { overflow-x: auto; }
     #shell-settings .settab { flex: none; }
@@ -3742,6 +3762,7 @@
     #shell-settings .setsec > h3 { display: none; } /* the pressed target already names the one section shown */
     .settoggle, .settab, .setreset, .setin, .setfoot .cmdapply, .setchoice .cmdlevel { min-height: 40px; } /* finger targets, G0.7 */
     .setin { font-size: 16px; } /* no iOS zoom, G0.7 */
+    .useradio { min-height: 40px; }
     .fleetrow .setmain { flex-basis: 100%; }
     .fleetrow .setval { flex: 1; max-width: none; }
     .fleetrow .setctl { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }

@@ -51,7 +51,7 @@ import type { WaitRow } from "../waits";
 import {
   WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS, INSTANCE_NAME_RE, INSTANCE_URL_RE, normalizeLaneAnchor,
   type GitInfo, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo,
-  type DispositionWorker, type DispositionVerdict, type SuiteOfferRow,
+  type DispositionWorker, type DispositionVerdict, type SuiteOfferRow, type SubscriptionUsage, type SubscriptionWindow,
 } from "./protocol";
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
@@ -2586,30 +2586,34 @@ export let panes: Pane[] = [];
 export let focused = 0;
 let layout = 1;
 
-// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5+3e6342e2): one gear top right, one window,
-// four sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
+// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5+3e6342e2+038d2694): one gear top right, one
+// window, five sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
 // label, its control and a way back (G5.1). "Schrift" is the size panel's ONE home (G5.3) — the Aa
 // corner button opens the window right there. "Fleet" holds the five server switches whose routes
 // already exist (G5.2, card D-3, fleetSection) and, beside them, what the parallelism really is right
 // now. "Diese Maschine" reads the fixed class-2 allowlist and renders no control (card D-5).
-// The four section targets stand at the top of the window at every width: on the phone each shows
-// its one section (G3.1), on the desktop all four stack and a target scrolls to its section. Esc,
+// "Verbrauch" shows the subscription usage and its explicit refresh (card 038d2694, usageSection).
+// The five section targets stand at the top of the window at every width: on the phone each shows
+// its one section (G3.1), on the desktop all five stack and a target scrolls to its section. Esc,
 // backdrop and ✕ come from openShell (G6.3); the focus enters the window on open, Tab and Shift-Tab
 // stay among its visible controls, and the focus returns to the button that opened it (G4).
 // Every control is NAMED BY ITS VISIBLE LABEL through aria-labelledby (G5.3, UI-MAIN 30.09.): a
 // renamed label renames the control, nobody keeps a copied string in sync.
 let settingsShell: Shell | null = null;
 let settingsTab = "device";
-const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "Diese Maschine"]];
+const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "Diese Maschine"], ["usage", "Verbrauch"]];
 const SET_CHOICE_WORDS: Record<string, string> = { tree: "Baum", line: "Zeile", all: "alle" };
 const setOnOff = (on: boolean): string => on ? "an" : "aus";
 // one DOM id per label of the window — the window exists once, a key's dots become dashes
 const setId = (part: string): string => `set-${part.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-// what a keyboard can reach inside an element right now: enabled, rendered, not under [hidden]
+// what a keyboard can reach inside an element right now: enabled, rendered, not under [hidden] — and
+// of a radio group with a choice only the chosen radio, the one stop Tab makes in it
 function visibleFocusables(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex='-1'])")]
     .filter((e) => !(e as HTMLButtonElement).disabled && e.getClientRects().length > 0 && !e.closest("[hidden]")
-      && getComputedStyle(e).visibility !== "hidden");
+      && getComputedStyle(e).visibility !== "hidden"
+      && !(e instanceof HTMLInputElement && e.type === "radio" && !e.checked && !!e.name
+        && !!root.querySelector(`input[type="radio"][name="${CSS.escape(e.name)}"]:checked`)));
 }
 
 // The live effect of a row beyond the write itself — the SAME setters the original surfaces
@@ -2701,9 +2705,11 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
   const fleetState = fleetSection(fleetsec);
   const machine = section("machine");
   machineSection(machine);
-  const sections: [string, HTMLElement][] = [["device", device], ["schrift", schrift], ["fleet", fleetsec], ["machine", machine]];
+  const usagesec = section("usage");
+  usageSection(usagesec);
+  const sections: [string, HTMLElement][] = [["device", device], ["schrift", schrift], ["fleet", fleetsec], ["machine", machine], ["usage", usagesec]];
 
-  shell.detail.append(tabs, device, schrift, fleetsec, machine);
+  shell.detail.append(tabs, device, schrift, fleetsec, machine, usagesec);
   let discard: HTMLElement | null = null;
   let discardFocus: HTMLElement | null = null;
   shell.setCloseGuard(() => {
@@ -2749,7 +2755,7 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
     const next = e.shiftKey ? (i === 0 ? ring[ring.length - 1] : null) : (i === ring.length - 1 ? ring[0] : null);
     if (next) { e.preventDefault(); next.focus(); }
   });
-  // on the desktop all four sections stack: the target of the section under the target row reads
+  // on the desktop all five sections stack: the target of the section under the target row reads
   // pressed while the reader scrolls (one frame per scroll burst, no timer)
   let spy = 0;
   shell.detail.addEventListener("scroll", () => {
@@ -2860,6 +2866,314 @@ function settingsRow(d: PrefDef): HTMLElement {
   }
   syncAll();
   return row;
+}
+
+// THE "VERBRAUCH" SECTION (card 038d2694 over the wire of 7f458ab0, docs/self-api.md §subscription
+// usage): what the Codex subscription has used, from GET /api/subscription-usage read ONCE when the
+// window opens and again only by the explicit "Neu lesen" — no timer, no repaint read, and no GET
+// starts a refresh. The target is chosen apart: "lokal" re-reads the rollout files this machine has
+// already stored (a new READ, not a new measurement — the answer says whether the measurement event
+// moved); "Anbieter" is the active account read, which the wire names unsupported: its button stays
+// aria-disabled (focusable, so its reason stays reachable) and sends nothing. Three times stay
+// apart: when the event was measured (measuredAt), when the server read it (fetchedAt), and its age
+// by the server's clock (ageMs). A window the wire does not carry reads "unbekannt", never 0; a read
+// that fails keeps the last windows this page saw measured, dated and stale. An answer belongs to
+// the request that asked it: a newer answer on screen, a switched target or a closed window drops
+// it. The model block keeps four facts apart — the owner's preference, the register default, the
+// slot's selection and the model a turn really ran — and none of them follows from free quota: a
+// model is switched at its session, as before.
+type UsageTarget = "local" | "provider";
+// the last windows this page saw MEASURED, across window opens: a later failed or unknown read shows
+// them dated and stale instead of blank or 0. Page memory only — nothing of it is stored.
+let usageSeen: { primary: SubscriptionWindow | null; secondary: SubscriptionWindow | null;
+  measuredAt: number; provenance: string | null } | null = null;
+const USAGE_STATUS: Record<string, string> = { measured: "gemessen", stale: "veraltet", unknown: "unbekannt", error: "Fehler" };
+// the reader's reason codes (codex-quota.ts) in the owner's words; an unknown code shows as it came
+const USAGE_REASON: Record<string, string> = {
+  "not-observed": "noch nicht gelesen",
+  "missing-windows": "Messereignis ohne Fenster",
+  "event-older-than-15-minutes": "Messung älter als 15 min",
+  "event-time-ahead-of-server": "Messzeit liegt nach der Server-Uhr",
+  "invalid-json-line": "kaputte Zeile in der Quelle",
+  "invalid-rate-limits": "ungültige Verbrauchsdaten in der Quelle",
+  "invalid-window": "ungültiges Fenster in der Quelle",
+  "missing-or-invalid-event-time": "Messzeit fehlt oder ist ungültig",
+  "no-codex-rate-limits": "keine Codex-Messung in der Quelle",
+  "no-codex-rate-limits-in-observed-tails": "keine Codex-Messung in den gelesenen Dateienden",
+  "source-identity-changed": "Quelle hat sich während des Lesens geändert",
+  "missing-source": "Quelle fehlt — kein Codex-Sitzungsordner auf dieser Maschine",
+  "unreadable-source": "Quelle nicht lesbar",
+  "read-timeout": "Lesen nach 5 s abgebrochen",
+  "read-failed": "Lesen fehlgeschlagen",
+};
+// the wire's three prose reasons (server.ts#subscriptionUsage, codex-quota.ts#PROVIDER_UNSUPPORTED)
+// in German; a changed sentence shows as the server wrote it
+const USAGE_PROSE: Record<string, string> = {
+  "installed schema proves account/rateLimits/read, but no account-bound reader or authorized account connection is evidenced":
+    "kein kontogebundener Leser und keine autorisierte Kontoverbindung belegt — das installierte Schema kennt account/rateLimits/read nur als Schnittstelle",
+  "no measured subscription sensor; dated owner availability messages have no machine-readable source or validity contract":
+    "kein gemessener Sensor; eine datierte Verfügbarkeitsmeldung des Owners hat keine maschinenlesbare Quelle und keine Geltung",
+  "no dated owner preference source with scope and validity":
+    "keine datierte Quelle einer Owner-Präferenz mit Geltungsbereich und Gültigkeit",
+};
+const usageReason = (r: string | null): string => r === null ? "" : USAGE_REASON[r] ?? r;
+const usageProse = (r: string): string => USAGE_PROSE[r] ?? r;
+const usageClock = (ms: number): string => {
+  const d = new Date(ms);
+  const time = d.toLocaleTimeString("de-DE");
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })} ${time}`;
+};
+function usageSpan(ms: number): string {
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return "unter 1 min";
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 48) return min % 60 ? `${h} h ${min % 60} min` : `${h} h`;
+  return h % 24 ? `${Math.floor(h / 24)} Tage ${h % 24} h` : `${Math.floor(h / 24)} Tage`;
+}
+const usageLength = (m: number): string => m % 1440 === 0 ? `${m / 1440} ${m === 1440 ? "Tag" : "Tage"}` : m % 60 === 0 ? `${m / 60} h` : `${m} min`;
+const usagePct = (p: number): string => `${p.toLocaleString("de-DE", { maximumFractionDigits: 1 })} %`;
+// a served answer is used only in the shape the wire promises; anything else is "nicht lesbar"
+function usageOf(raw: unknown): SubscriptionUsage | null {
+  const obj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
+  const num = (x: unknown): boolean => typeof x === "number" && Number.isFinite(x);
+  const numOrNull = (x: unknown): boolean => x === null || num(x);
+  const win = (x: unknown): boolean => x === null || (obj(x) && num(x.used_percent) && num(x.window_minutes) && num(x.resets_at));
+  if (!obj(raw) || raw.schema !== "fleet.subscription-usage/v1" || !num(raw.generatedAt)) return null;
+  const c = raw.codex, m = raw.model;
+  if (!obj(c) || typeof c.status !== "string" || !(c.status in USAGE_STATUS) || !win(c.primary) || !win(c.secondary)) return null;
+  const s = c.source, r = c.refresh, p = c.provider;
+  if (!obj(s) || !numOrNull(s.measuredAt) || !numOrNull(s.fetchedAt) || !numOrNull(s.ageMs) || !num(s.staleAfterMs)
+    || !obj(s.selection) || !obj(r) || typeof r.status !== "string" || !numOrNull(r.startedAt) || !numOrNull(r.finishedAt)
+    || !obj(p) || typeof p.status !== "string" || typeof p.reason !== "string") return null;
+  if (!obj(raw.otherSubscriptions) || typeof raw.otherSubscriptions.reason !== "string" || !obj(m) || !obj(m.ownerPreference)
+    || typeof m.ownerPreference.reason !== "string" || !obj(m.registerDefaults) || !Array.isArray(m.selected)) return null;
+  return raw as unknown as SubscriptionUsage;
+}
+function usageSection(sec: HTMLElement): void {
+  let usage: SubscriptionUsage | null = null;
+  let openFailed = "";
+  let target: UsageTarget = "local";
+  // the newest request, the request whose answer is on screen, the refresh this window waits for
+  let asked = 0, shown = 0, pending = 0;
+  let pendingTarget: UsageTarget | null = null;
+  let outcome = "";
+  let failed = false;
+
+  const stat = (key: string, word: string) => {
+    const row = el("div", "setstat");
+    row.dataset.use = key;
+    const v = el("span", "setstatv");
+    const more = el("div", "setstatl");
+    row.append(el("span", "setstatk", word), v, more);
+    sec.appendChild(row);
+    return { row, v, more };
+  };
+  sec.appendChild(el("h4", "setsub", "Codex-Abo"));
+  const state = stat("state", "Zustand");
+  const wins = { primary: stat("primary", "Primäres Fenster"), secondary: stat("secondary", "Sekundäres Fenster") };
+  const source = stat("source", "Quelle");
+  const measured = stat("measured", "Gemessen");
+  const age = stat("age", "Alter");
+  const fetched = stat("fetched", "Gelesen");
+
+  // the refresh: a native radio group picks the target, one button reads, one status line answers
+  const box = el("fieldset", "usetarget");
+  const legend = el("legend", "", "Neu lesen aus");
+  legend.id = setId("use-target");
+  const radios = el("div", "useradios");
+  const radio = (value: UsageTarget, word: string): HTMLInputElement => {
+    const label = el("label", "useradio");
+    const input = el("input", "") as HTMLInputElement;
+    input.type = "radio"; input.name = "set-usage-target"; input.value = value;
+    input.checked = value === target;
+    input.onchange = () => { if (input.checked) pick(value); };
+    label.append(input, el("span", "", word));
+    radios.appendChild(label);
+    return input;
+  };
+  radio("local", "Lokal gespeicherter Stand");
+  radio("provider", "Anbieter-Konto (aktiv)");
+  const hint = el("div", "hint setnote");
+  hint.id = setId("use-hint");
+  const btn = el("button", "setreset usebtn", "Neu lesen") as HTMLButtonElement;
+  btn.type = "button";
+  btn.setAttribute("aria-describedby", hint.id);
+  btn.onclick = () => { if (btn.getAttribute("aria-disabled") !== "true") void read(target); };
+  const ctl = el("div", "usectl");
+  const status = el("div", "hint setnote usestatus");
+  status.setAttribute("role", "status");
+  const server = el("div", "hint setnote");
+  ctl.append(btn, status);
+  box.append(legend, radios, hint, ctl, server);
+  sec.appendChild(box);
+
+  sec.appendChild(el("h4", "setsub", "Andere Abos"));
+  const others = stat("others", "Zustand");
+
+  sec.appendChild(el("h4", "setsub", "Modell"));
+  const pref = stat("preference", "Präferenz des Owners");
+  const defaults = stat("defaults", "Register-Standard");
+  const selected = stat("selected", "Am Slot gewählt");
+  const turn = stat("turn", "Benutzt je Turn");
+  sec.appendChild(el("div", "hint setnote", "Freies Kontingent wählt kein Modell. Ein Modell wechselst du wie bisher an seiner Session."));
+
+  function pick(value: UsageTarget) {
+    target = value;
+    // a target switch ends the wait: the answer of the other target no longer belongs on screen
+    if (pending && pendingTarget !== value) { pending = 0; pendingTarget = null; outcome = "Antwort verworfen — das Ziel wurde gewechselt"; failed = false; }
+    paint();
+  }
+  async function read(kind: "open" | UsageTarget) {
+    const mine = ++asked;
+    if (kind !== "open") { pending = mine; pendingTarget = kind; outcome = ""; failed = false; }
+    paint();
+    let res: Response | null = null;
+    let body: unknown = null;
+    try {
+      res = kind === "open" ? await api("/api/subscription-usage") : await post("/api/subscription-usage/refresh", { target: kind });
+      body = await res.json().catch(() => null);
+    } catch { res = null; }
+    if (!sec.isConnected || mine < shown || (kind !== "open" && mine !== pending)) return;
+    if (kind !== "open") { pending = 0; pendingTarget = null; }
+    const got = res?.ok ? usageOf(body) : null;
+    if (got) {
+      const seenBefore = usageSeen;
+      usage = got; shown = mine;
+      const c = got.codex;
+      if ((c.status === "measured" || c.status === "stale") && (c.primary || c.secondary) && c.source.measuredAt !== null)
+        usageSeen = { primary: c.primary, secondary: c.secondary, measuredAt: c.source.measuredAt, provenance: c.source.provenance };
+      if (kind !== "open") outcome = refreshWords(got, seenBefore);
+    } else {
+      const why = !res ? "Server nicht erreichbar" : res.status === 409 ? "der Server liest gerade schon — gleich erneut versuchen"
+        : res.ok ? "Antwort nicht lesbar" : `Server antwortet ${res.status}`;
+      if (kind === "open") openFailed = why;
+      else { failed = true; outcome = `Neu lesen fehlgeschlagen: ${why}`; }
+    }
+    paint();
+  }
+  // what one refresh answer says about itself — a local read is a READ: same event, same measurement
+  function refreshWords(u: SubscriptionUsage, before: typeof usageSeen): string {
+    const r = u.codex.refresh, src = u.codex.source;
+    const at = r.finishedAt !== null ? ` ${usageClock(r.finishedAt)}` : "";
+    if (r.status === "unsupported") return `Anbieter: nicht unterstützt — ${usageProse(r.reason ?? u.codex.provider.reason)}`;
+    if (r.status === "error" || r.status === "timeout") { failed = true; return `Lokal gelesen${at}: ${usageReason(r.reason) || "Fehler"}`; }
+    if (r.status !== "ok") return `Server meldet: ${r.status}`;
+    if (src.measuredAt === null) return `Lokal neu gelesen${at} — keine Messung gefunden`;
+    return before && before.provenance !== null && before.provenance === src.provenance
+      ? `Lokal neu gelesen${at} — kein neues Messereignis, die Messung von ${usageClock(src.measuredAt)} bleibt`
+      : `Lokal neu gelesen${at} — Messereignis von ${usageClock(src.measuredAt)}`;
+  }
+  function paintWindow(x: ReturnType<typeof stat>, w: SubscriptionWindow | null, at: number | null, stale: boolean, why: string) {
+    x.v.replaceChildren(); x.more.textContent = "";
+    x.row.classList.toggle("stale", stale && w !== null);
+    if (!w) { x.v.textContent = "unbekannt"; x.more.textContent = why; return; }
+    const bar = el("span", "usebar");
+    bar.setAttribute("aria-hidden", "true");
+    const fill = el("i", "");
+    fill.style.width = `${Math.max(0, Math.min(100, w.used_percent))}%`;
+    bar.appendChild(fill);
+    x.v.append(`${usagePct(w.used_percent)} verbraucht`, bar);
+    const reset = w.resets_at * 1000;
+    // the reset against the server's clock at the read, never this device's
+    const left = at !== null ? reset - at : null;
+    const when = left === null ? "" : left > 0 ? ` (in ${usageSpan(left)})` : " (vorbei — der Wert kann schon zurückgesetzt sein)";
+    x.more.textContent = `Fenster ${usageLength(w.window_minutes)} · Reset ${usageClock(reset)}${when}${stale ? ` · ${why}` : ""}`;
+  }
+  function paint() {
+    const c = usage?.codex ?? null;
+    if (!c) {
+      const word = openFailed ? `unbekannt — ${openFailed}` : "wird gelesen …";
+      state.v.textContent = word; state.more.textContent = "";
+      const seen = usageSeen;
+      for (const k of ["primary", "secondary"] as const)
+        paintWindow(wins[k], seen?.[k] ?? null, null, !!seen, seen ? `zuletzt gemessen ${usageClock(seen.measuredAt)} — veraltet` : openFailed ? "nicht gelesen" : "wird gelesen …");
+      for (const x of [source, measured, age, fetched, others, pref, defaults, selected, turn]) { x.v.textContent = openFailed ? "unbekannt" : "wird gelesen …"; x.more.replaceChildren(); }
+    } else {
+      const s = c.source;
+      state.v.textContent = USAGE_STATUS[c.status] ?? c.status;
+      state.more.textContent = usageReason(s.reason);
+      const now = usage!.generatedAt;
+      if (c.primary || c.secondary) {
+        const stale = c.status === "stale";
+        for (const k of ["primary", "secondary"] as const)
+          paintWindow(wins[k], c[k], now, stale, c[k] ? "veraltet" : "dieses Fenster fehlt im Messereignis");
+      } else {
+        // nothing measured in this answer: the last windows this page saw, dated and stale — or unknown
+        const seen = usageSeen;
+        for (const k of ["primary", "secondary"] as const)
+          paintWindow(wins[k], seen?.[k] ?? null, null, !!seen,
+            seen ? `zuletzt gemessen ${usageClock(seen.measuredAt)} — veraltet, aktuell ${USAGE_STATUS[c.status] ?? c.status}` : usageReason(s.reason) || "nicht gemessen");
+      }
+      const sel = s.selection;
+      source.v.textContent = "lokale Codex-Sitzungsdateien dieser Maschine";
+      source.more.textContent = `nicht kontogebunden · die ${sel.maxFiles} jüngsten Dateien, je höchstens ${Math.round(sel.maxBytesPerFile / 1024)} KiB vom Ende`
+        + `${sel.historyComplete ? "" : " — keine vollständige Historie"} · Bereich ${s.limitId ?? "unbeschriftet"}`
+        + `${s.provenance ? ` · Ereignis ${s.provenance.slice(0, 8)}` : ""}`;
+      source.more.title = "Ereignis: die ersten Zeichen einer undurchsichtigen Prüfsumme des Messereignisses — gleich heißt dasselbe Ereignis; sie belegt weder Konto noch Session.";
+      measured.v.textContent = s.measuredAt !== null ? usageClock(s.measuredAt) : "unbekannt";
+      measured.more.textContent = s.measuredAt !== null ? "Zeit des Messereignisses" : "";
+      age.v.textContent = s.ageMs !== null ? usageSpan(s.ageMs) : "unbekannt";
+      age.more.textContent = `Server-Uhr · veraltet ab ${usageSpan(s.staleAfterMs)}`;
+      fetched.v.textContent = s.fetchedAt !== null ? usageClock(s.fetchedAt) : "noch nicht gelesen";
+      fetched.more.textContent = `Antwort des Servers ${usageClock(usage!.generatedAt)}`;
+      const o = usage!.otherSubscriptions;
+      others.v.textContent = USAGE_STATUS[o.status] ?? o.status;
+      others.more.textContent = usageProse(o.reason);
+      const m = usage!.model;
+      pref.v.textContent = USAGE_STATUS[m.ownerPreference.status] ?? m.ownerPreference.status;
+      pref.more.textContent = usageProse(m.ownerPreference.reason);
+      const d = m.registerDefaults;
+      defaults.v.textContent = `Worker ${modelLabel(d.worker.id)} · MAIN ${modelLabel(d.main.id)}`;
+      defaults.more.replaceChildren();
+      const dDet = el("details", "setwhy");
+      dDet.appendChild(el("summary", "", `alle ${Object.keys(d).length} Rollen`));
+      for (const [role, x] of Object.entries(d)) {
+        const line = el("div", "setwait");
+        line.append(el("span", "setids", role), ` ${x.harness} · ${modelLabel(x.id)}${x.effort ? ` · ${x.effort}` : ""}`);
+        line.title = x.id;
+        dDet.appendChild(line);
+      }
+      defaults.more.appendChild(dDet);
+      selected.v.textContent = `${m.selected.length} ${m.selected.length === 1 ? "Session" : "Sessions"}`;
+      selected.more.replaceChildren();
+      if (m.selected.length) {
+        const sDet = el("details", "setwhy");
+        sDet.appendChild(el("summary", "", "je Session"));
+        for (const row of m.selected) {
+          const slot = fleet.find((x) => x.id === row.slot && x.cwd);
+          const line = el("div", "setwait");
+          line.append(slot ? laneLabel(slot) : `Slot ${row.slot}`,
+            ` — ${row.harness ?? "Harness unbekannt"} · ${row.model ? modelLabel(row.model) : "Modell unbekannt"}`);
+          line.title = `Slot ${row.slot}${row.model ? ` · ${row.model}` : ""} · Quelle ${row.source}`;
+          sDet.appendChild(line);
+        }
+        selected.more.appendChild(sDet);
+      }
+      const why = [...new Set(m.selected.map((r) => r.decisionSource))];
+      selected.more.append(`Entscheidungsquelle: ${why.length === 1 && why[0] === "unknown" ? "unbekannt — die Auswahl ist keine belegte Owner-Entscheidung" : why.join(" · ") || "—"}`);
+      const used = m.selected.filter((r) => r.usedTurnModel !== null).length;
+      turn.v.textContent = used ? `${used} belegt` : "unbekannt";
+      turn.more.textContent = "Die Auswahl am Slot belegt nicht, welches Modell ein Turn wirklich ausgeführt hat.";
+      const r = c.refresh;
+      server.textContent = r.status === "not-requested" ? "Server: noch kein Neulesen angefordert"
+        : `Server: zuletzt ${r.target === "provider" ? "Anbieter" : r.target === "local" ? "lokal" : "—"} · ${r.status}`
+          + `${r.finishedAt !== null ? ` · ${usageClock(r.finishedAt)}` : r.startedAt !== null ? ` · seit ${usageClock(r.startedAt)}` : ""}`;
+    }
+    // the button: reading, unsupported, retry — aria-disabled keeps the focus on it while it reads
+    const unsupported = target === "provider" && (!c || c.provider.status === "unsupported");
+    const busy = pending !== 0;
+    btn.textContent = busy ? "Liest …" : failed && target === "local" ? "Erneut lesen" : "Neu lesen";
+    btn.setAttribute("aria-disabled", busy || unsupported ? "true" : "false");
+    btn.setAttribute("aria-busy", busy ? "true" : "false");
+    hint.textContent = target === "local"
+      ? "Liest die Codex-Sitzungsdateien, die diese Maschine schon gespeichert hat, erneut — fragt nicht beim Anbieter nach und erzeugt keine neue Messung."
+      : c ? (c.provider.status === "unsupported" ? `Nicht unterstützt: ${usageProse(c.provider.reason)}` : "Fragt das Konto beim Anbieter ab.")
+      : "Ob das Konto abgefragt werden kann, sagt erst die Antwort des Servers.";
+    status.textContent = busy ? (pendingTarget === "local" ? "Liest den lokal gespeicherten Stand …" : "Fragt den Anbieter …") : outcome;
+  }
+  paint();
+  void read("open");
 }
 
 interface MachineSetting {

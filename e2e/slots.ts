@@ -5697,6 +5697,7 @@ interface SettingsDomResult {
   facts: Record<string, unknown>;
 }
 type SettingsFixturePost = { url: string; body: unknown };
+type UsageKind = "measured" | "stale" | "missing" | "corrupt-source" | "null-secondary" | "timeout" | "late";
 export async function runSettingsDom(sourceRoot: string, artifacts?: string): Promise<SettingsDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-settings-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
@@ -5715,6 +5716,35 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     meterLane: false,
     // the protocol of the run: every native input sent and every /api request the page made
     inputs: [] as string[], requests: [] as string[],
+    // the "Verbrauch" section (card 038d2694): what GET /api/subscription-usage and the refresh
+    // answer, how late, and a raw body that is not the wire's shape
+    usageKind: "measured" as UsageKind, usageStatus: 200, usageDelay: 0, usageRaw: null as string | null,
+    refreshKind: "measured" as UsageKind, refreshStatus: 200, refreshDelay: 0,
+  };
+  // THE USAGE WIRE AS THE SERVER SERVES IT (src/protocol.ts#SubscriptionUsage): one measurement event
+  // fixed for the run (its provenance is the event's identity), the age by the serving clock
+  const USAGE_EVENT_AT = Date.now() - 3 * 60_000, USAGE_STALE_AT = Date.now() - 40 * 60_000;
+  const USAGE_SELECTION = { kind: "recent-file-tails", maxFiles: 16, maxBytesPerFile: 262144, historyComplete: false };
+  const PROVIDER_REASON = "installed schema proves account/rateLimits/read, but no account-bound reader or authorized account connection is evidenced";
+  const usageBody = (kind: UsageKind, refresh: Record<string, unknown> = { target: null, status: "not-requested", startedAt: null, finishedAt: null, reason: null }) => {
+    const at = Date.now();
+    const win = (used: number, minutes: number, resetMin: number) => ({ used_percent: used, window_minutes: minutes, resets_at: Math.floor((at + resetMin * 60_000) / 1000) });
+    const gone = (status: string, reason: string) => ({ status, primary: null, secondary: null, source: { kind: "local-rollout", measuredAt: null,
+      fetchedAt: at - 5_000, ageMs: null, staleAfterMs: 900_000, reason, selection: USAGE_SELECTION, limitId: null, accountBound: false, provenance: null } });
+    const event = kind === "stale" ? USAGE_STALE_AT : kind === "late" ? at - 60_000 : USAGE_EVENT_AT;
+    const codex = kind === "missing" ? gone("unknown", "missing-source") : kind === "corrupt-source" ? gone("error", "invalid-json-line")
+      : kind === "timeout" ? gone("error", "read-timeout")
+      : { status: kind === "stale" ? "stale" : "measured",
+        primary: kind === "late" ? win(99, 300, 30) : kind === "stale" ? win(30, 300, 90) : win(42, 300, 130),
+        secondary: kind === "null-secondary" ? null : kind === "late" ? win(97, 10080, 2000) : win(12.5, 10080, 3 * 1440 + 60),
+        source: { kind: "local-rollout", measuredAt: event, fetchedAt: at - 10_000, ageMs: at - event, staleAfterMs: 900_000,
+          reason: kind === "stale" ? "event-older-than-15-minutes" : null, selection: USAGE_SELECTION, limitId: "codex", accountBound: false,
+          provenance: kind === "late" ? "f".repeat(64) : kind === "stale" ? "5ta1e000".repeat(8) : "ab12cd34".repeat(8) } };
+    return { schema: "fleet.subscription-usage/v1", generatedAt: at, codex: { ...codex, refresh, provider: { status: "unsupported", reason: PROVIDER_REASON } },
+      otherSubscriptions: { status: "unknown", reason: "no measured subscription sensor; dated owner availability messages have no machine-readable source or validity contract" },
+      model: { ownerPreference: { status: "unknown", reason: "no dated owner preference source with scope and validity" }, registerDefaults: MODEL_DEFAULTS,
+        selected: [{ slot: 1, harness: "claude", model: "claude-opus-5-5[1m]", source: "slot-state", decisionSource: "unknown", usedTurnModel: null },
+          { slot: 2, harness: "codex", model: "gpt-6.1-sol", source: "slot-state", decisionSource: "unknown", usedTurnModel: null }] } };
   };
   const plan = () => ({
     version: 1, budget: 5, unresolved: [],
@@ -5839,6 +5869,14 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
           return void json(requestId, { ok: true, repo: b.repo, maxLanes: b.maxLanes ?? null });
         }
         if (p === "/api/dispatch") { fx.dispatchOn = !!(body as { on?: boolean })?.on; return void json(requestId, { ok: true, on: fx.dispatchOn }); }
+        if (p === "/api/subscription-usage/refresh") {
+          const t = (body as { target?: string })?.target;
+          const kind = fx.refreshKind, status = fx.refreshStatus;
+          const answer = () => status !== 200 ? json(requestId, { error: "fixture: refresh refused" }, status)
+            : json(requestId, usageBody(t === "provider" ? fx.usageKind : kind, { target: t, status: t === "provider" ? "unsupported" : kind === "timeout" ? "timeout" : "ok",
+              startedAt: Date.now() - 200, finishedAt: Date.now(), reason: t === "provider" ? PROVIDER_REASON : kind === "timeout" ? "read-timeout" : null }));
+          return void setTimeout(answer, fx.refreshDelay);
+        }
         return void json(requestId, { ok: true });
       }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
@@ -5852,6 +5890,11 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       if (p === "/api/tasks") return void json(requestId, { tasks: TASKS });
       if (p === "/api/start-plan") return void (fx.planStatus === 200 ? json(requestId, plan()) : json(requestId, { error: "fixture: plan unreadable" }, fx.planStatus));
       if (p === "/api/machine-settings") return void json(requestId, machine);
+      if (p === "/api/subscription-usage") {
+        const kind = fx.usageKind, status = fx.usageStatus, raw = fx.usageRaw;
+        return void setTimeout(() => raw !== null ? reply(requestId, 200, raw) : status !== 200 ? json(requestId, { error: "fixture: usage unreadable" }, status)
+          : json(requestId, usageBody(kind)), fx.usageDelay);
+      }
       // an empty catalogue, served: a refused /api/harnesses is re-asked on every render (loadHarnesses
       // latches only on success) and would flood the request protocol of this run
       if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
@@ -5894,7 +5937,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       return { role: node.role?.value ?? null, name: node.name?.value ?? null, ignored: !!node.ignored,
         ...Object.fromEntries((node.properties ?? []).map((x) => [x.name, x.value?.value ?? null])) };
     };
-    const KEY: Record<string, [number, string, string?]> = { Tab: [9, "Tab"], Enter: [13, "Enter", "\r"], Escape: [27, "Escape"], " ": [32, "Space", " "] };
+    const KEY: Record<string, [number, string, string?]> = { Tab: [9, "Tab"], Enter: [13, "Enter", "\r"], Escape: [27, "Escape"], " ": [32, "Space", " "],
+      ArrowDown: [40, "ArrowDown"], ArrowUp: [38, "ArrowUp"] };
     const key = async (name: string, shift = false) => {
       const [vk, code, text] = KEY[name];
       const modifiers = shift ? 8 : 0;
@@ -5936,7 +5980,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const W = () => document.querySelector('#shell-settings');
       const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && !e.closest('[hidden]');
       const focusables = () => [...(W()?.querySelectorAll('button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex="-1"])') ?? [])]
-        .filter((e) => !e.disabled && shown(e));
+        .filter((e) => !e.disabled && shown(e) && !(e.type === 'radio' && !e.checked && e.name && W().querySelector('input[type="radio"][name="' + e.name + '"]:checked')));
       const desc = (e) => !e ? 'none' : e === document.body ? 'body' : (e.tagName.toLowerCase() + (e.className ? '.' + String(e.className).split(' ').join('.') : '') + (e.textContent ? ':' + e.textContent.trim().slice(0, 24) : ''));
       const inside = () => !!W() && W().contains(document.activeElement);
       const row = (label) => [...(W()?.querySelectorAll('.setrow') ?? [])].find((r) => r.querySelector('.setlabel')?.textContent === label) ?? null;
@@ -5963,6 +6007,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       fx.caps = { default: 1, max: 8, caps: { [REPO_A]: 2 }, bases: { [REPO_A]: "overhaul" } };
       fx.capsStatus = 200; fx.planStatus = 200; fx.autosOn = true; fx.dispatchOn = true; fx.refuseCap = false; fx.posts = []; fx.meterLane = false;
       fx.inputs = []; fx.requests = [];
+      fx.usageKind = "measured"; fx.usageStatus = 200; fx.usageDelay = 0; fx.usageRaw = null;
+      fx.refreshKind = "measured"; fx.refreshStatus = 200; fx.refreshDelay = 0;
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await navigate("http://fleet.fixture/blank");
@@ -5987,11 +6033,11 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       claims["opening moves the focus into the window"] = await evaluate<boolean>("window.__fx.inside()");
       const nav = await evaluate<{ word: string; shown: boolean }[]>(`[...window.__fx.W().querySelectorAll('[data-settings-tab]')].map((b) => ({ word: b.textContent, shown: window.__fx.shown(b) }))`);
       facts.nav = nav;
-      claims["four section targets are visible, in the registry order"] = nav.length === 4 && nav.every((n) => n.shown);
+      claims["five section targets are visible, in the registry order"] = nav.length === 5 && nav.every((n) => n.shown);
       const navAx: Record<string, unknown>[] = [];
       for (let i = 0; i < nav.length; i++) navAx.push((await ax(`window.__fx.W().querySelectorAll('[data-settings-tab]')[${i}]`)) ?? {});
       facts.navAx = navAx;
-      claims["every section target is named by its visible word"] = navAx.length === 4 && navAx.every((n, i) => n.name === nav[i].word && n.role === "button");
+      claims["every section target is named by its visible word"] = navAx.length === 5 && navAx.every((n, i) => n.name === nav[i].word && n.role === "button");
       // each target reached with a native click: it reads pressed and its section is on screen
       const reached: Record<string, unknown>[] = [];
       for (let i = 0; i < nav.length; i++) {
@@ -6006,7 +6052,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         await shot(width, `section-${i + 1}`);
       }
       facts.reached = reached;
-      claims["each of the four targets shows its section and reads pressed"] = reached.length === 4 && reached.every((r) => r.visible && r.pressed === "true");
+      claims["each of the five targets shows its section and reads pressed"] = reached.length === 5 && reached.every((r) => r.visible && r.pressed === "true");
       claims["switching sections keeps the focus on the target that was used"] = reached.every((r, i) => String(r.focus).includes(nav[i].word));
       await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[0]`);
 
@@ -6216,8 +6262,11 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       // --- 7. background repaint and repeated opening do not steal the focus
       await evaluate(`${capInput}.focus()`);
       const polls = fx.sessions;
+      const usageReads = () => fx.requests.filter((r) => r === "GET /api/subscription-usage").length;
+      const usageBefore = usageReads();
       await evaluate("new Promise(r => setTimeout(r, 4500))");
-      facts.repaint = { polls: fx.sessions - polls, focus: await evaluate<string>("window.__fx.desc(document.activeElement)") };
+      facts.repaint = { polls: fx.sessions - polls, focus: await evaluate<string>("window.__fx.desc(document.activeElement)"), usageReads: usageReads() - usageBefore };
+      claims["the open window reads the usage once, never with the poll: no usage request over two background polls"] = fx.sessions - polls >= 2 && usageReads() === usageBefore;
       claims["two background polls later the focus is still on the same control"] = fx.sessions - polls >= 2 && await evaluate<boolean>(`document.activeElement === ${capInput}`);
       await key("Escape");
       claims["Escape without staged values closes and returns the focus to the opener"] = await evaluate<boolean>(`!window.__fx.W() && document.activeElement === ${opener}`);
@@ -6321,6 +6370,215 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
           !!meter && meter.board <= 300 && meter.fit - meter.prefix >= 20 && /^\w+ · Oberflaeche · I1 /.test(meter.name) && meter.placeInside;
         fx.meterLane = false;
       }
+
+      // --- 11. "Verbrauch" (card 038d2694): windows, source and the three times apart, the explicit
+      // refresh with its loading/error/retry, every answer bound to the request that asked it, unknown
+      // never 0, the model facts apart — and no GET or render that refreshes or starts anything. A
+      // fresh page first: nothing measured has been seen yet.
+      const usageRefreshes = (from = 0) => fx.posts.slice(from).filter((x) => x.url === "/api/subscription-usage/refresh");
+      claims["steps 1-10 opened the window again and again and never asked for a usage refresh"] = usageRefreshes().length === 0;
+      fx.usageKind = "missing"; fx.usageDelay = 0; fx.usageRaw = null; fx.refreshKind = "measured"; fx.refreshStatus = 200; fx.refreshDelay = 0;
+      await navigate("http://fleet.fixture/");
+      await wait(ready, 12000);
+      const usePosts = fx.posts.length, useReqs = fx.requests.length;
+      let useOpens = 0;
+      const useSec = `window.__fx.section('Verbrauch')`;
+      const openUsage = async () => {
+        if (await evaluate<boolean>("!!window.__fx.W()")) await key("Escape");
+        await toGear(); await click(gear); await wait("window.__fx.W()");
+        useOpens++;
+        await click(`[...window.__fx.W().querySelectorAll('[data-settings-tab]')].find((b) => b.textContent === 'Verbrauch')`);
+      };
+      const settled = `!/wird gelesen/.test(${useSec}?.querySelector('[data-use="state"]')?.innerText ?? 'wird gelesen')`;
+      const use = async () => (await evaluate<Record<string, string> | null>(`Object.fromEntries([...(${useSec}?.querySelectorAll('[data-use]') ?? [])]
+        .map((e) => [e.dataset.use, e.innerText.replace(/\\s+/g, ' ').trim()]))`)) ?? {};
+      const useBtn = `${useSec}.querySelector('.usebtn')`;
+      const useRadio = (v: string) => `${useSec}.querySelector('input[type="radio"][value="${v}"]')`;
+      const useStatus = async () => evaluate<string>(`${useSec}?.querySelector('.usestatus')?.textContent ?? ''`);
+      const bars = async () => evaluate<number>(`${useSec}?.querySelectorAll('.usebar').length ?? -1`);
+
+      // (a) a missing source: unknown with its reason, no number, no bar — and the open itself asked nothing
+      await openUsage();
+      await wait(settled, 4000);
+      const uMissing = await use();
+      const missingBars = await bars();
+      await shot(width, "usage-missing");
+      facts.usageMissing = { u: uMissing, bars: missingBars };
+      claims["usage, missing source: Zustand unbekannt with its reason, both windows unbekannt, no percent and no bar"] =
+        /^Zustand unbekannt/.test(uMissing.state ?? "") && /Quelle fehlt/.test(uMissing.state ?? "")
+        && /^Primäres Fenster unbekannt/.test(uMissing.primary ?? "") && /^Sekundäres Fenster unbekannt/.test(uMissing.secondary ?? "")
+        && !/%/.test(`${uMissing.primary}${uMissing.secondary}`) && missingBars === 0;
+      // (b) the refresh controls by name and state: a named radio group, local checked, the button named
+      const useGroupAx = await ax(`${useSec}.querySelector('fieldset')`);
+      const localAx = await ax(useRadio("local")), providerAx = await ax(useRadio("provider"));
+      const btnAx = await ax(useBtn);
+      facts.usageAx = { groupAx: useGroupAx, localAx, providerAx, btnAx };
+      claims["usage refresh: one group named 'Neu lesen aus', 'Lokal gespeicherter Stand' checked, 'Anbieter-Konto (aktiv)' not, the button named 'Neu lesen'"] =
+        useGroupAx?.name === "Neu lesen aus" && localAx?.role === "radio" && localAx?.name === "Lokal gespeicherter Stand" && localAx?.checked === "true"
+        && providerAx?.name === "Anbieter-Konto (aktiv)" && providerAx?.checked === "false" && btnAx?.name === "Neu lesen" && !btnAx?.disabled;
+      // (c) the keyboard picks the active target: unsupported, its reason in words, the button disabled — and Enter sends nothing
+      await evaluate(`${useRadio("local")}.focus()`);
+      await key("ArrowDown");
+      const provAx = await ax(useRadio("provider"));
+      const provBtn = await ax(useBtn);
+      const provHint = await evaluate<string>(`${useSec}.querySelector('#set-use-hint').textContent`);
+      await evaluate(`${useBtn}.focus()`); await key("Enter"); await key(" ");
+      const provPosts = usageRefreshes(usePosts).length;
+      await shot(width, "usage-provider");
+      await evaluate(`${useRadio("provider")}.focus()`);
+      await key("ArrowUp");
+      const backLocal = await ax(useRadio("local"));
+      facts.usageProvider = { provAx, provBtn, provHint, provPosts, backLocal };
+      claims["usage, active target by keyboard: checked, the button disabled with the unsupported reason, Enter/Space send no request"] =
+        provAx?.checked === "true" && provBtn?.disabled === true && /^Nicht unterstützt: kein kontogebundener Leser/.test(provHint) && provPosts === 0
+        && backLocal?.checked === "true";
+
+      // (d) a corrupt source the server reports, then an answer that is not the wire's shape
+      fx.usageKind = "corrupt-source";
+      await openUsage(); await wait(settled, 4000);
+      const uCorrupt = await use();
+      fx.usageRaw = JSON.stringify({ schema: "something-else", codex: { primary: { used_percent: 0 } } });
+      await openUsage(); await wait(settled, 4000);
+      const uShape = await use();
+      fx.usageRaw = null;
+      await shot(width, "usage-unreadable");
+      facts.usageCorrupt = { uCorrupt, uShape };
+      claims["usage, corrupt source: Fehler with its reason, windows unbekannt; an answer of another shape reads 'nicht lesbar', never 0"] =
+        /^Zustand Fehler/.test(uCorrupt.state ?? "") && /kaputte Zeile/.test(uCorrupt.state ?? "") && /^Primäres Fenster unbekannt/.test(uCorrupt.primary ?? "")
+        && /Antwort nicht lesbar/.test(uShape.state ?? "") && /^Primäres Fenster unbekannt/.test(uShape.primary ?? "") && !/\b0 %/.test(Object.values(uShape).join(" "));
+
+      // (e) measured: two windows with their own length and reset, source and the three times apart, the model facts apart
+      fx.usageKind = "measured";
+      await openUsage(); await wait(settled, 4000);
+      const uM = await use();
+      const secText = await evaluate<string>(`${useSec}.innerText`);
+      await shot(width, "usage-measured");
+      facts.usageMeasured = uM;
+      claims["usage, measured: primary 42 % over 5 h and secondary 12,5 % over 7 Tage, each with its own reset"] =
+        /42 % verbraucht/.test(uM.primary ?? "") && /Fenster 5 h · Reset .+\(in 2 h (9|10) min\)/.test(uM.primary ?? "")
+        && /12,5 % verbraucht/.test(uM.secondary ?? "") && /Fenster 7 Tage · Reset .+\(in 3 Tage( 1 h)?\)/.test(uM.secondary ?? "");
+      claims["usage, measured: source local and not account-bound, measured time, server-clock age and read time stand apart"] =
+        /^Quelle lokale Codex-Sitzungsdateien dieser Maschine/.test(uM.source ?? "") && /nicht kontogebunden/.test(uM.source ?? "")
+        && /16 jüngsten Dateien, je höchstens 256 KiB/.test(uM.source ?? "") && /Ereignis ab12cd34\b/.test(uM.source ?? "")
+        && /^Gemessen \d\d:\d\d:\d\d Zeit des Messereignisses$/.test(uM.measured ?? "") && /^Alter 3 min Server-Uhr · veraltet ab 15 min$/.test(uM.age ?? "")
+        && /^Gelesen \d\d:\d\d:\d\d Antwort des Servers/.test(uM.fetched ?? "") && uM.measured?.slice(9, 17) !== uM.fetched?.slice(8, 16);
+      claims["usage, model: owner preference unbekannt, register default, slot selection and the turn's model apart; no quota switch"] =
+        /^Präferenz des Owners unbekannt/.test(uM.preference ?? "") && !/Opus|Sol/.test(uM.preference ?? "")
+        && /^Register-Standard Worker .*Sol.* · MAIN .*Opus/.test(uM.defaults ?? "") && /^Am Slot gewählt 2 Sessions/.test(uM.selected ?? "")
+        && /Entscheidungsquelle: unbekannt/.test(uM.selected ?? "") && /^Benutzt je Turn unbekannt/.test(uM.turn ?? "")
+        && /^Zustand unbekannt kein gemessener Sensor/.test(uM.others ?? "") && /Freies Kontingent wählt kein Modell/.test(secText);
+      claims["usage: no path, account, credential or full event checksum in the section"] =
+        !/\/Users\/|\/fixture\/|@|token|ab12cd34ab12cd34/i.test(secText);
+
+      // (f) the explicit local refresh: loading on the focused button, then a READ without a new measurement event
+      fx.refreshDelay = 900; fx.refreshKind = "measured";
+      await evaluate(`${useBtn}.focus()`);
+      const beforeLocal = fx.posts.length;
+      await key("Enter");
+      const loadAx = await ax(useBtn);
+      const loading = { ax: loadAx, status: await useStatus(), focus: await evaluate<boolean>(`document.activeElement === ${useBtn}`) };
+      await shot(width, "usage-loading");
+      await key("Enter"); // pressed again while it reads: nothing more is sent
+      await wait(`/Lokal neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      const readDone = { status: await useStatus(), posts: usageRefreshes(beforeLocal), u: await use(), ax: await ax(useBtn) };
+      await shot(width, "usage-local-read");
+      facts.usageLocal = { loading, readDone };
+      claims["usage refresh by keyboard: the focused button reads 'Liest …', busy and disabled, the status says it reads the local stored state"] =
+        loadAx?.name === "Liest …" && !!loadAx?.busy && loadAx?.disabled === true && loading.focus
+        && /Liest den lokal gespeicherten Stand/.test(loading.status);
+      claims["usage refresh: exactly one POST {target:local}, and its answer says no new measurement event"] =
+        readDone.posts.length === 1 && JSON.stringify(readDone.posts[0].body) === JSON.stringify({ target: "local" })
+        && /kein neues Messereignis, die Messung von \d\d:\d\d:\d\d bleibt/.test(readDone.status)
+        && /42 % verbraucht/.test(readDone.u.primary ?? "") && readDone.ax?.name === "Neu lesen" && !readDone.ax?.disabled;
+
+      // (g) failure: the server's timeout, then a 500 and a 409 — the last measured windows stay, stale and dated, never 0; retry offered
+      fx.refreshDelay = 0; fx.refreshKind = "timeout";
+      await click(useBtn);
+      await wait(`/Lokal gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      const uT = await use();
+      const tAx = await ax(useBtn);
+      const staleRow = await evaluate<boolean>(`${useSec}.querySelector('[data-use="primary"]').classList.contains('stale')`);
+      await shot(width, "usage-failed-stale");
+      fx.refreshStatus = 500;
+      await click(useBtn);
+      await wait(`/Server antwortet 500/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      const after500 = { status: await useStatus(), u: await use() };
+      fx.refreshStatus = 409;
+      await click(useBtn);
+      await wait(`/liest gerade schon/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      const after409 = { status: await useStatus(), ax: await ax(useBtn) };
+      fx.refreshStatus = 200;
+      facts.usageFailure = { uT, tAx, staleRow, after500, after409 };
+      claims["usage failure: Fehler with its reason, the last measured 42 % stays as 'zuletzt gemessen … veraltet', never 0 or blank"] =
+        /^Zustand Fehler Lesen nach 5 s abgebrochen/.test(uT.state ?? "") && /42 % verbraucht/.test(uT.primary ?? "")
+        && /zuletzt gemessen \d\d:\d\d:\d\d — veraltet, aktuell Fehler/.test(uT.primary ?? "") && /12,5 % verbraucht/.test(uT.secondary ?? "") && staleRow
+        && !/\b0 %/.test(`${uT.primary}${uT.secondary}`);
+      claims["usage failure offers the retry gesture: 'Erneut lesen' enabled after a timeout, a 500 and a 409, the windows kept"] =
+        tAx?.name === "Erneut lesen" && !tAx?.disabled && /Neu lesen fehlgeschlagen: Server antwortet 500/.test(after500.status)
+        && /42 % verbraucht/.test(after500.u.primary ?? "") && /liest gerade schon/.test(after409.status) && after409.ax?.name === "Erneut lesen";
+
+      // (h) a late GET answer after a newer refresh answer: the newer one stays
+      fx.usageKind = "stale"; fx.usageDelay = 1200; fx.refreshKind = "measured";
+      await openUsage();
+      await click(useBtn);
+      await wait(`/Lokal neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await evaluate("new Promise(r => setTimeout(r, 1500))");
+      const uLateGet = await use();
+      facts.usageLateGet = uLateGet;
+      claims["usage: an older GET answering after the refresh's answer does not overwrite it (42 % measured stays, not 30 % stale)"] =
+        /^Zustand gemessen/.test(uLateGet.state ?? "") && /42 % verbraucht/.test(uLateGet.primary ?? "") && !/30 %/.test(uLateGet.primary ?? "");
+
+      // (i) the window closed while a refresh read: its late answer paints nothing into the next window
+      fx.usageKind = "measured"; fx.usageDelay = 0; fx.refreshKind = "late"; fx.refreshDelay = 1200;
+      await click(useBtn);
+      await key("Escape");
+      const closedOnCancel = await evaluate<boolean>("!window.__fx.W()");
+      await openUsage(); await wait(settled, 4000);
+      await evaluate("new Promise(r => setTimeout(r, 1600))");
+      const uAfterClose = { u: await use(), status: await useStatus() };
+      facts.usageAfterClose = { closedOnCancel, ...uAfterClose };
+      claims["usage: Escape closes while it reads, and that late answer (99 %) never reaches the reopened window"] =
+        closedOnCancel && /42 % verbraucht/.test(uAfterClose.u.primary ?? "") && !/99 %/.test(uAfterClose.u.primary ?? "") && uAfterClose.status === "";
+
+      // (j) the target switched while a local read was pending: its answer is dropped, the active target stays chosen
+      await click(useBtn);
+      await click(useRadio("provider"));
+      const useDropped = await useStatus();
+      await evaluate("new Promise(r => setTimeout(r, 1600))");
+      const uSwitch = { u: await use(), status: await useStatus(), provider: await ax(useRadio("provider")), btn: await ax(useBtn) };
+      await shot(width, "usage-switched");
+      await click(useRadio("local"));
+      facts.usageSwitch = { dropped: useDropped, ...uSwitch };
+      claims["usage: switching the target while a local read is pending drops its answer; the active target stays checked and disabled"] =
+        /Antwort verworfen — das Ziel wurde gewechselt/.test(useDropped) && /42 % verbraucht/.test(uSwitch.u.primary ?? "") && !/99 %/.test(uSwitch.u.primary ?? "")
+        && uSwitch.provider?.checked === "true" && uSwitch.btn?.disabled === true;
+
+      // (k) a missing secondary window and a stale event on open
+      fx.refreshKind = "measured"; fx.refreshDelay = 0;
+      fx.usageKind = "null-secondary";
+      await openUsage(); await wait(settled, 4000);
+      const uNull = await use();
+      fx.usageKind = "stale";
+      await openUsage(); await wait(settled, 4000);
+      const uStale = await use();
+      const staleClass = await evaluate<boolean>(`${useSec}.querySelector('[data-use="primary"]').classList.contains('stale')`);
+      await shot(width, "usage-stale");
+      facts.usageNullStale = { uNull, uStale, staleClass };
+      claims["usage, null secondary: the primary measured, the secondary 'unbekannt — dieses Fenster fehlt', no 0"] =
+        /42 % verbraucht/.test(uNull.primary ?? "") && /^Sekundäres Fenster unbekannt dieses Fenster fehlt im Messereignis$/.test(uNull.secondary ?? "");
+      claims["usage, stale event: veraltet with its reason and age, the measured 30 % kept and marked"] =
+        /^Zustand veraltet Messung älter als 15 min/.test(uStale.state ?? "") && /30 % verbraucht/.test(uStale.primary ?? "") && /veraltet/.test(uStale.primary ?? "")
+        && /^Alter 40 min/.test(uStale.age ?? "") && staleClass;
+      await key("Escape");
+
+      // the whole step: each open read once, every POST was an explicit local refresh — nothing else written or
+      // started (the reloaded pane's own terminal size report, /resize, is the page's, not this section's)
+      const stepPosts = fx.posts.slice(usePosts).filter((x) => x.url !== "/resize");
+      const stepReads = fx.requests.slice(useReqs).filter((r) => r === "GET /api/subscription-usage").length;
+      facts.usageStep = { opens: useOpens, reads: stepReads, posts: stepPosts };
+      claims["usage step: one GET per window open, no poll; every POST is an explicit {target:local} refresh, no session or other write"] =
+        stepReads === useOpens && stepPosts.length === 7
+        && stepPosts.every((x) => x.url === "/api/subscription-usage/refresh" && JSON.stringify(x.body) === JSON.stringify({ target: "local" }));
 
       if (artifacts) { await send("Page.stopScreencast"); writeFileSync(resolve(artifacts, `video-${width}`, "times.json"), JSON.stringify(frameTimes)); recording = null; }
       facts.missing = missing.splice(0);

@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { AUTOS_TICK_MS, BASE, REPO, ROOT, UntilTimeout, until, check, get, post, restartSrv, stopSrv, tmuxOut } from "./harness";
+import { AUTOS_TICK_MS, BASE, REPO, ROOT, UntilTimeout, until, check, get, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
 import { suiteMeter, calmCase, laneDisplayName, laneTail, laneTitleOf, meterKind, meterLine, shortTitle, type MeterInput } from "../src/suitemeter";
@@ -1856,7 +1856,7 @@ export async function run(): Promise<void> {
       (await bodyOf<{ events?: EventRow[] }>(await get("/api/events"))).events
         ?.filter((e) => e.kind === "command-job" && e.subjectJobId === id) ?? [];
     const commandHistory = async (id: string) =>
-      (await bodyOf<{ history?: { text: string; openedAt?: number }[] }>(
+      (await bodyOf<{ history?: { text: string }[] }>(
         await get(`/api/slots/${paneLane.slot}/history`))).history
         ?.filter((h) => h.text.includes(` ${id} reached terminal result=`)) ?? [];
     const offerCommand = async () => {
@@ -1887,12 +1887,14 @@ export async function run(): Promise<void> {
         }
         const events = await commandEvents(id);
         const event = events[0];
+        const prompts = (await plogRead()).filter((p) => p.slot === paneLane.slot
+          && p.text.includes(` ${id} reached terminal result=`));
         check(`(LS.cmd rail) ${result} reaches the offering pane exactly once without a watch`,
           reported.ok && duplicate.status === 409 && events.length === 1
             && event?.watchId === null && event.delivery === "pane" && event.receiverIdleSec === 0
             && event.receiverSlot === paneLane.slot && event.payload?.result === result
             && event.payload.exitCode === exitCode && history.length === 1
-            && history[0]?.openedAt === event.receiverOpenedAt
+            && prompts.length === 1 && prompts[0]?.openedAt === event.receiverOpenedAt
             && history[0]?.text.includes(`result=${result};`),
           JSON.stringify({ reported: reported.status, duplicate: duplicate.status, events, history: history.length }));
         await restartSrv({ FLEET_HARNESS_AUTOMATION: "1" });

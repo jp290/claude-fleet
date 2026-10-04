@@ -2971,7 +2971,7 @@ Result-Handler verbraucht zuerst den Claim und erzeugt genau eine `command-job`-
 bestehenden FleetEvent-Rail; ein wiederholter Result-POST wird 409, ein späteres Watch-Abo erzeugt
 keine zweite automatische Zeile. Die Zeile bindet Slot, `openedAt` und Session-Id der anbietenden
 Occupation; eine Ersatz-Occupation erhält sie nicht. Die bestehenden Zustell-Gates und der
-Zustell-Deckel gelten weiterhin; bei vollem Budget nennt `command_job_event_skipped` den Grund.
+Zustell-Deckel gelten weiterhin; bei vollem Budget nennt `watch_skip` die Command-Job-Id und den Grund.
 MAIN-Sessions nutzen weiterhin eine `job`-Watch. Die Quittung bleibt über die Lesetür verfügbar.
 `GET /api/self/jobs/:id` antwortet nur der anbietenden Session (sonst 404, nie fremde Arbeit).
 `POST /api/self/jobs/:id/withdraw` gilt für die anbietende Session (Slot und `openedAt`), Lane

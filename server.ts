@@ -10394,7 +10394,7 @@ async function mintCommandJobEvents(j: CommandJob, notifyLane = false): Promise<
     if (lane) {
       const budget = slotDeliveryBudget(lane.id);
       if (budget.free === 0) {
-        audit("command_job_event_skipped", lane.id, `job=${j.id} ${r.result} no delivery budget`);
+        audit("watch_skip", lane.id, `command job=${j.id} ${r.result} no delivery budget`);
       } else {
         const event: CommandJobFleetEvent = {
           id: randomBytes(12).toString("hex"), watchId: null,
@@ -10404,7 +10404,7 @@ async function mintCommandJobEvents(j: CommandJob, notifyLane = false): Promise<
           status: "pending", delivery: "pane", attempts: 0, deliveredAt: null, acknowledgedAt: null,
         };
         fleetEvents = [...fleetEvents, event];
-        audit("command_job_event", lane.id, `${event.id} job=${j.id} ${r.result} → slot ${lane.id}`);
+        audit("helper_result", lane.id, `event=${event.id} job=${j.id} ${r.result} → slot ${lane.id}`);
         dirty = true;
       }
     }

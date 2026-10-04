@@ -15,7 +15,9 @@ import { run as contextBorrowChecks } from "./context-borrow";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { codexPermissionsFrom } from "../server/types";
+import { piZaiFenceProfile } from "../server/pi-zai-fence";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, CONTEXT_MANIFEST_PATH, observedSourceHash, planRepoContext,
@@ -635,6 +637,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     `${SNIPPET_HIT_MAX_LINES} ${definitionLines(alpha.split("\n"), "alphaTwo")}`);
 
   sessionAgentsChecks(check);
+  await laneSessionFilesChecks(check);
   taskCatalogChecks(check);
   privatePackChecks(check);
   await contextBorrowChecks(check);
@@ -1159,6 +1162,16 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   }
   check("session agents: position sums are observed", sums.length === 3, sums.join("; "));
   const base = { role: { text: templates.roles[0]!, path: "server.ts", anchor: "LANE_ROLE_CARD" }, position: "lane" as const, harness: "codex", plan, sourceBytes, footer: "" };
+  for (const harness of ["claude", "codex", "pi", "pi-zai"]) {
+    const footer = templates.laneExitFooter(harness, { role: "program-main", slot: 10 });
+    const rendered = renderSessionAgents({ role: { text: templates.roles[0]!, path: "server.ts", anchor: "LANE_ROLE_CARD" },
+      position: "lane", harness, plan, sourceBytes, footer });
+    check(`native lane render: ${harness} carries one role and measured source parts`,
+      rendered.text.split(templates.roles[0]!).length === 2 && rendered.parts[0]?.anchor === "LANE_ROLE_CARD"
+        && rendered.parts[0].bytes === Buffer.byteLength(templates.roles[0]!)
+        && rendered.parts.filter((part) => part.content !== null).every((part) => part.sha256 === createHash("sha256").update(part.content!).digest("hex")),
+      `${rendered.bytes} bytes`);
+  }
   const missingBytes = new Map(sourceBytes);
   missingBytes.set("docs/verify-tiering.md", "# Missing anchors\n");
   const missing = renderSessionAgents({ ...base, sourceBytes: missingBytes, selection: { "verify-e2e.gate-vs-audit": "box" } });
@@ -1199,4 +1212,72 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   check("session agents: the shared cut preserves UTF-8 and fenced headings and refuses an absent anchor",
     sectionAt(`${section}### Next\nother\n`, "x.md", "### Part") === section
     && sectionAt(section, "x.md", "### Missing") === null);
+}
+
+async function laneSessionFilesChecks(check: ContextPlanCheck): Promise<void> {
+  const source = readFileSync(join(import.meta.dir, "../server.ts"), "utf8");
+  const start = source.indexOf("async function writeLaneSessionAgents(");
+  const end = source.indexOf("\n}", start);
+  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end + 2));
+  const git = async (repo: string, ...args: string[]) => {
+    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
+  };
+  const deps = { git, existsSync, readFileSync, mkdirSync, dirname, appendFileSync, lstatSync, writeFileSync, chmodSync };
+  const write = new Function(...Object.keys(deps), `${js}; return writeLaneSessionAgents;`)(...Object.values(deps)) as
+    (path: string, agents: { text: string }) => Promise<void>;
+  const codexStart = source.indexOf("  spawnCmd: (o) => {", source.indexOf("const CODEX_HARNESS: Harness"));
+  const codexEnd = source.indexOf("\n  },", codexStart);
+  const arrow = source.slice(codexStart + "  spawnCmd: ".length, codexEnd + 4);
+  const codexDeps = { codexPermissionsFrom, realpathSync, shellSingleQuote: (s: string) => `'${s.replaceAll("'", "'\\''")}'`,
+    CODEX_TEXT_LANE_MCP: "text-mcp", PATH_EXPORT: "", SHELL: "/bin/sh" };
+  const spawnCodex = new Function(...Object.keys(codexDeps), `return (${arrow});`)(...Object.values(codexDeps)) as
+    (opts: Record<string, unknown>) => string;
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "lane-agents-files-")));
+  try {
+    for (const resume of [false, true]) {
+      const options = { cwd: repo, permissions: { sandbox: "danger-full-access", approval: "never" }, browserMcp: true,
+        sessionId: "11111111-1111-1111-1111-111111111111", resume };
+      const normal = spawnCodex(options), large = spawnCodex({ ...options, projectDocMaxBytes: 41980 });
+      check(`native Codex ${resume ? "resume" : "fresh"}: only oversized project docs get the exact byte budget`,
+        !normal.includes("project_doc_max_bytes") && large.includes(" -c project_doc_max_bytes=41980")
+          && large.replace(" -c project_doc_max_bytes=41980", "") === normal);
+    }
+    await git(repo, "init", "-q");
+    const text = "## Rolle\n\nEin Satz aus der Lane-Rolle.\n";
+    await write(repo, { text });
+    const exclude = (await git(repo, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")).out;
+    const first = readFileSync(exclude, "utf8");
+    await write(repo, { text });
+    check("lane files: exact render and native Claude import are excluded with a clean tree",
+      readFileSync(join(repo, "AGENTS.override.md"), "utf8") === text
+        && readFileSync(join(repo, "CLAUDE.local.md"), "utf8") === "@AGENTS.override.md\n"
+        && (await git(repo, "check-ignore", "AGENTS.override.md", "CLAUDE.local.md")).out === "AGENTS.override.md\nCLAUDE.local.md"
+        && (await git(repo, "status", "--porcelain")).out === "");
+    check("lane files: repeated preparation does not duplicate exclusions", readFileSync(exclude, "utf8") === first);
+    await git(repo, "add", "-f", "AGENTS.override.md");
+    let refused = "";
+    try { await write(repo, { text: "overwrite" }); } catch (err) { refused = String(err); }
+    check("lane files: tracked native rules refuse overwrite", refused.includes("session rule paths must be untracked")
+      && readFileSync(join(repo, "AGENTS.override.md"), "utf8") === text);
+    await git(repo, "rm", "--cached", "-f", "AGENTS.override.md");
+    unlinkSync(join(repo, "CLAUDE.local.md"));
+    writeFileSync(join(repo, "target"), "keep");
+    symlinkSync(join(repo, "target"), join(repo, "CLAUDE.local.md"));
+    refused = "";
+    try { await write(repo, { text }); } catch (err) { refused = String(err); }
+    check("lane files: symlink import refuses writing outside its file", refused.includes("session rule path is a symlink")
+      && readFileSync(join(repo, "target"), "utf8") === "keep");
+    mkdirSync(join(repo, "denied"));
+    writeFileSync(join(repo, "denied/canary"), "blocked");
+    const profile = piZaiFenceProfile({ home: repo, fleetDir: repo, agentDir: join(repo, "agent"),
+      keyFile: join(repo, "key"), cwd: repo, tmuxDir: join(repo, "tmux"), sockets: [], denyRoots: [join(repo, "denied")] });
+    check("lane files: pi-zai fence builds with a local native rule file", profile !== null);
+    if (process.platform === "darwin" && profile) {
+      const allowed = spawnSync("/usr/bin/sandbox-exec", ["-p", profile, "/bin/cat", join(repo, "AGENTS.override.md")], { encoding: "utf8" });
+      const denied = spawnSync("/usr/bin/sandbox-exec", ["-p", profile, "/bin/cat", join(repo, "denied/canary")], { encoding: "utf8" });
+      check("lane files: real pi-zai seatbelt reads session rules and refuses private roots", allowed.status === 0
+        && allowed.stdout === text && denied.status !== 0 && denied.stdout === "");
+    }
+  } finally { rmSync(repo, { recursive: true, force: true }); }
 }

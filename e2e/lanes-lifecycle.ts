@@ -3,6 +3,7 @@ import type { WorkplaceChecks, Workplaces, WorkplaceRepo } from "../src/protocol
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import type { WorkplaceCheckObservation } from "../server/types";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -606,6 +607,57 @@ export async function run(lc: LaneCtx): Promise<void> {
     }
   }
   const emptyBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  for (const harness of ["claude", "codex", "pi", "pi-zai"] as const) {
+    const lane = harness === "claude" ? emptyBranch
+      : await (await post("/api/lanes", { repo: REPO, harness })).json() as { slot: number; cwd: string; branch: string };
+    const agents = lane.cwd && existsSync(`${lane.cwd}/AGENTS.override.md`) ? readFileSync(`${lane.cwd}/AGENTS.override.md`, "utf8") : "";
+    const local = lane.cwd && existsSync(`${lane.cwd}/CLAUDE.local.md`) ? readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") : "";
+    const status = spawnSync("git", ["-C", lane.cwd ?? REPO, "status", "--porcelain"], { encoding: "utf8" });
+    const ignored = spawnSync("git", ["-C", lane.cwd ?? REPO, "check-ignore", "AGENTS.override.md", "CLAUDE.local.md"], { encoding: "utf8" });
+    check(`native lane start: ${harness} has its role file and exact Claude import`, agents.startsWith("## Rolle\n\n--- ROLLE --- Lane:")
+      && agents.includes("/api/self/fleet-report") && local === "@AGENTS.override.md\n");
+    check(`native lane start: ${harness} ignores both files and keeps git clean`, ignored.status === 0
+      && ignored.stdout.trim() === "AGENTS.override.md\nCLAUDE.local.md" && status.status === 0 && status.stdout === "");
+    if (harness !== "claude" && lane.slot) await post(`/api/slots/${lane.slot}/kill`, {});
+  }
+
+  for (const harness of ["claude", "codex", "pi", "pi-zai"] as const) {
+    const marker = `native-lane-receipt-${harness}-${Date.now()}`;
+    const task = await (await post("/api/tasks", { text: marker, queue: false, repo: ROOT })).json() as { task: { id: string } };
+    const opened = await (await post(`/api/tasks/${task.task.id}/dispatch`, { harness })).json() as
+      { ok?: boolean; slot?: number; error?: string };
+    check(`native dispatch ${harness}: stand-in lane starts`, opened.ok === true && typeof opened.slot === "number", JSON.stringify(opened));
+    if (typeof opened.slot !== "number") continue;
+    await plantScreen(opened.slot, harness === "codex" ? "›" : harness === "pi-zai" ? "0%/1.0M" : "❯", "native lane receipt");
+    type Part = { id: string; path: string | null; anchor: string | null; sha256: string | null; bytes: number | null; ort: string };
+    type Receipt = { taskId?: string; branch?: string; sessionAgents?: { path: string; sha256: string; bytes: number; parts: Part[] } };
+    let receipt: Receipt | undefined, prompt = "";
+    await until(async () => {
+      const rows = existsSync(`${ROOT}/context-receipts.jsonl`) ? readFileSync(`${ROOT}/context-receipts.jsonl`, "utf8")
+        .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Receipt) : [];
+      receipt = rows.findLast((row) => row.taskId === task.task.id);
+      const prompts = await (await get("/api/prompts?limit=100")).json() as { prompts: { slot: number; text: string }[] };
+      prompt = prompts.prompts.find((row) => row.slot === opened.slot && row.text.startsWith(marker))?.text ?? "";
+      return !!receipt && !!prompt;
+    }, { timeoutMs: 15000, what: `native ${harness} delivery receipt` });
+    const sessions = await (await get("/api/sessions")).json() as { slots: { id: number; cwd: string | null }[] };
+    const cwd = sessions.slots.find((row) => row.id === opened.slot)?.cwd;
+    const agents = cwd ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : "";
+    const roleStart = agents.indexOf("## Rolle\n\n") + "## Rolle\n\n".length;
+    const roleEnd = agents.indexOf("\n\n## Anleitung", roleStart);
+    const role = agents.slice(roleStart, roleEnd);
+    const meta = receipt?.sessionAgents, part = meta?.parts.find((row) => row.id === "role");
+    check(`native dispatch ${harness}: first message carries the order and pointer without role, anchors or exit`,
+      prompt.startsWith(`${marker}\n\nSession-Regeln: ${cwd}/AGENTS.override.md`)
+        && !prompt.includes("--- ROLLE ---") && !prompt.includes("ContextPlan v2 anchors") && !prompt.includes("HOW THIS LANE ENDS"));
+    check(`native dispatch ${harness}: receipt measures the actual file and role part`, meta?.path === "AGENTS.override.md"
+      && meta.bytes === Buffer.byteLength(agents) && meta.sha256 === createHash("sha256").update(agents).digest("hex")
+      && part?.path === "server.ts" && part.anchor === "LANE_ROLE_CARD" && part.bytes === Buffer.byteLength(role)
+      && part.sha256 === createHash("sha256").update(role).digest("hex") && part.ort === "box"
+      && meta.parts.some((row) => row.id === "footer" && typeof row.bytes === "number" && row.bytes > 0));
+    await post(`/api/slots/${opened.slot}/kill`, {});
+    await post(`/api/tasks/${task.task.id}/delete`, {});
+  }
   {
     const route = `/api/slots/${emptyBranch.slot}/testinstanz`;
     const script = `${emptyBranch.cwd}/testinstanz.sh`;
@@ -738,6 +790,8 @@ export async function run(lc: LaneCtx): Promise<void> {
       && spawnSync("git", ["-C", REPO, "branch", "--list", keptBranch.branch]).stdout.toString().trim() !== "",
     `${keepCommit.status}/${keepPush.status}/${keptRemove.status} ${keptBranch.branch}`);
   const landedBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  check("native lane rules remain present before a real script land", existsSync(`${landedBranch.cwd}/AGENTS.override.md`)
+    && existsSync(`${landedBranch.cwd}/CLAUDE.local.md`));
   await Bun.write(`${landedBranch.cwd}/branch-landed.txt`, "landed lane work\n");
   spawnSync("git", ["-C", landedBranch.cwd, "add", "branch-landed.txt"]);
   const landedCommit = spawnSync("git", ["-C", landedBranch.cwd, "commit", "-qm", "branch preservation after land"]);

@@ -7351,25 +7351,13 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       `tasksCapAt=${tasksCapAt} programsCapAt=${programsCapAt}`);
   }
 
-  // THREE call sites since the codex-exit cut (2026-09-18), still one construction: the
-  // declaration, the dispatch seam, and the LANE SUCCESSION brief (server.ts#buildLaneSuccessionBrief).
-  // The count is still pinned because the rule it enforces is unchanged — a lane's ending is
-  // appended at a seam, never retyped. Since the same cut the footer is a FUNCTION of the harness
-  // and the receiver resolved from the lane's current occupant:
-  // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
-  // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
-  // The harness-switch continuation (server.ts#buildLaneHarnessBrief) adds the same footer: its
-  // continuation brief appends the same footer at the same kind of seam, resolved for the NEW
-  // harness (`ho.harness`), because the session that reads it runs on that one. The fifth site
-  // only renders the founding preview; it sends nothing.
-  pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only and read by the founding preview, clarify exempted at the seam`,
-    /const deliveredBrief = `\$\{brief\}\$\{clarify \? "" : `\\n\\n\$\{LANE_ROLE_CARD\}`\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness, selfPosition\(free\)\.receiver\)\}\$\{memoryBlock\}`;/.test(server)
-      && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
-      && /footer: laneExitFooter\(s\.harness, selfPosition\(s\)\.receiver\)/.test(server)
-      && /footer: laneExitFooter\(ho\.harness, selfPosition\(s\)\.receiver\)/.test(server)
-      && /footer: position === "lane" \? laneExitFooter\(harness, null\)/.test(server)
-      && (server.split("laneExitFooter(").length - 1) === 5,
-    `laneExitFooter call sites=${server.split("laneExitFooter(").length - 1}`);
+  const foundingBrief = server.match(/const deliveredBrief = `[^;]+;/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — founding lane instructions live in the native file, with one brief pointer`,
+    foundingBrief.includes("Session-Regeln:") && foundingBrief.includes("AGENTS.override.md")
+      && !/LANE_ROLE_CARD|laneExitFooter|anchorBlock|memoryBlock/.test(foundingBrief)
+      && /footer: footer \?\? \(position === "lane" \? laneExitFooter\(harness, null\)/.test(server)
+      && server.includes('await writeLaneSessionAgents(wt.path, context.sessionAgents);'), foundingBrief);
+
 }
 
 // --- THE PROGRAM-MAIN EXECUTION RAIL ↔ THE TWO PROSE CONTRACTS. The block is the only text a

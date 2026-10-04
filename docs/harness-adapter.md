@@ -4,6 +4,29 @@
 Inventar: `docs/rulebook-inventar-2026-08-18.md`). Die Betriebs-Regeln und Gefahrensätze stehen
 weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, nie dieses Dokument.**
 
+## Sitzungseigene Lane-Regeln
+
+Vor dem Lane-Spawn schreibt Fleet `AGENTS.override.md` aus `renderSessionAgents`
+und `CLAUDE.local.md` mit der ungequoteten Importzeile `@AGENTS.override.md`.
+Beide Wurzelpfade werden vorher idempotent in `git rev-parse --git-path info/exclude`
+ausgeschlossen. Linked Worktrees teilen den Ausschluss, jede Lane hat ihre eigenen
+Dateibytes; Clone-Lanes haben ein eigenes Git-Verzeichnis. Getrackte Zieldateien
+und Symlinks werden verweigert.
+
+Claude importiert die Datei nativ aus `CLAUDE.local.md` und laedt weiterhin den
+privaten Lane-Render der Repo-`CLAUDE.md`. Codex, Pi und pi-zai waehlen nativ
+`AGENTS.override.md` vor `AGENTS.md`. Nur Codex bekommt bei mehr als 32 KiB
+`-c project_doc_max_bytes=<UTF-8-Bytes der Renderdatei>`; Pi braucht keinen Zusatz.
+Der pi-zai-Lesezaun laesst die lokale Regeldatei im Lane-Verzeichnis lesen.
+Loadergrundlage: `docs/messungen/2026-10-03-sitzungseigene-agents-md.md` und
+`docs/messungen/2026-10-03-claude-import-agents-md.md`.
+
+Der erste Brief enthaelt den Auftrag samt Aufgabenquellen und den Dateiverweis.
+Rollenkarte, Pack-Anker, Abschluss und Memory-Zeiger stehen in der Datei.
+Das Lane-Receipt nennt Dateihash und Bytes sowie je Renderer-Teil Pfad, Anker,
+SHA-256, Bytes und Ladeort; fehlende Quellen bleiben explizit unbekannt.
+MAIN und Orchestratorin im gemeinsamen Haupt-Checkout behalten ihren Ladeweg.
+
 ## PATH (launchd-Spawn-Umgebung)
 
 - launchd-Kontext hat weder ~/.local/bin (claude) noch ~/.bun/bin (bun) noch brew im PATH — watchdog.sh muss

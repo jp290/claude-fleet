@@ -1,5 +1,5 @@
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, DeployGap, DeployLand, FactReason } from "./src/protocol";
-import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents } from "./session-agents";
+import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
@@ -474,7 +474,7 @@ interface Harness {
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
     container: string; containerContext: string; cwd: string; browserMcp: boolean;
     context: SlotContext | null; permissions: SlotPermissions | null; rulebookRole: "main" | "orchestrator" | null;
-    remoteName: string | null; webSearch?: boolean }): string;
+    remoteName: string | null; webSearch?: boolean; projectDocMaxBytes?: number }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -1482,6 +1482,7 @@ const CODEX_HARNESS: Harness = {
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` -c model_reasoning_effort='${o.effort}'`;
     if (o.webSearch) cmd += " --search";
+    if (o.projectDocMaxBytes) cmd += ` -c project_doc_max_bytes=${o.projectDocMaxBytes}`;
     // the slot's context budget (Slot.context), fresh AND resume form. Both numbers are integers judged
     // by contextOf, so no request text reaches this line; absent = no flag, today's line byte for byte.
     // The scope is `total`, the counting mode docs/messungen/2026-09-15-codex-kontextfenster-profile.md §4
@@ -6940,6 +6941,30 @@ async function excludeLaneScratch(lanePath: string): Promise<void> {
   } catch { /* see above: a dirty lane beats a spawn that throws */ }
 }
 
+async function writeLaneSessionAgents(lanePath: string, agents: SessionAgents): Promise<void> {
+  const tracked = await git(lanePath, "ls-files", "--", "AGENTS.override.md", "CLAUDE.local.md");
+  if (tracked.code !== 0 || tracked.out) throw new Error("session rule paths must be untracked");
+  const exclude = await git(lanePath, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude");
+  if (exclude.code !== 0 || !exclude.out) throw new Error("could not resolve lane info/exclude");
+  const previous = existsSync(exclude.out) ? readFileSync(exclude.out, "utf8") : "";
+  const have = new Set(previous.split("\n").map((line) => line.trim()));
+  const missing = ["/AGENTS.override.md", "/CLAUDE.local.md"].filter((path) => !have.has(path));
+  if (missing.length) {
+    mkdirSync(dirname(exclude.out), { recursive: true });
+    appendFileSync(exclude.out, `${previous && !previous.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n`);
+  }
+  const files = [["AGENTS.override.md", agents.text], ["CLAUDE.local.md", "@AGENTS.override.md\n"]] as const;
+  for (const [name] of files) {
+    const path = `${lanePath}/${name}`;
+    if (existsSync(path) && lstatSync(path).isSymbolicLink()) throw new Error("session rule path is a symlink");
+  }
+  for (const [name, text] of files) {
+    const path = `${lanePath}/${name}`;
+    writeFileSync(path, text, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  }
+}
+
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
 // need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
@@ -8463,6 +8488,20 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
     // RESUME when the harness's own conversation evidence still exists (transcript .jsonl, pi's
     // create-or-attach id, codex's exact rollout file) — asking claude's question of another
     // harness loses work. Narrativ: server-narrativ-archiv.md#ensureslot
+    if (s.worktree && !existsSync(`${occupant.cwd}/AGENTS.override.md`)) {
+      const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
+      if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+      if (!planned.ok) throw new Error(planned.error);
+      const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
+      if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
+      const agents = await foundingSessionAgents({ ...planned.value, repoRoot: occupant.cwd, head: head.out },
+        occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver)}\n\n${memoryPointer("lane")}`);
+      if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+      await writeLaneSessionAgents(occupant.cwd, agents);
+      if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+    }
+    const projectBytes = s.worktree ? Buffer.byteLength(readFileSync(`${occupant.cwd}/AGENTS.override.md`)) : 0;
+    const projectDocMaxBytes = projectBytes > SESSION_AGENTS_LIMIT ? projectBytes : undefined;
     const codex = h.id === "codex";
     const priorSessionId = occupant.sessionId;
     const priorCodexState = s.codexRecoveryState;
@@ -8517,7 +8556,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
           browserMcp: !s.worktree || occupant.browser, context: occupant.context, permissions: po.permissions, rulebookRole,
-          webSearch: h.id === "codex" && occupant.webSearch,
+          webSearch: h.id === "codex" && occupant.webSearch, projectDocMaxBytes,
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);
@@ -17394,7 +17433,17 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // ref, every root-side reader (drift, risk, the land path) reports an absence. No-op for a worktree.
     await syncLaneRefs(dRef, wt.path);
     guard();
+    let prepared: ReturnType<typeof laneBrief> & { context: LaneContextDelivery };
     try {
+      const preparedBrief = laneBrief(next, clarify, wave);
+      const context = await laneContextDelivery({ ...free, cwd: wt.path, worktree: dRef,
+        harness: spawn.harness, model: spawn.model, effort: spawn.effort,
+        taskId: next.id, originId: next.originId ?? null, programId: next.programId ?? null }, wt,
+        preparedBrief.brief, preparedBrief.sourceRows, preparedBrief.briefSource, clarify);
+      guard();
+      await writeLaneSessionAgents(wt.path, context.sessionAgents);
+      guard();
+      prepared = { ...preparedBrief, context };
       await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
         spawn.context ?? null, false, spawn.permissions, [next, ...(wave?.followers ?? [])].some((t) =>
           t.card?.valid === true && t.card.web === "search"));
@@ -17437,7 +17486,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     free.awaiting = clarify ? "owner" : null;
     saveState();
     return { ok: true, slot: free.id, branch: wt.branch,
-      tail: briefAndSend(next, free, wt, ownerAct, clarify, wave) };
+      tail: briefAndSend(next, free, wt, ownerAct, clarify, wave, prepared) };
   } catch (e) {
     // spawning failed — mark the task so the owner sees why instead of it silently vanishing
     next.status = wasStatus;
@@ -17645,8 +17694,7 @@ Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self
 `;
 }
 
-async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
-  ownerAct: boolean, clarify = false, wave: WaveDispatch | null = null): Promise<void> {
+function laneBrief(next: Task, clarify: boolean, wave: WaveDispatch | null) {
   // THE ROWS THIS LANE CARRIES, head first — the wave's fixed order, and a one-element list for
   // every other dispatch. One list, so nothing below has to ask twice whether this is a wave.
   const waveRows: Task[] = wave ? [next, ...wave.followers] : [next];
@@ -17683,6 +17731,13 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(src, clarify);
+  return { waveRows, sourceRows, brief, briefSource };
+}
+
+async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
+  ownerAct: boolean, clarify = false, wave: WaveDispatch | null = null,
+  prepared?: ReturnType<typeof laneBrief> & { context: LaneContextDelivery }): Promise<void> {
+  const { waveRows, sourceRows, brief, briefSource } = prepared ?? laneBrief(next, clarify, wave);
   // …and the counter-read's `atStart` is stamped at this same moment, so it says exactly whether the
   // let claude finish booting in the fresh pane before the first prompt lands
   await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
@@ -17800,18 +17855,12 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   const readiness = await waitForFoundingReadiness(free, () => !identityLost());
   if (!readiness.ok) { await requeue(`${readiness.reason} — requeued`, readiness.screen ?? null); return; }
   try {
-    const context = await laneContextDelivery(free, wt, brief, sourceRows, briefSource, clarify);
-    const { notesBlock, snippetBlock, studioLaneBlock, anchorBlock } = context;
+    const context = prepared?.context ?? await laneContextDelivery(free, wt, brief, sourceRows, briefSource, clarify);
+    const { notesBlock, snippetBlock, studioLaneBlock } = context;
     // Every await since the readiness wait was git or state work, and a kill or re-open in that window
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
-    // THE MEMORY POINTER (≤ 512 B): the reader and its limits, never a copy of the state it reads.
-    // AFTER the exit footer, never between brief and footer: the dispatch probes (e2e/tasks.ts (d),
-    // (d3), (d5), the manifest seam; the studio splice in e2e/programs.ts) measure everything in
-    // that span as the notes/source/studio/anchor region, and a pointer there moved all of their
-    // bytes (preview b546fb2cccdb, 7 red). Clarify gets none, like the notes and the footer.
-    const memoryBlock = clarify ? "" : `\n\n${memoryPointer("lane")}`;
-    const deliveredBrief = `${brief}${clarify ? "" : `\n\n${LANE_ROLE_CARD}`}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness, selfPosition(free).receiver)}${memoryBlock}`;
+    const deliveredBrief = `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ${wt.path}/AGENTS.override.md`;
     await sendText(free, deliveredBrief, true, { path: "brief" });
     for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();
@@ -17825,6 +17874,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
 
 interface LaneContextDelivery {
   block: string;
+  sessionAgents: SessionAgents;
   notesBlock: string; snippetBlock: string; studioLaneBlock: string; anchorBlock: string;
   record: (deliveredBrief: string, at: number) => Promise<void>;
 }
@@ -17927,9 +17977,13 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   const snippet = clarify ? { block: "", receipt: NO_SNIPPET_RECEIPT }
     : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, sourceRows);
   const snippetBlock = snippet.block;
-  const selected = contextReceiptSelections(plan.selected);
+  const laneHead = await gitRead(wt.path, "rev-parse", "--verify", "HEAD^{commit}");
+  if (laneHead.code !== 0 || !/^[0-9a-f]{40,64}$/.test(laneHead.out)) throw new Error("could not read lane HEAD for session rules");
+  const sessionAgents = await foundingSessionAgents({ repoRoot: wt.path, head: laneHead.out, plan },
+    free.harness, "lane", undefined, clarify ? "" : `${laneExitFooter(free.harness, selfPosition(free).receiver)}\n\n${memoryPointer("lane")}`);
+  const selected = contextReceiptSelections(plan.selected, sessionAgents);
   const omitted = plan.omitted.map((entry) => ({ ...entry }));
-  return { notesBlock, snippetBlock, studioLaneBlock, anchorBlock,
+  return { sessionAgents, notesBlock, snippetBlock, studioLaneBlock, anchorBlock,
     block: `${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}`,
     record: async (deliveredBrief, at) => {
       // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
@@ -17971,6 +18025,8 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
         // the named refs it could not deliver. 0/0/[] is "this brief carried no block".
         snippet: snippet.receipt,
         renderer: CONTEXT_ANCHOR_RENDERER,
+        sessionAgents: { path: "AGENTS.override.md", sha256: createHash("sha256").update(sessionAgents.text).digest("hex"),
+          bytes: sessionAgents.bytes, parts: sessionAgents.parts.map(({ content, ...part }) => part) },
         // The join key — the SAME function LaneOutcome.briefHash uses over the lane's first logged
         // prompt, so a receipt and the outcome it founded meet exactly. `hash` above keys a different question.
         briefHash: briefHashOf(deliveredBrief), briefSource,
@@ -18019,6 +18075,7 @@ type ContextReceiptSelection = {
   anchors: readonly { path: string; anchor: string }[] | { privateSourceId: string };
   sourceHash?: string;
   origin?: "program";
+  parts?: readonly Omit<SessionAgents["parts"][number], "content">[];
   // a private row only: the hash verdict and the fassung it was taken on — never the local path
   private?: { verdict: PrivatePackResolution["verdict"]; version: number | null };
 };
@@ -18078,8 +18135,9 @@ function renderContextAnchorBlock(input: ContextPlan): string {
   return `\n\n${lines.join("\n")}`;
 }
 
-function contextReceiptSelections(selected: readonly ContextPlanSelection[]): ContextReceiptSelection[] {
+function contextReceiptSelections(selected: readonly ContextPlanSelection[], agents?: SessionAgents): ContextReceiptSelection[] {
   return selected.map((selection) => {
+    const parts = agents ? { parts: agents.parts.filter((part) => part.packId === selection.id).map(({ content, ...part }) => part) } : {};
     const declared = declaredSourceHash(selection);
     const sourceHash = declared !== undefined ? { sourceHash: declared } : {};
     // useWhen is copied from the SELECTION, never re-read from the seed: the row must describe the
@@ -18088,10 +18146,11 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[]): Co
     // A Program pack says so on its row; every other row stays byte-identical to before the field.
     const origin = "origin" in selection && selection.origin === "program" ? { origin: selection.origin } : {};
     if (!("privateSourceId" in selection.sources))
-      return { id: selection.id, ...useWhen, anchors: selection.sources.map((source) => ({ path: source.path, anchor: source.anchor })), ...sourceHash, ...origin };
+      return { id: selection.id, ...parts, ...useWhen, anchors: selection.sources.map((source) => ({ path: source.path, anchor: source.anchor })), ...sourceHash, ...origin };
     const resolved = privatePackResolutionOf(selection, selection.sources.privateSourceId);
     return {
       id: selection.id,
+      ...parts,
       ...useWhen,
       anchors: { privateSourceId: selection.sources.privateSourceId },
       ...sourceHash,
@@ -35493,8 +35552,8 @@ async function foundingPlanOf(repo: string, harness: string | null,
     } } };
 }
 
-async function foundingSessionAgents(fp: FoundingPlan, harness: string | null,
-  position: "lane" | "main" | "orchestratorin", selection?: Readonly<Record<string, "box" | "ausleihe">>): Promise<SessionAgents> {
+async function foundingSessionAgents(fp: Pick<FoundingPlan, "repoRoot" | "head" | "plan">, harness: string | null,
+  position: "lane" | "main" | "orchestratorin", selection?: Readonly<Record<string, "box" | "ausleihe">>, footer?: string): Promise<SessionAgents> {
   const sourceBytes = new Map<string, string>();
   const paths = new Set(fp.plan.selected.flatMap((pack) => "privateSourceId" in pack.sources ? [] : pack.sources.map((source) => source.path)));
   if (resolveContextHarness(harness) === "codex" || resolveContextHarness(harness).startsWith("pi")) paths.add("AGENTS.md");
@@ -35511,10 +35570,12 @@ async function foundingSessionAgents(fp: FoundingPlan, harness: string | null,
     : { text: orchestratorRoleCard(harness), anchor: "ORCHESTRATOR_ROLE_CARD" };
   const pointerLines = new Map<string, readonly string[]>();
   for (const pack of fp.plan.selected) if ("privateSourceId" in pack.sources)
-    pointerLines.set(pack.id, [`  private source ${pack.sources.privateSourceId} (resolved at delivery)`]);
+    pointerLines.set(pack.id, footer !== undefined && position === "lane"
+      ? renderPrivatePackLines(privatePackResolutionOf(pack, pack.sources.privateSourceId))
+      : [`  private source ${pack.sources.privateSourceId} (resolved at delivery)`]);
   return renderSessionAgents({ role: { ...role, path: "server.ts" }, position, harness, plan: fp.plan,
     sourceBytes, selection, pointerLines,
-    footer: position === "lane" ? laneExitFooter(harness, null) : position === "main" ? PROGRAM_MAIN_RAIL_BLOCK : "" });
+    footer: footer ?? (position === "lane" ? laneExitFooter(harness, null) : position === "main" ? PROGRAM_MAIN_RAIL_BLOCK : "") });
 }
 
 // A planned pack's DECLARED rule facts, for the founding window: a Fleet seed's from its code entry, a

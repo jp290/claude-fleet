@@ -177,15 +177,27 @@ export async function checkCodexSpawnFixtures(source: string,
       ({ name: `replaced-at-${race}`, support: available, race, empty: race === "observe", founding: race === "persist" })),
   ];
   for (const fixture of fixtures) {
-    const slot: Record<string, unknown> = { id: 17, cwd: fixture.empty ? null : "/old", openedAt: fixture.empty ? 0 : 10,
-      selfToken: "old-fixture-token", clients: new Set(), history: [] };
+    let foreignInstalled = false;
+    const writesAfterReplacement: string[] = [];
+    const slot: Record<string, unknown> = new Proxy({ id: 17, cwd: fixture.empty ? null : "/old", openedAt: fixture.empty ? 0 : 10,
+      selfToken: "old-fixture-token", clients: new Set(), history: [] }, {
+      set: (target, key, value) => {
+        if (foreignInstalled) writesAfterReplacement.push(String(key));
+        return Reflect.set(target, key, value);
+      },
+    });
     const effects: string[] = [];
+    let effectsAtReplacement = 0;
     let supportCalls = 0;
     let killed = false;
     const oldToken = slot.selfToken;
     const foreign = { cwd: "/foreign", openedAt: 999, selfToken: "foreign-fixture-token" };
     const barrier = async (name: string): Promise<void> => {
-      if (fixture.race === name) Object.assign(slot, foreign);
+      if (fixture.race === name) {
+        Object.assign(slot, foreign);
+        foreignInstalled = true;
+        effectsAtReplacement = effects.length;
+      }
     };
     const maps = ["mergeVerdict", "laneReviewParked", "mergeInflight", "mergeStart", "aliveInfo", "paneModelInfo",
       "gitOpInfo", "laneHunkInfo", "gitInfo", "repoInfo", "backlogNudgeTried", "inboxNudgeTried",
@@ -216,7 +228,8 @@ export async function checkCodexSpawnFixtures(source: string,
       hashSelfToken: () => "hash", randomBytes: () => ({ toString: () => "new-fixture-token" }),
       autos: [], dropWatchesFor: () => {}, reapLaneSuiteOffersFor: () => {},
       rm: () => barrier("history"), historyPath: () => "/fixture-history", recents: [], MAX_RECENTS: 10,
-      parkMergeVerdict: () => {}, audit: () => {}, saveState: () => {}, saveStateNow: () => barrier("persist"),
+      parkMergeVerdict: () => {}, audit: () => { effects.push("audit"); }, saveState: () => { effects.push("save"); },
+      saveStateNow: async () => { effects.push("persist"); await barrier("persist"); },
       ensureSlot: async () => { effects.push("ensure"); await barrier("ensure"); },
       NO_BOX: { container: null, containerContext: null }, singletonSpawn: new Set(),
     });
@@ -264,7 +277,13 @@ export async function checkCodexSpawnFixtures(source: string,
       let error: unknown = null;
       try { result = await open(slot, "/new", null, fixture.support.model!, null, "codex", null,
         { container: null, containerContext: null }, lease); } catch (caught) { error = caught; }
-      if (fixture.race) {
+      if (fixture.race === "ensure") {
+        checkFixture("Codex superseded open completes without a late effect or support claim", error === null
+          && result?.availability === "unknown" && result.reason === "observation-target-mismatch"
+          && slot.cwd === foreign.cwd && slot.openedAt === foreign.openedAt && slot.selfToken === foreign.selfToken
+          && writesAfterReplacement.length === 0 && effects.length === effectsAtReplacement,
+        `completed=${error === null}; availability=${result?.availability}; writes=${writesAfterReplacement}; late effects=${effects.length - effectsAtReplacement}`);
+      } else if (fixture.race) {
         checkFixture(`Codex open occupant: ${fixture.name}`, error instanceof Error
           && error.message === "slot occupant changed during open" && slot.cwd === foreign.cwd
           && slot.openedAt === foreign.openedAt && slot.selfToken === foreign.selfToken,

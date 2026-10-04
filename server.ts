@@ -8285,8 +8285,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   let expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
   const pendingTeardown = slotTeardownInflight.get(s.id);
+  const openOccupantCurrent = (): boolean => s.cwd === expected.cwd && s.openedAt === expected.openedAt
+    && s.selfToken === expected.selfToken;
   const assertOpenOccupant = (ended = false): void => {
-    if (s.cwd === expected.cwd && s.openedAt === expected.openedAt && s.selfToken === expected.selfToken) return;
+    if (openOccupantCurrent()) return;
     if (ended && s.cwd === null && s.openedAt === 0 && s.selfToken === expected.selfToken) {
       expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
       return;
@@ -8463,7 +8465,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
       throw new GameMakerTreeConflict("Program-MAIN target identity changed during candidate persistence");
   } else saveState();
   await ensureSlot(s, "open");
-  assertOpenOccupant();
+  // Completion is effect-free: a superseded open retains main's successful return without claiming its target still stands.
+  if (!openOccupantCurrent()) return modelSupport
+    ? { ...modelSupport, availability: "unknown", provider: null, reason: "observation-target-mismatch" } : null;
   return modelSupport;
   } finally {
     openSlotIntents.delete(openIntent);

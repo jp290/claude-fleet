@@ -7927,6 +7927,9 @@ interface GlassDriver {
   // the engine's WHOLE tap: in WebKit Playwright's tap, which sends a click after the touchend as iOS
   // does (a raw touch stream sends none); in Chromium the touch pair, whose gesture adds the click
   tap(at: GlassPt): Promise<void>;
+  // the page's own size, as a browser that shrinks its layout viewport for the keyboard changes it
+  resize(width: number, height: number): Promise<void>;
+  type(text: string): Promise<void>;
   key(key: "Escape" | "ArrowLeft" | "ArrowRight"): Promise<void>;
   media(m: { motion?: boolean; contrast?: boolean; transparency?: boolean }): Promise<{ transparency: boolean }>;
   shot(file: string): Promise<void>;
@@ -8019,6 +8022,8 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
       await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y, id: 1 }] });
       await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     },
+    async resize(width, height) { await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 3, mobile: true }); },
+    async type(text) { await send("Input.insertText", { text }); },
     async key(key) {
       const vk = { Escape: 27, ArrowLeft: 37, ArrowRight: 39 }[key];
       await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: vk });
@@ -8037,7 +8042,8 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
 async function glassWebkit(playwright: string, serve: GlassServe, init: string): Promise<GlassDriver> {
   const mod = await import(playwright) as { default?: unknown };
   type PwPage = { goto(u: string): Promise<unknown>; evaluate(e: string): Promise<unknown>; screenshot(o: { path: string }): Promise<unknown>;
-    keyboard: { press(k: string): Promise<void> }; touchscreen: { tap(x: number, y: number): Promise<void> }; emulateMedia(o: Record<string, unknown>): Promise<void>; _connection: { toImpl(p: unknown): { delegate: { _pageProxySession: { send(m: string, p: unknown): Promise<unknown> } } } } };
+    keyboard: { press(k: string): Promise<void>; type(t: string): Promise<void> }; touchscreen: { tap(x: number, y: number): Promise<void> };
+    setViewportSize(s: { width: number; height: number }): Promise<void>; emulateMedia(o: Record<string, unknown>): Promise<void>; _connection: { toImpl(p: unknown): { delegate: { _pageProxySession: { send(m: string, p: unknown): Promise<unknown> } } } } };
   type PwContext = { newPage(): Promise<PwPage>; close(): Promise<void>; addInitScript(s: string): Promise<void>;
     route(u: string, h: (r: { request(): { url(): string; method(): string }; fulfill(o: Record<string, unknown>): Promise<void> }) => unknown): Promise<void> };
   const pw = (mod.default ?? mod) as { webkit: { launch(): Promise<{ newContext(o: unknown): Promise<PwContext>; close(): Promise<void> }> }; devices: Record<string, unknown> };
@@ -8062,6 +8068,8 @@ async function glassWebkit(playwright: string, serve: GlassServe, init: string):
       await pg()._connection.toImpl(pg()).delegate._pageProxySession.send("Input.dispatchTouchEvent", { type, touchPoints: [{ x: Math.round(at.x), y: Math.round(at.y), id: 1 }] });
     },
     async tap(at) { await pg().touchscreen.tap(Math.round(at.x), Math.round(at.y)); },
+    async resize(width, height) { await pg().setViewportSize({ width, height }); },
+    async type(text) { await pg().keyboard.type(text); },
     async key(key) { await pg().keyboard.press(key); },
     async media(m) {
       await pg().emulateMedia({ reducedMotion: m.motion ? "reduce" : "no-preference", contrast: m.contrast ? "more" : "no-preference" });
@@ -8087,9 +8095,10 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
   const HARNESSES = { harnesses: [{ id: "claude", default: true, note: null, effortLevels: ["low", "medium", "high", "xhigh"], models: modelsForHarness("claude"),
     supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
     modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) };
+  const posts: string[] = [];
   const serve: GlassServe = (p, method) => {
     const json = (v: unknown, status = 200) => ({ status, type: "application/json", body: JSON.stringify(v) });
-    if (method === "POST") return json({ ok: true });
+    if (method === "POST") { posts.push(p); return json({ ok: true }); }
     if (p === "/") return { status: 200, type: "text/html", body: indexHtml };
     if (p === "/blank") return { status: 200, type: "text/html", body: "<!doctype html><title>blank</title>" };
     if (p === "/app.js") return { status: 200, type: "text/javascript", body: appJs };
@@ -8419,6 +8428,28 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
         await swipe(centre, [{ dx: 30 }, { dx: 60 }, { dx: 90 }]);
         await wait(settled, 2000);
         say("with the keyboard up a swipe still opens Sessions", (await state()).sessions);
+        // 11. the field upright in a browser whose keyboard shrinks the PAGE (a phone browser, the owner's
+        // a phone: the keyboard flashed and closed): the page drops under 500 px, which is also the
+        // phone on its side's height — the reading mode must not take over and hide the focused field
+        await boot(SHORT);
+        const fieldAt = await ev<GlassPt>("(() => { const r = document.querySelector('#input').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()");
+        await d.tap(fieldAt); await pause(200);
+        const tapFocus = await ev<boolean>(`(() => { window.__field = document.querySelector('#input'); window.__blurs = 0;
+          window.__field.addEventListener('blur', () => window.__blurs++); return document.activeElement === window.__field; })()`);
+        await d.resize(GLASS_W, 400); await pause(500);
+        const kept = await ev<{ same: boolean; focus: boolean; blurs: number; comp: string; reading: string }>(`({ same: document.querySelector('#input') === window.__field,
+          focus: document.activeElement === window.__field, blurs: window.__blurs, comp: getComputedStyle(document.querySelector('#comp')).display,
+          reading: getComputedStyle(document.querySelector('#mread')).display })`);
+        await shot("tastatur-schrumpft-seite");
+        await d.type("hallo"); await pause(100);
+        const typed = await ev<string>("document.querySelector('#input').value");
+        const sent0 = posts.length;
+        await d.tap(await ev<GlassPt>("(() => { const r = document.querySelector('#send').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
+        await pause(500);
+        const sentNow = posts.slice(sent0);
+        say("upright, a tap focuses the field, and when the keyboard shrinks the page to 390 × 400 the same field keeps the focus (no blur, still drawn, no reading mode), takes typed text and sends it",
+          tapFocus && kept.same && kept.focus && kept.blurs === 0 && kept.comp !== "none" && kept.reading === "none" && typed === "hallo" && sentNow.includes("/send"),
+          { tapFocus, kept, typed, sentNow });
       } catch (error) {
         say("PROBE: the engine ran the island's claims to the end", false, error instanceof Error ? error.message : String(error));
       } finally { await d.close(); }

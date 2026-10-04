@@ -3421,7 +3421,7 @@
        BOTTOM: #bar itself is the island, in flow (so the terminal ends above it by construction):
        + field send in one row, the grip over it folds #chips and #keys in. Live line, a dropped
        socket (.panedown) and the alarm stay in flow as before; #mhead only keeps the alarm. */
-    @media not all and ((pointer: coarse) and (max-height: 500px)) {
+    @media not all and ((pointer: coarse) and (max-height: 500px) and (min-aspect-ratio: 8/5)) {
       #mhead { display: none; }
       #mhead:has(> #malarm:not([hidden])) { display: flex; justify-content: flex-end; padding: env(safe-area-inset-top) 6px 0;
         background: none; border: 0; }
@@ -3672,7 +3672,7 @@
 
   /* --- mobile LANDSCAPE: the reading mode (Richtung B, owner's pick 2026-09-24; measured and drawn
      in docs/messungen/2026-09-22-mobil-querformat-entwurf.md, mockup docs/design/querformat/
-     b-lesemodus.html). Exactly the SECOND arm of MOBILE_MQ — no width limit of its own (G0.7): a phone
+     b-lesemodus.html). The SECOND arm of MOBILE_MQ on a wide page — no width limit of its own (G0.7): a phone
      on its side has 286 px of page without the keyboard and 122 with it, and the portrait treatment
      left 6 transcript rows of that. Here #mhead, #keys and the tray fold away and the transcript runs
      edge to edge (21 rows); #mread floats ☰ + title, ⌨ and ✎ over it in a see-through material.
@@ -3681,8 +3681,11 @@
      column-reverse: the composer stands IN FLOW at the top, clear of iOS's accessory bar (page
      y 64–108), and the pane shrinks under it. ⋯ brings back the tray as a second row there — never
      #mhead, whose settings gear moves into the pane's corner group instead (G5: one gear). After
-     the mobile block on purpose: it inherits all of it and overrides by order. */
-  @media (pointer: coarse) and (max-height: 500px) {
+     the mobile block on purpose: it inherits all of it and overrides by order. The 8/5 keeps it
+     to a phone on its side: upright with the keyboard up, a browser that shrinks the layout
+     viewport with the keyboard (a phone browser) is under 500 px as well, and this block's
+     `#comp { display: none }` took the focused field away (src/client.ts#LANDSCAPE_MQ). */
+  @media (pointer: coarse) and (max-height: 500px) and (min-aspect-ratio: 8/5) {
     :root { --read-glass: color-mix(in srgb, var(--chat-raised) 72%, transparent);
       --read-glass-edge: color-mix(in srgb, var(--c-edge-hi) 60%, transparent); }
     #mhead, #keys, #chips, #comp { display: none; }

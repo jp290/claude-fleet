@@ -72,8 +72,12 @@ const LAYOUTS: Record<string, number> = { "1": 1, "2": 2, "3": 3, "4": 4 };
 // must match the mobile media query in index.html
 export const MOBILE_MQ = matchMedia("(max-width: 700px), ((pointer: coarse) and (max-height: 500px))");
 export const isMobile = () => MOBILE_MQ.matches;
-// MOBILE_MQ's second arm alone — the phone on its side (index.html's reading-mode block), no limit of its own
-const LANDSCAPE_MQ = matchMedia("(pointer: coarse) and (max-height: 500px)");
+// MOBILE_MQ's second arm, held to a wide page — the phone on its side (index.html's reading-mode
+// block), no width limit of its own. The 8/5 tells it from the phone UPRIGHT with the keyboard up in
+// a browser whose keyboard shrinks the layout viewport (a phone browser, the owner's: 414 x ~385, 1.1):
+// that page is under 500 px too, and the reading mode hid #comp under the focused field — the focus
+// went, the keyboard flashed and closed. On its side a phone is ~2 or wider, with the keyboard more.
+const LANDSCAPE_MQ = matchMedia("(pointer: coarse) and (max-height: 500px) and (min-aspect-ratio: 8/5)");
 
 // Terminal links (bare urls via WebLinksAddon, OSC 8 via the linkHandler option) open on
 // Cmd/Ctrl-click, not a plain click: xterm activates a link on mouseup whenever the mousedown hit
@@ -9902,6 +9906,11 @@ async function doSend() {
   }
 }
 send.onclick = () => void doSend();
+// on the phone ➤ keeps the field's focus, like the key row: an engine that focuses a pressed button
+// (Chromium) blurred the field under the finger, the composer moved, and the tap's click landed on
+// #bar — nothing was sent, and the keyboard left. iOS focuses no button on a tap; the desktop keeps
+// its own focus rules.
+send.addEventListener("pointerdown", (e) => { if (isMobile()) e.preventDefault(); });
 ta.addEventListener("keydown", (e) => {
   // desktop: Enter sends. mobile: Enter is a newline (messaging convention) — ➤ sends
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isMobile()) {

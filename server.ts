@@ -1527,8 +1527,10 @@ function makeCodexCliObserver(
         }
         if (binary.identity === snapshot.binary && snapshot.observedAt !== null
           && snapshot.reason !== "binary-changed" && clock() - snapshot.observedAt < CODEX_CLI_CACHE_MS) return;
-        snapshot = { ...snapshot, binary: binary.identity, version: null, observedAt: null,
-          reason: snapshot.binary === null ? "not-observed" : "binary-changed" };
+        if (binary.identity !== snapshot.binary) {
+          snapshot = { ...snapshot, binary: binary.identity, version: null, observedAt: null,
+            reason: snapshot.binary === null ? "not-observed" : "binary-changed" };
+        }
         const result = await probe(binary.path);
         const current = resolveBinary();
         snapshot = { ...snapshot, observedAt: clock(), ...result };

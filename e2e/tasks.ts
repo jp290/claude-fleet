@@ -137,6 +137,33 @@ async function codexCliFixtures(serverSource: string, clientSource: string): Pro
     await observer.tick();
     check("R3c: cache expiry measures again instead of restamping an old reading", calls === 2
       && observer.read().observedAt === now);
+    let completeRefresh: (value: { version: string | null; reason: string | null }) => void = () => {};
+    let refreshCalls = 0, refreshNow = now;
+    const refreshing = fixture.makeCodexCliObserver(fixture.resolveCodexCliBinary, async (binary) => {
+      refreshCalls++;
+      if (refreshCalls === 1) return fixture.probeCodexCliVersion(binary);
+      return new Promise((done) => { completeRefresh = done; });
+    }, () => refreshNow);
+    await refreshing.tick();
+    const beforeRefresh = refreshing.read();
+    refreshNow += 60_000;
+    const refreshPending = refreshing.tick();
+    const duringRefresh = refreshing.read();
+    await refreshing.tick();
+    check("R3c: same-binary cache refresh preserves version, reason and observation while the probe is pending",
+      duringRefresh.version === "0.159.0" && duringRefresh.reason === null
+      && duringRefresh.binary === beforeRefresh.binary && duringRefresh.observedAt === beforeRefresh.observedAt
+      && refreshCalls === 2, JSON.stringify(duringRefresh));
+    completeRefresh({ version: "0.159.0", reason: null });
+    await refreshPending;
+    check("R3c: completed same-binary refresh updates only the measured observation",
+      refreshing.read().version === "0.159.0" && refreshing.read().reason === null && refreshing.read().observedAt === refreshNow);
+    refreshNow += 60_000;
+    const failedRefresh = refreshing.tick();
+    completeRefresh({ version: null, reason: "timeout" });
+    await failedRefresh;
+    check("R3c: a failed refresh replaces the previous version with a measured unknown",
+      refreshing.read().version === null && refreshing.read().reason === "timeout" && refreshing.read().observedAt === refreshNow);
     rmSync(path); symlinkSync(b, path);
     await observer.tick();
     const changed = observer.read();

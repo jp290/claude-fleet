@@ -2106,8 +2106,13 @@
     /* keyboard focus shows it, a mouse click does not pin it open */
     #shell-found .fdrow:hover > .fdhv, #shell-found .fdrow:focus-visible > .fdhv, #shell-found .fdrow:has(:focus-visible) > .fdhv { display: block; }
   }
+  /* without hover the details rest hidden too, and one switch in the foot shows them all in the flow */
+  #shell-found .fdghost.fdtechb { display: none; }
   @media (hover: none) {
-    #shell-found .fdhv { display: block; }
+    #shell-found .fdhv { display: none; }
+    #shell-found.fdtech .fdhv { display: block; }
+    #shell-found .fdghost.fdtechb { display: inline-flex; }
+    #shell-found .fdtechb.on { color: var(--chat-ink); border-color: var(--c-edge-hi); background: var(--chat-raised); }
     #shell-found .fdline, #shell-found .fdfh, #shell-found .fddevn { flex-wrap: wrap; }
     #shell-found .fdline > .fdhv { flex-basis: 100%; padding: 0 0 4px 30px; }
     #shell-found .fdfh > .fdhv, #shell-found .fddevn > .fdhv { flex-basis: 100%; }

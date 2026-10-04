@@ -2157,13 +2157,14 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && foundCss.includes("#shell-found .fdcols { grid-template-columns: minmax(0, 1fr); }"),
     "open/renderPlace/renderRole/renderFile in src/founding.ts");
   // the v3 rules the rendered window cannot prove alone: packs are a TREE (owner 01.10.: no card
-  // list), the file's order is fixed, technical lines live only behind hover/focus (in the flow
-  // without hover), and the word "Heftchen" is not in the view (card 569f8bb5)
-  check("founding window: packs are one tree Gruppe → Pack → Teil with a switch per level, the file keeps its fixed order, details hover or flow, no Heftchen",
+  // list), the file's order is fixed, technical lines live only behind hover/focus (without hover:
+  // hidden too, one unsaved switch shows them in the flow), and the word "Heftchen" is not in the view (card 569f8bb5)
+  check("founding window: packs are one tree Gruppe → Pack → Teil with a switch per level, the file keeps its fixed order, details on hover or behind the touch switch, no Heftchen",
     foundCode.includes('const tree = el("div", "fdtree");') && /function packNode\(/.test(foundCode) && /function partNode\(/.test(foundCode)
     && ["data-group", "data-pack", "data-part"].every((k) => foundCode.includes(`sw.dataset.${k.slice(5)} =`))
     && /k: "rolle"[\s\S]*k: "auftrag"[\s\S]*k: "anl"[\s\S]*k: "wis"[\s\S]*k: "abruf"[\s\S]*k: "ende"/.test(foundCode)
-    && /@media \(hover: hover\) \{[\s\S]*#shell-found \.fdrow:hover > \.fdhv/.test(foundCss) && /@media \(hover: none\) \{\s*#shell-found \.fdhv \{ display: block; \}/.test(foundCss)
+    && /@media \(hover: hover\) \{[\s\S]*#shell-found \.fdrow:hover > \.fdhv/.test(foundCss) && /@media \(hover: none\) \{\s*#shell-found \.fdhv \{ display: none; \}\s*#shell-found\.fdtech \.fdhv \{ display: block; \}/.test(foundCss)
+    && foundCode.includes('s.shell.root.classList.toggle("fdtech", s.tech);') && !/fleet\.\w*tech/i.test(foundCode)
     && !/heftchen/i.test(foundCode) && !foundCode.includes("fdcx"),
     "renderPacks/renderFile in src/founding.ts + .fdhv in public/index.html");
   check("founding window: the four roles are radio cards with one sentence each, two across on a phone",
@@ -5656,7 +5657,22 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await reset(); await role('lane'); await wait(`${chips}.length === 2 && !!document.querySelector('.fdtot')`);
       const fileBefore = await evaluate<string>(fileSays);
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
-      g['at rest no technical line is shown: ids and hashes wait for hover or focus'] = width !== 1200 || await evaluate<boolean>(`Array.from(document.querySelectorAll('#shell-found .fdhv')).every(e => getComputedStyle(e).display === 'none')`);
+      const hvShown = `Array.from(document.querySelectorAll('#shell-found .fdhv')).map(e => getComputedStyle(e).display !== 'none')`;
+      g['at rest no technical line is shown: ids and hashes wait for hover or focus'] = await evaluate<boolean>(`${hvShown}.every(x => !x)`);
+      // a touch screen has no hover: one switch in the foot shows every technical line in the flow,
+      // and takes them back; the desktop never shows the switch (review d37a339b, MAIN's call)
+      if (touch) {
+        await shot('touch-rest');
+        await click('.fdtechb');
+        g['touch: Technik zeigen shows every technical line in the flow, the page stays 390 wide'] = await evaluate<boolean>(`(() => {
+          const shown = ${hvShown}; const d = document.querySelector('#shell-found .shelldetail');
+          return shown.length > 10 && shown.every(x => x) && document.querySelector('.fdtechb').getAttribute('aria-pressed') === 'true'
+            && document.documentElement.scrollWidth <= innerWidth && d.scrollWidth <= d.clientWidth;
+        })()`);
+        await shot('touch-tech');
+        await click('.fdtechb');
+        g['touch: the switch takes them back — at rest again'] = await evaluate<boolean>(`${hvShown}.every(x => !x) && document.querySelector('.fdtechb').getAttribute('aria-pressed') === 'false'`);
+      } else g['desktop: no Technik switch — hover and focus show the details'] = await evaluate<boolean>(`getComputedStyle(document.querySelector('.fdtechb')).display === 'none'`);
       await evaluate(`document.querySelector('[data-fold="fixture-beta"]').click()`); await wait(`!!document.querySelector('[data-part="fixture-beta.one"]')`);
       await click('[data-part="fixture-beta.one"]');
       await wait(`${fileSays} !== ${JSON.stringify(fileBefore)} && !!document.querySelector('.fdsec2[data-sec="wis"] .fdit')`);

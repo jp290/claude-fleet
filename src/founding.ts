@@ -166,6 +166,7 @@ interface State {
   sizes: Partial<Record<Role, number | null>>; sizesFor: string | null; sizesSeq: number; // each profile's file alone
   presetState: "idle" | "saving" | "saved" | "error";
   presetNote: string | null;            // why the stored presets could not be read or written
+  tech: boolean;                        // touch only: the technical lines shown in the flow — off at every open, never stored
   orphan: string | null;
   progs: ProgRow[] | null; progOther: number; progErr: string | null; progSeq: number;
   program: string | null;               // the Program the MAIN is founded for
@@ -338,7 +339,7 @@ function open(entry: Entry) {
     shell, flakes, entry, role: laneEntry ? "lane" : "leer", mode: laneEntry ? "new" : "repo", name: "", note: null,
     repos, view: repos.length ? "repos" : "folders", place: null,
     info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0, planHarness: null,
-    packs: new Set(), touched: new Map(), presetDue: true, delta: null, dropped: [], presetState: "idle", presetNote: null,
+    packs: new Set(), touched: new Map(), presetDue: true, delta: null, dropped: [], presetState: "idle", presetNote: null, tech: false,
     parts: new Map(), open: new Set(), file: null, fileErr: null, fileFor: null, filePending: null, fileSeq: 0, shown: null, flash: new Set(),
     sizes: {}, sizesFor: null, sizesSeq: 0,
     orphan: null, progs: null, progOther: 0, progErr: null, progSeq: 0, program: null, harness: null, model: "", effort: "", container: "", containerContext: "",
@@ -1958,6 +1959,14 @@ function renderFoot() {
     back.onclick = likeProfile;
     dev.append(n, back);
   } else dev.append(el("span", "fddevn quiet", `Wie Profil ${ROLES.find((r) => r.id === s.role)!.name}`));
+  // a touch screen has no hover: its technical lines rest hidden as on the desktop, and this one switch
+  // shows them all in the flow — off at every open, never stored; the CSS shows it only at (hover: none)
+  const tech = btn(`fdghost fdtechb${s.tech ? " on" : ""}`, "Technik zeigen");
+  tech.setAttribute("aria-pressed", String(s.tech));
+  tech.title = "Ids, Quellen und Größen jeder Zeile im Fluss zeigen";
+  tech.onclick = () => { s.tech = !s.tech; renderFoot(); s.shell.foot.querySelector<HTMLElement>(".fdtechb")?.focus({ preventScroll: true }); };
+  dev.append(tech);
+  s.shell.root.classList.toggle("fdtech", s.tech);
   if (s.presetState === "saved" || s.presetState === "saving")
     dev.append(el("span", "fdmeta", s.presetState === "saving" ? "Wird gesichert …" : "Gesichert — gilt für alle künftigen Starts."));
   // a plan nobody could read starts without packs — allowed, but never silently

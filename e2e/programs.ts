@@ -4513,19 +4513,26 @@ export async function run(ctx: Ctx): Promise<void> {
   check("MAIN cannot message a foreign Program lane", laneMsgForeign.status === 409
     && (await laneMsgForeign.text()).includes("foreign program"), `status=${laneMsgForeign.status}`);
   await post(`/api/slots/${laneMsgSlot}/kill`, {});
-  const laneMsgRecycle = await post("/api/lanes", { repo: REPO, slot: laneMsgSlot });
-  const laneMsgRecycleSlot = (await laneMsgRecycle.json() as { slot?: number }).slot ?? 0;
+  const laneMsgRecycle = await post(`/api/slots/${laneMsgSlot}/open-worktree`, { repo: REPO });
+  const laneMsgRecycleBody = await laneMsgRecycle.json() as { error?: string };
+  const laneMsgRecycleSlot = laneMsgSlot;
+  const laneMsgNewOccupant = readState().slots?.[String(laneMsgRecycleSlot)];
+  check("MAIN-to-lane recycle precondition: the fixed slot holds a new live lane occupant",
+    laneMsgRecycle.ok && !!laneMsgNewOccupant?.cwd && !!laneMsgNewOccupant.worktree
+      && (laneMsgNewOccupant.openedAt ?? 0) > 0 && laneMsgNewOccupant.openedAt !== laneMsgAt,
+    `open=${laneMsgRecycle.status} error=${laneMsgRecycleBody.error ?? "none"} oldAt=${laneMsgAt} newAt=${laneMsgNewOccupant?.openedAt}`);
   const laneMsgRecycled = await selfMessages(slotToken(laneMsgRecycleSlot));
   const laneMsgStale = await selfSend(slotToken(successorSlot), { ...laneMsgBody, idempotencyKey: "lane-stale" });
   const laneMsgOldRead = await selfMessageRead(slotToken(laneMsgRecycleSlot), laneMsgId);
+  const laneMsgStaleError = (await laneMsgStale.json() as { error?: string }).error ?? "";
   check("MAIN-to-lane recycle reads no old traffic and rejects the old openedAt",
     laneMsgRecycle.ok && laneMsgRecycleSlot === laneMsgSlot
       && readState().slots?.[String(laneMsgSlot)]?.openedAt !== laneMsgAt
       && laneMsgRecycled.view?.entries.length === 0 && laneMsgOldRead.status === 404
       && (readState().messages as { entries?: MessageRow[] }).entries?.some((e) => e.id === laneMsgId
         && JSON.stringify(e.to) === JSON.stringify(laneMsgAddress)) === true
-      && laneMsgStale.status === 409 && (await laneMsgStale.text()).includes("no longer live"),
-    `recycle=${laneMsgRecycle.status} slot=${laneMsgRecycleSlot}/${laneMsgSlot} read=${laneMsgOldRead.status} stale=${laneMsgStale.status}`);
+      && laneMsgStale.status === 409 && laneMsgStaleError.includes("no longer live"),
+    `recycle=${laneMsgRecycle.status} slot=${laneMsgRecycleSlot}/${laneMsgSlot} newAt=${laneMsgNewOccupant?.openedAt} oldAt=${laneMsgAt} entries=${laneMsgRecycled.view?.entries.length} read=${laneMsgOldRead.status} stale=${laneMsgStale.status}:${laneMsgStaleError}`);
   await post(`/api/slots/${laneMsgRecycleSlot}/kill`, {});
   const laneMsgCleanup = await post(`/api/tasks/${laneMsgTaskId}/delete`, {});
   check("MAIN-to-lane fixture removes its own task after killing its lane", laneMsgCleanup.ok, `cleanup=${laneMsgCleanup.status}`);

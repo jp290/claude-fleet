@@ -2296,13 +2296,14 @@ export async function run(lc: LaneCtx): Promise<void> {
 
     // THE PARK
     const parkRes = await selfPark(rpMainTok, rpIds[0] ?? "", { hours: 2 });
-    const parked = ((await parkRes.json()) as { ok?: boolean; candidate?: RpCandidate }).candidate;
+    const parkBody = (await parkRes.json()) as { ok?: boolean; candidate?: RpCandidate; error?: string };
+    const parked = parkBody.candidate;
     check("(review park) an accepted, clean lane parks as ONE candidate with rows, branch, head, base, report and deadline",
       parkRes.ok && !!parked && /^[0-9a-f]{12}$/.test(parked.id) && parked.branch === rpLane.branch && parked.head === rpHead
         && typeof parked.base === "string" && parked.base !== "" && /^[0-9a-f]{40}$/.test(parked.baseSha ?? "")
         && JSON.stringify([...parked.taskIds].sort()) === JSON.stringify([...rpIds].sort()) && parked.taskId === rpIds[0]
         && parked.reportId === rpReportId && parked.expiresAt - parked.parkedAt === 2 * 3_600_000,
-      JSON.stringify(parked));
+      `${parkRes.status} ${parkBody.error ?? ""} ${JSON.stringify(parked)}`);
     check("(review park) the slot is free and the worktree with its commit stays on disk",
       (await rpSessions()).find((x) => x.id === rpSlot)?.cwd === null && exists(`${rpCwd}/review-park.txt`));
     check("(review park) the rows stay SENT with no slot — not handed back to pending or queued",

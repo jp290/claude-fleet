@@ -1492,6 +1492,13 @@ bereits der persistierte Program-Lebenszyklus (`proposed|confirmed|active|comple
 `GET /api/sessions` trägt `programsStale` nur, wenn mindestens ein aktives Program eine stale
 MAIN-Bindung hat; bei null ist das Feld wegen des Poll-Budgets abwesend.
 
+Jede Program-Zeile trägt außerdem `clarifications`: nur Rückfragen dieses Programs mit
+`status:"send-uncertain"`, deren Worker-Occupant noch exakt lebt. Die Zeile nennt `id`,
+`workerSlot`, `ageMs` (seit `askedAt`) und `nextAction` mit dem einzigen erlaubten Retrypfad:
+`retry identical text -> POST /api/self/clarifications/<id>/reply`. Der Text muss byte-identisch
+zur gespeicherten Antwort sein. Ein erfolgreicher Retry entfernt die Zeile aus dieser Projektion;
+ein Tick sendet sie niemals erneut.
+
 ### Landbereit-Liste und einmaliges Wecken (`GET /api/self/program-execution`)
 
 Je Program führt `landbereit = {rows, nudgeAfterMs}` die angenommenen `complete`-Reports
@@ -2694,6 +2701,10 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   Wiederholung mit **identischem** Text ist erlaubt, mit abweichendem Text ist sie 409 — der
   ausstehende Text kann schon in der Pane stehen, und zwei verschiedene Antworten wären die zweite
   Hälfte eines Widerspruchs, den niemand sieht.
+- Ist der Sendestatus `send-uncertain` und der Worker-Occupant noch exakt lebendig, zeigt die
+  gebundene Program-MAIN die Rückfrage zusätzlich unter `GET /api/self/program-execution` mit Alter,
+  Worker-Slot und dem Retrypfad für identischen Text. Die Projektion sendet nichts; nur ein
+  erfolgreicher identischer Aufruf der bestehenden Reply-Tür löst die Zeile auf.
 - **Standard-Program-MAIN-Nachfolge:** Offene Fragen einer lebenden Program-Lane gehen beim Bindungsschnitt an die Nachfolgerin über. Ihr GET listet die Frage, ihr Reply bleibt derselbe Antwortpfad; der Audit nennt `clarification_rebound`. Eine nicht übertragbare Frage wird mit ID und Grund in `program.handover.lost` festgehalten und der Lane in ihrer Pane abgelehnt. Owner-Kill überträgt keine Frage.
 - **Refusals, die kein Fehler deiner Seite sind:** 404 `unknown clarification request` · 409
   `clarification belongs to another or replaced MAIN session` (recycelter Occupant) · 409

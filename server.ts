@@ -2958,6 +2958,13 @@ async function programExecutionView(s: Slot): Promise<Response> {
   const projected = boundPrograms.map((p) => {
     const main = p.main!;
     const programTasks = tasks.filter((t) => t.programId === p.id);
+    const uncertainClarifications = clarifications.filter((c) => c.provenance.programId === p.id
+      && c.status === "send-uncertain"
+      && slots.some((worker) => worker.id === c.worker.slot && worker.cwd
+        && worker.openedAt === c.worker.openedAt && worker.sessionId === c.worker.sessionId))
+      .map((c) => ({ id: c.id, workerSlot: c.worker.slot,
+        ageMs: Math.max(0, now - c.askedAt),
+        nextAction: `retry identical text -> POST /api/self/clarifications/${c.id}/reply` }));
     const byStatus: Record<string, number> = {};
     for (const task of programTasks) byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
     const outcomeRows = outcomeLedger.rows.filter((row) => row.programId === p.id);
@@ -3039,6 +3046,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
       },
       status: programStatusView(p, { outcomeRows: outcomeLedger.rows,
         auditRows: auditLedger.rows, judged }),
+      clarifications: uncertainClarifications,
       // WHAT THE LAST RETIRING MAIN OWED, verbatim. This is the durable half of the succession
       // handover: the founding brief carries a PREVIEW of these rows and a prompt is read once,
       // while an obligation that has to be re-registered has to be readable whenever the session

@@ -188,6 +188,7 @@ interface ProgramExecutionRow {
     // the persisted lineage verbatim, or null when no record exists (the unknown list then says so)
     lineage: { entries: ProgramLineageEntry[]; dropped: number } | null };
   status: ProgramStatusView;
+  clarifications: { id: string; workerSlot: number; ageMs: number; nextAction: string }[];
   // the durable half of the succession handover: null until a Standard succession has happened
   // here, and an EMPTY obligations list where one has and measured nothing owed
   handover: ProgramHandover | null;
@@ -7367,6 +7368,63 @@ export async function run(ctx: Ctx): Promise<void> {
   if (ownerKillLane.slot) await post(`/api/slots/${ownerKillLane.slot}/kill`, {});
   if (ownerKillLane.cwd) spawnSync("git", ["-C", gameRepo, "worktree", "remove", "--force", ownerKillLane.cwd]);
   await programPost(ownerKillProgram.id, "complete");
+
+  const uncertainProgram = await activateNewProgram("Program projection retains uncertain clarification replies");
+  const uncertainMain = await bootstrapRevocationMain(uncertainProgram, gameWt,
+    "uncertain-clarification-main", "uncertain clarification fixture has an exact live Program-MAIN");
+  const uncertainLane = (await (await post("/api/lanes", { repo: gameRepo,
+    harness: "codex", model: "gpt-5.5" })).json()) as { slot?: number; cwd?: string };
+  if (uncertainLane.slot) await respawnScreen(uncertainLane.slot, ">_ OpenAI Codex (v0.147.0)");
+  const uncertainLatch = `${ROOT}/clarification-reply-before-paste-latch`;
+  clearSuccessionLatch(uncertainLatch);
+  await stopSrv();
+  const uncertainFixture = readState();
+  if (uncertainLane.slot && uncertainFixture.slots?.[String(uncertainLane.slot)])
+    uncertainFixture.slots[String(uncertainLane.slot)]!.programId = uncertainProgram.id;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(uncertainFixture, null, 2), { mode: 0o600 });
+  await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: uncertainLatch });
+  const uncertainQuestion = await selfPost("/api/self/clarifications", slotToken(uncertainLane.slot ?? null),
+    { question: "Which exact reply should unblock this Program lane?" });
+  const uncertainRequest = (await uncertainQuestion.json() as { request?: { id?: string } }).request;
+  const uncertainAnswer = "Continue the existing bounded task.";
+  writeFileSync(uncertainLatch, uncertainAnswer, { mode: 0o600 });
+  const uncertainSend = selfPost(`/api/self/clarifications/${uncertainRequest?.id ?? ""}/reply`,
+    uncertainMain.token, { text: uncertainAnswer }).catch(() => null);
+  let uncertainReached = false;
+  try {
+    await until(() => existsSync(`${uncertainLatch}.reached`),
+      { timeoutMs: 10_000, what: "uncertain clarification send reached before-paste latch" });
+    uncertainReached = true;
+  } catch (e) {
+    if (!(e instanceof UntilTimeout)) throw e;
+  }
+  await stopSrv();
+  await uncertainSend;
+  clearSuccessionLatch(uncertainLatch);
+  await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: "" });
+  const uncertainExecution = await selfExecution(uncertainMain.token);
+  const uncertainRow = uncertainExecution.view?.programs.find((row) => row.program.id === uncertainProgram.id)
+    ?.clarifications.find((row) => row.id === uncertainRequest?.id);
+  check("Program execution exposes a reply made uncertain by server loss before paste, with the live worker and identical-retry door",
+    uncertainReached && uncertainQuestion.ok && !!uncertainRequest?.id
+      && uncertainExecution.response.ok && uncertainRow?.workerSlot === uncertainLane.slot
+      && typeof uncertainRow?.ageMs === "number" && uncertainRow.ageMs >= 0
+      && uncertainRow?.nextAction === `retry identical text -> POST /api/self/clarifications/${uncertainRequest.id}/reply`,
+    JSON.stringify({ reached: uncertainReached, question: uncertainQuestion.status,
+      row: uncertainRow ?? null, lane: uncertainLane.slot }));
+  const uncertainRetry = await selfPost(`/api/self/clarifications/${uncertainRequest?.id ?? ""}/reply`,
+    uncertainMain.token, { text: uncertainAnswer });
+  const uncertainAfterRetry = await selfExecution(uncertainMain.token);
+  check("Program execution removes the uncertain clarification after a successful identical retry",
+    uncertainRetry.status === 200 && uncertainRetry.ok
+      && !uncertainAfterRetry.view?.programs.find((row) => row.program.id === uncertainProgram.id)
+        ?.clarifications.some((row) => row.id === uncertainRequest?.id),
+    `retry=${uncertainRetry.status} stillVisible=${uncertainAfterRetry.view?.programs
+      .find((row) => row.program.id === uncertainProgram.id)?.clarifications.some((row) => row.id === uncertainRequest?.id)}`);
+  if (uncertainLane.slot) await post(`/api/slots/${uncertainLane.slot}/kill`, {});
+  if (uncertainLane.cwd) spawnSync("git", ["-C", gameRepo, "worktree", "remove", "--force", uncertainLane.cwd]);
+  await post(`/api/slots/${uncertainMain.slot}/kill`, {});
+  await programPost(uncertainProgram.id, "complete");
 
   // THE RESTART INSIDE THE RESPAWN, on a Game-Maker Program so the boot's tree-occupant rule runs
   // too. The predecessor is already gone when the server dies, so the boot can only do one honest

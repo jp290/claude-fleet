@@ -2023,6 +2023,7 @@ export async function run(h: {
       // (3) ALL GREEN. MUTATION: write the row on the FIRST report ⇒ a row exists after two ⇒ red.
       const r1 = await report(ids[0]!, { exitCode: 0, fails: [], trail: "isolated-20260914T1200Z-1111",
         tail: "PASS  shard one a\nPASS  shard one b\nALL PASS" });
+      const r1Body = (await r1.json()) as { artifactAt?: number };
       const r2 = await report(ids[1]!, { exitCode: 0, fails: [], trail: "isolated-20260914T1200Z-2222",
         tail: "PASS  shard two a\nPASS  shard two b\nALL PASS" });
       await Bun.sleep(1200);
@@ -2072,7 +2073,7 @@ export async function run(h: {
       check("(K11) should-reject: a second report for a shard of a finished run is a 409 — one run, one row",
         lateShard.status === 409, `${lateShard.status}`);
 
-      // (4) ONE RED. The red is shard 2 and shard 3 reports AFTER it, green, so a merge that kept only the
+      // (4) ONE RED. The red is shard 2 and reports FIRST, so a merge that kept only the
       // last report's fails (or verdict) goes red here. MUTATION: drop the `reds.length ? "red"` arm ⇒ unknown ⇒ red.
       const rowsBeforeRed = (await newRepoRows()).length;
       const red = await openLane(REPO, "shardred");
@@ -2080,10 +2081,41 @@ export async function run(h: {
       const redSha = headOf();
       await Bun.sleep(1500);
       const redClaims = await claimAll(ids);
-      await report(ids[0]!, { exitCode: 0, fails: [], tail: "PASS  one ok\nALL PASS" });
-      await report(ids[1]!, { exitCode: 1, fails: ["alpha check", "beta check"],
+      interface ShardReceipt { result?: string; artifactAt?: number; pending?: number }
+      const redFirst = await report(ids[1]!, { exitCode: 1, fails: ["alpha check", "beta check"],
         tail: "PASS  two ok\nFAIL  alpha check\nFAIL  beta check\n2 FAILURES" });
-      await report(ids[2]!, { exitCode: 0, fails: [], tail: "PASS  three ok\nALL PASS" });
+      const redReceipt = (await redFirst.json()) as ShardReceipt;
+      const redLog = "shard 2/3 · vollständiges Log\r\nFAIL  alpha check\nFAIL  beta check\n2 FAILURES\n";
+      const uploadShard = (k: number, receipt: ShardReceipt, log: string): Promise<Response> =>
+        hpostRaw(`/api/helper/artifact/${ids[k - 1]}?at=${receipt.artifactAt ?? 0}`, log);
+      const redUpload = await uploadShard(2, redReceipt, redLog);
+      const redUploadBody = (await redUpload.json()) as { result?: string; artifact?: { sha256?: string } };
+      const redLogSha = createHash("sha256").update(redLog).digest("hex");
+      check("(K11) the RED shard reports FIRST and uploads its own log BEFORE the audit row exists",
+        redFirst.ok && redReceipt.result === "red" && redReceipt.pending === 2
+          && typeof redReceipt.artifactAt === "number" && (await newRepoRows()).length === rowsBeforeRed
+          && redUpload.ok && redUploadBody.result === "red" && redUploadBody.artifact?.sha256 === redLogSha,
+        `${JSON.stringify(redReceipt)} upload=${redUpload.status} ${JSON.stringify(redUploadBody)}`);
+      const wrongShard = await uploadShard(1, redReceipt, "wrong shard");
+      const wrongRun = await uploadShard(2, { artifactAt: (redReceipt.artifactAt ?? 0) + 5000 }, "wrong run");
+      check("(K11) should-reject: a shard upload needs BOTH its exact receipt key and its own job id",
+        wrongShard.status === 404 && wrongRun.status === 404,
+        `wrongShard=${wrongShard.status} wrongRun=${wrongRun.status}`);
+      const greenSecond = await report(ids[0]!, { exitCode: 0, fails: [], tail: "PASS  one ok\nALL PASS" });
+      const greenReceipt = (await greenSecond.json()) as ShardReceipt;
+      const greenLog = "shard 1/3\nPASS  one ok\nALL PASS\n";
+      const greenUpload = await uploadShard(1, greenReceipt, greenLog);
+      const greenLast = await report(ids[2]!, { exitCode: 0, fails: [], tail: "PASS  three ok\nALL PASS" });
+      const lastReceipt = (await greenLast.json()) as ShardReceipt;
+      const lastLog = "shard 3/3\nPASS  three ok\nALL PASS\n";
+      const lastUpload = await uploadShard(3, lastReceipt, lastLog);
+      check("(K11) EVERY shard uploads with a distinct key, and a repeated shard job gets a fresh key",
+        greenSecond.ok && greenLast.ok && greenUpload.ok && lastUpload.ok
+          && [redReceipt, greenReceipt, lastReceipt].every((r) => typeof r.artifactAt === "number")
+          && new Set([redReceipt.artifactAt, greenReceipt.artifactAt, lastReceipt.artifactAt]).size === 3
+          && typeof r1Body.artifactAt === "number" && greenReceipt.artifactAt !== r1Body.artifactAt,
+        `keys=${[redReceipt.artifactAt, greenReceipt.artifactAt, lastReceipt.artifactAt]} previous=${r1Body.artifactAt}`
+          + ` uploads=${redUpload.status}/${greenUpload.status}/${lastUpload.status}`);
       const redRows = await waitNewRepoRows(rowsBeforeRed + 1, 20_000);
       const redRow = redRows.find((r) => r.mainSha === redSha);
       check("(K11) ONE RED SHARD ⇒ the row is RED, with that shard's fails, its exit code, and the sums across all three",
@@ -2093,6 +2125,21 @@ export async function run(h: {
           && shardLine(redRow) === "1:green:1:0:0,2:red:3:2:1,3:green:1:0:0"
           && redRow.out.includes("FAIL  alpha check") && redRow.reason === undefined,
         `${redClaims.statuses} ${JSON.stringify(redRow).slice(0, 500)}`);
+      await killSrv();
+      const artifactRebooted = await startSrv({ audit: true, extra: shardEnv });
+      await beat();
+      const lateUpload = await uploadShard(2, redReceipt, redLog);
+      check("(K11) the first shard's receipt still accepts its log AFTER completion and a server restart",
+        artifactRebooted && lateUpload.ok, `restart=${artifactRebooted} upload=${lateUpload.status}`);
+      for (const [receipt, log, k] of [[redReceipt, redLog, 2], [greenReceipt, greenLog, 1],
+        [lastReceipt, lastLog, 3]] as const) {
+        const served = await get(`/api/post-land-audits/artifact?at=${receipt.artifactAt ?? 0}`);
+        const bytes = new Uint8Array(await served.arrayBuffer());
+        const wantSha = createHash("sha256").update(log).digest("hex");
+        check(`(K11) shard ${k}/3's log survives the run and restart and is served BYTE-EXACT (sha256)`,
+          served.ok && bytes.byteLength === Buffer.byteLength(log) && createHash("sha256").update(bytes).digest("hex") === wantSha,
+          `${served.status} ${bytes.byteLength}b want=${wantSha}`);
+      }
 
       // (5) ONE LAPSED ⇒ UNKNOWN, NEVER GREEN. Two green reports and a third claim that never comes back.
       // MUTATION: drop `reported.length === n` from the merge ⇒ a green row ⇒ red.

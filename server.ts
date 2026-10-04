@@ -29273,13 +29273,21 @@ async function reportAuditShard(run: AuditShardRun, slot: AuditShardSlot, body: 
   if (run.shards.every(shardTerminal)) {
     const row = await writeShardedAuditRow(run, slot.jobId);
     // `result` stays THIS shard's verdict in every answer; `auditResult` is the row's, present only on
-    // the answer that wrote it — and so are the row keys, the one upload this run can file a log under
+    // the answer that wrote it. The final shard keeps the audit row's upload key for older readers.
     return json({ ok: true, result, ...(reason ? { reason } : {}), shard, auditResult: row.result,
       auditAt: row.at, artifactAt: row.at });
   }
+  // A pending shard has no audit row yet. Its receipt lives on the artifact rail, survives the run
+  // being consumed/restarted, and never changes the audit ledger's shape. Microsecond-sized keys
+  // keep these receipts apart from the existing millisecond audit/preview keys; the counter also
+  // separates reports in one clock tick and repeated runs of the same shard job.
+  const artifactAt = Math.max(now * 1000 + slot.k, lastHelperAuditShardArtifactAt + 1);
+  const receipt = { kind: "audit-shard-receipt", at: now, rowAt: artifactAt, jobId: slot.jobId, result };
+  rememberHelperArtifact(receipt);
+  await appendEvent(HELPER_ARTIFACT_FILE, receipt);
   await saveStateNow();
   return json({ ok: true, result, ...(reason ? { reason } : {}), shard,
-    pending: run.shards.filter((s) => !shardTerminal(s)).length });
+    pending: run.shards.filter((s) => !shardTerminal(s)).length, artifactAt });
 }
 // Close the shards nobody should start any more: every unclaimed one once green is ruled out (a red,
 // an unmeasured result or a lapse on a sibling), or once the run's window has shut. Claimed ones are
@@ -29609,7 +29617,8 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
   // the exact collision the KEY paragraph above exists to prevent. And nothing needs one: only a
   // daemon new enough to upload at all is new enough to have read `artifactAt` out of its receipt.
   //
-  // TWO KINDS OF ROW may be named here, and they are resolved in the SAME order helperResult forks
+  // Preview verdicts, pending audit-shard receipts and audit rows may be named here. Previews resolve
+  // first, in the SAME order helperResult forks
   // in — the LANE-SUITE job first, because that is the order the id spaces are resolved everywhere
   // else and one lookup order is the whole reason a 48-bit collision could only misroute, never
   // corrupt. A preview's row is its own settled `result`, whose `remote.reportedAt` is the key; an
@@ -29654,6 +29663,14 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       }
       verdict = lane.result.result;
       subject = `preview at ${rowAt}`;
+    } else if (helperAuditShardReceipts.has(rowAt)) {
+      const receipt = helperAuditShardReceipts.get(rowAt)!;
+      if (receipt.jobId !== jobId) {
+        await drainBody(req);
+        return json({ error: "that shard receipt came from another job — refusing to file this log onto it" }, 404);
+      }
+      verdict = receipt.result;
+      subject = `audit shard at ${rowAt}`;
     } else {
       // The row must EXIST and must be THIS job's, and both are checked before a byte is written —
       // an artefact stored for a row that names nothing is a file nothing can ever join back.
@@ -30125,12 +30142,21 @@ const HELPER_ARTIFACT_KEEP_RED = Math.max(1, Number(process.env.FLEET_HELPER_ART
 // the durable truth: this map is built from it ONCE at boot and appended to by the only writer
 // there is (writeHelperArtifact, below). If they could ever disagree, the file wins.
 const helperArtifactByRow = new Map<number, HelperArtifact>();
+const helperAuditShardReceipts = new Map<number, { jobId: string; result: string }>();
+let lastHelperAuditShardArtifactAt = 0;
 function rememberHelperArtifact(r: Record<string, unknown>): void {
   // `rowAt` first, `auditAt` second: every row this rail wrote before 2026-09-06 carries the old
   // key and there is no migration — a ledger this box appends to is read forward, never rewritten.
   const rowAt = typeof r.rowAt === "number" ? r.rowAt : typeof r.auditAt === "number" ? r.auditAt : NaN;
   const at = typeof r.at === "number" ? r.at : 0;
   const jobId = typeof r.jobId === "string" ? r.jobId : "";
+  if (r.kind === "audit-shard-receipt") {
+    if (!Number.isSafeInteger(rowAt) || rowAt < 1e15 || !/^[0-9a-f]{12}$/.test(jobId)
+      || (r.result !== "green" && r.result !== "red" && r.result !== "unknown")) return;
+    helperAuditShardReceipts.set(rowAt, { jobId, result: r.result });
+    lastHelperAuditShardArtifactAt = Math.max(lastHelperAuditShardArtifactAt, rowAt);
+    return;
+  }
   const path = typeof r.path === "string" ? r.path : "";
   const bytes = typeof r.bytes === "number" ? r.bytes : NaN;
   const sha256 = typeof r.sha256 === "string" ? r.sha256 : "";
@@ -30173,9 +30199,13 @@ async function pruneHelperArtifacts(): Promise<void> {
     const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
     const redAt = new Set(rows.filter((r) => r.result === "red" && typeof r.at === "number")
       .map((r) => r.at as number));
-    const keys = [...helperArtifactByRow.values()].sort((a, b) => b.rowAt - a.rowAt);
-    const reds = keys.filter((k) => redAt.has(k.rowAt));
-    const rest = keys.filter((k) => !redAt.has(k.rowAt));
+    const rowTime = (k: HelperArtifact): number => helperAuditShardReceipts.has(k.rowAt)
+      ? Math.floor(k.rowAt / 1000) : k.rowAt;
+    const keys = [...helperArtifactByRow.values()].sort((a, b) => rowTime(b) - rowTime(a));
+    const isRed = (k: HelperArtifact): boolean => redAt.has(k.rowAt)
+      || helperAuditShardReceipts.get(k.rowAt)?.result === "red";
+    const reds = keys.filter(isRed);
+    const rest = keys.filter((k) => !isRed(k));
     for (const dead of [...reds.slice(HELPER_ARTIFACT_KEEP_RED), ...rest.slice(HELPER_ARTIFACT_KEEP)]) {
       const dir = `${HELPER_ARTIFACT_DIR}/${dead.jobId}/${dead.rowAt}`;
       try { rmSync(dir, { recursive: true, force: true }); } catch { /* a dir already gone is the goal */ }

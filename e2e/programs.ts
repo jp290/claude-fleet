@@ -8,6 +8,7 @@ import { AUTOS_TICK_MS, BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, fleetReportDecisionMessage, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
+import { fleetEventFrom } from "../server/types";
 import { CONTEXT_PACKS } from "../context-packs";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
@@ -11528,6 +11529,10 @@ export async function run(ctx: Ctx): Promise<void> {
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(a2Plant, null, 2), { mode: 0o600 });
     await restartSrv();
     const a2View = async () => (await selfExecution(landTok)).view?.programs.find((p) => p.program.id === landProgram.id)?.landbereit;
+    const a2GreenReobserved = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot, greenLaneCwd);
+    const a2SideReobserved = a2Slot === null ? false : await waitDoneLooking(a2Slot, a2Cwd);
+    check("landbereit unjudged prerequisite: both lanes are observed done-looking after restart",
+      a2GreenReobserved && a2SideReobserved, doneLookingWhy);
     const a2Unjudged = await a2View();
     check("landbereit: an unjudged complete report is excluded even when its lane looks done",
       a2Unjudged?.rows.some((r) => r.taskId === greenRowId) === true
@@ -11548,27 +11553,35 @@ export async function run(ctx: Ctx): Promise<void> {
     const a2ReportIds = [a2ReportId, slSecondReport.id ?? ""];
     const a2Nudges = () => auditLinesNow().map((line) => JSON.parse(line) as { event: string; detail?: string })
       .filter((r) => r.event === "watch_fire" && r.detail?.startsWith("land-ready ") && a2ReportIds.some((id) => r.detail?.includes(`report=${id} `)));
-    const a2Events = (readState().events ?? []).filter((e) => a2ReportIds.some((id) => e.watchId === `land-ready:${id}`));
+    const a2Events = (readState().events ?? []).filter((e) => a2ReportIds.some((id) => e.watchId === `landready${id}`));
     check("landbereit: each overdue report mints exactly one existing lane-ready event to its bound MAIN",
       a2Nudges().length === 2 && a2Events.length === 2 && a2Events.every((e) => e.kind === "lane-ready"
         && e.receiverSlot === landMainSlot && e.receiverOpenedAt === landMainState?.openedAt
         && e.receiverSessionId === (landMainState?.sessionId ?? null)), JSON.stringify(a2Events));
+    check("landbereit persistence: minted events hydrate and a colon-bearing marker is rejected",
+      a2Events.length === 2 && a2Events.every((e) => fleetEventFrom(e)?.id === e.id
+        && fleetEventFrom({ ...e, watchId: `land-ready:${a2ReportId}` }) === null),
+      JSON.stringify(a2Events.map((e) => ({ id: e.id, watchId: e.watchId, hydrated: fleetEventFrom(e) !== null }))));
     await stopSrv();
     const a2Prune = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { events?: { watchId?: string }[] };
-    a2Prune.events = (a2Prune.events ?? []).filter((e) => !a2ReportIds.some((id) => e.watchId === `land-ready:${id}`));
+    a2Prune.events = (a2Prune.events ?? []).filter((e) => !a2ReportIds.some((id) => e.watchId === `landready${id}`));
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(a2Prune, null, 2), { mode: 0o600 });
     await restartSrv();
+    const a2GreenAfterPrune = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot, greenLaneCwd);
+    const a2SideAfterPrune = a2Slot === null ? false : await waitDoneLooking(a2Slot, a2Cwd);
+    check("landbereit retention prerequisite: both lanes are observed done-looking after restart",
+      a2GreenAfterPrune && a2SideAfterPrune, doneLookingWhy);
     await Bun.sleep(AUTOS_TICK_MS * 2 + 200);
     const a2AfterRestart = await a2View();
     check("landbereit: restart and event retention do not mint a second wake for either report",
       a2Nudges().length === 2 && a2AfterRestart?.rows.length === 2
         && a2AfterRestart.rows.every((r) => r.nudgeEventId !== null)
-        && !(readState().events ?? []).some((e) => a2ReportIds.some((id) => e.watchId === `land-ready:${id}`)),
+        && !(readState().events ?? []).some((e) => a2ReportIds.some((id) => e.watchId === `landready${id}`)),
       JSON.stringify({ nudges: a2Nudges(), rows: a2AfterRestart?.rows }));
 
     await stopSrv();
     const a2Pending = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { events?: Record<string, unknown>[] };
-    const a2GreenEvent = a2Events.find((e) => e.watchId === `land-ready:${slSecondReport.id}`);
+    const a2GreenEvent = a2Events.find((e) => e.watchId === `landready${slSecondReport.id}`);
     if (a2GreenEvent) a2Pending.events = [...(a2Pending.events ?? []),
       { ...a2GreenEvent, status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null, receiverIdleSec: 3600 }];
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(a2Pending, null, 2), { mode: 0o600 });
@@ -11611,7 +11624,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const a2Cleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
       fleetReports?: { id?: string }[]; events?: { watchId?: string }[] };
     a2Cleanup.fleetReports = (a2Cleanup.fleetReports ?? []).filter((r) => r.id !== a2ReportId);
-    a2Cleanup.events = (a2Cleanup.events ?? []).filter((e) => !a2ReportIds.some((id) => e.watchId === `land-ready:${id}`));
+    a2Cleanup.events = (a2Cleanup.events ?? []).filter((e) => !a2ReportIds.some((id) => e.watchId === `landready${id}`));
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(a2Cleanup, null, 2), { mode: 0o600 });
     await restartSrv();
     // THE POINT OF THE WHOLE ACT: the ledger can NAME the actor. Three carriers, all three asserted,

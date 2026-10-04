@@ -2723,7 +2723,7 @@ function lanePreviewFact(lane: Slot): { state: "offered" | "running" | "red"; id
 }
 
 const LAND_READY_NUDGE_MS = Math.max(0, Number(process.env.FLEET_LAND_READY_NUDGE_MS ?? 15 * 60_000));
-const LAND_READY_WATCH_PREFIX = "land-ready:";
+const LAND_READY_WATCH_PREFIX = "landready";
 
 function landReadyRows(programId: string, now: number) {
   const rows: { taskId: string; reportId: string; slot: number; openedAt: number; branch: string;

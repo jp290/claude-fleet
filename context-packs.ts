@@ -41,10 +41,22 @@ export type ContextPackEvidence = (typeof CONTEXT_PACK_EVIDENCE)[number];
 export const CONTEXT_PACK_STATUSES = ["active", "superseded", "retired"] as const;
 export type ContextPackStatus = (typeof CONTEXT_PACK_STATUSES)[number];
 
+export const CONTEXT_PACK_GROUPS = ["grundlagen", "pruefen-landen", "sessions-fuehren", "vor-arbeiten"] as const;
+export type ContextPackGroup = (typeof CONTEXT_PACK_GROUPS)[number];
+export const CONTEXT_PART_SORTEN = ["anleitung", "wissen"] as const;
+export type ContextPartSorte = (typeof CONTEXT_PART_SORTEN)[number];
+export const CONTEXT_POSITIONS = ["lane", "main", "orchestratorin"] as const;
+export type ContextPosition = (typeof CONTEXT_POSITIONS)[number];
+export type ContextPartOrt = "box" | "ausleihe";
+export type ContextPartPositions = Readonly<Record<ContextPosition, ContextPartOrt>>;
+
 export interface ContextPackSource {
   readonly path: string;
   // An identifier, heading, or symbol only. Source prose remains in the source file.
   readonly anchor: string;
+  readonly id?: string;
+  readonly sorte?: ContextPartSorte;
+  readonly positions?: ContextPartPositions;
 }
 
 interface ContextPackBase {
@@ -53,6 +65,7 @@ interface ContextPackBase {
   // renders it beside the pointer so a lane can decide whether to follow it; source prose stays in
   // the source file, which is why the content firewall applies to this field like any other.
   readonly useWhen: string;
+  readonly group?: ContextPackGroup;
   readonly scope: ContextPackScope;
   readonly audience: ContextPackAudience;
   readonly triggers: readonly ContextPackTrigger[];
@@ -86,6 +99,8 @@ export type ContextPack = PublicContextPack | PrivateContextPack;
 
 const ALL_HARNESSES = CONTEXT_PACK_HARNESSES;
 const ALL_MODES = CONTEXT_PACK_MODES;
+const AUSLEIHE = { lane: "ausleihe", main: "ausleihe", orchestratorin: "ausleihe" } as const;
+const VERIFY_BOX = { lane: "box", main: "box", orchestratorin: "ausleihe" } as const;
 
 // Fleet seeds stay small. Public sources carry only tracked path + exact anchor metadata;
 // the private overlay carries only an opaque reference, content hash, and observation time.
@@ -96,12 +111,13 @@ const ALL_MODES = CONTEXT_PACK_MODES;
 export const CONTEXT_PACKS = [
   {
     id: "portable-core",
+    group: "grundlagen",
     useWhen: "Immer zuerst: das Vokabular und die harten Invarianten, die jede Session in diesem Baum binden.",
     scope: "portable-core",
     audience: "agent",
     triggers: ["always"],
     hardness: "hard",
-    sources: [{ path: "AGENTS.md", anchor: "## Portable operating contract" }],
+    sources: [{ id: "portable-core.contract", path: "AGENTS.md", anchor: "## Portable operating contract", sorte: "anleitung", positions: AUSLEIHE }],
     requiredCapabilities: ["tracked-source-read"],
     harnesses: ALL_HARNESSES,
     modes: ALL_MODES,
@@ -112,32 +128,37 @@ export const CONTEXT_PACKS = [
   },
   {
     id: "verify-e2e",
+    group: "pruefen-landen",
     useWhen: "Wenn du beweisen willst, dass deine Aenderung traegt: welcher Beweis wann genuegt und was das Gate wirklich faehrt.",
     scope: "verify-e2e",
     audience: "agent",
     triggers: ["verification"],
     hardness: "hard",
     sources: [
-      { path: "AGENTS.md", anchor: "## Verify" },
-      { path: "docs/verify-tiering.md", anchor: "## 6. Pre-land gate vs post-land audit — what each buys that the other cannot" },
-      { path: "AGENTS.md", anchor: "## How a check is written" },
+      { id: "verify-e2e.kern", path: "AGENTS.md", anchor: "### Kern", sorte: "anleitung", positions: VERIFY_BOX },
+      { id: "verify-e2e.lane", path: "AGENTS.md", anchor: "### Lane", sorte: "anleitung", positions: { ...AUSLEIHE, lane: "box" } },
+      { id: "verify-e2e.main", path: "AGENTS.md", anchor: "### MAIN", sorte: "anleitung", positions: { ...AUSLEIHE, main: "box" } },
+      { id: "verify-e2e.more", path: "AGENTS.md", anchor: "### More", sorte: "anleitung", positions: AUSLEIHE },
+      { id: "verify-e2e.gate-vs-audit", path: "docs/verify-tiering.md", anchor: "### 6.0 gate-vs-audit — What each buys", sorte: "wissen", positions: { ...AUSLEIHE, main: "box" } },
+      { id: "verify-e2e.proportion", path: "docs/verify-tiering.md", anchor: "### 6.0b proportion — Docs-only gate and audit", sorte: "wissen", positions: AUSLEIHE },
     ],
     requiredCapabilities: ["tracked-source-read", "pure-validator-run"],
     harnesses: ALL_HARNESSES,
     modes: ["read-only", "mutating"],
-    estimatedBytes: 29900,
+    estimatedBytes: 11591,
     evidence: "tree-anchor",
     owner: "owner",
     status: "active",
   },
   {
     id: "jev-use",
+    group: "vor-arbeiten",
     useWhen: "Wenn die Aufgabe Jev betrifft: die Verwendungsform und ihre Stelle in der Attribut-Topologie lesen.",
     scope: "product-quality",
     audience: "agent",
     triggers: ["jev-use"],
     hardness: "guidance",
-    sources: [{ path: "docs/jev.md", anchor: "## Verwendungsform" }],
+    sources: [{ id: "jev-use.verwendungsform", path: "docs/jev.md", anchor: "## Verwendungsform", sorte: "wissen", positions: AUSLEIHE }],
     requiredCapabilities: ["tracked-source-read"],
     harnesses: ALL_HARNESSES,
     modes: ["read-only", "mutating"],
@@ -148,14 +169,15 @@ export const CONTEXT_PACKS = [
   },
   {
     id: "land-mechanics",
+    group: "pruefen-landen",
     useWhen: "Bevor du eine Lane landest oder den Land-Pfad anfasst: was sich beim Land wirklich bewegt.",
     scope: "land-mechanics",
     audience: "maintainer",
     triggers: ["landing"],
     hardness: "hard",
     sources: [
-      { path: "AGENTS.md", anchor: "## Landing" },
-      { path: "docs/land-mechanics.md", anchor: "# Landing a lane — what actually moves, and how to know before you press it" },
+      { id: "land-mechanics.landing", path: "AGENTS.md", anchor: "## Landing", sorte: "anleitung", positions: AUSLEIHE },
+      { id: "land-mechanics.doc", path: "docs/land-mechanics.md", anchor: "# Landing a lane — what actually moves, and how to know before you press it", sorte: "anleitung", positions: AUSLEIHE },
     ],
     requiredCapabilities: ["tracked-source-read", "git-inspect"],
     harnesses: ["claude", "pi-unfenced"],
@@ -167,14 +189,15 @@ export const CONTEXT_PACKS = [
   },
   {
     id: "harness-adapter",
+    group: "sessions-fuehren",
     useWhen: "Wenn du einen Harness auswaehlst oder den Adapter-Kontrakt anfasst: Probe-Mengen und Automations-Grenzen.",
     scope: "harness-adapter",
     audience: "maintainer",
     triggers: ["harness-selection"],
     hardness: "hard",
     sources: [
-      { path: "server.ts", anchor: "const HARNESSES: readonly Harness[] =" },
-      { path: "docs/container.md", anchor: "## The `container` harness — a different cut, not that one" },
+      { id: "harness-adapter.harnesses", path: "server.ts", anchor: "const HARNESSES: readonly Harness[] =", sorte: "anleitung", positions: AUSLEIHE },
+      { id: "harness-adapter.container", path: "docs/container.md", anchor: "## The `container` harness — a different cut, not that one", sorte: "anleitung", positions: AUSLEIHE },
     ],
     requiredCapabilities: ["tracked-source-read", "harness-adapter-read"],
     harnesses: ALL_HARNESSES,
@@ -195,6 +218,7 @@ export const CONTEXT_PACKS = [
     // it as harness-unsupported before a path or a verdict is rendered. `container` stays out too: a
     // boxed session does not see the host's private root, and a path it cannot open is no pointer.
     id: "konzept-claude-fleet",
+    group: "grundlagen",
     useWhen: "Wenn eine Aufgabe verstehen muss, was Claude Fleet ist und nach welchen Prinzipien es arbeitet.",
     scope: "konzept",
     audience: "private-ops",

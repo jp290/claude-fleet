@@ -2,6 +2,7 @@ import {
   CONTEXT_PACKS,
   CONTEXT_PACK_HARNESSES,
   type ContextPackCapability,
+  type ContextPackGroup,
   type ContextPackMode,
   type ContextPackSource,
   type ContextPackStatus,
@@ -42,6 +43,7 @@ export interface ContextPlanInput {
 // claim nobody made. Absent here means the renderer omits the line, never the pointer.
 export type ContextPlanSelection = {
   readonly id: string;
+  readonly group?: ContextPackGroup;
   readonly useWhen?: string;
   readonly sources: readonly ContextPackSource[];
   readonly estimatedBytes: number;
@@ -52,6 +54,7 @@ export type ContextPlanSelection = {
   readonly origin?: "program";
 } | {
   readonly id: string;
+  readonly group?: ContextPackGroup;
   readonly useWhen?: string;
   readonly sources: { readonly privateSourceId: string };
   readonly estimatedBytes: number;
@@ -117,8 +120,8 @@ export function planContext(input: ContextPlanInput): ContextPlan {
       continue;
     }
     selected.push("sources" in pack
-      ? { id: pack.id, useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })), estimatedBytes: pack.estimatedBytes }
-      : { id: pack.id, useWhen: pack.useWhen, sources: { privateSourceId: pack.privateSourceId }, estimatedBytes: pack.estimatedBytes });
+      ? { id: pack.id, group: pack.group, useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })), estimatedBytes: pack.estimatedBytes }
+      : { id: pack.id, group: pack.group, useWhen: pack.useWhen, sources: { privateSourceId: pack.privateSourceId }, estimatedBytes: pack.estimatedBytes });
   }
 
   return { selected, omitted };

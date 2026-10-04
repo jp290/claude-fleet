@@ -620,10 +620,20 @@ export function normalizeRolePresets(x: unknown): RolePresets | null {
 // `harnesses` is the pack's ALLOWED list, never a claim about who wrote it or which model fits: the
 // pack schema has no model field (context-pack-validator.ts refuses one), so no row names a model.
 export type PackAnchors = readonly { readonly path: string; readonly anchor: string }[] | { readonly privateSourceId: string };
+export interface FoundingPlanPart {
+  id: string; packId: string | null; path: string | null; anchor: string | null; privateSourceId?: string;
+  sorte: "anleitung" | "wissen"; ort: "box" | "ausleihe";
+  sha256: string | null; bytes: number | null; content: string | null;
+  refusal: "source-unavailable" | "source-anchor-missing" | null;
+}
+export interface FoundingSessionAgents {
+  text: string; bytes: number; parts: readonly FoundingPlanPart[]; projectDocMaxBytes?: number;
+}
 export interface FoundingPlanPack {
   id: string; bytes: number; source: "fleet-seed" | "repo-manifest"; useWhen?: string;
   // absent on a server older than these fields — the window says "nicht gemeldet", never guesses
   harnesses?: string[]; triggers?: string[]; anchors?: PackAnchors; sourceHash?: string;
+  group?: "grundlagen" | "pruefen-landen" | "sessions-fuehren" | "vor-arbeiten"; parts?: readonly FoundingPlanPart[];
 }
 export interface FoundingPlanOmission { id: string; reason: string; harnesses?: string[] }
 

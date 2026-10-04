@@ -1,3 +1,4 @@
+import { sectionAt } from "../context-sections";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -60,7 +61,7 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       json: (body: unknown, status = 200) => Response.json(body, { status }), STEWARD_LABEL: "steward",
       youngestArchivedTask: async () => null, planContext, planProgramContext, planRepoContext, readContextManifest,
       stampObservedSourceHashes, taskContextTriggers, CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, KONZEPT_ROOT_ENV,
-      readPrivatePack, resolvePrivatePack, createHash, basename: (path: string) => path.split("/").pop(),
+      readPrivatePack, resolvePrivatePack, sectionAt, createHash, basename: (path: string) => path.split("/").pop(),
       repoRootOf: async (path: string) => path, integrationHead: async () => g("rev-parse", "HEAD"),
       dispatchSourceTree: async () => sourceTree, variantSourceOf: (row: unknown) => row,
       DISPATCH_CONTEXT_MODE: "mutating", DISPATCH_CONTEXT_TRIGGERS: ["always"], DISPATCH_CONTEXT_CAPABILITIES: [...CONTEXT_PACK_CAPABILITIES],
@@ -80,7 +81,7 @@ export async function run(check: ContextPlanCheck): Promise<void> {
         deliveredThen: { receipts: { selected: { id: string; borrowedAt?: number }[] }[] }; readByAgent: string; borrowed: { total: number }; coverage: string }>;
     };
     type Answer = { status: number; body: { id?: string; refusal?: string; head?: string; borrowedAt?: number; sources?:
-      { content: string; sha256: string; bytes: number }[] } };
+      { content: string; sha256: string; bytes: number; anchor?: string; sorte?: string }[] } };
     const borrow = async (id: string, query = "", token = slot.selfToken): Promise<Answer> => {
       const url = new URL(`http://fixture/api/self/context/${id}${query}`);
       const response = await api.contextBorrowRoute(new Request(url, { headers: { "x-fleet-self-token": token } }), url, id);
@@ -203,11 +204,14 @@ export async function run(check: ContextPlanCheck): Promise<void> {
     const verify = await borrow("verify-e2e");
     const verifySources = verify.body.sources;
     const verifyLine = (await readLedger<Record<string, unknown>>(borrowFile)).rows.at(-1);
-    check("context borrow: the real verify-e2e pack serves three sections totaling less than 40,000 bytes",
-      verify.status === 200 && verifySources?.length === 3 && verifySources.reduce((sum, item) => sum + item.bytes, 0) < 40_000
-      && verifySources[0]?.content.startsWith("## Verify\n") === true
-      && verifySources[1]?.content.startsWith("## 6. Pre-land gate vs post-land audit") === true
-      && verifySources[2]?.content.startsWith("## How a check is written\n") === true,
+    check("context borrow: the real verify-e2e pack serves six named sections with their sorten below 40,000 bytes",
+      verify.status === 200 && verifySources?.length === 6 && verifySources.reduce((sum, item) => sum + item.bytes, 0) < 40_000
+      && JSON.stringify(verifySources.map(({ anchor, sorte }) => ({ anchor, sorte }))) === JSON.stringify([
+        { anchor: "### Kern", sorte: "anleitung" }, { anchor: "### Lane", sorte: "anleitung" },
+        { anchor: "### MAIN", sorte: "anleitung" }, { anchor: "### More", sorte: "anleitung" },
+        { anchor: "### 6.0 gate-vs-audit — What each buys", sorte: "wissen" },
+        { anchor: "### 6.0b proportion — Docs-only gate and audit", sorte: "wissen" },
+      ]),
       `served bytes: ${verifySources?.reduce((sum, item) => sum + item.bytes, 0) ?? "unknown"}`);
     check("context borrow: verify-e2e's ledger contains exact section hashes and the sum of delivered bytes",
       verifyLine?.bytes === verifySources?.reduce((sum, item) => sum + item.bytes, 0)

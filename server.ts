@@ -1,4 +1,6 @@
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorktreeDistance, DeployGap, DeployLand, FactReason } from "./src/protocol";
+import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents } from "./session-agents";
+import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
 import type { SubscriptionUsage } from "./src/protocol";
@@ -3321,34 +3323,7 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
   const refused = (refusal: string, error: string, status = 409) => ({ status, body: { refusal, error } });
   type BorrowSource = { path?: string; anchor?: string; privateSourceId?: string; version?: number;
     content: string; sha256: string; bytes: number };
-  const sectionAt = (text: string, path: string, anchor: string): string | null => {
-    const markdown = /\.(md|markdown)$/i.test(path);
-    const lines = [...text.matchAll(/[^\n]+\n?|\n/g)].map((match) => ({
-      text: match[0].replace(/\r?\n$/, ""), offset: match.index, level: 0, code: false,
-    }));
-    let fence: { char: string; length: number } | null = null;
-    if (markdown) for (const [index, line] of lines.entries()) {
-      const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line.text);
-      if (fence) {
-        line.code = true;
-        if (marker && marker[1]![0] === fence.char && marker[1]!.length >= fence.length && !marker[2]!.trim()) fence = null;
-        continue;
-      }
-      if (marker && (marker[1]![0] !== "`" || !marker[2]!.includes("`"))) {
-        fence = { char: marker[1]![0]!, length: marker[1]!.length }; line.code = true; continue;
-      }
-      if (/^(?: {4}|\t)/.test(line.text)) { line.code = true; continue; }
-      line.level = /^ {0,3}(#{1,6})(?:[ \t]+|$)/.exec(line.text)?.[1]?.length ?? 0;
-      const previous = lines[index - 1];
-      if (/^ {0,3}(?:=+|-+)[ \t]*$/.test(line.text) && previous?.text.trim() && !previous.code && !previous.level)
-        previous.level = line.text.trimStart()[0] === "=" ? 1 : 2;
-    }
-    const start = lines.findIndex((line) => !line.code && line.text.trimStart().startsWith(anchor));
-    if (start < 0) return null;
-    const first = lines[start]!;
-    const next = markdown ? lines.slice(start + 1).find((line) => line.level > 0 && (!first.level || line.level <= first.level)) : undefined;
-    return text.slice(first.offset, next?.offset ?? text.length);
-  };
+
   let sources: BorrowSource[] = [];
   let head: string | null = null;
   let repo: string | null = null;
@@ -17968,7 +17943,7 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[]): Co
     // A Program pack says so on its row; every other row stays byte-identical to before the field.
     const origin = "origin" in selection && selection.origin === "program" ? { origin: selection.origin } : {};
     if (!("privateSourceId" in selection.sources))
-      return { id: selection.id, ...useWhen, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash, ...origin };
+      return { id: selection.id, ...useWhen, anchors: selection.sources.map((source) => ({ path: source.path, anchor: source.anchor })), ...sourceHash, ...origin };
     const resolved = privatePackResolutionOf(selection, selection.sources.privateSourceId);
     return {
       id: selection.id,
@@ -35373,6 +35348,30 @@ async function foundingPlanOf(repo: string, harness: string | null,
     } } };
 }
 
+async function foundingSessionAgents(fp: FoundingPlan, harness: string | null,
+  position: "lane" | "main" | "orchestratorin", selection?: Readonly<Record<string, "box" | "ausleihe">>): Promise<SessionAgents> {
+  const sourceBytes = new Map<string, string>();
+  const paths = new Set(fp.plan.selected.flatMap((pack) => "privateSourceId" in pack.sources ? [] : pack.sources.map((source) => source.path)));
+  if (resolveContextHarness(harness) === "codex" || resolveContextHarness(harness).startsWith("pi")) paths.add("AGENTS.md");
+  for (const path of paths) {
+    const entry = await gitRead(fp.repoRoot, "ls-tree", fp.head, "--", path);
+    if (entry.code !== 0 || !/^100(?:644|755) blob /.test(entry.out)) continue;
+    const size = await gitRead(fp.repoRoot, "cat-file", "-s", `${fp.head}:${path}`);
+    if (size.code !== 0 || !/^\d+$/.test(size.out) || Number(size.out) > CONTEXT_MANIFEST_MAX_SOURCE_BYTES) continue;
+    const blob = await gitReadRaw(fp.repoRoot, "show", `${fp.head}:${path}`);
+    if (blob.code === 0 && !blob.out.includes("\0") && Buffer.byteLength(blob.out) === Number(size.out)) sourceBytes.set(path, blob.out);
+  }
+  const role = position === "lane" ? { text: LANE_ROLE_CARD, anchor: "LANE_ROLE_CARD" }
+    : position === "main" ? { text: MAIN_ROLE_CARD, anchor: "MAIN_ROLE_CARD" }
+    : { text: orchestratorRoleCard(harness), anchor: "ORCHESTRATOR_ROLE_CARD" };
+  const pointerLines = new Map<string, readonly string[]>();
+  for (const pack of fp.plan.selected) if ("privateSourceId" in pack.sources)
+    pointerLines.set(pack.id, [`  private source ${pack.sources.privateSourceId} (resolved at delivery)`]);
+  return renderSessionAgents({ role: { ...role, path: "server.ts" }, position, harness, plan: fp.plan,
+    sourceBytes, selection, pointerLines,
+    footer: position === "lane" ? laneExitFooter(harness, null) : position === "main" ? PROGRAM_MAIN_RAIL_BLOCK : "" });
+}
+
 // A planned pack's DECLARED rule facts, for the founding window: a Fleet seed's from its code entry, a
 // repo pack's from the manifest the plan read at its head. Only arrays of strings are carried — the
 // ladder already judged this declaration, and a shape it could not have read is no fact to show.
@@ -45413,11 +45412,20 @@ Bun.serve<WSData>({
       if (mode !== "main" && mode !== "lane") return json({ error: "mode must be 'main' or 'lane'" }, 400);
       const ho = harnessIdOf({ harness: url.searchParams.get("harness") ?? undefined });
       if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+      const position = url.searchParams.get("role") ?? mode;
+      if (!["lane", "main", "orchestratorin"].includes(position)) return json({ error: "role must be lane, main or orchestratorin" }, 400);
       const fp = await foundingPlanOf(repo, ho.harness, mode);
       if (!fp.ok) return json({ error: fp.error }, 400);
       const seedIds = new Set<string>(CONTEXT_PACKS.map((pack) => pack.id));
       const { plan, manifest } = fp.value;
       const plannedAt = Date.now();
+      const partIds = new Set(plan.selected.flatMap((pack) => "privateSourceId" in pack.sources ? [`${pack.id}.private`]
+        : pack.sources.map((source, index) => contextPartId(pack.id, source, index))));
+      const requested = url.searchParams.get("parts");
+      const chosen = requested === null ? undefined : requested.split(",").filter(Boolean);
+      if (chosen?.some((id) => !partIds.has(id))) return json({ error: "parts contains an unknown part id" }, 400);
+      const selection = chosen ? Object.fromEntries([...partIds].map((id) => [id, chosen.includes(id) ? "box" as const : "ausleihe" as const])) : undefined;
+      const sessionAgents = await foundingSessionAgents(fp.value, ho.harness, position as "lane" | "main" | "orchestratorin", selection);
       // Every field below is the PLAN'S OWN: anchors and sourceHash exactly as the receipt would write
       // them (contextReceiptSelections reads the same declaredSourceHash), harnesses and triggers off
       // the declaration the ladder judged. A private pack's hash verdict is NOT here — it is taken at
@@ -45427,6 +45435,8 @@ Bun.serve<WSData>({
         const sourceHash = declaredSourceHash(pack);
         return {
           id: pack.id, bytes: pack.estimatedBytes,
+          group: pack.group ?? contextPackGroup(pack.id),
+          parts: sessionAgents.parts.filter((part) => part.packId === pack.id),
           source: seedIds.has(pack.id) ? "fleet-seed" : "repo-manifest",
           ...(pack.useWhen !== undefined ? { useWhen: pack.useWhen } : {}),
           ...(rule ? { harnesses: rule.harnesses, triggers: rule.triggers } : {}),
@@ -45443,7 +45453,7 @@ Bun.serve<WSData>({
       });
       return json({
         repo: fp.value.repoRoot, head: fp.value.head, branch: fp.value.branch,
-        mode, harness: resolveContextHarness(ho.harness), plannedAt, selected, omitted,
+        mode, harness: resolveContextHarness(ho.harness), plannedAt, selected, omitted, role: position, sessionAgents,
       });
     }
     // what the folder under the picker's cursor actually IS. A SEPARATE route from /api/dirs on purpose:

@@ -1,3 +1,5 @@
+import { renderSessionAgents, sessionExitFooter, SESSION_AGENTS_LIMIT } from "../session-agents";
+import { sectionAt, sourceSection } from "../context-sections";
 // Pure ContextPlan v1 family. Direct entry point: bun e2e/context-plan.ts
 import {
   CONTEXT_PACK_CAPABILITIES,
@@ -632,6 +634,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     SNIPPET_HIT_MAX_LINES === 60 && definitionLines(alpha.split("\n"), "alphaTwo").join(",") === "5",
     `${SNIPPET_HIT_MAX_LINES} ${definitionLines(alpha.split("\n"), "alphaTwo")}`);
 
+  sessionAgentsChecks(check);
   taskCatalogChecks(check);
   privatePackChecks(check);
   await contextBorrowChecks(check);
@@ -1093,3 +1096,107 @@ function foundingStandChecks(check: ContextPlanCheck): void {
 }
 
 if (import.meta.main) await run();
+
+function sessionAgentsChecks(check: ContextPlanCheck): void {
+  const tree = realManifestTree();
+  if ("error" in tree) { check("session agents: source tree is readable", false, tree.error); return; }
+  const server = readFileSync(join(tree.root, "server.ts"), "utf8");
+  const constant = (name: string): string => {
+    const match = new RegExp("const " + name + " = (`(?:\\\\.|[^`])*`);", "s").exec(server);
+    if (!match) throw new Error(`session agents probe: missing ${name}`);
+    return match[0];
+  };
+  const fn = (name: string): string => {
+    const start = server.indexOf(`function ${name}(`);
+    const end = server.indexOf("\n}", start);
+    if (start < 0 || end < 0) throw new Error(`session agents probe: missing ${name}`);
+    return server.slice(start, end + 2);
+  };
+  const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync([
+    ...["LANE_ROLE_CARD", "MAIN_ROLE_CARD", "ORCHESTRATOR_ROLE_CARD", "LANE_EXIT_HANDOFF", "LANE_EXIT_HANDOFF_CODEX", "RAIL_HEAD", "RAIL_TAIL", "ORCHESTRATOR_CONTEXT_LINE_CODEX"].map(constant),
+    fn("memoryPointer"), fn("laneExitFooter"),
+    'return { roles: [LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_ROLE_CARD + "\\n" + ORCHESTRATOR_CONTEXT_LINE_CODEX], laneExitFooter, mainFooter: RAIL_HEAD + RAIL_TAIL };',
+  ].join("\n"));
+  const deps = { HOST: "127.0.0.1", PORT: 8790, MAX_FLEET_REPORT_TEXT: 4000,
+    FLEET_REPORT_STATUSES: ["complete", "needs-main", "failed", "handoff"], nativeCompaction: (h: string) => h === "codex" };
+  const templates = new Function(...Object.keys(deps), compiled)(...Object.values(deps)) as {
+    roles: string[]; laneExitFooter: (harness: string, receiver: { role: string; slot: number } | null) => string; mainFooter: string;
+  };
+  const sourceBytes = new Map(tree.sourceBytes);
+  for (const pack of CONTEXT_PACKS) if ("sources" in pack) for (const source of pack.sources)
+    sourceBytes.set(source.path, readFileSync(join(tree.root, source.path), "utf8"));
+  const plan = planContext({ sourceTree: "fleet", harness: "codex", mode: "mutating", triggers: ["always", "verification"], capabilities: fullCapabilities() });
+  const verify = plan.selected.find((pack) => pack.id === "verify-e2e")!;
+  const expected = [582, 1549, 403, 321, 3959, 4777];
+  const measured = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)?.bytes);
+  check("session agents: six verify parts carry the approved tree bytes (fixture 670/902/161/711/3917/2623)",
+    JSON.stringify(measured) === JSON.stringify(expected), JSON.stringify(measured));
+  const sums: string[] = [];
+  for (const [index, position] of (["lane", "main", "orchestratorin"] as const).entries()) {
+    const footer = position === "lane" ? templates.laneExitFooter("codex", { role: "program-main", slot: 10 }) : position === "main" ? templates.mainFooter : "";
+    const input = { role: { text: templates.roles[index]!, path: "server.ts", anchor: `${position}-role` }, position, harness: "codex", plan, sourceBytes, footer };
+    const rendered = renderSessionAgents(input);
+    const carried = rendered.parts.filter((part) => part.ort === "box");
+    check(`session agents: ${position} is deterministic, measures the exact file and stays below 32 KiB`,
+      JSON.stringify(renderSessionAgents(input)) === JSON.stringify(rendered) && rendered.bytes === Buffer.byteLength(rendered.text)
+        && rendered.bytes < SESSION_AGENTS_LIMIT && rendered.projectDocMaxBytes === undefined,
+      `${rendered.bytes} bytes; box=${carried.map((part) => `${part.id}:${part.bytes}`).join(",")}`);
+    sums.push(`${position}=${rendered.bytes}`);
+    check(`session agents: ${position} box receipts hash the delivered source bytes`, carried.every((part) =>
+      part.content !== null && part.bytes === Buffer.byteLength(part.content)
+      && part.sha256 === createHash("sha256").update(part.content).digest("hex")));
+    const deliveredFooter = rendered.parts.find((part) => part.id === "footer")?.content;
+    if (deliveredFooter) check(`session agents: ${position} footer retains no sentence-equal carried instruction`,
+      sessionExitFooter(deliveredFooter, rendered.text.slice(0, rendered.text.indexOf(position === "lane" ? "## Lane-Ende" : "## Program-Schiene"))) === deliveredFooter);
+    const headings = ["## Rolle", "## Anleitung", "## Wissen", "## Packs auf Abruf"];
+    check(`session agents: ${position} keeps role, instruction, knowledge, pointers and footer in order`,
+      headings.every((heading, i) => rendered.text.indexOf(heading) >= 0 && (i === 0 || rendered.text.indexOf(heading) > rendered.text.indexOf(headings[i - 1]!)))
+      && (!footer || rendered.text.indexOf(position === "lane" ? "## Lane-Ende" : "## Program-Schiene") > rendered.text.indexOf("## Packs auf Abruf")));
+    const gate = rendered.parts.find((part) => part.id === "verify-e2e.gate-vs-audit");
+    check(`session agents: ${position} carries the portable contract once and gate knowledge only for MAIN`,
+      rendered.text.split("## Portable operating contract").length === 2
+      && gate?.ort === (position === "main" ? "box" : "ausleihe") && (gate?.content !== null) === (position === "main"));
+  }
+  check("session agents: position sums are observed", sums.length === 3, sums.join("; "));
+  const base = { role: { text: templates.roles[0]!, path: "server.ts", anchor: "LANE_ROLE_CARD" }, position: "lane" as const, harness: "codex", plan, sourceBytes, footer: "" };
+  const missingBytes = new Map(sourceBytes);
+  missingBytes.set("docs/verify-tiering.md", "# Missing anchors\n");
+  const missing = renderSessionAgents({ ...base, sourceBytes: missingBytes, selection: { "verify-e2e.gate-vs-audit": "box" } });
+  check("session agents: a missing anchor falls back only its own part, leaving instructions in the box",
+    missing.parts.find((part) => part.id === "verify-e2e.gate-vs-audit")?.refusal === "source-anchor-missing"
+    && missing.parts.find((part) => part.id === "verify-e2e.kern")?.ort === "box"
+    && missing.text.includes("source-anchor-missing"));
+  const chosen = renderSessionAgents({ ...base, selection: { "verify-e2e.more": "box", "verify-e2e.lane": "ausleihe" } });
+  check("session agents: choices operate on parts without switching the rest of their pack",
+    chosen.parts.find((part) => part.id === "verify-e2e.more")?.ort === "box"
+    && chosen.parts.find((part) => part.id === "verify-e2e.lane")?.ort === "ausleihe"
+    && chosen.parts.find((part) => part.id === "verify-e2e.kern")?.ort === "box");
+  for (const harness of ["codex", "pi", "pi-zai", "pi-ox", "pi-unfenced"]) {
+    const empty = renderSessionAgents({ ...base, harness, plan: { selected: [], omitted: [] } });
+    check(`session agents: ${harness} keeps its mandatory portable contract even with optional packs off`,
+      empty.parts.find((part) => part.id === "portable-core.contract")?.bytes === 8229
+      && empty.text.split("## Portable operating contract").length === 2 && empty.bytes < SESSION_AGENTS_LIMIT);
+  }
+  const privateBytes = "Private knowledge supplied at the boundary.\n";
+  const privateBox = renderSessionAgents({ ...base, selection: { "konzept-claude-fleet.private": "box" },
+    privateSources: new Map([["k-claude-fleet", { path: "/fixture/k-claude-fleet/v1.md", content: privateBytes }]]) });
+  const privatePart = privateBox.parts.find((part) => part.id === "konzept-claude-fleet.private");
+  check("session agents: injected private knowledge measures exact bytes; missing private bytes stay unknown",
+    privatePart?.ort === "box" && privatePart.bytes === Buffer.byteLength(privateBytes)
+    && privatePart.sha256 === createHash("sha256").update(privateBytes).digest("hex")
+    && renderSessionAgents(base).parts.find((part) => part.id === "konzept-claude-fleet.private")?.bytes === null);
+  const huge = renderSessionAgents({ ...base, role: { ...base.role, text: "x".repeat(SESSION_AGENTS_LIMIT) } });
+  check("session agents: exceeding 32 KiB exposes the precise project document switch",
+    huge.bytes > SESSION_AGENTS_LIMIT && huge.projectDocMaxBytes === huge.bytes);
+  const duplicate = "Read the exact output. Preserve this footer sentence.";
+  check("session agents: sentence-equal instructions disappear from the footer only",
+    sessionExitFooter(duplicate, "--- DER LOOP --- Read the exact output.") === "Preserve this footer sentence.");
+  const legacy = { id: "legacy", useWhen: "Read on demand", estimatedBytes: 0, sources: [{ path: "old.md", anchor: "## Old" }] };
+  const legacyRender = renderSessionAgents({ ...base, harness: "claude", plan: { selected: [legacy], omitted: [] }, sourceBytes: new Map([["old.md", "## Old\nold bytes\n"]]) });
+  check("session agents: an unsplit pack retains its exact existing pointer bytes",
+    legacyRender.text.includes("- legacy — Read on demand\n  old.md | ## Old") && !legacyRender.text.includes("old bytes"));
+  const section = "### Part\nGrüße.\n```md\n### False sibling\n```\n";
+  check("session agents: the shared cut preserves UTF-8 and fenced headings and refuses an absent anchor",
+    sectionAt(`${section}### Next\nother\n`, "x.md", "### Part") === section
+    && sectionAt(section, "x.md", "### Missing") === null);
+}

@@ -1,3 +1,4 @@
+import { sourceSection } from "../context-sections";
 // e2e/pins.ts — the must-agree pairs whose OTHER SIDE IS NOT TYPESCRIPT.
 //
 // `bun e2e/pins.ts` from the repo root. No server, no tmux, no network: it reads files and
@@ -80,7 +81,7 @@ import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 // S3's byte-equality rule is DRIVEN, not scanned: the renderer is pure (no clock, no git, no
 // state — wave-brief.ts's own header says so), so the pin runs it over the no-comment shapes.
 import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
-import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
+import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, type ContextPackSource } from "../context-packs";
 import { SESSION_BLOCKS } from "../session-blocks";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
@@ -195,6 +196,31 @@ pin("the server universe is derived and holds its entry module",
 pin("the client universe is derived and holds its bundle entry",
   clientU.files.length > 0 && clientU.files[0]!.file === "src/client.ts" && clientU.text.length > 0,
   `${clientU.files.length} module(s): [${clientU.files.map((f) => f.file).join(", ")}]`);
+
+{
+  const sources: ContextPackSource[] = CONTEXT_PACKS.flatMap<ContextPackSource>((pack) => "sources" in pack ? [...pack.sources] : [])
+    .filter((source) => source.sorte === "wissen");
+  const manifest = readContextManifest(read(".fleet/context-packs.json"));
+  if (manifest.kind === "packs") for (const raw of manifest.packs) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !("sources" in raw) || !Array.isArray(raw.sources)) continue;
+    for (const source of raw.sources) {
+      if (!source || typeof source !== "object" || Array.isArray(source)) continue;
+      if ((source.sorte === "wissen" || (source.sorte === undefined && "hardness" in raw && raw.hardness === "guidance"))
+        && typeof source.path === "string" && typeof source.anchor === "string") sources.push({ path: source.path, anchor: source.anchor, sorte: "wissen" });
+    }
+  }
+  const parts = sources.map((source) => {
+    try { return sourceSection(read(source.path), source.path, source.anchor); } catch { return null; }
+  });
+  const overlaps: string[] = [];
+  for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) {
+    const a = parts[i], b = parts[j];
+    if (a && b && a.path === b.path && a.start < b.end && b.start < a.end)
+      overlaps.push(`${a.path}: ${a.anchor} / ${b.anchor}`);
+  }
+  pin("knowledge parts resolve at their home without overlapping bytes", parts.every(Boolean) && overlaps.length === 0,
+    `${parts.length} parts; overlaps=[${overlaps.join(", ")}]`);
+}
 
 {
   const doc = read("docs/rollenkarten.md");
@@ -7332,15 +7358,17 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // and the receiver resolved from the lane's current occupant:
   // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
   // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
-  // FOUR since the owner's harness switch (2026-10-02, server.ts#buildLaneHarnessBrief): its
+  // The harness-switch continuation (server.ts#buildLaneHarnessBrief) adds the same footer: its
   // continuation brief appends the same footer at the same kind of seam, resolved for the NEW
-  // harness (`ho.harness`), because the session that reads it runs on that one.
-  pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
+  // harness (`ho.harness`), because the session that reads it runs on that one. The fifth site
+  // only renders the founding preview; it sends nothing.
+  pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only and read by the founding preview, clarify exempted at the seam`,
     /const deliveredBrief = `\$\{brief\}\$\{clarify \? "" : `\\n\\n\$\{LANE_ROLE_CARD\}`\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness, selfPosition\(free\)\.receiver\)\}\$\{memoryBlock\}`;/.test(server)
       && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
       && /footer: laneExitFooter\(s\.harness, selfPosition\(s\)\.receiver\)/.test(server)
       && /footer: laneExitFooter\(ho\.harness, selfPosition\(s\)\.receiver\)/.test(server)
-      && (server.split("laneExitFooter(").length - 1) === 4,
+      && /footer: position === "lane" \? laneExitFooter\(harness, null\)/.test(server)
+      && (server.split("laneExitFooter(").length - 1) === 5,
     `laneExitFooter call sites=${server.split("laneExitFooter(").length - 1}`);
 }
 

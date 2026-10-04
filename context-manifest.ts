@@ -7,7 +7,7 @@
 // manifest bytes and the repo facts, and performs no filesystem, git, env, or network read.
 import { createHash } from "node:crypto";
 import { validateContextPacks, validUseWhen, type ContextPackRepoFacts } from "./context-pack-validator";
-import { CONTEXT_PACKS, type ContextPackCapability, type ContextPackMode, type ContextPackSource,
+import { CONTEXT_PACKS, type ContextPackCapability, type ContextPackMode, type ContextPackSource, type ContextPackGroup,
   type ContextPackTrigger } from "./context-packs";
 import { contextOmissionFor, resolveContextHarness, type ContextPlan, type ContextPlanInput,
   type ContextPlanOmissionReason, type ContextPlanRule, type ContextPlanSelection } from "./context-plan";
@@ -145,6 +145,7 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
       readonly estimatedBytes: number;
       readonly sourceHash?: string;
       readonly useWhen?: unknown;
+      readonly group?: ContextPackGroup;
     };
     // Sources are present at the planned commit: validation proved every path tracked there and
     // every anchor present in those exact bytes.
@@ -157,7 +158,8 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
     }
     selected.push({
       id,
-      sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })),
+      sources: pack.sources.map((source) => ({ ...source })),
+      ...(pack.group !== undefined ? { group: pack.group } : {}),
       estimatedBytes: pack.estimatedBytes,
       // The validator already condemned any pack whose useWhen is unusable, so this re-check can
       // only ever see a valid line or none. It is still stated here rather than assumed: the field

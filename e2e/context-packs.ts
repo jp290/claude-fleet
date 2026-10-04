@@ -20,7 +20,7 @@ import { USE_WHEN_MAX, validateContextPacks, type ContextPackRepoFacts } from ".
 import { CONTEXT_MANIFEST_PATH, planRepoContext, readContextManifest, taskContextTriggers } from "../context-manifest";
 import { planContext } from "../context-plan";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
-import { packIdFassung, standSincePreview, type FoundingPlanPack } from "../src/protocol";
+import { packIdFassung, standSincePreview, type FoundingPlanPack, type FoundingSessionAgents } from "../src/protocol";
 
 export type ContextPackCheck = (name: string, ok: boolean, detail?: string) => void;
 
@@ -106,6 +106,14 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
     check("context packs: real seed manifest resolves", real.verdict === "pass" && real.issues.length === 0,
       issueSummary(real));
 
+    const metadataCases = [
+      { ...CONTEXT_PACKS[0], group: "unknown-group" },
+      { ...CONTEXT_PACKS[0], sources: [{ ...CONTEXT_PACKS[0].sources[0], sorte: "prose" }] },
+      { ...CONTEXT_PACKS[0], sources: [{ ...CONTEXT_PACKS[0].sources[0], positions: { lane: "box", main: "elsewhere", orchestratorin: "ausleihe" } }] },
+      { ...CONTEXT_PACKS[0], sources: [CONTEXT_PACKS[0].sources[0], CONTEXT_PACKS[0].sources[0]] },
+    ];
+    check("context packs: invalid group, sorte, position and duplicate part IDs are rejected",
+      metadataCases.every((pack) => validateContextPacks({ packs: [pack], repo: fixture.facts!, capabilities }).verdict === "fail"));
     const missingPath = clonePacks();
     missingPath[0].sources[0].path = "docs/not-a-tracked-context-source.md";
     const missingPathResult = validateContextPacks({ packs: missingPath, repo: fixture.facts, capabilities });
@@ -293,7 +301,7 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
       check("context packs: a Jev lane gets the Verwendungsform anchor",
         jevTriggers.includes("jev-use") && jevPack !== undefined
           && Array.isArray(jevPack.sources)
-          && JSON.stringify(jevPack.sources) === JSON.stringify([{ path: "docs/jev.md", anchor: "## Verwendungsform" }]),
+          && JSON.stringify(jevPack.sources.map(({ path, anchor }) => ({ path, anchor }))) === JSON.stringify([{ path: "docs/jev.md", anchor: "## Verwendungsform" }]),
         `selected=[${jevPlan.selected.map((pack) => pack.id).join(",")}]`);
       check("context packs: a lane without Jev omits only the Jev trigger",
         !ordinaryTriggers.includes("jev-use")
@@ -416,9 +424,9 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
   writeFileSync(join(fixture, "AGENTS.md"), "# Target contract\n\n## Repo contract\nProve with the repo's own chain.\n");
   writeFileSync(join(fixture, "docs", "promise.md"), "# Promise\n\n## Product promise\nThe first minute must feel good.\n");
   writeFileSync(join(fixture, ".fleet", "context-packs.json"), JSON.stringify([
-    packEntry({ id: "promise-anchor", useWhen: "The repo's own contract, before the first act.", sources: [
-      { path: "AGENTS.md", anchor: "## Repo contract" },
-      { path: "docs/promise.md", anchor: "## Product promise" }] }),
+    packEntry({ id: "promise-anchor", group: "vor-arbeiten", useWhen: "The repo's own contract, before the first act.", sources: [
+      { id: "promise-anchor.contract", path: "AGENTS.md", anchor: "## Repo contract", sorte: "anleitung", positions: { lane: "box", main: "box", orchestratorin: "ausleihe" } },
+      { id: "promise-anchor.promise", path: "docs/promise.md", anchor: "## Product promise", sorte: "wissen", positions: { lane: "ausleihe", main: "box", orchestratorin: "ausleihe" } }] }),
     packEntry({ id: "broken-pointer", scope: "repo-contract",
       sources: [{ path: "docs/absent.md", anchor: "## Never tracked" }] }),
     packEntry({ id: "promise-codex-v1", useWhen: "The repo's own contract, as a Codex session reads it.", harnesses: ["codex"],
@@ -465,12 +473,29 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
       `${noRepo.status}:${noRepoText} | ${badMode.status}:${badModeText} | ${badHarness.status}:${badHarnessText}`);
 
     const plan = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude`);
-    const selected = Array.isArray(plan.body.selected) ? plan.body.selected as { id: string; bytes?: number; source?: string }[] : [];
+    const selected = Array.isArray(plan.body.selected) ? plan.body.selected as FoundingPlanPack[] : [];
     const omitted = Array.isArray(plan.body.omitted) ? plan.body.omitted as { id: string; reason?: string }[] : [];
     const promiseRow = selected.find((pack) => pack.id === "promise-anchor");
     check("founding plan: the repo pack is selected with its declared bytes and its source named",
       plan.status === 200 && !!promiseRow && promiseRow.bytes === 900 && promiseRow.source === "repo-manifest",
       JSON.stringify(plan.body).slice(0, 300));
+    const file = plan.body.sessionAgents as FoundingSessionAgents | undefined;
+    check("founding plan: the session file and repo part metadata reach the window with exact bytes",
+      !!file && file.bytes === Buffer.byteLength(file.text) && file.text.includes("## Rolle")
+      && file.text.includes("The first minute must feel good.") && promiseRow?.group === "vor-arbeiten"
+      && promiseRow.parts?.map((part) => part.id).join(",") === "promise-anchor.contract,promise-anchor.promise"
+      && promiseRow.parts.every((part) => part.ort === "box" && part.sha256?.length === 64 && part.bytes === Buffer.byteLength(part.content ?? "")));
+    const switched = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&parts=promise-anchor.contract`);
+    const switchedFile = switched.body.sessionAgents as FoundingSessionAgents | undefined;
+    check("founding plan: parts switches one source without losing the pack and refuses unknown IDs",
+      switched.status === 200 && !!switchedFile && !switchedFile.text.includes("The first minute must feel good.")
+      && switchedFile.parts.find((part) => part.id === "promise-anchor.promise")?.ort === "ausleihe"
+      && (await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&parts=unknown`)).status === 400);
+    const orchard = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&role=orchestratorin`);
+    const orchardFile = orchard.body.sessionAgents as FoundingSessionAgents | undefined;
+    check("founding plan: the orchestratorin role has its own card without a program footer",
+      orchard.status === 200 && orchardFile?.text.includes("--- ROLLE --- Orchestratorin") === true
+      && !orchardFile.text.includes("HOW THIS PROGRAM IS EXECUTED"));
     const manifestIds = ["promise-anchor", "broken-pointer"];
     const namedOnce = manifestIds.every((id) =>
       selected.filter((pack) => pack.id === id).length + omitted.filter((pack) => pack.id === id).length === 1);

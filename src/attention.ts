@@ -15,7 +15,7 @@ interface AttentionRow {
   requester: { slot: number; openedAt: number; sessionId: string | null };
   programId: string; programTitle: string | null;
   status: "open" | "send-uncertain" | "answered" | "refused";
-  answer: { text: string; at: number; by: "owner" } | null;
+  answer: ({ text: string; at: number } & ({ by: "owner" } | { by: "orchestrator"; slot: number })) | null;
   refusedReason: string | null; closedAt: number | null;
   // derived by the server at read time for an ANSWERED row, null otherwise (server.ts#attentionDelivery)
   delivery: AttentionDelivery | null;

@@ -2265,7 +2265,7 @@ export async function run(): Promise<void> {
       const queuedAuto = async (text: string, recurring = false): Promise<string> => {
         const start = auditRows().length;
         const response = await post(`/api/slots/${slot}/autos`, {
-          text, inSec: 1, idleSec: recurring ? 0 : 1, ...(recurring ? { everySec: 60, runs: 1 } : {}),
+          text, inSec: 1, idleSec: recurring ? 0 : 1, everySec: 60, runs: 1,
         });
         const body = await response.json() as { auto?: { id: string } };
         check("owner send fixture: a machine auto is accepted", response.ok && !!body.auto?.id, String(response.status));
@@ -2491,7 +2491,10 @@ export async function run(): Promise<void> {
           && sendFailureMessage(409, draftBody) === draftMessage && await replay(draftResponse, draftMessage),
         JSON.stringify({ http: draftResponse.status, zeroBytes: zeroBytes(start), intact: stateText() === draft }));
       await tmuxOut("send-keys", "-t", `s${slot}`, "-N", String([...draft].length), "BSpace");
-      await until(() => stateText() === "", { timeoutMs: 3000, what: "fixture draft removed by its author" });
+      await until(async () => {
+        const frame = await tmuxOut("capture-pane", "-p", "-e", "-t", `s${slot}`);
+        return frame.code === 0 && composerBuffer({ kind: "rules" }, frame.out) === "";
+      }, { timeoutMs: 3000, what: "fixture draft removed by its author" });
       writeFileSync(modeFile, "hold\n");
       const notObserved = await post("/send", { slot, text: "owner-send-not-observed-once" });
       const notObservedBody = await notObserved.clone().json() as { receipt?: { delivery: string; acceptance?: string } };
@@ -2500,7 +2503,7 @@ export async function run(): Promise<void> {
           && notObservedBody.receipt?.acceptance === "not-observed"
           && stateText().split("owner-send-not-observed-once").length - 1 === 1
           && await replay(notObserved, "prompt acceptance not observed — check the pane; do not paste again"),
-        JSON.stringify(notObservedBody.receipt));
+        JSON.stringify({ status: notObserved.status, body: notObservedBody }));
       await post(`/api/slots/${slot}/kill`, {});
       writeFileSync(modeFile, "normal\n");
       await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });

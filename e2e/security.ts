@@ -165,9 +165,14 @@ const PRE_AUTH_ROUTES = [
   // nothing into any pane and reaches no foreign slot. POST is non-lane-only AND requires the
   // caller to be the current bound MAIN of an active program (programId is derived from that
   // binding, never read from the body); GET returns only rows carrying the caller's exact occupant
-  // triple. The answer side — the half that does type into a pane — is owner-gated and lives on
-  // /api/attention, deliberately not here.
+  // triple. The answer side writes a Program-inbox pointer; its scoped Orchestratorin exception
+  // is listed separately below. Refuse and escalate remain behind the owner gate.
   '= /api/self/attention',
+  // POST only: the self principal must be the unique live non-lane Orchestratorin selected by
+  // deliveryRecipient({kind:"orchestrator"}), and the row must have stage:"orchestrator".
+  // The answer records by:"orchestrator" with her slot and writes one Program-inbox pointer.
+  // Lane, other session and replaced-occupant tokens are refused; Owner-Bearer keeps by:„[Zitat entfernt]“.
+  String.raw`~ /^\/api\/attention\/([0-9a-f]{24})\/answer$/`,
   // Its withdrawal twin (2026-09-18): non-lane-only like the raise door above, and it closes ONE
   // row — the id comes from the path, the row must carry the CALLER'S OWN occupant triple
   // (attentionBound, compared inside the handler), it must still be open, and the required
@@ -658,11 +663,6 @@ const taskSurface = (fix: string): Probe[] => [
   // remote code execution through the back door, so it belongs on this matrix more than most
   { path: `/api/tasks/${fix}/brief`, method: "POST", body: { text: "probe" }, owner: 409 },
   { path: `/api/tasks/${fix}/dispatch`, method: "POST", body: {}, owner: 409 },
-  // ↻ refine spawns a repo-reading agent and refine-confirm mints task rows — both answer the
-  // owner a side-effect-free 409 on this DONE fixture (wrong status / no proposal), so both can
-  // carry the positive control while every other principal must be denied outright
-  { path: `/api/tasks/${fix}/refine`, method: "POST", body: {}, owner: 409 },
-  { path: `/api/tasks/${fix}/refine-confirm`, method: "POST", body: {}, owner: 409 },
   // W2 · the CONFIRM of a row's file surface — the only writer of `filesOrigin:"confirmed"` that a
   // request can reach, and therefore the door a scoped credential must never open (its lane-facing
   // twin, /api/self/tasks/:id/files-proposal, deliberately cannot promote). On this DONE fixture

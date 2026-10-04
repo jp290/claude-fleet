@@ -201,6 +201,7 @@ flushedBy:"sofort-Zustellung oder Cache-Kante"}`. `auto.nextAt` ist der Fälligk
 die Paste kann durch die Bündelung bis zu `delivery.maxDelaySec` Sekunden später kommen
 (Default 900, Bündelung d6d75307, `server.ts#deliveryClass`). Eine sofort-Zustellung an denselben
 Slot oder die Cache-Kante spült das Bündel früher; `idleSec:0` hebt dieses Bündelfenster nicht auf.
+Bei einem One-Shot (`everySec:null`) setzt `tickAutos` jedoch `deliveryClass:"sofort"` statt der oben beschriebenen Standardklasse, sodass er bei Fälligkeit ohne Bündelfenster zugestellt wird; wiederkehrende Autos bleiben `buendelbar`, und Busy-, Quiet-Hours- und Harness-Gates gelten unverändert.
 
 Empfänger ist **dein Slot mit deinem Occupant**, nie eine Rolle: das Auto trägt `slotOpenedAt` (der
 Occupant, der es angelegt hat), und `server.ts#tickAutos` stellt es mit `address:{kind:"slot"}` zu.
@@ -844,10 +845,15 @@ Rollenkarten in `docs/rollenkarten.md` sagen es für beide Seiten). Mechanik (`s
   400) setzt `stage:"owner"` und `escalation:{reason, at}`, Audit `attention_escalated`. Nur eine
   Stufe aufwärts: eine Zeile, die schon beim Owner liegt, ist 409, außer derselbe Grund wird
   wiederholt (`existing:true`). Eine geschlossene Zeile ist 409, eine unbekannte Id 404.
-- **Beantworten** geht in beiden Stufen durch `POST /api/attention/:id/answer`, unverändert: ein
-  `attention-answer`-Zeiger in der Program-Inbox, `answer.by:"owner"`. Beide Türen liegen hinter
-  dem Owner-Bearer. Nach Zeile 923f771e ist die handelnde Session in der Audit-Zeile erkennbar; bis dahin
-  kann der Server die Orchestratorin nicht vom Owner unterscheiden und behauptet es auch nicht.
+- **Beantworten** geht durch `POST /api/attention/:id/answer` mit `{"text":"…"}`. Die genau eine
+  lebende Nicht-Lane-Orchestratorin (`deliveryRecipient({kind:"orchestrator"})`, derselbe
+  `isOrchestratorLabel`-Filter wie beim Anlegen) darf mit ihrem `x-fleet-self-token` eine
+  `stage:"orchestrator"`-Zeile beantworten. Der Record trägt `answer.by:"orchestrator"` und
+  `answer.slot` mit ihrem Slot. Andere Session-Token und Lane-Token sind 401; ihr Token auf einer
+  `stage:"owner"`-Zeile ist 403. Diese Ablehnungen ändern weder Zeile noch Program-Inbox.
+  Der Owner-Bearer antwortet weiterhin in beiden Stufen mit `answer.by:„[Zitat entfernt]“`. Jede Antwort
+  schreibt genau einen `attention-answer`-Zeiger in die Program-Inbox; identische Wiederholungen
+  erhalten die gespeicherte Provenienz. Escalate bleibt hinter dem Owner-Bearer.
 - **Altbestand:** eine persistierte Zeile ohne `stage` lädt als `"owner"`.
 
 ## attention withdraw — `POST /api/self/attention/:id/withdraw`
@@ -1412,7 +1418,7 @@ unbekannte Klassen oder ungültige Rollen werden als benannte Kartenlücken abge
 **Optionale Flächen-VORSCHLAG-Liste `files`:** der Body darf zusätzlich eine explizite
 `files: ["pfad", …]` tragen. Sie wird AUSSCHLIESSLICH nach `Task.filesProposal` geschrieben — nie
 nach `files`, nie nach `filesOrigin`. Das ist dieselbe propose/promote-Grenze wie bei `criterion`
-und `refine`, und aus demselben Grund: die MAIN, die die Zeile anlegt, ist die Produzentin, und die
+und aus demselben Grund: die MAIN, die die Zeile anlegt, ist die Produzentin, und die
 Produzentin bestätigt nicht die Fläche, nach der ihre eigene Arbeit später gebündelt wird.
 Bestätigen kann weiterhin nur der Owner an seiner BESTEHENDEN Tür `POST /api/tasks/:id/files` —
 mit leerem Body konsumiert sie genau diesen geparkten Vorschlag. Keine neue Route, kein
@@ -1493,6 +1499,102 @@ bereits der persistierte Program-Lebenszyklus (`proposed|confirmed|active|comple
 `lastLand` und `lastAudit` sind in dieser Liste weggelassen. Der Owner-Poll
 `GET /api/sessions` trägt `programsStale` nur, wenn mindestens ein aktives Program eine stale
 MAIN-Bindung hat; bei null ist das Feld wegen des Poll-Budgets abwesend.
+
+### Landbereit-Liste und einmaliges Wecken (`GET /api/self/program-execution`)
+
+Je Program führt `landbereit = {rows, nudgeAfterMs}` die angenommenen `complete`-Reports
+laufender Aufträge, deren aktuelle Lane done-looking ist und für die noch kein Land-Lauf
+begonnen hat. `rows` sortiert älteste Report-Eingänge zuerst, bei Gleichstand nach Task-ID.
+Jede Zeile enthält `taskId`, `reportId`, `slot`, `openedAt`, `branch`, `reportedAt`,
+`acceptedAt`, `ageMs` (Serverzeit minus Report-Eingang) und `nudgeEventId` (anfangs `null`).
+Der Report muss der aktuelle sein und exakt Task, Program, Lane-Belegung, Branch und
+Arbeitsverzeichnis zuordnen. Unbeurteilte, abgelehnte oder überholte Reports, unbekannte
+Lane-Fakten und bereits begonnene Lands stehen nicht in der Liste. Sie erteilt keine Land-Rechte.
+
+Der vorhandene Watch-Tick erzeugt für jede Zeile **ein** bestehendes `lane-ready`-Event,
+sobald `ageMs > FLEET_LAND_READY_NUDGE_MS` (Default **900000 ms / 15 Minuten**).
+Empfänger ist die aktuell exakt gebundene, lebende Program-MAIN, Adresse `{kind:"program",id}`.
+Der Volltext verweist auf die Liste und die ausstehende Entscheidung. Zustellung und ACK laufen
+über die bestehenden Event-Türen; kein neuer Tick, Zustellweg oder Auto-Land entsteht.
+Der Report speichert `landReadyNudgeEventId` zusammen mit dem Event vor jeder Zustellung.
+Damit erzeugen ACK, Event-Retention und Server-Neustart keinen zweiten Weck-Event für diesen Report.
+`landCalledAt` wird beim Beginn eines Merge-/Confirm-/Land-Laufs für die aktuelle Lane gespeichert.
+Ein noch ausstehender Nudge wird dann `subject-gone`: seine Land-Pflicht besteht nicht mehr.
+Die Event-Zustellung prüft diese Pflicht auch nach ihren externen Awaits. Ein bereits zugestelltes
+Event bleibt als Zustellbeleg erhalten. Nach dem Land entsteht kein neuer Nudge.
+
+**Vorhermessung reproduzieren.** Die folgende Rechnung nimmt ausschließlich einen eingefrorenen
+Auszug mit `MANIFEST.json` (`frozenAt`, `files{name:{bytes,sha256}}`), `audit.jsonl` und
+`lane-outcomes.jsonl`. Das Fenster endet bei `frozenAt` und beginnt 14 Tage davor. Cohort sind
+abgeschlossene Lands in diesem Fenster, deren letzter Complete-Report ebenfalls im Fenster liegt;
+Start ist der erste beobachtete `self_land_start` nach diesem Report. Ein dazwischenliegendes
+`needs-main`/`failed` schließt das Intervall aus. Lane-Slots werden durch beobachtete
+`slot_open`/`slot_kill` begrenzt; fehlende Identität bleibt unknown. Program-ID stammt explizit
+aus dem Land-Aufruf, MAIN-Slot aus dessen Audit-Zeile. Aggregiert wird je Program-MAIN über
+Nachfolgen desselben Programs; Slotnummern sind diagnostisch, kein Beweis gleicher Sessions.
+Median mittelt die beiden zentralen Werte; p90 ist nearest-rank (`ceil(0.9*n)`).
+Das misst Eingang bis Aufruf einschließlich Prüfung und Entscheidungen, keine bewiesene Leerlaufzeit.
+Offene Lanes und nicht zuordenbare Lands werden nicht zu Nullintervallen.
+
+```sh
+python3 - /Users/someone/fleet-extracts/2026-10-04-a2 <<'PY'
+import json, re, hashlib, math, statistics
+from pathlib import Path
+import sys
+from collections import defaultdict, Counter
+from datetime import datetime, timezone
+root=Path(sys.argv[1])
+manifest=json.loads((root/'MANIFEST.json').read_text()); end=manifest['frozenAt']; begin=end-14*86400000
+for name,expected in manifest['files'].items():
+ data=(root/name).read_bytes()
+ assert len(data)==expected['bytes'] and hashlib.sha256(data).hexdigest()==expected['sha256'], name
+rows=[dict(json.loads(raw),line=i) for i,raw in enumerate((root/'audit.jsonl').open(),1)]
+rows.sort(key=lambda r:(r['ts'],r['line']))
+occupants={}; reports=defaultdict(list); starts=defaultdict(list); exclusions=Counter()
+for r in rows:
+ event=r['event']; detail=r.get('detail',''); slot=r.get('slot')
+ if event=='slot_open':
+  match=re.search(r'/fleet-([^ /]+)(?:\s|$)',detail)
+  occupants[slot]=(match and 'fleet/'+match[1],r['ts'])
+ elif event=='slot_kill': occupants.pop(slot,None)
+ elif event=='fleet_report_open':
+  occ=occupants.get(slot); status=re.search(r'\bstatus=([^ ]+)',detail)
+  if occ and occ[0] and status: reports[occ].append((r,status[1]))
+ elif event=='self_land_start':
+  lane=re.search(r'\blane=(\d+)',detail); program=re.search(r'\bprogram=([0-9a-f]+)',detail)
+  occ=occupants.get(int(lane[1])) if lane else None
+  if occ and occ[0] and program: starts[occ].append((r,program[1]))
+  else: exclusions['land_identity_unknown']+=1
+outcomes=defaultdict(list)
+for raw in (root/'lane-outcomes.jsonl').open():
+ r=json.loads(raw)
+ if r.get('disposition')=='landed' and begin<=r.get('landAt',r.get('ts',0))<=end: outcomes[r['branch']].append(r)
+samples=[]
+for branch, outs in outcomes.items():
+ if len(outs)!=1: exclusions['duplicate_branch']+=1; continue
+ out=outs[0]; at=out.get('landAt') or out['ts']
+ pairs=[]
+ for occ, calls in starts.items():
+  if occ[0]!=branch: continue
+  for report,status in reports[occ]:
+   following=[(r,p) for r,p in calls if report['ts']<=r['ts']<=at]
+   if status=='complete' and following: pairs.append((report,following[0],occ))
+ if not pairs: exclusions['complete_or_land_unknown']+=1; continue
+ report,(call,program),occ=max(pairs,key=lambda pair:pair[0]['ts'])
+ if not begin<=report['ts']<=end: exclusions['report_outside_window']+=1; continue
+ if any(status in ('needs-main','failed') and report['ts']<r['ts']<call['ts'] for r,status in reports[occ]):
+  exclusions['superseded_complete']+=1; continue
+ samples.append(dict(program=program,mainSlot=call['slot'],branch=branch,reportLine=report['line'],landLine=call['line'],ms=call['ts']-report['ts']))
+groups=defaultdict(list)
+for s in samples: groups[s['program']].append(s['ms']/60000)
+print('manifest_sha256',hashlib.sha256((root/'MANIFEST.json').read_bytes()).hexdigest())
+print('window',*[datetime.fromtimestamp(t/1000,timezone.utc).isoformat() for t in (begin,end)])
+for program,values in sorted(groups.items()):
+ values.sort(); print(program,'slots',sorted({s['mainSlot'] for s in samples if s['program']==program}),'n',len(values),'median_min',round(statistics.median(values),3),'p90_min',round(values[math.ceil(.9*len(values))-1],3))
+print('total',len(samples),'sum_min',round(sum(s['ms'] for s in samples)/60000,3),'unknown',dict(exclusions))
+
+PY
+```
 
 ### Der Übergabe-Record `handover` (`GET /api/self/program-execution`)
 
@@ -1843,6 +1945,38 @@ in `GET /api/self` und mintet genau ein bestehendes `merge-terminal`- bzw. `post
 für die haltende MAIN. Land-Watches lesen in `tickWatches` den dauerhaften Land-Beleg, überleben
 also das Ende des Ziel-Slots und feuern bei einem bereits belegten Land im nächsten Tick.
 Zustellung und Bestätigung laufen wie bei §watch, einschließlich des 60-Sekunden-Idle-Gates.
+
+Die Stau-Lesung nimmt freigegebene Zeilen aus, deren Wartekette an einem MAIN-Hold mit
+`until:{kind:"land",task:X}` endet, solange X `queued` oder `sent` ist. X selbst bleibt messbar:
+ein hängendes X kann weiter Stau auslösen. Holds ohne `until`, andere Selektoren sowie ein
+fehlendes, `pending` oder terminales X geben diese Ausnahme nicht. `STALL_MS` und Eskalation
+bleiben unverändert.
+
+`GET /api/start-plan` führt daneben `blockers:[{id,history,zeiten}]`. Diese Tür exponiert die
+Warte-Messfelder; `GET /api/tasks` behält seine bisherige Task-Projektion. Die gespeicherte Task-Zeile hält in
+`blockers` die `history`: `{freigabe,dispatch,abschnitte}`; jeder Abschnitt ist
+`{art,adressat,wurzel,von,bis}` mit Millisekunden-Zeitpunkten, `bis:null` für den offenen Abschnitt.
+`art` ist `hold`, `release`, `after`, `wave`, `unchecked`, `collision`, `cap`, `tick` oder `unknown`.
+Der bestehende Dispatch-/Sensor-Lauf beobachtet den Plan; nur ein Wechsel von Art, Adressat oder
+Wurzel eröffnet einen neuen Abschnitt. Unveränderte Lesungen schreiben weder die Task-Zeile noch
+einen Zeitstempel und rufen dafür kein `saveState` auf. Die Lese-Tür ergänzt `history.observedAt`
+aus der letzten Beobachtung im Speicher, dem Dispatch oder der letzten dauerhaften Abschnittsgrenze;
+ohne diese Basis bleibt es `null`. Freigabe und tatsächlicher Dispatch werden separat gestempelt.
+Die Beobachtung ist diskret im Dispatch-Takt: kurzlebige Gründe zwischen zwei Lesungen sind unknown.
+Vor der ersten Beobachtung und über einen Neustart hinweg steht eine messbare Lücke ausdrücklich
+als `unknown`; das gilt auch für eine startbereite Welle ohne Wartegrund im Register bis zu ihrem
+tatsächlichen Dispatch. Bei alten oder erstmals unter Policy beobachteten Zeilen ist `freigabe:null`, niemals
+0 Minuten. Nach einem Neustart ist das Ende eines zuvor offenen Abschnitts nur bis zu seiner
+letzten gespeicherten Grenze bekannt; sein ungespeicherter Rest wird `unknown`. Die Lese-Tür
+schreibt nichts und verlängert keinen Abschnitt bis zur Lesezeit.
+
+Der vorhandene `lane-outcomes.jsonl` erhält `blockerZeiten:[{taskId,zeiten}]`, auch für Wellenfolger.
+`zeiten:{freigabe,dispatch,ms,unknown}` summiert die beobachteten Millisekunden je Art; fehlende
+historische Messung bleibt `zeiten:null`. Erst nach dem Schreiben des Outcomes werden die Abschnitte
+an der Task-Zeile zu `blockerZeiten` verdichtet (`history:null` im Startplan). Aktive Zeilen behalten
+ihre Abschnitte bis dahin vollständig; terminale Zeilen unterliegen der bestehenden Queue-/Archiv-
+Retention, und der Outcome der bestehenden Ledger-Rotation. Es entsteht kein weiterer Ledger.
+
 **Das Event hebt den Halt nicht auf:** Release bleibt ein eigener Akt der MAIN. Ein erneuter Hold
 mit derselben Bedingung erzeugt keinen weiteren Watch; eine Freigabe löscht keine Watch-Abos.
 
@@ -1974,6 +2108,42 @@ er überlebt einen Restart mit dieser Herkunft. Der gemeinsame Kommentar-Deckel 
 Die Antwort enthält `{ok, sessionIdMatch, comment}`. Diese Tür fügt einen Kommentar hinzu;
 sie liefert ihn nicht in eine Lane-Pane aus. Fremde Zeile/Repo oder Lane: 409; unbekannte Id: 404.
 
+### Ansatzantwort auf den Advisory-Review
+
+Eine gültige Karte mittlerer oder großer Größe setzt bei ihrer Geburt (Author-Karte an beiden
+Create-Türen oder Text-Kopfzeilen im Karten-Sweep) `review:"advisory"`, sofern die Aufgabe
+`pending|queued` ist und noch keine Review-Entscheidung hat. Kleine Karten bleiben unverändert;
+`review:"none"` beziehungsweise `null` entfernt weiter das Feld und speichert `reviewDefaultOff:true`
+als Opt-out, auch über Restart. Die Owner-Create-Tür akzeptiert die Review-Wahl; die MAIN setzt sie an ihrer bestehenden Brief-Tür. Gesendete Zeilen
+werden vom Default nicht berührt; der vorhandene Reviewer und seine Ticks bleiben die Ausführer.
+
+Der Reviewer bekommt ZIEL, DONE, Dateien und Symbole der FLAECHE wörtlich als Kartendaten im
+bestehenden Prompt. Zusätzlich zum unveränderten Code-Review beantwortet er die binäre Frage
+`ansatz:"ok"|"ueberdenken"`. Im Zweifel gilt `ok`. Ein `ueberdenken` zählt nur, wenn `anker` exakt
+`ZIEL: <Kartenwert>` oder `DONE: <Kartenwert>` zitiert oder einen realen Diff-Dateipfad außerhalb
+der Karten-Dateifläche (einschließlich deklarierter neuer Dateien) nennt. Sonst führt der Parser
+es als `ok`. `begruendung` enthält bei `ueberdenken` genau einen Satz ohne Fix-Vorschlag;
+bei `ok` bleibt sie leer. Alte oder unlesbare Reviews tragen keinen Ansatzbefund.
+
+Das `lane-review`-Event speichert diese drei Felder neben `diffSha`. Je Task zeigen die
+Program-Projektion und die erfolgreiche MAIN-Land-Antwort `ansatzReviews` mit `eventId`,
+`answerOwed`, `answerDoor` und `answerPrefix`. `ueberdenken` blockiert keinen Land.
+Die Pflicht bleibt auch nach Event-Ack, Land und MAIN-Wechsel sichtbar. Nur die aktuell gebundene
+MAIN schließt sie über die vorhandene Kommentar-Tür mit
+`{"text":"Ansatz <eventId>: <ein Satz>"}`. Event, Task und Program müssen exakt zusammenpassen;
+falsche Referenzen oder mehrere Sätze sind 400. Ein gewöhnlicher Kommentar oder Owner-Kommentar
+schließt nichts. Die erste passende Antwort wird am Event als `answer{text,at,slot,commentId}`
+gespeichert und überlebt Kommentar-Kappung und Restart.
+
+Bei Lane-Ende misst der bestehende Outcome-Pfad für jedes `ueberdenken` den Folge-Diff:
+`changedAfterReview:true|false|null`, `followupPatchId` und `followupAt` am Event.
+`null` bedeutet nicht gemessen, niemals keine Änderung. Gemessen wird die Inhaltsänderung per
+Patch-ID, keine Wirkung oder Kausalität einer Reparatur. Alle vorhandenen Ansatzbefunde samt
+Änderungsmessung werden zusätzlich in `LaneOutcome.ansatzReviews` archiviert, damit Action-Rate
+und `ueberdenken`-Quote nach Event-Kappung auswertbar bleiben. Ein Review, das beim Lane-Ende noch
+läuft, bleibt eine ungemessene Grenze. Offene Antwortpflichten werden nicht durch Event-Kappung
+entfernt; geschlossene und am Ende gemessene Events folgen der bestehenden Retention.
+
 ## task withdraw — `POST /api/self/tasks/:id/withdraw`
 
 Body: `{"grund":"<Pflicht-Grund>","beleg":"<optionaler Beleg>"}`. Die gebundene MAIN archiviert
@@ -2005,7 +2175,7 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 **Keine lane-only Route** (409 `a lane may not sharpen a brief — …`) — und dieser Ausschluss ist der
 lauteste der Familie, nicht der leiseste. Zwei bestehende Doktrinen zeigen in dieselbe Richtung: der
 Brief IST die Arbeitsanweisung, auf die eine Lane gegründet wurde, also schriebe eine Lane an der
-eigenen Zeile **ihren eigenen Auftrag um** — genau das, wogegen `criterion` und `refine` propose von
+eigenen Zeile **ihren eigenen Auftrag um** — genau das, wogegen `criterion` propose von
 promote trennen („the producer must not be the one who rewrites the work order it was measured
 against"); und an einer FREMDEN Zeile ist es Lane-schreibt-für-Lane, die Kopplung, die
 `/api/self/watch` ablehnt, weil nur der Owner sie sichtbar machen kann. Der `⚙ steward` ist **nicht**
@@ -2099,7 +2269,7 @@ role"-Grenze liegt darum auf dem BESTÄTIGEN, und das ist eine Owner-Route hinte
 existiert nicht.
 
 - **Ein einziger stehender Vorschlag pro Zeile.** Ein zweiter Aufruf überschreibt den ersten,
-  genau wie ein zweiter `↻ refine`-Lauf seinen geparkten Vorschlag überschreibt.
+  Ein zweiter Vorschlag ersetzt den vorherigen.
 - **`by` kommt vom Server, nie aus dem Body**: eine Lane wird nach ihrer Branch benannt, jede
   andere Session nach ihrem Label. Eine Provenienz, die der Aufrufer diktieren kann, ist keine.
 - **`unknownPaths` MELDET, es gated nicht.** Drei Zustände, und sie dürfen nie kollabieren:
@@ -2130,7 +2300,7 @@ Die Owner-Seite (`POST /api/tasks/:id/files`, Owner-Token) schreibt `{files, fil
 "confirmed"}` auf dieselbe Zeile: mit leerem Body bestätigt sie den stehenden Vorschlag, mit
 `{"files":[…]}` die eigene Liste des Owners, mit `{"accept":false}` verwirft sie den Vorschlag und
 lässt die Fläche unberührt. Warum das überhaupt eine Tür braucht: `filesOrigin:"confirmed"` hatte
-bis dahin genau EINEN Schreiber (den refine-promote, der nur NEUE Kinder so stempeln kann) —
+historisch nur einen Schreiber beim Erzeugen neuer Zeilen —
 gemessen am 2026-09-07 trugen 0 von 48 offenen `auftrag`-Zeilen `confirmed`, und der
 Landewellen-Sensor lieferte darum 44 Wellen der Größe 1, jede mit dem Grund
 `flaeche-nur-abgeleitet` und 0 s Ersparnis. Eine Fläche wird NIE automatisch von `derived` nach

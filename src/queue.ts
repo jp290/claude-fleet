@@ -1,4 +1,4 @@
-import { $, el, MOBILE_MQ, TaskInfo, TaskRefineFull, agentHarnesses, api, autosOnSrv, baseName, briefCompilerOn, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, intakeOn, labelled, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
+import { $, el, MOBILE_MQ, TaskInfo, agentHarnesses, api, autosOnSrv, baseName, briefCompilerOn, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, intakeOn, labelled, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
 import { prefSet, prefText } from "./prefs";
 import { Shell, ShellRow, openShell } from "./shell";
 import { askRisk } from "./dialog";
@@ -37,8 +37,6 @@ export const briefByMain = (b: { edited: boolean; by?: string } | undefined): bo
 export const taskBriefFull = new Map<string, FullBrief>();
 // same reason for the criterion: the poll knows THAT one exists, this knows what it says
 export const taskCriterionFull = new Map<string, NonNullable<TaskInfo["criterion"]>>();
-// …and for the refine proposal: the poll knows a proposal landed, this knows what it proposes
-export const taskRefineFull = new Map<string, TaskRefineFull>();
 // …and the comment thread. Same split for the same reason: a comment is free text of unbounded
 // length, and the 2 s poll is the one place in this client where bytes are a standing cost.
 // `from`/`verdict` are the LANE half of the thread (N2). Their absence is the owner's own remark,
@@ -388,7 +386,7 @@ export let qRowId = new Map<HTMLElement, string | null>();
 // announce a new top-level briefAt while the old full cache is still present; treating that cache
 // as current would briefly call a stored brief absent.
 export const qTaskFullKey = () => tasksList.map((t) =>
-  `${t.id}:${t.status}:${t.briefAt ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}:${t.notes?.n ?? 0}:${t.notes?.at ?? 0}:${t.verdicts?.n ?? 0}:${t.verdicts?.at ?? 0}`
+  `${t.id}:${t.status}:${t.briefAt ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}:${t.notes?.n ?? 0}:${t.notes?.at ?? 0}:${t.verdicts?.n ?? 0}:${t.verdicts?.at ?? 0}`
 ).join(",");
 export const qTaskFullLoaded = (id: string) => taskText.has(id) && taskTextKey === qTaskFullKey();
 
@@ -406,7 +404,7 @@ export async function loadTaskTexts() {
     if (res.ok) {
       const data = (await res.json()) as { tasks: { id: string; text: string;
         brief?: FullBrief; criterion?: NonNullable<TaskInfo["criterion"]>;
-        refine?: TaskRefineFull; comments?: TaskCommentView[]; spawn?: NonNullable<QSpawnRow>; card?: QCardView;
+        comments?: TaskCommentView[]; spawn?: NonNullable<QSpawnRow>; card?: QCardView;
         notes?: TaskNotePinView[]; verdicts?: TaskNoteVerdictView[]; absorbed?: string[]; disposition?: { beleg?: string } }[] };
       // A brief save can complete while this GET (started before it) is in flight. Never publish
       // that older response under the post-save generation; the retry below fetches the new truth.
@@ -414,7 +412,6 @@ export async function loadTaskTexts() {
         taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
         taskBriefFull.clear();
         taskCriterionFull.clear();
-        taskRefineFull.clear();
         taskCommentsFull.clear();
         taskNotesFull.clear();
         taskAbsorbedFull.clear();
@@ -430,7 +427,6 @@ export async function loadTaskTexts() {
           if (t.spawn) taskSpawnFull.set(t.id, t.spawn);
           if (t.brief) taskBriefFull.set(t.id, t.brief);
           if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
-          if (t.refine) taskRefineFull.set(t.id, t.refine);
           if (t.comments?.length) taskCommentsFull.set(t.id, t.comments);
           if (t.notes?.length) taskNotesFull.set(t.id, t.notes);
           if (t.verdicts?.length) taskVerdictsFull.set(t.id, t.verdicts);
@@ -1844,7 +1840,6 @@ export async function qAct(id: string, action: string, body: Record<string, unkn
   // applying or discarding consumes the proposal server-side; drop the local copy in the same
   // beat, or the detail paints one stale frame of a proposal that no longer exists (the /api/tasks
   // refetch that would correct it is a poll behind)
-  if (action === "refine-confirm") taskRefineFull.delete(id);
   // briefAt will invalidate every polling browser. The local epoch additionally rejects a full GET
   // that started before THIS save and returns before that next poll; the warning stays neutral until
   // the post-save full row arrives.
@@ -3423,7 +3418,6 @@ export function renderQueueDetail() {
   }
   const brief = taskBriefFull.get(t.id);
   const crit = taskCriterionFull.get(t.id) ?? t.criterion;
-  const ref = taskRefineFull.get(t.id);
   // THE TITLE FIRST (owner, 2026-09-18: „[Zitat entfernt]“): what this row IS, in its own words,
   // with the same chips its list row carries — minus program, which the head's facts name below.
   const summary = qTaskSummary(t, qTaskText(t.id), Date.now(), programsList);
@@ -3601,7 +3595,7 @@ export function renderQueueDetail() {
   // the comment thread. Never a fold — the comment box is a draft a repaint must not close.
   const discussion = qDetailSection(read, "Notes & comments");
   const hasRefinement = (!qAdvisory(t) && (t.status === "pending" || t.status === "queued"))
-    || brief !== undefined || crit !== undefined || ref !== undefined;
+    || brief !== undefined || crit !== undefined;
   const refinement = hasRefinement ? qDetailSection(read, "Refinement") : null;
   // Once a compiled brief exists, the original request is supporting evidence rather than the
   // primary working text. Keep it one click away; raw tasks stay open because it is all they have.
@@ -3626,8 +3620,6 @@ export function renderQueueDetail() {
   meta.appendChild(chip(taskSourceLabel(t)));
   if (qAdvisory(t)) meta.appendChild(chip(`${t.kind} — not work`, "dim",
     "an advisory row does not assign work. Change its Kind to auftrag to enter the normal workflow"));
-  if (t.refining) meta.appendChild(chip("↻ refining…", "dim",
-    "the brief compiler is reading the repo — this can take a few minutes; the proposal appears here when it lands"));
   if (t.repo) meta.appendChild(chip(`⌂ ${t.repo.split("/").pop() || t.repo}`, "dim",
     `target repo: ${t.repo} — this task's lane spawns there`));
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
@@ -3907,67 +3899,12 @@ export function renderQueueDetail() {
   arrived.querySelector(".qorigin-st")?.addEventListener("click", () => { qShowOriginal = t.id; });
   if (brief) step("brief", `${brief.edited ? (briefByMain(brief) ? "by its MAIN" : "yours") : "compiled"} · ${fmtTs(brief.at)}`,
     refinement, "a rewrite of the original — this is what a lane receives; under Refinement");
-  if (ref) step("refine", `${ref.proposal.unchanged ? "unchanged" : "proposed"} · ${fmtTs(ref.at)}`,
-    refinement, "an agent's proposed rewrite or split — nothing changes until you apply it");
   if (crit) step("criterion", crit.confirmedAt !== null ? `confirmed · ${fmtTs(crit.confirmedAt)}` : "proposed",
     refinement, "what done means for this row — under Refinement");
   read.prepend(arrived);
   if (brief) request.appendChild(el("div", "rvhead", "your draft, as filed"));
   if (body) qTextBlock(request, brief ? "your draft" : "request", body);
   else request.appendChild(el("div", "hint shellhint", "loading the prompt text…"));
-  // ↻ the refine proposal. Rendered BELOW the original text on purpose: the two are meant to be
-  // read against each other, and what the owner promotes is the compiled version — so the thing
-  // being replaced stays visible right above it until they decide.
-  if (ref) {
-    const kids = ref.proposal.tasks ?? [];
-    refinement!.appendChild(el("div", "rvhead",
-      ref.proposal.unchanged ? `refine · already brief-shaped (${fmtTs(ref.at)})`
-        : `refine · PROPOSED ${kids.length === 1 ? "rewrite" : `split into ${kids.length}`} — yours to apply (${fmtTs(ref.at)})`));
-    if (ref.proposal.unchanged) {
-      refinement!.appendChild(el("div", "qdtext",
-        `${ref.proposal.reason || "already brief-shaped"} (${ref.model})`));
-    } else {
-      kids.forEach((c, i) => {
-        refinement!.appendChild(el("div", "qdtext", [
-          `${kids.length > 1 ? `${i + 1}. ` : ""}${c.text}`,
-          ...(c.files?.length ? [`Files: ${c.files.join(", ")}`] : []),
-          ...(c.doneCriterion ? [`Done: ${c.doneCriterion}`] : []),
-          ...(c.verify ? [`Verify: ${c.verify}`] : []),
-        ].join("\n")));
-        // …and the machine's own reading of that child, immediately under it. Two severities, two
-        // colours, never merged: "not tracked in this repo" is a measured defect, "could not be
-        // read" is an absent measurement, and only the first is evidence of a bad proposal.
-        for (const sev of ["error", "unknown"] as const) {
-          const mine = (ref.validation?.findings ?? []).filter((f) => f.child === i && f.severity === sev);
-          if (mine.length) refinement!.appendChild(el("div", `qdfind ${sev === "error" ? "err" : "unk"}`,
-            mine.map((f) => `${sev === "error" ? "✕" : "?"} ${f.detail}`).join("\n")));
-        }
-      });
-      // and the verdict once, above the buttons — so the apply click is never the first place the
-      // owner could have learned it. It says what it is (a check, not a gate) because the button
-      // beneath it stays enabled either way: promoting a flagged proposal is the owner's to do.
-      if (ref.validation && ref.validation.verdict !== "pass")
-        refinement!.appendChild(el("div", `qdfind ${ref.validation.verdict === "fail" ? "err" : "unk"}`,
-          ref.validation.verdict === "fail"
-            ? `checked against the target repo: ${ref.validation.findings.filter((f) => f.severity === "error").length} finding(s) above. Applying anyway is yours to decide.`
-            : "checked against the target repo: some of it could not be checked (see above) — not measured is not a pass."));
-    }
-    const racts = el("div", "pkdacts");
-    // applying is all-or-nothing and archives this row — say so on the button, because the
-    // alternative reading ("adds the children alongside") is the one that would surprise
-    if (!ref.proposal.unchanged && (t.status === "pending" || t.status === "queued")) {
-      const ab = el("button", "shrbtn primary",
-        `✓ apply — replace this task with ${kids.length === 1 ? "it" : `these ${kids.length}`}`) as HTMLButtonElement;
-      ab.title = "creates the compiled task(s) as new pending rows and archives this one";
-      ab.onclick = () => void qAct(t.id, "refine-confirm", {});
-      racts.appendChild(ab);
-    }
-    const db = el("button", "shrbtn", "✕ discard proposal") as HTMLButtonElement;
-    db.title = "drops the proposal — the task itself is untouched either way";
-    db.onclick = () => void qAct(t.id, "refine-confirm", { accept: false });
-    racts.appendChild(db);
-    refinement!.appendChild(racts);
-  }
   const acts = el("div", "pkdacts");
   const mk = (label: string, action: string, cls = "shrbtn", body?: Record<string, unknown>, title?: string) => {
     const b = el("button", cls, label) as HTMLButtonElement;
@@ -4066,7 +4003,7 @@ export function renderQueueDetail() {
       const sb = el("button", raw ? "shrbtn qraw" : mainCls("start"),
         raw ? `${startName} — ${rawWhat}` : startName) as HTMLButtonElement;
       sb.title = spawnProblem ? `blocked: ${spawnProblem}`
-        : raw ? "a raw start — tick the line below to confirm it; clarify or refine fix the state instead"
+        : raw ? "a raw start — tick the line below to confirm it; clarify settles the criterion first"
           : "opens a lane on the triple shown above and hands it the brief";
       sb.onclick = () => void qAct(t.id, "dispatch",
         qDispatchBody("start", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, raw));
@@ -4099,19 +4036,6 @@ export function renderQueueDetail() {
       cb.onclick = () => void qAct(t.id, "dispatch",
         qDispatchBody("clarify", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, false));
       place(cb, "clarify", "a lane settles with you what done means, then waits — no code yet");
-    }
-    // ↻ refine: rewrite the REQUEST itself — compile it into a work brief, or into the several
-    // tasks it really is — before any lane sees it. Attended only; nothing on the server calls it.
-    // Distinct from the brief editor above, and the difference is worth holding on to: refine
-    // changes what you are asking for, the brief changes how it is said to the session.
-    if (startable) {
-      const rb = el("button", "shrbtn", t.refining ? "↻ refining…" : "↻ refine") as HTMLButtonElement;
-      rb.disabled = t.refining === true;
-      rb.title = "a read-only agent reads the repo and proposes a compiled brief — or a split."
-        + " Nothing changes until you apply it";
-      rb.onclick = () => void qAct(t.id, "refine", {});
-      qActDesc(rb, "an agent rewrites the request into a brief, or splits it — you approve it");
-      acts.appendChild(rb);
     }
     // RELEASING IS THE DECISION, and since 2026-09-10 it is the ONLY one: the queue analyst that
     // used to file an advisory verdict beside it — which renamed this button "release anyway ▸",
@@ -4489,7 +4413,7 @@ export function renderQueue() {
     programsList.map((p) => [p.id, p.status, p.title, programMark(p).mark]),
     [...model.work, ...model.history].map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
-      t.refine?.at, t.refining, t.comments?.n, t.notes?.at, t.hold?.at, t.size, t.programId]),
+      t.comments?.n, t.notes?.at, t.hold?.at, t.size, t.programId]),
     qNotesOpen, taskTextKey, [...taskAbsorbedFull], [...taskDispositionFull], qRepo, qProg, [...qSel], qBundleBusy, qBundleMode]);
   if (key === qKey) return;
   qKey = key;

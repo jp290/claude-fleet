@@ -8,6 +8,7 @@ import { AUTOS_TICK_MS, BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, fleetReportDecisionMessage, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
+import { fleetEventFrom } from "../server/types";
 import { CONTEXT_PACKS } from "../context-packs";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
@@ -190,6 +191,8 @@ interface ProgramExecutionRow {
   // the durable half of the succession handover: null until a Standard succession has happened
   // here, and an EMPTY obligations list where one has and measured nothing owed
   handover: ProgramHandover | null;
+  landbereit: { rows: { taskId: string; reportId: string; slot: number; openedAt: number; branch: string;
+    reportedAt: number; acceptedAt: number; ageMs: number; nudgeEventId: string | null }[]; nudgeAfterMs: number };
   tasks: { rows: { id: string; kind: string; status: string; releasedBy: string | null;
     slot: number | null; originId: string | null; text: string;
     // derived per request, stored nowhere (program-phase.ts)
@@ -11494,6 +11497,99 @@ export async function run(ctx: Ctx): Promise<void> {
     const landReady = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot, greenLaneCwd);
     check("self-land acceptance fixture: the lane settles again after the accept was carried into its pane",
       landReady, landReady ? "done-looking" : doneLookingWhy);
+    const a2RowId = await makeTask({ text: "landbereit age-order fixture", programId: landProgram.id, repo: REPO2 });
+    const a2Dispatch = await post(`/api/tasks/${a2RowId}/dispatch`, {});
+    const a2Task = await slRow(a2RowId);
+    const a2Slot = a2Task?.slot ?? null;
+    const a2Cwd = a2Slot === null ? "" : (await slSess()).slots.find((x) => x.id === a2Slot)?.cwd ?? "";
+    if (a2Cwd) {
+      writeFileSync(`${a2Cwd}/landbereit.txt`, "age-order fixture\n");
+      spawnSync("git", ["-C", a2Cwd, "add", "landbereit.txt"]);
+      spawnSync("git", ["-C", a2Cwd, "commit", "-qm", "landbereit fixture"]);
+    }
+    const a2Ready = a2Slot === null ? false : await waitDoneLooking(a2Slot, a2Cwd);
+    check("landbereit prerequisite: a second lane is running, clean, ahead and done-looking",
+      a2Dispatch.ok && a2Task?.status === "sent" && a2Ready,
+      JSON.stringify({ status: a2Dispatch.status, slot: a2Slot, ready: a2Ready, why: doneLookingWhy }));
+    const a2ReportId = "a2".repeat(12);
+    const a2Now = Date.now();
+    const a2Threshold = Math.max(0, Number(process.env.FLEET_LAND_READY_NUDGE_MS ?? 15 * 60_000));
+    await stopSrv();
+    const a2Plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+      fleetReports?: Record<string, unknown>[]; slots?: Record<string, { openedAt?: number; worktree?: { branch?: string } }> };
+    const a2LaneState = a2Slot === null ? null : a2Plant.slots?.[String(a2Slot)];
+    const a2Report = { id: a2ReportId, reportedAt: a2Now - a2Threshold - 120_000,
+      status: "complete", text: "landbereit unjudged control", basis: "program", receiver: null, eventId: null,
+      worker: { slot: a2Slot, openedAt: a2LaneState?.openedAt, sessionId: null, cwd: a2Cwd,
+        branch: a2LaneState?.worktree?.branch },
+      provenance: { taskId: a2RowId, originId: null, programId: landProgram.id } };
+    a2Plant.fleetReports = [...(a2Plant.fleetReports ?? []), a2Report];
+    for (const r of a2Plant.fleetReports) {
+      if (r.id === slFirstReport.id) r.reportedAt = a2Now - a2Threshold - 180_000;
+      if (r.id === slSecondReport.id) r.reportedAt = a2Now - a2Threshold - 60_000;
+    }
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(a2Plant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const a2View = async () => (await selfExecution(landTok)).view?.programs.find((p) => p.program.id === landProgram.id)?.landbereit;
+    const a2GreenReobserved = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot, greenLaneCwd);
+    const a2SideReobserved = a2Slot === null ? false : await waitDoneLooking(a2Slot, a2Cwd);
+    check("landbereit unjudged prerequisite: both lanes are observed done-looking after restart",
+      a2GreenReobserved && a2SideReobserved, doneLookingWhy);
+    const a2Unjudged = await a2View();
+    check("landbereit: an unjudged complete report is excluded even when its lane looks done",
+      a2Unjudged?.rows.some((r) => r.taskId === greenRowId) === true
+        && !a2Unjudged.rows.some((r) => r.taskId === a2RowId), JSON.stringify(a2Unjudged));
+    const a2Accept = await mainDecides(a2ReportId, "accept", "accept age-order fixture");
+    let a2Rows = await a2View();
+    await until(async () => {
+      a2Rows = await a2View();
+      return a2Rows?.rows.length === 2 && a2Rows.rows.every((r) => r.nudgeEventId !== null);
+    }, { timeoutMs: 20_000, stepMs: 100, what: "both overdue landbereit reports have a nudge event" });
+    check("landbereit: accepted done-looking lanes sort oldest first with exact report ages",
+      a2Accept.ok && a2Rows?.nudgeAfterMs === a2Threshold
+        && JSON.stringify(a2Rows.rows.map((r) => r.taskId)) === JSON.stringify([a2RowId, greenRowId])
+        && a2Rows.rows[0].reportedAt === a2Report.reportedAt
+        && a2Rows.rows[0].ageMs - a2Rows.rows[1].ageMs === 60_000
+        && a2Rows.rows[0].acceptedAt >= a2Now,
+      JSON.stringify(a2Rows));
+    const a2ReportIds = [a2ReportId, slSecondReport.id ?? ""];
+    const a2Nudges = () => auditLinesNow().map((line) => JSON.parse(line) as { event: string; detail?: string })
+      .filter((r) => r.event === "watch_fire" && r.detail?.startsWith("land-ready ") && a2ReportIds.some((id) => r.detail?.includes(`report=${id} `)));
+    const a2Events = (readState().events ?? []).filter((e) => a2ReportIds.some((id) => e.watchId === `landready${id}`));
+    check("landbereit: each overdue report mints exactly one existing lane-ready event to its bound MAIN",
+      a2Nudges().length === 2 && a2Events.length === 2 && a2Events.every((e) => e.kind === "lane-ready"
+        && e.receiverSlot === landMainSlot && e.receiverOpenedAt === landMainState?.openedAt
+        && e.receiverSessionId === (landMainState?.sessionId ?? null)), JSON.stringify(a2Events));
+    check("landbereit persistence: minted events hydrate and a colon-bearing marker is rejected",
+      a2Events.length === 2 && a2Events.every((e) => fleetEventFrom(e)?.id === e.id
+        && fleetEventFrom({ ...e, watchId: `land-ready:${a2ReportId}` }) === null),
+      JSON.stringify(a2Events.map((e) => ({ id: e.id, watchId: e.watchId, hydrated: fleetEventFrom(e) !== null }))));
+    await stopSrv();
+    const a2Prune = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { events?: { watchId?: string }[] };
+    a2Prune.events = (a2Prune.events ?? []).filter((e) => !a2ReportIds.some((id) => e.watchId === `landready${id}`));
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(a2Prune, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const a2GreenAfterPrune = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot, greenLaneCwd);
+    const a2SideAfterPrune = a2Slot === null ? false : await waitDoneLooking(a2Slot, a2Cwd);
+    check("landbereit retention prerequisite: both lanes are observed done-looking after restart",
+      a2GreenAfterPrune && a2SideAfterPrune, doneLookingWhy);
+    await Bun.sleep(AUTOS_TICK_MS * 2 + 200);
+    const a2AfterRestart = await a2View();
+    check("landbereit: restart and event retention do not mint a second wake for either report",
+      a2Nudges().length === 2 && a2AfterRestart?.rows.length === 2
+        && a2AfterRestart.rows.every((r) => r.nudgeEventId !== null)
+        && !(readState().events ?? []).some((e) => a2ReportIds.some((id) => e.watchId === `landready${id}`)),
+      JSON.stringify({ nudges: a2Nudges(), rows: a2AfterRestart?.rows }));
+
+    await stopSrv();
+    const a2Pending = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { events?: Record<string, unknown>[] };
+    const a2GreenEvent = a2Events.find((e) => e.watchId === `landready${slSecondReport.id}`);
+    if (a2GreenEvent) a2Pending.events = [...(a2Pending.events ?? []),
+      { ...a2GreenEvent, status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null, receiverIdleSec: 3600 }];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(a2Pending, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const a2FinalReady = greenLaneSlot === null ? false : await waitDoneLooking(greenLaneSlot, greenLaneCwd);
+    check("landbereit pending-cancel prerequisite: the lane remains done-looking after restart", a2FinalReady, doneLookingWhy);
     const landRes = await selfLand(landTok, greenRowId);
     const landRespBody = await landRes.json() as { running?: boolean; candidate?: string; laneSlot?: number;
       selfLand?: string; watch?: { kind?: string; target?: number }; error?: string };
@@ -11512,6 +11608,27 @@ export async function run(ctx: Ctx): Promise<void> {
       greenLanded?.status === "done" && greenMainAfter !== greenMainBefore
         && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("selfland green work"),
       JSON.stringify({ status: greenLanded?.status, before: greenMainBefore.slice(0, 8), after: greenMainAfter.slice(0, 8) }));
+    await Bun.sleep(AUTOS_TICK_MS * 2 + 200);
+    const a2AfterLand = await a2View();
+    const a2LandedReport = (readState().fleetReports ?? []).find((r) => r.id === slSecondReport.id) as
+      { landCalledAt?: number } | undefined;
+    check("landbereit: after the actual land no row or new wake remains for the landed task",
+      greenLanded?.status === "done" && typeof a2LandedReport?.landCalledAt === "number"
+        && a2AfterLand?.rows.some((r) => r.taskId === greenRowId) === false
+        && a2Nudges().length === 2
+        && (readState().events ?? []).some((e) => e.id === a2GreenEvent?.id
+          && e.status === "subject-gone" && e.attempts === 0 && e.deliveredAt === null),
+      JSON.stringify({ status: greenLanded?.status, landCalledAt: a2LandedReport?.landCalledAt,
+        rows: a2AfterLand?.rows, nudges: a2Nudges().length }));
+    if (a2Slot !== null) await post(`/api/slots/${a2Slot}/kill`, {});
+    await post(`/api/tasks/${a2RowId}/delete`, {});
+    await stopSrv();
+    const a2Cleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+      fleetReports?: { id?: string }[]; events?: { watchId?: string }[] };
+    a2Cleanup.fleetReports = (a2Cleanup.fleetReports ?? []).filter((r) => r.id !== a2ReportId);
+    a2Cleanup.events = (a2Cleanup.events ?? []).filter((e) => !a2ReportIds.some((id) => e.watchId === `landready${id}`));
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(a2Cleanup, null, 2), { mode: 0o600 });
+    await restartSrv();
     // THE POINT OF THE WHOLE ACT: the ledger can NAME the actor. Three carriers, all three asserted,
     // because each answers a different reader — the note travels with the commit, the outcome row
     // answers about LANES, the trail survives a repo nobody ever clones.

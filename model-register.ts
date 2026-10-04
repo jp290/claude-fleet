@@ -1,10 +1,10 @@
 // model-register.ts — the model policy, defaults, aliases and display windows for Fleet harnesses.
 export type ModelHarness = "claude" | "codex" | "pi-zai";
 export type ModelStatus = "current" | "superseded";
-export type FleetWorkerRole = "summary" | "commitMsg" | "enhance" | "digest" | "review" | "merge" | "repair" | "cleanReview" | "refine" | "briefReview" | "card";
+export type FleetWorkerRole = "summary" | "commitMsg" | "enhance" | "digest" | "review" | "merge" | "repair" | "cleanReview" | "card";
 export type ModelRole = "orchestrator" | "main" | "worker" | "denk" | FleetWorkerRole
   | "summaryExec" | "commitMsgExec" | "enhanceExec" | "digestExec"
-  | "reviewExec" | "mergeExec" | "repairExec" | "cleanReviewExec" | "refineExec" | "briefReviewExec" | "cardExec";
+  | "reviewExec" | "mergeExec" | "repairExec" | "cleanReviewExec" | "cardExec";
 export interface ModelEntry {
   harness: ModelHarness;
   id: string;
@@ -26,8 +26,6 @@ export const MODEL_DEFAULTS = {
   merge: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
   repair: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
   cleanReview: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  refine: { harness: "claude", id: "claude-opus-5-5[1m]", effort: null },
-  briefReview: { harness: "claude", id: "claude-opus-5-5[1m]", effort: null },
   card: { harness: "claude", id: "claude-haiku-4-5-20251001", effort: null },
   summaryExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
   commitMsgExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
@@ -37,8 +35,6 @@ export const MODEL_DEFAULTS = {
   mergeExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
   repairExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
   cleanReviewExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
-  refineExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
-  briefReviewExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
   cardExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
 } as const satisfies Readonly<Record<ModelRole, { harness: ModelHarness; id: string; effort: string | null }>>;
 

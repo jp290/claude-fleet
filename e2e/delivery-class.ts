@@ -63,11 +63,26 @@ export async function run(): Promise<void> {
     check("delivery-class fixture: slot 2 remains open after the isolated restart",
       session.slots.some((s) => s.id === 2 && !!s.cwd));
     check("delivery-class fixture: slot 2 runs a plain cat for the header read-backs", await catPane("s2"));
+    const oneShotText = `${marker}: sofortiger One-Shot`, oneShotAuditBefore = auditRows().length, oneShotPlBefore = (await plogRead()).length;
+    const oneShot = await post("/api/slots/2/autos", { text: oneShotText, everySec: null, inSec: 1, idleSec: 0 });
+    const oneShotBody = await oneShot.json() as { auto?: { id: string; everySec: number | null } };
+    check("immediate auto fixture is a one-shot", oneShot.ok && !!oneShotBody.auto?.id && oneShotBody.auto.everySec === null, `${oneShot.status}`);
+    const oneShotFire = await until(() => auditRows().slice(oneShotAuditBefore).find((r) =>
+      r.event === "auto_fire" && r.slot === 2 && r.detail === oneShotBody.auto?.id) ?? null,
+    { timeoutMs: 8_000, what: "one-shot reaches its audit receipt" });
+    const oneShotAudit = auditRows().slice(oneShotAuditBefore);
+    const oneShotSends = oneShotAudit.filter((r) => r.event === "send" && r.slot === 2 && r.path === "auto");
+    check("a due one-shot is sent with deliveryClass sofort", oneShotSends.length === 1
+      && oneShotSends[0]?.deliveryClass === "sofort" && !!oneShotFire, JSON.stringify(oneShotSends));
+    check("a one-shot never enters the auto bundle window", !oneShotAudit.some((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto"), JSON.stringify(oneShotAudit));
+    check("the immediate one-shot delivers its full text once", (await plogRead()).slice(oneShotPlBefore).filter((p) => p.slot === 2 && p.text === oneShotText).length === 1);
     const before = (await plogRead()).length;
     const sendsBefore = auditRows().filter((r) => r.event === "send" && r.slot === 2).length;
-    const scheduled = await post("/api/slots/2/autos", { text: autoText, inSec: 1, idleSec: 0 });
-    check("delivery-class fixture: one-shot check-in is scheduled", scheduled.ok, `${scheduled.status}`);
-    const queued = await until(() => auditRows().find((r) => r.event === "delivery_bundle_queued"
+    const scheduled = await post("/api/slots/2/autos", { text: autoText, everySec: 60, runs: 1, inSec: 1, idleSec: 0 });
+    const scheduledBody = await scheduled.json() as { auto?: { id: string; everySec: number | null } };
+    check("delivery-class fixture: recurring check-in is scheduled", scheduled.ok && scheduledBody.auto?.everySec === 60, `${scheduled.status}`);
+    const queued = await until(() => auditRows().slice(oneShotAuditBefore).find((r) => r.event === "delivery_bundle_queued"
       && r.slot === 2 && r.path === "auto" && r.cache === "kalt"),
     { timeoutMs: 8_000, what: "cold auto enters a nonzero bundle window" });
     check("cold bundle audit names its delivery class",
@@ -86,6 +101,8 @@ export async function run(): Promise<void> {
       const rows = (await plogRead()).slice(before).filter((p) => p.slot === 2 && p.text.includes(marker));
       return rows.length === 2 ? rows : null;
     }, { timeoutMs: 5_000, what: "bundle and owner delivery receipts" });
+    const afterRecurring = await (await get("/api/sessions")).json() as { autos: { id: string; enabled: boolean; runsLeft: number; lastResult: string | null }[] };
+    check("a recurring bundle fixture with runs:1 is spent after its delivery", afterRecurring.autos.some((a) => a.id === scheduledBody.auto?.id && !a.enabled && a.runsLeft === 0 && a.lastResult === "sent"));
     const sends = auditRows().filter((r) => r.event === "send" && r.slot === 2);
     const bundled = auditRows().filter((r) => r.event === "delivery_bundle_sent" && r.slot === 2);
     check("one physical bundle send carries two complete source texts and its path audit",
@@ -94,25 +111,20 @@ export async function run(): Promise<void> {
         && bundled.at(-1)?.detail === "slot:2 count=1",
       JSON.stringify({ texts: typed.map((p) => p.text), sends: sends.length - sendsBefore,
         path: sends.at(-1)?.path, bundle: bundled.at(-1)?.detail }));
-    // (2) A REAL BUNDLE: the outer header says path=bundle, and each mark carries its own entry's
-    // sentence — before 5a a mark named only the path, so the auto's sentence never reached the pane.
-    // BREAKS IF: bundleText drops the per-entry sentence or the outer send stops being path=bundle.
     const twoPane = await paneText("s2");
     check("a two-entry bundle is headed path=bundle and each mark carries its own path's sentence",
       inPane(twoPane, `path=bundle · Slot 2 · ${MEANING.bundle}] [fleet-buendel 1/2 · path=owner · ${MEANING.owner}]`)
         && inPane(twoPane, `[fleet-buendel 2/2 · path=auto · ${MEANING.auto}]`),
       JSON.stringify([around(twoPane, "[fleet-buendel 1/2"), around(twoPane, "[fleet-buendel 2/2")]));
-
     const timedAuto = `${marker}: kalter Auto-Termin`;
     const timedAutoAuditBefore = auditRows().length;
     const timedAutoPlBefore = (await plogRead()).length;
-    const timedAutoScheduled = await post("/api/slots/2/autos", { text: timedAuto, inSec: 1, idleSec: 0 });
+    const timedAutoScheduled = await post("/api/slots/2/autos", { text: timedAuto, everySec: 60, runs: 1, inSec: 1, idleSec: 0 });
     check("cold auto window fixture is scheduled", timedAutoScheduled.ok, `${timedAutoScheduled.status}`);
     const timedAutoQueued = await until(() => auditRows().slice(timedAutoAuditBefore).find((r) =>
       r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto" && r.cache === "kalt") ?? null,
     { timeoutMs: 8_000, what: "second cold auto enters its own window" });
     await Bun.sleep(3_000);
-    // the WHEN of the flush, whatever path it carries — which path is check (1)'s question below
     const timedAutoSends = auditRows().slice(timedAutoAuditBefore).filter((r) =>
       r.event === "send" && r.slot === 2);
     const timedAutoPrompts = (await plogRead()).slice(timedAutoPlBefore).filter((p) =>
@@ -127,10 +139,6 @@ export async function run(): Promise<void> {
     const timedAutoBundled = auditRows().slice(timedAutoAuditBefore).filter((r) =>
       r.event === "delivery_bundle_sent" && r.slot === 2);
     const timedAutoPane = await paneText("s2");
-    // (1) ONE ENTRY IS NO BUNDLE: it is typed under its own path, so the send row says auto and the
-    // header carries the auto's sentence; the bundle row still counts the one entry it flushed.
-    // BREAKS IF: flushDeliveryBundle sends a single entry with path "bundle" again (the pre-5a state:
-    // 0 of 70 live sends in audit.jsonl carried their own path).
     check("a single bundled auto is typed with its own header — path=auto and its sentence — and counted count=1",
       timedAutoSends.length === 1 && timedAutoSends[0]?.path === "auto"
         && timedAutoBundled.length === 1 && timedAutoBundled[0]?.count === 1
@@ -138,13 +146,9 @@ export async function run(): Promise<void> {
         && inPane(timedAutoPane, `[fleet-zustellung · geplanter Check-in · path=auto · Slot 2 · ${MEANING.auto}] ${timedAuto}`),
       JSON.stringify({ sends: timedAutoSends.map((r) => r.path), bundled: timedAutoBundled.map((r) => [r.count, r.paths]),
         line: around(timedAutoPane, timedAuto) }));
-
-    // (1) …and an IMMEDIATE delivery into a bundle that holds nothing any more: the queued auto is
-    // deleted inside its window, so the owner /send flushes a bundle whose only entry is itself.
     const loneText = `${marker}: allein im leeren Buendel`;
     const loneAuditBefore = auditRows().length;
-    const loneScheduled = await post("/api/slots/2/autos", { text: `${marker}: geloeschter Check-in`,
-      inSec: 1, idleSec: 0 });
+    const loneScheduled = await post("/api/slots/2/autos", { text: `${marker}: geloeschter Check-in`, everySec: 60, runs: 1, inSec: 1, idleSec: 0 });
     const loneAutoId = ((await loneScheduled.json()) as { auto?: { id: string } }).auto?.id ?? "";
     await until(() => auditRows().slice(loneAuditBefore).find((r) =>
       r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto") ?? null,
@@ -167,14 +171,10 @@ export async function run(): Promise<void> {
         sends: loneSends.map((r) => r.path),
         line: around(lonePane, loneText) }));
 
-    // AN OWNER /-COMMAND NEVER RIDES A BUNDLE (Slot 9, 2026-09-28: „[Zitat entfernt]“ arrived as
-    // „[Zitat entfernt]“ and ran as a prompt). With an auto waiting in the window, the
-    // command is typed alone and first, with no header in front of it; the auto flushes on its own.
-    // BREAKS IF: sendText merges an owner /-command into the waiting bundle again.
     const slashText = `/fleet-probe-${marker}`;
     const slashAutoText = `${marker}: Check-in neben einem Befehl`;
     const slashAuditBefore = auditRows().length;
-    const slashScheduled = await post("/api/slots/2/autos", { text: slashAutoText, inSec: 1, idleSec: 0 });
+    const slashScheduled = await post("/api/slots/2/autos", { text: slashAutoText, everySec: 60, runs: 1, inSec: 1, idleSec: 0 });
     await until(() => auditRows().slice(slashAuditBefore).find((r) =>
       r.event === "delivery_bundle_queued" && r.slot === 2 && r.path === "auto") ?? null,
     { timeoutMs: 8_000, what: "an auto waits in the window beside the coming command" });

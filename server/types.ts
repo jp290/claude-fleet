@@ -5,6 +5,7 @@
 // (docs/sanierung-2026-09/plan-2026-08-31.md §P4 Punkt 1) — a MOVE, every declaration byte-identical
 // to the server.ts line it came from.
 import type { ServerWebSocket } from "bun";
+import type { BlockerHistory, BlockerTotals } from "../waits";
 import type { LaneWatchEventKind, LaneWatchEventPayload, MergeWatchEventPayload, AuditWatchEventPayload,
   DeployWatchEventPayload, CommandJobArtifactPayload, CommandJobWatchEventPayload, ClarificationEventPayload,
   ClarificationBasis } from "../lane-signals";
@@ -13,7 +14,6 @@ import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_
   type HarnessBlockEventPayload, LANE_REVIEW_FINDINGS_MAX, LANE_REVIEW_TITLE_MAX, LANE_REVIEW_FILE_MAX,
   LANE_REVIEW_NOTES_MAX, type LaneReviewEventPayload } from "../lane-signals";
 import type { TitleCarry } from "../titlebytes";
-import type { BriefReviewArm, BriefReviewKind, RefineValidation } from "../refine-validate";
 import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
   type LaneAnchor } from "../src/protocol";
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
@@ -432,12 +432,22 @@ interface HarnessBlockFleetEvent extends FleetEventBase {
 // receiver — and owner-addressable for harness-block's reason: a lane with no live Program-MAIN
 // must still reach someone. NOT a lane kind for subject-gone: the verdict describes a diff, and a
 // lane that landed or died meanwhile leaves that fact exactly as true as it was.
+interface AnsatzReview {
+  ansatz: "ok" | "ueberdenken";
+  begruendung: string;
+  anker: string | null;
+}
 interface LaneReviewFleetEvent extends FleetEventBase {
   subjectSlot: number;
   subjectBranch: string;
   subjectOpenedAt: number;
   kind: "lane-review";
-  payload: LaneReviewEventPayload;
+  payload: LaneReviewEventPayload & Partial<AnsatzReview> & {
+    answer?: { text: string; at: number; slot: number; commentId: string };
+    changedAfterReview?: boolean | null;
+    followupPatchId?: string | null;
+    followupAt?: number;
+  };
   subjectName?: string; // S3d, see LaneFleetEvent
 }
 interface ClarificationFleetEvent extends FleetEventBase {
@@ -663,8 +673,8 @@ interface FleetReport {
 
 // THE OWNER-FACING TWIN of ClarificationRequest, with the roles flipped: there a worker asks its
 // bound Program-MAIN, here the bound Program-MAIN asks the OWNER. The owner is a PRINCIPAL, not a
-// slot — there is no occupant triple to bind an answer to and none is invented, which is why
-// `answer.by` is the literal "owner" rather than the receiver occupant a clarification carries.
+// slot — Owner-Bearer answers carry `by: „[Zitat entfernt]“` without an invented occupant triple. A scoped
+// Orchestratorin answer carries `by: "orchestrator"` and her server-observed slot instead.
 // Everything else is deliberately the same shape, including `send-uncertain`: the answer travels
 // into the requester's pane over the same transport, so it inherits the same crash boundary.
 type AttentionKind = "decision" | "blocked" | "review-ready";
@@ -688,7 +698,7 @@ interface AttentionRequest {
   stage: AttentionStage;
   // present once POST /api/attention/:id/escalate handed the row from the Orchestratorin to the owner
   escalation?: { reason: string; at: number };
-  answer: { text: string; at: number; by: "owner" } | null;
+  answer: ({ text: string; at: number } & ({ by: "owner" } | { by: "orchestrator"; slot: number })) | null;
   refusedReason: string | null;
   closedAt: number | null;
 }
@@ -1051,12 +1061,27 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       || !Number.isInteger(p.findingCount) || (p.findingCount ?? -1) < 0
       || !Array.isArray(p.findings) || p.findings.length > LANE_REVIEW_FINDINGS_MAX || !p.findings.every(finding)
       || typeof p.notes !== "string" || p.notes.length > LANE_REVIEW_NOTES_MAX) return null;
+    const a = e.payload as LaneReviewFleetEvent["payload"];
+    if (a.ansatz !== undefined && (a.ansatz !== "ok" && a.ansatz !== "ueberdenken"
+      || typeof a.begruendung !== "string" || a.begruendung.length > 1000
+      || !(a.anker === null || typeof a.anker === "string" && a.anker.length <= 500))) return null;
+    if (a.answer !== undefined && (!a.answer || typeof a.answer.text !== "string" || !a.answer.text
+      || a.answer.text.length > 2000 || !Number.isFinite(a.answer.at) || !Number.isInteger(a.answer.slot)
+      || a.answer.slot <= 0 || typeof a.answer.commentId !== "string")) return null;
+    if (a.changedAfterReview !== undefined && a.changedAfterReview !== null && typeof a.changedAfterReview !== "boolean") return null;
+    if (a.followupPatchId !== undefined && !sha(a.followupPatchId)) return null;
+    if (a.followupAt !== undefined && !Number.isFinite(a.followupAt)) return null;
     return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
       subjectOpenedAt: e.subjectOpenedAt, kind: e.kind,
       payload: { taskId: p.taskId, programId: p.programId ?? null, diffSha: p.diffSha ?? null, head: p.head ?? null, model: p.model,
         describedThisDiff: p.describedThisDiff, raw: p.raw, findingCount: p.findingCount!,
         findings: p.findings.map((f) => ({ title: f.title, file: f.file, line: f.line, impact: f.impact })),
-        notes: p.notes }, ...subjectNameFrom(e.subjectName) };
+        notes: p.notes,
+        ...(a.ansatz ? { ansatz: a.ansatz, begruendung: a.begruendung, anker: a.anker } : {}),
+        ...(a.answer ? { answer: { ...a.answer } } : {}),
+        ...(a.changedAfterReview !== undefined ? { changedAfterReview: a.changedAfterReview } : {}),
+        ...(a.followupPatchId !== undefined ? { followupPatchId: a.followupPatchId } : {}),
+        ...(a.followupAt !== undefined ? { followupAt: a.followupAt } : {}) }, ...subjectNameFrom(e.subjectName) };
   }
   return null;
 }
@@ -1263,7 +1288,9 @@ function attentionFrom(raw: unknown): AttentionRequest | null {
     || !(a.refusedReason === null || typeof a.refusedReason === "string")) return null;
   const answerShaped = (): boolean => !!answer && typeof answer.text === "string" && !!answer.text.trim()
     && answer.text.length <= MAX_ATTENTION_ANSWER && typeof answer.at === "number"
-    && Number.isFinite(answer.at) && answer.at > 0 && answer.by === "owner";
+    && Number.isFinite(answer.at) && answer.at > 0
+    && (answer.by === "owner" || (answer.by === "orchestrator"
+      && Number.isInteger(answer.slot) && answer.slot > 0 && a.stage === "orchestrator"));
   if (a.status === "open" && (answer !== null || a.refusedReason !== null || a.closedAt !== null)) return null;
   if (a.status === "answered") {
     if (!answerShaped() || a.refusedReason !== null || a.closedAt === null) return null;
@@ -1399,12 +1426,10 @@ interface Task {
   // It records the RECOMMENDATION, not the act — the act is variantDecision above, which the
   // comparator attempts in the same breath and which may legitimately refuse (a winner whose lane
   // is already gone leaves the group undecided for the owner, ledger line standing).
-  files?: string[]; // the task's file surface. In persisted state this is written ONLY when a ↻
-  // refine proposal is confirmed (from RefineChild.files): the refiner verified it against the
-  // tree and the owner promoted it. API views may instead PROJECT exact tracked paths named in the
-  // task/brief, but that weaker derivation is never written back over the owner-confirmed field.
-  // Absent means UNKNOWN, never „[Zitat entfernt]“; loadState and the projector both preserve that.
-  filesOrigin?: TaskFilesOrigin; // confirmed = persisted refine-confirm fact; derived = read-only
+  files?: string[]; // the task's stored file surface, confirmed by the owner or lifted from a card.
+  // API views may project tracked paths named in task/brief; that weaker reading never overwrites
+  // the confirmed field. Absent means UNKNOWN; the loader and projector both preserve that.
+  filesOrigin?: TaskFilesOrigin; // confirmed = owner fact; derived = read-only
   // server projection from exact path tokens; card = the card tick's lift of a surfaceValid card on
   // a program row (server.ts#liftCardSurface), persisted, bundled on range evidence only. A legacy
   // persisted `files` field is confirmed by the old field's contract. The values must never collapse:
@@ -1442,6 +1467,8 @@ interface Task {
   // than an absent field, which reads as "nobody looked".
   status: "pending" | "queued" | "sent" | "done" | "archived";
   disposition?: TaskDisposition; // WHY this row was archived — see TaskDisposition
+  blockers?: BlockerHistory;
+  blockerZeiten?: BlockerTotals;
   hold?: TaskHold; // a Program-MAIN's STOP on this row (POST /api/self/tasks/:id/hold) — see TaskHold
   releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
   // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's
@@ -1466,20 +1493,11 @@ interface Task {
   // the Inspektion's register `key`). One live proposal per ref — the server answers a repeat
   // filing with the existing row instead of a duplicate, so a persisting condition survives
   // as ONE queue item across an hourly pulse. Absent on ad-hoc filings and non-steward rows.
-  refine?: TaskRefine; // the brief compiler's PROPOSAL (briefs/task-refine.md). A refine run never
-  // touches this row's text — it only parks what it would become here, and the owner's confirm is
-  // what mints the children. Propose/promote like `criterion`, for the same reason: the producer
-  // must not be the one who rewrites the work order it was measured against.
-  briefReview?: TaskBriefReview; // the COUNTER-READ trial (docs/brief-gegenlese.md): which arm this
-  // row fell into and, on the reviewed arm, the model's PROPOSAL. Allocated only by the dispatch tick
-  // under FLEET_BRIEF_REVIEW, never by a door; it never touches `brief` or `text`. Absent = the
-  // switch was off, or the row was never eligible (no valid mittel|gross card) when it was started.
+  refine?: unknown;
+  briefReview?: unknown;
   brief?: TaskBrief;       // the compiled work brief — the EXACT bytes a lane will receive.
   // Compiled once per draft by the brief sweep, from then on stored, shown and editable (why it
   // is stored rather than compiled at spawn: server-narrativ-archiv.md#task).
-  // NOT the same object as `refine`, and the difference is the point: ↻ refine proposes a new
-  // REQUEST (attended, all-or-nothing, may split one row into several), while this is the prompt
-  // the request compiles down to. Refine rewrites what you asked for; the brief is how it is said.
   touched?: TaskTouch[]; // WHICH lands moved a file this row's surface names, newest first, capped
   // at TASK_TOUCHED_MAX. Advisory like `cluster`: it changes no status and gates
   // nothing — it answers "has the ground under this observation moved since it was written". ABSENT
@@ -1498,6 +1516,7 @@ interface Task {
   // with the fleet-wide tick off (FLEET_AUTO_REVIEW_MS=0), and the verdict is filed as a `lane-review`
   // FleetEvent to the live Program-MAIN, else the owner inbox (server.ts#fileLaneReview). It GATES
   // NOTHING: no land, dispatch or report reads it. Absent = no review asked for (never stored "none").
+  reviewDefaultOff?: true;
   comments?: TaskComment[]; // the owner's own words ON this row, addressed to whoever picks it up
   // (the gap it closed: server-narrativ-archiv.md#task). Deliberately NOT folded into the brief:
   // the brief is the exact bytes a lane receives and is approved as such, so appending to it behind
@@ -1734,44 +1753,6 @@ interface TaskCriterionPart { text: string; check?: { cmd: string; expectExit: n
 // empty array means "checked, all tracked" while ABSENCE means the index could not be read at all.
 interface TaskFilesProposal { files: string[]; at: number; by: string; unknownPaths?: string[] }
 
-// The counter-read's record on a row. `arm` and `at` are written together, once, at the first tick
-// that sees the row eligible, and never change: the trial's allocation is a fact, not a state.
-// `state` exists on the reviewed arm only — the control arm has nothing running and nothing to say.
-// `atStart` is what the review's state WAS when the lane's founding bytes were chosen (briefAndSend):
-// `done` = its findings block rode along, anything else = the lane got the old bytes.
-// `findings` + `brief` are the PROPOSAL; `brief` never replaces Task.brief (least of all by:owner),
-// and an empty string means the reviewer found nothing to rewrite.
-interface BriefReviewFinding { kind: BriefReviewKind; text: string; evidence: string }
-interface TaskBriefReview {
-  arm: BriefReviewArm;
-  at: number;
-  size: "mittel" | "gross";
-  state?: "running" | "done" | "failed";
-  model?: string;
-  doneAt?: number;
-  error?: string;
-  findings?: BriefReviewFinding[];
-  brief?: string;
-  atStart?: "running" | "done" | "failed";
-}
-// One compiled child. `text` is the request in its own words; the other three are what a hand-
-// written brief carries and a raw task usually does not. They are stored SEPARATELY rather than
-// pre-joined so the proposal stays reviewable field by field in the queue detail — the row text
-// the owner promotes is composed from them deterministically (refineChildText).
-interface RefineChild { text: string; doneCriterion: string; verify: string; files: string[] }
-// The two answer shapes, as a discriminated union: either the task was already brief-shaped
-// (triage — the anti-overthink clause) or it compiles into 1..MAX_REFINE_CHILDREN children.
-type RefineProposal = { unchanged: true; reason: string } | { unchanged: false; tasks: RefineChild[] };
-interface TaskRefine { at: number; model: string; proposal: RefineProposal;
-  // The deterministic acceptance on that proposal (refine-validate.ts): which declared paths are
-  // tracked in the target repo, and whether each child's verify field names a step of this repo's
-  // local proof chain. READ-ONLY PROJECTION, like `cluster` on the row above it — written by
-  // taskView from the CURRENT tracked tree and never by the worker, so it is always a statement
-  // about today rather than about the minute the compile finished, and it needs no staleness
-  // anchor of its own. Never persisted: normRefine rebuilds this record field by
-  // field, so a hand-edited state file cannot smuggle a verdict in either direction.
-  validation?: RefineValidation }
-
 // HOW a lane's working copy relates to the repo it came from. Absent/"worktree" is every lane
 // Fleet ever made: `git worktree add`, sharing the primary's object database. "clone" is a full
 // `git clone --no-hardlinks` — its own .git, its own hooks, its own config, one self-contained
@@ -1844,88 +1825,6 @@ const loadLaneResume = (value: unknown): LaneResume | null => {
     || !finiteTime(r.parkedAt) || !finiteTime(r.resumedAt) || r.verify !== "stale") return null;
   return { candidate: r.candidate, head: r.head, reportId: r.reportId, parkedAt: r.parkedAt,
     resumedAt: r.resumedAt, verify: "stale" };
-};
-// THE REVIEW PREVIEW (task 6ec36333, docs/messungen/2026-09-23-worktree-lebenszyklus.md §3 Karte 2):
-// ONE time-boxed, isolated instance of ONE review candidate's STORED head, started by the owner and
-// run by lane-preview.sh in a scratch copy with its own socket, port and token. The record is the
-// candidate's start, stop and expiry evidence in one (`endedAt` + `why` name which end it met); a
-// later start of the same candidate replaces it. `head` is the candidate's head, so a lane head that
-// moved away marks the record stale. A VIEW, never a verify or land-gate result — no gate reads it.
-// Unrelated to server.ts#lanePreviewFact, which is the lane's isolated SUITE job.
-type LanePreviewState = "starting" | "running" | "stopped" | "expired" | "failed";
-interface LanePreview {
-  id: string; candidate: string; path: string; branch: string; head: string;
-  host: string; port: number; sock: string; dir: string; token: string;
-  startedAt: number; expiresAt: number; state: LanePreviewState;
-  endedAt: number | null; why: string | null;
-}
-const LANE_PREVIEW_STATES: readonly LanePreviewState[] = ["starting", "running", "stopped", "expired", "failed"];
-const loadLanePreview = (value: unknown): LanePreview | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const r = value as Record<string, unknown>;
-  if (typeof r.id !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.id)
-    || typeof r.candidate !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.candidate)
-    || typeof r.path !== "string" || !r.path || typeof r.branch !== "string" || !r.branch
-    || typeof r.head !== "string" || !GIT_SHA_RE.test(r.head) || typeof r.host !== "string" || !r.host
-    || typeof r.port !== "number" || !Number.isInteger(r.port) || r.port < 1 || r.port > 65535
-    || typeof r.sock !== "string" || !/^fleetpv[0-9a-f]{12}$/.test(r.sock)
-    || typeof r.dir !== "string" || !/\/fleet-lane-preview-[0-9a-f]{12}$/.test(r.dir)
-    || typeof r.token !== "string" || !/^[0-9a-f]{32,64}$/.test(r.token)
-    || !finiteTime(r.startedAt) || !finiteTime(r.expiresAt)
-    || !LANE_PREVIEW_STATES.includes(r.state as LanePreviewState)
-    || !(r.endedAt === null || finiteTime(r.endedAt)) || !(r.why === null || typeof r.why === "string")) return null;
-  return { id: r.id, candidate: r.candidate, path: r.path, branch: r.branch, head: r.head, host: r.host,
-    port: r.port, sock: r.sock, dir: r.dir, token: r.token, startedAt: r.startedAt, expiresAt: r.expiresAt,
-    state: r.state as LanePreviewState, endedAt: r.endedAt, why: r.why };
-};
-// THE REVIEW ON PRESS (row after 6ec36333, docs/messungen/2026-09-23-worktree-lebenszyklus.md §3
-// Karte 3; owner 2026-09-24 „[Zitat entfernt]“): ONE advisory diff review of a
-// parked candidate's STORED head against its base, run only when the owner presses for it, kept as a
-// dated comment bound to the patch id it read. Keyed by the worktree path, not the candidate, so a
-// comment outlives a resume and a later park of the same tree — and a changed patch there shows it
-// stale. `running` is the claim that makes a second press a refusal, `failed` a run that filed
-// nothing (it still counts toward the per-candidate cap). Advisory only: no gate reads any of it.
-type CandidateReviewState = "running" | "filed" | "failed";
-interface CandidateReviewFinding {
-  title: string; file: string; line: number | null; impact: "high" | "medium" | "low";
-  cost: string; basis: "verified" | "inferred"; detail: string;
-}
-interface CandidateReview {
-  id: string; candidate: string; path: string; branch: string; head: string; base: string; patchId: string;
-  startedAt: number; at: number | null; state: CandidateReviewState; why: string | null;
-  model: string | null; scope: string; notes: string; raw: boolean | null; findings: CandidateReviewFinding[];
-}
-const CANDIDATE_REVIEW_STATES: readonly CandidateReviewState[] = ["running", "filed", "failed"];
-const CANDIDATE_REVIEW_IMPACTS = ["high", "medium", "low"] as const;
-const loadCandidateReviewFinding = (value: unknown): CandidateReviewFinding | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const f = value as Record<string, unknown>;
-  if (typeof f.title !== "string" || typeof f.file !== "string" || !f.file
-    || !(f.line === null || (typeof f.line === "number" && Number.isInteger(f.line)))
-    || !CANDIDATE_REVIEW_IMPACTS.includes(f.impact as CandidateReviewFinding["impact"])
-    || typeof f.cost !== "string" || (f.basis !== "verified" && f.basis !== "inferred")
-    || typeof f.detail !== "string") return null;
-  return { title: f.title, file: f.file, line: f.line, impact: f.impact as CandidateReviewFinding["impact"],
-    cost: f.cost, basis: f.basis, detail: f.detail };
-};
-// whole or not at all, like every loader here — a torn finding drops its comment, never itself alone
-const loadCandidateReview = (value: unknown): CandidateReview | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const r = value as Record<string, unknown>;
-  if (typeof r.id !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.id)
-    || typeof r.candidate !== "string" || !REVIEW_CANDIDATE_ID_RE.test(r.candidate)
-    || typeof r.path !== "string" || !r.path || typeof r.branch !== "string" || !r.branch
-    || typeof r.head !== "string" || !GIT_SHA_RE.test(r.head) || typeof r.base !== "string" || !r.base
-    || typeof r.patchId !== "string" || !GIT_SHA_RE.test(r.patchId) || !finiteTime(r.startedAt)
-    || !(r.at === null || finiteTime(r.at)) || !CANDIDATE_REVIEW_STATES.includes(r.state as CandidateReviewState)
-    || !(r.why === null || typeof r.why === "string") || !(r.model === null || typeof r.model === "string")
-    || typeof r.scope !== "string" || typeof r.notes !== "string" || !(r.raw === null || typeof r.raw === "boolean")
-    || !Array.isArray(r.findings)) return null;
-  const findings = r.findings.map(loadCandidateReviewFinding);
-  if (findings.some((f) => f === null)) return null;
-  return { id: r.id, candidate: r.candidate, path: r.path, branch: r.branch, head: r.head, base: r.base,
-    patchId: r.patchId, startedAt: r.startedAt, at: r.at, state: r.state as CandidateReviewState, why: r.why,
-    model: r.model, scope: r.scope, notes: r.notes, raw: r.raw, findings: findings as CandidateReviewFinding[] };
 };
 interface SuccessionRetirement { at: number; cwd: string; token: string }
 // THE PORTFOLIO READ GRANT (memory M4, task 41641179; docs/self-api.md §memory). A READ permission
@@ -2058,6 +1957,7 @@ interface Slot {
   // silently falling back to the default one.
   effort: string | null; // per-slot reasoning level for harnesses that have one (Pi's --thinking);
   // null = pass no flag. Validated against the HARNESS's own closed set, never a charset.
+  webSearch: boolean;
   browser: boolean; // THIS LANE's MCP profile: true = it starts with the ambient Playwright MCP
   // (the state before 2026-09-14), false = a text lane that starts without it. Read ONLY for a slot
   // with a worktree — a MAIN or plain session keeps its ambient MCPs whatever this says (ensureSlot).
@@ -3506,13 +3406,13 @@ export type {
   DeployWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
-  HelperCmdCheck, HarnessBlockFleetEvent, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
+  HelperCmdCheck, HarnessBlockFleetEvent, AnsatzReview, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
   FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportFulfilled, FleetReportDecision, FleetReportBasis,
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
-  Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal, RefineChild,
-  RefineProposal, TaskRefine, BriefReviewFinding, TaskBriefReview, LaneForm, LaneRef, LaneReviewCandidate, LaneResume, LanePreview, LanePreviewState, CandidateReview, CandidateReviewFinding, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
+  Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal,
+  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
@@ -3559,7 +3459,7 @@ export {
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, loadTaskHoldUntil, TASK_HOLD_GRUND_MAX, loadTaskKindChanges, loadStallSensor,
-  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume, loadLanePreview, loadCandidateReview,
+  REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume,
   TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX, loadTaskDisposition,
   HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, HELPER_CMD_MAX, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName,
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,

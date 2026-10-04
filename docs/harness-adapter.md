@@ -23,7 +23,7 @@ mit temporaeren Fixture-Quellen.
 | --- | --- | --- |
 | `codex` | `$CODEX_HOME/models_cache.json`, Default `~/.codex/models_cache.json` | `models[].slug` ist der von Codex gespeicherte Modellkatalog; optional `fetched_at` datiert den Cache. |
 | `pi-zai` | `$FLEET_PI_ZAI_AGENT_DIR/models-store.json`, Default `~/.config/claude-fleet/pi-zai-agent/models-store.json` | Nur `zai.models[].id` aus dem dynamischen Provider-Katalog; `zai.checkedAt` datiert die letzte Cache-Pruefung. Ein fehlender Provider, leere Modelle oder fehlender Zeitstempel bleiben `unknown`. |
-| `claude` | `$CLAUDE_CONFIG_DIR/cache/model-access.json` und `model-capabilities.json`, Default `~/.claude/cache/` | Bei Claude Code 2.1.288: Access-Schema `version: 1, entries: {scope: {model: {s: "ok"\|"refused", at: number}}}`; Capability-Schema `models: [{id, max_input_tokens?, max_tokens?}], timestamp: number`. Beide Dateien fehlen auf dem gemessenen Host. Auch vorhandene, passende Dateien bilden keinen vollstaendigen Verfuegbarkeitskatalog: Access merkt scoped Provider-Erfahrungen, Capabilities Tokenlimits. Ergebnis bleibt `unknown`. |
+| `claude` | `$CLAUDE_CONFIG_DIR/cache/model-catalog/*-cc.json`, Default `~/.claude/cache/model-catalog/` | Gemessenes Schema: `version: 2, fetchedAt: number, staleAt: number, catalog: {surface: "cc", config: {id: "cc", models: [{id, ...}]}, ...}`. Nur Modell-IDs und Cachezeiten werden ausgegeben. Fehlende, unlesbare, leere, abgelaufene oder widerspruechliche cc-Kataloge bleiben `unknown` mit Grund; publizierte Dokumente und andere Oberflaechen werden nicht als lokale Verfuegbarkeit gewertet. Die bisherigen Access-/Capability-Caches sind kein vollstaendiger Katalog. |
 
 Je Harness nennt `sources` die Quelle ohne aufgeloeste Host-/Override-Pfade.
 `status: "known"` liefert sortierte, deduplizierte `available`, `newlyAvailable`
@@ -46,6 +46,17 @@ Flaechen dieses Vorschlags: CLI/JSON und Dokumentation `apply`, Fixture-Probe `a
 Server/Wire, Client und Reverse-State `not-applicable`, da kein laufender Fleet-Zustand
 geaendert wird. CLI-Updates und regelmaessige Ausfuehrung sind in diesem Scanner
 `unsupported`; ein spaeterer Service braucht dafuer eine eigene Entscheidung.
+
+Der bestehende `tickAutos` ruft den Abgleich bei eingeschalteten Autos hoechstens einmal
+je 24 Stunden auf. `fleet.json.modelScan` bewahrt den Scanzeitpunkt und den zuletzt
+gemeldeten Differenzstand je Harness auch ueber Server-Neustarts. Nur Aenderungen an
+`newlyAvailable`/`registeredButUnavailable` erzeugen zusammen eine einzeilige Nachricht
+ueber `sendText` an die Rollenadresse `{kind: "orchestrator"}`. Ein erster bekannter
+Stand ohne Differenz bleibt still; eine Rueckkehr zu leeren Differenzen nach einer
+Meldung wird gemeldet. `unknown` ueberschreibt keinen bekannten Meldestand und
+behauptet keinen Modell-Wegfall. Fehlt die Rolle oder scheitert die Zustellung,
+bleibt der Stand ungemeldet bis zum naechsten Tageslauf. Der Vorschlag aendert das
+Register nie automatisch.
 
 ## Land-Pfad-Flags
 
@@ -323,28 +334,25 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   im Rollout einer gpt-6.1-sol-Session vom 2026-09-29.
 - `DEFAULT_MODEL` (`server.ts`, Override `FLEET_MODEL`) bleibt die Auswahl für Sessions/Lanes.
   Fleet-eigene Worker beziehen Modell **und Effort** aus `model-register.ts#MODEL_DEFAULTS`;
-  `server.ts#WORKER_MODELS` löst die validierte Auswahl einmal beim Boot auf. Elf Rollen: summary,
-  commitMsg, enhance, digest, review, merge, repair, cleanReview, refine, briefReview und card.
-  Brief-Gegenlese teilt den Prompt-Vertrag und den Routenschalter mit refine, behält aber eine
-  eigene Modellauswahl und eigene Override-Schlüssel.
-- Alle zehn Worker-Routen laufen standardmäßig über `codex exec`. Die elf rollenbezogenen
-  `*Exec`-Defaults einschließlich `briefReviewExec` sind `codex/gpt-6.1-sol` mit Effort `medium`.
+  `server.ts#WORKER_MODELS` löst die validierte Auswahl einmal beim Boot auf. Neun Rollen: summary,
+  commitMsg, enhance, digest, review, merge, repair, cleanReview und card.
+- Alle neun Worker-Routen laufen standardmäßig über `codex exec`. Die neun rollenbezogenen
+  `*Exec`-Defaults sind `codex/gpt-6.1-sol` mit Effort `medium`.
   Der interaktive Worker-Default bleibt davon unabhängig auf `high`.
   Nur der exakte Wert `claude` an `FLEET_WORKER_ROUTE_SUMMARY`, `_COMMITMSG`, `_ENHANCE`, `_DIGEST`,
-  `_REVIEW`, `_CLEANREVIEW`, `_REFINE`, `_CARD`, `_MERGE` oder `_REPAIR` wählt den bisherigen
-  Claude-Session-Pfad mit dessen unverändertem Toolprofil. Brief-Gegenlese teilt `_REFINE`.
+  `_REVIEW`, `_CLEANREVIEW`, `_CARD`, `_MERGE` oder `_REPAIR` wählt den bisherigen
+  Claude-Session-Pfad mit dessen unverändertem Toolprofil.
   Fehlende, `codex-exec` und ungültige Werte wählen Codex; `FLEET_*_CMD` und Repo-Worker-Kommandos
   behalten Vorrang vor der Route.
 - Claude-Fallbackdefaults bleiben unverändert: summary, commitMsg, enhance, digest, review,
-  cleanReview, merge und repair verwenden Sonnet 5.5; refine und briefReview Opus 5.5;
+  cleanReview, merge und repair verwenden Sonnet 5.5;
   card Haiku 4.5. Alle Claude-Defaults tragen `effort: null` und lassen den CLI-Effort-Flag weg.
   Der effektive CLI-Default ist unbekannt. Modell und Effort können unabhängig überschrieben werden.
 - Worker-Overrides heißen `FLEET_<KEY>_MODEL` und `FLEET_<KEY>_EFFORT`, mit den Keys SUMMARY,
-  COMMITMSG, ENHANCE, DIGEST, REVIEW, MERGE, REPAIR, CLEAN_REVIEW, REFINE, BRIEF_REVIEW und CARD.
+  COMMITMSG, ENHANCE, DIGEST, REVIEW, MERGE, REPAIR, CLEAN_REVIEW und CARD.
   Auf Headless-Routen heißen sie `FLEET_<KEY>_CODEX_MODEL|EFFORT`; die bisherigen Claude-Keys
   ändern diese Routen weiterhin nicht. Ohne rollenbezogenen Override gelten für Claude die
-  bisherigen `FLEET_SUMMARY_MODEL|EFFORT`, für Brief-Gegenlese `FLEET_REFINE_MODEL|EFFORT`.
-  Card und refine haben eigene Keys.
+  bisherigen `FLEET_SUMMARY_MODEL|EFFORT`. Card hat eigene Keys.
 - Beim Boot werden Overrides gegen `MODEL_REGISTER` und die Effort-Stufen der Harness geprüft.
   Unbekannte oder harnessfremde Modelle und ungültige Efforts werden laut zurückgewiesen;
   der jeweilige Register-Fallback greift. Registrierte `superseded`-Overrides bleiben lesbar,
@@ -381,7 +389,7 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
 
 `server.ts#runWorker` schreibt pro Aufruf genau eine Zeile in den gitignorierten
 `worker-runs.jsonl`-Ledger über `server/persist.ts#appendEvent`, auch bei Fehlern.
-Die Zeile trägt `at` (Startzeit), `worker`, `role` (einschließlich briefReview),
+Die Zeile trägt `at` (Startzeit), `worker`, `role`,
 `route` (`cmd`, `claude` oder `codex-exec`), die konfigurierte Auswahl `model` und
 `effort` (`null` heißt weiterhin CLI-Default unbekannt), `ms` und `ok`.
 Bei Fehlern kommt `error` hinzu: höchstens 300 Zeichen der ersten Diagnosezeile,
@@ -696,6 +704,25 @@ Netzwerkkosten werden nicht als null behauptet.
     die Zustellung; sie bestätigt oder umgeht keinen Dialog. Managed CLI-Refusals bleiben Refusals.
     `GET /api/harnesses` trägt `permissions:{status:"supported",sandbox:[…],approval:[…],default:{…}}`
     bzw. `{status:"unsupported"}`. Client-Fläche sind nur Wire-Typen, keine Setup-Formulare.
+  - **Web-Recherche je Queue-Karte: `WEB: search`.** Optionale Kopfzeile neben `NACH:`;
+    `search` ist der einzige gültige Wert. Die strukturierten Create-Türen nehmen entsprechend
+    `card.web: "search"` als explizite Autor-Deklaration. Eine Rechercheabsicht in Prosa aktiviert
+    nichts. Websuche verändert weder Sandbox noch Approval; sie ist kein Rechte-Upgrade.
+    Parser und Validator bewahren das Feld; ein anderer Wert verweigert die Karte.
+    **Codex `apply`**: Dispatch reicht die gültige Karte bis `CODEX_HARNESS.spawnCmd` weiter;
+    frische UND exakt-ID-resumierte Kommandozeilen erhalten `--search`. Ohne Deklaration bleibt
+    die Kommandozeile bytegleich. Bei einer Welle genügt eine deklarierende Karte. Die Auswahl
+    wird als `Slot.webSearch` persistiert und im Spawn-Occupant mitverglichen; Heal, Restart
+    und Resume erhalten sie auch dann, wenn die Queue-Zeile nicht mehr `sent` ist.
+    Open und Teardown setzen das Profil zurück, sodass ein neuer Occupant es nicht erbt.
+    `succeedLane` und der gemeinsame `restartLaneSession` tragen die Auswahl weiter;
+    `switchLaneHarness` erhält sie bei Codex und setzt sie beim Wechsel auf einen anderen Harness auf false.
+    `GET /api/sessions` zeigt das gewählte Profil als `webSearch: true`; ohne Auswahl fehlt das Feld.
+    Ein eigener Web-Schalter im Client ist **not-applicable**. Plain-Sessions und handgeöffnete Lanes ohne Queue-Karte wählen
+    hier kein Web-Profil. **claude/pi/container `not-applicable`**: deren Kommandozeilen bleiben
+    unverändert. Keine Änderung an globaler Codex-Konfiguration oder Trust-Prelude.
+    `e2e/tasks.ts` prüft Parser-Refusals sowie erzeugte frische und Resume-Zeilen mit/ohne Auswahl
+    gegen ein Stand-in-Binary; dafür wird kein echter Codex gestartet.
   - **Kontextbudget je Codex-Slot: `context: {window, compactAt}` (2026-09-15).** Zwei ganze Zahlen in
     Tokens, Spawn-Option wie `effort`: `POST /api/slots/:n/open`, `…/open-worktree`, `POST /api/lanes`
     (auch attach), `Task.spawn` (beide Create-Türen), Dispatch- und Wellen-Tür (Body-Feld gewinnt, sonst die

@@ -71,10 +71,6 @@ type AuditEvent =
   // the clarify lane's propose/promote pair, both sides recorded: who drafted the anchor and
   // when the owner made it theirs (the boundary this whole path is built around)
   | "criterion_proposed" | "criterion_confirmed"
-  // ↻ refine, the same propose/promote pair one level up: the compiler was asked (task_refine),
-  // and the owner either promoted the proposal into new rows or discarded it. The confirm's detail
-  // carries the children's ids — the archived original is otherwise the only place they are named
-  | "task_refine" | "task_refine_confirm" | "task_refine_dismiss" | "task_brief_review"
   // W2 · the FILE SURFACE of an existing row, the same propose/promote pair once more: a lane or
   // MAIN parks a proposal (task_files_propose, with the proposing slot), and the owner either
   // confirms a surface onto the row (task_files_confirm) or drops the proposal
@@ -465,13 +461,7 @@ type AuditEvent =
   // the detail names the sendId and the draft's LENGTH — never the text, never the draft.
   | "send_parked"
   | "delivery_bundle_queued" | "delivery_bundle_sent" | "delivery_bundle_refused"
-  | "delivery_bundle_uncertain" | "delivery_bundle_dropped" | "delivery_bundle_rerouted"
-  // a review candidate's isolated preview (server.ts#startLanePreview): start / stopped / expired /
-  // failed, the candidate and preview ids and the port — never the instance token
-  | "lane_preview"
-  // an owner-pressed advisory review of a parked candidate (server.ts#startCandidateReview): start /
-  // filed / failed, the candidate and review ids and the patch id — never a finding's text
-  | "candidate_review";
+  | "delivery_bundle_uncertain" | "delivery_bundle_dropped" | "delivery_bundle_rerouted";
 // `fields` — machine-readable columns for the rows that need them, beside (not instead of) the
 // prose `detail` every other event uses. Identity keys are RESERVED: a caller cannot
 // overwrite what row this is, which is why they are filtered rather than merely documented.

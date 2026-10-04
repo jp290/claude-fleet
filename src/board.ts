@@ -209,18 +209,7 @@ export interface ReviewFinding { title: string; file: string; line: number | nul
 export interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
   shortstat: string | null; empty: boolean }
 export interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number; note?: string | null;
-  notepad?: string | null; review?: ReviewCandidateInfo | null; preview?: LanePreviewInfo | null; reviews?: CandidateReviewInfo[] | null }
-// server.ts#CandidateReviewView — an owner-pressed advisory review of a candidate's stored head, bound
-// to the patch it read; `stale` when the worktree now carries another patch (null = unreadable)
-export interface CandidateReviewInfo { id: string; candidate: string; head: string; base: string; patchId: string;
-  startedAt: number; at: number | null; state: "running" | "filed" | "failed"; why: string | null;
-  model: string | null; scope: string; notes: string; raw: boolean | null; findings: ReviewFinding[];
-  patchNow: string | null; stale: boolean | null }
-// server.ts#LanePreviewView — the time-boxed isolated preview of a candidate's stored head; `url` only
-// while it runs, `stale` when the lane's HEAD moved off that head (null = HEAD unreadable)
-export interface LanePreviewInfo { id: string; candidate: string; branch: string; head: string;
-  state: "starting" | "running" | "stopped" | "expired" | "failed"; url: string | null; startedAt: number;
-  expiresAt: number; endedAt: number | null; why: string | null; laneHead: string | null; stale: boolean | null }
+  notepad?: string | null; review?: ReviewCandidateInfo | null }
 // server.ts#ReviewCandidateView — a lane parked for later owner review, with its identity
 export interface ReviewCandidateInfo { id: string; parkedAt: number; expiresAt: number; expired: boolean; branch: string;
   head: string; base: string | null; baseSha: string | null; taskIds: string[]; reportId: string }
@@ -2301,102 +2290,7 @@ export async function renderBoard() {
               + ` · report ${c.reportId.slice(0, 8)} · tasks ${c.taskIds.join(", ")}`
               + (c.expired ? ` · Frist abgelaufen ${new Date(c.expiresAt).toLocaleString()} — Entscheidung fällig`
                 : ` · Frist ${new Date(c.expiresAt).toLocaleString()}`)));
-            const live = w.preview && (w.preview.state === "running" || w.preview.state === "starting");
-            if (!live) {
-              const pvb = el("button", "bwtact", "preview") as HTMLButtonElement;
-              pvb.title = `start a 30-minute isolated test instance of candidate ${c.id} at its stored head ${c.head.slice(0, 10)} — own socket, port and token, no live data; a view, not a verify result`;
-              pvb.onclick = async () => {
-                if (laneReqBusy) return;
-                laneReqBusy = true;
-                pvb.disabled = true;
-                pvb.textContent = "starting…";
-                try {
-                  const r = await post(`/api/review-candidates/${c.id}/preview`, {});
-                  if (!r.ok) alert(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "preview failed");
-                } finally {
-                  laneReqBusy = false;
-                  void renderBoard();
-                }
-              };
-              crow.appendChild(pvb);
-            }
-            // THE REVIEW ON PRESS: one advisory diff review of the stored head, only ever on this click
-            if (!w.reviews?.some((r) => r.state === "running")) {
-              const rvb = el("button", "bwtact", "review") as HTMLButtonElement;
-              rvb.title = `one advisory agent review of candidate ${c.id}'s stored head ${c.head.slice(0, 10)} against its base — filed as a dated comment bound to the patch; not a gate, not a land decision`;
-              rvb.onclick = async () => {
-                if (laneReqBusy) return;
-                laneReqBusy = true;
-                rvb.disabled = true;
-                rvb.textContent = "reviewing…";
-                try {
-                  const r = await post(`/api/review-candidates/${c.id}/review`, {});
-                  if (!r.ok) alert(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "review failed");
-                } finally {
-                  laneReqBusy = false;
-                  void renderBoard();
-                }
-              };
-              crow.appendChild(rvb);
-            }
             sec.appendChild(crow);
-          }
-          // the review COMMENTS on this worktree, oldest first: date, patch, and whether the tree still
-          // carries that patch. They stay across a resume; a changed patch marks them stale, never removes them.
-          for (const rv of w.reviews ?? []) {
-            const rrow = el("div", "sweepv shelved");
-            rrow.appendChild(el("span", "sweepvbadge", `review ${rv.state}`));
-            rrow.appendChild(el("span", "sweepvreason",
-              `${new Date(rv.at ?? rv.startedAt).toLocaleString()} · candidate ${rv.candidate} · patch ${rv.patchId.slice(0, 10)}`
-              + ` · head ${rv.head.slice(0, 10)} vs ${rv.base}`
-              + (rv.stale === true ? ` · VERALTET: der Worktree trägt jetzt Patch ${rv.patchNow?.slice(0, 10) ?? "?"}`
-                : rv.stale === null ? " · aktueller Patch unlesbar — Aktualität unbekannt" : "")
-              + (rv.state === "failed" && rv.why ? ` — ${rv.why}` : "")
-              + " · beratend, kein Gate"));
-            sec.appendChild(rrow);
-            if (rv.state === "filed") {
-              // the outcome lens's own frame: green while the tree carries this patch, amber once it moved on
-              const body = el("div", `ocrev rel-${rv.stale === false ? "covered" : rv.stale ? "superseded" : "unmeasured"}`);
-              for (const n of reviewBody({ ...rv, raw: rv.raw ?? undefined, at: rv.at ?? undefined, model: rv.model ?? undefined }))
-                body.appendChild(n);
-              sec.appendChild(body);
-            }
-          }
-          // THE PREVIEW of that candidate: which candidate, which commit, where, until when — and
-          // whether the lane has moved off that commit since. It stays after a resume (the lane then
-          // carries on) and shows its end; it is a view the owner opens, never a verify result.
-          if (w.preview) {
-            const p = w.preview;
-            const prow = el("div", "sweepv shelved");
-            prow.appendChild(el("span", "sweepvbadge", `preview ${p.state}`));
-            const when = (t: number) => new Date(t).toLocaleTimeString();
-            const where = el("span", "sweepvreason",
-              `candidate ${p.candidate} · commit ${p.head.slice(0, 10)}`
-              + (p.state === "running" || p.state === "starting" ? ` · läuft bis ${when(p.expiresAt)}`
-                : ` · beendet ${p.endedAt ? when(p.endedAt) : "?"}${p.why ? ` — ${p.why}` : ""}`)
-              + (p.stale === true ? ` · VERALTET: Lane-Head ${p.laneHead?.slice(0, 10) ?? "?"} ≠ Vorschau-Commit`
-                : p.stale === null ? " · Lane-Head unlesbar — Aktualität unbekannt" : "")
-              + " · kein Verify-Beleg");
-            prow.appendChild(where);
-            if (p.url) {
-              const a = el("a", "bwtact", p.url.replace(/\?token=.*$/, "")) as HTMLAnchorElement;
-              a.href = p.url;
-              a.target = "_blank";
-              a.rel = "noopener";
-              a.title = "open the preview instance (its own token rides in the link; it is not the board's)";
-              prow.appendChild(a);
-            }
-            if (p.state === "running") {
-              const stop = el("button", "bwtact del", "stop") as HTMLButtonElement;
-              stop.title = "stop this preview now — its instance and scratch copy are removed";
-              stop.onclick = async () => {
-                const r = await post(`/api/review-candidates/${p.candidate}/preview/stop`, {});
-                if (!r.ok) alert(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "stop failed");
-                void renderBoard();
-              };
-              prow.appendChild(stop);
-            }
-            sec.appendChild(prow);
           }
           // THE OWNER'S NOTEPAD under the row of a worktree no slot holds — the parked candidate's
           // (or shelved orphan's) detail area, the same one text per path the live board shows.

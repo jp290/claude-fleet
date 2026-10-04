@@ -1669,16 +1669,9 @@ export async function run(lc: LaneCtx): Promise<void> {
       fleetReports?: { id: string; worker: { sessionId: string | null }; decision?: unknown }[];
       shelved?: Record<string, { note: string; at?: number; review?: RpCandidate }>;
       worktreeNotes?: Record<string, string>;
-      lanePreviews?: Record<string, unknown>;
-      candidateReviews?: Record<string, unknown>;
     };
-    type PvView = { id: string; candidate: string; head: string; state: string; url: string | null; expiresAt: number;
-      endedAt: number | null; why: string | null; laneHead: string | null; stale: boolean | null };
-    type CrRec = { id: string; candidate: string; head: string; base: string; patchId: string; at: number | null;
-      state: string; why: string | null; scope: string; notes: string; raw: boolean | null;
-      findings: { title: string; impact: string }[]; patchNow?: string | null; stale?: boolean | null };
     type RpBoard = { path: string; slot: number | null; note: string | null; notepad?: string | null;
-      review?: RpCandidate | null; preview?: PvView | null; reviews?: CrRec[] | null };
+      review?: RpCandidate | null };
     const rpState = (): RpState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as RpState;
     // the rows through the API, not the state file: a queued save may still be in flight after a response
     const rpRows = async (ids: string[]): Promise<(RpRow | undefined)[]> => {
@@ -1701,20 +1694,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     const rpForeignId = ((await (await post("/api/tasks", { text: "REVIEW PARK FIXTURE: foreign program refusal", queue: false })).json()) as
       { task?: { id: string } }).task?.id ?? "";
     writeFileSync(`${rpCwd}/review-park.txt`, "finished work\n");
-    // …and what makes its head PREVIEWABLE (lane-preview.sh wants server.ts, package.json and a
-    // build): a stub server that answers on the port it was given and writes down the environment it
-    // was started with, so the isolation checks read the instance's real env rather than a promise
-    const rpPkg = JSON.parse(readFileSync(`${rpCwd}/package.json`, "utf8")) as Record<string, unknown>;
-    writeFileSync(`${rpCwd}/package.json`, JSON.stringify({ ...rpPkg, scripts: { build: "mkdir -p public && echo built > public/built.txt" } }) + "\n");
-    writeFileSync(`${rpCwd}/server.ts`, [
-      'import { writeFileSync } from "node:fs";',
-      "const e = process.env;",
-      "writeFileSync(\"seen-env.json\", JSON.stringify({ keys: Object.keys(e).filter((k) => k.startsWith(\"FLEET_\")).sort(),",
-      "  token: e.FLEET_TOKEN ?? null, sock: e.FLEET_SOCK ?? null, port: e.FLEET_PORT ?? null, cmd: e.FLEET_CMD ?? null, home: e.HOME ?? null }));",
-      "Bun.serve({ hostname: e.FLEET_HOST, port: Number(e.FLEET_PORT), fetch: () => new Response(\"preview stub\") });",
-      "",
-    ].join("\n"));
-    spawnSync("git", ["-C", rpCwd, "add", "review-park.txt", "package.json", "server.ts"]);
+    spawnSync("git", ["-C", rpCwd, "add", "review-park.txt"]);
     spawnSync("git", ["-C", rpCwd, "commit", "-qm", "review park: the finished cut"]);
     const rpHead = spawnSync("git", ["-C", rpCwd, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
     const rpMainSlot = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots
@@ -1864,254 +1844,19 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("(notepad) the note rides the review park — the parked row still carries it",
       board1?.notepad === noteText, (board1?.notepad ?? "null").slice(0, 60));
 
-    // === THE REVIEW PREVIEW of this candidate (lane-preview.sh, server.ts#startLanePreview): one
-    // time-boxed isolated instance of the STORED head. What turns each check red: a start that copies
-    // the working tree or its .env, an instance that inherits this server's token/socket/port/HOME, a
-    // second preview of one candidate or one past the budget, a stop or deadline that leaves the URL
-    // answering, a lane head that moved without the record saying so, and a boot that re-arms a
-    // preview whose deadline passed while the server was down.
     {
-      type PvRec = { id: string; candidate: string; head: string; port: number; dir: string; sock: string;
-        state: string; url?: string; token?: string; expiresAt: number; why: string | null };
-      const reach = (u: string): Promise<string | null> =>
-        fetch(u, { signal: AbortSignal.timeout(2000) }).then((r) => r.text()).catch(() => null);
-      const gone = async (u: string, what: string): Promise<boolean> => {
-        try { await until(async () => (await reach(u)) === null, { timeoutMs: 8000, what }); return true; }
-        catch (e) { if (e instanceof UntilTimeout) return false; throw e; }
-      };
-      const pvStart = async (cand: string) => {
-        const r = await post(`/api/review-candidates/${cand}/preview`, {});
-        return { status: r.status, body: (await r.json().catch(() => ({}))) as { ok?: boolean; preview?: PvRec; error?: string } };
-      };
-      // a SECOND candidate, planted: its own worktree at the same head, parked by record — the
-      // budget refusal needs two candidates, and the subject here is the preview, not the park door
-      const pvbPath = `${rpCwd}-pvb`;
-      const pvbBranch = `fleet/pvb-${Date.now()}`;
-      spawnSync("git", ["-C", REPO, "worktree", "add", "-q", "-b", pvbBranch, pvbPath, rpHead]);
-      const pvbId = "b0b0b0b0b0b0";
-      await stopSrv();
-      const pvPlant = rpState();
-      pvPlant.shelved = { ...(pvPlant.shelved ?? {}), [pvbPath]: { note: "preview budget fixture", at: Date.now(),
-        review: { id: pvbId, parkedAt: Date.now(), expiresAt: Date.now() + 3_600_000, branch: pvbBranch, head: rpHead,
-          base: "main", baseSha: null, taskIds: ["pvb-fixture-row"], taskId: null, originId: null, programId: null, reportId: "pvb-fixture-report" } as RpCandidate } };
-      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(pvPlant, null, 2), { mode: 0o600 });
-      await restartSrv({ FLEET_LANE_PREVIEW_MAX: "1", FLEET_LANE_PREVIEW_TTL_MS: "600000" });
-      const cand = parked?.id ?? "";
-      check("(preview) setup: the lane worktree carries a .env the copy must NOT take, and a second candidate is on the board",
-        exists(`${rpCwd}/.env`) && exists(pvbPath) && (await rpBoard())?.review?.id === cand,
-        JSON.stringify({ env: exists(`${rpCwd}/.env`), pvb: exists(pvbPath) }));
-      const pvbNote = "pvb notepad fixture — geht mit dem Baum weg";
-      const pvbSaved = await post("/api/worktrees/note", { repo: REPO, path: pvbPath, text: pvbNote });
-      check("(notepad) the second candidate's worktree carries a note of its own",
-        pvbSaved.ok && rpState().worktreeNotes?.[pvbPath] === pvbNote, String(pvbSaved.status));
-
-      const a = await pvStart(cand);
-      const pa = a.body.preview;
-      check("(preview) a start answers ONE running record of the candidate's stored head on a band port, own socket, deadline set",
-        a.status === 200 && pa?.candidate === cand && pa.head === rpHead && pa.state === "running"
-          && pa.port >= 25400 && pa.port < 25420 && pa.port !== PORT && pa.sock !== SOCK && /^fleetpv[0-9a-f]{12}$/.test(pa.sock)
-          && pa.token === undefined && pa.expiresAt - Date.now() > 500_000,
-        `${a.status} ${JSON.stringify(a.body).slice(0, 400)}`);
-      const url = pa?.url ?? "";
-      check("(preview) the URL answers — the instance is up", (await reach(url)) === "preview stub", url.replace(/token=.*/, "token=…"));
-      const seen = (() => {
-        try { return JSON.parse(readFileSync(`${pa?.dir ?? "-"}/tree/seen-env.json`, "utf8")) as
-          { keys: string[]; token: string | null; sock: string | null; port: string | null; cmd: string | null; home: string | null }; }
-        catch { return null; }
-      })();
-      check("(preview) the copy is the tracked head only: no .env, no working-tree file, the stored server.ts",
-        !!pa && exists(`${pa.dir}/tree/server.ts`) && !exists(`${pa.dir}/tree/.env`)
-          && readFileSync(`${pa.dir}/tree/review-park.txt`, "utf8") === "finished work\n", pa?.dir);
-      check("(preview) the instance runs on its OWN token, socket, port and HOME — nothing of this server's env reaches it",
-        !!seen && !!seen.token && seen.token !== TOKEN && url.includes(seen.token) && seen.sock === pa?.sock
-          && seen.port === String(pa?.port) && seen.cmd === "true" && (seen.home ?? "").startsWith(pa?.dir ?? "-")
-          && !seen.keys.some((k) => k.startsWith("FLEET_SELF_") || k.startsWith("FLEET_STEWARD") || k === "FLEET_VERIFY_CMD" || k.startsWith("FLEET_E2E_")),
-        JSON.stringify({ ...seen, token: seen?.token ? "<set>" : null }));
-      const b1 = await rpBoard();
-      check("(preview) the board row names candidate, commit, URL and deadline, and the head is current",
-        b1?.preview?.candidate === cand && b1.preview.head === rpHead && b1.preview.url === url && b1.preview.state === "running"
-          && b1.preview.expiresAt === pa?.expiresAt && b1.preview.stale === false && b1.preview.laneHead === rpHead,
-        JSON.stringify({ ...b1?.preview, url: b1?.preview?.url ? "<set>" : null }));
-
-      const again = await pvStart(cand);
-      check("(preview) a second preview of the SAME candidate is refused, naming the running one",
-        again.status === 409 && (again.body.error ?? "").includes("already has preview") && (again.body.error ?? "").includes(pa?.id ?? "-"),
-        `${again.status} ${again.body.error}`);
-      const over = await pvStart(pvbId);
-      check("(preview) a preview past the fleet-wide budget is refused, naming the budget",
-        over.status === 409 && (over.body.error ?? "").includes("budget") && (over.body.error ?? "").includes("1 of 1"),
-        `${over.status} ${over.body.error}`);
-
-      // THE HEAD MOVES under the candidate: the record is stale while it differs — and only then
-      writeFileSync(`${rpCwd}/moved.txt`, "a later commit\n");
-      spawnSync("git", ["-C", rpCwd, "add", "moved.txt"]);
-      spawnSync("git", ["-C", rpCwd, "commit", "-qm", "moved after the park"]);
-      const moved = spawnSync("git", ["-C", rpCwd, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-      const b2 = await rpBoard();
-      spawnSync("git", ["-C", rpCwd, "reset", "-q", "--hard", rpHead]);
-      const b3 = await rpBoard();
-      check("(preview) a lane head that moved off the stored head marks the preview stale, and back on it is current again",
-        moved !== rpHead && b2?.preview?.stale === true && b2.preview.laneHead === moved && b2.preview.head === rpHead
-          && b3?.preview?.stale === false,
-        JSON.stringify({ moved: b2?.preview?.stale, back: b3?.preview?.stale }));
-
-      // THE STOP
-      const stop = await post(`/api/review-candidates/${cand}/preview/stop`, {});
-      const stopped = ((await stop.json().catch(() => ({}))) as { preview?: PvRec }).preview;
-      check("(preview) stop ends it: URL unreachable, scratch copy and socket gone, record says stopped",
-        stop.ok && stopped?.state === "stopped" && (await gone(url, "stopped preview unreachable")) && !exists(pa?.dir ?? "-")
-          && spawnSync("tmux", ["-L", pa?.sock ?? "-", "has-session"]).status !== 0,
-        `${stop.status} ${String(JSON.stringify(stopped)).slice(0, 300)}`);
-      const b4 = await rpBoard();
-      check("(preview) the board keeps the ended record, without a URL",
-        b4?.preview?.state === "stopped" && b4.preview.id === pa?.id && !!pa && b4.preview.url === null, JSON.stringify(b4?.preview));
-      check("(preview) a second stop is refused by name, not repeated",
-        (await post(`/api/review-candidates/${cand}/preview/stop`, {})).status === 409);
-
-      // THE DEADLINE, on the server's timer: a short clock for this one restart
-      await restartSrv({ FLEET_LANE_PREVIEW_MAX: "1", FLEET_LANE_PREVIEW_TTL_MS: "4000" });
-      const bRes = await pvStart(pvbId);
-      const pb = bRes.body.preview;
-      const bUp = !!pb?.url && (await reach(pb.url)) === "preview stub";
-      const pvbBoard = async () => ((await (await get(`/api/slots/${lc.lnSlot}/worktrees`)).json()) as { worktrees: RpBoard[] })
-        .worktrees.find((w) => w.path === pvbPath);
-      let pbEnd: PvView | null | undefined = null;
-      try {
-        pbEnd = await until(async () => { const v = (await pvbBoard())?.preview; return v?.state === "expired" ? v : null; },
-          { timeoutMs: 20_000, what: "the second preview expired on its deadline" });
-      } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
-      check("(preview) with the first stopped the budget is free again, and the deadline ends the preview: URL unreachable, copy gone",
-        bRes.status === 200 && bUp && pbEnd?.state === "expired" && (pbEnd.why ?? "").includes("deadline") && pbEnd.url === null
-          && !!pb?.url && (await gone(pb.url, "expired preview unreachable"))
-          // the record turns `expired` BEFORE the stop script runs (endLanePreview); the copy goes with the script
-          && (await until(() => !exists(pb.dir), { timeoutMs: 8000, what: "expired preview copy removed" }).catch(() => false)) === true,
-        `${bRes.status} up=${bUp} ${JSON.stringify(pbEnd)}`);
-
-      // …and on a deadline that passed while the server was DOWN: the boot ends it (the script's own
-      // backstop fires only a grace later, so this is the server's answer)
-      const c2 = await pvStart(cand);
-      const pc = c2.body.preview;
-      await stopSrv();
-      const cUpWhileDown = !!pc?.url && (await reach(pc.url)) === "preview stub";
-      await Bun.sleep(Math.max(0, (pc?.expiresAt ?? 0) - Date.now()) + 300);
-      await restartSrv();
-      const b5 = await rpBoard();
-      check("(preview) a deadline passed during downtime is ended at boot: expired, unreachable, copy gone",
-        c2.status === 200 && cUpWhileDown && !!pc && b5?.preview?.state === "expired" && b5.preview.id === pc.id
-          && (b5.preview.why ?? "").includes("server was down") && !!pc?.url && (await gone(pc.url, "boot-expired preview unreachable"))
-          && !exists(pc?.dir ?? "-"),
-        `${c2.status} up=${cUpWhileDown} ${JSON.stringify(b5?.preview)}`);
-
-      // the planted candidate leaves the way the owner would remove it — and its record with it
-      const disc = await post("/api/worktrees/discard", { repo: REPO, path: pvbPath, branch: pvbBranch });
-      check("(preview) fixture cleanup: the planted candidate's worktree is discarded",
-        disc.ok && !exists(pvbPath), String(disc.status));
-      check("(notepad) a discarded worktree takes its note along — no orphan entry, the parked tree's note untouched",
-        rpState().worktreeNotes?.[pvbPath] === undefined && rpState().worktreeNotes?.[rpCwd] === noteText,
-        JSON.stringify(rpState().worktreeNotes ?? {}).slice(0, 200));
+      const notePath = `${rpCwd}-notepad`;
+      const noteBranch = `fleet/notepad-${Date.now()}`;
+      const added = spawnSync("git", ["-C", REPO, "worktree", "add", "-q", "-b", noteBranch, notePath, rpHead]);
+      check("(notepad) setup: a second worktree exists for the discard probe", added.status === 0 && exists(notePath), String(added.status));
+      const saved = await post("/api/worktrees/note", { repo: REPO, path: notePath, text: "discard notepad fixture" });
+      check("(notepad) the second worktree carries its own note", saved.ok && rpState().worktreeNotes?.[notePath] === "discard notepad fixture", String(saved.status));
+      const discarded = await post("/api/worktrees/discard", { repo: REPO, path: notePath, branch: noteBranch });
+      check("(notepad) discarding removes the second worktree", discarded.ok && !exists(notePath), String(discarded.status));
+      check("(notepad) discarding removes only that note and preserves the parked worktree's note",
+        rpState().worktreeNotes?.[notePath] === undefined && rpState().worktreeNotes?.[rpCwd] === noteText, String(discarded.status));
     }
 
-    // === THE REVIEW ON PRESS of this candidate (server.ts#startCandidateReview; owner 2026-09-24 „[Zitat entfernt]“
-    // ). The reviewer is the FLEET_REVIEW_CMD stand-in, never an agent,
-    // and its per-cwd spawn log is the fact behind every "ran"/"did not run". What each check turns red
-    // on: a run nobody pressed for; a subject read from the worktree instead of the stored head; a
-    // second run of one patch; a comment that stays "current" after the patch moved; a sixth run of one
-    // candidate; comments lost on a restart.
-    const crCand = parked?.id ?? "-";
-    const crCtl = ROOT; // the stand-in reads its switches next to itself
-    const crPress = async (cand: string) => {
-      const r = await post(`/api/review-candidates/${cand}/review`, {});
-      return { status: r.status, body: (await r.json().catch(() => ({}))) as { ok?: boolean; review?: CrRec; error?: string } };
-    };
-    const crRuns0 = reviewRunsFor(rpCwd);
-    await Bun.sleep(2500); // more than two auto-③ ticks (FLEET_AUTO_REVIEW_MS=1000 in this suite)
-    check("(review on press) nothing runs without a press: a parked candidate past two auto-review ticks has no comment and no spawn",
-      reviewRunsFor(rpCwd) === crRuns0 && ((await rpBoard())?.reviews ?? null) === null && !rpState().candidateReviews,
-      `${reviewRunsFor(rpCwd)} vs ${crRuns0}`);
-    const crUnknown = await crPress("0123456789ab");
-    check("(review on press) an id that names no parked candidate is refused by name",
-      crUnknown.status === 404 && (crUnknown.body.error ?? "").includes("no parked review candidate"), `${crUnknown.status} ${crUnknown.body.error}`);
-
-    // a failed reviewer files nothing, and the run counts
-    writeFileSync(`${crCtl}/reviewfail`, "1");
-    const crFail = await crPress(crCand);
-    rmSync(`${crCtl}/reviewfail`, { force: true });
-    check("(review on press) a failed reviewer is a named 502 that files no comment",
-      crFail.status === 502 && (crFail.body.error ?? "").includes("failed") && reviewRunsFor(rpCwd) === crRuns0 + 1
-        && ((await rpBoard())?.reviews ?? []).map((r) => r.state).join() === "failed",
-      `${crFail.status} ${crFail.body.error} runs=${reviewRunsFor(rpCwd) - crRuns0}`);
-
-    // THE SUBJECT IS THE STORED HEAD: the worktree moves on first, and the review must not read that
-    writeFileSync(`${rpCwd}/review-moved.txt`, "a commit after the park\n");
-    spawnSync("git", ["-C", rpCwd, "add", "review-moved.txt"]);
-    spawnSync("git", ["-C", rpCwd, "commit", "-qm", "review: moved after the park"]);
-    const crMoved = spawnSync("git", ["-C", rpCwd, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-    const crOk = await crPress(crCand);
-    const c1 = crOk.body.review;
-    const c1Prompt = lastReviewPromptFor(rpCwd);
-    check("(review on press) a press runs the stand-in ONCE and files a dated comment bound to the stored head's patch",
-      crOk.status === 200 && c1?.state === "filed" && c1.candidate === crCand && c1.head === rpHead && /^[0-9a-f]{40}$/.test(c1.patchId)
-        && typeof c1.at === "number" && c1.findings.map((f) => f.impact).join() === "high,low" && c1.raw === false
-        && reviewRunsFor(rpCwd) === crRuns0 + 2,
-      `${crOk.status} ${JSON.stringify(crOk.body).slice(0, 300)}`);
-    check("(review on press) the reviewer read the stored head's diff, not the worktree that moved on",
-      c1Prompt.includes("review-park.txt") && !c1Prompt.includes("review-moved.txt") && (c1?.scope ?? "").includes("stored head"),
-      `${c1Prompt.length} chars, moved=${c1Prompt.includes("review-moved.txt")} scope=${c1?.scope}`);
-    const crAgain = await crPress(crCand);
-    check("(review on press) a second press on the same patch is refused by name, and runs nothing",
-      crAgain.status === 409 && (crAgain.body.error ?? "").includes("already reviewed") && (crAgain.body.error ?? "").includes(c1?.id ?? "-")
-        && reviewRunsFor(rpCwd) === crRuns0 + 2,
-      `${crAgain.status} ${crAgain.body.error}`);
-    const crB1 = (await rpBoard())?.reviews?.find((r) => r.id === c1?.id);
-    spawnSync("git", ["-C", rpCwd, "reset", "-q", "--hard", rpHead]);
-    const crB2 = (await rpBoard())?.reviews?.find((r) => r.id === c1?.id);
-    check("(review on press) the comment is stale while the worktree carries another patch, and current on the stored head",
-      crB1?.stale === true && crB1.patchNow !== c1?.patchId && typeof crB1.patchNow === "string"
-        && crB2?.stale === false && crB2.patchNow === c1?.patchId,
-      JSON.stringify({ moved: crB1 && { stale: crB1.stale, now: crB1.patchNow }, back: crB2 && { stale: crB2.stale, now: crB2.patchNow } }));
-
-    // A LATER PARK of the same tree at the moved head (planted: the subject is the review, not the
-    // park door, which the checks above already cover) — a second candidate, a changed patch
-    await stopSrv();
-    const crPlant = rpState();
-    const crA = crPlant.shelved?.[rpCwd]?.review;
-    const crBId = "c0c0c0c0c0c0";
-    if (crPlant.shelved?.[rpCwd] && crA) crPlant.shelved[rpCwd].review = { ...crA, id: crBId, head: crMoved };
-    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(crPlant, null, 2), { mode: 0o600 });
-    spawnSync("git", ["-C", rpCwd, "reset", "-q", "--hard", crMoved]);
-    await restartSrv();
-    writeFileSync(`${crCtl}/reviewfail`, "1");
-    const crFails: number[] = [];
-    for (let i = 0; i < 4; i++) crFails.push((await crPress(crBId)).status);
-    rmSync(`${crCtl}/reviewfail`, { force: true });
-    const crB = await crPress(crBId);
-    const c2 = crB.body.review;
-    const crBoard3 = (await rpBoard())?.reviews ?? [];
-    check("(review on press) the changed patch gets its own comment, and marks the earlier one visibly stale",
-      crB.status === 200 && c2?.state === "filed" && c2.head === crMoved && !!c1 && c2.patchId !== c1.patchId
-        && crBoard3.find((r) => r.id === c1.id)?.stale === true && crBoard3.find((r) => r.id === c2.id)?.stale === false,
-      `${crB.status} ${JSON.stringify(crBoard3.map((r) => ({ id: r.id, state: r.state, stale: r.stale })))}`);
-    const crCap = await crPress(crBId);
-    check("(review on press) a candidate is capped at 5 runs, failed ones counted — the sixth press is refused and runs nothing",
-      crFails.every((x) => x === 502) && crCap.status === 409 && (crCap.body.error ?? "").includes("5 of 5")
-        && reviewRunsFor(rpCwd) === crRuns0 + 7,
-      `${crFails.join()} ${crCap.status} ${crCap.body.error} runs=${reviewRunsFor(rpCwd) - crRuns0}`);
-
-    // back to the real candidate for the park checks below; the comments must survive the restart
-    await stopSrv();
-    const crRestore = rpState();
-    if (crRestore.shelved?.[rpCwd] && crA) crRestore.shelved[rpCwd].review = crA;
-    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(crRestore, null, 2), { mode: 0o600 });
-    spawnSync("git", ["-C", rpCwd, "reset", "-q", "--hard", rpHead]);
-    await restartSrv();
-    const crBoard4 = (await rpBoard())?.reviews ?? [];
-    check("(review on press) the comments survive a restart, and staleness follows the tree back to the first patch",
-      crBoard4.length === 7 && crBoard4.find((r) => r.id === c1?.id)?.stale === false
-        && crBoard4.find((r) => r.id === c2?.id)?.stale === true && reviewRunsFor(rpCwd) === crRuns0 + 7,
-      JSON.stringify(crBoard4.map((r) => ({ id: r.id, state: r.state, stale: r.stale }))));
-
-    // RESTART, with the deadline moved into the past: the rows must not be requeued by the boot
-    // reconcile, and an expired candidate is marked — never removed.
     await stopSrv();
     const rpAge = rpState();
     const rpShelf = rpAge.shelved?.[rpCwd]?.review;
@@ -2149,11 +1894,6 @@ export async function run(lc: LaneCtx): Promise<void> {
       board3?.slot === rpSlot2 && board3.review == null && board3.note == null, JSON.stringify(board3));
     check("(notepad) the note survives the resume — the live lane's row carries it again",
       board3?.notepad === noteText && board3?.slot === rpSlot2, (board3?.notepad ?? "null").slice(0, 60));
-    const crLive = await crPress(crCand);
-    check("(review on press) a candidate resumed into a live lane is refused by name, and runs nothing",
-      crLive.status === 409 && (crLive.body.error ?? "").includes(`live lane slot ${rpSlot2}`) && reviewRunsFor(rpCwd) >= crRuns0 + 7
-        && ((await rpBoard())?.reviews ?? []).length === 7,
-      `${crLive.status} ${crLive.body.error}`);
     const second = await post("/api/lanes", { repo: REPO, attach: rpCwd });
     check("(review park) a second attach of the same worktree is refused and moves no row",
       second.status === 409 && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === rpSlot2), String(second.status));
@@ -2167,10 +1907,6 @@ export async function run(lc: LaneCtx): Promise<void> {
         && (await rpRows(rpIds)).every((t) => t?.status === "pending" && t.slot === null),
       `${JSON.stringify(plainBody)} ${JSON.stringify(board4)} ${JSON.stringify((await rpRows(rpIds)))}`);
 
-    const crPlain = await crPress(crCand);
-    check("(review on press) a worktree shelved without review is not a candidate — refused by name",
-      crPlain.status === 409 && (crPlain.body.error ?? "").includes("shelved without review"), `${crPlain.status} ${crPlain.body.error}`);
-
     // the planted records leave the way they came (the 2 s poll's budget, see the baton cleanup)
     spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", rpCwd]);
     for (const id of [...rpIds, rpForeignId]) await post(`/api/tasks/${id}/delete`, {});
@@ -2179,8 +1915,6 @@ export async function run(lc: LaneCtx): Promise<void> {
     rpUnplant.programs = (rpUnplant.programs ?? []).filter((p) => p.id !== rpProgramId);
     rpUnplant.fleetReports = (rpUnplant.fleetReports ?? []).filter((r) => r.id !== rpReportId);
     if (rpUnplant.shelved) delete rpUnplant.shelved[rpCwd];
-    delete rpUnplant.lanePreviews; // the ended preview records of this fixture — no instance is left behind them
-    delete rpUnplant.candidateReviews; // …and the review comments on its removed worktree
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpUnplant, null, 2), { mode: 0o600 });
     await restartSrv();
     await post(`/api/slots/${rpMainSlot}/kill`, {});

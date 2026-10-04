@@ -20,7 +20,7 @@ interface AttentionRow {
     branch: string | null; candidateSha: string | null };
   status: "open" | "send-uncertain" | "answered" | "refused";
   stage?: "orchestrator" | "owner"; escalation?: { reason: string; at: number };
-  answer: { text: string; at: number; by: "owner" } | null;
+  answer: ({ text: string; at: number } & ({ by: "owner" } | { by: "orchestrator"; slot: number })) | null;
   refusedReason: string | null; closedAt: number | null;
   delivery?: {
     state: "read" | "unread" | "unknown"; entryId?: string; since?: number; readAt?: number; why?: string;
@@ -827,7 +827,14 @@ export async function run(): Promise<void> {
     const o1Open = o1 ? await post(`/api/slots/${o1}/open`, { cwd: REPO, label: "attention-chain-o1" }) : null;
     const o2 = await freeSlot();
     const o2Open = o2 ? await post(`/api/slots/${o2}/open`, { cwd: REPO, label: "attention-chain-o2" }) : null;
+    const unboundSlot = await freeSlot();
+    const unboundOpen = unboundSlot ? await post(`/api/slots/${unboundSlot}/open`, { cwd: REPO, label: "attention-chain-unbound" }) : null;
+    const authLaneOpen = await post("/api/lanes", { repo: REPO });
+    const authLane = await authLaneOpen.json() as { slot?: number };
+    const unboundToken = unboundSlot ? await paneEnv(`s${unboundSlot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const authLaneToken = authLane.slot ? await paneEnv(`s${authLane.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const eTok = eSlot ? await paneEnv(`s${eSlot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const oTok = o1 ? await paneEnv(`s${o1}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const foreignOrch = (await sessions()).slots.filter((x) => x.cwd
       && (x.label?.includes("🎛") || /(^|[^\p{L}])orchestrator/iu.test(x.label ?? ""))).map((x) => x.id);
     await stopSrv();
@@ -851,7 +858,10 @@ export async function run(): Promise<void> {
     const orchBefore = await liveOrch();
     check("attention chain fixture: a bound MAIN with a credential, two planted 🎛 slots, and no other Orchestratorin in the instance",
       !!eOpen?.ok && !!o1Open?.ok && !!o2Open?.ok && /^[0-9a-f]{32}$/.test(eTok)
-        && new Set([eSlot, o1, o2]).size === 3 && orchBefore.length === 2
+        && !!unboundOpen?.ok && authLaneOpen.ok && !!authLane.slot
+        && [oTok, unboundToken, authLaneToken].every((t) => /^[0-9a-f]{32}$/.test(t))
+        && new Set([eTok, oTok, unboundToken, authLaneToken]).size === 4
+        && new Set([eSlot, o1, o2, unboundSlot, authLane.slot]).size === 5 && orchBefore.length === 2
         && orchBefore.includes(o1) && orchBefore.includes(o2) && foreignOrch.length === 0,
       JSON.stringify({ eSlot, o1, o2, open: [eOpen?.status, o1Open?.status, o2Open?.status], orchBefore, foreignOrch }));
     const hintSends = () => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
@@ -922,21 +932,89 @@ export async function run(): Promise<void> {
         && escOther.status === 409 && escOwnerRow.status === 409 && escUnknown.status === 404,
       `${escAgain.status} ${escOther.status} ${escOwnerRow.status} ${escUnknown.status}`);
 
-    // (4) the answer door is today's door in BOTH stages: one Program inbox pointer each
+    // (4) only the unique live Orchestratorin may use her scoped credential, on her own stage.
     const orchRow = await raised(await selfRaise(eTok, { kind: "blocked", text: "Chain: answered by the Orchestratorin herself." }));
-    const orchAnswer = await post(`/api/attention/${orchRow?.id}/answer`, { text: "Unblocked: use the helper." });
+    const scopedAnswer = (token: string, id: string | undefined, text: string) => fetch(`${BASE}/api/attention/${id}/answer`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+      body: JSON.stringify({ text }),
+    });
+    const answerState = () => JSON.stringify({ rows: readRows(),
+      inbox: (JSON.parse(readFileSync(statePath, "utf8")) as { programs: { id: string; inbox?: unknown }[] })
+        .programs.find((p) => p.id === programE)?.inbox });
+    const authenticated = await Promise.all([eTok, oTok, authLaneToken, unboundToken].map((token) =>
+      fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": token } })));
+    const originalOrchestrator = await authenticated[1]!.json() as { slot?: number; position?: unknown };
+    const originalOpenedAt = (await sessions()).slots.find((s) => s.id === o1)?.openedAt;
+    check("attention scoped answer fixture: bound MAIN, Orchestratorin, lane and unbound session credentials identify current occupants",
+      authenticated.every((res) => res.status === 200), authenticated.map((res) => res.status).join(" "));
+    for (const [who, token, id, status] of [
+      ["non-Orchestratorin", eTok, orchRow?.id, 401],
+      ["unbound session", unboundToken, orchRow?.id, 401],
+      ["Orchestratorin on owner stage", oTok, chainRow?.id, 403],
+      ["lane", authLaneToken, orchRow?.id, 401],
+    ] as const) {
+      const before = answerState();
+      const refused = await scopedAnswer(token, id, "Unauthorized answer must change nothing.");
+      check(`attention scoped answer: ${who} is ${status} with no row or inbox mutation`,
+        refused.status === status && answerState() === before,
+        JSON.stringify({ status: refused.status, unchanged: answerState() === before }));
+    }
+    const orchAnswer = await scopedAnswer(oTok, orchRow?.id, "Unblocked: use the helper.");
     const orchAnswerBody = await orchAnswer.json() as { request?: AttentionRow; inbox?: string };
     const ownerAnswer = await post(`/api/attention/${chainRow?.id}/answer`, { text: "After the audit." });
     const ownerAnswerBody = await ownerAnswer.json() as { request?: AttentionRow; inbox?: string };
     const eInbox = await selfInbox(eTok);
     const entryFor = (id: string | undefined) => eInbox.view?.entries.filter((e) => e.kind === "attention-answer" && e.ref === id) ?? [];
-    check("attention chain (4): answer works in both stages as today — an orchestrator-stage and an escalated row each become exactly one attention-answer inbox entry",
+    check("attention chain (4): scoped Orchestratorin answer records her slot; Owner-Bearer answer stays owner; each writes exactly one inbox pointer",
       orchRow?.stage === "orchestrator" && orchAnswer.ok && orchAnswerBody.request?.status === "answered"
-        && orchAnswerBody.request.answer?.by === "owner" && ownerAnswer.ok && ownerAnswerBody.request?.status === "answered"
+        && orchAnswerBody.request.answer?.by === "orchestrator" && orchAnswerBody.request.answer.slot === o1
+        && readRow(orchRow?.id)?.answer?.by === "orchestrator"
+        && ownerAnswer.ok && ownerAnswerBody.request?.status === "answered" && ownerAnswerBody.request.answer?.by === "owner"
         && entryFor(orchRow?.id).length === 1 && entryFor(orchRow?.id)[0]?.id === orchAnswerBody.inbox
         && entryFor(chainRow?.id).length === 1 && entryFor(chainRow?.id)[0]?.id === ownerAnswerBody.inbox,
       JSON.stringify({ orch: [orchRow?.stage, orchAnswer.status, orchAnswerBody.inbox], owner: [ownerAnswer.status, ownerAnswerBody.inbox],
         entries: [entryFor(orchRow?.id).length, entryFor(chainRow?.id).length] }));
+
+    const recorded = readRow(orchRow?.id)?.answer;
+    const retry = await scopedAnswer(oTok, orchRow?.id, "Unblocked: use the helper.");
+    const retryBody = await retry.json() as { existing?: boolean };
+    check("attention scoped answer: identical retry preserves provenance and the single inbox pointer",
+      retry.ok && retryBody.existing === true && JSON.stringify(readRow(orchRow?.id)?.answer) === JSON.stringify(recorded)
+        && (await selfInbox(eTok)).view?.entries.filter((e) => e.ref === orchRow?.id).length === 1);
+    await restartSrv();
+    check("attention scoped answer: Orchestratorin provenance survives persistence and restart",
+      recorded?.by === "orchestrator" && recorded.slot === o1
+        && JSON.stringify(readRow(orchRow?.id)?.answer) === JSON.stringify(recorded)
+        && (await ownerRows()).find((a) => a.id === orchRow?.id)?.answer?.by === "orchestrator");
+    const overrideRow = await raised(await selfRaise(eTok, { kind: "blocked", text: "Chain: Owner-Bearer may still answer at Orchestratorin stage." }));
+    const overrideAnswer = await post(`/api/attention/${overrideRow?.id}/answer`, { text: "Owner answer at either stage." });
+    const overrideBody = await overrideAnswer.json() as { request?: AttentionRow };
+    check("attention scoped answer: Owner-Bearer still answers an Orchestratorin-stage row as owner",
+      overrideRow?.stage === "orchestrator" && overrideAnswer.ok && overrideBody.request?.answer?.by === "owner"
+        && readRow(overrideRow?.id)?.answer?.by === "owner");
+
+    const staleRow = await raised(await selfRaise(eTok, { kind: "blocked", text: "Chain: an old Orchestratorin credential has no authority." }));
+    await post(`/api/slots/${o1}/kill`, {});
+    const replacement = await post(`/api/slots/${o1}/open`, { cwd: REPO, label: "attention-chain-o1-replacement" });
+    const replacementToken = await paneEnv(`s${o1}`, "FLEET_SELF_TOKEN") ?? "";
+    await stopSrv();
+    const replacementImage = JSON.parse(readFileSync(statePath, "utf8")) as { slots: Record<string, { label: string }> };
+    replacementImage.slots[String(o1)]!.label = orchLabel;
+    writeFileSync(statePath, JSON.stringify(replacementImage, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const replacementSelf = await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": replacementToken } });
+    const replacementOpenedAt = (await sessions()).slots.find((s) => s.id === o1)?.openedAt;
+    check("attention scoped answer fixture: the same Orchestratorin slot has a distinct live replacement occupant and credential",
+      replacement.ok && replacementSelf.ok && originalOrchestrator.slot === o1
+        && originalOpenedAt !== undefined && replacementOpenedAt !== undefined && replacementOpenedAt !== originalOpenedAt
+        && /^[0-9a-f]{32}$/.test(replacementToken) && replacementToken !== oTok
+        && (await liveOrch()).length === 1 && (await liveOrch())[0] === o1);
+    const beforeStale = answerState();
+    const staleAnswer = await scopedAnswer(oTok, staleRow?.id, "An old occupant must not answer.");
+    check("attention scoped answer: replaced Orchestratorin occupant token is 401 with no row or inbox mutation",
+      staleRow?.stage === "orchestrator" && staleAnswer.status === 401 && answerState() === beforeStale,
+      JSON.stringify({ status: staleAnswer.status, unchanged: answerState() === beforeStale }));
+    await post(`/api/attention/${staleRow?.id}/refuse`, { reason: "13 fixture: replaced Orchestratorin credential" });
 
     // (3a) NO Orchestratorin: born "owner" — and a row still parked at a gone one climbs at read time
     const parked = await raised(await selfRaise(eTok, { kind: "review-ready", text: "Chain: parked when she leaves." }));
@@ -957,6 +1035,8 @@ export async function run(): Promise<void> {
       await post(`/api/attention/${id}/refuse`, { reason: why });
     await post(`/api/programs/${programE}/complete`, { force: true });
     if (eSlot) await post(`/api/slots/${eSlot}/kill`, {});
+    if (unboundSlot) await post(`/api/slots/${unboundSlot}/kill`, {});
+    if (authLane.slot) await post(`/api/slots/${authLane.slot}/kill`, {});
   }
 
   // Pre-provenance rows are a distinct historical shape: absence means UNKNOWN and must stay

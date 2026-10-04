@@ -445,12 +445,6 @@ export const WORKER_CONTRACTS = {
   repair: { mark: "You are REPAIRING a fleet worktree lane", key: "status" },
   cleanReview: { mark: "You are REVIEWING a fleet lane", key: "verdict" },
   digest: { mark: "read-only SENSING worker for a fleet steward", key: "digest" },
-  // one key for BOTH answer shapes on purpose: runWorker polls the transcript for `"tasks"` and
-  // returns the moment it appears, so a triage answer keyed on anything else ("unchanged") would
-  // sit out the full timeout before the poller gave up and returned it anyway. The refiner's
-  // contract therefore always spells `tasks` — an empty array plus `unchanged: true` is how it
-  // says "already brief-shaped" (refine-prompt.ts).
-  refine: { mark: "a read-only BRIEF COMPILER for a fleet task queue", key: "tasks" },
   // The SHAPE EXTRACTOR (card-extract.ts). TEXT_ONLY: unlike every worker above it, it is given no
   // repository and no tools — it reads one queued request's own words and returns a fixed object,
   // and what it returns is then checked against this tree rather than believed. The mark and the

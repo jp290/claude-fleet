@@ -1,5 +1,5 @@
 // model-scan.ts — read local harness model caches and propose a register comparison without writes.
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { MODEL_REGISTER, type ModelEntry, type ModelHarness } from "./model-register";
@@ -56,8 +56,40 @@ function compare(harness: ModelHarness, sources: string[], available: string[] |
   };
 }
 
+async function readClaudeCatalogue(dir: string, label: string, now: number): Promise<{
+  available: string[] | null; reason: string | null; cacheTime: number | null;
+}> {
+  const unknown = (reason: string, cacheTime: number | null = null) =>
+    ({ available: null, reason: `${label}: ${reason}`, cacheTime });
+  let files: string[];
+  try { files = (await readdir(dir)).filter((name) => name.endsWith("-cc.json")).sort(); }
+  catch { return unknown("missing or unreadable directory"); }
+  if (!files.length) return unknown("missing cc catalogue");
+  const catalogues: { available: string[]; fetchedAt: number; staleAt: number }[] = [];
+  for (const file of files) {
+    const source = await readSource(join(dir, file), label);
+    if (source.reason) return { available: null, reason: source.reason, cacheTime: null };
+    const value = source.value;
+    const catalogue = object(value) && object(value.catalog) ? value.catalog : null;
+    const config = catalogue && object(catalogue.config) ? catalogue.config : null;
+    const available = config ? ids(config.models, "id") : null;
+    if (!object(value) || value.version !== 2 || catalogue?.surface !== "cc" || config?.id !== "cc"
+      || available === null || available.length === 0
+      || typeof value.fetchedAt !== "number" || !Number.isFinite(value.fetchedAt)
+      || typeof value.staleAt !== "number" || !Number.isFinite(value.staleAt)
+      || value.fetchedAt < 0 || value.fetchedAt > now || value.staleAt <= value.fetchedAt)
+      return unknown("unknown schema (expected version 2, cc config.models[].id and valid cache times)");
+    catalogues.push({ available, fetchedAt: value.fetchedAt, staleAt: value.staleAt });
+  }
+  const latest = Math.max(...catalogues.map((row) => row.fetchedAt));
+  if (catalogues.some((row) => now >= row.staleAt)) return unknown("stale cc catalogue", latest);
+  if (catalogues.some((row) => JSON.stringify(row.available) !== JSON.stringify(catalogues[0]!.available)))
+    return unknown("ambiguous cc catalogues", latest);
+  return { available: catalogues[0]!.available, reason: null, cacheTime: latest };
+}
+
 export async function scanModels(options: {
-  home?: string; env?: ScanEnvironment; register?: readonly ModelEntry[];
+  home?: string; env?: ScanEnvironment; register?: readonly ModelEntry[]; now?: number;
 } = {}): Promise<{ harnesses: HarnessScan[] }> {
   const home = options.home ?? homedir();
   const env = options.env ?? process.env;
@@ -84,24 +116,72 @@ export async function scanModels(options: {
       harnesses.push(compare(harness, [label], usable ? available : null, source.reason ?? (usable ? null
         : `${label}: missing or incomplete zai catalogue (expected nonempty models[].id and checkedAt)`), cacheTime, register));
     } else {
-      const dir = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
-      const labels = ["CLAUDE_CONFIG_DIR/cache/model-access.json", "CLAUDE_CONFIG_DIR/cache/model-capabilities.json"];
-      const access = await readSource(join(dir, "cache/model-access.json"), labels[0]);
-      const capabilities = await readSource(join(dir, "cache/model-capabilities.json"), labels[1]);
-      const accessSchema = object(access.value) && access.value.version === 1 && object(access.value.entries)
-        && Object.values(access.value.entries).every((group) => object(group)
-          && Object.values(group).every((row) => object(row) && (row.s === "ok" || row.s === "refused")
-            && typeof row.at === "number" && Number.isFinite(row.at)));
-      const capabilitiesSchema = object(capabilities.value) && ids(capabilities.value.models, "id") !== null
-        && typeof capabilities.value.timestamp === "number" && Number.isFinite(capabilities.value.timestamp);
-      const sourceReasons = [access.reason, capabilities.reason].filter((reason) => reason !== null);
-      const reason = sourceReasons.length ? sourceReasons.join("; ") : (!accessSchema || !capabilitiesSchema
-        ? "Claude caches: unknown schema"
-        : "Claude caches contain scoped access observations and token capabilities, not a complete harness availability catalogue");
-      harnesses.push(compare(harness, labels, null, reason, null, register));
+      const label = "CLAUDE_CONFIG_DIR/cache/model-catalog/";
+      const catalogue = await readClaudeCatalogue(join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"),
+        "cache/model-catalog"), label, options.now ?? Date.now());
+      harnesses.push(compare(harness, [label], catalogue.available, catalogue.reason, catalogue.cacheTime, register));
     }
   }
   return { harnesses };
+}
+
+export const MODEL_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+type ModelDifferences = { newlyAvailable: string[]; registeredButUnavailable: string[] };
+export interface ModelScanState {
+  lastScanAt: number | null;
+  reported: Partial<Record<ModelHarness, ModelDifferences>>;
+}
+
+export function modelScanStateFrom(value: unknown): ModelScanState {
+  const state: ModelScanState = { lastScanAt: null, reported: {} };
+  if (!object(value)) return state;
+  if (typeof value.lastScanAt === "number" && Number.isFinite(value.lastScanAt) && value.lastScanAt >= 0)
+    state.lastScanAt = value.lastScanAt;
+  if (object(value.reported)) for (const harness of ["claude", "codex", "pi-zai"] as const) {
+    const row = value.reported[harness];
+    if (object(row) && Array.isArray(row.newlyAvailable) && row.newlyAvailable.every(modelId)
+      && Array.isArray(row.registeredButUnavailable) && row.registeredButUnavailable.every(modelId))
+      state.reported[harness] = { newlyAvailable: [...new Set(row.newlyAvailable)].sort(),
+        registeredButUnavailable: [...new Set(row.registeredButUnavailable)].sort() };
+  }
+  return state;
+}
+
+export function makeModelScanTick(options: {
+  state: ModelScanState;
+  scan: () => Promise<{ harnesses: HarnessScan[] }>;
+  send: (message: string) => Promise<boolean>;
+  persist: () => Promise<void>;
+  now?: () => number;
+}): () => Promise<void> {
+  let busy = false;
+  return async () => {
+    const now = (options.now ?? Date.now)();
+    const state = options.state;
+    if (busy || state.lastScanAt !== null && now - state.lastScanAt < MODEL_SCAN_INTERVAL_MS) return;
+    busy = true;
+    try {
+      state.lastScanAt = now;
+      await options.persist();
+      const { harnesses } = await options.scan();
+      const changed: { harness: ModelHarness; differences: ModelDifferences }[] = [];
+      for (const row of harnesses) {
+        if (row.status !== "known" || row.newlyAvailable === null || row.registeredButUnavailable === null) continue;
+        const differences = { newlyAvailable: [...new Set(row.newlyAvailable)].sort(),
+          registeredButUnavailable: [...new Set(row.registeredButUnavailable)].sort() };
+        const previous = state.reported[row.harness];
+        if (!previous && !differences.newlyAvailable.length && !differences.registeredButUnavailable.length)
+          state.reported[row.harness] = differences;
+        else if (JSON.stringify(previous) !== JSON.stringify(differences)) changed.push({ harness: row.harness, differences });
+      }
+      if (changed.length) {
+        const message = "Modell-Vorschlag (lokaler Cache; Register unveraendert): " + changed.map(({ harness, differences }) =>
+          `${harness} newlyAvailable=${JSON.stringify(differences.newlyAvailable)} registeredButUnavailable=${JSON.stringify(differences.registeredButUnavailable)}`).join("; ");
+        if (await options.send(message)) for (const { harness, differences } of changed) state.reported[harness] = differences;
+      }
+      await options.persist();
+    } finally { busy = false; }
+  };
 }
 
 if (import.meta.main) {

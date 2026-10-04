@@ -409,10 +409,6 @@ export interface TaskInfo { id: string; source: ServerTask["source"];
   cluster?: { projekt: string; prozess: string; unterprozess?: string };
   // the poll carries only the timestamps; the text rides the queue overlay's /api/tasks fetch
   criterion?: { text?: string; proposedAt: number; confirmedAt: number | null };
-  // ↻ refine: the poll says a proposal exists, how it came out and how many children it holds —
-  // the texts ride /api/tasks like everything else. `refining` is live server state (a worker is
-  // running right now), which is why it is a fact about the moment and never persisted.
-  refine?: { at: number; unchanged: boolean; count: number }; refining?: boolean;
   // comments: the poll carries only how many and how recent — enough for the row chip and to
   // notice a new one; the texts ride /api/tasks like every other body on this row
   comments?: { n: number; at: number };
@@ -426,16 +422,6 @@ export interface TaskInfo { id: string; source: ServerTask["source"];
   // "untouched": the two owner ⏏ paths land already-integrated work and measure nothing.
   touched?: { sha: string; branch: string; at: number }[];
   hold?: { by: "main"; slot: number; at: number; grund: string | null } }
-// the proposal itself, as GET /api/tasks serves it (server.ts TaskRefine)
-interface RefineChildView { text: string; doneCriterion?: string; verify?: string; files?: string[] }
-export interface TaskRefineFull { at: number; model: string;
-  proposal: { unchanged: boolean; reason?: string; tasks?: RefineChildView[] };
-  // the server's deterministic acceptance on that proposal (server.ts refineValidationFor,
-  // refine-validate.ts): tracked-path and verify-contract findings, three-valued, per child. It
-  // gates nothing here either — it is shown next to the apply button so the owner promotes a bad
-  // proposal knowingly or not at all. ABSENT on an `unchanged` proposal, which has no children.
-  validation?: { verdict: "pass" | "fail" | "unknown";
-    findings: { code: string; severity: "error" | "unknown"; child: number; detail: string }[] } }
 // `waveBudget` is the server's live FLEET_LAND_WAVE_BUDGET: the board's land fold must cut with the
 // number the wave door checks, or it offers waves the door refuses. Absent on an older server.
 // `lanes` (busy lanes in the dispatch repo) and `quiet` (the machine's quiet window is open NOW, by
@@ -6894,10 +6880,8 @@ export async function refresh() {
         // a parked file-surface proposal arrives on a poll exactly as the criterion does, and the
         // confirm button removes it — without this the pane would keep offering a spent click
         t.filesProposal?.at, t.filesProposal?.files.join("\n"),
-        // the refine proposal arrives on a poll exactly like the criterion does, and the button
-        // spends minutes in `refining` before it — both have to move the key or the pane lies.
         // In Waves, another row or active branch can move this row's advisory placement too.
-        t.refine?.at, t.refining, t.comments?.n, t.comments?.at, t.touched?.length, t.touched?.[0]?.sha,
+        t.comments?.n, t.comments?.at, t.touched?.length, t.touched?.[0]?.sha,
         // N3: attaching or detaching a source, and every verdict a lane writes, arrive on a poll
         // exactly as a comment does — without them the sources section would keep showing a spent
         // detach button and a verdict list that is one report behind.
@@ -7443,10 +7427,6 @@ function decodeAudit(event: string, detail?: string): string {
       return detail === "landed" ? "closed after landing"
         : detail === "owner" ? "closed by the owner"
         : `closed${detail ? ` (${detail})` : ""}`;
-    case "lane_preview":
-      return `review preview · ${detail ?? ""}`;
-    case "candidate_review":
-      return `candidate review · ${detail ?? ""}`;
     case "slot_shelve": {
       const m = detail?.match(/^note:(\d+)(?: review:([0-9a-f]{12}))?$/);
       return m ? `${m[2] ? `parked for review · candidate ${m[2]}` : "shelved"} · ${m[1]}-char note` : "shelved";

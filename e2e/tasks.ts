@@ -179,13 +179,14 @@ async function codexCliFixtures(serverSource: string, clientSource: string): Pro
     writeFileSync(stub, `#!/bin/sh\necho $$ > '${stubPid}'\nwhile :; do :; done\n`);
     chmodSync(stub, 0o755);
     check("R3c: existing server termination handler stops Codex probe groups before exit",
-      serverSource.includes('process.on(sig, () => { stopCodexCliProbeGroups(); releaseSuiteLock(); process.exit(0); });'));
+      serverSource.includes('process.on("exit", stopCodexCliProbeGroups);')
+      && serverSource.includes('process.on(sig, () => { releaseSuiteLock(); process.exit(0); });'));
     const runner = `import { createHash } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 const CODEX_CLI_VERSION_RE = /^\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}(?:[-+][A-Za-z0-9.-]{1,40})?$/;
 process.env.PATH = ${JSON.stringify(ownerDir)};
 ${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}
-process.on("SIGTERM", () => { stopCodexCliProbeGroups(); process.exit(0); });
+process.on("SIGTERM", () => process.exit(0));
 void makeCodexCliObserver().tick();
 `;
     writeFileSync(ownerRunner, runner);

@@ -5019,8 +5019,11 @@ function sideTo(side: Side, to: 0 | 1, v0 = 0): void {
 // pointercancel (the system took the gesture; its coordinates are not to be trusted, the last move
 // counts). The velocity is read off the last 8 moves. A start in the outer 20 px belongs to iOS's
 // edge swipe. A finger's TAP (under 10 px and 250 ms; a mouse keeps its own click) is decided here, at pointerup, and pressed on what the
-// finger went down on — the engine's own click after it is swallowed (any trusted click for 400 ms;
-// the press this code makes is untrusted and passes — Chromium's tap click carries detail 0, so
+// finger went down on — the engine's own click after it is swallowed (any trusted click for 400 ms
+// on the island, or anywhere within 10 px of where the finger left it: Sessions, ℹ and ⋯ open a
+// surface under the finger, and the click WebKit's tap sends after its touchend hit that surface's
+// shade and closed it again, measured with Playwright's WebKit tap; the press this code makes is
+// untrusted and passes — Chromium's tap click carries detail 0, so
 // detail cannot tell them apart, measured), and so is the click after a long press or a drag. Deciding it here keeps the
 // thresholds the note names, and a touch stream that synthesises no click (Playwright's WebKit on
 // macOS, measured) still taps. While a finger drags, the side and its shade take no pointer
@@ -5028,12 +5031,14 @@ function sideTo(side: Side, to: 0 | 1, v0 = 0): void {
 // shade slides under it (measured in that WebKit: pointercancel, then pointerup on the shade).
 const SWIPE = { lock: 8, tapPx: 10, tapMs: 250, firePx: 28, fireV: 0.4, edge: 20, give: 0.35, giveMax: 24 } as const;
 type Drag = { id: number; at: Element; x0: number; y0: number; x: number; y: number; t0: number; axis: "x" | "y" | null; side: Side | null; none: Side | null; track: [number, number][] };
-let drag: Drag | null = null, swallowUntil = 0, giveStop: (() => void) | null = null;
+let drag: Drag | null = null, swallowUntil = 0, swallowAt = { x: 0, y: 0 }, giveStop: (() => void) | null = null;
 const setGive = (px: number) => mTop.style.setProperty("--mdx", `${px.toFixed(2)}px`);
 const sideWidth = (side: Side): number =>
   sideHost(side)?.querySelector<HTMLElement>(side === "sessions" ? "#msheet" : ".shellwin")?.getBoundingClientRect().width || innerWidth * 0.86;
-mTop.addEventListener("click", (e) => {
-  if (performance.now() < swallowUntil && e.isTrusted) { e.stopImmediatePropagation(); e.preventDefault(); }
+document.addEventListener("click", (e) => {
+  if (performance.now() >= swallowUntil || !e.isTrusted) return;
+  if (!mTop.contains(e.target as Node) && Math.hypot(e.clientX - swallowAt.x, e.clientY - swallowAt.y) >= SWIPE.tapPx) return;
+  e.stopImmediatePropagation(); e.preventDefault();
 }, true);
 mTop.addEventListener("pointerdown", (e) => {
   if (!portrait() || e.button > 0) return;
@@ -5096,11 +5101,13 @@ function islandRelease(e: PointerEvent, cancelled: boolean, id = e.pointerId, la
     // no drag: the engine's click that follows is swallowed either way; a tap presses what the finger
     // went down on — its button, else the island itself (the pill's rim opens, free glass closes)
     swallowUntil = performance.now() + 400;
+    swallowAt = { x, y };
     if (!cancelled && !d.axis && Math.hypot(dx, dy) < SWIPE.tapPx && ms < SWIPE.tapMs && d.at.isConnected)
       (d.at.closest<HTMLButtonElement>("#mtop button") ?? mTop).click();
     return;
   }
   swallowUntil = performance.now() + 400;
+  swallowAt = { x, y };
   const give = parseFloat(mTop.style.getPropertyValue("--mdx")) || 0;
   giveStop = springTo(SPRING.snap, give, 0, v * 1000 * SWIPE.give, setGive, () => { giveStop = null; });
   const side = d.side;

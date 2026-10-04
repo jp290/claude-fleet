@@ -7924,6 +7924,9 @@ interface GlassDriver {
   open(): Promise<void>;
   evaluate<T>(expression: string): Promise<T>;
   touch(type: GlassTouch, at: GlassPt): Promise<void>;
+  // the engine's WHOLE tap: in WebKit Playwright's tap, which sends a click after the touchend as iOS
+  // does (a raw touch stream sends none); in Chromium the touch pair, whose gesture adds the click
+  tap(at: GlassPt): Promise<void>;
   key(key: "Escape" | "ArrowLeft" | "ArrowRight"): Promise<void>;
   media(m: { motion?: boolean; contrast?: boolean; transparency?: boolean }): Promise<{ transparency: boolean }>;
   shot(file: string): Promise<void>;
@@ -8012,6 +8015,10 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
       const lifted = type === "touchEnd" || type === "touchCancel";
       await send("Input.dispatchTouchEvent", { type, touchPoints: lifted ? [] : [{ x: at.x, y: at.y, id: 1 }] });
     },
+    async tap(at) {
+      await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y, id: 1 }] });
+      await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    },
     async key(key) {
       const vk = { Escape: 27, ArrowLeft: 37, ArrowRight: 39 }[key];
       await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: vk });
@@ -8030,7 +8037,7 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
 async function glassWebkit(playwright: string, serve: GlassServe, init: string): Promise<GlassDriver> {
   const mod = await import(playwright) as { default?: unknown };
   type PwPage = { goto(u: string): Promise<unknown>; evaluate(e: string): Promise<unknown>; screenshot(o: { path: string }): Promise<unknown>;
-    keyboard: { press(k: string): Promise<void> }; emulateMedia(o: Record<string, unknown>): Promise<void>; _connection: { toImpl(p: unknown): { delegate: { _pageProxySession: { send(m: string, p: unknown): Promise<unknown> } } } } };
+    keyboard: { press(k: string): Promise<void> }; touchscreen: { tap(x: number, y: number): Promise<void> }; emulateMedia(o: Record<string, unknown>): Promise<void>; _connection: { toImpl(p: unknown): { delegate: { _pageProxySession: { send(m: string, p: unknown): Promise<unknown> } } } } };
   type PwContext = { newPage(): Promise<PwPage>; close(): Promise<void>; addInitScript(s: string): Promise<void>;
     route(u: string, h: (r: { request(): { url(): string; method(): string }; fulfill(o: Record<string, unknown>): Promise<void> }) => unknown): Promise<void> };
   const pw = (mod.default ?? mod) as { webkit: { launch(): Promise<{ newContext(o: unknown): Promise<PwContext>; close(): Promise<void> }> }; devices: Record<string, unknown> };
@@ -8054,6 +8061,7 @@ async function glassWebkit(playwright: string, serve: GlassServe, init: string):
       // Input.dispatchTouchEvent (reached through the in-process connection)
       await pg()._connection.toImpl(pg()).delegate._pageProxySession.send("Input.dispatchTouchEvent", { type, touchPoints: [{ x: Math.round(at.x), y: Math.round(at.y), id: 1 }] });
     },
+    async tap(at) { await pg().touchscreen.tap(Math.round(at.x), Math.round(at.y)); },
     async key(key) { await pg().keyboard.press(key); },
     async media(m) {
       await pg().emulateMedia({ reducedMotion: m.motion ? "reduce" : "no-preference", contrast: m.contrast ? "more" : "no-preference" });
@@ -8248,6 +8256,22 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
         await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mview').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
         await wait("!document.querySelector('#panes .pane').classList.contains('chat')", 3000);
         await reset();
+        // a finger's whole tap on Sessions, ℹ and ⋯: each opens a surface under the finger, and the click the
+        // engine sends after the touchend must not land on that surface's shade and close it again
+        const opened: Record<string, string> = {
+          mslot: "document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'sessions'",
+          minfo: "!!document.querySelector('#shell-board')",
+          mmore: "document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'tools'" };
+        const stays: Record<string, boolean> = {};
+        for (const [id, cond] of Object.entries(opened)) {
+          await d.tap({ x: GLASS_W / 2, y: 22 }); await pause(900);
+          await d.tap(await ev<GlassPt>(`(() => { const r = document.querySelector('#${id}').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`));
+          await pause(900);
+          stays[id] = await ev<boolean>(`!!(${cond})`);
+          await reset();
+        }
+        say("a finger's whole tap — the engine's click after it included — on Sessions, ℹ and ⋯ opens what it names, and it stays open",
+          Object.values(stays).every(Boolean), stays);
         // 5. the swipe: right opens Sessions from the left, left the Info from the right — the session stays
         const before = await state();
         const centre = { x: GLASS_W / 2, y: 22 };

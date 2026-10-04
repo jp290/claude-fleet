@@ -5398,11 +5398,18 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
     };
     const results: FoundingFocusDomResult[] = [];
     for (const [width, height] of [[1200, 900], [390, 844]]) {
+      // the DEVICE per case: the desktop is a mouse (the launch pins it), the phone a touch screen —
+      // touch emulation turns the media to (hover: none) and (pointer: coarse); the probe still presses
+      // with mouse events, which a touch-emulated page receives as before
+      const touch = width < 700;
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await send('Emulation.setTouchEmulationEnabled', touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
       await send('Page.navigate', { url: `file://${scratch}/fixture.html` });
       await evaluate(`new Promise((resolve, reject) => { const until = Date.now() + 5000; const ready = () => { if (window.fixtureReady) return resolve(true); if (Date.now() > until) return reject(new Error('fixture not ready')); requestAnimationFrame(ready); }; ready(); })`);
       const g: Record<string, boolean> = {}, detail: Record<string, string> = {};
-      g['PROBE: the fixture browser is the pinned mouse device — (hover: hover) and (pointer: fine), whatever the host'] = await evaluate<boolean>(`matchMedia('(hover: hover)').matches && matchMedia('(pointer: fine)').matches`);
+      g[`PROBE: the fixture browser is the case's device — ${touch ? 'touch: (hover: none) and (pointer: coarse)' : 'mouse: (hover: hover) and (pointer: fine)'}, whatever the host`] = await evaluate<boolean>(touch
+        ? `matchMedia('(hover: none)').matches && matchMedia('(pointer: coarse)').matches`
+        : `matchMedia('(hover: hover)').matches && matchMedia('(pointer: fine)').matches`);
       const shot = async (stage: string) => {
         if (!artifacts) return;
         const png = await send('Page.captureScreenshot', { format: 'png' });

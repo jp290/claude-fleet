@@ -499,6 +499,18 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
       switched.status === 200 && !!switchedFile && !switchedFile.text.includes("The first minute must feel good.")
       && switchedFile.parts.find((part) => part.id === "promise-anchor.promise")?.ort === "ausleihe"
       && (await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&parts=unknown`)).status === 400);
+    // the window's pack switches (card 569f8bb5): packs= renders a subset of plan.selected, the size
+    // is the renderer's own, and an id the plan did not select is refused like an unknown part
+    const others = selected.filter((pack) => pack.id !== "promise-anchor").map((pack) => pack.id);
+    const without = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&packs=${others.join(",")}`);
+    const withoutFile = without.body.sessionAgents as FoundingSessionAgents | undefined;
+    const unknownPack = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&packs=unknown-pack`);
+    check("founding plan: packs= renders without a left-out pack, the file shrinks, and an unknown pack id is 400",
+      without.status === 200 && !!file && !!withoutFile && withoutFile.bytes === Buffer.byteLength(withoutFile.text)
+      && withoutFile.bytes < file.bytes && !withoutFile.text.includes("The first minute must feel good.")
+      && !withoutFile.parts.some((part) => part.packId === "promise-anchor")
+      && unknownPack.status === 400 && JSON.stringify(unknownPack.body).includes("packs contains an unknown pack id"),
+      `${without.status} ${file?.bytes}→${withoutFile?.bytes} unknown=${unknownPack.status}`);
     const orchard = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&role=orchestratorin`);
     const orchardFile = orchard.body.sessionAgents as FoundingSessionAgents | undefined;
     check("founding plan: the orchestratorin role has its own card without a program footer",

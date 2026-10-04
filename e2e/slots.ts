@@ -2105,10 +2105,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && indexSrc.includes("Live-Mitschreiben") && indexSrc.includes("Prompt-Verlauf")
     && indexSrc.includes("Geplante Prompts für diese Session"),
     "tray titles in client.ts + public/index.html");
-  // --- THE FOUNDING WINDOW (Neuentwurf 2026-10-01 with the owner, src/founding.ts): one column of
-  // four fields — Ort, Rolle, Profil, Kontext — instead of tabs over a place list; the role applies
-  // a preset over the founding plan, stored fleet-wide; ⎇+ opens the same window. These checks hold
-  // the source to what the rendered window cannot show; runFoundingFocusDom below drives it.
+  // --- THE FOUNDING WINDOW (src/founding.ts): since 2026-10-04 the profile window of design v3 — the
+  // place, then ① Profil wählen, ② Anpassen (settings + the pack tree Gruppe → Pack → Teil) beside ③
+  // Was der Agent liest (the session file of GET /api/founding-plan); the role applies a preset over
+  // the founding plan, stored fleet-wide; ⎇+ opens the same window. These checks hold the source to
+  // what the rendered window cannot show; runFoundingFocusDom below drives it.
   let foundSrc = "", clientOnly = "", planSrc = "", prefsOnly = "", boardOnly = "", foundSrcError = "";
   try {
     foundSrc = readFileSync(`${sourceRoot}/src/founding.ts`, "utf8");
@@ -2140,7 +2141,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   })();
   check("founding window: ONE shell window of one size, no list — a state change never moves it",
     foundCode.includes("openShell({") && foundCode.includes('id: "found",')
-    && foundCss.includes("#shell-found .shellwin { position: relative; width: min(880px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px));")
+    && foundCss.includes("#shell-found .shellwin { position: relative; width: min(1180px, calc(100vw - 32px)); height: min(920px, calc(100vh - 32px));")
     && foundCss.includes("#shell-found .shelllist, #shell-found .shelltools { display: none; }")
     && !/\.style\.(width|height|left|top)\s*=/.test(foundCode) && !foundCode.includes("gfwin"),
     foundCss.slice(0, 120) || "no #shell-found block in public/index.html");
@@ -2148,10 +2149,23 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     foundCss.length > 0 && !/#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(foundCss.replace(/#shell-found/g, ""))
     && !/\.gf[a-z]/.test(indexSrc),
     (foundCss.replace(/#shell-found/g, "").match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) ?? []).join(" ") || "clean");
-  check("founding window: four fields in reading order — Ort, Rolle, Profil, Kontext",
-    /fieldHead\(sec, "Ort",[\s\S]*fieldHead\(sec, "Rolle",[\s\S]*fieldHead\(sec, "Profil",[\s\S]*fieldHead\(sec, "Kontext",/.test(foundCode)
-    && foundCode.includes("shell.detail.replaceChildren(fPlace, fRole, fProfile, fContext);"),
-    "renderPlace/renderRole/renderProfile/renderContext in src/founding.ts");
+  check("founding window: the place, then three numbered steps — ① Profil wählen, ② Anpassen beside ③ Was der Agent liest",
+    foundCode.includes('fieldHead(sec, "Ort",') && foundCode.includes('stepHead(1, "Profil wählen",')
+    && foundCode.includes('stepHead(2, "Anpassen",') && foundCode.includes('stepHead(3, "Was der Agent liest",')
+    && foundCode.includes("shell.detail.replaceChildren(fPlace, fRole, cols);") && foundCode.includes("cols.append(left, fFile);")
+    && /#shell-found \.fdcols \{ display: grid; grid-template-columns: 430px minmax\(0, 1fr\); \}/.test(foundCss)
+    && foundCss.includes("#shell-found .fdcols { grid-template-columns: minmax(0, 1fr); }"),
+    "open/renderPlace/renderRole/renderFile in src/founding.ts");
+  // the v3 rules the rendered window cannot prove alone: packs are a TREE (owner 01.10.: no card
+  // list), the file's order is fixed, technical lines live only behind hover/focus (in the flow
+  // without hover), and the word "Heftchen" is not in the view (card 569f8bb5)
+  check("founding window: packs are one tree Gruppe → Pack → Teil with a switch per level, the file keeps its fixed order, details hover or flow, no Heftchen",
+    foundCode.includes('const tree = el("div", "fdtree");') && /function packNode\(/.test(foundCode) && /function partNode\(/.test(foundCode)
+    && ["data-group", "data-pack", "data-part"].every((k) => foundCode.includes(`sw.dataset.${k.slice(5)} =`))
+    && /k: "rolle"[\s\S]*k: "auftrag"[\s\S]*k: "anl"[\s\S]*k: "wis"[\s\S]*k: "abruf"[\s\S]*k: "ende"/.test(foundCode)
+    && /@media \(hover: hover\) \{[\s\S]*#shell-found \.fdrow:hover > \.fdhv/.test(foundCss) && /@media \(hover: none\) \{\s*#shell-found \.fdhv \{ display: block; \}/.test(foundCss)
+    && !/heftchen/i.test(foundCode) && !foundCode.includes("fdcx"),
+    "renderPacks/renderFile in src/founding.ts + .fdhv in public/index.html");
   check("founding window: the four roles are radio cards with one sentence each, two across on a phone",
     ['"Leer"', '"Lane"', '"Orchestratorin"', '"MAIN"'].every((w) => foundCode.includes(`name: ${w}`))
     && foundCode.includes('b.setAttribute("role", "radio");') && foundCode.includes('b.setAttribute("aria-checked", String(on));')
@@ -2201,7 +2215,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   const omitSay = /const OMIT_SAY[\s\S]*?\n};/.exec(foundCode)?.[0] ?? "";
   check("founding window: every omission reason of the plan is said in owner words, the raw one only behind intern:",
     reasons.length >= 8 && reasons.every((r) => omitSay.includes(`"${r}":`))
-    && (foundCode.match(/row\.title = `intern: \$\{o\.reason\}`;/g) ?? []).length === 2,
+    && (foundCode.match(/ · intern: \$\{o\.reason\}`/g) ?? []).length === 1,
     `reasons=${reasons.join(",")} missing=${reasons.filter((r) => !omitSay.includes(`"${r}":`)).join(",")}`);
   const bodySrc = foundCode.slice(foundCode.indexOf("function foundingBody()"), foundCode.indexOf("function blocker()"));
   check("founding window — should-reject: with no pack on the body carries no packs — one packs key, only in the conditional, and client.ts builds no second spawn body",
@@ -2209,7 +2223,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && !/function spawnBody\(/.test(clientCode),
     "foundingBody in src/founding.ts; no spawnBody in src/client.ts");
   check("founding window: the plan is read for (place, harness, mode), latest-wins, and re-read when any of the three moves",
-    foundCode.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`")
+    foundCode.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}&role=${role}`")
     && foundCode.includes("if (S !== s || seq !== s.planSeq || s.place !== path || key !== planKey()) return; // latest-wins")
     && foundCode.includes("if (s.planFor !== planKey()) void loadPlan();"),
     "loadPlan/renderContext in src/founding.ts");
@@ -5243,11 +5257,28 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
         if (window.fixturePlan === 'network') throw new Error('fixture network refusal');
         if (window.fixturePlan === '500') return Response.json({ error: 'fixture plan refusal' }, { status: 500 });
         if (window.fixturePlan === 'malformed') return Response.json({ selected: [{ id: 'broken' }], omitted: [] });
-        if (window.fixturePlan === 'many') return Response.json({ selected: Array.from({ length: 14 }, (_, i) => pack('fixture-pack-number-' + i, 'repo-manifest', 'Pack ' + i)), omitted: [] });
-        return Response.json({ head: 'fixture-head', branch: 'fixture', selected: [
-          pack('fixture-alpha', 'repo-manifest', 'Erstes Test-Pack: voller Zweck mit langem Text, der mobil lesbar umbricht.'),
-          pack('fixture-beta', 'fleet-seed', 'Zweites Test-Pack')
-        ].filter(p => window.fixturePlan !== 'missing-id' || p.id !== 'fixture-alpha'), omitted: [{ id: 'fixture-omitted', reason: 'harness-unsupported' }] });
+        // THE PROFILE WINDOW'S PLAN (card 569f8bb5): packs in groups with their parts, and the session
+        // file rendered for the query's packs= and parts= the way session-agents.ts does — a pack's hint
+        // line stands while any of its parts is not whole in the file; every size is the text's own
+        const groups = ['grundlagen', 'pruefen-landen', 'sessions-fuehren', 'vor-arbeiten'];
+        const part = (packId, n, sorte, bytes, ort) => ({ id: packId + '.' + n, packId, path: 'AGENTS.md', anchor: '## ' + packId + ' ' + n, sorte, ort, sha256: 'f'.repeat(64), bytes, content: null, refusal: null });
+        const all = window.fixturePlan === 'many'
+          ? Array.from({ length: 14 }, (_, i) => ({ ...pack('fixture-pack-number-' + i, 'repo-manifest', 'Pack ' + i), group: groups[i % 4], parts: [part('fixture-pack-number-' + i, 'one', 'wissen', 100 + i, 'ausleihe')] }))
+          : [{ ...pack('fixture-alpha', 'repo-manifest', 'Erstes Test-Pack: voller Zweck mit langem Text, der mobil lesbar umbricht.'), group: 'grundlagen', parts: [part('fixture-alpha', 'one', 'anleitung', 300, 'box')] },
+             { ...pack('fixture-beta', 'fleet-seed', 'Zweites Test-Pack'), group: 'pruefen-landen', parts: [part('fixture-beta', 'one', 'wissen', 500, 'ausleihe'), part('fixture-beta', 'two', 'anleitung', 200, 'ausleihe')] }]
+            .filter(p => window.fixturePlan !== 'missing-id' || p.id !== 'fixture-alpha');
+        const q = new URLSearchParams(path.slice(path.indexOf('?') + 1));
+        const packsQ = q.get('packs'), partsQ = q.get('parts');
+        window.fixtureFileQueries.push({ role: q.get('role'), packs: packsQ, parts: partsQ });
+        const on = packsQ === null ? all : all.filter(p => packsQ.split(',').includes(p.id));
+        const parts = on.flatMap(p => p.parts.map(x => { const ort = partsQ === null ? x.ort : partsQ.split(',').includes(x.id) ? 'box' : 'ausleihe'; return { ...x, ort, content: ort === 'box' ? 'x'.repeat(x.bytes) : null }; }));
+        const role = { id: 'role', packId: null, path: 'server.ts', anchor: 'LANE_ROLE_CARD', sorte: 'anleitung', ort: 'box', sha256: 'a'.repeat(64), bytes: 100, content: 'r'.repeat(100), refusal: null };
+        const whole = sorte => parts.filter(x => x.ort === 'box' && x.sorte === sorte).map(x => x.content).join('\\n');
+        const hints = on.filter(p => p.parts.some(x => parts.find(y => y.id === x.id).ort !== 'box')).map(p => '- ' + p.id + ' — ' + p.useWhen + '\\n  AGENTS.md | ## ' + p.id).join('\\n');
+        const text = '## Rolle\\n\\n' + role.content + '\\n\\n## Anleitung\\n\\n' + whole('anleitung') + '\\n\\n## Wissen\\n\\n' + whole('wissen') + '\\n\\n## Packs auf Abruf\\n\\n' + hints + '\\n';
+        const sessionAgents = { text, bytes: new TextEncoder().encode(text).length, parts: [role, ...parts] };
+        if (window.fixturePlan === 'many') return Response.json({ selected: all, omitted: [], sessionAgents });
+        return Response.json({ head: 'fixture-head', branch: 'fixture', selected: all, omitted: [{ id: 'fixture-omitted', reason: 'harness-unsupported' }], sessionAgents });
       }
       throw new Error('unexpected fixture API: ' + path);
     };
@@ -5293,7 +5324,9 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: stub, loader: 'ts' }));
       build.onLoad({ filter: /\/src\/founding\.ts$/ }, args => ({
         contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases = []; window.fixturePlanReads = 0; window.fixtureStored = null;
-window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false;
+window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; window.fixtureFileQueries = [];
+// the tree opens its groups for a reader that asks which packs are on; a repaint only when one was closed
+window.fixtureUnfold = () => { if (!S) return; const before = S.open.size; for (const g of [...GROUPS, UNGROUPED]) S.open.add(g.id); if (S.open.size !== before) renderPacks(); };
 window.fixtureReload = () => { void loadPlan(); renderAll(); };
 window.fixturePlanReady = () => !!S?.plan && S.planFor === planKey();
 window.fixtureClose = closeFounding; window.fixtureSettled = () => !S?.busy;
@@ -5388,12 +5421,14 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const starts = `window.fixtureRequests.filter(r => r.url !== '/api/role-presets')`;
       const onlyStart = (url: string, body: unknown) => evaluate<boolean>(`(() => { const s = ${starts}; return s.length === 1 && s[0].url === ${JSON.stringify(url)} && JSON.stringify(s[0].body) === ${JSON.stringify(JSON.stringify(body))}; })()`);
       const said = async (name: string) => { detail[name] = await evaluate<string>(`JSON.stringify(window.fixtureRequests)`); };
-      const chips = `Array.from(document.querySelectorAll('.fdctx .fdcx:not(.out):not(.fix)'), e => e.querySelector('.fdcxid').textContent)`;
-      const ready = `document.querySelector('.fdadd') !== null && !document.querySelector('.fdctx .fdnote')`;
+      // the packs that are ON, read off the tree's switches (its groups unfolded first)
+      const chips = `(window.fixtureUnfold(), Array.from(document.querySelectorAll('.fdsw[data-pack]')).filter(e => e.getAttribute('aria-checked') === 'true').map(e => e.dataset.pack))`;
+      const ready = `document.querySelector('.fdtree') !== null`;
+      const fileSays = `(document.querySelector('#shell-found .fdtot')?.textContent || '')`;
       const reset = async (extra = '') => {
         await evaluate(`document.querySelector('#shell-found')?.remove(); window.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases.splice(0).forEach(r => r()); window.fixtureStored = null;
           window.fixtureMode = null; window.fixtureShown = null; window.fixtureReceiptReads = 0; window.fixtureReceiptHold = false; window.fixtureResetSlots();
-          window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; ${extra}`);
+          window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; window.fixtureFileQueries = []; ${extra}`);
         await evaluate(`window.fixtureOpen()`);
         await wait(ready);
       };
@@ -5411,7 +5446,8 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g['Leer — should-reject a packs key: the start body is exactly { cwd }'] = await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo' }); await said('leer');
 
       await reset(); await role('lane'); await wait(`${chips}.length === 2`); await shot('lane');
-      g['Lane applies its preset: every pack the plan offers lights up, the delta line names them'] = await evaluate<boolean>(`JSON.stringify(${chips}) === '["fixture-alpha","fixture-beta"]' && document.querySelector('.fddelta').textContent.includes('+fixture-alpha') && document.querySelectorAll('.fdcx.in').length === 2`);
+      await wait(`!!document.querySelector('.fdsec2[data-sec="abruf"]')`);
+      g['Lane applies its preset: every pack the plan offers is on, and the file names their hints'] = await evaluate<boolean>(`JSON.stringify(${chips}) === '["fixture-alpha","fixture-beta"]' && document.querySelector('.fdsec2[data-sec="abruf"] .fdsay2').textContent.includes('1 Hinweis')`);
       g['Lane and worktree are one choice: the place moved to Neuer Worktree and says why'] = await evaluate<boolean>(`document.querySelector('.fdsegb.on').textContent === 'Neuer Worktree' && document.querySelector('.fdcouple').textContent.includes('Neuer Worktree')`);
       await evaluate(`const i = document.querySelector('.fdname input'); i.value = 'Mein Test'; i.dispatchEvent(new Event('input'))`);
       const stamp = await evaluate<string>(`(() => { const d = new Date(); return String(d.getFullYear() % 100).padStart(2, '0') + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0'); })()`);
@@ -5419,7 +5455,6 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g['Lane start: one open-worktree with the preset packs and the typed name as its branch'] = await onlyStart('/api/slots/2/open-worktree', { repo: '/fixture/repo', branch: `fleet/${stamp}-mein-test`, packs: ['fixture-alpha', 'fixture-beta'] }); await said('lane');
 
       await reset(); await role('lane'); await wait(`${chips}.length === 2`);
-      await click('.fdctxfoot .fdghost'); await wait(`document.querySelector('.fdlist') !== null`);
       await evaluate(`document.querySelector('.fdsw[data-pack="fixture-alpha"]').focus()`);
       const toggles: string[] = [];
       for (let i = 0; i < 2; i++) {
@@ -5430,8 +5465,9 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       detail['toggles'] = JSON.stringify(toggles);
       await shot('list');
 
-      await reset(); await click('[data-pop="harness"]'); await click('.fdpop .fdprow:nth-child(2)'); await role('orch');
-      g['Orchestratorin shows her role card and carries no packs'] = await evaluate<boolean>(`document.querySelector('.fdcx.srv')?.textContent === 'Rollenkarte' && ${chips}.length === 0`);
+      await reset(); await click('.fdsw2b[data-agent="other"]'); await role('orch');
+      await wait(`!!document.querySelector('.fdsec2[data-sec="rolle"]')`);
+      g['Orchestratorin shows her role text in the file and carries no packs'] = await evaluate<boolean>(`document.querySelector('.fdsec2[data-sec="rolle"] .fdskb').textContent === '0,1 KB' && ${chips}.length === 0 && window.fixtureFileQueries.some(f => f.role === 'orchestratorin')`);
       await click('.fdgo');
       g['Orchestratorin with another agent: exactly { cwd, label, harness }'] = await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo', label: 'Orchestrator', harness: 'other' }); await said('orch');
 
@@ -5442,10 +5478,10 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const toMain = async () => { await click('.fdrole[data-role="main"]'); await wait(`${progs}.length > 0 || !!document.querySelector('.fdprogs .fdnote.warn')`); };
       // the MAIN default of the model register, as the window must send it (read, never copied)
       const mainDefault = { harness: MODEL_DEFAULTS.main.harness, model: MODEL_DEFAULTS.main.id, ...(MODEL_DEFAULTS.main.effort ? { effort: MODEL_DEFAULTS.main.effort } : {}) };
-      const profileShown = `({ agent: document.querySelector('.fdpf[data-pop="harness"] .fdpfv')?.textContent, model: document.querySelector('.fdpf[data-pop="model"]')?.title,
-        effort: document.querySelector('.fdpf[data-pop="effort"] .fdpfv')?.textContent })`;
+      const profileShown = `({ agent: document.querySelector('.fdsw2b[data-agent].on')?.textContent, model: document.querySelector('.fdpf[data-pop="model"]')?.title,
+        effort: document.querySelector('.fdsw2b[data-effort].on')?.textContent })`;
       await reset();
-      g['the role cards are exactly Leer, Lane, Orchestratorin, MAIN — no Steward is offered'] = await evaluate<boolean>(`Array.from(document.querySelectorAll('.fdrole'), b => b.dataset.role).join() === 'leer,lane,orch,main' && !document.querySelector('#shell-found').textContent.includes('Steward')`);
+      g['the profile tiles are exactly Lane, MAIN, Orchestratorin, Leer (design v3 order) — no Steward is offered'] = await evaluate<boolean>(`Array.from(document.querySelectorAll('.fdrole'), b => b.dataset.role).join() === 'lane,main,orch,leer' && !document.querySelector('#shell-found').textContent.includes('Steward')`);
       await toMain(); await shot('main');
       const listed = await evaluate<string>(`JSON.stringify(${progs}.map(b => [b.dataset.program, b.disabled, b.querySelector('.fdpst').textContent]))`);
       detail['main-programs'] = listed;
@@ -5467,8 +5503,8 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       detail['main-profile'] = JSON.stringify(shownMain);
       g['MAIN fills Agent, Modell and Effort with the MAIN default of the model register — Effort is no longer "Adapter wählt"'] =
         shownMain.agent === MODEL_DEFAULTS.main.harness && shownMain.model.startsWith(`Modell ${MODEL_DEFAULTS.main.id}`)
-        && shownMain.model.includes('MAIN-Standard') && shownMain.effort === (MODEL_DEFAULTS.main.effort ?? 'Adapter wählt');
-      g['MAIN carries no packs: the Programs founding brief stands in Kontext, no pack button'] = await evaluate<boolean>(`${chips}.length === 0 && !document.querySelector('.fdadd') && document.querySelector('.fdcx.srv')?.textContent === 'Gründungsbrief des Programs'`);
+        && shownMain.model.includes('MAIN-Standard') && shownMain.effort === (MODEL_DEFAULTS.main.effort ?? 'Adapter');
+      g['MAIN carries no packs: her plan stands read-only in the tree, every pack switch is fixed, her file renders the whole plan'] = await evaluate<boolean>(`(window.fixtureUnfold(), true) && document.querySelectorAll('.fdsw[data-pack]').length === 2 && Array.from(document.querySelectorAll('.fdsw[data-pack], .fdsw[data-group]')).every(e => e.disabled) && window.fixtureFileQueries.filter(f => f.role === 'main' && f.parts !== null).every(f => f.packs === null)`);
       g['should-reject: MAIN without a chosen Program blocks the button and Enter'] = await blocked();
       await click('.fdprog[data-program="p-live"]');
       g['should-reject: a Program with a living MAIN cannot be chosen'] = await evaluate<boolean>(`document.querySelector('.fdprog[data-program="p-live"]').getAttribute('aria-checked') === 'false' && document.querySelector('.fdgo').disabled`);
@@ -5493,8 +5529,8 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       detail['main-left'] = JSON.stringify(backToLeer);
       await click('.fdgo');
       g['leaving MAIN takes its default back: Leer shows Adapter wählt again and starts with exactly { cwd }'] =
-        backToLeer.agent === 'codex' && backToLeer.effort === 'Adapter wählt' && await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo' });
-      await reset(); await toMain(); await click('[data-pop="effort"]'); await click('.fdpop .fdprow:nth-child(2)'); await role('leer');
+        backToLeer.agent === 'codex' && backToLeer.effort === 'Adapter' && await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo' });
+      await reset(); await toMain(); await click('.fdsw2b[data-effort="low"]'); await role('leer');
       g['should-reject: an Effort the owner picked under MAIN is not taken back when the role changes'] =
         (await evaluate<{ effort: string }>(profileShown)).effort === 'low';
       await reset(`window.fixtureNoMainAgent = true;`); await toMain(); await click('.fdprog[data-program="p-free"]');
@@ -5502,7 +5538,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       detail['main-no-agent'] = JSON.stringify(noAgent);
       await click('.fdgo'); await wait(`window.fixtureSettled()`);
       g['should-reject: without the MAIN agent of the register on this machine nothing is filled — the door gets exactly { cwd }'] =
-        noAgent.agent === 'codex' && noAgent.effort === 'Adapter wählt'
+        noAgent.agent === 'codex' && noAgent.effort === 'Adapter'
         && await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo' });
       await reset(`window.fixturePrograms = 'fail';`); await toMain();
       g['should-reject: Programs that cannot be read offer nothing, say so and block the start'] = await evaluate<boolean>(`${progs}.length === 0 && document.querySelector('.fdprogs .fdnote.warn').textContent.includes('Antwort 500')`) && await blocked();
@@ -5513,7 +5549,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
 
       await reset(); await role('lane'); await wait(`${chips}.length === 2`);
       await evaluate(`window.fixtureHold = true;`);
-      await click('[data-pop="harness"]'); await click('.fdpop .fdprow:nth-child(2)');
+      await click('.fdsw2b[data-agent="other"]');
       await wait(`window.fixtureReleases.length > 0`);
       g['should-reject: while the plan of a changed start is missing, packs block the button and Enter'] = await blocked();
       await evaluate(`window.fixtureHold = false; window.fixtureReleases.splice(0).forEach(r => r());`);
@@ -5523,7 +5559,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       for (const failure of ['500', 'malformed', 'network']) {
         await reset(); await role('lane'); await wait(`${chips}.length === 2`);
         await evaluate(`window.fixturePlan = ${JSON.stringify(failure)}; window.fixtureReload();`);
-        await wait(`document.querySelector('.fdbody .fdnote.warn') !== null`);
+        await wait(`document.querySelector('.fdpacks .fdnote.warn') !== null`);
         const sayPlan = await evaluate<boolean>(`${chips}.length === 0 && document.querySelector('.fdfootnote.warn')?.textContent.includes('ohne Packs')`);
         await click('.fdgo');
         g[`${failure} plan: the switches go off, the foot says it starts without packs, and the body carries none`] = sayPlan
@@ -5558,34 +5594,72 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await reset(`window.fixtureStored = { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } };`);
       await role('lane'); await wait(`${chips}.length === 1`);
       g['a stored preset wins over the built-in one and the card says "angepasst"'] = await evaluate<boolean>(`JSON.stringify(${chips}) === '["fixture-alpha"]' && document.querySelector('.fdrole[data-role="lane"] .fdrk').textContent.includes('angepasst')`);
+      // ALS PROFIL SICHERN and back (design v3): the session's pack choice becomes the role's preset
+      // over the existing door, only that role is stored, and "Auf Standard zurücksetzen" stores null
       await reset(); await role('lane'); await wait(`${chips}.length === 2`);
-      await click('.fdctxfoot .fdghost:last-child'); await wait(`document.querySelector('.fdcmp') !== null`);
-      await click('.fdpip[aria-label="fixture-beta für Lane"]'); await wait(`${chips}.length === 1`);
+      await click('.fdsw[data-pack="fixture-beta"]'); await wait(`${chips}.length === 1`);
+      const devFoot = await evaluate<string>(`document.querySelector('.fddev').textContent`);
+      await click('.fdkeep'); await wait(`window.fixtureRequests.some(r => r.url === '/api/role-presets')`);
       const stored = await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`);
-      await click('.fdcmpfoot .fdghost'); await wait(`${chips}.length === 2`);
+      const keptAngepasst = await evaluate<boolean>(`document.querySelector('.fdrole[data-role="lane"] .fdrk').textContent.includes('angepasst') && !document.querySelector('.fddev').textContent.includes('weicht')`);
+      await click('.fdstep1 .fdghost'); await wait(`${chips}.length === 2`);
       const afterReset = await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`);
-      g['redrawing a preset stores only that role; the reset stores null and brings the packs back'] =
-        stored === JSON.stringify([{ presets: { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }])
+      g['Als Profil sichern stores only that role, the deviation is gone; the reset stores null and brings the packs back'] =
+        devFoot.includes('weicht in 1 Punkt') && keptAngepasst
+        && stored === JSON.stringify([{ presets: { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }])
         && afterReset === JSON.stringify([{ presets: { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }, { presets: null }]);
       detail['presets'] = afterReset;
-      await shot('compare');
+      await shot('profile-saved');
       await reset(`window.fixtureStored = { steward: { base: 'none', plus: ['fixture-alpha'], minus: [] } };`); await role('lane'); await wait(`${chips}.length === 2`);
-      await click('.fdctxfoot .fdghost:last-child'); await wait(`document.querySelector('.fdcmp') !== null`);
-      await click('.fdpip[aria-label="fixture-beta für Lane"]'); await wait(`${chips}.length === 1`);
+      await click('.fdsw[data-pack="fixture-beta"]'); await wait(`${chips}.length === 1`); await click('.fdkeep');
+      await wait(`window.fixtureRequests.some(r => r.url === '/api/role-presets')`);
       g['a stored Steward preset rides along unchanged when the window saves — dropping the card drops no stored choice'] =
         await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`)
         === JSON.stringify([{ presets: { steward: { base: 'none', plus: ['fixture-alpha'], minus: [] }, lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }]);
 
-      await reset(`window.fixturePlan = 'many';`); await role('lane'); await wait(`document.querySelectorAll('.fdctx .fdcx').length === 14`);
-      await wait(`document.querySelectorAll('.fdcx.in').length === 0`);
-      const line = await evaluate<{ rows: number; shown: number; more: string }>(`(() => {
-        const l = document.querySelector('.fdctx'); const shown = Array.from(l.querySelectorAll('.fdcx')).filter(c => !c.hidden);
-        // one line = every visible item on one vertical centre (items of different heights sit centred)
-        const centres = new Set(Array.from(l.children).filter(c => !c.hidden).map(c => { const r = c.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }));
-        const m = l.querySelector('.fdmore'); return { rows: centres.size, shown: shown.length, more: m.hidden ? '' : m.textContent };
+      // THE FILE ANSWERS EVERY SWITCH (card 569f8bb5): a part switched whole raises the size and its
+      // section names it; a pack switched off leaves the file over packs=; each change is a deviation
+      // with a dot, counted in the foot, and Wie Profil takes them all back. Every size is the route's.
+      await reset(); await role('lane'); await wait(`${chips}.length === 2 && !!document.querySelector('.fdtot')`);
+      const fileBefore = await evaluate<string>(fileSays);
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+      g['at rest no technical line is shown: ids and hashes wait for hover or focus'] = width !== 1200 || await evaluate<boolean>(`Array.from(document.querySelectorAll('#shell-found .fdhv')).every(e => getComputedStyle(e).display === 'none')`);
+      await evaluate(`document.querySelector('[data-fold="fixture-beta"]').click()`); await wait(`!!document.querySelector('[data-part="fixture-beta.one"]')`);
+      await click('[data-part="fixture-beta.one"]');
+      await wait(`${fileSays} !== ${JSON.stringify(fileBefore)} && !!document.querySelector('.fdsec2[data-sec="wis"] .fdit')`);
+      const partQuery = await evaluate<string>(`JSON.stringify(window.fixtureFileQueries[window.fixtureFileQueries.length - 1])`);
+      g['a part switched whole: the file re-reads with parts= naming it, Wissen lists it, the size grows'] =
+        JSON.parse(partQuery).parts.split(',').includes('fixture-beta.one') && await evaluate<boolean>(`document.querySelector('.fdsec2[data-sec="wis"] .fdinm').textContent.length > 0 && document.querySelector('.fdsec2[data-sec="wis"]').classList.contains('dev')`);
+      detail['part-query'] = partQuery;
+      const fileWithPart = await evaluate<string>(fileSays);
+      await click('.fdsw[data-pack="fixture-alpha"]');
+      await wait(`${fileSays} !== ${JSON.stringify(fileWithPart)}`);
+      g['a pack switched off leaves the file: packs= drops it and its group reads 0 von 1'] = await evaluate<boolean>(`(() => {
+        const last = window.fixtureFileQueries[window.fixtureFileQueries.length - 1];
+        return last.packs === 'fixture-beta' && document.querySelector('[data-group="grundlagen"]').closest('.fdline').querySelector('.fdcnt').textContent === '0 von 1';
       })()`);
-      g['fourteen packs stay ONE line: what does not fit is counted in +N'] = line.rows === 1 && line.more === `+${14 - line.shown}` && line.shown >= 1;
-      detail['line'] = JSON.stringify(line);
+      g['two deviations carry dots, the foot counts them; Wie Profil takes both back'] = await evaluate<boolean>(`document.querySelectorAll('.fdtree .fddvb').length >= 2 && document.querySelector('.fddev').textContent.includes('weicht in 2 Punkten')`);
+      await shot('profil-deviation');
+      await click('.fdlike'); await wait(`${chips}.length === 2 && ${fileSays} === ${JSON.stringify(fileBefore)}`);
+      g['Wie Profil: the file is the profile file again, no dot is left'] = await evaluate<boolean>(`!document.querySelector('.fdtree .fddvb') && !document.querySelector('.fddev').textContent.includes('weicht')`);
+      g['each profile tile names its file size from the route; Leer loads none'] = await evaluate<boolean>(`(() => {
+        const say = r => document.querySelector('.fdrole[data-role="' + r + '"] .fdrk').textContent;
+        return /^\\d+,\\d KB/.test(say('lane')) && /^\\d+,\\d KB/.test(say('main')) && /^\\d+,\\d KB/.test(say('orch')) && say('leer') === 'nichts geladen';
+      })()`);
+
+      // SCALING (owner to v2: „[Zitat entfernt]“): fourteen packs stand
+      // folded in their four groups — the first glance has four rows, a partial group says "N von M"
+      await reset(`window.fixturePlan = 'many';`); await role('lane');
+      await wait(`document.querySelectorAll('.fdtree > .fdnode').length === 4`);
+      const folded = await evaluate<{ groups: number; packs: number }>(`({ groups: document.querySelectorAll('.fdtree > .fdnode').length, packs: document.querySelectorAll('.fdsw[data-pack]').length })`);
+      await wait(`${chips}.length === 14`);
+      await click('.fdsw[data-pack="fixture-pack-number-0"]');
+      await wait(`document.querySelector('[data-group="grundlagen"]').getAttribute('aria-checked') === 'mixed'`);
+      g['fourteen packs fold into four group rows; a partly switched group reads 3 von 4 and stands half'] = folded.groups === 4 && folded.packs === 0
+        && await evaluate<boolean>(`document.querySelector('[data-group="grundlagen"]').closest('.fdline').querySelector('.fdcnt').textContent === '3 von 4'`);
+      await click('[data-group="grundlagen"]');
+      g['a half group switches all on with one click'] = await evaluate<boolean>(`document.querySelector('[data-group="grundlagen"]').getAttribute('aria-checked') === 'true'`);
+      detail['many'] = JSON.stringify(folded);
       await shot('many');
       g['nothing in the window is wider than the screen'] = await evaluate<boolean>(`(() => { const w = document.querySelector('#shell-found .shellwin'); return w.getBoundingClientRect().right <= innerWidth + 0.5 && document.querySelector('#shell-found .shelldetail').scrollWidth <= document.querySelector('#shell-found .shelldetail').clientWidth; })()`);
 
@@ -5596,7 +5670,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const setup = async (mode: string, pack = false) => {
         await reset(`window.fixtureMode = ${JSON.stringify(mode)};`);
         if (!pack) return;
-        await click('.fdadd'); await click('.fdaddpop .fdprow'); await key('Escape');
+        await wait(`${chips}.length === 0`); await click('.fdsw[data-pack="fixture-alpha"]');
         await wait(`JSON.stringify(${chips}) === '["fixture-alpha"]' && !document.querySelector('.fdpop')`);
       };
       // every receipt this run renders is read for the inner words the owner never sees (card 1c17)
@@ -5612,7 +5686,10 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       })()`);
       const text = () => evaluate<string>(`document.querySelector('#shell-found')?.textContent || ''`);
       const actual = (name: string) => `document.querySelector('.fdproofrow[data-field="${name}"] .fdactual')`;
-      const pick = async (pop: string) => { await click(`[data-pop="${pop}"]`); await click('.fdpop .fdprow:nth-child(2)'); };
+      const pick = async (what: string) => {
+        if (what === 'effort') { await click('.fdsw2b[data-effort]:not([data-effort=""])'); return; }
+        await click(`[data-pop="${what}"]`); await click('.fdpop .fdprow:nth-child(2)');
+      };
       const plain = async () => {
         await setup('equal'); await pick('model'); await pick('effort');
         await click('.fdgo'); await finished();

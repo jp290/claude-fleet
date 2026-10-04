@@ -1811,7 +1811,7 @@
     :is(.riskbtn, .shrbtn, .qbtn, .bbtn) { min-height: 40px; }
     .rgbtn:not(.link) { min-height: 40px; padding: 6px 14px; }
     .rgopt { min-height: 44px; padding: 8px 6px; }
-    #shell-found .fdrights .rgrow { grid-template-columns: 100px minmax(0, 1fr); }
+    #shell-found .fdhvrights .rgrow { grid-template-columns: 100px minmax(0, 1fr); }
     .tabrow { overflow-x: auto; flex-wrap: nowrap; max-width: 100%; }
     .tabrow button { min-height: 40px; flex: none; }
     .shell { align-items: stretch; justify-content: stretch; }
@@ -1911,7 +1911,7 @@
      three --chat-*-fs (G0.3/G0.4). One fixed size: a state change never moves the window. */
   #shell-found { background: color-mix(in srgb, var(--chat-void) 72%, transparent);
     font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
-  #shell-found .shellwin { position: relative; width: min(880px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px));
+  #shell-found .shellwin { position: relative; width: min(1180px, calc(100vw - 32px)); height: min(920px, calc(100vh - 32px));
     background: var(--chat-void); border: 1px solid var(--chat-edge); border-radius: var(--r3);
     box-shadow: 0 24px 64px color-mix(in srgb, var(--chat-void) 80%, transparent); }
   #shell-found .chatflakes { display: block; z-index: 0; }
@@ -1987,23 +1987,31 @@
   #shell-found .fdradio { flex: none; width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--chat-faint); }
   #shell-found .fdorph.on .fdradio { border-color: var(--chat-ink); background: radial-gradient(var(--chat-ink) 0 3px, transparent 3.5px); }
 
-  /* ROLLE — four cards; the chosen one in ink */
-  #shell-found .fdroles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-  #shell-found .fdrole { display: flex; flex-direction: column; gap: 6px; min-height: 116px; padding: 12px 12px 11px; border-radius: var(--r2);
-    background: var(--chat-surface); border: 1px solid var(--chat-edge); transition: border-color var(--t), background var(--t), transform var(--t); }
-  #shell-found .fdrole:not(:disabled):hover { border-color: var(--c-edge-hi); transform: translateY(-1px); }
-  #shell-found .fdrole.on { border-color: var(--chat-ink); background: var(--chat-raised);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--chat-ink) 7%, transparent); }
+  /* ① PROFIL WÄHLEN — four tiles, the chosen one in ink; each names its file's size (design v3) */
+  #shell-found .fdstep { padding: 16px 22px 18px; min-width: 0; }
+  #shell-found .fdstep1 { border-bottom: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdsteph { display: flex; align-items: center; gap: 9px; margin: 0 0 12px; min-width: 0; }
+  #shell-found .fdstepn { display: grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--chat-ink); color: var(--chat-void); font-size: var(--chat-ui-fs); font-weight: 600; }
+  #shell-found .fdstept { font-weight: 600; color: var(--chat-ink); white-space: nowrap; }
+  #shell-found .fdsteph2 { min-width: 0; font-size: var(--chat-ui-fs); color: var(--chat-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shell-found .fdright { margin-left: auto; }
+  #shell-found .fdroles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  #shell-found .fdrole { display: flex; align-items: flex-start; gap: 11px; padding: 11px 13px; border-radius: var(--r2);
+    background: var(--chat-void); border: 1px solid var(--chat-edge); transition: border-color var(--t), background var(--t); }
+  #shell-found .fdrole:not(:disabled):hover { border-color: var(--c-edge-hi); }
+  #shell-found .fdrole.on { border-color: var(--chat-ink); background: var(--chat-raised); }
   #shell-found .fdrole:disabled { opacity: .35; }
-  #shell-found .fdrn { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--chat-ink); }
-  #shell-found .fdglyph { display: grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: var(--r1);
-    background: var(--c-hover); color: var(--chat-mute); font-size: var(--chat-ui-fs); }
-  #shell-found .fdrole.on .fdglyph { background: var(--chat-ink); color: var(--chat-void); }
-  #shell-found .fdrs { font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-mute); }
-  #shell-found .fdrk { margin-top: auto; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  /* MAIN — the Program she is founded for, under the cards: active Programs only, the ones with a
+  #shell-found .fdrt { display: flex; flex-direction: column; min-width: 0; }
+  #shell-found .fdrn { font-weight: 600; color: var(--chat-ink); }
+  #shell-found .fdglyph { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: var(--r1);
+    background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-mute); }
+  #shell-found .fdrole.on .fdglyph { color: var(--chat-ink); }
+  #shell-found .fdrs { margin-top: 2px; font-size: var(--chat-ui-fs); line-height: 1.4; color: var(--chat-mute); }
+  #shell-found .fdrk { margin-top: 6px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  /* MAIN — the Program she is founded for, under the tiles: active Programs only, the ones with a
      living MAIN greyed with their slot, an unknown one greyed with "unbekannt" */
-  #shell-found .fdprogs { grid-column: -2; min-width: 0; margin-top: 12px; animation: fdrise var(--t); }
+  #shell-found .fdprogs { min-width: 0; margin-top: 12px; animation: fdrise var(--t); }
   #shell-found .fdproghead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
   #shell-found .fdproghead .fdmeta { flex: 1; }
   #shell-found .fdproglist { display: flex; flex-direction: column; gap: 6px; max-height: 232px; overflow-y: auto; scrollbar-width: thin; }
@@ -2019,26 +2027,129 @@
   #shell-found .fdpst { flex: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-faint); }
   #shell-found .fdpst.stale, #shell-found .fdpst.unknown { color: var(--amber); }
 
-  /* PROFIL — fields with their name above the value */
-  #shell-found .fdprof { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-  #shell-found .fdpfw { position: relative; min-width: 0; }
-  #shell-found .fdpf { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 7px 11px 8px; border-radius: var(--r2);
-    background: var(--chat-surface); border: 1px solid var(--chat-edge); transition: border-color var(--t); }
+  /* ② beside ③: the file is the widest field */
+  #shell-found .fdcols { display: grid; grid-template-columns: 430px minmax(0, 1fr); }
+  #shell-found .fdfile { border-left: 1px solid var(--chat-edge-soft); background: var(--chat-void); }
+  #shell-found .fdleft { background: color-mix(in srgb, var(--chat-surface) 60%, transparent); }
+  #shell-found .fdgl { margin: 2px 0 8px; font-size: var(--chat-ui-fs); font-weight: 500; letter-spacing: .03em; text-transform: uppercase; color: var(--chat-faint); }
+  #shell-found .fdpacks { margin-top: 18px; }
+
+  /* ② Einstellungen: a name, then its switch; a deviation names the profile's value beside it */
+  #shell-found .fdsetrow { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 0 12px; align-items: center; padding: 6px 0; }
+  #shell-found .fdsetk { color: var(--chat-prose); }
+  #shell-found .fdsetv { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  /* a switch row: one pill per value, wrapping when a machine runs many agents */
+  #shell-found .fdsw2 { display: inline-flex; flex-wrap: wrap; gap: 2px; max-width: 100%; padding: 2px; border-radius: var(--r1);
+    border: 1px solid var(--chat-edge); background: var(--chat-void); }
+  #shell-found .fdsw2b { min-height: 24px; padding: 2px 9px; border-radius: 4px; font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; }
+  #shell-found .fdsw2b:not(.on):hover { color: var(--chat-ink); background: var(--c-hover); }
+  #shell-found .fdsw2b.on { background: var(--chat-ink); color: var(--chat-void); }
+  /* a value with a list (Modell, Container): one field, its popover under it */
+  #shell-found .fdpfw { position: relative; min-width: 0; flex: 0 1 220px; }
+  #shell-found .fdpf { display: flex; align-items: center; width: 100%; min-height: 28px; padding: 3px 10px; border-radius: var(--r1);
+    background: var(--chat-void); border: 1px solid var(--chat-edge); transition: border-color var(--t); }
   #shell-found .fdpf:not(:disabled):hover, #shell-found .fdpf.open { border-color: var(--c-edge-hi); }
-  #shell-found .fdpfl { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  #shell-found .fdpfv { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--chat-ink); white-space: nowrap; }
+  #shell-found .fdpfl { display: none; }
+  #shell-found .fdpfv { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    font-size: var(--chat-ui-fs); color: var(--chat-ink); white-space: nowrap; }
   #shell-found .fdpfv span { overflow: hidden; text-overflow: ellipsis; }
   #shell-found .fdpf.dim .fdpfv { color: var(--chat-mute); }
-  #shell-found .fdpmeta { margin-top: 8px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  /* what she may do and read (src/rights.ts#foundingRights, G6.6) — under the profile switches */
-  #shell-found .fdrights { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--chat-edge-soft); }
-  #shell-found .fdrights .rgrow { display: grid; grid-template-columns: 118px minmax(0, 1fr); column-gap: 10px; padding: 3px 0; align-items: baseline; }
-  #shell-found .fdrights .rgkey { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  #shell-found .fdrights .rgv { font-size: var(--chat-ui-fs); }
+  #shell-found .fdwas { display: inline-flex; align-items: center; gap: 6px; padding: 1px 4px; border-radius: var(--r1); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-found .fdwas:hover { color: var(--chat-ink); background: var(--c-hover); }
+  #shell-found .fddot2 { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--chat-ink); }
+  #shell-found .fdsoon { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+
+  /* ② Packs: ONE tree Gruppe → Pack → Teil (owner 01.10.: no card list; v3: groups so it scales) */
+  #shell-found .fdtree { border: 1px solid var(--chat-edge-soft); border-radius: var(--r2); background: var(--chat-void); }
+  #shell-found .fdtree > .fdnode + .fdnode { border-top: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdline { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 5px 10px 5px 6px; border-radius: var(--r1); }
+  #shell-found .fdline:hover { background: color-mix(in srgb, var(--chat-ink) 3%, transparent); }
+  #shell-found .fdlv1 > .fdline { padding-left: 24px; min-height: 34px; }
+  #shell-found .fdlv2 > .fdline { padding-left: 46px; min-height: 32px; }
+  #shell-found .fdchev { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: var(--r1); color: var(--chat-faint); }
+  #shell-found .fdchev:hover { color: var(--chat-ink); }
+  #shell-found .fdchev svg { width: 13px; height: 13px; transform: rotate(-90deg); transition: transform var(--t); }
+  #shell-found .fdchev[aria-expanded="true"] svg { transform: none; }
+  #shell-found .fdchev.none { visibility: hidden; }
+  #shell-found .fdtx { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #shell-found .fdnm { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #shell-found .fdnm b { font-weight: 600; color: var(--chat-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #shell-found .fdn2 { font-size: var(--chat-code-fs); color: var(--chat-prose); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #shell-found .fdcnt { font-size: var(--chat-ui-fs); color: var(--chat-faint); white-space: nowrap; }
+  #shell-found .fdgsay { margin-top: 1px; font-size: var(--chat-ui-fs); line-height: 1.35; color: var(--chat-faint); }
+  #shell-found .fdkb { flex: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; }
+  #shell-found .fdkb.off { color: var(--chat-faint); }
+  #shell-found .fddvb { display: grid; place-items: center; flex: none; width: 14px; height: 14px; }
+  #shell-found .fddvb .fddot2 { transition: transform var(--t); }
+  #shell-found .fddvb:hover .fddot2 { transform: scale(1.4); }
+  #shell-found .fdsw { flex: none; position: relative; width: 30px; height: 17px; border-radius: 9px; background: var(--chat-edge); transition: background var(--t); }
+  #shell-found .fdsw:not(:disabled):hover { background: var(--c-edge-hi); }
+  #shell-found .fdsw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--chat-mute); transition: transform var(--t), background var(--t); }
+  #shell-found .fdsw.on { background: var(--chat-ink); }
+  #shell-found .fdsw.on::after { transform: translateX(13px); background: var(--chat-void); }
+  #shell-found .fdsw.mixed { background: var(--c-edge-hi); }
+  #shell-found .fdsw.mixed::after { transform: translateX(6.5px); background: var(--chat-prose); }
+  #shell-found .fdsw:disabled { opacity: .35; }
+  #shell-found .fdpknote { margin-top: 8px; font-size: var(--chat-ui-fs); line-height: 1.45; color: var(--chat-faint); }
+  #shell-found .fdpknote b { color: var(--chat-mute); font-weight: 500; }
+
+  /* the technical line of a row: a card under it on hover or focus that pushes nothing (G4.1, G6.1);
+     without hover it stands in the flow (grammatik.md §1 Mobil, the .slotact precedent) */
+  #shell-found .fdrow { position: relative; }
+  #shell-found .fdhv { display: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-faint); overflow-wrap: anywhere; }
+  @media (hover: hover) {
+    #shell-found .fdrow > .fdhv { position: absolute; z-index: 6; top: calc(100% - 3px); left: 12px; width: max-content;
+      max-width: min(520px, calc(100% - 20px)); padding: 5px 9px; color: var(--chat-mute); background: var(--chat-raised);
+      border: 1px solid var(--chat-edge); border-radius: var(--r2);
+      box-shadow: 0 10px 28px color-mix(in srgb, var(--chat-void) 70%, transparent); pointer-events: none; }
+    /* keyboard focus shows it, a mouse click does not pin it open */
+    #shell-found .fdrow:hover > .fdhv, #shell-found .fdrow:focus-visible > .fdhv, #shell-found .fdrow:has(:focus-visible) > .fdhv { display: block; }
+  }
+  @media (hover: none) {
+    #shell-found .fdhv { display: block; }
+    #shell-found .fdline, #shell-found .fdfh, #shell-found .fddevn { flex-wrap: wrap; }
+    #shell-found .fdline > .fdhv { flex-basis: 100%; padding: 0 0 4px 30px; }
+    #shell-found .fdfh > .fdhv, #shell-found .fddevn > .fdhv { flex-basis: 100%; }
+  }
+  #shell-found .fdhvrights { font-family: var(--chat-sans); }
+  #shell-found .fdhvrights .rgrow { display: grid; grid-template-columns: 110px minmax(0, 1fr); column-gap: 10px; padding: 2px 0; align-items: baseline; }
+  #shell-found .fdhvrights .rgkey { color: var(--chat-mute); }
+  @media (hover: none) { #shell-found .fdsetrow > .fdhv { grid-column: 2; margin-top: 4px; } }
   /* the receipt's optional step: the same block as in the session's Info */
   #shell-found .fdproofgrant { margin-top: 16px; }
 
-  /* the popovers: place, profile values, more packs — one material */
+  /* ③ WAS DER AGENT LIEST — the session file in its fixed order, its size the route's */
+  #shell-found .fdfh { display: flex; align-items: flex-end; gap: 12px; margin: 2px 0 4px; }
+  #shell-found .fdfn { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; font-weight: 600; color: var(--chat-ink); }
+  #shell-found .fdfn svg { width: 15px; height: 15px; color: var(--chat-mute); }
+  #shell-found .fdtot { font-size: 22px; font-weight: 600; line-height: 1; color: var(--chat-ink); white-space: nowrap; }
+  #shell-found .fdfsub { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-found .fdvs { margin-left: auto; color: var(--chat-faint); white-space: nowrap; }
+  #shell-found .fddoc { border: 1px solid var(--chat-edge); border-radius: var(--r2); background: var(--chat-surface); transition: opacity var(--t); }
+  #shell-found .fddoc.stale { opacity: .6; }
+  #shell-found .fdsec2 { position: relative; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 2px 12px; align-items: baseline; padding: 12px 14px; outline: none; }
+  #shell-found .fdsec2 + .fdsec2 { border-top: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdno { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdh { font-weight: 600; color: var(--chat-ink); }
+  #shell-found .fdskb { font-size: var(--chat-code-fs); color: var(--chat-prose); text-align: right; white-space: nowrap; }
+  #shell-found .fdsay2 { grid-column: 2 / 4; font-size: var(--chat-code-fs); line-height: 1.45; color: var(--chat-mute); }
+  #shell-found .fdsec2.empty .fdh, #shell-found .fdsec2.empty .fdskb { color: var(--chat-faint); font-weight: 500; }
+  #shell-found .fdsec2.dev::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--chat-ink); }
+  #shell-found .fdsec2.flash { animation: fdflash 900ms ease-out; }
+  #shell-found .fditems { grid-column: 2 / 4; display: flex; flex-direction: column; gap: 3px; margin-top: 7px; }
+  #shell-found .fdit { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--chat-code-fs); color: var(--chat-prose); outline: none; }
+  #shell-found .fdinm { white-space: nowrap; }
+  #shell-found .fdnames { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdx { margin-left: auto; font-size: var(--chat-ui-fs); color: var(--chat-faint); white-space: nowrap; }
+  #shell-found .fdbar { grid-column: 2 / 4; display: block; height: 3px; margin-top: 8px; overflow: hidden; border-radius: 2px; background: var(--chat-edge-soft); }
+  #shell-found .fdbar i { display: block; width: var(--w, 0); height: 100%; border-radius: 2px; background: var(--chat-mute); transition: width 260ms ease; }
+  @media (hover: none) { #shell-found .fdsec2 > .fdhv { grid-column: 2 / 4; margin-top: 6px; } #shell-found .fdit { flex-wrap: wrap; } #shell-found .fdit > .fdhv { flex-basis: 100%; padding-left: 14px; } }
+  #shell-found .fdffoot { margin-top: 12px; font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-faint); }
+  #shell-found .fdnofile { padding: 28px 18px; border: 1px dashed var(--chat-edge); border-radius: var(--r2); text-align: center; color: var(--chat-mute); }
+  @keyframes fdflash { from { background: color-mix(in srgb, var(--chat-ink) 7%, transparent); } to { background: transparent; } }
+
+  /* the popovers: place and profile values — one material */
   #shell-found .fdpop { position: relative; z-index: 3; display: flex; flex-direction: column; gap: 1px; margin-top: 6px; padding: 5px;
     max-height: 300px; overflow-y: auto; border-radius: var(--r2); background: var(--chat-surface); border: 1px solid var(--chat-edge);
     box-shadow: 0 12px 32px color-mix(in srgb, var(--chat-void) 70%, transparent); animation: fdrise var(--t); }
@@ -2070,70 +2181,11 @@
   #shell-found .fdinto svg { width: 14px; height: 14px; transform: rotate(-90deg); }
   #shell-found .fdpin { display: flex; flex-direction: column; gap: 4px; padding: 6px 9px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
 
-  /* KONTEXT — ONE line of chips (owner 2026-10-01: a card per pack takes too much room and does not
-     scale); what a pack is stands in its tooltip, the rest is one click away */
-  #shell-found .fdctx { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; overflow: hidden; }
-  #shell-found .fdctx.all { flex-wrap: wrap; }
-  #shell-found .fdctx > * { flex: none; }
-  #shell-found .fdctx > [hidden] { display: none; }
-  #shell-found .fdmore { height: 28px; padding: 0 10px; border-radius: var(--r1); background: var(--chat-raised);
-    border: 1px solid var(--chat-edge); color: var(--chat-mute); font-size: var(--chat-ui-fs); }
-  #shell-found .fdmore:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
-  #shell-found .fdcx { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 4px 0 10px; border-radius: var(--r1);
-    background: var(--chat-raised); border: 1px solid var(--chat-edge); color: var(--chat-ink); font-size: var(--chat-code-fs); cursor: help;
-    transition: background .6s, border-color .6s, opacity .3s; }
-  #shell-found .fdcx.fix { padding-right: 10px; color: var(--chat-mute); background: var(--chat-surface); border-style: dashed; }
-  #shell-found .fdcx.srv { color: var(--chat-prose); border-style: solid; border-color: var(--c-edge-hi); }
-  #shell-found .fdcx.mine { border-color: color-mix(in srgb, var(--amber) 55%, var(--chat-edge)); }
-  #shell-found .fdcx.in { animation: fdpop .5s ease; background: color-mix(in srgb, var(--add) 16%, var(--chat-raised));
-    border-color: color-mix(in srgb, var(--add) 70%, transparent); }
-  #shell-found .fdcx.out { padding-right: 10px; opacity: .4; text-decoration: line-through; border-color: color-mix(in srgb, var(--del) 60%, transparent); }
-  #shell-found .fdcxrm { display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r1); color: var(--chat-faint); }
-  #shell-found .fdcxrm:hover { background: var(--c-hover); color: var(--chat-ink); }
-  #shell-found .fdcxrm svg { width: 11px; height: 11px; }
-  #shell-found .fdadd { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: var(--r1);
-    border: 1px dashed var(--c-edge-hi); color: var(--chat-mute); font-size: var(--chat-ui-fs); }
-  #shell-found .fdadd:hover, #shell-found .fdadd.open { color: var(--chat-ink); border-color: var(--chat-mute); }
-  #shell-found .fdadd svg { width: 12px; height: 12px; }
-  #shell-found .fdaddn { font-family: var(--chat-mono); color: var(--chat-faint); }
-  #shell-found .fdaddpop .fdprow .fdmeta { flex: 1; }
-  #shell-found .fdctxfoot { display: flex; align-items: center; gap: 12px; margin-top: 10px; min-height: 24px; }
-  #shell-found .fddelta { flex: 1; min-width: 0; font-size: var(--chat-ui-fs); color: var(--chat-faint); line-height: 1.5; }
-  #shell-found .fddelta .add { color: var(--add); }
-  #shell-found .fddelta .del { color: var(--del); }
-  #shell-found .fdghost { flex: none; padding: 5px 10px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+  #shell-found .fdghost { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
     font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  #shell-found .fdghost:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
-  #shell-found .fdlist { display: flex; flex-direction: column; margin-top: 10px; border-radius: var(--r2);
-    border: 1px solid var(--chat-edge); background: var(--chat-surface); animation: fdrise var(--t); }
-  #shell-found .fdlrow { display: flex; align-items: flex-start; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--chat-edge-soft); }
-  #shell-found .fdlrow:last-child { border-bottom: 0; }
-  #shell-found .fdlrow.off { opacity: .5; }
-  #shell-found .fdlt { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  #shell-found .fdlh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; color: var(--chat-ink); font-size: var(--chat-code-fs); }
-  #shell-found .fdlsrc, #shell-found .fdlrole, #shell-found .fdlmine { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  #shell-found .fdlrole { color: var(--chat-mute); }
-  #shell-found .fdlmine { color: var(--amber); }
-  #shell-found .fdluse { font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-mute); }
-  #shell-found .fdsw { flex: none; position: relative; width: 28px; height: 17px; margin-top: 2px; border-radius: 9px; background: var(--chat-edge); }
-  #shell-found .fdsw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 13px; height: 13px; border-radius: 50%;
-    background: var(--chat-faint); transition: transform var(--t), background var(--t); }
-  #shell-found .fdsw.on { background: var(--chat-ink); }
-  #shell-found .fdsw.on::after { transform: translateX(11px); background: var(--chat-void); }
-  #shell-found .fdsw.off { opacity: .4; }
-  #shell-found .fdcmp { margin-top: 10px; border-radius: var(--r2); border: 1px solid var(--chat-edge); background: var(--chat-surface);
-    overflow-x: auto; animation: fdrise var(--t); }
-  #shell-found .fdcmp table { width: 100%; border-collapse: collapse; font-size: var(--chat-ui-fs); }
-  #shell-found .fdcmp th, #shell-found .fdcmp td { padding: 7px 10px; text-align: center; border-bottom: 1px solid var(--chat-edge-soft); }
-  #shell-found .fdcmp th { font-weight: 600; color: var(--chat-mute); white-space: nowrap; }
-  #shell-found .fdcmp th:first-child, #shell-found .fdcmp td:first-child { text-align: left; color: var(--chat-prose); white-space: nowrap; }
-  #shell-found .fdcmp .cur { background: color-mix(in srgb, var(--chat-ink) 4%, transparent); color: var(--chat-ink); }
-  #shell-found .fdcmpwhy td { vertical-align: top; color: var(--chat-faint); line-height: 1.4; border-bottom: 0; }
-  #shell-found .fdcmpx { color: var(--chat-faint); }
-  #shell-found .fdpip { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--c-edge-hi); vertical-align: middle; }
-  #shell-found .fdpip.on { background: var(--chat-ink); border-color: var(--chat-ink); }
-  #shell-found .fdcmpfoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px;
-    font-size: var(--chat-ui-fs); color: var(--chat-faint); border-top: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdghost:not(:disabled):hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
+  #shell-found .fdghost:disabled { opacity: .38; }
+  #shell-found .fdghost svg { width: 12px; height: 12px; }
 
   /* the foot: one sentence of what starts, and the one button */
   #shell-found .shellfoot { display: flex; align-items: center; gap: 14px; padding: 12px 14px 12px 22px; border-top: 1px solid var(--chat-edge); }
@@ -2141,6 +2193,12 @@
   #shell-found .fdsay { color: var(--chat-mute); line-height: 1.45; }
   #shell-found .fdsay b { color: var(--chat-ink); font-weight: 600; }
   #shell-found .fdsaym { color: var(--chat-faint); }
+  #shell-found .fddev { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+  #shell-found .fddevn { display: inline-flex; align-items: center; gap: 8px; color: var(--chat-prose); outline: none; }
+  #shell-found .fddevn.quiet { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fddevn > .fdhv { top: auto; bottom: calc(100% + 4px); }
+  #shell-found .fdlike { border-color: transparent; }
+  #shell-found .fdacts { display: flex; align-items: center; gap: 8px; flex: none; }
   #shell-found .fdfootnote { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
   #shell-found .fdfootnote.warn { color: var(--amber); }
   #shell-found .fdgo { flex: none; display: inline-flex; align-items: center; gap: 10px; padding: 10px 14px 10px 16px; border-radius: var(--r2);
@@ -2158,7 +2216,13 @@
     #shell-found .fdsec { grid-template-columns: minmax(0, 1fr); padding: 16px; }
     #shell-found .fdlab { flex-direction: row; align-items: baseline; gap: 10px; padding: 0 0 10px; }
     #shell-found .fdroles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    #shell-found .fdrole { min-height: 0; }
+    #shell-found .fdrole { min-height: 0; flex-direction: column; gap: 8px; }
+    #shell-found .fdstep { padding: 16px; }
+    #shell-found .fdcols { grid-template-columns: minmax(0, 1fr); }
+    #shell-found .fdfile { border-left: 0; border-top: 1px solid var(--chat-edge-soft); }
+    #shell-found .fdsteph2 { white-space: normal; }
+    #shell-found .fdsw2 { flex-wrap: wrap; }
+    #shell-found .fdsetrow { grid-template-columns: 64px minmax(0, 1fr); }
     #shell-found .fdprog { flex-wrap: wrap; row-gap: 2px; }
     #shell-found .fdpst { flex-basis: 100%; padding-left: 23px; }
     #shell-found .fdseg { align-self: stretch; }
@@ -2544,12 +2608,14 @@
     .fxkeys { display: none; }
     /* the founding window on a phone (G0.7): the shell's fullscreen, one column; touch heights
        40 px, fields 16 px (no iOS zoom), the button full width under its sentence */
-    #shell-found .fdsegb, #shell-found .fdprow, #shell-found .fdnavb, #shell-found .fdghost, #shell-found .fdorph { min-height: 40px; }
-    #shell-found .fdcx, #shell-found .fdadd, #shell-found .fdmore { height: 34px; }
-    #shell-found .fdcxrm { width: 28px; height: 28px; }
+    #shell-found .fdsegb, #shell-found .fdprow, #shell-found .fdnavb, #shell-found .fdghost, #shell-found .fdorph, #shell-found .fdsw2b { min-height: 40px; }
+    #shell-found .fdline { min-height: 44px; }
+    #shell-found .fdchev, #shell-found .fddvb { width: 32px; height: 32px; }
     #shell-found .fdfind, #shell-found .fdpin input, #shell-found .fdname input { font-size: 16px; }
     #shell-found .shellfoot { flex-wrap: wrap; }
-    #shell-found .fdgo { flex: 1 1 100%; justify-content: center; min-height: 44px; }
+    #shell-found .fdsaycol { flex: 1 1 100%; }
+    #shell-found .fdacts { flex: 1 1 100%; }
+    #shell-found .fdgo { flex: 1 1 auto; justify-content: center; min-height: 44px; }
     #shell-found .fdpfw .fdpop { position: fixed; left: 8px; right: 8px; top: auto; bottom: 132px; max-height: 50vh; }
     #shell-found.fdproved .fdgo { align-self: stretch; flex: none; }
     .fdproofrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }

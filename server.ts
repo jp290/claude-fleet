@@ -45566,7 +45566,14 @@ Bun.serve<WSData>({
       const chosen = requested === null ? undefined : requested.split(",").filter(Boolean);
       if (chosen?.some((id) => !partIds.has(id))) return json({ error: "parts contains an unknown part id" }, 400);
       const selection = chosen ? Object.fromEntries([...partIds].map((id) => [id, chosen.includes(id) ? "box" as const : "ausleihe" as const])) : undefined;
-      const sessionAgents = await foundingSessionAgents(fp.value, ho.harness, position as "lane" | "main" | "orchestratorin", selection);
+      // packs= is the window's pack switches: the file renders only these of plan.selected (empty = none),
+      // so its size is the renderer's own; absent renders every selected pack, as before the parameter
+      const packsParam = url.searchParams.get("packs");
+      const packIds = packsParam === null ? null : packsParam.split(",").filter(Boolean);
+      if (packIds?.some((id) => !plan.selected.some((pack) => pack.id === id))) return json({ error: "packs contains an unknown pack id" }, 400);
+      const rendered = packIds === null ? fp.value
+        : { ...fp.value, plan: { ...plan, selected: plan.selected.filter((pack) => packIds.includes(pack.id)) } };
+      const sessionAgents = await foundingSessionAgents(rendered, ho.harness, position as "lane" | "main" | "orchestratorin", selection);
       // Every field below is the PLAN'S OWN: anchors and sourceHash exactly as the receipt would write
       // them (contextReceiptSelections reads the same declaredSourceHash), harnesses and triggers off
       // the declaration the ladder judged. A private pack's hash verdict is NOT here — it is taken at

@@ -7446,12 +7446,16 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         !st.mhead && !st.keys && !!bar && bar.x === 6 && bar.r === W - 6 && bar.b === bottom - 6;
       // 2. the start is the closed pill of glass: centred, state shape + name, 28 px seen, 44 px to hit
       const pill = st.pill;
-      const hitTop = pill ? await evaluate<boolean>(`window.__fx.hits('#mtop', ${pill.x + pill.w / 2}, ${pill.y - 6})`) : false;
-      const hitBottom = pill ? await evaluate<boolean>(`window.__fx.hits('#mtop', ${pill.x + pill.w / 2}, ${pill.b + 6})`) : false;
-      facts.pillHit = { hitTop, hitBottom };
+      // the 44 px exactly: 8 px of rim above the glass (to the screen's edge — above it there is
+      // nothing to miss, so the zone must start there) and 8 px below, and 9 and 10 px below no longer
+      const zoneBox = await box("#mtop");
+      const hitAt = (dy: number) => pill ? evaluate<boolean>(`window.__fx.hits('#mtop', ${pill.x + pill.w / 2}, ${dy < 0 ? pill.y + dy : pill.b + dy})`) : Promise.resolve(false);
+      const hitTop = await hitAt(-7.5), hitBottom = await hitAt(7.5), missBelow = !await hitAt(9) && !await hitAt(10);
+      facts.pillHit = { zone: zoneBox, hitTop, hitBottom, missBelow };
       claims[`${tag}the start is the closed pill: centred, state shape and the session's name, nothing else`] = !st.open && !st.mopen && !!pill
         && Math.abs(pill.x + pill.w / 2 - W / 2) <= 1 && pill.y === 8 && st.pillText === "Alpha" && /\bact (work|rest|sleep|bad)\b/.test(st.pillShape);
-      claims[`${tag}the pill is 28 px seen and hits 44 px (6 px above and below it still belong to the island)`] = !!pill && pill.h === 28 && hitTop && hitBottom;
+      claims[`${tag}the pill is 28 px seen and hits exactly 44 px: 8 px above it (to the screen's edge) and 8 px below belong to the island, 9 and 10 px below no longer`] =
+        !!pill && pill.h === 28 && !!zoneBox && zoneBox.y === 0 && zoneBox.h === 44 && zoneBox.y === pill.y - 8 && zoneBox.b === pill.b + 8 && hitTop && hitBottom && missBelow;
       if (pill && !st.open) {
         await tapAt({ x: pill.x + pill.w / 2, y: pill.b + 6 }, "the rim under the pill");
         const rimOpens = await isOpen();
@@ -8182,8 +8186,11 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
         say("closed, the island is a pill 28 px high, 8 px under the top, centred, 96–168 px wide; state shape and name, nothing else",
           !!glass && glass.h === 28 && glass.y === 8 && Math.abs(glass.x + glass.w / 2 - GLASS_W / 2) <= 1 && glass.w >= 96 && glass.w <= 168
           && pill.text === SHORT && /\bact (work|rest|sleep|bad)\b/.test(await ev<string>("document.querySelector('#mpill .act')?.className ?? ''")), { glass, pill });
-        const rimAbove = glass ? await ev<boolean>(`!!document.elementFromPoint(${glass.x + glass.w / 2}, ${glass.y - 6})?.closest('#mtop')`) : false;
-        say("the pill hits 44 px: the zone is 44 px high and 6 px above the glass still belongs to it", !!zone && zone.h === 44 && rimAbove, { zone, rimAbove });
+        // exactly 44: 8 px of rim above (to the screen's edge, so the zone must start there) and below, 9 and 10 px below no longer
+        const inZone = (y: number) => glass ? ev<boolean>(`!!document.elementFromPoint(${glass.x + glass.w / 2}, ${y})?.closest('#mtop')`) : Promise.resolve(false);
+        const rim = glass ? { above: await inZone(glass.y - 7.5), below: await inZone(glass.b + 7.5), out9: await inZone(glass.b + 9), out10: await inZone(glass.b + 10) } : null;
+        say("the pill hits exactly 44 px: 8 px above the glass (to the screen's edge) and 8 px below belong to the zone, 9 and 10 px below no longer",
+          !!zone && !!glass && !!rim && zone.y === 0 && zone.h === 44 && zone.y === glass.y - 8 && zone.b === glass.b + 8 && rim.above && rim.below && !rim.out9 && !rim.out10, { zone, glass, rim });
         say("the terminal starts 6 px under the glass", !!term && !!glass && term.y === glass.b + 6, { term, glass, pane: await box("#panes .pane") });
         say(`a name that fits (${SHORT}) is no band: one copy, nothing runs`, !pill.over && pill.copies === 1 && !pill.run, pill);
         // 2. the material

@@ -7931,7 +7931,15 @@ async function glassChromium(serve: GlassServe, init: string, scratch: string): 
     ]).finally(() => clearTimeout(timer));
     const ws = new WebSocket(endpoint);
     socket = ws;
-    await new Promise<void>((ok, bad) => { ws.onopen = () => ok(); ws.onerror = () => bad(new Error("CDP connection failed")); });
+    // the socket opens, or it errors, closes or hangs past 15 s — each of the last three is the catch below
+    let openTimer: ReturnType<typeof setTimeout> | undefined;
+    await new Promise<void>((ok, bad) => {
+      ws.onopen = () => ok();
+      ws.onerror = () => bad(new Error("CDP connection failed"));
+      ws.onclose = () => bad(new Error("CDP connection closed before it opened"));
+      openTimer = setTimeout(() => bad(new Error("CDP connection did not open within 15 s")), 15000);
+    }).finally(() => clearTimeout(openTimer));
+    ws.onclose = null;
   } catch (error) {
     socket?.close(); browser.kill(); await browser.exited;
     throw error;

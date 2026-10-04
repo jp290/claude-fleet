@@ -7905,7 +7905,10 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   await syncLaneRefs(ref, wt.path);
   let modelSupport: CodexModelSupport | null;
   try {
-    modelSupport = (await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context)).modelSupport;
+    const opened = await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
+    if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
+      || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during lane open");
+    modelSupport = opened.modelSupport;
   } finally {
     releaseLaneLetter(letterBand, letter);
   }
@@ -8282,7 +8285,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false, context: SlotContext | null = null, remote = false, webSearch = false, preObservedSupport: CodexModelSupport | null = null): Promise<SlotOpenResult> {
+  browser = false, context: SlotContext | null = null, remote = false, webSearch = false, preObservedSupport: CodexModelSupport | null = null,
+  onCandidate: (occupant: SlotStreamOccupant) => void = () => {}): Promise<SlotOpenResult> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   let expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
@@ -8417,6 +8421,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.laneSeats = []; // ...and its seats with it, stamped back by succeedLane on the same terms
   s.selfToken = treeLease?.targetSelfToken ?? randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
+  onCandidate({ slot: s.id, openedAt: s.openedAt, selfToken: s.selfToken });
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.sessionIdLearned = null; // ...and a new occupation has learned nothing yet
   s.codexPaneSpawnedAt = null;
@@ -10715,7 +10720,8 @@ interface SuccessionStranded { brief: string; path: "succession" | "founding"; d
   label: string | null }
 async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string,
   stranded: SuccessionStranded, target: { cwd: string; model: string | null; harness: string | null },
-  open: (support: CodexModelSupport | null) => Promise<SlotOpenResult>, onLost: (error: unknown) => Promise<void>,
+  open: (support: CodexModelSupport | null, onCandidate: (occupant: SlotStreamOccupant) => void) => Promise<SlotOpenResult>,
+  onLost: (error: unknown) => Promise<void>,
   // a refusal BEFORE the kill: the predecessor still stands, only the rail's own intent falls
   onRefused: () => Promise<void> = async () => {}): Promise<InPlaceRespawn> {
   // tmux stderr is not an API-safe diagnostic (unavailableFoundingResponse's rule): only the typed
@@ -10764,19 +10770,20 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
       () => onLost(new Error(reason)), 409, true) };
   }
   let opened: SlotOpenResult;
+  let candidate: SlotStreamOccupant | null = null;
   try {
     if (SUCCESSION_RESPAWN_FAIL_LATCH !== null && existsSync(SUCCESSION_RESPAWN_FAIL_LATCH))
       throw new Error("forced respawn failure (FLEET_TEST_SUCCESSION_RESPAWN_FAIL_LATCH)");
-    opened = await open(modelSupport);
+    opened = await open(modelSupport, (occupant) => { candidate = { ...occupant }; });
   } catch (e) {
     return { ok: false, response: await respawnLost(s, predecessor, rail, msg(e), stranded, () => onLost(e),
-      e instanceof GameMakerTreeConflict ? 409 : 500) };
+      e instanceof GameMakerTreeConflict ? 409 : 500, false, candidate) };
   }
   if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
     || s.selfToken !== opened.occupant.selfToken) {
     const reason = "slot was taken by another act during successor open — nothing handed over";
     return { ok: false, response: await respawnLost(s, predecessor, rail, reason, stranded,
-      () => onLost(new Error(reason)), 409, true) };
+      () => onLost(new Error(reason)), 409, true, candidate) };
   }
   audit("main_succession", s.id, `${rail} respawned in place (predecessor openedAt ${predecessor.openedAt} → ${s.openedAt})`);
   // THE LANES FOLLOW THEIR MAIN'S LINE, in the same synchronous step as the open and before any rail
@@ -10836,26 +10843,32 @@ function healLaneAnchorsOnLoad(): void {
   }
 }
 async function respawnLost(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string, reason: string,
-  stranded: SuccessionStranded, onLost: () => Promise<void>, status = 500, preserveOccupant = false): Promise<Response> {
+  stranded: SuccessionStranded, onLost: () => Promise<void>, status = 500, preserveOccupant = false,
+  candidate: SlotStreamOccupant | null = null): Promise<Response> {
   try {
     await onLost();
   } catch (e) {
     logError("successionRespawnLost", e);
   }
-  // Clean up a failed open's candidate, but never the foreign occupant detected before any open.
-  if (!preserveOccupant && s.cwd && s.openedAt !== predecessor.openedAt)
+  // A failed open owns only the identity it reported at assignment, re-proved after onLost's await.
+  const ownCandidate = !preserveOccupant && candidate !== null && sameSlotStreamOccupant(s, candidate);
+  const cleanup = ownCandidate ? "teardown limited to this open's candidate"
+    : !s.cwd ? "slot is empty — no further session stopped"
+    : candidate === null ? "candidate identity unknown — occupant preserved"
+    : "foreign occupant preserved — no session stopped";
+  if (ownCandidate)
     await killSlot(s, "reopen").catch((e: unknown) => logError("successionRespawnLost", e));
   const holds = s.cwd ? `still holds an occupant (openedAt ${s.openedAt})` : "is empty";
-  audit("main_succession", s.id, `${rail} respawn FAILED after the predecessor ended: ${reason} — slot ${s.id} ${holds}; reopen it on ${predecessor.cwd}`);
+  audit("main_succession", s.id, `${rail} respawn FAILED after the predecessor ended: ${reason} — ${cleanup}; slot ${s.id} ${holds}; reopen it on ${predecessor.cwd}`);
   // THE HANDOVER OUTLIVES THE FAILED OPEN: brief and record are held as a debt, the line carries a
   // scar (so any reader of it says `lost`, never "nothing owed"), and the owner gets the row.
-  const debt = recordSuccessionDebt(s, rail, predecessor, null, reason, stranded);
+  const debt = recordSuccessionDebt(s, rail, predecessor, null, `${cleanup}: ${reason}`, stranded);
   if (stranded.draft)
     lineageHandoverLosses = [...lineageHandoverLosses, { v: 1 as const, at: debt.at, lineageId: stranded.draft.lineageId,
       error: `successor respawn failed on slot ${s.id} after the predecessor ended; the record is held as succession debt ${debt.id} until the slot reopens on its cwd`
         .slice(0, PROGRAM_RECORD_LOSS_ERROR_MAX) }].slice(-LINEAGE_LOSSES_MAX);
   await saveStateNow().catch((e: unknown) => logError("successionRespawnLost", e));
-  return json({ error: `successor open failed after the predecessor ended: ${reason} — slot ${s.id} ${holds}; `
+  return json({ error: `successor open failed after the predecessor ended: ${reason} — ${cleanup}; slot ${s.id} ${holds}; `
     + `reopen it on ${predecessor.cwd} (audit: main_succession; held as succession debt ${debt.id})`,
   slot: s.id, respawned: false, debt: debt.id }, status);
 }
@@ -11839,8 +11852,8 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
         { brief, path: "succession", draft, label },
         { cwd: predecessor.cwd, model: spawn.model, harness },
-        (preObservedSupport) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
-          null, false, null, false, false, preObservedSupport),
+        (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
+          null, false, null, false, false, preObservedSupport, onCandidate),
         async () => {});
       if (!respawned.ok) return respawned.response;
       // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -36211,8 +36224,8 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       const respawned = await respawnInPlace(s, predecessor, `program ${program.id}`,
         { brief: deliveredBrief, path: "founding", draft: null, label },
         { cwd: openRoot, model: spawn.model, harness },
-        (preObservedSupport) => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease,
-          false, null, false, false, preObservedSupport),
+        (preObservedSupport, onCandidate) => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease,
+          false, null, false, false, preObservedSupport, onCandidate),
         // the predecessor is gone and no successor stands: drop the marker (stopping an exact
         // candidate the open left behind), which also closes the ended holding as `retire`. The
         // binding is then stale — the state bootstrapProgramMain re-founds over, loudly.

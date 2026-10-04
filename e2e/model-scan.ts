@@ -6,7 +6,7 @@ import { scanModels, makeModelScanTick, modelScanStateFrom, MODEL_SCAN_INTERVAL_
 import { type ModelEntry } from "../model-register";
 
 const fixtureRegister: readonly ModelEntry[] = [
-  { harness: "claude", id: "claude-fixture", status: "current" },
+  { harness: "claude", id: "fixture-claude-present", status: "current" },
   { harness: "codex", id: "codex-present", status: "current" },
   { harness: "codex", id: "codex-absent", status: "current" },
   { harness: "codex", id: "codex-old", status: "superseded" },
@@ -81,12 +81,12 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     check("model-scan: incomplete Pi cache never claims a known empty catalogue", true);
 
     await writeFile(join(claude, "model-access.json"), JSON.stringify({ version: 1,
-      entries: { "SECRET-ACCOUNT": { "claude-new": { s: "ok", at: 1234 } } } }));
+      entries: { "SECRET-ACCOUNT": { "fixture-claude-new": { s: "ok", at: 1234 } } } }));
     const missingCapabilities = (await scan()).harnesses[0];
     strictEqual(missingCapabilities.status, "unknown");
     strictEqual(missingCapabilities.reason, claudeResult.reason);
     await writeFile(join(claude, "model-capabilities.json"), JSON.stringify({ timestamp: 1234,
-      models: [{ id: "claude-new", max_input_tokens: 200000 }] }));
+      models: [{ id: "fixture-claude-new", max_input_tokens: 200000 }] }));
     const scoped = (await scan()).harnesses[0];
     strictEqual(scoped.status, "unknown");
     strictEqual(scoped.reason, claudeResult.reason);
@@ -98,7 +98,7 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     const catalogueDir = join(claude, "model-catalog");
     const cataloguePath = join(catalogueDir, "fixture-cc.json");
     await mkdir(catalogueDir);
-    const catalogue = (models = ["claude-fixture", "claude-new", "claude-new"]) => ({
+    const catalogue = (models = ["fixture-claude-present", "fixture-claude-new", "fixture-claude-new"]) => ({
       version: 2, fetchedAt: now - 1000, staleAt: now + 1000,
       catalog: { surface: "cc", config: { id: "cc", models: models.map((id) => ({ id })) } },
     });
@@ -109,8 +109,8 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     strictEqual(knownClaude.status, "known");
     strictEqual(knownClaude.reason, null);
     strictEqual(knownClaude.cacheTime, now - 1000);
-    deepStrictEqual(knownClaude.available, ["claude-fixture", "claude-new"]);
-    deepStrictEqual(knownClaude.newlyAvailable, ["claude-new"]);
+    deepStrictEqual(knownClaude.available, ["fixture-claude-new", "fixture-claude-present"]);
+    deepStrictEqual(knownClaude.newlyAvailable, ["fixture-claude-new"]);
     deepStrictEqual(knownClaude.registeredButUnavailable, []);
     strictEqual(JSON.stringify(knownClaude).includes("fixture-cc.json"), false);
     check("model-scan: measured Claude v2 cc schema yields exact sorted model IDs", true);
@@ -130,7 +130,7 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     await rm(cataloguePath, { recursive: true });
     await writeFile(cataloguePath, JSON.stringify(catalogue()));
     const secondPath = join(catalogueDir, "second-cc.json");
-    await writeFile(secondPath, JSON.stringify(catalogue(["claude-other"])));
+    await writeFile(secondPath, JSON.stringify(catalogue(["fixture-claude-other"])));
     match((await scan()).harnesses[0].reason ?? "", /ambiguous cc catalogues$/);
     await rm(secondPath);
     check("model-scan: stale, malformed, unreadable and conflicting Claude catalogues remain unknown", true);
@@ -150,9 +150,9 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     strictEqual(scans, 1);
     strictEqual(sent.length, 1);
     strictEqual(sent[0].includes("\n"), false);
-    match(sent[0], /claude newlyAvailable=\["claude-new"\]/);
+    match(sent[0], /claude newlyAvailable=\["fixture-claude-new"\]/);
     strictEqual(state.lastScanAt, now);
-    deepStrictEqual(state.reported.claude, { newlyAvailable: ["claude-new"], registeredButUnavailable: [] });
+    deepStrictEqual(state.reported.claude, { newlyAvailable: ["fixture-claude-new"], registeredButUnavailable: [] });
     const restored = modelScanStateFrom(JSON.parse(JSON.stringify(state)) as unknown);
     const restart = makeModelScanTick({ ...tickOptions, state: restored });
     now += MODEL_SCAN_INTERVAL_MS - 1;
@@ -177,7 +177,7 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     await restart();
     strictEqual(sent.length, 1);
     now += MODEL_SCAN_INTERVAL_MS;
-    await writeFile(cataloguePath, JSON.stringify(catalogue(["claude-fixture"])));
+    await writeFile(cataloguePath, JSON.stringify(catalogue(["fixture-claude-present"])));
     await restart();
     strictEqual(sent.length, 2);
     strictEqual(sent[1], 'Modell-Vorschlag (lokaler Cache; Register unveraendert): claude newlyAvailable=[] registeredButUnavailable=[]');
@@ -195,7 +195,7 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     await refusal();
     strictEqual(attempts, 1);
     now += MODEL_SCAN_INTERVAL_MS;
-    await writeFile(cataloguePath, JSON.stringify(catalogue(["claude-fixture"])));
+    await writeFile(cataloguePath, JSON.stringify(catalogue(["fixture-claude-present"])));
     await refusal();
     strictEqual(attempts, 2);
     const emptyState = modelScanStateFrom(null);

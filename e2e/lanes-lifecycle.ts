@@ -628,8 +628,15 @@ export async function run(lc: LaneCtx): Promise<void> {
       { ok?: boolean; slot?: number; error?: string };
     check(`native dispatch ${harness}: stand-in lane starts`, opened.ok === true && typeof opened.slot === "number", JSON.stringify(opened));
     if (typeof opened.slot !== "number") continue;
-    await plantScreen(opened.slot, harness === "codex" ? ">_ OpenAI Codex (v0.159.0)\n› "
-      : harness === "pi-zai" ? "0%/1.0M" : "❯", "native lane receipt");
+    if (harness === "claude" || harness === "codex") {
+      await plantScreen(opened.slot, harness === "codex" ? ">_ OpenAI Codex (v0.159.0)\n› " : "❯", "native lane receipt");
+    } else {
+      await until(async () => {
+        const frame = await tmuxOut("capture-pane", "-t", `s${opened.slot}`, "-p", "-J");
+        return frame.code === 0 && frame.out.includes("────────")
+          && (harness === "pi" || frame.out.includes("0.0%/1.0M"));
+      }, { timeoutMs: 15000, what: `native ${harness} stand-in composer` });
+    }
     type Part = { id: string; path: string | null; anchor: string | null; sha256: string | null; bytes: number | null; ort: string };
     type Receipt = { taskId?: string; branch?: string; sessionAgents?: { path: string; sha256: string; bytes: number; parts: Part[] } };
     let receipt: Receipt | undefined, prompt = "";

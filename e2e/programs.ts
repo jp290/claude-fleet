@@ -10353,7 +10353,8 @@ export async function run(ctx: Ctx): Promise<void> {
         await Bun.sleep(250);
       }
       const pointerMark = "\n\nSession-Regeln: ";
-      const pointerPath = text.slice(text.lastIndexOf(pointerMark) + pointerMark.length);
+      const laneCwd = (await sessions()).slots.find((slot) => slot.id === body.slot)?.cwd;
+      const pointerPath = `${laneCwd}/${text.slice(text.lastIndexOf(pointerMark) + pointerMark.length)}`;
       const dispatchRules = text.includes(pointerMark) && existsSync(pointerPath) ? readFileSync(pointerPath, "utf8") : "";
       const receiptBefore = await contextReceipts();
       const nativeReceipt = receiptBefore.receipts.findLast((r) => r.slot === body.slot && r.taskId === taskId);

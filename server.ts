@@ -17862,7 +17862,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
     const deliveredBrief = clarify
       ? `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${context.anchorBlock}`
-      : `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ${wt.path}/AGENTS.override.md`;
+      : `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ./AGENTS.override.md`;
     await sendText(free, deliveredBrief, true, { path: "brief" });
     for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();

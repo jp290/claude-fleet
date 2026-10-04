@@ -1752,7 +1752,7 @@ async function memoryDoor(): Promise<void> {
     }
     const nativeLaneRules = laneSlot.map((slot) => {
       const prompt = prompts.find((p) => p.slot === slot && p.text.includes("\n\nSession-Regeln: "))?.text ?? "";
-      const path = prompt.slice(prompt.lastIndexOf("\n\nSession-Regeln: ") + "\n\nSession-Regeln: ".length);
+      const path = `${readState().slots[String(slot)]?.cwd}/${prompt.slice(prompt.lastIndexOf("\n\nSession-Regeln: ") + "\n\nSession-Regeln: ".length)}`;
       return { prompt, text: prompt.includes("\n\nSession-Regeln: ") && existsSync(path) ? readFileSync(path, "utf8") : "" };
     });
     check("the native lane footer names the same MAIN receiver as GET /api/self position",

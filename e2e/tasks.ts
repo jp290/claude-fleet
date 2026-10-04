@@ -135,11 +135,12 @@ export async function run(ctx: Ctx): Promise<void> {
 
   const NATIVE_RULES_MARK = "\n\nSession-Regeln: ";
   const taskPayload = (prompt: string): string => prompt.slice(0, prompt.lastIndexOf(NATIVE_RULES_MARK));
-  const nativeRules = (prompt: string): string => {
-    const path = prompt.slice(prompt.lastIndexOf(NATIVE_RULES_MARK) + NATIVE_RULES_MARK.length);
+  const nativeRules = async (prompt: string): Promise<string> => {
+    const delivered = (await plogRead()).findLast((entry) => entry.text === prompt);
+    const path = delivered?.cwd ? resolve(delivered.cwd, prompt.slice(prompt.lastIndexOf(NATIVE_RULES_MARK) + NATIVE_RULES_MARK.length)) : "";
     return prompt.includes(NATIVE_RULES_MARK) && existsSync(path) ? readFileSync(path, "utf8") : "";
   };
-  const nativeReceiptMatches = (prompt: string, receipt: ContextReceipt | undefined, agents = nativeRules(prompt)): boolean => {
+  const nativeReceiptMatches = (prompt: string, receipt: ContextReceipt | undefined, agents: string): boolean => {
     const meta = receipt?.sessionAgents;
     const role = meta?.parts.find((part) => part.id === "role");
     const footer = meta?.parts.find((part) => part.id === "footer");
@@ -3403,7 +3404,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // one measures the ANCHOR REGION (what the planner appended) and reads the footer only to know
     // where that region ends; (d-footer) measures the footer. A missing footer must not red the
     // anchor check as well, or the failure stops naming which of the two broke.
-    const deliveredAgents = nativeRules(deliveredPrompt);
+    const deliveredAgents = await nativeRules(deliveredPrompt);
     const lifecycleAt = deliveredAgents.indexOf(LANE_EXIT_MARK);
     const lifecycleFooter = lifecycleAt >= 0 ? deliveredAgents.slice(lifecycleAt) : "";
     const anchorRegion = taskPayload(deliveredPrompt).slice(DBRIEF.length);
@@ -5459,7 +5460,7 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.sleep(500);
     }
     const fHead = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-    const fAgents = nativeRules(fPrompt);
+    const fAgents = await nativeRules(fPrompt);
     // THE POINTER, resolved by its own commit and line numbers against the lane source. The block sits between the brief and the
     // anchors, so the anchor check below finds its block by position rather than by prefix.
     const snipLabelRe = new RegExp(`^- ${SNIP_PATH.replace(/[./]/g, "\\$&")}#snippetProbeTarget@([0-9a-f]{12}) Z. (\\d+)-(\\d+)`);
@@ -5909,7 +5910,7 @@ export async function run(ctx: Ctx): Promise<void> {
         if (receipt && prompt) break;
         await Bun.sleep(500);
       }
-      return { prompt, agents: nativeRules(prompt), receipt, slot };
+      return { prompt, agents: await nativeRules(prompt), receipt, slot };
     };
     const rootLanes: string[] = [];
     const closeLane = async (slot: number | null): Promise<void> => {
@@ -6601,7 +6602,7 @@ export async function run(ctx: Ctx): Promise<void> {
         ? ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
           .slots.find((slot) => slot.id === body.slot)?.cwd ?? null
         : null;
-      const agents = nativeRules(prompt);
+      const agents = await nativeRules(prompt);
       if (typeof body.slot === "number") await post(`/api/slots/${body.slot}/kill`, {});
       await post(`/api/tasks/${task.task.id}/delete`, {});
       return { prompt, agents, receipt, lane };

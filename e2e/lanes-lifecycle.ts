@@ -656,7 +656,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     const role = agents.slice(roleStart, roleEnd);
     const meta = receipt?.sessionAgents, part = meta?.parts.find((row) => row.id === "role");
     check(`native dispatch ${harness}: first message carries the order and pointer without role, anchors or exit`,
-      prompt.startsWith(`${marker}\n\nSession-Regeln: ${cwd}/AGENTS.override.md`)
+      prompt.startsWith(`${marker}\n\nSession-Regeln: ./AGENTS.override.md`)
         && !prompt.includes("--- ROLLE ---") && !prompt.includes("ContextPlan v2 anchors") && !prompt.includes("HOW THIS LANE ENDS"));
     check(`native dispatch ${harness}: receipt measures the actual file and role part`, meta?.path === "AGENTS.override.md"
       && meta.bytes === Buffer.byteLength(agents) && meta.sha256 === createHash("sha256").update(agents).digest("hex")

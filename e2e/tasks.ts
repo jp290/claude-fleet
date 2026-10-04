@@ -100,13 +100,14 @@ async function codexCliFixtures(serverSource: string, clientSource: string): Pro
     const source = serverSource.slice(start, end);
     const fixture = new Function("Bun", "process", "createHash", "realpathSync", "statSync", "CODEX_CLI_VERSION_RE",
       `${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}
-      return { resolveCodexCliBinary, probeCodexCliVersion, makeCodexCliObserver };`)(
-      Bun, { env: { PATH: dir }, kill: process.kill.bind(process) }, createHash, realpathSync, statSync, CODEX_CLI_VERSION_RE) as {
+      return { resolveCodexCliBinary, probeCodexCliVersion, makeCodexCliObserver, stopCodexCliProbeGroups };`)(
+      Bun, { env: { PATH: dir }, kill: process.kill.bind(process), on: () => {} }, createHash, realpathSync, statSync, CODEX_CLI_VERSION_RE) as {
         resolveCodexCliBinary: () => { path: string; identity: string } | null;
         probeCodexCliVersion: (path: string) => Promise<{ version: string | null; reason: string | null }>;
         makeCodexCliObserver: (resolveBinary?: () => { path: string; identity: string } | null,
           probe?: (path: string) => Promise<{ version: string | null; reason: string | null }>, clock?: () => number)
           => { read: () => CodexCliSnapshot; tick: () => Promise<void> };
+        stopCodexCliProbeGroups: () => void;
       };
     const script = (name: string, body: string): string => {
       const path = join(dir, name);
@@ -172,6 +173,39 @@ async function codexCliFixtures(serverSource: string, clientSource: string): Pro
     const slow = script("slow", "while :; do :; done");
     const timeout = await fixture.probeCodexCliVersion(slow);
     check("R3c: a nonterminating version process is bounded and returns timeout", timeout.version === null && timeout.reason === "timeout");
+    const ownerDir = join(dir, "owner");
+    mkdirSync(ownerDir);
+    const stub = join(ownerDir, "codex"), stubPid = join(ownerDir, "stub.pid"), ownerRunner = join(ownerDir, "owner.ts");
+    writeFileSync(stub, `#!/bin/sh\necho $$ > '${stubPid}'\nwhile :; do :; done\n`);
+    chmodSync(stub, 0o755);
+    const runner = `import { createHash } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
+const CODEX_CLI_VERSION_RE = /^\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}(?:[-+][A-Za-z0-9.-]{1,40})?$/;
+process.env.PATH = ${JSON.stringify(ownerDir)};
+${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}
+void makeCodexCliObserver().tick();
+`;
+    writeFileSync(ownerRunner, runner);
+    const owner = Bun.spawn(["bun", ownerRunner], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    let stubPidValue = "";
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !existsSync(stubPid)) await Bun.sleep(10);
+    if (existsSync(stubPid)) stubPidValue = readFileSync(stubPid, "utf8").trim();
+    if (!stubPidValue) {
+      try { process.kill(owner.pid, "SIGKILL"); } catch { /* already exited */ }
+      await owner.exited;
+      throw new Error("R3c owner fixture did not start its hanging codex stub");
+    }
+    process.kill(owner.pid, "SIGTERM");
+    await owner.exited;
+    let stubAlive = true;
+    const stubReapDeadline = Date.now() + 1_000;
+    while (stubAlive && Date.now() < stubReapDeadline) {
+      try { process.kill(Number(stubPidValue), 0); } catch { stubAlive = false; }
+      if (stubAlive) await Bun.sleep(10);
+    }
+    check("R3c: terminating the probe owner kills its never-responding codex process group",
+      !stubAlive, `owner=${owner.pid} stub=${stubPidValue}`);
     const noisy = script("noisy", "printf '%01025d' 0");
     const overflow = await fixture.probeCodexCliVersion(noisy);
     check("R3c: version output beyond 1024 bytes is refused", overflow.version === null && overflow.reason === "output-limit");

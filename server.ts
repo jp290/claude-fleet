@@ -1459,6 +1459,15 @@ const CODEX_CLI_TIMEOUT_MS = 2000;
 const CODEX_CLI_CACHE_MS = 60_000;
 const CODEX_CLI_OUTPUT_MAX = 1024;
 const CODEX_SPAWN_PATH = process.env.PATH;
+const codexCliProbeGroups = new Set<number>();
+function stopCodexCliProbeGroups(): void {
+  for (const pid of codexCliProbeGroups) {
+    try { process.kill(-pid, "SIGKILL"); } catch { /* already exited */ }
+  }
+  codexCliProbeGroups.clear();
+}
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, stopCodexCliProbeGroups);
+process.on("exit", stopCodexCliProbeGroups);
 type CodexCliBinary = { path: string; identity: string };
 function resolveCodexCliBinary(): CodexCliBinary | null {
   if (!CODEX_SPAWN_PATH) return null;
@@ -1475,6 +1484,7 @@ async function probeCodexCliVersion(path: string): Promise<{ version: string | n
   let proc: ReturnType<typeof start>;
   try { proc = start(); }
   catch { return { version: null, reason: "probe-failed" }; }
+  codexCliProbeGroups.add(proc.pid);
   const reader = proc.stdout.getReader();
   const stop = () => {
     try { process.kill(-proc.pid, "SIGKILL"); }
@@ -1505,7 +1515,7 @@ async function probeCodexCliVersion(path: string): Promise<{ version: string | n
     finally { reader.releaseLock(); }
   })();
   try { return await Promise.race([timeout, reading]); }
-  finally { clearTimeout(timer!); }
+  finally { clearTimeout(timer!); codexCliProbeGroups.delete(proc.pid); }
 }
 function makeCodexCliObserver(
   resolveBinary = resolveCodexCliBinary, probe = probeCodexCliVersion, clock = Date.now,

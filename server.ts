@@ -1466,7 +1466,6 @@ function stopCodexCliProbeGroups(): void {
   }
   codexCliProbeGroups.clear();
 }
-for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, stopCodexCliProbeGroups);
 process.on("exit", stopCodexCliProbeGroups);
 type CodexCliBinary = { path: string; identity: string };
 function resolveCodexCliBinary(): CodexCliBinary | null {
@@ -32629,7 +32628,7 @@ async function holdSuiteLock(budgetMs: number, owner: symbol | null = null): Pro
 // `process.exit` after releasing: these handlers replace the default terminate, so not exiting
 // would turn a kill into a server that ignores it.
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const)
-  process.on(sig, () => { releaseSuiteLock(); process.exit(0); });
+  process.on(sig, () => { stopCodexCliProbeGroups(); releaseSuiteLock(); process.exit(0); });
 // Never removes a lock that is no longer ours: if a contender reaped us (a recycled pid, a torn
 // write) and took it, the dir belongs to them and this must not touch it.
 function releaseSuiteLock(owner: symbol | null = null): void {

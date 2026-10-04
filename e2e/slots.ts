@@ -8584,8 +8584,11 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
     const openOn = async (width: number, height: number, slot: number, failFirstRead = false, longProject?: { projectKey: string; repo: string }) => {
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
-      await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
       const phone = width < 700;
+      // the phone's top island springs (runGlassIslandDom measures that); here it stands at once, so no tap lands
+      // mid-spring — a click aimed at ℹ while the glass still widened landed on the free glass under load and closed it
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: phone ? "reduce" : "no-preference" }] });
+      await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${slot}], focused: 0 }));
         localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); ${failFirstRead ? `localStorage.setItem('probe.failGrant', '${slot}');` : ""}
         ${longProject ? `localStorage.setItem('probe.longProject', ${JSON.stringify(JSON.stringify(longProject))});` : ""} })()`);
@@ -8593,7 +8596,13 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       if (!await wait(`document.querySelector('#panes .pane .xterm')`, 15000))
         throw new Error("client did not boot against the instance: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
       // the phone upright: ℹ sits in the top island (pill → ℹ), the pane's corner button is folded away
-      if (phone) { await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#minfo')`); }
+      // …and ℹ is pressed only once the island stands open with ℹ itself under its centre
+      if (phone) {
+        await click(`document.querySelector('#mpill')`);
+        await wait(`document.body.classList.contains('mopen') && (() => { const i = document.querySelector('#minfo'), r = i.getBoundingClientRect();
+          return i.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })()`, 5000);
+        await click(`document.querySelector('#minfo')`);
+      }
       return wait(`${RB}`, 10000);
     };
     const startVideo = async (name: string) => {

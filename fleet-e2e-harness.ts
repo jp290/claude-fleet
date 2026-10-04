@@ -28,6 +28,7 @@ import { basename } from "node:path";
 import { codexModelSupport, type CodexModelSupport } from "./model-register";
 import { readCodexFirstTurn, readCodexRollout } from "./server/conversation-read";
 import type { Slot } from "./server/types";
+import type { SlotInfo } from "./src/client";
 import { AUTOS_TICK_MS, ROOT, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
 
 export async function checkPaneAgentAtFixtures(source: string, checkFixture: (name: string, ok: boolean, detail: string) => void): Promise<void> {
@@ -216,9 +217,11 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
     checkFixture("first model turn: successful B cannot overwrite failed A", b.codexFirstTurn?.turn.state === "succeeded"
       && a.codexFirstTurn?.turn.state === "failed" && !reads.includes("/fixture/foreign"), JSON.stringify(b.codexFirstTurn));
     const ui = section(client, "function codexTurnOf(", "\n// THE FIFTH READING:");
+    type TurnSlot = Pick<SlotInfo, "agent" | "openedAt" | "lastOutput" | "codexRecovery" | "codexFirstTurn">;
     const display = new Function("RECENT_MS", "SLEEP_MS", ui + "\nreturn {outputState,codexTurnLine};")(5000, 1_800_000) as {
-      outputState: (s: unknown, now: number, awake: boolean) => string; codexTurnLine: (s: unknown) => string };
-    const uiA = { ...a, agent: "alive", lastOutput: epoch + 23, codexRecovery: { sessionId: a.sessionId } };
+      outputState: (s: TurnSlot, now: number, awake: boolean) => string; codexTurnLine: (s: TurnSlot) => string };
+    const uiA = { ...a, agent: "alive" as const, lastOutput: epoch + 23,
+      codexRecovery: { state: "bound" as const, sessionId: a.sessionId, disconnectSeenAt: null } };
     checkFixture("first model turn: client shows alive model-400 as broken with provenance",
       display.outputState(uiA, epoch + 24, true) === "bad" && display.codexTurnLine(uiA).includes("bad_request")
       && display.codexTurnLine(uiA).includes("Quelle: codex-rollout"), display.codexTurnLine(uiA));
@@ -290,7 +293,11 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
     checkFixture("first model turn fixture execution", false, error instanceof Error ? error.message : "unknown error");
   }
 }
-await checkCodexFirstTurnFixtures(readFileSync(`${ROOT}/server.ts`, "utf8"), readFileSync(`${ROOT}/src/client.ts`, "utf8"), check);
+try {
+  await checkCodexFirstTurnFixtures(readFileSync(`${ROOT}/server.ts`, "utf8"), readFileSync(`${ROOT}/src/client.ts`, "utf8"), check);
+} catch (error) {
+  check("first model turn fixture source precondition", false, error instanceof Error ? error.message : "unknown source error");
+}
 
 export async function checkCodexSpawnFixtures(source: string,
   checkFixture: (name: string, ok: boolean, detail: string) => void): Promise<void> {

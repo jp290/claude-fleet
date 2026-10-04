@@ -6653,7 +6653,7 @@ let gitTickBusy = false;
 let operationalGitObservedAt: number | null = null;
 const operationalGitOccupants = new Map<number, { openedAt: number; sessionId: string | null }>();
 const codexFirstTurnCursors = new Map<number, { openedAt: number; sessionId: string; selfToken: string;
-  file: string; offset: number; skipping: boolean; turn: Slot["codexFirstTurn"] }>();
+  file: string; offset: number; skipping: boolean; unknownReason: "oversized-row-skipped" | null; turn: Slot["codexFirstTurn"] }>();
 function codexFirstTurnView(s: Slot): Slot["codexFirstTurn"] {
   const hit = s.codexFirstTurn;
   const cursor = codexFirstTurnCursors.get(s.id);
@@ -6671,7 +6671,8 @@ function tickCodexFirstTurn(s: Slot): void {
   let cursor = codexFirstTurnCursors.get(s.id);
   if (!cursor || cursor.openedAt !== s.openedAt || cursor.sessionId !== s.sessionId
     || cursor.selfToken !== s.selfToken || cursor.file !== file) {
-    cursor = { openedAt: s.openedAt, sessionId: s.sessionId, selfToken: s.selfToken, file, offset: 0, skipping: false, turn: null };
+    cursor = { openedAt: s.openedAt, sessionId: s.sessionId, selfToken: s.selfToken, file, offset: 0,
+      skipping: false, unknownReason: null, turn: null };
     codexFirstTurnCursors.set(s.id, cursor);
     s.codexFirstTurn = null;
   }
@@ -6682,7 +6683,7 @@ function tickCodexFirstTurn(s: Slot): void {
     if (size < cursor.offset) { cursor.offset = 0; cursor.skipping = false; cursor.turn = null; s.codexFirstTurn = null; }
     if (cursor.turn?.turn.completedAt != null) return;
     // Bounded incremental scan, including resumed history. A non-full torn line is retried;
-    // oversized rows are skipped as unknown until their newline, so later events stay observable.
+    // Oversized rows leave a permanent gap: later errors remain observable, success stays unknown.
     // Missing start, missing time or absent terminal model output remains unknown.
     const buffer = Buffer.alloc(Math.min(1_048_576, Math.max(0, size - cursor.offset)));
     const n = readSync(fd, buffer, 0, buffer.length, cursor.offset);
@@ -6691,12 +6692,22 @@ function tickCodexFirstTurn(s: Slot): void {
       if (cursor.skipping || (buffer.length === 1_048_576 && n === buffer.length)) {
         cursor.offset += n;
         cursor.skipping = true;
+        if (!cursor.unknownReason) {
+          cursor.unknownReason = "oversized-row-skipped";
+          if (cursor.turn) {
+            cursor.turn = { ...cursor.turn, observedAt: Date.now(),
+              turn: { ...cursor.turn.turn, state: "unknown", unknownReason: cursor.unknownReason } };
+            s.codexFirstTurn = cursor.turn;
+          }
+        }
       }
       return;
     }
     const from = cursor.skipping ? buffer.subarray(0, n).indexOf(10) + 1 : 0;
     cursor.skipping = false;
-    const turn = readCodexFirstTurn(buffer.toString("utf8", from, end + 1).split("\n"), s.openedAt, cursor.turn?.turn ?? null);
+    const parsed = readCodexFirstTurn(buffer.toString("utf8", from, end + 1).split("\n"), s.openedAt, cursor.turn?.turn ?? null);
+    const turn = parsed && cursor.unknownReason
+      ? { ...parsed, state: "unknown" as const, unknownReason: cursor.unknownReason } : parsed;
     cursor.offset += end + 1;
     if (turn && JSON.stringify(turn) !== JSON.stringify(cursor.turn?.turn ?? null)) {
       if (turn.error) {

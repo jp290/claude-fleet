@@ -258,11 +258,24 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
     put("session-long", [start(21, "A"), oversized, failure]);
     for (let tick = 0; tick < 3; tick++) scan.tickCodexFirstTurn(long);
     checkFixture("first model turn: oversized row itself stays unknown, never a guessed success",
-      long.codexFirstTurn?.turn.state === "running", JSON.stringify(long.codexFirstTurn));
+      long.codexFirstTurn?.turn.state === "unknown" && long.codexFirstTurn.turn.unknownReason === "oversized-row-skipped",
+      JSON.stringify(long.codexFirstTurn));
     for (let tick = 0; tick < 3; tick++) scan.tickCodexFirstTurn(long);
     checkFixture("first model turn: model-400 after a >1-MiB row is still detected",
-      scan.codexFirstTurnView(long)?.turn.state === "failed" && long.codexFirstTurn?.turn.error?.code === "bad_request",
+      scan.codexFirstTurnView(long)?.turn.state === "unknown" && long.codexFirstTurn?.turn.error?.code === "bad_request",
       JSON.stringify(long.codexFirstTurn));
+    const longSuccess = { ...long, id: 21, selfToken: "token-long-success", sessionId: "session-long-success", codexFirstTurn: null } as Slot;
+    put("session-long-success", [start(21, "A"), oversized, success(23, "A")]);
+    for (let tick = 0; tick < 6; tick++) scan.tickCodexFirstTurn(longSuccess);
+    checkFixture("first model turn: success after a skipped row stays permanently unknown",
+      longSuccess.codexFirstTurn?.turn.state === "unknown"
+      && longSuccess.codexFirstTurn.turn.unknownReason === "oversized-row-skipped" && longSuccess.codexFirstTurn.turn.error === null,
+      JSON.stringify(longSuccess.codexFirstTurn));
+    const uiLong = { ...uiA, openedAt: long.openedAt, codexFirstTurn: long.codexFirstTurn,
+      codexRecovery: { ...uiA.codexRecovery, sessionId: long.sessionId } };
+    checkFixture("first model turn: client shows observed failure despite unknown outcome after skip",
+      display.outputState(uiLong, epoch + 24, true) === "bad" && display.codexTurnLine(uiLong).includes("oversized-row-skipped")
+      && display.codexTurnLine(uiLong).includes("bad_request"), display.codexTurnLine(uiLong));
     const torn = { ...long, id: 20, selfToken: "token-torn", sessionId: "session-torn", codexFirstTurn: null } as Slot;
     files.set("/fixture/session-torn", Buffer.from(start(21, "A").slice(0, -2)));
     scan.tickCodexFirstTurn(torn); scan.tickCodexFirstTurn(torn);

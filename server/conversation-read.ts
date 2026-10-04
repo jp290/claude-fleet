@@ -29,6 +29,7 @@ export interface CodexFirstTurn {
   acceptedAt: number;
   completedAt: number | null;
   error: { message: string; code: string | null } | null;
+  unknownReason?: "oversized-row-skipped";
 }
 export interface ConversationRead {
   entries: TEntry[];

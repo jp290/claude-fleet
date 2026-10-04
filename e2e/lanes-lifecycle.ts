@@ -366,13 +366,16 @@ async function workplacesChecks(): Promise<void> {
       const broken = unreadable.repos.find((r) => r.repo === realpathSync(b));
       check("workplaces unreadable repo is null with its reason, never an empty worktree list", broken?.worktrees === null && broken.branches === null
         && broken.reasons.some((r) => r.reason === "worktree-list-unreadable"), JSON.stringify(broken));
-      writeFileSync(`${b}/.git`, `gitdir: ${realpathSync(ROOT)}/.git\n`);
+      const other = `${dir}/other`;
+      mkdirSync(other); git(other, "init", "-qb", "main"); commit(other);
+      git(other, "config", "core.worktree", realpathSync(other));
+      writeFileSync(`${b}/.git`, `gitdir: ${realpathSync(other)}/.git\n`);
       try {
         const topMutant = functions.replace('if (top.code !== 0 || realpathSync(top.out) !== realpathSync(repo)) throw new Error("repo-toplevel-mismatch");', '');
         const mismatch = await compile(functions, []).repo(b), wrongRepo = await compile(topMutant, []).repo(b);
-        check("workplaces rejects an existing Git pointer whose toplevel is another repo", mismatch.worktrees === null
+        check("workplaces rejects an existing Git pointer whose explicit toplevel is another repo", mismatch.worktrees === null
           && mismatch.reasons.some((r) => r.reason === "worktree-list-unreadable"), JSON.stringify(mismatch));
-        check("workplaces toplevel mutation probe rejects substituting an enclosing repo", topMutant !== functions && wrongRepo.worktrees !== null, JSON.stringify(wrongRepo.repo));
+        check("workplaces toplevel mutation probe rejects substituting another repo", topMutant !== functions && wrongRepo.worktrees !== null, JSON.stringify(wrongRepo.repo));
       } finally { rmSync(`${b}/.git`, { force: true }); }
     } finally { renameSync(`${b}/.git-hidden`, `${b}/.git`); }
 

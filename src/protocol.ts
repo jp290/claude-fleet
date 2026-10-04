@@ -624,7 +624,7 @@ export interface FoundingPlanPart {
   id: string; packId: string | null; path: string | null; anchor: string | null; privateSourceId?: string;
   sorte: "anleitung" | "wissen"; ort: "box" | "ausleihe";
   sha256: string | null; bytes: number | null; content: string | null;
-  refusal: "source-unavailable" | "source-anchor-missing" | null;
+  refusal: "source-unavailable" | "source-anchor-missing" | "source-anchor-ambiguous" | null;
 }
 export interface FoundingSessionAgents {
   text: string; bytes: number; parts: readonly FoundingPlanPart[]; projectDocMaxBytes?: number;

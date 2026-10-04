@@ -18,7 +18,7 @@ export interface SessionAgentsPart {
   readonly sha256: string | null;
   readonly bytes: number | null;
   readonly content: string | null;
-  readonly refusal: "source-unavailable" | "source-anchor-missing" | null;
+  readonly refusal: "source-unavailable" | "source-anchor-missing" | "source-anchor-ambiguous" | null;
 }
 
 export interface SessionAgentsInput {
@@ -84,11 +84,21 @@ export function renderSessionAgents(input: SessionAgentsInput): SessionAgents {
       const requested = input.selection?.[id] ?? source.positions?.[input.position] ?? "ausleihe";
       const ort = pack.id === "portable-core" && nativeContract ? "box" : requested;
       const bytes = input.sourceBytes.get(source.path);
-      const section = bytes === undefined ? null : sourceSection(bytes, source.path, source.anchor);
+      let section: ReturnType<typeof sourceSection> = null;
+      let refusal: SessionAgentsPart["refusal"] = bytes === undefined ? "source-unavailable" : "source-anchor-missing";
+      if (bytes !== undefined) {
+        try {
+          section = sourceSection(bytes, source.path, source.anchor);
+          if (section) refusal = null;
+        } catch (error) {
+          if (!(error instanceof Error) || error.name !== "source-anchor-ambiguous") throw error;
+          refusal = "source-anchor-ambiguous";
+        }
+      }
       return { id, packId: pack.id, path: source.path, anchor: source.anchor,
         sorte: source.sorte ?? "wissen", ort: section ? ort : "ausleihe",
         sha256: section?.sha256 ?? null, bytes: section?.bytes ?? null, content: section && ort === "box" ? section.content : null,
-        refusal: bytes === undefined ? "source-unavailable" : section ? null : "source-anchor-missing" };
+        refusal };
     });
     if ("privateSourceId" in pack.sources) {
       const id = `${pack.id}.private`;

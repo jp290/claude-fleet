@@ -1344,7 +1344,8 @@ function validPart(p: unknown): p is FoundingPlanPart {
   return isStr(r.id) && nullable(isStr)(r.packId) && nullable(isStr)(r.path) && nullable(isStr)(r.anchor)
     && (r.sorte === "anleitung" || r.sorte === "wissen") && (r.ort === "box" || r.ort === "ausleihe")
     && nullable(isStr)(r.sha256) && nullable(isNum)(r.bytes) && nullable(isStr)(r.content)
-    && (r.refusal === null || r.refusal === "source-unavailable" || r.refusal === "source-anchor-missing");
+    && (r.refusal === null || r.refusal === "source-unavailable" || r.refusal === "source-anchor-missing"
+      || r.refusal === "source-anchor-ambiguous");
 }
 function validFile(v: unknown): v is FoundingSessionAgents {
   if (!v || typeof v !== "object") return false;
@@ -1423,7 +1424,8 @@ const partOrt = (x: FoundingPlanPart): PartOrt => S?.parts.get(x.id) ?? x.ort;
 const partFixed = (x: FoundingPlanPart): string | null =>
   x.privateSourceId ? "Privat: der Text dieser Quelle kommt nie in die Datei, nur ihr Hinweis."
   : x.refusal === "source-unavailable" ? "Die Quelle liegt an diesem Stand nicht im Repo."
-  : x.refusal === "source-anchor-missing" ? "Die Überschrift der Quelle fehlt an diesem Stand." : null;
+  : x.refusal === "source-anchor-missing" ? "Die Überschrift der Quelle fehlt an diesem Stand."
+  : x.refusal === "source-anchor-ambiguous" ? "Anker nicht eindeutig." : null;
 
 // whether this start can change its packs at all: a MAIN's door takes none, a continued worktree gets none
 const packsFixed = (): string | null => {

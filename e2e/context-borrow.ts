@@ -1,4 +1,5 @@
 import { sectionAt, sourceSection } from "../context-sections";
+import { renderSessionAgents } from "../session-agents";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -48,6 +49,48 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       check(`context borrow: ${read.name} rejects ambiguous prefixes with a named error`,
         error instanceof Error && error.name === "source-anchor-ambiguous"
         && error.message.includes("ambiguous.md") && error.message.includes("### Kern"));
+    }
+    const founding = readFileSync(join(sourceRoot, "src/founding.ts"), "utf8");
+    const validators = founding.slice(founding.indexOf("const strs ="), founding.indexOf("// THE FOUR GROUPS"));
+    const fixed = founding.slice(founding.indexOf("const partFixed ="), founding.indexOf("// whether this start"));
+    const client = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
+      `${validators}\n${fixed}\nreturn { validPlan, partFixed };`))() as {
+      validPlan: (value: unknown) => boolean; partFixed: (value: unknown) => string | null;
+    };
+    for (const harness of ["claude", "codex"]) {
+      const input = { role: { text: "Fixture role.", path: "server.ts", anchor: "role" }, position: "lane", harness,
+        plan: { selected: [{ id: "renderer-anchor", estimatedBytes: 0, sources: [
+          { id: "ambiguous", path: "ambiguous.md", anchor: "### Kern" },
+          { id: "exact", path: "exact.md", anchor: "### Kern" },
+        ] }], omitted: [] }, selection: { "renderer-anchor.ambiguous": "box", "renderer-anchor.exact": "box" },
+        sourceBytes: new Map([["ambiguous.md", ambiguousText], ["exact.md", exactText],
+          ["AGENTS.md", "## Portable operating contract\nFixture contract.\n"]]), footer: "Keep footer." } as const;
+      let rendered: ReturnType<typeof renderSessionAgents> | undefined;
+      let error: unknown;
+      try { rendered = renderSessionAgents(input); } catch (caught) { error = caught; }
+      const part = rendered?.parts.find((item) => item.id === "renderer-anchor.ambiguous");
+      check(`context borrow: ${harness} rendering refuses an ambiguous anchor without throwing or delivering bytes`,
+        error === undefined && JSON.stringify(part) === JSON.stringify({ id: "renderer-anchor.ambiguous", packId: "renderer-anchor",
+          path: "ambiguous.md", anchor: "### Kern", sorte: "wissen", ort: "ausleihe", sha256: null, bytes: null,
+          content: null, refusal: "source-anchor-ambiguous" }), error instanceof Error ? `${error.name}: ${error.message}` : JSON.stringify(part));
+      check(`context borrow: ${harness} rendering keeps other boxed sections and the named refusal pointer`,
+        rendered?.parts.find((item) => item.id === "renderer-anchor.exact")?.content === exactSection
+        && rendered.text.includes("ambiguous.md | ### Kern (source-anchor-ambiguous)")
+        && !rendered.text.includes("First section.") && !rendered.text.includes("Second section."));
+      const clientPlan = { selected: [{ id: "renderer-anchor", bytes: 0, source: "repo-manifest", parts: [part] }],
+        omitted: [], sessionAgents: rendered };
+      check(`context borrow: the client accepts the ${harness} plan with an ambiguous refusal in pack and file parts`,
+        part !== undefined && rendered !== undefined && client.validPlan(clientPlan));
+      check(`context borrow: the client names the ${harness} ambiguous anchor as fixed outside the file`,
+        part !== undefined && client.partFixed(part) === "Anker nicht eindeutig.");
+      check(`context borrow: the client still rejects an unknown refusal in ${harness} plan parts`,
+        part !== undefined && !client.validPlan({ ...clientPlan,
+          selected: [{ ...clientPlan.selected[0]!, parts: [{ ...part, refusal: "unknown-refusal" }] }] }));
+      let unexpected: unknown;
+      try { renderSessionAgents({ ...input, sourceBytes: new Map([["ambiguous.md", 123 as unknown as string]]) }); }
+      catch (caught) { unexpected = caught; }
+      check(`context borrow: ${harness} rendering still throws unrelated source parsing errors`,
+        unexpected instanceof TypeError && unexpected.message.includes("matchAll"), String(unexpected));
     }
     g("init", "-q", "-b", "main"); g("config", "user.name", "e2e"); g("config", "user.email", "e2e@fleet");
     const section = "## Section\nGrüße vom HEAD.\n### Child\nKept child.\n````md\n## Fenced sibling\n```\n# Still fenced\n````\n~~~md\n# Tilde fenced\n~~~\n\n";

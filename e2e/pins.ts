@@ -5023,7 +5023,7 @@ await import(pathToFileURL(process.argv[2]).href);
     .filter((l) => !l.trim().startsWith("//") && /config\.toml/.test(l));
   pin("Codex provider config inspection is read-only and excludes credential files",
     providerRead.includes('Bun.TOML.parse(readFileSync(path, "utf8"))')
-      && !/write|append|truncate|unlink|auth\.json|base_url|api_key|console|audit|json\(/i.test(providerRead),
+      && !/write|append|truncate|unlink|auth\.json|api_key|console|audit|json\(/i.test(providerRead),
     "bounded TOML reader only");
   pin("Fleet writes no global plugin settings: no code line names ~/.claude/settings.json",
     settingsJson.length === 0, settingsJson.map((l) => l.trim().slice(0, 80)).join(" | "));
@@ -11506,6 +11506,11 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const code = new Bun.Transpiler({ loader: "ts" }).transformSync(server.slice(providerAt, providerEnd + 3));
   const cases = [
     { name: "missing configs use default", global: null, local: null, env: {}, want: true },
+    { name: "default name with global endpoint override", global: 'model_provider = "openai"\nopenai_base_url = "never-output-this"', local: null, env: {}, want: false },
+    { name: "default name with project endpoint override", global: null, local: 'model_provider = "openai"\nchatgpt_base_url = "never-output-this"', env: {}, want: false },
+    { name: "global openai provider redefined", global: '[model_providers.openai]\nname = "fixture"', local: null, env: {}, want: false },
+    { name: "project openai provider redefined", global: null, local: '[model_providers.openai]\nname = "fixture"', env: {}, want: false },
+    { name: "malformed provider table", global: 'model_providers = "invalid"', local: null, env: {}, want: false },
     { name: "explicit default", global: 'model_provider = "openai"', local: null, env: {}, want: true },
     { name: "foreign global provider", global: 'model_provider = "foreign"', local: null, env: {}, want: false },
     { name: "foreign project provider", global: null, local: 'model_provider = "foreign"', env: {}, want: false },
@@ -11525,7 +11530,12 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     const bound = new Function("Bun", "process", "resolve", "homedir", "readFileSync",
       `${code}; return codexDefaultProviderBound;`)(Bun, { env: fixture.env }, (...parts: string[]) => parts.join("/"),
       () => "/home", readConfig) as (cwd: string) => boolean;
-    pin(`Codex provider binding: ${fixture.name}`, bound("/spawn") === fixture.want, `expected=${fixture.want}`);
+    const providerBound = bound("/spawn");
+    const evidence = codexModelSupport(cache, "fixture-absent", cli, providerBound, now, "/spawn");
+    pin(`Codex provider binding: ${fixture.name}`, providerBound === fixture.want, `expected=${fixture.want}`);
+    if (!fixture.want) pin(`Codex overridden endpoint/provider stays unknown: ${fixture.name}`,
+      evidence.availability === "unknown" && evidence.reason === "provider-binding-unproven",
+      `availability=${evidence.availability}; reason=${evidence.reason}`);
   }
   const client = read("src/client.ts");
   pin("Codex spawn refusal reaches existing client error display", client.includes('onError(j.error ?? `the server answered ${res.status}`)'),

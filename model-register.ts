@@ -98,6 +98,7 @@ export function codexAvailability(cache: unknown, id: string): ModelAvailability
 
 export const CODEX_MODEL_CACHE_MAX_AGE_MS = 300_000;
 export interface CodexModelSupport {
+  cwd: string | null;
   model: string | null;
   registerValid: true;
   registered: boolean;
@@ -111,17 +112,17 @@ export interface CodexModelSupport {
   cliObservedAt: number | null;
   provider: "openai" | null;
   reason: "model-unspecified" | "cache-missing-or-malformed" | "cache-time-unproven" | "cache-expired"
-    | "cli-unproven" | "cli-version-mismatch" | "provider-binding-unproven" | "catalog-listed" | "catalog-excluded";
+    | "cli-unproven" | "cli-version-mismatch" | "provider-binding-unproven" | "observation-target-mismatch" | "catalog-listed" | "catalog-excluded";
 }
 export function codexModelSupport(cache: unknown, id: string | null,
   cli: { binary: string | null; version: string | null; observedAt: number | null; reason: string | null },
-  providerBound: boolean, now = Date.now()): CodexModelSupport {
+  providerBound: boolean, now = Date.now(), cwd: string | null = null): CodexModelSupport {
   const fetched = cache && typeof cache === "object" && "fetched_at" in cache && typeof cache.fetched_at === "string"
     ? Date.parse(cache.fetched_at) : NaN;
   const observedAt = Number.isFinite(fetched) ? fetched : null;
   const age = observedAt === null ? null : now - observedAt;
   const base: CodexModelSupport = {
-    model: id, registerValid: true, registered: id !== null && !!modelEntry("codex", id), availability: "unknown",
+    cwd, model: id, registerValid: true, registered: id !== null && !!modelEntry("codex", id), availability: "unknown",
     source: "CODEX_HOME/models_cache.json", observedAt, cacheAgeMs: age,
     maxAgeMs: CODEX_MODEL_CACHE_MAX_AGE_MS, cliVersion: cli.version, binary: cli.binary,
     cliObservedAt: cli.observedAt, provider: providerBound ? "openai" : null, reason: "cache-missing-or-malformed",

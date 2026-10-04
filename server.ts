@@ -1571,6 +1571,10 @@ function codexDefaultProviderBound(cwd: string): boolean {
   }
   let profile: string | null = null;
   for (const config of configs) {
+    if (Object.keys(config).some((name) => /base_url$/.test(name))) return false;
+    const providers = config.model_providers;
+    if (providers !== undefined && (!providers || typeof providers !== "object" || Array.isArray(providers)
+      || Object.keys(providers).includes("openai"))) return false;
     if (config.model_provider !== undefined && config.model_provider !== "openai") return false;
     if (config.profile !== undefined) {
       if (typeof config.profile !== "string" || !config.profile) return false;
@@ -1600,7 +1604,8 @@ async function codexSpawnSupport(model: string | null, cwd: string): Promise<Cod
     cli.version = null;
     cli.reason = "binary-changed";
   }
-  return codexModelSupport(readCodexModelsCache(), model, cli, codexDefaultProviderBound(cwd));
+  const targetCwd = resolve(expandCwd(cwd));
+  return codexModelSupport(readCodexModelsCache(), model, cli, codexDefaultProviderBound(targetCwd), Date.now(), targetCwd);
 }
 class CodexModelUnavailable extends Error {
   constructor(readonly modelSupport: CodexModelSupport) {
@@ -8299,7 +8304,12 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   const h = harnessOf(harness);
   const selection = modelOf({ model }, h);
   if (!selection.ok) throw new Error(selection.error);
-  const modelSupport = preObservedSupport ?? (h.id === "codex" ? await codexSpawnSupport(model, cwd) : null);
+  const modelSupport: CodexModelSupport | null = preObservedSupport
+    ? preObservedSupport.model === model && preObservedSupport.cwd === cwd && h.id === "codex"
+      ? preObservedSupport
+      : { ...preObservedSupport, model, cwd, registered: model !== null && modelsForHarness("codex").includes(model),
+        availability: "unknown", provider: null, reason: "observation-target-mismatch" }
+    : h.id === "codex" ? await codexSpawnSupport(model, cwd) : null;
   assertOpenOccupant();
   if (!preObservedSupport && modelSupport?.availability === "unavailable") throw new CodexModelUnavailable(modelSupport);
   if (SEPARATE_LANE_SLOTS && (worktree
@@ -10694,7 +10704,7 @@ interface SuccessionStranded { brief: string; path: "succession" | "founding"; d
   label: string | null }
 async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string,
   stranded: SuccessionStranded, target: { cwd: string; model: string | null; harness: string | null },
-  open: (support: CodexModelSupport | null) => Promise<unknown>, onLost: (error: unknown) => Promise<void>,
+  open: (support: CodexModelSupport | null) => Promise<CodexModelSupport | null>, onLost: (error: unknown) => Promise<void>,
   // a refusal BEFORE the kill: the predecessor still stands, only the rail's own intent falls
   onRefused: () => Promise<void> = async () => {}): Promise<InPlaceRespawn> {
   // tmux stderr is not an API-safe diagnostic (unavailableFoundingResponse's rule): only the typed
@@ -10727,10 +10737,11 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
       return refused(json({ error: `the predecessor could not be ended for the in-place respawn (${msg(e)}) — it is still standing and nothing was handed over` }, 500));
     return { ok: false, response: await respawnLost(s, predecessor, rail, `teardown: ${msg(e)}`, stranded, () => onLost(e)) };
   }
+  let openedSupport: CodexModelSupport | null = null;
   try {
     if (SUCCESSION_RESPAWN_FAIL_LATCH !== null && existsSync(SUCCESSION_RESPAWN_FAIL_LATCH))
       throw new Error("forced respawn failure (FLEET_TEST_SUCCESSION_RESPAWN_FAIL_LATCH)");
-    await open(modelSupport);
+    openedSupport = await open(modelSupport);
   } catch (e) {
     return { ok: false, response: await respawnLost(s, predecessor, rail, msg(e), stranded, () => onLost(e),
       e instanceof GameMakerTreeConflict ? 409 : 500) };
@@ -10741,7 +10752,7 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   // line; a respawn that failed leaves every anchor naming the ended predecessor (respawnLost above).
   rebindLaneAnchors({ slot: predecessor.slot, openedAt: predecessor.openedAt }, { slot: s.id, openedAt: s.openedAt },
     `${rail} succession`);
-  return { ok: true, ...(modelSupport ? { modelSupport } : {}) };
+  return { ok: true, ...(openedSupport ? { modelSupport: openedSupport } : {}) };
 }
 
 // S0 (docs/messungen/2026-09-22-slot-baender-stufen-nach-32014c79.md §2.1): a lane's anchor is the

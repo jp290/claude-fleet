@@ -159,10 +159,10 @@ export async function checkCodexSpawnFixtures(source: string,
   const cli = { binary: "fixture-binary", version: "0.153.4", observedAt: now, reason: null };
   const cache = { fetched_at: new Date(now - 10).toISOString(), client_version: cli.version,
     models: [{ slug: "fixture-present" }] };
-  const available = codexModelSupport(cache, "fixture-present", cli, true, now);
-  const unavailable = codexModelSupport(cache, "fixture-absent", cli, true, now);
-  const unknown = codexModelSupport(cache, "fixture-absent", cli, false, now);
-  type Fixture = { name: string; support: CodexModelSupport; race?: string; joined?: boolean; empty?: boolean; founding?: boolean; succession?: boolean };
+  const available = codexModelSupport(cache, "fixture-present", cli, true, now, "/new");
+  const unavailable = codexModelSupport(cache, "fixture-absent", cli, true, now, "/new");
+  const unknown = codexModelSupport(cache, "fixture-absent", cli, false, now, "/new");
+  type Fixture = { name: string; support: CodexModelSupport; race?: string; joined?: boolean; empty?: boolean; founding?: boolean; succession?: boolean; mismatch?: "model" | "cwd" };
   const fixtures: Fixture[] = [
     { name: "available", support: available },
     { name: "unavailable", support: unavailable },
@@ -171,6 +171,8 @@ export async function checkCodexSpawnFixtures(source: string,
     { name: "unknown-expired", support: codexModelSupport(cache, "fixture-absent", cli, true, now + 300_001) },
     { name: "joined-own-teardown", support: available, joined: true },
     { name: "succession-flips-after-kill", support: available, succession: true },
+    { name: "preobserved-model-mismatch", support: available, mismatch: "model" },
+    { name: "preobserved-cwd-mismatch", support: available, mismatch: "cwd" },
     ...["teardown", "spawn", "support", "kill", "observe", "latch", "history", "persist", "ensure"].map((race): Fixture =>
       ({ name: `replaced-at-${race}`, support: available, race, empty: race === "observe", founding: race === "persist" })),
   ];
@@ -199,7 +201,7 @@ export async function checkCodexSpawnFixtures(source: string,
       waitForSlotSpawn: () => barrier("spawn"), assertProgramFoundingTargetOpen: () => {},
       repoCanon: (p: string) => p, assertGameMakerTreeOpen: () => {}, openSlotIntents: new Set(),
       harnessOf: () => ({ id: "codex", allowsLanes: true, singleton: false }),
-      modelOf: () => ({ ok: true }), codexSpawnSupport: async () => {
+      modelOf: () => ({ ok: true }), modelsForHarness: () => [], codexSpawnSupport: async () => {
         supportCalls++;
         await barrier("support");
         return fixture.succession && killed ? unavailable : fixture.support;
@@ -220,6 +222,17 @@ export async function checkCodexSpawnFixtures(source: string,
     try {
       const open = new Function("scope", `with (scope) { ${code}; return openSlot; }`)(scope) as
         (s: Record<string, unknown>, cwd: string, ...args: unknown[]) => Promise<CodexModelSupport | null>;
+      if (fixture.mismatch) {
+        const model = fixture.mismatch === "model" ? "fixture-other" : available.model;
+        const cwd = fixture.mismatch === "cwd" ? "/other" : "/new";
+        const result = await open(slot, cwd, null, model, null, "codex", null,
+          { container: null, containerContext: null }, null, false, null, false, false, available);
+        checkFixture(`Codex preobserved target mismatch: ${fixture.mismatch}`, supportCalls === 0
+          && result?.availability === "unknown" && result.reason === "observation-target-mismatch"
+          && result.model === model && result.cwd === cwd && slot.cwd === cwd && effects.includes("ensure"),
+        `probes=${supportCalls}; availability=${result?.availability}; reason=${result?.reason}; opened=${slot.cwd === cwd}`);
+        continue;
+      }
       if (fixture.succession) {
         Object.assign(scope, {
           sameSuccessionOccupant: () => slot.openedAt === 10 && slot.selfToken === oldToken,
@@ -238,7 +251,7 @@ export async function checkCodexSpawnFixtures(source: string,
         let observed: CodexModelSupport | null = null;
         const result = await respawn(slot, {}, "fixture", {}, { cwd: "/new", model: available.model, harness: "codex" },
           async (support) => { observed = await open(slot, "/new", null, available.model, null, "codex", null,
-            { container: null, containerContext: null }, null, false, null, false, false, support); }, async () => {});
+            { container: null, containerContext: null }, null, false, null, false, false, support); return observed; }, async () => {});
         checkFixture("Codex succession freezes one pre-teardown decision when support flips after kill",
           result.ok && supportCalls === 1 && observed === available && result.modelSupport === available
             && slot.cwd === "/new" && effects.includes("ensure") && !effects.includes("lost"),

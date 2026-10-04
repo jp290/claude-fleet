@@ -2881,41 +2881,45 @@ function settingsRow(d: PrefDef): HTMLElement {
 // the request that asked it: a newer answer on screen, a switched target or a closed window drops
 // it. The model block keeps four facts apart — the owner's preference, the register default, the
 // slot's selection and the model a turn really ran — and none of them follows from free quota: a
-// model is switched at its session, as before.
+// model is switched at its session, as before. The words are the owner's, not the wire's (card
+// e433): no event checksum, no reader vocabulary, and every "unbekannt" carries one short sentence
+// saying what is missing.
 type UsageTarget = "local" | "provider";
 // the last windows this page saw MEASURED, across window opens: a later failed or unknown read shows
 // them dated and stale instead of blank or 0. Page memory only — nothing of it is stored.
 let usageSeen: { primary: SubscriptionWindow | null; secondary: SubscriptionWindow | null;
   measuredAt: number; provenance: string | null } | null = null;
-const USAGE_STATUS: Record<string, string> = { measured: "gemessen", stale: "veraltet", unknown: "unbekannt", error: "Fehler" };
-// the reader's reason codes (codex-quota.ts) in the owner's words; an unknown code shows as it came
+const USAGE_STATUS: Record<string, string> = { measured: "aktuell", stale: "veraltet", unknown: "unbekannt", error: "Fehler" };
+// the reader's reason codes (codex-quota.ts) as one short sentence each; an unknown code shows as it came
 const USAGE_REASON: Record<string, string> = {
-  "not-observed": "noch nicht gelesen",
-  "missing-windows": "Messereignis ohne Fenster",
-  "event-older-than-15-minutes": "Messung älter als 15 min",
-  "event-time-ahead-of-server": "Messzeit liegt nach der Server-Uhr",
-  "invalid-json-line": "kaputte Zeile in der Quelle",
-  "invalid-rate-limits": "ungültige Verbrauchsdaten in der Quelle",
-  "invalid-window": "ungültiges Fenster in der Quelle",
-  "missing-or-invalid-event-time": "Messzeit fehlt oder ist ungültig",
-  "no-codex-rate-limits": "keine Codex-Messung in der Quelle",
-  "no-codex-rate-limits-in-observed-tails": "keine Codex-Messung in den gelesenen Dateienden",
-  "source-identity-changed": "Quelle hat sich während des Lesens geändert",
-  "missing-source": "Quelle fehlt — kein Codex-Sitzungsordner auf dieser Maschine",
-  "unreadable-source": "Quelle nicht lesbar",
-  "read-timeout": "Lesen nach 5 s abgebrochen",
-  "read-failed": "Lesen fehlgeschlagen",
+  "not-observed": "Die Sitzungsdateien wurden noch nicht gelesen.",
+  "missing-windows": "Codex hat keine Limits mitgeschickt.",
+  "event-older-than-15-minutes": "Der letzte Stand ist älter als 15 Minuten.",
+  "event-time-ahead-of-server": "Die Zeitangabe des Stands liegt in der Zukunft.",
+  "invalid-json-line": "Eine Zeile in den Sitzungsdateien ist beschädigt.",
+  "invalid-rate-limits": "Die Verbrauchsangaben in den Sitzungsdateien sind ungültig.",
+  "invalid-window": "Ein Zeitfenster in den Sitzungsdateien ist ungültig.",
+  "missing-or-invalid-event-time": "Dem Stand fehlt eine gültige Uhrzeit.",
+  "no-codex-rate-limits": "In den Sitzungsdateien steht kein Codex-Verbrauch.",
+  "no-codex-rate-limits-in-observed-tails": "In den neuesten Sitzungsdateien steht kein Codex-Verbrauch.",
+  "source-identity-changed": "Die Dateien haben sich beim Lesen geändert.",
+  "missing-source": "Auf dieser Maschine liegt kein Codex-Sitzungsordner.",
+  "unreadable-source": "Die Sitzungsdateien lassen sich nicht lesen.",
+  "read-timeout": "Das Lesen hat länger als 5 s gedauert und wurde abgebrochen.",
+  "read-failed": "Das Lesen ist fehlgeschlagen.",
 };
 // the wire's three prose reasons (server.ts#subscriptionUsage, codex-quota.ts#PROVIDER_UNSUPPORTED)
-// in German; a changed sentence shows as the server wrote it
+// as the sentence the owner reads; a changed sentence shows as the server wrote it
 const USAGE_PROSE: Record<string, string> = {
   "installed schema proves account/rateLimits/read, but no account-bound reader or authorized account connection is evidenced":
-    "kein kontogebundener Leser und keine autorisierte Kontoverbindung belegt — das installierte Schema kennt account/rateLimits/read nur als Schnittstelle",
+    "Die Fleet hat keinen Zugang, um das Konto beim Anbieter abzufragen.",
   "no measured subscription sensor; dated owner availability messages have no machine-readable source or validity contract":
-    "kein gemessener Sensor; eine datierte Verfügbarkeitsmeldung des Owners hat keine maschinenlesbare Quelle und keine Geltung",
+    "Für andere Abos erfasst die Fleet noch keinen Verbrauch.",
   "no dated owner preference source with scope and validity":
-    "keine datierte Quelle einer Owner-Präferenz mit Geltungsbereich und Gültigkeit",
+    "Von dir ist keine Modell-Vorgabe hinterlegt.",
 };
+// what a refresh did, as the server line names it
+const USAGE_REFRESH: Record<string, string> = { refreshing: "läuft", ok: "erledigt", error: "fehlgeschlagen", timeout: "abgebrochen", unsupported: "nicht möglich" };
 const usageReason = (r: string | null): string => r === null ? "" : USAGE_REASON[r] ?? r;
 const usageProse = (r: string): string => USAGE_PROSE[r] ?? r;
 const usageClock = (ms: number): string => {
@@ -2971,7 +2975,7 @@ function usageSection(sec: HTMLElement): void {
   };
   sec.appendChild(el("h4", "setsub", "Codex-Abo"));
   const state = stat("state", "Zustand");
-  const wins = { primary: stat("primary", "Primäres Fenster"), secondary: stat("secondary", "Sekundäres Fenster") };
+  const wins = { primary: stat("primary", "Erstes Fenster"), secondary: stat("secondary", "Zweites Fenster") };
   const source = stat("source", "Quelle");
   const measured = stat("measured", "Gemessen");
   const age = stat("age", "Alter");
@@ -2992,8 +2996,8 @@ function usageSection(sec: HTMLElement): void {
     radios.appendChild(label);
     return input;
   };
-  radio("local", "Lokal gespeicherter Stand");
-  radio("provider", "Anbieter-Konto (aktiv)");
+  radio("local", "Gespeicherter Stand");
+  radio("provider", "Konto beim Anbieter");
   const hint = el("div", "hint setnote");
   hint.id = setId("use-hint");
   const btn = el("button", "setreset usebtn", "Neu lesen") as HTMLButtonElement;
@@ -3012,16 +3016,16 @@ function usageSection(sec: HTMLElement): void {
   const others = stat("others", "Zustand");
 
   sec.appendChild(el("h4", "setsub", "Modell"));
-  const pref = stat("preference", "Präferenz des Owners");
-  const defaults = stat("defaults", "Register-Standard");
-  const selected = stat("selected", "Am Slot gewählt");
-  const turn = stat("turn", "Benutzt je Turn");
+  const pref = stat("preference", "Deine Vorgabe");
+  const defaults = stat("defaults", "Standard");
+  const selected = stat("selected", "An Sessions gewählt");
+  const turn = stat("turn", "Wirklich benutzt");
   sec.appendChild(el("div", "hint setnote", "Freies Kontingent wählt kein Modell. Ein Modell wechselst du wie bisher an seiner Session."));
 
   function pick(value: UsageTarget) {
     target = value;
     // a target switch ends the wait: the answer of the other target no longer belongs on screen
-    if (pending && pendingTarget !== value) { pending = 0; pendingTarget = null; outcome = "Antwort verworfen — das Ziel wurde gewechselt"; failed = false; }
+    if (pending && pendingTarget !== value) { pending = 0; pendingTarget = null; outcome = "Antwort verworfen, weil du die Quelle gewechselt hast."; failed = false; }
     paint();
   }
   async function read(kind: "open" | UsageTarget) {
@@ -3045,24 +3049,24 @@ function usageSection(sec: HTMLElement): void {
         usageSeen = { primary: c.primary, secondary: c.secondary, measuredAt: c.source.measuredAt, provenance: c.source.provenance };
       if (kind !== "open") outcome = refreshWords(got, seenBefore);
     } else {
-      const why = !res ? "Server nicht erreichbar" : res.status === 409 ? "der Server liest gerade schon — gleich erneut versuchen"
-        : res.ok ? "Antwort nicht lesbar" : `Server antwortet ${res.status}`;
+      const why = !res ? "Der Server ist nicht erreichbar." : res.status === 409 ? "Der Server liest gerade schon. Versuch es gleich noch einmal."
+        : res.ok ? "Die Antwort des Servers ist nicht lesbar." : `Der Server antwortet mit Fehler ${res.status}.`;
       if (kind === "open") openFailed = why;
-      else { failed = true; outcome = `Neu lesen fehlgeschlagen: ${why}`; }
+      else { failed = true; outcome = `Neu lesen fehlgeschlagen. ${why}`; }
     }
     paint();
   }
   // what one refresh answer says about itself — a local read is a READ: same event, same measurement
   function refreshWords(u: SubscriptionUsage, before: typeof usageSeen): string {
     const r = u.codex.refresh, src = u.codex.source;
-    const at = r.finishedAt !== null ? ` ${usageClock(r.finishedAt)}` : "";
-    if (r.status === "unsupported") return `Anbieter: nicht unterstützt — ${usageProse(r.reason ?? u.codex.provider.reason)}`;
-    if (r.status === "error" || r.status === "timeout") { failed = true; return `Lokal gelesen${at}: ${usageReason(r.reason) || "Fehler"}`; }
-    if (r.status !== "ok") return `Server meldet: ${r.status}`;
-    if (src.measuredAt === null) return `Lokal neu gelesen${at} — keine Messung gefunden`;
+    const at = r.finishedAt !== null ? ` um ${usageClock(r.finishedAt)}` : "";
+    if (r.status === "unsupported") return `Noch nicht möglich. ${usageProse(r.reason ?? u.codex.provider.reason)}`;
+    if (r.status === "error" || r.status === "timeout") { failed = true; return `Neu lesen${at} fehlgeschlagen. ${usageReason(r.reason) || "Der Grund ist nicht bekannt."}`; }
+    if (r.status !== "ok") return `Der Server meldet „${USAGE_REFRESH[r.status] ?? r.status}“.`;
+    if (src.measuredAt === null) return `Neu gelesen${at} — kein Stand gefunden.`;
     return before && before.provenance !== null && before.provenance === src.provenance
-      ? `Lokal neu gelesen${at} — kein neues Messereignis, die Messung von ${usageClock(src.measuredAt)} bleibt`
-      : `Lokal neu gelesen${at} — Messereignis von ${usageClock(src.measuredAt)}`;
+      ? `Neu gelesen${at} — nichts Neues, der Stand von ${usageClock(src.measuredAt)} gilt weiter.`
+      : `Neu gelesen${at} — Stand von ${usageClock(src.measuredAt)}.`;
   }
   function paintWindow(x: ReturnType<typeof stat>, w: SubscriptionWindow | null, at: number | null, stale: boolean, why: string) {
     x.v.replaceChildren(); x.more.textContent = "";
@@ -3077,18 +3081,22 @@ function usageSection(sec: HTMLElement): void {
     const reset = w.resets_at * 1000;
     // the reset against the server's clock at the read, never this device's
     const left = at !== null ? reset - at : null;
-    const when = left === null ? "" : left > 0 ? ` (in ${usageSpan(left)})` : " (vorbei — der Wert kann schon zurückgesetzt sein)";
-    x.more.textContent = `Fenster ${usageLength(w.window_minutes)} · Reset ${usageClock(reset)}${when}${stale ? ` · ${why}` : ""}`;
+    const when = left === null ? "" : left > 0 ? ` (in ${usageSpan(left)})` : " (schon vorbei, der Wert ist vielleicht schon zurückgesetzt)";
+    x.more.textContent = `Fenster ${usageLength(w.window_minutes)} · beginnt neu um ${usageClock(reset)}${when}${stale ? ` · ${why}` : ""}`;
   }
   function paint() {
     const c = usage?.codex ?? null;
     if (!c) {
-      const word = openFailed ? `unbekannt — ${openFailed}` : "wird gelesen …";
-      state.v.textContent = word; state.more.textContent = "";
+      state.v.textContent = openFailed ? "unbekannt" : "wird gelesen …"; state.more.textContent = openFailed;
       const seen = usageSeen;
+      const missing = "Es fehlt eine lesbare Antwort des Servers.";
       for (const k of ["primary", "secondary"] as const)
-        paintWindow(wins[k], seen?.[k] ?? null, null, !!seen, seen ? `zuletzt gemessen ${usageClock(seen.measuredAt)} — veraltet` : openFailed ? "nicht gelesen" : "wird gelesen …");
-      for (const x of [source, measured, age, fetched, others, pref, defaults, selected, turn]) { x.v.textContent = openFailed ? "unbekannt" : "wird gelesen …"; x.more.replaceChildren(); }
+        paintWindow(wins[k], seen?.[k] ?? null, null, !!seen, seen ? `Stand von ${usageClock(seen.measuredAt)}, veraltet` : missing);
+      // the first read still running and nothing seen: the windows wait like every other row
+      if (!openFailed && !seen) for (const k of ["primary", "secondary"] as const) { wins[k].v.textContent = "wird gelesen …"; wins[k].more.textContent = ""; }
+      for (const x of [source, measured, age, fetched, others, pref, defaults, selected, turn]) {
+        x.v.textContent = openFailed ? "unbekannt" : "wird gelesen …"; x.more.replaceChildren(openFailed ? missing : "");
+      }
     } else {
       const s = c.source;
       state.v.textContent = USAGE_STATUS[c.status] ?? c.status;
@@ -3097,26 +3105,24 @@ function usageSection(sec: HTMLElement): void {
       if (c.primary || c.secondary) {
         const stale = c.status === "stale";
         for (const k of ["primary", "secondary"] as const)
-          paintWindow(wins[k], c[k], now, stale, c[k] ? "veraltet" : "dieses Fenster fehlt im Messereignis");
+          paintWindow(wins[k], c[k], now, stale, c[k] ? "veraltet" : "Codex hat für dieses Fenster nichts mitgeschickt.");
       } else {
         // nothing measured in this answer: the last windows this page saw, dated and stale — or unknown
         const seen = usageSeen;
         for (const k of ["primary", "secondary"] as const)
           paintWindow(wins[k], seen?.[k] ?? null, null, !!seen,
-            seen ? `zuletzt gemessen ${usageClock(seen.measuredAt)} — veraltet, aktuell ${USAGE_STATUS[c.status] ?? c.status}` : usageReason(s.reason) || "nicht gemessen");
+            seen ? `Stand von ${usageClock(seen.measuredAt)}, veraltet` : usageReason(s.reason) || "Beim letzten Lesen wurde kein Stand gefunden.");
       }
       const sel = s.selection;
-      source.v.textContent = "lokale Codex-Sitzungsdateien dieser Maschine";
-      source.more.textContent = `nicht kontogebunden · die ${sel.maxFiles} jüngsten Dateien, je höchstens ${Math.round(sel.maxBytesPerFile / 1024)} KiB vom Ende`
-        + `${sel.historyComplete ? "" : " — keine vollständige Historie"} · Bereich ${s.limitId ?? "unbeschriftet"}`
-        + `${s.provenance ? ` · Ereignis ${s.provenance.slice(0, 8)}` : ""}`;
-      source.more.title = "Ereignis: die ersten Zeichen einer undurchsichtigen Prüfsumme des Messereignisses — gleich heißt dasselbe Ereignis; sie belegt weder Konto noch Session.";
+      source.v.textContent = "Codex-Sitzungsdateien dieser Maschine";
+      source.more.textContent = `Nicht direkt vom Konto: die ${sel.maxFiles} neuesten Dateien, jeweils die letzten ${Math.round(sel.maxBytesPerFile / 1024)} KiB`
+        + `${sel.historyComplete ? "." : ". Ältere Einträge bleiben ungelesen."}`;
       measured.v.textContent = s.measuredAt !== null ? usageClock(s.measuredAt) : "unbekannt";
-      measured.more.textContent = s.measuredAt !== null ? "Zeit des Messereignisses" : "";
+      measured.more.textContent = s.measuredAt !== null ? "Wann Codex diesen Stand gemeldet hat." : "Beim letzten Lesen wurde kein Stand gefunden.";
       age.v.textContent = s.ageMs !== null ? usageSpan(s.ageMs) : "unbekannt";
-      age.more.textContent = `Server-Uhr · veraltet ab ${usageSpan(s.staleAfterMs)}`;
+      age.more.textContent = s.ageMs !== null ? `Gilt nach ${usageSpan(s.staleAfterMs)} als veraltet.` : "Ohne gefundenen Stand gibt es kein Alter.";
       fetched.v.textContent = s.fetchedAt !== null ? usageClock(s.fetchedAt) : "noch nicht gelesen";
-      fetched.more.textContent = `Antwort des Servers ${usageClock(usage!.generatedAt)}`;
+      fetched.more.textContent = s.fetchedAt !== null ? "Wann die Fleet die Dateien gelesen hat." : "Die Fleet hat die Dateien noch nicht gelesen.";
       const o = usage!.otherSubscriptions;
       others.v.textContent = USAGE_STATUS[o.status] ?? o.status;
       others.more.textContent = usageProse(o.reason);
@@ -3144,20 +3150,21 @@ function usageSection(sec: HTMLElement): void {
           const slot = fleet.find((x) => x.id === row.slot && x.cwd);
           const line = el("div", "setwait");
           line.append(slot ? laneLabel(slot) : `Slot ${row.slot}`,
-            ` — ${row.harness ?? "Harness unbekannt"} · ${row.model ? modelLabel(row.model) : "Modell unbekannt"}`);
-          line.title = `Slot ${row.slot}${row.model ? ` · ${row.model}` : ""} · Quelle ${row.source}`;
+            ` — ${row.harness ?? "Programm unbekannt"} · ${row.model ? modelLabel(row.model) : "Modell unbekannt"}`);
+          line.title = row.model ?? "";
           sDet.appendChild(line);
         }
         selected.more.appendChild(sDet);
       }
       const why = [...new Set(m.selected.map((r) => r.decisionSource))];
-      selected.more.append(`Entscheidungsquelle: ${why.length === 1 && why[0] === "unknown" ? "unbekannt — die Auswahl ist keine belegte Owner-Entscheidung" : why.join(" · ") || "—"}`);
+      selected.more.append(why.length === 1 && why[0] === "unknown" ? "Ob du diese Modelle bewusst gewählt hast, ist nicht erfasst." : `Gewählt von: ${why.join(" · ") || "—"}`);
       const used = m.selected.filter((r) => r.usedTurnModel !== null).length;
-      turn.v.textContent = used ? `${used} belegt` : "unbekannt";
-      turn.more.textContent = "Die Auswahl am Slot belegt nicht, welches Modell ein Turn wirklich ausgeführt hat.";
+      turn.v.textContent = used ? `bei ${used} ${used === 1 ? "Session" : "Sessions"} erfasst` : "unbekannt";
+      turn.more.textContent = used ? "Die Wahl an einer Session sagt nicht, welches Modell wirklich geantwortet hat."
+        : "Welches Modell wirklich geantwortet hat, ist nicht erfasst.";
       const r = c.refresh;
-      server.textContent = r.status === "not-requested" ? "Server: noch kein Neulesen angefordert"
-        : `Server: zuletzt ${r.target === "provider" ? "Anbieter" : r.target === "local" ? "lokal" : "—"} · ${r.status}`
+      server.textContent = r.status === "not-requested" ? "Noch nicht neu gelesen."
+        : `Zuletzt neu gelesen: ${r.target === "provider" ? "Konto beim Anbieter" : r.target === "local" ? "gespeicherter Stand" : "—"} · ${USAGE_REFRESH[r.status] ?? r.status}`
           + `${r.finishedAt !== null ? ` · ${usageClock(r.finishedAt)}` : r.startedAt !== null ? ` · seit ${usageClock(r.startedAt)}` : ""}`;
     }
     // the button: reading, unsupported, retry — aria-disabled keeps the focus on it while it reads
@@ -3167,10 +3174,10 @@ function usageSection(sec: HTMLElement): void {
     btn.setAttribute("aria-disabled", busy || unsupported ? "true" : "false");
     btn.setAttribute("aria-busy", busy ? "true" : "false");
     hint.textContent = target === "local"
-      ? "Liest die Codex-Sitzungsdateien, die diese Maschine schon gespeichert hat, erneut — fragt nicht beim Anbieter nach und erzeugt keine neue Messung."
-      : c ? (c.provider.status === "unsupported" ? `Nicht unterstützt: ${usageProse(c.provider.reason)}` : "Fragt das Konto beim Anbieter ab.")
+      ? "Liest die gespeicherten Sitzungsdateien noch einmal, ohne beim Anbieter nachzufragen. Neues gibt es nur, wenn Codex inzwischen etwas gemeldet hat."
+      : c ? (c.provider.status === "unsupported" ? `Noch nicht möglich. ${usageProse(c.provider.reason)}` : "Fragt das Konto beim Anbieter ab.")
       : "Ob das Konto abgefragt werden kann, sagt erst die Antwort des Servers.";
-    status.textContent = busy ? (pendingTarget === "local" ? "Liest den lokal gespeicherten Stand …" : "Fragt den Anbieter …") : outcome;
+    status.textContent = busy ? (pendingTarget === "local" ? "Liest den gespeicherten Stand …" : "Fragt den Anbieter …") : outcome;
   }
   paint();
   void read("open");

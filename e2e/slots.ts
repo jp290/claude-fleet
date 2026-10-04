@@ -6396,26 +6396,42 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const useRadio = (v: string) => `${useSec}.querySelector('input[type="radio"][value="${v}"]')`;
       const useStatus = async () => evaluate<string>(`${useSec}?.querySelector('.usestatus')?.textContent ?? ''`);
       const bars = async () => evaluate<number>(`${useSec}?.querySelectorAll('.usebar').length ?? -1`);
+      // THE OWNER'S WORDS (card e433), read in every data state below: the section's whole text — closed
+      // details and tooltips included — carries no event checksum and none of the reader's vocabulary,
+      // and every value that reads "unbekannt" says in one short sentence what is missing (a checksum is
+      // hex with letters AND digits — a model id's date, 20251001, is not one)
+      const plainStates: Record<string, { jargon: string[]; unknownWithout: string[] }> = {};
+      const plain = async (label: string) => {
+        const p = await evaluate<{ text: string; rows: { key: string; v: string; more: string }[] } | null>(`(() => { const s = ${useSec}; if (!s) return null;
+          const rows = [...s.querySelectorAll('[data-use]')].map((r) => ({ key: r.dataset.use, v: (r.querySelector('.setstatv')?.textContent ?? '').trim(),
+            more: (r.querySelector('.setstatl')?.textContent ?? '').replace(/\\s+/g, ' ').trim() }));
+          return { text: [s.textContent, ...[...s.querySelectorAll('[title]')].map((e) => e.title)].join(' ').replace(/\\s+/g, ' '), rows }; })()`);
+        if (!p) { plainStates[label] = { jargon: ["section missing"], unknownWithout: [] }; return; }
+        const jargon = p.text.match(/Sensor|Wire|Provenan\w*|kontogebunden|Ereignis\w*|Messereignis|Server-Uhr|Owner|Register|Harness|\bTurn\b|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{8,}\b|ab12cd34|5ta1e000|ffffffff/gi) ?? [];
+        const unknownWithout = p.rows.filter((r) => /^unbekannt/.test(r.v) && !/^[A-ZÄÖÜ][^.]{8,88}\.$/.test(r.more)).map((r) => `${r.key}: ${r.more || "(leer)"}`);
+        plainStates[label] = { jargon: [...new Set(jargon)], unknownWithout };
+      };
 
       // (a) a missing source: unknown with its reason, no number, no bar — and the open itself asked nothing
       await openUsage();
       await wait(settled, 4000);
       const uMissing = await use();
       const missingBars = await bars();
+      await plain("missing");
       await shot(width, "usage-missing");
       facts.usageMissing = { u: uMissing, bars: missingBars };
       claims["usage, missing source: Zustand unbekannt with its reason, both windows unbekannt, no percent and no bar"] =
-        /^Zustand unbekannt/.test(uMissing.state ?? "") && /Quelle fehlt/.test(uMissing.state ?? "")
-        && /^Primäres Fenster unbekannt/.test(uMissing.primary ?? "") && /^Sekundäres Fenster unbekannt/.test(uMissing.secondary ?? "")
+        /^Zustand unbekannt/.test(uMissing.state ?? "") && /Auf dieser Maschine liegt kein Codex-Sitzungsordner\./.test(uMissing.state ?? "")
+        && /^Erstes Fenster unbekannt/.test(uMissing.primary ?? "") && /^Zweites Fenster unbekannt/.test(uMissing.secondary ?? "")
         && !/%/.test(`${uMissing.primary}${uMissing.secondary}`) && missingBars === 0;
       // (b) the refresh controls by name and state: a named radio group, local checked, the button named
       const useGroupAx = await ax(`${useSec}.querySelector('fieldset')`);
       const localAx = await ax(useRadio("local")), providerAx = await ax(useRadio("provider"));
       const btnAx = await ax(useBtn);
       facts.usageAx = { groupAx: useGroupAx, localAx, providerAx, btnAx };
-      claims["usage refresh: one group named 'Neu lesen aus', 'Lokal gespeicherter Stand' checked, 'Anbieter-Konto (aktiv)' not, the button named 'Neu lesen'"] =
-        useGroupAx?.name === "Neu lesen aus" && localAx?.role === "radio" && localAx?.name === "Lokal gespeicherter Stand" && localAx?.checked === "true"
-        && providerAx?.name === "Anbieter-Konto (aktiv)" && providerAx?.checked === "false" && btnAx?.name === "Neu lesen" && !btnAx?.disabled;
+      claims["usage refresh: one group named 'Neu lesen aus', 'Gespeicherter Stand' checked, 'Konto beim Anbieter' not, the button named 'Neu lesen'"] =
+        useGroupAx?.name === "Neu lesen aus" && localAx?.role === "radio" && localAx?.name === "Gespeicherter Stand" && localAx?.checked === "true"
+        && providerAx?.name === "Konto beim Anbieter" && providerAx?.checked === "false" && btnAx?.name === "Neu lesen" && !btnAx?.disabled;
       // (c) the keyboard picks the active target: unsupported, its reason in words, the button disabled — and Enter sends nothing
       await evaluate(`${useRadio("local")}.focus()`);
       await key("ArrowDown");
@@ -6424,49 +6440,54 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const provHint = await evaluate<string>(`${useSec}.querySelector('#set-use-hint').textContent`);
       await evaluate(`${useBtn}.focus()`); await key("Enter"); await key(" ");
       const provPosts = usageRefreshes(usePosts).length;
+      await plain("provider");
       await shot(width, "usage-provider");
       await evaluate(`${useRadio("provider")}.focus()`);
       await key("ArrowUp");
       const backLocal = await ax(useRadio("local"));
       facts.usageProvider = { provAx, provBtn, provHint, provPosts, backLocal };
       claims["usage, active target by keyboard: checked, the button disabled with the unsupported reason, Enter/Space send no request"] =
-        provAx?.checked === "true" && provBtn?.disabled === true && /^Nicht unterstützt: kein kontogebundener Leser/.test(provHint) && provPosts === 0
+        provAx?.checked === "true" && provBtn?.disabled === true && /^Noch nicht möglich\. Die Fleet hat keinen Zugang, um das Konto beim Anbieter abzufragen\.$/.test(provHint) && provPosts === 0
         && backLocal?.checked === "true";
 
       // (d) a corrupt source the server reports, then an answer that is not the wire's shape
       fx.usageKind = "corrupt-source";
       await openUsage(); await wait(settled, 4000);
       const uCorrupt = await use();
+      await plain("corrupt-source");
       fx.usageRaw = JSON.stringify({ schema: "something-else", codex: { primary: { used_percent: 0 } } });
       await openUsage(); await wait(settled, 4000);
       const uShape = await use();
+      await plain("unreadable-answer");
       fx.usageRaw = null;
       await shot(width, "usage-unreadable");
       facts.usageCorrupt = { uCorrupt, uShape };
-      claims["usage, corrupt source: Fehler with its reason, windows unbekannt; an answer of another shape reads 'nicht lesbar', never 0"] =
-        /^Zustand Fehler/.test(uCorrupt.state ?? "") && /kaputte Zeile/.test(uCorrupt.state ?? "") && /^Primäres Fenster unbekannt/.test(uCorrupt.primary ?? "")
-        && /Antwort nicht lesbar/.test(uShape.state ?? "") && /^Primäres Fenster unbekannt/.test(uShape.primary ?? "") && !/\b0 %/.test(Object.values(uShape).join(" "));
+      claims["usage, corrupt source: Fehler with its reason, windows unbekannt; an answer of another shape reads 'nicht lesbar' and says what is missing, never 0"] =
+        /^Zustand Fehler/.test(uCorrupt.state ?? "") && /Eine Zeile in den Sitzungsdateien ist beschädigt\./.test(uCorrupt.state ?? "") && /^Erstes Fenster unbekannt/.test(uCorrupt.primary ?? "")
+        && /Die Antwort des Servers ist nicht lesbar\./.test(uShape.state ?? "") && /^Erstes Fenster unbekannt Es fehlt eine lesbare Antwort des Servers\.$/.test(uShape.primary ?? "") && !/\b0 %/.test(Object.values(uShape).join(" "));
 
       // (e) measured: two windows with their own length and reset, source and the three times apart, the model facts apart
       fx.usageKind = "measured";
       await openUsage(); await wait(settled, 4000);
       const uM = await use();
       const secText = await evaluate<string>(`${useSec}.innerText`);
+      await plain("measured");
       await shot(width, "usage-measured");
       facts.usageMeasured = uM;
       claims["usage, measured: primary 42 % over 5 h and secondary 12,5 % over 7 Tage, each with its own reset"] =
-        /42 % verbraucht/.test(uM.primary ?? "") && /Fenster 5 h · Reset .+\(in 2 h (9|10) min\)/.test(uM.primary ?? "")
-        && /12,5 % verbraucht/.test(uM.secondary ?? "") && /Fenster 7 Tage · Reset .+\(in 3 Tage( 1 h)?\)/.test(uM.secondary ?? "");
-      claims["usage, measured: source local and not account-bound, measured time, server-clock age and read time stand apart"] =
-        /^Quelle lokale Codex-Sitzungsdateien dieser Maschine/.test(uM.source ?? "") && /nicht kontogebunden/.test(uM.source ?? "")
-        && /16 jüngsten Dateien, je höchstens 256 KiB/.test(uM.source ?? "") && /Ereignis ab12cd34\b/.test(uM.source ?? "")
-        && /^Gemessen \d\d:\d\d:\d\d Zeit des Messereignisses$/.test(uM.measured ?? "") && /^Alter 3 min Server-Uhr · veraltet ab 15 min$/.test(uM.age ?? "")
-        && /^Gelesen \d\d:\d\d:\d\d Antwort des Servers/.test(uM.fetched ?? "") && uM.measured?.slice(9, 17) !== uM.fetched?.slice(8, 16);
-      claims["usage, model: owner preference unbekannt, register default, slot selection and the turn's model apart; no quota switch"] =
-        /^Präferenz des Owners unbekannt/.test(uM.preference ?? "") && !/Opus|Sol/.test(uM.preference ?? "")
-        && /^Register-Standard Worker .*Sol.* · MAIN .*Opus/.test(uM.defaults ?? "") && /^Am Slot gewählt 2 Sessions/.test(uM.selected ?? "")
-        && /Entscheidungsquelle: unbekannt/.test(uM.selected ?? "") && /^Benutzt je Turn unbekannt/.test(uM.turn ?? "")
-        && /^Zustand unbekannt kein gemessener Sensor/.test(uM.others ?? "") && /Freies Kontingent wählt kein Modell/.test(secText);
+        /42 % verbraucht/.test(uM.primary ?? "") && /Fenster 5 h · beginnt neu um .+\(in 2 h (9|10) min\)/.test(uM.primary ?? "")
+        && /12,5 % verbraucht/.test(uM.secondary ?? "") && /Fenster 7 Tage · beginnt neu um .+\(in 3 Tage( 1 h)?\)/.test(uM.secondary ?? "");
+      claims["usage, measured: source local and not the account itself, measured time, age and read time stand apart"] =
+        /^Quelle Codex-Sitzungsdateien dieser Maschine/.test(uM.source ?? "") && /Nicht direkt vom Konto/.test(uM.source ?? "")
+        && /16 neuesten Dateien, jeweils die letzten 256 KiB\. Ältere Einträge bleiben ungelesen\./.test(uM.source ?? "") && !/ab12cd34/.test(uM.source ?? "")
+        && /^Gemessen \d\d:\d\d:\d\d Wann Codex diesen Stand gemeldet hat\.$/.test(uM.measured ?? "") && /^Alter 3 min Gilt nach 15 min als veraltet\.$/.test(uM.age ?? "")
+        && /^Gelesen \d\d:\d\d:\d\d Wann die Fleet die Dateien gelesen hat\.$/.test(uM.fetched ?? "") && uM.measured?.slice(9, 17) !== uM.fetched?.slice(8, 16);
+      claims["usage, model: the owner's preference unbekannt, the default, the sessions' selection and the model really used apart; no quota switch"] =
+        /^Deine Vorgabe unbekannt Von dir ist keine Modell-Vorgabe hinterlegt\.$/.test(uM.preference ?? "") && !/Opus|Sol/.test(uM.preference ?? "")
+        && /^Standard Worker .*Sol.* · MAIN .*Opus/.test(uM.defaults ?? "") && /^An Sessions gewählt 2 Sessions/.test(uM.selected ?? "")
+        && /Ob du diese Modelle bewusst gewählt hast, ist nicht erfasst\./.test(uM.selected ?? "")
+        && /^Wirklich benutzt unbekannt Welches Modell wirklich geantwortet hat, ist nicht erfasst\.$/.test(uM.turn ?? "")
+        && /^Zustand unbekannt Für andere Abos erfasst die Fleet noch keinen Verbrauch\.$/.test(uM.others ?? "") && /Freies Kontingent wählt kein Modell/.test(secText);
       claims["usage: no path, account, credential or full event checksum in the section"] =
         !/\/Users\/|\/fixture\/|@|token|ab12cd34ab12cd34/i.test(secText);
 
@@ -6477,56 +6498,62 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await key("Enter");
       const loadAx = await ax(useBtn);
       const loading = { ax: loadAx, status: await useStatus(), focus: await evaluate<boolean>(`document.activeElement === ${useBtn}`) };
+      await plain("loading");
       await shot(width, "usage-loading");
       await key("Enter"); // pressed again while it reads: nothing more is sent
-      await wait(`/Lokal neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await wait(`/Neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       const readDone = { status: await useStatus(), posts: usageRefreshes(beforeLocal), u: await use(), ax: await ax(useBtn) };
+      await plain("local-read");
       await shot(width, "usage-local-read");
       facts.usageLocal = { loading, readDone };
       claims["usage refresh by keyboard: the focused button reads 'Liest …', busy and disabled, the status says it reads the local stored state"] =
         loadAx?.name === "Liest …" && !!loadAx?.busy && loadAx?.disabled === true && loading.focus
-        && /Liest den lokal gespeicherten Stand/.test(loading.status);
+        && /Liest den gespeicherten Stand/.test(loading.status);
       claims["usage refresh: exactly one POST {target:local}, and its answer says no new measurement event"] =
         readDone.posts.length === 1 && JSON.stringify(readDone.posts[0].body) === JSON.stringify({ target: "local" })
-        && /kein neues Messereignis, die Messung von \d\d:\d\d:\d\d bleibt/.test(readDone.status)
+        && /nichts Neues, der Stand von \d\d:\d\d:\d\d gilt weiter\./.test(readDone.status)
         && /42 % verbraucht/.test(readDone.u.primary ?? "") && readDone.ax?.name === "Neu lesen" && !readDone.ax?.disabled;
 
       // (g) failure: the server's timeout, then a 500 and a 409 — the last measured windows stay, stale and dated, never 0; retry offered
       fx.refreshDelay = 0; fx.refreshKind = "timeout";
       await click(useBtn);
-      await wait(`/Lokal gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await wait(`/Neu lesen um .+ fehlgeschlagen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       const uT = await use();
       const tAx = await ax(useBtn);
       const staleRow = await evaluate<boolean>(`${useSec}.querySelector('[data-use="primary"]').classList.contains('stale')`);
+      await plain("failed-timeout");
       await shot(width, "usage-failed-stale");
       fx.refreshStatus = 500;
       await click(useBtn);
-      await wait(`/Server antwortet 500/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await wait(`/antwortet mit Fehler 500/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       const after500 = { status: await useStatus(), u: await use() };
+      await plain("failed-500");
       fx.refreshStatus = 409;
       await click(useBtn);
       await wait(`/liest gerade schon/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       const after409 = { status: await useStatus(), ax: await ax(useBtn) };
+      await plain("failed-409");
       fx.refreshStatus = 200;
       facts.usageFailure = { uT, tAx, staleRow, after500, after409 };
-      claims["usage failure: Fehler with its reason, the last measured 42 % stays as 'zuletzt gemessen … veraltet', never 0 or blank"] =
-        /^Zustand Fehler Lesen nach 5 s abgebrochen/.test(uT.state ?? "") && /42 % verbraucht/.test(uT.primary ?? "")
-        && /zuletzt gemessen \d\d:\d\d:\d\d — veraltet, aktuell Fehler/.test(uT.primary ?? "") && /12,5 % verbraucht/.test(uT.secondary ?? "") && staleRow
+      claims["usage failure: Fehler with its reason, the last measured 42 % stays as 'Stand von … veraltet', never 0 or blank"] =
+        /^Zustand Fehler Das Lesen hat länger als 5 s gedauert und wurde abgebrochen\./.test(uT.state ?? "") && /42 % verbraucht/.test(uT.primary ?? "")
+        && /Stand von \d\d:\d\d:\d\d, veraltet/.test(uT.primary ?? "") && /12,5 % verbraucht/.test(uT.secondary ?? "") && staleRow
         && !/\b0 %/.test(`${uT.primary}${uT.secondary}`);
       claims["usage failure offers the retry gesture: 'Erneut lesen' enabled after a timeout, a 500 and a 409, the windows kept"] =
-        tAx?.name === "Erneut lesen" && !tAx?.disabled && /Neu lesen fehlgeschlagen: Server antwortet 500/.test(after500.status)
+        tAx?.name === "Erneut lesen" && !tAx?.disabled && /Neu lesen fehlgeschlagen\. Der Server antwortet mit Fehler 500\./.test(after500.status)
         && /42 % verbraucht/.test(after500.u.primary ?? "") && /liest gerade schon/.test(after409.status) && after409.ax?.name === "Erneut lesen";
 
       // (h) a late GET answer after a newer refresh answer: the newer one stays
       fx.usageKind = "stale"; fx.usageDelay = 1200; fx.refreshKind = "measured";
       await openUsage();
       await click(useBtn);
-      await wait(`/Lokal neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await wait(`/Neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       await evaluate("new Promise(r => setTimeout(r, 1500))");
       const uLateGet = await use();
+      await plain("late-get");
       facts.usageLateGet = uLateGet;
       claims["usage: an older GET answering after the refresh's answer does not overwrite it (42 % measured stays, not 30 % stale)"] =
-        /^Zustand gemessen/.test(uLateGet.state ?? "") && /42 % verbraucht/.test(uLateGet.primary ?? "") && !/30 %/.test(uLateGet.primary ?? "");
+        /^Zustand aktuell/.test(uLateGet.state ?? "") && /42 % verbraucht/.test(uLateGet.primary ?? "") && !/30 %/.test(uLateGet.primary ?? "");
 
       // (i) the window closed while a refresh read: its late answer paints nothing into the next window
       fx.usageKind = "measured"; fx.usageDelay = 0; fx.refreshKind = "late"; fx.refreshDelay = 1200;
@@ -6536,6 +6563,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await openUsage(); await wait(settled, 4000);
       await evaluate("new Promise(r => setTimeout(r, 1600))");
       const uAfterClose = { u: await use(), status: await useStatus() };
+      await plain("after-close");
       facts.usageAfterClose = { closedOnCancel, ...uAfterClose };
       claims["usage: Escape closes while it reads, and that late answer (99 %) never reaches the reopened window"] =
         closedOnCancel && /42 % verbraucht/.test(uAfterClose.u.primary ?? "") && !/99 %/.test(uAfterClose.u.primary ?? "") && uAfterClose.status === "";
@@ -6546,11 +6574,12 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const useDropped = await useStatus();
       await evaluate("new Promise(r => setTimeout(r, 1600))");
       const uSwitch = { u: await use(), status: await useStatus(), provider: await ax(useRadio("provider")), btn: await ax(useBtn) };
+      await plain("switched");
       await shot(width, "usage-switched");
       await click(useRadio("local"));
       facts.usageSwitch = { dropped: useDropped, ...uSwitch };
       claims["usage: switching the target while a local read is pending drops its answer; the active target stays checked and disabled"] =
-        /Antwort verworfen — das Ziel wurde gewechselt/.test(useDropped) && /42 % verbraucht/.test(uSwitch.u.primary ?? "") && !/99 %/.test(uSwitch.u.primary ?? "")
+        /Antwort verworfen, weil du die Quelle gewechselt hast\./.test(useDropped) && /42 % verbraucht/.test(uSwitch.u.primary ?? "") && !/99 %/.test(uSwitch.u.primary ?? "")
         && uSwitch.provider?.checked === "true" && uSwitch.btn?.disabled === true;
 
       // (k) a missing secondary window and a stale event on open
@@ -6558,18 +6587,23 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       fx.usageKind = "null-secondary";
       await openUsage(); await wait(settled, 4000);
       const uNull = await use();
+      await plain("null-secondary");
       fx.usageKind = "stale";
       await openUsage(); await wait(settled, 4000);
       const uStale = await use();
       const staleClass = await evaluate<boolean>(`${useSec}.querySelector('[data-use="primary"]').classList.contains('stale')`);
+      await plain("stale");
       await shot(width, "usage-stale");
       facts.usageNullStale = { uNull, uStale, staleClass };
-      claims["usage, null secondary: the primary measured, the secondary 'unbekannt — dieses Fenster fehlt', no 0"] =
-        /42 % verbraucht/.test(uNull.primary ?? "") && /^Sekundäres Fenster unbekannt dieses Fenster fehlt im Messereignis$/.test(uNull.secondary ?? "");
+      claims["usage, null secondary: the primary measured, the secondary 'unbekannt' with the sentence that it was not sent, no 0"] =
+        /42 % verbraucht/.test(uNull.primary ?? "") && /^Zweites Fenster unbekannt Codex hat für dieses Fenster nichts mitgeschickt\.$/.test(uNull.secondary ?? "");
       claims["usage, stale event: veraltet with its reason and age, the measured 30 % kept and marked"] =
-        /^Zustand veraltet Messung älter als 15 min/.test(uStale.state ?? "") && /30 % verbraucht/.test(uStale.primary ?? "") && /veraltet/.test(uStale.primary ?? "")
+        /^Zustand veraltet Der letzte Stand ist älter als 15 Minuten\./.test(uStale.state ?? "") && /30 % verbraucht/.test(uStale.primary ?? "") && /veraltet/.test(uStale.primary ?? "")
         && /^Alter 40 min/.test(uStale.age ?? "") && staleClass;
       await key("Escape");
+      facts.usagePlain = plainStates;
+      claims["usage in the owner's words, in all 15 data states: no event checksum, no reader vocabulary, every 'unbekannt' says in one short sentence what is missing"] =
+        Object.keys(plainStates).length === 15 && Object.values(plainStates).every((x) => x.jargon.length === 0 && x.unknownWithout.length === 0);
 
       // the whole step: each open read once, every POST was an explicit local refresh — nothing else written or
       // started (the reloaded pane's own terminal size report, /resize, is the page's, not this section's)

@@ -2047,6 +2047,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // BREAKS IF: the reader stops knowing a mark the writer writes, or a Fleet part retires a send.
   const bundleSrvSrc = readFileSync(`${sourceRoot}/server.ts`, "utf8");
   for (const [claim, ok] of Object.entries(bundleSettleClaims(bundleSrvSrc))) check(`bundled send: ${claim}`, ok);
+  for (const [claim, ok] of Object.entries(commandSettleClaims())) check(`slash command send: ${claim}`, ok);
   check("bundled send: server.ts types its bundle marks through src/delivery-format.ts and spells none itself",
     /import \{ deliveryBundleText, fleetEventBundleText \} from "\.\/src\/delivery-format";/.test(bundleSrvSrc)
     && /function bundleText\(entries: QueuedDelivery\[\], s: Slot\): string \{[\s\S]{0,200}?return deliveryBundleText\(entries\.map\(/.test(bundleSrvSrc)
@@ -8900,6 +8901,35 @@ export function bundleSettleClaims(serverSrc: string): Record<string, boolean> {
       && deliveryParts(`[fleet-buendel 1/1 · path=owner]\n${ownerA}`) === null
       && deliveryParts(`[fleet-buendel 1/2 · path=owner]\n${ownerA}\n\n[fleet-buendel 3/2 · path=auto]\nx`) === null
       && deliveryParts(`${ownerA}\n\n[fleet-buendel 2/2 · path=auto]\nx`) === null,
+    // AS CLAUDE CODE STORES IT (card "Eine zugestellte Nachricht bleibt im Chat nicht als ungesendet
+    // stehen", 2026-10-04): the typed head, then ITS blank line, then the pasted body — 102 of 102
+    // bundles in the day's transcripts. The reader knew only the writer's form, so no stored bundle
+    // ever split and every bundled owner send stood as „[Zitat entfernt]“ for good.
+    // BREAKS IF: the blank line Claude Code puts after the head stays in the body.
+    "a bundle as Claude Code stores it (head, its blank line, the paste) retires the owner part's bubble": pendingSettledBy(ownerA, f.stored(f.ownerFirst))
+      && pendingSettledBy(ownerB, f.stored(f.ownerSecond)),
+    "a bundle as Claude Code stores it splits into the same parts as the writer's form": JSON.stringify(partsOf(f.stored(f.ownerFirst))) === JSON.stringify(first)
+      && JSON.stringify(partsOf(f.stored(f.ownerSecond))) === JSON.stringify(second),
+    "a bundle as Claude Code stores it retires neither a Fleet part's text nor another owner text": !pendingSettledBy(f.nudge, f.stored(f.ownerFirst))
+      && !pendingSettledBy(ownerB, f.stored(f.ownerFirst)) && !pendingSettledBy("fix it now", f.stored(f.ownerFirst)),
+    "the head's blank line goes with the head, the body keeps its own lines": splitDeliveryHeader(`${f.head}\n\n${ownerA}`).body === ownerA
+      && splitDeliveryHeader(`${f.head}${ownerA}`).body === ownerA && splitDeliveryHeader(`\n\n${ownerA}`).body === `\n\n${ownerA}`,
+  };
+}
+
+// A SLASH COMMAND SENT FROM THE COMPOSER (same card, measured 2026-10-03 14:17: "/effort xhigh" sent
+// to slot 9 stood as "wartet"): Claude Code records it as its command record, never as the typed text.
+// BREAKS IF: the record stops retiring the command, or retires a different one.
+export function commandSettleClaims(): Record<string, boolean> {
+  const record = (name: string, args: string) =>
+    `<command-name>${name}</command-name>\n            <command-message>${name.slice(1)}</command-message>\n            <command-args>${args}</command-args>`;
+  return {
+    "the command record retires the command that was typed, with and without arguments": pendingSettledBy("/effort xhigh", record("/effort", "xhigh"))
+      && pendingSettledBy("/login", record("/login", "")) && pendingSettledBy("/effort  xhigh ", record("/effort", "xhigh")),
+    "the command record retires no other text: other arguments, another command, the bare name, prose": !pendingSettledBy("/effort high", record("/effort", "xhigh"))
+      && !pendingSettledBy("/model xhigh", record("/effort", "xhigh")) && !pendingSettledBy("/effort", record("/effort", "xhigh"))
+      && !pendingSettledBy("effort xhigh", record("/effort", "xhigh")) && !pendingSettledBy("/effort xhigh", `${record("/effort", "xhigh")} und mehr`),
+    "Claude Code's command output is not the command arriving": !pendingSettledBy("/effort xhigh", "<local-command-stdout>Set effort level to xhigh</local-command-stdout>"),
   };
 }
 
@@ -8926,6 +8956,9 @@ export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string
     ownerSecond: head + deliveryBundleText([part("fleet-event", events), part("owner", ownerB)]),
     // a receiver that is not a headed harness: no head, no sentence in the marks
     bare: deliveryBundleText([{ path: "owner", meaning: null, text: ownerA }, { path: "inbox-nudge", meaning: null, text: nudge }]),
+    // what the chat view reads once its envelope is off (src/client.ts#unwrapPasted): Claude Code 2.1.288
+    // keeps a head typed before a paste as `<head>\n\n<pasted_content …>` (every bundle of 2026-10-04)
+    stored: (typed: string): string => typed.startsWith(head) ? `${head}\n\n${typed.slice(head.length)}` : typed,
   };
 }
 
@@ -9081,10 +9114,20 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       claims["the composer's send goes out as the owner's text, and its bubble says \"wartet\" until the transcript has it"] = waits && fx.sends.at(-1) === ownerA;
       await shot(`${width}-1-wartet`);
 
-      // --- 2. the transcript brings the BUNDLE the server typed: owner part 1/2, nudge 2/2
-      // (head typed, body pasted — Claude Code keeps the paste in its wrapper, src/client.ts#unwrapPasted)
+      // --- 2. the transcript brings the BUNDLE the server typed: owner part 1/2, nudge 2/2, in the form
+      // Claude Code 2.1.288 stores it (measured 2026-10-04): the head, its blank line, the paste in its
+      // wrapper (src/client.ts#unwrapPasted). The session's queue holds the same text first.
       const body = fixture.ownerFirst.slice(fixture.head.length);
-      fx.entries.push(text("user", `${fixture.head}<pasted_content id="p1">\n${body}\n</pasted_content id="p1">`, 55),
+      const stored = `${fixture.head}\n\n<pasted_content id="p1">\n${body}\n</pasted_content id="p1">`;
+      fx.queued = [{ text: stored, at: at(54) }];
+      await settle(1600);
+      const q0 = await evaluate<Read>(READ);
+      facts.queuedBundle = q0.own;
+      claims["owner part 1/2 in the session's queue: the composer's send and the queued bundle are ONE \"wartet\" bubble, no raw mark"] =
+        q0.own.filter((m) => m.pending).length === 1 && q0.own.find((m) => m.pending)?.text === ownerA
+        && q0.own.find((m) => m.pending)?.state === "wartet" && !q0.raw;
+      fx.queued = [];
+      fx.entries.push(text("user", `${stored}\n`, 55),
         text("assistant", "Freut mich. Genau so bleibt das Ganze aus einem Guss.", 56));
       await wait(`document.querySelectorAll('.pane .panechat .msg.assistant').length >= 2`);
       await settle(300);

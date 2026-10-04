@@ -12,11 +12,23 @@ const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
 // bracket: the short owner form „[Zitat entfernt]“, or the long form of every other path
 // („[Zitat entfernt]“). Text with no head, or a head that never closes,
 // has header null and is its own body.
+// Claude Code 2.1.288 stores a head followed by a paste as `<head>] \n\n<pasted_content …>`: the blank
+// line between the two is its own, not the sender's, and it goes with the head. Without that cut a
+// bundle body began "\n\n[fleet-buendel 1/…", deliveryParts never saw its marks, and every bundled owner
+// send stood as "wartet" for good (measured 2026-10-04: 102 of 102 bundles in the day's transcripts).
 export function splitDeliveryHeader(entry: string): { header: string | null; body: string } {
   if (!entry.startsWith(DELIVERY_HEADER_PREFIX)) return { header: null, body: entry };
   const end = entry.indexOf("] ", DELIVERY_HEADER_PREFIX.length);
   if (end < 0) return { header: null, body: entry };
-  return { header: entry.slice(DELIVERY_HEADER_PREFIX.length, end), body: entry.slice(end + 2) };
+  return { header: entry.slice(DELIVERY_HEADER_PREFIX.length, end), body: entry.slice(end + 2).replace(/^\s*\n/, "") };
+}
+// A slash command never reaches the transcript as typed: Claude Code records it as
+// `<command-name>/effort</command-name> <command-message>…</command-message> <command-args>xhigh</command-args>`
+// (2.1.288, every command line of 2026-10-01..04 in this shape). This is the text that was typed, or null.
+const COMMAND_RECORD = /^<command-name>(\/[^<\s]+)<\/command-name>\s*<command-message>[^<]*<\/command-message>\s*<command-args>([^<]*)<\/command-args>$/;
+function typedCommand(entry: string): string | null {
+  const m = COMMAND_RECORD.exec(entry.trim());
+  return m ? `${m[1]} ${m[2]}` : null;
 }
 // A bundle (src/delivery-format.ts) retires the bubble through its OWNER parts only: a Fleet part that
 // happens to repeat the sent text is not the send arriving.
@@ -24,7 +36,9 @@ export function pendingSettledBy(pending: string, entry: string): boolean {
   const p = norm(pending);
   if (p === "") return false;
   const body = splitDeliveryHeader(entry).body;
-  return p === norm(body) || (deliveryParts(body) ?? []).some((part) => part.owner && norm(part.text) === p);
+  const command = typedCommand(entry);
+  return p === norm(body) || (command !== null && p === norm(command))
+    || (deliveryParts(body) ?? []).some((part) => part.owner && norm(part.text) === p);
 }
 
 // Esc mid-turn: Claude Code writes one of these as a user text block of its own (measured,

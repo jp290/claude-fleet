@@ -2730,13 +2730,12 @@ nennt und keinen Rumpf trägt; eine Nachricht hat zwei Enden, einen Text und ein
 Darum ein **eigener Record**, kein Feld an `Program.inbox` (der Pin `RULE_INBOX` §I1 hält den
 Eintrag ausdrücklich empfängerlos).
 
-**Die Adresse ist nie eine Slot-Nummer**, und das ist der ganze Grund, dass zwei Eigenschaften
-gleichzeitig gelten: ein Slot wird recycelt, eine Program-Id und eine Rollenbindung nicht.
+**Program- und Rollenadressen folgen der Bindung; Occupant-Adressen gelten nur für ein Paar.**
 
-- **SICHTBARKEIT entscheidet die ADRESSE.** Der Nachfolger einer zurückgetretenen Occupation löst
-  auf dieselbe Adresse auf und liest dieselbe Nachricht unter derselben Id.
-- **Die QUITTUNG entscheidet das Occupant-Tripel** `{slot, openedAt, sessionId}`. Der Record sagt
-  weiter exakt, wer gelesen hat; eine spätere Occupation überschreibt das nie.
+- `{kind:"program",id}` und `{kind:"role",role}` bleiben über einen Halterwechsel lesbar.
+- `{kind:"session",slot,openedAt}` und `{kind:"lane",slot,openedAt}` gehören genau dieser
+  Occupation. Recycle oder Nachfolge mit neuem `openedAt` erbt weder Eingang noch Ausgang.
+- Die Quittung nennt weiterhin `{slot, openedAt, sessionId}` des ersten Lesers.
 
 ```
 curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<fleet-host>:<port>/api/self/messages
@@ -2750,11 +2749,19 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   http://<fleet-host>:<port>/api/self/messages/<message-id>/read
 ```
 
-- **Scope: Prinzipal-gebunden, Nicht-Lane.** Absender ist, wer die Session IST — aus der Bindung
+- **Absender (`server.ts#messageSenderFor`):** Absender ist, wer die Session IST — aus der Bindung
   abgeleitet, nie aus dem Body. Eine gebundene Program-MAIN sendet als `{kind:"program",id}`.
   Die einzige lebende Session mit Orchestratorin-Label sendet als
   `{kind:"role",role:"orchestrator"}`; das Label gewährt keine weiteren Rechte.
-- **Adress-Union, geschlossen:** `{kind:"program", id}` | `{kind:"role", role}` mit
+  Eine ungebundene Nicht-Lane-Nicht-Steward-Session sendet als
+  `{kind:"session",slot,openedAt}` ausschließlich an `role:"orchestrator"` (sonst 409).
+  Die Lane sendet weiterhin nie (409 mit dem bisherigen Satz); der Steward wird mit eigenem
+  Satz abgelehnt. Eine mehrdeutige Program-Bindung wird nicht zur ungebundenen Session.
+- **Adress-Union, geschlossen (`server/types.ts#MessageAddress`, `#loadMessageAddress`):**
+  `{kind:"program",id}` | `{kind:"role",role}` | `{kind:"session",slot,openedAt}` |
+  `{kind:"lane",slot,openedAt}`. Occupant-Adressen enthalten genau diese drei Felder, einen
+  gültigen Slot und positives endliches `openedAt`; kaputte Einträge werden benannt abgelehnt.
+  Für Rollen gilt
   `role ∈ {orchestrator, controller, owner}`. `owner` ist ausschließlich Absender;
   als Ziel wird es mit benannter **409** abgelehnt. Auch der Record-Loader lehnt `to: owner` ab.
 - **`role:"controller"` ist BENANNT, aber nicht auflösbar** — 409, und **nichts wird gespeichert**.
@@ -2762,6 +2769,17 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   will, adressiert **das Program, dessen MAIN er ist**, als `{kind:"program",id}`. Die Rolle steht
   trotzdem in der Union: so ist die Sackgasse dokumentiert statt erfunden, und eine spätere
   owner-promovierte Controller-Bindung ist eine Änderung am AUFLÖSER, keine Migration am Record.
+- **Program-MAIN → eigene Lane (`server.ts#sendMessageFor`):** Nur ein Program-Absender darf
+  eine lebende Lane mit exakt passendem `slot` und `openedAt` adressieren. Ihre Task-/Origin-Zeile
+  und die Lane müssen demselben Program gehören. Fremdes Program, fehlende Zuordnung oder
+  ersetzter Occupant: benannte 409, kein neuer Record.
+- **Orchestratorin → Session:** Nur als Antwort mit `replyTo` auf die Nachricht genau dieser
+  Session. Andere Absender, freie Erstnachrichten oder eine andere Session-Adresse: 409.
+- **Lesegrenze (`server.ts#messageAddressesFor`, `#resolveMessageAddress`):** Eine ungebundene
+  Session liest nur ihre Session-Adresse, eine Lane nur ihre Lane-Adresse, jeweils solange
+  `slot` und `openedAt` passen. Ein später gestorbener Empfänger bleibt im Record adressiert;
+  `holder:null` und `note` sagen wörtlich, dass gespeichert, aber nicht zugestellt und nicht
+  neu adressiert wird. Keine Eskalation dieser Occupant-Adressen.
 - **Eine Nachricht verleiht NICHTS.** Sie ist Text an einen Prinzipal: keine Owner-, Release-,
   Land- oder Deploy-Berechtigung reist mit ihr, und keine Route liest sie als Anweisung.
 
@@ -2773,17 +2791,19 @@ Adressen, die diese Session gerade hält — eine Session kann unter mehreren le
 `to` **oder** `from` eine deiner Adressen ist. Das ist keine Bequemlichkeit — eine Antwort nennt ihre
 Frage in `replyTo`, und eine reine Eingangs-Sicht gäbe einem Nachfolger eine Id in die Hand, die er
 nicht auflösen kann: die Frage seines Vorgängers wäre genau so verloren wie auf jeder Fläche, die
-diese hier ersetzt. Beide Seiten bleiben **adress**-geschlüsselt, ein recycelter Occupant löst also
-auf keine von beiden auf. `unread` zählt **nur den Eingang** — eine selbst gesendete Zeile ist keine
+diese hier ersetzt. Beide Seiten bleiben **adress**-geschlüsselt. Ein recycelter Occupant erbt keine
+Session-/Lane-Adresse; eine neu gebundene Program-MAIN liest weiterhin ihre Program-Adresse. `unread` zählt **nur den Eingang** — eine selbst gesendete Zeile ist keine
 Neuigkeit, und sie mitzuzählen ließe eine untätige MAIN aussehen, als schulde sie ihrer eigenen
 Frage eine Antwort. `droppedFleetWide`
 heißt so, wie es heißt: der Deckel liegt auf dem GANZEN Record, die Zahl ist also nicht „so viele
 DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, die genau das sagt.
 
-**Die drei Antworten auf eine Adresse, und sie dürfen nie zu einer werden:**
+**Antworten auf eine Adresse:**
 
 | Fall | Antwort | Gespeichert? |
 |---|---|---|
+| Fremde/unzugeordnete Lane oder falsches Lane-`openedAt` beim Senden | 409, benannt | **nein** |
+| Session-Antwort an einen nicht mehr lebenden Occupant | 200 mit `holder:null`, `note`, `escalatedTo:null` | **ja**, ohne Zustellung oder neue Adresse |
 | Unbekannte Program-Id · `role:"controller"` | 409, benannt | **nein** |
 | Gültige Adresse ohne lebenden Halter (Program) | 200 mit `note`, `escalatedTo:"orchestrator"`, `holder` = Orchestratorin; ohne genau eine lebende Orchestratorin `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse — der nächste Halter liest sie weiter |
 | `role:"orchestrator"` ohne genau eine lebende Orchestratorin | 200 mit `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse |
@@ -2797,7 +2817,8 @@ Der Nachrichten-Tick prüft Zustellbarkeit, Leerlauf und Ruhezeit und schreibt b
 zustellbaren Aktivwerden einen `[fleet message]`-Hinweis über `inbox-nudge`. Ein unveränderter
 Satz ungelesener IDs erhält in derselben Session keinen zweiten Hinweis; ein später gebundener
 Halter kann die gespeicherte Nachricht und den Hinweis erhalten. Das Senden selbst tippt nichts
-in die Pane.
+in die Pane. Derselbe Tick liefert auch den Hinweis für Session- und Lane-Adressen; alive-,
+busy- und draft-Gates sowie die Occupant-Prüfung vor dem Einfügen bleiben wirksam.
 `ctl.sh send --orchestrator <textfile>` sendet über `POST /api/self/messages` mit
 `FLEET_SELF_TOKEN`; die Owner-Credential wird dafür nicht gelesen.
 

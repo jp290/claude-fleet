@@ -8,7 +8,7 @@ import { AUTOS_TICK_MS, BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, fleetReportDecisionMessage, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
-import { fleetEventFrom } from "../server/types";
+import { fleetEventFrom, loadMessageAddress, loadMessages } from "../server/types";
 import { CONTEXT_PACKS } from "../context-packs";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
@@ -4105,15 +4105,11 @@ export async function run(ctx: Ctx): Promise<void> {
   const msgRecycledToken = slotToken(msgBSlot);
   const msgRecycledView = await selfMessages(msgRecycledToken);
   const msgRecycledRead = await selfMessageRead(msgRecycledToken, msgOutId);
-  // BOTH doors answer 409 here rather than 404, and that is the right pair: this occupant is not a
-  // PRINCIPAL at all, which is a different statement from "that message is not yours" (the 404 the
-  // non-disclosure check above proves). Telling a session it holds no address leaks nothing about
-  // what exists; it is the same answer it would get with an empty rail.
-  check("message rail: the SAME SLOT recycled into a new occupant is not the address — it holds no address at all, so it reads none of B's thread and a direct read of a known id tells it only that",
+  check("message rail: the SAME SLOT recycled into an unbound session reads none of B's Program thread",
     msgRecycleOpen.ok && /^[0-9a-f]{32}$/.test(msgRecycledToken) && msgRecycledToken !== msgBToken
-      && msgRecycledView.response.status === 409
-      && (msgRecycledView.error ?? "").includes("not a principal with an address")
-      && msgRecycledRead.status === 409,
+      && msgRecycledView.response.ok && msgRecycledView.view?.entries.length === 0
+      && msgRecycledView.view?.addresses[0]?.kind === "session"
+      && msgRecycledRead.status === 404,
     `open=${msgRecycleOpen.status} view=${msgRecycledView.response.status}:${msgRecycledView.error} read=${msgRecycledRead.status}`);
   await post(`/api/slots/${msgBSlot}/kill`, {});
 
@@ -4395,6 +4391,160 @@ export async function run(ctx: Ctx): Promise<void> {
       orchestrator: orchAfterRebind.position?.waitingOnMe, prompts: rebindPrompts.length }));
   await post(`/api/slots/${lateMsgSlot}/kill`, {});
 
+  const occupantSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const occupantOpen = await post(`/api/slots/${occupantSlot}/open`, { cwd: REPO, label: "message-unbound-session" });
+  const occupantAt = readState().slots?.[String(occupantSlot)]?.openedAt ?? 0;
+  const occupantAddress = { kind: "session", slot: occupantSlot, openedAt: occupantAt };
+  const occupantToken = slotToken(occupantSlot);
+  const occupantBody = { to: orchAddress, payload: { kind: "text", text: "R1 exact session question" }, idempotencyKey: "occupant-question" };
+  const occupantQuestion = await selfSend(occupantToken, occupantBody);
+  const occupantId = await sentId(occupantQuestion);
+  const occupantRow = await occupantQuestion.json() as { message?: MessageRow };
+  const occupantOrchView = await selfMessages(slotToken(orchFree));
+  check("R1 unbound session sends only with its derived slot/openedAt and the Orchestrator reads it",
+    occupantOpen.ok && occupantAt > 0 && occupantQuestion.ok
+      && JSON.stringify(occupantRow.message?.from) === JSON.stringify(occupantAddress)
+      && occupantOrchView.view?.entries.some((e) => e.id === occupantId) === true,
+    `open=${occupantOpen.status} send=${occupantQuestion.status} from=${JSON.stringify(occupantRow.message?.from)}`);
+  const occupantProgramRefusal = await selfSend(occupantToken, { ...occupantBody,
+    to: { kind: "program", id: mainProgram.id }, idempotencyKey: "occupant-program-refused" });
+  check("R1 unbound session cannot address a Program", occupantProgramRefusal.status === 409
+    && (await occupantProgramRefusal.text()).includes("only the Orchestrator"), `status=${occupantProgramRefusal.status}`);
+  const occupantAnswerBody = { to: occupantAddress, payload: { kind: "text", text: "R1 exact reply" },
+    idempotencyKey: "occupant-answer", replyTo: occupantId };
+  const occupantAnswer = await selfSend(slotToken(orchFree), occupantAnswerBody);
+  const occupantAnswerId = await sentId(occupantAnswer);
+  const occupantView = await selfMessages(occupantToken);
+  const occupantForeignRead = await selfMessageRead(slotToken(successorSlot), occupantAnswerId);
+  const occupantReceipt = await selfMessageRead(occupantToken, occupantAnswerId);
+  check("R1 only the exact session reads and receipts the Orchestrator reply",
+    occupantAnswer.ok && occupantView.view?.entries.some((e) => e.id === occupantAnswerId && e.replyTo === occupantId) === true
+      && occupantView.view?.unread === 1 && occupantForeignRead.status === 404 && occupantReceipt.ok,
+    `answer=${occupantAnswer.status} unread=${occupantView.view?.unread} foreign=${occupantForeignRead.status} receipt=${occupantReceipt.status}`);
+  const occupantDirectRefusal = await selfSend(slotToken(orchFree), { ...occupantAnswerBody,
+    replyTo: null, idempotencyKey: "occupant-no-parent" });
+  const occupantMainRefusal = await selfSend(slotToken(successorSlot), { ...occupantAnswerBody,
+    idempotencyKey: "occupant-wrong-sender" });
+  const occupantWrongTarget = await selfSend(slotToken(orchFree), { ...occupantAnswerBody,
+    to: { ...occupantAddress, slot: successorSlot }, idempotencyKey: "occupant-wrong-target" });
+  const occupantOwnerRefusal = await post(`/api/messages/${occupantId}/reply`, {
+    payload: { kind: "text", text: "Owner does not gain a new Occupant route" }, idempotencyKey: "occupant-owner-refused" });
+  check("R1 session destinations require the Orchestrator and the exact parent sender",
+    occupantDirectRefusal.status === 409 && occupantMainRefusal.status === 409
+      && occupantWrongTarget.status === 409 && occupantOwnerRefusal.status === 409,
+    `direct=${occupantDirectRefusal.status} main=${occupantMainRefusal.status} target=${occupantWrongTarget.status} owner=${occupantOwnerRefusal.status}`);
+  await post(`/api/slots/${occupantSlot}/rename`, { label: "⚙ steward" });
+  const occupantSteward = await selfSend(occupantToken, occupantBody);
+  check("R1 steward send is a named 409", occupantSteward.status === 409
+    && (await occupantSteward.text()).includes("the steward does not send addressed messages"), `status=${occupantSteward.status}`);
+  await post(`/api/slots/${occupantSlot}/rename`, { label: "message-unbound-session" });
+  await post(`/api/slots/${occupantSlot}/kill`, {});
+  const occupantRecycle = await post(`/api/slots/${occupantSlot}/open`, { cwd: REPO, label: "message-recycled-session" });
+  const occupantNewAt = readState().slots?.[String(occupantSlot)]?.openedAt ?? 0;
+  const occupantRecycledView = await selfMessages(slotToken(occupantSlot));
+  const occupantOldRead = await selfMessageRead(slotToken(occupantSlot), occupantAnswerId);
+  const occupantLate = await selfSend(slotToken(orchFree), { ...occupantAnswerBody, idempotencyKey: "occupant-late" });
+  const occupantLateRow = await occupantLate.json() as { holder?: unknown; note?: string; message?: MessageRow; escalatedTo?: unknown };
+  check("R1 recycle inherits no traffic; a late reply is retained at the old address without delivery or re-addressing",
+    occupantRecycle.ok && occupantNewAt !== occupantAt && occupantRecycledView.view?.entries.length === 0
+      && occupantOldRead.status === 404 && occupantLate.ok && occupantLateRow.holder === null
+      && occupantLateRow.escalatedTo === null && occupantLateRow.note?.includes("stored but not delivered; it will not be re-addressed") === true
+      && JSON.stringify(occupantLateRow.message?.to) === JSON.stringify(occupantAddress),
+    `recycle=${occupantRecycle.status} changed=${occupantNewAt !== occupantAt} read=${occupantOldRead.status} late=${occupantLate.status}/${occupantLateRow.note}`);
+  const occupantNewQuestion = await selfSend(slotToken(occupantSlot), occupantBody);
+  check("R1 idempotency does not merge recycled session senders", occupantNewQuestion.ok
+    && (await sentId(occupantNewQuestion)) !== occupantId, `status=${occupantNewQuestion.status}`);
+  await post(`/api/slots/${occupantSlot}/kill`, {});
+
+  const laneMsgOpen = await post("/api/lanes", { repo: REPO });
+  const laneMsgSlot = (await laneMsgOpen.json() as { slot?: number }).slot ?? 0;
+  const laneMsgAt = readState().slots?.[String(laneMsgSlot)]?.openedAt ?? 0;
+  const laneMsgAddress = { kind: "lane", slot: laneMsgSlot, openedAt: laneMsgAt };
+  const laneMsgBody = { to: laneMsgAddress, payload: { kind: "text", text: "MAIN to its exact running lane" }, idempotencyKey: "occupant-lane" };
+  const laneMsgUnassigned = await selfSend(slotToken(successorSlot), laneMsgBody);
+  check("MAIN cannot message an unassigned lane", laneMsgUnassigned.status === 409
+    && (await laneMsgUnassigned.text()).includes("no Program assignment"), `status=${laneMsgUnassigned.status}`);
+  const laneMsgTask = await selfPost("/api/self/tasks", slotToken(successorSlot), { text: "message lane ownership fixture", kind: "auftrag" });
+  const laneMsgTaskId = (await laneMsgTask.json() as { task?: { id?: string } }).task?.id ?? "";
+  await stopSrv();
+  const laneMsgState = readState();
+  const laneMsgSlotRow = laneMsgState.slots?.[String(laneMsgSlot)];
+  const laneMsgTaskRow = laneMsgState.tasks?.find((t) => t.id === laneMsgTaskId);
+  if (laneMsgSlotRow && laneMsgTaskRow) {
+    Object.assign(laneMsgSlotRow, { taskId: laneMsgTaskId, originId: laneMsgTaskId, programId: mainProgram.id });
+    Object.assign(laneMsgTaskRow, { slot: laneMsgSlot, status: "sent" });
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(laneMsgState, null, 2), { mode: 0o600 });
+  await restartSrv({ FLEET_INBOX_NUDGE_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
+  check("MAIN-to-lane fixture joins its live occupant to its own sent Task",
+    laneMsgOpen.ok && laneMsgAt > 0 && !!laneMsgTaskId && laneMsgSlotRow?.programId === mainProgram.id
+      && laneMsgTaskRow?.programId === mainProgram.id && laneMsgTaskRow?.status === "sent",
+    `open=${laneMsgOpen.status} slot=${laneMsgSlot} task=${laneMsgTaskId}`);
+  const laneMsgSent = await selfSend(slotToken(successorSlot), laneMsgBody);
+  const laneMsgId = await sentId(laneMsgSent);
+  const laneMsgView = await selfMessages(slotToken(laneMsgSlot));
+  check("MAIN sends to its own live lane and only that lane address reads the exact payload",
+    laneMsgSent.ok && laneMsgView.view?.entries.some((e) => e.id === laneMsgId && e.payload.text === laneMsgBody.payload.text
+      && JSON.stringify(e.from) === JSON.stringify({ kind: "program", id: mainProgram.id })) === true
+      && JSON.stringify(laneMsgView.view?.addresses) === JSON.stringify([laneMsgAddress]),
+    `send=${laneMsgSent.status} addresses=${JSON.stringify(laneMsgView.view?.addresses)}`);
+  try { await until(async () => (await plogRead()).some((e) => e.slot === laneMsgSlot && e.openedAt === laneMsgAt
+    && e.text.startsWith("[fleet message]")), { timeoutMs: 20_000, stepMs: 100, what: "exact lane message nudge" }); } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+  check("MAIN-to-lane message uses the existing pane delivery machine",
+    (await plogRead()).some((e) => e.slot === laneMsgSlot && e.openedAt === laneMsgAt && e.text.startsWith("[fleet message]")),
+    `slot=${laneMsgSlot} openedAt=${laneMsgAt}`);
+  const laneMsgLaneSend = await selfSend(slotToken(laneMsgSlot), { to: orchAddress,
+    payload: laneMsgBody.payload, idempotencyKey: "lane-cannot-send" });
+  const laneMsgOrchSend = await selfSend(slotToken(orchFree), { ...laneMsgBody, idempotencyKey: "orch-cannot-send-lane" });
+  check("Lane still never sends and the Orchestrator cannot send to lanes",
+    laneMsgLaneSend.status === 409 && (await laneMsgLaneSend.text()).includes("a lane does not address principals")
+      && laneMsgOrchSend.status === 409, `lane=${laneMsgLaneSend.status} orchestrator=${laneMsgOrchSend.status}`);
+  await stopSrv();
+  const laneMsgForeignState = readState();
+  const laneMsgForeignSlot = laneMsgForeignState.slots?.[String(laneMsgSlot)];
+  const laneMsgForeignTask = laneMsgForeignState.tasks?.find((t) => t.id === laneMsgTaskId);
+  if (laneMsgForeignSlot && laneMsgForeignTask) {
+    Object.assign(laneMsgForeignSlot, { programId: msgUnheldProgram.id });
+    Object.assign(laneMsgForeignTask, { programId: msgUnheldProgram.id });
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(laneMsgForeignState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const laneMsgForeign = await selfSend(slotToken(successorSlot), { ...laneMsgBody, idempotencyKey: "lane-foreign" });
+  check("MAIN cannot message a foreign Program lane", laneMsgForeign.status === 409
+    && (await laneMsgForeign.text()).includes("foreign program"), `status=${laneMsgForeign.status}`);
+  await post(`/api/slots/${laneMsgSlot}/kill`, {});
+  const laneMsgRecycle = await post("/api/lanes", { repo: REPO, slot: laneMsgSlot });
+  const laneMsgRecycleSlot = (await laneMsgRecycle.json() as { slot?: number }).slot ?? 0;
+  const laneMsgRecycled = await selfMessages(slotToken(laneMsgRecycleSlot));
+  const laneMsgStale = await selfSend(slotToken(successorSlot), { ...laneMsgBody, idempotencyKey: "lane-stale" });
+  const laneMsgOldRead = await selfMessageRead(slotToken(laneMsgRecycleSlot), laneMsgId);
+  check("MAIN-to-lane recycle reads no old traffic and rejects the old openedAt",
+    laneMsgRecycle.ok && laneMsgRecycleSlot === laneMsgSlot
+      && readState().slots?.[String(laneMsgSlot)]?.openedAt !== laneMsgAt
+      && laneMsgRecycled.view?.entries.length === 0 && laneMsgOldRead.status === 404
+      && (readState().messages as { entries?: MessageRow[] }).entries?.some((e) => e.id === laneMsgId
+        && JSON.stringify(e.to) === JSON.stringify(laneMsgAddress)) === true
+      && laneMsgStale.status === 409 && (await laneMsgStale.text()).includes("no longer live"),
+    `recycle=${laneMsgRecycle.status} slot=${laneMsgRecycleSlot}/${laneMsgSlot} read=${laneMsgOldRead.status} stale=${laneMsgStale.status}`);
+  await post(`/api/slots/${laneMsgRecycleSlot}/kill`, {});
+  const laneMsgCleanup = await post(`/api/tasks/${laneMsgTaskId}/delete`, {});
+  check("MAIN-to-lane fixture removes its own task after killing its lane", laneMsgCleanup.ok, `cleanup=${laneMsgCleanup.status}`);
+  const occupantRejectedKeys = ["occupant-program-refused", "occupant-no-parent", "occupant-wrong-sender",
+    "occupant-wrong-target", "occupant-owner-refused", "lane-cannot-send", "orch-cannot-send-lane", "lane-foreign", "lane-stale"];
+  check("Occupant message policy refusals append nothing",
+    !(readState().messages as { entries?: MessageRow[] }).entries?.some((e) => occupantRejectedKeys.includes(e.idempotencyKey)),
+    `rejectedKeys=${occupantRejectedKeys.length}`);
+  for (const kind of ["session", "lane"]) {
+    const good = { kind, slot: 1, openedAt: 123 };
+    const bad = [{ kind, slot: 1 }, { ...good, openedAt: 0 }, { ...good, slot: 0 },
+      { ...good, openedAt: Infinity }, { ...good, extra: true }];
+    check(`${kind} address loader accepts only exact valid occupant pairs`,
+      JSON.stringify(loadMessageAddress(good, "probe")) === JSON.stringify(good)
+        && bad.every((v) => typeof loadMessageAddress(v, "probe") === "string"), `kind=${kind}`);
+    const broken = loadMessages({ v: 1, entries: [{ ...occupantRow.message, from: { kind, slot: 1 }, id: "f1".repeat(12) }], dropped: 0 });
+    check(`${kind} record loader rejects malformed addresses by name`, !broken.ok
+      && broken.error.includes(`from ${kind} must contain exactly kind, slot, openedAt`), JSON.stringify(broken));
+  }
   const secondOrch = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
   const secondOpen = await post(`/api/slots/${secondOrch}/open`, { cwd: REPO, label: "🎛 second receiver" });
   const twoOrch = await selfSend(slotToken(successorSlot), { to: orchAddress,

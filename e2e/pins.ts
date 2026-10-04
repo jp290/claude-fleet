@@ -9903,19 +9903,23 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 
   // ACP-18 · THE ADDRESSED MESSAGE RAIL. Same discipline as the inbox above, pinned for the same
   // reasons — plus the two properties that are this rail's own and that no compiler can see.
-  const RULE_MESSAGES = "an addressed message names principals, never slots";
+  const RULE_MESSAGES = "an addressed message names a principal or an exact occupant";
   const msgIface = server.match(/interface Message \{[\s\S]*?\n\}/)?.[0] ?? "";
   const msgAddr = server.match(/type MessageAddress = [^\n]*/)?.[0] ?? "";
-  // M1 — THE ADDRESS IS A CLOSED UNION OF PRINCIPALS AND CARRIES NO SLOT. A `slot` on either end is
-  // how criterion (1) and (2) die together: a recycled occupant would inherit the mailbox of the
-  // one before it, and a successor would lose the thread it is supposed to continue.
-  pin(`${RULE_MESSAGES} — MessageAddress is a closed program|role union and no address field is a slot`,
+  pin(`${RULE_MESSAGES} — MessageAddress keeps program and role plus exact session and lane occupants`,
     msgAddr.includes('{ kind: "program"; id: string }') && msgAddr.includes('{ kind: "role"; role: MessageRole }')
+      && msgAddr.includes('{ kind: "session"; slot: number; openedAt: number }')
+      && msgAddr.includes('{ kind: "lane"; slot: number; openedAt: number }')
       && msgIface !== "" && /\bfrom: MessageAddress;/.test(msgIface) && /\bto: MessageAddress;/.test(msgIface)
       && !/\b(from|to)Slot\b/.test(msgIface),
-    msgAddr === "" ? "type MessageAddress not found in the server universe"
-      : msgIface === "" ? "interface Message not found in the server universe"
-        : `union=${msgAddr.includes('{ kind: "role"; role: MessageRole }')} ends=${/\bfrom: MessageAddress;/.test(msgIface)}`);
+    `union=${msgAddr} message=${msgIface !== ""}`);
+  const msgSender = (serverU.span("function messageSenderFor(", "// THE ADDRESSES")?.text ?? "")
+    .split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+  pin(`${RULE_MESSAGES} — a lane still never sends and keeps its named 409 before sender binding`,
+    /if \(s\.worktree && s\.label !== STEWARD_LABEL\)/.test(msgSender)
+      && msgSender.includes('error: "a lane does not address principals — a lane files its result, and its MAIN speaks for the program" }, 409)')
+      && msgSender.indexOf("if (s.worktree") < msgSender.indexOf("boundProgramForMain(s)"),
+    `sender=${msgSender !== ""} laneBeforeBinding=${msgSender.indexOf("if (s.worktree") < msgSender.indexOf("boundProgramForMain(s)")}`);
   // M2 — THE SENDER IS DERIVED, NEVER READ FROM A BODY. One line of `body.from` would make every
   // other property on this rail unprovable, because any principal could then claim any address.
   const msgSend = server.match(/async function sendMessageFor\([\s\S]*?\n\}\n/)?.[0] ?? "";

@@ -2528,10 +2528,12 @@ function appendProgramInbox(program: Program, kind: ProgramInboxKind, ref: strin
 
 // === THE ADDRESSED MESSAGE RAIL — the one writer (ACP-18) =======================================
 const addressLabel = (a: MessageAddress): string =>
-  a.kind === "program" ? `program:${a.id}` : `role:${a.role}`;
+  a.kind === "program" ? `program:${a.id}` : a.kind === "role" ? `role:${a.role}`
+    : `${a.kind}:${a.slot}:${a.openedAt}`;
 const sameAddress = (a: MessageAddress, b: MessageAddress): boolean =>
   a.kind === "program" ? b.kind === "program" && a.id === b.id
-    : b.kind === "role" && a.role === b.role;
+    : a.kind === "role" ? b.kind === "role" && a.role === b.role
+      : b.kind === a.kind && a.slot === b.slot && a.openedAt === b.openedAt;
 const samePayload = (a: MessagePayload, b: MessagePayload): boolean =>
   a.kind === "text" && b.kind === "text" && a.text === b.text;
 
@@ -14431,10 +14433,15 @@ type MessageSender = { ok: true; from: MessageAddress } | { ok: false; response:
 function messageSenderFor(s: Slot): MessageSender {
   if (s.worktree && s.label !== STEWARD_LABEL)
     return { ok: false, response: json({ error: "a lane does not address principals — a lane files its result, and its MAIN speaks for the program" }, 409) };
+  if (s.label === STEWARD_LABEL)
+    return { ok: false, response: json({ error: "the steward does not send addressed messages" }, 409) };
   const bound = boundProgramForMain(s);
   if (bound.ok) return { ok: true, from: { kind: "program", id: bound.program.id } };
   if (deliveryRecipient({ kind: "orchestrator" }) === s)
     return { ok: true, from: { kind: "role", role: "orchestrator" } };
+  if (s.cwd && s.openedAt > 0 && !programs.some((p) => p.status === "active"
+    && p.main?.slot === s.id && p.main.openedAt === s.openedAt))
+    return { ok: true, from: { kind: "session", slot: s.id, openedAt: s.openedAt } };
   return { ok: false, response: json({ error: bound.error }, 409) };
 }
 
@@ -14443,12 +14450,16 @@ function messageSenderFor(s: Slot): MessageSender {
 // is deliberate: sending under two identities would forge an attribution, reading under both only
 // shows a session what was addressed to it either way.
 function messageAddressesFor(s: Slot): MessageAddress[] {
-  if (s.worktree && s.label !== STEWARD_LABEL) return [];
+  if (!s.cwd || s.openedAt <= 0 || s.label === STEWARD_LABEL) return [];
+  if (s.worktree) return [{ kind: "lane", slot: s.id, openedAt: s.openedAt }];
   const out: MessageAddress[] = [];
   const bound = boundProgramForMain(s);
   if (bound.ok) out.push({ kind: "program", id: bound.program.id });
   if (!bound.ok && deliveryRecipient({ kind: "orchestrator" }) === s)
     out.push({ kind: "role", role: "orchestrator" });
+  if (!out.length && !programs.some((p) => p.status === "active"
+    && p.main?.slot === s.id && p.main.openedAt === s.openedAt))
+    out.push({ kind: "session", slot: s.id, openedAt: s.openedAt });
   return out;
 }
 
@@ -14462,6 +14473,13 @@ function escalateMessage(note: string): AddressResolution {
     : { ok: true, holder: null, note, escalatedTo: "owner" };
 }
 function resolveMessageAddress(a: MessageAddress): AddressResolution {
+  if (a.kind === "session" || a.kind === "lane") {
+    const live = slotFrom(a.slot);
+    const held = !!(live?.cwd && live.openedAt === a.openedAt
+      && live.label !== STEWARD_LABEL && (a.kind === "lane" ? live.worktree : !live.worktree));
+    return held ? { ok: true, holder: live!, note: null, escalatedTo: null }
+      : { ok: true, holder: null, note: `${a.kind} slot ${a.slot} openedAt ${a.openedAt} is no longer live — the message is stored but not delivered; it will not be re-addressed`, escalatedTo: null };
+  }
   if (a.kind === "role") {
     if (a.role === "owner")
       return { ok: false, error: 'role "owner" is sender-only, never a message destination — questions to the Owner use the clarification chain' };
@@ -14571,6 +14589,22 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
     return json({ ok: true, existing: true, message: prior });
   }
 
+  if (sender.from.kind === "session" && !(to.kind === "role" && to.role === "orchestrator"))
+    return json({ error: "an unbound session may address only the Orchestrator" }, 409);
+  if (to.kind === "session" && !(sender.from.kind === "role" && sender.from.role === "orchestrator" && replyTo !== null))
+    return json({ error: "a session destination is only an Orchestrator reply" }, 409);
+  if (to.kind === "lane") {
+    if (sender.from.kind !== "program")
+      return json({ error: "only a bound Program-MAIN may address its own lane" }, 409);
+    const lane = slotFrom(to.slot);
+    if (!lane?.cwd || !lane.worktree || lane.label === STEWARD_LABEL || lane.openedAt !== to.openedAt)
+      return json({ error: "the addressed lane occupant is no longer live" }, 409);
+    const row = tasks.find((t) => t.id === lane.taskId && t.slot === lane.id && t.status === "sent")
+      ?? tasks.find((t) => lane.originId !== null && (t.id === lane.originId || t.originId === lane.originId)
+        && t.slot === lane.id && t.status === "sent");
+    if (!row?.programId || row.programId !== sender.from.id || lane.programId !== sender.from.id)
+      return json({ error: "the addressed lane belongs to a foreign program or has no Program assignment" }, 409);
+  }
   const resolved = resolveMessageAddress(to);
   if (!resolved.ok) return json({ error: resolved.error }, 409);
   if (resolved.escalatedTo === "owner" && ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX)
@@ -14584,7 +14618,8 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   if (replyTo !== null) {
     const mine = messageAddressesFor(s);
     const parent = messages.entries.find((m) => m.id === replyTo);
-    if (!parent || !messageInboundFor(s, parent, mine))
+    if (!parent || !messageInboundFor(s, parent, mine)
+      || (to.kind === "session" && !sameAddress(parent.from, to)))
       return json({ error: "replyTo names no message addressed to this sender" }, 409);
   }
 
@@ -14654,6 +14689,8 @@ async function replyToMessageAsOwner(id: string, body: Record<string, unknown> |
   const parent = messages.entries.find((m) => m.id === id);
   if (!parent) return json({ error: "no retained message with this id" }, 404);
   const to = parent.from;
+  if (to.kind === "session" || to.kind === "lane")
+    return json({ error: "Occupant replies use the Orchestrator self-message route" }, 409);
   if (to.kind === "role" && to.role === "supervisor")
     return json({ error: 'role "supervisor" is retired — no new message can address it' }, 409);
   const resolved = resolveMessageAddress(to);

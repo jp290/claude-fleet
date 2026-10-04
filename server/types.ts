@@ -2728,7 +2728,7 @@ type MessageRole = "supervisor" | "orchestrator" | "controller" | "owner";
 // and a later owner-promoted binding is a resolver change instead of a record migration. A MAIN
 // that wants to reach the Controller today addresses the Program the Controller is MAIN of.
 const MESSAGE_ROLES: MessageRole[] = [ "orchestrator", "controller", "owner"];
-type MessageAddress = { kind: "program"; id: string } | { kind: "role"; role: MessageRole };
+type MessageAddress = { kind: "program"; id: string } | { kind: "role"; role: MessageRole } | { kind: "session"; slot: number; openedAt: number } | { kind: "lane"; slot: number; openedAt: number };
 // CLOSED BY KIND, with exactly one member today. An unknown kind is a named refusal rather than a
 // tolerated extra — but the honest limit of what that buys: it keeps TODAY's text records stably
 // readable, and it does NOT prove a second payload type will land without migration. Only the
@@ -2773,7 +2773,16 @@ const loadMessageAddress = (value: unknown, what: string, legacy = false): Messa
       return `${what} role must be one of ${MESSAGE_ROLES.join(", ")}`;
     return { kind: "role", role: r.role as MessageRole };
   }
-  return `${what} kind must be one of program, role`;
+  if (r.kind === "session" || r.kind === "lane") {
+    if (Object.keys(r).some((k) => !["kind", "slot", "openedAt"].includes(k)) || Object.keys(r).length !== 3)
+      return `${what} ${r.kind} must contain exactly kind, slot, openedAt`;
+    if (typeof r.slot !== "number" || !Number.isInteger(r.slot) || r.slot < 1 || r.slot > MAX_SLOTS)
+      return `${what} ${r.kind} slot must be an integer in 1..${MAX_SLOTS}`;
+    if (typeof r.openedAt !== "number" || !Number.isFinite(r.openedAt) || r.openedAt <= 0)
+      return `${what} ${r.kind} openedAt must be a positive number`;
+    return { kind: r.kind, slot: r.slot, openedAt: r.openedAt };
+  }
+  return `${what} kind must be one of program, role, session, lane`;
 };
 
 const loadMessagePayload = (value: unknown, what: string): MessagePayload | string => {

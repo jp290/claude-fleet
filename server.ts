@@ -8501,7 +8501,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
     }
     const projectBytes = s.worktree ? Buffer.byteLength(readFileSync(`${occupant.cwd}/AGENTS.override.md`)) : 0;
-    const projectDocMaxBytes = projectBytes > SESSION_AGENTS_LIMIT ? projectBytes : undefined;
+    const projectDocMaxBytes = s.worktree && projectBytes > SESSION_AGENTS_LIMIT ? projectBytes : undefined;
     const codex = h.id === "codex";
     const priorSessionId = occupant.sessionId;
     const priorCodexState = s.codexRecoveryState;

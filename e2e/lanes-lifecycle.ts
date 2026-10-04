@@ -4,7 +4,7 @@ import type { Workplaces, WorkplaceRepo } from "../src/protocol";
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plantScreen, plogRead, post, restartSrv,
@@ -223,6 +223,84 @@ async function workplacesChecks(): Promise<void> {
     const claim = (r: WorkplaceRepo) => { const d = r.branches?.find((x) => x.branch === "overhaul")?.distance; return d?.ahead === 0 && d.behind === 1; };
     const baseline = await evaluate(body)(b), mutated = await evaluate(mutant)(b);
     check("workplaces mutation probe catches swapped ahead/behind on the fixture graph", body !== mutant && claim(baseline) && !claim(mutated), JSON.stringify({ baseline: baseline.branches, mutated: mutated.branches }));
+    const blocks = [
+      ["function knownRepos()", "async function slotCommits("],
+      ["function testinstanzPathIdentity(", "async function testinstanzTarget("],
+      ["function testinstanzFact(", "async function testinstanzReadSource("],
+      ["interface WtEntry {", "// the real risk behind a destructive action"],
+    ];
+    const functions = "const testinstanzBusy = new Set<string>();\n" + blocks.map(([from, to]) => {
+      const first = source.indexOf(from), last = source.indexOf(to, first);
+      if (first < 0 || last <= first) throw new Error(`workplaces source fixture cannot resolve ${from}`);
+      return source.slice(first, last);
+    }).join("\n");
+    type FixtureOccupant = { id: number; openedAt: number; cwd: string; worktree: { repo: string; base: string; baseSha: string } };
+    const holderFixture = (): FixtureOccupant => ({ id: 42, openedAt: 100, cwd: realpathSync(b),
+      worktree: { repo: realpathSync(b), base: "overhaul", baseSha: bOverhaul } });
+    const compile = (code: string, occupants: FixtureOccupant[], graphFails = false, statusAwait?: () => Promise<void>) => {
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
+      return new Function("slots", "DISPATCH_REPO", "gitRead", "testinstanzCommand", "existsSync", "realpathSync", "statSync", "lstatSync", "HOST",
+        `${js}\nreturn { repo: workplaceRepo, read: workplaces };`)(occupants, realpathSync(b),
+        async (repo: string, ...args: string[]) => {
+          if (graphFails && args[0] === "rev-list") return { code: 128, out: "" };
+          const r = git(repo, ...args); return { code: r.status, out: r.stdout.trim() };
+        }, async (path: string, args: string[]) => {
+          await statusAwait?.();
+          const r = spawnSync(`${path}/testinstanz.sh`, args, { cwd: path, encoding: "utf8" });
+          return { code: r.status, out: r.stdout };
+        }, existsSync, realpathSync, statSync, lstatSync, "") as { repo: (repo: string) => Promise<WorkplaceRepo>; read: () => Promise<Workplaces> };
+    };
+    const retainsBasis = (repo: WorkplaceRepo, head: string) => {
+      const row = repo.worktrees?.find((w) => w.primary);
+      return row?.base?.head === head && row.distance === null
+        && row.reasons.some((r) => r.field === "distance" && r.reason === "commit-graph-unreadable")
+        && !row.reasons.some((r) => r.field === "base");
+    };
+    const graphFailed = await compile(functions, [holderFixture()], true).repo(b);
+    const refGraphFailed = await compile(functions, [], true).repo(b);
+    check("workplaces failed graph preserves the readable stored basis, only distance becomes unknown", retainsBasis(graphFailed, bOverhaul), JSON.stringify(graphFailed.worktrees));
+    check("workplaces failed graph preserves the readable main ref basis", retainsBasis(refGraphFailed, bMain), JSON.stringify(refGraphFailed.worktrees));
+    const baseMutant = functions.replace("const base = baseHead ?", "const base = baseHead && ancestors(baseHead) ?");
+    const lostBasis = await compile(baseMutant, [holderFixture()], true).repo(b);
+    check("workplaces basis mutation probe rejects hiding a readable base on graph failure", baseMutant !== functions && !retainsBasis(lostBasis, bOverhaul), JSON.stringify(lostBasis.worktrees));
+    const instanceScript = `${b}/testinstanz.sh`;
+    writeFileSync(instanceScript, "#!/bin/sh\nprintf '%s' '{\"state\":\"not-running\",\"procStatus\":\"dead\"}'\n"); chmodSync(instanceScript, 0o700);
+    try {
+      const steady = await compile(functions, [holderFixture()]).read();
+      const steadyRow = steady.repos[0]?.worktrees?.find((w) => w.primary);
+      check("workplaces captures an unchanged occupant together with its stored basis", steadyRow?.session?.slot === 42
+        && steadyRow.session.openedAt === 100 && steadyRow.base?.head === bOverhaul, JSON.stringify(steadyRow));
+      const race = async (code: string, changedSlot: boolean): Promise<Workplaces> => {
+        const occupants = [holderFixture()];
+        let accepted = false, release = () => {};
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        // t | event | exclusive owner
+        // 0 | identity and basis captured | read
+        // 1 | status accepted and held | script boundary
+        // 2 | occupant identity and basis replaced | test
+        // 3 | status released, response joins identity | read
+        const pending = compile(code, occupants, false, async () => { accepted = true; await held; }).read();
+        try {
+          await until(() => accepted, { timeoutMs: 5000, what: "workplaces status boundary accepted the cached read" });
+          if (changedSlot) occupants[0] = { ...occupants[0], id: 43, worktree: { repo: realpathSync(b), base: "main", baseSha: bMain } };
+          else { occupants[0].openedAt = 200; occupants[0].worktree = { repo: realpathSync(b), base: "main", baseSha: bMain }; }
+        } finally { release(); }
+        return pending;
+      };
+      const refusesPairing = (value: Workplaces) => {
+        const row = value.repos[0]?.worktrees?.find((w) => w.primary);
+        return row?.session === null && row.base?.head === bOverhaul
+          && row.reasons.some((r) => r.field === "session" && r.reason === "session-changed-since-measurement");
+      };
+      const identityGuard = "const sessionMatches = w.session?.slot === holder?.id && w.session?.openedAt === holder?.openedAt;";
+      const occupantMutant = functions.replace(identityGuard, "const sessionMatches = true;");
+      for (const changedSlot of [false, true]) {
+        const raced = await race(functions, changedSlot), wronglyPaired = await race(occupantMutant, changedSlot);
+        check(`workplaces ${changedSlot ? "slot" : "openedAt"} change during status cannot pair the new occupant with the old basis`, refusesPairing(raced), JSON.stringify(raced.repos[0]?.worktrees));
+        check(`workplaces ${changedSlot ? "slot" : "openedAt"} mutation probe rejects dropping the occupant guard`, occupantMutant !== functions && !refusesPairing(wronglyPaired), JSON.stringify(wronglyPaired.repos[0]?.worktrees));
+      }
+    } finally { rmSync(instanceScript, { force: true }); }
+
     renameSync(`${b}/.git`, `${b}/.git-hidden`);
     try {
       await Bun.sleep(3100);

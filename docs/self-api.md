@@ -2942,7 +2942,10 @@ Je Repo stehen `branches` (immer main, overhaul nur bei vorhandenem lokalen Ref)
 Branch-`distance` zählt `{ahead,behind}` exklusiv erreichbare Commits gegen main, keine
 Zeit- oder First-Parent-Schätzung. Worktree-`base` ist die gespeicherte Lane-Basis samt `baseSha`,
 sonst main; `distance` misst HEAD gegen genau diese Spitze. Eine fehlende Basis bleibt null.
-`session:{slot,openedAt}` wird beim Antworten aus dem aktuellen Occupant gejoint, sonst null.
+Eine aus Ref oder gespeicherter `baseSha` bekannte Basis bleibt auch bei Graphfehlern erhalten;
+nur der Abstand hängt vom Graph ab. `session:{slot,openedAt}` wird zusammen mit der Basis vor
+dem Status-Await festgehalten und beim Antworten nur übernommen, wenn der aktuelle Occupant
+beide Identitätswerte unverändert trägt. Sonst session:null mit session-changed-since-measurement.
 Clone-Lanes gehören nicht zur Git-Worktree-Liste.
 
 ```json
@@ -2967,7 +2970,8 @@ Sie startet, öffnet, stoppt und bereinigt keine Instanz. URLs und rohe Script-A
 Nicht lesbare Werte sind null mit `reasons:[{field,reason}]`, etwa worktree-list-unreadable,
 branch-refs-unreadable, commit-graph-unreadable, commit-graph-capped, base-unreadable,
 template-unreadable, missingScript, instance-unreadable-or-busy oder instance-field-unrecorded.
-`session:null` ist beobachtete Nichtbelegung, `branch:null` mit detached-head ein Detached-HEAD.
+`session:null` ohne Grund ist beobachtete Nichtbelegung; ein Wechsel nennt seinen Grund.
+`branch:null` mit detached-head bezeichnet einen Detached-HEAD.
 
 Kosten: maximal drei lockfreie Git-Aufrufe je bekanntem Repo bei einer Cache-Neuberechnung:
 worktree list, show-ref und ein gemeinsamer rev-list --parents für Ref-/Worktree-/Basis-Spitzen.

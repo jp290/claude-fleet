@@ -7186,14 +7186,15 @@ async function workplaceRepo(repo: string): Promise<WorkplaceRepo> {
   if (!branches) reasons.push({ field: "branches", reason: "branch-refs-unreadable" });
   const readRow = async (w: WtEntry): Promise<WorkplaceRow> => {
     const why: FactReason[] = [], holder = workplaceSession(w.path);
+    const session = holder ? { slot: holder.id, openedAt: holder.openedAt } : null;
     const branch = w.branch === "(detached)" ? null : w.branch;
     const baseBranch = holder?.worktree?.base ?? "main";
     const baseHead = holder?.worktree?.baseSha ?? heads.get(baseBranch) ?? null;
-    const base = baseHead && ancestors(baseHead) ? { branch: baseBranch, head: baseHead } : null;
+    const base = baseHead ? { branch: baseBranch, head: baseHead } : null;
     const d = distance(w.head ?? null, base?.head ?? null);
     if (!branch) why.push({ field: "branch", reason: "detached-head" });
     if (!w.head) why.push({ field: "head", reason: "worktree-head-unreadable" });
-    if (!base) why.push({ field: "base", reason: graphReason ?? "base-unreadable" });
+    if (!base) why.push({ field: "base", reason: "base-unreadable" });
     if (!d) why.push({ field: "distance", reason: graphReason ?? "base-or-head-unreadable" });
     let template: WorkplaceRow["template"] = null, testinstanz: WorkplaceRow["testinstanz"] = null;
     if (!testinstanzPathIdentity(w.path)) why.push({ field: "template", reason: "worktree-unreadable" });
@@ -7219,7 +7220,7 @@ async function workplaceRepo(repo: string): Promise<WorkplaceRepo> {
       if (testinstanz.state === "unknown") why.push({ field: "testinstanz.state", reason: "instance-state-unproven" });
     }
     return { path: w.path, primary: w.primary, branch, head: w.head ?? null, base, distance: d,
-      session: null, template, testinstanz, reasons: why };
+      session, template, testinstanz, reasons: why };
   };
   const worktrees: WorkplaceRow[] = new Array(rows.length);
   let next = 0;
@@ -7242,7 +7243,9 @@ async function workplaces(): Promise<Workplaces> {
   const value = await workplacesCache.value;
   return { ...value, repos: value.repos.map((r) => ({ ...r, worktrees: r.worktrees?.map((w) => {
     const holder = workplaceSession(w.path);
-    return { ...w, session: holder ? { slot: holder.id, openedAt: holder.openedAt } : null };
+    const sessionMatches = w.session?.slot === holder?.id && w.session?.openedAt === holder?.openedAt;
+    return { ...w, session: sessionMatches && holder ? w.session : null,
+      reasons: sessionMatches ? w.reasons : [...w.reasons, { field: "session", reason: "session-changed-since-measurement" }] };
   }) ?? null })) };
 }
 

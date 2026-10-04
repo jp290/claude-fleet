@@ -2352,6 +2352,23 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // THE TOP ISLAND OF GLASS (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
+  // gebaut", docs/design/insel-glas-notiz.md), same fixture: the pill, the material and its opaque
+  // face, the spring, the icon buttons, the empty place Arbeitsort, the swipes and every way out, the
+  // keys, still — in Chromium and, where a Playwright WebKit resolves, in WebKit. WebKit not resolving
+  // is printed, not counted (the repo carries no Playwright); an engine that resolves and cannot run
+  // is its PROBE line — red, never a skip.
+  try {
+    for (const result of await runGlassIslandDom(sourceRoot)) {
+      if (result.notRun) { console.log(`NOTE  glass island DOM ${result.engine} not run here: ${result.notRun}`); continue; }
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`glass island DOM ${claim}`, ok, claim in result.detail ? JSON.stringify(result.detail[claim]).slice(0, 1500) : "");
+    }
+  } catch (error) {
+    check("glass island DOM — PROBE: the engines run the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
   // THE RIGHTS OF A SESSION (card "der Owner sieht an jeder Session und beim Gruenden, was sie
   // lesen darf"; docs/design/datenrechte-notiz.md): measured against THIS instance, not a fixture —
   // real grants, real 409s, a really re-occupied slot. Every scenario is its own line, so a painted
@@ -6024,6 +6041,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       fx.refreshKind = "measured"; fx.refreshStatus = 200; fx.refreshDelay = 0;
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      // the phone's top island springs (runGlassIslandDom measures that); here it stands at once, so no tap lands mid-spring
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: width < 700 ? "reduce" : "no-preference" }] });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); })()`);
       await navigate("http://fleet.fixture/");
@@ -6813,6 +6832,8 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
       fx.slots = fresh(); fx.sends = []; fx.inputs = [];
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      // the phone's top island springs (runGlassIslandDom measures that); here it stands at once, so no tap lands mid-spring
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: width < 700 ? "reduce" : "no-preference" }] });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: ${phone ? 1 : 2}, panes: ${phone ? "[1]" : "[1, 2]"}, focused: 0 })); })()`);
       await navigate("http://fleet.fixture/");
@@ -7105,6 +7126,10 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
 // Sessions and Werkzeuge (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene Blätter"):
 // their place, words, 40-px targets, and that each row does what the board's own control does;
 // at 390 and at 360 × 780 that their tool row and segments break into lines with no word cut off.
+// Since the island is glass (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
+// gebaut") it is the 28-px pill with icon buttons, and Sessions opens as its left side; the phone
+// runs here under prefers-reduced-motion, so every state stands at once and a box is never read
+// mid-spring — motion, material and the swipes are runGlassIslandDom's.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 // `detail` holds the facts one claim was judged on — the whole `facts` outgrows a check line
 interface PhoneIslandDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown>; detail: Record<string, unknown> }
@@ -7278,6 +7303,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await send("Emulation.setTouchEmulationEnabled", touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: touch || width < 700 ? "reduce" : "no-preference" }] });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); })()`);
       await navigate("http://fleet.fixture/");
@@ -7415,14 +7441,20 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const st = facts.start as { mhead: boolean; keys: boolean; bar: Box; pill: Box; pane: Box; pillText: string; pillShape: string; open: boolean; mopen: boolean };
       claims[`${tag}no head and no fixed foot: #mhead is gone, the keys are folded, the bottom island floats 6 px from the edges`] =
         !st.mhead && !st.keys && !!bar && bar.x === 6 && bar.r === W - 6 && bar.b === bottom - 6;
-      // 2. the start is the closed pill: centred, state shape + name, 32 px seen and 40 px to hit
+      // 2. the start is the closed pill of glass: centred, state shape + name, 28 px seen, 44 px to hit
       const pill = st.pill;
-      const hitTop = pill ? await evaluate<boolean>(`window.__fx.hits('#mpill', ${pill.x + pill.w / 2}, ${pill.y - 3})`) : false;
-      const hitBottom = pill ? await evaluate<boolean>(`window.__fx.hits('#mpill', ${pill.x + pill.w / 2}, ${pill.b + 3})`) : false;
+      const hitTop = pill ? await evaluate<boolean>(`window.__fx.hits('#mtop', ${pill.x + pill.w / 2}, ${pill.y - 6})`) : false;
+      const hitBottom = pill ? await evaluate<boolean>(`window.__fx.hits('#mtop', ${pill.x + pill.w / 2}, ${pill.b + 6})`) : false;
       facts.pillHit = { hitTop, hitBottom };
       claims[`${tag}the start is the closed pill: centred, state shape and the session's name, nothing else`] = !st.open && !st.mopen && !!pill
-        && Math.abs(pill.x + pill.w / 2 - W / 2) <= 1 && pill.y === 6 && st.pillText === "Alpha" && /\bact (work|rest|sleep|bad)\b/.test(st.pillShape);
-      claims[`${tag}the pill is 32 px seen and hits 40 px (4 px above and below it still open it)`] = !!pill && pill.h === 32 && hitTop && hitBottom;
+        && Math.abs(pill.x + pill.w / 2 - W / 2) <= 1 && pill.y === 8 && st.pillText === "Alpha" && /\bact (work|rest|sleep|bad)\b/.test(st.pillShape);
+      claims[`${tag}the pill is 28 px seen and hits 44 px (6 px above and below it still belong to the island)`] = !!pill && pill.h === 28 && hitTop && hitBottom;
+      if (pill && !st.open) {
+        await tapAt({ x: pill.x + pill.w / 2, y: pill.b + 6 }, "the rim under the pill");
+        const rimOpens = await isOpen();
+        await tap("document.querySelector('#mname')");
+        claims[`${tag}a tap on the rim 6 px under the glass opens the island too`] = rimOpens && !await isOpen();
+      }
       // 3. a tap on the pill opens; the open island covers the pane without moving it
       const termBefore = await box("document.querySelector('.paneterm')");
       await tap("document.querySelector('#mpill')");
@@ -7430,32 +7462,32 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const ids = ["#mslot", "#mname", "#minfo", "#mview", "#mhist", "#mauto", "#mmore"];
       const boxes: Record<string, Box> = {};
       for (const id of ids) boxes[id] = (await shown(id)) ? await box(id) : null;
-      facts.open = { opened, boxes, name: await evaluate<string>("document.querySelector('#mname').innerText"), view: await evaluate<string>("document.querySelector('#mview').textContent"),
+      facts.open = { opened, boxes, name: await evaluate<string>("document.querySelector('#mname').innerText"), view: await evaluate<string>("document.querySelector('#mview').getAttribute('aria-label')"),
         term: await box("document.querySelector('.paneterm')"), pane: await box("window.__fx.pane()"), top: await box("#mtop"), where: await evaluate<string>("window.__fx.where()") };
       const op = facts.open as { opened: boolean; name: string; view: string; term: Box; pane: Box; top: Box; where: string };
       await shot(`${W}${keyboard ? "-tastatur" : ""}-auf`);
       const b = (id: string) => boxes[id];
-      claims[`${tag}a tap on the pill opens the island: slot button left, name with model · effort, ℹ right; view, History, Schedule, ⋯ under the name`] =
+      claims[`${tag}a tap on the pill opens the island: Sessions left, name with model · effort, ℹ right; view, History, Schedule, ⋯ under them`] =
         opened && ids.every((id) => !!b(id)) && b("#mslot")!.x < b("#mname")!.x && b("#mname")!.r <= b("#minfo")!.x
         && b("#mview")!.y >= b("#mname")!.b && b("#mview")!.x < b("#mhist")!.x && b("#mhist")!.x < b("#mauto")!.x && b("#mauto")!.x < b("#mmore")!.x
-        && /Alpha/.test(op.name) && /Opus 5\.5 · high/.test(op.name) && op.view === "Konversation";
+        && /Alpha/.test(op.name) && /Opus 5\.5 · high/.test(op.name) && op.view === "Konversation anzeigen";
       // …and a finger at each centre meets that button, at the default text size and at the largest
-      // Aa (24 px, src/chatsize.ts) — where the words of the tools row no longer fit
+      // Aa (24 px, src/chatsize.ts) — the glyphs do not grow, the name's type stops at 15 px
       const hittable = () => evaluate<string[]>(`${JSON.stringify(ids)}.filter((id) => { const e = document.querySelector(id), r = e.getBoundingClientRect();
         return !e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })`);
       const missedAt14 = await hittable();
       await evaluate("document.documentElement.style.setProperty('--chat-fs', '24px')");
       await settle(100);
-      const missedAt24 = (await hittable()).filter((id) => id !== "#mview" && id !== "#mhist" && id !== "#mauto");
+      const missedAt24 = await hittable();
       const moreAt24 = await box("#mmore");
       await evaluate("document.documentElement.style.removeProperty('--chat-fs')");
       await settle(100);
-      const sizeClaim = `${tag}every target in the open island is at least 40 px high, the icon buttons 40 × 40, each met by a finger at its centre`;
-      claims[sizeClaim] = ids.every((id) => (b(id)?.h ?? 0) >= 40) && ["#mslot", "#minfo", "#mmore"].every((id) => (b(id)?.w ?? 0) >= 40)
+      const sizeClaim = `${tag}every target in the open island is at least 44 px high, the icon buttons 44 × 44, each met by a finger at its centre`;
+      claims[sizeClaim] = ids.every((id) => (b(id)?.h ?? 0) >= 44) && ids.filter((id) => id !== "#mname").every((id) => (b(id)?.w ?? 0) >= 44)
         && missedAt14.length === 0;
       detail[sizeClaim] = { boxes, missedAt14 };
-      const bigClaim = `${tag}at the largest text size ⋯, ℹ and the slot button stay on screen and tappable (the words scroll under ⋯)`;
-      claims[bigClaim] = missedAt24.length === 0 && !!moreAt24 && moreAt24.r <= W - 6;
+      const bigClaim = `${tag}at the largest text size every button of the open island stays on screen and tappable`;
+      claims[bigClaim] = missedAt24.length === 0 && !!moreAt24 && moreAt24.r <= W - 10;
       detail[bigClaim] = { missedAt24, moreAt24 };
       claims[`${tag}the open island covers the top of the pane — the pane and the terminal do not move`] = JSON.stringify(op.pane) === JSON.stringify(st.pane)
         && JSON.stringify(op.term) === JSON.stringify(termBefore) && !!op.top && op.top.b > (termBefore?.y ?? 0);
@@ -7484,15 +7516,15 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const sheetGone = async () => { await escape(); await wait("!document.body.classList.contains('msheet')"); await settle(200); };
       actions.slot = await act("#mslot", sheetIs("sessions"), sheetGone);
       actions.view = await act("#mview", "window.__fx.pane().classList.contains('chat')");
-      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').textContent"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')"),
+      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').getAttribute('aria-label')"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')"),
         placeholder: await evaluate<string>("document.querySelector('#input').placeholder") };
       actions.viewBack = await act("#mview", "!window.__fx.pane().classList.contains('chat')");
       actions.info = await act("#minfo", "window.__fx.shown(document.querySelector('#shell-board'))", escape);
       actions.hist = await act("#mhist", "getComputedStyle(document.querySelector('#hist')).display === 'flex'", escape);
       actions.more = await act("#mmore", sheetIs("tools"), sheetGone);
       facts.actions = actions;
-      const actionsClaim = `${tag}every action closes the island and does what it names (Sessions sheet, view, ℹ, History, tools sheet)`;
-      claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
+      const actionsClaim = `${tag}every action closes the island and does what it names (Sessions, view, ℹ, History, tools sheet)`;
+      claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal anzeigen";
       detail[actionsClaim] = { actions, chatView: facts.chatView, missing: [...missing] };
       facts.placeholder = { term: await evaluate<string>("document.querySelector('#input').placeholder"), chat: (facts.chatView as { placeholder: string }).placeholder };
       claims[`${tag}the field reads "Prompt für Alpha …" in the terminal and in the conversation`] =
@@ -7537,6 +7569,9 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const tapRow = async (word: string) => { await evaluate(`${rowSel(word)}?.scrollIntoView({ inline: 'nearest', block: 'nearest' })`); await settle(100); return tap(rowSel(word)); };
       const placed = (r: SheetRead) => !!r.sheet && !!r.shade && r.sheet.x === 0 && r.sheet.r === W && r.sheet.b === bottom
         && r.shade.x === 0 && r.shade.y === 0 && r.shade.w === W && r.shade.b === bottom && !r.islandOpen;
+      // Sessions is the island's left side: from the left edge, 86 % wide, the visible screen tall
+      const sided = (r: SheetRead) => !!r.sheet && !!r.shade && r.sheet.x === 0 && Math.abs(r.sheet.w - W * 0.86) <= 1 && r.sheet.y === 0 && r.sheet.b === bottom
+        && r.shade.x === 0 && r.shade.y === 0 && r.shade.w === W && r.shade.b === bottom && !r.islandOpen;
 
       // --- the Sessions sheet
       await kbUp();
@@ -7544,8 +7579,8 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const sess = await readSheet();
       await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-sessions`);
       facts.sessions = sess;
-      const sessPlaced = `${tag}the slot button opens the sheet Sessions: full width, set at the foot of the visible screen, over a shade; the island closes`;
-      claims[sessPlaced] = sessOpened && placed(sess);
+      const sessPlaced = `${tag}the Sessions button opens Sessions as the island's left side: from the left edge, 86 % wide, the visible screen tall, over a shade; the island closes`;
+      claims[sessPlaced] = sessOpened && sided(sess);
       detail[sessPlaced] = { sheet: sess.sheet, shade: sess.shade, bottom, islandOpen: sess.islandOpen };
       claims[`${tag}the sheet takes the focus — a keyboard goes with it`] = sess.where === "#msheet" && !sess.keyboardOpen;
       const drawerHidden = await evaluate<boolean>("['attnbtn', 'opsbtn', 'devbtn'].every((id) => document.getElementById(id).style.display === 'none')");
@@ -7566,7 +7601,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await escape();
       const escClosed = await evaluate<boolean>("!document.body.classList.contains('msheet')"), escWhere = await evaluate<string>("window.__fx.where()");
       await openVia("#mslot", "sessions");
-      await tapAt({ x: W / 2, y: 40 }, "shade");
+      await tapAt({ x: W - 20, y: 40 }, "shade"); // right of the side, where only the shade is
       const shadeClosed = await evaluate<boolean>("!document.body.classList.contains('msheet')");
       facts.sessClose = { escClosed, escWhere, shadeClosed };
       claims[`${tag}Escape closes the sheet and gives the focus to the pill; a tap on the shade closes it too`] = escClosed && escWhere === "#mpill" && shadeClosed;
@@ -7850,6 +7885,487 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
     return results;
   } finally {
     socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE TOP ISLAND OF GLASS (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
+// gebaut", docs/design/insel-glas-notiz.md §1–§4), measured in TWO engines on the real client bundle
+// behind the fixture origin: Chromium through CDP (the suite's own browser, always) and WebKit
+// through Playwright's WebKit build when one resolves — FLEET_E2E_PLAYWRIGHT names a playwright-core
+// directory, else it is looked up from the source tree. The repo carries no Playwright dependency,
+// so a machine without one prints the WebKit half as not run (a line, not a check); a WebKit that
+// resolves but cannot run is its PROBE line, red. Both with an iPhone profile (390 × 844, DPR 3,
+// touch, mobile) and every gesture as REAL touch events (Input.dispatchTouchEvent in both
+// protocols), so the engine's own touch → pointer path runs. WebKit emulates prefers-contrast and
+// prefers-reduced-motion but not prefers-reduced-transparency: there the claim reads that the
+// engine parses the query and that the opaque face is bound to it. Every claim reads the DOM,
+// computed style or geometry, never the source. Exported so a lane can drive it with an artefact
+// folder and against a mutated copy of the tree.
+export interface GlassIslandResult { engine: "chromium" | "webkit"; claims: Record<string, boolean>; detail: Record<string, unknown>; notRun?: string }
+type GlassPt = { x: number; y: number };
+type GlassTouch = "touchStart" | "touchMove" | "touchEnd" | "touchCancel";
+interface GlassDriver {
+  open(): Promise<void>;
+  evaluate<T>(expression: string): Promise<T>;
+  touch(type: GlassTouch, at: GlassPt): Promise<void>;
+  key(key: "Escape" | "ArrowLeft" | "ArrowRight"): Promise<void>;
+  media(m: { motion?: boolean; contrast?: boolean; transparency?: boolean }): Promise<{ transparency: boolean }>;
+  shot(file: string): Promise<void>;
+  close(): Promise<void>;
+}
+type GlassServe = (path: string, method: string) => { status: number; type: string; body: string };
+const GLASS_W = 390, GLASS_H = 844;
+const GLASS_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+async function glassChromium(serve: GlassServe, init: string, scratch: string): Promise<GlassDriver> {
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) throw new Error("glass island DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable);
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/chromium`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let log = "", timer: ReturnType<typeof setTimeout> | undefined;
+  const endpoint = await Promise.race([
+    (async () => { for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + log); })(),
+    new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + log)), 45000); }),
+  ]).finally(() => clearTimeout(timer));
+  const socket = new WebSocket(endpoint);
+  await new Promise<void>((ok, bad) => { socket.onopen = () => ok(); socket.onerror = () => bad(new Error("CDP connection failed")); });
+  let serial = 0, sessionId: string | undefined, targetId = "", loaded: (() => void) | null = null;
+  const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+  const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+    const id = ++serial;
+    const t = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+    pending.set(id, { ok: (v) => { clearTimeout(t); ok(v); }, bad: (e) => { clearTimeout(t); bad(e); } });
+    socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+  socket.onmessage = (event) => {
+    const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+    if (msg.id !== undefined) {
+      const w = pending.get(msg.id); if (!w) return;
+      pending.delete(msg.id);
+      if (msg.error) w.bad(new Error(JSON.stringify(msg.error))); else w.ok(msg.result ?? {});
+      return;
+    }
+    if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+    if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+    const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+    const a = serve(new URL(request.url).pathname, request.method);
+    void send("Fetch.fulfillRequest", { requestId, responseCode: a.status, responseHeaders: [{ name: "content-type", value: a.type }], body: Buffer.from(a.body).toString("base64") }).catch(() => undefined);
+  };
+  const navigate = async (url: string) => { const done = new Promise<void>((ok) => { loaded = ok; }); await send("Page.navigate", { url }); await Promise.race([done, Bun.sleep(15000)]); };
+  let media: { name: string; value: string }[] = [];
+  return {
+    async open() {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = undefined;
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: init });
+      await send("Emulation.setDeviceMetricsOverride", { width: GLASS_W, height: GLASS_H, deviceScaleFactor: 3, mobile: true });
+      await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+      await send("Emulation.setUserAgentOverride", { userAgent: GLASS_UA, platform: "iPhone" });
+      media = [];
+      await send("Emulation.setEmulatedMedia", { features: [] });
+      await navigate("http://fleet.fixture/blank");
+      await send("Runtime.evaluate", { expression: "localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 }))" });
+      await navigate("http://fleet.fixture/");
+    },
+    async evaluate<T>(expression: string): Promise<T> {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("page threw: " + JSON.stringify(r.exceptionDetails).slice(0, 300));
+      return (r.result as { value: T }).value;
+    },
+    async touch(type, at) {
+      const lifted = type === "touchEnd" || type === "touchCancel";
+      await send("Input.dispatchTouchEvent", { type, touchPoints: lifted ? [] : [{ x: at.x, y: at.y, id: 1 }] });
+    },
+    async key(key) {
+      const vk = { Escape: 27, ArrowLeft: 37, ArrowRight: 39 }[key];
+      await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: vk });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: vk });
+    },
+    async media(m) {
+      media = [{ name: "prefers-reduced-motion", value: m.motion ? "reduce" : "no-preference" }, { name: "prefers-contrast", value: m.contrast ? "more" : "no-preference" },
+        { name: "prefers-reduced-transparency", value: m.transparency ? "reduce" : "no-preference" }];
+      await send("Emulation.setEmulatedMedia", { features: media });
+      return { transparency: true };
+    },
+    async shot(file) { writeFileSync(file, Buffer.from(String((await send("Page.captureScreenshot", { format: "png" })).data), "base64")); },
+    async close() { socket.close(); browser.kill(); await browser.exited; },
+  };
+}
+async function glassWebkit(playwright: string, serve: GlassServe, init: string): Promise<GlassDriver> {
+  const mod = await import(playwright) as { default?: unknown };
+  type PwPage = { goto(u: string): Promise<unknown>; evaluate(e: string): Promise<unknown>; screenshot(o: { path: string }): Promise<unknown>;
+    keyboard: { press(k: string): Promise<void> }; emulateMedia(o: Record<string, unknown>): Promise<void>; _connection: { toImpl(p: unknown): { delegate: { _pageProxySession: { send(m: string, p: unknown): Promise<unknown> } } } } };
+  type PwContext = { newPage(): Promise<PwPage>; close(): Promise<void>; addInitScript(s: string): Promise<void>;
+    route(u: string, h: (r: { request(): { url(): string; method(): string }; fulfill(o: Record<string, unknown>): Promise<void> }) => unknown): Promise<void> };
+  const pw = (mod.default ?? mod) as { webkit: { launch(): Promise<{ newContext(o: unknown): Promise<PwContext>; close(): Promise<void> }> }; devices: Record<string, unknown> };
+  const browser = await pw.webkit.launch();
+  let context: PwContext | null = null, page: PwPage | null = null;
+  const pg = () => { if (!page) throw new Error("no page"); return page; };
+  return {
+    async open() {
+      await context?.close();
+      context = await browser.newContext({ ...(pw.devices["iPhone 13"] as object), viewport: { width: GLASS_W, height: GLASS_H }, deviceScaleFactor: 3 });
+      await context.route("http://fleet.fixture/**", async (route) => { const r = route.request(); const a = serve(new URL(r.url()).pathname, r.method()); await route.fulfill({ status: a.status, contentType: a.type, body: a.body }); });
+      await context.addInitScript(init);
+      page = await context.newPage();
+      await page.goto("http://fleet.fixture/blank");
+      await page.evaluate("localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 }))");
+      await page.goto("http://fleet.fixture/");
+    },
+    async evaluate<T>(expression: string): Promise<T> { return await pg().evaluate(expression) as T; },
+    async touch(type, at) {
+      // Playwright exposes only a tap; the touch stream goes through its WebKit protocol, which has
+      // Input.dispatchTouchEvent (reached through the in-process connection)
+      await pg()._connection.toImpl(pg()).delegate._pageProxySession.send("Input.dispatchTouchEvent", { type, touchPoints: [{ x: Math.round(at.x), y: Math.round(at.y), id: 1 }] });
+    },
+    async key(key) { await pg().keyboard.press(key); },
+    async media(m) {
+      await pg().emulateMedia({ reducedMotion: m.motion ? "reduce" : "no-preference", contrast: m.contrast ? "more" : "no-preference" });
+      return { transparency: false };
+    },
+    async shot(file) { await pg().screenshot({ path: file }); },
+    async close() { await browser.close(); },
+  };
+}
+export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: string; engines?: ("chromium" | "webkit")[] } = {}): Promise<GlassIslandResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-glass-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  const SHORT = "Alpha", LONG = "Nordlicht · Abgleich der Wetterstationen im Hochgebirge";
+  const alpha = { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: SHORT, openedAt: 1000, model: "claude-opus-5-5", effort: "high", lastOutput: 0 };
+  const slots = [alpha, { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, lastOutput: 0 },
+    ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null }))];
+  const HARNESSES = { harnesses: [{ id: "claude", default: true, note: null, effortLevels: ["low", "medium", "high", "xhigh"], models: modelsForHarness("claude"),
+    supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
+    modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) };
+  const serve: GlassServe = (p, method) => {
+    const json = (v: unknown, status = 200) => ({ status, type: "application/json", body: JSON.stringify(v) });
+    if (method === "POST") return json({ ok: true });
+    if (p === "/") return { status: 200, type: "text/html", body: indexHtml };
+    if (p === "/blank") return { status: 200, type: "text/html", body: "<!doctype html><title>blank</title>" };
+    if (p === "/app.js") return { status: 200, type: "text/javascript", body: appJs };
+    if (p === "/xterm.css") return { status: 200, type: "text/css", body: xtermCss };
+    if (p === "/api/sessions") return json({ now: 10 * 60_000, chips: [], slots, tasks: [] });
+    if (p === "/api/harnesses") return json(HARNESSES);
+    return json({ error: "fixture: not served" }, 404);
+  };
+  // a socket per pane that answers and keeps nothing; a visualViewport the probe can shrink (the
+  // on-screen keyboard where the client reads it); window.__g reads the island
+  const INIT = `(() => { class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.binaryType = 'blob'; (window.__ws ||= []).push(this);
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          this.onmessage?.({ data: new TextEncoder().encode('fixture\\r\\n$ ').buffer }); }, 0); }
+      send() {} close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS;
+    const vv = new EventTarget(); let kbd = 0;
+    for (const [k, f] of Object.entries({ height: () => window.innerHeight - kbd, width: () => window.innerWidth, offsetTop: () => 0, offsetLeft: () => 0, pageTop: () => 0, pageLeft: () => 0, scale: () => 1 }))
+      Object.defineProperty(vv, k, { get: f });
+    Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => vv });
+    window.__keyboard = (px) => { kbd = px; vv.dispatchEvent(new Event('resize')); };
+    window.__g = (() => {
+      const q = (s) => document.querySelector(s);
+      const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), r: Math.round(r.right), b: Math.round(r.bottom) }; };
+      const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none' && !e.closest('[hidden]');
+      const state = () => ({ open: document.body.classList.contains('mopen'), sessions: document.body.classList.contains('msheet') && q('#msheet').dataset.sheet === 'sessions',
+        side: q('#msheetwrap').classList.contains('mside'), info: !!q('#shell-board'), title: q('#mtitle').textContent, target: q('#comptarget')?.dataset.slot ?? null,
+        sessionsP: q('#msheetwrap').style.getPropertyValue('--mside-p'), infoP: q('#shell-board')?.style.getPropertyValue('--mside-p') ?? null });
+      // widths of the glass, one per frame, for the spring's overshoot
+      const sample = (ms) => { window.__frames = []; const g = q('#mglas'), t0 = performance.now();
+        const f = () => { window.__frames.push([Math.round(performance.now() - t0), g.getBoundingClientRect().width]); if (performance.now() - t0 < ms) requestAnimationFrame(f); };
+        requestAnimationFrame(f); };
+      return { q, box, shown, state, sample };
+    })(); })()`;
+  const results: GlassIslandResult[] = [];
+  const engines = opts.engines ?? ["chromium", "webkit"];
+  try {
+    for (const engine of engines) {
+      const claims: Record<string, boolean> = {}, detail: Record<string, unknown> = {};
+      let driver: GlassDriver;
+      if (engine === "webkit") {
+        let playwright = process.env.FLEET_E2E_PLAYWRIGHT ?? "";
+        if (!playwright) try { playwright = Bun.resolveSync("playwright-core", sourceRoot); } catch { /* none on this machine */ }
+        else playwright = resolve(playwright, "index.js");
+        if (!playwright) { results.push({ engine, claims, detail, notRun: "no playwright-core resolves from the source tree and FLEET_E2E_PLAYWRIGHT is unset" }); continue; }
+        driver = await glassWebkit(playwright, serve, INIT);
+      } else driver = await glassChromium(serve, INIT, scratch);
+      const d = driver;
+      const tag = (s: string) => `${engine} · ${s}`;
+      const say = (claim: string, ok: boolean, facts?: unknown) => { claims[tag(claim)] = ok; if (facts !== undefined) detail[tag(claim)] = facts; };
+      const ev = <T>(e: string) => d.evaluate<T>(e);
+      const wait = (cond: string, ms = 3000) => ev<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+        const tick = () => { let v = false; try { v = !!(${cond}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+      const pause = (ms: number) => ev(`new Promise((r) => setTimeout(r, ${ms}))`);
+      type Box = { x: number; y: number; w: number; h: number; r: number; b: number } | null;
+      type State = { open: boolean; sessions: boolean; side: boolean; info: boolean; title: string; target: string | null; sessionsP: string; infoP: string | null };
+      const box = (sel: string) => ev<Box>(`window.__g.box(document.querySelector(${JSON.stringify(sel)}))`);
+      const state = () => ev<State>("window.__g.state()");
+      const shot = async (name: string) => { if (opts.artifacts) await d.shot(resolve(opts.artifacts, `${engine}-${name}.png`)); };
+      const tapAt = async (at: GlassPt, holdMs = 30) => { await d.touch("touchStart", at); await Bun.sleep(holdMs); await d.touch("touchEnd", at); await pause(120); };
+      // one finger: down at `from`, then each step (dx, dy from the start, an optional wait before it), then up
+      const swipe = async (from: GlassPt, steps: { dx: number; dy?: number; wait?: number }[], end: GlassTouch = "touchEnd") => {
+        await d.touch("touchStart", from);
+        let at = from;
+        for (const s of steps) { if (s.wait) await Bun.sleep(s.wait); at = { x: from.x + s.dx, y: from.y + (s.dy ?? 0) }; await d.touch("touchMove", at); }
+        await d.touch(end, at);
+      };
+      const settled = `!document.querySelector('#msheetwrap').style.getPropertyValue('--mside-p') && !(document.querySelector('#shell-board')?.style.getPropertyValue('--mside-p'))`;
+      const closed = `!document.body.classList.contains('mopen') && !document.body.classList.contains('msheet') && !document.querySelector('#shell-board')`;
+      const reset = async () => { for (let i = 0; i < 3 && !await ev<boolean>(closed); i++) { await d.key("Escape"); await pause(150); } await wait(closed, 2000); await pause(100); };
+      // a freshly booted page (or one whose media just changed) answers its first touches slowly —
+      // measured 0.2–1.6 s per event in Chromium — and a slow touch is no tap: warm up with taps on
+      // the terminal until a touchStart/touchEnd pair comes back inside 80 ms
+      const warm = async () => {
+        for (let i = 0; i < 12; i++) {
+          const t0 = performance.now();
+          await d.touch("touchStart", { x: GLASS_W / 2, y: 400 }); await d.touch("touchEnd", { x: GLASS_W / 2, y: 400 });
+          if (performance.now() - t0 < 80) break;
+          await pause(150);
+        }
+        await pause(200);
+      };
+      const boot = async (label: string) => {
+        alpha.label = label;
+        await d.open();
+        const ok = await wait(`document.querySelector('#panes .pane .xterm') && (window.__ws || []).some((w) => w.readyState === 1) && document.querySelector('#mtitle').textContent === ${JSON.stringify(label)} && document.querySelector('#mpill .mnm')`, 15000);
+        if (!ok) throw new Error(`${engine}: the client did not boot in the fixture origin: ` + await ev<string>("document.body.innerText.slice(0, 200)"));
+        await pause(600);
+        await warm();
+      };
+      try {
+        await boot(SHORT);
+        // touch: the page has touch events (WebKit's build reports maxTouchPoints 0 even with touch on)
+        const env = await ev<{ w: number; h: number; dpr: number; coarse: boolean; touch: boolean; mobile: boolean }>(
+          "({ w: innerWidth, h: innerHeight, dpr: devicePixelRatio, coarse: matchMedia('(pointer: coarse)').matches, touch: 'ontouchstart' in window, mobile: matchMedia('(max-width: 700px)').matches })");
+        say("SETUP: the real client bundle boots under an iPhone profile — 390 × 844, DPR 3, touch events, a coarse pointer", env.w === GLASS_W && env.h === GLASS_H && env.dpr === 3 && env.coarse && env.touch && env.mobile, env);
+        await shot("zu");
+        // 1. the pill
+        const glass = await box("#mglas"), zone = await box("#mtop"), term = await box(".paneterm");
+        const pill = await ev<{ text: string; copies: number; over: boolean; run: boolean; label: string }>(`(() => { const p = document.querySelector('#mpill');
+          return { text: p.querySelector('.mband').textContent, copies: p.querySelectorAll('.mspur .mnm').length, over: p.querySelector('.mband').classList.contains('mover'),
+            run: p.querySelector('.mspur').classList.contains('mrun'), label: p.getAttribute('aria-label') }; })()`);
+        say("closed, the island is a pill 28 px high, 8 px under the top, centred, 96–168 px wide; state shape and name, nothing else",
+          !!glass && glass.h === 28 && glass.y === 8 && Math.abs(glass.x + glass.w / 2 - GLASS_W / 2) <= 1 && glass.w >= 96 && glass.w <= 168
+          && pill.text === SHORT && /\bact (work|rest|sleep|bad)\b/.test(await ev<string>("document.querySelector('#mpill .act')?.className ?? ''")), { glass, pill });
+        const rimAbove = glass ? await ev<boolean>(`!!document.elementFromPoint(${glass.x + glass.w / 2}, ${glass.y - 6})?.closest('#mtop')`) : false;
+        say("the pill hits 44 px: the zone is 44 px high and 6 px above the glass still belongs to it", !!zone && zone.h === 44 && rimAbove, { zone, rimAbove });
+        say("the terminal starts 6 px under the glass", !!term && !!glass && term.y === glass.b + 6, { term, glass, pane: await box("#panes .pane") });
+        say(`a name that fits (${SHORT}) is no band: one copy, nothing runs`, !pill.over && pill.copies === 1 && !pill.run, pill);
+        // 2. the material
+        const mat = await ev<{ bd: string; shadow: string; bg: string; after: string }>(`(() => { const s = getComputedStyle(document.querySelector('#mglas'));
+          return { bd: s.backdropFilter || s.webkitBackdropFilter || '', shadow: s.boxShadow, bg: s.backgroundImage + ' | ' + s.backgroundColor, after: getComputedStyle(document.querySelector('#mglas'), '::after').display }; })()`);
+        say("the glass computes its material: blur(18px) saturate(1.6), three inset edges, light over a scrim",
+          /blur\(18px\)/.test(mat.bd) && /saturate\(1\.6\)/.test(mat.bd) && (mat.shadow.match(/inset/g) ?? []).length === 3 && /linear-gradient/.test(mat.bg), mat);
+        // 3. a tap opens: the glass springs to --maw × 96, the icon buttons spring in one after the other
+        await ev("window.__g.sample(1100)");
+        await tapAt({ x: GLASS_W / 2, y: 22 });
+        await pause(1150);
+        const frames = await ev<[number, number][]>("window.__frames");
+        const open = await ev<{ open: boolean; expanded: string; glass: Box; ease: string; delays: string[] }>(`(() => ({ open: document.body.classList.contains('mopen'),
+          expanded: document.querySelector('#mpill').getAttribute('aria-expanded'), glass: window.__g.box(document.querySelector('#mglas')),
+          ease: getComputedStyle(document.querySelector('#mglas')).transitionTimingFunction,
+          delays: [...document.querySelectorAll('#mopen .mib, #mname, #mort')].filter(window.__g.shown).map((e) => getComputedStyle(e).transitionDelay.split(',')[0].trim()) }))()`);
+        const final = open.glass?.w ?? 0, peak = Math.max(...frames.map((f) => f[1]));
+        await shot("auf-terminal");
+        say("a tap on the pill opens it: the glass becomes 370 × 96 (aria-expanded true)", open.open && open.expanded === "true" && !!open.glass && open.glass.w === 370 && open.glass.h === 96, open);
+        say("it opens as a spring: the glass overshoots its width by 1–6 % on the way (the linear() curve from response 0.38 / ζ 0.72)",
+          /^linear\(/.test(open.ease) && final > 0 && peak / final - 1 > 0.01 && peak / final - 1 < 0.06, { peak, final, ease: open.ease.slice(0, 60), frames });
+        say("the buttons spring in one after another, 22 ms apart from 60 ms", open.delays.length >= 9 && open.delays.every((v, i) => Math.abs(parseFloat(v) * (v.endsWith("ms") ? 1 : 1000) - (60 + 22 * i)) < 1), open.delays);
+        // 4. the buttons of the view: icons, no words
+        type Btns = { ids: string[]; bad: string[]; small: string[]; off: string[] };
+        const BTNS = `(() => { const bs = [...document.querySelectorAll('#mopen .mib')].filter(window.__g.shown);
+          return { ids: bs.map((b) => b.id), bad: bs.filter((b) => b.tagName !== 'BUTTON' || !b.getAttribute('aria-label') || !b.title || !b.querySelector('svg') || b.textContent.trim() !== '').map((b) => b.id),
+            small: bs.filter((b) => { const r = b.getBoundingClientRect(); return Math.round(r.width) < 44 || Math.round(r.height) < 44; }).map((b) => b.id),
+            off: bs.filter((b) => { const r = b.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2; return r.left < 0 || r.right > innerWidth || !b.contains(document.elementFromPoint(x, y)); }).map((b) => b.id) }; })()`;
+        const term8 = await ev<Btns>(BTNS);
+        say("in the terminal: eight icon buttons — Sessions, Info, view, search, reconnect, History, Schedule, ⋯ — each a <button> with aria-label and title, a glyph and no word, 44 × 44, met by a finger",
+          JSON.stringify(term8.ids) === JSON.stringify(["mslot", "minfo", "mview", "mfind", "mreload", "mhist", "mauto", "mmore"]) && !term8.bad.length && !term8.small.length && !term8.off.length, term8);
+        const ort = await ev<{ kids: number; text: string; label: string | null; box: Box; more: Box; glass: Box }>(`(() => { const o = document.querySelector('#mort');
+          return { kids: o.childNodes.length, text: o.textContent, label: o.getAttribute('aria-label'), box: window.__g.box(o), more: window.__g.box(document.querySelector('#mmore')), glass: window.__g.box(document.querySelector('#mglas')) }; })()`);
+        say('the place "Arbeitsort" is named and empty: aria-label Arbeitsort, no child, at least 64 px, right of ⋯, inside the glass',
+          ort.label === "Arbeitsort" && ort.kids === 0 && ort.text === "" && !!ort.box && !!ort.more && !!ort.glass && ort.box.w >= 64 && ort.box.x >= ort.more.r && ort.box.r <= ort.glass.r, ort);
+        // the open island closes by its name
+        await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mname').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
+        await pause(200);
+        say("a tap on the name closes it", !(await state()).open);
+        // the conversation: ↑ ↓ instead of search and reconnect, and the text runs under the glass
+        await tapAt({ x: GLASS_W / 2, y: 22 }); await pause(900);
+        await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mview').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
+        const toChat = await wait("document.querySelector('#panes .pane').classList.contains('chat')", 3000);
+        await pause(300);
+        await tapAt({ x: GLASS_W / 2, y: 22 }); await pause(900);
+        const chat8 = { ...await ev<Btns>(BTNS), toChat, state: await state() };
+        const fade = await ev<string>("getComputedStyle(document.querySelector('#panes .pane'), '::after').backgroundImage");
+        await shot("auf-konversation");
+        say("in the conversation: eight icon buttons — Sessions, Info, view, ↑, ↓, History, Schedule, ⋯ — the same rules",
+          JSON.stringify(chat8.ids) === JSON.stringify(["mslot", "minfo", "mview", "mup", "mdown", "mhist", "mauto", "mmore"]) && !chat8.bad.length && !chat8.small.length && !chat8.off.length, chat8);
+        say("the conversation runs on under the glass: no fade over its top", !/gradient/.test(fade ?? ""), fade);
+        await reset();
+        await tapAt({ x: GLASS_W / 2, y: 22 }); await pause(900);
+        await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mview').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
+        await wait("!document.querySelector('#panes .pane').classList.contains('chat')", 3000);
+        await reset();
+        // 5. the swipe: right opens Sessions from the left, left the Info from the right — the session stays
+        const before = await state();
+        const centre = { x: GLASS_W / 2, y: 22 };
+        await swipe(centre, [{ dx: 30 }, { dx: 60 }, { dx: 90 }]);
+        await wait(settled, 2000);
+        const right = { ...await state(), sheet: await box("#msheet"), swipe: await ev<string>("document.querySelector('#mtop').dataset.swipe ?? ''") };
+        await shot("wisch-rechts-sessions");
+        say("a swipe to the right opens Sessions from the left edge (86 % wide, the screen tall); the session stays the same",
+          right.sessions && right.side && !!right.sheet && right.sheet.x === 0 && Math.abs(right.sheet.w - GLASS_W * 0.86) <= 1 && right.sheet.y === 0 && right.sheet.b === GLASS_H
+          && right.title === before.title && right.target === before.target && before.target === "1", { before, right });
+        await reset();
+        await swipe(centre, [{ dx: -30 }, { dx: -60 }, { dx: -90 }]);
+        await wait(settled, 2000);
+        const left = { ...await state(), win: await box("#shell-board .shellwin") };
+        await shot("wisch-links-info");
+        say("a swipe to the left opens the Info from the right edge (86 % wide); the session stays the same",
+          left.info && !left.sessions && !!left.win && left.win.r === GLASS_W && Math.abs(left.win.w - GLASS_W * 0.86) <= 1 && left.title === before.title && left.target === before.target, { before, left });
+        await reset();
+        // …and from the open island as well
+        await tapAt(centre); await pause(900);
+        await swipe({ x: GLASS_W / 2, y: 40 }, [{ dx: 30 }, { dx: 70 }]);
+        await wait(settled, 2000);
+        const fromOpen = await state();
+        say("a swipe on the open island opens the side too, and the island closes", fromOpen.sessions && !fromOpen.open && fromOpen.target === before.target, fromOpen);
+        await reset();
+        // the ways out: none of them opens anything, and none counts as a tap
+        const nothing = async (name: string, run: () => Promise<void>) => {
+          await run();
+          await pause(700);
+          const s = await state();
+          const ok = !s.open && !s.sessions && !s.info && s.target === before.target;
+          say(`${name}: nothing opens, the island stays shut`, ok, { ...s, swipe: await ev<string>("document.querySelector('#mtop').dataset.swipe ?? ''") });
+          await reset();
+        };
+        await nothing("20 px slowly to the right", () => swipe(centre, [{ dx: 7, wait: 120 }, { dx: 14, wait: 120 }, { dx: 20, wait: 120 }]));
+        await nothing("24 px over ~540 ms (0.04 px/ms)", () => swipe(centre, [{ dx: 9, wait: 180 }, { dx: 17, wait: 180 }, { dx: 24, wait: 180 }]));
+        await nothing("begun upright (12 px down, then 30 sideways)", () => swipe(centre, [{ dx: 2, dy: 12 }, { dx: 30, dy: 14 }]));
+        await nothing("out 80 px and back to 10 px", () => swipe(centre, [{ dx: 40, wait: 60 }, { dx: 80, wait: 60 }, { dx: 45, wait: 120 }, { dx: 10, wait: 120 }]));
+        await nothing("a press of 400 ms without moving", async () => { await d.touch("touchStart", centre); await Bun.sleep(400); await d.touch("touchEnd", centre); });
+        await nothing("the system takes the gesture (touchcancel after 90 px)", () => swipe(centre, [{ dx: 45 }, { dx: 90 }], "touchCancel"));
+        // a start in the outer 20 px belongs to iOS: measured on the open island, which reaches x = 10
+        await tapAt(centre); await pause(900);
+        await swipe({ x: 14, y: 40 }, [{ dx: 40 }, { dx: 90 }]);
+        await pause(700);
+        const edge = await state();
+        say("a swipe begun in the outer 20 px (x = 14) is left to iOS: no side opens", !edge.sessions && !edge.info, edge);
+        await reset();
+        // velocity: 24 px in ONE move opens (a protocol touch costs ~35 ms here, so two moves already
+        // arrive at 0.35 px/ms — liquid-glass.md Messfalle 3). The speed the island measured is read,
+        // not assumed: a slow delivery is retried, and every try must follow the rule — open exactly
+        // when it arrived faster than 0.4 px/ms
+        const flicks: { opened: boolean; v: number; dx: number }[] = [];
+        for (let i = 0; i < 4; i++) {
+          await swipe(centre, [{ dx: 24 }]);
+          await wait(settled, 2000);
+          const sw = JSON.parse(await ev<string>("document.querySelector('#mtop').dataset.swipe ?? '{}'")) as { v?: number; dx?: number };
+          flicks.push({ opened: (await state()).sessions, v: sw.v ?? 0, dx: sw.dx ?? 99 });
+          await reset();
+          if ((sw.v ?? 0) > 0.45) break;
+        }
+        const fast = flicks[flicks.length - 1];
+        say("a quick 24 px (measured above 0.4 px/ms) opens the side though it is under 28 px; a try that arrived slower does not",
+          !!fast && fast.v > 0.4 && fast.dx < 28 && fast.opened && flicks.every((f) => f.opened === (f.v > 0.4)), flicks);
+        // 6. the keys: ← and → on the focused island, Escape closes
+        await ev("document.querySelector('#mpill').focus()");
+        await d.key("ArrowLeft"); await wait(settled, 2000);
+        const kl = await state();
+        await d.key("Escape"); await pause(250);
+        const ke = await state();
+        await ev("document.querySelector('#mpill').focus()");
+        await d.key("ArrowRight"); await wait(settled, 2000);
+        const kr = await state();
+        await d.key("Escape"); await pause(250);
+        const kre = await state();
+        say("← on the focused island opens Sessions, → the Info; Escape closes each — the same as the swipes",
+          kl.sessions && !ke.sessions && kr.info && !kre.info && kre.target === before.target, { kl, ke, kr, kre });
+        await reset();
+        // 7. raised contrast (and, where the engine emulates it, reduced transparency): the opaque face
+        const face = `(() => { const s = getComputedStyle(document.querySelector('#mglas')), n = getComputedStyle(document.querySelector('#mpill .mnm'));
+          return { bd: s.backdropFilter || s.webkitBackdropFilter || '', bg: s.backgroundColor, img: s.backgroundImage, text: n.textShadow, after: getComputedStyle(document.querySelector('#mglas'), '::after').display }; })()`;
+        type Face = { bd: string; bg: string; img: string; text: string; after: string };
+        const opaque = (f: Face) => (f.bd === "none" || f.bd === "") && /^rgb\(12, 12, 14\)$/.test(f.bg) && f.img === "none" && f.text === "none" && f.after === "none";
+        await d.media({ contrast: true }); await warm();
+        const fc = await ev<Face>(face);
+        await shot("kontrast");
+        say("under prefers-contrast: more the pill is opaque — no blur, rgb(12, 12, 14) at full alpha, no highlight, no text shadow: nothing shows through", opaque(fc), fc);
+        const tr = await d.media({ transparency: true }); await pause(200);
+        const ft = await ev<Face>(face);
+        if (tr.transparency) say("under prefers-reduced-transparency: reduce the pill is the same opaque face", opaque(ft), ft);
+        else {
+          const bound = await ev<{ parses: boolean; rule: boolean }>(`(() => ({ parses: matchMedia('(prefers-reduced-transparency: reduce)').media !== 'not all',
+            rule: [...document.styleSheets].some((sh) => { const walk = (rs) => [...rs].some((r) => (r.media && /prefers-reduced-transparency/.test(r.media.mediaText) && /#mglas/.test(r.cssText)) || (r.cssRules && walk(r.cssRules))); try { return walk(sh.cssRules); } catch { return false; } }) }))()`);
+          say("prefers-reduced-transparency (not emulable here): the engine parses the query and the opaque face is bound to it", bound.parses && bound.rule, bound);
+        }
+        await d.media({});
+        // 8. still (prefers-reduced-motion): no spring, no band
+        await d.media({ motion: true }); await warm();
+        await ev("window.__g.sample(300)");
+        await tapAt(centre, 20);
+        await pause(320);
+        const stillFrames = await ev<[number, number][]>("window.__frames");
+        const stillGlass = await box("#mglas");
+        // every frame is the pill (96, or 93 while pressed: scale .97) or the open island — none between
+        say("still: the tapped island jumps to its full width — no frame in between, no overshoot",
+          !!stillGlass && stillGlass.w === 370 && stillFrames.some((f) => Math.round(f[1]) === 370) && stillFrames.every((f) => f[1] <= 96.5 || Math.round(f[1]) === 370), { stillFrames, stillGlass });
+        await reset();
+        await swipe(centre, [{ dx: 30 }, { dx: 60 }, { dx: 90 }]);
+        await pause(60);
+        const stillSide = { ...await state(), sheet: await box("#msheet") };
+        say("still: a swipe opens the side at once", stillSide.sessions && !!stillSide.sheet && stillSide.sheet.x === 0, stillSide);
+        await reset();
+        await d.media({});
+        // 9. a long name: a band only now, held while open, and none while still
+        await boot(LONG);
+        const lg = await ev<{ w: number; copies: number; over: boolean; anim: string; play: string; label: string }>(`(() => { const p = document.querySelector('#mpill'), s = p.querySelector('.mspur');
+          return { w: Math.round(document.querySelector('#mglas').getBoundingClientRect().width), copies: s.querySelectorAll('.mnm').length, over: p.querySelector('.mband').classList.contains('mover'),
+            anim: getComputedStyle(s).animationName, play: getComputedStyle(s).animationPlayState, label: p.getAttribute('aria-label') }; })()`);
+        await pause(1500);
+        await shot("langer-name");
+        say("a name that overflows runs as a band: the pill at 168 px, two copies, the animation running, the full name in aria-label",
+          lg.w === 168 && lg.over && lg.copies === 2 && lg.anim === "mtick" && lg.play === "running" && lg.label.startsWith(LONG), lg);
+        await tapAt(centre); await pause(300);
+        const held = await ev<string>("getComputedStyle(document.querySelector('#mpill .mspur')).animationPlayState");
+        say("the band holds while the island is open", held === "paused", held);
+        await reset();
+        await d.media({ motion: true }); await warm();
+        const lgStill = await ev<{ anim: string; over: boolean }>(`(() => ({ anim: getComputedStyle(document.querySelector('#mpill .mspur')).animationName, over: document.querySelector('#mpill .mband').classList.contains('mover') }))()`);
+        await tapAt(centre); await pause(150);
+        const twoLines = await ev<{ clamp: string; lines: number }>(`(() => { const n = document.querySelector('#mname .mnm'), s = getComputedStyle(n);
+          return { clamp: s.webkitLineClamp || s.getPropertyValue('-webkit-line-clamp'), lines: Math.round(n.getBoundingClientRect().height / parseFloat(s.lineHeight)) }; })()`);
+        say("still, the long name does not run: cut with its soft edge in the pill, in two lines when open", lgStill.anim === "none" && lgStill.over && String(twoLines.clamp) === "2" && twoLines.lines === 2, { lgStill, twoLines });
+        await reset();
+        await d.media({});
+        // 10. with the on-screen keyboard: the pill stays at the top, opening and swiping still work
+        await boot(SHORT);
+        await ev("document.querySelector('#input').focus(); window.__keyboard(336)");
+        await wait("document.body.classList.contains('keyboard-open')", 2000);
+        await pause(300);
+        const kg = await box("#mglas");
+        await tapAt(centre); await pause(900);
+        const kOpen = { ...await state(), where: await ev<string>("document.activeElement?.id ?? ''") };
+        await shot("tastatur");
+        say("with the keyboard up the pill stays 8 px under the top, and a tap opens it without taking the field's focus", !!kg && kg.y === 8 && kOpen.open && kOpen.where === "input", { kg, kOpen });
+        await d.key("Escape"); await pause(200);
+        await swipe(centre, [{ dx: 30 }, { dx: 60 }, { dx: 90 }]);
+        await wait(settled, 2000);
+        say("with the keyboard up a swipe still opens Sessions", (await state()).sessions);
+      } catch (error) {
+        say("PROBE: the engine ran the island's claims to the end", false, error instanceof Error ? error.message : String(error));
+      } finally { await d.close(); }
+      results.push({ engine, claims, detail });
+    }
+    return results;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 
@@ -8928,6 +9444,8 @@ export async function runTermFindDom(sourceRoot: string, artifacts?: string): Pr
       await send("Page.addScriptToEvaluateOnNewDocument", { source: FAKE });
       const phone = width < 700;
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: phone });
+      // the phone's top island springs (runGlassIslandDom measures that); here it stands at once, so no tap lands mid-spring
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: phone ? "reduce" : "no-preference" }] });
       if (phone) await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [false] })); localStorage.setItem('fleet.board', '0'); })()`);

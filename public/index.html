@@ -429,7 +429,20 @@
     /* PURE BLACK, the owner's call for the reading grounds (2026-09-18 for the chat view, again
        2026-09-20 for the right column): one definition here, so no surface invents its own. */
     --chat-void: #000;
-    --chat-col: 780px; }
+    --chat-col: 780px;
+    /* GLASS (Grammatik G0.8): the one material a floating control over the content may wear — today
+       only the phone's top island. Values and why: docs/design/liquid-glass.md §2. --glas-dicht is
+       the raised-contrast / reduced-transparency face, fully opaque: no text shows through it. */
+    --glas-scrim: rgba(20, 20, 24, .42); --glas-blur: 18px; --glas-sat: 1.6;
+    --glas-licht: rgba(255, 255, 255, .22); --glas-kante-o: rgba(255, 255, 255, .55);
+    --glas-kante-u: rgba(255, 255, 255, .08); --glas-ring: rgba(255, 255, 255, .16);
+    --glas-schatten: 0 8px 24px rgba(0, 0, 0, .28); --glas-dicht: rgb(12, 12, 14); --glas-ohne: rgba(23, 23, 26, .72);
+    --glas-text: 0 1px 2px rgba(0, 0, 0, .55); --glas-glyphe: drop-shadow(0 1px 1px rgba(0, 0, 0, .5));
+    --glas-druck: rgba(255, 255, 255, .16); --glas-fokus: rgba(255, 255, 255, .7);
+    /* THE SPRING (G0.4 addendum): positions and sizes of a floating control move as a spring.
+       src/client.ts#springCurve writes both from response 0.38 s / dampingFraction 0.72 as a linear()
+       curve; this cubic-bezier is the fallback for an engine without linear() */
+    --feder: cubic-bezier(.2, .9, .3, 1.1); --feder-ms: 600ms; }
   .chatflakes { position: absolute; inset: 0; width: 100%; height: 100%; display: none; pointer-events: none; z-index: 0; }
   /* the chat language's scrollbar tokens. index.html has TWO design languages but ONE :root
      element, so a second same-name pair down in the board :root would shadow this one — the chat
@@ -3414,64 +3427,113 @@
         background: none; border: 0; }
       #mhead > #menu, #mhead > #mtitle, #mhead > #mset, #mhead > #mdot { display: none; }
       #panes { padding: 0; gap: 0; }
-      .paneterm { top: calc(44px + env(safe-area-inset-top)); }
+      /* the terminal starts 6 px under the glass (8 + 28 + 6 on screen; the pane sits 1 px down, so
+         41 here); the conversation runs on UNDER the
+         glass with no fade — the glass takes its colour from what passes beneath (liquid-glass.md §1) */
+      .paneterm { top: calc(41px + env(safe-area-inset-top)); }
       .panechat { padding-top: calc(56px + env(safe-area-inset-top)); padding-right: max(18px, calc((100% - var(--chat-col)) / 2)); }
-      /* calm above the conversation: it runs on under the pill and fades out there */
-      .pane.chat::after { content: ""; position: absolute; z-index: 2; left: 0; right: 0; top: 0;
-        height: calc(54px + env(safe-area-inset-top)); pointer-events: none;
-        background: linear-gradient(to bottom, var(--chat-void) calc(100% - 16px), transparent); }
-      .pane:not(.chat) .termfind.open { top: calc(44px + env(safe-area-inset-top)); }
+      .pane:not(.chat) .termfind.open { top: calc(42px + env(safe-area-inset-top)); }
 
-      #mtop { display: flex; flex-direction: column; align-items: center; position: absolute; z-index: 8;
-        top: calc(6px + env(safe-area-inset-top)); left: 6px; right: 6px; pointer-events: none;
-        font-family: var(--chat-sans); }
-      #mpill { position: relative; pointer-events: auto; display: inline-flex; align-items: center; justify-content: center;
-        gap: 8px; min-width: 120px; max-width: 100%; height: 32px; padding: 0 16px 0 14px; border: 0;
-        border-radius: var(--r3); background: var(--chat-raised); color: var(--chat-ink); cursor: pointer;
-        box-shadow: inset 0 0 0 1px var(--chat-edge), 0 8px 24px color-mix(in srgb, var(--chat-void) 70%, transparent);
-        font: 500 var(--chat-fs) / 1.2 var(--chat-sans); letter-spacing: -0.01em; transition: box-shadow var(--t); }
-      #mpill::before { content: ""; position: absolute; left: 0; right: 0; top: -4px; bottom: -4px; }
-      #mpill:active, #mpill:focus-visible { outline: none;
-        box-shadow: inset 0 0 0 1px var(--chat-mute), 0 8px 24px color-mix(in srgb, var(--chat-void) 70%, transparent); }
-      #mtop .mnm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      #mopen { display: none; }
-      body.mopen #mpill { display: none; }
-      body.mopen #mtop { pointer-events: auto; align-items: stretch; padding: 4px; border-radius: var(--r3);
-        background: var(--chat-raised);
-        box-shadow: inset 0 0 0 1px var(--chat-edge), 0 10px 30px color-mix(in srgb, var(--chat-void) 70%, transparent); }
-      body.mopen #mopen { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto 40px; grid-template-rows: 40px 40px; gap: 2px; }
-      #mopen button { padding: 0; border: 0; background: none; color: var(--chat-mute); font-family: var(--chat-sans);
-        cursor: pointer; }
-      #mopen button:active, #mopen button:focus-visible { outline: none; background: var(--c-hover); color: var(--chat-ink); }
-      #mslot, #mfind, #minfo { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--r2); }
-      #mslot { grid-column: 1; grid-row: 1; position: relative; }
-      /* the terminal search (card 746e381b) beside ℹ: a pane action with no hardware keyboard, terminal
-         view only — hidden, its column collapses (auto) and the name takes the room back */
-      #mfind { grid-column: 3; grid-row: 1; }
-      #minfo { grid-column: 4; grid-row: 1; }
-      #mfind .ico, #minfo .ico { width: 18px; height: 18px; }
-      #mfind[hidden] { display: none; }
-      #mslot .maddr, #msheet .maddr { flex: none; min-width: 26px; padding: 1px 5px; border-radius: var(--r1); background: var(--chat-surface);
+      /* THE TOP ISLAND OF GLASS (card "Die Insel auf dem Telefon wird nach dem freigegebenen
+         Entwurf gebaut", docs/design/insel-glas-notiz.md §1–§3, Grammatik G0.8). #mtop is the hit
+         zone: 8 px above and below the glass, so the pill shows 28 px and hits 44. It gives way
+         to a horizontal drag by --mdx (35 %, at most 24 px; src/client.ts#islandSwipe) and takes
+         every horizontal move itself (touch-action: pan-y). #mglas is the glass: closed as wide as
+         the name (96–168 px, --mpw from src/client.ts#fitPill), opened --maw × 96, both as the
+         spring (--feder). Closed: the state shape and the name, as a band (two copies, 40 px/s,
+         after 1.2 s, soft edges) only when it overflows. Open: Sessions · name · Info, then the
+         view's tools as icon buttons and the named empty place Arbeitsort; they spring in 22 ms apart. */
+      #mtop { display: block; position: absolute; z-index: 8; left: 50%; top: env(safe-area-inset-top); padding: 8px 0;
+        --maw: min(370px, calc(100vw - 20px)); transform: translateX(-50%) translateX(var(--mdx, 0px));
+        touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent; font-family: var(--chat-sans); }
+      #mglas { position: relative; width: var(--mpw, 120px); height: 28px; border-radius: 14px; overflow: hidden;
+        background: linear-gradient(180deg, var(--glas-licht), transparent 42%), var(--glas-scrim);
+        -webkit-backdrop-filter: blur(var(--glas-blur)) saturate(var(--glas-sat));
+        backdrop-filter: blur(var(--glas-blur)) saturate(var(--glas-sat));
+        box-shadow: inset 0 1px 0 var(--glas-kante-o), inset 0 -1px 0 var(--glas-kante-u), inset 0 0 0 1px var(--glas-ring), var(--glas-schatten);
+        transition: width var(--feder-ms) var(--feder), height var(--feder-ms) var(--feder),
+          border-radius var(--feder-ms) var(--feder), scale 180ms var(--feder); }
+      /* a press shows itself (iOS has no navigator.vibrate) */
+      #mtop.mpress #mglas { scale: .97; }
+      /* the highlight follows the drag: its own layer, transform only — the glass is not repainted */
+      #mglas::after { content: ""; position: absolute; top: -40%; left: 50%; width: 60%; height: 80%; pointer-events: none;
+        background: radial-gradient(closest-side, var(--glas-ring), transparent);
+        transform: translateX(calc(-50% + var(--mdx, 0px) * 1.6)); }
+      body.mopen #mglas { width: var(--maw); height: 96px; border-radius: 26px; }
+      #mtop button { padding: 0; border: 0; background: none; color: var(--chat-ink); font-family: var(--chat-sans); cursor: pointer; }
+      #mtop button:focus-visible { outline: 2px solid var(--glas-fokus); outline-offset: -4px; }
+      #mpill { position: absolute; inset: 0; display: flex; align-items: center; gap: 6px; padding: 0 12px 0 11px;
+        border-radius: inherit; font: 500 min(var(--chat-fs), 15px) / 28px var(--chat-sans); letter-spacing: -0.01em;
+        transition: opacity 140ms linear; }
+      #mpill .act { width: 6px; height: 6px; }
+      .mband { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-align: center; }
+      .mband.mover { text-align: left;
+        -webkit-mask-image: linear-gradient(90deg, transparent 0, var(--chat-void) 8px, var(--chat-void) calc(100% - 14px), transparent);
+        mask-image: linear-gradient(90deg, transparent 0, var(--chat-void) 8px, var(--chat-void) calc(100% - 14px), transparent); }
+      .mspur { display: inline-flex; }
+      #mtop .mnm { color: var(--chat-ink); text-shadow: var(--glas-text); }
+      .mband.mover .mnm { padding-right: 32px; }
+      .mspur.mrun { will-change: transform; animation: mtick var(--mtick, 8s) linear 1.2s infinite; }
+      /* the band holds while the island is open or the page is hidden */
+      body.mopen .mspur.mrun, body.mhidden .mspur.mrun { animation-play-state: paused; }
+      @keyframes mtick { to { transform: translateX(-50%); } }
+      #mopen { display: none; position: absolute; left: 0; top: 0; width: var(--maw); padding: 4px; }
+      body.mopen #mopen { display: block; }
+      body.mopen #mpill { opacity: 0; pointer-events: none; }
+      .mz1, #mtools { display: flex; align-items: center; height: 44px; }
+      #mtools { gap: 2px; }
+      .mib { position: relative; flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 22px; }
+      .mib::before { content: ""; position: absolute; inset: 4px; border-radius: 18px; background: transparent;
+        transition: background-color 120ms linear, scale 180ms var(--feder); }
+      .mib:active::before { background: var(--glas-druck); scale: .92; }
+      .mib .ico { position: relative; width: 20px; height: 20px; filter: var(--glas-glyphe); }
+      #mtop .mib[hidden] { display: none; }
+      #mname { flex: 1; min-width: 0; height: 44px; display: flex; flex-direction: column; justify-content: center; align-items: center;
+        padding: 0 6px; text-align: center; }
+      #mname .ml1 { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+      #mname .mnm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font: 500 min(var(--chat-fs), 15px) / 1.25 var(--chat-sans); letter-spacing: -0.01em; }
+      #mname .mrp { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font: 400 var(--chat-ui-fs) / 1.3 var(--chat-sans); color: var(--chat-mute); }
+      #mname .mrp:empty { display: none; }
+      /* the named empty place: the Ranke card's worktree field fills it (insel-glas-notiz.md §4);
+         its word is drawn only while it is empty */
+      #mort { flex: 1; min-width: 64px; height: 36px; margin-left: 4px; display: grid; place-items: center;
+        border: 1px dashed var(--chat-faint); border-radius: 18px; color: var(--chat-faint);
+        font: 500 var(--chat-ui-fs) / 1 var(--chat-sans); letter-spacing: .02em; }
+      #mort:empty::before { content: "Arbeitsort"; }
+      /* the contents spring in one after another (--i from src/client.ts#renderIsland); closing
+         takes them away at once and only the glass springs */
+      #mopen .mib, #mopen #mname, #mopen #mort { opacity: 0; transform: translateY(-6px) scale(.6); }
+      body.mopen.mda #mopen .mib, body.mopen.mda #mopen #mname, body.mopen.mda #mopen #mort { opacity: 1; transform: none;
+        transition: opacity 160ms linear calc(60ms + var(--i, 0) * 22ms), transform var(--feder-ms) var(--feder) calc(60ms + var(--i, 0) * 22ms); }
+      @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        #mglas { background: linear-gradient(180deg, var(--glas-licht), transparent 42%), var(--glas-ohne); }
+      }
+      /* raised contrast or reduced transparency: no blur, the opaque face with a firm edge, no
+         highlight and no shadows on text — nothing shows through the island */
+      @media (prefers-contrast: more), (prefers-reduced-transparency: reduce) {
+        #mglas { background: var(--glas-dicht); -webkit-backdrop-filter: none; backdrop-filter: none;
+          box-shadow: inset 0 0 0 1px var(--c-edge-hi), var(--glas-schatten); }
+        #mglas::after { display: none; }
+        #mtop .mnm { text-shadow: none; }
+        .mib .ico { filter: none; }
+      }
+      /* still: no spring (states jump), no band — a long name (#mtop.mlong, the pill overflows) stands
+         cut with a soft edge in the pill and in two lines when open, in place of model · effort. NOT a
+         sideways scroller: it would take the swipe (liquid-glass.md §5) */
+      @media (prefers-reduced-motion: reduce) {
+        #mglas, #mpill, #mopen .mib, #mopen #mname, #mopen #mort, .mib::before { transition: none !important; }
+        .mspur.mrun { animation: none; }
+        #mglas::after { transform: translateX(-50%); }
+        #mtop.mlong #mname .mnm { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.2; }
+        #mtop.mlong #mname .mrp { display: none; }
+      }
+
+      #msheet .maddr { flex: none; min-width: 26px; padding: 1px 5px; border-radius: var(--r1); background: var(--chat-surface);
         box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); font: 400 var(--chat-code-fs) / 1.45 var(--chat-mono);
         font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
-      #mslot .act { position: absolute; right: 3px; top: 5px; box-shadow: 0 0 0 2px var(--chat-raised); }
-      #mslot .act.rest { box-shadow: inset 0 0 0 1.5px var(--chat-mute), 0 0 0 2px var(--chat-raised); }
-      #mopen #mname { grid-column: 2; grid-row: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center;
-        align-items: flex-start; gap: 1px; padding: 0 8px; border-radius: 14px; text-align: left; }
-      #mname .ml1 { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
-      #mname .mnm { font-size: var(--chat-fs); font-weight: 500; line-height: 1.25; letter-spacing: -0.01em; color: var(--chat-ink); }
-      #mname .mrp { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        font-size: var(--chat-ui-fs); line-height: 1.2; color: var(--chat-faint); }
-      #mname .mrp:empty { display: none; }
-      /* the tools row runs on under ℹ, and ⋯ sticks to its right end: with a wide font or a large
-         Aa the words scroll under it, ⋯ itself never leaves the screen */
-      #mtools { grid-column: 2 / 5; grid-row: 2; display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-      #mtools button { flex: none; display: inline-flex; align-items: center; height: 40px; padding: 0 10px;
-        border-radius: var(--r1); font-size: var(--chat-fs); white-space: nowrap; }
-      #mopen #mtools #mmore { position: sticky; right: 0; width: 40px; justify-content: center; padding: 0; margin-left: auto;
-        background: var(--chat-raised); }
-      #mtools #mmore .ico { width: 18px; height: 18px; }
-      #mtools [hidden], #minfo[hidden] { display: none; }
 
       /* the pane's corner group: its view toggle and ℹ live in the island; the rest is a row of the
          sheet behind ⋯ — only the end mark stays, resting over the bottom island while the
@@ -3588,6 +3650,23 @@
       #msheet .mshapply { flex: none; margin-left: auto; min-height: 40px; padding: 0 12px; border-radius: var(--r1); background: var(--chat-ink);
         color: var(--chat-void); font-weight: 500; font-size: var(--chat-ui-fs); }
       #msheet .mshapply:disabled { background: var(--chat-edge); color: var(--chat-faint); }
+
+      /* THE TWO SIDES (insel-glas-notiz.md §1, §7): the swipe on the island opens Sessions from the
+         left and Info from the right — so both change their FORM here, not their content. Solid
+         (--chat-surface family, never glass), 86 % wide, over a shade. --mside-p is the opening,
+         0 shut … 1 open; src/client.ts#sideTo writes it per frame as the spring or the finger moves
+         it, and with no inline value the side simply stands open. */
+      #msheetwrap.mside #msheet { position: absolute; left: 0; top: 0; bottom: 0; width: 86%; max-height: none;
+        padding: calc(8px + env(safe-area-inset-top)) 6px calc(8px + env(safe-area-inset-bottom));
+        border-radius: 0 var(--r2) var(--r2) 0; transform: translateX(calc((var(--mside-p, 1) - 1) * 100%));
+        box-shadow: inset -1px 0 0 var(--chat-edge), 8px 0 22px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+      #msheetwrap.mside #msheetshade { opacity: var(--mside-p, 1); }
+      /* while a finger drags the side in, the side and its shade take no pointer: the touch stays on
+         the island (src/client.ts#islandRelease, body.mdrag) */
+      body.mdrag #msheetwrap, body.mdrag #shell-board { pointer-events: none; }
+      #shell-board { justify-content: flex-end; background: color-mix(in srgb, var(--chat-void) calc(66% * var(--mside-p, 1)), transparent); }
+      #shell-board .shellwin { width: 86%; transform: translateX(calc((1 - var(--mside-p, 1)) * 100%));
+        box-shadow: inset 1px 0 0 var(--chat-edge), -8px 0 22px color-mix(in srgb, var(--chat-void) 70%, transparent); }
     }
   }
 
@@ -3869,22 +3948,33 @@
       <div id="mreadtl"><button id="mreadmenu" type="button" title="Sessions"></button><span id="mreadtitle"></span></div>
       <div id="mreadbr"><button id="mreadkeys" type="button" title="Tastenreihe einblenden" aria-pressed="false"></button><button id="mreadwrite" type="button" title="Prompt schreiben"></button></div>
     </div>
-    <!-- the phone upright only (index.html, the island block): the top island in two steps — the
-         pill to read (state + name), opened to act. Every button hands over to a control the board
-         already has (src/client.ts#renderIsland): the pane's ℹ, search and view toggle, the tray's History
-         and Schedule; the slot button and ⋯ open the sheets Sessions and Werkzeuge (#msheet) -->
-    <div id="mtop" role="group" aria-label="Session und Werkzeuge">
-      <button id="mpill" type="button" aria-expanded="false" title="Insel aufklappen — Sessions, Info und Werkzeuge"></button>
-      <div id="mopen">
-        <button id="mslot" type="button" aria-haspopup="dialog" title="Sessions öffnen — wechseln, starten, Tasks"></button>
-        <button id="mname" type="button" aria-expanded="true" title="Insel zuklappen — mehr Platz zum Lesen"></button>
-        <button id="mfind" type="button" aria-label="Im Verlauf suchen" title="Im Terminalverlauf suchen — am Desktop ⌘/Strg+F"></button>
-        <button id="minfo" type="button" title="Info öffnen — Brief, Änderungen, Checks, Verlauf"></button>
-        <div id="mtools">
-          <button id="mview" type="button"></button>
-          <button id="mhist" type="button" title="Prompt-Verlauf dieser Session">History</button>
-          <button id="mauto" type="button" title="Geplante Prompts für diese Session">Schedule</button>
-          <button id="mmore" type="button" aria-haspopup="dialog" title="Weitere Werkzeuge — Modell, Effort, Live, Suche, Schrift, Einstellungen"></button>
+    <!-- the phone upright only (index.html, the island block): the top island of glass
+         (docs/design/insel-glas-notiz.md). #mtop is the 44-px hit zone, #mglas the glass: closed a
+         28-px pill (state + name, running as a band when it overflows), opened two rows of icon
+         buttons. Every button hands over to a control the board already has
+         (src/client.ts#renderIsland); a swipe right opens Sessions from the left, a swipe left the
+         Info from the right, never another session (src/client.ts#islandSwipe) -->
+    <div id="mtop" role="group" aria-label="Session">
+      <div id="mglas">
+        <button id="mpill" type="button" aria-expanded="false" title="Insel aufklappen"></button>
+        <div id="mopen">
+          <div class="mz1">
+            <button id="mslot" class="mib" type="button" aria-haspopup="dialog"></button>
+            <button id="mname" type="button" aria-expanded="true" aria-label="Insel zuklappen" title="Insel zuklappen"></button>
+            <button id="minfo" class="mib" type="button" aria-label="Info öffnen" title="Info öffnen — Brief, Änderungen, Checks, Verlauf"></button>
+          </div>
+          <div id="mtools">
+            <button id="mview" class="mib" type="button"></button>
+            <button id="mfind" class="mib" type="button" aria-label="Im Terminalverlauf suchen" title="Im Terminalverlauf suchen — am Desktop ⌘/Strg+F"></button>
+            <button id="mreload" class="mib" type="button" aria-label="Neu verbinden" title="Neu verbinden — holt den Verlauf neu"></button>
+            <button id="mup" class="mib" type="button" aria-label="Voriger Prompt" title="Zu deinem vorigen Prompt"></button>
+            <button id="mdown" class="mib" type="button" aria-label="Nächster Prompt" title="Zu deinem nächsten Prompt"></button>
+            <button id="mhist" class="mib" type="button" aria-label="Prompt-Verlauf" title="Prompt-Verlauf dieser Session"></button>
+            <button id="mauto" class="mib" type="button" aria-label="Geplante Prompts" title="Geplante Prompts für diese Session"></button>
+            <button id="mmore" class="mib" type="button" aria-haspopup="dialog" aria-label="Weitere Werkzeuge" title="Weitere Werkzeuge — Modell, Effort, Live, Schrift, Einstellungen"></button>
+            <!-- a named, EMPTY place: the worktree field of the Ranke card goes here (insel-glas-notiz.md §4) -->
+            <div id="mort" role="group" aria-label="Arbeitsort"></div>
+          </div>
         </div>
       </div>
     </div>

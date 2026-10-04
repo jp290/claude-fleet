@@ -4764,33 +4764,125 @@ mreadWrite.onclick = () => {
   ta.focus();
 };
 // THE PHONE UPRIGHT: two islands instead of #mhead and the fixed foot (index.html, the island
-// block; docs/design/mobil-insel-notiz.md §1b/§1c). The top island has two steps — closed, a pill
-// with the state shape and the name (to read); open, the controls (to act). A tap on the pill opens
-// it; a tap on the name, on its free surface or anywhere outside closes it, and so does every
-// action in it. It invents no way of its own: each button hands over to the control the board
-// already has — the focused pane's ℹ and view toggle, the tray's History and Schedule — and the
-// slot button and ⋯ open the two sheets below (openSheet), which do the same row by row. Body
-// classes only; the CSS decides that they mean anything (portrait).
+// block; docs/design/mobil-insel-notiz.md §1b/§1c). The TOP island is glass (card "Die Insel auf
+// dem Telefon wird nach dem freigegebenen Entwurf gebaut", docs/design/insel-glas-notiz.md): closed
+// a 28-px pill with the state shape and the name — a band that runs when the name overflows —,
+// open two rows of icon buttons (to act). A tap on the pill or its 44-px rim opens it; a tap on
+// the name, on its free glass or anywhere outside closes it, and so does every action in it. A
+// swipe on it opens a SIDE — to the right Sessions from the left, to the left Info from the right —
+// and never another session (islandRelease); ← / → on the focused island do the same, Escape
+// closes. It invents no way of its own: each button hands over to the control the board already
+// has — the focused pane's ℹ, view toggle, ↻, ↑ ↓ and search, the tray's History and Schedule —
+// and Sessions and ⋯ open the two sheets below (openSheet). Body classes only; the CSS decides
+// that they mean anything (portrait).
 const portrait = () => isMobile() && !LANDSCAPE_MQ.matches;
 const mTop = $("mtop"), mPill = $("mpill") as HTMLButtonElement, mName = $("mname") as HTMLButtonElement;
 const mSlot = $("mslot") as HTMLButtonElement, mInfo = $("minfo") as HTMLButtonElement, mView = $("mview") as HTMLButtonElement;
 const mMore = $("mmore") as HTMLButtonElement, mGrip = $("mgrip") as HTMLButtonElement;
 // the terminal search on a phone (card 746e381b): ⌘/Ctrl+F needs a hardware keyboard, so the open
-// island carries it beside ℹ — a pane action outside the terminal text (G6.4), terminal view only.
-// Not a word in the tools row: there it pushed Schedule under ⋯. It opens the bar Pane#openSearch
-// opens; the search itself is unchanged.
+// island carries it — a pane action outside the terminal text (G6.4), terminal view only. It opens
+// the bar Pane#openSearch opens; the search itself is unchanged.
 const mFind = $("mfind") as HTMLButtonElement;
-mFind.appendChild(icon("search"));
+const mReload = $("mreload") as HTMLButtonElement, mUp = $("mup") as HTMLButtonElement, mDown = $("mdown") as HTMLButtonElement;
+const mHist = $("mhist") as HTMLButtonElement, mAuto = $("mauto") as HTMLButtonElement, mTools = $("mtools");
+mSlot.appendChild(icon("menu"));
 mInfo.appendChild(icon("info"));
+mFind.appendChild(icon("search"));
+mReload.appendChild(icon("reload"));
+mUp.appendChild(icon("up"));
+mDown.appendChild(icon("down"));
+mHist.appendChild(icon("history"));
+mAuto.appendChild(icon("clock"));
 mMore.appendChild(icon("dots"));
+// the pill's name sits in a band track; a second copy joins it only while it runs (fitPill)
+const mBand = el("span", "mband"), mSpur = el("span", "mspur");
+mBand.setAttribute("aria-hidden", "true");
+mBand.appendChild(mSpur);
 const paneControl = (cls: string): HTMLButtonElement | null => {
   const b = panes[focused]?.root.querySelector<HTMLButtonElement>(`.panetools .${cls}`) ?? null;
   return b && b.style.display !== "none" ? b : null;
 };
+
+// THE SPRING (Grammatik G0.4 addendum, docs/design/liquid-glass.md §3): one spring in two settings,
+// given as in SwiftUI — response (s) and dampingFraction ζ; mass 1, so stiffness k = (2π/response)²
+// and damping c = 4π·ζ/response. "snap" moves a state (open, spring in, the island back to the
+// middle), "swipe" carries a released finger on with its velocity. springCurve samples the same
+// spring as a CSS linear() curve, so CSS and JS have one source. Still (prefers-reduced-motion,
+// chatStill): nothing springs, every state lands at once.
+type Spring = { response: number; zeta: number };
+const SPRING = { snap: { response: 0.38, zeta: 0.72 }, swipe: { response: 0.42, zeta: 0.86 } } satisfies Record<string, Spring>;
+const springKC = (f: Spring) => ({ k: (2 * Math.PI / f.response) ** 2, c: 4 * Math.PI * f.zeta / f.response });
+function springCurve(f: Spring, n = 24): { css: string; ms: number } {
+  const { k, c } = springKC(f);
+  let x = 0, v = 0, t = 0;
+  const xs = [0];
+  while (t < 3) {
+    v += (-k * (x - 1) - c * v) / 1000; x += v / 1000; t += 1 / 1000; xs.push(x);
+    if (Math.abs(1 - x) < 1e-3 && Math.abs(v) < 1e-2) break;
+  }
+  const ms = Math.round(t * 1000), pts: number[] = [];
+  for (let i = 0; i <= n; i++) pts.push(i === n ? 1 : +xs[Math.round(ms * i / n)].toFixed(3));
+  return { css: `linear(${pts.join(", ")})`, ms };
+}
+if (CSS.supports("transition-timing-function", "linear(0, 1)")) {
+  const snap = springCurve(SPRING.snap);
+  document.documentElement.style.setProperty("--feder", snap.css);
+  document.documentElement.style.setProperty("--feder-ms", `${snap.ms}ms`);
+}
+// the spring in JS, for what a finger hands over: integrated per frame in 1-ms steps from `v0`
+// (units per second), written only through `write`. The returned stop cancels it, so a new grip
+// starts from wherever it stands.
+function springTo(f: Spring, from: number, to: number, v0: number, write: (x: number) => void, done?: () => void): () => void {
+  if (chatStill.matches) { write(to); done?.(); return () => {}; }
+  const { k, c } = springKC(f);
+  let x = from, v = v0, last = performance.now(), id = 0;
+  const tick = (now: number) => {
+    let dt = Math.min(0.064, (now - last) / 1000);
+    last = now;
+    while (dt > 0) { const h = Math.min(dt, 0.001); v += (-k * (x - to) - c * v) * h; x += v * h; dt -= h; }
+    if (Math.abs(x - to) < 1e-3 * Math.max(1, Math.abs(to - from)) && Math.abs(v) < 1e-2) { write(to); done?.(); return; }
+    write(x);
+    id = requestAnimationFrame(tick);
+  };
+  id = requestAnimationFrame(tick);
+  return () => cancelAnimationFrame(id);
+}
+
+// the pill as wide as the name, 96–168 px; a name that does not fit runs as a band — a second copy
+// behind it, 40 px/s (the CSS starts it after 1.2 s, holds it while open or hidden) — never while
+// still, where it stands cut with a soft edge (liquid-glass.md §5)
+const PILL_PAD = 11 + 12, PILL_DOT = 6 + 6;
+function fitPill(): void {
+  for (const copy of [...mSpur.children].slice(1)) copy.remove();
+  mBand.classList.remove("mover");
+  mTop.classList.remove("mlong");
+  mSpur.classList.remove("mrun");
+  const nm = mSpur.firstElementChild as HTMLElement | null;
+  const nat = nm && portrait() ? nm.scrollWidth : 0;
+  if (!nm || !nat) return; // not drawn here (desktop, the phone on its side)
+  const chrome = PILL_PAD + (mPill.querySelector(".act") ? PILL_DOT : 0);
+  const width = Math.max(96, Math.min(168, nat + chrome));
+  mTop.style.setProperty("--mpw", `${width}px`);
+  if (nat <= width - chrome) return;
+  mBand.classList.add("mover");
+  mTop.classList.add("mlong");
+  const copy = nm.cloneNode(true) as HTMLElement;
+  mSpur.appendChild(copy);
+  mTop.style.setProperty("--mtick", `${(nm.getBoundingClientRect().width / 40).toFixed(2)}s`);
+  if (!chatStill.matches) mSpur.classList.add("mrun");
+}
+chatStill.addEventListener("change", () => { islandKey = ""; renderIsland(); });
+document.addEventListener("visibilitychange", () => document.body.classList.toggle("mhidden", document.hidden));
+
 function setIsland(open: boolean): void {
-  document.body.classList.toggle("mopen", open);
+  const body = document.body;
+  body.classList.toggle("mopen", open);
   mPill.setAttribute("aria-expanded", String(open));
-  if (open) renderIsland();
+  if (!open) { body.classList.remove("mda"); return; }
+  renderIsland();
+  // the contents spring in from the next frame on — in the frame that opens they have no start
+  if (chatStill.matches) body.classList.add("mda");
+  else requestAnimationFrame(() => requestAnimationFrame(() => { if (body.classList.contains("mopen")) body.classList.add("mda"); }));
 }
 let islandKey = "";
 function renderIsland(): void {
@@ -4806,41 +4898,64 @@ function renderIsland(): void {
   const model = s?.cwd ? runningModel(s.model, pane?.observedModel) : "";
   const effort = s?.cwd ? runningEffort(s.effort, pane?.observedEffort) : "";
   const meta = [model ? modelLabel(model).split(" · ")[0] : "", effort].filter(Boolean).join(" · ");
-  const view = paneControl("viewtoggle"), info = paneControl("boardtoggle");
+  const view = paneControl("viewtoggle"), info = paneControl("boardtoggle"), reload = paneControl("panereload");
+  const jumps = !!paneControl("promptnav.up") && !!paneControl("promptnav.dn");
   const chat = !!pane?.isChat, more = document.body.classList.contains("keyboard-options");
-  const key = [name, state, addr, meta, !!view, chat, !!info, more, slot].join("|");
+  // the pill's type follows Aa up to 15 px, so its measured width does too
+  const fs = portrait() ? getComputedStyle(mPill).fontSize : "";
+  const key = [name, state, addr, meta, !!view, chat, !!info, !!reload, jumps, more, slot, fs].join("|");
   if (key === islandKey) return;
   islandKey = key;
   const dot = () => { const d = el("span", `act ${state}`); d.title = state ? STATE_WORD[state] : ""; return d; };
-  mPill.replaceChildren(...(state ? [dot()] : []), el("span", "mnm", name));
+  mSpur.replaceChildren(el("span", "mnm", name));
+  mPill.replaceChildren(...(state ? [dot()] : []), mBand);
   mPill.setAttribute("aria-label", `${name}${state ? ` · ${STATE_WORD[state]}` : ""} — Insel aufklappen`);
-  mSlot.replaceChildren(el("span", "maddr", addr), ...(state ? [dot()] : []));
+  mTop.setAttribute("aria-label", `Session ${name}`);
   mSlot.setAttribute("aria-label", `Sessions öffnen — gerade ${addr} ${name}`);
+  mSlot.title = "Sessions öffnen — wechseln, starten, Tasks";
   const line1 = el("span", "ml1");
   line1.append(...(state ? [dot()] : []), el("span", "mnm", name));
   mName.replaceChildren(line1, el("span", "mrp", meta));
+  // the view button shows where it goes: the keyboard to the terminal, the bubble to the conversation
   mView.hidden = !view;
+  mView.replaceChildren(icon(chat ? "keys" : "chat"));
+  const viewWord = chat ? "Terminal anzeigen" : "Konversation anzeigen";
+  mView.setAttribute("aria-label", viewWord);
+  mView.title = viewWord;
   mFind.hidden = !slot || chat;
-  mView.textContent = chat ? "Terminal" : "Konversation";
-  mView.title = chat ? "Zum Terminal zurück" : "Konversation anzeigen";
+  mReload.hidden = chat || !reload;
+  mUp.hidden = mDown.hidden = !chat || !jumps;
   mInfo.hidden = !info;
   mMore.setAttribute("aria-expanded", String(more));
+  // the stagger counts what is drawn, so the springs follow each other with no gap
+  let i = 0;
+  for (const e of [mSlot, mName, mInfo, ...mTools.children] as HTMLElement[]) if (!e.hidden) e.style.setProperty("--i", String(i++));
+  fitPill();
 }
-// switching the step is no action: like the keys, it never takes the field's focus (keyboard stays).
-// Nor does ⋯: its options are for the field, and a keyboard leaving would fold them away again (sync)
-for (const b of [mPill, mName, mMore]) b.addEventListener("pointerdown", (e) => e.preventDefault());
-mPill.onclick = () => setIsland(true);
+MOBILE_MQ.addEventListener("change", () => { islandKey = ""; renderIsland(); });
+// switching the step is no action: like the keys, it never takes the field's focus (keyboard stays),
+// and neither does the island's rim. Nor does ⋯: its options are for the field, and a keyboard
+// leaving would fold them away again (sync)
+mTop.addEventListener("pointerdown", (e) => {
+  const b = (e.target as Element).closest("button");
+  if (!b || b === mPill || b === mName || b === mMore) e.preventDefault();
+});
 mName.onclick = () => setIsland(false);
 mTop.addEventListener("click", (e) => {
-  if (e.target === mTop || e.target === $("mopen") || e.target === $("mtools")) setIsland(false);
+  const b = (e.target as Element).closest("button");
+  if (!document.body.classList.contains("mopen")) { if (!b || b === mPill) setIsland(true); return; }
+  if (!b) setIsland(false); // the free glass, the rim
 });
 const islandAction = (run: () => void) => () => { setIsland(false); run(); };
-mSlot.onclick = islandAction(() => openSheet("sessions"));
-mInfo.onclick = islandAction(() => paneControl("boardtoggle")?.click());
+mSlot.onclick = islandAction(() => sideTo("sessions", 1));
+mInfo.onclick = islandAction(() => sideTo("info", 1));
 mView.onclick = islandAction(() => paneControl("viewtoggle")?.click());
 mFind.onclick = islandAction(() => panes[focused]?.openSearch());
-$("mhist").onclick = islandAction(() => $("histbtn").click());
-$("mauto").onclick = islandAction(() => $("autobtn").click());
+mReload.onclick = islandAction(() => paneControl("panereload")?.click());
+mUp.onclick = islandAction(() => paneControl("promptnav.up")?.click());
+mDown.onclick = islandAction(() => paneControl("promptnav.dn")?.click());
+mHist.onclick = islandAction(() => $("histbtn").click());
+mAuto.onclick = islandAction(() => $("autobtn").click());
 mMore.onclick = islandAction(() => openSheet("tools"));
 // a tap outside closes the open island (upright only)
 document.addEventListener("pointerdown", (e) => {
@@ -4848,6 +4963,178 @@ document.addEventListener("pointerdown", (e) => {
   if (!t || !portrait()) return;
   if (document.body.classList.contains("mopen") && !mTop.contains(t)) setIsland(false);
 }, true);
+
+// THE TWO SIDES the island opens (insel-glas-notiz.md §1, §3): Sessions from the left — the
+// Sessions sheet in its side form (#msheetwrap.mside) — and Info from the right — the board's
+// window (#shell-board). --mside-p on the side's own root is its opening, 0 shut … 1 open: the
+// finger moves it while it drags, the swipe spring carries it on with the finger's velocity, a
+// button or an arrow key opens it with the same spring. Back at 0 the side closes for real.
+type Side = "sessions" | "info";
+const sideHost = (side: Side): HTMLElement | null => side === "sessions"
+  ? (sheetOpen === "sessions" ? mSheetWrap : null) : (boardShell?.isOpen() ? boardShell.root : null);
+const sideP: Record<Side, number> = { sessions: 0, info: 0 };
+const sideStop: Partial<Record<Side, () => void>> = {};
+function sideWrite(side: Side, p: number): void {
+  sideP[side] = p;
+  sideHost(side)?.style.setProperty("--mside-p", String(Math.max(0, Math.min(1.04, p))));
+}
+// open the side's own surface (the sheet, the board's ℹ); false when there is none — a pane with no
+// session has no Info
+function sideOpen(side: Side): boolean {
+  if (side === "sessions") { if (sheetOpen !== "sessions") openSheet("sessions"); }
+  else if (!boardShell?.isOpen()) paneControl("boardtoggle")?.click();
+  return !!sideHost(side);
+}
+function sideShut(side: Side): void {
+  sideStop[side]?.();
+  sideStop[side] = undefined;
+  sideP[side] = 0;
+  if (side === "sessions") closeSheet();
+  else if (boardShell?.isOpen()) setBoard(false);
+}
+function sideTo(side: Side, to: 0 | 1, v0 = 0): void {
+  sideStop[side]?.();
+  const host = sideHost(side);
+  // a side opened some other way stands open (no inline opening): it starts from there
+  if (host && !host.style.getPropertyValue("--mside-p")) sideP[side] = 1;
+  if (!host) {
+    sideP[side] = 0;
+    if (to === 0 || !sideOpen(side)) return;
+    sideWrite(side, 0);
+  }
+  sideStop[side] = springTo(SPRING.swipe, sideP[side], to, v0, (p) => sideWrite(side, p), () => {
+    sideStop[side] = undefined;
+    if (to === 1) sideHost(side)?.style.removeProperty("--mside-p");
+    else sideShut(side);
+  });
+}
+
+// THE SWIPE (insel-glas-notiz.md §3, liquid-glass.md §4): pointer events on the island, which takes
+// every horizontal move itself (touch-action: pan-y). The axis locks after 8 px, the larger one
+// wins; a horizontal drag moves the side with the finger (1:1, a drawer) and the island gives 35 %
+// of it, at most 24 px. Released, the side opens past 28 px unless flicked back faster than
+// 0.4 px/ms, or at more than 0.4 px/ms its way; otherwise it springs back — so does a
+// pointercancel (the system took the gesture; its coordinates are not to be trusted, the last move
+// counts). The velocity is read off the last 8 moves. A start in the outer 20 px belongs to iOS's
+// edge swipe. A TAP (under 10 px and 250 ms) is decided here, at pointerup, and pressed on what the
+// finger went down on — the engine's own click after it is swallowed (any trusted click for 400 ms;
+// the press this code makes is untrusted and passes — Chromium's tap click carries detail 0, so
+// detail cannot tell them apart, measured), and so is the click after a long press or a drag. Deciding it here keeps the
+// thresholds the note names, and a touch stream that synthesises no click (Playwright's WebKit on
+// macOS, measured) still taps. While a finger drags, the side and its shade take no pointer
+// (body.mdrag): an engine that hit-tests every move would otherwise cancel the touch the moment the
+// shade slides under it (measured in that WebKit: pointercancel, then pointerup on the shade).
+const SWIPE = { lock: 8, tapPx: 10, tapMs: 250, firePx: 28, fireV: 0.4, edge: 20, give: 0.35, giveMax: 24 } as const;
+type Drag = { id: number; at: Element; x0: number; y0: number; x: number; y: number; t0: number; axis: "x" | "y" | null; side: Side | null; none: Side | null; track: [number, number][] };
+let drag: Drag | null = null, swallowUntil = 0, giveStop: (() => void) | null = null;
+const setGive = (px: number) => mTop.style.setProperty("--mdx", `${px.toFixed(2)}px`);
+const sideWidth = (side: Side): number =>
+  sideHost(side)?.querySelector<HTMLElement>(side === "sessions" ? "#msheet" : ".shellwin")?.getBoundingClientRect().width || innerWidth * 0.86;
+mTop.addEventListener("click", (e) => {
+  if (performance.now() < swallowUntil && e.isTrusted) { e.stopImmediatePropagation(); e.preventDefault(); }
+}, true);
+mTop.addEventListener("pointerdown", (e) => {
+  if (!portrait() || e.button > 0) return;
+  if (drag) islandRelease(e, true, drag.id); // a finger whose end never came (the system kept it) lets go
+  if (e.clientX < SWIPE.edge || innerWidth - e.clientX < SWIPE.edge) return;
+  giveStop?.();
+  giveStop = null;
+  drag = { id: e.pointerId, at: e.target as Element, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: e.timeStamp,
+    axis: null, side: null, none: null, track: [[e.timeStamp, e.clientX]] };
+  mTop.classList.add("mpress");
+});
+mTop.addEventListener("pointermove", (e) => {
+  const d = drag;
+  if (!d || e.pointerId !== d.id) return;
+  d.track.push([e.timeStamp, e.clientX]);
+  if (d.track.length > 8) d.track.shift();
+  d.x = e.clientX; d.y = e.clientY;
+  const dx = d.x - d.x0, dy = d.y - d.y0;
+  if (!d.axis && Math.hypot(dx, dy) >= SWIPE.lock) {
+    d.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+    mTop.classList.remove("mpress");
+    if (d.axis === "x") {
+      document.body.classList.add("mdrag");
+      try { mTop.setPointerCapture(e.pointerId); } catch { /* the pointer is gone already */ }
+    }
+  }
+  if (d.axis !== "x") return;
+  e.preventDefault();
+  setGive(Math.sign(dx) * Math.min(SWIPE.giveMax, Math.abs(dx) * SWIPE.give));
+  const side: Side = dx > 0 ? "sessions" : "info";
+  if (d.side && d.side !== side) { sideShut(d.side); d.side = null; }
+  if (d.none === side) return;
+  if (d.side !== side) {
+    sideStop[side]?.();
+    if (!sideHost(side)) { sideP[side] = 0; if (!sideOpen(side)) { d.none = side; return; } }
+    d.side = side;
+  }
+  sideWrite(side, Math.min(1, Math.abs(dx) / sideWidth(side)));
+});
+// `last`: the release happened where the finger last moved (the event's own coordinates are not to
+// be trusted — a cancel, or a cancel that turned out to be a release)
+function islandRelease(e: PointerEvent, cancelled: boolean, id = e.pointerId, last = cancelled): void {
+  const d = drag;
+  if (!d || id !== d.id) return;
+  drag = null;
+  clearTimeout(cancelTimer);
+  pendingCancel = null;
+  mTop.classList.remove("mpress");
+  document.body.classList.remove("mdrag");
+  const x = last ? d.x : e.clientX, y = last ? d.y : e.clientY;
+  const dx = x - d.x0, dy = y - d.y0, ms = e.timeStamp - d.t0;
+  const a = d.track[0], b = d.track[d.track.length - 1];
+  const v = b[0] > a[0] ? (b[1] - a[1]) / (b[0] - a[0]) : 0; // px/ms
+  // what the island measured, for a reader of the page (the probe checks a fast swipe arrived fast)
+  mTop.dataset.swipe = JSON.stringify({ axis: d.axis, dx: Math.round(dx), v: +v.toFixed(2), ms: Math.round(ms), side: d.side, cancelled });
+  if (d.axis !== "x") {
+    // no drag: the engine's click that follows is swallowed either way; a tap presses what the finger
+    // went down on — its button, else the island itself (the pill's rim opens, free glass closes)
+    swallowUntil = performance.now() + 400;
+    if (!cancelled && !d.axis && Math.hypot(dx, dy) < SWIPE.tapPx && ms < SWIPE.tapMs && d.at.isConnected)
+      (d.at.closest<HTMLButtonElement>("#mtop button") ?? mTop).click();
+    return;
+  }
+  swallowUntil = performance.now() + 400;
+  const give = parseFloat(mTop.style.getPropertyValue("--mdx")) || 0;
+  giveStop = springTo(SPRING.snap, give, 0, v * 1000 * SWIPE.give, setGive, () => { giveStop = null; });
+  const side = d.side;
+  if (!side) return;
+  const vIn = v * Math.sign(dx); // the velocity in the swipe's own direction
+  const fire = !cancelled && ((Math.abs(dx) > SWIPE.firePx && vIn > -SWIPE.fireV) || vIn > SWIPE.fireV);
+  const w = sideWidth(side);
+  if (fire) { setIsland(false); sideTo(side, 1, Math.max(0, vIn) * 1000 / w); }
+  else sideTo(side, 0, Math.min(0, vIn) * 1000 / w);
+}
+mTop.addEventListener("pointerup", (e) => islandRelease(e, false));
+// A touch's pointercancel is not always the system taking it: WebKit (Playwright's macOS build,
+// measured) cancels a touch that ENDS outside the element it began on and then delivers that touch's
+// touchend — a drag that carried the finger off the pill would never open its side. The touch event
+// after the cancel decides: touchend is a release where the finger last was, touchcancel (or nothing
+// within 80 ms) is the cancel.
+let pendingCancel: PointerEvent | null = null, cancelTimer: ReturnType<typeof setTimeout> | undefined;
+mTop.addEventListener("pointercancel", (e) => {
+  if (!drag || e.pointerId !== drag.id) return;
+  if (e.pointerType !== "touch") { islandRelease(e, true); return; }
+  pendingCancel = e;
+  clearTimeout(cancelTimer);
+  cancelTimer = setTimeout(() => { if (pendingCancel) islandRelease(pendingCancel, true); }, 80);
+});
+mTop.addEventListener("touchend", () => { if (pendingCancel) islandRelease(pendingCancel, false, pendingCancel.pointerId, true); }, { passive: true });
+mTop.addEventListener("touchcancel", () => {
+  const e = pendingCancel;
+  if (e) islandRelease(e, true);
+  else if (drag) islandRelease(new PointerEvent("pointercancel", { pointerId: drag.id }), true, drag.id);
+}, { passive: true });
+// ← and → on the focused island are the swipe's keys: they follow the SIDE (← opens the left one),
+// since a key pulls nothing; Escape closes (the window's handler above, the board's own)
+mTop.addEventListener("keydown", (e) => {
+  if (!portrait() || e.altKey || e.ctrlKey || e.metaKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  setIsland(false);
+  sideTo(e.key === "ArrowLeft" ? "sessions" : "info", 1);
+});
 // the grip folds the chips and the nine keys in and out of the bottom island; like the keys, it
 // never takes the field's focus, so the on-screen keyboard stays up
 mGrip.addEventListener("pointerdown", (e) => e.preventDefault());
@@ -4861,14 +5148,18 @@ mGrip.onclick = () => {
 LANDSCAPE_MQ.addEventListener("change", () => {
   setIsland(false);
   closeSheet();
+  islandKey = ""; // the pill is measured again once it is drawn
+  renderIsland();
   if (portrait()) { document.body.classList.remove("keyboard-options"); mobileMore.setAttribute("aria-expanded", "false"); }
 });
 
 // THE TWO SHEETS OF THE TOP ISLAND (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene
 // Blätter"; docs/design/mobil-insel-notiz.md §1 and §3, sketch mobil-insel-skizze.html?v=oben&blatt=…).
-// The slot button opens Sessions, ⋯ opens Werkzeuge: each a sheet over a shade, full width and set
+// Sessions opens Sessions, ⋯ opens Werkzeuge, each over a shade. Werkzeuge is a sheet, full width
 // at the foot of the VISIBLE screen (G4.1 mobil; #msheetwrap is --vvh tall, so a keyboard that has
-// not left yet never covers it). Like the island it invents no way of its own — every row hands over
+// not left yet never covers it); Sessions is the glass island's LEFT SIDE since its build — from
+// the left edge, 86 % wide, the visible screen tall (insel-glas-notiz.md §7: the form changed, not
+// the content), opened by the button, ← or a swipe (sideTo). Like the island it invents no way of its own — every row hands over
 // to what the board already has: the drawer's head buttons, showSlot, openPicker, the instance
 // menu's own rows, the tray, the pane's corner group, the composer's switches, openSettings. A
 // conditional control stays conditional: its row shows exactly when its source does. Every row
@@ -4886,6 +5177,8 @@ function openSheet(which: Sheet): void {
   sheetOpen = which;
   sheetInst = false;
   sheetKey = "";
+  // Sessions is the island's left side (index.html, THE TWO SIDES); Werkzeuge stays at the foot
+  mSheetWrap.classList.toggle("mside", which === "sessions");
   document.body.classList.add("msheet");
   mSheetWrap.setAttribute("aria-hidden", "false");
   renderSheet();
@@ -4895,6 +5188,11 @@ function closeSheet(refocus = false): void {
   if (!sheetOpen) return;
   sheetOpen = null;
   sheetKey = "";
+  sideStop.sessions?.();
+  sideStop.sessions = undefined;
+  sideP.sessions = 0;
+  mSheetWrap.classList.remove("mside");
+  mSheetWrap.style.removeProperty("--mside-p");
   document.body.classList.remove("msheet");
   mSheetWrap.setAttribute("aria-hidden", "true");
   mSheet.replaceChildren();

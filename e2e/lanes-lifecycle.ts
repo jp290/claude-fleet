@@ -228,7 +228,7 @@ async function workplacesChecks(): Promise<void> {
     const compile = (code: string, occupants: FixtureOccupant[], graphFails = false, statusAwait?: () => Promise<void>, notesFail = false, gitCalls?: string[], sources: Record<string, unknown> = {}) => {
       const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
       return new Function("slots", "DISPATCH_REPO", "gitRead", "testinstanzCommand", "existsSync", "realpathSync", "statSync", "lstatSync", "HOST", "commandJobs", "laneSuiteJobs", "mergeLast", "mergeParked", "serverRuns",
-        "runningPostLandAudit", "auditQueue", "auditQueueGroups", "auditCmdFor", "repoCanon", "localFailNames", "POSTLAND_AUDIT_FILE", "validAuditRow", "helperClaims", "auditShardRuns", "coverKey",
+        "runningPostLandAudit", "auditQueue", "auditQueueGroups", "auditCmdFor", "repoCanon", "localFailNames", "POSTLAND_AUDIT_FILE", "validAuditRow", "helperClaims", "auditShardRuns", "coverKey", "auditClaimableSince",
         `${js}\nreturn { repo: workplaceRepo, read: workplaces, observations: workplaceCheckObservations, checks: workplaceChecks, audits: workplaceAuditReading };`)(occupants, realpathSync(b),
         async (repo: string, ...args: string[]) => {
           gitCalls?.push(args[0]);
@@ -247,7 +247,7 @@ async function workplacesChecks(): Promise<void> {
           if (!row || typeof row !== "object" || !("covers" in row) || !Array.isArray(row.covers)) return null;
           return row;
         }, sources.claims ?? new Map(), sources.auditShards ?? new Map(),
-        (c: { branch: string; mainAfter: string; at: number }) => JSON.stringify([c.branch, c.mainAfter, c.at])) as { observations: (repo: string, notes: { rows: unknown[] }, audits: { rows: unknown[]; reason: string }) => WorkplaceCheckObservation[];
+        (c: { branch: string; mainAfter: string; at: number }) => JSON.stringify([c.branch, c.mainAfter, c.at]), sources.claimableSince ?? new Map()) as { observations: (repo: string, notes: { rows: unknown[] }, audits: { rows: unknown[]; reason: string }) => WorkplaceCheckObservation[];
           checks: (repo: string, branch: string | null, head: string | null, observations: WorkplaceCheckObservation[], auditReason: string,
             reasons: Array<{ field: string; reason: string }>) => WorkplaceChecks;
           audits: () => Promise<{ rows: unknown[]; reason: string }>;
@@ -347,6 +347,21 @@ async function workplacesChecks(): Promise<void> {
       check(`workplaces checks old audit finishing late cannot hide newer ${state} cover`, lateAuditClaim(functions, state));
       check(`workplaces checks completion-order mutation hides newer ${state} cover`, auditOrderMutant !== functions && !lateAuditClaim(auditOrderMutant, state));
     }
+    const retryAuditClaim = (code: string, state: "waiting" | "running") => {
+      const cover = { branch: checkBranch, mainAfter: checkHead, at: 100 };
+      const f = compile(code, [], false, undefined, false, undefined, state === "waiting"
+        ? { queue: new Map([[checkRepo, { covers: [cover] }]]), claimableSince: new Map([[checkRepo, 400]]) }
+        : { running: { repo: checkRepo, mainSha: checkHead, startedAt: 400, covers: [cover] } });
+      const observations = f.observations(checkRepo, { rows: [] }, { rows: [{ repo: checkRepo, mainSha: checkHead,
+        at: 300, result: "red", fails: ["previous attempt"], covers: [cover] }], reason: "audit-not-retained" });
+      const value = f.checks(checkRepo, checkBranch, checkHead, observations, "audit-not-retained", []).audit;
+      return value?.state === state && value.head === checkHead && value.at === 400 && value.fails.length === 0;
+    };
+    const auditRetryMutant = functions.replace(" || b.at - a.at", "");
+    for (const state of ["waiting", "running"] as const) {
+      check(`workplaces checks red audit yields to newer ${state} retry of the same cover`, retryAuditClaim(functions, state));
+      check(`workplaces checks observation-time mutation hides ${state} retry behind old red`, auditRetryMutant !== functions && !retryAuditClaim(auditRetryMutant, state));
+    }
     const skipGate = observe("gate", "green", checkHead, { merges: new Map([[42, { branch: checkBranch, candidateSha: checkHead, at: 300, verify: { ok: null, out: "" } }]]) });
     check("workplaces checks explicit gate skip is skipped", skipGate.checks.gate?.state === "skipped");
     for (const flag of ["timedOut", "waitedOut", "serverDown"] as const) {
@@ -376,10 +391,18 @@ async function workplacesChecks(): Promise<void> {
       ["self header", "x-fleet-self-token: SYNTHETIC_CREDENTIAL_VALUE", "[redacted]"],
       ["bare bearer", "Bearer SYNTHETIC_CREDENTIAL_VALUE", "[redacted]"],
       ["schemaless query", "/fixture/path?token=SYNTHETIC_CREDENTIAL_VALUE&next=okay", "/fixture/path?[redacted]&next=okay"],
+      ["compressed IPv6", "fixture 2001:db8::1", "fixture [redacted]"],
+      ["expanded IPv6", "fixture 2001:db8:0:0:0:0:0:1", "fixture [redacted]"],
+      ["bracketed IPv6 URL", "[2001:db8::1]:8790/fixture", "[redacted]/fixture"],
+      ["HTTP bracketed IPv6 URL", "http://[2001:db8::1]:8790/fixture", "[redacted]"],
+      ["IPv4-mapped IPv6", "fixture ::ffff:192.0.2.1", "fixture [redacted]"],
     ] as const;
     const credentialScrub = functions.match(/name\.replace\([^\n]+/u)?.[0];
     if (!credentialScrub) throw new Error("workplaces credential mutation cannot resolve scrub expression");
-    const credentialMutant = functions.replace(credentialScrub, "name");
+    const ipv6Scrub = functions.split("\n").find((line) => line.includes(".replace(/") && line.includes("(?<!"))?.trim();
+    const addressScrub = functions.split("\n").find((line) => line.trim().startsWith(".replace(/https?:"))?.trim();
+    if (!ipv6Scrub || !addressScrub) throw new Error("workplaces redaction mutation cannot resolve address scrubs");
+    const credentialMutant = functions.replace(credentialScrub, "name").replace(ipv6Scrub, "").replace(addressScrub, "");
     const protectsCredential = (code: string, input: string, expected: string) => {
       const f = compile(code, []);
       const value = f.checks(checkRepo, checkBranch, checkHead, [{ repo: checkRepo, branch: checkBranch, stage: "preview", head: checkHead,
@@ -387,8 +410,8 @@ async function workplacesChecks(): Promise<void> {
       return value === expected && !value.includes("SYNTHETIC_CREDENTIAL_VALUE");
     };
     for (const [form, input, expected] of credentialForms) {
-      check(`workplaces checks credential redaction removes value in ${form}`, protectsCredential(functions, input, expected));
-      check(`workplaces checks credential mutation exposes value in ${form}`, credentialMutant !== functions && !protectsCredential(credentialMutant, input, expected));
+      check(`workplaces checks sensitive redaction removes value in ${form}`, protectsCredential(functions, input, expected));
+      check(`workplaces checks redaction mutation exposes value in ${form}`, credentialMutant !== functions && !protectsCredential(credentialMutant, input, expected));
     }
     const unknownReason: Array<{ field: string; reason: string }> = [];
     const unknown = fixture.checks(checkRepo, checkBranch, checkHead, [{ ...localBase, state: null, reason: "job-unmeasured" }], "audit-not-retained", unknownReason);

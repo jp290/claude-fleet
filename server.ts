@@ -7235,7 +7235,7 @@ function workplaceCheckObservations(repo: string, notes: WorkplaceLandNotes, aud
   }
   for (const [qRepo, q] of auditQueue) if (sameRepo(qRepo))
     for (const g of auditQueueGroups(q)) for (const c of g.covers) if (!inflight.has(coverKey(c)))
-      addAudit(c, c.mainAfter, c.at, auditCmdFor(qRepo) ? "waiting" : "skipped");
+      addAudit(c, c.mainAfter, Math.max(c.at, auditClaimableSince.get(qRepo) ?? 0), auditCmdFor(qRepo) ? "waiting" : "skipped");
   return out;
 }
 function workplaceChecks(repo: string, branch: string | null, head: string | null,
@@ -7243,7 +7243,7 @@ function workplaceChecks(repo: string, branch: string | null, head: string | nul
   const checks: WorkplaceChecks = { local: null, preview: null, gate: null, audit: null };
   for (const stage of ["local", "preview", "gate", "audit"] as const) {
     const matches = observations.filter((o) => o.repo === repo && o.branch === branch && o.stage === stage)
-      .sort((a, b) => (b.order ?? b.at) - (a.order ?? a.at));
+      .sort((a, b) => (b.order ?? b.at) - (a.order ?? a.at) || b.at - a.at);
     const latest = matches[0];
     if (!latest?.state) {
       reasons.push({ field: `checks.${stage}`, reason: !branch ? "worktree-branch-unreadable"
@@ -7265,6 +7265,7 @@ function workplaceChecks(repo: string, branch: string | null, head: string | nul
     const state = stage === "local" ? (["running", "waiting", "red", "skipped", "green"] as const).find((s) => states.includes(s))! : latest.state;
     const fails = [...new Set(selected.flatMap((o) => o.fails))].slice(0, 20).map((name) =>
       name.replace(/\b(?:x-fleet-self-token|token|secret|authorization)\s*[:=]\s*(?:[a-z][a-z0-9_-]*\s+)?[^\s&#]+|\bBearer\s+[^\s&#]+/gi, "[redacted]")
+        .replace(/\[(?:[a-f0-9.]*:){2,}[a-f0-9.]*(?:%[a-z0-9_.~-]+)?\](?::\d+)?|(?<![a-z0-9])(?:[a-f0-9]{0,4}:){2,}(?:(?:\d{1,3}\.){3}\d{1,3}|[a-f0-9]{0,4})(?:%[a-z0-9_.~-]+)?(?![a-z0-9:])/gi, "[redacted]")
         .replace(/https?:\/\/\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b|\b(?:\d{1,3}\.){3}\d{1,3}\b/gi, "[redacted]")
         .replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 160));
     const sha = latest.head && /^[0-9a-f]{40,64}$/.test(latest.head) ? latest.head : null;

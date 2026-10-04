@@ -2983,9 +2983,11 @@ Ergebnisse bleiben bei abweichender SHA sichtbar und werden stale, auch nach Slo
   diese drei Ausfälle und eine fehlende Verify-Quittung bleiben null mit Grund.
 - audit: neuestes gehaltenes Audit mit covers für diesen Branch, oder sein laufender/geplanter
   Audit, einschließlich ungeteilter und geteilter Helper-Claims. Alle Audit-Beobachtungen
-  werden nach covers[].at, dem Landzeitpunkt, geordnet. Die angezeigte at bleibt die Ergebnis-,
-  Start- oder Queue-Zeit; ein spät abgeschlossenes älteres Audit verdeckt deshalb keine Arbeit
-  für ein neueres Land. head ist mainSha beziehungsweise das wartende mainAfter; diese Integrations-SHA
+  werden nach covers[].at, dem Landzeitpunkt, geordnet, bei Gleichheit nach Beobachtungszeit
+  (Abschluss oder Start). Wartende Arbeit nutzt den vorhandenen auditClaimableSince-Zeitpunkt,
+  falls später als der Cover; ohne diese flüchtige Quelle bleibt ihre Zeit die Cover-Zeit.
+  Die angezeigte at ist diese Ergebnis-, Start- oder Claimability-/Cover-Zeit; ein spät
+  abgeschlossenes älteres Audit verdeckt deshalb keine Arbeit für ein neueres Land. head ist mainSha beziehungsweise das wartende mainAfter; diese Integrations-SHA
   ersetzt nicht die Lane-SHA. not-applicable und eine geparkte Queue ohne Audit-Kommando
   sind skipped. unknown wird null mit audit-unmeasured.
 
@@ -2995,6 +2997,7 @@ Lesung audit-history-capped|malformed|unreadable. Diese Gründe beweisen keine h
 Abwesenheit. Fail-Namen sind auf 20 Einträge und je 160 Zeichen gedeckelt und redigiert:
 Credential-Schlüssel einschließlich x-fleet-self-token entfernen auch einen Wert nach einem
 Leerzeichen-Schema; allein stehendes Bearer und token-Queryparameter ohne URL-Schema ebenfalls.
+IPv6-Adressen, auch geklammert in URLs und mit eingebettetem IPv4, werden ebenfalls geschwärzt.
 Keine rohen Tails, Helper-Namen, Netzwerkadressen oder Zugangsdaten werden übernommen.
 
 Fixture-Ausschnitt bei Worktree-HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:

@@ -2209,7 +2209,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     for (const row of rpPlant.tasks ?? [])
       if (rpIds.includes(row.id)) { row.status = "sent"; row.slot = rpSlot; row.programId = rpProgramId; }
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpPlant, null, 2), { mode: 0o600 });
-    await restartSrv();
+    await restartSrv({ FLEET_AUTO_REVIEW_MS: "0" });
     const rpTok = rpState().slots?.[String(rpSlot)]?.selfToken ?? "";
     const rpMainTok = rpState().slots?.[String(rpMainSlot)]?.selfToken ?? "";
     check("review park setup: a committed lane carries two sent rows and a Program",
@@ -2247,7 +2247,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       openedAt: rpMain?.openedAt ?? 0, sessionId: rpMain?.sessionId ?? null },
       reason: null, fulfilled: null };
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpDecide, null, 2), { mode: 0o600 });
-    await restartSrv();
+    await restartSrv({ FLEET_AUTO_REVIEW_MS: "0" });
     writeFileSync(`${rpCwd}/review-park-dirty.txt`, "uncommitted\n");
     const dirty = await park({});
     const dirtyText = await dirty.text();
@@ -2355,7 +2355,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     const rpShelf = rpAge.shelved?.[rpCwd]?.review;
     if (rpShelf) rpShelf.expiresAt = Date.now() - 1000;
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpAge, null, 2), { mode: 0o600 });
-    await restartSrv();
+    await restartSrv({ FLEET_AUTO_REVIEW_MS: "0" });
     check("(review park) across a restart the rows stay parked — no boot requeue, no second dispatch",
       (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === null), JSON.stringify((await rpRows(rpIds))));
     const board2 = await rpBoard();

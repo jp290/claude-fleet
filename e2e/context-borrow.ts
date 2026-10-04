@@ -2,9 +2,9 @@ import { sectionAt, sourceSection } from "../context-sections";
 import { renderSessionAgents } from "../session-agents";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { CONTEXT_PACK_CAPABILITIES, CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
 import { planContext, planProgramContext, readPrivatePack, resolvePrivatePack } from "../context-plan";
 import { CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest, stampObservedSourceHashes, taskContextTriggers } from "../context-manifest";
@@ -50,13 +50,28 @@ export async function run(check: ContextPlanCheck): Promise<void> {
         error instanceof Error && error.name === "source-anchor-ambiguous"
         && error.message.includes("ambiguous.md") && error.message.includes("### Kern"));
     }
-    const founding = readFileSync(join(sourceRoot, "src/founding.ts"), "utf8");
-    const validators = founding.slice(founding.indexOf("const strs ="), founding.indexOf("// THE FOUR GROUPS"));
-    const fixed = founding.slice(founding.indexOf("const partFixed ="), founding.indexOf("// whether this start"));
-    const client = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
-      `${validators}\n${fixed}\nreturn { validPlan, partFixed };`))() as {
-      validPlan: (value: unknown) => boolean; partFixed: (value: unknown) => string | null;
+    const readClient = (roots: readonly string[]) => {
+      const errors: string[] = [];
+      for (const root of roots) try {
+        const founding = readFileSync(join(root, "src/founding.ts"), "utf8");
+        const validators = founding.slice(founding.indexOf("const strs ="), founding.indexOf("// THE FOUR GROUPS"));
+        const fixed = founding.slice(founding.indexOf("const partFixed ="), founding.indexOf("// whether this start"));
+        const client = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
+          `${validators}\n${fixed}\nreturn { validPlan, partFixed };`))() as {
+          validPlan: (value: unknown) => boolean; partFixed: (value: unknown) => string | null;
+        };
+        return { client };
+      } catch (error) { errors.push(`${root}: ${error instanceof Error ? error.message : String(error)}`); }
+      return { error: errors.join("; ") };
     };
+    const candidates = [sourceRoot];
+    try { candidates.push(dirname(resolve(sourceRoot, readlinkSync(join(sourceRoot, "node_modules"))))); } catch {}
+    const observed = readClient([...new Set(candidates)]);
+    const client = observed.client;
+    check("context borrow: PROBE: founding client validators are readable from the source tree", client !== undefined, observed.error);
+    const missingClient = readClient([root]);
+    check("context borrow: an unavailable founding source returns a setup error instead of throwing",
+      missingClient.client === undefined && missingClient.error?.includes("src/founding.ts") === true, missingClient.error);
     for (const harness of ["claude", "codex"]) {
       const input = { role: { text: "Fixture role.", path: "server.ts", anchor: "role" }, position: "lane", harness,
         plan: { selected: [{ id: "renderer-anchor", estimatedBytes: 0, sources: [
@@ -77,15 +92,17 @@ export async function run(check: ContextPlanCheck): Promise<void> {
         rendered?.parts.find((item) => item.id === "renderer-anchor.exact")?.content === exactSection
         && rendered.text.includes("ambiguous.md | ### Kern (source-anchor-ambiguous)")
         && !rendered.text.includes("First section.") && !rendered.text.includes("Second section."));
-      const clientPlan = { selected: [{ id: "renderer-anchor", bytes: 0, source: "repo-manifest", parts: [part] }],
-        omitted: [], sessionAgents: rendered };
-      check(`context borrow: the client accepts the ${harness} plan with an ambiguous refusal in pack and file parts`,
-        part !== undefined && rendered !== undefined && client.validPlan(clientPlan));
-      check(`context borrow: the client names the ${harness} ambiguous anchor as fixed outside the file`,
-        part !== undefined && client.partFixed(part) === "Anker nicht eindeutig.");
-      check(`context borrow: the client still rejects an unknown refusal in ${harness} plan parts`,
-        part !== undefined && !client.validPlan({ ...clientPlan,
-          selected: [{ ...clientPlan.selected[0]!, parts: [{ ...part, refusal: "unknown-refusal" }] }] }));
+      if (client) {
+        const clientPlan = { selected: [{ id: "renderer-anchor", bytes: 0, source: "repo-manifest", parts: [part] }],
+          omitted: [], sessionAgents: rendered };
+        check(`context borrow: the client accepts the ${harness} plan with an ambiguous refusal in pack and file parts`,
+          part !== undefined && rendered !== undefined && client.validPlan(clientPlan));
+        check(`context borrow: the client names the ${harness} ambiguous anchor as fixed outside the file`,
+          part !== undefined && client.partFixed(part) === "Anker nicht eindeutig.");
+        check(`context borrow: the client still rejects an unknown refusal in ${harness} plan parts`,
+          part !== undefined && !client.validPlan({ ...clientPlan,
+            selected: [{ ...clientPlan.selected[0]!, parts: [{ ...part, refusal: "unknown-refusal" }] }] }));
+      }
       let unexpected: unknown;
       try { renderSessionAgents({ ...input, sourceBytes: new Map([["ambiguous.md", 123 as unknown as string]]) }); }
       catch (caught) { unexpected = caught; }

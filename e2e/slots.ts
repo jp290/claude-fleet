@@ -5343,7 +5343,11 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
   writeFileSync(resolve(scratch, 'fixture.html'), `<!doctype html><meta charset="utf-8"><style>${css}</style><div id="slots"></div><button id="fixture-free">Freier Slot 2</button><script>window.fetch = () => { throw new Error('network forbidden in DOM fixture'); };</script><script>${await built.outputs[0].text()}</script>`);
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which('chromium') ?? Bun.which('chromium-browser') ?? Bun.which('google-chrome') ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error('DOM probe needs Chromium (FLEET_E2E_BROWSER): ' + executable); }
-  const browser = Bun.spawn([executable, '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${scratch}/profile`, 'about:blank'], { stdout: 'ignore', stderr: 'pipe' });
+  // the DEVICE is the fixture's, not the host's: a headless Chromium on the Linux helper reports
+  // (hover: none), the window then rightly puts every detail in the flow, and the desktop claims below
+  // measured a phone (preview a5394323f32d). Pinned: a mouse — hover, fine pointer (blink HoverType 2,
+  // PointerType 4) — so both hosts measure the same device; the PROBE line below checks it took.
+  const browser = Bun.spawn([executable, '--headless', '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${scratch}/profile`, 'about:blank'], { stdout: 'ignore', stderr: 'pipe' });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -5398,6 +5402,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await send('Page.navigate', { url: `file://${scratch}/fixture.html` });
       await evaluate(`new Promise((resolve, reject) => { const until = Date.now() + 5000; const ready = () => { if (window.fixtureReady) return resolve(true); if (Date.now() > until) return reject(new Error('fixture not ready')); requestAnimationFrame(ready); }; ready(); })`);
       const g: Record<string, boolean> = {}, detail: Record<string, string> = {};
+      g['PROBE: the fixture browser is the pinned mouse device — (hover: hover) and (pointer: fine), whatever the host'] = await evaluate<boolean>(`matchMedia('(hover: hover)').matches && matchMedia('(pointer: fine)').matches`);
       const shot = async (stage: string) => {
         if (!artifacts) return;
         const png = await send('Page.captureScreenshot', { format: 'png' });

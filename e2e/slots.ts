@@ -5750,6 +5750,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     // answer, how late, and a raw body that is not the wire's shape
     usageKind: "measured" as UsageKind, usageStatus: 200, usageDelay: 0, usageRaw: null as string | null,
     refreshKind: "measured" as UsageKind, refreshStatus: 200, refreshDelay: 0,
+    // the stale event's age as last served: it grows with the run, so the claim reads it from here
+    staleAgeMs: null as number | null,
   };
   // THE USAGE WIRE AS THE SERVER SERVES IT (src/protocol.ts#SubscriptionUsage): one measurement event
   // fixed for the run (its provenance is the event's identity), the age by the serving clock
@@ -5762,6 +5764,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     const gone = (status: string, reason: string) => ({ status, primary: null, secondary: null, source: { kind: "local-rollout", measuredAt: null,
       fetchedAt: at - 5_000, ageMs: null, staleAfterMs: 900_000, reason, selection: USAGE_SELECTION, limitId: null, accountBound: false, provenance: null } });
     const event = kind === "stale" ? USAGE_STALE_AT : kind === "late" ? at - 60_000 : USAGE_EVENT_AT;
+    if (kind === "stale") fx.staleAgeMs = at - event;
     const codex = kind === "missing" ? gone("unknown", "missing-source") : kind === "corrupt-source" ? gone("error", "invalid-json-line")
       : kind === "timeout" ? gone("error", "read-timeout")
       : { status: kind === "stale" ? "stale" : "measured",
@@ -6622,16 +6625,16 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await plain("null-secondary");
       fx.usageKind = "stale";
       await openUsage(); await wait(settled, 4000);
-      const uStale = await use();
+      const uStale = await use(), staleServed = fx.staleAgeMs;
       const staleClass = await evaluate<boolean>(`${useSec}.querySelector('[data-use="primary"]').classList.contains('stale')`);
       await plain("stale");
       await shot(width, "usage-stale");
-      facts.usageNullStale = { uNull, uStale, staleClass };
+      facts.usageNullStale = { uNull, uStale, staleClass, staleServed };
       claims["usage, null secondary: the primary measured, the secondary 'unbekannt' with the sentence that it was not sent, no 0"] =
         /42 % verbraucht/.test(uNull.primary ?? "") && /^Zweites Fenster unbekannt Codex hat für dieses Fenster nichts mitgeschickt\.$/.test(uNull.secondary ?? "");
       claims["usage, stale event: veraltet with its reason and age, the measured 30 % kept and marked"] =
         /^Zustand veraltet Der letzte Stand ist älter als 15 Minuten\./.test(uStale.state ?? "") && /30 % verbraucht/.test(uStale.primary ?? "") && /veraltet/.test(uStale.primary ?? "")
-        && /^Alter 40 min/.test(uStale.age ?? "") && staleClass;
+        && staleServed !== null && staleServed >= 40 * 60_000 && (uStale.age ?? "").startsWith(`Alter ${Math.floor(staleServed / 60_000)} min`) && staleClass;
       await key("Escape");
       facts.usagePlain = plainStates;
       claims["usage in the owner's words, in all 15 data states: no event checksum, no reader vocabulary, every 'unbekannt' says in one short sentence what is missing"] =

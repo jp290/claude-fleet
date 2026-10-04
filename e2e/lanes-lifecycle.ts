@@ -321,6 +321,32 @@ async function workplacesChecks(): Promise<void> {
     const unownedMerge = compile(functions, [{ ...checkHolder, worktree: { ...checkHolder.worktree, repo: a } }], false, undefined, false, undefined, fixtureSources("gate", "green"));
     const mismatchedMerge = unownedMerge.observations(checkRepo, { rows: [] }, { rows: [], reason: "audit-not-retained" });
     check("workplaces checks merge slot with matching branch in another repo cannot join", unownedMerge.checks(checkRepo, checkBranch, checkHead, mismatchedMerge, "audit-not-retained", []).gate === null);
+    const mergeWithRepo = { branch: checkBranch, candidateSha: checkHead, at: 300, repo: checkRepo, verify: { ok: true, out: "" } };
+    const recordedRepoClaim = (code: string) => {
+      const f = compile(code, [{ ...checkHolder, worktree: { ...checkHolder.worktree, repo: a } }], false, undefined, false, undefined,
+        { merges: new Map([[42, mergeWithRepo]]) });
+      return f.checks(checkRepo, checkBranch, checkHead, f.observations(checkRepo, { rows: [] }, { rows: [], reason: "audit-not-retained" }), "audit-not-retained", []).gate?.state === "green";
+    };
+    check("workplaces checks recorded merge repo survives occupant repo changes", recordedRepoClaim(functions));
+    const repoMutant = functions.replace('"repo" in m && typeof m.repo === "string" && m.repo ? m.repo : null', 'null');
+    check("workplaces checks merge repo mutation cannot substitute the current occupant", repoMutant !== functions && !recordedRepoClaim(repoMutant));
+    const recordedOtherRepo = observe("gate", "green", checkHead, { merges: new Map([[42, { ...mergeWithRepo, repo: a }]]) });
+    check("workplaces checks recorded other merge repo overrides a matching current holder", recordedOtherRepo.checks.gate === null);
+    const lateAuditClaim = (code: string, state: "waiting" | "running") => {
+      const newer = { branch: checkBranch, mainAfter: checkHead, at: 400 };
+      const f = compile(code, [], false, undefined, false, undefined, state === "waiting"
+        ? { queue: new Map([[checkRepo, { covers: [newer] }]]) }
+        : { running: { repo: checkRepo, mainSha: checkHead, startedAt: 450, covers: [newer] } });
+      const observations = f.observations(checkRepo, { rows: [] }, { rows: [{ repo: checkRepo, mainSha: oldHead,
+        at: 500, result: "green", covers: [{ branch: checkBranch, mainAfter: oldHead, at: 100 }] }], reason: "audit-not-retained" });
+      const value = f.checks(checkRepo, checkBranch, checkHead, observations, "audit-not-retained", []).audit;
+      return value?.state === state && value.head === checkHead && value.at === (state === "waiting" ? 400 : 450);
+    };
+    const auditOrderMutant = functions.replace('order: cover.at', 'order: at');
+    for (const state of ["waiting", "running"] as const) {
+      check(`workplaces checks old audit finishing late cannot hide newer ${state} cover`, lateAuditClaim(functions, state));
+      check(`workplaces checks completion-order mutation hides newer ${state} cover`, auditOrderMutant !== functions && !lateAuditClaim(auditOrderMutant, state));
+    }
     const skipGate = observe("gate", "green", checkHead, { merges: new Map([[42, { branch: checkBranch, candidateSha: checkHead, at: 300, verify: { ok: null, out: "" } }]]) });
     check("workplaces checks explicit gate skip is skipped", skipGate.checks.gate?.state === "skipped");
     for (const flag of ["timedOut", "waitedOut", "serverDown"] as const) {
@@ -345,6 +371,25 @@ async function workplacesChecks(): Promise<void> {
     const protectedNames = fixture.checks(checkRepo, checkBranch, checkHead, [{ repo: checkRepo, branch: checkBranch, stage: "preview", head: checkHead,
       state: "red", at: 300, fails: ["fixture https://fixture.invalid/ 192.0.2.1 token=SYNTHETIC_CHECK_SECRET"] }], "audit-not-retained", []);
     check("workplaces checks redacts network addresses and credential-shaped fail details", protectedNames.preview?.fails[0] === "fixture [redacted] [redacted] [redacted]");
+    const credentialForms = [
+      ["authorization scheme", "authorization: Bearer SYNTHETIC_CREDENTIAL_VALUE", "[redacted]"],
+      ["self header", "x-fleet-self-token: SYNTHETIC_CREDENTIAL_VALUE", "[redacted]"],
+      ["bare bearer", "Bearer SYNTHETIC_CREDENTIAL_VALUE", "[redacted]"],
+      ["schemaless query", "/fixture/path?token=SYNTHETIC_CREDENTIAL_VALUE&next=okay", "/fixture/path?[redacted]&next=okay"],
+    ] as const;
+    const credentialScrub = functions.match(/name\.replace\([^\n]+/u)?.[0];
+    if (!credentialScrub) throw new Error("workplaces credential mutation cannot resolve scrub expression");
+    const credentialMutant = functions.replace(credentialScrub, "name");
+    const protectsCredential = (code: string, input: string, expected: string) => {
+      const f = compile(code, []);
+      const value = f.checks(checkRepo, checkBranch, checkHead, [{ repo: checkRepo, branch: checkBranch, stage: "preview", head: checkHead,
+        state: "red", at: 300, fails: [input] }], "audit-not-retained", []).preview?.fails[0];
+      return value === expected && !value.includes("SYNTHETIC_CREDENTIAL_VALUE");
+    };
+    for (const [form, input, expected] of credentialForms) {
+      check(`workplaces checks credential redaction removes value in ${form}`, protectsCredential(functions, input, expected));
+      check(`workplaces checks credential mutation exposes value in ${form}`, credentialMutant !== functions && !protectsCredential(credentialMutant, input, expected));
+    }
     const unknownReason: Array<{ field: string; reason: string }> = [];
     const unknown = fixture.checks(checkRepo, checkBranch, checkHead, [{ ...localBase, state: null, reason: "job-unmeasured" }], "audit-not-retained", unknownReason);
     check("workplaces checks unknown result never becomes red or green", unknown.local === null && unknownReason.some((r) => r.reason === "job-unmeasured"));

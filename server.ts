@@ -7197,8 +7197,9 @@ function workplaceCheckObservations(repo: string, notes: WorkplaceLandNotes, aud
   for (const j of laneSuiteJobs.values()) job(j, "preview");
   const merges = [...mergeLast.entries(), ...[...mergeParked.values()].map((m) => [null, m] as const)];
   for (const [slot, m] of merges) {
+    const recordedRepo = "repo" in m && typeof m.repo === "string" && m.repo ? m.repo : null;
     const holder = slot === null ? null : slots.find((s) => s.id === slot && s.worktree?.branch === m.branch && sameRepo(s.worktree.repo));
-    if (!holder && !notes.rows?.some((n) => n.branch === m.branch && n.sha === m.candidateSha)) continue;
+    if (recordedRepo ? !sameRepo(recordedRepo) : !holder && !notes.rows?.some((n) => n.branch === m.branch && n.sha === m.candidateSha)) continue;
     const v = m.verify;
     out.push({ repo, branch: m.branch, stage: "gate", at: m.at, head: m.candidateSha ?? null,
       state: workplaceGateState(v),
@@ -7212,29 +7213,29 @@ function workplaceCheckObservations(repo: string, notes: WorkplaceLandNotes, aud
   }
   for (const r of serverRuns.values()) if (r.repo && sameRepo(r.repo) && r.suite.includes("gate"))
     out.push({ repo, branch: r.branch, stage: "gate", state: "running", head: null, at: r.at, fails: [] });
-  const addAudit = (branch: string, head: string | null, at: number, state: WorkplaceCheckObservation["state"], fails: string[] = []) =>
-    out.push({ repo, branch, stage: "audit", head, at, state, fails, reason: "audit-unmeasured" });
+  const addAudit = (cover: AuditCover, head: string | null, at: number, state: WorkplaceCheckObservation["state"], fails: string[] = []) =>
+    out.push({ repo, branch: cover.branch, stage: "audit", head, at, order: cover.at, state, fails, reason: "audit-unmeasured" });
   for (const r of audits.rows) if (sameRepo(r.repo))
-    for (const c of r.covers) addAudit(c.branch, r.mainSha, r.at,
+    for (const c of r.covers) addAudit(c, r.mainSha, r.at,
       r.result === "not-applicable" ? "skipped" : r.result === "unknown" ? null : r.result, r.fails ?? []);
   const running = runningPostLandAudit;
   if (running && sameRepo(running.repo)) for (const c of running.covers)
-    addAudit(c.branch, running.mainSha, running.startedAt, "running");
+    addAudit(c, running.mainSha, running.startedAt, "running");
   const inflight = new Set((running?.covers ?? []).map(coverKey));
   for (const c of helperClaims.values()) if (sameRepo(c.repo)) for (const cover of c.covers) {
     inflight.add(coverKey(cover));
-    addAudit(cover.branch, c.mainSha, c.claimedAt, c.expiresAt > Date.now() ? "running" : null);
+    addAudit(cover, c.mainSha, c.claimedAt, c.expiresAt > Date.now() ? "running" : null);
   }
   for (const r of auditShardRuns.values()) if (sameRepo(r.repo)) {
     const active = r.shards.some((s) => s.claim && s.claim.expiresAt > Date.now() && !s.result && !s.closed);
     for (const c of r.covers) {
       inflight.add(coverKey(c));
-      addAudit(c.branch, r.mainSha, r.firstClaimAt, active ? "running" : r.openUntil > Date.now() ? "waiting" : null);
+      addAudit(c, r.mainSha, r.firstClaimAt, active ? "running" : r.openUntil > Date.now() ? "waiting" : null);
     }
   }
   for (const [qRepo, q] of auditQueue) if (sameRepo(qRepo))
     for (const g of auditQueueGroups(q)) for (const c of g.covers) if (!inflight.has(coverKey(c)))
-      addAudit(c.branch, c.mainAfter, c.at, auditCmdFor(qRepo) ? "waiting" : "skipped");
+      addAudit(c, c.mainAfter, c.at, auditCmdFor(qRepo) ? "waiting" : "skipped");
   return out;
 }
 function workplaceChecks(repo: string, branch: string | null, head: string | null,
@@ -7263,7 +7264,8 @@ function workplaceChecks(repo: string, branch: string | null, head: string | nul
     }
     const state = stage === "local" ? (["running", "waiting", "red", "skipped", "green"] as const).find((s) => states.includes(s))! : latest.state;
     const fails = [...new Set(selected.flatMap((o) => o.fails))].slice(0, 20).map((name) =>
-      name.replace(/https?:\/\/\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:token|secret|authorization)\s*[:=]\s*\S+/gi, "[redacted]")
+      name.replace(/\b(?:x-fleet-self-token|token|secret|authorization)\s*[:=]\s*(?:[a-z][a-z0-9_-]*\s+)?[^\s&#]+|\bBearer\s+[^\s&#]+/gi, "[redacted]")
+        .replace(/https?:\/\/\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b|\b(?:\d{1,3}\.){3}\d{1,3}\b/gi, "[redacted]")
         .replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 160));
     const sha = latest.head && /^[0-9a-f]{40,64}$/.test(latest.head) ? latest.head : null;
     checks[stage] = { state, head: sha, at: Number.isFinite(latest.at) && latest.at > 0 ? latest.at : null,

@@ -2975,19 +2975,27 @@ Ergebnisse bleiben bei abweichender SHA sichtbar und werden stale, auch nach Slo
   Ergebnis. Eine gemessene remote.clonedSha hat Vorrang vor der angebotenen commitSha.
 - gate: letzter zuordenbarer Merge-Versuch aus mergeLast/mergeParked oder dessen fleet/land-Note;
   ein laufender branchgebundener Server-Gate kann running melden. candidateSha trägt die
-  Kandidatenidentität; verify.mainSha ist die Integrationsbasis und wird nicht als Kandidat
+  Kandidatenidentität. Ein im Merge-Eintrag selbst gehaltenes repo hat Vorrang. Ohne dieses
+  Legacy-Feld nimmt die Projektion an, dass der aktuelle Slot-Inhaber mit demselben Branch und
+  Repo den Eintrag zuordnet; alternativ belegt eine Land-Note Branch und candidateSha.
+  verify.mainSha ist die Integrationsbasis und wird nicht als Kandidat
   ausgegeben. Ein explizites ok:null ohne Timeout-/Wait-/Server-Ausfall ist skipped;
   diese drei Ausfälle und eine fehlende Verify-Quittung bleiben null mit Grund.
 - audit: neuestes gehaltenes Audit mit covers für diesen Branch, oder sein laufender/geplanter
-  Audit, einschließlich ungeteilter und geteilter Helper-Claims. head ist mainSha beziehungsweise das wartende mainAfter; diese Integrations-SHA
+  Audit, einschließlich ungeteilter und geteilter Helper-Claims. Alle Audit-Beobachtungen
+  werden nach covers[].at, dem Landzeitpunkt, geordnet. Die angezeigte at bleibt die Ergebnis-,
+  Start- oder Queue-Zeit; ein spät abgeschlossenes älteres Audit verdeckt deshalb keine Arbeit
+  für ein neueres Land. head ist mainSha beziehungsweise das wartende mainAfter; diese Integrations-SHA
   ersetzt nicht die Lane-SHA. not-applicable und eine geparkte Queue ohne Audit-Kommando
   sind skipped. unknown wird null mit audit-unmeasured.
 
 Fehlende/entfallene Angebote heißen local-not-retained beziehungsweise preview-not-retained,
 ein fehlender Gate gate-not-retained. Das Audit nennt audit-not-retained oder die eingeschränkte
 Lesung audit-history-capped|malformed|unreadable. Diese Gründe beweisen keine historische
-Abwesenheit. Fail-Namen sind auf 20 Einträge und je 160 Zeichen gedeckelt und redigiert;
-keine rohen Tails, Helper-Namen, Netzwerkadressen oder Zugangsdaten werden übernommen.
+Abwesenheit. Fail-Namen sind auf 20 Einträge und je 160 Zeichen gedeckelt und redigiert:
+Credential-Schlüssel einschließlich x-fleet-self-token entfernen auch einen Wert nach einem
+Leerzeichen-Schema; allein stehendes Bearer und token-Queryparameter ohne URL-Schema ebenfalls.
+Keine rohen Tails, Helper-Namen, Netzwerkadressen oder Zugangsdaten werden übernommen.
 
 Fixture-Ausschnitt bei Worktree-HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:
 

@@ -93,7 +93,8 @@ import { loadBlockerHistory, observeBlocker, finishBlockers, blockerTotals, type
 import {
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
-  FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom,
+  FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom, CODEX_CLI_VERSION_RE,
+  type CodexCliSnapshot, type CodexCliReason,
   type GitInfo, type InstanceIdentity, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus, type SuiteOfferRow,
@@ -1454,6 +1455,94 @@ const CONTAINER_HARNESS: Harness = {
 // Re-measured on codex-cli 0.153.4 the same day, fresh and `codex resume <id>`: 0 Playwright children.
 // A per-launch `-c` override — ~/.codex/config.toml is never written for it (pinned).
 const CODEX_TEXT_LANE_MCP = `'mcp_servers.playwright={command="npx",args=["@playwright/mcp@latest"],enabled=false}'`;
+const CODEX_CLI_TIMEOUT_MS = 2000;
+const CODEX_CLI_CACHE_MS = 60_000;
+const CODEX_CLI_OUTPUT_MAX = 1024;
+const CODEX_SPAWN_PATH = process.env.PATH;
+type CodexCliBinary = { path: string; identity: string };
+function resolveCodexCliBinary(): CodexCliBinary | null {
+  if (!CODEX_SPAWN_PATH) return null;
+  const path = Bun.which("codex", { PATH: CODEX_SPAWN_PATH });
+  if (!path) return null;
+  try {
+    const target = realpathSync(path), info = statSync(target);
+    const identity = createHash("sha256").update(JSON.stringify([path, target, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs])).digest("hex").slice(0, 24);
+    return { path, identity };
+  } catch { return null; }
+}
+async function probeCodexCliVersion(path: string): Promise<{ version: string | null; reason: CodexCliReason | null }> {
+  const start = () => Bun.spawn([path, "--version"], { stdin: "ignore", stdout: "pipe", stderr: "ignore", detached: true });
+  let proc: ReturnType<typeof start>;
+  try { proc = start(); }
+  catch { return { version: null, reason: "probe-failed" }; }
+  const reader = proc.stdout.getReader();
+  const stop = () => {
+    try { process.kill(-proc.pid, "SIGKILL"); }
+    catch { try { proc.kill("SIGKILL"); } catch {} }
+    void reader.cancel().catch(() => {});
+  };
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<{ version: null; reason: CodexCliReason }>((done) => {
+    timer = setTimeout(() => { stop(); done({ version: null, reason: "timeout" }); }, CODEX_CLI_TIMEOUT_MS);
+  });
+  const reading = (async (): Promise<{ version: string | null; reason: CodexCliReason | null }> => {
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > CODEX_CLI_OUTPUT_MAX) { stop(); return { version: null, reason: "output-limit" }; }
+        chunks.push(value);
+      }
+      if (await proc.exited !== 0) return { version: null, reason: "probe-failed" };
+      const output = Buffer.concat(chunks).toString("utf8").trim();
+      const version = /^codex-cli ([^\s]+)$/.exec(output)?.[1];
+      return version && CODEX_CLI_VERSION_RE.test(version)
+        ? { version, reason: null } : { version: null, reason: "invalid-version" };
+    } catch { stop(); return { version: null, reason: "probe-failed" }; }
+    finally { reader.releaseLock(); }
+  })();
+  try { return await Promise.race([timeout, reading]); }
+  finally { clearTimeout(timer!); }
+}
+function makeCodexCliObserver(
+  resolveBinary = resolveCodexCliBinary, probe = probeCodexCliVersion, clock = Date.now,
+) {
+  const bootAt = clock();
+  let snapshot: CodexCliSnapshot = { source: "local-spawn-binary", binary: null, version: null,
+    bootAt, observedAt: null, reason: "not-observed" };
+  let inFlight = false;
+  return {
+    read: (): CodexCliSnapshot => ({ ...snapshot }),
+    tick: async (): Promise<void> => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const binary = resolveBinary();
+        if (!binary) {
+          snapshot = { ...snapshot, binary: null, version: null, observedAt: clock(), reason: "binary-missing" };
+          return;
+        }
+        if (binary.identity === snapshot.binary && snapshot.observedAt !== null
+          && snapshot.reason !== "binary-changed" && clock() - snapshot.observedAt < CODEX_CLI_CACHE_MS) return;
+        snapshot = { ...snapshot, binary: binary.identity, version: null, observedAt: null,
+          reason: snapshot.binary === null ? "not-observed" : "binary-changed" };
+        const result = await probe(binary.path);
+        const current = resolveBinary();
+        snapshot = { ...snapshot, observedAt: clock(), ...result };
+        if (!current || current.identity !== binary.identity) {
+          snapshot = { ...snapshot, binary: current?.identity ?? null, version: null, reason: "binary-changed" };
+        }
+      } catch {
+        snapshot = { ...snapshot, version: null, observedAt: clock(), reason: "probe-failed" };
+      } finally { inFlight = false; }
+    },
+  };
+}
+const codexCliObserver = makeCodexCliObserver();
+
 const CODEX_HARNESS: Harness = {
   id: "codex",
   // No subcommand: `codex` alone is the interactive TUI, which is the form a slot wants
@@ -38526,6 +38615,8 @@ operationalView = makeOperationalView({ bootEpoch: SERVER_BOOT_AT, now: Date.now
   observe: operationalSources, produce: produceOperationalData });
 operationalView.observe();
 setInterval(() => operationalView?.observe(), AUTOS_TICK_MS);
+void codexCliObserver.tick();
+setInterval(() => void codexCliObserver.tick(), 30_000);
 setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
@@ -42746,6 +42837,7 @@ Bun.serve<WSData>({
         // Additive — every client that had no idea it existed keeps working, it is a new top-level
         // key beside `chips` and nothing else changed shape.
         instance: INSTANCE,
+        codexCli: codexCliObserver.read(),
         // …and whether that fleet writes the integration branch. Beside `instance` and ONCE per
         // response for the same reason: it is a boot-time constant of the process, so a per-slot
         // copy would pay 16× for a fact that cannot vary within one response. ALWAYS sent, never

@@ -100,7 +100,50 @@ export const INSTANCE_URL_RE =
 // long enough to matter cannot fit under it — the switcher's own length.
 export const INSTANCE_LINKS_MAX_BYTES = 1024;
 
-export interface InstanceLink { name: string; url: string }
+export const CODEX_CLI_MAX_AGE_MS = 300_000;
+export const CODEX_CLI_REASONS = ["not-observed", "binary-missing", "timeout", "output-limit", "probe-failed", "invalid-version", "binary-changed"] as const;
+export type CodexCliReason = typeof CODEX_CLI_REASONS[number];
+export interface CodexCliSnapshot {
+  source: "local-spawn-binary";
+  binary: string | null;
+  version: string | null;
+  bootAt: number;
+  observedAt: number | null;
+  reason: CodexCliReason | null;
+}
+export const CODEX_CLI_VERSION_RE = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][A-Za-z0-9.-]{1,40})?$/;
+export function codexCliSnapshotFrom(value: unknown): CodexCliSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (v.source !== "local-spawn-binary"
+    || !(v.binary === null || typeof v.binary === "string" && /^[a-f0-9]{24}$/.test(v.binary))
+    || !(v.version === null || typeof v.version === "string" && CODEX_CLI_VERSION_RE.test(v.version))
+    || typeof v.bootAt !== "number" || !Number.isSafeInteger(v.bootAt) || v.bootAt <= 0 || v.bootAt > 8_640_000_000_000_000
+    || !(v.observedAt === null || typeof v.observedAt === "number" && Number.isSafeInteger(v.observedAt) && v.observedAt >= v.bootAt && v.observedAt <= 8_640_000_000_000_000)
+    || !(v.reason === null || CODEX_CLI_REASONS.some((r) => r === v.reason))
+    || (v.version !== null && (v.binary === null || v.observedAt === null || v.reason !== null))
+    || (v.version === null && v.reason === null)) return null;
+  return { source: v.source, binary: v.binary, version: v.version, bootAt: v.bootAt,
+    observedAt: v.observedAt, reason: v.reason as CodexCliReason | null };
+}
+export function codexCliUnknown(value: unknown, now: number): string | null {
+  const snapshot = codexCliSnapshotFrom(value);
+  if (!snapshot) return "missing-or-invalid-snapshot";
+  if (!Number.isSafeInteger(now) || snapshot.bootAt > now
+    || snapshot.observedAt !== null && snapshot.observedAt > now) return "future-observation";
+  if (snapshot.observedAt === null) return snapshot.reason ?? "not-observed";
+  if (now - snapshot.observedAt > CODEX_CLI_MAX_AGE_MS) return "stale-snapshot";
+  return snapshot.reason;
+}
+export function compareCodexCli(left: unknown, right: unknown, now: number):
+  { state: "same" | "drift" | "unknown"; reason: string | null } {
+  const reason = codexCliUnknown(left, now) ?? codexCliUnknown(right, now);
+  if (reason) return { state: "unknown", reason };
+  const a = codexCliSnapshotFrom(left)!, b = codexCliSnapshotFrom(right)!;
+  return { state: a.version === b.version ? "same" : "drift", reason: null };
+}
+
+export interface InstanceLink { name: string; url: string; codexCli?: CodexCliSnapshot }
 // `rejected` is the reason half, and it exists so that a dropped entry is an EVENT rather than an
 // absence: the server logs each line at boot. An operator whose typo'd URL simply vanished from the
 // header would have no way to tell it from "the list never reached this process".
@@ -131,7 +174,7 @@ export function instanceLinksFrom(value: unknown): InstanceLinksParse {
       rejected.push(`entry #${i} is not an object: ${shortly(entry)}`);
       continue;
     }
-    const e = entry as { name?: unknown; url?: unknown };
+    const e = entry as { name?: unknown; url?: unknown; codexCli?: unknown };
     const name = instanceNameFrom(e.name);
     if (name === null) { rejected.push(`entry #${i} has no valid name: ${shortly(e.name)}`); continue; }
     const rawUrl = typeof e.url === "string" ? e.url.trim().replace(/\/$/, "") : "";
@@ -141,14 +184,17 @@ export function instanceLinksFrom(value: unknown): InstanceLinksParse {
     }
     const key = rawUrl.toLowerCase();
     if (seen.has(key)) { rejected.push(`entry #${i} (${name}) repeats an url already listed: ${shortly(rawUrl)}`); continue; }
-    const cost = JSON.stringify({ name, url: rawUrl }).length + (links.length ? 1 : 0);
+    const codexCli = codexCliSnapshotFrom(e.codexCli);
+    if (e.codexCli !== undefined && !codexCli) rejected.push(`entry #${i} (${name}) has an invalid Codex snapshot`);
+    const link: InstanceLink = { name, url: rawUrl, ...(codexCli ? { codexCli } : {}) };
+    const cost = new TextEncoder().encode(JSON.stringify(link)).length + (links.length ? 1 : 0);
     if (bytes + cost > INSTANCE_LINKS_MAX_BYTES) {
       rejected.push(`entry #${i} (${name}) does not fit the ${INSTANCE_LINKS_MAX_BYTES} B list budget`);
       continue;
     }
     bytes += cost;
     seen.add(key);
-    links.push({ name, url: rawUrl });
+    links.push(link);
   }
   return { links, rejected };
 }

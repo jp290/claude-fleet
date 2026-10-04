@@ -50,6 +50,7 @@ import type { WaitRow } from "../waits";
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
   WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS, INSTANCE_NAME_RE, INSTANCE_URL_RE, normalizeLaneAnchor,
+  codexCliSnapshotFrom, codexCliUnknown, compareCodexCli, type CodexCliSnapshot,
   type GitInfo, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo,
   type DispositionWorker, type DispositionVerdict, type SuiteOfferRow,
 } from "./protocol";
@@ -145,10 +146,19 @@ const instWrap = $("instwrap"), instBtn = $("instbtn") as HTMLButtonElement, ins
 export let instanceName: string | null = null;
 export let instanceLinks: InstanceLink[] = [];
 let instRendered = "";
+let instanceCodexCli: CodexCliSnapshot | null = null;
+let instanceObservedNow = 0;
+function codexCliLabel(snapshot: CodexCliSnapshot | null, now: number): string {
+  const reason = codexCliUnknown(snapshot, now);
+  const age = snapshot?.observedAt === null || !snapshot ? "nicht beobachtet"
+    : `${Math.max(0, Math.floor((now - snapshot.observedAt) / 60_000))} min alt · ${new Date(snapshot.observedAt).toISOString()}`;
+  return `Codex ${reason ? `unknown (${reason})` : snapshot!.version} · ${age}`
+    + (snapshot ? ` · ${snapshot.source} · Binary ${snapshot.binary ?? "unknown"} · Boot ${new Date(snapshot.bootAt).toISOString()}` : "");
+}
 
 const instMenuOpen = () => instMenu.classList.contains("open");
 function setInstMenu(open: boolean) {
-  instMenu.classList.toggle("open", open && instanceLinks.length > 0);
+  instMenu.classList.toggle("open", open);
 }
 // the origin a link actually resolves to — `new URL` folds the default port away, so a list that
 // spells this instance `http://host:80` still marks itself as "here" instead of offering a switch
@@ -170,7 +180,9 @@ function hostSign(name: IconName, text: string): HTMLElement[] {
 }
 
 function renderInstanceHead() {
-  const key = JSON.stringify([instanceName, instanceLinks]);
+  const key = JSON.stringify([instanceName, instanceLinks, instanceCodexCli,
+    Math.floor(instanceObservedNow / 60_000), codexCliUnknown(instanceCodexCli, instanceObservedNow),
+    instanceLinks.map((link) => codexCliUnknown(link.codexCli, instanceObservedNow))]);
   if (key === instRendered) return; // an open menu must survive the 2 s poll
   instRendered = key;
   // the ONE navigation of this client (e2e/pins.ts): the link's own url, nothing appended
@@ -179,7 +191,6 @@ function renderInstanceHead() {
     if (instOriginOf(link.url) !== location.origin) location.assign(link.url);
   };
   instWrap.classList.add("on");
-  const pick = instanceLinks.length > 0;
   const n = Math.max(instanceLinks.length, 1);
   const at = instanceLinks.findIndex((l) => instOriginOf(l.url) === location.origin);
   // an unnamed single host shows only the screen and its "+": the title row has no room for a word
@@ -188,18 +199,27 @@ function renderInstanceHead() {
   instBtn.title = n > 1
     ? `Computer ${at >= 0 ? at + 1 : "?"} von ${n} — ${instanceName ?? "unbenannt"}. Klick zeigt die anderen.`
     : MORE_HOSTS;
-  instBtn.classList.toggle("pick", pick);
-  instBtn.onclick = pick ? () => setInstMenu(!instMenuOpen()) : null;
+  instBtn.title += ` · ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`;
+  instBtn.classList.add("pick");
+  instBtn.onclick = () => setInstMenu(!instMenuOpen());
   instMenu.replaceChildren(...instanceLinks.map((link) => {
     const here = instOriginOf(link.url) === location.origin;
     const row = el("button", `instrow${here ? " here" : ""}`);
     row.append(el("span", "instname", link.name), el("span", "insturl", here ? "you are here" : link.url));
-    row.title = here ? `${link.name} — this board` : `open ${link.name} at ${link.url} (its own login)`;
+    const snapshot = here ? instanceCodexCli : codexCliSnapshotFrom(link.codexCli);
+    const comparison = compareCodexCli(instanceCodexCli, snapshot, instanceObservedNow);
+    const drift = here ? "lokal" : comparison.state === "drift" ? "CLI-Drift"
+      : comparison.state === "same" ? "gleiche CLI-Version" : `unknown (${comparison.reason})`;
+    row.style.flexWrap = "wrap";
+    const detail = el("span", "insturl", `${drift} · ${codexCliLabel(snapshot, instanceObservedNow)}`);
+    Object.assign(detail.style, { flexBasis: "100%", whiteSpace: "normal", overflowWrap: "anywhere", textAlign: "left" });
+    row.appendChild(detail);
+    row.title = here ? `${link.name} — dieses Board` : `${link.name} öffnen · expliziter Snapshot · ${link.url}`;
     row.onclick = go(link);
     return row;
   }));
-  if (pick) instMenu.appendChild(el("div", "hint instnote", MORE_HOSTS));
-  if (!pick) setInstMenu(false);
+  instMenu.appendChild(el("div", "hint instnote", `Lokal: ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`));
+  instMenu.appendChild(el("div", "hint instnote", MORE_HOSTS));
 }
 
 // the instance menu's outside-click and Escape live in src/popover.ts (G4.1/K5) — like every
@@ -6198,6 +6218,7 @@ export async function refresh() {
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
       // WHICH FLEET ANSWERED — always sent since the dual-host cut, `{name:null}` when unnamed
       instance?: { name?: string | null };
+      codexCli?: CodexCliSnapshot;
       // absent on a server that predates the flag → treated as "this fleet lands", the old behaviour
       lands?: boolean;
       // omitted by the server when nothing is configured — absent and empty are the same answer
@@ -6248,6 +6269,8 @@ export async function refresh() {
     instanceLinks = (data.instances ?? []).filter((l) =>
       typeof l?.name === "string" && INSTANCE_NAME_RE.test(l.name)
       && typeof l.url === "string" && INSTANCE_URL_RE.test(l.url));
+    instanceCodexCli = codexCliSnapshotFrom(data.codexCli);
+    instanceObservedNow = data.now;
     renderInstanceHead();
     briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;

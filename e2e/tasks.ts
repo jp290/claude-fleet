@@ -26,7 +26,8 @@ import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims,
 import { laneHunkDiffArgs, laneHunkRanges } from "../land-collision-stats";
 import { loadBlockerHistory, observeBlocker, finishBlockers, blockerTotals, deriveWaits, namedAfterIds, stallReadings, type BlockerHistory, type WaitFacts } from "../waits";
 import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
-  type InstanceLink } from "../src/protocol";
+  CODEX_CLI_VERSION_RE, CODEX_CLI_MAX_AGE_MS, codexCliSnapshotFrom, codexCliUnknown, compareCodexCli,
+  type CodexCliSnapshot, type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
 import { CONTEXT_PACKS } from "../context-packs";
@@ -87,6 +88,171 @@ const CLAUDE_COMPOSER_SCREEN = [
   "  ctx [----------] --%  |  Haiku 4.5",
   "  ⏵⏵ don't ask on (shift+tab to cycle) · ← 7 agents",
 ].join("\n");
+
+async function codexCliFixtures(serverSource: string, clientSource: string): Promise<void> {
+  serverSource = serverSource.replace(/^[ \t]*\/\/.*$/gm, "");
+  clientSource = clientSource.replace(/^[ \t]*\/\/.*$/gm, "");
+  const dir = mkdtempSync(join(tmpdir(), "fleet-codex-cli-"));
+  try {
+    const start = serverSource.indexOf("const CODEX_CLI_TIMEOUT_MS =");
+    const end = serverSource.indexOf("const codexCliObserver =", start);
+    if (start < 0 || end <= start) throw new Error("Codex measurement source missing");
+    const source = serverSource.slice(start, end);
+    const fixture = new Function("Bun", "process", "createHash", "realpathSync", "statSync", "CODEX_CLI_VERSION_RE",
+      `${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}
+      return { resolveCodexCliBinary, probeCodexCliVersion, makeCodexCliObserver };`)(
+      Bun, { env: { PATH: dir }, kill: process.kill.bind(process) }, createHash, realpathSync, statSync, CODEX_CLI_VERSION_RE) as {
+        resolveCodexCliBinary: () => { path: string; identity: string } | null;
+        probeCodexCliVersion: (path: string) => Promise<{ version: string | null; reason: string | null }>;
+        makeCodexCliObserver: (resolveBinary?: () => { path: string; identity: string } | null,
+          probe?: (path: string) => Promise<{ version: string | null; reason: string | null }>, clock?: () => number)
+          => { read: () => CodexCliSnapshot; tick: () => Promise<void> };
+      };
+    const script = (name: string, body: string): string => {
+      const path = join(dir, name);
+      writeFileSync(path, `#!/bin/sh\n${body}\n`);
+      chmodSync(path, 0o755);
+      return path;
+    };
+    const a = script("a", "printf 'codex-cli 0.159.0\\n'");
+    const b = script("b", "printf 'codex-cli 0.160.0\\n'");
+    const path = join(dir, "codex");
+    symlinkSync(a, path);
+    let now = 1_000_000, calls = 0;
+    const observer = fixture.makeCodexCliObserver(fixture.resolveCodexCliBinary,
+      async (binary) => { calls++; return fixture.probeCodexCliVersion(binary); }, () => now);
+    check("R3c: a new boot has no inherited version or observation", observer.read().version === null
+      && observer.read().observedAt === null && observer.read().bootAt === now && observer.read().reason === "not-observed");
+    await observer.tick();
+    const first = observer.read();
+    check("R3c: the spawn PATH binary is measured with version, source, identity and observation",
+      first.version === "0.159.0" && first.source === "local-spawn-binary" && first.binary?.length === 24
+      && first.observedAt === now && first.reason === null, JSON.stringify(first));
+    for (let i = 0; i < 10; i++) observer.read();
+    now += 59_999;
+    await observer.tick();
+    check("R3c: repeated reads and an unexpired tick launch no version process and retain observation time",
+      calls === 1 && observer.read().observedAt === first.observedAt);
+    now++;
+    await observer.tick();
+    check("R3c: cache expiry measures again instead of restamping an old reading", calls === 2
+      && observer.read().observedAt === now);
+    rmSync(path); symlinkSync(b, path);
+    await observer.tick();
+    const changed = observer.read();
+    check("R3c: switching the spawn binary invalidates an unexpired cache", calls === 3
+      && changed.version === "0.160.0" && changed.binary !== first.binary, JSON.stringify(changed));
+    const slow = script("slow", "while :; do :; done");
+    const timeout = await fixture.probeCodexCliVersion(slow);
+    check("R3c: a nonterminating version process is bounded and returns timeout", timeout.version === null && timeout.reason === "timeout");
+    const noisy = script("noisy", "printf '%01025d' 0");
+    const overflow = await fixture.probeCodexCliVersion(noisy);
+    check("R3c: version output beyond 1024 bytes is refused", overflow.version === null && overflow.reason === "output-limit");
+    const failed = await fixture.probeCodexCliVersion(script("failed", "exit 7"));
+    const invalid = await fixture.probeCodexCliVersion(script("invalid", "printf 'secret-like untrusted output'"));
+    check("R3c: failed and malformed output cannot become a version or leak raw output",
+      failed.reason === "probe-failed" && invalid.reason === "invalid-version"
+      && !JSON.stringify(invalid).includes("untrusted"));
+    let finish: (value: { version: string; reason: null }) => void = () => {};
+    const racing = fixture.makeCodexCliObserver(fixture.resolveCodexCliBinary,
+      () => new Promise((done) => { finish = done; }), () => now);
+    const pending = racing.tick();
+    await racing.tick();
+    rmSync(path); symlinkSync(a, path);
+    finish({ version: "0.160.0", reason: null });
+    await pending;
+    check("R3c: a binary replaced during a probe discards the result", racing.read().version === null
+      && racing.read().reason === "binary-changed");
+    rmSync(path);
+    await observer.tick();
+    check("R3c: a missing spawn binary clears the last successful version", observer.read().version === null
+      && observer.read().binary === null && observer.read().reason === "binary-missing");
+    check("R3c: another boot starts unknown even after a previous successful measurement",
+      fixture.makeCodexCliObserver(undefined, undefined, () => now + 1).read().observedAt === null);
+
+    const local: CodexCliSnapshot = { ...first, bootAt: 1, observedAt: now - 1000 };
+    const remote: CodexCliSnapshot = { ...changed, bootAt: 1, observedAt: now - 30_000 };
+    check("R3c: out-of-range timestamps cannot reach the date renderer", codexCliSnapshotFrom({ ...remote, bootAt: Number.MAX_SAFE_INTEGER, observedAt: Number.MAX_SAFE_INTEGER }) === null);
+    const supplied = instanceLinksFrom(JSON.stringify([{ name: "other", url: "https://other.example", codexCli: remote }]));
+    check("R3c: two explicitly supplied, differently aged fresh snapshots deterministically show drift",
+      supplied.links.length === 1 && compareCodexCli(local, supplied.links[0]!.codexCli, now).state === "drift");
+    check("R3c: equal versions compare equal despite distinct binaries and observation times",
+      compareCodexCli(local, { ...remote, version: local.version }, now).state === "same");
+    const stale = { ...remote, observedAt: now - CODEX_CLI_MAX_AGE_MS - 1 };
+    check("R3c: an old explicit snapshot is unknown rather than drift",
+      compareCodexCli(local, stale, now).state === "unknown" && compareCodexCli(local, stale, now).reason === "stale-snapshot");
+    check("R3c: missing, failed, future and pre-boot observations are unknown",
+      compareCodexCli(local, undefined, now).reason === "missing-or-invalid-snapshot"
+      && compareCodexCli(local, { ...remote, version: null, reason: "timeout" }, now).reason === "timeout"
+      && compareCodexCli(local, { ...remote, observedAt: now + 1 }, now).reason === "future-observation"
+      && compareCodexCli(local, { ...remote, bootAt: now }, now).reason === "missing-or-invalid-snapshot");
+    const projected = instanceLinksFrom(JSON.stringify([{ name: "other", url: "https://other.example", codexCli: { ...remote, token: "never-forward" } }]));
+    const malformed = instanceLinksFrom(JSON.stringify([{ name: "other", url: "https://other.example", codexCli: { ...remote, version: "credential-text" } }]));
+    check("R3c: explicit snapshot parsing projects only token-free facts and names malformed snapshots",
+      !JSON.stringify(projected.links).includes("never-forward") && malformed.links.length === 1
+      && !malformed.links[0]!.codexCli && malformed.rejected.length === 1);
+    const many = instanceLinksFrom(JSON.stringify(Array.from({ length: 20 }, (_, i) =>
+      ({ name: `i${i}`, url: `https://h${i}.example`, codexCli: remote }))));
+    check("R3c: supplied snapshots share the existing bounded link budget",
+      Buffer.byteLength(JSON.stringify(many.links)) <= INSTANCE_LINKS_MAX_BYTES && many.rejected.length > 0);
+    const pollStart = serverSource.indexOf('if (url.pathname === "/api/sessions")');
+    const pollEnd = serverSource.indexOf('if (url.pathname ===', pollStart + 10);
+    const poll = serverSource.slice(pollStart, pollEnd);
+    check("R3c: sessions only reads the observer; version work runs on boot and its own timer",
+      poll.includes("codexCli: codexCliObserver.read()") && !/codexCliObserver\.tick|probeCodexCliVersion|Bun\.spawn/.test(poll)
+      && serverSource.includes("void codexCliObserver.tick();")
+      && serverSource.includes("setInterval(() => void codexCliObserver.tick(), 30_000)"));
+    const labelStart = clientSource.indexOf("function codexCliLabel(");
+    const labelEnd = clientSource.indexOf("\n}\n", labelStart) + 3;
+    const label = new Function("codexCliUnknown", `${new Bun.Transpiler({ loader: "ts" }).transformSync(clientSource.slice(labelStart, labelEnd))}; return codexCliLabel;`)(codexCliUnknown) as
+      (snapshot: CodexCliSnapshot | null, now: number) => string;
+    check("R3c: the client labels measured version, provenance, age, observation and unknown reason",
+      label(local, now).includes("Codex 0.159.0") && label(local, now).includes(local.source)
+      && label(local, now).includes(new Date(local.observedAt!).toISOString())
+      && label(local, now).includes(local.binary!) && label(stale, now).includes("unknown (stale-snapshot)"));
+    type Node = { children: Node[]; text: string; style: Record<string, string>; title: string;
+      onclick: (() => void) | null; classList: { add: (name: string) => void };
+      append: (...nodes: Node[]) => void; appendChild: (node: Node) => void; replaceChildren: (...nodes: Node[]) => void };
+    const node = (_tag = "", _className = "", text = ""): Node => {
+      const n: Node = { children: [], text, style: {}, title: "", onclick: null, classList: { add: () => {} },
+        append: (...nodes) => { n.children.push(...nodes); }, appendChild: (x) => { n.children.push(x); },
+        replaceChildren: (...nodes) => { n.children = nodes; } };
+      return n;
+    };
+    const menu = node(), button = node();
+    let open = false;
+    const headStart = clientSource.indexOf("function renderInstanceHead(");
+    const headEnd = clientSource.indexOf("\n}\n", headStart) + 3;
+    const deps = { instWrap: node(), instBtn: button, instMenu: menu, el: node, codexCliLabel: label,
+      codexCliUnknown, compareCodexCli, codexCliSnapshotFrom, MORE_HOSTS: "Computers",
+      hostSign: (_icon: string, text: string) => [node("span", "", text)],
+      instOriginOf: (url: string) => new URL(url).origin, location: { origin: "https://mac.example", assign: () => {} },
+      setInstMenu: (value: boolean) => { open = value; }, instMenuOpen: () => open };
+    const render = new Function("d", `${Object.keys(deps).map((key) => `const ${key} = d[${JSON.stringify(key)}];`).join("\n")}
+      let instanceName = "mac", instanceLinks = [], instanceCodexCli = null, instanceObservedNow = 0, instRendered = "";
+      ${new Bun.Transpiler({ loader: "ts" }).transformSync(clientSource.slice(headStart, headEnd))}
+      return (links, snapshot, now) => { instanceLinks = links; instanceCodexCli = snapshot; instanceObservedNow = now; renderInstanceHead(); };`)(deps) as
+      (links: InstanceLink[], snapshot: CodexCliSnapshot | null, now: number) => void;
+    const textOf = (n: Node): string => n.text + n.children.map(textOf).join(" ");
+    render(supplied.links, local, now);
+    check("R3c: the original instance renderer displays drift and local measurement",
+      textOf(menu).includes("CLI-Drift") && textOf(menu).includes("Lokal: Codex 0.159.0"));
+    render([{ ...supplied.links[0]!, codexCli: stale }], local, now);
+    check("R3c: the original instance renderer displays stale snapshot unknown",
+      textOf(menu).includes("unknown (stale-snapshot)") && !textOf(menu).includes("CLI-Drift"));
+    render([], local, now);
+    button.onclick?.();
+    check("R3c: a single-host board can open its local CLI measurement", open && textOf(menu).includes(local.binary!));
+    const rendered = menu.children;
+    render([], local, now + 1);
+    check("R3c: unchanged facts within one minute preserve the open instance menu", menu.children === rendered && open);
+    check("R3c: the instance head consumes the measured local snapshot and explicitly supplied comparison",
+      clientSource.includes("instanceCodexCli = codexCliSnapshotFrom(data.codexCli)")
+      && clientSource.includes("compareCodexCli(instanceCodexCli, snapshot, instanceObservedNow)")
+      && clientSource.includes('"CLI-Drift"') && clientSource.includes("Lokal: ${codexCliLabel"));
+  } catch (e) { check("R3c: measurement fixtures complete", false, e instanceof Error ? e.message : String(e)); }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+}
 
 export async function run(ctx: Ctx): Promise<void> {
   const LANE_ROLE_CARD = /const LANE_ROLE_CARD = `([^`]*)`;/
@@ -151,6 +317,7 @@ export async function run(ctx: Ctx): Promise<void> {
   } catch (e) { taskClientReadError = e instanceof Error ? e.message : String(e); }
   check("task workbench precondition: client source, server source and page CSS are readable",
     taskClientSource.length > 0 && taskServerSource.length > 0 && taskPageSource.length > 0, taskClientReadError);
+  await codexCliFixtures(taskServerSource, taskClientSource);
   // Execute the held view and the existing producer functions. Only the disk/ledger/git and
   // role-address boundaries are fixture adapters; the queue, metadata and start-plan folds run.
   {
@@ -2735,6 +2902,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // same raw body the budget was measured on, so "carried" and "carried cheaply" cannot drift
     // apart. The wrapper boots this server with FLEET_INSTANCE (e2e-isolated.sh), so the value is
     // the operator's, never a hostname.
+    const cliPoll = JSON.parse(raw) as { codexCli?: unknown; slots: Record<string, unknown>[] };
+    check("R3c: the real sessions response delivers one normalized local measurement outside slot rows",
+      codexCliSnapshotFrom(cliPoll.codexCli) !== null
+      && cliPoll.slots.every((row) => !("codexCli" in row)), JSON.stringify(cliPoll.codexCli));
     const instancePoll = JSON.parse(raw) as
       { instance?: { name?: string | null }; slots: Record<string, unknown>[] };
     // The probe's own precondition, failing AS ITSELF: without a name on the server's line the two

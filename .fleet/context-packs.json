@@ -52,5 +52,23 @@
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
+  },
+  {
+    "id": "owner-instanzweg",
+    "useWhen": "Wenn im Owner-Gespraech Arbeit auf einer anderen Fleet-Instanz ansteht: den bestehenden Weg dorthin nachlesen.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["orchestration"],
+    "hardness": "guidance",
+    "sources": [
+      { "path": "docs/messungen/2026-10-04-pruefung-owner-gespraech-r1-r5.md", "anchor": "### Quellenabschnitt fuer das Pack: auf einer anderen Instanz arbeiten" }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 1500,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
   }
 ]

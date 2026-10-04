@@ -4942,6 +4942,8 @@ mTop.addEventListener("pointerdown", (e) => {
 });
 mName.onclick = () => setIsland(false);
 mTop.addEventListener("click", (e) => {
+  // a target the action itself replaced (the view button's glyph) is no free glass: it decides nothing
+  if (!(e.target as Element).isConnected) return;
   const b = (e.target as Element).closest("button");
   if (!document.body.classList.contains("mopen")) { if (!b || b === mPill) setIsland(true); return; }
   if (!b) setIsland(false); // the free glass, the rim
@@ -5016,7 +5018,7 @@ function sideTo(side: Side, to: 0 | 1, v0 = 0): void {
 // 0.4 px/ms, or at more than 0.4 px/ms its way; otherwise it springs back — so does a
 // pointercancel (the system took the gesture; its coordinates are not to be trusted, the last move
 // counts). The velocity is read off the last 8 moves. A start in the outer 20 px belongs to iOS's
-// edge swipe. A TAP (under 10 px and 250 ms) is decided here, at pointerup, and pressed on what the
+// edge swipe. A finger's TAP (under 10 px and 250 ms; a mouse keeps its own click) is decided here, at pointerup, and pressed on what the
 // finger went down on — the engine's own click after it is swallowed (any trusted click for 400 ms;
 // the press this code makes is untrusted and passes — Chromium's tap click carries detail 0, so
 // detail cannot tell them apart, measured), and so is the click after a long press or a drag. Deciding it here keeps the
@@ -5087,6 +5089,9 @@ function islandRelease(e: PointerEvent, cancelled: boolean, id = e.pointerId, la
   const v = b[0] > a[0] ? (b[1] - a[1]) / (b[0] - a[0]) : 0; // px/ms
   // what the island measured, for a reader of the page (the probe checks a fast swipe arrived fast)
   mTop.dataset.swipe = JSON.stringify({ axis: d.axis, dx: Math.round(dx), v: +v.toFixed(2), ms: Math.round(ms), side: d.side, cancelled });
+  // a mouse that did not drag keeps its own click, held however long: the 250 ms bound is a finger's
+  // tap, and a slow press of a button is no long press (a loaded CDP click swallowed, measured)
+  if (!d.axis && e.pointerType === "mouse") return;
   if (d.axis !== "x") {
     // no drag: the engine's click that follows is swallowed either way; a tap presses what the finger
     // went down on — its button, else the island itself (the pill's rim opens, free glass closes)

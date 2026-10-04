@@ -7454,6 +7454,14 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         const rimOpens = await isOpen();
         await tap("document.querySelector('#mname')");
         claims[`${tag}a tap on the rim 6 px under the glass opens the island too`] = rimOpens && !await isOpen();
+        // a mouse's own click decides however long its button is held: the touch tap's 250 ms bound
+        // swallowed a slow CDP click on a loaded machine (rights DOM 390, preview 2cd80fb28756)
+        const at = { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
+        fx.inputs.push(`mouse held 400 ms ${Math.round(at.x)},${Math.round(at.y)} the pill`);
+        await mouse("mouseMoved", at); await mouse("mousePressed", at); await settle(400); await mouse("mouseReleased", at); await settle();
+        const slowOpens = await isOpen();
+        if (slowOpens) await tap("document.querySelector('#mname')");
+        claims[`${tag}a mouse click held 400 ms on the pill opens the island too — the touch tap's 250 ms bound is no mouse's`] = slowOpens && !await isOpen();
       }
       // 3. a tap on the pill opens; the open island covers the pane without moving it
       const termBefore = await box("document.querySelector('.paneterm')");

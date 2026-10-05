@@ -7483,7 +7483,8 @@ async function workplaceStandSources(repos: WorkplaceRepo[], observedAt: number)
       codeScope: "repository", observedAt: null, branch: null, headReason: "repos-unreported", update: null, repoReading: null });
     else for (const r of d.repos.repos) source({ kind: "helper-repo", repo: r.name, path: null,
       name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: r.head, basis: "heartbeat",
-      codeScope: "repository", observedAt: r.at, branch: r.branch, headReason: r.reason ?? "repo-head-unreadable",
+      codeScope: "repository", observedAt: r.reason === "invalid-report" && r.head === null ? null : r.at,
+      branch: r.branch, headReason: r.reason ?? "repo-head-unreadable",
       update: null, repoReading: r });
     if (d.instance) source({ kind: "helper-instance", repo: canonical(REPO_DIR), path: null,
       name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: null, basis: "checkout-unproven", codeScope: "server",
@@ -7637,6 +7638,7 @@ async function workplaceStands(repos: WorkplaceRepo[], measuredAt: number): Prom
       reasons.push({ field, reason: "repos-unreported" });
     else {
       if (r.reason) reasons.push({ field: "coverage", reason: r.reason });
+      if (stand.observedAt === null) reasons.push({ field: "observedAt", reason: "invalid-report" });
       if (r.name === null) reasons.push({ field: "repo", reason: "invalid-report" });
       if (r.head === null) reasons.push({ field: "head", reason: headReason });
       if (branch === null) reasons.push({ field: "reportedBranch", reason: r.remote === null && r.reason ? r.reason : r.head ? "detached-head" : headReason });

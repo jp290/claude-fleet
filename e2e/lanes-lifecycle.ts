@@ -294,7 +294,8 @@ export async function helperRepoChecks(): Promise<void> {
     check("helper stand isolates broken ref as null with reason", Array.isArray(partial?.remote)
       && partial.remote[0].mergeBase === head && partial.remote[1].head === null && partial.remote[1].distance === null
       && partial.remote[1].reasons.some((r) => r.field === "head" && r.reason === "invalid-report")
-      && partialWire.some((r) => r.kind === "helper-repo" && r.repo === null && r.coverage?.reason === "invalid-report"));
+      && partialWire.some((r) => r.kind === "helper-repo" && r.repo === null && r.observedAt === null
+        && r.coverage?.reason === "invalid-report" && r.reasons.some((x) => x.field === "observedAt" && x.reason === "invalid-report")));
     check("sanitized helper partial readings survive persistence unchanged", JSON.stringify(helperReposFrom(received.repos)) === JSON.stringify(received.repos));
     const oversized = ingest({ repos: report, junk: "x".repeat(37000) }, {}, helperReposFrom, 32768, (v: unknown) => v);
     check("helper repo heartbeat enforces the total size cap", !!oversized && typeof oversized === "object" && "error" in oversized);

@@ -11675,10 +11675,33 @@ export async function run(ctx: Ctx): Promise<void> {
     const wCapPlan = projectStartPlan(spInput([spRow("wq", 1, ["wq.ts"])], wLanes.slice(0, 1), { [spRepo]: { max: 1, source: "repo", programs: {} } }));
     const wCapWaits = deriveWaits({ ...wFacts, plan: wCapPlan });
     check("(waits) stall reading: stuck with a free lane (released rows only, the held one is not stuck work), not stuck at lanes == cap, and a cap wait is addressed to the tick",
-      wFree[0]?.stuck === true && wFree[0].waits.map((w) => w.id).join(" ") === "wb wc wm wp"
+      wFree[0]?.stuck === true && wFree[0].waits.map((w) => w.id).join(" ") === "wb wm wp"
       && wFull[0]?.stuck === false && wFull[0].lanes === 2 && wFull[0].cap === 2
       && wCapWaits.length === 1 && wCapWaits[0]?.adressat === "tick" && stallReadings(wCapPlan, wCapWaits)[0]?.stuck === false,
       JSON.stringify({ free: wFree.map((r) => [r.stuck, r.waits.map((w) => w.id)]), full: wFull.map((r) => [r.stuck, r.lanes, r.cap]), cap: wCapWaits }));
+    const afterFixture = [spRow("first", 1, ["first.ts"], { after: ["running"] }),
+      spRow("second", 2, ["second.ts"], { after: ["first"] })];
+    const afterPlan = projectStartPlan(spInput(afterFixture, wLanes.slice(0, 1),
+      { [spRepo]: { max: 5, source: "repo", programs: {} } }, { running: "sent" }));
+    for (const parked of [null, "owner", "main"] as const) {
+      const waits = deriveWaits({ plan: afterPlan,
+        rows: { running: { status: "sent", programId: "p-running", slot: 7, hold: null },
+          first: { status: "queued", programId: "p-first", slot: null, hold: null },
+          second: { status: "queued", programId: "p-second", slot: null, hold: null } },
+        lanes: { 7: { programId: "p-running", parked, since: parked === null ? null : 500 } },
+        mains: { "p-running": 4 } });
+      const reading = stallReadings(afterPlan, waits)[0];
+      const adressat = parked === null ? "slot:7" : parked === "owner" ? "owner" : "main:p-running";
+      check(`(waits-after) after chain to a ${parked ?? "working"} lane keeps its head and links`,
+        JSON.stringify(waits.map((w) => [w.id, w.art, w.freigegeben, w.adressat, w.kette, w.seit])) === JSON.stringify([
+          ["first", "after", true, adressat, ["row running (after) auf lane 7"], parked === null ? null : 500],
+          ["second", "after", true, adressat, ["row first (after)", "row running (after) auf lane 7"], parked === null ? null : 500],
+        ]) && waits.every((w) => w.wurzel.includes(parked === null ? "lane 7 arbeitet" : parked === "owner"
+          ? "lane 7 wartet auf den Owner" : "lane 7 wartet auf ihre MAIN")), JSON.stringify(waits));
+      check(`(waits-after) after chain to a ${parked ?? "working"} lane ${parked === null ? "is progress" : "remains stuck"} with spare capacity`,
+        reading?.lanes === 1 && reading.cap === 5 && reading.stuck === (parked !== null)
+          && reading.waits.map((w) => w.id).join(" ") === (parked === null ? "" : "first second"), JSON.stringify(reading));
+    }
     const hFixture = [spRow("held", 1, ["h.ts"], { held: true }),
       spRow("dependent", 2, ["d.ts"], { after: ["held"] }),
       spRow("target", 3, ["park.ts"])];

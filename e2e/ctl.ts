@@ -171,6 +171,90 @@ export async function run(): Promise<void> {
       const state = readFileSync(`${source}/state.sh`, "utf8");
       const register = readFileSync(`${source}/register.sh`, "utf8");
       const prefix = (s: string) => s.slice(0, s.indexOf("\nesac\n") + 7);
+      // Verbatim --brief dispatch from git show 50a3b8c2612d:state.sh, through esac; no full diagnostics.
+      const oldStateSource = `#!/bin/sh
+# Fleet's derivable state, computed at read time — never written down, so it cannot rot.
+# This describes the full diagnosis; --brief reads the server-held metadata view.
+#
+# WHY THIS EXISTS: a handoff that states state is wrong by the next land. Session 8's was wrong
+# by six ledger rows within a day; two of session 9's own errors were stale numbers quoted from
+# prose. Everything this script prints is derived from git, the ledgers and the running fleet.
+# HANDOFF.md carries only the RESIDUE — intent, what is in flight, corrections, the next-step
+# order and its reasoning — i.e. the things git genuinely cannot carry.
+#
+# Usage:  ./state.sh            (run it at the start of a session, before believing anything)
+#         ./state.sh --brief         (held metadata, max 40 lines; full diagnosis: --full)
+#         ./state.sh --since <ref>   (default: the last handoff commit)
+set -u
+cd "$(dirname "$0")" || exit 1
+
+# --brief reads the held owner metadata view; --full explicitly selects the diagnosis below.
+case "\${1:-}" in
+"" | --since) ;;
+--full) shift ;;
+--brief)
+  python3 - <<'PYBRIEF'
+import json, subprocess
+
+schema = 'fleet.operational-view/v1'
+lines = []
+reason = 'invalid-held-source'
+try:
+    result = subprocess.run(['./ctl.sh', 'get', '/api/operational-view', '--json'],
+                            capture_output=True, text=True, timeout=10)
+    if result.returncode:
+        reason = 'ctl-read-failed'
+        raise ValueError('held source unavailable')
+    view = json.loads(result.stdout)
+    if view.get('schema') != schema or view.get('scope') != 'owner-metadata':
+        reason = 'unsupported-schema'
+        raise ValueError('held operational source unsupported (old server/schema)')
+    lines.append(f"{schema} scope={view['scope']} freshness={view.get('freshness', 'unknown')} full: ./state.sh --full")
+    lines.append(f"boot={view.get('bootEpoch')} computedAt={view.get('computedAt')} revision={view.get('revision')}")
+    lines.append(f"observedRevision={view.get('observedRevision')} pending={view.get('pending')} inflight={view.get('inflight')} failed={view.get('failed')}")
+    for name, source in view.get('sources', {}).items():
+        lines.append(f"source {name} revision={source.get('revision')} computed={source.get('computedRevision')} "
+                     f"observedAt={source.get('observedAt')} cadenceMs={source.get('cadenceMs')} "
+                     f"ageMs={source.get('ageMs')} state={source.get('state', 'unknown')}")
+    for item in view.get('unknown', []):
+        lines.append(f"unknown {item.get('id')} reason={item.get('reason')}")
+    data = view.get('data') or {}
+    rows = data.get('rows', [])
+    lines.append(f"queue rows={len(rows)} held={sum(bool(row.get('held')) for row in rows)} "
+                 f"exceptions={len(data.get('exceptions', []))} startable={len(data.get('startable', []))}")
+    for row in data.get('startable', []):
+        lines.append(f"startable {row.get('id')} by={row.get('by')} (action door rechecks)")
+    for row in data.get('exceptions', []):
+        lines.append(f"boundary {row.get('kind')} {row.get('id')} reason={row.get('reason')} related={','.join(row.get('relatedIds', []))}")
+    for row in rows:
+        lines.append(f"row {row.get('id')} status={row.get('status')} program={row.get('programId')} "
+                     f"held={row.get('held')} after={','.join(row.get('after', []))}")
+except subprocess.TimeoutExpired:
+    lines = []
+    reason = 'source-timeout'
+except OSError:
+    lines = []
+    reason = 'ctl-unavailable'
+except (ValueError, TypeError, KeyError, AttributeError):
+    lines = []
+if not lines:
+    # Only named reasons leave the interpreter; exceptions may contain URLs or credentials.
+    lines = [schema + ' freshness=unknown',
+             'unknown source /api/operational-view reason=' + reason + '; full diagnosis: ./state.sh --full']
+if len(lines) > 40:
+    lines = lines[:39] + [f"omitted={len(lines) - 39} metadata lines; held detail: GET /api/operational-view"]
+print('\\n'.join(lines))
+PYBRIEF
+  exit $? ;;
+*) echo "state.sh: unbekanntes Flag '$1' — gueltig: (kein Flag) | --full | --brief | --since <ref>" >&2
+   exit 2 ;;
+esac
+
+`;
+      writeFileSync(`${dir}/state-old.sh`, oldStateSource);
+      check("start old-reader fixture matches its measured base bytes",
+        Buffer.byteLength(oldStateSource) === 4186 && new Bun.CryptoHasher("sha256").update(oldStateSource).digest("hex")
+          === "e2e2ba9e691ef494279b636184c78675923d01fe42761fbea9ac66103324a6e1", "base=50a3b8c2612d:state.sh (--brief dispatch)");
       writeFileSync(`${dir}/state.sh`, prefix(state));
       writeFileSync(`${dir}/register.sh`, prefix(register));
       writeFileSync(`${dir}/ctl.sh`, readFileSync(CTL, "utf8"));
@@ -236,15 +320,53 @@ await import(pathToFileURL(process.argv[2]).href);
         fresh.status === 0 && fresh.requests.join(",") === "/api/self,/api/operational-view,/api/self"
         && ["HTTP=3", "role=orchestrator", "Continue bounded act", "watch1", "own-messages unread=3", "m3", "Task title", "collision", "Blocking title", "main1", "freshness=fresh", "inbox not-applicable"].every((s) => fresh.stdout.includes(s)),
         `${Buffer.byteLength(fresh.stdout)} B; ${fresh.requests.join(",")}`);
-      const oldState = run(["register.sh", "--brief"]), oldRegister = run(["register.sh", "--brief"]);
+      const oldState = run(["state-old.sh", "--brief"]), oldRegister = run(["register.sh", "--brief"]);
       const oldSelf = run(["ctl.sh", "get", "/api/self", "--json"]), messages = run(["ctl.sh", "get", "/api/self/messages", "--json"]);
+      const questions: {name: string; old: (s: string) => boolean; modern: (s: string) => boolean; oldAt: number}[] = [
+        {name: "role/receiver", old: (s) => s.includes('"role":"orchestrator"') && s.includes('"receiver":null'),
+          modern: (s) => s.includes("role=orchestrator") && s.includes("unknown receiver reason=no-proven-receiver"), oldAt: 3},
+        {name: "line-intent/lost-obligations", old: (s) => s.includes("Continue bounded act") && s.includes('"handoverLost":null') && s.includes("watch1"),
+          modern: (s) => s.includes("Continue bounded act") && s.includes("lineage state=present") && s.includes("watch1"), oldAt: 3},
+        {name: "three-unread-messages", old: (s) => s.includes('"unread":3') && ["m1", "m2", "m3"].every((id) => s.includes(id)),
+          modern: (s) => s.includes("own-messages unread=3") && ["m1", "m2", "m3"].every((id) => s.includes(id)), oldAt: 3},
+        {name: "queue/blocker", old: (s) => s.includes("boundary start task1 reason=collision"),
+          modern: (s) => /boundary start task1 .*reason=collision/.test(s), oldAt: 1},
+        {name: "exact-MAIN-binding", old: (s) => ['"state":"bound"', '"slot":2', '"openedAt":1', '"sessionId":"main1"'].every((v) => s.includes(v)),
+          modern: (s) => s.includes("binding=bound slot=2 openedAt=1 sessionId=main1"), oldAt: 5},
+        {name: "freshness/unknown", old: (s) => s.includes("freshness=fresh") && s.includes("observedRevision=r1"),
+          modern: (s) => s.includes("freshness=fresh") && s.includes("observedRevision=r1"), oldAt: 1},
+      ];
+      type ReadResult = {name: string; status: number | null; stdout: string; requests: string[]};
+      const cost = (reads: ReadResult[], answer: (s: string) => boolean) => {
+        const at = reads.findIndex((r) => {
+          if (r.status !== 0) return false;
+          let semantic = r.stdout;
+          try { semantic = JSON.stringify(JSON.parse(r.stdout) as unknown); } catch { /* renderer text */ }
+          return answer(semantic);
+        });
+        return at < 0 ? null : {tools: at + 1, bytes: reads.slice(0, at + 1).reduce((n, r) => n + Buffer.byteLength(r.stdout), 0),
+          http: reads.slice(0, at + 1).reduce((n, r) => n + r.requests.length, 0), first: reads[at]!.name};
+      };
+      const measure = (role: string, oldReads: ReadResult[], newReads: ReadResult[], qs: typeof questions) => {
+        const rows = qs.map((q) => ({question: q.name, old: cost(oldReads, q.old), modern: cost(newReads, q.modern)}));
+        check(`start ${role} per-question costs stop at the first result carrying that answer`,
+          rows.every((r, i) => r.old?.tools === qs[i]!.oldAt && r.modern?.tools === 1 && r.modern.http === 3), JSON.stringify(rows));
+        const full = (s: string) => [1, 2, 3].every((i) => s.includes(`Full own message ${i}`));
+        const texts = {question: "message-fulltexts", old: cost(oldReads, full), modern: cost(newReads, full)};
+        check(`start ${role} complete message contents count their separate follow-up`, texts.old?.tools === (role === "Orchestrator" ? 4 : 6) && texts.modern?.tools === 2,
+          JSON.stringify(texts));
+        const missing = cost(newReads.map((r) => ({...r, stdout: r.stdout.replaceAll("Full own message 3", "removed")})), full);
+        check(`start ${role} missing answer stays unknown rather than becoming a measured cost`, missing === null);
+      };
       const oldOperational = run(["ctl.sh", "get", "/api/operational-view", "--json"]);
-      const oldBytes = [oldState, oldRegister, oldSelf, messages, oldOperational].reduce((n, r) => n + Buffer.byteLength(r.stdout), 0);
-      const newBytes = Buffer.byteLength(fresh.stdout + messages.stdout);
-      const questions = ["role/receiver", "line-intent/lost-obligations", "three-unread-messages", "queue/blocker", "exact-MAIN-binding", "freshness/unknown"];
-      check("start same-fixture effect probe records calls and UTF-8 result bytes for every acceptance question",
-        messages.stdout.includes("Full own message 3") && fresh.requests.length === 3,
-        `${questions.map((q) => `${q}: old=5 tools/${oldBytes} B; new=2 tools/${newBytes} B`).join("; ")} (full messages included; old needs raw operational detail for titles/binding)`);
+      const orchestratorOld = [{...oldState, name: "./state-old.sh --brief"}, {...oldRegister, name: "./register.sh --brief"},
+        {...oldSelf, name: "GET /api/self"}, {...oldOperational, name: "GET /api/operational-view"}, {...messages, name: "GET /api/self/messages"}];
+      // Keep the original old order: the message reader preceded the binding detail request.
+      [orchestratorOld[3], orchestratorOld[4]] = [orchestratorOld[4]!, orchestratorOld[3]!];
+      measure("Orchestrator", orchestratorOld, [{...fresh, name: "./state.sh --brief"}, {...messages, name: "GET /api/self/messages"}], questions);
+      check("start old state and register are equal only after normalizing their explicit full-reader name",
+        oldState.stdout !== oldRegister.stdout && oldState.stdout.replaceAll("./state.sh", "./register.sh") === oldRegister.stdout,
+        `old state=${Buffer.byteLength(oldState.stdout)} B register=${Buffer.byteLength(oldRegister.stdout)} B (raw byte equality=false)`);
       const denied = run(["state.sh", "--brief"], "denied"), missing = run(["state.sh", "--brief"], "fresh", false);
       check("start missing/refused Owner right stays unknown and never falls back to global or full diagnosis",
         denied.stdout.includes("unknown source /api/operational-view reason=ctl-read-failed")
@@ -271,12 +393,22 @@ await import(pathToFileURL(process.argv[2]).href);
       check("start Standard MAIN reads only its own projection with phase, inbox ID and next door",
         main.requests.join(",") === "/api/self,/api/self/program-execution,/api/self" && ["phase=OWNER_GATE", "door=owner answers", "inbox1", "own-messages unread=3"].every((s) => main.stdout.includes(s))
         && !main.stdout.includes("Blocking title"));
-      const mainOld = [run(["register.sh", "--brief"]), run(["register.sh", "--brief"]),
-        run(["ctl.sh", "get", "/api/self/program-execution", "--json"]), run(["ctl.sh", "get", "/api/self/inbox", "--json"]),
-        run(["ctl.sh", "get", "/api/self", "--json"]), run(["ctl.sh", "get", "/api/self/messages", "--json"])];
-      check("start MAIN same-fixture effect probe includes inbox and all full message results",
-        mainOld.every((r) => r.status === 0) && main.requests.length === 3,
-        `${questions.map((q) => `${q}: old=6 tools/${mainOld.reduce((n, r) => n + Buffer.byteLength(r.stdout), 0)} B; new=2 tools/${Buffer.byteLength(main.stdout + messages.stdout)} B`).join("; ")}`);
+      const mainArgs = [["state-old.sh", "--brief"], ["register.sh", "--brief"],
+        ["ctl.sh", "get", "/api/self/program-execution", "--json"], ["ctl.sh", "get", "/api/self/inbox", "--json"],
+        ["ctl.sh", "get", "/api/self", "--json"], ["ctl.sh", "get", "/api/self/messages", "--json"]];
+      const mainOld = mainArgs.map((args) => ({...run(args), name: args.join(" ")}));
+      const mainQuestions: typeof questions = [
+        {name: "role/receiver", old: (s) => s.includes('"role":"program-main"') && s.includes('"receiver":null'),
+          modern: (s) => s.includes("role=program-main") && s.includes("unknown receiver reason=no-proven-receiver"), oldAt: 5},
+        {...questions[1]!, oldAt: 5}, {...questions[2]!, oldAt: 5},
+        {name: "queue/blocker", old: (s) => s.includes('"id":"task1"') && s.includes('"phase":"OWNER_GATE"') && s.includes('"nextAction":"owner answers"'),
+          modern: (s) => s.includes("task task1") && s.includes("phase=OWNER_GATE") && s.includes("door=owner answers"), oldAt: 3},
+        {name: "exact-MAIN-binding", old: (s) => ['"sessionIdMatch":"exact"', '"boundSlot":1', '"boundOpenedAt":1', '"boundSessionId":"session1"'].every((v) => s.includes(v)),
+          modern: (s) => ['"sessionIdMatch":"exact"', '"boundSlot":1', '"boundOpenedAt":1', '"boundSessionId":"session1"'].every((v) => s.includes(v)), oldAt: 3},
+        {name: "freshness/unknown", old: (s) => s.includes('"session":{"slot":1,"openedAt":1,"sessionId":"session1"}') && s.includes('"unknown":[]'),
+          modern: (s) => s.includes("source /api/self/program-execution fetchedAt=") && s.includes("execution-unknown count=0"), oldAt: 3},
+      ];
+      measure("MAIN", mainOld, [{...main, name: "./state.sh --brief"}, {...messages, name: "GET /api/self/messages"}], mainQuestions);
       program.authority.sessionIdMatch = "unknown";
       program.unknown = ["inbox record unreadable; earlier pointers gone", "handover record unreadable; obligations lost"];
       program.inbox.lost = {error: "unreadable inbox"};

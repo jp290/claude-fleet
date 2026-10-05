@@ -164,8 +164,8 @@ export function deriveWaits(facts: WaitFacts): WaitRow[] {
     if (at?.release && !at.release.released) {
       if (row?.hold) return { head: { adressat: programAddressee(programId, mains),
         wurzel: `${id} gehalten von der MAIN (Slot ${row.hold.slot}) — ${row.hold.grund === null ? "ohne Grund" : `Grund: ${row.hold.grund}`}`,
-        seit: row.hold.at || null, intentionalHold: row.hold.until?.kind === "land"
-          && !!row.hold.until.task && ["queued", "sent"].includes(rows[row.hold.until.task]?.status) } };
+        seit: row.hold.at || null, intentionalHold: !!row.hold.grund?.trim() || (row.hold.until?.kind === "land"
+          && !!row.hold.until.task && ["queued", "sent"].includes(rows[row.hold.until.task]?.status)) } };
       return { head: { adressat: programAddressee(programId, mains),
         wurzel: `${id} nicht freigegeben${at.release.why ? ` — ${at.release.why}` : ""}`, seit: null } };
     }

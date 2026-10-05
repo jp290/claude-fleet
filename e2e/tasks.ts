@@ -11713,7 +11713,23 @@ export async function run(ctx: Ctx): Promise<void> {
       const waits = deriveWaits({ ...wFacts, plan: hPlan, rows, mains: { "p-held": 4 } });
       return { waits, reading: stallReadings(hPlan, waits.filter((w) => w.id === "dependent"))[0] };
     };
-    const hUntil = { slot: 4, grund: "nach Land", at: 1000, until: { kind: "land", task: "target" } };
+    for (const grund of ["wartet auf ein Owner-Ja", null, "", " \t "]) {
+      const held = hRead({ slot: 4, grund, at: 1000 }, "queued");
+      const intentional = !!grund?.trim();
+      const dependent = held.waits.find((w) => w.id === "dependent");
+      check(`(waits-hold) MAIN hold with reason ${JSON.stringify(grund)} ${intentional ? "is intentional" : "remains stuck"}`,
+        held.reading?.stuck === !intentional && dependent?.intentionalHold === intentional
+          && dependent.freigegeben === true && dependent.adressat === "main:p-held"
+          && dependent.kette.join() === "row held (after)" && dependent.seit === 1000
+          && dependent.wurzel === `held gehalten von der MAIN (Slot 4) — ${grund === null ? "ohne Grund" : `Grund: ${grund}`}`,
+        JSON.stringify(held));
+    }
+    const noHold = hRead(null, "queued");
+    check("(waits-hold) released work waiting for a MAIN decision without a hold remains stuck",
+      noHold.reading?.stuck === true && noHold.reading.waits.map((w) => w.id).join() === "dependent"
+        && noHold.waits.find((w) => w.id === "dependent")?.adressat === "main:p-held"
+        && noHold.waits.find((w) => w.id === "dependent")?.intentionalHold === false, JSON.stringify(noHold));
+    const hUntil = { slot: 4, grund: null, at: 1000, until: { kind: "land", task: "target" } };
     for (const status of ["queued", "sent"]) {
       const live = hRead(hUntil, status);
       check(`(waits-until) MAIN hold on a ${status} target suppresses only its dependent's stall`,
@@ -14181,14 +14197,14 @@ export async function run(ctx: Ctx): Promise<void> {
         verboten: [], after: [stB], model: "planted-stau", at: Date.now(), ms: 0, gaps: [] };
     });
     await post(`/api/tasks/${stC}/queue`, {});
-    await stUntil(async () => (await stBlocked()).some((a) => a.status === "open" && a.text.includes(stC)), 60);
+    await stUntil(async () => (await stBlocked()).some((a) => a.status === "open" && a.text.includes(stB)), 60);
     const stOpen = (await stBlocked()).filter((a) => a.status === "open");
     const stA1 = await stPlan();
     const stWaitC = stA1.waits?.find((w) => w.id === stC);
     const stClockA = stA1.stau?.open.find((o) => o.repo === stKey);
-    check("(stau)(a) a stall held past STALL_MS with a free lane raises EXACTLY ONE blocked attention on the program — it names the lane's slot, the lane, the file and the waiting rows; the counter reads it",
+    check("(stau)(a) a stall held past STALL_MS with a free lane raises EXACTLY ONE blocked attention on the program — it names the collision row, slot, lane and file, excluding the working after chain; the counter reads it",
       stOpen.length === 1 && stOpen[0]!.text.includes(`slot:${stSlot}`) && stOpen[0]!.text.includes(`lane ${stSlot}`)
-        && stOpen[0]!.text.includes("f-stau.ts") && stOpen[0]!.text.includes(stB) && stOpen[0]!.text.includes(stC)
+        && stOpen[0]!.text.includes("f-stau.ts") && stOpen[0]!.text.includes(stB) && !stOpen[0]!.text.includes(stC)
         && stClockA?.stalled === true && stClockA.attentionId === stOpen[0]!.id && (stA1.stau?.detected ?? 0) >= 1,
       JSON.stringify({ open: stOpen, stau: stA1.stau ?? null }));
     check("(stau)(owner) without a live Orchestratorin the sensor row immediately waits on the owner",

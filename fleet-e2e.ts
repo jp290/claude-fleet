@@ -32,6 +32,7 @@ import * as contextPlan from "./e2e/context-plan";
 import * as modelScan from "./e2e/model-scan";
 import * as prompts from "./e2e/prompts";
 import * as briefstats from "./e2e/briefstats";
+import * as bytes from "./e2e/bytes";
 import * as auth from "./e2e/auth";
 import * as dirsPins from "./e2e/dirs-pins";
 import * as slots from "./e2e/slots";
@@ -163,6 +164,10 @@ const steps: Step[] = [
   // as the operator runs it. No server, so it sits with the other pure families.
   { unit: "pure", module: "briefstats", run: async () => {
     await briefstats.run();
+  } },
+
+  { unit: "bytes", module: "bytes", run: async () => {
+    await bytes.run(check);
   } },
 
   // --- auth, request guards, the ✨ enhance surface, and the directory/pin API ---

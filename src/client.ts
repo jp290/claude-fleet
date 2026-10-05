@@ -1,4 +1,5 @@
 import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } from "./protocol";
+import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
 import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, renderWorkplaceField, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
@@ -6666,7 +6667,7 @@ const marks = new MarkStage();
 let markItems: MarkItem[] = [];
 new ResizeObserver(() => placeMarks(marks, slotsEl, markItems)).observe(slotsEl);
 
-function renderSlots() {
+export function renderSlots() {
   updateTitle();
   // harness-dependent pane affordances follow the POLL, not just pane assignment: a session
   // started from another device (or another tab) changes what its slot can do, and a 💬 that
@@ -6679,6 +6680,7 @@ function renderSlots() {
   // a band that had the keyboard gets it back on the rebuilt row (← → Esc keep working)
   const bandFocus = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("bandview")
     ? document.activeElement.closest<HTMLElement>(".slot")?.dataset.slot ?? null : null;
+  perfRebuild("renderSlots");
   slotsEl.replaceChildren();
   markItems = [];
   // Every slot still gets a row and empty slots still hold their place — but a lane whose project

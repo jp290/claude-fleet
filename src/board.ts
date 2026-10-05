@@ -14,6 +14,7 @@ import { icon } from "./icons";
 import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./devices";
 import { serverClock } from "./composer";
 import { rightsHoldFocus, rightsSection, wireRights } from "./rights";
+import { perfRebuild } from "./perfmarks";
 
 // the rights block reads the queue's lists through the board, never by import (src/rights.ts#wireRights)
 wireRights({
@@ -982,6 +983,7 @@ export function helperSummary(): string | null {
 }
 export function renderSuiteMeter() {
   if (!boardOpen) return; // mobile too: the meter renders into #boardsuites, which travels with #board
+  perfRebuild("renderSuiteMeter");
   const m = meterModel();
   const focusSlot = panes[focused]?.slot ?? null;
   meterEl.className = `lock-${m.lock ?? "none"}`;
@@ -1370,6 +1372,7 @@ export async function renderBoard() {
       // the same scroll rescue the main path has: these three sections can be taller than the
       // column, and without it the machine zone jumped back to the top on every tick
       const y0 = boardBody.scrollTop;
+      perfRebuild("renderBoard");
       boardBody.replaceChildren(...(pla0 ? [pla0] : []), ...(dp ? [dp] : []), ...(er ? [er] : []),
         arbeitsorteSection(null, null), ...(dv ? [dv] : []), el("div", "bempty", "Focus a pane with a session to see its brief."));
       boardBody.scrollTop = y0;
@@ -2225,6 +2228,7 @@ export async function renderBoard() {
       if (!(a instanceof HTMLElement) || !boardBody.contains(a)) return null;
       return `${a.tagName}\u0000${a.className}\u0000${(a.textContent ?? "").slice(0, 40)}`;
     })();
+    perfRebuild("renderBoard");
     boardBody.replaceChildren(...nodes);
     drawRankeLines(boardBody);
     boardBody.scrollTop = y;

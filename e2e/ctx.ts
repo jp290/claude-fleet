@@ -92,6 +92,7 @@ export interface ShardUnit { unit: string; seconds: number; modules: readonly st
 export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "pure", seconds: 0, modules: ["context-plan", "model-scan", "prompts", "briefstats"] },
   { unit: "context-packs", seconds: 30, modules: ["context-packs"] },
+  { unit: "bytes", seconds: 3, modules: ["bytes"] },
   { unit: "auth", seconds: 1, modules: ["auth", "dirs-pins"] },
   { unit: "core", seconds: 626, modules: ["slots", "history", "summary", "transport", "autos", "share",
     "review", "self-token", "trailstats", "outcomes", "tasks", "intake", "restart", "steward-core",

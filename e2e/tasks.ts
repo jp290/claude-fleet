@@ -89,6 +89,51 @@ const CLAUDE_COMPOSER_SCREEN = [
 ].join("\n");
 
 export async function run(ctx: Ctx): Promise<void> {
+  {
+    const source = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const code = source.slice(source.indexOf("const taskBaseTreeCache ="), source.indexOf("// The graph half of the surface", source.indexOf("const taskBaseTreeCache ="))).split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+    const repo = mkdtempSync(join(tmpdir(), "fleet-sessions-git-"));
+    try {
+      const git = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+      if (git("init", "-q", "-b", "main").status !== 0) throw new Error("sessions Git fixture init failed");
+      writeFileSync(join(repo, "fixture.ts"), "export const value = 1;\n");
+      if (git("add", "fixture.ts").status !== 0
+        || git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture").status !== 0)
+        throw new Error("sessions Git fixture commit failed");
+      const exercise = (resolverCode: string) => {
+        let now = 0, spawns = 0, denied = true;
+        const boundary = { spawnSync: (args: string[], options: Parameters<typeof Bun.spawnSync>[1]) => {
+          spawns++;
+          return denied ? { success: false, stdout: Buffer.alloc(0) } : Bun.spawnSync(args, options);
+        } };
+        const base = new Function("Bun", "repoCanon", "repoBases", "statSync", "readFileSync", "resolve", "basename", "Date",
+          new Bun.Transpiler({ loader: "ts" }).transformSync(resolverCode) + "\nreturn taskBaseSnapshotFor;")
+          (boundary, realpathSync, {}, statSync, readFileSync, resolve, basename, { now: () => now }) as
+          (repo: string, base: string) => import("../task-metadata").TrackedSnapshot | null;
+        const missing = Array.from({ length: 213 }, () => base(repo, "main"));
+        const initialSpawns = spawns;
+        denied = false; now = 4999;
+        const beforeRetry = base(repo, "main");
+        const beforeRetrySpawns = spawns;
+        now = 5000;
+        const recovered = base(repo, "main");
+        return { allUnknown: missing.every((row) => row === null), initialSpawns, beforeRetry,
+          beforeRetrySpawns, paths: recovered ? [...recovered.paths] : null };
+      };
+      const result = exercise(code);
+      check("(sessions-latency) 213 task rows share one failed Git discovery and retain UNKNOWN until its 5 s retry",
+        result.allUnknown && result.initialSpawns === 1 && result.beforeRetry === null && result.beforeRetrySpawns === 1,
+        JSON.stringify(result));
+      check("(sessions-latency) failed Git discovery recovers at the retry boundary with the exact tracked paths",
+        JSON.stringify(result.paths) === JSON.stringify(["fixture.ts"]), JSON.stringify(result));
+      const mutantCode = code.replace("if (failedAt !== undefined && Date.now() - failedAt < 5000) return null;", "if (false) return null;");
+      const mutant = exercise(mutantCode);
+      check("(sessions-latency) mutation: removing the failed-discovery cache repeats Git once per task row",
+        mutantCode !== code && mutant.allUnknown && mutant.initialSpawns === 213 && result.initialSpawns === 1,
+        JSON.stringify({ normal: result.initialSpawns, mutant: mutant.initialSpawns }));
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  }
+
   const LANE_ROLE_CARD = /const LANE_ROLE_CARD = `([^`]*)`;/
     .exec(readFileSync(resolve(ROOT, "server.ts"), "utf8"))?.[1] ?? "";
   const laneCardCount = (prompt: string): number =>

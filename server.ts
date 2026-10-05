@@ -5062,6 +5062,7 @@ function trackedSnapshotFor(repoRaw: string): TrackedSnapshot | null {
 const taskBaseTreeCache = new Map<string, TrackedSnapshot>();
 const taskBaseRefCache = new Map<string, { stamp: string; commit: string | null }>();
 const taskBaseGitDirs = new Map<string, { gitDir: string; commonDir: string }>();
+const taskBaseGitFailures = new Map<string, number>();
 const taskBaseFileStamp = (path: string): string => {
   try { const s = statSync(path); return `${s.ino}:${s.mtimeMs}:${s.size}`; } catch { return "-"; }
 };
@@ -5071,9 +5072,12 @@ function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapsh
     { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
   let dirs = taskBaseGitDirs.get(repo);
   if (!dirs) {
+    const failedAt = taskBaseGitFailures.get(repo);
+    if (failedAt !== undefined && Date.now() - failedAt < 5000) return null;
     const found = run("rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir");
     const [gitDir, commonDir] = found.success ? found.stdout.toString().trim().split("\n") : [];
-    if (!gitDir || !commonDir) return null;
+    if (!gitDir || !commonDir) { taskBaseGitFailures.set(repo, Date.now()); return null; }
+    taskBaseGitFailures.delete(repo);
     dirs = { gitDir, commonDir };
     taskBaseGitDirs.set(repo, dirs);
   }

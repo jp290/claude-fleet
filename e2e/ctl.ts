@@ -214,7 +214,7 @@ await import(pathToFileURL(process.argv[2]).href);
       const program = {program: {id: "program1", title: "Program title", profile: null},
         authority: {sessionIdMatch: "exact", boundSlot: 1, boundOpenedAt: 1, boundSessionId: "session1"},
         status: {inbox: {unread: 1}, messages: {unread: 3}, attention: {open: 1}},
-        inbox: {dropped: 0, unread: [{id: "inbox1", kind: "audit-red", ref: "audit1"}]},
+        inbox: {lost: null as {error: string} | null, dropped: 0, unread: [{id: "inbox1", kind: "audit-red", ref: "audit1"}]},
         handover: {from: {slot: 1, openedAt: 0}, to: {slot: 1, openedAt: 1}, obligations: [{id: "watch1"}], lost: [], dropped: 0},
         unknown: [] as string[], clarifications: [],
         tasks: {rows: [{id: "task1", text: "Task title", status: "queued", phase: "OWNER_GATE", phaseBasis: "owner question", note: "collision", nextAction: "owner answers"}]}};
@@ -257,7 +257,8 @@ await import(pathToFileURL(process.argv[2]).href);
       own.position.messages.unread = 0; own.position.messages.unknown = ["retained-record-lost: every earlier message is gone; empty proves nothing"];
       const lost = run(["state.sh", "--brief"]);
       check("start empty message list and lost line never become absence of obligations",
-        lost.stdout.includes("retained-record-lost") && lost.stdout.includes("lineage state=lost"));
+        lost.stdout.includes("retained-record-lost") && lost.stdout.includes("lineage state=lost")
+        && lost.stdout.includes("unread=unknown (retainedUnread=0)") && !lost.stdout.includes("Continue bounded act"));
       own.lineage.state = "present"; own.position.messages.unread = 3; own.position.messages.unknown = [];
       operational.data.exceptions.push(...Array.from({length: 40}, (_, i) => ({...operational.data.exceptions[0]!, id: `overflow${i}`})));
       operational.data.exceptions[40]!.reason = "DECISIVE_LAST_BOUNDARY";
@@ -278,9 +279,11 @@ await import(pathToFileURL(process.argv[2]).href);
         `${questions.map((q) => `${q}: old=6 tools/${mainOld.reduce((n, r) => n + Buffer.byteLength(r.stdout), 0)} B; new=2 tools/${Buffer.byteLength(main.stdout + messages.stdout)} B`).join("; ")}`);
       program.authority.sessionIdMatch = "unknown";
       program.unknown = ["inbox record unreadable; earlier pointers gone", "handover record unreadable; obligations lost"];
+      program.inbox.lost = {error: "unreadable inbox"};
       const unproven = run(["state.sh", "--brief"]);
       check("start unproven MAIN and unreadable records expose reason rather than empty success",
-        unproven.stdout.includes("unproven-session-id") && unproven.stdout.includes("obligations lost") && unproven.stdout.includes("earlier pointers gone"));
+        unproven.stdout.includes("unproven-session-id") && unproven.stdout.includes("obligations lost") && unproven.stdout.includes("earlier pointers gone")
+        && unproven.stdout.includes("unknown inbox reason=record-lost") && !unproven.stdout.includes("inbox count="));
       fixtures["/api/self/program-execution"].programs[0]!.program.id = "foreign-program";
       const foreign = run(["state.sh", "--brief"]);
       check("start refuses a foreign Program returned on the own door", foreign.stdout.includes("data discarded") && !foreign.stdout.includes("foreign-program"));

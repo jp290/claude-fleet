@@ -24,10 +24,8 @@ import json, os, re, subprocess, time
 schema = 'fleet.operational-view/v1'
 lines, reads = [], []
 http = 0
-def emit(text):
-    lines.append(text)
-def compact(value):
-    return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+def emit(text): lines.append(text)
+def compact(value): return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 def read(path):
     global http
     at = int(time.time() * 1000)
@@ -64,13 +62,11 @@ def group(name, rows, door, render=compact):
     emit(f'{name} count={len(rows)} detail: {door}')
     if len(rows) > 12:
         emit(f'overflow {name} count={len(rows)} budget=12; all rows retained; detail: {door}')
-    for row in rows:
-        emit(f'{name} {render(row)}')
+    for row in rows: emit(f'{name} {render(row)}')
 def named(row):
     return f"{row.get('id', row.get('programId', 'unknown'))} title={compact(row.get('title', 'unknown'))} basis={row.get('titleBasis', 'unknown: missing-title-source')}"
 def operational(view):
-    if view is None:
-        return
+    if view is None: return
     if view.get('schema') != schema or view.get('scope') != 'owner-metadata':
         emit('unknown source /api/operational-view reason=unsupported-schema; full diagnosis: ./state.sh --full')
         return
@@ -122,16 +118,15 @@ def own(self):
     group('waiting', position.get('waitingOnMe'), 'GET /api/self/messages; POST /api/self/messages/<id>/read after reading; GET /api/self/fleet-report; POST /api/self/fleet-report/<id>/accept|reject; GET /api/self/clarifications')
     messages = position.get('messages')
     if isinstance(messages, dict):
-        emit(f"own-messages unread={messages.get('unread', 'unknown')} droppedFleetWide={messages.get('droppedFleetWide', 'unknown')} reason={messages.get('reason')} detail: GET /api/self/messages; POST /api/self/messages/<id>/read after reading")
+        unread = messages.get('unread', 'unknown') if not messages.get('unknown') else f"unknown (retainedUnread={messages.get('unread', 'unknown')})"
+        emit(f"own-messages unread={unread} droppedFleetWide={messages.get('droppedFleetWide', 'unknown')} reason={messages.get('reason')} detail: GET /api/self/messages; POST /api/self/messages/<id>/read after reading")
         group('message-unknown', messages.get('unknown'), 'GET /api/self/messages')
     else:
         emit('unknown own-messages reason=missing-status; detail: GET /api/self/messages')
     group('attention', position.get('attention'), 'GET /api/self/attention')
-    for name in ('watches', 'autos', 'events'):
-        group(name, self.get(name), 'GET /api/self; no automatic ack or re-arm')
+    for name in ('watches', 'autos', 'events'): group(name, self.get(name), 'GET /api/self; no automatic ack or re-arm')
 def execution(view, self):
-    if view is None:
-        return
+    if view is None: return
     if seat(view.get('session', {})) != seat(self):
         raise ValueError('execution-occupant-mismatch')
     programs = view.get('programs')
@@ -142,11 +137,15 @@ def execution(view, self):
     if p.get('authority', {}).get('sessionIdMatch') != 'exact':
         emit('unknown MAIN binding reason=unproven-session-id; detail: GET /api/self/program-execution')
     emit(f"program-status {compact(p.get('status'))} detail: GET /api/self/inbox; GET /api/self/messages; GET /api/self/attention")
-    group('inbox', p.get('inbox', {}).get('unread'), 'GET /api/self/inbox; POST /api/self/inbox/<id>/read after reading')
+    inbox = p.get('inbox', {})
+    if inbox.get('lost'):
+        emit(f"unknown inbox reason=record-lost {compact(inbox['lost'])}; detail: GET /api/self/inbox")
+    else:
+        group('inbox', inbox.get('unread'), 'GET /api/self/inbox; POST /api/self/inbox/<id>/read after reading')
     emit(f"inbox dropped={p.get('inbox', {}).get('dropped', 'unknown')}; loss: see execution-unknown")
     handover = p.get('handover')
     if handover is None:
-        emit('handover none (no Standard succession record); losses: see execution-unknown')
+        emit('handover record=null; absence or loss: see execution-unknown')
     elif isinstance(handover, dict):
         emit(f"handover from={compact(handover.get('from'))} to={compact(handover.get('to'))} lost={compact(handover.get('lost'))} dropped={handover.get('dropped')} detail: GET /api/self/program-execution (handover)")
         group('historical-obligation', handover.get('obligations'), 'GET /api/self/program-execution (handover); nothing re-armed')

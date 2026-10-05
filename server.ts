@@ -3110,7 +3110,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
       },
       status: programStatusView(p, { outcomeRows: outcomeLedger.rows,
         auditRows: auditLedger.rows, judged }),
-      inbox: { dropped: p.inbox?.dropped ?? 0,
+      inbox: { lost: p.inboxLost ?? null, dropped: p.inbox?.dropped ?? 0,
         unread: (p.inbox?.entries ?? []).filter((e) => e.readBy === null)
           .map((e) => ({ id: e.id, kind: e.kind, ref: e.ref, at: e.at })) },
       clarifications: uncertainClarifications,

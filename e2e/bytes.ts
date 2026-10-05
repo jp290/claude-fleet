@@ -1,14 +1,15 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONVERSATION_ID, CONVERSATION_LINES, scratchInstance } from "../perf-probe";
 import { perfRebuild, perfRebuilds, REBUILD_SURFACES } from "../src/perfmarks";
 
-// Measured on 2026-10-05 at 256c7e5c. These literals are reviewed budgets, never re-derived from
-// the tree under test. Bun.gzipSync is the compression used by server/transport.ts.
+// Captured on 2026-10-05 at 256c7e5c; sessions recaptured on 2026-10-06 after path normalization,
+// with unchanged server source. These literals are reviewed budgets, never re-derived from the
+// tree under test. Bun.gzipSync is the compression used by server/transport.ts.
 export const BYTE_BUDGETS = [
   { scenario: "app.js gzip", baseline: 360303, ceiling: 396334 },
   { scenario: "index.html raw", baseline: 342178, ceiling: 376396 },
-  { scenario: "/api/sessions 16 slots, no events", baseline: 7375, ceiling: 8113 },
+  { scenario: "/api/sessions 16 slots, no events", baseline: 6190, ceiling: 6809 },
   { scenario: "transcript after=0, 24 fixed turns", baseline: 5921, ceiling: 6514 },
 ] as const;
 
@@ -50,15 +51,21 @@ export async function run(check: ByteCheck, inflateBundle = false): Promise<void
       && transcript.source === `${CONVERSATION_ID}.jsonl`
       && transcript.entries.every((e, i) => e.n === i + 1 && e.role === (i % 2 ? "assistant" : "user")
         && e.blocks[0]?.text === (JSON.parse(CONVERSATION_LINES[i]!) as { message: { content: { text: string }[] } }).message.content[0]!.text));
+    check("bytes: transcript contains no host scratch paths", !transcriptRaw.includes(fx.dir) && !transcriptRaw.includes(realpathSync(fx.dir)));
     delete sessions.events;
+    // The scratch prefix has host-dependent length, including /private on macOS.
+    let sessionsRaw = JSON.stringify(sessions);
+    for (const prefix of [...new Set([fx.dir, realpathSync(fx.dir)])].sort((a, b) => b.length - a.length)) {
+      sessionsRaw = sessionsRaw.replaceAll(prefix, "/fleet-byte-fixture");
+    }
     const values = [Bun.gzipSync(readFileSync(bundle)).length, readFileSync(join(fx.dir, "public/index.html")).length,
-      Buffer.byteLength(JSON.stringify(sessions)), Buffer.byteLength(transcriptRaw)];
+      Buffer.byteLength(sessionsRaw), Buffer.byteLength(transcriptRaw)];
     const rows = BYTE_BUDGETS.map((b, i) => ({ ...b, value: values[i]!, difference: values[i]! - b.baseline }));
-    const table = ["scenario | basis B | value B | difference B | ceiling B",
+    const table = ["Sessions paths normalized: scratch prefixes → /fleet-byte-fixture; events excluded. Transcript source is the fixed filename.", "scenario | basis B | value B | difference B | ceiling B",
       ...rows.map((r) => `${r.scenario} | ${r.baseline} | ${r.value} | ${r.difference >= 0 ? "+" : ""}${r.difference} | ${r.ceiling}`)].join("\n");
     for (const row of rows) check(`bytes: ${row.scenario} stays under its fixed ceiling`, row.value <= row.ceiling, table);
     check("bytes: every ceiling is the captured baseline plus 10 percent rounded up",
-      BYTE_BUDGETS.every((b) => b.ceiling === Math.ceil(b.baseline * 1.1)));
+      BYTE_BUDGETS.every((b) => b.ceiling === Math.ceil(b.baseline * 11 / 10)));
     for (const surface of REBUILD_SURFACES) {
       const before = perfRebuilds()[surface]; perfRebuild(surface);
       const single = perfRebuilds()[surface] - before;

@@ -1,3 +1,4 @@
+import { nearestRank, validPerfRecord, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type PerfRecord } from "./src/protocol";
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
 import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { sectionAt } from "./context-sections";
@@ -179,7 +180,7 @@ import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/aud
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import { parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile } from "./server/pi-zai-fence";
-import { STATIC, bundleV, staticResponse, finishHttp, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
+import { STATIC, bundleV, staticResponse, finishHttp, startHttpTiming, httpPhase, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
   TREE_CAP, fileWritePath, dirEntries, type DirEntry } from "./server/dir-explorer";
@@ -221,6 +222,11 @@ const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
 // every fleet-report, twice: one `open` row with the full text when it is filed and one `decision`
 // row when it is judged. Append-only — the live list in fleet.json is a bounded tail
 // (pruneFleetReports, FLEET_REPORT_KEEP) and this is what survives it.
+const PERF_FILE = `${import.meta.dir}/perf.jsonl`;
+function rWithoutAt(r: PerfRecord & { at: number }): unknown {
+  const { at, ...record } = r;
+  return record;
+}
 const FLEET_REPORT_LEDGER_FILE = `${import.meta.dir}/fleet-reports.jsonl`;
 const RULEBOOK_AB_LEDGER_FILE = `${import.meta.dir}/rulebook/ab.jsonl`;
 // every queue row that went terminal or was evicted, WHOLE — the bound in capTasks retires terminal
@@ -10078,6 +10084,7 @@ type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
   eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string; inboxId?: string;
   programEventId?: string;
+  timing?: (phase: string, ms: number) => void;
   bundleGate?: { harness?: false; quietHours?: false; idleMs?: number } };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
 type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
@@ -10337,7 +10344,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
         { path: "bundle", ...(ordered.length === 1 ? { path: ordered[0]!.options.path } : {}),
           rollbackOwnPayload: true, requireAgent: true,
           deliveryClass: immediate ? "sofort" : "buendelbar", bypassQueue: true,
-          paneInboxNotice: bundleNotice(ordered),
+          paneInboxNotice: bundleNotice(ordered), timing: immediate?.options.timing,
           ...(immediate?.options.reportId ? { reportId: immediate.options.reportId } : {}),
           ...(immediate?.options.inboxId ? { inboxId: immediate.options.inboxId } : {}),
           ...(immediate?.options.programEventId ? { programEventId: immediate.options.programEventId } : {}) });
@@ -10400,6 +10407,12 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
   return bundle.inflight;
 }
 async function sendText(s: Slot, given: string, submit: boolean, options: SendTextOptions): Promise<{ acceptance: Acceptance }> {
+  let phaseAt = performance.now();
+  const phase = (name: string): void => {
+    const now = performance.now();
+    options.timing?.(name, now - phaseAt);
+    phaseAt = now;
+  };
   const origin = { slot: s.id, openedAt: s.openedAt };
   if (!options.bypassQueue) {
   const address = options.address ?? deliveryAddress(s);
@@ -10459,6 +10472,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes can interleave with them and reorder pty input
   const task = s.inputChain.then(async () => {
+    phase("queue");
     if (s.openedAt !== origin.openedAt)
       throw new DeliveryCancelled("slot occupant changed before paste");
     // every paste reaches a sleeping pane by waking it first; a failed wake types nothing, and the
@@ -10530,6 +10544,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed during send agent probe — nothing typed");
       if (state !== "alive") throw new SendAgentNotAlive(state);
     }
+    phase("ready");
     const buf = `fleetbuf${occupant.slot}-${occupant.openedAt}-${randomBytes(8).toString("hex")}`;
     let ownPasteQuiet = false;
     try {
@@ -10556,8 +10571,10 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       pasted = payloadBytes; // the bytes are in the pane from here on, whatever the submit half does
       await waitForSendTestLatch(SEND_AFTER_PASTE_TEST_LATCH, "after-paste", bound, text);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed after paste");
+      phase("paste");
       if (!submit) return { acceptance: "not-applicable" as const };
       await Bun.sleep(150);
+      phase("settle");
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before submit");
       // ENTER IS THE DESTRUCTIVE HALF OF A PASTE: only "partial" (payload provably still arriving)
       // blocks it. "differs" leaves completeness UNPROVABLE, never disproven, so the send proceeds
@@ -10579,10 +10596,13 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
             + `payload after ${arrivalWaitMs}ms; no Enter was sent`);
       }
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before Enter");
+      phase("arrival");
       const sk = await tmux("send-keys", "-t", bound.paneId, "Enter");
+      phase("submit");
       if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
       if (!observes) return { acceptance: "not-applicable" as const };
       const after = await awaitComposer(s, bound, (r) => r === "");
+      phase("accept");
       if (!sameBoundPane(s, bound)) throw new Error("slot changed after submit");
       if (after === "") {
         if (bound.comms.length > 0 && await paneAgentAt(bound.paneId, bound.comms) !== "alive")
@@ -10609,6 +10629,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
     } finally {
       if (ownPasteQuiet) s.quietUntil = Date.now() + OWN_PASTE_QUIET_TAIL_MS;
       await tmux("delete-buffer", "-b", buf);
+      phase("cleanup");
     }
   });
   s.inputChain = task.catch(() => {});
@@ -27506,7 +27527,7 @@ function auditStats(repo: string): { n: number; p50: number; p90: number } | nul
 function nearestRankStats(d: number[] | undefined): { n: number; p50: number; p90: number } | null {
   if (!d || d.length < AUDIT_DURATION_MIN_N) return null;
   const s = [...d].sort((a, b) => a - b);
-  const at = (q: number): number => s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
+  const at = (q: number): number => nearestRank(s, q)!;
   return { n: s.length, p50: at(0.5), p90: at(0.9) };
 }
 // THE LAND GATE'S DISTRIBUTION, the same bookkeeping one surface over: the board's land-check row
@@ -42181,6 +42202,7 @@ Bun.serve<WSData>({
     return new Response("internal error", { status: 500 });
   },
   async fetch(req, server) {
+    startHttpTiming(req);
     // Every response leaves through finishHttp — the only place that sees the finished body AND the
     // accept-encoding (json() sees neither). Nested on purpose: a top-level extraction would reindent
     // ~1200 lines for no behavioural difference. Narrativ: server-narrativ-archiv.md#fetch-entry
@@ -44404,6 +44426,56 @@ Bun.serve<WSData>({
     // the transport ledger (server/transport.ts). Its OWN route on purpose: /api/sessions is the endpoint
     // being shrunk, and a counter inside it would inflate what it measures. Owner-only, read-only.
     if (url.pathname === "/api/transport" && req.method === "GET") return json(transportReport());
+    if (url.pathname === "/api/perf") {
+      if (!tokenOk(cookieToken(req))) return json({ error: "Owner cookie required" }, 403);
+      if (req.method === "POST") {
+        if (Number(req.headers.get("content-length") ?? 0) > PERF_BODY_MAX)
+          return json({ error: "perf batch too large" }, 413);
+        const reader = req.body?.getReader();
+        if (!reader) return json({ error: "invalid perf JSON" }, 400);
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        while (true) {
+          const part = await reader.read();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (size > PERF_BODY_MAX) { await reader.cancel(); return json({ error: "perf batch too large" }, 413); }
+          chunks.push(part.value);
+        }
+        const text = Buffer.concat(chunks).toString("utf8");
+        let raw: unknown;
+        try { raw = JSON.parse(text); } catch { return json({ error: "invalid perf JSON" }, 400); }
+        if (!Array.isArray(raw) || !raw.length || raw.length > PERF_BATCH_MAX || !raw.every(validPerfRecord))
+          return json({ error: "invalid perf records" }, 400);
+        const at = Date.now();
+        const lines = raw.map((r: PerfRecord) => JSON.stringify({ ...r, at }) + "\n").join("");
+        if (existsSync(PERF_FILE) && statSync(PERF_FILE).size + Buffer.byteLength(lines) > PERF_ROTATE_BYTES)
+          renameSync(PERF_FILE, `${PERF_FILE}.1`);
+        appendFileSync(PERF_FILE, lines, { mode: 0o600 });
+        chmodSync(PERF_FILE, 0o600);
+        return json({ accepted: raw.length });
+      }
+      if (req.method === "GET") {
+        const since = Number(url.searchParams.get("since") ?? 0), until = Number(url.searchParams.get("until") ?? Date.now());
+        if (!Number.isFinite(since) || !Number.isFinite(until) || since < 0 || until < since)
+          return json({ error: "invalid perf time range" }, 400);
+        const { rows } = await readLedger<PerfRecord & { at: number }>(PERF_FILE);
+        const records = rows.filter((r) => validPerfRecord(rWithoutAt(r)) && Number.isFinite(r.at) && r.at >= since && r.at <= until);
+        const groups = new Map<string, { j: PerfRecord["j"]; dev: PerfRecord["dev"]; v: number; values: number[]; failed: number }>();
+        for (const r of records) {
+          const key = `${r.j}/${r.dev}/${r.v}`;
+          let g = groups.get(key);
+          if (!g) { g = { j: r.j, dev: r.dev, v: r.v, values: [], failed: 0 }; groups.set(key, g); }
+          if (r.ok && r.ms !== null) g.values.push(r.ms); else g.failed++;
+        }
+        return json({ n: records.length, since, until, groups: [...groups.values()].map((g) => {
+          const sorted = g.values.sort((a, b) => a - b);
+          return { j: g.j, dev: g.dev, v: g.v, n: sorted.length, failed: g.failed,
+            p50: nearestRank(sorted, 0.5), p75: nearestRank(sorted, 0.75), p95: nearestRank(sorted, 0.95) };
+        }), records });
+      }
+      return json({ error: "method not allowed" }, 405);
+    }
     // the owner disposition rail (see the DISPOSITION region). GET is the same read model as the
     // two trails above; POST is the ONLY writer, and it is owner-only by construction — a lane's
     // self token is rejected with 403 before the owner gate (see the block above /api/self/autos),
@@ -47201,7 +47273,7 @@ Bun.serve<WSData>({
       const receiver = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, body.text, submit, { path: "owner", requireAgent: true }));
+        ({ acceptance } = await sendText(s, body.text, submit, { path: "owner", requireAgent: true, timing: (name, ms) => httpPhase(req, name, ms) }));
       } catch (e) {
         // Nothing typed: an occupied composer (owner draft), or no live agent after the bounded boot
         // wait, refuses before the paste. Plainly retryable, so it is neither journaled as a send nor

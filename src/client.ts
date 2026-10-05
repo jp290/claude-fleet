@@ -1,3 +1,4 @@
+import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } from "./protocol";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
 import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, renderWorkplaceField, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
@@ -269,8 +270,74 @@ gateIn.addEventListener("keydown", (e) => {
   void submitToken(t);
 });
 
+interface PerfSpan {
+  j: PerfJourney; start: number; done: boolean;
+  context: Pick<PerfRecord, "dev" | "saver" | "v" | "slots">;
+  attrs: PerfAttrs;
+}
+const perfBuffer: PerfRecord[] = [];
+const perfRequests = new WeakMap<Response, { url: string; start: number }>();
+const perfDeliveries = new WeakMap<Promise<boolean>, { response?: Response }>();
+let perfSendClickAt: number | undefined;
+const perfPending = new WeakMap<HTMLElement, { span: PerfSpan }>();
+let perfBoardStarted = false;
+function perfStart(j: PerfJourney, at = performance.now(), attrs: PerfAttrs = {}): PerfSpan {
+  return { j, start: at > performance.timeOrigin ? at - performance.timeOrigin : at, done: false,
+    context: { dev: isMobile() ? "mobile" : "desktop", saver: dataSaver, v: bundleV, slots: fleet.filter((s) => !!s.cwd).length }, attrs };
+}
+function perfPaint(fn: () => void): void {
+  requestAnimationFrame(() => requestAnimationFrame(fn));
+}
+function perfFinish(span: PerfSpan | null, ok: boolean, res?: Response): void {
+  if (!span || span.done) return;
+  span.done = true;
+  const finish = (): void => {
+    const ms = span.j === "J3" && span.attrs.responseMs !== null && span.attrs.responseMs !== undefined
+      ? span.attrs.responseMs : Math.max(0, performance.now() - span.start);
+    const request = res && perfRequests.get(res);
+    const req = request && request.start >= span.start ? request : undefined;
+    const resource = req ? (performance.getEntriesByName(req.url, "resource") as PerformanceResourceTiming[])
+      .filter((e) => e.startTime >= req.start - 1).at(-1) : undefined;
+    const total = resource?.serverTiming?.find((t) => t.name === "total")?.duration
+      ?? (req && res?.headers.get("server-timing")?.match(/(?:^|,\s*)total;dur=([\d.]+)/)?.[1]);
+    const serverMs = total === undefined ? null : Number(total);
+    const netMs = resource && serverMs !== null ? Math.max(0, resource.responseEnd - resource.startTime - serverMs) : null;
+    if (resource) span.attrs.bytes ??= resource.encodedBodySize;
+    if (request && serverMs === null) span.attrs.serverMs = "timing-unavailable";
+    if (span.j === "J1") {
+      const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+      const bundle = (performance.getEntriesByType("resource") as PerformanceResourceTiming[]).find((e) => new URL(e.name).pathname === "/app.js");
+      span.attrs.htmlBytes = nav?.encodedBodySize ?? 0;
+      span.attrs.bundleBytes = bundle?.encodedBodySize ?? 0;
+      span.attrs.cold = (bundle?.transferSize ?? 0) > 0;
+      span.context.v = bundleV;
+      span.context.slots = fleet.filter((s) => !!s.cwd).length;
+    }
+    const record: PerfRecord = { ...span.context, j: span.j, ok, ms: ok ? ms : null,
+      clientMs: ok ? Math.max(0, ms - (serverMs ?? 0) - (netMs ?? 0)) : null,
+      serverMs: ok ? serverMs : null, netMs: ok ? netMs : null, attrs: span.attrs };
+    if (perfBuffer.length < PERF_BATCH_MAX * 2) perfBuffer.push(record);
+  };
+  if (ok) perfPaint(finish); else {
+    if (span.j === "J3") span.attrs.responseMs = null;
+    finish();
+  }
+}
+function flushPerf(): void {
+  while (perfBuffer.length) {
+    const batch = perfBuffer.slice(0, PERF_BATCH_MAX);
+    if (!navigator.sendBeacon("/api/perf", new Blob([JSON.stringify(batch)], { type: "application/json" }))) return;
+    perfBuffer.splice(0, batch.length);
+  }
+}
+setInterval(flushPerf, 60_000);
+document.addEventListener("visibilitychange", () => { if (document.hidden) flushPerf(); });
+
 export async function api(path: string, init?: RequestInit): Promise<Response> {
+  const timed = path === "/api/sessions" || path === "/send" || /^\/api\/slots\/\d+\/(transcript|brief)(?:\?|$)/.test(path);
+  const start = timed ? performance.now() : 0;
   const res = await fetch(path, init);
+  if (timed) perfRequests.set(res, { url: new URL(path, location.href).href, start });
   if (res.status === 401) showGate();
   return res;
 }
@@ -1046,6 +1113,26 @@ function dropStrip(slot: number, images: DropImage[]): HTMLElement {
 }
 
 class Pane {
+  private perfSwitch: PerfSpan | null = null;
+  private perfChat: PerfSpan | null = null;
+  private perfChatLoaded = false;
+  private perfSeedReady = false;
+  visibleExistingSwitch(): void {
+    if (this.view === "chat" ? this.perfChatLoaded : this.perfSeedReady) this.visibleSwitch(true);
+  }
+  beginSwitch(at: number): void {
+    perfFinish(this.perfSwitch, false);
+    this.perfSwitch = perfStart("J2", at, { view: this.view });
+  }
+  visibleSwitch(shelf: boolean, res?: Response): void {
+    if (this.perfSwitch) {
+      this.perfSwitch.attrs.view = this.view;
+      this.perfSwitch.attrs.shelf = this.view === "chat" && shelf;
+      if (this.view === "term") this.perfSwitch.attrs.serverMs = "ws-seed-unmeasured";
+      perfFinish(this.perfSwitch, true, res);
+      this.perfSwitch = null;
+    }
+  }
   slot = 0; // 0 = unassigned
   private gen = 0; // bump to suppress a stale socket's reconnect loop
   private pinPending = false; // pin the viewport to the bottom once the next seed lands
@@ -1208,7 +1295,7 @@ class Pane {
     this.viewBtn.setAttribute("aria-pressed", "false");
     this.viewBtn.onclick = (e) => {
       e.stopPropagation();
-      this.setView(this.view === "term" ? "chat" : "term");
+      this.setView(this.view === "term" ? "chat" : "term", e.timeStamp);
     };
     // terminal on the chat column's width — one pane, terminal view, never a phone (VERBOTEN mobil);
     // the phone never sees this button (mobile CSS hides it outright)
@@ -1512,7 +1599,14 @@ class Pane {
   // own resize jiggle relocates content, so line-anchored marks drift and were dropped.
   // "What did I send" lives in the 🕘 prompt history and the conversation view instead.
 
-  setView(v: "term" | "chat") {
+  setView(v: "term" | "chat", at = performance.now()) {
+    if (v !== this.view) { perfFinish(this.perfSwitch, false); this.perfSwitch = null; }
+    if (v === "chat" && this.view !== "chat" && this.slot && this.pastN === null) {
+      perfFinish(this.perfChat, false);
+      this.perfChat = perfStart("J4", at, { view: "chat", shelf: this.perfChatLoaded });
+      if (this.perfChatLoaded) { perfFinish(this.perfChat, true); this.perfChat = null; }
+    }
+    if (v === "term") { perfFinish(this.perfChat, false); this.perfChat = null; }
     if (v !== "term") this.closeSearch();
     // the terminal view hides the chat (display:none) and a hidden element has no scroll position:
     // read it on the way out, restore it on the way back (applyChatMemo below)
@@ -1578,6 +1672,7 @@ class Pane {
   }
 
   private resetChat() {
+    this.perfChatLoaded = false;
     clearTimeout(this.chatTimer);
     this.chatGen++;
     this.chatMemo = null;
@@ -1997,7 +2092,11 @@ class Pane {
   // true = the entry retired a bubble this board put up: it is the same send, now DURCH
   private settlePending(text: string): boolean {
     const hit = this.pending.find((p) => pendingSettledBy(p.text, text));
-    if (hit) this.dropPending(hit.el);
+    if (hit) {
+      const measured = perfPending.get(hit.el);
+      if (measured) measured.span.attrs.transcriptMs = Math.max(0, performance.now() - measured.span.start);
+      this.dropPending(hit.el);
+    }
     return !!hit;
   }
 
@@ -2032,13 +2131,18 @@ class Pane {
     // capture the slot this fetch belongs to: assign()→resetChat() can reassign the pane
     // mid-fetch, and the old slot's entries must NOT append under the new slot's header.
     const slot = this.slot, past = this.pastN, gen = this.chatGen;
+    const chatPerf = this.perfChat, switchPerf = this.perfSwitch;
+    const initial = this.chatTotal === 0;
     this.chatBusy = true;
     let grew = false;
     try {
       const res = await api(past === null ? `/api/slots/${slot}/transcript?after=${this.chatTotal}`
         : `/api/slots/${slot}/succession/${past}/transcript?after=${this.chatTotal}`);
       if (this.slot !== slot || this.pastN !== past || this.chatGen !== gen) return; // reassigned during the fetch — stale
-      if (!res.ok) return;
+      if (!res.ok) {
+        perfFinish(chatPerf, false); perfFinish(switchPerf, false);
+        return;
+      }
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
         cache?: { at: number; provider: string } | null; model?: string | null; ttlSec?: number;
         effort?: string | null;
@@ -2138,10 +2242,21 @@ class Pane {
         if (focused === this.index) renderComposerOpts(false);
       }
       this.chatTotal = data.total;
+      if (initial && past === null) {
+        this.perfChatLoaded = true;
+        if (this.view === "chat") {
+          const visibleChat = this.perfChat;
+          if (visibleChat) visibleChat.attrs.entries = data.entries.length;
+          perfFinish(visibleChat, true, res);
+          this.perfChat = null;
+          this.visibleSwitch(false, res);
+        }
+      }
       // every poll re-reads the working fact and re-arms the RECENT_MS hide timer (the timer
       // alone makes the bound, the poll only refreshes the fact when new output moved it)
       if (past === null) this.updateWork();
     } catch {
+      perfFinish(chatPerf, false); perfFinish(switchPerf, false);
       // transient fetch error — next tick retries
     } finally {
       if (this.chatGen === gen) this.chatFresh = false; // an entry that threw must not leave the flag up
@@ -2187,6 +2302,7 @@ class Pane {
 
   private connect(force = false) {
     if (!this.slot) return;
+    this.perfSeedReady = false;
     this.gen++;
     const g = this.gen;
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -2229,11 +2345,16 @@ class Pane {
       // Re-pin once the seed is written; the write callback runs after the buffer settles.
       const pin = this.pinPending;
       this.pinPending = false;
-      this.term.write(new Uint8Array(e.data as ArrayBuffer), pin ? () => this.pinToBottom() : undefined);
+      this.term.write(new Uint8Array(e.data as ArrayBuffer), pin || action.reset ? () => {
+        if (pin) this.pinToBottom();
+        if (action.reset && g === this.gen) this.perfSeedReady = true;
+        if (action.reset && g === this.gen && this.view === "term") this.visibleSwitch(false);
+      } : undefined);
       if (action.reset) this.flushHeld();
     };
     ws.onclose = () => {
-      if (g !== this.gen) return; // superseded by a reassign or dispose
+      if (g !== this.gen) return;
+      perfFinish(this.perfSwitch, false); this.perfSwitch = null;
       if (focused === this.index) setConn(false);
       // every successful open costs a scrollback seed, so a socket that keeps opening and
       // dropping is as expensive as one that never opens — only a socket that STAYED up
@@ -2248,7 +2369,7 @@ class Pane {
   }
 
   assign(slot: number) {
-    if (slot === this.slot) { this.focus(); this.scrollToEnd(); return; }
+    if (slot === this.slot) { this.focus(); this.scrollToEnd(); this.visibleExistingSwitch(); return; }
     this.leavePast();
     this.closeSearch(); // the hits were the old slot's text
     // the slot this pane leaves keeps its chat and its reading position (owner 2026-09-29: „[Zitat entfernt]“
@@ -2270,6 +2391,13 @@ class Pane {
     this.hideCopy();
     this.term.reset();
     const restored = !!slot && this.unshelveChat(slot);
+    this.perfChatLoaded = restored;
+    perfFinish(this.perfChat, false);
+    this.perfChat = null;
+    if (slot && this.view === "chat") {
+      if (restored) this.visibleSwitch(true);
+      else this.perfChat = perfStart("J4", this.perfSwitch?.start, { view: "chat", shelf: false });
+    }
     if (!restored) this.resetChat();
     this.boardBtn.style.display = slot ? "flex" : "none";
     this.reloadBtn.style.display = slot ? "flex" : "none";
@@ -4687,7 +4815,7 @@ function setLayout(n: number, assignments?: number[]) {
 
 // sidebar click: assign to the focused pane — unless the slot is already
 // visible in another pane (same slot twice = two sessions fighting over resize)
-export function showSlot(id: number): boolean {
+export function showSlot(id: number, at = performance.now()): boolean {
   const s = fleet.find((slot) => slot.id === id);
   if (!s?.cwd) return false;
   // §F3 edge 2 — focus beats fold. Whatever route got here (a ⏸ badge, an adopt, a merge job
@@ -4699,8 +4827,10 @@ export function showSlot(id: number): boolean {
   }
   setDrawer(false);
   const existing = panes.find((p) => p.slot === id);
-  if (existing) { existing.focus(); existing.scrollToEnd(); existing.flash(); void renderMobileAlarmHint(); return true; }
+  existing?.beginSwitch(at);
+  if (existing) { existing.focus(); existing.scrollToEnd(); existing.visibleExistingSwitch(); existing.flash(); void renderMobileAlarmHint(); return true; }
   const target = panes[focused];
+  target.beginSwitch(at);
   target.assign(id);
   target.flash();
   void renderMobileAlarmHint();
@@ -5222,13 +5352,13 @@ function closeSheet(refocus = false): void {
 }
 $("msheetshade").onclick = () => closeSheet(true);
 // one row of a sheet: an icon, the word, a quiet value; the click closes the sheet, then acts
-function sheetRow(cls: string, ico: IconName | null, word: string, run: () => void, value?: string): HTMLButtonElement {
+function sheetRow(cls: string, ico: IconName | null, word: string, run: (event: MouseEvent) => void, value?: string): HTMLButtonElement {
   const b = el("button", cls) as HTMLButtonElement;
   b.type = "button";
   if (ico) b.appendChild(icon(ico));
   b.appendChild(el("span", "mshw", word));
   if (value) b.appendChild(el("span", "mshval", value));
-  b.onclick = () => { closeSheet(); run(); };
+  b.onclick = (e) => { closeSheet(); run(e); };
   return b;
 }
 // the sessions in the drawer's order — a stack's anchor, then its lanes — none folded away: the
@@ -5309,7 +5439,7 @@ function sessionsSheet(): HTMLElement[] {
   for (const s of rows) {
     const addr = s.worktree ? refs.get(s.id) ?? String(s.id) : String(s.id);
     const state = slotState(s, serverNow, panes.some((p) => p.slot === s.id));
-    const r = sheetRow(`mshrow${s.worktree ? " lane" : ""}${s.id === cur ? " current" : ""}`, null, "", () => showSlot(s.id));
+    const r = sheetRow(`mshrow${s.worktree ? " lane" : ""}${s.id === cur ? " current" : ""}`, null, "", (e) => showSlot(s.id, e.timeStamp));
     r.dataset.slot = String(s.id);
     const nm = el("span", "mshnm");
     nm.appendChild(el("span", "mshname", laneLabel(s)));
@@ -6244,7 +6374,7 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
   }, { passive: false });
   view.addEventListener("keydown", (e) => {
     const to = ({ ArrowLeft: idx - 1, ArrowRight: idx + 1, Home: 0, End: n - 1, Escape: n - 1 } as Record<string, number>)[e.key];
-    if (e.key === "Enter") { e.preventDefault(); showSlot(s.id); return; }
+    if (e.key === "Enter") { e.preventDefault(); showSlot(s.id, e.timeStamp); return; }
     if (to === undefined) return;
     e.preventDefault();
     e.stopPropagation();
@@ -6792,7 +6922,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       if (s.mergePending) {
         const rb = el("span", "revb", "⏸");
         rb.title = "Konflikte, die der Agent aufgelöst hat, ohne dass jemand sie prüfte — Klick öffnet das Board zum Prüfen und Landen (intern: merge review).";
-        rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
+        rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id, e.timeStamp); setBoard(true); };
         act.appendChild(rb);
       }
       if (s.share) {
@@ -6820,7 +6950,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // ): clicking a FOLDED stack only unfolds it — it does not steal the
       // pane. Once open the anchor is an ordinary row again and focuses its session. Folding back is
       // the arrow's job alone, or focusing the main session would always cost you the open fold.
-      row.onclick = stack && !open ? () => setStackOpen(stack, true) : () => showSlot(s.id);
+      row.onclick = stack && !open ? () => setStackOpen(stack, true) : (e) => showSlot(s.id, e.timeStamp);
   }
   return row;
 }
@@ -7223,6 +7353,11 @@ export async function refresh() {
         qLaneKey(new Map([[t.id, qLaneJoinOf(t.id)]])),
         qView === "waves" ? qWaveProjectionKey() : null]) : "gone";
       if (dk !== qDetailKey) { setQueueDetailKey(dk); renderQueueDetail(); }
+    }
+    if (!perfBoardStarted) {
+      perfBoardStarted = true;
+      const span = perfStart("J1", 0);
+      perfFinish(span, !ta.disabled, res);
     }
     // keep an open share dialog honest (guest count, mode changed elsewhere) without
     // rebuilding it on every poll — rebuilds kill hover state and button focus
@@ -9865,24 +10000,31 @@ function flashSendError() {
 // conversation view's own bar): same POST /send, same 409 reading, same failure sentence. The
 // second composer was the moment this had to stop being inline in doSend — two readings of a
 // three-shape 409 is one reading too many.
-export async function deliver(slot: number, text: string): Promise<boolean> {
-  try {
-    const res = await post("/send", { slot, text, submit: true });
-    if (!res.ok) {
-      const body: unknown = await res.clone().json().catch(() => null);
-      toast(sendFailureMessage(res.status, body));
-      flashSendError();
+export function deliver(slot: number, text: string): Promise<boolean> {
+  const measured: { response?: Response } = {};
+  const delivery = (async (): Promise<boolean> => {
+    try {
+      const res = await post("/send", { slot, text, submit: true });
+      measured.response = res;
+      if (!res.ok) {
+        const body: unknown = await res.clone().json().catch(() => null);
+        toast(sendFailureMessage(res.status, body));
+        flashSendError();
+        return false;
+      }
+      return true;
+    } catch {
+      toast("send outcome unknown — check the pane; text kept, do not paste again");
+      flashSendError(); // text stays in the box so nothing typed is silently lost
       return false;
     }
-    return true;
-  } catch {
-    toast("send outcome unknown — check the pane; text kept, do not paste again");
-    flashSendError(); // text stays in the box so nothing typed is silently lost
-    return false;
-  }
+  })();
+  perfDeliveries.set(delivery, measured);
+  return delivery;
 }
 
-async function doSend() {
+async function doSend(at = perfSendClickAt ?? performance.now()) {
+  perfSendClickAt = undefined;
   const pane = panes[focused];
   const text = ta.value.trim();
   // exactly what the box used to carry after an upload: the prompt, then one mention per line
@@ -9899,10 +10041,21 @@ async function doSend() {
     flashSendError();
     return;
   }
+  const span = perfStart("J3", at, { view: pane.isChat ? "chat" : "term", bubbleMs: null, responseMs: null, transcriptMs: null });
+  let measuredResponse: Response | undefined;
+  let sendOk = false;
   send.disabled = true;
   const pending = pane.addPending(outgoing);
+  if (pending) {
+    perfPending.set(pending, { span });
+    perfPaint(() => { span.attrs.bubbleMs = Math.max(0, performance.now() - span.start); });
+  }
   try {
-    if (!await deliver(slot, outgoing)) { if (pending) pane.dropPending(pending); return; }
+    const delivery = deliver(slot, outgoing);
+    sendOk = await delivery;
+    measuredResponse = perfDeliveries.get(delivery)?.response;
+    span.attrs.responseMs = Math.max(0, performance.now() - span.start);
+    if (!sendOk) { if (pending) pane.dropPending(pending); return; }
     pending?.querySelector(".mwho")?.replaceChildren("you · gesendet");
     pending?.querySelector(".msend")?.replaceWith(sendState("wait"));
     // the send IS the next turn: the counter restarts now, not one transcript poll later
@@ -9917,8 +10070,10 @@ async function doSend() {
     pane.snapToBottom();
   } finally {
     send.disabled = false;
+    perfFinish(span, sendOk, measuredResponse);
   }
 }
+send.addEventListener("click", (e) => { perfSendClickAt = e.timeStamp; }, { capture: true });
 send.onclick = () => void doSend();
 // on the phone ➤ keeps the field's focus, like the key row: an engine that focuses a pressed button
 // (Chromium) blurred the field under the finger, the composer moved, and the tap's click landed on
@@ -9929,7 +10084,7 @@ ta.addEventListener("keydown", (e) => {
   // desktop: Enter sends. mobile: Enter is a newline (messaging convention) — ➤ sends
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isMobile()) {
     e.preventDefault();
-    void doSend();
+    void doSend(e.timeStamp);
     return;
   }
   if (e.isComposing) return;

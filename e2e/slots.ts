@@ -15,7 +15,7 @@ import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
 import { deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
 import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
-import { normalizeLaneAnchor, type LaneAnchor, type SubscriptionUsage } from "../src/protocol";
+import { normalizeLaneAnchor, validPerfRecord, PERF_BATCH_MAX, type PerfRecord, type LaneAnchor, type SubscriptionUsage } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
 import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-register";
@@ -41,6 +41,7 @@ const restoreTmuxEnv = async (before: (string | null)[]): Promise<void> => {
 };
 
 export async function run(): Promise<void> {
+  runPerfMarks();
   const permissionsEnvBefore = await tmuxEnvSnapshot();
   let permissionsEnvDuring: (string | null)[] = [];
   try {
@@ -1597,7 +1598,7 @@ export async function run(): Promise<void> {
       /\nfunction chatAnchor\([\s\S]*?\n\}/, /\nfunction restoreChatAnchor\([\s\S]*?\n\}/,
       /\nconst CHAT_SHELF_MAX = .*;/, /\nconst chatShelf = .*;/, /\nconst bodySource = .*;/]
       .map((re) => re.exec(cliSrc!)?.[0] ?? "").join("\n");
-    const lifted = ["assign", "refreshEntities", "relinkChat", "resetChat", "shelveChat", "unshelveChat", "chatKids",
+    const lifted = ["assign", "visibleSwitch", "visibleExistingSwitch", "refreshEntities", "relinkChat", "resetChat", "shelveChat", "unshelveChat", "chatKids",
       "applyChatMemo", "scrollToEnd", "chatPosition", "chatScrolled", "followEnd", "settleEnd", "chatGrew", "paintEndBtn",
       "chatAdd"].map(methodSrc);
     let liftError = "";
@@ -1607,6 +1608,8 @@ export async function run(): Promise<void> {
       // module declares (ChatShelfRow, the group shapes) are declared loosely here
       const code = new Bun.Transpiler({ loader: "ts" }).transformSync(`type ChatShelfRow = any; type ChatToolGroup = any; type ChatNotifGroup = any;
 ${topSrc}
+const isMobile = () => false, dataSaver = false, bundleV = 0, PERF_BATCH_MAX = 50;
+${cliSrc!.slice(cliSrc!.indexOf("interface PerfSpan {"), cliSrc!.indexOf("\nsetInterval(flushPerf"))}
 class LiftedPane { ${lifted.join("\n")} }
 export default LiftedPane;`).replace(/export default LiftedPane;?/, "return LiftedPane;");
       // HTMLElement: chatAdd marks a delta's node .fresh only on an element — a fake kid counts as one
@@ -2018,7 +2021,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("pending bubble: an empty or whitespace-only text never settles anything",
     !pendingSettledBy("", "") && !pendingSettledBy("  \n", " "));
   check("client: doSend shows the pending bubble BEFORE it awaits POST /send, and drops it when delivery fails",
-    /const pending = pane\.addPending\(outgoing\);\s*try \{\s*if \(!await deliver\(slot, outgoing\)\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
+    /const pending = pane\.addPending\(outgoing\);[\s\S]*const delivery = deliver\(slot, outgoing\);\s*sendOk = await delivery;[\s\S]*if \(!sendOk\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
     "doSend in src/client.ts");
   check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
     // (the Esc marker joined the import, card "wartet in der Chat-Ansicht")
@@ -10623,4 +10626,48 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
   } finally {
     socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+
+export function runPerfMarks(): void {
+  const root = dirname(realpathSync(`${ROOT}/node_modules`));
+  const source = readFileSync(`${root}/src/client.ts`, "utf8");
+  const start = source.indexOf("interface PerfSpan {");
+  const end = source.indexOf("\nsetInterval(flushPerf", start);
+  check("perf marks: the probe can load the client measurement functions", start >= 0 && end > start);
+  if (start < 0 || end < start) return;
+  let now = 100;
+  const frames: (() => void)[] = [];
+  const beacons: { path: string; blob: Blob }[] = [];
+  let accepts = true;
+  interface Span { attrs: { responseMs?: number | null }; }
+  interface Marks { start: (j: string, at?: number) => Span; finish: (span: Span, ok: boolean, res?: Response) => void; flush: () => void; records: PerfRecord[]; }
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end));
+  const marks = new Function("performance", "isMobile", "dataSaver", "bundleV", "fleet", "requestAnimationFrame", "navigator", "PERF_BATCH_MAX", "location", code + "\nreturn {start:perfStart,finish:perfFinish,flush:flushPerf,records:perfBuffer};")(
+    { now: () => now, timeOrigin: 1000000, getEntriesByType: () => [], getEntriesByName: () => [] },
+    () => false, false, 42, [{ cwd: "/fixture" }, { cwd: null }], (fn: () => void) => frames.push(fn),
+    { sendBeacon: (path: string, blob: Blob) => { if (accepts) beacons.push({ path, blob }); return accepts; } }, PERF_BATCH_MAX,
+    { href: "http://127.0.0.1/" }) as Marks;
+  const paint = (): void => { while (frames.length) frames.shift()!(); };
+  // t | event | exclusive owner: 100 start J1..J4 | 120 paint all four | 130 failed send.
+  for (const j of ["J1", "J2", "J3", "J4"]) { const span = marks.start(j); marks.finish(span, true); marks.finish(span, true); }
+  check("perf marks: a completed action waits for paint", marks.records.length === 0);
+  now = 120; paint();
+  check("perf marks: four actions emit exactly one valid row apiece", marks.records.length === 4 && marks.records.every(validPerfRecord) && new Set(marks.records.map((r) => r.j)).size === 4, JSON.stringify(marks.records));
+  check("perf marks: duration runs from start through paint", marks.records.every((r) => r.ms === 20 && r.clientMs === 20 && r.serverMs === null && r.netMs === null));
+  const fail = marks.start("J3"); now = 130; marks.finish(fail, false); marks.finish(fail, false);
+  const failed = marks.records.at(-1);
+  check("perf marks: a failed send emits once with null latency", marks.records.length === 5 && failed?.ok === false && failed.ms === null && failed.clientMs === null && failed.serverMs === null && failed.netMs === null && validPerfRecord(failed), JSON.stringify(failed));
+  accepts = false; marks.flush();
+  check("perf marks: a refused beacon queue keeps the buffer", marks.records.length === 5 && beacons.length === 0);
+  accepts = true; marks.flush();
+  check("perf marks: beacons go only to the own server and clear queued rows", marks.records.length === 0 && beacons.length === 1 && beacons[0]?.path === "/api/perf" && beacons[0].blob.type.startsWith("application/json"), JSON.stringify({ n: marks.records.length, beacons: beacons.map((b) => ({ path: b.path, type: b.blob.type })) }));
+  for (let i = 0; i < 110; i++) marks.finish(marks.start("J2"), false);
+  check("perf marks: the client buffer is bounded at one hundred rows", marks.records.length === 100);
+  const clean = source.split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+  for (const [j, anchor] of [["J1", 'perfStart("J1", 0)'], ["J2", 'this.perfSwitch = perfStart("J2", at'],
+    ["J3", 'perfStart("J3", at'], ["J4", 'this.perfChat = perfStart("J4", at']] as const)
+    check(`perf marks: ${j} has a live action boundary`, clean.includes(anchor));
+  check("perf marks: J2 terminal timing remains explicitly unmeasured", clean.includes('this.perfSwitch.attrs.serverMs = "ws-seed-unmeasured"'));
+  check("perf marks: send measures the event timestamp", clean.includes('perfSendClickAt = e.timeStamp') && clean.includes('void doSend(e.timeStamp)'));
 }

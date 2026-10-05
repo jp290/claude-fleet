@@ -757,3 +757,62 @@ export interface DeployGap {
   codeBehind: boolean | null; codeBehindUnknown: string[] | null;
   lands: DeployLand[] | null; truncated: boolean | null; reasons: FactReason[];
 }
+
+
+export type PerfJourney = "J1" | "J2" | "J3" | "J4";
+export interface PerfAttrs {
+  view?: "chat" | "term";
+  shelf?: boolean;
+  bytes?: number;
+  entries?: number;
+  htmlBytes?: number;
+  bundleBytes?: number;
+  cold?: boolean;
+  bubbleMs?: number | null;
+  responseMs?: number | null;
+  transcriptMs?: number | null;
+  serverMs?: "ws-seed-unmeasured" | "timing-unavailable";
+}
+export interface PerfRecord {
+  j: PerfJourney;
+  ms: number | null;
+  clientMs: number | null;
+  serverMs: number | null;
+  netMs: number | null;
+  dev: "mobile" | "desktop";
+  saver: boolean;
+  v: number;
+  slots: number;
+  ok: boolean;
+  attrs?: PerfAttrs;
+}
+export const PERF_BATCH_MAX = 50;
+export const PERF_BODY_MAX = 64_000;
+export const PERF_ROTATE_BYTES = 1_000_000;
+const perfMs = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 86_400_000;
+export function validPerfRecord(raw: unknown): raw is PerfRecord {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const r = raw as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["j", "ms", "clientMs", "serverMs", "netMs", "dev", "saver", "v", "slots", "ok", "attrs"].includes(k))) return false;
+  if (!["J1", "J2", "J3", "J4"].includes(r.j as string) || !["mobile", "desktop"].includes(r.dev as string)
+    || typeof r.saver !== "boolean" || typeof r.ok !== "boolean"
+    || !Number.isSafeInteger(r.v) || Number(r.v) < 0 || !Number.isSafeInteger(r.slots) || Number(r.slots) < 0 || Number(r.slots) > 1000) return false;
+  if (![r.ms, r.clientMs, r.serverMs, r.netMs].every((n) => n === null || perfMs(n))) return false;
+  if (r.ok ? !perfMs(r.ms) || !perfMs(r.clientMs) : r.ms !== null || r.clientMs !== null || r.serverMs !== null || r.netMs !== null) return false;
+  if (r.attrs !== undefined) {
+    if (!r.attrs || typeof r.attrs !== "object" || Array.isArray(r.attrs)) return false;
+    const a = r.attrs as Record<string, unknown>;
+    for (const [k, v] of Object.entries(a)) {
+      if (["bytes", "entries", "htmlBytes", "bundleBytes"].includes(k)) { if (!Number.isSafeInteger(v) || Number(v) < 0) return false; }
+      else if (["bubbleMs", "responseMs", "transcriptMs"].includes(k)) { if (v !== null && !perfMs(v)) return false; }
+      else if (["shelf", "cold"].includes(k)) { if (typeof v !== "boolean") return false; }
+      else if (k === "view") { if (v !== "chat" && v !== "term") return false; }
+      else if (k === "serverMs") { if (v !== "ws-seed-unmeasured" && v !== "timing-unavailable") return false; }
+      else return false;
+    }
+  }
+  return true;
+}
+export function nearestRank(sorted: readonly number[], q: number): number | null {
+  return sorted.length ? sorted[Math.ceil(q * sorted.length) - 1] : null;
+}

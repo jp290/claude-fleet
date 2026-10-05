@@ -133,6 +133,26 @@ function wantsGzip(req: Request): boolean {
 // The single exit every HTTP response passes through (see the fetch handler): it compresses what
 // is worth compressing and records what went out. It never sees a WebSocket upgrade — that path
 // returns undefined and is handed straight back.
+const httpTimings = new WeakMap<Request, { start: number; phases: Map<string, number> }>();
+export function startHttpTiming(req: Request): void {
+  const path = new URL(req.url).pathname;
+  if (path === "/api/sessions" || path === "/send" || /^\/api\/slots\/\d+\/(transcript|brief)$/.test(path))
+    httpTimings.set(req, { start: performance.now(), phases: new Map() });
+}
+export function httpPhase(req: Request, phase: string, ms: number): void {
+  if (!["queue", "ready", "paste", "settle", "arrival", "submit", "accept", "cleanup"].includes(phase)) return;
+  httpTimings.get(req)?.phases.set(phase, ms);
+}
+function finishTiming(req: Request, res: Response): Response {
+  const timing = httpTimings.get(req);
+  if (timing) {
+    res.headers.set("server-timing", [`total;dur=${(performance.now() - timing.start).toFixed(3)}`,
+      ...[...timing.phases].map(([name, ms]) => `${name};dur=${ms.toFixed(3)}`)].join(", "));
+    httpTimings.delete(req);
+  }
+  return res;
+}
+
 export async function finishHttp(req: Request, addr: string, res: Response | undefined): Promise<Response | undefined> {
   if (!res) return res;
   const path = new URL(req.url).pathname;
@@ -142,25 +162,25 @@ export async function finishHttp(req: Request, addr: string, res: Response | und
   const declared = res.headers.get("content-length");
   if (res.headers.get("content-encoding") || declared !== null || !res.body) {
     countHttp(addr, path, Number(declared ?? 0), 0);
-    return res;
+    return finishTiming(req, res);
   }
   const type = res.headers.get("content-type") ?? "";
   const raw: Uint8Array<ArrayBuffer> = new Uint8Array(await res.arrayBuffer());
   const headers = new Headers(res.headers);
   if (!COMPRESSIBLE.test(type)) {
     countHttp(addr, path, raw.byteLength, 0);
-    return new Response(raw, { status: res.status, statusText: res.statusText, headers });
+    return finishTiming(req, new Response(raw, { status: res.status, statusText: res.statusText, headers }));
   }
   headers.set("vary", "accept-encoding"); // set whether or not we compress: a cache must not
                                           // hand one client's variant to the other kind
   if (raw.byteLength < GZIP_MIN_BYTES || !wantsGzip(req)) {
     countHttp(addr, path, raw.byteLength, 0);
-    return new Response(raw, { status: res.status, statusText: res.statusText, headers });
+    return finishTiming(req, new Response(raw, { status: res.status, statusText: res.statusText, headers }));
   }
   const gz = Bun.gzipSync(raw);
   headers.set("content-encoding", "gzip");
   countHttp(addr, path, gz.byteLength, raw.byteLength - gz.byteLength);
-  return new Response(gz, { status: res.status, statusText: res.statusText, headers });
+  return finishTiming(req, new Response(gz, { status: res.status, statusText: res.statusText, headers }));
 }
 
 // app.js is ~590 KB and was served `no-store`, i.e. paid in full on every single page load. It

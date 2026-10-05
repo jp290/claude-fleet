@@ -6004,3 +6004,53 @@ Dispatch ist `lane.opened`; Kommunikation außerhalb von Report und `send` (Inbo
 Clarifications als Inhalt), Session-Profil, Datenschicht-Antworten und Tool-Calls (T1–T3, T6–T8) sind
 spätere Schnitte. Kosten gemessen am 2026-09-26 gegen die echten Ledger (≈ 27 MB): 120–350 ms je Aufruf,
 auf Abruf, nie aus einem Poll. Owner-only durch POSITION (unter dem Token-Gate wie `/api/lane`).
+
+
+## Owner performance ledger — `/api/perf`
+
+`POST /api/perf` accepts a JSON array (also a `sendBeacon` Blob of type `application/json`),
+1–50 records, at most 64,000 bytes. Both methods require the existing Owner cookie; a bearer,
+query token, self token or share credential alone cannot write or read this ledger. The host and
+Origin guards still apply. Each record contains `j` (`J1`–`J4`), `ms`, `clientMs`, `serverMs`,
+`netMs`, `dev` (`mobile`/`desktop`), `saver`, numeric bundle `v`, active `slots` and `ok`.
+Failures have all four duration fields `null`, never zero. Unknown server/network components
+are `null`; optional `attrs.serverMs` names `ws-seed-unmeasured` or `timing-unavailable`.
+Only the declared numeric/boolean/enum attributes are accepted, never text, paths or content.
+The server supplies `at`; a client cannot choose the ledger timestamp.
+
+The client buffers at most 100 records, flushes every 60 seconds and when hidden, using only
+same-origin `/api/perf`. A failed beacon queue operation retains the buffer. The private
+`perf.jsonl` rotates before an append would exceed 1,000,000 bytes into `perf.jsonl.1`, replacing
+the previous generation. Both are gitignored; no archive grows indefinitely. A read failure
+is an error, not an empty measurement. A beacon accepted by the browser is not a server receipt.
+
+`GET /api/perf?since=<epoch-ms>&until=<epoch-ms>` reads both generations within the inclusive
+interval (defaults: 0 through now). It returns `n`, `since`, `until`, `records` and `groups` by
+`j × dev × v`. Groups report successful `n`, `failed`, and p50/p75/p95 of successful `ms`, using
+nearest rank (`ceil(q*n)-1` in the sorted array). An empty interval returns `n:0`, `records:[]`,
+`groups:[]`; an error-only group has `n:0`, `failed>0` and null percentiles.
+
+J1 runs from the navigation origin to the first paint after server-backed sidebar rendering and
+an enabled composer. J2 runs from the row event timestamp to a painted chat (shelf or initial
+fetch), or the completed first xterm seed write and paint. Terminal J2 has no server/network
+breakdown: its seed arrives after upgrade; this slice adds no WebSocket frame. J4 starts at the
+chat toggle or an assigned chat's shelf miss; it ends after the initial `after=0` render and paint.
+An already loaded chat records the visible shelf hit. Periodic refreshes and delta polls create
+no additional journey rows. Superseded/failed starts produce one failed row.
+
+J3 records the send response duration as `ms`; `attrs.bubbleMs` measures the pending bubble's
+first paint separately (`null` in terminal view), and `attrs.responseMs` names the response.
+`attrs.transcriptMs` is separate and remains null if the transcript has not arrived before the
+buffer is sent. It never delays sending or creates another journey record. `clientMs` is the
+remaining total after server and network components, not the bubble measurement. Resource
+Timing supplies fetch duration, encoded bytes and `serverTiming`; the header is the fallback
+when Resource Timing is unavailable (network time then remains null). J1 also records HTML/bundle bytes and cold/warm cache state.
+
+`/api/sessions`, `/api/slots/:id/transcript`, `/api/slots/:id/brief` and `/send` expose
+`Server-Timing: total;dur=<ms>` through the existing HTTP finish path (including compression).
+Send additionally exposes exclusive `queue`, `ready`, `paste`, `settle`, `arrival`, `submit`,
+`accept`, `cleanup` phases when reached. No timing header includes paths, tokens or contents.
+Request/body semantics, delays, acceptance checks, render paths and poll cadence are unchanged.
+Surfaces: HTTP wire/server/client/reverse-state apply; dashboard display and WebSocket wire are
+not applicable; guests and non-Owner telemetry are unsupported. Checks live in `e2e/slots.ts`
+and `e2e/transport.ts`.

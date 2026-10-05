@@ -95,3 +95,6 @@ drops/
 # released-section.png painted the account path INTO the image, where no grep finds it.
 *.bundle
 /*.png
+
+perf.jsonl
+perf.jsonl.1

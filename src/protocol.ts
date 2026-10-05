@@ -745,7 +745,7 @@ export interface WorkplaceStand {
   codeScope: "server" | "helper-daemon" | "repository";
   observedAt: number | null; target: WorkplaceGitComparison | null;
   remote: "none" | WorkplaceRemote[] | null;
-  update: { state: string; mainSha: string | null } | null; reasons: FactReason[];
+  update: { state: string; main: string | null; mainSha: string | null } | null; reasons: FactReason[];
 }
 export interface Workplaces { repos: WorkplaceRepo[]; stands: WorkplaceStand[]; measuredAt: number; cacheMs: number }
 export interface DeployLand {

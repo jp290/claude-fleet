@@ -3029,7 +3029,9 @@ Sie bleibt auf registrierte Repos und diese beiden Quellen begrenzt, ohne Dateis
 `observedAt` nennt den lokalen Messbeginn, beim Daemon die vorhandene lastSeen-Zeit (auch Claim-
 Touches können sie erneuern), bei Helferinstanzen deren gemeldetes at; eine unbekannte Zeit ist
 null. Eine Heartbeat-SHA ist ein letzter Bericht, kein Beweis aktueller Erreichbarkeit.
-`update:{state,mainSha}` zeigt den vorhandenen Update-Auftrag separat. mainSha ist dessen
+`update:{state,main,mainSha}` zeigt den vorhandenen Update-Auftrag separat. main nennt dessen
+Bundle-Ref; er beeinflusst niemals das Daemon-Vergleichsziel, das wie bei den übrigen Trägern
+aus repoBases bzw. dem Haupt-Checkout-Branch kommt. mainSha ist dessen
 Ergebnis-/Claim-SHA, niemals Ersatz für daemonSha; ohne Auftrag bleibt update:null mit Grund.
 Testkopien melden bisher keine belegte laufende Git-Version: weder recordedSource.before noch
 heutige Worktree-HEAD beweisen sie. Daher bleibt ihre head:null mit copy-running-version-unproven.
@@ -3092,7 +3094,7 @@ Fixture-Wire-Ausschnitt (SHAs als Fixture-Werte):
  {"field":"mergeBase","reason":"stand-or-ref-sha-unavailable"},
  {"field":"distance","reason":"stand-or-ref-sha-unavailable"},
  {"field":"codeBehind","reason":"stand-or-ref-sha-unavailable"}]},
- "remote":"none","update":{"state":"reported","mainSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+ "remote":"none","update":{"state":"reported","main":"main","mainSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
  "reasons":[{"field":"head","reason":"daemon-sha-unreported"},
  {"field":"path","reason":"no-local-worktree-path"}]}
 ```

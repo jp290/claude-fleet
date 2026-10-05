@@ -305,6 +305,35 @@ async function workplacesChecks(): Promise<void> {
     const noRemote = versions.stands.find((s) => s.repo === realpathSync(b) && s.kind === "worktree");
     check("workplace versions repo without remote has typed none rather than null or error", noRemote?.remote === "none"
       && !noRemote.reasons.some((r) => r.field === "remote"), JSON.stringify(noRemote));
+    const withDaemonUpdate = { ...standSources, helperUpdates: new Map([["current", {
+      state: "open", main: "update-bundle", claim: { mainSha: serverHead },
+    }]]) };
+    const defaultUpdated = await compile(functions, [], false, undefined, false, undefined, { stands: withDaemonUpdate }).read();
+    const defaultDaemon = stand(defaultUpdated, "helper-daemon", "current");
+    check("workplace versions daemon default target is independent of update job", current?.target?.ref === "refs/heads/main"
+      && JSON.stringify(defaultDaemon?.target) === JSON.stringify(current.target)
+      && defaultDaemon?.update?.main === "update-bundle", JSON.stringify(defaultDaemon));
+    git(versionRepo, "branch", "integration", serverHead);
+    const configuredSources = { ...standSources, repoBases: { [versionRepo]: "integration" } };
+    const configuredWithoutJob = await compile(functions, [], false, undefined, false, undefined, { stands: configuredSources }).read();
+    const configuredWithJob = await compile(functions, [], false, undefined, false, undefined,
+      { stands: { ...withDaemonUpdate, repoBases: configuredSources.repoBases } }).read();
+    const configuredDaemon = stand(configuredWithoutJob, "helper-daemon", "current");
+    const updatedDaemon = stand(configuredWithJob, "helper-daemon", "current");
+    const sameConfiguredTarget = (left: Workplaces, right: Workplaces) => {
+      const target = stand(left, "helper-daemon", "current")?.target;
+      return target?.ref === "refs/heads/integration" && target.head === serverHead
+        && JSON.stringify(target) === JSON.stringify(stand(right, "helper-daemon", "current")?.target);
+    };
+    check("workplace versions daemon configured repo target is identical with and without job", sameConfiguredTarget(configuredWithoutJob, configuredWithJob)
+      && updatedDaemon?.update?.main === "update-bundle" && updatedDaemon.update.mainSha === serverHead, JSON.stringify(configuredDaemon));
+    const jobTargetLie = functions.replace('branch: HELPER_UPDATE_REPO ? repoBases[HELPER_UPDATE_REPO] ?? null : null, headReason: "daemon-sha-unreported"',
+      'branch: update?.main ?? null, headReason: "daemon-sha-unreported"');
+    const jobTargetLieWire = await compile(jobTargetLie, [], false, undefined, false, undefined,
+      { stands: { ...withDaemonUpdate, repoBases: configuredSources.repoBases } }).read();
+    check("workplace versions mutation rejects daemon target borrowed from update bundle", jobTargetLie !== functions
+      && !sameConfiguredTarget(configuredWithoutJob, jobTargetLieWire)
+      && stand(jobTargetLieWire, "helper-daemon", "current")?.target?.ref === "refs/heads/update-bundle");
     const remote = Array.isArray(live?.remote) ? live.remote[0] : null;
     check("workplace versions remote names local ref tip merge-base distance and logged age", remote?.name === "origin"
       && remote.ref === "refs/remotes/origin/main" && remote.head === serverHead && remote.mergeBase === docsHead

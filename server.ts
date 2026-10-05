@@ -7465,8 +7465,8 @@ async function workplaceStandSources(repos: WorkplaceRepo[], observedAt: number)
     source({ kind: "helper-daemon", repo: HELPER_UPDATE_REPO ? canonical(HELPER_UPDATE_REPO) : null,
       path: null, name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: d.daemonSha ?? null,
       basis: "heartbeat", codeScope: "helper-daemon", observedAt: d.lastSeen,
-      branch: update?.main ?? null, headReason: "daemon-sha-unreported",
-      update: update ? { state: update.state, mainSha: updateSha && /^[0-9a-f]{40}$/.test(updateSha) ? updateSha : null } : null });
+      branch: HELPER_UPDATE_REPO ? repoBases[HELPER_UPDATE_REPO] ?? null : null, headReason: "daemon-sha-unreported",
+      update: update ? { state: update.state, main: typeof update.main === "string" && update.main ? update.main : null, mainSha: updateSha && /^[0-9a-f]{40}$/.test(updateSha) ? updateSha : null } : null });
     if (d.instance) source({ kind: "helper-instance", repo: canonical(REPO_DIR), path: null,
       name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: null, basis: "checkout-unproven", codeScope: "server",
       reportedCheckout: { head: d.instance.head, observedAt: d.instance.at },
@@ -7578,7 +7578,10 @@ async function workplaceStandReader(repo: string, primaryBranch: string | null, 
     if (stand.path === null) reasons.push({ field: "path", reason: "no-local-worktree-path" });
     if (stand.observedAt === null) reasons.push({ field: "observedAt", reason: "observation-time-unreported" });
     if (stand.update === null) reasons.push({ field: "update", reason: "no-update-record-or-not-applicable" });
-    else if (stand.update.mainSha === null) reasons.push({ field: "update.mainSha", reason: "update-sha-unrecorded" });
+    else {
+      if (stand.update.main === null) reasons.push({ field: "update.main", reason: "update-target-unrecorded" });
+      if (stand.update.mainSha === null) reasons.push({ field: "update.mainSha", reason: "update-sha-unrecorded" });
+    }
     const targetBranch = branch ?? repoBases[repo] ?? primaryBranch;
     const target = targetBranch ? await compare(stand.head, `refs/heads/${targetBranch}`, stand.codeScope) : null;
     if (!target) reasons.push({ field: "target", reason: "target-branch-unreadable" });

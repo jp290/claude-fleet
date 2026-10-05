@@ -3,7 +3,7 @@
 export const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
 export interface TmuxResult { out: string; err: string; code: number }
 export async function tmux(...args: string[]): Promise<TmuxResult> {
-  const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["tmux", "-u", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([
     new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited,
   ]);
@@ -24,7 +24,7 @@ export const TMUX_NEW_SESSION_KILL_GRACE_MS = 500;
 // unbounded client process strands both lifecycle verbs. Kill only the exact Bun child we started:
 // TERM first, KILL after a short grace, and never a name-pattern/process-tree sweep.
 export async function tmuxNewSession(...args: string[]): Promise<TmuxNewSessionResult> {
-  const p = Bun.spawn(["tmux", "-L", SOCK, "new-session", ...args], { stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["tmux", "-u", "-L", SOCK, "new-session", ...args], { stdout: "pipe", stderr: "pipe" });
   const outP = new Response(p.stdout).text().catch(() => "");
   const errP = new Response(p.stderr).text().catch(() => "");
   let timer: ReturnType<typeof setTimeout> | undefined;

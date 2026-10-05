@@ -31,6 +31,7 @@ import * as contextPacks from "./e2e/context-packs";
 import * as contextPlan from "./e2e/context-plan";
 import * as modelScan from "./e2e/model-scan";
 import * as apiStall from "./e2e/api-stall";
+import * as tmuxLocale from "./e2e/tmux-locale";
 import * as prompts from "./e2e/prompts";
 import * as briefstats from "./e2e/briefstats";
 import * as auth from "./e2e/auth";
@@ -168,6 +169,10 @@ const steps: Step[] = [
   // as the operator runs it. No server, so it sits with the other pure families.
   { unit: "pure", module: "briefstats", run: async () => {
     await briefstats.run();
+  } },
+
+  { unit: "tmux-locale", module: "tmux-locale", run: async () => {
+    await tmuxLocale.run();
   } },
 
   // --- auth, request guards, the ✨ enhance surface, and the directory/pin API ---

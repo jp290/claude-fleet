@@ -136,6 +136,7 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "api-stall" },
   { module: "prompts" },
   { module: "briefstats" },
+  { module: "tmux-locale" },
   { module: "auth" },
   { module: "dirs-pins" },
   { module: "slots", writes: ["server:slots-1-2-open", "server:slots-1-2-driven"] },

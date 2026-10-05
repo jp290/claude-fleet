@@ -21730,7 +21730,7 @@ if (LANE_AUTOCLOSE_RAW && !LANE_AUTOCLOSE_ON && !LANE_AUTOCLOSE_OFF_RE.test(LANE
 // until a human typed "resume" — and each ran on. The DETECTION is apiStall (apiStallFact, served
 // on the polls); this is the optional actuator on top of it, in FLEET_LANE_AUTOCLOSE's shape: OFF
 // unless the owner arms it in watchdog.sh's srv-spawn line, an unrecognised value is OFF and says
-// so, and absence registers no tick at all.
+// so. Detection and terminal reporting run even when actuation is OFF.
 const API_STALL_RESUME_RAW = (process.env.FLEET_API_STALL_RESUME ?? "").trim();
 const API_STALL_RESUME_ON = /^(1|true|on|yes)$/i.test(API_STALL_RESUME_RAW);
 // declared up here because the setInterval that reads it sits above the tick's own region
@@ -21739,7 +21739,7 @@ if (API_STALL_RESUME_RAW && !API_STALL_RESUME_ON && !/^(0|off|false|no)$/i.test(
   console.log(`[fleet] FLEET_API_STALL_RESUME=${JSON.stringify(API_STALL_RESUME_RAW)} is not a recognised`
     + " value — the API-stall auto-resume is OFF. Recognised: 1/true/on/yes · 0/off/false/no.");
 // the rate-limit twin, same shape: OFF unless the operator arms it, an unrecognised value is OFF
-// and says so. Unlike its twin above, the tick it arms is registered unconditionally — the FACT
+// and says so. Both ticks run unconditionally — the FACT
 // half (the pi-zai pane read) serves apiStall with the flag OFF; only actuation gates on this.
 const RATE_LIMIT_RESUME_RAW = (process.env.FLEET_RATE_LIMIT_RESUME ?? "").trim();
 const RATE_LIMIT_RESUME_ON = /^(1|true|on|yes)$/i.test(RATE_LIMIT_RESUME_RAW);
@@ -23447,7 +23447,10 @@ function fleetEventMessage(event: FleetEvent): string {
     : event.kind === "lane-suite"
     ? laneSuiteWatchMessage(event.subjectJobId, event)
     : event.kind === "harness-block"
-    ? harnessBlockMessage(event.subjectSlot, event.subjectBranch, event)
+    ? event.payload.tool?.startsWith("api-stall:")
+      ? `[fleet] API STALL: Slot ${event.subjectSlot} — ${event.payload.detail}`
+        + ` [event ${event.id}] Quittieren: POST /api/self/events/${event.id}/ack.`
+      : harnessBlockMessage(event.subjectSlot, event.subjectBranch, event)
     : event.kind === "lane-review"
     ? laneReviewMessage(event.subjectSlot, event.subjectBranch, event)
       + (event.payload.ansatz ? `\nAnsatz: ${event.payload.ansatz}${event.payload.begruendung ? ` — ${event.payload.begruendung}` : ""}`
@@ -39028,7 +39031,7 @@ if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown)
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickMessageNudge().catch((e: unknown) => logError("tickMessageNudge", e)), INBOX_NUDGE_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);
-if (API_STALL_RESUME_ON) setInterval(() => void tickApiStallResume().catch((e: unknown) => logError("tickApiStallResume", e)), API_STALL_TICK_MS);
+setInterval(() => void tickApiStallResume().catch((e: unknown) => logError("tickApiStallResume", e)), API_STALL_TICK_MS);
 setInterval(() => void tickRateLimitResume().catch((e: unknown) => logError("tickRateLimitResume", e)), RATE_LIMIT_TICK_MS);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (three tmux queries) per healthy slot
@@ -39523,8 +39526,16 @@ interface ContextRead { used: number; window: number; at?: number }
 // "Connection lost mid-response", …): an assistant line with isApiErrorMessage:true, model
 // "<synthetic>" and a usage of all zeros (measured on slot 3, 2026-09-22T01:16:35Z). `at` is the
 // line's own timestamp, `text` its message text, `kind` its `error` field ("server_error",
-// "rate_limit", "authentication_failed", "invalid_request", …) or null when the line has none.
-interface ApiErrorLine { at: number; text: string; kind: string | null; resetAt: number | null }
+// "rate_limit", "authentication_failed", "invalid_request", …), classified as unknown when absent.
+type ApiStallKind = "server_error" | "stream_interrupted" | "capacity" | "rate_limit"
+  | "authentication_failed" | "invalid_request" | "unknown";
+function apiErrorKind(text: string, kind: unknown): ApiStallKind {
+  if (kind === "rate_limit" || kind === "authentication_failed" || kind === "invalid_request") return kind;
+  if ((!kind || kind === "server_error") && /^API Error: The response stopped arriving(?:\.|$)/.test(text))
+    return "stream_interrupted";
+  return kind === "server_error" ? kind : "unknown";
+}
+interface ApiErrorLine { at: number; text: string; kind: ApiStallKind; resetAt: number | null }
 // One tail read, two answers: the numerator (as `used` returns it) and whether the LAST assistant
 // line is such an error round. apiError is null both for "the last assistant line is a real one"
 // and for "no assistant line in the tail" — neither is a stall anyone can act on.
@@ -39751,7 +39762,7 @@ function readClaudeTail(file: string, size: number): ContextTail {
         const said = parts.map((p) => (typeof p === "object" && p !== null
           && typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : ""))
           .filter(Boolean).join(" ");
-        apiError = { at, text: said.slice(0, API_STALL_TEXT_MAX), kind: typeof d.error === "string" ? d.error : null,
+        apiError = { at, text: said.slice(0, API_STALL_TEXT_MAX), kind: apiErrorKind(said, d.error),
           resetAt: claudeLimitResetAt(said, at) };
       }
     }
@@ -40022,88 +40033,97 @@ function stalledFacts(s: Slot, sig: ReturnType<typeof laneSignalView>, now: numb
   };
 }
 
-// --- apiStall: a claude session parked on an API-error round -----------------------------------
-// The FACT is exact because claude writes it down: the dead turn is an assistant line with
-// isApiErrorMessage:true (readClaudeTail). Nothing here reads the pane's text — a grep for
-// "API Error" on the screen would match the owner quoting one, a scrolled-back old error, or a
-// lane writing about this very feature. Two conditions, both required:
-//   - the LAST assistant line of the transcript is that round (a later real reply ends it), and
-//   - the pane is quiet for API_STALL_QUIET_MS. Claude retries some failures itself before it gives
-//     up; a pane still painting is a session still doing something, and an unobserved pane
-//     (lastOutput 0) is "cannot tell", never "idle".
-// null for every harness without a `tail` reader: its transcript has no such mark, so the answer is
-// "unmeasured" — never a claim that no error happened.
+// --- apiStall: transcript error rounds and occupant-pinned visible pane errors -----------------
 const API_STALL_QUIET_MS = 10_000;
-// the actuator's numbers (tickApiStallResume): first attempt 90 s after the error line, at most two
-// attempts per stall, the second 90 s after the first
 const API_STALL_RESUME_AFTER_MS = 90_000;
 const API_STALL_RESUME_MAX = 2;
-interface ApiStall { since: number; text: string; kind: string | null; resetAt: number | null }
+interface ApiStall { since: number; text: string; kind: ApiStallKind; resetAt: number | null }
 function apiStallFact(s: Slot, apiError: ApiErrorLine | null, now: number): ApiStall | null {
-  // the pi-zai pane fact (paneLimitFacts below) rides the same shape: a harness whose transcript
-  // carries no error mark can still have one ON SCREEN. Null for every other harness and every
-  // unset entry — the transcript path above reads exactly as it did before this seam existed.
   const err = apiError ?? paneLimitFactFor(s);
   if (!err || !s.cwd) return null;
   if (s.lastOutput === 0 || now - s.lastOutput < API_STALL_QUIET_MS) return null;
   return { since: err.at, text: err.text, kind: err.kind, resetAt: err.resetAt };
 }
 
-// ONE STALL, NOT ONE LINE. A resume that meets the same outage writes a NEW error round with a new
-// timestamp; counting attempts per line would therefore resume a persistent 529 forever, 90 s
-// apart. The budget belongs to the stall: it is spent while the last assistant line stays an error
-// round and is only given back when a REAL assistant line is read again (or the occupant changes).
-// After the second attempt apiStall simply stays on the polls — the next move is a person's.
-//
-// ONLY kind "server_error". The other rounds claude writes the same way are not transient:
-// "rate_limit" (out of credits, a limit until 20:00), "authentication_failed" (/login),
-// "invalid_request" (a safeguard refusal — typing "resume" re-sends the very turn that was flagged).
-// They stay visible as apiStall and are never typed into.
-interface ApiStallAttempt { openedAt: number; sessionId: string; tries: number; lastAt: number }
+interface ApiStallAttempt {
+  openedAt: number; sessionId: string; since: number; tries: number; lastAt: number; reported: boolean;
+}
 const apiStallTried = new Map<number, ApiStallAttempt>();
 let apiStallTickBusy = false;
+function transientApiStall(kind: ApiStallKind): boolean {
+  return kind === "server_error" || kind === "stream_interrupted" || kind === "capacity";
+}
+async function reportApiStall(s: Slot, stall: ApiStall, attempt: ApiStallAttempt,
+  reason: "non-transient" | "exhausted"): Promise<void> {
+  if (attempt.reported || slotFrom(s.id) !== s || !s.cwd
+    || s.openedAt !== attempt.openedAt || s.sessionId !== attempt.sessionId) return;
+  const address: NonNullable<FleetEvent["receiverAddress"]> = s.worktree && s.programId
+    ? { kind: "program", id: s.programId } : { kind: "orchestrator" };
+  const receiver = deliveryRecipient(address);
+  if (!receiver || slotDeliveryBudget(receiver.id).free === 0) return;
+  const key = createHash("sha256").update(`${s.id}:${attempt.openedAt}:${attempt.sessionId}:${attempt.since}`)
+    .digest("hex").slice(0, 16);
+  const event: HarnessBlockFleetEvent = {
+    id: randomBytes(12).toString("hex"), watchId: null,
+    receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
+    receiverIdleSec: 0, receiverAddress: address,
+    subjectSlot: s.id, subjectOpenedAt: s.openedAt, subjectBranch: s.worktree?.branch ?? "unknown",
+    kind: "harness-block",
+    payload: { signal: "waiting", tool: `api-stall:${stall.kind}`, key, count: 1, escalated: true,
+      detail: (`api-stall kind=${stall.kind} reason=${reason} harness=${harnessOf(s.harness).id}`
+        + ` since=${attempt.since} tries=${attempt.tries} resetAt=${stall.resetAt} text=${stall.text}`)
+        .slice(0, HARNESS_BLOCK_DETAIL_MAX) },
+    createdAt: Date.now(), status: "pending", delivery: "pane", attempts: 0,
+    deliveredAt: null, acknowledgedAt: null,
+  };
+  attempt.reported = true;
+  fleetEvents = [...fleetEvents, event];
+  audit("harness_block", s.id, `${stall.kind} ${reason} event=${event.id} receiver=${receiver.id}`);
+  await saveStateNow();
+}
 async function tickApiStallResume(): Promise<void> {
   if (apiStallTickBusy) return;
-  const now = Date.now();
-  const due: { s: Slot; attempt: ApiStallAttempt }[] = [];
-  for (const s of slots) {
-    const prior = apiStallTried.get(s.id);
-    if (!s.cwd || !s.sessionId || harnessOf(s.harness) !== CLAUDE_HARNESS) {
-      if (prior) apiStallTried.delete(s.id);
-      continue;
-    }
-    const { apiError } = contextReading(s);
-    if (!apiError) { if (prior) apiStallTried.delete(s.id); continue; }
-    // a parked clarify lane was told to wait, and a sleeping pane is not woken for this
-    if (s.sleeping || s.awaiting === "owner") continue;
-    const stall = apiStallFact(s, apiError, now);
-    if (!stall || stall.kind !== "server_error") continue;
-    const attempt = prior && prior.openedAt === s.openedAt && prior.sessionId === s.sessionId
-      ? prior : { openedAt: s.openedAt, sessionId: s.sessionId, tries: 0, lastAt: 0 };
-    if (attempt.tries >= API_STALL_RESUME_MAX) continue;
-    if (now - Math.max(stall.since, attempt.lastAt) < API_STALL_RESUME_AFTER_MS) continue;
-    due.push({ s, attempt });
-  }
-  if (!due.length) return;
   apiStallTickBusy = true;
   try {
-    for (const { s, attempt } of due) {
-      // THE OCCUPANT PIN: the session decided on above is the one typed into, or nothing is.
-      // sendText pins its own stream occupant from here on; this closes the gap before it.
-      if (s.openedAt !== attempt.openedAt || s.sessionId !== attempt.sessionId || !s.cwd) continue;
-      // the attempt is SPENT before the paste, delivered or not: "at most two" is a promise about
-      // what is typed into a stuck pane, and a failed paste must not buy a third try
+    const now = Date.now();
+    for (const s of slots) {
+      const prior = apiStallTried.get(s.id);
+      if (!s.cwd || !s.sessionId) { apiStallTried.delete(s.id); continue; }
+      const h = harnessOf(s.harness);
+      if (h !== CLAUDE_HARNESS && h !== CODEX_HARNESS && h !== PI_ZAI_HARNESS) continue;
+      const reading = h === CLAUDE_HARNESS ? contextReading(s) : null;
+      const err = reading?.apiError ?? paneLimitFactFor(s);
+      if (!err) {
+        // An unreadable sensor is unknown; only a measured clear returns the budget.
+        const pane = paneLimitFacts.get(s.id);
+        if ((reading !== null && reading.ctx !== null) || pane?.identity === `${s.openedAt}\0${s.sessionId}`)
+          apiStallTried.delete(s.id);
+        continue;
+      }
+      const attempt = prior && prior.openedAt === s.openedAt && prior.sessionId === s.sessionId
+        ? prior : { openedAt: s.openedAt, sessionId: s.sessionId, since: err.at, tries: 0, lastAt: 0, reported: false };
+      apiStallTried.set(s.id, attempt);
+      if (s.sleeping || s.awaiting === "owner") continue;
+      const stall = apiStallFact(s, err, now);
+      if (!stall) continue;
+      if (!transientApiStall(stall.kind)) {
+        await reportApiStall(s, stall, attempt, "non-transient");
+        continue;
+      }
+      if (attempt.tries >= API_STALL_RESUME_MAX) {
+        if (now - attempt.lastAt >= API_STALL_RESUME_AFTER_MS)
+          await reportApiStall(s, stall, attempt, "exhausted");
+        continue;
+      }
+      if (!API_STALL_RESUME_ON || now - Math.max(stall.since, attempt.lastAt) < API_STALL_RESUME_AFTER_MS) continue;
+      if (slotFrom(s.id) !== s || s.openedAt !== attempt.openedAt || s.sessionId !== attempt.sessionId || !s.cwd) continue;
       const spent = { ...attempt, tries: attempt.tries + 1, lastAt: Date.now() };
       apiStallTried.set(s.id, spent);
-      // every attempt is its own audit row: sendText books a `send` row with path
-      // "api-stall-resume" and its acceptance on success AND on failure (auditSend)
       try {
         await sendText(s, "resume", true, { path: "api-stall-resume", requireAgent: true });
       } catch (e) {
         logError("apiStallResume", e);
       }
-      if (spent.tries >= API_STALL_RESUME_MAX)
-        console.log(`[fleet] api-stall: slot ${s.id} got ${spent.tries} resume attempts — apiStall stays up, the next move is the owner's`);
     }
   } finally {
     apiStallTickBusy = false;
@@ -40134,6 +40154,36 @@ const paneLimitFacts = new Map<number, { identity: string; err: ApiErrorLine | n
 function paneLimitFactFor(s: Slot): ApiErrorLine | null {
   const known = paneLimitFacts.get(s.id);
   return known && known.identity === `${s.openedAt}\0${s.sessionId}` ? known.err : null;
+}
+
+const CODEX_CAPACITY_LINE_RE = /^(?:■\s+)?Selected model is at capacity\.(?: Please try a different model\.)?$/;
+const ZAI_ERROR_LINE_RE = /^(?:Error: Retry failed after \d+ attempts: )?429:?\s+\{"code":"(?:1308|1310)","message":"/;
+function paneApiError(h: Harness, screen: string, at: number): ApiErrorLine | null {
+  for (const raw of screen.split("\n")) {
+    const line = raw.trim();
+    if (h === CODEX_HARNESS && CODEX_CAPACITY_LINE_RE.test(line))
+      return { at, text: line.slice(0, API_STALL_TEXT_MAX), kind: "capacity", resetAt: null };
+    if (h !== PI_ZAI_HARNESS || !(ZAI_LIMIT_LINE_RE.test(line) || ZAI_ERROR_LINE_RE.test(line))) continue;
+    const m = ZAI_LIMIT_LINE_RE.exec(line);
+    const reset = m ? Date.parse(`${m[1]}T${m[2]}+08:00`) : NaN;
+    return { at, text: line.slice(0, API_STALL_TEXT_MAX), kind: "rate_limit",
+      resetAt: Number.isFinite(reset) ? reset : null };
+  }
+  return null;
+}
+async function readPaneApiErrors(now: number): Promise<void> {
+  for (const s of slots) {
+    const h = harnessOf(s.harness);
+    if (!s.cwd || !s.sessionId || h !== PI_ZAI_HARNESS && h !== CODEX_HARNESS) {
+      paneLimitFacts.delete(s.id); continue;
+    }
+    const identity = `${s.openedAt}\0${s.sessionId}`;
+    const cwd = s.cwd;
+    const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
+    if (slotFrom(s.id) !== s || identity !== `${s.openedAt}\0${s.sessionId}` || s.cwd !== cwd || harnessOf(s.harness) !== h) continue;
+    if (cap.code !== 0) { paneLimitFacts.delete(s.id); continue; }
+    paneLimitFacts.set(s.id, { identity, err: paneApiError(h, cap.out, s.lastOutput > 0 ? s.lastOutput : now) });
+  }
 }
 
 // --- harness limits: no unattended start into a MEASURED usage limit --------------------------
@@ -40199,21 +40249,7 @@ async function tickRateLimitResume(): Promise<void> {
   rateLimitTickBusy = true;
   try {
     const now = Date.now();
-    // THE FACT HALF. One visible-pane capture per pi-zai slot per tick; a dead pane deletes the
-    // entry, which is the honest "cannot see it" rather than a stale last state.
-    for (const s of slots) {
-      if (!s.cwd || !s.sessionId || harnessOf(s.harness) !== PI_ZAI_HARNESS) { paneLimitFacts.delete(s.id); continue; }
-      const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
-      if (cap.code !== 0) { paneLimitFacts.delete(s.id); continue; }
-      const identity = `${s.openedAt}\0${s.sessionId}`;
-      const line = cap.out.split("\n").map((l) => l.trim()).find((l) => ZAI_LIMIT_LINE_RE.test(l));
-      paneLimitFacts.set(s.id, { identity, err: line ? (() => {
-        const m = ZAI_LIMIT_LINE_RE.exec(line);
-        const resetMs = m ? Date.parse(`${m[1]}T${m[2]}+08:00`) : NaN;
-        return { at: s.lastOutput > 0 ? s.lastOutput : now, text: line.trim().slice(0, API_STALL_TEXT_MAX),
-          kind: "rate_limit", resetAt: Number.isFinite(resetMs) ? resetMs : null };
-      })() : null });
-    }
+    await readPaneApiErrors(now);
     noteHarnessLimits(now); // the dispatch gate's memory — fed here, where the tick runs regardless
     if (!RATE_LIMIT_RESUME_ON) return;
     // THE ACTUATOR HALF. Only kind "rate_limit" WITH a readable resetAt; every other round stays

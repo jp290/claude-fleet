@@ -30,6 +30,7 @@ import { FIXTURES, MODULE_FIXTURES, selectModules } from "./suite-modules";
 import * as contextPacks from "./e2e/context-packs";
 import * as contextPlan from "./e2e/context-plan";
 import * as modelScan from "./e2e/model-scan";
+import * as apiStall from "./e2e/api-stall";
 import * as prompts from "./e2e/prompts";
 import * as briefstats from "./e2e/briefstats";
 import * as auth from "./e2e/auth";
@@ -155,6 +156,9 @@ const steps: Step[] = [
   } },
   { unit: "pure", module: "model-scan", run: async () => {
     await modelScan.run(check);
+  } },
+  { unit: "pure", module: "api-stall", run: async () => {
+    await apiStall.run(check);
   } },
   { unit: "pure", module: "prompts", run: async () => {
     await prompts.run();

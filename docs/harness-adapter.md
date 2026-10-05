@@ -878,6 +878,38 @@ des pfadbasierten Zauns. **Preis:** `ps` ist setuid und startet unter keinem `sa
 Suite-Offer), `ctl.sh`-Owner-Verben fehlen. `sandbox-exec` ist von Apple als deprecated markiert;
 der Selbsttest fängt einen Bruch. Workhorse/Linux ist ungemessen (Gegenstück wäre `bwrap`).
 
+**API-Stau erkennen, fortsetzen und melden.** `apiStall` ist ein beobachteter Fehler bei einer
+seit mindestens 10 s stillen Pane; `lastOutput:0` bleibt unbekannt. Claude liest die letzte
+Assistentenrunde mit `isApiErrorMessage:true` aus dem Transkript. Der gemessene Text
+`API Error: The response stopped arriving. The response above may be incomplete.` trägt
+`kind:"stream_interrupted"`, auch ohne `error`-Feld; eine spätere echte Antwort beendet den Stau.
+Codex schreibt für `Selected model is at capacity. Please try a different model.` keine hier
+lesbare Transkript-Fehlermarke: Fleet erfasst die vollständige sichtbare Fehlerzeile als
+`kind:"capacity"`. Pi-zai erfasst die sichtbaren 429/1308/1310-Limitzeilen als `kind:"rate_limit"`,
+auch wenn keine Reset-Zeit lesbar ist. Der gemeinsame Pane-Sensor läuft alle 10 s, liest keinen
+Scrollback, verwirft zitierte Zeilen und pinnt auch nach dem Capture-Await den Occupant.
+Andere Harnesses erhalten dadurch keine gemessene Fehlerart.
+
+Der neue API-Aktor läuft alle 15 s. `server_error`, `stream_interrupted` und `capacity` sind
+vorübergehend. Nur mit `FLEET_API_STALL_RESUME=1` (auch true/on/yes) sendet er `resume`: frühestens
+90 s nach dem Fehler, weitere 90 s Abstand, höchstens zwei Versuche pro zusammenhängendem Stau.
+Neue Fehlerzeilen geben kein Budget zurück; eine gemessene echte Antwort oder neue Occupation
+schon. Unlesbare Sensoren geben kein Budget zurück. Vor dem Send sind `openedAt` und `sessionId`
+gepinnt; auch ein fehlgeschlagener Paste verbraucht einen Versuch. Jeder Versuch trägt die
+bestehende Audit-`send`-Spur `path:"api-stall-resume"`. Schlafende oder auf den Owner wartende
+Sessions bleiben geparkt. Fehlender oder unbekannter Schalterwert bedeutet AUS; Erkennung und
+Rückweg bleiben aktiv. Es gibt keinen zusätzlichen Codex-Schalter und keinen Modell-/Harness-Wechsel.
+
+`rate_limit`, `authentication_failed`, `invalid_request` und `unknown` lösen im API-Aktor keinen
+Send aus. Sie erzeugen einmal pro beobachtetem Stau ein vorhandenes `harness-block`-FleetEvent
+mit `signal:"waiting"`, `tool:"api-stall:<Art>"` und Detail `reason=non-transient`. Eine noch
+stehende vorübergehende Art erzeugt frühestens 90 s nach dem zweiten Versuch dieselbe Ereignisart
+mit `reason=exhausted` und `tries=2`. Empfänger ist die gebundene MAIN des Lane-Programs,
+sonst die Orchestratorin. Ohne lebenden Empfänger oder freies Zustellbudget bleibt die Meldung
+ausstehend. Das Ereignis nutzt die vorhandene Zustellung und Quittierung; ein ACK erzeugt kein
+neues Ereignis und gibt kein Fortsetzungsbudget frei. Ereignisse werden gespeichert; die
+Stau-/Versuchszähler sind wie bisher Prozessspeicher und beginnen nach einem Serverneustart neu.
+
 **Nutzungslimit am Pane lesen (seit 2026-09-22).** Pi schreibt keine API-Fehlerrunde ins
 Session-File, die Fleet lesen könnte (`tail`-Leser hat nur claude) — die einzige Sensorik für ein
 Z.ai-Nutzungslimit ist der SICHTBARE Screen. `server.ts#tickRateLimitResume` liest je pi-zai-Slot
@@ -897,8 +929,9 @@ der Fakt gilt auch bei ausgeschaltetem Flag. Der Aktuator dahinter ist AUS, bis 
 genau einmal `resume`, frühestens `resetAt + 60 s`, Occupant auf `openedAt + sessionId` gepinnt,
 gebucht als Audit-`send` mit `path:"rate-limit-resume"`; ein erneutes Limit heißt neuer
 `resetAt`, höchstens 3 Versuche je Stall. Ohne lesbare Reset-Zeit wird NIE getippt — `apiStall`
-bleibt sichtbar. Der `server_error`-Pfad (`server.ts#tickApiStallResume`,
-`FLEET_API_STALL_RESUME`) ist von diesem Schnitt unberührt.
+bleibt sichtbar. Der API-Stall-Pfad (`server.ts#tickApiStallResume`,
+`FLEET_API_STALL_RESUME`) tippt dagegen nie in ein Limit. Beide Pfade teilen nur den Pane-Sensor
+und `apiStall`; der bestehende Reset-Vertrag bleibt eigenständig.
 
 ## Welches Modell läuft — die Rangfolge
 

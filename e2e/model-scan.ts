@@ -115,6 +115,39 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     strictEqual(JSON.stringify(knownClaude).includes("fixture-cc.json"), false);
     check("model-scan: measured Claude v2 cc schema yields exact sorted model IDs", true);
 
+    const opus = "claude-opus-5-5";
+    const sonnet = "claude-sonnet-5-5";
+    const contextRegister: readonly ModelEntry[] = [
+      { harness: "claude", id: `${opus}[1m]`, status: "current" },
+      { harness: "claude", id: `${sonnet}[1m]`, status: "current" },
+      { harness: "claude", id: "fixture-absent[1m]", status: "current" },
+      { harness: "claude", id: "fixture-other[preview]", status: "current" },
+      { harness: "codex", id: "codex-present[1m]", status: "current" },
+    ];
+    const contextCache = JSON.stringify(catalogue([opus, sonnet, "fixture-other", "fixture-new"]));
+    await writeFile(cataloguePath, contextCache);
+    await writeFile(codexPath, '{"models":[{"slug":"codex-present"}]}');
+    const contextScan = () => scanModels({ home, env: {}, register: contextRegister, now });
+    const [contextClaude, contextCodex] = (await contextScan()).harnesses;
+    deepStrictEqual(contextClaude.available, [opus, sonnet, "fixture-new", "fixture-other"]);
+    deepStrictEqual(contextClaude.newlyAvailable, ["fixture-new", "fixture-other"]);
+    deepStrictEqual(contextClaude.registeredButUnavailable, ["fixture-absent[1m]", "fixture-other[preview]"]);
+    deepStrictEqual(contextCodex.newlyAvailable, ["codex-present"]);
+    deepStrictEqual(contextCodex.registeredButUnavailable, ["codex-present[1m]"]);
+    strictEqual(await readFile(cataloguePath, "utf8"), contextCache);
+    check("model-scan: Claude context suffix matches both differences, preserves IDs and excludes other suffixes/harnesses", true);
+
+    const expiry = now + 1000;
+    const beforeExpiry = (await scanModels({ home, env: {}, register: contextRegister, now: expiry - 1 })).harnesses[0];
+    strictEqual(beforeExpiry.status, "known");
+    const atExpiry = (await scanModels({ home, env: {}, register: contextRegister, now: expiry })).harnesses[0];
+    strictEqual(atExpiry.status, "unknown");
+    strictEqual(atExpiry.reason, "CLAUDE_CONFIG_DIR/cache/model-catalog/: stale cc catalogue");
+    deepStrictEqual([atExpiry.available, atExpiry.newlyAvailable, atExpiry.registeredButUnavailable], [null, null, null]);
+    check("model-scan: Claude catalogue is known before staleAt and unknown at staleAt", true);
+    await writeFile(cataloguePath, JSON.stringify(catalogue()));
+    await writeFile(codexPath, '{"models":[]}');
+
     for (const invalid of ["broken", JSON.stringify({ ...catalogue(), version: 1 }),
       JSON.stringify(catalogue([])), JSON.stringify({ ...catalogue(), staleAt: now }),
       JSON.stringify({ ...catalogue(), fetchedAt: now + 500 }),

@@ -47,12 +47,14 @@ async function readSource(path: string, label: string): Promise<{ value: unknown
 function compare(harness: ModelHarness, sources: string[], available: string[] | null,
   reason: string | null, cacheTime: string | number | null, register: readonly ModelEntry[]): HarnessScan {
   const registered = new Set(register.filter((entry) => entry.harness === harness).map((entry) => entry.id));
-  const observed = new Set(available ?? []);
+  const canonical = (id: string) => harness === "claude" ? id.replace(/\[\d+[km]\]$/i, "") : id;
+  const registeredModels = new Set([...registered].map(canonical));
+  const observed = new Set((available ?? []).map(canonical));
   return {
     harness, sources, status: available === null ? "unknown" : "known", basis: "local-cache", reason, cacheTime,
     available,
-    newlyAvailable: available === null ? null : available.filter((id) => !registered.has(id)),
-    registeredButUnavailable: available === null ? null : [...registered].filter((id) => !observed.has(id)).sort(),
+    newlyAvailable: available === null ? null : available.filter((id) => !registeredModels.has(canonical(id))),
+    registeredButUnavailable: available === null ? null : [...registered].filter((id) => !observed.has(canonical(id))).sort(),
   };
 }
 

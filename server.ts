@@ -4590,10 +4590,17 @@ function testinstanzFact(out: string): { url: string; port: number; expiresAt: n
   } catch { return null; }
 }
 
-function testinstanzList(out: string): Array<{ worktree: string; port: number; url: string; expiresAt: number | null; state: string }> {
+// `withOpenUrl` is the OWNER's open-ready link (owner 2026-10-05, from another Mac: „[Zitat entfernt]“
+// ): the instance's own `.testinstanz.token`, read here and
+// never from `list` — whose output, like the state file, stays token-free. Only the owner route
+// below the tokenGate passes it; the token lives in the response body and nowhere else (no log, no
+// audit, no state), and only for a running instance — a down one has no server to open.
+function testinstanzList(out: string, withOpenUrl = false): Array<{ worktree: string; port: number; url: string;
+  expiresAt: number | null; state: string; openUrl?: string }> {
   const lines = out.trim().split("\n");
   if (lines.length === 1 && lines[0]?.startsWith("no test instances on this machine")) return [];
   const expiryByInstance = new Map<string, number | null>();
+  const tokenByInstance = new Map<string, string>();
   for (const entry of readdirSync("/tmp", { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.startsWith("fleet-testinstanz-")) continue;
     let state: string;
@@ -4605,6 +4612,11 @@ function testinstanzList(out: string): Array<{ worktree: string; port: number; u
     const expiry = Number(field("expiresAt"));
     if (worktree && Number.isInteger(port)) expiryByInstance.set(`${worktree}\0${port}`,
       Number.isSafeInteger(expiry) && expiry > 0 ? expiry * 1000 : null);
+    if (!withOpenUrl || !worktree || !Number.isInteger(port)) continue;
+    let token = "";
+    try { token = readFileSync(`/tmp/${entry.name}/.testinstanz.token`, "utf8").trim(); }
+    catch { continue; } // no token file: the row keeps its plain url, never a half link
+    if (/^[\x21-\x7e]{1,256}$/.test(token)) tokenByInstance.set(`${worktree}\0${port}`, token);
   }
   return lines.map((line) => {
     const parts = line.split("  ");
@@ -4615,7 +4627,9 @@ function testinstanzList(out: string): Array<{ worktree: string; port: number; u
     if ((state !== "up" && state !== "down") || !Number.isInteger(port) || !worktree
       || !/^rest /.test(parts[2] ?? "") || !/^https?:\/\/\S+\/$/.test(url))
       throw new Error(`unrecognized testinstanz list row: ${line.slice(0, 200)}`);
-    return { worktree, port, url, expiresAt: expiryByInstance.get(`${worktree}\0${port}`) ?? null, state };
+    const row = { worktree, port, url, expiresAt: expiryByInstance.get(`${worktree}\0${port}`) ?? null, state };
+    const token = state === "up" ? tokenByInstance.get(`${worktree}\0${port}`) : undefined;
+    return token ? { ...row, openUrl: `${url}?token=${encodeURIComponent(token)}` } : row;
   });
 }
 const MAX_TASKS = 200;
@@ -44307,7 +44321,9 @@ Bun.serve<WSData>({
         if (!st.isFile() || (st.mode & 0o111) === 0) return json({ error: "testinstanz.sh is missing or not executable" }, 409);
         const run = await testinstanzCommand(import.meta.dir, ["list"], 15_000);
         if (run.code !== 0) return json({ error: `testinstanz list failed (${run.code}): ${(run.err.trim() || run.out.trim()).slice(-500)}` }, 409);
-        return json({ testinstanzen: testinstanzList(run.out) });
+        // owner-only by POSITION (below the tokenGate): the one place a test instance's token
+        // leaves its file — steward, self and share credentials all stop at the gate with a 401
+        return json({ testinstanzen: testinstanzList(run.out, true) });
       } catch (error) {
         return json({ error: `testinstanz list could not run: ${String(error instanceof Error ? error.message : error).slice(0, 300)}` }, 409);
       }

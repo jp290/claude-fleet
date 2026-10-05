@@ -65,6 +65,12 @@ Dazu: `FLEET_CMD=true`, also wird nie ein Agent gespawnt; die Harness-CLI in den
 stand-in (siehe den Kopf von `testinstanz.sh`). Die State-Datei trägt den Token nicht — der
 bleibt in `.testinstanz.token`, und `list` druckt die URL OHNE Token.
 
+Von einem anderen Gerät kommt der Owner an den Link über das Board: die Testinstanz-Karte listet
+jede Instanz der Maschine mit „öffnen", dahinter `openUrl` aus `GET /api/testinstanzen`, die der
+Server nur auf dem Owner-Pfad (unter dem `tokenGate`) aus der `.testinstanz.token` der Instanz
+liest (`server.ts#testinstanzList`) — Steward-, Self-, Share-Credential und anonym enden vorher mit
+401/403 und sehen nie ein Token.
+
 ## Bauen, TTL, Abräumen
 
 `up` führt **vor** dem Serverstart `bun run build` in der Kopie aus; scheitert der Build, startet

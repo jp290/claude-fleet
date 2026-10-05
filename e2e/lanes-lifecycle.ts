@@ -13,13 +13,18 @@ import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers"
 export async function run(lc: LaneCtx): Promise<void> {
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
   // assertions fail on real teardown paths.
+  // opened before the list block: its share is the guest credential probed there, and the share
+  // dies with this lane when the teardown check below lands it
+  const emptyBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   {
     const listScript = `${ROOT}/testinstanz.sh`;
     const original = exists(listScript) ? { bytes: readFileSync(listScript), mode: lstatSync(listScript).mode & 0o777 } : null;
     const stateDir = mkdtempSync("/tmp/fleet-testinstanz-e2e-");
     const worktree = `${stateDir}/fixture worktree`;
     try {
+      const tiToken = "e2e0ti0token0f1x7ure";
       writeFileSync(`${stateDir}/testinstanz.state`, `src=${worktree}\nport=8912\nexpiresAt=2000000000\n`);
+      writeFileSync(`${stateDir}/.testinstanz.token`, tiToken);
       writeFileSync(listScript, `#!/bin/sh\n[ "$1" = list ] && echo 'up  port 8912  rest 45 min  ${worktree}  http://100.64.0.1:8912/'\n`);
       chmodSync(listScript, 0o700);
       const anonymous = await fetch(BASE + "/api/testinstanzen");
@@ -31,13 +36,40 @@ export async function run(lc: LaneCtx): Promise<void> {
         listed.status === 200 && body.testinstanzen?.length === 1 && instance?.worktree === worktree
         && instance.port === 8912 && instance.url === "http://100.64.0.1:8912/"
         && instance.expiresAt === 2_000_000_000_000 && instance.state === "up", JSON.stringify(body));
+      // Mutation: dropping the owner-only flag at the route loses openUrl; reading the token on any
+      // other credential's path shows up in one of the four bodies below.
+      check("testinstanz list gives the OWNER an open-ready link carrying the instance's own token file",
+        instance?.openUrl === `http://100.64.0.1:8912/?token=${tiToken}`, JSON.stringify(body));
+      const stewardTok = ((await (await get("/api/steward/token")).json()) as { token?: string }).token ?? "";
+      let selfTok = "";
+      try { selfTok = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { selfToken?: string }> }).slots?.[String(emptyBranch.slot)]?.selfToken ?? ""; } catch { /* mid-write */ }
+      const share = (await (await post(`/api/slots/${emptyBranch.slot}/share`, { mode: "view", password: "tilistpass123" })).json()) as { id?: string };
+      const shareAuth = await post(`/s/${share.id}/auth`, { password: "tilistpass123" });
+      const shareCookie = (shareAuth.headers.get("set-cookie") ?? "").split(";")[0];
+      check("testinstanz credential probe fixtures: steward token, the lane's self token and a guest cookie exist",
+        !!stewardTok && /^[0-9a-f]{32}$/.test(selfTok) && shareAuth.ok && shareCookie.startsWith(`share_${share.id}=`),
+        `steward=${!!stewardTok} self=${/^[0-9a-f]{32}$/.test(selfTok)} share=${shareAuth.status}`);
+      const others: Array<[string, Record<string, string>]> = [
+        ["steward", { authorization: `Bearer ${stewardTok}` }],
+        ["self", { "x-fleet-self-token": selfTok }],
+        ["self as bearer", { authorization: `Bearer ${selfTok}` }],
+        ["share", { cookie: shareCookie }],
+        ["anonymous", {}],
+      ];
+      for (const [who, headers] of others) {
+        const res = await fetch(BASE + "/api/testinstanzen", { headers });
+        const text = await res.text();
+        check(`testinstanz list: a ${who} credential is refused and its answer carries no token`,
+          (res.status === 401 || res.status === 403) && !text.includes(tiToken) && !text.includes("openUrl"),
+          `${res.status} ${text.slice(0, 200)}`);
+      }
     } finally {
       if (original) { writeFileSync(listScript, original.bytes); chmodSync(listScript, original.mode); }
       else rmSync(listScript, { force: true });
       rmSync(stateDir, { recursive: true, force: true });
     }
   }
-  const emptyBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   {
     const route = `/api/slots/${emptyBranch.slot}/testinstanz`;
     const script = `${emptyBranch.cwd}/testinstanz.sh`;

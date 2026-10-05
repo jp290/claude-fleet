@@ -9435,12 +9435,62 @@ const testinstanzPending = new Set<string>();
 const testinstanzReadAt = new Map<string, number>();
 const testinstanzErrors = new Map<string, string>();
 const testinstanzKey = (s: SlotInfo) => `${s.id}:${s.openedAt ?? 0}:${s.cwd ?? ""}`;
+// Every test instance of this machine (GET /api/testinstanzen, owner route): `openUrl` carries the
+// instance's token, so the owner opens one from ANOTHER device without a shell on this one.
+type TestinstanzRow = { worktree: string; port: number; state: string; expiresAt: number | null; openUrl?: string };
+let testinstanzMachine: TestinstanzRow[] | null = null;
+let testinstanzMachineReadAt = 0;
+let testinstanzMachinePending = false;
+let testinstanzMachineError = "";
+
+function paintTestinstanzMachine(card: HTMLElement): void {
+  if (testinstanzMachine?.length) {
+    card.appendChild(el("div", "hint", "Alle Testinstanzen dieser Maschine"));
+    for (const row of testinstanzMachine) {
+      const line = el("div", "bbtnrow");
+      const name = row.worktree.split("/").filter(Boolean).at(-1) ?? row.worktree;
+      line.appendChild(el("span", "hint", `${name} · Port ${row.port} · ${row.state === "up" ? "läuft" : "aus"}`
+        + (row.expiresAt ? ` · bis ${new Date(row.expiresAt).toLocaleString()}` : "")));
+      if (row.openUrl) {
+        const link = el("a", "bbtn", "öffnen") as HTMLAnchorElement;
+        link.href = row.openUrl;
+        link.target = "_blank";
+        link.rel = "noopener";
+        line.appendChild(link);
+      }
+      card.appendChild(line);
+    }
+  }
+  if (testinstanzMachineError) card.appendChild(el("div", "hint", testinstanzMachineError));
+  if (testinstanzMachinePending || Date.now() - testinstanzMachineReadAt <= 15_000) return;
+  testinstanzMachinePending = true;
+  testinstanzMachineReadAt = Date.now();
+  void api("/api/testinstanzen").then(async (res) => {
+    const answer = (await res.json()) as { testinstanzen?: TestinstanzRow[]; error?: string };
+    if (!res.ok || !Array.isArray(answer.testinstanzen)) throw new Error(answer.error ?? `testinstanz list failed (${res.status})`);
+    testinstanzMachine = answer.testinstanzen;
+    testinstanzMachineError = "";
+  }).catch((error: unknown) => {
+    testinstanzMachineError = error instanceof Error ? error.message : String(error);
+  }).finally(() => {
+    testinstanzMachinePending = false;
+    boardBody.querySelector(".testinstanzcard")?.remove();
+    paintTestinstanzCard();
+  });
+}
 
 function paintTestinstanzCard(): void {
   if (!boardOpen || boardBody.querySelector(".testinstanzcard")) return;
   const slot = panes[focused]?.slot;
   const s = slot ? fleet[slot - 1] : undefined;
-  if (!s?.worktree || !s.cwd) return;
+  if (!s?.worktree || !s.cwd) {
+    // no lane in focus: the card carries only the machine list, and only once there is one
+    const card = el("div", "bsec testinstanzcard");
+    card.appendChild(el("h3", "", "Testinstanzen"));
+    paintTestinstanzMachine(card);
+    if (testinstanzMachine?.length || testinstanzMachineError) boardBody.prepend(card);
+    return;
+  }
   const key = testinstanzKey(s);
   const cached = testinstanzSeen.get(key);
   const busy = testinstanzPending.has(key);
@@ -9486,6 +9536,7 @@ function paintTestinstanzCard(): void {
   }
   const error = testinstanzErrors.get(key);
   if (error) card.appendChild(el("div", "hint", error));
+  paintTestinstanzMachine(card);
   boardBody.prepend(card);
   if (!busy && Date.now() - (testinstanzReadAt.get(key) ?? 0) > 15_000) {
     testinstanzPending.add(key);

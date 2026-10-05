@@ -7637,6 +7637,7 @@ async function workplaceStands(repos: WorkplaceRepo[], measuredAt: number): Prom
       reasons.push({ field, reason: "repos-unreported" });
     else {
       if (r.reason) reasons.push({ field: "coverage", reason: r.reason });
+      if (r.name === null) reasons.push({ field: "repo", reason: "invalid-report" });
       if (r.head === null) reasons.push({ field: "head", reason: headReason });
       if (branch === null) reasons.push({ field: "reportedBranch", reason: r.remote === null && r.reason ? r.reason : r.head ? "detached-head" : headReason });
       if (r.remote === null) for (const field of ["remote", "remotes"]) reasons.push({ field, reason: r.reason ?? "remote-unreadable" });
@@ -7644,12 +7645,12 @@ async function workplaceStands(repos: WorkplaceRepo[], measuredAt: number): Prom
     out.push({ ...stand, reportedBranch: branch, target: null,
       remotes: r?.remotes ?? null, coverage: { state: r?.coverage ?? "unreported", reason: r?.reason ?? (r ? null : "repos-unreported") },
       remote: r?.remote === "none" ? "none" : r?.remote === "present" ? r.refs.map((f): WorkplaceRemote => ({
-        name: f.ref.split("/")[0], ref: `refs/remotes/${f.ref}`, head: f.head, mergeBase: f.mergeBase,
+        name: f.ref?.split("/")[0] ?? null, ref: f.ref === null ? null : `refs/remotes/${f.ref}`, head: f.head, mergeBase: f.mergeBase,
         distance: f.ahead === null || f.behind === null ? null : { ahead: f.ahead, behind: f.behind },
         codeBehind: null, refUpdatedAt: f.updatedAt, refAgeMs: f.updatedAt === null ? null : Math.max(0, measuredAt - f.updatedAt),
         reasons: [{ field: "codeBehind", reason: "helper-code-paths-unreported" },
           ...(f.updatedAt === null ? [{ field: "refUpdatedAt/refAgeMs", reason: "ref-update-time-unrecorded" }] : []),
-          ...(f.reason ? ["mergeBase", "distance"].map((field) => ({ field, reason: f.reason! })) : [])],
+          ...(f.reason ? ["mergeBase", "distance", ...(f.head === null ? ["head"] : []), ...(f.ref === null ? ["ref", "name"] : [])].map((field) => ({ field, reason: f.reason! })) : [])],
       })) : null, reasons });
   }
   for (const repo of [...new Set(sources.filter((s) => s.kind !== "helper-repo").map((s) => s.repo))]) {
@@ -30562,8 +30563,9 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
       if (Buffer.byteLength(JSON.stringify(body)) > HELPER_REPOS_BYTES_MAX + 4096)
         return json({ error: "repo heartbeat exceeds 36 KiB" }, 400);
       const repos = helperReposFrom(body.repos);
-      if (!repos) return json({ error: "invalid repos reading (32 KiB maximum)" }, 400);
-      reported.repos = repos;
+      const at = Date.now();
+      reported.repos = repos ?? { at, repos: [{ name: null, at, head: null, branch: null,
+        remote: null, remotes: null, refs: [], coverage: "incomplete", reason: "invalid-report" }] };
     } else reported.repos = undefined;
     if (body && Object.prototype.hasOwnProperty.call(body, "instance")) {
       const instance = body.instance;

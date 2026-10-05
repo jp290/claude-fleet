@@ -47,7 +47,9 @@ comparison; larger or unfinished readings have incomplete coverage and a named r
 The entire measurement has a 5-second budget, each Git command at most 750 ms and 32 KiB
 stdout. Results are reused for 60 seconds, including failures, preserving the original
 measurement time. Repo wire data is capped at 32 KiB; a heartbeat carrying it at 36 KiB total.
-The configuration does not update or deploy a helper.
+The receiver replaces malformed repo/ref rows with null measurements and `invalid-report`,
+preserving healthy rows and other heartbeat fields. Full remote ref names avoid Git's ambiguous
+shortening when a local branch has the same name. The configuration does not update or deploy a helper.
 
 ## The rules this file exists to keep
 

@@ -74,13 +74,13 @@ export const helperGitLabel = (v: unknown): v is string => typeof v === "string"
   && /^[a-zA-Z0-9][a-zA-Z0-9_./-]{0,95}$/.test(v) && !v.includes("..")
   && !/\d+\.\d+\.\d+\.\d+|\.[a-zA-Z]{2,}(?:$|\/)/.test(v);
 export type HelperRepoReason = "unreadable" | "budget" | "unsafe-label" | "ref-cap" | "remote-cap"
-  | "commit-cap" | "no-merge-base";
+  | "commit-cap" | "no-merge-base" | "invalid-report";
 export interface HelperRepoRef {
-  ref: string; head: string; updatedAt: number | null;
+  ref: string | null; head: string | null; updatedAt: number | null;
   mergeBase: string | null; ahead: number | null; behind: number | null; reason: HelperRepoReason | null;
 }
 export interface HelperRepoReading {
-  name: string; at: number; head: string | null; branch: string | null;
+  name: string | null; at: number; head: string | null; branch: string | null;
   remote: "none" | "present" | null; remotes: string[] | null; refs: HelperRepoRef[];
   coverage: "complete" | "incomplete"; reason: HelperRepoReason | null;
 }
@@ -758,8 +758,8 @@ export interface WorkplaceGitComparison {
   ref: string; head: string | null; mergeBase: string | null; distance: WorktreeDistance | null;
   codeBehind: boolean | null; reasons: FactReason[];
 }
-export interface WorkplaceRemote extends WorkplaceGitComparison {
-  name: string; refUpdatedAt: number | null; refAgeMs: number | null;
+export interface WorkplaceRemote extends Omit<WorkplaceGitComparison, "ref"> {
+  ref: string | null; name: string | null; refUpdatedAt: number | null; refAgeMs: number | null;
 }
 export interface WorkplaceStand {
   kind: "worktree" | "live-server" | "test-instance" | "helper-daemon" | "helper-instance" | "helper-repo" | "linked-instance";

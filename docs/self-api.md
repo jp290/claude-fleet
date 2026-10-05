@@ -3078,9 +3078,14 @@ Deckel dieser Erweiterung: **32 KiB für repos**, **36 KiB für einen Heartbeat 
 Vergleichen. Kein Wert wird als null ohne Grund ausgegeben. Ganze Messung höchstens 5 Sekunden,
 je Git-Prozess 750 ms und 32 KiB stdout; Cache 60 Sekunden ab Messbeginn, auch für Fehler.
 Cache-Treffer behalten die Messzeit. Der stands-Cache-Schlüssel enthält die Repo-Meldung.
-Die Eingangsprüfung verweigert falsche Formen, doppelte Namen, unsafe labels, zusätzliche
-Felder, ungültige/null-widersprüchliche Distanzen oder Übergröße mit 400 und festem Fehlertext.
-Persistierte Meldungen werden mit derselben Prüfung gelesen; eine ungültige bleibt unberichtet.
+Die Eingangsprüfung isoliert falsche Repo-/Ref-Formen, doppelte Namen, unsafe labels,
+zusätzliche Felder und ungültige/null-widersprüchliche Distanzen je betroffener Zeile: deren
+unbelegte Felder werden null mit `invalid-report`, die Abdeckung incomplete. Gesunde Nachbarzeilen
+und andere Heartbeat-Felder einschließlich daemonSha bleiben erhalten. Eine kaputte/über 32 KiB
+liegende Repo-Hülle ergibt eine unbekannte Repo-Zeile; nur die Gesamtüberschreitung von 36 KiB
+verweigert den Heartbeat mit 400. Persistierte Meldungen durchlaufen dieselbe Zeilenprüfung.
+Der Daemon liest vollständige `refs/remotes/...`-Namen und entfernt ausschließlich dieses Präfix;
+ein gleichnamiger lokaler Branch verändert weder Ref-Identität noch Vergleich.
 
 Fixture-Wire (Repo ohne konfigurierten Remote):
 

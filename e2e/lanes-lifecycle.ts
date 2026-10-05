@@ -166,6 +166,7 @@ export async function helperRepoChecks(): Promise<void> {
     const head = git(current, "rev-parse", "HEAD").stdout.trim();
     git(current, "remote", "add", "origin", "http://fixture.invalid/?token=SYNTHETIC_REPO_SECRET");
     git(current, "update-ref", "--create-reflog", "refs/remotes/origin/main", head);
+    git(current, "branch", "origin/main", head);
     const cfgBase = { fleetUrl: "http://fixture.invalid", token: "SYNTHETIC_REPO_SECRET", deviceId: "fixturedevice",
       name: "workhorse", workDir: dir };
     const config = loadConfig("fixture", { ...cfgBase, repos: [
@@ -182,6 +183,8 @@ export async function helperRepoChecks(): Promise<void> {
     }
     const report = await reposOf(config.repos!);
     const [now, noRemote, unreadable] = report.repos;
+    check("helper repo full ref remains exact despite same-named local branch", now.refs[0]?.ref === "origin/main"
+      && git(current, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/main").stdout.trim() === "remotes/origin/main");
     check("helper repo current reading names exact HEAD branch merge-base and zero distance", now.head === head
       && now.branch === "main" && now.remote === "present" && now.remotes?.join() === "origin"
       && now.refs[0]?.head === head && now.refs[0]?.mergeBase === head && now.refs[0]?.ahead === 0
@@ -205,12 +208,15 @@ export async function helperRepoChecks(): Promise<void> {
     check("helper repo distance direction is remote ahead of HEAD", behind.repos[0].refs[0].ahead === 0
       && behind.repos[0].refs[0].behind === 1 && behind.repos[0].refs[0].mergeBase === head);
     git(current, "update-ref", "refs/remotes/origin/main", head);
-    for (const mutation of [{ ...report, absolutePath: dir }, { ...report, repos: [{ ...now, name: "bad/path" }] },
-      { ...report, repos: [{ ...now, refs: [{ ...now.refs[0], ahead: -1 }] }] },
-      { ...report, repos: [{ ...now, refs: Array(9).fill(now.refs[0]) }] },
-      { ...report, repos: [{ ...noRemote, remotes: ["origin"] }] },
-      { ...report, repos: [{ ...unreadable, coverage: "complete", reason: null }] }])
-      check("helper repo wire rejects invalid or leaking readings", helperReposFrom(mutation) === null);
+    check("helper repo invalid envelope is identified without copying unknown fields", helperReposFrom({ ...report, absolutePath: dir }) === null);
+    for (const mutation of [{ ...now, name: "bad/path" }, { ...now, refs: [{ ...now.refs[0], ahead: -1 }] },
+      { ...now, refs: Array(9).fill(now.refs[0]) }, { ...noRemote, remotes: ["origin"] },
+      { ...unreadable, coverage: "complete", reason: null }]) {
+      const sanitized = helperReposFrom({ ...report, repos: [mutation, { ...noRemote, name: "healthy" }] });
+      check("helper repo wire isolates invalid row while preserving healthy neighbours", sanitized?.repos[0].coverage === "incomplete"
+        && sanitized.repos[0].reason === "invalid-report" && sanitized.repos[1].head === noRemote.head
+        && !JSON.stringify(sanitized).includes("bad/path"));
+    }
     const server = readFileSync(`${ROOT}/server.ts`, "utf8");
     const block = (from: string, to: string) => {
       const start = server.indexOf(from), end = server.indexOf(to, start);
@@ -256,7 +262,7 @@ export async function helperRepoChecks(): Promise<void> {
     const setter = new Bun.Transpiler({ loader: "ts" }).transformSync(block("function setHelperDevice(", "// Build the bundle"));
     const devices = new Map();
     const set = new Function("helperDevices", `const HELPER_DEVICE_KEEP=24, helperClaims=new Map(),auditShardRuns=new Map();
-      ${setter}; return setHelperDevice;`)(devices) as (id: string, name: string, report?: Record<string, unknown>) => { repos?: HelperReposReading };
+      ${setter}; return setHelperDevice;`)(devices) as (id: string, name: string, report?: Record<string, unknown>) => { repos?: HelperReposReading; daemonSha?: string };
     set("fixturedevice", "workhorse", { repos: report });
     check("helper claim touch retains the last repo measurement", set("fixturedevice", "workhorse").repos === report);
     const heartbeat = block('    if (body && Object.prototype.hasOwnProperty.call(body, "repos"))',
@@ -267,13 +273,34 @@ export async function helperRepoChecks(): Promise<void> {
     ingest({}, legacy, helperReposFrom, 32768, (v: unknown) => v);
     check("legacy heartbeat clears previously reported repos instead of claiming fresh data", Object.hasOwn(legacy, "repos")
       && set("fixturedevice", "workhorse", legacy).repos === undefined);
-    const rejected = ingest({ repos: { ...report, path: dir } }, {}, helperReposFrom, 32768, (v: unknown) => v);
-    check("helper heartbeat refuses unsafe repo reading before storage", !!rejected && typeof rejected === "object" && "error" in rejected);
+    const envelopeFallback: Record<string, unknown> = { daemonSha: head };
+    const envelopeResponse = ingest({ repos: { ...report, path: dir } }, envelopeFallback, helperReposFrom, 32768, (v: unknown) => v);
+    const fallback = set("fixturedevice", "workhorse", envelopeFallback);
+    check("helper heartbeat malformed envelope preserves daemonSha with typed unknown repo", envelopeResponse === undefined
+      && fallback.daemonSha === head && fallback.repos?.repos[0].head === null && fallback.repos.repos[0].reason === "invalid-report");
+    const mixed: Record<string, unknown> = { daemonSha: head };
+    const response = ingest({ repos: { ...report, repos: [{ ...now, refs: [now.refs[0],
+      { ...now.refs[0], ref: "origin/broken", head: "broken", path: dir }] }, noRemote,
+      { ...unreadable, name: "bad/path" }] } }, mixed, helperReposFrom, 32768, (v: unknown) => v);
+    const received = set("fixturedevice", "workhorse", mixed);
+    check("helper heartbeat bad ref and repo retain healthy rows and daemonSha", response === undefined
+      && received.daemonSha === head && received.repos?.repos[0].head === head
+      && received.repos.repos[0].refs[0].mergeBase === head && received.repos.repos[0].refs[1].head === null
+      && received.repos.repos[0].refs[1].reason === "invalid-report" && received.repos.repos[1].head === noRemote.head
+      && received.repos.repos[2].name === null && received.repos.repos[2].reason === "invalid-report"
+      && !JSON.stringify(received).includes(dir) && !JSON.stringify(received).includes("bad/path"));
+    const partialWire = await project(functions, received.repos);
+    const partial = partialWire.find((r) => r.kind === "helper-repo" && r.repo === "current");
+    check("helper stand isolates broken ref as null with reason", Array.isArray(partial?.remote)
+      && partial.remote[0].mergeBase === head && partial.remote[1].head === null && partial.remote[1].distance === null
+      && partial.remote[1].reasons.some((r) => r.field === "head" && r.reason === "invalid-report")
+      && partialWire.some((r) => r.kind === "helper-repo" && r.repo === null && r.coverage?.reason === "invalid-report"));
+    check("sanitized helper partial readings survive persistence unchanged", JSON.stringify(helperReposFrom(received.repos)) === JSON.stringify(received.repos));
     const oversized = ingest({ repos: report, junk: "x".repeat(37000) }, {}, helperReposFrom, 32768, (v: unknown) => v);
     check("helper repo heartbeat enforces the total size cap", !!oversized && typeof oversized === "object" && "error" in oversized);
     git(current, "-c", "core.logAllRefUpdates=false", "update-ref", "refs/remotes/origin/no-reflog", head);
     const noAge = await reposOf([{ name: "current", path: current }]);
-    check("helper ref without reflog has unknown age", noAge.repos[0].refs.find((r) => r.ref.endsWith("no-reflog"))?.updatedAt === null);
+    check("helper ref without reflog has unknown age", noAge.repos[0].refs.find((r) => r.ref?.endsWith("no-reflog"))?.updatedAt === null);
     git(current, "reset", "--soft", head);
     const bulk = Array.from({ length: HELPER_REPO_COMMITS_MAX + 1 }, (_, i) => `commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 7\nfixture\n${i === 0 ? `from ${head}\n` : ""}\n`).join("");
     const many = spawnSync("git", ["-C", current, "fast-import", "--quiet"], { input: bulk, encoding: "utf8" });

@@ -483,17 +483,18 @@ export async function reposOf(repos: NonNullable<HelperConfig["repos"]>): Promis
       r.coverage = names.length > HELPER_REPO_REMOTES_MAX ? "incomplete" : "complete";
       r.reason = names.length > HELPER_REPO_REMOTES_MAX ? "remote-cap" : null;
       const refs = names.length ? await git(repo.path, "for-each-ref", `--count=${HELPER_REPO_REFS_MAX + 1}`,
-        "--format=%(refname:short) %(objectname) %(symref)", ...r.remotes.map((n) => `refs/remotes/${n}/`)) : "";
+        "--format=%(refname) %(objectname) %(symref)", ...r.remotes.map((n) => `refs/remotes/${n}/`)) : "";
       if (refs === undefined) { r.coverage = "incomplete"; r.reason = "budget"; continue; }
       const allRows = refs ? refs.split("\n") : [];
       const rows = allRows.filter((line) => line.trim().split(" ").length === 2);
       if (allRows.length > HELPER_REPO_REFS_MAX) { r.coverage = "incomplete"; r.reason = "ref-cap"; }
       for (const line of rows.slice(0, HELPER_REPO_REFS_MAX)) {
-        const [ref, sha] = line.trim().split(" ");
+        const [fullRef, sha] = line.trim().split(" ");
+        if (!fullRef?.startsWith("refs/remotes/")) { r.coverage = "incomplete"; r.reason = "unsafe-label"; continue; }
+        const ref = fullRef.slice("refs/remotes/".length);
         if (!helperGitLabel(ref) || !sha || !/^[0-9a-f]{40}$/.test(sha)) {
           r.coverage = "incomplete"; r.reason = "unsafe-label"; continue;
         }
-        const fullRef = `refs/remotes/${ref}`;
         const updated = await git(repo.path, "reflog", "show", "-1", "--format=%gD", "--date=unix", fullRef);
         const stamp = updated?.match(/@\{(\d+)\}/)?.[1];
         const row: HelperRepoReading["refs"][number] = { ref, head: sha,

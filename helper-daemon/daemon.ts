@@ -470,9 +470,10 @@ export async function reposOf(repos: NonNullable<HelperConfig["repos"]>): Promis
         continue;
       }
       r.head = head;
-      const branch = await git(repo.path, "symbolic-ref", "--quiet", "--short", "HEAD");
-      if (branch !== undefined && !helperGitLabel(branch)) { r.reason = "unsafe-label"; continue; }
-      r.branch = branch ?? null;
+      const branch = await git(repo.path, "branch", "--show-current");
+      if (branch === undefined) { r.reason = "budget"; continue; }
+      if (branch && !helperGitLabel(branch)) { r.reason = "unsafe-label"; continue; }
+      r.branch = branch || null;
       const remotes = await git(repo.path, "remote");
       if (remotes === undefined) { r.reason = "budget"; continue; }
       const names = remotes ? remotes.split("\n") : [];
@@ -498,18 +499,17 @@ export async function reposOf(repos: NonNullable<HelperConfig["repos"]>): Promis
         const row: HelperRepoReading["refs"][number] = { ref, head: sha,
           updatedAt: stamp ? Number(stamp) * 1000 : null, mergeBase: null, ahead: null, behind: null, reason: null };
         r.refs.push(row);
-        const commits = await git(repo.path, "rev-list", `--max-count=${HELPER_REPO_COMMITS_MAX + 1}`, head, sha);
-        if (commits === undefined) row.reason = "budget";
-        else if (commits.split("\n").length > HELPER_REPO_COMMITS_MAX) row.reason = "commit-cap";
+        const range = await git(repo.path, "rev-list", "--left-right",
+          `--max-count=${HELPER_REPO_COMMITS_MAX + 1}`, `${head}...${sha}`, "--");
+        const commits = range ? range.split("\n") : [];
+        if (range === undefined) row.reason = "budget";
+        else if (commits.length > HELPER_REPO_COMMITS_MAX) row.reason = "commit-cap";
+        else if (commits.some((c) => !/^[<>][0-9a-f]{40}$/.test(c))) row.reason = "unreadable";
         else {
-          const base = await git(repo.path, "merge-base", head, sha);
+          const base = await git(repo.path, "merge-base", "--all", head, sha);
           if (!base || !/^[0-9a-f]{40}$/.test(base)) row.reason = Date.now() >= deadline ? "budget" : "no-merge-base";
-          else {
-            const distances = await git(repo.path, "rev-list", "--left-right", "--count", `${head}...${sha}`);
-            const counts = distances?.split(/\s+/).map(Number);
-            if (!counts || counts.length !== 2 || counts.some((n) => !Number.isSafeInteger(n) || n < 0)) row.reason = "budget";
-            else { row.mergeBase = base; row.ahead = counts[0]!; row.behind = counts[1]!; }
-          }
+          else { row.mergeBase = base; row.ahead = commits.filter((c) => c[0] === "<").length;
+            row.behind = commits.filter((c) => c[0] === ">").length; }
         }
         if (row.reason) { r.coverage = "incomplete"; r.reason ??= row.reason; }
       }

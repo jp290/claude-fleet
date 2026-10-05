@@ -19,7 +19,7 @@ import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, 
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
 import type { TaskCardBody } from "../card-extract";
 import type { ProgramContextPack } from "../context-plan";
-import { HELPER_REPOS_MAX, HELPER_REPO_REMOTES_MAX, HELPER_REPO_REFS_MAX, HELPER_REPOS_BYTES_MAX,
+import { HELPER_REPOS_MAX, HELPER_REPO_REMOTES_MAX, HELPER_REPO_REFS_MAX, HELPER_REPO_COMMITS_MAX, HELPER_REPOS_BYTES_MAX,
   HELPER_REPO_NAME_RE, helperGitLabel, type HelperReposReading, type HelperRepoReason } from "../src/protocol";
 
 export function helperReposFrom(raw: unknown): HelperReposReading | null {
@@ -29,7 +29,7 @@ export function helperReposFrom(raw: unknown): HelperReposReading | null {
   const exact = (v: Record<string, unknown>, keys: string): boolean => Object.keys(v).sort().join(",") === keys;
   const time = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
   const sha = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{40}$/.test(v);
-  const count = (v: unknown): boolean => v === null || typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  const count = (v: unknown): boolean => v === null || typeof v === "number" && Number.isSafeInteger(v) && v >= 0 && v <= HELPER_REPO_COMMITS_MAX;
   const reason = (v: unknown): v is HelperRepoReason | null => v === null || typeof v === "string"
     && ["unreadable", "budget", "unsafe-label", "ref-cap", "remote-cap", "commit-cap", "no-merge-base"].includes(v);
   const v = raw as Record<string, unknown>;
@@ -58,6 +58,7 @@ export function helperReposFrom(raw: unknown): HelperReposReading | null {
         || !helperGitLabel(f.ref) || refs.has(f.ref) || !sha(f.head)
         || !(f.updatedAt === null || time(f.updatedAt)) || !(f.mergeBase === null || sha(f.mergeBase))
         || !count(f.ahead) || !count(f.behind) || !reason(f.reason)
+        || typeof f.ahead === "number" && typeof f.behind === "number" && f.ahead + f.behind > HELPER_REPO_COMMITS_MAX
         || !Array.isArray(r.remotes) || !r.remotes.some((n: string) => (f.ref as string).startsWith(`${n}/`))
         || (f.reason === null ? f.mergeBase === null || f.ahead === null || f.behind === null
           : f.mergeBase !== null || f.ahead !== null || f.behind !== null)
@@ -3526,6 +3527,7 @@ export interface WorkplaceStandSource {
   repo: string | null; name: string | null; path: string | null; head: string | null;
   basis: import("../src/protocol").WorkplaceStand["basis"];
   reportedCheckout?: { head: string; observedAt: number };
+  repoReading?: import("../src/protocol").HelperRepoReading | null;
   codeScope: import("../src/protocol").WorkplaceStand["codeScope"];
   observedAt: number | null; branch: string | null; headReason: string;
   update: import("../src/protocol").WorkplaceStand["update"];

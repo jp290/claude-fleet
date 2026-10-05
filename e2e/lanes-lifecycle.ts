@@ -1,4 +1,6 @@
-import { instanceNameFrom, type WorkplaceStand, type WorkplaceChecks, type Workplaces, type WorkplaceRepo } from "../src/protocol";
+import { loadConfig, reposOf } from "../helper-daemon/daemon";
+import { helperReposFrom } from "../server/types";
+import { HELPER_REPO_COMMITS_MAX, type HelperReposReading, instanceNameFrom, type WorkplaceStand, type WorkplaceChecks, type Workplaces, type WorkplaceRepo } from "../src/protocol";
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
@@ -150,6 +152,136 @@ esac
     for (const branch of [branchA, branchB]) cmd("branch", "-D", branch);
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+export async function helperRepoChecks(): Promise<void> {
+  const dir = mkdtempSync("/tmp/fleet-helper-repos-");
+  const current = `${dir}/current`, local = `${dir}/local`, missing = `${dir}/missing`;
+  const git = (repo: string, ...args: string[]) => spawnSync("git", ["-C", repo, "-c", "user.name=Fixture",
+    "-c", "user.email=fixture@example.invalid", ...args], { encoding: "utf8" });
+  try {
+    for (const repo of [current, local]) {
+      mkdirSync(repo); git(repo, "init", "-qb", "main"); git(repo, "commit", "--allow-empty", "-qm", "fixture");
+    }
+    const head = git(current, "rev-parse", "HEAD").stdout.trim();
+    git(current, "remote", "add", "origin", "http://fixture.invalid/?token=SYNTHETIC_REPO_SECRET");
+    git(current, "update-ref", "--create-reflog", "refs/remotes/origin/main", head);
+    const cfgBase = { fleetUrl: "http://fixture.invalid", token: "SYNTHETIC_REPO_SECRET", deviceId: "fixturedevice",
+      name: "workhorse", workDir: dir };
+    const config = loadConfig("fixture", { ...cfgBase, repos: [
+      { name: "current", path: current }, { name: "example-repo", path: local }, { name: "missing", path: missing },
+    ] }, 0o600);
+    check("helper repos absent config preserves the serialized legacy config", JSON.stringify(loadConfig("fixture", cfgBase, 0o600))
+      === JSON.stringify(loadConfig("fixture", { ...cfgBase, repos: undefined }, 0o600))
+      && !Object.hasOwn(loadConfig("fixture", cfgBase, 0o600), "repos"));
+    for (const repos of [[{ name: "bad/path", path: local }], Array(9).fill({ name: "cap", path: local }),
+      [{ name: "duplicate", path: local }, { name: "duplicate", path: local }]]) {
+      let refused = false;
+      try { loadConfig("fixture", { ...cfgBase, repos }, 0o600); } catch { refused = true; }
+      check("helper repos rejects unsafe, over-cap or duplicate configuration", refused);
+    }
+    const report = await reposOf(config.repos!);
+    const [now, noRemote, unreadable] = report.repos;
+    check("helper repo current reading names exact HEAD branch merge-base and zero distance", now.head === head
+      && now.branch === "main" && now.remote === "present" && now.remotes?.join() === "origin"
+      && now.refs[0]?.head === head && now.refs[0]?.mergeBase === head && now.refs[0]?.ahead === 0
+      && now.refs[0]?.behind === 0 && now.coverage === "complete" && now.refs[0]?.updatedAt !== null);
+    check("helper repo without remotes is explicitly none", noRemote.head === git(local, "rev-parse", "HEAD").stdout.trim()
+      && noRemote.remote === "none" && noRemote.remotes?.length === 0 && noRemote.refs.length === 0 && noRemote.coverage === "complete");
+    check("helper unreadable repo retains null with fixed reason", unreadable.head === null && unreadable.branch === null
+      && unreadable.remote === null && unreadable.coverage === "incomplete" && unreadable.reason === "unreadable");
+    check("helper repo reports are validated and contain no path address URL or token", helperReposFrom(report) !== null
+      && !JSON.stringify(report).includes(dir) && !JSON.stringify(report).includes("fixture.invalid")
+      && !JSON.stringify(report).includes("SYNTHETIC_REPO_SECRET"));
+    git(current, "commit", "--allow-empty", "-qm", "changed");
+    check("helper repo repeated heartbeat reuses its bounded measurement cache", await reposOf(config.repos!) === report);
+    const advanced = await reposOf([{ name: "current", path: current }]);
+    check("helper repo distance direction is HEAD ahead of local remote", advanced.repos[0].refs[0].ahead === 1
+      && advanced.repos[0].refs[0].behind === 0 && advanced.repos[0].refs[0].mergeBase === head);
+    const advancedHead = advanced.repos[0].head!;
+    git(current, "update-ref", "refs/remotes/origin/main", advancedHead);
+    git(current, "reset", "--soft", head);
+    const behind = await reposOf([{ name: "current", path: current }]);
+    check("helper repo distance direction is remote ahead of HEAD", behind.repos[0].refs[0].ahead === 0
+      && behind.repos[0].refs[0].behind === 1 && behind.repos[0].refs[0].mergeBase === head);
+    git(current, "update-ref", "refs/remotes/origin/main", head);
+    for (const mutation of [{ ...report, absolutePath: dir }, { ...report, repos: [{ ...now, name: "bad/path" }] },
+      { ...report, repos: [{ ...now, refs: [{ ...now.refs[0], ahead: -1 }] }] },
+      { ...report, repos: [{ ...now, refs: Array(9).fill(now.refs[0]) }] },
+      { ...report, repos: [{ ...noRemote, remotes: ["origin"] }] },
+      { ...report, repos: [{ ...unreadable, coverage: "complete", reason: null }] }])
+      check("helper repo wire rejects invalid or leaking readings", helperReposFrom(mutation) === null);
+    const server = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const block = (from: string, to: string) => {
+      const start = server.indexOf(from), end = server.indexOf(to, start);
+      if (start < 0 || end <= start) throw new Error(`helper repos source anchor missing: ${from}`);
+      return server.slice(start, end);
+    };
+    const functions = block("async function workplaceStandSources(", "function workplaceDaemonGraph(")
+      + block("async function workplaceStands(", "async function workplaces(");
+    const project = (code: string, reading: HelperReposReading | undefined): Promise<WorkplaceStand[]> => {
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
+      return new Function("context", `const { helperDevices, realpathSync } = context;
+        const helperUpdates = new Map(), slots = [], INSTANCE_LINKS = [], repoBases = {},
+          REPO_DIR = "fixture-fleet", INSTANCE_NAME = "fixture", HELPER_UPDATE_REPO = null,
+          BOOT_HEAD = null, bootHeadReady = Promise.resolve();
+        async function workplaceStandReader() { return async (s) => ({...s, target:null,remote:null,reasons:[]}); }
+        ${js}; return workplaceStands([], Date.now());`)(
+        { helperDevices: new Map([["fixturedevice", { id: "fixturedevice", name: "workhorse", lastSeen: Date.now(), repos: reading }]]),
+          realpathSync: (p: string) => { if (p !== "fixture-fleet") throw new Error("foreign repo touched locally"); return p; } });
+    };
+    const wire = await project(functions, report);
+    const carrier = wire.find((r) => r.kind === "helper-repo" && r.repo === "current");
+    const remote = Array.isArray(carrier?.remote) ? carrier.remote[0] : null;
+    check("helper repo stand belongs to Fleet machine with exact timestamp and coverage", carrier?.name === "workhorse"
+      && carrier.path === null && carrier.head === head && carrier.observedAt === now.at
+      && carrier.coverage?.state === "complete" && carrier.reportedBranch === "main"
+      && remote?.mergeBase === head && remote.distance?.ahead === 0 && remote.distance.behind === 0);
+    check("helper remote ref age names the local reflog clock", remote?.refUpdatedAt === now.refs[0].updatedAt
+      && typeof remote.refAgeMs === "number" && remote.refAgeMs >= 0);
+    check("helper repo stands preserve none and unreadable measurements", wire.some((r) => r.kind === "helper-repo"
+      && r.repo === "example-repo" && r.remote === "none") && wire.some((r) => r.kind === "helper-repo"
+      && r.repo === "missing" && r.head === null && r.coverage?.reason === "unreadable"));
+    const absent = await project(functions, undefined);
+    check("helper heartbeat without repos is unreported rather than empty", absent.some((r) => r.kind === "helper-repo"
+      && r.repo === null && r.head === null && r.remote === null && r.observedAt === null
+      && r.coverage?.state === "unreported" && r.reasons.some((x) => x.reason === "repos-unreported")));
+    const begin = functions.indexOf('    if (d.repos === undefined) source(');
+    const end = functions.indexOf('    else for (const r of d.repos.repos)', begin);
+    const mutation = functions.slice(0, begin) + '    if (d.repos === undefined) {}\n' + functions.slice(end);
+    if (mutation === functions) throw new Error("helper repos mutation anchor missing");
+    const mutated = await project(mutation, undefined);
+    check("helper repos mutation proves omitted measurement is detected", !mutated.some((r) => r.kind === "helper-repo")
+      && absent.some((r) => r.coverage?.state === "unreported"));
+    const setter = new Bun.Transpiler({ loader: "ts" }).transformSync(block("function setHelperDevice(", "// Build the bundle"));
+    const devices = new Map();
+    const set = new Function("helperDevices", `const HELPER_DEVICE_KEEP=24, helperClaims=new Map(),auditShardRuns=new Map();
+      ${setter}; return setHelperDevice;`)(devices) as (id: string, name: string, report?: Record<string, unknown>) => { repos?: HelperReposReading };
+    set("fixturedevice", "workhorse", { repos: report });
+    check("helper claim touch retains the last repo measurement", set("fixturedevice", "workhorse").repos === report);
+    const heartbeat = block('    if (body && Object.prototype.hasOwnProperty.call(body, "repos"))',
+      '    if (body && Object.prototype.hasOwnProperty.call(body, "instance"))');
+    const ingest = new Function("body", "reported", "helperReposFrom", "HELPER_REPOS_BYTES_MAX", "json",
+      new Bun.Transpiler({ loader: "ts" }).transformSync(heartbeat)) as (...args: unknown[]) => unknown;
+    const legacy: Record<string, unknown> = {};
+    ingest({}, legacy, helperReposFrom, 32768, (v: unknown) => v);
+    check("legacy heartbeat clears previously reported repos instead of claiming fresh data", Object.hasOwn(legacy, "repos")
+      && set("fixturedevice", "workhorse", legacy).repos === undefined);
+    const rejected = ingest({ repos: { ...report, path: dir } }, {}, helperReposFrom, 32768, (v: unknown) => v);
+    check("helper heartbeat refuses unsafe repo reading before storage", !!rejected && typeof rejected === "object" && "error" in rejected);
+    const oversized = ingest({ repos: report, junk: "x".repeat(37000) }, {}, helperReposFrom, 32768, (v: unknown) => v);
+    check("helper repo heartbeat enforces the total size cap", !!oversized && typeof oversized === "object" && "error" in oversized);
+    git(current, "-c", "core.logAllRefUpdates=false", "update-ref", "refs/remotes/origin/no-reflog", head);
+    const noAge = await reposOf([{ name: "current", path: current }]);
+    check("helper ref without reflog has unknown age", noAge.repos[0].refs.find((r) => r.ref.endsWith("no-reflog"))?.updatedAt === null);
+    git(current, "reset", "--soft", head);
+    const bulk = Array.from({ length: HELPER_REPO_COMMITS_MAX + 1 }, (_, i) => `commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 7\nfixture\n${i === 0 ? `from ${head}\n` : ""}\n`).join("");
+    const many = spawnSync("git", ["-C", current, "fast-import", "--quiet"], { input: bulk, encoding: "utf8" });
+    const capped = await reposOf([{ name: "current", path: current }]);
+    check("helper commit cap keeps measured HEAD with unknown distance and reason", many.status === 0
+      && capped.repos[0].refs[0].ahead === null && capped.repos[0].refs[0].reason === "commit-cap"
+      && capped.repos[0].coverage === "incomplete");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
 async function workplacesChecks(): Promise<void> {
@@ -727,6 +859,7 @@ async function workplacesChecks(): Promise<void> {
 }
 
 export async function run(lc: LaneCtx): Promise<void> {
+  await helperRepoChecks();
   await workplacesChecks();
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
   // assertions fail on real teardown paths.

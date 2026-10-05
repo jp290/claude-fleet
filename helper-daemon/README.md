@@ -26,6 +26,29 @@ omitted field means no measurement, not a healthy instance. Leave `instanceDir` 
 without that checkout.
 `GET /api/helper/token` (owner-gated — it is neither the owner token nor a slot's self token).
 
+## Explicit repo reports
+
+`repos` is optional: `[{"name":"example-repo","path":"~/example-repo"}]`. Names are unique,
+1–64 ASCII letters/digits/underscores/hyphens starting with a letter. Paths are local config
+only; `~/` expands to this account's home. No disk discovery, fetch, remote URL reading or extra
+network call occurs. Omit `repos` to keep the previous config and heartbeat bytes unchanged.
+An explicit empty list reports no configured repositories; an omitted field means unreported.
+
+Each existing heartbeat carries `repos:{at,repos:[...]}`: name, measured HEAD, branch (null
+for detached HEAD), configured remote names, and locally stored remote refs with their HEAD,
+unique merge-base and exact ahead/behind counts. A repo without remotes has `remote:"none"`.
+Unreadable measurements stay null with a fixed reason, never a raw Git error. A ref's
+`updatedAt` is its last local reflog update, or null; it does not prove remote freshness.
+The Fleet exposes these readings as `helper-repo` carriers in `/api/worktrees`'s `stands`,
+identified by Fleet machine name and repo name, with no helper path or network address.
+
+Limits: 8 repositories, 8 remote names and 8 remote refs per repo, 512 exclusive commits per
+comparison; larger or unfinished readings have incomplete coverage and a named reason.
+The entire measurement has a 5-second budget, each Git command at most 750 ms and 32 KiB
+stdout. Results are reused for 60 seconds, including failures, preserving the original
+measurement time. Repo wire data is capped at 32 KiB; a heartbeat carrying it at 36 KiB total.
+The configuration does not update or deploy a helper.
+
 ## The rules this file exists to keep
 
 - **The token travels as the `x-fleet-helper-token` header and nowhere else.** Not in a URL (the

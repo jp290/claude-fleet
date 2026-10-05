@@ -3023,6 +3023,7 @@ Sie bleibt auf registrierte Repos und diese beiden Quellen begrenzt, ohne Dateis
 | live-server | BOOT_HEAD / boot-head | laufender Prozess, unabhängig von heutiger Checkout-HEAD; INSTANCE_NAME oder null |
 | test-instance | null / copy-unproven | je vorhandenem testinstanz.sh, Zustand weiterhin in der Worktree-Zeile |
 | helper-daemon | daemonSha / heartbeat | je helperDevices-Eintrag, nur Fleet-Name; letzter gespeicherter Bericht |
+| helper-repo | Checkout-HEAD / heartbeat | explizite Repo-Liste; Repo-Name und Fleet-Maschinenname, keine Helferpfade |
 | helper-instance | null / checkout-unproven | wenn der vorhandene Heartbeat eine Instanz meldet; reportedCheckout separat |
 | linked-instance | null / link-only | je FLEET_INSTANCES-Link, nur Name, repo:null; keine Verbindung zur Instanz |
 
@@ -3041,6 +3042,54 @@ Boot-SHA ihres Prozesses. Daher head:null mit helper-instance-running-sha-unrepo
 laufende Version auszugeben. Auch verlinkte Instanzen bleiben head:null mit linked-instance-sha-unreported; ihr Repo ist
 unbekannt. Geräte-/Instanznamen fehlen nur mit benanntem Grund. Keine Netzwerkadresse, Geräte-ID,
 Remote-URL oder Zugangsdaten werden in stands übernommen.
+
+**Repos auf Helfer-Maschinen.** Die optionale Daemon-Konfiguration
+`repos:[{"name":"example-repo","path":"~/example-repo"}]` erweitert ausschließlich den vorhandenen
+`POST /api/helper/device`-Heartbeat um `repos:{at,repos:[...]}`. Der Pfad bleibt in der lokalen
+Konfiguration; der Bericht trägt nur den eindeutigen Repo-Namen. Kein Suchen nach Repos,
+kein fetch oder zusätzlicher Netzaufruf. Ohne Konfiguration bleiben die Daemon-Heartbeat-Bytes
+unverändert. Ein explizites `repos:[]` meldet keine konfigurierten Repos; fehlendes `repos`
+bedeutet **unberichtet**, löscht auf einem echten Heartbeat die vorherige Repo-Meldung und
+wird in stands als `helper-repo` mit `repo:null, head:null, remote:null`,
+`coverage:{state:"unreported",reason:"repos-unreported"}` sichtbar. Ein bloßer Claim-Touch
+löscht die letzte Meldung nicht und erneuert deren Messzeit nicht.
+
+Je gemeldetem Repo erscheint ein eigener `helper-repo`-Träger mit `repo` als Repo-Name,
+`name` als Fleet-Maschinenname, `path:null`, `basis:"heartbeat"`, `codeScope:"repository"`,
+`observedAt` als Daemon-Messzeit, `reportedBranch`, `remotes` und
+`coverage:{state:"complete"|"incomplete",reason:null|<Grund>}`. `head` ist die gemessene
+Checkout-SHA, kein laufender Prozess. Unlesbares Repo: head/Branch/Remotes null, reason
+`unreadable`; ein abgebrochener Messlauf nennt `budget`. `target:null` mit
+`helper-target-unreported`: ein fremdes Repo wird niemals über einen lokalen Namensgleichstand
+zugeordnet oder auf diesem Server gelesen. `remote:"none"` bezeichnet keine konfigurierten
+Remotes; sonst führt `remote` die lokal gespeicherten Remote-Refs mit Name, SHA, eindeutiger
+Merge-base und `distance:{ahead,behind}`. `remotes` führt auch konfigurierte Namen ohne lokale
+Refs. Remote-URLs, Helferpfade, Geräte-IDs, Adressen und rohe Git-Fehler werden nicht getragen.
+`codeBehind:null` mit `helper-code-paths-unreported`, da der Bericht keine Änderungspfade misst.
+`refUpdatedAt` kommt nur aus dem letzten lokalen Reflog-Eintrag des jeweiligen Refs;
+`refAgeMs` misst dessen Alter bei Antwort-Messbeginn. Ohne Reflog sind beide null mit Grund.
+Das Alter beweist keinen aktuellen Remote-Stand. Detached HEAD hat reportedBranch:null mit
+Grund; die SHA bleibt gemessen. Ein Repo-Bericht ist keine vollständige Platteninventur.
+
+Deckel dieser Erweiterung: **32 KiB für repos**, **36 KiB für einen Heartbeat mit repos**,
+8 Repos (größere Config wird verweigert), je Repo 8 Remote-Namen und 8 Remote-Refs;
+512 exklusive Commits je SHA/Ref-Vergleich. Überschreitungen bleiben sichtbar als
+`remote-cap`, `ref-cap` oder `commit-cap`, mit incomplete coverage und unbekannten betroffenen
+Vergleichen. Kein Wert wird als null ohne Grund ausgegeben. Ganze Messung höchstens 5 Sekunden,
+je Git-Prozess 750 ms und 32 KiB stdout; Cache 60 Sekunden ab Messbeginn, auch für Fehler.
+Cache-Treffer behalten die Messzeit. Der stands-Cache-Schlüssel enthält die Repo-Meldung.
+Die Eingangsprüfung verweigert falsche Formen, doppelte Namen, unsafe labels, zusätzliche
+Felder, ungültige/null-widersprüchliche Distanzen oder Übergröße mit 400 und festem Fehlertext.
+Persistierte Meldungen werden mit derselben Prüfung gelesen; eine ungültige bleibt unberichtet.
+
+Fixture-Wire (Repo ohne konfigurierten Remote):
+
+```json
+{"kind":"helper-repo","repo":"example-repo","name":"workhorse","path":null,
+ "head":"1111111111111111111111111111111111111111","basis":"heartbeat",
+ "codeScope":"repository","observedAt":1700000000000,"reportedBranch":"main",
+ "remotes":[],"coverage":{"state":"complete","reason":null},"target":null,"remote":"none","update":null}
+```
 
 `target:{ref,head,mergeBase,distance,codeBehind,reasons}` vergleicht die Träger-SHA mit dem
 lokalen Zielbranch: bei belegten Lanes ihre aufgezeichnete Basisbranch, sonst repoBases, sonst

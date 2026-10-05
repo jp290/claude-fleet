@@ -762,10 +762,13 @@ export interface WorkplaceRemote extends WorkplaceGitComparison {
   name: string; refUpdatedAt: number | null; refAgeMs: number | null;
 }
 export interface WorkplaceStand {
-  kind: "worktree" | "live-server" | "test-instance" | "helper-daemon" | "helper-instance" | "linked-instance";
+  kind: "worktree" | "live-server" | "test-instance" | "helper-daemon" | "helper-instance" | "helper-repo" | "linked-instance";
   repo: string | null; name: string | null; path: string | null; head: string | null;
   basis: "worktree-head" | "boot-head" | "copy-unproven" | "checkout-unproven" | "heartbeat" | "link-only";
   reportedCheckout?: { head: string; observedAt: number };
+  reportedBranch?: string | null;
+  remotes?: string[] | null;
+  coverage?: { state: "complete" | "incomplete" | "unreported"; reason: string | null };
   codeScope: "server" | "helper-daemon" | "repository";
   observedAt: number | null; target: WorkplaceGitComparison | null;
   remote: "none" | WorkplaceRemote[] | null;

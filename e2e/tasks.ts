@@ -30,6 +30,7 @@ import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLi
   type CodexCliSnapshot, type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
+import { readCodexFirstTurn } from "../server/conversation-read";
 import { CONTEXT_PACKS } from "../context-packs";
 import type { Ctx } from "./ctx";
 
@@ -319,6 +320,30 @@ void makeCodexCliObserver().tick();
   finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
+function codexFirstTurnFixtures(): void {
+  const since = Date.parse("2026-10-05T10:00:00.000Z");
+  const row = (type: string, at: number, turnId?: string, extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({ type: "event_msg", timestamp: new Date(at).toISOString(), payload: { type, ...(turnId ? { turn_id: turnId } : {}), ...extra } });
+  const started = row("task_started", since + 1_000, "turn-1");
+  const succeeded = row("task_complete", since + 3_000, "turn-1", { last_agent_message: "done" });
+  const skipped = readCodexFirstTurn([started, "{unreadable", succeeded], since);
+  check("R3b first turn: an unreadable row between start and success keeps the result unknown",
+    skipped?.state === "unknown" && skipped.unknownReason === "unreadable-row", JSON.stringify(skipped));
+  const failed = readCodexFirstTurn([started, "{unreadable", row("task_complete", since + 3_000, "turn-1", {
+    error: { message: "observed failure" },
+  })], since);
+  check("R3b first turn: an observed terminal error remains failed across an unreadable row",
+    failed?.state === "failed" && failed.error?.message === "observed failure", JSON.stringify(failed));
+  const injectedLikeUser = JSON.stringify({ type: "response_item", timestamp: new Date(since + 500).toISOString(),
+    payload: { type: "message", role: "user", content: [{ text: "# AGENTS.md instructions" }] } });
+  const userGap = readCodexFirstTurn([injectedLikeUser, started, succeeded], since);
+  check("R3b first turn: a pre-start user row matching only the injected-text pattern is not proof of injection",
+    userGap?.state === "unknown" && userGap.unknownReason === "user-before-start", JSON.stringify(userGap));
+  const idGap = readCodexFirstTurn([row("task_started", since + 500), started, succeeded], since);
+  check("R3b first turn: a start event without turn_id before the observed start keeps success unknown",
+    idGap?.state === "unknown" && idGap.unknownReason === "start-without-turn-id", JSON.stringify(idGap));
+}
+
 export async function run(ctx: Ctx): Promise<void> {
   const LANE_ROLE_CARD = /const LANE_ROLE_CARD = `([^`]*)`;/
     .exec(readFileSync(resolve(ROOT, "server.ts"), "utf8"))?.[1] ?? "";
@@ -383,6 +408,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("task workbench precondition: client source, server source and page CSS are readable",
     taskClientSource.length > 0 && taskServerSource.length > 0 && taskPageSource.length > 0, taskClientReadError);
   await codexCliFixtures(taskServerSource, taskClientSource);
+  codexFirstTurnFixtures();
   // Execute the held view and the existing producer functions. Only the disk/ledger/git and
   // role-address boundaries are fixture adapters; the queue, metadata and start-plan folds run.
   {

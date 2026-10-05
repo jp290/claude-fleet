@@ -29,7 +29,7 @@ export interface CodexFirstTurn {
   acceptedAt: number | null;
   completedAt: number | null;
   error: { message: string; code: string | null } | null;
-  unknownReason?: "oversized-row-skipped" | "unreadable-row" | "turn-before-start" | "user-before-start" | "event-without-time";
+  unknownReason?: "oversized-row-skipped" | "unreadable-row" | "turn-before-start" | "user-before-start" | "event-without-time" | "start-without-turn-id";
 }
 export interface CodexFirstTurnEvidence {
   turn: CodexFirstTurn | null;
@@ -239,18 +239,19 @@ export function readCodexFirstTurnEvidence(lines: string[], since: number,
     if (!line.trim()) continue;
     let row: { type?: unknown; timestamp?: unknown; payload?: Record<string, unknown> };
     try { row = JSON.parse(line) as typeof row; } catch {
-      if (!first && i < lines.length - 1) unknownReason ??= "unreadable-row";
+      if ((!first || first.completedAt === null) && i < lines.length - 1) unknownReason ??= "unreadable-row";
       continue;
     }
     if (!row || typeof row !== "object") continue;
     const p = row.payload && typeof row.payload === "object" ? row.payload : null;
-    const userInput = row.type === "response_item" && p?.type === "message" && p.role === "user"
-      && !CODEX_INJECTED.test(Array.isArray(p.content)
-        ? p.content.map((c) => str((c as { text?: unknown } | null)?.text)).join("\n") : "");
+    const userRow = row.type === "response_item" && p?.type === "message" && p.role === "user";
+    const injectedLikeUser = userRow && CODEX_INJECTED.test(Array.isArray(p.content)
+      ? p.content.map((c) => str((c as { text?: unknown } | null)?.text)).join("\n") : "");
+    const userInput = userRow && !injectedLikeUser;
     const at = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
     if (!Number.isFinite(at)) {
       if (!first && row.type === "event_msg") unknownReason ??= "event-without-time";
-      else if (!first && userInput) unknownReason ??= "user-before-start";
+      else if (!first && (userInput || injectedLikeUser)) unknownReason ??= "user-before-start";
       continue;
     }
     if (!p) continue;
@@ -259,10 +260,12 @@ export function readCodexFirstTurnEvidence(lines: string[], since: number,
         startedBeforeSince.add(str(p.turn_id));
       continue;
     }
-    if (!first && userInput) unknownReason ??= "user-before-start";
+    if (!first && (userInput || injectedLikeUser)) unknownReason ??= "user-before-start";
     if (row.type !== "event_msg") continue;
     const terminal = p.type === "task_complete" || p.type === "turn_complete";
     if (terminal && startedBeforeSince.has(str(p.turn_id))) continue;
+    if (!first && (p.type === "task_started" || p.type === "turn_started") && !str(p.turn_id))
+      unknownReason ??= "start-without-turn-id";
     if (!first && (p.type === "task_started" || p.type === "turn_started") && str(p.turn_id)) {
       first = { state: unknownReason ? "unknown" : "running", turnId: str(p.turn_id), acceptedAt: at,
         completedAt: null, error: null, ...(unknownReason ? { unknownReason } : {}) };
@@ -279,12 +282,12 @@ export function readCodexFirstTurnEvidence(lines: string[], since: number,
       if (error && typeof error === "object") {
         const e = error as Record<string, unknown>;
         const info = e.codex_error_info;
-        first = { ...first, state: unknownReason && first.acceptedAt !== null ? "unknown" : "failed", completedAt: at,
+        first = { ...first, state: "failed", completedAt: at, ...(unknownReason ? { unknownReason } : {}),
           error: { message: str(e.message) || "Codex turn failed",
             code: typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] ?? null : null } };
       } else {
         first = { ...first, state: !unknownReason && (error === undefined || error === null) && str(p.last_agent_message)
-          ? "succeeded" : "unknown", completedAt: at };
+          ? "succeeded" : "unknown", completedAt: at, ...(unknownReason ? { unknownReason } : {}) };
       }
     }
   }

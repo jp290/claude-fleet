@@ -264,11 +264,11 @@ export function deriveWaits(facts: WaitFacts): WaitRow[] {
  */
 export interface StallReading { repo: string; stuck: boolean; lanes: number; cap: number | null; waits: WaitRow[] }
 export function stallReadings(plan: StartPlan, waits: readonly WaitRow[]): StallReading[] {
-  const afterWorkingLane = (w: WaitRow): boolean => w.art === "after" && w.adressat.startsWith("slot:");
+  const workingLane = (w: WaitRow): boolean => w.adressat.startsWith("slot:");
   return plan.repos.map((repo) => {
     const now = repo.waves.some((w) => w.next === "now");
     const stuckRows = waits.filter((w) => w.repo === repo.repo && w.freigegeben && w.adressat !== "tick" && !w.intentionalHold
-      && !afterWorkingLane(w));
+      && !workingLane(w));
     const free = repo.cap !== null && repo.lanes < repo.cap.max;
     return { repo: repo.repo, stuck: !now && free && stuckRows.length > 0, lanes: repo.lanes,
       cap: repo.cap?.max ?? null, waits: stuckRows };

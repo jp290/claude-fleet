@@ -1,6 +1,6 @@
-import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, stacksOf, parkedSendLine, heldDeliveriesLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, boxOrphan, adoptBox, type HarnessInfo } from "./client";
+import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, laneLabel, stacksOf, parkedSendLine, heldDeliveriesLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, boxOrphan, adoptBox, type HarnessInfo } from "./client";
 import { icon, harnessMark, MASCOT_MOTIONS, type IconName } from "./icons";
-import { sessionActive } from "./board";
+import { boardOpen, flashWorkplace, sessionActive, setBoard, workplaces } from "./board";
 import { modelLabel } from "./modelname";
 import { prefBool, prefSetBool } from "./prefs";
 import { popover } from "./popover";
@@ -84,6 +84,60 @@ export function mountComposer(): void {
   renderParkHint();
   renderHeldHint();
   renderTarget();
+  renderWorkplaceField();
+}
+
+// THE WORKTREE FIELD (card e66909b1; docs/design/ranke-notiz.md §1, rechter-tab-notiz.md §3b): where
+// the focused session works, said in one line at the right end of the tray — the Ranke's figure,
+// the address the session list gives it, the lane's NAME (owner 2026-10-04: never a hex tail) and,
+// while one runs, its test instance as the same green square the Ranke draws. A click shows that
+// worktree in Info and marks it there. On the phone the field fills the island's named empty place
+// "Arbeitsort" (#mort). Everything here is the poll's row plus the last Arbeitsorte read — no
+// request of its own.
+let wtFieldKey = "";
+export function renderWorkplaceField(): void {
+  const slot = panes[focused]?.slot ?? 0;
+  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
+  const repo = s?.cwd ? (s.worktree?.repo ?? s.repo ?? s.cwd) : null;
+  // the worktree's row in the last Arbeitsorte read — looked up again at the click, since the read
+  // may arrive after the field was drawn
+  const rowNow = () => {
+    const rows = repo ? workplaces?.repos.find((r) => r.repo === repo)?.worktrees ?? null : null;
+    return s && rows ? rows.find((w) => w.session?.slot === s.id) ?? (s.worktree ? null : rows.find((w) => w.primary) ?? null) : null;
+  };
+  const row = rowNow();
+  const up = row?.testinstanz?.state === "up";
+  const lane = s?.cwd && s.worktree ? laneBandNames(stacksOf()).get(s.id) : undefined;
+  const addr = !s?.cwd || !s.git ? null : lane ?? "main";
+  const name = !s?.cwd ? "" : s.worktree ? laneLabel(s) : baseName(repo ?? s.cwd);
+  const key = [addr, name, up, row?.path ?? "", s?.worktree?.branch ?? "", isMobile()].join("|");
+  if (key === wtFieldKey && document.getElementById("compwt")) return;
+  wtFieldKey = key;
+  const build = (id: string): HTMLButtonElement | null => {
+    if (!addr || !s) return null;
+    const b = el("button", "wtfield") as HTMLButtonElement;
+    b.id = id;
+    b.type = "button";
+    b.append(icon("ranke"), el("span", "wtref", addr), el("span", "wtname", name));
+    if (up) b.appendChild(el("span", "wtsq"));
+    const branch = s.worktree?.branch ?? null;
+    b.title = `${s.worktree ? `Lane ${addr} · ${name} auf ${branch}` : `Haupt-Checkout von ${baseName(repo ?? "")}`}`
+      + `${up ? " · Testinstanz läuft" : ""} — Klick zeigt diesen Arbeitsort in Info`;
+    b.setAttribute("aria-label", b.title);
+    b.onclick = () => {
+      if (!boardOpen) setBoard(true);
+      flashWorkplace(rowNow()?.path ?? null);
+    };
+    return b;
+  };
+  compTray.querySelector("#compwt")?.remove();
+  const desk = build("compwt");
+  if (desk) compTray.appendChild(desk);
+  const mort = document.getElementById("mort");
+  if (mort) {
+    const phone = build("mortwt");
+    mort.replaceChildren(...(phone ? [phone] : []));
+  }
 }
 
 // THE PLACEHOLDER names the session by the name the pill and the target read (label, else the

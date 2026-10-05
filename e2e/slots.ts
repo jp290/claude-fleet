@@ -2123,17 +2123,17 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // whole-line comments stripped first: a claim about CODE must not be satisfied by prose
   const strip = (src: string) => src.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
   const foundCode = strip(foundSrc), clientCode = strip(clientOnly), boardCode = strip(boardOnly);
-  check("founding window: a free place, ⎇+ and the board's New lane all open src/founding.ts — no one-click lane is left",
+  check("founding window: a free place, ⎇+ and the board's + Lane all open src/founding.ts — no one-click lane is left",
     // a regex, not the import as a string: e2e-stage.sh scans this file's TEXT for relative from-clauses
     /import \{ openLaneFounding, openPicker \} from "\.\/founding";/.test(clientCode)
     && /row\.onclick = \(\) => openPicker\(s\.id\)/.test(clientCode)
     && /q\.onclick = \(e\) => \{ e\.stopPropagation\(\); openLaneFounding\(repo, parent\); \};/.test(clientCode)
-    && /nb\.onclick = \(\) => \{ openLaneFounding\(wts\.repo\); \};/.test(boardCode)
+    && /add\.onclick = \(e\) => \{ e\.stopPropagation\(\); openLaneFounding\(R\.repo\); \};/.test(boardCode)
     && foundCode.includes("export function openPicker(slotId: number)") && foundCode.includes("export function openLaneFounding(repo: string, parent?: LaneAnchor)")
     // should-reject: the one-click lane without packs, and the rejected 2026-09-22 surface
     && !/function newLane\(|newLane\(/.test(boardCode + clientCode)
     && !/function openPicker\(|\bgfStep\b|\bGF_ROLES\b|\brenderGf\b|"gf-(orch|plain|steward|wt-new|wt-old)"/.test(clientCode),
-    "client.ts emptyRow + quickLaneChip, board.ts New lane, founding.ts exports");
+    "client.ts emptyRow + quickLaneChip, board.ts + Lane in the Arbeitsorte, founding.ts exports");
   const foundCss = (() => {
     const at = indexSrc.indexOf("THE FOUNDING WINDOW (src/founding.ts");
     const end = indexSrc.indexOf("/* end of THE FOUNDING WINDOW */", at);
@@ -2349,6 +2349,21 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // THE ARBEITSORTE IN INFO (cards e66909b1 + abe74821, docs/design/rechter-tab-notiz.md §3b–§3d),
+  // same rig: the Ranke at the top of Info in the draft's nine states, at 1200 and 390 — rows, beads,
+  // squares, the stand of every carrier, the jump, the worktree field — each a DOM claim, and every
+  // click judged by the request it sent. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runArbeitsorteDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`arbeitsorte DOM ${result.width}x${result.height} ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("arbeitsorte DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
   // THE PHONE UPRIGHT'S TWO ISLANDS (card "Auf dem Telefon steht oben klein", docs/design/
   // mobil-insel-notiz.md §1c), same rig: the two steps of the top island, closing by name, by a tap
   // outside and by every action, the 40-px targets, the terminal above the bottom island, the grip's
@@ -2415,11 +2430,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // `gsec` (the guest-console panel) left with the console itself, 2026-08-08, and `dsec1` (the
   // helper register) left for the meter's device count, 2026-09-19 — both absences are asserted,
   // so a re-added machine-level section has to state where it goes.
-  check("client: the board renders in the owner's order — alarms → head → setup → rights → changes → checks → history → lanes → tools",
-    at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("idsec")
+  // the lane list (`lsec`) left for the Arbeitsorte (`ranke`) above the head, card e66909b1 —
+  // asserted as an absence too, so a second lane list beside the Ranke has to say where it goes
+  check("client: the board renders in the owner's order — alarms → Arbeitsorte → head → setup → rights → changes → checks → history → tools",
+    at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("ranke") && at("ranke") < at("idsec")
     && at("idsec") < at("su") && at("su") < at("rsec") && at("rsec") < at("work")
-    && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("lsec") && at("lsec") < at("tsec")
-    && at("gsec") === -1 && at("dsec1") === -1,
+    && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("tsec")
+    && at("lsec") === -1 && at("gsec") === -1 && at("dsec1") === -1,
     JSON.stringify(pushOrder));
   // SETUP is what the session is MADE of — owner, 2026-09-19: „[Zitat entfernt]“
   // . The two fields he
@@ -2512,7 +2529,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: every board section head names its reach — session · repo · machine · fleet",
     !/appendChild\(el\("h3", "",/.test(boardSrc) && !/el\("h3", "", "Setup"\)/.test(cliSrc)
     && /boardHead\("Changes", "session"\)/.test(boardSrc) && /boardHead\("Checks", "session"\)/.test(boardSrc)
-    && /boardHead\("History", "repo"\)/.test(boardSrc) && /boardHead\(`Lanes in \$\{baseName\(wts\.repo\)\}`, "repo"\)/.test(boardSrc)
+    && /boardHead\("History", "repo"\)/.test(boardSrc) && /boardHead\("Arbeitsorte", "fleet"\)/.test(cliSrc)
     && /boardHead\("helper devices", "fleet"\)/.test(cliSrc)
     && /sec\.appendChild\(scopeTag\("machine"\)\);/.test(cliSrc),
     "the section heads in renderBoard");
@@ -10074,5 +10091,518 @@ async function runCodexPermissions(): Promise<void> {
     await post("/api/slots/16/kill", {});
     await restartSrv({ PATH: process.env.PATH ?? "" });
     rmSync(bin, { recursive: true, force: true }); rmSync(argvLog, { force: true });
+  }
+}
+
+// THE ARBEITSORTE IN INFO (cards e66909b1 and abe74821; docs/design/rechter-tab-notiz.md §3b–§3d,
+// Variante 3A with the owner's four additions of 2026-10-05), measured in a real browser on the real
+// client bundle behind a fixture origin: GET /api/worktrees carries the repos, their worktrees and
+// the stand of every carrier the way src/protocol.ts#Workplaces types them, /api/sessions the
+// sessions. Every claim reads the DOM, at 1200 × 900 and 390 × 844, in the draft's states lane ·
+// modell · tippen · land · viele · branch · alarm · leer · main. The fixture also records every write
+// the page sends, so a click is judged by the request it made. Exported so a lane can drive it with an
+// artefact folder and against a mutated copy of the tree.
+export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export const ARBEITSORTE_STATES = ["lane", "modell", "tippen", "land", "viele", "branch", "alarm", "leer", "main"] as const;
+export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string): Promise<ArbeitsorteDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-arbeitsorte-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  if (artifacts) mkdirSync(artifacts, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  type State = typeof ARBEITSORTE_STATES[number];
+  // --- the fixture: two repos, lanes on main and on overhaul, a helper machine and a linked instance
+  const REPO = "/fixture/claude-fleet", REPO2 = "/fixture/rezepte-app";
+  const hex = (seed: string) => createHash("sha1").update(seed).digest("hex");
+  const MAIN = hex("main"), OVER = hex("overhaul"), MAIN2 = hex("main2"), BOOT = hex("boot");
+  type Check = { state: "running" | "green" | "red" | "skipped" | "waiting"; head: string | null; at: number | null; fails: string[]; stale: boolean | null } | null;
+  type Lane = { slot: number | null; letter?: string; title?: string; branch: string; target: "main" | "overhaul"; ahead: number; dirty?: number;
+    checks?: Partial<Record<"local" | "preview" | "gate" | "audit", Check>>; landed?: "yes" | "no" | null; landedAs?: string;
+    ti?: "up" | "expired" | "not-running"; awaiting?: "owner" | "main"; working?: boolean; repo?: string; auditUnreadable?: boolean };
+  const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[] };
+  const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
+  const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
+  const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
+  const free: Lane = { slot: null, branch: "fleet/261005-insel-telefon-7c08", target: "overhaul", ahead: 2 };
+  const lanesOf = (st: State): Lane[] => {
+    const h = (b: string) => hex(b);
+    const base: Lane[] = [
+      { ...own, checks: { local: green(h(own.branch)), preview: st === "land" ? green(h(own.branch)) : { state: "running", head: h(own.branch), at: fx.now - 90_000, fails: [], stale: false },
+        gate: st === "land" ? { state: "running", head: null, at: fx.now - 160_000, fails: [], stale: null } : null }, landed: "no" },
+      { ...zeit, checks: { local: green(h(zeit.branch), 60), preview: green(h(zeit.branch), 55) }, landed: "no", ti: st === "modell" || st === "viele" || st === "branch" ? "up" : "not-running" },
+      { ...free, landed: "no", ti: st === "modell" ? "up" : "not-running" },
+      { slot: 13, letter: "A", title: "Filter nach Saison", branch: "fleet/261005-filter-saison-91ab", target: "main", ahead: 2, repo: REPO2, working: true, landed: "no" },
+    ];
+    if (st === "leer") return base.map((l) => ({ ...l, slot: null, working: false }));
+    if (st !== "viele" && st !== "branch") return base;
+    const more: Lane[] = [
+      { slot: 11, letter: "C", title: "Insel am Telefon", branch: "fleet/261005-insel-am-telefon-1b2c", target: "overhaul", ahead: 4, working: true, landed: "no",
+        checks: { local: green(h("c")), preview: { state: "red", head: h("old"), at: fx.now - 30 * 60_000, fails: ["e2e/slots.ts: glass island"], stale: true } } },
+      { slot: 12, letter: "D", title: "Leiste Marken", branch: "fleet/261005-leiste-marken-91e2", target: "overhaul", ahead: 2, awaiting: "owner", landed: "no",
+        checks: { local: green(h("d")), preview: { state: "waiting", head: h("d"), at: fx.now - 60_000, fails: [], stale: false } } },
+      { slot: 14, letter: "E", title: "Task-View gehalten", branch: "fleet/261005-task-view-gehalten-5e6b", target: "overhaul", ahead: 3, landed: "yes", landedAs: hex("landed-e"),
+        checks: { local: green(h("e"), 90), preview: green(h("e"), 80), gate: green(h("e"), 20), audit: { state: "running", head: OVER, at: fx.now - 5 * 60_000, fails: [], stale: true } } },
+      { slot: 15, letter: "F", title: "Datenrechte Quellen", branch: "fleet/261005-datenrechte-quellen-2c19", target: "overhaul", ahead: 5, working: true, landed: "no", auditUnreadable: true },
+      { slot: 16, letter: "G", title: "Modell-Register Sonnet", branch: "fleet/261005-modell-register-0f41", target: "main", ahead: 1, landed: "no", checks: { local: { state: "skipped", head: h("g"), at: fx.now - 3600_000, fails: [], stale: false } } },
+    ];
+    for (const [i, word] of ["export dialog", "notizblock", "gruendung", "alte suche", "zeitleiste alt", "explorer suche", "querformat", "schedule ansicht"].entries())
+      more.push({ slot: null, branch: `fleet/261004-${word.replace(/ /g, "-")}-${(0xa000 + i).toString(16)}`, target: "overhaul", ahead: i % 3, landed: i % 3 ? "no" : null });
+    return [...base, ...more];
+  };
+  const pathOf = (l: Lane) => `${l.repo ?? REPO}.worktrees/${l.branch.replace(/\//g, "-")}`;
+  const openedAt = (slot: number) => 1_000_000 + slot;
+  const sessions = (st: State) => {
+    const lanes = lanesOf(st);
+    const rows: Record<string, unknown>[] = Array.from({ length: 16 }, (_, i) => ({ id: i + 1, cwd: null, label: null, lastOutput: 0 }));
+    const put = (id: number, v: Record<string, unknown>) => { rows[id - 1] = { id, openedAt: openedAt(id), lastOutput: fx.now - 12 * 60_000, harness: "claude", ...v }; };
+    if (st !== "leer") {
+      put(1, { cwd: REPO, repo: REPO, label: "Orchestratorin", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
+      put(3, { cwd: REPO, repo: REPO, label: "Program-MAIN Oberfläche", lastOutput: fx.now, git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
+      put(6, { cwd: REPO2, repo: REPO2, label: "rezepte-app", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
+    }
+    for (const l of lanes) if (l.slot) {
+      const repo = l.repo ?? REPO;
+      put(l.slot, { cwd: pathOf(l), repo: pathOf(l), label: `⎇ task ${l.branch.slice(-4)}`, taskTitle: l.title, mission: `${l.title} bauen.`,
+        lastOutput: l.working ? fx.now : fx.now - 12 * 60_000, awaiting: l.awaiting,
+        git: { branch: l.branch, dirty: l.dirty ?? 0, ahead: l.ahead, behind: 0 },
+        worktree: { repo, branch: l.branch, anchor: { slot: repo === REPO ? 3 : 6, openedAt: openedAt(repo === REPO ? 3 : 6) }, letter: l.letter } });
+    }
+    return rows;
+  };
+  const row = (l: Lane) => {
+    const head = hex(l.branch), target = l.target === "main" ? (l.repo === REPO2 ? MAIN2 : MAIN) : OVER;
+    const checks = { local: l.checks?.local ?? null, preview: l.checks?.preview ?? null, gate: l.checks?.gate ?? null, audit: l.checks?.audit ?? null };
+    const reasons = Object.entries(checks).filter(([, v]) => v === null).map(([k]) => ({ field: `checks.${k}`, reason: k === "audit" && l.auditUnreadable ? "audit-history-unreadable" : `${k}-not-retained` }));
+    if (l.landed === null) reasons.push({ field: "target.landed", reason: "nothing-to-land" });
+    const ti = l.ti === "up" ? { state: "up", instance: { state: "up", expiresAt: fx.now + 2 * 3600_000, port: 8913, recordedSource: { before: { head } } } }
+      : l.ti === "expired" ? { state: "expired", instance: { state: "expired", expiresAt: fx.now - 12 * 60_000 } }
+      : { state: "not-running", instance: { state: "not-running" } };
+    return { path: pathOf(l), primary: false, branch: l.branch, head, base: { branch: l.target, head: target }, distance: { ahead: l.ahead, behind: 0 },
+      session: l.slot ? { slot: l.slot, openedAt: openedAt(l.slot) } : null,
+      target: { branch: l.target, head: target, behind: 0, landed: l.landed ?? null, landedAs: l.landedAs ?? null, basis: "land-note" },
+      checks, template: (l.repo ?? REPO) === REPO ? "present" : "missing", testinstanz: (l.repo ?? REPO) === REPO ? ti : null, reasons };
+  };
+  const workplaces = (st: State) => {
+    const lanes = lanesOf(st);
+    const primary = (repo: string, head: string) => ({ path: repo, primary: true, branch: "main", head, base: { branch: "main", head }, distance: { ahead: 0, behind: 0 },
+      session: null, target: { branch: "main", head, behind: 0, landed: null, landedAs: null, basis: "land-note" },
+      checks: { local: null, preview: null, gate: null, audit: null }, template: repo === REPO ? "present" : "missing",
+      testinstanz: repo === REPO ? { state: "not-running", instance: { state: "not-running" } } : null,
+      reasons: [{ field: "target.landed", reason: "nothing-to-land" }] });
+    const cmp = (head: string | null, ref: string, behind: number, codeBehind: boolean | null) => ({ ref, head: MAIN, mergeBase: head ? MAIN : null,
+      distance: head ? { ahead: 0, behind } : null, codeBehind: head ? (behind ? codeBehind : false) : null, reasons: [] });
+    const behind = st === "alarm" ? 5 : 0;
+    return {
+      repos: [
+        { repo: REPO, branches: [{ branch: "main", head: MAIN, distance: { ahead: 0, behind: 0 }, reasons: [] }, { branch: "overhaul", head: OVER, distance: { ahead: 41, behind: 0 }, reasons: [] }],
+          worktrees: [primary(REPO, MAIN), ...lanes.filter((l) => (l.repo ?? REPO) === REPO).map(row)], landNotes: { truncated: false }, reasons: [] },
+        { repo: REPO2, branches: [{ branch: "main", head: MAIN2, distance: { ahead: 0, behind: 0 }, reasons: [] }],
+          worktrees: [primary(REPO2, MAIN2), ...lanes.filter((l) => l.repo === REPO2).map(row)], landNotes: { truncated: false }, reasons: [] },
+      ],
+      stands: [
+        { kind: "live-server", repo: REPO, name: null, path: null, head: behind ? BOOT : MAIN, basis: "boot-head", codeScope: "server", observedAt: fx.now,
+          target: behind ? { ref: "refs/heads/main", head: MAIN, mergeBase: BOOT, distance: { ahead: 0, behind }, codeBehind: true, reasons: [] } : cmp(MAIN, "refs/heads/main", 0, null),
+          remote: null, update: null, reasons: [] },
+        { kind: "worktree", repo: REPO, name: null, path: REPO, head: MAIN, basis: "worktree-head", codeScope: "repository", observedAt: fx.now,
+          target: cmp(MAIN, "refs/heads/main", 0, null), remote: [{ name: "origin", ref: "refs/remotes/origin/main", head: hex("origin"), mergeBase: hex("origin"),
+            distance: { ahead: 3, behind: 0 }, codeBehind: false, reasons: [], refUpdatedAt: fx.now - 7200_000, refAgeMs: 7200_000 }], update: null, reasons: [] },
+        { kind: "worktree", repo: REPO2, name: null, path: REPO2, head: MAIN2, basis: "worktree-head", codeScope: "repository", observedAt: fx.now,
+          target: { ref: "refs/heads/main", head: MAIN2, mergeBase: MAIN2, distance: { ahead: 0, behind: 0 }, codeBehind: false, reasons: [] }, remote: "none", update: null, reasons: [] },
+        { kind: "test-instance", repo: REPO, name: null, path: pathOf(zeit), head: null, basis: "copy-unproven", codeScope: "server", observedAt: fx.now, target: null, remote: null, update: null,
+          reasons: [{ field: "head", reason: "copy-running-version-unproven" }] },
+        { kind: "helper-daemon", repo: REPO, name: "workhorse", path: null, head: MAIN, basis: "heartbeat", codeScope: "helper-daemon", observedAt: fx.now - 40_000,
+          target: cmp(MAIN, "refs/heads/main", 0, null), remote: null, update: { state: "reported", main: "main", mainSha: MAIN }, reasons: [] },
+        { kind: "helper-instance", repo: REPO, name: "workhorse", path: null, head: null, basis: "checkout-unproven", reportedCheckout: { head: hex("helper-checkout"), observedAt: fx.now - 40_000 },
+          codeScope: "server", observedAt: fx.now - 40_000, target: null, remote: null, update: null, reasons: [{ field: "head", reason: "helper-instance-running-sha-unreported" }] },
+        { kind: "linked-instance", repo: null, name: "Zweite Fleet", path: null, head: null, basis: "link-only", codeScope: "server", observedAt: null, target: null, remote: null, update: null,
+          reasons: [{ field: "head", reason: "linked-instance-sha-unreported" }] },
+      ],
+      measuredAt: fx.now, cacheMs: 3000,
+    };
+  };
+  const focusOf = (st: State): number | null => st === "leer" ? null : st === "main" ? 3 : 9;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("arbeitsorte DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
+      const url = new URL(request.url), p = url.pathname;
+      fx.now = Date.now();
+      if (request.method === "POST") {
+        let body: unknown = null; try { body = JSON.parse(request.postData ?? "null"); } catch { body = request.postData ?? null; }
+        fx.writes.push({ path: `${p}${url.search}`, body });
+        if (/testinstanz$/.test(p) && (body as { action?: string })?.action === "open") return void json(requestId, { ok: true, state: "up", url: "http://fleet.fixture/blank?instanz", port: 8913, expiresAt: fx.now + 3600_000 });
+        return void json(requestId, { ok: true });
+      }
+      const st = fx.state;
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/api/sessions") return void json(requestId, { now: fx.now, chips: [], tasks: [], slots: sessions(st), instance: { name: "Mac" },
+        deployGap: { bootHead: st === "alarm" ? BOOT : MAIN, head: MAIN, behindCount: st === "alarm" ? 5 : 0, codeBehind: st === "alarm" } });
+      if (p === "/api/worktrees") return void json(requestId, workplaces(st));
+      const m = /^\/api\/slots\/(\d+)\/(brief|worktrees|merge|transcript)$/.exec(p);
+      if (m) {
+        const slot = Number(m[1]);
+        const lane = lanesOf(st).find((l) => l.slot === slot);
+        const repo = lane ? lane.repo ?? REPO : slot === 6 ? REPO2 : REPO;
+        if (m[2] === "brief") return void json(requestId, { branch: lane?.branch ?? "main", head: lane ? hex(lane.branch) : MAIN,
+          worktree: lane ? { repo, branch: lane.branch } : null, sessionStart: fx.now - 3600_000, uncommitted: 0, uncommittedFiles: [], files: [], filesTotal: 0,
+          shortstat: "", commits: [], repoCommits: [], laneScoped: !!lane, laneBase: lane?.target ?? null, commitsCap: 200, ahead: lane?.ahead ?? 0, behind: 0 });
+        if (m[2] === "worktrees") return void json(requestId, { repo, main: "main", worktrees: lanesOf(st).filter((l) => (l.repo ?? REPO) === repo).map((l) => ({
+          path: pathOf(l), branch: l.branch, slot: l.slot, dirty: l.dirty ?? 0, ahead: l.ahead, behind: 0, empty: !l.dirty && !l.ahead,
+          dirtyFiles: [], unpushedCommits: l.ahead ? [{ hash: hex(l.branch).slice(0, 7), subject: "feat: fixture" }] : [], note: null, notepad: null, review: null })) });
+        if (m[2] === "merge") return void json(requestId, { running: false });
+        return void json(requestId, { entries: [], total: 0, source: null, ttlSec: 300, queued: [] });
+      }
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("arbeitsorte DOM probe: evaluate failed: " + JSON.stringify(r.exceptionDetails).slice(0, 300) + " :: " + expression.replace(/\s+/g, " ").slice(0, 160));
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // everything a claim reads, in one pass over the DOM
+    const READ = `(() => { const sec = document.querySelector('#boardbody .ranke'); if (!sec) return null;
+      const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), r: Math.round(r.right), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; };
+      const vis = (e) => !!e && getComputedStyle(e).visibility !== 'hidden' && e.getBoundingClientRect().width > 0;
+      const col = (e, p) => e ? getComputedStyle(e)[p] : null;
+      const probe = (v) => { const t = document.createElement('span'); t.style.color = v; sec.append(t); const c = getComputedStyle(t).color; t.remove(); return c; };
+      const rows = [...sec.querySelectorAll('.zr')].map((r) => { const pf = r.querySelector(':scope > .pf'), ti = r.querySelector(':scope > .ti');
+        return { cls: r.className, id: r.dataset.id ?? null, slot: r.dataset.slot ?? null, node: r.dataset.node ?? null, kind: r.dataset.kind ?? null,
+          text: r.innerText.replace(/\\s+/g, ' ').trim(), title: r.title, box: box(r),
+          ref: r.querySelector(':scope > .ref')?.textContent ?? null, name: r.querySelector(':scope > .nm')?.textContent ?? null,
+          nd: col(r.querySelector(':scope > .nd'), 'backgroundColor'),
+          pf: pf ? { box: box(pf), aria: pf.getAttribute('aria-label'), beads: [...pf.children].map((c) => ({ tag: c.tagName, stage: c.dataset.stage ?? null, state: c.dataset.state ?? null, landed: c.dataset.landed ?? null, title: c.title, bg: col(c, 'backgroundColor'), cls: c.className })) } : null,
+          ti: ti ? { state: ti.dataset.ti ?? null, title: ti.title, box: box(ti), sq: vis(ti.querySelector('.sq')), bg: col(ti.querySelector('.sq'), 'backgroundColor'), disabled: ti.disabled } : null,
+          tag: r.querySelector('.tag')?.textContent ?? null, tagTitle: r.querySelector('.tag')?.title ?? null }; });
+      const lines = [...sec.querySelectorAll('.zd')].map((z) => ({ cls: z.className, for: z.dataset.for ?? null, text: z.innerText.replace(/\\s+/g, ' ').trim(), title: z.querySelector('.tx')?.title ?? '', buttons: [...z.querySelectorAll('button')].map((b) => b.textContent) }));
+      const body = document.querySelector('#boardbody');
+      const kids = [...body.children];
+      const field = document.querySelector('#compwt'), tray = document.querySelector('#comptray'), sched = document.querySelector('#autobtn');
+      const mort = document.querySelector('#mort .wtfield');
+      return { index: kids.indexOf(sec), before: kids.slice(0, kids.indexOf(sec)).map((k) => k.className), next: kids[kids.indexOf(sec) + 1]?.className ?? null,
+        head: sec.querySelector('h3')?.textContent ?? null, seg: [...sec.querySelectorAll('.rkseg button')].map((b) => b.textContent + (b.classList.contains('on') ? '*' : '')),
+        rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
+        secBox: box(sec), secOverflow: sec.scrollWidth - sec.clientWidth, pageScroll: document.documentElement.scrollWidth - innerWidth,
+        bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'),
+        live: probe('var(--q-live)'), wait: probe('var(--q-wait)'), danger: probe('var(--danger)'), amber: probe('var(--amber)'),
+        field: field ? { text: field.innerText.replace(/\\s+/g, ' ').trim(), title: field.title, box: box(field), vis: vis(field), sq: !!field.querySelector('.wtsq') } : null,
+        trayBox: box(tray), schedBox: box(sched), mort: mort ? mort.innerText.replace(/\\s+/g, ' ').trim() : null,
+        focusSlot: (window.__fxPane && window.__fxPane()) ?? null }; })()`;
+    type Bead = { tag: string; stage: string | null; state: string | null; landed: string | null; title: string; bg: string; cls: string };
+    type Row = { cls: string; id: string | null; slot: string | null; node: string | null; kind: string | null; text: string; title: string; box: { x: number; r: number; y: number; w: number; h: number };
+      ref: string | null; name: string | null; nd: string | null; pf: { box: { x: number; r: number }; aria: string | null; beads: Bead[] } | null;
+      ti: { state: string | null; title: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean } | null; tag: string | null; tagTitle: string | null };
+    type Read = { index: number; before: string[]; next: string | null; head: string | null; seg: string[]; rows: Row[];
+      lines: { cls: string; for: string | null; text: string; title: string; buttons: string[] }[]; text: string; svgPaths: number; inkPaths: number;
+      secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean;
+      live: string; wait: string; danger: string; amber: string;
+      field: { text: string; title: string; box: { x: number; r: number; y: number; h: number }; vis: boolean; sq: boolean } | null;
+      trayBox: { x: number; r: number } | null; schedBox: { x: number; r: number } | null; mort: string | null };
+    const read = async (): Promise<Read> => {
+      const r = await evaluate<Read | null>(READ);
+      if (!r) throw new Error("arbeitsorte DOM probe: no .ranke section in #boardbody: " + await evaluate<string>("document.querySelector('#boardbody')?.innerText.slice(0, 300) ?? 'no #boardbody'"));
+      return r;
+    };
+    const lane = (r: Read, slot: number) => r.rows.find((x) => x.slot === String(slot));
+    const byId = (r: Read, id: string) => r.rows.find((x) => x.id === id);
+    const branchRows = (r: Read) => r.rows.filter((x) => x.cls.split(" ").includes("zw"));
+    const sha7 = (h: string) => h.slice(0, 7);
+    const clock = (ms: number) => evaluate<string>(`new Date(${ms}).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })`);
+    const PROCESS = /\b(baton|gate|audit|suite|deploy|mutex|srv)\b/i;
+    const ADDRESS = /\b\d{1,3}(\.\d{1,3}){3}\b|localhost|\.local\b/i;
+    const results: ArbeitsorteDomResult[] = [];
+    let targetId = "";
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const phone = width < 700;
+      for (const st of ARBEITSORTE_STATES) {
+        const claims: Record<string, boolean> = {};
+        const facts: Record<string, unknown> = {};
+        fx.state = st; fx.writes = [];
+        if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+        targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+        sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+        await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+        await send("Page.enable"); await send("Runtime.enable");
+        await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
+          window.open = (u) => { (window.__opened = window.__opened || []).push(String(u)); return { location: { set href(v) { window.__opened.push(String(v)); } }, close() {} }; };` });
+        await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+        await navigate("http://fleet.fixture/blank");
+        const focus = focusOf(st);
+        await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${focus ?? 0}], focused: 0 })); localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); })()`);
+        await navigate("http://fleet.fixture/");
+        if (phone && st === "leer") {
+          // the phone opens Info from a pane's session (src/client.ts#sideOpen); with no session on
+          // the fleet there is none, and the island's place Arbeitsort stays empty with its word
+          await wait("document.querySelector('#mpill')", 8000);
+          await settle(2500);
+          const mort = await evaluate<{ field: boolean; empty: boolean }>(`({ field: !!document.querySelector('#mort .wtfield'), empty: document.querySelector('#mort')?.childElementCount === 0 })`);
+          facts.mort = mort;
+          claims[`${st}: with no session the island's place Arbeitsort stays empty — no field names a worktree nobody works in`] = !mort.field && mort.empty;
+          await shot(`${st}-${width}`);
+          results.push({ width, height, state: st, claims, facts });
+          continue;
+        }
+        if (phone) {
+          await wait("document.querySelector('#mpill')", 8000);
+          await settle(400);
+          await evaluate("document.querySelector('#mpill')?.click()");
+          await wait("document.body.classList.contains('mopen')", 2000);
+          await settle(200);
+          await evaluate("document.querySelector('#minfo')?.click()");
+        }
+        const shown = await wait(`document.querySelector('#boardbody .ranke .rk .zr.zw')`, 15000);
+        if (!shown) throw new Error(`arbeitsorte DOM probe (${st} ${width}): the Ranke did not draw: ` + await evaluate<string>("(document.querySelector('#boardbody')?.innerText ?? document.body.innerText).slice(0, 400)"));
+        await settle(400);
+        const tag = `${st}: `;
+        // --- the common claims, every state
+        let r = await read();
+        facts.base = { index: r.index, before: r.before, head: r.head, seg: r.seg, rows: r.rows.length, secOverflow: r.secOverflow, pageScroll: r.pageScroll };
+        claims[`${tag}"Arbeitsorte" is the first section of Info after the alarms, above the session`] = r.head?.startsWith("Arbeitsorte") === true
+          && r.before.every((c) => /balert|plaboard|bfail/.test(c)) && (st === "leer" || /bhead/.test(r.next ?? ""));
+        const zw = branchRows(r);
+        const pfX = new Set(zw.map((x) => x.pf?.box.x)), tiX = new Set(zw.map((x) => x.ti?.box.x));
+        facts.columns = { pfX: [...pfX], tiX: [...tiX], heights: [...new Set(zw.map((x) => x.box.h))] };
+        claims[`${tag}one row per branch, the same height (${phone ? 40 : 24} px), and the beads and the square stand in one column across every repo`] =
+          zw.length > 0 && zw.every((x) => x.box.h === (phone ? 40 : 24)) && pfX.size === 1 && tiX.size === 1;
+        claims[`${tag}every branch carries five beads in the order local · preview · land check · in its target · after the land, each with a tooltip`] =
+          zw.every((x) => !!x.pf && x.pf.beads.length === 5 && x.pf.beads.map((b) => b.stage ?? b.tag).join(",") === "local,preview,gate,B,audit"
+            && x.pf.beads.every((b) => b.title.length > 4) && !!x.pf.aria);
+        claims[`${tag}every branch says whether it is in its target — "noch nicht auf overhaul" / "gelandet als <sha>" / unknown — from target.landed`] =
+          zw.every((x) => { const b = x.pf?.beads[3]; if (!b) return false;
+            return b.landed === "no" ? /^noch nicht auf (main|overhaul)$/.test(b.title) : b.landed === "yes" ? /^gelandet als [0-9a-f]{7} in /.test(b.title)
+              : /^(nichts zu landen|unbekannt, ob)/.test(b.title); });
+        claims[`${tag}no process word and no network address in the section's visible text`] = !PROCESS.test(r.text) && !ADDRESS.test(r.text);
+        claims[`${tag}nothing runs off the side: the section and the page do not scroll sideways`] = r.secOverflow <= 0 && r.pageScroll <= 0;
+        claims[`${tag}the old card "Testinstanz · dieser Worktree" and the list "Lanes in ‹repo›" are gone`] = !r.oldCard && !/Testinstanz · dieser Worktree|Lanes in /.test(r.bodyText);
+        claims[`${tag}the Ranke has its lines (1 px, vertical and horizontal)`] = r.svgPaths > 0;
+        const liveRow = r.rows.find((x) => x.kind === "live-server");
+        facts.live = liveRow?.text;
+        claims[`${tag}Live says the running commit and how far from main`] = !!liveRow && liveRow.text.includes(`läuft auf ${sha7(st === "alarm" ? BOOT : MAIN)}`)
+          && (st === "alarm" ? liveRow.text.includes("5 hinter main") && liveRow.nd === r.wait
+            : liveRow.text.includes("neuester Stand von main") && liveRow.nd === r.live);
+        const repos = r.rows.filter((x) => x.cls.includes("repo"));
+        facts.repos = repos.map((x) => ({ text: x.text, tag: x.tag, cls: x.cls }));
+        claims[`${tag}every repo the server reads is a group, the focused session's open, the other closed with its summary`] =
+          repos.length === 2 && repos.some((x) => x.text.startsWith("claude-fleet") && (st === "leer" || x.cls.includes("auf")))
+          && repos.some((x) => x.text.startsWith("rezepte-app") && x.cls.includes("zu") && /1 Zweig/.test(x.text));
+        const mainRow = byId(r, `${REPO}#main`), overRow = byId(r, `${REPO}#overhaul`);
+        // overhaul: every claude-fleet worktree aiming at it that has not landed; main: its own lanes plus overhaul itself
+        const repoLanes = lanesOf(st).filter((l) => (l.repo ?? REPO) === REPO && l.landed !== "yes");
+        const nOver = repoLanes.filter((l) => l.target === "overhaul").length, nMain = repoLanes.filter((l) => l.target === "main").length + 1;
+        const landsWord = (n: number) => `${n} ${n === 1 ? "landet" : "landen"} hier`;
+        facts.lands = { main: mainRow?.text, over: overRow?.text, nMain, nOver };
+        claims[`${tag}the stem main and the branch overhaul say in words how many land there`] = !!mainRow && !!overRow
+          && overRow.text.includes(landsWord(nOver)) && overRow.text.includes("41 vor main") && mainRow.text.includes(landsWord(nMain)) && mainRow.text.includes(sha7(MAIN));
+        // the worktree field under the composer (desktop: the tray's right end; phone: the island's Arbeitsort)
+        if (focus) {
+          const name = st === "main" ? "claude-fleet" : "Rechter Tab dichter";
+          const addr = st === "main" ? "main" : "3A";
+          claims[`${tag}the worktree field names the address and the lane's name, ${phone ? "in the island's place Arbeitsort" : "right-aligned after Schedule"}`] = phone
+            ? (r.mort ?? "").includes(addr) && (r.mort ?? "").includes(name)
+            : !!r.field && r.field.vis && r.field.text.includes(addr) && r.field.text.includes(name) && !!r.schedBox && r.field.box.x >= r.schedBox.r
+              && !!r.trayBox && r.trayBox.r - r.field.box.r <= 12;
+        }
+        // --- the state's own claims
+        if (st === "lane" || st === "land" || st === "modell" || st === "tippen") {
+          const mine = lane(r, 9)!, zeitRow = lane(r, 10)!;
+          claims[`${tag}the own lane is the marked row 3A with its name, and its square is visible (Starten without hovering)`] =
+            !!mine && mine.cls.includes("here") && mine.ref === "3A" && mine.name === "Rechter Tab dichter" && !!mine.ti?.sq && mine.ti.state === "not-running";
+          claims[`${tag}the own path main → overhaul → 3A is drawn in ink`] = r.inkPaths === 1;
+          claims[`${tag}the node says the state: 3A works (green), 3B is still (a ring), the word in the tooltip`] =
+            mine.nd === r.live && mine.title.includes("arbeitet") && zeitRow.node === "still" && zeitRow.nd !== r.live && /still/.test(zeitRow.title);
+          const beads = mine.pf!.beads;
+          claims[`${tag}3A's beads: local green · preview ${st === "land" ? "green" : "running (green fill)"} · land check ${st === "land" ? "running" : "none yet"} · not yet on overhaul`] =
+            beads[0].state === "green" && (st === "land" ? beads[1].state === "green" && beads[2].state === "running" && beads[2].bg === r.live
+              : beads[1].state === "running" && beads[1].bg === r.live && beads[2].state === "none") && beads[3].landed === "no" && beads[3].title === "noch nicht auf overhaul";
+        }
+        if (st === "lane" && !phone) {
+          // the worktree field shows its worktree in Info: a click marks the own row for a moment
+          await evaluate(`document.querySelector('#boardbody').scrollTop = 9999; document.querySelector('#compwt')?.click()`);
+          const marked = await wait(`document.querySelector('#boardbody .zr.flash')?.dataset.slot === '9'`, 4000);
+          claims[`${tag}a click on the worktree field marks the own branch in Info`] = marked;
+        }
+        if (st === "lane") {
+          // a click on the own square opens its line with Starten; Starten asks the slot's route for a 4-h copy
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] .ti')?.click()`);
+          await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Starten'))`, 3000);
+          r = await read();
+          const line = r.lines.find((l) => l.cls.includes("ti"));
+          facts.tiLine = line;
+          await shot(`${st}-${width}`);
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Starten')?.click()`);
+          await wait(`false`, 400);
+          facts.writes = fx.writes;
+          claims[`${tag}the square opens its line "Testinstanz · keine" with Starten, and Starten asks for a copy of THIS lane for 4 hours`] =
+            !!line && /Testinstanz · keine/.test(line.text) && line.buttons.join(",") === "Starten"
+            && fx.writes.some((w) => w.path === "/api/slots/9/testinstanz" && JSON.stringify(w.body) === JSON.stringify({ action: "up", ttlMin: 240 }));
+        }
+        if (st === "modell") {
+          const zeitRow = lane(r, 10)!, freeRow = byId(r, pathOf(free))!;
+          const until = await clock(fx.now + 2 * 3600_000);
+          claims[`${tag}a running test instance is a green square IN its branch's row, at 3B and at the worktree without a session`] =
+            zeitRow.ti?.state === "up" && zeitRow.ti.sq && zeitRow.ti.bg === r.live && freeRow.ti?.state === "up" && freeRow.ti.sq && freeRow.ti.bg === r.live
+            && zeitRow.ti.title.startsWith(`Testinstanz läuft bis ${until}`);
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"] .ti')?.click()`);
+          await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Öffnen'))`, 3000);
+          r = await read();
+          const line = r.lines.find((l) => l.cls.includes("ti"));
+          facts.tiLine = line;
+          claims[`${tag}its line says the deadline and where the copy came from, with Öffnen and Stoppen`] = !!line && line.text.includes(`bis ${until}`)
+            && line.buttons.join(",") === "Öffnen,Stoppen" && line.title.includes(`kopiert von ${sha7(hex(zeit.branch))}`);
+          await shot(`${st}-${width}`);
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Öffnen')?.click()`);
+          await wait(`(window.__opened || []).length >= 2`, 3000);
+          const opened = await evaluate<string[]>("window.__opened || []");
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Stoppen')?.click()`);
+          await wait(`false`, 400);
+          // the slotless worktree's instance goes through the worktree route, named by repo and path
+          await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"] .ti')?.click()`);
+          await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.dataset.for === ${JSON.stringify(pathOf(free))})`, 3000);
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(free))}).querySelector('button')?.click()`);
+          await wait(`false`, 400);
+          facts.writes = fx.writes; facts.opened = opened;
+          const wtRoute = `/api/worktrees/testinstanz?repo=${encodeURIComponent(REPO)}&path=${encodeURIComponent(pathOf(free))}`;
+          claims[`${tag}Öffnen asks the slot's route for the opening link and opens it in a new tab; Stoppen sends down`] =
+            fx.writes.some((w) => w.path === "/api/slots/10/testinstanz" && (w.body as { action?: string })?.action === "open")
+            && opened.includes("http://fleet.fixture/blank?instanz")
+            && fx.writes.some((w) => w.path === "/api/slots/10/testinstanz" && (w.body as { action?: string })?.action === "down");
+          claims[`${tag}a worktree without a session reaches its own instance through the worktree route`] =
+            fx.writes.some((w) => w.path === wtRoute && (w.body as { action?: string })?.action === "open");
+        }
+        if (st === "tippen") {
+          // a click on a branch with a session jumps there like a click in the session list
+          await shot(`${st}-vorher-${width}`);
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"]')?.click()`);
+          const jumped = phone
+            ? await wait(`!document.querySelector('#shell-board')`, 4000)
+            : await wait(`document.querySelector('#boardbody .zr.here')?.dataset.slot === '10'`, 6000);
+          facts.jumped = jumped;
+          if (phone) {
+            claims[`${tag}on the phone a jump closes Info, and the session is the one in the pane`] = jumped
+              && await wait(`document.querySelector('#comptarget')?.dataset.slot === '10'`, 3000);
+            // back into Info for the slotless row
+            await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200);
+            await evaluate("document.querySelector('#minfo')?.click()");
+            await wait(`document.querySelector('#boardbody .ranke .rk .zr.zw')`, 8000); await settle(300);
+            r = await read();
+            claims[`${tag}after the jump the marked row is 3B — the Ranke stands as before`] = lane(r, 10)?.cls.includes("here") === true && !lane(r, 9)?.cls.includes("here");
+          } else {
+            r = await read();
+            claims[`${tag}after the jump the pane and Info show 3B, the Ranke stands as before, only the mark moved`] = jumped
+              && lane(r, 10)?.cls.includes("here") === true && !lane(r, 9)?.cls.includes("here") && branchRows(r).length === zw.length;
+          }
+          await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"]')?.click()`);
+          await wait(`document.querySelector('#boardbody .zd.zx')`, 3000);
+          r = await read();
+          const x = r.lines.find((l) => l.cls.includes("zx2"));
+          facts.opened = r.lines;
+          claims[`${tag}a branch without a session opens up with its branch, Öffnen and Schließen…`] = !!x && x.buttons.includes("Öffnen") && x.buttons.includes("Schließen…")
+            && r.lines.some((l) => l.cls.includes("zx") && l.text.includes(free.branch));
+          await shot(`${st}-${width}`);
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.zx2 button')].find((b) => b.textContent === 'Öffnen')?.click()`);
+          await wait(`false`, 400);
+          claims[`${tag}Öffnen there reopens the worktree in a free slot`] = fx.writes.some((w) => w.path === "/api/lanes"
+            && JSON.stringify(w.body) === JSON.stringify({ repo: REPO, attach: pathOf(free) }));
+        }
+        if (st === "land") await shot(`${st}-${width}`);
+        if (st === "viele" || st === "branch") {
+          // open the second repo, as after a click on its head
+          await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('rezepte-app'))?.click()`);
+          await wait(`document.querySelector('#boardbody .zr[data-slot="13"]')`, 3000);
+          if (st === "branch") {
+            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.textContent === 'Branch')?.click()`);
+            await wait(`document.querySelector('#boardbody .zr[data-slot="9"] .nm')?.textContent === ${JSON.stringify(own.branch)}`, 3000);
+          }
+          await settle(200);
+          r = await read();
+          const z2 = branchRows(r);
+          const fold = r.rows.find((x) => x.cls.includes("zf"));
+          facts.many = { rows: z2.length, fold: fold?.text, pfX: [...new Set(z2.map((x) => x.pf?.box.x))], tiX: [...new Set(z2.map((x) => x.ti?.box.x))] };
+          claims[`${tag}with many branches: from 13 on, the worktrees without a session fold into one line; beads and squares still flee across both repos`] =
+            !!fold && /\d+ ohne Session/.test(fold.text)
+              && new Set(z2.map((x) => x.pf?.box.x)).size === 1 && new Set(z2.map((x) => x.ti?.box.x)).size === 1 && z2.some((x) => x.slot === "13");
+          const e = lane(r, 14)!, f = lane(r, 15)!, c = lane(r, 11)!, d = lane(r, 12)!, g = lane(r, 16)!;
+          claims[`${tag}the bead states read apart: red stale preview is a red ring, waiting is a green ring, skipped is a dash, an unreadable record is amber`] =
+            c.pf!.beads[1].cls === "bad stale" && d.pf!.beads[1].state === "waiting" && g.pf!.beads[0].state === "skipped" && f.pf!.beads[4].state === "unknown"
+            && /unbekannt/.test(f.pf!.beads[4].title);
+          claims[`${tag}a landed worktree shows the filled diamond "gelandet als <sha> in overhaul" and its check after the land running`] =
+            e.pf!.beads[3].landed === "yes" && e.pf!.beads[3].title === `gelandet als ${sha7(hex("landed-e"))} in overhaul` && e.pf!.beads[4].state === "running";
+          claims[`${tag}a session waiting on you has the brown node`] = d.nd === r.wait && /wartet auf dich/.test(d.title);
+          if (st === "branch") claims[`${tag}the switch shows branches in the name column, still one row per branch`] = r.seg.includes("Branch*")
+            && lane(r, 9)?.name === own.branch && z2.every((x) => x.box.h === (phone ? 40 : 24));
+          await shot(`${st}-${width}`);
+          if (st === "viele") {
+            await evaluate(`document.querySelector('#boardbody .zr.zf')?.click()`);
+            const unfolded = await wait(`!document.querySelector('#boardbody .zr.zf') && document.querySelectorAll('#boardbody .zr.zw').length === ${z2.length + Number(/(\d+) ohne Session/.exec(fold?.text ?? "")?.[1] ?? -99)}`, 3000);
+            claims[`${tag}a click on the fold line shows every worktree without a session`] = unfolded;
+          }
+        }
+        if (st === "alarm") await shot(`${st}-${width}`);
+        if (st === "leer") {
+          claims[`${tag}without a session the Ranke still shows every worktree, none marked, each with Öffnen behind a click`] =
+            !r.rows.some((x) => x.cls.includes("here")) && zw.every((x) => x.node === "leer") && /Focus a pane/.test(r.bodyText);
+          await shot(`${st}-${width}`);
+        }
+        if (st === "main") {
+          const m = byId(r, `${REPO}#main`)!;
+          claims[`${tag}a session in the main checkout marks the stem, its address is underlined, no lane is marked`] =
+            m.cls.includes("here") && /\b3\b/.test(m.text) && !zw.some((x) => x.cls.includes("here"));
+          await shot(`${st}-${width}`);
+        }
+        results.push({ width, height, state: st, claims, facts });
+      }
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
   }
 }

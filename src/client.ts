@@ -1,6 +1,6 @@
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
 import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
-import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
+import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, renderWorkplaceField, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
 import { Terminal } from "@xterm/xterm";
@@ -7124,6 +7124,7 @@ export async function refresh() {
     renderChips(data.chips);
     renderParkHint();
     renderHeldHint();
+    renderWorkplaceField();
     for (const p of panes) p.syncHeld();
     // hot also for a PROPOSED done-criterion (2026-08-05): a clarify lane that filed its
     // proposal sits parked on the owner — before this, nothing on the board said so and the
@@ -10242,83 +10243,9 @@ dropFile.addEventListener("change", () => {
 
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 initBoard();
-type TestinstanzView = { ok: true; state: "up"; url: string; port: number; expiresAt: number }
-  | { ok: true; state: "down" };
-const testinstanzSeen = new Map<string, { at: number; view: TestinstanzView }>();
-const testinstanzPending = new Set<string>();
-const testinstanzReadAt = new Map<string, number>();
-const testinstanzErrors = new Map<string, string>();
-const testinstanzKey = (s: SlotInfo) => `${s.id}:${s.openedAt ?? 0}:${s.cwd ?? ""}`;
-
-function paintTestinstanzCard(): void {
-  if (!boardOpen || boardBody.querySelector(".testinstanzcard")) return;
-  const slot = panes[focused]?.slot;
-  const s = slot ? fleet[slot - 1] : undefined;
-  if (!s?.worktree || !s.cwd) return;
-  const key = testinstanzKey(s);
-  const cached = testinstanzSeen.get(key);
-  const busy = testinstanzPending.has(key);
-  const card = el("div", "bsec testinstanzcard");
-  card.appendChild(el("h3", "", "Testinstanz · dieser Worktree"));
-  const actions = el("div", "bbtnrow");
-  card.appendChild(actions);
-  const button = el("button", "bbtn", busy ? "Wird ausgeführt…"
-    : cached?.view.state === "up" ? "Testinstanz stoppen" : "Testinstanz starten") as HTMLButtonElement;
-  button.disabled = busy || !cached;
-  button.onclick = async () => {
-    if (testinstanzPending.has(key)) return;
-    testinstanzPending.add(key);
-    testinstanzErrors.delete(key);
-    card.remove(); paintTestinstanzCard();
-    const action = cached?.view.state === "up" ? "down" : "up";
-    try {
-      const res = await post(`/api/slots/${s.id}/testinstanz`, { action });
-      const answer = (await res.json()) as { error?: string; url?: string; port?: number; expiresAt?: number };
-      if (!res.ok) throw new Error(answer.error ?? `testinstanz ${action} failed (${res.status})`);
-      if (action === "up" && answer.url && answer.port && answer.expiresAt)
-        testinstanzSeen.set(key, { at: Date.now(), view: { ok: true, state: "up", url: answer.url,
-          port: answer.port, expiresAt: answer.expiresAt } });
-      else if (action === "down") testinstanzSeen.set(key, { at: Date.now(), view: { ok: true, state: "down" } });
-      else throw new Error("testinstanz started without a URL and deadline");
-    } catch (error) {
-      testinstanzErrors.set(key, error instanceof Error ? error.message : String(error));
-      testinstanzSeen.delete(key);
-    } finally {
-      testinstanzPending.delete(key);
-      boardBody.querySelector(".testinstanzcard")?.remove();
-      paintTestinstanzCard();
-    }
-  };
-  actions.appendChild(button);
-  if (cached?.view.state === "up") {
-    const link = el("a", "bbtn", "Testinstanz öffnen") as HTMLAnchorElement;
-    link.href = cached.view.url;
-    link.target = "_blank";
-    link.rel = "noopener";
-    actions.appendChild(link);
-    card.appendChild(el("div", "hint", `Port ${cached.view.port} · bis ${new Date(cached.view.expiresAt).toLocaleString()}`));
-  }
-  const error = testinstanzErrors.get(key);
-  if (error) card.appendChild(el("div", "hint", error));
-  boardBody.prepend(card);
-  if (!busy && Date.now() - (testinstanzReadAt.get(key) ?? 0) > 15_000) {
-    testinstanzPending.add(key);
-    testinstanzReadAt.set(key, Date.now());
-    void api(`/api/slots/${s.id}/testinstanz`).then(async (res) => {
-      const answer = (await res.json()) as TestinstanzView & { error?: string };
-      if (!res.ok) throw new Error(answer.error ?? `status failed (${res.status})`);
-      testinstanzSeen.set(key, { at: Date.now(), view: answer });
-      testinstanzErrors.delete(key);
-    }).catch((error: unknown) => {
-      testinstanzErrors.set(key, error instanceof Error ? error.message : String(error));
-    }).finally(() => {
-      testinstanzPending.delete(key);
-      boardBody.querySelector(".testinstanzcard")?.remove();
-      paintTestinstanzCard();
-    });
-  }
-}
-new MutationObserver(paintTestinstanzCard).observe(boardBody, { childList: true });
+// the test instance of a worktree is a square in its row of the Arbeitsorte (src/board.ts#tiSquare)
+// since card e66909b1 — the former card "Testinstanz · dieser Worktree" was absorbed there, with
+// Starten, Öffnen and Stoppen; its own read-on-render loop went with it
 initQueue();
 initAttention();
 initDevices();

@@ -889,6 +889,17 @@
   #comptray > #live { display: none; }
   @media (any-pointer: coarse) { #comptray > #live { display: flex; } }
   #comptray > #live.on { color: var(--chat-ink); background: var(--c-hover); }
+  /* THE WORKTREE FIELD (card e66909b1): the tray's last entry, right-aligned after Files · History ·
+     Schedule — the Ranke's figure, the address, the lane's name, and the green square while its test
+     instance runs (src/composer.ts#renderWorkplaceField). On the phone it fills the island's #mort. */
+  #comptray > .wtfield { margin-left: auto; max-width: 46%; min-width: 0; }
+  .wtfield .wtref { font: 500 var(--chat-code-fs) var(--chat-mono); color: var(--chat-prose); flex: none; }
+  .wtfield .wtname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wtfield .wtsq { flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--q-live); }
+  #mort .wtfield { display: flex; align-items: center; gap: 6px; width: 100%; height: 100%; padding: 0 12px; border: 0;
+    background: none; color: var(--chat-ink); font: 500 var(--chat-ui-fs) var(--chat-sans); min-width: 0; cursor: pointer; }
+  #mort .wtfield .ico { width: 14px; height: 14px; flex: none; }
+  #mort:has(.wtfield) { border-style: solid; border-color: var(--chat-edge); }
   /* the model/effort switch: plain text in the surface's bottom row, conversation view only
      (a terminal strip stays a strip) */
   #compopts { display: none; }
@@ -2797,6 +2808,161 @@
   #board .rbfail .bfile { color: var(--b-ink2); cursor: default; }
   #board .bfail h3 { color: var(--amber); }
   #board .bfail .bstate { color: var(--amber); }
+
+  /* ARBEITSORTE — the Ranke as a table (cards e66909b1 + abe74821; docs/design/rechter-tab-notiz.md
+     §3b, Variante 3A). Every row has the same columns: lines · address · name · ↑• · the check beads
+     · the test-instance square, so a sign stands at the same x in every repo. The sizes are the
+     third version's tokens; colour only as a signal (G0.2): --q-live works / runs by itself,
+     --q-wait waits on you, --danger is red, --amber is unmeasured. Motion is colour only (G0.4). */
+  #board .ranke { --rk-row: 24px; --rk-sub: 20px; --rk-grp: 8px; --rk-lvl: 10px; --rk-rail: 28px;
+    --rk-cols: var(--rk-rail) 22px minmax(0, 1fr) 30px 42px 14px; }
+  #board .ranke h3 { display: flex; align-items: center; gap: 6px; min-height: 24px; margin-bottom: 4px; }
+  #board .rkseg { margin-left: auto; display: inline-flex; border: 1px solid var(--chat-edge); border-radius: var(--r1); overflow: hidden; }
+  #board .rkseg button { border: 0; border-radius: 0; min-height: 20px; padding: 0 6px; background: transparent;
+    color: var(--chat-mute); font: 400 var(--chat-ui-fs) var(--chat-sans); cursor: pointer; transition: color var(--t), background-color var(--t); }
+  #board .rkseg button.on { background: var(--c-hover); color: var(--chat-ink); }
+  #board .ranke .grp + .grp { margin-top: var(--rk-grp); }
+  #board .ranke .rk { position: relative; }
+  #board .ranke .rk > svg { position: absolute; left: 0; top: 0; width: var(--rk-rail); height: 100%; pointer-events: none; overflow: visible; }
+  #board .ranke .rk > svg path { fill: none; stroke-width: 1; }
+  #board .ranke .rk > svg path.q { stroke: var(--c-edge-hi); }
+  #board .ranke .rk > svg path.i { stroke: var(--chat-ink); }
+  #board .zr { position: relative; display: grid; grid-template-columns: var(--rk-cols); column-gap: 4px; align-items: center;
+    min-height: var(--rk-row); font-size: 12px; border-radius: 4px; transition: background-color var(--t); }
+  #board .zr > .nd { grid-column: 1; justify-self: start; width: 7px; height: 7px; border-radius: 50%; margin-left: calc(var(--d, 0) * var(--rk-lvl));
+    background: var(--chat-void); box-shadow: inset 0 0 0 1.25px var(--chat-mute); position: relative; z-index: 1; }
+  #board .zr > .nd.live { background: var(--q-live); box-shadow: none; }
+  #board .zr > .nd.wait { background: var(--q-wait); box-shadow: none; }
+  #board .zr > .nd.bad { box-shadow: inset 0 0 0 1.5px var(--danger); }
+  #board .zr > .nd.leer { box-shadow: inset 0 0 0 1.25px var(--chat-faint); }
+  #board .zr .ref { font: 500 10.5px/1 var(--chat-mono); color: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l)); white-space: nowrap;
+    background: none; border: 0; padding: 0; }
+  #board .zr .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chat-prose); }
+  #board .zr .nm.leer { color: var(--chat-faint); }
+  #board .zr .nm.mono { font: 10.5px var(--chat-mono); color: var(--chat-mute); }
+  #board .zr .nm.br { direction: rtl; text-align: left; } /* a branch is cut from the front: its end tells lanes apart */
+  #board .zr .nm .q { color: var(--chat-faint); }
+  #board .zr .up { font: 10.5px var(--chat-mono); color: var(--chat-faint); text-align: right; white-space: nowrap; }
+  /* the five beads: local proofs · preview · land check · in its target (the diamond) · check after the land */
+  #board .zr .pf { display: flex; align-items: center; gap: 3px; height: 100%; }
+  #board .zr .pf i { width: 6px; height: 6px; border-radius: 1.5px; display: block; flex: none; box-shadow: inset 0 0 0 1px var(--chat-faint); }
+  #board .zr .pf i.none { width: 4px; height: 4px; margin: 1px; border-radius: 50%; box-shadow: none; background: var(--chat-edge); }
+  #board .zr .pf i.ok { background: var(--chat-mute); box-shadow: none; }
+  #board .zr .pf i.run { background: var(--q-live); box-shadow: none; }
+  #board .zr .pf i.queue { box-shadow: inset 0 0 0 1px var(--q-live); }
+  #board .zr .pf i.bad { background: var(--danger); box-shadow: none; }
+  #board .zr .pf i.skip { box-shadow: none; background: linear-gradient(var(--chat-faint), var(--chat-faint)) center / 6px 1px no-repeat; }
+  #board .zr .pf i.unk { box-shadow: inset 0 0 0 1px var(--amber); }
+  #board .zr .pf i.stale.ok { background: transparent; box-shadow: inset 0 0 0 1px var(--chat-mute); }
+  #board .zr .pf i.stale.bad { background: transparent; box-shadow: inset 0 0 0 1px var(--danger); }
+  #board .zr .pf i.stale.run { background: transparent; box-shadow: inset 0 0 0 1px var(--q-live); }
+  #board .zr .pf b { width: 6px; height: 6px; display: block; flex: none; margin: 0 1px; transform: rotate(45deg);
+    box-shadow: inset 0 0 0 1px var(--chat-mute); }
+  #board .zr .pf b.yes { background: var(--chat-ink); box-shadow: none; }
+  #board .zr .pf b.nil { box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  #board .zr .pf b.unk { box-shadow: inset 0 0 0 1px var(--amber); }
+  /* the test instance: a square in its worktree's row — green while it runs */
+  #board .zr .ti { display: grid; place-items: center; width: 14px; height: 18px; padding: 0; border: 0; background: none;
+    border-radius: 4px; cursor: pointer; }
+  #board .zr .ti:disabled { cursor: default; }
+  #board .zr .ti.open { background: var(--c-hover); }
+  #board .sq { width: 10px; height: 10px; border-radius: 2px; display: block; box-shadow: inset 0 0 0 1.25px var(--chat-faint); }
+  #board .ti.up .sq, #board .sq.up { background: var(--q-live); box-shadow: none; }
+  #board .ti.exp .sq, #board .sq.exp { box-shadow: inset 0 0 0 1.25px var(--chat-mute); }
+  #board .ti.bad .sq, #board .sq.bad { box-shadow: inset 0 0 0 1.25px var(--danger); }
+  #board .ti.unk .sq, #board .sq.unk { box-shadow: inset 0 0 0 1.25px var(--amber); }
+  #board .zr .ti.tpl .sq { visibility: hidden; }
+  /* no instance: the square shows only under the pointer (a click offers Starten) — and always at the own lane */
+  #board .zr .ti.off:not(.mine):not(.open) .sq { visibility: hidden; }
+  #board .zr:hover .ti.off .sq, #board .zr .ti.off:focus-visible .sq { visibility: visible; }
+  /* a row with a session is a target like a row of the session list: a click jumps there */
+  #board .zr.zw { cursor: pointer; }
+  #board .zr.zw:hover { background: var(--c-hover); }
+  #board .zr.here { background: var(--chat-surface); cursor: default; }
+  #board .zr.here .nm { color: var(--chat-ink); font-weight: 500; }
+  #board .zr.open { background: var(--chat-surface); }
+  #board .zr.flash { background: var(--c-hover); }
+  #board .zr[role="button"]:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: -1px; }
+  /* stem and branch rows: the branch itself in mono, right what hangs on it */
+  #board .zr.base { cursor: default; grid-template-columns: var(--rk-rail) auto minmax(0, 1fr) var(--rk-tiw, 14px); }
+  #board .zr.base .nm { grid-column: 2; font: 500 var(--chat-code-fs) var(--chat-mono); color: var(--chat-ink); }
+  #board .zr.base .rt { grid-column: 3; justify-self: end; display: flex; gap: 6px; align-items: center;
+    font-size: var(--chat-ui-fs); color: var(--chat-faint); white-space: nowrap; min-width: 0; overflow: hidden; }
+  #board .zr.base .rt .tgt { color: var(--chat-mute); }
+  #board .zr.base .rt .mono { font: 10.5px var(--chat-mono); }
+  #board .zr.base .rt .ref { cursor: pointer; }
+  #board .zr.base .rt .ref.on { color: var(--chat-ink); text-decoration: underline; text-underline-offset: 3px; }
+  #board .zr.base .ti { grid-column: 4; }
+  /* the repo's head */
+  #board .zr.repo { cursor: pointer; grid-template-columns: var(--rk-rail) minmax(0, 1fr) auto; }
+  #board .zr.repo .fx { grid-column: 1; color: var(--chat-faint); display: grid; place-items: center start; }
+  #board .zr.repo .fx .ico { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform var(--t); }
+  #board .zr.repo.auf .fx .ico { transform: none; }
+  #board .zr.repo .nm { grid-column: 2; font-weight: 500; color: var(--chat-prose); }
+  #board .zr.repo.zu .nm { color: var(--chat-mute); font-weight: 400; }
+  #board .zr .cnt { color: var(--chat-faint); font-weight: 400; font-size: var(--chat-ui-fs); margin-left: 6px; }
+  #board .zr.repo .rt { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 4px; }
+  /* the fold of worktrees without a session (from 13 branches on) */
+  #board .zr.zf { cursor: pointer; }
+  #board .zr.zf .fc { grid-column: 6; color: var(--chat-faint); display: grid; place-items: center; }
+  #board .zr.zf .fc .ico { width: 12px; height: 12px; transform: rotate(-90deg); }
+  /* the Live row: what runs on this machine */
+  #board .zr.stand { grid-template-columns: var(--rk-rail) minmax(0, 1fr); }
+  #board .zr.stand .nd { margin-left: 1px; }
+  #board .zr.stand .nm { grid-column: 2; font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: normal; line-height: 1.35; padding: 3px 0; }
+  #board .zr.stand .nm b { color: var(--chat-ink); font-weight: 500; }
+  #board .zr .mono { font-family: var(--chat-mono); font-size: 10.5px; }
+  #board .zr.stand .nm .q { color: var(--chat-faint); }
+  #board .zr.stand .nm .cb { color: var(--q-wait); }
+  /* the line under a row: its test instance, or a worktree without a session opened up */
+  #board .zd { display: grid; grid-template-columns: var(--rk-cols); column-gap: 4px; align-items: center; min-height: var(--rk-sub);
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #board .zd > .tx { grid-column: 3 / 5; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 5px; }
+  #board .zd > .tx .sq { width: 8px; height: 8px; }
+  #board .zd > .tx .k { color: var(--chat-prose); }
+  #board .zd > .tx .mono { color: var(--chat-faint); }
+  #board .zd > .r { grid-column: 5 / -1; justify-self: end; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+  #board .zd > .err { grid-column: 3 / -1; color: var(--danger); white-space: normal; }
+  /* the instance's line is a row of its own under the branch: words from the name column on, the
+     buttons at the right end, and nothing overlaps when they need more room than a column */
+  #board .zd.ti { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-left: calc(var(--rk-rail) + 30px); }
+  #board .zd.ti > .tx { flex: 1 1 auto; min-width: 0; }
+  #board .zd.ti > .r { flex: none; margin-left: auto; }
+  #board .zd.ti > .err { flex-basis: 100%; }
+  #board .zd.zx > .tx { grid-column: 3 / -1; }
+  #board .zd.zx2 { display: block; padding: 2px 0 6px calc(var(--rk-rail) + 26px); }
+  #board .zd.zx2 .hint { color: var(--chat-faint); margin-top: 4px; }
+  #board .rk-acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #board .rk-btn { min-height: 20px; padding: 0 7px; border: 1px solid var(--chat-edge); border-radius: var(--r1); background: var(--chat-surface);
+    color: var(--chat-ink); font: 500 var(--chat-ui-fs) var(--chat-sans); display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+    transition: color var(--t), background-color var(--t), border-color var(--t); }
+  #board .rk-btn:hover:not(:disabled) { background: var(--c-hover); border-color: var(--c-edge-hi); }
+  #board .rk-btn:disabled { color: var(--chat-faint); cursor: default; }
+  #board .rk-btn.quiet { border-color: transparent; background: transparent; color: var(--chat-mute); }
+  #board .rk-btn.quiet:hover { color: var(--chat-ink); }
+  #board .rk-btn.del:hover { color: var(--danger); }
+  #board .rk-btn .ico { width: 12px; height: 12px; }
+  #board .rk-btn.ib { width: 22px; padding: 0; justify-content: center; }
+  @media (prefers-reduced-motion: reduce) { #board .zr, #board .rk-btn, #board .rkseg button { transition: none; } }
+  /* the phone: what one taps is 40 px high (G0.7) */
+  @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
+    #board .ranke { --rk-row: 40px; --rk-sub: 32px; --rk-grp: 12px; --rk-lvl: 12px; --rk-rail: 34px;
+      --rk-cols: var(--rk-rail) 26px minmax(0, 1fr) 36px 48px 40px; }
+    #board .zr { font-size: 13px; }
+    #board .zr .ref { font-size: 11px; }
+    #board .zr.stand { min-height: 32px; }
+    #board .zr .ti { width: 40px; height: 40px; }
+    #board .zr .pf i { width: 7px; height: 7px; } #board .zr .pf b { width: 7px; height: 7px; }
+    #board .rkseg button, #board .rk-btn { min-height: 40px; padding: 0 12px; }
+    #board .ranke { --rk-tiw: 40px; }
+    #board .zr.zw:hover { background: transparent; }
+    #board .zr.here, #board .zr.here:hover, #board .zr.open { background: var(--chat-surface); }
+    /* the instance's line: its words over the full width, the 40-px buttons on a row of their own */
+    #board .zd.ti { row-gap: 2px; padding-top: 2px; padding-bottom: 6px; }
+    #board .zd.ti > .tx { flex-basis: 100%; }
+    #board .zd.ti > .r { margin-left: 0; }
+    #board .rk-btn.ib { width: 40px; padding: 0; justify-content: center; }
+  }
 
   /* machine alarms — only drawn when something is due */
   #board .balert { margin-top: 14px; padding: 9px 11px; border-radius: 8px; background: rgba(224,175,104,.07); }

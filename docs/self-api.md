@@ -3023,7 +3023,7 @@ Sie bleibt auf registrierte Repos und diese beiden Quellen begrenzt, ohne Dateis
 | live-server | BOOT_HEAD / boot-head | laufender Prozess, unabhängig von heutiger Checkout-HEAD; INSTANCE_NAME oder null |
 | test-instance | null / copy-unproven | je vorhandenem testinstanz.sh, Zustand weiterhin in der Worktree-Zeile |
 | helper-daemon | daemonSha / heartbeat | je helperDevices-Eintrag, nur Fleet-Name; letzter gespeicherter Bericht |
-| helper-instance | instance.head / heartbeat | wenn der vorhandene Heartbeat eine Instanz meldet |
+| helper-instance | null / checkout-unproven | wenn der vorhandene Heartbeat eine Instanz meldet; reportedCheckout separat |
 | linked-instance | null / link-only | je FLEET_INSTANCES-Link, nur Name, repo:null; keine Verbindung zur Instanz |
 
 `observedAt` nennt den lokalen Messbeginn, beim Daemon die vorhandene lastSeen-Zeit (auch Claim-
@@ -3033,7 +3033,10 @@ null. Eine Heartbeat-SHA ist ein letzter Bericht, kein Beweis aktueller Erreichb
 Ergebnis-/Claim-SHA, niemals Ersatz für daemonSha; ohne Auftrag bleibt update:null mit Grund.
 Testkopien melden bisher keine belegte laufende Git-Version: weder recordedSource.before noch
 heutige Worktree-HEAD beweisen sie. Daher bleibt ihre head:null mit copy-running-version-unproven.
-Auch verlinkte Instanzen bleiben head:null mit linked-instance-sha-unreported; ihr Repo ist
+Helferinstanzen melden bislang nur Checkout-HEAD (helper-daemon/daemon.ts#instanceOf), keine
+Boot-SHA ihres Prozesses. Daher head:null mit helper-instance-running-sha-unreported;
+`reportedCheckout:{head,observedAt}` hält ihre gemessene Checkout-Version separat, ohne sie als
+laufende Version auszugeben. Auch verlinkte Instanzen bleiben head:null mit linked-instance-sha-unreported; ihr Repo ist
 unbekannt. Geräte-/Instanznamen fehlen nur mit benanntem Grund. Keine Netzwerkadresse, Geräte-ID,
 Remote-URL oder Zugangsdaten werden in stands übernommen.
 

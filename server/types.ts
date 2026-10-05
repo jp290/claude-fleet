@@ -3476,6 +3476,7 @@ export interface WorkplaceStandSource {
   kind: import("../src/protocol").WorkplaceStand["kind"];
   repo: string | null; name: string | null; path: string | null; head: string | null;
   basis: import("../src/protocol").WorkplaceStand["basis"];
+  reportedCheckout?: { head: string; observedAt: number };
   codeScope: import("../src/protocol").WorkplaceStand["codeScope"];
   observedAt: number | null; branch: string | null; headReason: string;
   update: import("../src/protocol").WorkplaceStand["update"];

@@ -290,7 +290,9 @@ async function workplacesChecks(): Promise<void> {
       && live.target?.mergeBase === docsHead && live.target.distance?.ahead === 0 && live.target.distance.behind === 2
       && live.target.codeBehind === true, JSON.stringify(live));
     check("workplace versions helper owns daemon code and has an independent server-instance stand", old?.target?.distance?.behind === 1
-      && old.target.codeBehind === true && stand(versions, "helper-instance", "current")?.head === serverHead, JSON.stringify(old));
+      && old.target.codeBehind === true && stand(versions, "helper-instance", "current")?.head === null
+      && stand(versions, "helper-instance", "current")?.reportedCheckout?.head === serverHead
+      && stand(versions, "helper-instance", "current")?.reasons.some((r) => r.field === "head" && r.reason === "helper-instance-running-sha-unreported") === true, JSON.stringify(old));
     const withoutOwnCode = await compile(functions, [], false, undefined, false, undefined,
       { stands: { ...standSources, BOOT_HEAD: serverHead } }).read();
     const serverOnly = stand(withoutOwnCode, "live-server");
@@ -338,6 +340,10 @@ async function workplacesChecks(): Promise<void> {
     check("workplace versions configured upstream selects its remote branch rather than assuming main", Array.isArray(upstream)
       && upstream.find((r) => r.name === "origin")?.ref === "refs/remotes/origin/upstream-target"
       && upstream.find((r) => r.name === "origin")?.head === versionBase);
+    const checkoutLie = functions.replace('head: null, basis: "checkout-unproven"', 'head: d.instance.head, basis: "checkout-unproven"');
+    const checkoutLieWire = await compile(checkoutLie, [], false, undefined, false, undefined, { stands: standSources }).read();
+    check("workplace versions mutation rejects checkout SHA claimed as running helper instance", checkoutLie !== functions
+      && stand(checkoutLieWire, "helper-instance", "current")?.head !== null);
     const checkHead = "a".repeat(40), oldHead = "b".repeat(40), checkBranch = "fixture-lane", checkRepo = realpathSync(b);
     const checkHolder = { ...holderFixture(), worktree: { ...holderFixture().worktree, branch: checkBranch } };
     const fixtureSources = (stage: keyof WorkplaceChecks, state: "green" | "red" | "running" | "waiting" | "skipped", sha = checkHead): Record<string, unknown> => {

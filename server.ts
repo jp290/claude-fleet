@@ -7468,8 +7468,9 @@ async function workplaceStandSources(repos: WorkplaceRepo[], observedAt: number)
       branch: update?.main ?? null, headReason: "daemon-sha-unreported",
       update: update ? { state: update.state, mainSha: updateSha && /^[0-9a-f]{40}$/.test(updateSha) ? updateSha : null } : null });
     if (d.instance) source({ kind: "helper-instance", repo: canonical(REPO_DIR), path: null,
-      name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: d.instance.head, basis: "heartbeat", codeScope: "server",
-      observedAt: d.instance.at, branch: null, headReason: "instance-sha-unreported", update: null });
+      name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: null, basis: "checkout-unproven", codeScope: "server",
+      reportedCheckout: { head: d.instance.head, observedAt: d.instance.at },
+      observedAt: d.instance.at, branch: null, headReason: "helper-instance-running-sha-unreported", update: null });
   }
   for (const link of INSTANCE_LINKS) source({ kind: "linked-instance", repo: null, path: null, name: link.name,
     head: null, basis: "link-only", codeScope: "server", observedAt: null, branch: null,

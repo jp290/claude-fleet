@@ -740,7 +740,8 @@ export interface WorkplaceRemote extends WorkplaceGitComparison {
 export interface WorkplaceStand {
   kind: "worktree" | "live-server" | "test-instance" | "helper-daemon" | "helper-instance" | "linked-instance";
   repo: string | null; name: string | null; path: string | null; head: string | null;
-  basis: "worktree-head" | "boot-head" | "copy-unproven" | "heartbeat" | "link-only";
+  basis: "worktree-head" | "boot-head" | "copy-unproven" | "checkout-unproven" | "heartbeat" | "link-only";
+  reportedCheckout?: { head: string; observedAt: number };
   codeScope: "server" | "helper-daemon" | "repository";
   observedAt: number | null; target: WorkplaceGitComparison | null;
   remote: "none" | WorkplaceRemote[] | null;

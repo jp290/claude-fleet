@@ -282,7 +282,10 @@ export function readCodexFirstTurnEvidence(lines: string[], since: number,
       if (error && typeof error === "object") {
         const e = error as Record<string, unknown>;
         const info = e.codex_error_info;
-        first = { ...first, state: "failed", completedAt: at, ...(unknownReason ? { unknownReason } : {}),
+        const uncertainGap = unknownReason && unknownReason !== "unreadable-row"
+          && unknownReason !== "user-before-start" && unknownReason !== "start-without-turn-id";
+        first = { ...first, state: uncertainGap && first.acceptedAt !== null ? "unknown" : "failed",
+          completedAt: at, ...(unknownReason ? { unknownReason } : {}),
           error: { message: str(e.message) || "Codex turn failed",
             code: typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] ?? null : null } };
       } else {

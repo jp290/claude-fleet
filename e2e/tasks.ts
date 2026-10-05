@@ -329,9 +329,8 @@ function codexFirstTurnFixtures(): void {
   const skipped = readCodexFirstTurn([started, "{unreadable", succeeded], since);
   check("R3b first turn: an unreadable row between start and success keeps the result unknown",
     skipped?.state === "unknown" && skipped.unknownReason === "unreadable-row", JSON.stringify(skipped));
-  const failed = readCodexFirstTurn([started, "{unreadable", row("task_complete", since + 3_000, "turn-1", {
-    error: { message: "observed failure" },
-  })], since);
+  const observedError = row("task_complete", since + 3_000, "turn-1", { error: { message: "observed failure" } });
+  const failed = readCodexFirstTurn([started, "{unreadable", observedError], since);
   check("R3b first turn: an observed terminal error remains failed across an unreadable row",
     failed?.state === "failed" && failed.error?.message === "observed failure", JSON.stringify(failed));
   const injectedLikeUser = JSON.stringify({ type: "response_item", timestamp: new Date(since + 500).toISOString(),
@@ -339,9 +338,15 @@ function codexFirstTurnFixtures(): void {
   const userGap = readCodexFirstTurn([injectedLikeUser, started, succeeded], since);
   check("R3b first turn: a pre-start user row matching only the injected-text pattern is not proof of injection",
     userGap?.state === "unknown" && userGap.unknownReason === "user-before-start", JSON.stringify(userGap));
+  const userGapFailure = readCodexFirstTurn([injectedLikeUser, started, observedError], since);
+  check("R3b first turn: an observed error remains failed after an injected-text ambiguity",
+    userGapFailure?.state === "failed" && userGapFailure.error?.message === "observed failure", JSON.stringify(userGapFailure));
   const idGap = readCodexFirstTurn([row("task_started", since + 500), started, succeeded], since);
   check("R3b first turn: a start event without turn_id before the observed start keeps success unknown",
     idGap?.state === "unknown" && idGap.unknownReason === "start-without-turn-id", JSON.stringify(idGap));
+  const idGapFailure = readCodexFirstTurn([row("task_started", since + 500), started, observedError], since);
+  check("R3b first turn: an observed error remains failed after an id-less start ambiguity",
+    idGapFailure?.state === "failed" && idGapFailure.error?.message === "observed failure", JSON.stringify(idGapFailure));
 }
 
 export async function run(ctx: Ctx): Promise<void> {

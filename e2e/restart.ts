@@ -155,6 +155,10 @@ export async function boundRestartReadiness(): Promise<void> {
   let own: AgentBinding | null = null;
   let openedSlot: number | null = null;
   let started = false;
+  const probeBin = `${ROOT}/bound-readiness-bin`;
+  const probeLatch = `${probeBin}/held`;
+  const probeReached = `${probeBin}/reached`;
+  let controlledRestart = false;
   const external = async (): Promise<{ status: number; slots: { id: number; cwd: string | null; openedAt: number;
     agent: BoundAgentObservation["agent"] }[] }> => {
     const response = await get("/api/sessions");
@@ -185,12 +189,47 @@ export async function boundRestartReadiness(): Promise<void> {
     }, { timeoutMs: budget * 3 + 1500, what: "bound agent readiness probe-start" });
     own = bound;
     started = true;
+    const realTmux = Bun.which("tmux");
+    if (!realTmux) throw new BoundAgentError("probe-start", "tmux executable absent");
+    mkdirSync(probeBin, { recursive: true });
+    rmSync(probeReached, { force: true });
+    writeFileSync(probeLatch, "held");
+    // The boot tick runs immediately, regardless of FLEET_GIT_TICK_MS. Hold only this
+    // occupant's agent probe through the existing server-only PATH fixture seam.
+    writeFileSync(`${probeBin}/tmux`, `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+const target = ${JSON.stringify(["-L", SOCK, "display-message", "-p", "-t", `=s${bound.slot}:`, "#{pane_pid}"])};
+const latch = ${JSON.stringify(probeLatch)};
+if (args.length === target.length && args.every((arg, i) => arg === target[i])
+    && await Bun.file(latch).exists()) {
+  await Bun.write(${JSON.stringify(probeReached)}, ${JSON.stringify(JSON.stringify(bound))});
+  const deadline = Date.now() + 45_000;
+  while (await Bun.file(latch).exists()) {
+    if (Date.now() >= deadline) process.exit(1);
+    await Bun.sleep(10);
+  }
+}
+const child = Bun.spawn([${JSON.stringify(realTmux)}, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+process.exit(await child.exited);
+`, { mode: 0o755 });
     const states: { http: number; openedAt: number | null; agent: BoundAgentObservation["agent"] | undefined }[] = [];
-    await restartSrv({}, { binding: bound, timeoutMs: budget * 3 + 1500, stepMs: Math.min(100, budget),
+    controlledRestart = true;
+    await restartSrv({ PATH: `${probeBin}:${process.env.PATH ?? ""}` }, {
+      binding: bound, timeoutMs: budget * 3 + 1500, stepMs: Math.min(100, budget),
       readSessions: async () => {
+        if (states.length === 0) await until(() => existsSync(probeReached), {
+          timeoutMs: budget * 3 + 1500, what: "bound agent readiness SETUP: boot agent probe held" });
         const actual = await external();
         const row = actual.slots.find((s) => s.id === bound.slot);
         states.push({ http: actual.status, openedAt: row?.openedAt ?? null, agent: row?.agent });
+        if (states.length === 1) {
+          const held = existsSync(probeLatch) && readFileSync(probeReached, "utf8") === JSON.stringify(bound);
+          const measured = held && actual.status === 200 && row?.agent === null && row.openedAt === bound.openedAt;
+          check("bound agent readiness SETUP: held boot probe exposes HTTP 200/null for the bound occupant",
+            measured, JSON.stringify({ held, first: states[0] }));
+          rmSync(probeLatch, { force: true });
+          if (!measured) throw new BoundAgentError("probe-read", "SETUP: HTTP 200/null unmeasured");
+        }
         return actual;
       } });
     const after = await external();
@@ -211,6 +250,9 @@ export async function boundRestartReadiness(): Promise<void> {
       error instanceof UntilTimeout ? `${error.what}; ${error.last}`
         : error instanceof BoundAgentError ? `${error.reason}; ${error.actual}` : "external probe failed");
   } finally {
+    rmSync(probeLatch, { force: true });
+    if (controlledRestart) await restartSrv();
+    rmSync(probeBin, { recursive: true, force: true });
     if (openedSlot !== null) {
       const row = (await external()).slots.find((s) => s.id === openedSlot);
       const same = row?.cwd === ROOT && own !== null && row.openedAt === own.openedAt;

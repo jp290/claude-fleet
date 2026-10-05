@@ -56,7 +56,7 @@ export async function run(check: Check): Promise<void> {
       Date: class extends Date { static override now() { return now; } }, Buffer,
       openSync, readSync, closeSync, CTX_TAIL_BYTES: 65536, API_STALL_TEXT_MAX: 300,
       slots, CLAUDE_HARNESS: claude, CODEX_HARNESS: codex, PI_ZAI_HARNESS: pi, harnessOf,
-      API_STALL_RESUME_ON: on, RATE_LIMIT_RESUME_ON: rateOn, HARNESS_BLOCK_DETAIL_MAX,
+      API_STALL_RESUME_ON: on, RATE_LIMIT_RESUME_ON: rateOn, RATE_LIMIT_TICK_MS: 10_000, HARNESS_BLOCK_DETAIL_MAX,
       createHash, randomBytes, fleetEvents: [] as FleetEvent[], LAND_READY_WATCH_PREFIX: "land-ready:",
       slotFrom: (id: number) => slots.find((s) => s.id === id),
       contextReading: (s: TestSlot) => ({ ctx: contextReadable ? { usedTokens: 100 } : null, apiError: contextReadable ? errors.get(s.id) ?? null : null }),
@@ -87,6 +87,7 @@ export async function run(check: Check): Promise<void> {
   };
   const stream = "API Error: The response stopped arriving. The response above may be incomplete.";
   const capacity = "Selected model is at capacity. Please try a different model.";
+  const capacityScreen = `${capacity}\n\n› \n  gpt-6.1-sol · 80% context left`;
   const usage = 'Error: Retry failed after 3 attempts: 429: {"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-09-22 18:19:39"}';
   const weekly = '429 {"code":"1310","message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-09-26 16:53:22"}';
   const noReset = '429 {"code":"1308","message":"Usage limit reached for 5 hour"}';
@@ -111,11 +112,11 @@ export async function run(check: Check): Promise<void> {
       [pi, usage, "rate_limit", Date.parse("2026-09-22T10:19:39Z")],
       [pi, weekly, "rate_limit", Date.parse("2026-09-26T08:53:22Z")],
       [pi, noReset, "rate_limit", null]] as const) {
-      const fact = f.api.paneApiError(h, text, 1_000);
+      const fact = f.api.paneApiError(h, h === codex ? capacityScreen : text, 1_000);
       check(`api-stall: ${h.id} measured ${text === weekly ? "1310" : text === noReset ? "1308 without reset" : kind} fixture is typed`,
         fact?.kind === kind && fact.resetAt === reset && fact.text === text);
       check(`api-stall: ${h.id} quoted ${text === weekly ? "1310" : text === noReset ? "1308 without reset" : kind} is rejected`,
-        f.api.paneApiError(h, `> ${text}`, 1_000) === null);
+        f.api.paneApiError(h, `> ${text}\n› `, 1_000) === null);
     }
     check("api-stall: unrelated harness and ordinary prose about capacity are not errors",
       f.api.paneApiError(pi, capacity, 1_000) === null && f.api.paneApiError(codex, `We saw ${capacity}`, 1_000) === null);
@@ -134,8 +135,9 @@ export async function run(check: Check): Promise<void> {
     for (const harness of ["claude", "codex"]) {
       const b = build(); b.slots[0]!.harness = harness;
       const fresh = async (at: number) => {
+        b.at(at);
         if (harness === "claude") b.errors.set(1, { ...err, at });
-        else { b.slots[0]!.lastOutput = at; b.screens.set(1, capacity); await b.api.readPaneApiErrors(at); }
+        else { b.slots[0]!.lastOutput = at; b.screens.set(1, capacityScreen); await b.api.readPaneApiErrors(at); }
       };
       await fresh(1_000); b.at(90_000); await b.api.tickApiStallResume();
       check(`api-stall: ${harness} waits the complete 90s`, b.sends.length === 0);
@@ -162,12 +164,17 @@ export async function run(check: Check): Promise<void> {
       check(`api-stall: ${harness} acknowledgement never buys a second report or third resume`,
         b.api.events().length === 1 && b.sends.length === 2);
       if (harness === "claude") b.errors.set(1, null);
-      else { b.screens.set(1, "reply complete"); await b.api.readPaneApiErrors(400_000); }
-      await b.api.tickApiStallResume(); await fresh(401_000); b.at(491_000); await b.api.tickApiStallResume();
+      else {
+        b.screens.set(1, "reply complete\n› ");
+        for (let t = 400_000; t <= 580_000; t += 15_000) {
+          b.at(t); await b.api.readPaneApiErrors(t); await b.api.tickApiStallResume();
+        }
+      }
+      await b.api.tickApiStallResume(); await fresh(581_000); b.at(671_000); await b.api.tickApiStallResume();
       check(`api-stall: ${harness} measured recovery returns the next outage's budget`, b.sends.length === 3);
       const off = build(false); off.slots[0]!.harness = harness;
       if (harness === "claude") off.errors.set(1, err);
-      else { off.screens.set(1, capacity); await off.api.readPaneApiErrors(1_000); }
+      else { off.screens.set(1, capacityScreen); await off.api.readPaneApiErrors(1_000); }
       off.at(400_000); await off.api.tickApiStallResume();
       check(`api-stall: ${harness} OFF still measures but never types`, off.sends.length === 0
         && off.api.apiStallFact(off.slots[0]!, harness === "claude" ? err : null, 400_000) !== null);
@@ -193,7 +200,51 @@ export async function run(check: Check): Promise<void> {
       await off.api.tickRateLimitResume(); await off.api.tickApiStallResume();
       check(`api-stall: pi-zai ${text === weekly ? "1310" : text === noReset ? "1308 no reset" : "1308"} both flags OFF never types`, off.sends.length === 0);
     }
-    const pin = build(); pin.slots[0]!.harness = "codex"; pin.screens.set(1, capacity);
+    const ordering = build(true, true); ordering.slots[0]!.harness = "pi-zai";
+    ordering.screens.set(1, `${noReset}\n${usage}`);
+    ordering.at(Date.parse("2026-10-01T12:00:00Z")); await ordering.api.tickRateLimitResume();
+    check("api-stall: an older Pi error without reset cannot hide the newest readable reset",
+      ordering.api.paneLimitFactFor(ordering.slots[0]!)?.resetAt === Date.parse("2026-09-22T10:19:39Z")
+      && ordering.sends.length === 1 && ordering.sends[0]?.path === "rate-limit-resume");
+    ordering.screens.set(1, `${usage}\n${weekly}`); await ordering.api.readPaneApiErrors(1_000);
+    check("api-stall: newest Pi error owns the reset when two readable errors are visible",
+      ordering.api.paneLimitFactFor(ordering.slots[0]!)?.resetAt === Date.parse("2026-09-26T08:53:22Z"));
+    for (const screen of [`${capacity}\nResponse complete.\n› `,
+      "A quoted example:\n```text\n" + capacity + "\n```\n› ",
+      "```text\n" + capacity + "\n› "]) {
+      const healthy = build(); healthy.slots[0]!.harness = "codex"; healthy.screens.set(1, screen);
+      await healthy.api.readPaneApiErrors(1_000); await healthy.api.tickApiStallResume();
+      check("api-stall: old or code-block-quoted Codex capacity is neither stall, resume nor notification",
+        healthy.api.apiStallFact(healthy.slots[0]!, null, 91_000) === null
+        && healthy.sends.length === 0 && healthy.api.events().length === 0);
+    }
+    const intermittent = build(); intermittent.slots[0]!.harness = "codex";
+    intermittent.screens.set(1, capacityScreen); await intermittent.api.readPaneApiErrors(1_000);
+    await intermittent.api.tickApiStallResume();
+    intermittent.at(92_000); intermittent.screens.set(1, "Working...\n› ");
+    await intermittent.api.readPaneApiErrors(92_000); await intermittent.api.tickApiStallResume();
+    intermittent.at(181_000); intermittent.screens.set(1, capacityScreen);
+    await intermittent.api.readPaneApiErrors(181_000); await intermittent.api.tickApiStallResume();
+    intermittent.at(182_000); intermittent.screens.set(1, "\n› ");
+    await intermittent.api.readPaneApiErrors(182_000); await intermittent.api.tickApiStallResume();
+    intermittent.at(271_000); intermittent.screens.set(1, capacityScreen);
+    await intermittent.api.readPaneApiErrors(271_000); await intermittent.api.tickApiStallResume();
+    await intermittent.api.tickApiStallResume();
+    check("api-stall: error -> resume -> blank -> error retains the budget and emits one exhaustion event",
+      intermittent.sends.length === 2 && intermittent.api.events().length === 1);
+    const interruptedClear = build(); interruptedClear.slots[0]!.harness = "codex";
+    interruptedClear.screens.set(1, capacityScreen); await interruptedClear.api.readPaneApiErrors(1_000);
+    await interruptedClear.api.tickApiStallResume();
+    interruptedClear.at(92_000); interruptedClear.screens.set(1, "Working...\n› ");
+    await interruptedClear.api.readPaneApiErrors(92_000); await interruptedClear.api.tickApiStallResume();
+    interruptedClear.at(300_000); await interruptedClear.api.readPaneApiErrors(300_000);
+    await interruptedClear.api.tickApiStallResume();
+    interruptedClear.at(301_000); interruptedClear.screens.set(1, capacityScreen);
+    await interruptedClear.api.readPaneApiErrors(301_000); await interruptedClear.api.tickApiStallResume();
+    interruptedClear.at(391_000); await interruptedClear.api.tickApiStallResume();
+    check("api-stall: an unobserved gap cannot turn two isolated clear captures into recovery",
+      interruptedClear.sends.length === 2 && interruptedClear.api.events().length === 1);
+    const pin = build(); pin.slots[0]!.harness = "codex"; pin.screens.set(1, capacityScreen);
     pin.captureEffect(() => { pin.slots[0]!.sessionId = "replacement"; });
     await pin.api.readPaneApiErrors(1_000); await pin.api.tickApiStallResume();
     check("api-stall: pane capture re-proves the occupant after its external await", pin.api.paneLimitFactFor(pin.slots[0]!) === null && pin.sends.length === 0);

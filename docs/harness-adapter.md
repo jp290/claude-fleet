@@ -885,16 +885,20 @@ Assistentenrunde mit `isApiErrorMessage:true` aus dem Transkript. Der gemessene 
 `kind:"stream_interrupted"`, auch ohne `error`-Feld; eine spätere echte Antwort beendet den Stau.
 Codex schreibt für `Selected model is at capacity. Please try a different model.` keine hier
 lesbare Transkript-Fehlermarke: Fleet erfasst die vollständige sichtbare Fehlerzeile als
-`kind:"capacity"`. Pi-zai erfasst die sichtbaren 429/1308/1310-Limitzeilen als `kind:"rate_limit"`,
-auch wenn keine Reset-Zeit lesbar ist. Der gemeinsame Pane-Sensor läuft alle 10 s, liest keinen
+`kind:"capacity"`, wenn sie die letzte Inhaltszeile oberhalb des letzten `›`-Composers ist.
+Spätere normale Ausgabe und Codeblock-Zitate verwerfen den alten Fehler. Pi-zai erfasst die sichtbaren 429/1308/1310-Limitzeilen als `kind:"rate_limit"`,
+auch wenn keine Reset-Zeit lesbar ist. Dort zählt die neueste sichtbare Fehlerzeile;
+eine ältere Zeile ohne Reset verdeckt keine spätere mit Reset. Der gemeinsame Pane-Sensor läuft alle 10 s, liest keinen
 Scrollback, verwirft zitierte Zeilen und pinnt auch nach dem Capture-Await den Occupant.
 Andere Harnesses erhalten dadurch keine gemessene Fehlerart.
 
 Der neue API-Aktor läuft alle 15 s. `server_error`, `stream_interrupted` und `capacity` sind
 vorübergehend. Nur mit `FLEET_API_STALL_RESUME=1` (auch true/on/yes) sendet er `resume`: frühestens
 90 s nach dem Fehler, weitere 90 s Abstand, höchstens zwei Versuche pro zusammenhängendem Stau.
-Neue Fehlerzeilen geben kein Budget zurück; eine gemessene echte Antwort oder neue Occupation
-schon. Unlesbare Sensoren geben kein Budget zurück. Vor dem Send sind `openedAt` und `sessionId`
+Neue Fehlerzeilen und kurze fehlerfreie Pane-Momente geben kein Budget zurück. Claude braucht
+eine gemessene echte Antwort; Pane-Sensoren brauchen 180 s ununterbrochen frische, fehlerfreie
+Lesungen (doppelte Resume-Frist, höchstens 20 s Beobachtungslücke). Ein unlesbarer Sensor oder
+eine größere Lücke unterbricht dieses Fenster. Eine neue Occupation hat ihr eigenes Budget. Vor dem Send sind `openedAt` und `sessionId`
 gepinnt; auch ein fehlgeschlagener Paste verbraucht einen Versuch. Jeder Versuch trägt die
 bestehende Audit-`send`-Spur `path:"api-stall-resume"`. Schlafende oder auf den Owner wartende
 Sessions bleiben geparkt. Fehlender oder unbekannter Schalterwert bedeutet AUS; Erkennung und

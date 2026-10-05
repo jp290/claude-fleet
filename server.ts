@@ -40047,6 +40047,7 @@ function apiStallFact(s: Slot, apiError: ApiErrorLine | null, now: number): ApiS
 
 interface ApiStallAttempt {
   openedAt: number; sessionId: string; since: number; tries: number; lastAt: number; reported: boolean;
+  clearSince: number | null; clearSeenAt: number | null;
 }
 const apiStallTried = new Map<number, ApiStallAttempt>();
 let apiStallTickBusy = false;
@@ -40094,14 +40095,28 @@ async function tickApiStallResume(): Promise<void> {
       const reading = h === CLAUDE_HARNESS ? contextReading(s) : null;
       const err = reading?.apiError ?? paneLimitFactFor(s);
       if (!err) {
-        // An unreadable sensor is unknown; only a measured clear returns the budget.
-        const pane = paneLimitFacts.get(s.id);
-        if ((reading !== null && reading.ctx !== null) || pane?.identity === `${s.openedAt}\0${s.sessionId}`)
-          apiStallTried.delete(s.id);
+        if (reading !== null && reading.ctx !== null) apiStallTried.delete(s.id);
+        else if (prior) {
+          const pane = paneLimitFacts.get(s.id);
+          const same = prior.openedAt === s.openedAt && prior.sessionId === s.sessionId;
+          if (!same) apiStallTried.delete(s.id);
+          else if (pane?.identity === `${s.openedAt}\0${s.sessionId}` && now - pane.readAt <= 2 * RATE_LIMIT_TICK_MS) {
+            // A transient blank screen during a retry is not recovery. Require 180s of fresh,
+            // error-free captures, twice the resume interval; an unreadable interval breaks it.
+            if (prior.clearSeenAt === null || now - prior.clearSeenAt > 2 * RATE_LIMIT_TICK_MS)
+              prior.clearSince = now;
+            prior.clearSince ??= now;
+            prior.clearSeenAt = now;
+            if (now - prior.clearSince >= 2 * API_STALL_RESUME_AFTER_MS) apiStallTried.delete(s.id);
+          } else { prior.clearSince = null; prior.clearSeenAt = null; }
+        }
         continue;
       }
       const attempt = prior && prior.openedAt === s.openedAt && prior.sessionId === s.sessionId
-        ? prior : { openedAt: s.openedAt, sessionId: s.sessionId, since: err.at, tries: 0, lastAt: 0, reported: false };
+        ? prior : { openedAt: s.openedAt, sessionId: s.sessionId, since: err.at, tries: 0, lastAt: 0,
+          reported: false, clearSince: null, clearSeenAt: null };
+      attempt.clearSince = null;
+      attempt.clearSeenAt = null;
       apiStallTried.set(s.id, attempt);
       if (s.sleeping || s.awaiting === "owner") continue;
       const stall = apiStallFact(s, err, now);
@@ -40148,9 +40163,9 @@ async function tickApiStallResume(): Promise<void> {
 const ZAI_LIMIT_LINE_RE = /^(?:(?:Error: Retry failed after \d+ attempts: )?429:?\s+\{"code":"(?:1308|1310)","message":"|)(?:Usage limit reached|Weekly\/Monthly Limit Exhausted)[^\n]*Your limit will reset at (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})/;
 interface RateLimitAttempt { openedAt: number; sessionId: string; tries: number; lastAt: number; lastResetAt: number }
 const rateLimitTried = new Map<number, RateLimitAttempt>();
-// the pane-read API-error fact per pi-zai slot — the FACT half of the tick, served on the polls
+// the pane-read API-error fact per pi-zai/codex slot — the FACT half of the tick, served on the polls
 // with the flag OFF too, and keyed by occupant identity so a recycled slot never inherits one
-const paneLimitFacts = new Map<number, { identity: string; err: ApiErrorLine | null }>();
+const paneLimitFacts = new Map<number, { identity: string; readAt: number; err: ApiErrorLine | null }>();
 function paneLimitFactFor(s: Slot): ApiErrorLine | null {
   const known = paneLimitFacts.get(s.id);
   return known && known.identity === `${s.openedAt}\0${s.sessionId}` ? known.err : null;
@@ -40159,11 +40174,22 @@ function paneLimitFactFor(s: Slot): ApiErrorLine | null {
 const CODEX_CAPACITY_LINE_RE = /^(?:■\s+)?Selected model is at capacity\.(?: Please try a different model\.)?$/;
 const ZAI_ERROR_LINE_RE = /^(?:Error: Retry failed after \d+ attempts: )?429:?\s+\{"code":"(?:1308|1310)","message":"/;
 function paneApiError(h: Harness, screen: string, at: number): ApiErrorLine | null {
-  for (const raw of screen.split("\n")) {
-    const line = raw.trim();
-    if (h === CODEX_HARNESS && CODEX_CAPACITY_LINE_RE.test(line))
-      return { at, text: line.slice(0, API_STALL_TEXT_MAX), kind: "capacity", resetAt: null };
-    if (h !== PI_ZAI_HARNESS || !(ZAI_LIMIT_LINE_RE.test(line) || ZAI_ERROR_LINE_RE.test(line))) continue;
+  const lines = screen.split("\n").map((line) => line.trim());
+  if (h === CODEX_HARNESS) {
+    // Codex's last › line is its composer (the adapter's measured glyph). A capacity error
+    // must be the last content above it, never an older visible turn or a code-block quote.
+    const composer = lines.findLastIndex((line) => /^›/.test(line));
+    if (composer < 0) return null;
+    const content = lines.slice(0, composer).filter(Boolean);
+    const last = content.at(-1);
+    const fences = content.slice(0, -1).filter((line) => /^(?:```|~~~)/.test(line)).length;
+    return last && fences % 2 === 0 && CODEX_CAPACITY_LINE_RE.test(last)
+      ? { at, text: last.slice(0, API_STALL_TEXT_MAX), kind: "capacity", resetAt: null } : null;
+  }
+  if (h !== PI_ZAI_HARNESS) return null;
+  // Preserve Pi's visible-pane sensor, but the newest error owns its reset, not the first one.
+  for (const line of lines.reverse()) {
+    if (!(ZAI_LIMIT_LINE_RE.test(line) || ZAI_ERROR_LINE_RE.test(line))) continue;
     const m = ZAI_LIMIT_LINE_RE.exec(line);
     const reset = m ? Date.parse(`${m[1]}T${m[2]}+08:00`) : NaN;
     return { at, text: line.slice(0, API_STALL_TEXT_MAX), kind: "rate_limit",
@@ -40182,7 +40208,7 @@ async function readPaneApiErrors(now: number): Promise<void> {
     const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
     if (slotFrom(s.id) !== s || identity !== `${s.openedAt}\0${s.sessionId}` || s.cwd !== cwd || harnessOf(s.harness) !== h) continue;
     if (cap.code !== 0) { paneLimitFacts.delete(s.id); continue; }
-    paneLimitFacts.set(s.id, { identity, err: paneApiError(h, cap.out, s.lastOutput > 0 ? s.lastOutput : now) });
+    paneLimitFacts.set(s.id, { identity, readAt: Date.now(), err: paneApiError(h, cap.out, s.lastOutput > 0 ? s.lastOutput : now) });
   }
 }
 

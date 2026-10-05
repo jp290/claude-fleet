@@ -113,7 +113,7 @@ try {
     const envProof = join(scratch, "server-locale");
     const quote = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
     for (const locale of locales) {
-      writeFileSync(join(bin, "bun"), "#!/bin/sh\nunset LANG LC_ALL LC_CTYPE LC_COLLATE LC_MESSAGES LC_MONETARY LC_NUMERIC LC_TIME\n"
+      writeFileSync(join(bin, "bun"), "#!/bin/sh\nunset LANG LC_ALL LC_CTYPE LC_COLLATE LC_MESSAGES LC_MONETARY LC_NUMERIC LC_TIME TMUX TMUX_PANE\n"
         + Object.entries(locale.env).map(([k, v]) => `export ${k}=${quote(v)}\n`).join("")
         + `printf '%s|%s|%s' "\${LANG-unset}" "\${LC_ALL-unset}" "\${LC_CTYPE-unset}" > ${quote(envProof)}\n`
         + `exec ${quote(process.execPath)} "$@"\n`);
@@ -130,7 +130,7 @@ try {
         const body = await sent.json() as { error?: string };
         check(`tmux-locale: ${locale.name} /send accepts the exact pane`, sent.ok, JSON.stringify({ status: sent.status, error: body.error }));
         if (sent.ok) {
-          await until(async () => (await tmuxOut("capture-pane", "-p", "-t", "=s14:")).out.includes(marker),
+          await until(async () => (await tmuxOut("capture-pane", "-p", "-J", "-t", "=s14:")).out.includes(marker),
             { timeoutMs: 5000, stepMs: 50, what: `tmux-locale ${locale.name} paste visible` });
           check(`tmux-locale: ${locale.name} /send really pastes into the pane`, true);
         }

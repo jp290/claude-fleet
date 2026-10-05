@@ -41,7 +41,7 @@ const restoreTmuxEnv = async (before: (string | null)[]): Promise<void> => {
 };
 
 export async function run(): Promise<void> {
-  runPerfMarks();
+  await runPerfMarks();
   const permissionsEnvBefore = await tmuxEnvSnapshot();
   let permissionsEnvDuring: (string | null)[] = [];
   try {
@@ -1614,10 +1614,10 @@ class LiftedPane { ${lifted.join("\n")} }
 export default LiftedPane;`).replace(/export default LiftedPane;?/, "return LiftedPane;");
       // HTMLElement: chatAdd marks a delta's node .fresh only on an element — a fake kid counts as one
       PaneClass = new Function("fleet", "fxTree", "loadTree", "loadEntityDetails", "renderSlots", "saveView", "requestAnimationFrame",
-        "setTimeout", "clearTimeout", "CACHE_TTL_MS", "el", "mdInto", "decorateCode", "entityKnown", "chatStill", "HTMLElement", code)(
+        "setTimeout", "clearTimeout", "CACHE_TTL_MS", "el", "mdInto", "decorateCode", "entityKnown", "chatStill", "HTMLElement", "document", code)(
         [], new Map(), async () => {}, async () => {}, () => {}, () => {}, (cb: () => void) => cb(),
         () => 0, () => {}, 300_000, () => ({ querySelectorAll: () => [] }), () => {}, () => {}, () => false, { matches: false },
-        { [Symbol.hasInstance]: (x: unknown) => !!(x as { classList?: unknown })?.classList });
+        { [Symbol.hasInstance]: (x: unknown) => !!(x as { classList?: unknown })?.classList }, { hidden: false });
     } catch (e) { liftError = e instanceof Error ? e.message : String(e); }
     // one transcript per slot: 30 messages of mixed height; the stand-in poll loads them from 0 or
     // brings `grow` new ones as a delta
@@ -10629,7 +10629,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
 }
 
 
-export function runPerfMarks(): void {
+export async function runPerfMarks(): Promise<void> {
   const root = dirname(realpathSync(`${ROOT}/node_modules`));
   const source = readFileSync(`${root}/src/client.ts`, "utf8");
   const start = source.indexOf("interface PerfSpan {");
@@ -10640,14 +10640,38 @@ export function runPerfMarks(): void {
   const frames: (() => void)[] = [];
   const beacons: { path: string; blob: Blob }[] = [];
   let accepts = true;
-  interface Span { attrs: { responseMs?: number | null }; }
-  interface Marks { start: (j: string, at?: number) => Span; finish: (span: Span, ok: boolean, res?: Response) => void; flush: () => void; records: PerfRecord[]; }
-  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end));
-  const marks = new Function("performance", "isMobile", "dataSaver", "bundleV", "fleet", "requestAnimationFrame", "navigator", "PERF_BATCH_MAX", "location", code + "\nreturn {start:perfStart,finish:perfFinish,flush:flushPerf,records:perfBuffer};")(
+  const doc = { hidden: false }, input = { disabled: true };
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
+  const observers = new Set<Observer>();
+  class Observer {
+    constructor(readonly callback: () => void) {}
+    observe(): void { observers.add(this); }
+    disconnect(): void { observers.delete(this); }
+  }
+  let read: () => Promise<Response> = async () => { throw new Error("fixture fetch failed"); };
+  interface Span { attrs: NonNullable<PerfRecord["attrs"]>; }
+  interface FetchProbe { perfChat: Span | null; perfSwitch: Span | null; pollChat: () => Promise<void>; }
+  interface Marks { start: (j: string, at?: number) => Span; finish: (span: Span, ok: boolean, res?: Response) => void;
+    ready: (span: Span, res: Response) => void; visibility: () => void; refresh: () => Promise<void>;
+    probe: () => FetchProbe; flush: () => void; records: PerfRecord[]; }
+  const poll = source.slice(source.indexOf("  private async pollChat()"), source.indexOf("\n  // the poll pump drives"));
+  const refresh = source.slice(source.indexOf("export async function refresh()"), source.indexOf("\n// --- the poll pump:"));
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + `
+class FetchProbe {
+  slot = 1; view = "chat"; chatBusy = false; pastN = null; chatGen = 0; chatTotal = 0;
+  perfChat = perfStart("J4"); perfSwitch = perfStart("J2");
+  ${poll}
+}
+${refresh.replace("export async", "async")}
+`);
+  const marks = new Function("performance", "isMobile", "dataSaver", "bundleV", "fleet", "requestAnimationFrame", "navigator", "PERF_BATCH_MAX", "location", "document", "MutationObserver", "setTimeout", "clearTimeout", "ta", "api", "plan", code + "\nreturn {start:perfStart,finish:perfFinish,ready:perfBoardReady,visibility:perfVisibility,refresh,probe:()=>new FetchProbe(),flush:flushPerf,records:perfBuffer};")(
     { now: () => now, timeOrigin: 1000000, getEntriesByType: () => [], getEntriesByName: () => [] },
     () => false, false, 42, [{ cwd: "/fixture" }, { cwd: null }], (fn: () => void) => frames.push(fn),
     { sendBeacon: (path: string, blob: Blob) => { if (accepts) beacons.push({ path, blob }); return accepts; } }, PERF_BATCH_MAX,
-    { href: "http://127.0.0.1/" }) as Marks;
+    { href: "http://127.0.0.1/" }, doc, Observer,
+    (fn: () => void) => { timers.set(++timerId, fn); return timerId; }, (id: number) => timers.delete(id), input,
+    () => read(), () => ({ chatMs: 0 })) as Marks;
   const paint = (): void => { while (frames.length) frames.shift()!(); };
   // t | event | exclusive owner: 100 start J1..J4 | 120 paint all four | 130 failed send.
   for (const j of ["J1", "J2", "J3", "J4"]) { const span = marks.start(j); marks.finish(span, true); marks.finish(span, true); }
@@ -10662,6 +10686,36 @@ export function runPerfMarks(): void {
   check("perf marks: a refused beacon queue keeps the buffer", marks.records.length === 5 && beacons.length === 0);
   accepts = true; marks.flush();
   check("perf marks: beacons go only to the own server and clear queued rows", marks.records.length === 0 && beacons.length === 1 && beacons[0]?.path === "/api/perf" && beacons[0].blob.type.startsWith("application/json"), JSON.stringify({ n: marks.records.length, beacons: beacons.map((b) => ({ path: b.path, type: b.blob.type })) }));
+  // t | event | exclusive owner: 140 board paint disabled | 150 enabled paint | 30150 composer timeout.
+  now = 140;
+  marks.ready(marks.start("J1"), new Response()); paint();
+  check("perf marks: a disabled composer leaves J1 pending after the data paint", marks.records.length === 0 && observers.size === 1);
+  now = 150; input.disabled = false;
+  for (const observer of observers) observer.callback();
+  paint();
+  check("perf marks: J1 ends once at the first enabled composer paint", marks.records.length === 1 && marks.records[0]?.ok === true && marks.records[0].ms === 10 && timers.size === 0 && observers.size === 0, JSON.stringify(marks.records));
+  input.disabled = true;
+  marks.ready(marks.start("J1"), new Response()); paint();
+  now = 30150;
+  for (const fn of [...timers.values()]) fn();
+  check("perf marks: a composer timeout emits one failed row with a fixed reason", marks.records.length === 2 && marks.records[1]?.ok === false && marks.records[1].ms === null && marks.records[1].attrs?.reason === "composer-timeout" && timers.size === 0 && observers.size === 0, JSON.stringify(marks.records));
+  marks.flush();
+  const hiddenSpan = marks.start("J2"); marks.finish(hiddenSpan, true);
+  accepts = false; doc.hidden = true; marks.visibility(); doc.hidden = false; paint();
+  doc.hidden = true; marks.finish(marks.start("J4"), false); doc.hidden = false;
+  check("perf marks: spans hidden during paint or at start keep the background marker", marks.records.length === 2 && marks.records.every((r) => r.attrs?.hidden === true && validPerfRecord(r)), JSON.stringify(marks.records));
+  accepts = true; marks.flush();
+  const probe = marks.probe();
+  read = async () => {
+    probe.perfChat = marks.start("J4"); probe.perfSwitch = marks.start("J2");
+    throw new Error("fixture fetch failed after a new view action");
+  };
+  await probe.pollChat();
+  check("perf marks: a thrown transcript fetch closes captured and current owned spans once", marks.records.length === 4 && marks.records.every((r) => r.ok === false && r.ms === null && r.attrs?.reason === "fetch-error" && validPerfRecord(r)) && probe.perfChat === null && probe.perfSwitch === null, JSON.stringify(marks.records));
+  read = async () => { throw new Error("fixture board fetch failed"); };
+  await marks.refresh(); await marks.refresh();
+  check("perf marks: a thrown first board fetch emits exactly one failed J1", marks.records.length === 5 && marks.records[4]?.j === "J1" && marks.records[4].ok === false && marks.records[4].attrs?.reason === "fetch-error", JSON.stringify(marks.records));
+  marks.flush();
   for (let i = 0; i < 110; i++) marks.finish(marks.start("J2"), false);
   check("perf marks: the client buffer is bounded at one hundred rows", marks.records.length === 100);
   const clean = source.split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");

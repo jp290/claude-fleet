@@ -276,22 +276,27 @@ interface PerfSpan {
   attrs: PerfAttrs;
 }
 const perfBuffer: PerfRecord[] = [];
+const perfActive = new Set<PerfSpan>();
 const perfRequests = new WeakMap<Response, { url: string; start: number }>();
 const perfDeliveries = new WeakMap<Promise<boolean>, { response?: Response }>();
 let perfSendClickAt: number | undefined;
 const perfPending = new WeakMap<HTMLElement, { span: PerfSpan }>();
 let perfBoardStarted = false;
 function perfStart(j: PerfJourney, at = performance.now(), attrs: PerfAttrs = {}): PerfSpan {
-  return { j, start: at > performance.timeOrigin ? at - performance.timeOrigin : at, done: false,
+  const span: PerfSpan = { j, start: at > performance.timeOrigin ? at - performance.timeOrigin : at, done: false,
     context: { dev: isMobile() ? "mobile" : "desktop", saver: dataSaver, v: bundleV, slots: fleet.filter((s) => !!s.cwd).length }, attrs };
+  if (document.hidden) span.attrs.hidden = true;
+  perfActive.add(span);
+  return span;
 }
 function perfPaint(fn: () => void): void {
   requestAnimationFrame(() => requestAnimationFrame(fn));
 }
-function perfFinish(span: PerfSpan | null, ok: boolean, res?: Response): void {
+function perfFinish(span: PerfSpan | null, ok: boolean, res?: Response, painted = false): void {
   if (!span || span.done) return;
   span.done = true;
   const finish = (): void => {
+    perfActive.delete(span);
     const ms = span.j === "J3" && span.attrs.responseMs !== null && span.attrs.responseMs !== undefined
       ? span.attrs.responseMs : Math.max(0, performance.now() - span.start);
     const request = res && perfRequests.get(res);
@@ -318,10 +323,32 @@ function perfFinish(span: PerfSpan | null, ok: boolean, res?: Response): void {
       serverMs: ok ? serverMs : null, netMs: ok ? netMs : null, attrs: span.attrs };
     if (perfBuffer.length < PERF_BATCH_MAX * 2) perfBuffer.push(record);
   };
-  if (ok) perfPaint(finish); else {
-    if (span.j === "J3") span.attrs.responseMs = null;
+  if (ok && !painted) perfPaint(finish); else {
+    if (!ok && span.j === "J3") span.attrs.responseMs = null;
     finish();
   }
+}
+function perfBoardReady(span: PerfSpan, res: Response, input = ta): void {
+  const observer = new MutationObserver(() => { if (!input.disabled) perfPaint(ready); });
+  const cleanup = (): void => { observer.disconnect(); clearTimeout(timeout); };
+  const ready = (): void => {
+    if (span.done) { cleanup(); return; }
+    if (input.disabled) { observer.observe(input, { attributes: true, attributeFilter: ["disabled"] }); return; }
+    cleanup();
+    perfFinish(span, true, res, true);
+  };
+  const timeout = setTimeout(() => {
+    cleanup();
+    if (span.done) return;
+    span.attrs.reason = "composer-timeout";
+    perfFinish(span, false);
+  }, 30_000);
+  perfPaint(ready);
+}
+function perfVisibility(): void {
+  if (!document.hidden) return;
+  for (const span of perfActive) span.attrs.hidden = true;
+  flushPerf();
 }
 function flushPerf(): void {
   while (perfBuffer.length) {
@@ -331,7 +358,7 @@ function flushPerf(): void {
   }
 }
 setInterval(flushPerf, 60_000);
-document.addEventListener("visibilitychange", () => { if (document.hidden) flushPerf(); });
+document.addEventListener("visibilitychange", perfVisibility);
 
 export async function api(path: string, init?: RequestInit): Promise<Response> {
   const timed = path === "/api/sessions" || path === "/send" || /^\/api\/slots\/\d+\/(transcript|brief)(?:\?|$)/.test(path);
@@ -2132,6 +2159,14 @@ class Pane {
     // mid-fetch, and the old slot's entries must NOT append under the new slot's header.
     const slot = this.slot, past = this.pastN, gen = this.chatGen;
     const chatPerf = this.perfChat, switchPerf = this.perfSwitch;
+    const failPerf = (reason: "fetch-error" | "http-error"): void => {
+      const owns = this.slot === slot && this.pastN === past && this.chatGen === gen;
+      for (const span of [chatPerf, switchPerf, ...(owns ? [this.perfChat, this.perfSwitch] : [])]) {
+        if (span && !span.done) span.attrs.reason = reason;
+        perfFinish(span, false);
+      }
+      if (owns) { this.perfChat = null; this.perfSwitch = null; }
+    };
     const initial = this.chatTotal === 0;
     this.chatBusy = true;
     let grew = false;
@@ -2140,7 +2175,7 @@ class Pane {
         : `/api/slots/${slot}/succession/${past}/transcript?after=${this.chatTotal}`);
       if (this.slot !== slot || this.pastN !== past || this.chatGen !== gen) return; // reassigned during the fetch — stale
       if (!res.ok) {
-        perfFinish(chatPerf, false); perfFinish(switchPerf, false);
+        failPerf("http-error");
         return;
       }
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
@@ -2256,7 +2291,7 @@ class Pane {
       // alone makes the bound, the poll only refreshes the fact when new output moved it)
       if (past === null) this.updateWork();
     } catch {
-      perfFinish(chatPerf, false); perfFinish(switchPerf, false);
+      failPerf("fetch-error");
       // transient fetch error — next tick retries
     } finally {
       if (this.chatGen === gen) this.chatFresh = false; // an entry that threw must not leave the flag up
@@ -7148,9 +7183,14 @@ function armReload() {
 let chipCmds: string[] = [];
 let lastRender = "";
 export async function refresh() {
+  const boardPerf = !perfBoardStarted ? perfStart("J1", 0) : null;
+  if (boardPerf) perfBoardStarted = true;
   try {
     const res = await api("/api/sessions");
-    if (!res.ok) return;
+    if (!res.ok) {
+      if (boardPerf) { boardPerf.attrs.reason = "http-error"; perfFinish(boardPerf, false); }
+      return;
+    }
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
       // WHICH FLEET ANSWERED — always sent since the dual-host cut, `{name:null}` when unnamed
@@ -7354,11 +7394,7 @@ export async function refresh() {
         qView === "waves" ? qWaveProjectionKey() : null]) : "gone";
       if (dk !== qDetailKey) { setQueueDetailKey(dk); renderQueueDetail(); }
     }
-    if (!perfBoardStarted) {
-      perfBoardStarted = true;
-      const span = perfStart("J1", 0);
-      perfFinish(span, !ta.disabled, res);
-    }
+    if (boardPerf) perfBoardReady(boardPerf, res);
     // keep an open share dialog honest (guest count, mode changed elsewhere) without
     // rebuilding it on every poll — rebuilds kill hover state and button focus
     if (dlgSlot && sharedlg.style.display === "flex") {
@@ -7370,6 +7406,7 @@ export async function refresh() {
       }
     }
   } catch {
+    if (boardPerf) { boardPerf.attrs.reason = "fetch-error"; perfFinish(boardPerf, false); }
     // server briefly unreachable — WS dot already shows disconnect
   }
 }

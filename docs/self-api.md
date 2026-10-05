@@ -6025,13 +6025,20 @@ the previous generation. Both are gitignored; no archive grows indefinitely. A r
 is an error, not an empty measurement. A beacon accepted by the browser is not a server receipt.
 
 `GET /api/perf?since=<epoch-ms>&until=<epoch-ms>` reads both generations within the inclusive
-interval (defaults: 0 through now). It returns `n`, `since`, `until`, `records` and `groups` by
-`j × dev × v`. Groups report successful `n`, `failed`, and p50/p75/p95 of successful `ms`, using
+interval (defaults: 0 through now). It returns total `n`, background `hidden`, `since`, `until`,
+`records` and `groups` by `j × dev × v`. Groups report successful foreground `n`, `failed`,
+`hidden`, and p50/p75/p95 of successful foreground `ms`, using
 nearest rank (`ceil(q*n)-1` in the sorted array). An empty interval returns `n:0`, `records:[]`,
 `groups:[]`; an error-only group has `n:0`, `failed>0` and null percentiles.
 
 J1 runs from the navigation origin to the first paint after server-backed sidebar rendering and
-an enabled composer. J2 runs from the row event timestamp to a painted chat (shelf or initial
+an enabled composer. If disabled at the first data paint, measurement alone observes its disabled
+attribute until the first enabled paint; after 30 seconds it fails with
+`attrs.reason:"composer-timeout"`. A thrown initial fetch fails once with `fetch-error`, and an
+HTTP refusal with `http-error`. A tab hidden at any point from start through the final paint marks
+`attrs.hidden:true`; these records remain in the ledger and raw response, but their durations are
+excluded from the default percentiles. `hidden` counts all such records and can overlap `failed`.
+No duration is corrected for background time. J2 runs from the row event timestamp to a painted chat (shelf or initial
 fetch), or the completed first xterm seed write and paint. Terminal J2 has no server/network
 breakdown: its seed arrives after upgrade; this slice adds no WebSocket frame. J4 starts at the
 chat toggle or an assigned chat's shelf miss; it ends after the initial `after=0` render and paint.

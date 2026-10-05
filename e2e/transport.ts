@@ -145,8 +145,9 @@ export async function run(): Promise<void> {
 
 interface PerfReport {
   n: number;
+  hidden: number;
   records: (PerfRecord & { at: number })[];
-  groups: { j: string; dev: string; v: number; n: number; failed: number; p50: number | null; p75: number | null; p95: number | null }[];
+  groups: { j: string; dev: string; v: number; n: number; failed: number; hidden: number; p50: number | null; p75: number | null; p95: number | null }[];
 }
 export async function runPerfTransport(): Promise<void> {
   const headers = { cookie: `fleet=${TOKEN}`, "content-type": "application/json" };
@@ -172,6 +173,8 @@ export async function runPerfTransport(): Promise<void> {
     check("perf: failed rows with fabricated zero latency are refused", (await perfPost([{ ...row(0), ok: false }])).status === 400);
     check("perf: non-enum journey values are refused", (await perfPost([{ ...row(1), j: ["J1"] }])).status === 400);
     check("perf: a client-chosen timestamp is refused", (await perfPost([{ ...row(1), at: 1 }])).status === 400);
+    check("perf: a non-boolean background marker is refused", (await perfPost([{ ...row(1), attrs: { hidden: "yes" } }])).status === 400);
+    check("perf: free-form failure reasons are refused", (await perfPost([{ ...row(1), attrs: { reason: "/private/path" } }])).status === 400);
     check("perf: more than fifty records are refused", (await perfPost(Array.from({ length: 51 }, () => row(1)))).status === 400);
     check("perf: a body above the byte cap is refused", (await fetch(BASE + "/api/perf", { method: "POST", headers, body: " ".repeat(64001) })).status === 413);
     const synthetic = Array.from({ length: 20 }, (_, i) => row(20 - i));
@@ -180,6 +183,10 @@ export async function runPerfTransport(): Promise<void> {
     const g = report.groups[0];
     check("perf: twenty values 1..20 have nearest-rank p50=10,p75=15,p95=19", report.n === 20 && g?.n === 20 && g.p50 === 10 && g.p75 === 15 && g.p95 === 19, JSON.stringify(g));
     check("perf: ledger timestamps are server-owned", report.records.every((r) => Number.isFinite(r.at) && r.at > 0));
+    await perfPost([{ ...row(9999), attrs: { hidden: true } }]);
+    const background = await perfRead();
+    const bg = background.groups[0];
+    check("perf: background rows remain visible but cannot inflate default percentiles", background.n === 21 && background.hidden === 1 && background.records.at(-1)?.attrs?.hidden === true && bg?.hidden === 1 && bg.n === 20 && bg.p50 === 10 && bg.p75 === 15 && bg.p95 === 19, JSON.stringify(bg));
     const fail: PerfRecord = { ...row(0), j: "J2", ok: false, ms: null, clientMs: null, serverMs: null, netMs: null };
     await perfPost([fail, { ...row(31), dev: "mobile" }, { ...row(41), v: 424243 }]);
     const grouped = await perfRead();

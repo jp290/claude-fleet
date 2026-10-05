@@ -44461,16 +44461,18 @@ Bun.serve<WSData>({
           return json({ error: "invalid perf time range" }, 400);
         const { rows } = await readLedger<PerfRecord & { at: number }>(PERF_FILE);
         const records = rows.filter((r) => validPerfRecord(rWithoutAt(r)) && Number.isFinite(r.at) && r.at >= since && r.at <= until);
-        const groups = new Map<string, { j: PerfRecord["j"]; dev: PerfRecord["dev"]; v: number; values: number[]; failed: number }>();
+        const groups = new Map<string, { j: PerfRecord["j"]; dev: PerfRecord["dev"]; v: number; values: number[]; failed: number; hidden: number }>();
         for (const r of records) {
           const key = `${r.j}/${r.dev}/${r.v}`;
           let g = groups.get(key);
-          if (!g) { g = { j: r.j, dev: r.dev, v: r.v, values: [], failed: 0 }; groups.set(key, g); }
-          if (r.ok && r.ms !== null) g.values.push(r.ms); else g.failed++;
+          if (!g) { g = { j: r.j, dev: r.dev, v: r.v, values: [], failed: 0, hidden: 0 }; groups.set(key, g); }
+          if (r.attrs?.hidden) g.hidden++;
+          if (!r.ok) g.failed++;
+          else if (!r.attrs?.hidden && r.ms !== null) g.values.push(r.ms);
         }
-        return json({ n: records.length, since, until, groups: [...groups.values()].map((g) => {
+        return json({ n: records.length, hidden: records.filter((r) => r.attrs?.hidden).length, since, until, groups: [...groups.values()].map((g) => {
           const sorted = g.values.sort((a, b) => a - b);
-          return { j: g.j, dev: g.dev, v: g.v, n: sorted.length, failed: g.failed,
+          return { j: g.j, dev: g.dev, v: g.v, n: sorted.length, failed: g.failed, hidden: g.hidden,
             p50: nearestRank(sorted, 0.5), p75: nearestRank(sorted, 0.75), p95: nearestRank(sorted, 0.95) };
         }), records });
       }

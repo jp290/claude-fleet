@@ -768,6 +768,8 @@ export interface PerfAttrs {
   htmlBytes?: number;
   bundleBytes?: number;
   cold?: boolean;
+  hidden?: boolean;
+  reason?: "composer-timeout" | "fetch-error" | "http-error";
   bubbleMs?: number | null;
   responseMs?: number | null;
   transcriptMs?: number | null;
@@ -805,7 +807,8 @@ export function validPerfRecord(raw: unknown): raw is PerfRecord {
     for (const [k, v] of Object.entries(a)) {
       if (["bytes", "entries", "htmlBytes", "bundleBytes"].includes(k)) { if (!Number.isSafeInteger(v) || Number(v) < 0) return false; }
       else if (["bubbleMs", "responseMs", "transcriptMs"].includes(k)) { if (v !== null && !perfMs(v)) return false; }
-      else if (["shelf", "cold"].includes(k)) { if (typeof v !== "boolean") return false; }
+      else if (["shelf", "cold", "hidden"].includes(k)) { if (typeof v !== "boolean") return false; }
+      else if (k === "reason") { if (v !== "composer-timeout" && v !== "fetch-error" && v !== "http-error") return false; }
       else if (k === "view") { if (v !== "chat" && v !== "term") return false; }
       else if (k === "serverMs") { if (v !== "ws-seed-unmeasured" && v !== "timing-unavailable") return false; }
       else return false;

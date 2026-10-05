@@ -70,7 +70,8 @@ export async function run(check: ByteCheck, inflateBundle = false): Promise<void
     const expected = perfRebuilds().renderSlots;
     const copy = perfRebuilds(); copy.renderSlots = -1;
     check("perf rebuilds: a reader cannot mutate the counters", perfRebuilds().renderSlots === expected);
-  } finally { await fx.stop(); }
+  } catch (error) { check("bytes: fixture measurement completed", false, String(error)); }
+  finally { await fx.stop(); }
 }
 
 if (import.meta.main) {

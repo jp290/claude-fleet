@@ -1,9 +1,10 @@
 // perf-probe.ts — isolated browser measurements of rebuilds, Long Tasks and the four Fleet journeys.
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { RebuildCounts } from "./src/perfmarks";
 import type { PerfRecord } from "./src/protocol";
+import type { TaskInfo } from "./src/client";
 
 export const CONVERSATION_ID = "00000000-0000-4000-8000-000000000001";
 export const CONVERSATION_LINES = Array.from({ length: 24 }, (_, i) => JSON.stringify({
@@ -11,10 +12,7 @@ export const CONVERSATION_LINES = Array.from({ length: 24 }, (_, i) => JSON.stri
   message: { role: i % 2 ? "assistant" : "user", ...(i % 2 ? { model: "claude-sonnet-4-6" } : {}),
     content: [{ type: "text", text: `Fixture turn ${i}: ${"fixed conversation text. ".repeat(5)}` }] },
 }));
-const sourceRoot = (): string => {
-  try { return dirname(realpathSync(join(import.meta.dir, "node_modules"))); }
-  catch { return import.meta.dir; }
-};
+const sourceRoot = (): string => import.meta.dir;
 const run = async (argv: string[], cwd: string, env: Record<string, string>): Promise<string> => {
   const p = Bun.spawn(argv, { cwd, env, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
@@ -41,19 +39,24 @@ export async function scratchInstance(): Promise<{
   let server: ReturnType<typeof Bun.spawn> | undefined;
   const stop = async (): Promise<void> => {
     if (server) { server.kill(); await server.exited; server = undefined; }
-const socketPath = await run(["tmux", "-L", sock, "display-message", "-p", "#{socket_path}"], dir, env).then((s) => s.trim()).catch(() => "");
+    const socketPath = await run(["tmux", "-L", sock, "display-message", "-p", "#{socket_path}"], dir, env).then((s) => s.trim()).catch(() => "");
     await run(["tmux", "-L", sock, "kill-server"], dir, env).catch(() => undefined);
     if (socketPath && basename(socketPath) === sock) rmSync(socketPath, { force: true });
     rmSync(dir, { recursive: true, force: true });
   };
   try {
     mkdirSync(env.HOME!, { recursive: true }); mkdirSync(repo);
-    const staging = readFileSync(join(sourceRoot(), "e2e-stage.sh"), "utf8");
-    // Reuse only staging functions: sourcing the suite prelude would take its global mutex again.
-    const functions = staging.slice(staging.indexOf("_stage_norm() {"));
-    if (!functions.startsWith("_stage_norm() {")) throw new Error("e2e-stage staging functions missing");
-    writeFileSync(join(dir, "stage-functions.sh"), functions);
-    await run(["sh", "-c", '. "$2/stage-functions.sh"; stage_instance "$1" "$2" server.ts', "stage", sourceRoot(), dir], dir, env);
+    const root = sourceRoot();
+    const identity = await run(["git", "rev-parse", "HEAD", "HEAD^{tree}"], root, env);
+    const [head, tree] = identity.trim().split("\n");
+    const dirty = (await run(["git", "status", "--porcelain"], root, env)).trim() !== "";
+    console.log("MEASURED SOURCE", JSON.stringify({ root, head, tree, dirty }));
+    for (const file of readdirSync(root).filter((f) => f.endsWith(".ts"))) cpSync(join(root, file), join(dir, file));
+    for (const file of ["src", "server", "public", "package.json", "fleet-sync.sh"]) cpSync(join(root, file), join(dir, file), { recursive: true });
+    symlinkSync(join(root, "node_modules"), join(dir, "node_modules"));
+    const built = await Bun.build({ entrypoints: [join(root, "src/client.ts")], target: "browser", minify: true });
+    if (!built.success) throw new Error(built.logs.map(String).join("\n"));
+    writeFileSync(join(dir, "public/app.js"), await built.outputs[0]!.text());
     await run(["git", "init", "-q", "-b", "main"], repo, env);
     await run(["git", "config", "user.name", "Fixture"], repo, env);
     await run(["git", "config", "user.email", "fixture@example.invalid"], repo, env);
@@ -97,9 +100,9 @@ async function browserProbe(fx: Awaited<ReturnType<typeof scratchInstance>>): Pr
   const root = sourceRoot();
   writeFileSync(entry, `import {renderSlots,panes,focused,showSlot} from ${JSON.stringify(join(root, "src/client.ts"))};
 import {renderBoard,renderSuiteMeter,setBoard} from ${JSON.stringify(join(root, "src/board.ts"))};
-import {renderQueue,openQueue} from ${JSON.stringify(join(root, "src/queue.ts"))};
+import {renderQueue,openQueue,invalidateQueueList} from ${JSON.stringify(join(root, "src/queue.ts"))};
 import {perfRebuilds} from ${JSON.stringify(join(root, "src/perfmarks.ts"))};
-globalThis.__fleetProbe={counts:perfRebuilds,renderSlots,renderBoard,renderQueue,renderSuiteMeter,setBoard,openQueue,showSlot,get panes(){return panes},get current(){return panes[focused]}};`);
+globalThis.__fleetProbe={counts:perfRebuilds,renderSlots,renderBoard,renderQueue,renderSuiteMeter,setBoard,openQueue,invalidateQueueList,showSlot,get panes(){return panes},get current(){return panes[focused]}};`);
   const build = await Bun.build({ entrypoints: [entry], target: "browser", minify: true });
   if (!build.success) throw new Error(build.logs.map(String).join("\n"));
   writeFileSync(join(fx.dir, "public/app.js"), await build.outputs[0]!.text());
@@ -164,14 +167,14 @@ globalThis.__fleetProbe={counts:perfRebuilds,renderSlots,renderBoard,renderQueue
     await Bun.sleep(3000);
     const before = await evaluate<RebuildCounts>("window.__fleetProbe.counts()");
     await evaluate("window.__longTasks=[]");
-    const firstSessions = await (await fx.get("/api/sessions")).json() as { slots: Record<string, unknown>[]; tasks: unknown[] };
+    const firstSessions = await (await fx.get("/api/sessions")).json() as { slots: Record<string, unknown>[]; tasks: TaskInfo[] };
     const slotFacts = (slots: Record<string, unknown>[]): string => JSON.stringify(slots.map((slot) =>
       Object.fromEntries(["id", "cwd", "label", "openedAt", "lastOutput", "git", "worktree", "model", "ctx", "share", "mergePending"].map((k) => [k, slot[k]]))));
     const started = performance.now();
     console.log("IDLE started: 120 s, eight unchanged sessions, Info open, Queue closed");
     await Bun.sleep(120_000);
     const idle = await evaluate<{ counts: RebuildCounts; longTasks: number[] }>("({counts:window.__fleetProbe.counts(),longTasks:window.__longTasks})");
-    const lastSessions = await (await fx.get("/api/sessions")).json() as { slots: Record<string, unknown>[]; tasks: unknown[] };
+    const lastSessions = await (await fx.get("/api/sessions")).json() as { slots: Record<string, unknown>[]; tasks: TaskInfo[] };
     const delta = Object.fromEntries(Object.entries(idle.counts).map(([k, v]) => [k, v - before[k as keyof RebuildCounts]]));
     console.log(JSON.stringify({ idleMs: performance.now() - started, rebuilds: delta,
       longTaskSumMs: idle.longTasks.reduce((a, b) => a + b, 0), longTaskCount: idle.longTasks.length,
@@ -180,12 +183,6 @@ globalThis.__fleetProbe={counts:perfRebuilds,renderSlots,renderBoard,renderQueue
       reference: { renderSlots: 4, renderBoard: 40 }, deviation: { renderSlots: Number(delta.renderSlots) - 4, renderBoard: Number(delta.renderBoard) - 40 } }));
     if (slotFacts(firstSessions.slots) !== slotFacts(lastSessions.slots)
       || JSON.stringify(firstSessions.tasks) !== JSON.stringify(lastSessions.tasks)) throw new Error("fixture data changed during idle");
-    // Synchronous calls share one task: no timer or poll can sneak into this counter proof.
-    const doubled = await evaluate<unknown>(`(()=>{const p=window.__fleetProbe;
-      const a=p.counts().renderSlots;p.renderSlots();const b=p.counts().renderSlots;
-      p.renderSlots();p.renderSlots();const c=p.counts().renderSlots;return {single:b-a,double:c-b}})()`);
-    if (JSON.stringify(doubled) !== JSON.stringify({ single: 1, double: 2 })) throw new Error(`double rebuild proof failed: ${JSON.stringify(doubled)}`);
-    console.log("DOUBLE", JSON.stringify(doubled));
     await evaluate("window.__fleetProbe.setBoard(false)");
     for (let i = 0; i < 10; i++) {
       await evaluate(`window.__fleetProbe.current.setView('term');window.__fleetProbe.showSlot(${i % 2 ? 1 : 2})`);
@@ -207,6 +204,20 @@ globalThis.__fleetProbe={counts:perfRebuilds,renderSlots,renderBoard,renderQueue
         p75Ms: values.length ? values[Math.ceil(values.length * .75) - 1] : null, records: rows }));
       if (!values.length) throw new Error(`no successful ${j} measurement`);
     }
+    await evaluate("window.__fleetProbe.setBoard(true)");
+    await evaluate("window.__fleetProbe.showSlot(16);window.__fleetProbe.openQueue()");
+    await Bun.sleep(1000);
+    // An empty slot makes Board synchronous; all calls finish in the same task, before timers run.
+    const doubled = await evaluate<Record<string, { single: number; double: number }>>(`(async()=>{const p=window.__fleetProbe;const result={};
+      for(const name of ['renderSlots','renderBoard','renderQueue','renderSuiteMeter']){
+        const render=()=>{if(name==='renderQueue')p.invalidateQueueList();return p[name]()};
+        const a=p.counts()[name];await render();const b=p.counts()[name];
+        await render();await render();const c=p.counts()[name];result[name]={single:b-a,double:c-b};
+      }return result})()`);
+    for (const [name, counts] of Object.entries(doubled)) {
+      if (counts.single !== 1 || counts.double !== 2) throw new Error(`double rebuild proof failed for ${name}: ${JSON.stringify(counts)}`);
+    }
+    console.log("DOUBLE", JSON.stringify(doubled));
     console.log("PERF PROBE PASS");
   } finally { socket?.close(); browser.kill(); await browser.exited; }
 }

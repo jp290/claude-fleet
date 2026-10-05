@@ -3471,3 +3471,12 @@ export interface WorkplaceCheckObservation {
   state: "running" | "green" | "red" | "skipped" | "waiting" | null;
   head: string | null; at: number; fails: string[]; reason?: string; command?: string; order?: number;
 }
+
+export interface WorkplaceStandSource {
+  kind: import("../src/protocol").WorkplaceStand["kind"];
+  repo: string | null; name: string | null; path: string | null; head: string | null;
+  basis: import("../src/protocol").WorkplaceStand["basis"];
+  codeScope: import("../src/protocol").WorkplaceStand["codeScope"];
+  observedAt: number | null; branch: string | null; headReason: string;
+  update: import("../src/protocol").WorkplaceStand["update"];
+}

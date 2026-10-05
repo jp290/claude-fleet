@@ -3011,7 +3011,89 @@ Fixture-Ausschnitt bei Worktree-HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:
 },"reasons":[{"field":"checks.gate","reason":"gate-not-retained"}]}
 ```
 
-Clone-Lanes gehören nicht zur Git-Worktree-Liste.
+Die zusätzliche Liste `stands` (`src/protocol.ts#WorkplaceStand`) beschreibt die Git-Version
+jedes Trägers. `repo` ist der kanonische **lokale Vergleichs-Checkout**, bei Helfern die Quelle
+für Daemon-Updates beziehungsweise diesen Fleet-Server; er behauptet keinen Pfad auf dem Helfer.
+Die Antwort ergänzt die Boot- und Daemon-Quellrepos, falls sie nicht in `knownRepos` stehen.
+Sie bleibt auf registrierte Repos und diese beiden Quellen begrenzt, ohne Dateisystemsuche.
+
+| kind | head / basis | Zuordnung |
+| --- | --- | --- |
+| worktree | HEAD / worktree-head | alle Git-Worktrees; aktive Clone-Lanes zusätzlich mit direkt lokal gelesener HEAD |
+| live-server | BOOT_HEAD / boot-head | laufender Prozess, unabhängig von heutiger Checkout-HEAD; INSTANCE_NAME oder null |
+| test-instance | null / copy-unproven | je vorhandenem testinstanz.sh, Zustand weiterhin in der Worktree-Zeile |
+| helper-daemon | daemonSha / heartbeat | je helperDevices-Eintrag, nur Fleet-Name; letzter gespeicherter Bericht |
+| helper-instance | instance.head / heartbeat | wenn der vorhandene Heartbeat eine Instanz meldet |
+| linked-instance | null / link-only | je FLEET_INSTANCES-Link, nur Name, repo:null; keine Verbindung zur Instanz |
+
+`observedAt` nennt den lokalen Messbeginn, beim Daemon die vorhandene lastSeen-Zeit (auch Claim-
+Touches können sie erneuern), bei Helferinstanzen deren gemeldetes at; eine unbekannte Zeit ist
+null. Eine Heartbeat-SHA ist ein letzter Bericht, kein Beweis aktueller Erreichbarkeit.
+`update:{state,mainSha}` zeigt den vorhandenen Update-Auftrag separat. mainSha ist dessen
+Ergebnis-/Claim-SHA, niemals Ersatz für daemonSha; ohne Auftrag bleibt update:null mit Grund.
+Testkopien melden bisher keine belegte laufende Git-Version: weder recordedSource.before noch
+heutige Worktree-HEAD beweisen sie. Daher bleibt ihre head:null mit copy-running-version-unproven.
+Auch verlinkte Instanzen bleiben head:null mit linked-instance-sha-unreported; ihr Repo ist
+unbekannt. Geräte-/Instanznamen fehlen nur mit benanntem Grund. Keine Netzwerkadresse, Geräte-ID,
+Remote-URL oder Zugangsdaten werden in stands übernommen.
+
+`target:{ref,head,mergeBase,distance,codeBehind,reasons}` vergleicht die Träger-SHA mit dem
+lokalen Zielbranch: bei belegten Lanes ihre aufgezeichnete Basisbranch, sonst repoBases, sonst
+der Branch des Haupt-Checkouts. `distance:{ahead,behind}` zählt die exklusiv erreichbaren
+Commits in beiden Richtungen. mergeBase ist der einzige gemeinsame Abzweigpunkt; bei mehreren
+besten Basen, fehlenden Objekten oder unverbundener Geschichte bleibt er null mit Grund.
+Eine Clone-SHA, deren Objekt in der Quellrepo fehlt, bleibt trotzdem sichtbar; der Vergleich
+bleibt unbekannt. Es werden keine Clone-Refs gespiegelt.
+
+`remote` ist **"none"**, wenn das Repo keine konfigurierten Remotes besitzt: ein eigener Zustand,
+kein Fehler und kein null. Sonst nennt die Liste jeden konfigurierten Remote-Namen und dessen
+lokal vorhandene Zielspitze. Ein vorhandenes Upstream-Ref des Zielbranches bestimmt den
+Branch-Namen beim zugehörigen Remote; sonst gilt refs/remotes/<name>/<zielbranch>. Jede Zeile
+trägt denselben Git-Vergleich sowie `name,refUpdatedAt,refAgeMs`. Ein konfigurierter Remote ohne
+passendes Ref bleibt eine Zeile mit head:null und local-ref-missing. refUpdatedAt ist die Zeit
+des letzten **lokalen Reflog-Eintrags** für genau dieses Ref, refAgeMs der Abstand zum
+Antwort-Messbeginn measuredAt. Fehlendes/abgelaufenes Reflog liefert null mit
+ref-update-time-unrecorded. Das Alter beweist keinen aktuellen Remote-Stand; kein fetch,
+ls-remote oder Netzaufruf erfolgt. Nicht darstellbare Remote-Namen liefern remote:null mit Grund.
+
+`codeScope` benennt die Zuordnung von `codeBehind`: server verwendet denselben lokalen
+Importgraph und roleOf wie deployGap, zusätzlich sind nicht server-importierte helper-daemon/
+Dateien anderer Laufzeitcode; helper-daemon verwendet den lokalen Importgraph ab helper-daemon/daemon.ts und
+Runtime-Manifeste; Dokumentation und Test-/Bundle-Dateien bleiben fremd. Ein unlesbarer oder
+auf 4000 Dateien gedeckelter Daemon-Graph lässt andere Pfade unbekannt. repository zählt alle Änderungen außer Markdown als betroffen. Geprüft werden die
+geänderten Pfade der fehlenden Zielcommits, einschließlich zwischenzeitlich zurückgenommener
+Änderungen. Kein Rückstand ergibt false; sicher betroffener Code true; nur bekannte fremde
+Pfade false; ungeklärte Zuordnung ohne positiven Treffer null mit code-ownership-unproven.
+Beide Laufzeit-Zuordnungen lesen den lokalen Checkout-Importgraph, keinen historisch ausgeführten
+Prozessgraph; dieselbe Grenze wie deployGap. Unbekannte Werte tragen immer benannte reasons.
+
+Kosten: weiterhin Nachfrage-Cache 3000 ms ohne Tick. Zwei lokale Git-Lesungen je Vergleichsrepo
+(Refs und Remote-Namen); gleiche SHA/Ref/Scope-Vergleiche und Pfadbereiche werden innerhalb der
+Messung zusammengeführt. Je einzigartigem Vergleich höchstens merge-base + rev-list, bei
+Rückstand eine geteilte Pfadlesung; je Remote-Ref einmal Reflog. Repos werden für stands seriell,
+Träger je Repo mit höchstens sechs Arbeitern gelesen. Deckel: 20 Remotes (darüber remote:null),
+100000 exklusive Commits (darüber distance:null), 2000 verschiedene Änderungspfade (darüber
+codeBehind:null), jeweils mit Grund; Git-Lesungen nutzen den bestehenden Timeout. Repos und
+Träger werden nicht still gekürzt. Helferberichte verändern den Cache-Schlüssel; Antworten
+zeigen measuredAt, nicht vermeintliche Netzwerkfrische. Die bestehende Statusprobe einer
+Testkopie bleibt lokal; fremde Instanzen oder Helfer werden nie angesprochen.
+
+Fixture-Wire-Ausschnitt (SHAs als Fixture-Werte):
+
+```json
+{"kind":"helper-daemon","repo":"/fixture/fleet","name":"workhorse","path":null,
+ "head":null,"basis":"heartbeat","codeScope":"helper-daemon","observedAt":1000,
+ "target":{"ref":"refs/heads/main","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "mergeBase":null,"distance":null,"codeBehind":null,"reasons":[
+ {"field":"mergeBase","reason":"stand-or-ref-sha-unavailable"},
+ {"field":"distance","reason":"stand-or-ref-sha-unavailable"},
+ {"field":"codeBehind","reason":"stand-or-ref-sha-unavailable"}]},
+ "remote":"none","update":{"state":"reported","mainSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+ "reasons":[{"field":"head","reason":"daemon-sha-unreported"},
+ {"field":"path","reason":"no-local-worktree-path"}]}
+```
+
+Clone-Lanes gehören nicht zur Git-Worktree-Liste; stands enthält ihre lokale SHA zusätzlich.
 
 ```json
 {"repos":[{"repo":"/fixture/repo","branches":[

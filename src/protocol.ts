@@ -730,7 +730,23 @@ export interface WorkplaceRepo {
   repo: string; branches: WorkplaceBranch[] | null;
   worktrees: WorkplaceRow[] | null; landNotes: { truncated: boolean | null }; reasons: FactReason[];
 }
-export interface Workplaces { repos: WorkplaceRepo[]; measuredAt: number; cacheMs: number }
+export interface WorkplaceGitComparison {
+  ref: string; head: string | null; mergeBase: string | null; distance: WorktreeDistance | null;
+  codeBehind: boolean | null; reasons: FactReason[];
+}
+export interface WorkplaceRemote extends WorkplaceGitComparison {
+  name: string; refUpdatedAt: number | null; refAgeMs: number | null;
+}
+export interface WorkplaceStand {
+  kind: "worktree" | "live-server" | "test-instance" | "helper-daemon" | "helper-instance" | "linked-instance";
+  repo: string | null; name: string | null; path: string | null; head: string | null;
+  basis: "worktree-head" | "boot-head" | "copy-unproven" | "heartbeat" | "link-only";
+  codeScope: "server" | "helper-daemon" | "repository";
+  observedAt: number | null; target: WorkplaceGitComparison | null;
+  remote: "none" | WorkplaceRemote[] | null;
+  update: { state: string; mainSha: string | null } | null; reasons: FactReason[];
+}
+export interface Workplaces { repos: WorkplaceRepo[]; stands: WorkplaceStand[]; measuredAt: number; cacheMs: number }
 export interface DeployLand {
   sha: string; branch: string | null; task: string | null; at: number | null;
   reasons: FactReason[];

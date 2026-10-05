@@ -1,4 +1,4 @@
-import type { WorkplaceChecks, Workplaces, WorkplaceRepo } from "../src/protocol";
+import { instanceNameFrom, type WorkplaceStand, type WorkplaceChecks, type Workplaces, type WorkplaceRepo } from "../src/protocol";
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
@@ -7,11 +7,12 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plantScreen, plogRead, post, restartSrv,
   reviewRunsFor, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
+import { repoGraph, roleOf } from "../server/deploy-classify";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 async function testinstanzWorktreeChecks(slot: number): Promise<void> {
@@ -229,8 +230,8 @@ async function workplacesChecks(): Promise<void> {
     const compile = (code: string, occupants: FixtureOccupant[], graphFails = false, statusAwait?: () => Promise<void>, notesFail = false, gitCalls?: string[], sources: Record<string, unknown> = {}) => {
       const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
       return new Function("slots", "DISPATCH_REPO", "gitRead", "testinstanzCommand", "existsSync", "realpathSync", "statSync", "lstatSync", "HOST", "commandJobs", "laneSuiteJobs", "mergeLast", "mergeParked", "serverRuns",
-        "runningPostLandAudit", "auditQueue", "auditQueueGroups", "auditCmdFor", "repoCanon", "localFailNames", "POSTLAND_AUDIT_FILE", "validAuditRow", "helperClaims", "auditShardRuns", "coverKey", "auditClaimableSince",
-        `${js}\nreturn { repo: workplaceRepo, read: workplaces, observations: workplaceCheckObservations, checks: workplaceChecks, audits: workplaceAuditReading };`)(occupants, realpathSync(b),
+        "runningPostLandAudit", "auditQueue", "auditQueueGroups", "auditCmdFor", "repoCanon", "localFailNames", "POSTLAND_AUDIT_FILE", "validAuditRow", "helperClaims", "auditShardRuns", "coverKey", "auditClaimableSince", "standContext",
+        `const { REPO_DIR, HELPER_UPDATE_REPO, BOOT_HEAD, bootHeadReady, INSTANCE_NAME, INSTANCE_LINKS, helperDevices, helperUpdates, repoBases, instanceNameFrom, repoGraph, roleOf, readFileSync, resolve, dirname } = standContext;\n${js}\nreturn { repo: workplaceRepo, read: workplaces, observations: workplaceCheckObservations, checks: workplaceChecks, audits: workplaceAuditReading };`)(occupants, realpathSync(b),
         async (repo: string, ...args: string[]) => {
           gitCalls?.push(args[0]);
           if (notesFail && args[0] === "log") return { code: 128, out: "" };
@@ -248,12 +249,95 @@ async function workplacesChecks(): Promise<void> {
           if (!row || typeof row !== "object" || !("covers" in row) || !Array.isArray(row.covers)) return null;
           return row;
         }, sources.claims ?? new Map(), sources.auditShards ?? new Map(),
-        (c: { branch: string; mainAfter: string; at: number }) => JSON.stringify([c.branch, c.mainAfter, c.at]), sources.claimableSince ?? new Map()) as { observations: (repo: string, notes: { rows: unknown[] }, audits: { rows: unknown[]; reason: string }) => WorkplaceCheckObservation[];
+        (c: { branch: string; mainAfter: string; at: number }) => JSON.stringify([c.branch, c.mainAfter, c.at]), sources.claimableSince ?? new Map(), { REPO_DIR: realpathSync(b), HELPER_UPDATE_REPO: realpathSync(b), BOOT_HEAD: bOverhaul, bootHeadReady: Promise.resolve(),
+          INSTANCE_NAME: "fixture", INSTANCE_LINKS: [{ name: "other", url: "http://fixture.invalid/" }], helperDevices: new Map(), helperUpdates: new Map(), repoBases: {}, instanceNameFrom, repoGraph, roleOf, readFileSync, resolve, dirname, ...sources.stands as object }) as { observations: (repo: string, notes: { rows: unknown[] }, audits: { rows: unknown[]; reason: string }) => WorkplaceCheckObservation[];
           checks: (repo: string, branch: string | null, head: string | null, observations: WorkplaceCheckObservation[], auditReason: string,
             reasons: Array<{ field: string; reason: string }>) => WorkplaceChecks;
           audits: () => Promise<{ rows: unknown[]; reason: string }>;
           repo: (repo: string) => Promise<WorkplaceRepo>; read: () => Promise<Workplaces> };
     };
+    const versionRepo = `${dir}/versions`, versionWorktree = `${dir}/version-worktree`;
+    mkdirSync(versionRepo); git(versionRepo, "init", "-qb", "main");
+    mkdirSync(`${versionRepo}/helper-daemon`); mkdirSync(`${versionRepo}/src`);
+    writeFileSync(`${versionRepo}/server.ts`, "export const value = 1;\n");
+    writeFileSync(`${versionRepo}/helper-daemon/daemon.ts`, "export const daemon = 1;\n");
+    writeFileSync(`${versionRepo}/src/client.ts`, "export const client = 1;\n");
+    writeFileSync(`${versionRepo}/package.json`, JSON.stringify({ scripts: { build: "bun build src/client.ts" } }));
+    git(versionRepo, "add", "."); const versionBase = commit(versionRepo);
+    writeFileSync(`${versionRepo}/README.md`, "documentation\n");
+    git(versionRepo, "add", "."); const docsHead = commit(versionRepo);
+    git(versionRepo, "worktree", "add", "-qb", "old-docs", versionWorktree, versionBase);
+    writeFileSync(`${versionRepo}/server.ts`, "export const value = 2;\n");
+    git(versionRepo, "add", "."); const serverHead = commit(versionRepo);
+    writeFileSync(`${versionRepo}/helper-daemon/daemon.ts`, "export const daemon = 2;\n");
+    git(versionRepo, "add", "."); const daemonHead = commit(versionRepo);
+    git(versionRepo, "remote", "add", "origin", "http://fixture.invalid/?token=SYNTHETIC_REMOTE_SECRET");
+    git(versionRepo, "update-ref", "--create-reflog", "refs/remotes/origin/main", serverHead);
+    const standSources = { REPO_DIR: versionRepo, HELPER_UPDATE_REPO: versionRepo, BOOT_HEAD: docsHead,
+      helperDevices: new Map([
+        ["current", { id: "current", name: "current", lastSeen: 1000, daemonSha: daemonHead, instance: { head: serverHead, at: 900 } }],
+        ["old", { id: "old", name: "old", lastSeen: 1000, daemonSha: serverHead }],
+        ["missing", { id: "missing", name: "missing", lastSeen: 1000 }],
+      ]), helperUpdates: new Map([["missing", { state: "reported", main: "main", result: { mainSha: daemonHead } }]]) };
+    const standCalls: string[] = [];
+    const versions = await compile(functions, [], false, undefined, false, standCalls, { stands: standSources }).read();
+    const stand = (wire: Workplaces, kind: WorkplaceStand["kind"], name?: string) => wire.stands.find((s) => s.repo === realpathSync(versionRepo) && s.kind === kind && (name === undefined || s.name === name));
+    const live = stand(versions, "live-server"), current = stand(versions, "helper-daemon", "current"), old = stand(versions, "helper-daemon", "old");
+    check("workplace versions current daemon has exact zero distance and merge-base", current?.head === daemonHead
+      && current.target?.head === daemonHead && current.target.mergeBase === daemonHead
+      && current.target.distance?.ahead === 0 && current.target.distance.behind === 0 && current.target.codeBehind === false, JSON.stringify(current));
+    check("workplace versions behind live code uses boot SHA and target merge-base", live?.head === docsHead
+      && live.target?.mergeBase === docsHead && live.target.distance?.ahead === 0 && live.target.distance.behind === 2
+      && live.target.codeBehind === true, JSON.stringify(live));
+    check("workplace versions helper owns daemon code and has an independent server-instance stand", old?.target?.distance?.behind === 1
+      && old.target.codeBehind === true && stand(versions, "helper-instance", "current")?.head === serverHead, JSON.stringify(old));
+    const withoutOwnCode = await compile(functions, [], false, undefined, false, undefined,
+      { stands: { ...standSources, BOOT_HEAD: serverHead } }).read();
+    const serverOnly = stand(withoutOwnCode, "live-server");
+    check("workplace versions behind without own code keeps behind count and false codeBehind", serverOnly?.target?.distance?.behind === 1
+      && serverOnly.target.codeBehind === false, JSON.stringify(serverOnly));
+    const missing = stand(versions, "helper-daemon", "missing");
+    check("workplace versions missing daemon SHA stays null despite successful update", missing?.head === null
+      && missing.target?.mergeBase === null && missing.target.distance === null && missing.target.codeBehind === null
+      && missing.update?.mainSha === daemonHead && missing.reasons.some((r) => r.field === "head" && r.reason === "daemon-sha-unreported"), JSON.stringify(missing));
+    const noRemote = versions.stands.find((s) => s.repo === realpathSync(b) && s.kind === "worktree");
+    check("workplace versions repo without remote has typed none rather than null or error", noRemote?.remote === "none"
+      && !noRemote.reasons.some((r) => r.field === "remote"), JSON.stringify(noRemote));
+    const remote = Array.isArray(live?.remote) ? live.remote[0] : null;
+    check("workplace versions remote names local ref tip merge-base distance and logged age", remote?.name === "origin"
+      && remote.ref === "refs/remotes/origin/main" && remote.head === serverHead && remote.mergeBase === docsHead
+      && remote.distance?.ahead === 0 && remote.distance.behind === 1 && remote.codeBehind === true
+      && remote.refUpdatedAt !== null && remote.refAgeMs !== null, JSON.stringify(remote));
+    const future = stand(versions, "helper-daemon", "current"), futureRemote = Array.isArray(future?.remote) ? future.remote[0] : null;
+    check("workplace versions remote ahead and behind directions stay independent", futureRemote?.distance?.ahead === 1
+      && futureRemote.distance.behind === 0 && futureRemote.mergeBase === serverHead, JSON.stringify(futureRemote));
+    check("workplace versions links and test instances name unobserved running SHA", versions.stands.some((s) => s.kind === "linked-instance"
+      && s.name === "other" && s.repo === null && s.head === null && s.reasons.some((r) => r.field === "head"))
+      && value.stands.some((s) => s.kind === "test-instance" && s.path === realpathSync(orphan) && s.head === null && s.reasons.some((r) => r.field === "head")));
+    const versionWire = JSON.stringify(versions);
+    check("workplace versions never reads network or emits remote endpoints or credentials", !standCalls.some((c) => c === "fetch" || c === "push" || c === "ls-remote")
+      && !versionWire.includes("fixture.invalid") && !versionWire.includes("SYNTHETIC_REMOTE_SECRET"));
+    const lie = functions.replace('result.codeBehind = roles.includes(true) ? true : roles.includes(null) ? null : false;', 'result.codeBehind = false;');
+    const lied = await compile(lie, [], false, undefined, false, undefined, { stands: standSources }).read();
+    check("workplace versions mutation rejects suppressed own-code backlog", lie !== functions && stand(lied, "live-server")?.target?.codeBehind !== true);
+    const reversed = functions.replace('ahead: lines.filter((l) => l[0] === "<").length, behind: lines.filter((l) => l[0] === ">").length',
+      'behind: lines.filter((l) => l[0] === "<").length, ahead: lines.filter((l) => l[0] === ">").length');
+    const reversedWire = await compile(reversed, [], false, undefined, false, undefined, { stands: standSources }).read();
+    check("workplace versions mutation rejects reversed commit distance", reversed !== functions && stand(reversedWire, "live-server")?.target?.distance?.behind !== 2);
+    git(versionRepo, "remote", "add", "unseen", "http://fixture.invalid/");
+    const noRefWire = await compile(functions, [], false, undefined, false, undefined, { stands: standSources }).read();
+    const noRef = stand(noRefWire, "live-server")?.remote;
+    check("workplace versions configured remote with missing ref is unknown with reason", Array.isArray(noRef)
+      && noRef.find((r) => r.name === "unseen")?.head === null
+      && noRef.find((r) => r.name === "unseen")?.reasons.some((r) => r.field === "head" && r.reason === "local-ref-missing") === true);
+    git(versionRepo, "update-ref", "--create-reflog", "refs/remotes/origin/upstream-target", versionBase);
+    git(versionRepo, "config", "branch.main.remote", "origin");
+    git(versionRepo, "config", "branch.main.merge", "refs/heads/upstream-target");
+    const upstreamWire = await compile(functions, [], false, undefined, false, undefined, { stands: standSources }).read();
+    const upstream = stand(upstreamWire, "live-server")?.remote;
+    check("workplace versions configured upstream selects its remote branch rather than assuming main", Array.isArray(upstream)
+      && upstream.find((r) => r.name === "origin")?.ref === "refs/remotes/origin/upstream-target"
+      && upstream.find((r) => r.name === "origin")?.head === versionBase);
     const checkHead = "a".repeat(40), oldHead = "b".repeat(40), checkBranch = "fixture-lane", checkRepo = realpathSync(b);
     const checkHolder = { ...holderFixture(), worktree: { ...holderFixture().worktree, branch: checkBranch } };
     const fixtureSources = (stage: keyof WorkplaceChecks, state: "green" | "red" | "running" | "waiting" | "skipped", sha = checkHead): Record<string, unknown> => {

@@ -1,4 +1,4 @@
-import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, DeployGap, DeployLand, FactReason } from "./src/protocol";
+import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
 import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
@@ -164,7 +164,7 @@ import {
   type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
   type ProgramValidation, type ProgramDigest, type DispatchSpawn, type SlotContext, type CodexPermissions, type SlotPermissions,
   CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
-  type WorkplaceCheckObservation,
+  type WorkplaceCheckObservation, type WorkplaceStandSource,
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
   loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
@@ -7429,15 +7429,214 @@ async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { row
   }));
   return { repo, branches, worktrees, landNotes: { truncated: notes.truncated }, reasons };
 }
+const WORKPLACE_REMOTE_CAP = 20;
+const WORKPLACE_PATH_CAP = 2000;
+async function workplaceStandSources(repos: WorkplaceRepo[], observedAt: number): Promise<WorkplaceStandSource[]> {
+  const out: WorkplaceStandSource[] = [];
+  const canonical = (r: string) => { try { return realpathSync(r); } catch { return r; } };
+  const source = (s: WorkplaceStandSource) => out.push(s);
+  for (const r of repos) for (const w of r.worktrees ?? []) {
+    const branch = w.session ? w.target.branch : repoBases[r.repo] ?? r.worktrees?.find((row) => row.primary)?.branch ?? null;
+    source({ kind: "worktree", repo: r.repo, path: w.path, name: null, head: w.head,
+      basis: "worktree-head", codeScope: "repository", observedAt, branch,
+      headReason: "worktree-head-unreadable", update: null });
+    if (w.template === "present") source({ kind: "test-instance", repo: r.repo, path: w.path, name: null,
+      head: null, basis: "copy-unproven", codeScope: "server", observedAt,
+      branch, headReason: "copy-running-version-unproven", update: null });
+  }
+  for (const r of repos) if (r.worktrees === null) source({ kind: "worktree", repo: r.repo, path: r.repo,
+    name: null, head: null, basis: "worktree-head", codeScope: "repository", observedAt,
+    branch: repoBases[r.repo] ?? null, headReason: "repo-worktrees-unreadable", update: null });
+  const clones = slots.filter((s) => s.worktree?.form === "clone" && s.cwd).map((s) => ({
+    cwd: s.cwd!, repo: canonical(s.worktree!.repo), branch: s.worktree!.base ?? null }));
+  for (const clone of clones) {
+    const head = await gitRead(clone.cwd, "rev-parse", "HEAD");
+    source({ kind: "worktree", repo: clone.repo, path: clone.cwd, name: null,
+      head: head.code === 0 && /^[0-9a-f]{40}$/.test(head.out) ? head.out : null,
+      basis: "worktree-head", codeScope: "repository", observedAt, branch: clone.branch,
+      headReason: "clone-head-unreadable", update: null });
+  }
+  source({ kind: "live-server", repo: canonical(REPO_DIR), path: null, name: INSTANCE_NAME,
+    head: BOOT_HEAD, basis: "boot-head", codeScope: "server", observedAt,
+    branch: null, headReason: "boot-head-unreadable", update: null });
+  for (const d of helperDevices.values()) {
+    const update = helperUpdates.get(d.id);
+    const updateSha = update?.result?.mainSha ?? update?.claim?.mainSha ?? null;
+    source({ kind: "helper-daemon", repo: HELPER_UPDATE_REPO ? canonical(HELPER_UPDATE_REPO) : null,
+      path: null, name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: d.daemonSha ?? null,
+      basis: "heartbeat", codeScope: "helper-daemon", observedAt: d.lastSeen,
+      branch: update?.main ?? null, headReason: "daemon-sha-unreported",
+      update: update ? { state: update.state, mainSha: updateSha && /^[0-9a-f]{40}$/.test(updateSha) ? updateSha : null } : null });
+    if (d.instance) source({ kind: "helper-instance", repo: canonical(REPO_DIR), path: null,
+      name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: d.instance.head, basis: "heartbeat", codeScope: "server",
+      observedAt: d.instance.at, branch: null, headReason: "instance-sha-unreported", update: null });
+  }
+  for (const link of INSTANCE_LINKS) source({ kind: "linked-instance", repo: null, path: null, name: link.name,
+    head: null, basis: "link-only", codeScope: "server", observedAt: null, branch: null,
+    headReason: "linked-instance-sha-unreported", update: null });
+  return out;
+}
+function workplaceDaemonGraph(repo: string): Set<string> | null {
+  const paths = new Set<string>(), pending = ["helper-daemon/daemon.ts"], root = resolve(repo);
+  try {
+    while (pending.length) {
+      if (paths.size >= 4000) return null;
+      const path = pending.pop()!;
+      if (paths.has(path)) continue;
+      const source = readFileSync(`${root}/${path}`, "utf8"); paths.add(path);
+      for (const m of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)["'](\.[^"'\n]*)["']/g)) {
+        const absolute = resolve(dirname(`${root}/${path}`), m[1]);
+        if (!absolute.startsWith(`${root}/`)) return null;
+        const stem = absolute.endsWith(".js") ? absolute.slice(0, -3) : absolute;
+        const next = [absolute, `${stem}.ts`, `${stem}.tsx`, `${absolute}/index.ts`]
+          .find((p) => /\.tsx?$/.test(p) && existsSync(p));
+        if (!next) return null;
+        pending.push(next.slice(root.length + 1));
+      }
+    }
+    return paths;
+  } catch { return null; }
+}
+async function workplaceStandReader(repo: string, primaryBranch: string | null, measuredAt: number) {
+  const [refs, remoteNames] = await Promise.all([
+    gitRead(repo, "for-each-ref", "--format=%(refname)%09%(objectname)%09%(upstream)", "refs/heads/", "refs/remotes/"),
+    gitRead(repo, "remote"),
+  ]);
+  const tips = new Map<string, { head: string; upstream: string }>();
+  if (refs.code === 0) for (const line of refs.out.split("\n")) {
+    const [ref, head, upstream = ""] = line.split("\t");
+    if (/^[0-9a-f]{40}$/.test(head ?? "")) tips.set(ref, { head, upstream });
+  }
+  const names = remoteNames.out.split("\n").filter(Boolean);
+  const ages = new Map<string, Promise<number | null>>();
+  const comparisons = new Map<string, Promise<WorkplaceGitComparison>>();
+  const paths = new Map<string, Promise<string[] | null>>();
+  const daemonGraph = workplaceDaemonGraph(repo);
+  const compare = (head: string | null, ref: string, scope: WorkplaceStand["codeScope"]): Promise<WorkplaceGitComparison> => {
+    const key = JSON.stringify([head, ref, scope]);
+    const cached = comparisons.get(key); if (cached) return cached;
+    const value = (async (): Promise<WorkplaceGitComparison> => {
+      const target = tips.get(ref)?.head ?? null, reasons: FactReason[] = [];
+      const result: WorkplaceGitComparison = { ref, head: target, mergeBase: null, distance: null, codeBehind: null, reasons };
+      if (!target) reasons.push({ field: "head", reason: refs.code === 0 ? "local-ref-missing" : "refs-unreadable" });
+      if (!head || !target) {
+        for (const field of ["mergeBase", "distance", "codeBehind"]) reasons.push({ field, reason: "stand-or-ref-sha-unavailable" });
+        return result;
+      }
+      const [base, range] = await Promise.all([
+        gitRead(repo, "merge-base", "--all", head, target),
+        gitRead(repo, "rev-list", "--left-right", `--max-count=${WORKPLACES_GRAPH_CAP + 1}`, `${head}...${target}`, "--"),
+      ]);
+      const bases = base.out.split("\n").filter(Boolean), lines = range.out.split("\n").filter(Boolean);
+      if (base.code === 0 && bases.length === 1 && /^[0-9a-f]{40}$/.test(bases[0])) result.mergeBase = bases[0];
+      else reasons.push({ field: "mergeBase", reason: bases.length > 1 ? "merge-base-ambiguous" : "merge-base-unreadable-or-unrelated" });
+      if (range.code === 0 && lines.length <= WORKPLACES_GRAPH_CAP && lines.every((l) => /^[<>][0-9a-f]{40}$/.test(l)))
+        result.distance = { ahead: lines.filter((l) => l[0] === "<").length, behind: lines.filter((l) => l[0] === ">").length };
+      else reasons.push({ field: "distance", reason: lines.length > WORKPLACES_GRAPH_CAP ? "commit-range-capped" : "commit-range-unreadable" });
+      if (result.distance?.behind === 0) { result.codeBehind = false; return result; }
+      if (!result.distance || !result.mergeBase) {
+        reasons.push({ field: "codeBehind", reason: "behind-range-unreadable" }); return result;
+      }
+      const pathKey = `${result.mergeBase}..${target}`;
+      let reading = paths.get(pathKey);
+      if (!reading) {
+        reading = gitRead(repo, "log", "--format=", "--name-only", "-z", "--no-renames", pathKey, "--")
+          .then((r) => {
+            const names = [...new Set(r.out.split("\0").map((p) => p.replace(/^\n+/, "")).filter(Boolean))];
+            return r.code === 0 && names.length <= WORKPLACE_PATH_CAP ? names : null;
+          });
+        paths.set(pathKey, reading);
+      }
+      const changed = await reading;
+      if (!changed) { reasons.push({ field: "codeBehind", reason: "changed-paths-unreadable-or-capped" }); return result; }
+      const graph = scope === "server" ? repoGraph(repo, target) : null;
+      const roles = changed.map((p): boolean | null => {
+        if (scope === "server") {
+          const role = roleOf(p, graph);
+          return role === "server" ? true : role === "non-server" || (graph !== null && p.startsWith("helper-daemon/")) ? false : null;
+        }
+        if (scope === "helper-daemon") {
+          if (daemonGraph?.has(p)) return true;
+          if (["package.json", "bun.lock", "bun.lockb", "tsconfig.json"].includes(p)) return true;
+          if (p.endsWith(".md") || p.startsWith("e2e/") || p.startsWith("public/")) return false;
+          return daemonGraph === null ? null : false;
+        }
+        return p.endsWith(".md") ? false : true;
+      });
+      result.codeBehind = roles.includes(true) ? true : roles.includes(null) ? null : false;
+      if (result.codeBehind === null) reasons.push({ field: "codeBehind", reason: "code-ownership-unproven" });
+      return result;
+    })();
+    comparisons.set(key, value); return value;
+  };
+  return async (source: WorkplaceStandSource): Promise<WorkplaceStand> => {
+    const { branch, headReason, ...stand } = source;
+    const reasons: FactReason[] = [];
+    if (!stand.head || !/^[0-9a-f]{40}$/.test(stand.head)) { stand.head = null; reasons.push({ field: "head", reason: headReason }); }
+    if (stand.name === null) reasons.push({ field: "name", reason: "fleet-name-unrecorded-or-not-applicable" });
+    if (stand.path === null) reasons.push({ field: "path", reason: "no-local-worktree-path" });
+    if (stand.observedAt === null) reasons.push({ field: "observedAt", reason: "observation-time-unreported" });
+    if (stand.update === null) reasons.push({ field: "update", reason: "no-update-record-or-not-applicable" });
+    else if (stand.update.mainSha === null) reasons.push({ field: "update.mainSha", reason: "update-sha-unrecorded" });
+    const targetBranch = branch ?? repoBases[repo] ?? primaryBranch;
+    const target = targetBranch ? await compare(stand.head, `refs/heads/${targetBranch}`, stand.codeScope) : null;
+    if (!target) reasons.push({ field: "target", reason: "target-branch-unreadable" });
+    let remote: WorkplaceStand["remote"] = null;
+    if (remoteNames.code !== 0 || names.length > WORKPLACE_REMOTE_CAP) reasons.push({ field: "remote", reason: names.length > WORKPLACE_REMOTE_CAP ? "remote-list-capped" : "remote-config-unreadable" });
+    else if (names.length === 0) remote = "none";
+    else if (!targetBranch || names.some((n) => instanceNameFrom(n) === null)) reasons.push({ field: "remote", reason: !targetBranch ? "remote-target-unreadable" : "remote-name-not-displayable" });
+    else {
+      const upstream = tips.get(`refs/heads/${targetBranch}`)?.upstream;
+      remote = await Promise.all(names.map(async (name): Promise<WorkplaceRemote> => {
+        const ref = upstream?.startsWith(`refs/remotes/${name}/`) ? upstream : `refs/remotes/${name}/${targetBranch}`;
+        let reading = ages.get(ref);
+        if (!reading) {
+          reading = gitRead(repo, "reflog", "show", "-1", "--date=raw", "--format=%gD", ref)
+            .then((r) => { const m = /@\{(\d+) [+-]\d+\}/.exec(r.out); return r.code === 0 && m ? Number(m[1]) * 1000 : null; });
+          ages.set(ref, reading);
+        }
+        const [comparison, refUpdatedAt] = await Promise.all([compare(stand.head, ref, stand.codeScope), reading]);
+        return { ...comparison, name, refUpdatedAt, refAgeMs: refUpdatedAt === null ? null : Math.max(0, measuredAt - refUpdatedAt),
+          reasons: [...comparison.reasons, ...(refUpdatedAt === null ? [{ field: "refUpdatedAt/refAgeMs", reason: "ref-update-time-unrecorded" }] : [])] };
+      }));
+    }
+    return { ...stand, target, remote, reasons };
+  };
+}
+async function workplaceStands(repos: WorkplaceRepo[], measuredAt: number): Promise<WorkplaceStand[]> {
+  await bootHeadReady;
+  const sources = await workplaceStandSources(repos, measuredAt), out: WorkplaceStand[] = [];
+  for (const repo of [...new Set(sources.map((s) => s.repo))]) {
+    const selected = sources.filter((s) => s.repo === repo);
+    if (repo === null) {
+      for (const { branch, headReason, ...stand } of selected) out.push({ ...stand, target: null, remote: null,
+        reasons: ["repo", "target", "remote", "observedAt", "path", "update"].map((field) => ({ field, reason: "linked-or-unmapped-repo-unobserved" }))
+          .concat(stand.head === null ? [{ field: "head", reason: headReason }] : [], stand.name === null ? [{ field: "name", reason: "fleet-name-unrecorded" }] : []) });
+      continue;
+    }
+    const primary = repos.find((r) => r.repo === repo)?.worktrees?.find((w) => w.primary)?.branch ?? null;
+    const read = await workplaceStandReader(repo, primary, measuredAt);
+    const values: WorkplaceStand[] = new Array(selected.length); let next = 0;
+    await Promise.all(Array.from({ length: Math.min(6, selected.length) }, async () => {
+      for (;;) { const i = next++; if (i >= selected.length) return; values[i] = await read(selected[i]); }
+    }));
+    out.push(...values);
+  }
+  return out;
+}
 async function workplaces(): Promise<Workplaces> {
-  const repos = [...new Set(knownRepos().map((r) => { try { return realpathSync(r); } catch { return r; } }))];
-  const key = JSON.stringify([repos, slots.filter((s) => s.cwd).map((s) => [s.id, s.openedAt, s.cwd, s.worktree?.base, s.worktree?.baseSha])]);
+  const repos = [...new Set([...knownRepos(), REPO_DIR, ...(HELPER_UPDATE_REPO ? [HELPER_UPDATE_REPO] : [])].map((r) => { try { return realpathSync(r); } catch { return r; } }))];
+  const key = JSON.stringify([repos, [...helperDevices.values()].map((d) => [d.id, d.name, d.daemonSha, d.instance, d.lastSeen, helperUpdates.get(d.id)]), slots.filter((s) => s.cwd).map((s) => [s.id, s.openedAt, s.cwd, s.worktree?.base, s.worktree?.baseSha])]);
   if (!workplacesCache || workplacesCache.key !== key || Date.now() - workplacesCache.at >= WORKPLACES_CACHE_MS) {
     const entry: NonNullable<typeof workplacesCache> = { key, at: Number.POSITIVE_INFINITY, value: workplaceAuditReading().then((audits) => Promise.all(repos.map(async (repo): Promise<WorkplaceRepo> => {
       try { return await workplaceRepo(repo, audits); } catch { return { repo, branches: null, worktrees: null, landNotes: { truncated: null },
         reasons: [{ field: "repo", reason: "repo-observation-failed" }, { field: "landNotes.truncated", reason: "land-notes-unreadable" }] }; }
     })))
-      .then((rows) => { entry.at = Date.now(); return { repos: rows, measuredAt: entry.at, cacheMs: WORKPLACES_CACHE_MS }; }) };
+      .then(async (rows) => {
+        const measuredAt = Date.now(), stands = await workplaceStands(rows, measuredAt);
+        entry.at = Date.now();
+        return { repos: rows, stands, measuredAt, cacheMs: WORKPLACES_CACHE_MS };
+      }) };
     workplacesCache = entry;
   }
   const value = await workplacesCache.value;

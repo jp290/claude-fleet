@@ -167,6 +167,7 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
   const failure = event(23, { type: "task_complete", turn_id: "A", last_agent_message: null,
     error: { message: "HTTP 400: model fixture unsupported", codex_error_info: "bad_request" } });
   const files = new Map<string, Buffer>();
+  const identities = new Map<string, { dev: number; ino: number }>();
   const reads: string[] = [];
   const put = (id: string, lines: string[]) => files.set(`/fixture/${id}`, Buffer.from(lines.join("\n") + "\n"));
   const section = (text: string, from: string, to: string) => {
@@ -179,7 +180,8 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
     const makeScanner = () => new Function("harnessOf", "codexContextFile", "openSync", "fstatSync", "Buffer",
       "readSync", "closeSync", "readCodexFirstTurnEvidence", "exportRedactor", scanner + "\nreturn {tickCodexFirstTurn,codexFirstTurnView};")(
         (id: string) => ({ id }), ({ sessionId }: { sessionId: string }) => files.has(`/fixture/${sessionId}`) ? `/fixture/${sessionId}` : null,
-        (file: string) => { reads.push(file); return file; }, (file: string) => ({ size: files.get(file)!.length }), Buffer,
+        (file: string) => { reads.push(file); return file; },
+        (file: string) => ({ size: files.get(file)!.length, ...(identities.get(file) ?? { dev: 1, ino: 1 }) }), Buffer,
         (file: string, buffer: Buffer, offset: number, length: number, position: number) => files.get(file)!.copy(buffer, offset, position, position + length),
         () => {}, readCodexFirstTurnEvidence, () => ({ clean: (s: string) => s.replace("fixture-secret", "[redacted]") })) as {
           tickCodexFirstTurn: (s: Slot) => void; codexFirstTurnView: (s: Slot) => Slot["codexFirstTurn"] };
@@ -240,6 +242,20 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
     const reboot = makeScanner(); reboot.tickCodexFirstTurn(b);
     checkFixture("first model turn: restart re-reads exact B instead of persisting a cached claim",
       reboot.codexFirstTurnView(b)?.turn.state === "succeeded" && b.codexFirstTurn?.sessionId === "session-B", JSON.stringify(b.codexFirstTurn));
+    const replaced = { ...b, id: 42, selfToken: "replaced", sessionId: "replaced", codexFirstTurn: null } as Slot;
+    put("replaced", [start(21, "original"), success(23, "original")]); scan.tickCodexFirstTurn(replaced);
+    checkFixture("first model turn: file replacement probe begins with a proved success",
+      replaced.codexFirstTurn?.turn.state === "succeeded" && replaced.codexFirstTurn.turn.turnId === "original", JSON.stringify(replaced.codexFirstTurn));
+    const originalSize = files.get("/fixture/replaced")!.length;
+    put("replaced", [start(21, "replacement"), JSON.stringify({ type: "padding", payload: { text: "x".repeat(500) } })]);
+    identities.set("/fixture/replaced", { dev: 1, ino: 2 }); scan.tickCodexFirstTurn(replaced);
+    checkFixture("first model turn: a new inode at the same path cannot retain old success",
+      files.get("/fixture/replaced")!.length >= originalSize && replaced.codexFirstTurn?.turn.state === "running"
+      && replaced.codexFirstTurn.turn.turnId === "replacement", JSON.stringify(replaced.codexFirstTurn));
+    put("replaced", [start(21, "other-device"), success(23, "other-device"), JSON.stringify({ type: "padding", payload: { text: "x".repeat(600) } })]);
+    identities.set("/fixture/replaced", { dev: 2, ino: 2 }); scan.tickCodexFirstTurn(replaced);
+    checkFixture("first model turn: a new device resets the cursor even with the same inode",
+      replaced.codexFirstTurn?.turn.state === "succeeded" && replaced.codexFirstTurn.turn.turnId === "other-device", JSON.stringify(replaced.codexFirstTurn));
     for (const [name, lines] of [
       ["no-start", [success(23, "B")]], ["torn-terminal", [start(21, "B"), success(23, "B").slice(0, -1)]],
       ["wrong-turn", [start(21, "B"), success(23, "other")]],
@@ -324,6 +340,17 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
       longSuccess.codexFirstTurn?.turn.state === "unknown"
       && longSuccess.codexFirstTurn.turn.unknownReason === "oversized-row-skipped" && longSuccess.codexFirstTurn.turn.error === null,
       JSON.stringify(longSuccess.codexFirstTurn));
+    const swappedGap = { ...longSuccess, id: 43, selfToken: "swapped-gap", sessionId: "swapped-gap", codexFirstTurn: null } as Slot;
+    put("swapped-gap", [start(21, "A"), oversized, success(23, "A")]);
+    for (let tick = 0; tick < 6; tick++) scan.tickCodexFirstTurn(swappedGap);
+    const gapSize = files.get("/fixture/swapped-gap")!.length;
+    put("swapped-gap", [start(21, "clean-replacement"), success(23, "clean-replacement"),
+      JSON.stringify({ type: "padding", payload: { text: "x".repeat(2_100_000) } })]);
+    identities.set("/fixture/swapped-gap", { dev: 1, ino: 2 }); scan.tickCodexFirstTurn(swappedGap);
+    checkFixture("first model turn: file replacement clears the gap as well as the completed turn and offset",
+      files.get("/fixture/swapped-gap")!.length >= gapSize && swappedGap.codexFirstTurn?.turn.state === "succeeded"
+      && swappedGap.codexFirstTurn.turn.turnId === "clean-replacement" && !swappedGap.codexFirstTurn.turn.unknownReason,
+      JSON.stringify(swappedGap.codexFirstTurn));
     const skippedBeforeStart = { ...longSuccess, id: 22, selfToken: "skip-before-start", sessionId: "skip-before-start", codexFirstTurn: null } as Slot;
     put(skippedBeforeStart.sessionId!, [oversized, start(24, "later"), success(25, "later")]);
     for (let tick = 0; tick < 6; tick++) scan.tickCodexFirstTurn(skippedBeforeStart);

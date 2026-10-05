@@ -7541,9 +7541,9 @@ async function workplaceStandReader(repo: string, primaryBranch: string | null, 
       const pathKey = `${result.mergeBase}..${target}`;
       let reading = paths.get(pathKey);
       if (!reading) {
-        reading = gitRead(repo, "log", "--format=", "--name-only", "-z", "--no-renames", pathKey, "--")
+        reading = gitRead(repo, "diff", "--name-only", "-z", "--no-renames", result.mergeBase, target, "--")
           .then((r) => {
-            const names = [...new Set(r.out.split("\0").map((p) => p.replace(/^\n+/, "")).filter(Boolean))];
+            const names = [...new Set(r.out.split("\0").filter(Boolean))];
             return r.code === 0 && names.length <= WORKPLACE_PATH_CAP ? names : null;
           });
         paths.set(pathKey, reading);

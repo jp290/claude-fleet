@@ -3064,8 +3064,9 @@ Importgraph und roleOf wie deployGap, zusätzlich sind nicht server-importierte 
 Dateien anderer Laufzeitcode; helper-daemon verwendet den lokalen Importgraph ab helper-daemon/daemon.ts und
 Runtime-Manifeste; Dokumentation und Test-/Bundle-Dateien bleiben fremd. Ein unlesbarer oder
 auf 4000 Dateien gedeckelter Daemon-Graph lässt andere Pfade unbekannt. repository zählt alle Änderungen außer Markdown als betroffen. Geprüft werden die
-geänderten Pfade der fehlenden Zielcommits, einschließlich zwischenzeitlich zurückgenommener
-Änderungen. Kein Rückstand ergibt false; sicher betroffener Code true; nur bekannte fremde
+Netto-Änderungspfade zwischen mergeBase und Zielspitze (`git diff --name-only -z
+--no-renames <mergeBase> <target> --`), einschließlich Änderungen aus Merge-Auflösungen.
+Zwischenzeitlich vollständig zurückgenommene Änderungen zählen nicht als Code-Rückstand. Kein Rückstand ergibt false; sicher betroffener Code true; nur bekannte fremde
 Pfade false; ungeklärte Zuordnung ohne positiven Treffer null mit code-ownership-unproven.
 Beide Laufzeit-Zuordnungen lesen den lokalen Checkout-Importgraph, keinen historisch ausgeführten
 Prozessgraph; dieselbe Grenze wie deployGap. Unbekannte Werte tragen immer benannte reasons.

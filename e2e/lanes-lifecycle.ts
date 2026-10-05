@@ -344,6 +344,35 @@ async function workplacesChecks(): Promise<void> {
     const checkoutLieWire = await compile(checkoutLie, [], false, undefined, false, undefined, { stands: standSources }).read();
     check("workplace versions mutation rejects checkout SHA claimed as running helper instance", checkoutLie !== functions
       && stand(checkoutLieWire, "helper-instance", "current")?.head !== null);
+    git(versionRepo, "checkout", "-qb", "merge-docs", daemonHead);
+    writeFileSync(`${versionRepo}/branch.md`, "branch docs\n"); git(versionRepo, "add", "."); const mergeDocsHead = commit(versionRepo);
+    git(versionRepo, "checkout", "-q", "main");
+    writeFileSync(`${versionRepo}/main.md`, "main docs\n"); git(versionRepo, "add", "."); const mergeMainHead = commit(versionRepo);
+    const mergeStarted = git(versionRepo, "merge", "--no-ff", "--no-commit", "merge-docs");
+    writeFileSync(`${versionRepo}/server.ts`, "export const value = 3;\n"); git(versionRepo, "add", "."); const mergeHead = commit(versionRepo);
+    const mergeParents = git(versionRepo, "rev-list", "--parents", "-1", mergeHead).stdout.trim().split(" ");
+    const mergeHasNoLoggedServer = !git(versionRepo, "log", "--format=", "--name-only", `${daemonHead}..${mergeHead}`, "--").stdout.split("\n").includes("server.ts");
+    check("workplace versions merge fixture changes server only in merge resolution", mergeStarted.status === 0
+      && mergeParents.join(" ") === [mergeHead, mergeMainHead, mergeDocsHead].join(" ") && mergeHasNoLoggedServer);
+    const mergeSources = { ...standSources, BOOT_HEAD: daemonHead };
+    const mergedWire = await compile(functions, [], false, undefined, false, undefined, { stands: mergeSources }).read();
+    const mergeStand = stand(mergedWire, "live-server");
+    const seesMergeCode = (wire: Workplaces) => {
+      const target = stand(wire, "live-server")?.target;
+      return target?.mergeBase === daemonHead && target.head === mergeHead && target.distance?.ahead === 0
+        && target.distance.behind === 3 && target.codeBehind === true;
+    };
+    check("workplace versions merge resolution reports true own-code backlog", seesMergeCode(mergedWire), JSON.stringify(mergeStand));
+    const mergeBlind = functions.replace('gitRead(repo, "diff", "--name-only", "-z", "--no-renames", result.mergeBase, target, "--")',
+      'gitRead(repo, "log", "--format=", "--name-only", "-z", "--no-renames", pathKey, "--")');
+    const mergeBlindWire = await compile(mergeBlind, [], false, undefined, false, undefined, { stands: mergeSources }).read();
+    check("workplace versions mutation rejects log missing merge-resolution paths", mergeBlind !== functions
+      && !seesMergeCode(mergeBlindWire) && stand(mergeBlindWire, "live-server")?.target?.codeBehind === false);
+    writeFileSync(`${versionRepo}/server.ts`, "export const value = 2;\n"); git(versionRepo, "add", "."); const revertedHead = commit(versionRepo);
+    const revertedWire = await compile(functions, [], false, undefined, false, undefined, { stands: mergeSources }).read();
+    const revertedTarget = stand(revertedWire, "live-server")?.target;
+    check("workplace versions reverted server edits leave no net own-code backlog", revertedTarget?.head === revertedHead
+      && revertedTarget.distance?.behind === 4 && revertedTarget.codeBehind === false, JSON.stringify(revertedTarget));
     const checkHead = "a".repeat(40), oldHead = "b".repeat(40), checkBranch = "fixture-lane", checkRepo = realpathSync(b);
     const checkHolder = { ...holderFixture(), worktree: { ...holderFixture().worktree, branch: checkBranch } };
     const fixtureSources = (stage: keyof WorkplaceChecks, state: "green" | "red" | "running" | "waiting" | "skipped", sha = checkHead): Record<string, unknown> => {

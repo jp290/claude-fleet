@@ -9,7 +9,7 @@
 # order and its reasoning — i.e. the things git genuinely cannot carry.
 #
 # Usage:  ./state.sh            (run it at the start of a session, before believing anything)
-#         ./state.sh --brief         (held metadata, max 40 lines; full diagnosis: --full)
+#         ./state.sh --brief         (role start output; full diagnosis: --full)
 #         ./state.sh --since <ref>   (default: the last handoff commit)
 set -u
 cd "$(dirname "$0")" || exit 1
@@ -20,56 +20,173 @@ case "${1:-}" in
 --full) shift ;;
 --brief)
   python3 - <<'PYBRIEF'
-import json, subprocess
-
+import json, os, re, subprocess, time
 schema = 'fleet.operational-view/v1'
-lines = []
-reason = 'invalid-held-source'
-try:
-    result = subprocess.run(['./ctl.sh', 'get', '/api/operational-view', '--json'],
-                            capture_output=True, text=True, timeout=10)
-    if result.returncode:
-        reason = 'ctl-read-failed'
-        raise ValueError('held source unavailable')
-    view = json.loads(result.stdout)
-    if view.get('schema') != schema or view.get('scope') != 'owner-metadata':
-        reason = 'unsupported-schema'
-        raise ValueError('held operational source unsupported (old server/schema)')
-    lines.append(f"{schema} scope={view['scope']} freshness={view.get('freshness', 'unknown')} full: ./state.sh --full")
-    lines.append(f"boot={view.get('bootEpoch')} computedAt={view.get('computedAt')} revision={view.get('revision')}")
-    lines.append(f"observedRevision={view.get('observedRevision')} pending={view.get('pending')} inflight={view.get('inflight')} failed={view.get('failed')}")
-    for name, source in view.get('sources', {}).items():
-        lines.append(f"source {name} revision={source.get('revision')} computed={source.get('computedRevision')} "
-                     f"observedAt={source.get('observedAt')} cadenceMs={source.get('cadenceMs')} "
-                     f"ageMs={source.get('ageMs')} state={source.get('state', 'unknown')}")
-    for item in view.get('unknown', []):
-        lines.append(f"unknown {item.get('id')} reason={item.get('reason')}")
-    data = view.get('data') or {}
-    rows = data.get('rows', [])
-    lines.append(f"queue rows={len(rows)} held={sum(bool(row.get('held')) for row in rows)} "
-                 f"exceptions={len(data.get('exceptions', []))} startable={len(data.get('startable', []))}")
-    for row in data.get('startable', []):
-        lines.append(f"startable {row.get('id')} by={row.get('by')} (action door rechecks)")
-    for row in data.get('exceptions', []):
-        lines.append(f"boundary {row.get('kind')} {row.get('id')} reason={row.get('reason')} related={','.join(row.get('relatedIds', []))}")
+lines, reads = [], []
+http = 0
+def emit(text):
+    lines.append(text)
+def compact(value):
+    return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+def read(path):
+    global http
+    at = int(time.time() * 1000)
+    reason = None
+    try:
+        result = subprocess.run(['./ctl.sh', 'get', path, '--json'], capture_output=True, text=True, timeout=10)
+        # ctl get issues exactly one fetch after local validation (exit 2 issues none).
+        if http is not None:
+            if result.returncode == 0 or re.search(r' -> [0-9]{3}', result.stderr):
+                http += 1
+            elif result.returncode != 2:
+                http = None
+        if result.returncode:
+            reason = 'credential-or-local-validation-missing' if result.returncode == 2 else 'ctl-read-failed'
+        else:
+            value = json.loads(result.stdout)
+            if isinstance(value, dict):
+                reads.append(f'source {path} fetchedAt={at}')
+                return value
+            reason = 'unsupported-shape'
+    except subprocess.TimeoutExpired:
+        http = None
+        reason = 'source-timeout; HTTP-count-unknown'
+    except OSError:
+        reason = 'ctl-unavailable'
+    except ValueError:
+        reason = 'invalid-json'
+    reads.append(f'unknown source {path} reason={reason}; freshness=unknown; full diagnosis: ./state.sh --full')
+    return None
+def group(name, rows, door, render=compact):
+    if not isinstance(rows, list):
+        emit(f'unknown {name} reason=missing-or-unreadable; detail: {door}')
+        return
+    emit(f'{name} count={len(rows)} detail: {door}')
+    if len(rows) > 12:
+        emit(f'overflow {name} count={len(rows)} budget=12; all rows retained; detail: {door}')
     for row in rows:
-        lines.append(f"row {row.get('id')} status={row.get('status')} program={row.get('programId')} "
-                     f"held={row.get('held')} after={','.join(row.get('after', []))}")
-except subprocess.TimeoutExpired:
-    lines = []
-    reason = 'source-timeout'
-except OSError:
-    lines = []
-    reason = 'ctl-unavailable'
+        emit(f'{name} {render(row)}')
+def named(row):
+    return f"{row.get('id', row.get('programId', 'unknown'))} title={compact(row.get('title', 'unknown'))} basis={row.get('titleBasis', 'unknown: missing-title-source')}"
+def operational(view):
+    if view is None:
+        return
+    if view.get('schema') != schema or view.get('scope') != 'owner-metadata':
+        emit('unknown source /api/operational-view reason=unsupported-schema; full diagnosis: ./state.sh --full')
+        return
+    emit(f"{schema} scope=owner-metadata freshness={view.get('freshness', 'unknown')} full: ./state.sh --full")
+    emit(f"boot={view.get('bootEpoch')} computedAt={view.get('computedAt')} revision={view.get('revision')}")
+    emit(f"observedRevision={view.get('observedRevision')} pending={view.get('pending')} inflight={view.get('inflight')} failed={view.get('failed')}")
+    for name, source in view.get('sources', {}).items():
+        emit(f"source {name} revision={source.get('revision')} computed={source.get('computedRevision')} observedAt={source.get('observedAt')} cadenceMs={source.get('cadenceMs')} ageMs={source.get('ageMs')} state={source.get('state', 'unknown')} basis={source.get('basis', 'unknown')}")
+    for item in view.get('unknown', []):
+        emit(f"unknown {item.get('id')} reason={item.get('reason')}")
+    data = view.get('data')
+    if not isinstance(data, dict):
+        emit('unknown operational data reason=missing-or-unreadable; detail: GET /api/operational-view')
+        return
+    group('program', data.get('bindings'), 'GET /api/operational-view', lambda r:
+          f"{named(r)} status={r.get('status', 'unknown')} binding={r.get('state', 'unknown')} slot={r.get('slot')} openedAt={r.get('openedAt')} sessionId={r.get('sessionId')} slotLabel={compact(r.get('slotLabel', 'unknown'))} slotLabelBasis={r.get('slotLabelBasis', 'unknown: unproven-occupant')}")
+    group('boundary', data.get('exceptions'), 'GET /api/operational-view', lambda r:
+          f"{r.get('kind')} {named(r)} reason={r.get('reason', 'unknown')} related={compact(r.get('related', r.get('relatedIds', [])))} slotLabel={compact(r.get('slotLabel', 'unknown'))} slotLabelBasis={r.get('slotLabelBasis', 'unknown: no-proven-occupant')} door=./ctl.sh task <id> for task boundaries; GET /api/operational-view otherwise")
+    group('row', data.get('rows'), 'GET /api/operational-view', lambda r:
+          f"{named(r)} status={r.get('status', 'unknown')} program={r.get('programId')} held={r.get('held')} after={compact(r.get('after'))} door=./ctl.sh task {r.get('id')}")
+    group('startable', data.get('startable'), 'GET /api/operational-view', lambda r:
+          f"{r.get('id')} by={r.get('by')} (action door rechecks)")
+    group('message', data.get('messages'), 'GET /api/operational-view; own text: GET /api/self/messages')
+    group('audit', data.get('audits'), './ctl.sh audits')
+    snapshot = data.get('snapshot')
+    if isinstance(snapshot, dict):
+        group('lane', snapshot.get('lanes'), './ctl.sh lane <slot>')
+    else:
+        emit('unknown snapshot reason=missing-or-unreadable')
+def seat(value):
+    identity = value.get('position', value)
+    return (value.get('slot'), identity.get('openedAt'), identity.get('sessionId'))
+def own(self):
+    position = self['position']
+    emit(f"start role={position.get('role')} slot={self.get('slot')} openedAt={position.get('openedAt')} sessionId={position.get('sessionId')} program={position.get('programId')} task={position.get('taskId')} receiver={compact(position.get('receiver'))}")
+    if position.get('receiver') is None:
+        emit('unknown receiver reason=no-proven-receiver; detail: GET /api/self')
+    lineage = self.get('lineage')
+    if lineage is None:
+        emit('unknown lineage reason=no-record; detail: GET /api/self (lineage)')
+    else:
+        emit(f"lineage state={lineage.get('state', 'unknown')} id={lineage.get('lineageId')} losses={lineage.get('losses')} lost={compact(lineage.get('handoverLost'))}")
+        record = lineage.get('record')
+        if lineage.get('state') == 'present' and isinstance(record, dict):
+            emit(f"intent={compact(record.get('intent'))} pointer={compact(record.get('pointer'))} detail: GET /api/self (lineage.record)")
+            group('historical-obligation', record.get('obligations'), 'GET /api/self (lineage.record); nothing re-armed')
+        else:
+            emit('unknown lineage record reason=lost-or-unreadable; detail: GET /api/self')
+    group('waiting', position.get('waitingOnMe'), 'GET /api/self/messages; POST /api/self/messages/<id>/read after reading; GET /api/self/fleet-report; POST /api/self/fleet-report/<id>/accept|reject; GET /api/self/clarifications')
+    messages = position.get('messages')
+    if isinstance(messages, dict):
+        emit(f"own-messages unread={messages.get('unread', 'unknown')} droppedFleetWide={messages.get('droppedFleetWide', 'unknown')} reason={messages.get('reason')} detail: GET /api/self/messages; POST /api/self/messages/<id>/read after reading")
+        group('message-unknown', messages.get('unknown'), 'GET /api/self/messages')
+    else:
+        emit('unknown own-messages reason=missing-status; detail: GET /api/self/messages')
+    group('attention', position.get('attention'), 'GET /api/self/attention')
+    for name in ('watches', 'autos', 'events'):
+        group(name, self.get(name), 'GET /api/self; no automatic ack or re-arm')
+def execution(view, self):
+    if view is None:
+        return
+    if seat(view.get('session', {})) != seat(self):
+        raise ValueError('execution-occupant-mismatch')
+    programs = view.get('programs')
+    if not isinstance(programs, list) or len(programs) != 1 or programs[0].get('program', {}).get('id') != self['position'].get('programId'):
+        raise ValueError('unproven-own-program')
+    p = programs[0]
+    emit(f"program {compact(p.get('program'))} authority={compact(p.get('authority'))} detail: GET /api/self/program-execution")
+    if p.get('authority', {}).get('sessionIdMatch') != 'exact':
+        emit('unknown MAIN binding reason=unproven-session-id; detail: GET /api/self/program-execution')
+    emit(f"program-status {compact(p.get('status'))} detail: GET /api/self/inbox; GET /api/self/messages; GET /api/self/attention")
+    group('inbox', p.get('inbox', {}).get('unread'), 'GET /api/self/inbox; POST /api/self/inbox/<id>/read after reading')
+    emit(f"inbox dropped={p.get('inbox', {}).get('dropped', 'unknown')}; loss: see execution-unknown")
+    handover = p.get('handover')
+    if handover is None:
+        emit('handover none (no Standard succession record); losses: see execution-unknown')
+    elif isinstance(handover, dict):
+        emit(f"handover from={compact(handover.get('from'))} to={compact(handover.get('to'))} lost={compact(handover.get('lost'))} dropped={handover.get('dropped')} detail: GET /api/self/program-execution (handover)")
+        group('historical-obligation', handover.get('obligations'), 'GET /api/self/program-execution (handover); nothing re-armed')
+    else:
+        emit('unknown handover reason=unreadable-record')
+    group('execution-unknown', p.get('unknown'), 'GET /api/self/program-execution')
+    group('task', p.get('tasks', {}).get('rows'), 'GET /api/self/program-execution', lambda r:
+          f"{r.get('id')} title={compact(r.get('text', 'unknown').splitlines()[0] if r.get('text') else 'unknown')} status={r.get('status', 'unknown')} phase={r.get('phase', 'unknown')} basis={compact(r.get('phaseBasis'))} note={compact(r.get('note'))} door={r.get('nextAction') or 'none; observe the named phase'}")
+    group('clarifications', p.get('clarifications'), 'GET /api/self/clarifications')
+try:
+    if not os.environ.get('FLEET_SELF_TOKEN'):
+        emit('unknown self reason=no-self-credential; legacy owner metadata only')
+        operational(read('/api/operational-view'))
+    else:
+        self = read('/api/self')
+        if self is None:
+            raise ValueError('self-unavailable')
+        if not all(seat(self)) or not isinstance(self.get('position'), dict):
+            raise ValueError('unsupported-self-identity')
+        role = self['position'].get('role')
+        if role == 'orchestrator':
+            view = read('/api/operational-view')
+        elif role == 'program-main':
+            view = read('/api/self/program-execution')
+        else:
+            view = None
+        last = read('/api/self')
+        if last is None or seat(last) != seat(self) or any(last.get('position', {}).get(k) != self['position'].get(k) for k in ('role', 'programId', 'taskId', 'receiver')):
+            raise ValueError('occupant-or-role-changed-after-await')
+        own(self)
+        if role == 'orchestrator':
+            operational(view)
+            emit('inbox not-applicable: Orchestratorin has role messages, no Program inbox')
+        elif role == 'program-main':
+            execution(view, self)
+        else:
+            emit('unknown role-start reason=unsupported-role; retain the role-specific entry contract')
 except (ValueError, TypeError, KeyError, AttributeError):
-    lines = []
-if not lines:
-    # Only named reasons leave the interpreter; exceptions may contain URLs or credentials.
-    lines = [schema + ' freshness=unknown',
-             'unknown source /api/operational-view reason=' + reason + '; full diagnosis: ./state.sh --full']
-if len(lines) > 40:
-    lines = lines[:39] + [f"omitted={len(lines) - 39} metadata lines; held detail: GET /api/operational-view"]
-print('\n'.join(lines))
+    lines = ['unknown start reason=identity-or-source-not-proven; stale role/Program data discarded; detail: GET /api/self']
+print('\n'.join([f'start-output HTTP={http if http is not None else "unknown"} observations=separate; GET-only; no ack/re-arm'] + reads + lines))
 PYBRIEF
   exit $? ;;
 *) echo "state.sh: unbekanntes Flag '$1' — gueltig: (kein Flag) | --full | --brief | --since <ref>" >&2

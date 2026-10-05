@@ -3056,7 +3056,7 @@ await import(pathToFileURL(process.argv[2]).href);
         const fresh = run(script, "--brief");
         pin(`${name} --brief without environment Owner token/URL executes ctl.sh get with home/.env and fleet.json, never the full path`,
           fresh.status === 0 && fresh.calls.join(",") === "python,bun,http" && fresh.stdout.includes(fixture.revision)
-          && fresh.stdout.includes("startable row1 by=release") && fresh.stdout.includes("boundary audit row2 reason=unknown")
+          && fresh.stdout.includes("startable row1 by=release") && (name === "state.sh" ? /boundary audit row2 .*reason=unknown/.test(fresh.stdout) : fresh.stdout.includes("boundary audit row2 reason=unknown"))
           && !fresh.stdout.includes("__FULL_PATH__") && !/PROBE_CREDENTIAL_MARKER/.test(fresh.stdout + fresh.stderr),
           `${Buffer.byteLength(fresh.stdout)} CLI bytes; calls=${fresh.calls.join(",")}`);
         for (const mode of ["offline", "old", "denied"])
@@ -3074,15 +3074,17 @@ await import(pathToFileURL(process.argv[2]).href);
         const missing = run(script, "--brief", "fresh", fixture, false);
         pin(`${name} --brief missing Owner credential is unknown before any HTTP or full work`,
           missing.status === 0 && missing.calls.join(",") === "python" && missing.stdout.includes("freshness=unknown")
-          && missing.stdout.includes(`unknown source /api/operational-view reason=ctl-read-failed; full diagnosis: ./${name} --full`));
+          && missing.stdout.includes(`unknown source /api/operational-view reason=${name === "state.sh" ? "credential-or-local-validation-missing" : "ctl-read-failed"}${name === "state.sh" ? "; freshness=unknown" : ""}; full diagnosis: ./${name} --full`));
         const stale = run(script, "--brief", "fresh", {...fixture, freshness: "unknown", data: null,
           unknown: [{id: "git", reason: "stale"}]});
         pin(`${name} --brief carries stale source ID/reason and claims no startable row`,
           stale.status === 0 && stale.stdout.includes("unknown git reason=stale") && !stale.stdout.includes("startable row1"));
         const many = run(script, "--brief", "fresh", {...fixture, data: {...fixture.data,
           exceptions: Array.from({length: 100}, (_, i) => ({kind: "audit", id: `row${i}`, reason: "unknown"}))}});
-        pin(`${name} --brief is capped at exactly 40 lines with an explicit omission count`,
-          many.status === 0 && many.stdout.trim().split("\n").length === 40 && many.stdout.includes("omitted="));
+        pin(`${name} --brief preserves its boundary budget contract with explicit overflow`,
+          many.status === 0 && (name === "state.sh"
+            ? many.stdout.includes("overflow boundary count=100") && /boundary audit row99 .*reason=unknown/.test(many.stdout)
+            : many.stdout.trim().split("\n").length === 40 && many.stdout.includes("omitted=")));
         const full = run(script, "--full"), invalid = run(script, "--not-a-flag");
         pin(`${name} --full selects diagnosis, unknown flag rejects before either producer`,
           full.calls.join(",") === "full" && full.stdout.includes("__FULL_PATH__") && invalid.status === 2 && invalid.calls.length === 0);
@@ -3099,6 +3101,82 @@ await import(pathToFileURL(process.argv[2]).href);
         && read("docs/self-api.md").includes('schema: "fleet.operational-view/v1"')
         && !/observe\(|produceOperationalData\(|invalidate\(/.test(operationalRoute));
     } finally { rmSync(dir, {recursive: true, force: true}); }
+  }
+  {
+    const body = (head: string) => server.match(new RegExp(head.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[\\s\\S]*?\\n\\}\\n"))?.[0] ?? "";
+    const standard = body("function buildProgramMainBrief("), successor = body("function buildProgramMainSuccessionBrief(");
+    const orchestrator = body("function buildOrchestratorSpawnBrief("), orchestraSuccessor = body("function buildOrchestratorSuccessionBrief(");
+    pin("role cards and all four Fleet Standard start builders name the single state --brief entry",
+      [standard, successor, orchestrator, orchestraSuccessor].every((s) => s.includes("./state.sh --brief") && !s.includes('"2. Run ./register.sh.') && !s.includes('"2. Führe ./register.sh'))
+      && read("docs/rollenkarten.md").includes("Standard-Fleet-Einstieg: state.sh --brief")
+      && !read("docs/rollenkarten.md").includes("state.sh --brief → register.sh")
+      && read("docs/controller.md").includes("genau `./state.sh --brief`"));
+    const role = body("function selfPosition("), inbound = body("function messageInboundFor(");
+    const scopeSource = `
+      const s = {id: 1, openedAt: 1, sessionId: 'mine', cwd: '/fixture', label: 'MAIN'};
+      const slots = [s], messages = {entries: [
+        {id: 'own', readBy: null, to: {kind: 'program', id: 'own-program'}},
+        {id: 'foreign', readBy: null, to: {kind: 'role', role: 'orchestrator'}}]};
+      const watches = [], parkedSends = [], clarifications = [], successionDebts = [];
+      const boundProgramForMain = () => ({ok: true, program: {id: 'own-program'}});
+      const positionRole = () => 'program-main', isOrchestratorLabel = () => false;
+      const fleetReportsFor = () => [], slotFrom = () => s;
+      const messageAddressesFor = () => [{kind: 'program', id: 'own-program'}];
+      const sameAddress = (a,b) => JSON.stringify(a) === JSON.stringify(b);
+      const resolveMessageAddress = () => ({ok:true, escalatedTo:null, holder:null});
+      ${inbound}
+      ${role}
+      return selfPosition(s).waitingOnMe;
+    `;
+    try {
+      const scope = new Function(new Bun.Transpiler({loader: "ts"}).transformSync(scopeSource));
+      const rows = scope() as {id: string}[];
+      const mutant = new Function(new Bun.Transpiler({loader: "ts"}).transformSync(
+        scopeSource.replace("m.readBy === null && messageInboundFor(s, m)", "m.readBy === null")))() as {id: string}[];
+      pin("start own waiting facts exclude a foreign-role message; removed-scope mutation admits it",
+        rows.length === 1 && rows[0]?.id === "own" && !JSON.stringify(rows).includes("foreign")
+        && mutant.length === 2 && mutant[1]?.id === "foreign");
+    } catch (e) { pin("start message scope fixture executes", false, String(e)); }
+    for (const path of ["/api/self", "/api/self/program-execution"]) {
+      const at = server.indexOf(`if (url.pathname === "${path}" && req.method === "GET")`);
+      const end = server.indexOf("\n    }", at);
+      const route = server.slice(at, end + 6);
+      pin(`${path} re-proves exact occupant after its ledger await and performs no state write`,
+        route.indexOf("const still = resolveSelfPrincipal(req)") > route.indexOf("await ")
+        && route.includes("s.sessionId !== sessionId") && route.includes("slotFrom(s.id) !== s")
+        && route.includes('refusal: "occupant-changed"') && !/saveState|audit\(|\.readBy\s*=(?!=)|createAuto|createWatch/.test(route));
+      const exercise = async (change: boolean, mutant = false): Promise<{status: number; refusal?: string}> => {
+        const tested = mutant ? route.replace(/      if \(still\?\.kind[\s\S]*?return json\(\{ refusal: "occupant-changed"[^\n]*\n/, "") : route;
+        const code = `return (async () => {
+          const url = {pathname: ${JSON.stringify(path)}}, req = {method: 'GET'};
+          const s = {id:1, openedAt:1, sessionId:'original', cwd:'/fixture', lastOutput:1};
+          let slots = [s];
+          const resolveSelfPrincipal = () => slots[0] === s ? {kind:'session',slot:1,openedAt:1} : null;
+          const slotFrom = () => slots[0];
+          const program = {id:'own'}, boundProgramForMain = () => ({ok:true,program});
+          const crossAwait = async () => {await Promise.resolve();
+            if (${change}) slots = [{...s,openedAt:2,sessionId:'replacement'}];};
+          const readLedger = async () => {await crossAwait(); return {rows:[]};};
+          const programExecutionView = async () => {await crossAwait(); return json({});};
+          const json = (body, status = 200) => ({...body,status});
+          const Bun = {sleep: async () => {}};
+          const LANE_OUTCOME_FILE = '/fixture';
+          const messageAddressesFor = () => [], messageRetentionUnknown = () => [], NO_MESSAGE_ADDRESS = 'unsupported';
+          const messages = {entries:[],dropped:0}, attentionRequests = [], autos = [], watches = [], fleetEvents = [];
+          const selfPosition = () => ({}), lineageSelfView = () => null, attentionFor = () => [];
+          ${tested}
+          throw Error('route did not execute');
+        })();`;
+        const result = await new Function(new Bun.Transpiler({loader: "ts"}).transformSync(code))() as {status: number; refusal?: string};
+        return result;
+      };
+      try {
+        const control = await exercise(false), changed = await exercise(true), mutant = await exercise(true, true);
+        pin(`${path} executed await probe refuses recycled occupant; removed-guard mutation fails that invariant`,
+          control.status === 200 && changed.status === 409 && changed.refusal === "occupant-changed" && mutant.status === 200,
+          `control=${control.status} recycled=${changed.status} mutant=${mutant.status}`);
+      } catch (e) { pin(`${path} await probe executes`, false, String(e)); }
+    }
   }
   // THE REPORT LEDGER: every place that opens a report or stamps a verdict writes its row. A fourth
   // decision site without the line would leave that verdict only in the prunable live list.

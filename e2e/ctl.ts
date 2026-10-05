@@ -161,6 +161,138 @@ export async function run(): Promise<void> {
       : `ctl=${CTL ?? `${home.present.join(", ")} — present, but no execute bit`}`);
   if (CTL === null) { unreached(entered, `no executable ctl.sh (sourceTree=${srcNote})`); return; }
 
+  // Same state, old separate readers versus the role start. Only HTTP is mocked.
+  {
+    const dir = `${REPO}.start-fixture`;
+    rmSync(dir, {recursive: true, force: true});
+    mkdirSync(dir, {recursive: true});
+    try {
+      const source = dirname(CTL);
+      const state = readFileSync(`${source}/state.sh`, "utf8");
+      const register = readFileSync(`${source}/register.sh`, "utf8");
+      const prefix = (s: string) => s.slice(0, s.indexOf("\nesac\n") + 7);
+      writeFileSync(`${dir}/state.sh`, prefix(state));
+      writeFileSync(`${dir}/register.sh`, prefix(register));
+      writeFileSync(`${dir}/ctl.sh`, readFileSync(CTL, "utf8"));
+      spawnSync("chmod", ["+x", `${dir}/ctl.sh`]);
+      writeFileSync(`${dir}/bun`, `#!${process.execPath}
+import {appendFileSync, readFileSync} from 'node:fs';
+import {pathToFileURL} from 'node:url';
+globalThis.fetch = async (url, opts) => {
+  const path = new URL(url).pathname;
+  const log = process.env.START_LOG;
+  const previous = readFileSync(log, 'utf8');
+  appendFileSync(log, path + '\\n');
+  const fixtures = JSON.parse(process.env.START_FIXTURES);
+  if (path.startsWith('/api/self') && opts.headers['x-fleet-self-token'] !== 'SELF_MARKER') throw Error('bad self credential');
+  if (path === '/api/operational-view' && opts.headers.authorization !== 'Bearer OWNER_MARKER') throw Error('bad owner credential');
+  if (process.env.START_MODE === 'denied' && path === '/api/operational-view') return new Response('{}', {status:403});
+  if (process.env.START_MODE === 'changed' && path === '/api/self' && previous.includes('/api/self\\n')) {
+    fixtures[path].position.openedAt = 2; fixtures[path].position.sessionId = 'replacement';
+  }
+  return new Response(JSON.stringify(fixtures[path]), {headers:{'content-type':'application/json'}});
+};
+await import(pathToFileURL(process.argv[2]).href);
+`);
+      spawnSync("chmod", ["+x", `${dir}/bun`]);
+      const log = `${dir}/requests`;
+      const own = {slot: 1, position: {role: "orchestrator", programId: null as string | null, taskId: null,
+        openedAt: 1, sessionId: "session1", receiver: null,
+        waitingOnMe: [1, 2, 3].map((i) => ({kind: "message", id: `m${i}`})),
+        messages: {unread: 3, droppedFleetWide: 0, unknown: [] as string[]}, attention: [{id: "attention1", status: "open"}]},
+        lineage: {lineageId: "line1", state: "present", losses: 0, handoverLost: null,
+          record: {intent: "Continue bounded act", pointer: null, obligations: [{id: "watch1", kind: "watch"}]}},
+        watches: [], autos: [], events: []};
+      const operational = {schema: "fleet.operational-view/v1", scope: "owner-metadata", freshness: "fresh", bootEpoch: 1,
+        revision: "r1", observedRevision: "r1", computedAt: 2, pending: false, inflight: false, failed: null,
+        sources: {queue: {state: "fresh", revision: "r1", computedRevision: "r1", basis: "tasks"}}, unknown: [],
+        data: {bindings: [{programId: "program1", title: "Program title", titleBasis: "programs:program1.title", status: "active",
+          state: "bound", slot: 2, openedAt: 1, sessionId: "main1", slotLabel: "MAIN", slotLabelBasis: "exact-occupant"}],
+          rows: [{id: "task1", title: "Task title", titleBasis: "tasks:task1.card.ziel", status: "queued", programId: "program1", held: true, after: []}],
+          exceptions: [{kind: "start", id: "task1", title: "Task title", titleBasis: "tasks:task1.card.ziel", reason: "collision", related: [{id: "task2", title: "Blocking title", titleBasis: "tasks:task2.text:first-line"}]}],
+          messages: [], audits: [], startable: [], snapshot: {lanes: []}}};
+      const program = {program: {id: "program1", title: "Program title", profile: null},
+        authority: {sessionIdMatch: "exact", boundSlot: 1, boundOpenedAt: 1, boundSessionId: "session1"},
+        status: {inbox: {unread: 1}, messages: {unread: 3}, attention: {open: 1}},
+        inbox: {dropped: 0, unread: [{id: "inbox1", kind: "audit-red", ref: "audit1"}]},
+        handover: {from: {slot: 1, openedAt: 0}, to: {slot: 1, openedAt: 1}, obligations: [{id: "watch1"}], lost: [], dropped: 0},
+        unknown: [] as string[], clarifications: [],
+        tasks: {rows: [{id: "task1", text: "Task title", status: "queued", phase: "OWNER_GATE", phaseBasis: "owner question", note: "collision", nextAction: "owner answers"}]}};
+      const fixtures = {"/api/self": own, "/api/operational-view": operational,
+        "/api/self/program-execution": {session: {slot: 1, openedAt: 1, sessionId: "session1"}, programs: [program]},
+        "/api/self/inbox": {entries: [{id: "inbox1"}], unknown: []},
+        "/api/self/messages": {unread: 3, entries: [1, 2, 3].map((i) => ({id: `m${i}`, payload: {text: `Full own message ${i}`}})), unknown: []}};
+      const run = (args: string[], mode = "fresh", owner = true, mutant: string | null = null) => {
+        writeFileSync(log, "");
+        if (mutant !== null) writeFileSync(`${dir}/state.sh`, mutant);
+        const result = spawnSync("sh", args, {cwd: dir, encoding: "utf8", timeout: 30_000,
+          env: {...process.env, PATH: `${dir}:${process.env.PATH}`, FLEET_CTL_HOME: dir, FLEET_CTL_URL: "http://fixture:8765",
+            FLEET_SELF_TOKEN: "SELF_MARKER", FLEET_CTL_TOKEN: owner ? "OWNER_MARKER" : "", FLEET_TOKEN: "",
+            START_LOG: log, START_FIXTURES: JSON.stringify(fixtures), START_MODE: mode}});
+        return {...result, requests: readFileSync(log, "utf8").trim().split("\n").filter(Boolean)};
+      };
+      const fresh = run(["state.sh", "--brief"]);
+      check("start Orchestrator: one tool, three real GET attempts; own line, obligations, three messages, titled blocker, exact MAIN and freshness",
+        fresh.status === 0 && fresh.requests.join(",") === "/api/self,/api/operational-view,/api/self"
+        && ["HTTP=3", "role=orchestrator", "Continue bounded act", "watch1", "own-messages unread=3", "m3", "Task title", "collision", "Blocking title", "main1", "freshness=fresh", "inbox not-applicable"].every((s) => fresh.stdout.includes(s)),
+        `${Buffer.byteLength(fresh.stdout)} B; ${fresh.requests.join(",")}`);
+      const oldState = run(["register.sh", "--brief"]), oldRegister = run(["register.sh", "--brief"]);
+      const oldSelf = run(["ctl.sh", "get", "/api/self", "--json"]), messages = run(["ctl.sh", "get", "/api/self/messages", "--json"]);
+      const oldOperational = run(["ctl.sh", "get", "/api/operational-view", "--json"]);
+      const oldBytes = [oldState, oldRegister, oldSelf, messages, oldOperational].reduce((n, r) => n + Buffer.byteLength(r.stdout), 0);
+      const newBytes = Buffer.byteLength(fresh.stdout + messages.stdout);
+      const questions = ["role/receiver", "line-intent/lost-obligations", "three-unread-messages", "queue/blocker", "exact-MAIN-binding", "freshness/unknown"];
+      check("start same-fixture effect probe records calls and UTF-8 result bytes for every acceptance question",
+        messages.stdout.includes("Full own message 3") && fresh.requests.length === 3,
+        `${questions.map((q) => `${q}: old=5 tools/${oldBytes} B; new=2 tools/${newBytes} B`).join("; ")} (full messages included; old needs raw operational detail for titles/binding)`);
+      const denied = run(["state.sh", "--brief"], "denied"), missing = run(["state.sh", "--brief"], "fresh", false);
+      check("start missing/refused Owner right stays unknown and never falls back to global or full diagnosis",
+        denied.stdout.includes("unknown source /api/operational-view reason=ctl-read-failed")
+        && missing.requests.length === 2 && missing.stdout.includes("HTTP=2") && missing.stdout.includes("credential-or-local-validation-missing")
+        && !denied.stdout.includes("Program title") && !missing.stdout.includes("Program title"));
+      const changed = run(["state.sh", "--brief"], "changed");
+      check("start identity change after await discards old role, intent and Program data",
+        changed.stdout.includes("stale role/Program data discarded") && !changed.stdout.includes("Task title") && !changed.stdout.includes("Continue bounded act"));
+      own.lineage.state = "lost"; own.lineage.handoverLost = null;
+      own.position.messages.unread = 0; own.position.messages.unknown = ["retained-record-lost: every earlier message is gone; empty proves nothing"];
+      const lost = run(["state.sh", "--brief"]);
+      check("start empty message list and lost line never become absence of obligations",
+        lost.stdout.includes("retained-record-lost") && lost.stdout.includes("lineage state=lost"));
+      own.lineage.state = "present"; own.position.messages.unread = 3; own.position.messages.unknown = [];
+      operational.data.exceptions.push(...Array.from({length: 40}, (_, i) => ({...operational.data.exceptions[0]!, id: `overflow${i}`})));
+      operational.data.exceptions[40]!.reason = "DECISIVE_LAST_BOUNDARY";
+      const overflow = run(["state.sh", "--brief"]);
+      check("start overflow keeps the decisive last boundary and a named detail door",
+        overflow.stdout.includes("overflow boundary count=41") && overflow.stdout.includes("DECISIVE_LAST_BOUNDARY") && overflow.stdout.includes("GET /api/operational-view"));
+      operational.data.exceptions.length = 1;
+      own.position.role = "program-main"; own.position.programId = "program1";
+      const main = run(["state.sh", "--brief"]);
+      check("start Standard MAIN reads only its own projection with phase, inbox ID and next door",
+        main.requests.join(",") === "/api/self,/api/self/program-execution,/api/self" && ["phase=OWNER_GATE", "door=owner answers", "inbox1", "own-messages unread=3"].every((s) => main.stdout.includes(s))
+        && !main.stdout.includes("Blocking title"));
+      const mainOld = [run(["register.sh", "--brief"]), run(["register.sh", "--brief"]),
+        run(["ctl.sh", "get", "/api/self/program-execution", "--json"]), run(["ctl.sh", "get", "/api/self/inbox", "--json"]),
+        run(["ctl.sh", "get", "/api/self", "--json"]), run(["ctl.sh", "get", "/api/self/messages", "--json"])];
+      check("start MAIN same-fixture effect probe includes inbox and all full message results",
+        mainOld.every((r) => r.status === 0) && main.requests.length === 3,
+        `${questions.map((q) => `${q}: old=6 tools/${mainOld.reduce((n, r) => n + Buffer.byteLength(r.stdout), 0)} B; new=2 tools/${Buffer.byteLength(main.stdout + messages.stdout)} B`).join("; ")}`);
+      program.authority.sessionIdMatch = "unknown";
+      program.unknown = ["inbox record unreadable; earlier pointers gone", "handover record unreadable; obligations lost"];
+      const unproven = run(["state.sh", "--brief"]);
+      check("start unproven MAIN and unreadable records expose reason rather than empty success",
+        unproven.stdout.includes("unproven-session-id") && unproven.stdout.includes("obligations lost") && unproven.stdout.includes("earlier pointers gone"));
+      fixtures["/api/self/program-execution"].programs[0]!.program.id = "foreign-program";
+      const foreign = run(["state.sh", "--brief"]);
+      check("start refuses a foreign Program returned on the own door", foreign.stdout.includes("data discarded") && !foreign.stdout.includes("foreign-program"));
+      fixtures["/api/self/program-execution"].programs[0]!.program.id = "program1";
+      const mutant = run(["state.sh", "--brief"], "changed", true,
+        prefix(state).replace("seat(last) != seat(self)", "False"));
+      check("start recycle mutation proves the identity negative probe can reject broken code",
+        !mutant.stdout.includes("data discarded") && mutant.stdout.includes("Task title"));
+      console.log(`START_FIXTURE_ORCHESTRATOR ${fresh.stdout.split("\n").filter((l) => /start-output|start role|own-messages|boundary start|program program1/.test(l)).join("\n")}`);
+      console.log(`START_FIXTURE_MAIN ${main.stdout.split("\n").filter((l) => /start-output|start role|own-messages|inbox |task task1/.test(l)).join("\n")}`);
+    } finally { rmSync(dir, {recursive: true, force: true}); }
+  }
   // the receiver: an ordinary non-lane session, which is what a controller IS. It owns the self
   // token every self verb below runs with.
   const free = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })

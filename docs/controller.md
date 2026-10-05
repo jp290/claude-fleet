@@ -96,11 +96,21 @@ Nachfolge trägt ihn gleich oder verengt (`succeed` mit `memoryGrant`), nie weit
 kopieren keine Portfolio-Tabelle: die manuelle projektübergreifende Übersicht im Übergabetext
 entfällt, gelesen wird sie aus der Tür. Vertrag: `docs/self-api.md` §memory.
 
-Die beiden Sensoren des Loop haben Kurzformen: `./state.sh --brief` und `./register.sh --brief`
-geben je höchstens 40 Zeilen, und ihre erste Zeile nennt Zeilen- und Byte-Zahl der Vollausgabe samt
-dem Kommando, das sie druckt; die Vollausgabe selbst bleibt byteidentisch und beginnt mit derselben
-Kopfzeile. Ein unbekanntes Flag ist exit 2 mit benanntem Ergebnis. Für die Erdung im Kontext — die
-Kennzahlen und der Wegweiser in die Volldaten, nicht die 68 KB Render.
+Der Einstieg für Orchestratorin und Standard-MAIN im Fleet-Repo ist genau `./state.sh --brief`.
+Die Rollenwahl stammt aus `/api/self`: die Orchestratorin liest zusätzlich die gehaltene
+Owner-Betriebssicht (vorhandenes Owner-Leserecht bleibt nötig), die MAIN nur ihre eigene
+`program-execution`. Ein abschließender Self-GET prüft die genaue Besetzung und Zuordnung erneut.
+Die Ausgabe nennt Abrufzeiten und HTTP-Anzahl: drei GETs bei einem erfolgreichen Rollenstart,
+getrennte Beobachtungen, kein atomarer Zustand. Ein Rollen- oder Identitätswechsel verwirft die
+Lage; fehlende Rechte, Quellen und Records erscheinen als `unknown` mit Grund.
+
+Linien-Absicht, offene Pflichten, Nachrichten-/Inbox-/Attention-Zeilen und die nächsten Detailtüren
+stehen im Einstieg. Volltexte bleiben an den bestehenden Türen; Lesen quittiert und armiert
+nichts. Pflichtgruppen und Grenzen werden nicht hinter einem Zeilen-Cap versteckt: über zwölf
+Zeilen nennt jede Gruppe einen Overflow samt Detailtür und druckt ihre Zeilen weiter.
+`./register.sh --brief` bleibt für bestehende Leser erreichbar, ist aber kein zweiter Pflichtabruf.
+`./state.sh --full` und `./register.sh --full` wählen die vollständige Diagnose; ein unbekanntes
+Flag endet mit exit 2. Game-Maker, Fremdrepo- und Lane-Einstieg behalten ihren Vertrag.
 
 ## Werkzeuge
 

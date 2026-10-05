@@ -384,11 +384,13 @@ export async function run(): Promise<void> {
       row.openedAt -= 1;
       return Response.json(body);
     }
-    pinPosts++;
+    if (req.method === "POST") pinPosts++;
     const headers = new Headers(req.headers);
     headers.delete("host");
-    const response = await fetch(BASE + url.pathname, { method: req.method, headers, body: await req.text() });
-    pinError = ((await response.clone().json()) as { error: string }).error;
+    const init: RequestInit = { method: req.method, headers };
+    if (req.method !== "GET" && req.method !== "HEAD") init.body = await req.text();
+    const response = await fetch(BASE + url.pathname, init);
+    if (req.method === "POST") pinError = ((await response.clone().json()) as { error?: string }).error ?? "";
     return response;
   } });
   const recycledLane = await ctl(["send", "--lane", String(sendProbe.slot), sendFile, "--json"],

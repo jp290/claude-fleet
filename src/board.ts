@@ -2828,9 +2828,9 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   } else if (Array.isArray(pst?.remote) && pst.remote.length) {
     const r0 = pst.remote[0];
     const d = r0.distance;
-    const tag = el("span", "tag", `${r0.name}${d ? `${d.ahead ? ` ↑${d.ahead}` : ""}${d.behind ? ` ↓${d.behind}` : ""}` : ""}`);
-    tag.dataset.remote = r0.name;
-    tag.title = pst.remote.map((r) => `${refShort(r.ref)}: ${r.head ? sha7(r.head) : "kein lokales Abbild"}`
+    const tag = el("span", "tag", `${r0.name ?? ""}${d ? `${d.ahead ? ` ↑${d.ahead}` : ""}${d.behind ? ` ↓${d.behind}` : ""}` : ""}`);
+    tag.dataset.remote = r0.name ?? "";
+    tag.title = pst.remote.map((r) => `${r.ref === null ? "unbekannt" : refShort(r.ref)}: ${r.head ? sha7(r.head) : "kein lokales Abbild"}`
       + (r.distance ? ` · ${r.distance.ahead} vor, ${r.distance.behind} hinter` : "")
       + (r.refAgeMs !== null ? ` · zuletzt abgeglichen ${agoDe(r.refAgeMs)}` : "")).join("\n")
       + "\n— aus den lokalen Abbildern, ohne Netz";

@@ -2288,12 +2288,13 @@ export function loadWorkplaces(force = false): void {
     .finally(() => { workplacesBusy = false; void renderBoard(); });
 }
 
-// what the name column shows: the lane's name or its branch
-type RankeMode = "name" | "branch";
+// what the name column shows: the lane's name, its branch, or the commit its worktree stands on
+type RankeMode = "name" | "branch" | "stand";
 let rankeMode: RankeMode = "name";
 const RANKE_MODES: { mode: RankeMode; word: string; title: string }[] = [
   { mode: "name", word: "Name", title: "Die Namen der Lanes zeigen" },
   { mode: "branch", word: "Branch", title: "Statt der Namen die Branches zeigen — eine Zeile je Zweig bleibt" },
+  { mode: "stand", word: "Stand", title: "Statt der Namen den Commit zeigen, auf dem jeder Worktree steht, und wie weit er von seinem Ziel weg ist" },
 ];
 // repos whose open/closed default (open = the focused session's repo) the owner flipped, and repos
 // whose worktrees without a session are unfolded — module state, so the repaint keeps them
@@ -2627,6 +2628,74 @@ function worktreeControls(wts: WtInfo, w: WtRow): HTMLElement[] {
   return out;
 }
 
+// --- STANDS (card abe74821): "auf welchem Stand jedes Gerät, jede Instanz und jeder Worktree läuft
+// und woher er kommt". One sentence per carrier: läuft auf <sha> · how far from its target · whether
+// that distance touches its own code. Unknown stays unknown, with the reason as a sentence.
+const SCOPE_WORD: Record<WorkplaceStand["codeScope"], string> = {
+  server: "betrifft den Server-Code", "helper-daemon": "betrifft den Helfer-Dienst", repository: "betrifft Code",
+};
+function standSentence(st: WorkplaceStand): { text: (Node | string)[]; title: string; node: string; behindCode: boolean } {
+  const parts: (Node | string)[] = [];
+  const titles: string[] = [];
+  const head = sha7(st.head);
+  parts.push("läuft auf ");
+  if (head) parts.push(el("span", "mono", head));
+  else parts.push(el("span", "q", "unbekannt"));
+  const t = st.target;
+  let behindCode = false;
+  if (head && t) {
+    const ref = refShort(t.ref);
+    const d = t.distance;
+    if (!d) parts.push(` · Abstand zu ${ref} unbekannt`);
+    else if (d.ahead === 0 && d.behind === 0) parts.push(` · neuester Stand von ${ref}`);
+    else {
+      parts.push(` · ${[d.behind ? `${d.behind} hinter` : "", d.ahead ? `${d.ahead} vor` : ""].filter(Boolean).join(", ")} ${ref}`);
+      if (d.behind) {
+        if (t.codeBehind === true) { parts.push(" · "); parts.push(el("span", "cb", SCOPE_WORD[st.codeScope])); behindCode = true; }
+        else if (t.codeBehind === false) parts.push(" · eigener Code aktuell");
+        else parts.push(" · ob eigener Code betroffen ist: unbekannt");
+      }
+    }
+    if (t.mergeBase) titles.push(`abgezweigt von ${ref} bei ${sha7(t.mergeBase)}`);
+  }
+  if (!head) {
+    if (st.basis === "link-only") parts.push(" · ihre Repos liest dieser Server nicht");
+    else if (st.basis === "checkout-unproven") {
+      if (st.reportedCheckout) { parts.push(" · Checkout "); parts.push(el("span", "mono", sha7(st.reportedCheckout.head) ?? "")); }
+      titles.push("die Instanz meldet nur ihren Checkout, nicht den Stand ihres laufenden Prozesses");
+    } else if (st.basis === "copy-unproven") titles.push("eine Testkopie meldet keinen belegten Stand");
+    else if (st.basis === "heartbeat") titles.push("der Helfer hat noch keinen Stand gemeldet");
+  }
+  if (st.basis === "heartbeat" && st.observedAt) titles.push(`zuletzt gemeldet ${agoDe(Date.now() - st.observedAt)} — ein letzter Bericht, kein Beweis, dass er gerade erreichbar ist`);
+  if (st.update) titles.push(`Aktualisierung: ${st.update.state}${st.update.mainSha ? ` auf ${sha7(st.update.mainSha)}` : ""}`);
+  const node = st.kind === "live-server" ? (behindCode ? "wait" : "live") : head ? "" : "leer";
+  return { text: parts, title: titles.join(" · "), node, behindCode };
+}
+function standRow(label: string | null, st: WorkplaceStand): HTMLElement {
+  const s = standSentence(st);
+  const row = el("div", "zr stand");
+  row.dataset.kind = st.kind;
+  row.appendChild(el("span", `nd ${s.node}`));
+  const nm = el("span", "nm");
+  if (label) { nm.appendChild(el("b", "", label)); nm.appendChild(document.createTextNode(" · ")); }
+  nm.append(...s.text);
+  row.appendChild(nm);
+  row.title = [label ?? "", ...s.text.map((p) => (typeof p === "string" ? p : p.textContent ?? ""))].join("").trim()
+    + (s.title ? ` — ${s.title}` : "");
+  return row;
+}
+function machineHead(name: string, sub: string, title: string): HTMLElement {
+  const row = el("div", "zr mach");
+  const fx = el("span", "fx");
+  fx.appendChild(icon("screen"));
+  row.appendChild(fx);
+  const nm = el("span", "nm", name);
+  nm.appendChild(el("span", "cnt", sub));
+  row.appendChild(nm);
+  row.title = title;
+  return row;
+}
+
 // a row that acts on a click is a target for the keyboard too: Tab reaches it, Enter or Space act
 function rowTarget(row: HTMLElement, act: () => void): void {
   row.tabIndex = 0;
@@ -2676,27 +2745,46 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   const standOf = new Map<string, WorkplaceStand>();
   for (const st of wp.stands ?? []) if (st.path) standOf.set(`${st.kind}:${st.path}`, st);
 
-  // LIVE (R1, server.ts#deployGap): what runs on this machine, read-only — its commit and how far
-  // it is from main; a restart is due when that distance touches server code
-  if (deployGapInfo) {
-    const g = el("div", "grp");
+  // 1 — THIS MACHINE: its running server, then its repos
+  const here = el("div", "grp");
+  here.appendChild(machineHead(instanceName ?? "Dieser Rechner", instanceName ? "dieser Rechner" : "",
+    "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest"));
+  const lives = (wp.stands ?? []).filter((st) => st.kind === "live-server");
+  for (const st of lives) here.appendChild(standRow("Live", st));
+  if (!lives.length && deployGapInfo) {
+    // an older server without stands: the deploy gap alone, said as plainly
     const row = el("div", "zr stand");
     row.dataset.kind = "live-server";
     row.appendChild(el("span", `nd ${deployGapInfo.codeBehind ? "wait" : "live"}`));
     const n = deployGapInfo.behindCount;
-    const nm = el("span", "nm");
-    nm.append(el("b", "", "Live"), document.createTextNode(` · läuft auf ${sha7(deployGapInfo.bootHead) ?? "unbekannt"}`
-      + (n === null ? " · Abstand zu main unbekannt" : n === 0 ? " · neuester Stand von main" : ` · ${n} hinter main`)));
-    row.appendChild(nm);
-    row.title = deployGapInfo.codeBehind ? "Der laufende Server ist älter als main, und der Unterschied berührt Server-Code — ein Neustart holt ihn" : "";
-    g.appendChild(row);
-    sec.appendChild(g);
+    row.appendChild(el("span", "nm", `Live · läuft auf ${sha7(deployGapInfo.bootHead) ?? "unbekannt"}${n === null ? "" : n === 0 ? " · neuester Stand" : ` · ${n} hinter`}`));
+    here.appendChild(row);
   }
+  sec.appendChild(here);
 
   // the focused session's repo stands open; without a focused session, the first one the server reads
   const focusRepo = focus?.cwd ? (focus.worktree?.repo ?? focus.repo ?? focus.cwd) : wp.repos[0]?.repo ?? null;
   for (const R of wp.repos) sec.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));
 
+  // 2 — THE OTHER MACHINES: helpers by their fleet name, then each linked instance
+  const helpers = new Map<string, WorkplaceStand[]>();
+  for (const st of wp.stands ?? []) {
+    if (st.kind !== "helper-daemon" && st.kind !== "helper-instance") continue;
+    const key = st.name ?? "Helfer ohne Namen";
+    helpers.set(key, [...(helpers.get(key) ?? []), st]);
+  }
+  for (const [name, list] of helpers) {
+    const g = el("div", "grp");
+    g.appendChild(machineHead(name, "Helfer", "Ein Helfer-Gerät dieser Fleet — sein Stand ist sein letzter Bericht"));
+    for (const st of list) g.appendChild(standRow(st.kind === "helper-daemon" ? "Helfer-Dienst" : "Instanz", st));
+    sec.appendChild(g);
+  }
+  for (const st of (wp.stands ?? []).filter((x) => x.kind === "linked-instance")) {
+    const g = el("div", "grp");
+    g.appendChild(machineHead(st.name ?? "verlinkte Fleet", "verlinkt", "Eine verlinkte Fleet-Instanz — nur ein Link, keine Verbindung"));
+    g.appendChild(standRow(null, st));
+    sec.appendChild(g);
+  }
   return sec;
 }
 
@@ -2726,6 +2814,24 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
     + (isOpen ? "" : [active ? ` · ${active} arbeitet` : "", waiting ? ` · ${waiting} wartet auf dich` : ""].join(""))));
   head.appendChild(nm);
   const rt = el("span", "rt");
+  // WHERE IT COMES FROM: the repo's remotes as the local refs know them (no fetch, no network)
+  const pst = primary ? standOf.get(`worktree:${primary.path}`) : undefined;
+  if (pst?.remote === "none") {
+    const tag = el("span", "tag", "kein Remote");
+    tag.title = "Dieses Repo hat keinen Remote — ein eigener Zustand, kein Fehler";
+    tag.dataset.remote = "none";
+    rt.appendChild(tag);
+  } else if (Array.isArray(pst?.remote) && pst.remote.length) {
+    const r0 = pst.remote[0];
+    const d = r0.distance;
+    const tag = el("span", "tag", `${r0.name}${d ? `${d.ahead ? ` ↑${d.ahead}` : ""}${d.behind ? ` ↓${d.behind}` : ""}` : ""}`);
+    tag.dataset.remote = r0.name;
+    tag.title = pst.remote.map((r) => `${refShort(r.ref)}: ${r.head ? sha7(r.head) : "kein lokales Abbild"}`
+      + (r.distance ? ` · ${r.distance.ahead} vor, ${r.distance.behind} hinter` : "")
+      + (r.refAgeMs !== null ? ` · zuletzt abgeglichen ${agoDe(r.refAgeMs)}` : "")).join("\n")
+      + "\n— aus den lokalen Abbildern, ohne Netz";
+    rt.appendChild(tag);
+  }
   const add = el("button", "rk-btn quiet ib") as HTMLButtonElement;
   add.type = "button";
   add.appendChild(icon("plus"));
@@ -2813,8 +2919,8 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
       v.title = `overhaul: ${d.ahead} Commits vor main, ${d.behind} hinter · Spitze ${sha7(overhaul?.head) ?? "unbekannt"}`;
       ort.appendChild(v);
     }
-    // the tip's commit only where no distance answers — the distance is what the row is for
-    if (!d) ort.appendChild(el("span", "mono", sha7(overhaul?.head) ?? "?"));
+    // the tip's commit only where the column asks for stands — here the distance is the answer
+    if (rankeMode === "stand" || !d) ort.appendChild(el("span", "mono", sha7(overhaul?.head) ?? "?"));
     orow.appendChild(ort);
     rk.appendChild(orow);
     branchRows(onOver, 2, `${R.repo}#overhaul`);
@@ -2868,6 +2974,11 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   let name: HTMLElement;
   if (rankeMode === "branch") {
     name = el("span", "nm mono br", w.branch ?? "(detached)");
+  } else if (rankeMode === "stand") {
+    name = el("span", "nm mono st");
+    name.appendChild(document.createTextNode(headSha ?? "unbekannt"));
+    const dist = w.distance;
+    if (dist?.behind) name.appendChild(el("span", "q", ` ↓${dist.behind}`));
   } else {
     // without a session the ring of the node says so; the words of the branch tell such worktrees apart
     name = el("span", `nm${s ? "" : " leer"}`, s ? laneLabel(s) : laneWords(w.branch));

@@ -2901,13 +2901,19 @@
   #board .zr.repo .nm { grid-column: 2; font-weight: 500; color: var(--chat-prose); }
   #board .zr.repo.zu .nm { color: var(--chat-mute); font-weight: 400; }
   #board .zr .cnt { color: var(--chat-faint); font-weight: 400; font-size: var(--chat-ui-fs); margin-left: 6px; }
+  #board .zr .tag { font-size: 10px; color: var(--chat-faint); border: 1px solid var(--chat-edge); border-radius: 4px; padding: 0 4px;
+    margin-left: 6px; font-weight: 400; }
   #board .zr.repo .rt { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 4px; }
+  #board .zr.repo .rt .tag { margin-left: 0; }
   /* the fold of worktrees without a session (from 13 branches on) */
   #board .zr.zf { cursor: pointer; }
   #board .zr.zf .fc { grid-column: 6; color: var(--chat-faint); display: grid; place-items: center; }
   #board .zr.zf .fc .ico { width: 12px; height: 12px; transform: rotate(-90deg); }
-  /* the Live row: what runs on this machine */
-  #board .zr.stand { grid-template-columns: var(--rk-rail) minmax(0, 1fr); }
+  /* machines and the stand of every carrier on them */
+  #board .zr.mach, #board .zr.stand { grid-template-columns: var(--rk-rail) minmax(0, 1fr); }
+  #board .zr.mach .fx { grid-column: 1; color: var(--chat-mute); display: grid; place-items: center start; }
+  #board .zr.mach .fx .ico { width: 13px; height: 13px; }
+  #board .zr.mach .nm { grid-column: 2; font-weight: 500; color: var(--chat-prose); }
   #board .zr.stand .nd { margin-left: 1px; }
   #board .zr.stand .nm { grid-column: 2; font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: normal; line-height: 1.35; padding: 3px 0; }
   #board .zr.stand .nm b { color: var(--chat-ink); font-weight: 500; }
@@ -2950,7 +2956,7 @@
       --rk-cols: var(--rk-rail) 26px minmax(0, 1fr) 36px 48px 40px; }
     #board .zr { font-size: 13px; }
     #board .zr .ref { font-size: 11px; }
-    #board .zr.stand { min-height: 32px; }
+    #board .zr.stand, #board .zr.mach { min-height: 32px; }
     #board .zr .ti { width: 40px; height: 40px; }
     #board .zr .pf i { width: 7px; height: 7px; } #board .zr .pf b { width: 7px; height: 7px; }
     #board .rkseg button, #board .rk-btn { min-height: 40px; padding: 0 12px; }

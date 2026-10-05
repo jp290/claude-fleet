@@ -10424,16 +10424,27 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
         claims[`${tag}nothing runs off the side: the section and the page do not scroll sideways`] = r.secOverflow <= 0 && r.pageScroll <= 0;
         claims[`${tag}the old card "Testinstanz · dieser Worktree" and the list "Lanes in ‹repo›" are gone`] = !r.oldCard && !/Testinstanz · dieser Worktree|Lanes in /.test(r.bodyText);
         claims[`${tag}the Ranke has its lines (1 px, vertical and horizontal)`] = r.svgPaths > 0;
-        const liveRow = r.rows.find((x) => x.kind === "live-server");
-        facts.live = liveRow?.text;
+        // abe74821 — the stand of every carrier, grouped by machine
+        const machines = r.rows.filter((x) => x.cls.includes("mach")).map((x) => x.text);
+        const stands = r.rows.filter((x) => x.kind);
+        facts.stands = { machines, stands: stands.map((x) => `${x.kind}: ${x.text}`) };
+        const liveRow = stands.find((x) => x.kind === "live-server");
+        claims[`${tag}this machine first, then the helper machine, then the linked instance — each carrier says "läuft auf"`] =
+          machines[0]?.startsWith("Mac") === true && machines.some((m) => m.startsWith("workhorse")) && machines.some((m) => m.startsWith("Zweite Fleet"))
+          && stands.length >= 4 && stands.every((x) => x.text.includes("läuft auf"));
         claims[`${tag}Live says the running commit and how far from main`] = !!liveRow && liveRow.text.includes(`läuft auf ${sha7(st === "alarm" ? BOOT : MAIN)}`)
-          && (st === "alarm" ? liveRow.text.includes("5 hinter main") && liveRow.nd === r.wait
+          && (st === "alarm" ? liveRow.text.includes("5 hinter main") && liveRow.text.includes("betrifft den Server-Code") && liveRow.nd === r.wait
             : liveRow.text.includes("neuester Stand von main") && liveRow.nd === r.live);
+        const helperI = stands.find((x) => x.kind === "helper-instance"), linked = stands.find((x) => x.kind === "linked-instance"), daemon = stands.find((x) => x.kind === "helper-daemon");
+        claims[`${tag}an unknown stand stays unknown with its sentence: the helper's instance names its checkout, the linked instance that its repos are not read here`] =
+          !!helperI && helperI.text.includes("läuft auf unbekannt") && helperI.text.includes(`Checkout ${sha7(hex("helper-checkout"))}`)
+          && !!linked && linked.text.includes("läuft auf unbekannt · ihre Repos liest dieser Server nicht")
+          && !!daemon && daemon.text.includes(`läuft auf ${sha7(MAIN)}`) && /zuletzt gemeldet/.test(daemon.title);
         const repos = r.rows.filter((x) => x.cls.includes("repo"));
         facts.repos = repos.map((x) => ({ text: x.text, tag: x.tag, cls: x.cls }));
-        claims[`${tag}every repo the server reads is a group, the focused session's open, the other closed with its summary`] =
-          repos.length === 2 && repos.some((x) => x.text.startsWith("claude-fleet") && (st === "leer" || x.cls.includes("auf")))
-          && repos.some((x) => x.text.startsWith("rezepte-app") && x.cls.includes("zu") && /1 Zweig/.test(x.text));
+        claims[`${tag}every repo the server reads is a group; a repo without a remote says "kein Remote" quietly, one with a remote names it`] =
+          repos.length === 2 && repos.some((x) => x.text.startsWith("claude-fleet") && x.tag === "origin ↑3" && /origin\/main/.test(x.tagTitle ?? ""))
+          && repos.some((x) => x.text.startsWith("rezepte-app") && x.tag === "kein Remote");
         const mainRow = byId(r, `${REPO}#main`), overRow = byId(r, `${REPO}#overhaul`);
         // overhaul: every claude-fleet worktree aiming at it that has not landed; main: its own lanes plus overhaul itself
         const repoLanes = lanesOf(st).filter((l) => (l.repo ?? REPO) === REPO && l.landed !== "yes");
@@ -10584,6 +10595,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
             await evaluate(`document.querySelector('#boardbody .zr.zf')?.click()`);
             const unfolded = await wait(`!document.querySelector('#boardbody .zr.zf') && document.querySelectorAll('#boardbody .zr.zw').length === ${z2.length + Number(/(\d+) ohne Session/.exec(fold?.text ?? "")?.[1] ?? -99)}`, 3000);
             claims[`${tag}a click on the fold line shows every worktree without a session`] = unfolded;
+          }
+          if (st === "branch") {
+            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.textContent === 'Stand')?.click()`);
+            await wait(`document.querySelector('#boardbody .zr[data-slot="9"] .nm')?.textContent === ${JSON.stringify(sha7(hex(own.branch)))}`, 3000);
+            r = await read();
+            claims[`${tag}the switch "Stand" shows the commit every worktree stands on`] = lane(r, 9)?.name === sha7(hex(own.branch)) && lane(r, 11)?.name === sha7(hex("fleet/261005-insel-am-telefon-1b2c"));
+            await shot(`stand-${width}`);
           }
         }
         if (st === "alarm") await shot(`${st}-${width}`);

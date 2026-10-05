@@ -2778,7 +2778,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Session. Andere Absender, freie Erstnachrichten oder eine andere Session-Adresse: 409.
 - **Lesegrenze (`server.ts#messageAddressesFor`, `#resolveMessageAddress`):** Eine ungebundene
   Session liest nur ihre Session-Adresse, eine Lane nur ihre Lane-Adresse, jeweils solange
-  `slot` und `openedAt` passen. Ein später gestorbener Empfänger bleibt im Record adressiert;
+  `slot` und `openedAt` passen. Die Zustellung setzt dieselbe aktuelle Leseberechtigung voraus:
+  Wird eine Session in derselben Occupation zur gebundenen MAIN, hält sie während der Bindung keine Session-Adresse.
+  Ein später gestorbener Empfänger oder eine nicht mehr gelesene Adresse bleibt im Record adressiert;
   `holder:null` und `note` sagen wörtlich, dass gespeichert, aber nicht zugestellt und nicht
   neu adressiert wird. Keine Eskalation dieser Occupant-Adressen.
 - **Eine Nachricht verleiht NICHTS.** Sie ist Text an einen Prinzipal: keine Owner-, Release-,

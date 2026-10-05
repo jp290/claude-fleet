@@ -14475,8 +14475,7 @@ function escalateMessage(note: string): AddressResolution {
 function resolveMessageAddress(a: MessageAddress): AddressResolution {
   if (a.kind === "session" || a.kind === "lane") {
     const live = slotFrom(a.slot);
-    const held = !!(live?.cwd && live.openedAt === a.openedAt
-      && live.label !== STEWARD_LABEL && (a.kind === "lane" ? live.worktree : !live.worktree));
+    const held = !!live && messageAddressesFor(live).some((address) => sameAddress(address, a));
     return held ? { ok: true, holder: live!, note: null, escalatedTo: null }
       : { ok: true, holder: null, note: `${a.kind} slot ${a.slot} openedAt ${a.openedAt} is no longer live — the message is stored but not delivered; it will not be re-addressed`, escalatedTo: null };
   }

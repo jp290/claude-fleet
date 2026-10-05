@@ -4456,6 +4456,49 @@ export async function run(ctx: Ctx): Promise<void> {
     && (await sentId(occupantNewQuestion)) !== occupantId, `status=${occupantNewQuestion.status}`);
   await post(`/api/slots/${occupantSlot}/kill`, {});
 
+  const sessionBindingProgram = await activateNewProgram("R1 session becomes MAIN without recycling");
+  const sessionBindingOpen = await post(`/api/slots/${occupantSlot}/open`, { cwd: REPO, label: "message-session-becomes-main" });
+  const sessionBindingAt = readState().slots?.[String(occupantSlot)]?.openedAt ?? 0;
+  const sessionBindingAddress = { kind: "session", slot: occupantSlot, openedAt: sessionBindingAt };
+  const sessionBindingQuestion = await selfSend(slotToken(occupantSlot), { ...occupantBody,
+    idempotencyKey: "occupant-before-main-binding" });
+  const sessionBindingQuestionId = await sentId(sessionBindingQuestion);
+  const sessionBindingQuestionBody = await sessionBindingQuestion.json() as { message?: MessageRow };
+  await stopSrv();
+  const sessionBindingState = readState();
+  const sessionBindingOccupant = sessionBindingState.slots?.[String(occupantSlot)];
+  const sessionBindingRow = sessionBindingState.programs?.find((p) => p.id === sessionBindingProgram.id);
+  if (sessionBindingRow && sessionBindingOccupant)
+    sessionBindingRow.main = { slot: occupantSlot, openedAt: sessionBindingOccupant.openedAt ?? 0,
+      sessionId: sessionBindingOccupant.sessionId ?? null, boundAt: Date.now() };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(sessionBindingState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const sessionBindingView = await selfMessages(slotToken(occupantSlot));
+  check("R1 binding fixture: the questioning session becomes a Program-MAIN in the same occupation",
+    sessionBindingOpen.ok && sessionBindingQuestion.ok && sessionBindingAt > 0
+      && JSON.stringify(sessionBindingQuestionBody.message?.from) === JSON.stringify(sessionBindingAddress)
+      && readState().slots?.[String(occupantSlot)]?.openedAt === sessionBindingAt
+      && JSON.stringify(sessionBindingView.view?.addresses) === JSON.stringify([{ kind: "program", id: sessionBindingProgram.id }]),
+    `open=${sessionBindingOpen.status} question=${sessionBindingQuestion.status} from=${JSON.stringify(sessionBindingQuestionBody.message?.from)} beforeAt=${sessionBindingAt} afterAt=${readState().slots?.[String(occupantSlot)]?.openedAt} addresses=${JSON.stringify(sessionBindingView.view?.addresses)}`);
+  const sessionBindingReply = await selfSend(slotToken(orchFree), { ...occupantAnswerBody,
+    to: sessionBindingAddress, replyTo: sessionBindingQuestionId, idempotencyKey: "occupant-after-main-binding" });
+  const sessionBindingReplyBody = await sessionBindingReply.json() as { holder?: unknown; note?: string; message?: MessageRow; escalatedTo?: unknown };
+  const sessionBindingReplyId = sessionBindingReplyBody.message?.id ?? "";
+  const sessionBindingAfter = await selfMessages(slotToken(occupantSlot));
+  const sessionBindingRead = await selfMessageRead(slotToken(occupantSlot), sessionBindingReplyId);
+  const sessionBindingStored = (readState().messages as { entries?: MessageRow[] }).entries?.some((e) => e.id === sessionBindingReplyId
+    && JSON.stringify(e.to) === JSON.stringify(sessionBindingAddress)) === true;
+  check("R1 reply after same-occupant MAIN binding is stored but explicitly not delivered",
+    sessionBindingReply.ok && sessionBindingReplyBody.holder === null && sessionBindingReplyBody.escalatedTo === null
+      && sessionBindingReplyBody.note?.includes("stored but not delivered; it will not be re-addressed") === true
+      && sessionBindingStored && sessionBindingAfter.view?.entries.some((e) => e.id === sessionBindingReplyId) === false
+      && sessionBindingRead.status === 404,
+    `reply=${sessionBindingReply.status} holder=${JSON.stringify(sessionBindingReplyBody.holder)} escalation=${JSON.stringify(sessionBindingReplyBody.escalatedTo)} note=${sessionBindingReplyBody.note} stored=${sessionBindingStored} readable=${sessionBindingAfter.view?.entries.some((e) => e.id === sessionBindingReplyId)} read=${sessionBindingRead.status}`);
+  await post(`/api/slots/${occupantSlot}/kill`, {});
+  const sessionBindingCleanup = await programPost(sessionBindingProgram.id, "complete", { force: true });
+  check("R1 binding fixture completes its own Program after killing its MAIN", sessionBindingCleanup.ok,
+    `complete=${sessionBindingCleanup.status}`);
+
   const laneMsgOpen = await post("/api/lanes", { repo: REPO });
   const laneMsgSlot = (await laneMsgOpen.json() as { slot?: number }).slot ?? 0;
   const laneMsgAt = readState().slots?.[String(laneMsgSlot)]?.openedAt ?? 0;

@@ -2825,6 +2825,14 @@ busy- und draft-Gates sowie die Occupant-Prüfung vor dem Einfügen bleiben wirk
 `ctl.sh send --orchestrator <textfile>` sendet über `POST /api/self/messages` mit
 `FLEET_SELF_TOKEN`; die Owner-Credential wird dafür nicht gelesen.
 
+`ctl.sh send --lane <slot> <textfile>` wählt ebenfalls den Self-Pfad, wenn `FLEET_SELF_TOKEN`
+gesetzt ist und `GET /api/self/program-execution` die aufrufende Session als gebundene MAIN mit
+diesem Slot in `lanes.rows` ausweist. `openedAt` kommt ausschließlich aus dieser Lane-Projektion;
+gesendet wird an `{kind:"lane",slot,openedAt}` über `POST /api/self/messages`, ohne Owner-Bearer.
+Ein 409 dieser Tür wird mit dem Serverfehler wörtlich ausgegeben und beendet den Befehl mit Exit 1.
+Wenn die Bindung samt Lane nicht aus der Self-Projektion folgt, bleibt der bisherige Owner-Pfad
+unverändert und liest `openedAt` aus `/api/sessions`.
+
 Der mittlere Fall ist der Zweck der Übung, nicht ein Randfall: **eine Succession ist genau das
 Fenster, in dem eine Adresse kurz unbesetzt ist.**
 

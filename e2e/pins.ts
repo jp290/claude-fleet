@@ -10075,6 +10075,14 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_CTL} — the usage block lists every declared verb`,
     usage !== "" && declared.every((v) => usage.includes("\n  " + cliForm(v))),
     `missing=[${declared.filter((v) => !usage.includes("\n  " + cliForm(v))).join(", ")}]`);
+  const laneSelfPath = ctl.slice(ctl.indexOf('if [ "$mode" = "lane" ]; then'), ctl.indexOf('slot_arg "send --lane"'));
+  pin(`${RULE_CTL} — send --lane derives its Self address only from its Program-MAIN projection and never reads the Owner bearer`,
+    laneSelfPath.includes('FLEET_SELF_TOKEN:-') && laneSelfPath.includes('need_self send')
+      && laneSelfPath.includes('/api/self/program-execution') && laneSelfPath.includes('/api/self/messages')
+      && laneSelfPath.includes('entry.lanes?.rows') && laneSelfPath.includes('target.openedAt')
+      && !laneSelfPath.includes('need_owner') && !laneSelfPath.includes('ownerH()')
+      && !laneSelfPath.includes('/api/sessions') && !laneSelfPath.includes('owner_token'),
+    `self-token=${laneSelfPath.includes('FLEET_SELF_TOKEN:-')} execution=${laneSelfPath.includes('/api/self/program-execution')} messages=${laneSelfPath.includes('/api/self/messages')} owner-read=${laneSelfPath.includes('need_owner') || laneSelfPath.includes('ownerH()') || laneSelfPath.includes('owner_token')}`);
   // TOKEN HYGIENE, as a fastener rather than a habit (CLAUDE.md §Self-scheduling): ensureSlot bakes
   // every pane's self-credential into its zsh line, so a `ps` that prints COMMANDS prints foreign
   // slots' tokens into whatever reads the output. ctl.sh may COUNT processes and must never render

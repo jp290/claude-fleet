@@ -1367,6 +1367,45 @@ send)
   done
   if [ "$mode" = "lane" ]; then
     [ -f "$textfile" ] && [ -s "$textfile" ] || { printf 'send --lane: give a nonempty text file\n' >&2; exit 2; }
+    if [ -n "${FLEET_SELF_TOKEN:-}" ] && printf '%s' "$lane" | grep -Eq '^[0-9]+$'; then
+      need_self send
+      export CTL_SLOT="$lane" CTL_TEXTFILE="$textfile"
+      js_head
+      cat >> "$CTL_TMP" <<'EOF'
+const targetSlot = Number(process.env.CTL_SLOT);
+let text;
+try { text = fs.readFileSync(process.env.CTL_TEXTFILE, "utf8"); } catch {
+  console.error("send --lane: cannot read text file — nothing sent"); process.exit(2);
+}
+if (!text.trim() || text.length > 1000000) {
+  console.error("send --lane: text must be 1–1000000 chars — nothing sent"); process.exit(2);
+}
+const execution = await api("/api/self/program-execution", { headers: selfH() });
+const view = execution.body;
+const session = view?.session;
+const binding = (view?.programs ?? []).find((entry) =>
+  entry?.authority?.executionState === "active"
+  && entry.authority.boundSlot === session?.slot
+  && entry.authority.boundOpenedAt === session?.openedAt
+  && (entry.lanes?.rows ?? []).some((row) => row.slot === targetSlot));
+const target = (binding?.lanes?.rows ?? []).find((row) => row.slot === targetSlot);
+if (!execution.ok || !session || !binding || !target || typeof target.openedAt !== "number" || target.openedAt <= 0) {
+  process.exit(42);
+}
+const key = "ctl-lane-" + require("node:crypto").randomBytes(12).toString("hex");
+const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
+  body: JSON.stringify({ to: { kind: "lane", slot: targetSlot, openedAt: target.openedAt },
+    payload: { kind: "text", text }, idempotencyKey: key }) });
+const error = r.ok ? null : (r.body?.error ?? "refused");
+out({ ok: r.ok, sent: r.ok, slot: targetSlot, openedAt: target.openedAt, status: r.status,
+  message: r.body?.message ?? null, error },
+  [`send --lane slot ${targetSlot}: ${r.status} ${error ?? `message ${r.body?.message?.id ?? "?"}`}`]);
+process.exit(r.ok ? 0 : 1);
+EOF
+      js_run
+      self_status=$?
+      [ "$self_status" -eq 42 ] || exit "$self_status"
+    fi
     slot_arg "send --lane" "$lane"
     need_owner send
     export CTL_TEXTFILE="$textfile"

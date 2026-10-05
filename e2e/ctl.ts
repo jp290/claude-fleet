@@ -1294,8 +1294,14 @@ export async function run(): Promise<void> {
     `exit ${unknownProgram.code} ${unknownProgram.err.slice(0, 200)}`);
 
   const sendPosts: { body: { slot?: number; text?: string; openedAt?: number }; auth: string | null }[] = [];
-  const selfPosts: { body: { to?: { kind?: string; role?: string }; payload?: { kind?: string; text?: string }; idempotencyKey?: string };
+  const selfPosts: { body: { to?: { kind?: string; role?: string; slot?: number; openedAt?: number }; payload?: { kind?: string; text?: string }; idempotencyKey?: string };
     token: string | null; auth: string | null }[] = [];
+  let selfExecution: unknown = { session: { slot: 4, openedAt: 4000 }, programs: [{
+    authority: { boundSlot: 4, boundOpenedAt: 4000, executionState: "active" },
+    lanes: { rows: [{ slot: 9, openedAt: 9000 }] },
+  }] };
+  let selfMessageStatus = 200;
+  let selfMessageError = "";
   const bound = (id: string, slot: number | null, openedAt: number, occupancy: string) =>
     ({ id, title: id, main: slot === null ? null : { slot, openedAt, sessionId: null, boundAt: 1 }, health: { occupancy } });
   const stub = Bun.serve({
@@ -1323,9 +1329,11 @@ export async function run(): Promise<void> {
         const body = (await req.json()) as typeof selfPosts[number]["body"];
         selfPosts.push({ body, token: req.headers.get("x-fleet-self-token"),
           auth: req.headers.get("authorization") });
-        return Response.json({ ok: true, message: { id: "a".repeat(24) }, holder: { slot: 4, openedAt: 1000 },
-          escalatedTo: null });
+        return Response.json(selfMessageStatus === 200
+          ? { ok: true, message: { id: "a".repeat(24) }, holder: { slot: 9, openedAt: 9000 }, escalatedTo: null }
+          : { error: selfMessageError }, { status: selfMessageStatus });
       }
+      if (path === "/api/self/program-execution" && req.method === "GET") return Response.json(selfExecution);
       return new Response("not found", { status: 404 });
     },
   });
@@ -1363,15 +1371,50 @@ export async function run(): Promise<void> {
       && sendPosts[0]?.body.text === "ctl send probe text\n"
       && sendPosts[0]?.auth === `Bearer ${TOKEN}`,
     `exit ${sendOk.code} posts=${JSON.stringify(sendPosts.map((p) => p.body))} ${sendOk.err.slice(0, 160)}`);
+  const noOwnerEnv = { ...stubEnv, FLEET_CTL_HOME: `${ROOT}/ctl-no-owner-home`, FLEET_CTL_TOKEN: "", FLEET_TOKEN: "" };
+  const selfLane = await ctl(["send", "--lane", "9", msgFile, "--json"], noOwnerEnv);
+  check("ctl send --lane: a bound Program-MAIN addresses its projected Lane with only the self token",
+    selfLane.code === 0 && selfPosts.length === 1 && selfPosts[0]?.body.to?.kind === "lane"
+      && selfPosts[0]?.body.to.slot === 9 && selfPosts[0]?.body.to.openedAt === 9000
+      && selfPosts[0]?.body.payload?.text === "ctl send probe text\n"
+      && !!selfPosts[0]?.body.idempotencyKey && selfPosts[0]?.token === selfTok && selfPosts[0]?.auth === null
+      && (selfLane.json as { status?: number })?.status === 200,
+    `exit=${selfLane.code} post=${JSON.stringify(selfPosts[0]?.body.to)} auth=${selfPosts[0]?.auth}`);
+  const serverConflict = "the addressed lane occupant is no longer live";
+  selfMessageStatus = 409;
+  selfMessageError = serverConflict;
+  const selfRecycled = await ctl(["send", "--lane", "9", msgFile, "--json"], noOwnerEnv);
+  check("ctl send --lane: the server's recycled Lane 409 is preserved verbatim and exits 1",
+    selfRecycled.code === 1 && selfPosts.length === 2 && selfPosts[1]?.body.to?.openedAt === 9000
+      && (selfRecycled.json as { status?: number; error?: string })?.status === 409
+      && (selfRecycled.json as { error?: string })?.error === serverConflict && selfRecycled.err.includes(serverConflict),
+    `exit=${selfRecycled.code} status=${(selfRecycled.json as { status?: number })?.status} error=${selfRecycled.err}`);
+  selfMessageError = "the addressed lane belongs to a foreign program or has no Program assignment";
+  const selfForeign = await ctl(["send", "--lane", "9", msgFile], noOwnerEnv);
+  check("ctl send --lane: the server's foreign Lane 409 is preserved verbatim and exits 1",
+    selfForeign.code === 1 && selfPosts.length === 3 && selfPosts[2]?.body.to?.openedAt === 9000
+      && selfForeign.err.includes(selfMessageError),
+    `exit=${selfForeign.code} posts=${selfPosts.length} error=${selfForeign.err}`);
+  selfMessageStatus = 200;
+  selfExecution = { session: { slot: 4, openedAt: 4000 }, programs: [{
+    authority: { boundSlot: 4, boundOpenedAt: 4000, executionState: "active" }, lanes: { rows: [] },
+  }] };
+  const selfNotNamed = await ctl(["send", "--lane", "10", msgFile], noOwnerEnv);
+  check("ctl send --lane: a Lane absent from this MAIN's projection falls back without guessing an openedAt",
+    selfNotNamed.code === 2 && selfPosts.length === 3 && selfNotNamed.err.includes("no owner token"),
+    `exit=${selfNotNamed.code} posts=${selfPosts.length} err=${selfNotNamed.err}`);
+  check("ctl send --lane: Self-mode output exposes neither credential",
+    [selfLane, selfRecycled, selfForeign, selfNotNamed].every((r) => ![TOKEN, selfTok]
+      .some((token) => r.out.includes(token) || r.err.includes(token))), "credential strings absent");
   const sendOrchestrator = await ctl(["send", "--orchestrator", msgFile, "--json"], stubEnv);
   check("ctl send --orchestrator: the file goes to the addressed self message door with this session's self token",
-    sendOrchestrator.code === 0 && selfPosts.length === 1
-      && selfPosts[0]?.body.to?.kind === "role" && selfPosts[0]?.body.to?.role === "orchestrator"
-      && selfPosts[0]?.body.payload?.kind === "text"
-      && selfPosts[0]?.body.payload?.text === "ctl send probe text\n"
-      && !!selfPosts[0]?.body.idempotencyKey && selfPosts[0]?.token === selfTok
-      && selfPosts[0]?.auth === null,
-    `exit=${sendOrchestrator.code} posts=${selfPosts.length} address=${JSON.stringify(selfPosts[0]?.body.to)}`);
+    sendOrchestrator.code === 0 && selfPosts.length === 4
+      && selfPosts[3]?.body.to?.kind === "role" && selfPosts[3]?.body.to?.role === "orchestrator"
+      && selfPosts[3]?.body.payload?.kind === "text"
+      && selfPosts[3]?.body.payload?.text === "ctl send probe text\n"
+      && !!selfPosts[3]?.body.idempotencyKey && selfPosts[3]?.token === selfTok
+      && selfPosts[3]?.auth === null,
+    `exit=${sendOrchestrator.code} posts=${selfPosts.length} address=${JSON.stringify(selfPosts[3]?.body.to)}`);
   stub.stop(true);
 
   // === commit-main ==============================================================================

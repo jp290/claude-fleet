@@ -9587,7 +9587,7 @@ type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent
   deliveryClass?: DeliveryClass; subscribedWatch?: true; beforeSend?: (receiver: Slot) => Promise<void>;
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
   eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string; inboxId?: string;
-  programEventId?: string;
+  programEventId?: string; beforePaste?: (receiver: Slot) => void;
   bundleGate?: { harness?: false; quietHours?: false; idleMs?: number } };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
 type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
@@ -10027,6 +10027,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       if ((await p.exited) !== 0) throw new SendRefused("tmux load-buffer failed — nothing typed");
       await waitForSendTestLatch(SEND_BEFORE_PASTE_TEST_LATCH, "before-paste", bound, text);
       if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed before paste — nothing typed");
+      options.beforePaste?.(s);
       if (options.rollbackOwnPayload) {
         s.quietUntil = Date.now() + OWN_PASTE_QUIET_MS;
         ownPasteQuiet = true;
@@ -40100,7 +40101,8 @@ async function tickApiStallResume(): Promise<void> {
           const pane = paneLimitFacts.get(s.id);
           const same = prior.openedAt === s.openedAt && prior.sessionId === s.sessionId;
           if (!same) apiStallTried.delete(s.id);
-          else if (pane?.identity === `${s.openedAt}\0${s.sessionId}` && now - pane.readAt <= 2 * RATE_LIMIT_TICK_MS) {
+          else if (pane?.identity === `${s.openedAt}\0${s.sessionId}` && pane.lastOutput === s.lastOutput
+            && now - pane.readAt <= 2 * RATE_LIMIT_TICK_MS) {
             // A transient blank screen during a retry is not recovery. Require 180s of fresh,
             // error-free captures, twice the resume interval; an unreadable interval breaks it.
             if (prior.clearSeenAt === null || now - prior.clearSeenAt > 2 * RATE_LIMIT_TICK_MS)
@@ -40132,10 +40134,19 @@ async function tickApiStallResume(): Promise<void> {
       }
       if (!API_STALL_RESUME_ON || now - Math.max(stall.since, attempt.lastAt) < API_STALL_RESUME_AFTER_MS) continue;
       if (slotFrom(s.id) !== s || s.openedAt !== attempt.openedAt || s.sessionId !== attempt.sessionId || !s.cwd) continue;
+      const lastOutput = s.lastOutput;
       const spent = { ...attempt, tries: attempt.tries + 1, lastAt: Date.now() };
       apiStallTried.set(s.id, spent);
       try {
-        await sendText(s, "resume", true, { path: "api-stall-resume", requireAgent: true });
+        await sendText(s, "resume", true, { path: "api-stall-resume", requireAgent: true,
+          beforePaste: (current) => {
+            const latest = h === CLAUDE_HARNESS ? contextReading(current).apiError : paneLimitFactFor(current);
+            if (slotFrom(s.id) !== current || current !== s || current.openedAt !== attempt.openedAt
+              || current.sessionId !== attempt.sessionId || current.lastOutput !== lastOutput
+              || latest?.at !== err.at || latest.kind !== err.kind || latest.text !== err.text
+              || !apiStallFact(current, latest, Date.now()))
+              throw new SendRefused("API stall cleared or pane output/occupant changed before paste — nothing typed");
+          } });
       } catch (e) {
         logError("apiStallResume", e);
       }
@@ -40165,31 +40176,40 @@ interface RateLimitAttempt { openedAt: number; sessionId: string; tries: number;
 const rateLimitTried = new Map<number, RateLimitAttempt>();
 // the pane-read API-error fact per pi-zai/codex slot — the FACT half of the tick, served on the polls
 // with the flag OFF too, and keyed by occupant identity so a recycled slot never inherits one
-const paneLimitFacts = new Map<number, { identity: string; readAt: number; err: ApiErrorLine | null }>();
+const paneLimitFacts = new Map<number, { identity: string; lastOutput: number; readAt: number; err: ApiErrorLine | null }>();
 function paneLimitFactFor(s: Slot): ApiErrorLine | null {
   const known = paneLimitFacts.get(s.id);
-  return known && known.identity === `${s.openedAt}\0${s.sessionId}` ? known.err : null;
+  return known && known.identity === `${s.openedAt}\0${s.sessionId}` && known.lastOutput === s.lastOutput
+    ? known.err : null;
 }
 
 const CODEX_CAPACITY_LINE_RE = /^(?:■\s+)?Selected model is at capacity\.(?: Please try a different model\.)?$/;
 const ZAI_ERROR_LINE_RE = /^(?:Error: Retry failed after \d+ attempts: )?429:?\s+\{"code":"(?:1308|1310)","message":"/;
 function paneApiError(h: Harness, screen: string, at: number): ApiErrorLine | null {
   const lines = screen.split("\n").map((line) => line.trim());
+  const quoted = new Set<number>();
+  let fence: string | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const marker = /^(?:`{3,}|~{3,})/.exec(lines[i])?.[0];
+    if (fence !== null || marker) quoted.add(i);
+    if (marker && fence === null) fence = marker;
+    else if (marker && fence !== null && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+  }
   if (h === CODEX_HARNESS) {
     // Codex's last › line is its composer (the adapter's measured glyph). A capacity error
     // must be the last content above it, never an older visible turn or a code-block quote.
     const composer = lines.findLastIndex((line) => /^›/.test(line));
     if (composer < 0) return null;
-    const content = lines.slice(0, composer).filter(Boolean);
-    const last = content.at(-1);
-    const fences = content.slice(0, -1).filter((line) => /^(?:```|~~~)/.test(line)).length;
-    return last && fences % 2 === 0 && CODEX_CAPACITY_LINE_RE.test(last)
+    const index = lines.slice(0, composer).findLastIndex(Boolean);
+    const last = lines[index];
+    return last && !quoted.has(index) && CODEX_CAPACITY_LINE_RE.test(last)
       ? { at, text: last.slice(0, API_STALL_TEXT_MAX), kind: "capacity", resetAt: null } : null;
   }
   if (h !== PI_ZAI_HARNESS) return null;
   // Preserve Pi's visible-pane sensor, but the newest error owns its reset, not the first one.
-  for (const line of lines.reverse()) {
-    if (!(ZAI_LIMIT_LINE_RE.test(line) || ZAI_ERROR_LINE_RE.test(line))) continue;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (quoted.has(i) || !(ZAI_LIMIT_LINE_RE.test(line) || ZAI_ERROR_LINE_RE.test(line))) continue;
     const m = ZAI_LIMIT_LINE_RE.exec(line);
     const reset = m ? Date.parse(`${m[1]}T${m[2]}+08:00`) : NaN;
     return { at, text: line.slice(0, API_STALL_TEXT_MAX), kind: "rate_limit",
@@ -40205,10 +40225,12 @@ async function readPaneApiErrors(now: number): Promise<void> {
     }
     const identity = `${s.openedAt}\0${s.sessionId}`;
     const cwd = s.cwd;
+    const lastOutput = s.lastOutput;
     const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
-    if (slotFrom(s.id) !== s || identity !== `${s.openedAt}\0${s.sessionId}` || s.cwd !== cwd || harnessOf(s.harness) !== h) continue;
+    if (slotFrom(s.id) !== s || identity !== `${s.openedAt}\0${s.sessionId}` || s.cwd !== cwd
+      || s.lastOutput !== lastOutput || harnessOf(s.harness) !== h) continue;
     if (cap.code !== 0) { paneLimitFacts.delete(s.id); continue; }
-    paneLimitFacts.set(s.id, { identity, readAt: Date.now(), err: paneApiError(h, cap.out, s.lastOutput > 0 ? s.lastOutput : now) });
+    paneLimitFacts.set(s.id, { identity, lastOutput, readAt: Date.now(), err: paneApiError(h, cap.out, s.lastOutput > 0 ? s.lastOutput : now) });
   }
 }
 

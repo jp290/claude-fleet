@@ -889,7 +889,10 @@ lesbare Transkript-Fehlermarke: Fleet erfasst die vollständige sichtbare Fehler
 Spätere normale Ausgabe und Codeblock-Zitate verwerfen den alten Fehler. Pi-zai erfasst die sichtbaren 429/1308/1310-Limitzeilen als `kind:"rate_limit"`,
 auch wenn keine Reset-Zeit lesbar ist. Dort zählt die neueste sichtbare Fehlerzeile;
 eine ältere Zeile ohne Reset verdeckt keine spätere mit Reset. Der gemeinsame Pane-Sensor läuft alle 10 s, liest keinen
-Scrollback, verwirft zitierte Zeilen und pinnt auch nach dem Capture-Await den Occupant.
+Scrollback, verwirft zitierte Zeilen einschließlich sichtbarer Codeblöcke in beiden Harnesses
+und pinnt auch nach dem Capture-Await Occupant und `lastOutput`. Neue Ausgabe macht einen
+gecachten Pane-Fakt sofort unbekannt. Der API-Send prüft dieselbe Regel nach seinen externen
+Awaits unmittelbar vor dem Paste über einen synchronen `beforePaste`-Guard.
 Andere Harnesses erhalten dadurch keine gemessene Fehlerart.
 
 Der neue API-Aktor läuft alle 15 s. `server_error`, `stream_interrupted` und `capacity` sind

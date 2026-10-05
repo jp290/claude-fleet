@@ -33,6 +33,10 @@ export async function run(check: Check): Promise<void> {
     return source.slice(match.index, end + 2);
   };
   const region = source.slice(source.indexOf("// --- apiStall:"), source.indexOf("// --- harness limits:"));
+  const pasteGuard = source.match(/^\s+options\.beforePaste\?\.\(s\);$/m)?.[0];
+  if (!pasteGuard) throw new Error("api-stall probe missing sendText's final before-paste guard");
+  const reprovePaste = new Function("options", "s", pasteGuard) as
+    (options: { beforePaste?: (s: TestSlot) => void }, s: TestSlot) => void;
   const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync([
     fn("apiErrorKind"), fn("claudeLimitResetAt"), fn("readClaudeTail"), region,
     "const RATE_LIMIT_RESUME_AFTER_MS = 60_000; const RATE_LIMIT_RESUME_MAX = 3; let rateLimitTickBusy = false;",
@@ -62,16 +66,17 @@ export async function run(check: Check): Promise<void> {
       contextReading: (s: TestSlot) => ({ ctx: contextReadable ? { usedTokens: 100 } : null, apiError: contextReadable ? errors.get(s.id) ?? null : null }),
       deliveryRecipient: (address: { kind: string }) => receiverPresent ? address.kind === "program" ? main : orchestrator : null,
       slotDeliveryBudget: () => ({ free: budget }), audit: () => {}, saveStateNow: async () => {},
-      noteHarnessLimits: () => {}, logError: () => {}, sess: (id: number) => String(id), paneTarget: (id: string) => id,
+      SendRefused: class extends Error {}, noteHarnessLimits: () => {}, logError: () => {}, sess: (id: number) => String(id), paneTarget: (id: string) => id,
       tmux: async (...args: string[]) => {
         const id = Number(args.at(-1));
         const out = screens.get(id) ?? "";
         captureEffect?.(); captureEffect = null;
         return { code: captureFails ? 1 : 0, out };
       },
-      sendText: async (s: TestSlot, text: string, _enter: boolean, options: { path: string }) => {
-        sends.push({ id: s.id, text, path: options.path, at: now });
+      sendText: async (s: TestSlot, text: string, _enter: boolean, options: { path: string; beforePaste?: (s: TestSlot) => void }) => {
         sendEffect?.(); sendEffect = null;
+        reprovePaste(options, s);
+        sends.push({ id: s.id, text, path: options.path, at: now });
         if (sendFails) throw new Error("external paste failed");
       },
     };
@@ -244,6 +249,31 @@ export async function run(check: Check): Promise<void> {
     interruptedClear.at(391_000); await interruptedClear.api.tickApiStallResume();
     check("api-stall: an unobserved gap cannot turn two isolated clear captures into recovery",
       interruptedClear.sends.length === 2 && interruptedClear.api.events().length === 1);
+    for (const harness of ["codex", "pi-zai"]) {
+      const stale = build(); stale.slots[0]!.harness = harness;
+      stale.screens.set(1, harness === "codex" ? capacityScreen : usage);
+      await stale.api.readPaneApiErrors(1_000);
+      stale.slots[0]!.lastOutput = 2_000;
+      await stale.api.tickApiStallResume();
+      check(`api-stall: ${harness} output after capture invalidates its cached fact, resume and notification`,
+        stale.api.paneLimitFactFor(stale.slots[0]!) === null && stale.sends.length === 0 && stale.api.events().length === 0);
+      const during = build(); during.slots[0]!.harness = harness;
+      during.screens.set(1, harness === "codex" ? capacityScreen : usage);
+      during.captureEffect(() => { during.slots[0]!.lastOutput = 2_000; });
+      await during.api.readPaneApiErrors(1_000); await during.api.tickApiStallResume();
+      check(`api-stall: ${harness} output during capture prevents publishing a stale error`,
+        during.api.paneLimitFactFor(during.slots[0]!) === null && during.api.events().length === 0);
+    }
+    const paste = build(); paste.slots[0]!.harness = "codex"; paste.screens.set(1, capacityScreen);
+    await paste.api.readPaneApiErrors(1_000);
+    paste.sendEffect(() => { paste.slots[0]!.lastOutput = 2_000; });
+    await paste.api.tickApiStallResume();
+    check("api-stall: final sendText paste guard refuses pane output after the actuator chose a send",
+      paste.sends.length === 0 && paste.api.events().length === 0);
+    for (const line of [usage, weekly, noReset]) {
+      check("api-stall: common fence filter rejects pi-zai code-block limit quotes",
+        f.api.paneApiError(pi, "```text\n" + line + "\n```", 1_000) === null);
+    }
     const pin = build(); pin.slots[0]!.harness = "codex"; pin.screens.set(1, capacityScreen);
     pin.captureEffect(() => { pin.slots[0]!.sessionId = "replacement"; });
     await pin.api.readPaneApiErrors(1_000); await pin.api.tickApiStallResume();

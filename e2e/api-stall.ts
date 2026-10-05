@@ -130,8 +130,8 @@ export async function run(check: Check): Promise<void> {
     //  90k  | 89s since error: no send       | old occupant
     //  91k  | first send                    | old occupant
     // 180k  | 89s since first: no send      | old occupant
-    // 181k  | second send; new error line   | old occupant, same outage
-    // 271k  | exhaustion event              | MAIN, never a third send
+    // 182k  | second send; new error line   | old occupant, same outage
+    // 273k  | exhaustion event              | MAIN, never a third send
     for (const harness of ["claude", "codex"]) {
       const b = build(); b.slots[0]!.harness = harness;
       const fresh = async (at: number) => {

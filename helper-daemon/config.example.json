@@ -6,6 +6,7 @@
   "workDir": "/var/lib/fleet-helper/work",
   "instanceDir": "/home/fleet/claude-fleet",
   "checkoutLink": "/var/lib/fleet-helper/work/current",
+  "repos": [{ "name": "example-repo", "path": "~/example-repo" }],
   "pollSec": 15,
   "offRecheckSec": 900,
   "quietHours": { "from": "23:00", "to": "07:00" },

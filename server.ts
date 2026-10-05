@@ -98,6 +98,7 @@ import { loadBlockerHistory, observeBlocker, finishBlockers, blockerTotals, type
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
+  type HelperReposReading, HELPER_REPOS_BYTES_MAX,
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
   FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom,
@@ -168,7 +169,7 @@ import {
   type WorkplaceCheckObservation, type WorkplaceStandSource,
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
-  loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
+  helperReposFrom, loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog,
@@ -26826,6 +26827,7 @@ interface HelperDevice {
   desiredMode?: DeviceMode;  // the OWNER's wish. Never written by the helper principal
   daemonSha?: string;        // the commit the daemon says it RUNS FROM (40 hex) — measured there, or absent
   instance?: HelperInstance;
+  repos?: HelperReposReading;
   // THE TWO CAPACITY NUMBERS, and neither is this server's reading of anything: both are the
   // DEVICE's own words about its own machine, echoed back to the board. `load` says how busy the
   // box is; these say how much of that is the fleet's and how much more it will take.
@@ -26846,7 +26848,7 @@ const helperDevices = new Map<string, HelperDevice>();
 // so a plain lastSeen touch (the claim paths) can spread this over the stored row without erasing
 // the last real report.
 type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string[]; daemonSha?: string;
-  maxParallelSuites?: number; running?: number; features?: string[]; instance?: HelperInstance };
+  maxParallelSuites?: number; running?: number; features?: string[]; instance?: HelperInstance; repos?: HelperReposReading };
 function validHelperInstance(value: unknown): value is HelperInstance {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
@@ -30525,6 +30527,13 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
         return json({ error: "daemonSha must be 40 hex digits" }, 400);
       reported.daemonSha = body.daemonSha;
     }
+    if (body && Object.prototype.hasOwnProperty.call(body, "repos")) {
+      if (Buffer.byteLength(JSON.stringify(body)) > HELPER_REPOS_BYTES_MAX + 4096)
+        return json({ error: "repo heartbeat exceeds 36 KiB" }, 400);
+      const repos = helperReposFrom(body.repos);
+      if (!repos) return json({ error: "invalid repos reading (32 KiB maximum)" }, 400);
+      reported.repos = repos;
+    } else reported.repos = undefined;
     if (body && Object.prototype.hasOwnProperty.call(body, "instance")) {
       const instance = body.instance;
       if (!instance || typeof instance !== "object" || Array.isArray(instance))
@@ -38061,6 +38070,7 @@ if (existsSync(STATE_FILE)) {
             ...(isDeviceMode(d.desiredMode) ? { desiredMode: d.desiredMode } : {}),
             ...(typeof d.daemonSha === "string" && /^[0-9a-f]{40}$/.test(d.daemonSha) ? { daemonSha: d.daemonSha } : {}),
             ...(validHelperInstance(d.instance) ? { instance: d.instance } : {}),
+            ...(helperReposFrom(d.repos) ? { repos: helperReposFrom(d.repos)! } : {}),
             // the CAP survives a restart (it is a property of that machine's config, and the board
             // should not go blank over a deploy); the COUNT does not, and that asymmetry is the
             // point. `running` is a live fact about another machine's processes, and a restored one

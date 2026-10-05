@@ -19,6 +19,55 @@ import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, 
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
 import type { TaskCardBody } from "../card-extract";
 import type { ProgramContextPack } from "../context-plan";
+import { HELPER_REPOS_MAX, HELPER_REPO_REMOTES_MAX, HELPER_REPO_REFS_MAX, HELPER_REPOS_BYTES_MAX,
+  HELPER_REPO_NAME_RE, helperGitLabel, type HelperReposReading, type HelperRepoReason } from "../src/protocol";
+
+export function helperReposFrom(raw: unknown): HelperReposReading | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)
+    || Buffer.byteLength(JSON.stringify(raw)) > HELPER_REPOS_BYTES_MAX) return null;
+  const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  const exact = (v: Record<string, unknown>, keys: string): boolean => Object.keys(v).sort().join(",") === keys;
+  const time = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+  const sha = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{40}$/.test(v);
+  const count = (v: unknown): boolean => v === null || typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  const reason = (v: unknown): v is HelperRepoReason | null => v === null || typeof v === "string"
+    && ["unreadable", "budget", "unsafe-label", "ref-cap", "remote-cap", "commit-cap", "no-merge-base"].includes(v);
+  const v = raw as Record<string, unknown>;
+  if (!exact(v, "at,repos") || !time(v.at) || !Array.isArray(v.repos) || v.repos.length > HELPER_REPOS_MAX) return null;
+  const names = new Set<string>();
+  for (const r of v.repos as unknown[]) {
+    if (!object(r) || !exact(r, "at,branch,coverage,head,name,reason,refs,remote,remotes")
+      || typeof r.name !== "string" || !HELPER_REPO_NAME_RE.test(r.name) || names.has(r.name)
+      || !time(r.at) || !(r.head === null || sha(r.head)) || !(r.branch === null || helperGitLabel(r.branch))
+      || ![null, "none", "present"].includes(r.remote as string | null)
+      || !(r.remotes === null || Array.isArray(r.remotes) && r.remotes.length <= HELPER_REPO_REMOTES_MAX
+        && r.remotes.every((n: unknown) => typeof n === "string" && HELPER_REPO_NAME_RE.test(n))
+        && new Set(r.remotes).size === r.remotes.length)
+      || !["complete", "incomplete"].includes(r.coverage as string) || !reason(r.reason)
+      || !Array.isArray(r.refs) || r.refs.length > HELPER_REPO_REFS_MAX) return null;
+    names.add(r.name);
+    if (r.remote === "none" && (!Array.isArray(r.remotes) || r.remotes.length !== 0 || r.refs.length !== 0)
+      || r.remote === "present" && (!Array.isArray(r.remotes) || r.remotes.length === 0)
+      || r.remote === null && r.remotes !== null
+      || r.coverage === "complete" && (r.head === null || r.reason !== null || r.remote === null)
+      || r.coverage === "incomplete" && r.reason === null
+      || r.head === null && (r.branch !== null || r.refs.length !== 0)) return null;
+    const refs = new Set<string>();
+    for (const f of r.refs as unknown[]) {
+      if (!object(f) || !exact(f, "ahead,behind,head,mergeBase,reason,ref,updatedAt")
+        || !helperGitLabel(f.ref) || refs.has(f.ref) || !sha(f.head)
+        || !(f.updatedAt === null || time(f.updatedAt)) || !(f.mergeBase === null || sha(f.mergeBase))
+        || !count(f.ahead) || !count(f.behind) || !reason(f.reason)
+        || !Array.isArray(r.remotes) || !r.remotes.some((n: string) => (f.ref as string).startsWith(`${n}/`))
+        || (f.reason === null ? f.mergeBase === null || f.ahead === null || f.behind === null
+          : f.mergeBase !== null || f.ahead !== null || f.behind !== null)
+        || r.coverage === "complete" && f.reason !== null) return null;
+      refs.add(f.ref);
+    }
+  }
+  return raw as HelperReposReading;
+}
+
 
 const BAND_SLOTS = 16;
 const SEPARATE_LANE_SLOTS = process.env.FLEET_SEPARATE_LANE_SLOTS === "1";

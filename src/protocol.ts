@@ -62,6 +62,30 @@ export const WS_INPUT_MAX_BYTES = 1024;
 // redeclaring it, so a field added for the client cannot be forgotten on the server and vice versa.
 export interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
 
+export const HELPER_REPOS_MAX = 8;
+export const HELPER_REPO_REMOTES_MAX = 8;
+export const HELPER_REPO_REFS_MAX = 8;
+export const HELPER_REPO_COMMITS_MAX = 512;
+export const HELPER_REPOS_BYTES_MAX = 32768;
+export const HELPER_REPOS_CACHE_MS = 60000;
+export const HELPER_REPOS_BUDGET_MS = 5000;
+export const HELPER_REPO_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+export const helperGitLabel = (v: unknown): v is string => typeof v === "string"
+  && /^[a-zA-Z0-9][a-zA-Z0-9_./-]{0,95}$/.test(v) && !v.includes("..")
+  && !/\d+\.\d+\.\d+\.\d+|\.[a-zA-Z]{2,}(?:$|\/)/.test(v);
+export type HelperRepoReason = "unreadable" | "budget" | "unsafe-label" | "ref-cap" | "remote-cap"
+  | "commit-cap" | "no-merge-base";
+export interface HelperRepoRef {
+  ref: string; head: string; updatedAt: number | null;
+  mergeBase: string | null; ahead: number | null; behind: number | null; reason: HelperRepoReason | null;
+}
+export interface HelperRepoReading {
+  name: string; at: number; head: string | null; branch: string | null;
+  remote: "none" | "present" | null; remotes: string[] | null; refs: HelperRepoRef[];
+  coverage: "complete" | "incomplete"; reason: HelperRepoReason | null;
+}
+export interface HelperReposReading { at: number; repos: HelperRepoReading[] }
+
 // --- worker result rail ------------------------------------------------------------------------
 // The route, persisted row and FleetEvent payload share this CLOSED vocabulary. Keeping the value
 // here makes a new spelling fail compilation in both the server and its transport probe instead of

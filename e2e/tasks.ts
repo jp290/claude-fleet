@@ -14200,7 +14200,7 @@ export async function run(ctx: Ctx): Promise<void> {
         verboten: [], after: [stB], model: "planted-stau", at: Date.now(), ms: 0, gaps: [] };
     });
     await post(`/api/tasks/${stC}/queue`, {});
-    await stUntil(async () => (await stBlocked()).some((a) => a.status === "open" && a.text.includes(stB)), 60);
+    await stUntil(async () => (await stBlocked()).some((a) => a.status === "open" && a.text.includes(stB) && a.text.includes(stC)), 60);
     const stOpen = (await stBlocked()).filter((a) => a.status === "open");
     const stA1 = await stPlan();
     const stWaitC = stA1.waits?.find((w) => w.id === stC);

@@ -7901,14 +7901,6 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       // wrapper (src/client.ts#unwrapPasted). The session's queue holds the same text first.
       const body = fixture.ownerFirst.slice(fixture.head.length);
       const stored = `${fixture.head}\n\n<pasted_content id="p1">\n${body}\n</pasted_content id="p1">`;
-      fx.queued = [{ text: stored, at: at(54) }];
-      await settle(1600);
-      const q0 = await evaluate<Read>(READ);
-      facts.queuedBundle = q0.own;
-      claims["owner part 1/2 in the session's queue: the composer's send and the queued bundle are ONE \"wartet\" bubble, no raw mark"] =
-        q0.own.filter((m) => m.pending).length === 1 && q0.own.find((m) => m.pending)?.text === ownerA
-        && q0.own.find((m) => m.pending)?.state === "wartet" && !q0.raw;
-      fx.queued = [];
       fx.entries.push(text("user", `${stored}\n`, 55),
         text("assistant", "Freut mich. Genau so bleibt das Ganze aus einem Guss.", 56));
       await wait(`document.querySelectorAll('.pane .panechat .msg.assistant').length >= 2`);

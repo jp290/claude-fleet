@@ -9465,6 +9465,8 @@ function paintTestinstanzMachine(card: HTMLElement): void {
   if (testinstanzMachinePending || Date.now() - testinstanzMachineReadAt <= 15_000) return;
   testinstanzMachinePending = true;
   testinstanzMachineReadAt = Date.now();
+  // repaint only on a CHANGED answer: the 15 s re-read must not move the board under a click
+  const before = JSON.stringify([testinstanzMachine, testinstanzMachineError]);
   void api("/api/testinstanzen").then(async (res) => {
     const answer = (await res.json()) as { testinstanzen?: TestinstanzRow[]; error?: string };
     if (!res.ok || !Array.isArray(answer.testinstanzen)) throw new Error(answer.error ?? `testinstanz list failed (${res.status})`);
@@ -9474,6 +9476,7 @@ function paintTestinstanzMachine(card: HTMLElement): void {
     testinstanzMachineError = error instanceof Error ? error.message : String(error);
   }).finally(() => {
     testinstanzMachinePending = false;
+    if (JSON.stringify([testinstanzMachine, testinstanzMachineError]) === before) return;
     boardBody.querySelector(".testinstanzcard")?.remove();
     paintTestinstanzCard();
   });
@@ -9484,11 +9487,12 @@ function paintTestinstanzCard(): void {
   const slot = panes[focused]?.slot;
   const s = slot ? fleet[slot - 1] : undefined;
   if (!s?.worktree || !s.cwd) {
-    // no lane in focus: the card carries only the machine list, and only once there is one
+    // no lane in focus: the card carries only the machine list, only once there is one, and at the
+    // END of the board — an answer arriving later never shifts the session's own sections
     const card = el("div", "bsec testinstanzcard");
     card.appendChild(el("h3", "", "Testinstanzen"));
     paintTestinstanzMachine(card);
-    if (testinstanzMachine?.length || testinstanzMachineError) boardBody.prepend(card);
+    if (testinstanzMachine?.length || testinstanzMachineError) boardBody.append(card);
     return;
   }
   const key = testinstanzKey(s);

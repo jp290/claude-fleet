@@ -74,6 +74,7 @@ import * as hostHygiene from "./e2e/host-hygiene";
 import * as stateSnapshot from "./e2e/state-snapshot";
 import * as trace from "./e2e/trace";
 import * as konzepte from "./e2e/konzepte";
+import * as roleAddress from "./e2e/role-address";
 import * as trail from "./e2e/trail";
 import * as trailstats from "./e2e/trailstats";
 
@@ -357,6 +358,11 @@ const steps: Step[] = [
   // scratch instance with a planted Program binding and a konzept root it owns, so it touches no fixture here.
   { unit: "konzepte", module: "konzepte", run: async () => {
     await konzepte.run();
+  } },
+  // --- the role address "orchestrator" and its conflict: opens, renames and kills three vacant
+  // slots of its own and needs nothing another module wrote — only that no slot holds the role yet
+  { unit: "role-address", module: "role-address", run: async () => {
+    await roleAddress.run();
   } },
 
   // --- steward principal: scoped token, typed+capped sends, read-only fleet-wide access ---

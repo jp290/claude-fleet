@@ -117,6 +117,7 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "state-snapshot", seconds: 12, modules: ["state-snapshot"] },
   { unit: "trace", seconds: 5, modules: ["trace"] },
   { unit: "konzepte", seconds: 10, modules: ["konzepte"] },
+  { unit: "role-address", seconds: 10, modules: ["role-address"] },
 ];
 
 // `k/n`, 1 ≤ k ≤ n. Anything else is null — the caller decides whether that is "no flag" or an error.

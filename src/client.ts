@@ -326,6 +326,9 @@ export interface SlotInfo {
   harness?: string; effort?: string;
   // what the session is for (server.ts, the /api/sessions slot row) — absent means none set
   mission?: string; awaiting?: "owner" | "main"; taskId?: string; taskHead?: string; programId?: string;
+  // the role the server gives this session (server.ts#positionRole), separate from the label the
+  // owner typed. ABSENT = no role a label could claim: a lane (see `worktree`) or a plain session.
+  role?: "program-main" | "orchestrator";
   // a task lane's full title, derived by the server from its founding card on every poll
   // (src/suitemeter.ts#laneTitleOf) — absent when there was nothing to derive it from
   taskTitle?: string;
@@ -549,6 +552,9 @@ export let quietHoursSrv: { start: number; end: number } | null = null;
 // `data.lands !== false`, so a server that predates the field — and every ordinary canonical
 // instance, which never sets the flag — keeps every land affordance exactly as it was.
 export let landsEnabled = true;
+// the slots that make the role address "orchestrator" resolve to nobody (server.ts#
+// orchestratorAddressConflict) — null while zero or one slot carries an Orchestrator label
+let roleConflict: { address: "orchestrator"; slots: number[] } | null = null;
 export let serverNow = 0;
 // the server's clock minus this device's, from the same poll that carries serverNow. Transcript
 // timestamps are written on the server machine; a phone whose clock runs 3 min ahead would
@@ -5535,6 +5541,17 @@ export function stacksOf(): Stack[] {
   return out.sort((a, b) => a.at - b.at);
 }
 
+// LABEL AND ROLE, SEPARATELY (Befund Portfolio-Koordination, 2026-10-05): the label is what the
+// owner typed, the role is what the server makes of it (server.ts#positionRole) — an "Orchestrator"
+// label on a bound Program-MAIN is a MAIN, and on a lane it is a lane.
+const ROLE_WORD: Record<NonNullable<SlotInfo["role"]> | "lane" | "generic", string> = {
+  "program-main": "Program-MAIN", orchestrator: "Orchestratorin", lane: "Lane", generic: "keine (Session)",
+};
+function roleLine(s: SlotInfo): string {
+  const role = s.role ?? (s.worktree ? "lane" : "generic");
+  return `Label: ${s.label ? `„${s.label}“` : "— (Ordnername)"} · Rolle: ${ROLE_WORD[role]}`;
+}
+
 export function startRename(row: HTMLElement, s: SlotInfo) {
   // dblclick on a not-yet-focused slot: the first click's assign() rebuilds the sidebar,
   // so the dblclick lands on the detached old row — a rename input there would be invisible.
@@ -5902,6 +5919,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       }
       if (s.parkedSend) facts.push(parkedSendLine(s.parkedSend));
       if (s.codexRecovery) facts.push(codexTurnLine(s));
+      facts.unshift(roleLine(s));
       facts.push("open the board for the diff, the files and the actions · double-click to rename");
       lbl.title = facts.join("\n");
       if (s.worktree) {
@@ -5995,6 +6013,20 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
           + (cr.sessionId ? `\nlast bound: ${cr.sessionId}` : "")
           + "\nclick to see the candidates and bind one exact conversation";
         need.onclick = (e) => { e.stopPropagation(); openCodexDlg(s.id); };
+        row.appendChild(need);
+      }
+      // THE ROLE ADDRESS RESOLVES TO NOBODY — a line on EVERY slot that carries an Orchestrator label,
+      // because none of them is "the" one: the server picks no winner, so neither does the board.
+      // The click renames this one; which to rename is the owner's call (server.ts#roleConflictFor).
+      if (roleConflict?.slots.includes(s.id)) {
+        const others = roleConflict.slots.filter((id) => id !== s.id);
+        const need = el("div", "needline",
+          `Adresse „orchestrator“ unauflösbar — auch Slot ${others.join(", ")} trägt ein Orchestrator-Label · klick zum Umbenennen`);
+        need.title = `Slots ${roleConflict.slots.join(", ")} tragen ein Orchestrator-Label. Die Rollenadresse „orchestrator“ `
+          + "löst nur bei genau einem Treffer auf — bis dahin erreicht keine Nachricht an die Orchestratorin ihr Ziel, "
+          + "und Fleet wählt keine Gewinnerin.\n" + roleLine(s)
+          + "\nklick: diesen Slot umbenennen — alle bis auf einen umbenennen löst die Adresse wieder auf";
+        need.onclick = (e) => { e.stopPropagation(); startRename(row, s); };
         row.appendChild(need);
       }
       // THE BAND: a line that has handed over becomes a track you pull back through (bandify)
@@ -6271,6 +6303,8 @@ export async function refresh() {
       // the owner poll's CUT and PROJECTION of the trail (src/opsevents.ts#opsPollRow); full rows: GET /api/events
       events?: OpsPollRow[];
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null;
+      // omitted while the role address resolves (one holder) or nobody holds it — absent is no conflict
+      roleConflict?: { address: "orchestrator"; slots: number[] };
       autosOn?: boolean; quietHours?: { start: number; end: number } | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
@@ -6289,6 +6323,7 @@ export async function refresh() {
     setProgramsPoll(data.programs ?? []);
     dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };
     landsEnabled = data.lands !== false;
+    roleConflict = data.roleConflict ?? null;
     instanceName = data.instance?.name ?? null;
     // THE BOUNDARY CHECK, and it is not paranoia about our own server: this list is the only wire
     // value the board turns into a NAVIGATION. Re-applying the server's own charset here means the
@@ -6392,7 +6427,9 @@ export async function refresh() {
         s.succession?.session,
         // the session mark's facts beyond the ones above (src/marks.ts#markFacts): role reads the
         // model (astra), the waiting frame reads awaiting, the bud reads the harness
-        s.harness, s.model, s.awaiting])]);
+        s.harness, s.model, s.awaiting,
+        // the label tooltip's role line and the role-address needline (roleLine, slotRow)
+        s.role, roleConflict?.slots.includes(s.id) ? roleConflict.slots.join(",") : null])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();

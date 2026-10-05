@@ -9617,14 +9617,39 @@ function deliveryRecipient(address: DeliveryAddress): Slot | null {
     return s?.cwd && s.openedAt === main?.openedAt ? s : null;
   }
   if (address.kind === "orchestrator") {
-    // non-lane only, the same predicate deliveryAddress uses on the sender side: a lane labelled
-    // "⎇ task orchestratorinnen-karte-…" matched the label and made the role ambiguous, so a bundle
-    // for the real Orchestratorin fell with "no current role occupant" (Slot 22, 2026-10-02)
-    const candidates = slots.filter((s) => s.cwd && !s.worktree && isOrchestratorLabel(s.label));
+    const candidates = orchestratorLabelHolders();
     return candidates.length === 1 ? candidates[0]! : null;
   }
   const s = slotFrom(address.id);
   return s?.cwd ? s : null;
+}
+// WHO THE ROLE ADDRESS "orchestrator" RESOLVES OVER — non-lane only, the same predicate
+// deliveryAddress uses on the sender side: a lane labelled "⎇ task orchestratorinnen-karte-…"
+// matched the label and made the role ambiguous, so a bundle for the real Orchestratorin fell with
+// "no current role occupant" (Slot 22, 2026-10-02). ONE set for the resolution above and for the
+// conflict below, so the two can never disagree about who holds the label.
+function orchestratorLabelHolders(): Slot[] {
+  return slots.filter((s) => s.cwd && !s.worktree && isOrchestratorLabel(s.label));
+}
+// THE ROLE ADDRESS'S CONFLICT, NAMED INSTEAD OF LOST (Befund Portfolio-Koordination, 2026-10-05):
+// two holders leave "orchestrator" resolving to nobody, and every reader of deliveryRecipient — the
+// message rail's 409, a MAIN's null receiver, the attention hand-off — only ever saw the absence.
+// This names it and decides nothing: no winner is picked here either (exactly one stays the rule),
+// nothing is renamed or closed. null at zero or one holder — one is the resolution, none is "no
+// Orchestratorin", which is not a conflict between slots.
+type RoleConflict = { address: "orchestrator"; slots: number[] };
+function orchestratorAddressConflict(): RoleConflict | null {
+  const holders = orchestratorLabelHolders();
+  return holders.length > 1
+    ? { address: "orchestrator", slots: holders.map((s) => s.id).sort((a, b) => a - b) } : null;
+}
+// …in a route's words, and only to a slot that is itself one of the holders: the open and rename
+// that made the second holder, and the 409 a holder gets from the message rail
+function roleConflictFor(s: Slot): { roleConflict?: RoleConflict & { note: string } } {
+  const c = orchestratorAddressConflict();
+  return c?.slots.includes(s.id) ? { roleConflict: { ...c,
+    note: `role address "orchestrator" resolves to nobody while ${c.slots.length} non-lane slots carry an Orchestrator label `
+      + `(slots ${c.slots.join(", ")}) — Fleet picks no winner; rename all but one` } } : {};
 }
 function scheduleDeliveryBundle(key: string, bundle: DeliveryBundle): void {
   if (bundle.timer) clearTimeout(bundle.timer);
@@ -14637,7 +14662,7 @@ function programMessageStatus(p: Program): { unread: number; oldestAt: number | 
 // GET /api/self/messages — the pull half. Pure projection, stamps nothing, newest first.
 function messageViewFor(s: Slot): Response {
   const mine = messageAddressesFor(s);
-  if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS }, 409);
+  if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS, ...roleConflictFor(s) }, 409);
   const unknown: string[] = [];
   // THE ONE DEGRADATION THIS READER MUST NEVER RENDER AS HEALTH, on programInboxView's terms: the
   // loader refuses to repair, so the rail arrives here EMPTY — byte-identical to "nobody ever sent
@@ -14819,7 +14844,7 @@ async function replyToMessageAsOwner(id: string, body: Record<string, unknown> |
 // read answers existing:true and rewrites nothing, because the FIRST reader is the fact.
 async function readMessageFor(s: Slot, id: string): Promise<Response> {
   const mine = messageAddressesFor(s);
-  if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS }, 409);
+  if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS, ...roleConflictFor(s) }, 409);
   const entry = messages.entries.find((m) => m.id === id && messageInboundFor(s, m, mine));
   if (!entry) {
     // A RECEIPT IS THE ADDRESSEE'S. The caller's own OUTBOUND row is visible to it in the view
@@ -43297,6 +43322,14 @@ Bun.serve<WSData>({
           return { ...(owner > 0 ? { attentionOpen: owner } : {}),
             ...(orchestrator > 0 ? { attentionAtOrchestrator: orchestrator } : {}) };
         })(),
+        // WHICH SLOTS MAKE THE ROLE ADDRESS UNRESOLVABLE (orchestratorAddressConflict) — ONCE per
+        // response, not per slot: the board paints it on every listed slot, and a per-row copy would
+        // pay for one fact several times. OMITTED while zero or one slot holds an Orchestrator label,
+        // which is the healthy fleet and costs this 14 KiB poll nothing.
+        ...(() => {
+          const conflict = orchestratorAddressConflict();
+          return conflict ? { roleConflict: conflict } : {};
+        })(),
         ...(() => {
           const stale = programs.filter((p) => p.status === "active"
             && programOccupancy(p) === "stale").length;
@@ -43408,6 +43441,14 @@ Bun.serve<WSData>({
             // /api/self all along, and the owner poll was the one reader that never got them
             ...(s.mission ? { mission: s.mission } : {}),
             ...(s.awaiting ? { awaiting: s.awaiting } : {}),
+            // the ROLE the server actually gives this session (positionRole), beside the label the
+            // owner typed: an „[Zitat entfernt]“ label on a bound Program-MAIN is a MAIN. Only the two
+            // roles a label cannot show — a lane is `worktree`, generic is absent; spelled
+            // `role: role` for the e2e/pins.ts key derivation
+            ...(s.cwd ? (() => {
+              const role = positionRole(s);
+              return role === "program-main" || role === "orchestrator" ? { role: role } : {};
+            })() : {}),
             // a task LANE's title, derived on this read from its founding card (src/suitemeter.ts#
             // laneTitleOf) and never stored; omitted when there is nothing to derive it from
             ...(s.cwd ? (() => {
@@ -46235,7 +46276,8 @@ Bun.serve<WSData>({
           return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
         s.label = body.label.trim() || null; // empty clears back to the cwd-basename default
         saveState();
-        return json({ ok: true, label: s.label });
+        // a second Orchestrator label is named in the answer that made it (roleConflictFor)
+        return json({ ok: true, label: s.label, ...roleConflictFor(s) });
       }
       // the owner rewrites a LIVE slot's model and/or effort IN THE RECORD. Deliberately no
       // respawn: the pane keeps running whatever it runs (the owner may already have switched it
@@ -46377,6 +46419,7 @@ Bun.serve<WSData>({
         const roleCard = isOrchestratorLabel(s.label) ? await deliverOrchestratorSpawnCard(s) : null;
         if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
         return json({ ok: true, cwd: s.cwd, label: s.label, ...(s.remote ? { remote: true } : {}), ...(roleCard ? { roleCard } : {}),
+          ...roleConflictFor(s),
           ...(modelSupport ? { modelSupport } : {}),
           ...(packsResult ? packsResult : {}),
           ...(adopted ? { successionDebt: { id: adopted.id, adopted: true,

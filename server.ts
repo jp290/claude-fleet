@@ -6654,7 +6654,7 @@ let operationalGitObservedAt: number | null = null;
 const operationalGitOccupants = new Map<number, { openedAt: number; sessionId: string | null }>();
 const codexFirstTurnCursors = new Map<number, { openedAt: number; sessionId: string; selfToken: string;
   file: string; dev: number | null; ino: number | null; offset: number; skipping: boolean;
-  unknownReason: CodexFirstTurnEvidence["unknownReason"]; turn: Slot["codexFirstTurn"] }>();
+  unknownReason: CodexFirstTurnEvidence["unknownReason"]; startedBeforeSince: string[]; turn: Slot["codexFirstTurn"] }>();
 function codexFirstTurnView(s: Slot): Slot["codexFirstTurn"] {
   const hit = s.codexFirstTurn;
   const cursor = codexFirstTurnCursors.get(s.id);
@@ -6673,7 +6673,7 @@ function tickCodexFirstTurn(s: Slot): void {
   if (!cursor || cursor.openedAt !== s.openedAt || cursor.sessionId !== s.sessionId
     || cursor.selfToken !== s.selfToken || cursor.file !== file) {
     cursor = { openedAt: s.openedAt, sessionId: s.sessionId, selfToken: s.selfToken, file, dev: null, ino: null, offset: 0,
-      skipping: false, unknownReason: null, turn: null };
+      skipping: false, unknownReason: null, startedBeforeSince: [], turn: null };
     codexFirstTurnCursors.set(s.id, cursor);
     s.codexFirstTurn = null;
   }
@@ -6683,6 +6683,7 @@ function tickCodexFirstTurn(s: Slot): void {
     const { size, dev, ino } = fstatSync(fd);
     if (size < cursor.offset || cursor.dev !== dev || cursor.ino !== ino) {
       cursor.offset = 0; cursor.skipping = false; cursor.unknownReason = null; cursor.turn = null; s.codexFirstTurn = null;
+      cursor.startedBeforeSince = [];
     }
     cursor.dev = dev; cursor.ino = ino;
     if (cursor.turn?.turn.completedAt != null) return;
@@ -6710,8 +6711,9 @@ function tickCodexFirstTurn(s: Slot): void {
     const from = cursor.skipping ? buffer.subarray(0, n).indexOf(10) + 1 : 0;
     cursor.skipping = false;
     const parsed = readCodexFirstTurnEvidence(buffer.toString("utf8", from, end + 1).split("\n"), s.openedAt,
-      { turn: cursor.turn?.turn ?? null, unknownReason: cursor.unknownReason });
+      { turn: cursor.turn?.turn ?? null, unknownReason: cursor.unknownReason, startedBeforeSince: cursor.startedBeforeSince });
     cursor.unknownReason = parsed.unknownReason;
+    cursor.startedBeforeSince = parsed.startedBeforeSince;
     const turn = parsed.turn;
     cursor.offset += end + 1;
     if (turn && JSON.stringify(turn) !== JSON.stringify(cursor.turn?.turn ?? null)) {

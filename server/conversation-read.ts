@@ -34,6 +34,7 @@ export interface CodexFirstTurn {
 export interface CodexFirstTurnEvidence {
   turn: CodexFirstTurn | null;
   unknownReason: CodexFirstTurn["unknownReason"] | null;
+  startedBeforeSince: string[];
 }
 export interface ConversationRead {
   entries: TEntry[];
@@ -222,14 +223,16 @@ const CODEX_INJECTED = /^(# AGENTS\.md instructions|<[a-z_]+>)/;
 // commentary, token count or missing error alone proves a successful model turn.
 // https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/protocol.rs
 export function readCodexFirstTurn(lines: string[], since: number, previous: CodexFirstTurn | null = null): CodexFirstTurn | null {
-  return readCodexFirstTurnEvidence(lines, since, { turn: previous, unknownReason: previous?.unknownReason ?? null }).turn;
+  return readCodexFirstTurnEvidence(lines, since,
+    { turn: previous, unknownReason: previous?.unknownReason ?? null, startedBeforeSince: [] }).turn;
 }
 
 // Keep pre-start gaps even when a chunk contains no start; a later start cannot prove it was first.
 export function readCodexFirstTurnEvidence(lines: string[], since: number,
-  previous: CodexFirstTurnEvidence = { turn: null, unknownReason: null }): CodexFirstTurnEvidence {
+  previous: CodexFirstTurnEvidence = { turn: null, unknownReason: null, startedBeforeSince: [] }): CodexFirstTurnEvidence {
   let first = previous.turn;
   let unknownReason = previous.unknownReason;
+  const startedBeforeSince = new Set(previous.startedBeforeSince);
   for (let i = 0; i < lines.length; i++) {
     if (first && first.completedAt !== null) break;
     const line = lines[i];
@@ -250,15 +253,21 @@ export function readCodexFirstTurnEvidence(lines: string[], since: number,
       else if (!first && userInput) unknownReason ??= "user-before-start";
       continue;
     }
-    if (at < since || !p) continue;
+    if (!p) continue;
+    if (at < since) {
+      if (row.type === "event_msg" && (p.type === "task_started" || p.type === "turn_started") && str(p.turn_id))
+        startedBeforeSince.add(str(p.turn_id));
+      continue;
+    }
     if (!first && userInput) unknownReason ??= "user-before-start";
     if (row.type !== "event_msg") continue;
+    const terminal = p.type === "task_complete" || p.type === "turn_complete";
+    if (terminal && startedBeforeSince.has(str(p.turn_id))) continue;
     if (!first && (p.type === "task_started" || p.type === "turn_started") && str(p.turn_id)) {
       first = { state: unknownReason ? "unknown" : "running", turnId: str(p.turn_id), acceptedAt: at,
         completedAt: null, error: null, ...(unknownReason ? { unknownReason } : {}) };
       continue;
     }
-    const terminal = p.type === "task_complete" || p.type === "turn_complete";
     if (!first && terminal && p.error && typeof p.error === "object") {
       first = { state: "failed", turnId: str(p.turn_id), acceptedAt: null, completedAt: null, error: null };
     }
@@ -279,7 +288,7 @@ export function readCodexFirstTurnEvidence(lines: string[], since: number,
       }
     }
   }
-  return { turn: first, unknownReason };
+  return { turn: first, unknownReason, startedBeforeSince: [...startedBeforeSince] };
 }
 
 export function readCodexRollout(lines: string[]): ConversationRead {

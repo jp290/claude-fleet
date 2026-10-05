@@ -256,6 +256,28 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
     identities.set("/fixture/replaced", { dev: 2, ino: 2 }); scan.tickCodexFirstTurn(replaced);
     checkFixture("first model turn: a new device resets the cursor even with the same inode",
       replaced.codexFirstTurn?.turn.state === "succeeded" && replaced.codexFirstTurn.turn.turnId === "other-device", JSON.stringify(replaced.codexFirstTurn));
+    for (const terminal of ["task_complete", "turn_complete"] as const) {
+      const oldStart = event(1, { type: terminal === "task_complete" ? "task_started" : "turn_started", turn_id: "predecessor" });
+      const oldFailure = event(21, { type: terminal, turn_id: "predecessor",
+        error: { message: "predecessor model failed", codex_error_info: "bad_request" } });
+      const turn = readCodexFirstTurn([oldStart, oldFailure], epoch + 20);
+      checkFixture(`first model turn: ${terminal} failure whose start precedes openedAt is excluded`, turn === null, JSON.stringify(turn));
+      const lane = { ...b, id: 44, selfToken: terminal, sessionId: `predecessor-${terminal}`, codexFirstTurn: null } as Slot;
+      put(lane.sessionId!, [oldStart]); scan.tickCodexFirstTurn(lane);
+      put(lane.sessionId!, [oldStart, oldFailure]); scan.tickCodexFirstTurn(lane);
+      checkFixture(`first model turn: ${terminal} predecessor identity survives a tick boundary`,
+        scan.codexFirstTurnView(lane) === null && lane.codexFirstTurn === null, JSON.stringify(lane.codexFirstTurn));
+      put(lane.sessionId!, [oldStart, oldFailure, start(24, "current"), success(25, "current")]); scan.tickCodexFirstTurn(lane);
+      checkFixture(`first model turn: ${terminal} predecessor failure cannot block the current occupant's own success`,
+        lane.codexFirstTurn?.turn.state === "succeeded" && lane.codexFirstTurn.turn.turnId === "current", JSON.stringify(lane.codexFirstTurn));
+    }
+    const historicalReset = { ...b, id: 45, selfToken: "historical-reset", sessionId: "historical-reset", codexFirstTurn: null } as Slot;
+    put("historical-reset", [start(1, "reused-id")]); scan.tickCodexFirstTurn(historicalReset);
+    put("historical-reset", [start(21, "reused-id"), success(23, "reused-id")]);
+    identities.set("/fixture/historical-reset", { dev: 1, ino: 2 }); scan.tickCodexFirstTurn(historicalReset);
+    checkFixture("first model turn: file replacement clears remembered predecessor IDs",
+      historicalReset.codexFirstTurn?.turn.state === "succeeded" && historicalReset.codexFirstTurn.turn.turnId === "reused-id",
+      JSON.stringify(historicalReset.codexFirstTurn));
     for (const [name, lines] of [
       ["no-start", [success(23, "B")]], ["torn-terminal", [start(21, "B"), success(23, "B").slice(0, -1)]],
       ["wrong-turn", [start(21, "B"), success(23, "other")]],

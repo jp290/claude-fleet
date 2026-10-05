@@ -797,6 +797,21 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   `verify=${verifyCmd.length}B audit=${auditCmd.length}B spawn=${spawnLine.length}B`);
 
 {
+  const srvCommand = watchdog.split("\n").find((line) =>
+    line.trimStart().startsWith('"') && line.includes("exec bun server.ts")) ?? "";
+  for (const [key, fallback] of [["FLEET_VERIFY_TIMEOUT_MS", "480000"], ["FLEET_VERIFY_WAIT_MS", "2700000"]] as const) {
+    const assignment = `${key}=\\\${${key}:-${fallback}}`;
+    const sourceAt = srvCommand.indexOf(". ./.env; set +a;");
+    const budgetAt = srvCommand.indexOf(assignment);
+    pin(`watchdog.sh's ${key} keeps default ${fallback} and expands in the inner shell after .env`,
+      sourceAt >= 0 && budgetAt > sourceAt
+      && srvCommand.split(`${key}=`).length === 2
+      && srvCommand[budgetAt - 1] === " " && srvCommand[budgetAt + assignment.length] === " ",
+      `source=${sourceAt} budget=${budgetAt}; expected escaped assignment ${assignment}`);
+  }
+}
+
+{
   // a command that declines to verify must say so with the ONE reserved exit code; any other code
   // is read as a real pass or a real failure, and a self-declared skip that lands as a pass is the
   // exact hole VERIFY_SKIP_EXIT was reserved to close

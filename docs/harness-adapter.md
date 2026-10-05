@@ -60,6 +60,11 @@ Register nie automatisch.
 
 ## Land-Pfad-Flags
 
+- `FLEET_VERIFY_TIMEOUT_MS` (Arbeitsbudget) und `FLEET_VERIFY_WAIT_MS` (Wartebudget) sind im
+  srv-Spawn von `watchdog.sh` per `.env` überschreibbar. Die innere Shell lädt zuerst `.env` und
+  expandiert dann `${FLEET_VERIFY_TIMEOUT_MS:-480000}` und `${FLEET_VERIFY_WAIT_MS:-2700000}`;
+  ohne Wert gelten unverändert 480000 bzw. 2700000 ms. Die Dollarzeichen sind im doppelt
+  gequoteten Spawn-String escaped, damit die äußere Watchdog-Shell die Defaults nicht vorweg einsetzt.
 - Land-path flags (in `watchdog.sh`'s srv-spawn env — die Deploy-Identität dagegen in `.env`, s. o.; grep die
   const in server.ts für den Kontrakt): `FLEET_MERGE_REPAIR_ROUNDS` (default 2, the resolver↔verify repair
   loop) is ON. `FLEET_CLEAN_REVIEW` (der ② clean-path-Reviewer) steht seit 2026-07-28 auf **`off`** —

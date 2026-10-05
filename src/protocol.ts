@@ -73,7 +73,7 @@ export const HELPER_REPO_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 export const helperGitLabel = (v: unknown): v is string => typeof v === "string"
   && /^[a-zA-Z0-9][a-zA-Z0-9_./-]{0,95}$/.test(v) && !v.includes("..")
   && !/\d+\.\d+\.\d+\.\d+|\.[a-zA-Z]{2,}(?:$|\/)/.test(v);
-export type HelperRepoReason = "unreadable" | "budget" | "unsafe-label" | "ref-cap" | "remote-cap"
+export type HelperRepoReason = "unreadable" | "not-repo-root" | "budget" | "unsafe-label" | "ref-cap" | "remote-cap"
   | "commit-cap" | "no-merge-base" | "invalid-report";
 export interface HelperRepoRef {
   ref: string | null; head: string | null; updatedAt: number | null;

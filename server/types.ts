@@ -30,7 +30,7 @@ export function helperReposFrom(raw: unknown): HelperReposReading | null {
   const count = (v: unknown): boolean => v === null || typeof v === "number" && Number.isSafeInteger(v)
     && v >= 0 && v <= HELPER_REPO_COMMITS_MAX;
   const reason = (v: unknown): v is HelperRepoReason | null => v === null || typeof v === "string"
-    && ["unreadable", "budget", "unsafe-label", "ref-cap", "remote-cap", "commit-cap", "no-merge-base", "invalid-report"].includes(v);
+    && ["unreadable", "not-repo-root", "budget", "unsafe-label", "ref-cap", "remote-cap", "commit-cap", "no-merge-base", "invalid-report"].includes(v);
   if (!object(raw) || Buffer.byteLength(JSON.stringify(raw)) > HELPER_REPOS_BYTES_MAX
     || !exact(raw, "at,repos") || !time(raw.at) || !Array.isArray(raw.repos) || raw.repos.length > HELPER_REPOS_MAX) return null;
   const at = raw.at, names = new Set<string>();

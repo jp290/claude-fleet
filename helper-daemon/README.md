@@ -39,6 +39,8 @@ for detached HEAD), configured remote names, and locally stored remote refs with
 unique merge-base and exact ahead/behind counts. A repo without remotes has `remote:"none"`.
 Unreadable measurements stay null with a fixed reason, never a raw Git error. A ref's
 `updatedAt` is its last local reflog update, or null; it does not prove remote freshness.
+The configured directory must match Git's repository root after resolving symlinks;
+a subdirectory reports null measurements with `not-repo-root`.
 The Fleet exposes these readings as `helper-repo` carriers in `/api/worktrees`'s `stands`,
 identified by Fleet machine name and repo name, with no helper path or network address.
 

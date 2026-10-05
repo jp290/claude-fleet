@@ -3059,7 +3059,9 @@ Je gemeldetem Repo erscheint ein eigener `helper-repo`-Träger mit `repo` als Re
 `observedAt` als Daemon-Messzeit, `reportedBranch`, `remotes` und
 `coverage:{state:"complete"|"incomplete",reason:null|<Grund>}`. `head` ist die gemessene
 Checkout-SHA, kein laufender Prozess. Unlesbares Repo: head/Branch/Remotes null, reason
-`unreadable`; ein abgebrochener Messlauf nennt `budget`. `target:null` mit
+`unreadable`; ein konfiguriertes Unterverzeichnis statt der Repo-Wurzel nennt `not-repo-root`
+mit head/Branch/Remotes null (Git-Wurzel und Konfiguration werden nach realpath verglichen).
+Ein abgebrochener Messlauf nennt `budget`. `target:null` mit
 `helper-target-unreported`: ein fremdes Repo wird niemals über einen lokalen Namensgleichstand
 zugeordnet oder auf diesem Server gelesen. `remote:"none"` bezeichnet keine konfigurierten
 Remotes; sonst führt `remote` die lokal gespeicherten Remote-Refs mit Name, SHA, eindeutiger

@@ -8,7 +8,7 @@ import type { WorkplaceCheckObservation } from "../server/types";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plantScreen, plogRead, post, restartSrv,
@@ -163,6 +163,8 @@ export async function helperRepoChecks(): Promise<void> {
     for (const repo of [current, local]) {
       mkdirSync(repo); git(repo, "init", "-qb", "main"); git(repo, "commit", "--allow-empty", "-qm", "fixture");
     }
+    const subdir = `${current}/subdir`, alias = `${dir}/alias`;
+    mkdirSync(subdir); symlinkSync(current, alias);
     const head = git(current, "rev-parse", "HEAD").stdout.trim();
     git(current, "remote", "add", "origin", "http://fixture.invalid/?token=SYNTHETIC_REPO_SECRET");
     git(current, "update-ref", "--create-reflog", "refs/remotes/origin/main", head);
@@ -171,6 +173,7 @@ export async function helperRepoChecks(): Promise<void> {
       name: "workhorse", workDir: dir };
     const config = loadConfig("fixture", { ...cfgBase, repos: [
       { name: "current", path: current }, { name: "example-repo", path: local }, { name: "missing", path: missing },
+      { name: "subdir", path: subdir }, { name: "alias", path: alias },
     ] }, 0o600);
     check("helper repos absent config preserves the serialized legacy config", JSON.stringify(loadConfig("fixture", cfgBase, 0o600))
       === JSON.stringify(loadConfig("fixture", { ...cfgBase, repos: undefined }, 0o600))
@@ -182,7 +185,13 @@ export async function helperRepoChecks(): Promise<void> {
       check("helper repos rejects unsafe, over-cap or duplicate configuration", refused);
     }
     const report = await reposOf(config.repos!);
-    const [now, noRemote, unreadable] = report.repos;
+    const [now, noRemote, unreadable, notRoot, symlinkRoot] = report.repos;
+    check("helper configured subdirectory never reports its parent repo HEAD", notRoot.head === null
+      && notRoot.branch === null && notRoot.remote === null && notRoot.refs.length === 0
+      && notRoot.coverage === "incomplete" && notRoot.reason === "not-repo-root"
+      && helperReposFrom(report)?.repos[3].reason === "not-repo-root");
+    check("helper configured symlink to repo root measures the actual repo", symlinkRoot.head === head
+      && symlinkRoot.coverage === "complete" && symlinkRoot.reason === null);
     check("helper repo full ref remains exact despite same-named local branch", now.refs[0]?.ref === "origin/main"
       && git(current, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/main").stdout.trim() === "remotes/origin/main");
     check("helper repo current reading names exact HEAD branch merge-base and zero distance", now.head === head
@@ -248,6 +257,8 @@ export async function helperRepoChecks(): Promise<void> {
     check("helper repo stands preserve none and unreadable measurements", wire.some((r) => r.kind === "helper-repo"
       && r.repo === "example-repo" && r.remote === "none") && wire.some((r) => r.kind === "helper-repo"
       && r.repo === "missing" && r.head === null && r.coverage?.reason === "unreadable"));
+    check("helper subdirectory stand retains null and not-repo-root reason", wire.some((r) => r.kind === "helper-repo"
+      && r.repo === "subdir" && r.head === null && r.remote === null && r.coverage?.reason === "not-repo-root"));
     const absent = await project(functions, undefined);
     check("helper heartbeat without repos is unreported rather than empty", absent.some((r) => r.kind === "helper-repo"
       && r.repo === null && r.head === null && r.remote === null && r.observedAt === null

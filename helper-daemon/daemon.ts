@@ -38,7 +38,7 @@
 // `RestartForceExitStatus=75`, so systemd starts the next daemon from the link. The old tree is
 // left in place: pointing the link back at it by hand is the whole rollback. A tree that fails the
 // parse never becomes the link's target — check first, swap second, and the daemon keeps running.
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync,
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync,
   statSync, symlinkSync } from "node:fs";
 import { homedir, loadavg } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -464,6 +464,14 @@ export async function reposOf(repos: NonNullable<HelperConfig["repos"]>): Promis
       const r: HelperRepoReading = { name: repo.name, at: Date.now(), head: null, branch: null,
         remote: null, remotes: null, refs: [], coverage: "incomplete", reason: "unreadable" };
       readings.push(r);
+      const root = await git(repo.path, "rev-parse", "--show-toplevel");
+      if (!root) {
+        if (Date.now() >= deadline) r.reason = "budget";
+        continue;
+      }
+      try {
+        if (realpathSync(repo.path) !== realpathSync(root)) { r.reason = "not-repo-root"; continue; }
+      } catch { continue; }
       const head = await git(repo.path, "rev-parse", "HEAD");
       if (!head || !/^[0-9a-f]{40}$/.test(head)) {
         if (Date.now() >= deadline) r.reason = "budget";

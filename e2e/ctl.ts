@@ -167,7 +167,7 @@ export async function run(): Promise<void> {
     rmSync(dir, {recursive: true, force: true});
     mkdirSync(dir, {recursive: true});
     try {
-      const source = dirname(CTL);
+      const source = dirname(realpathSync(`${ROOT}/node_modules`));
       const state = readFileSync(`${source}/state.sh`, "utf8");
       const register = readFileSync(`${source}/register.sh`, "utf8");
       const prefix = (s: string) => s.slice(0, s.indexOf("\nesac\n") + 7);

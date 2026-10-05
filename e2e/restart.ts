@@ -198,7 +198,7 @@ export async function boundRestartReadiness(): Promise<void> {
     // occupant's agent probe through the existing server-only PATH fixture seam.
     writeFileSync(`${probeBin}/tmux`, `#!/usr/bin/env bun
 const args = process.argv.slice(2);
-const target = ${JSON.stringify(["-L", SOCK, "display-message", "-p", "-t", `=s${bound.slot}:`, "#{pane_pid}"])};
+const target = ${JSON.stringify(["-u", "-L", SOCK, "display-message", "-p", "-t", `=s${bound.slot}:`, "#{pane_pid}"])};
 const latch = ${JSON.stringify(probeLatch)};
 if (args.length === target.length && args.every((arg, i) => arg === target[i])
     && await Bun.file(latch).exists()) {

@@ -12796,6 +12796,77 @@ export async function run(ctx: Ctx): Promise<void> {
       && aCtlView?.files?.join(" ") === "code.txt",
       JSON.stringify({ card: aView, control: aCtlView }));
 
+    const emptyCard = { ...aCard, ziel: "Nur messen", surface: { files: [], symbols: [] } };
+    const emptyIds: string[] = [];
+    const emptyFile = async (text: string, card: typeof emptyCard & { surface: { creates?: string[] } }): Promise<string> => {
+      const res = await post("/api/tasks", { text, queue: false, repo: REPO, card });
+      const body = (await res.json()) as { task?: { id: string }; error?: string };
+      const id = body.task?.id ?? "";
+      if (id) emptyIds.push(id);
+      check("(s6-empty) surface fixture filing succeeds", res.ok && !!id,
+        JSON.stringify({ status: res.status, body }));
+      return id;
+    };
+    const emptyId = await emptyFile("EMPTY-CARD-MEASURE", emptyCard);
+    const emptyBrief = await post(`/api/tasks/${emptyId}/brief`, { text: "Nur lesen: code.txt" });
+    const newPath = "author-surface-new.txt";
+    const newId = await emptyFile(`Nur code.txt lesen und ${newPath} neu anlegen`,
+      { ...emptyCard, surface: { ...emptyCard.surface, creates: [newPath] } });
+    const confirmedId = await emptyFile("Nur code.txt lesen", emptyCard);
+    const confirmedRes = await post(`/api/tasks/${confirmedId}/files`, { files: ["code.txt"] });
+    const emptyView = await aDigest(emptyId), newView = await aDigest(newId), confirmedView = await aDigest(confirmedId);
+    check("(s6-empty) a valid empty card keeps an empty derived surface despite a read-only file in its brief",
+      emptyBrief.ok && (await aFull(emptyId))?.card?.valid === true
+      && JSON.stringify(emptyView?.files) === "[]" && emptyView?.filesOrigin === "derived",
+      JSON.stringify({ briefStatus: emptyBrief.status, view: emptyView }));
+    check("(s6-empty) NEU stays separate from the existing-file surface and excludes the prose read target",
+      (await aFull(newId))?.card?.valid === true
+      && JSON.stringify(newView?.files) === "[]" && newView?.filesOrigin === "derived",
+      JSON.stringify(newView));
+    check("(s6-empty) a confirmed file list still outranks an empty valid card",
+      confirmedRes.ok && confirmedView?.filesOrigin === "confirmed"
+      && JSON.stringify(confirmedView.files) === '["code.txt"]',
+      JSON.stringify({ status: confirmedRes.status, view: confirmedView }));
+
+    const laneRes = await post("/api/tasks", { text: `code.txt und ctx-mod.txt bearbeiten, ${newPath} neu anlegen`,
+      queue: false, repo: REPO, card: { ...aCard,
+        surface: { files: ["code.txt", "ctx-mod.txt"], symbols: [], creates: [newPath] } } });
+    const laneId = ((await laneRes.json()) as { task?: { id: string } }).task?.id ?? "";
+    const laneStart = await post(`/api/tasks/${laneId}/dispatch`, {});
+    const laneBody = (await laneStart.json()) as { slot?: number; error?: string };
+    const laneSlot = laneBody.slot;
+    check("(s6-empty) a running lane holds the prose targets and NEU for the collision counter-probes",
+      laneRes.ok && laneStart.ok && typeof laneSlot === "number",
+      JSON.stringify({ filing: laneRes.status, start: laneStart.status, body: laneBody }));
+    const planIds = [emptyId, newId, confirmedId, aId, aCtl];
+    for (const id of planIds) {
+      const queued = await post(`/api/tasks/${id}/queue`, {});
+      check("(s6-empty) the collision fixture is released", queued.ok, `${id}: ${queued.status}`);
+    }
+    const emptyPlan = (await (await get("/api/start-plan")).json()) as StartPlan;
+    const nextOf = (id: string) => emptyPlan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id))?.next;
+    const collisionOf = (id: string) => {
+      const next = nextOf(id);
+      return next && typeof next === "object" && "collides" in next ? next.collides : null;
+    };
+    const emptyNext = nextOf(emptyId);
+    check("(s6-empty) GET /api/start-plan creates no prose-file collision for a valid card with neither FLAECHE nor NEU",
+      emptyNext === "now" || (!!emptyNext && typeof emptyNext === "object" && "cap" in emptyNext),
+      JSON.stringify(emptyNext));
+    check("(s6-empty) GET /api/start-plan collides on exactly NEU, never the file mentioned only for reading",
+      collisionOf(newId)?.slot === laneSlot && collisionOf(newId)?.file === newPath,
+      JSON.stringify(nextOf(newId)));
+    for (const [id, file] of [[aId, "ctx-mod.txt"], [confirmedId, "code.txt"], [aCtl, "code.txt"]]) {
+      check("(s6-empty) nonempty card, confirmed list and no-card prose keep their original collisions",
+        collisionOf(id)?.slot === laneSlot && collisionOf(id)?.file === file,
+        JSON.stringify({ id, expected: file, next: nextOf(id) }));
+    }
+    for (const id of planIds) await post(`/api/tasks/${id}/unqueue`, {});
+    await post(`/api/tasks/${laneId}/done`, {});
+    if (typeof laneSlot === "number") await post(`/api/slots/${laneSlot}/kill`, {});
+    await slotsEmptied(typeof laneSlot === "number" ? [laneSlot] : []);
+    for (const id of [...emptyIds, laneId]) if (id) await post(`/api/tasks/${id}/delete`, {});
+
     const aBefore = ((await (await get("/api/tasks")).json()) as { tasks: unknown[] }).tasks.length;
     const aBad = await post("/api/tasks", { text: "AUTHOR-CARD-BAD: gibt-es-nicht.ts", queue: false, repo: REPO,
       card: { ...aCard, surface: { files: ["gibt-es-nicht.ts"], symbols: [] } } });

@@ -5198,7 +5198,7 @@ function taskSurfaceOf(t: Task, snapshot: TrackedSnapshot | null,
   // for rows without one — never a second opinion over it. A confirmed list still outranks both:
   // the card is a reading, and `origin` stays "derived" because confirming is a separate act. The
   // card's own `at` joins the sha, so a replaced card is never answered from the cached surface.
-  if (!confirmedFiles?.length && src.card?.valid && src.card.surface.files.length) {
+  if (!confirmedFiles?.length && src.card?.valid) {
     const cardSha = `card-${sha}-${src.card.at}`;
     if (t.surface && t.surface.sha === cardSha) return t.surface;
     t.surface = { files: [...src.card.surface.files], ranges: resolveSurfaceRanges(src.card.surface, index?.index ?? null), origin: "derived",

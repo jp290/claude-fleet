@@ -1397,6 +1397,7 @@ const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
   body: JSON.stringify({ to: { kind: "lane", slot: targetSlot, openedAt: target.openedAt },
     payload: { kind: "text", text }, idempotencyKey: key }) });
 const error = r.ok ? null : (r.body?.error ?? "refused");
+if (error) console.error(`send --lane: ${r.status} ${error}`);
 out({ ok: r.ok, sent: r.ok, slot: targetSlot, openedAt: target.openedAt, status: r.status,
   message: r.body?.message ?? null, error },
   [`send --lane slot ${targetSlot}: ${r.status} ${error ?? `message ${r.body?.message?.id ?? "?"}`}`]);

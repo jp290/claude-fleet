@@ -364,14 +364,15 @@ export async function run(): Promise<void> {
   const sendProbe = await openLane(REPO, "ctlsendpin");
   await settleForMerge(sendProbe.slot);
   writeFileSync(sendFile, "ctl-lane-pinned-message-42");
-  const sentLane = await ctl(["send", "--lane", String(sendProbe.slot), sendFile, "--json"]);
+  const ownerLaneEnv = { FLEET_SELF_TOKEN: "" };
+  const sentLane = await ctl(["send", "--lane", String(sendProbe.slot), sendFile, "--json"], ownerLaneEnv);
   const sentJson = sentLane.json as { openedAt?: number; receipt?: { receiver?: { slot: number; openedAt: number } } };
   const lanePane = await tmuxOut("capture-pane", "-t", `s${sendProbe.slot}`, "-p", "-J");
   check("ctl send --lane: the real pane contains the text and the receipt matches the fresh openedAt pin",
     sentLane.code === 0 && lanePane.out.includes("ctl-lane-pinned-message-42")
       && sentJson.receipt?.receiver?.slot === sendProbe.slot && sentJson.openedAt === sentJson.receipt.receiver.openedAt,
     `exit=${sentLane.code} paneContains=${lanePane.out.includes("ctl-lane-pinned-message-42")} error=${sentLane.err}`);
-  const nonLane = await ctl(["send", "--lane", String(free), sendFile]);
+  const nonLane = await ctl(["send", "--lane", String(free), sendFile], ownerLaneEnv);
   check("ctl send --lane: an ordinary MAIN session is refused as a non-Lane",
     nonLane.code === 1 && nonLane.err.includes("not an active LANE"), nonLane.err);
   let pinPosts = 0;
@@ -394,7 +395,7 @@ export async function run(): Promise<void> {
     return response;
   } });
   const recycledLane = await ctl(["send", "--lane", String(sendProbe.slot), sendFile, "--json"],
-    { FLEET_CTL_URL: `http://127.0.0.1:${pinProxy.port}` });
+    { ...ownerLaneEnv, FLEET_CTL_URL: `http://127.0.0.1:${pinProxy.port}` });
   check("ctl send --lane: the real 409 for a stale pin is preserved verbatim",
     recycledLane.code === 1 && pinPosts === 1 && (recycledLane.json as { status?: number; error?: string }).status === 409
       && pinError.includes("nothing typed") && (recycledLane.json as { error?: string }).error === pinError

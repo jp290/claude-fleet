@@ -1,3 +1,4 @@
+// perf-probe.ts — isolated browser measurements of rebuilds, Long Tasks and the four Fleet journeys.
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -31,6 +32,7 @@ export async function scratchInstance(): Promise<{
   const token = crypto.randomUUID();
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: join(dir, "home"), TMPDIR: dir,
+    LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8",
     FLEET_HOST: "127.0.0.1", FLEET_PORT: String(port), FLEET_SOCK: sock, FLEET_TOKEN: token,
     FLEET_INSTANCE: "performance-fixture", FLEET_CMD: "cat", FLEET_LANDS: "0",
     FLEET_BRIEF_MS: "0", FLEET_LANE_AUTOCLOSE: "0", FLEET_STATE_SNAPSHOT_MS: "0",
@@ -158,6 +160,7 @@ globalThis.__fleetProbe={counts:perfRebuilds,renderSlots,renderBoard,renderQueue
     await send("Page.navigate", { url: `${fx.base}/?token=${encodeURIComponent(state.token)}` });
     await wait("!!window.__fleetProbe && document.querySelectorAll('#slots .slot').length>=16 && !document.querySelector('#input').disabled");
     await evaluate("window.__fleetProbe.showSlot(1); window.__fleetProbe.setBoard(true)");
+    await wait("window.__fleetProbe.current.perfSeedReady === true");
     await Bun.sleep(3000);
     const before = await evaluate<RebuildCounts>("window.__fleetProbe.counts()");
     await evaluate("window.__longTasks=[]");
@@ -186,7 +189,8 @@ globalThis.__fleetProbe={counts:perfRebuilds,renderSlots,renderBoard,renderQueue
     await evaluate("window.__fleetProbe.setBoard(false)");
     for (let i = 0; i < 10; i++) {
       await evaluate(`window.__fleetProbe.current.setView('term');window.__fleetProbe.showSlot(${i % 2 ? 1 : 2})`);
-      await Bun.sleep(200);
+      await wait("window.__fleetProbe.current.perfSeedReady === true");
+      await Bun.sleep(100);
       await evaluate("window.__fleetProbe.current.setView('chat')");
       await wait("!!document.querySelector('.pane.focused.chat .msg')");
       await evaluate("document.querySelector('#input').value='performance fixture send';document.querySelector('#input').dispatchEvent(new Event('input'));document.querySelector('#send').click()");
@@ -201,7 +205,7 @@ globalThis.__fleetProbe={counts:perfRebuilds,renderSlots,renderBoard,renderQueue
       const values = rows.filter((r) => r.ok && r.ms !== null).map((r) => r.ms!).sort((a, b) => a - b);
       console.log(JSON.stringify({ journey: j, n: rows.length, ok: values.length, failed: rows.length - values.length,
         p75Ms: values.length ? values[Math.ceil(values.length * .75) - 1] : null, records: rows }));
-      if (!rows.length) throw new Error(`no ${j} measurement`);
+      if (!values.length) throw new Error(`no successful ${j} measurement`);
     }
     console.log("PERF PROBE PASS");
   } finally { socket?.close(); browser.kill(); await browser.exited; }

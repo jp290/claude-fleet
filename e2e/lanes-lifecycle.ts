@@ -303,6 +303,11 @@ export async function helperRepoChecks(): Promise<void> {
     const noAge = await reposOf([{ name: "current", path: current }]);
     check("helper ref without reflog has unknown age", noAge.repos[0].refs.find((r) => r.ref?.endsWith("no-reflog"))?.updatedAt === null);
     git(current, "reset", "--soft", head);
+    git(current, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+    const symbolic = await reposOf([{ name: "current", path: current }]);
+    const symbolicRef = symbolic.repos[0].refs.find((r) => r.ref === "origin/HEAD");
+    check("helper repo coverage includes symbolic remote refs with exact SHA and distance", symbolic.repos[0].coverage === "complete"
+      && symbolicRef?.head === head && symbolicRef.mergeBase === head && symbolicRef.ahead === 0 && symbolicRef.behind === 0);
     const bulk = Array.from({ length: HELPER_REPO_COMMITS_MAX + 1 }, (_, i) => `commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 7\nfixture\n${i === 0 ? `from ${head}\n` : ""}\n`).join("");
     const many = spawnSync("git", ["-C", current, "fast-import", "--quiet"], { input: bulk, encoding: "utf8" });
     const capped = await reposOf([{ name: "current", path: current }]);

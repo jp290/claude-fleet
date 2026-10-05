@@ -486,7 +486,7 @@ export async function reposOf(repos: NonNullable<HelperConfig["repos"]>): Promis
         "--format=%(refname) %(objectname) %(symref)", ...r.remotes.map((n) => `refs/remotes/${n}/`)) : "";
       if (refs === undefined) { r.coverage = "incomplete"; r.reason = "budget"; continue; }
       const allRows = refs ? refs.split("\n") : [];
-      const rows = allRows.filter((line) => line.trim().split(" ").length === 2);
+      const rows = allRows;
       if (allRows.length > HELPER_REPO_REFS_MAX) { r.coverage = "incomplete"; r.reason = "ref-cap"; }
       for (const line of rows.slice(0, HELPER_REPO_REFS_MAX)) {
         const [fullRef, sha] = line.trim().split(" ");

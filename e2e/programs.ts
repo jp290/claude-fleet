@@ -8268,6 +8268,10 @@ export async function run(ctx: Ctx): Promise<void> {
     laneSpawn.status === 409 && (await taskRow(spawnQueued))?.spawn === undefined,
     `lane=${laneSpawn.status}:${await laneSpawn.text()}`);
   if (sentSlot !== undefined) await post(`/api/slots/${sentSlot}/kill`, {});
+  const spawnCleanup = await post(`/api/tasks/${spawnPending}/delete`, {});
+  check("MAIN spawn cleanup: its killed fixture row cannot re-enter the later release-cap count",
+    spawnCleanup.ok && (await taskRow(spawnPending)) === undefined,
+    `delete=${spawnCleanup.status} row=${JSON.stringify(await taskRow(spawnPending))}`);
   const foreignBefore = JSON.stringify(await taskRow(foreignId));
   const foreignRes = await selfRelease(successorToken, foreignId);
   const foreignText = await foreignRes.text();

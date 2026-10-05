@@ -1709,23 +1709,41 @@ export async function run(ctx: Ctx): Promise<void> {
         !!ln.slot && lnName?.ok === true && !!lnRow?.worktree && /orchestratorinnen-karte/.test(lnRow?.label ?? ""),
         `${JSON.stringify(ln)} rename=${lnName?.status} row=${JSON.stringify(lnRow)}`);
       if (ln.slot && ln.cwd) {
-        // Queue rows expose no message IDs. Clear the old queue with nudges disabled,
-        // then make the new message the sole unread ID before rearming the timer.
+        // The view includes outbound rows; receipts also accept escalated inbound messages
+        // whose original address differs from this role. Let the receipt door distinguish them.
         const roleBundleEnv = { FLEET_DELIVERY_BUNDLE_SEC: "2", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" };
         await restartSrv({ ...roleBundleEnv, FLEET_INBOX_NUDGE_MS: "0" });
         type MessageView = { unread?: number; entries?: { id: string; readBy: unknown }[] };
         const messageView = async (): Promise<MessageView> => (await (await selfMessages("GET")).json()) as MessageView;
+        const olderMessage = await selfMessages("POST", { to: { kind: "role", role: "orchestrator" },
+          payload: { kind: "text", text: "older role bundle fixture message" },
+          idempotencyKey: `role-bundle-older-${Date.now()}` });
+        const olderBody = (await olderMessage.json()) as { message?: { id?: string } };
         const oldInbox = await messageView();
+        check("precondition: role bundle has its own older unread message to acknowledge",
+          olderMessage.ok && !!olderBody.message?.id && (oldInbox.unread ?? 0) > 0
+            && oldInbox.entries?.some((m) => m.id === olderBody.message?.id && m.readBy === null) === true,
+          JSON.stringify({ status: olderMessage.status, id: olderBody.message?.id, unread: oldInbox.unread }));
+        const outboundIds = new Set<string>();
+        const readFailures: { id: string; status: number; error?: string }[] = [];
         let acknowledged = true;
         for (const m of oldInbox.entries ?? []) if (m.readBy === null) {
           const read = await fetch(BASE + `/api/self/messages/${m.id}/read`, { method: "POST",
             headers: { "content-type": "application/json", "x-fleet-self-token": selfToken }, body: "{}" });
-          acknowledged = read.ok && acknowledged;
+          const body = (await read.json()) as { error?: string };
+          const outbound = read.status === 409
+            && body.error === "this message was sent by this principal — a receipt is the addressee's";
+          if (outbound) outboundIds.add(m.id);
+          else if (!read.ok) readFailures.push({ id: m.id, status: read.status, error: body.error });
+          acknowledged = (read.ok || outbound) && acknowledged;
         }
+        const unreadIds = (view: MessageView): string[] => (view.entries ?? [])
+          .filter((m) => m.readBy === null && !outboundIds.has(m.id)).map((m) => m.id);
         const emptyInbox = await messageView();
-        const empty = acknowledged && emptyInbox.unread === 0;
+        const empty = acknowledged && emptyInbox.unread === 0 && unreadIds(emptyInbox).length === 0;
         check("precondition: role bundle clears older unread messages while its nudge timer is disabled",
-          empty, JSON.stringify({ acknowledged, unread: emptyInbox.unread ?? null }));
+          empty, JSON.stringify({ acknowledged, unread: emptyInbox.unread ?? null, readFailures,
+            outboundIds: [...outboundIds], ids: unreadIds(emptyInbox) }));
         const auditFrom = (await Bun.file(`${ROOT}/audit.jsonl`).text()).length;
         type Row = { event: string; slot?: number; detail?: string; path?: string; paths?: string; count?: number };
         const auditSince = async (): Promise<Row[]> =>
@@ -1758,11 +1776,18 @@ export async function run(ctx: Ctx): Promise<void> {
           `view=${oneView.status} ${JSON.stringify(oneBody.addresses ?? oneBody.error)} send=${sentMsg.status} ${JSON.stringify(sentBody)}`);
         const messageId = sentBody.message?.id ?? null;
         const soleUnread = (view: MessageView): boolean => messageId !== null && view.unread === 1
-          && view.entries?.filter((m) => m.readBy === null).map((m) => m.id).join(",") === messageId;
+          && unreadIds(view).join(",") === messageId;
         const stagedInbox = await messageView();
         check("precondition: the new role message is the sole unread ID before nudges resume",
           empty && soleUnread(stagedInbox), JSON.stringify({ messageId, unread: stagedInbox.unread ?? null,
-            ids: stagedInbox.entries?.filter((m) => m.readBy === null).map((m) => m.id) ?? null }));
+            ids: unreadIds(stagedInbox) }));
+        check("role bundle predicate: an extra unread ID rejects the sole-ID precondition even with unread=1",
+          soleUnread(stagedInbox) && !soleUnread({ ...stagedInbox, entries: [...stagedInbox.entries ?? [],
+            { id: "fixture-extra-unread", readBy: null }] }),
+          JSON.stringify({ messageId, unread: stagedInbox.unread, ids: unreadIds(stagedInbox) }));
+        check("role bundle predicate: unread=2 rejects the sole-ID precondition even with one unread ID",
+          soleUnread(stagedInbox) && !soleUnread({ ...stagedInbox, unread: 2 }),
+          JSON.stringify({ messageId, unread: stagedInbox.unread, ids: unreadIds(stagedInbox) }));
         const nudgeText = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — "
           + "GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
         const paneNudges = async (slot: number): Promise<{ code: number; count: number }> => {

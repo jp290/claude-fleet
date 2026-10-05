@@ -1709,6 +1709,23 @@ export async function run(ctx: Ctx): Promise<void> {
         !!ln.slot && lnName?.ok === true && !!lnRow?.worktree && /orchestratorinnen-karte/.test(lnRow?.label ?? ""),
         `${JSON.stringify(ln)} rename=${lnName?.status} row=${JSON.stringify(lnRow)}`);
       if (ln.slot && ln.cwd) {
+        // Queue rows expose no message IDs. Clear the old queue with nudges disabled,
+        // then make the new message the sole unread ID before rearming the timer.
+        const roleBundleEnv = { FLEET_DELIVERY_BUNDLE_SEC: "2", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" };
+        await restartSrv({ ...roleBundleEnv, FLEET_INBOX_NUDGE_MS: "0" });
+        type MessageView = { unread?: number; entries?: { id: string; readBy: unknown }[] };
+        const messageView = async (): Promise<MessageView> => (await (await selfMessages("GET")).json()) as MessageView;
+        const oldInbox = await messageView();
+        let acknowledged = true;
+        for (const m of oldInbox.entries ?? []) if (m.readBy === null) {
+          const read = await fetch(BASE + `/api/self/messages/${m.id}/read`, { method: "POST",
+            headers: { "content-type": "application/json", "x-fleet-self-token": selfToken }, body: "{}" });
+          acknowledged = read.ok && acknowledged;
+        }
+        const emptyInbox = await messageView();
+        const empty = acknowledged && emptyInbox.unread === 0;
+        check("precondition: role bundle clears older unread messages while its nudge timer is disabled",
+          empty, JSON.stringify({ acknowledged, unread: emptyInbox.unread ?? null }));
         const auditFrom = (await Bun.file(`${ROOT}/audit.jsonl`).text()).length;
         type Row = { event: string; slot?: number; detail?: string; path?: string; paths?: string; count?: number };
         const auditSince = async (): Promise<Row[]> =>
@@ -1733,24 +1750,50 @@ export async function run(ctx: Ctx): Promise<void> {
         const sentMsg = await selfMessages("POST", { to: { kind: "role", role: "orchestrator" },
           payload: { kind: "text", text: "role address beside an orchestrator-named lane" },
           idempotencyKey: `lane-label-${Date.now()}` });
-        const sentBody = (await sentMsg.json()) as { holder?: { slot?: number } | null; escalatedTo?: string | null; error?: string };
+        const sentBody = (await sentMsg.json()) as { message?: { id?: string }; holder?: { slot?: number } | null;
+          escalatedTo?: string | null; error?: string };
         check("with an orchestrator-named lane beside her, the Orchestratorin holds the role address",
           oneView.ok && oneBody.addresses?.some((a) => a.kind === "role" && a.role === "orchestrator") === true
             && sentMsg.ok && sentBody.holder?.slot === roleA && sentBody.escalatedTo === null,
           `view=${oneView.status} ${JSON.stringify(oneBody.addresses ?? oneBody.error)} send=${sentMsg.status} ${JSON.stringify(sentBody)}`);
+        const messageId = sentBody.message?.id ?? null;
+        const soleUnread = (view: MessageView): boolean => messageId !== null && view.unread === 1
+          && view.entries?.filter((m) => m.readBy === null).map((m) => m.id).join(",") === messageId;
+        const stagedInbox = await messageView();
+        check("precondition: the new role message is the sole unread ID before nudges resume",
+          empty && soleUnread(stagedInbox), JSON.stringify({ messageId, unread: stagedInbox.unread ?? null,
+            ids: stagedInbox.entries?.filter((m) => m.readBy === null).map((m) => m.id) ?? null }));
+        const nudgeText = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — "
+          + "GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
+        const paneNudges = async (slot: number): Promise<{ code: number; count: number }> => {
+          const pane = await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `=s${slot}:`);
+          return { code: pane.code, count: pane.out.split(nudgeText).length - 1 };
+        };
+        const roleBefore = await paneNudges(roleA);
+        const laneBefore = await paneNudges(ln.slot);
+        await restartSrv({ ...roleBundleEnv, FLEET_INBOX_NUDGE_MS: "1000" });
         // before the fix: delivery_bundle_dropped "orchestrator no current role occupant" after 30 s
-        const nudged = await until(async () => nudgeTyped(await auditSince(), roleA) || null,
+        const nudged = await until(async () => {
+          const pane = await paneNudges(roleA);
+          return nudgeTyped(await auditSince(), roleA) && pane.code === 0 && pane.count > roleBefore.count || null;
+        },
         { timeoutMs: 20_000, what: "the role-addressed inbox-nudge reaches the Orchestratorin" }).catch(() => null);
         const rows = await auditSince();
+        const deliveredInbox = await messageView();
+        const laneAfter = await paneNudges(ln.slot);
         check("the role-addressed bundle is typed into the Orchestratorin, never into the lane, nothing dropped",
-          !!nudged && rows.some((r) => r.event === "delivery_bundle_queued" && r.detail?.startsWith("orchestrator ") === true)
+          empty && soleUnread(stagedInbox) && soleUnread(deliveredInbox) && roleBefore.code === 0
+            && laneBefore.code === 0 && laneAfter.code === 0 && laneAfter.count === laneBefore.count
+            && !!nudged && rows.some((r) => r.event === "delivery_bundle_queued" && r.slot === roleA
+              && r.detail?.startsWith("orchestrator ") === true)
             && !rows.some((r) => r.event === "delivery_bundle_dropped" && r.detail?.startsWith("orchestrator ") === true)
             && !nudgeTyped(rows, ln.slot)
             && !rows.some((r) => r.event.startsWith("delivery_bundle") && r.slot === ln.slot
               && r.detail?.startsWith("orchestrator ") === true),
-          JSON.stringify(rows.filter((r) => r.event.startsWith("delivery_bundle") || r.path === "inbox-nudge"
+          JSON.stringify({ messageId, soleUnread: soleUnread(deliveredInbox), roleBefore, laneBefore, laneAfter,
+            rows: rows.filter((r) => r.event.startsWith("delivery_bundle") || r.path === "inbox-nudge"
             || (r.event === "send" && r.path === "bundle"))
-            .map((r) => [r.event, r.slot, r.detail, r.paths ?? r.path])));
+            .map((r) => [r.event, r.slot, r.detail, r.paths ?? r.path]) }));
         await post(`/api/slots/${ln.slot}/kill`, {});
         if (existsSync(ln.cwd)) rmSync(ln.cwd, { recursive: true, force: true });
         spawnSync("git", ["worktree", "prune"], { cwd: laneRepo });

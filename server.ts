@@ -38753,12 +38753,15 @@ function buildStateSnapshot(now: number): Record<string, unknown> {
 type OperationalSourceName = "queue" | "bindings" | "addresses" | "git" | "gateAudit";
 type OperationalSource = { revision: string; observedAt: number | null; cadenceMs: number; basis: string };
 type OperationalSources = Record<OperationalSourceName, OperationalSource>;
-type OperationalBoundary = { kind: string; id: string; reason: string; relatedIds?: string[] };
+type OperationalName = { title: string; titleBasis: string };
+type OperationalBoundary = OperationalName & { kind: string; id: string; reason: string; relatedIds?: string[];
+  related?: (OperationalName & { id: string })[]; slotLabel?: string; slotLabelBasis?: string };
 type OperationalData = {
   snapshot: Record<string, unknown>;
-  rows: { id: string; status: string; programId: string | null; held: boolean; after: string[] }[];
-  bindings: { programId: string; state: "bound" | "unknown"; slot: number | null;
-    openedAt: number | null; sessionId: string | null }[];
+  rows: (OperationalName & { id: string; status: string; programId: string | null; held: boolean; after: string[] })[];
+  bindings: (OperationalName & { programId: string; state: "bound" | "unknown"; slot: number | null;
+    slotLabel: string; slotLabelBasis: string;
+    openedAt: number | null; sessionId: string | null })[];
   messages: { id: string; unread: boolean; state: "addressed" | "unknown";
     holder: { slot: number; openedAt: number; sessionId: string | null } | null }[];
   audits: { taskId: string; mainAfter: string | null; state: string; result: string | null }[];
@@ -38864,12 +38867,13 @@ function operationalSources(): OperationalSources {
     return !!s.sessionId && s.openedAt === o?.openedAt && s.sessionId === o?.sessionId && !!gitInfo.get(s.id);
   });
   return {
-    queue: source(tasks, "tasks: in-memory persisted queue; revision is a hash, texts never leave the producer"),
-    bindings: source([occupants, programs.map((p) => ({ id: p.id, status: p.status, main: p.main, dispatch: p.dispatch })),
+    queue: source(tasks, "tasks: in-memory persisted queue; only title/ZIEL or first line leaves the producer"),
+    bindings: source([occupants, programs.map((p) => ({ id: p.id, title: p.title, status: p.status, main: p.main, dispatch: p.dispatch })),
       repoLaneCaps, repoBases, dispatchOn, autosOn, quietHours], "slots/program bindings and existing dispatch settings"),
     addresses: source([messages.entries.map((m) => ({ id: m.id, to: m.to, at: m.at, readBy: m.readBy, readAt: m.readAt })),
-      messages.dropped, messagesLost?.at ?? null, fleetReports.map((r) => [r.id, r.decision?.at]),
-      attentionRequests.map((r) => [r.id, r.status]), clarifications.map((r) => [r.id, r.status]),
+      messages.dropped, messagesLost?.at ?? null, fleetReports.map((r) => [r.id, r.decision?.at, r.provenance, r.worker]),
+      attentionRequests.map((r) => [r.id, r.status, r.programId, r.provenance, r.requester]),
+      clarifications.map((r) => [r.id, r.status, r.provenance, r.worker]),
       fleetEvents.map((e) => [e.id, e.status]), composerHolds.size], "message status and open obligation IDs; no payloads"),
     git: source([[...gitInfo], [...laneHunkInfo], [...aliveInfo], [...operationalGitOccupants], refs],
       "tickGit display sensors and observed ref stamps; no git on GET", gitIdentityProven ? operationalGitObservedAt : null, GIT_TICK_MS),
@@ -38886,15 +38890,30 @@ async function produceOperationalData(now: number): Promise<OperationalData> {
     readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE), readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE),
     adjudicationsByAudit(),
   ]);
-  const exceptions: OperationalBoundary[] = [];
+  const exceptions: Omit<OperationalBoundary, keyof OperationalName>[] = [];
   const occupied = (s: Slot | undefined, openedAt: number | undefined, sessionId: string | null | undefined): s is Slot =>
     !!s?.cwd && !!openedAt && s.openedAt === openedAt && !!sessionId && s.sessionId === sessionId;
+  const name = (text: string | null | undefined, basis: string): OperationalName => {
+    const title = text?.split(/\r?\n/)[0]?.trim().slice(0, 160);
+    return { title: title || "unknown", titleBasis: title ? basis : `${basis}: missing-or-empty` };
+  };
+  const taskName = (id: string): OperationalName => {
+    const t = tasks.find((t) => t.id === id);
+    return t?.card?.ziel?.trim() ? name(t.card.ziel, `tasks:${id}.card.ziel`)
+      : name(t?.text, `tasks:${id}.text:first-line`);
+  };
+  const programName = (id: string): OperationalName => name(programs.find((p) => p.id === id)?.title, `programs:${id}.title`);
+  const slotName = (s: Slot | undefined, proven: boolean) => {
+    const label = name(s?.label, `slots:${s?.id}.label`);
+    return { slotLabel: proven ? label.title : "unknown",
+      slotLabelBasis: proven ? `${label.titleBasis}; occupant=${s?.openedAt}/${s?.sessionId}` : "unproven-occupant" };
+  };
   const bindings: OperationalData["bindings"] = programs.filter((p) => p.status !== "complete").map((p) => {
     const main = p.main;
     const live = main ? slots[main.slot - 1] : undefined;
     const bound = main && occupied(live, main.openedAt, main.sessionId) && programMainLive(p.id);
     if (!bound) exceptions.push({ kind: "binding", id: p.id, reason: main ? "stale-or-unproven-occupant" : "no-bound-main" });
-    return { programId: p.id, state: bound ? "bound" : "unknown", slot: main?.slot ?? null,
+    return { ...programName(p.id), ...slotName(live, !!bound), programId: p.id, state: bound ? "bound" : "unknown", slot: main?.slot ?? null,
       openedAt: main?.openedAt ?? null, sessionId: main?.sessionId ?? null };
   });
   const messageRows: OperationalData["messages"] = messages.entries.map((m) => {
@@ -38950,8 +38969,32 @@ async function produceOperationalData(now: number): Promise<OperationalData> {
   const snapshot = buildStateSnapshot(now);
   snapshot.lanes = (snapshot.lanes as Record<string, unknown>[]).map((lane) => gitUnknown.some((s) => s.id === lane.s)
     ? { ...lane, alive: null, ahead: null, dirty: null, merge: null } : lane);
-  return { snapshot, bindings, messages: messageRows, audits: auditRows, exceptions,
-    rows: tasks.filter((t) => t.status !== "archived").map((t) => ({ id: t.id, status: t.status,
+  const namedExceptions: OperationalBoundary[] = exceptions.map((e) => {
+    let title: OperationalName = { title: "unknown", titleBasis: `${e.kind}:${e.id}: no-proven-title-source` };
+    let label: ReturnType<typeof slotName> | undefined;
+    if (e.kind === "binding") {
+      title = programName(e.id);
+      const b = bindings.find((b) => b.programId === e.id);
+      label = b ? { slotLabel: b.slotLabel, slotLabelBasis: b.slotLabelBasis } : slotName(undefined, false);
+    } else if (e.kind === "start" || e.kind === "audit") title = taskName(e.id);
+    else if (e.kind === "git") label = slotName(slots.find((s) => String(s.id) === e.id), false);
+    else if (e.kind === "report" || e.kind === "attention" || e.kind === "clarification") {
+      const row = e.kind === "report" ? fleetReports.find((r) => r.id === e.id)
+        : e.kind === "attention" ? attentionRequests.find((r) => r.id === e.id) : clarifications.find((r) => r.id === e.id);
+      const provenance = row?.provenance;
+      const taskId = provenance?.taskId ?? provenance?.originId;
+      const programId = provenance?.programId ?? (row && "programId" in row ? row.programId : null);
+      if (taskId) title = taskName(taskId);
+      else if (programId) title = programName(programId);
+      title.titleBasis = `${e.kind}:${e.id}.${taskId || provenance?.programId ? "provenance" : "programId"} -> ${title.titleBasis}`;
+      const seat = row && ("worker" in row ? row.worker : row.requester);
+      const s = seat ? slots[seat.slot - 1] : undefined;
+      label = slotName(s, !!seat && occupied(s, seat.openedAt, seat.sessionId));
+    }
+    return { ...e, ...title, ...label, ...(e.relatedIds ? { related: e.relatedIds.map((id) => ({ id, ...taskName(id) })) } : {}) };
+  });
+  return { snapshot, bindings, messages: messageRows, audits: auditRows, exceptions: namedExceptions,
+    rows: tasks.filter((t) => t.status !== "archived").map((t) => ({ ...taskName(t.id), id: t.id, status: t.status,
       programId: t.programId ?? null, held: !!t.hold, after: t.card?.after ?? [] })),
     startable: gitUnknown.length ? [] : startable.filter((row) => {
       const programId = tasks.find((t) => t.id === row.id)?.programId;

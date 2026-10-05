@@ -431,14 +431,17 @@ export async function run(ctx: Ctx): Promise<void> {
     type Held = { schema: string; freshness: string; revision: string | null; computedAt: number | null;
       pending: boolean; inflight: boolean; failed: string | null;
       sources: Record<string, { state: string; revision: string | null; computedRevision: string | null }>;
-      data: null | { rows: { id: string; held: boolean; status: string }[];
-        bindings: { state: string; sessionId: string | null }[]; messages: { id: string; unread: boolean; holder: unknown }[];
-        audits: { result: string | null }[]; exceptions: { kind: string; id: string; reason: string }[];
+      data: null | { rows: { id: string; held: boolean; status: string; title: string; titleBasis: string }[];
+        bindings: { state: string; sessionId: string | null; title: string; slotLabel: string }[];
+        messages: { id: string; unread: boolean; holder: unknown }[];
+        audits: { result: string | null }[]; exceptions: { kind: string; id: string; reason: string;
+          title: string; titleBasis: string; slotLabel?: string; related?: { id: string; title: string }[] }[];
         startable: { id: string }[] } };
     type Fixture = { clock: { now: number; gitAt: number | null; fail: boolean; observeFail: boolean };
-      tasks: { id: string; text: string; status: string; hold?: { slot: number; grund: string; at: number } }[];
-      slots: { openedAt: number; sessionId: string | null }[];
-      programs: { main: { openedAt: number; sessionId: string | null } }[];
+      tasks: { id: string; text: string; status: string; card: { ziel?: string }; hold?: { slot: number; grund: string; at: number } }[];
+      slots: { openedAt: number; sessionId: string | null; label: string }[];
+      programs: { title: string; main: { openedAt: number; sessionId: string | null } }[];
+      fleetReports: { provenance: { taskId: string | null; programId: string | null } }[];
       messages: { entries: { readBy: unknown; readAt: number | null; payload: { text: string } }[] };
       stamps: Map<string, number>; auditRows: { result: string }[];
       counts: { folds: number; subprocess: number; ledger: number; read: number; syncGit: number };
@@ -464,20 +467,22 @@ export async function run(ctx: Ctx): Promise<void> {
         const Date = {now: () => clock.now};
         const counts = {folds: 0, subprocess: 0, ledger: 0, read: 0, syncGit: 0};
         const stamps = new Map();
-        const tasks = [{id: 'row1', text: 'PRIVATE_TEXT_MARKER ACCESS_CREDENTIAL_MARKER', brief: {text: 'PRIVATE_BRIEF_MARKER'},
+        const tasks = [{id: 'row1', text: 'Readable task title\\nPRIVATE_TEXT_MARKER ACCESS_CREDENTIAL_MARKER', brief: {text: 'PRIVATE_BRIEF_MARKER'},
           repo: '/fixture', programId: 'program1', kind: 'auftrag', status: 'queued', source: 'owner', created: 1,
           card: {valid: true, surfaceValid: true, at: 1, surface: {files: ['server.ts'], symbols: []},
             done: 'PRIVATE_DONE_MARKER', verify: 'PRIVATE_VERIFY_MARKER', size: 'klein', after: [], gaps: []}}];
         const slots = [{id: 1, cwd: '/fixture', openedAt: 1, sessionId: 'session1', label: 'main', worktree: null}];
-        const programs = [{id: 'program1', status: 'active', main: {slot: 1, openedAt: 1, sessionId: 'session1'}, release: {policy: 'manual'}}];
+        const programs = [{id: 'program1', title: 'Readable program title', status: 'active', main: {slot: 1, openedAt: 1, sessionId: 'session1'}, release: {policy: 'manual'}}];
         const messages = {entries: [{id: 'message1', to: {kind: 'program', id: 'program1'}, at: 1,
           payload: {text: 'PRIVATE_MESSAGE_MARKER ACCESS_CREDENTIAL_MARKER'}, readBy: null, readAt: null}], dropped: 0};
         const auditRows = [{at: 2, result: 'green', covers: [{branch: 'fleet/fx', mainAfter: 'abc'}]}];
         const outcomeRows = [{taskId: 'row1', branch: 'fleet/fx', mainAfter: 'abc', repo: '/fixture'}];
         const repoBases = {}, repoLaneCaps = {}, auditQueue = new Map(), gitInfo = new Map(), laneHunkInfo = new Map(), aliveInfo = new Map();
-        const operationalGitOccupants = new Map(), fleetReports = [{id: 'report1', text: 'PRIVATE_REPORT_MARKER'}];
-        const attentionRequests = [{id: 'attention1', status: 'open', text: 'PRIVATE_ATTENTION_MARKER'}];
-        const clarifications = [{id: 'clarification1', status: 'open', question: 'PRIVATE_QUESTION_MARKER'}];
+        const operationalGitOccupants = new Map(), fleetReports = [{id: 'report1', text: 'PRIVATE_REPORT_MARKER',
+          provenance: {taskId: 'row1', programId: 'program1'}, worker: {slot: 1, openedAt: 1, sessionId: 'session1'}}];
+        const attentionRequests = [{id: 'attention1', status: 'open', programId: 'program1', text: 'PRIVATE_ATTENTION_MARKER'}];
+        const clarifications = [{id: 'clarification1', status: 'open', question: 'PRIVATE_QUESTION_MARKER',
+          provenance: {taskId: 'absent-row', programId: 'program1'}, worker: {slot: 1, openedAt: 0, sessionId: null}}];
         const fleetEvents = [], composerHolds = new Map(), messagesLost = null;
         const SERVER_BOOT_AT = clock.now, AUTOS_TICK_MS = 100, GIT_TICK_MS = 1000, DISPATCH_REPO = '/fixture';
         const DISPATCH_MAX_LANES = 4, DISPATCH_MAX_LANES_PER_PROGRAM = null, REPO_MAX_LANES_MAX = 24;
@@ -520,7 +525,7 @@ export async function run(ctx: Ctx): Promise<void> {
         const flush = async () => {for (let i = 0; i < 30; i++) {scheduled.splice(0).forEach((run) => run());
           await Promise.resolve(); if (!scheduled.length && !view.read().inflight) return;} throw Error('fixture refresh did not settle');};
         const legacyRead = async () => JSON.stringify({tasks: tasks.map(taskView), data: await produceOperationalData(clock.now)});
-        return {clock, tasks, slots, programs, messages, stamps, auditRows, counts, view, flush, legacyRead,
+        return {clock, tasks, slots, programs, fleetReports, messages, stamps, auditRows, counts, view, flush, legacyRead,
           freeze: () => {clock.pause = true;}, begin: () => scheduled.splice(0).forEach((run) => run()),
           release: () => {clock.pause = false; waiters.splice(0).forEach((resolve) => resolve());}};
       `;
@@ -545,8 +550,37 @@ export async function run(ctx: Ctx): Promise<void> {
           initial.freshness === "fresh" && initial.data?.rows[0].id === "row1" && initial.data.bindings[0].state === "bound"
           && initial.data.messages[0].id === "message1" && initial.data.startable[0]?.id === "row1"
           && ["report1", "attention1", "clarification1"].every((id) => initial.data?.exceptions.some((e) => e.id === id)), JSON.stringify(initial));
+        check("operational names use task first line, program title and proven slot label with basis",
+          initial.data?.rows[0].title === "Readable task title" && initial.data.rows[0].titleBasis === "tasks:row1.text:first-line"
+          && initial.data.bindings[0].title === "Readable program title" && initial.data.bindings[0].slotLabel === "main"
+          && initial.data.exceptions.some((e) => e.id === "report1" && e.title === "Readable task title"
+            && e.titleBasis === "report:report1.provenance -> tasks:row1.text:first-line" && e.slotLabel === "main")
+          && initial.data.exceptions.some((e) => e.id === "attention1" && e.title === "Readable program title"));
+        check("operational missing task provenance never borrows the program or unproven slot name",
+          !!initial.data?.exceptions.some((e) => e.id === "clarification1" && e.title === "unknown" && e.slotLabel === "unknown")
+          && initial.data.exceptions.every((e) => typeof e.title === "string" && !!e.titleBasis));
+        for (const [source, mutate, expected] of [
+          ["task", () => {fx.tasks[0].text = "Renamed task\nPRIVATE_TEXT_MARKER";}, "Renamed task"],
+          ["card", () => {fx.tasks[0].card.ziel = "Card goal";}, "Card goal"],
+          ["program", () => {fx.programs[0].title = "Renamed program";}, "Renamed program"],
+          ["slot", () => {fx.slots[0].label = "Renamed main";}, "Renamed main"],
+        ] as const) {
+          const revision = fx.view.read().revision;
+          mutate(); fx.view.observe(); await fx.flush();
+          const named = fx.view.read();
+          const value = source === "program" ? named.data?.bindings[0].title : source === "slot"
+            ? named.data?.bindings[0].slotLabel : named.data?.rows[0].title;
+          check(`operational ${source} rename changes held revision and observed name`,
+            named.revision !== revision && named.freshness === "fresh" && value === expected);
+        }
+        const provenanceRevision = fx.view.read().revision;
+        fx.fleetReports[0].provenance.taskId = null;
+        fx.view.observe(); await fx.flush();
+        check("operational report provenance change renews the revision and names its explicit program source",
+          fx.view.read().revision !== provenanceRevision && !!fx.view.read().data?.exceptions.some((e) => e.id === "report1"
+            && e.title === "Renamed program" && e.titleBasis === "report:report1.provenance -> programs:program1.title"));
         const beforeRead = JSON.stringify(fx.counts);
-        const beforeRevision = initial.revision;
+        const beforeRevision = fx.view.read().revision;
         for (let i = 0; i < 4; i++) fx.view.read();
         check("operational same-source GETs invoke exactly zero observer, producer, folds, git/syncgit or ledger reads",
           JSON.stringify(fx.counts) === beforeRead && fx.view.read().revision === beforeRevision, JSON.stringify(fx.counts));
@@ -568,6 +602,9 @@ export async function run(ctx: Ctx): Promise<void> {
         const recycled = fx.view.read();
         check("operational stale binding does not name the recycled occupant or claim readiness",
           recycled.data?.bindings[0].state === "unknown" && recycled.data.bindings[0].sessionId === "session1"
+          && recycled.data.bindings[0].slotLabel === "unknown"
+          && recycled.data.exceptions.some((e) => e.kind === "binding" && e.title === "Renamed program" && e.slotLabel === "unknown")
+          && recycled.data.exceptions.some((e) => e.id === "report1" && e.slotLabel === "unknown")
           && recycled.data.messages[0].holder === null && recycled.data.startable.length === 0);
         check("operational red audit names row ID and measured result", recycled.data?.audits[0].result === "red"
           && recycled.data.exceptions.some((e) => e.kind === "audit" && e.id === "row1" && e.reason === "red"));
@@ -599,10 +636,17 @@ export async function run(ctx: Ctx): Promise<void> {
           && !!burst.view.read().data?.exceptions.some((e) => e.kind === "ledger" && e.id === "audits" && e.reason === "source-missing"));
         const missingIdentity = makeFixture(); missingIdentity.programs[0].main.openedAt = 0;
         missingIdentity.view.observe(); await missingIdentity.flush();
-        check("operational slot number without openedAt is unknown", missingIdentity.view.read().data?.bindings[0].state === "unknown");
+        check("operational slot number without openedAt is unknown", missingIdentity.view.read().data?.bindings[0].state === "unknown"
+          && missingIdentity.view.read().data?.bindings[0].slotLabel === "unknown");
         missingIdentity.programs[0].main.openedAt = 1; missingIdentity.programs[0].main.sessionId = null;
         missingIdentity.view.observe(); await missingIdentity.flush();
-        check("operational slot number without sessionId is unknown", missingIdentity.view.read().data?.bindings[0].state === "unknown");
+        check("operational slot number without sessionId is unknown", missingIdentity.view.read().data?.bindings[0].state === "unknown"
+          && missingIdentity.view.read().data?.bindings[0].slotLabel === "unknown");
+        missingIdentity.programs[0].title = ""; missingIdentity.view.observe(); await missingIdentity.flush();
+        check("operational empty program title stays unknown with its missing source basis",
+          missingIdentity.view.read().data?.bindings[0].title === "unknown"
+          && !!missingIdentity.view.read().data?.exceptions.some((e) => e.kind === "binding" && e.title === "unknown"
+            && e.titleBasis === "programs:program1.title: missing-or-empty"));
         const inflight = makeFixture(); inflight.view.observe(); await inflight.flush();
         const inflightRevision = inflight.view.read().revision;
         inflight.freeze(); inflight.tasks[0].status = 'done'; inflight.view.observe(); inflight.begin();
@@ -612,6 +656,12 @@ export async function run(ctx: Ctx): Promise<void> {
         check("operational mutation during external await discards old target and renews once for the latest source",
           inflight.view.read().revision !== inflightRevision && inflight.view.read().data?.rows[0].status === 'pending'
           && inflight.view.read().freshness === "fresh");
+        inflight.freeze(); inflight.tasks[0].status = 'done'; inflight.view.observe(); inflight.begin();
+        inflight.slots[0].openedAt = 2; inflight.slots[0].sessionId = 'replacement'; inflight.slots[0].label = 'FOREIGN_OCCUPANT';
+        inflight.release(); await inflight.flush();
+        check("operational recycle during ledger await cannot attach the replacement label to the old binding or report",
+          inflight.view.read().data?.bindings[0].state === "unknown" && inflight.view.read().data?.bindings[0].slotLabel === "unknown"
+          && !JSON.stringify(inflight.view.read().data).includes('FOREIGN_OCCUPANT'));
         const mutant = makeFixture(true); mutant.view.observe(); await mutant.flush();
         check("operational invalidation mutation control first produces the real fixture", mutant.view.read().freshness === "fresh"
           && mutant.view.read().data?.rows[0].status === 'queued');

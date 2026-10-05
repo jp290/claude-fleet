@@ -3195,12 +3195,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       /\.slot \.n, \.slot \.laneref \{[^}]*font-family: var\(--chat-mono\)/.test(indexSrc)
         && /\.slot \.n, \.slot \.laneref \{[^}]*color: hsl\(var\(--proj-h/.test(indexSrc),
       "the address chip rule in public/index.html");
+    const slotRowCode = (/^function slotRow\([\s\S]*?^\}/m.exec(rowSrc)?.[0] ?? "").replace(/^[ \t]*\/\/.*$/gm, "");
     check("lane row internals keep slot ids, routes, tooltips and rename persistence",
       rowSrc.includes("row.dataset.slot = String(s.id)")
         // the tooltip still answers "which slot is this lane in", which is what the routes below
         // are addressed by — it sits beside the cwd now that the band name carries the identity
         && rowSrc.includes("slot ${s.id} · ${s.cwd}")
-        && rowSrc.includes("showSlot(s.id)")
+        && /\bshowSlot\(s\.id\s*[,)]/.test(slotRowCode)
         && rowSrc.includes("`/api/slots/${s.id}/kill`")
         && cliSrc.includes("`/api/slots/${s.id}/rename`")
         && rowSrc.includes("startRename(row, s)"),

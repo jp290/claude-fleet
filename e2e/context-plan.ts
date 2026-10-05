@@ -671,12 +671,15 @@ function taskCatalogChecks(check: ContextPlanCheck): void {
   const code = catalog(["ZIEL: Queue-Ansicht korrigieren", "FLAECHE: src/client.ts"]);
   const measurement = catalog(["ZIEL: Zustellungsdauer messen", "FLAECHE: docs/messungen/latenz.md"]);
   const rulebook = catalog(["ZIEL: Regelbuch aendern", "FLAECHE: rulebook/einstieg.md"]);
-  check("task catalog: an ordinary code task gets exactly the core and proof seeds",
-    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet", JSON.stringify(code));
+  // The manifest's always-on worker stance (haltung-worker) rides with every task; act packs add on top of it.
+  const addedTo = (row: typeof code) => code.selected.every((id) => row.selected.includes(id))
+    ? row.selected.filter((id) => !code.selected.includes(id)).join(",") : "dropped a core pack";
+  check("task catalog: an ordinary code task gets exactly the core and proof seeds plus the worker stance",
+    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker", JSON.stringify(code));
   check("task catalog: a measurement task adds only the measurement index",
-    measurement.selected.join(",") === `${code.selected.join(",")},messnotiz-index`, JSON.stringify(measurement));
+    addedTo(measurement) === "messnotiz-index", JSON.stringify(measurement));
   check("task catalog: a rulebook edit adds only the generator guidance",
-    rulebook.selected.join(",") === `${code.selected.join(",")},rulebook-generat`, JSON.stringify(rulebook));
+    addedTo(rulebook) === "rulebook-generat", JSON.stringify(rulebook));
   check("task catalog: code, measurement and rulebook catalogs are pairwise different",
     new Set([code, measurement, rulebook].map((row) => row.selected.join(","))).size === 3);
   check("task catalog: unrelated work omits both act-specific packs by trigger",

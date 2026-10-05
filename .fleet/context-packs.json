@@ -70,23 +70,5 @@
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
-  },
-  {
-    "id": "haltung-worker",
-    "useWhen": "Wenn du als Worker eine Karte ausfuehrst: was wir bei Ziel, Umfang, Beleg und Abschluss bevorzugen, und warum.",
-    "scope": "repo-contract",
-    "audience": "agent",
-    "triggers": ["always"],
-    "hardness": "guidance",
-    "sources": [
-      { "path": "docs/haltung-worker.md", "anchor": "## Was wir bevorzugen, und warum" }
-    ],
-    "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
-    "modes": ["read-only", "mutating"],
-    "estimatedBytes": 1440,
-    "evidence": "tree-anchor",
-    "owner": "owner",
-    "status": "active"
   }
 ]

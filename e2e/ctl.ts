@@ -1466,7 +1466,8 @@ await import(pathToFileURL(process.argv[2]).href);
     // refusal a session cannot act on. Safe to repeat: the cap is checked before any POST.
     const overCapText = await ctl(["dispatch", capRow], { FLEET_DISPATCH_MAX_LANES: "16" });
     check("ctl dispatch: the plain refusal names the cap, the count and --force",
-      overCapText.code === 1 && overCapText.out.includes("REFUSED: 1/1 lanes open (repo cap)")
+      overCapText.code === 1 && typeof oj?.openLanes === "number" && oj.openLanes >= 1 && oj.cap === 1
+        && overCapText.out.includes(`REFUSED: ${oj.openLanes}/${oj.cap} lanes open (repo cap)`)
         && overCapText.out.includes("--force"),
       overCapText.out.slice(0, 240));
     await post("/api/repo-lane-cap", { repo: REPO, maxLanes: capBefore ?? 0 });

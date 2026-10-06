@@ -456,7 +456,7 @@ await import(pathToFileURL(process.argv[2]).href);
         && bigMain.stdout.includes("task count=52") && bigMain.stdout.includes("terminal=44")
         && !/^(row done|program complete|audit .*\{|message .*"unread":false|task done)/m.test(bigOrch.stdout + bigMain.stdout));
       const normalize = (s: string) => s.replace(/fetchedAt=\d+/g, "fetchedAt=CLOCK")
-        .replace(/count=\d+|omitted=\d+|terminal=\d+|filtered=\d+/g, "COUNT");
+        .replace(/count=\d+|omitted=\d+|terminal=\d+|filtered=\d+|armed=\d+|spent=\d+/g, "COUNT");
       const growOlder = <T extends object>(rows: T[]) => { if (rows.length >= 2) rows.unshift({...rows[0]!, ...{at: -1}}); };
       const categories = [data.rows, data.bindings, data.exceptions, data.messages, data.audits, data.startable, data.snapshot.lanes,
         program.tasks.rows, program.inbox.unread, program.handover.obligations, program.clarifications,

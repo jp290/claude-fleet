@@ -60,6 +60,16 @@ async function instanceBandChecks(): Promise<void> {
   check("band words MUTATION: the vocabulary predicate is red on a planted process word", PROCESS.test(`${three?.text} · gate`));
   check("band words: the source is folded to null when unset or empty — no band on an instance without the variable",
     instanceSourceFrom(undefined) === null && instanceSourceFrom("") === null);
+  // the branch charset is git's (check-ref-format), not a positive list. Mutation: the earlier list
+  // /^(?!-)[A-Za-z0-9._/-]{1,200}$/ as the fold — "+" and the umlaut read "unbekannt" → red.
+  const charset = (shown: (b: string) => boolean) => shown("fleet/feature+x") && shown("fleet/überarbeitung") && shown("fix/a#b@c")
+    && !shown("fleet/a..b") && !shown("-x") && !shown("x.lock") && !shown("a b");
+  const folded = (b: string) => instanceSourceFrom(JSON.stringify({ head: H, branch: b, target: { branch: b, ahead: 0 } }))?.branch === b
+    && words({ head: H, branch: b, dirty: 0, target: null })?.text.startsWith(`Zweig ${b} ·`) === true;
+  check("band words: a branch with '+', '#', '@' or an umlaut is shown, one with '..' stays 'unbekannt' (git check-ref-format)",
+    charset(folded) && words({ head: H, branch: "fleet/a..b" })?.text.startsWith("Zweig unbekannt") === true);
+  check("band words MUTATION: the old positive-list fold is red on the same branches",
+    !charset((b) => /^(?!-)[A-Za-z0-9._/-]{1,200}$/.test(b)));
 
   // measure — a real repository: overhaul + a lane branch three commits ahead
   const src = dirname(realpathSync(`${ROOT}/node_modules`));
@@ -147,6 +157,107 @@ async function instanceBandChecks(): Promise<void> {
   check("band client: the band paints only from instance.source and is hidden (no html.tiband) without it", wired(client, html));
   check("band client MUTATION: the wiring predicate is red without the hidden toggle",
     !wired(client.replace("tiBand.hidden = !source;", ""), html) && !wired(client, html.replace('<div id="tiband" hidden></div>', '<div id="tiband"></div>')));
+
+  // DOM — the real client bundle in Chromium at 390 × 844 with a long branch and a long target:
+  // nothing clipped, the target sentence whole. Mutation: the phone rule with `flex: none` back.
+  try {
+    const dom = await instanceBandDom(src);
+    check("band DOM SETUP: Chromium paints the band from a fixture instance.source", dom.real.shown && dom.real.text === dom.expected,
+      JSON.stringify(dom.real).slice(0, 600));
+    check("band DOM 390x844: with a long branch and target no segment overflows and the target sentence stands whole in the band",
+      dom.real.shown && dom.real.clipped.length === 0 && dom.real.bandOverflow === false && dom.real.lastWhole, JSON.stringify(dom.real).slice(0, 900));
+    check("band DOM 390x844 MUTATION: with flex:none back on the phone segments the same claim is red",
+      dom.mutant.shown && (dom.mutant.clipped.length > 0 || dom.mutant.bandOverflow || !dom.mutant.lastWhole), JSON.stringify(dom.mutant).slice(0, 900));
+    check("band DOM: without instance.source (the live fleet) the band is hidden and the app starts at the top",
+      dom.live.shown === false && dom.live.htmlClass === false && dom.live.appTop === 0, JSON.stringify(dom.live));
+  } catch (error) {
+    check("band DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false, error instanceof Error ? error.message : String(error));
+  }
+}
+
+// THE BAND IN A REAL BROWSER: the real client bundle behind a fixture origin (the rig of
+// e2e/slots.ts#runPhoneIslandDom, cut down to one page and three facts). Three loads at 390 × 844:
+// the band with long names, the same with the phone rule mutated back to `flex: none`, and an
+// /api/sessions without instance.source. A browser that cannot run is the PROBE line — red, never a skip.
+interface BandDomFacts { shown: boolean; htmlClass: boolean; appTop: number; text: string; clipped: string[]; bandOverflow: boolean; lastWhole: boolean }
+async function instanceBandDom(sourceRoot: string): Promise<{ real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts; expected: string }> {
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const phoneRule = "#tiband .tiseg, #tiband .tiseg:first-of-type { flex: 0 1 auto; min-width: 0;";
+  if (!indexHtml.includes(phoneRule)) throw new Error("phone rule for #tiband .tiseg not found in public/index.html");
+  const mutantHtml = indexHtml.replace(phoneRule, "#tiband .tiseg:first-of-type { flex: 0 1 auto; min-width: 0;");
+  const source = { head: "c".repeat(40), branch: "fleet/261006-ein-sehr-langer-zweigname-der-ueber-die-breite-eines-telefons-hinausgeht-2b6c",
+    dirty: 2, measuredAt: 1, target: { branch: "integration/ueberarbeitung-mit-einem-sehr-langen-zielnamen", head: "d".repeat(40), ahead: 12 } };
+  const expected = instanceBandText(instanceSourceFrom(JSON.stringify(source))!, () => "").text;
+  const scratch = mkdtempSync(resolve(process.env.TMPDIR ?? "/tmp", "fleet-band-dom-"));
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("band DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let log = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + log); })(),
+      Bun.sleep(45000).then(() => { throw new Error("browser CDP startup timeout: " + log); }),
+    ]);
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, page = { html: indexHtml, source: source as unknown };
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timer = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timer); ok(v); }, bad: (e) => { clearTimeout(timer); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, body: string, type: string, status = 200) => send("Fetch.fulfillRequest", { requestId, responseCode: status,
+      responseHeaders: [{ name: "content-type", value: type }], body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string } };
+      const p = new URL(request.url).pathname;
+      if (p === "/") return void reply(requestId, page.html, "text/html");
+      if (p === "/app.js") return void reply(requestId, appJs, "text/javascript");
+      if (p === "/api/sessions") return void reply(requestId, JSON.stringify({ now: 1, chips: [], tasks: [],
+        slots: Array.from({ length: 16 }, (_, i) => ({ id: i + 1, cwd: null })),
+        instance: page.source === undefined ? { name: null } : { name: null, source: page.source } }), "application/json");
+      return void reply(requestId, JSON.stringify({ error: "fixture: not served" }), "application/json", 404);
+    };
+    const target = await send("Target.createTarget", { url: "about:blank" });
+    sessionId = String((await send("Target.attachToTarget", { targetId: String(target.targetId), flatten: true })).sessionId);
+    await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+    await send("Runtime.enable");
+    await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    const evaluate = async <T>(expression: string): Promise<T> =>
+      ((await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result as { value: T }).value;
+    const load = async (html: string, src: unknown): Promise<BandDomFacts> => {
+      page = { html, source: src };
+      await send("Page.navigate", { url: "http://fleet.fixture/?token=fixture" });
+      await evaluate(`new Promise((ok) => { const until = Date.now() + 8000; const tick = () => {
+        const b = document.getElementById('tiband'); if ((b && document.readyState === 'complete' && (${src === undefined} ? Date.now() > until - 6000 : !b.hidden)) || Date.now() > until) return ok(true); setTimeout(tick, 50); }; tick(); })`);
+      return await evaluate<BandDomFacts>(`(() => { const b = document.getElementById('tiband'), r = b.getBoundingClientRect();
+        const segs = [...b.querySelectorAll('.tiseg')], last = segs[segs.length - 1];
+        const lr = last ? last.getBoundingClientRect() : null;
+        return { shown: !b.hidden && getComputedStyle(b).display !== 'none', htmlClass: document.documentElement.classList.contains('tiband'),
+          appTop: Math.round(document.getElementById('app').getBoundingClientRect().top), text: b.textContent,
+          clipped: segs.filter((s) => s.scrollWidth > s.clientWidth || s.getBoundingClientRect().right > r.right + 0.5).map((s) => s.textContent.slice(0, 40)),
+          bandOverflow: b.scrollWidth > b.clientWidth || document.documentElement.scrollWidth > innerWidth,
+          lastWhole: !!lr && lr.left >= r.left - 0.5 && lr.right <= r.right + 0.5 && lr.bottom <= r.bottom + 0.5 && last.scrollWidth <= last.clientWidth }; })()`);
+    };
+    const real = await load(indexHtml, source), mutant = await load(mutantHtml, source), live = await load(indexHtml, undefined);
+    return { real, mutant, live, expected };
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 async function testinstanzWorktreeChecks(slot: number): Promise<void> {

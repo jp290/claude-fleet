@@ -3476,9 +3476,11 @@
   /* --- mobile: phones in any orientation (short landscape counts too) --- */
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     #app { flex-direction: column; height: 100dvh; height: var(--vvh, 100dvh); }
-    /* the test-instance band on a phone breaks into lines instead of cutting its words (G2 Mobil) */
-    #tiband { flex-wrap: wrap; white-space: normal; padding: 6px 12px; row-gap: 2px; }
-    #tiband .tiseg:first-of-type { overflow: visible; overflow-wrap: anywhere; }
+    /* the test-instance band on a phone breaks into lines instead of cutting its words (G2 Mobil):
+       EVERY segment may shrink to the line and wrap inside it — a long branch or target name is
+       broken, never clipped (claim: e2e/lanes-lifecycle.ts#instanceBandDom at 390 × 844) */
+    #tiband { flex-wrap: wrap; white-space: normal; overflow: visible; padding: 6px 12px; row-gap: 2px; }
+    #tiband .tiseg, #tiband .tiseg:first-of-type { flex: 0 1 auto; min-width: 0; overflow: visible; overflow-wrap: anywhere; }
 
     /* the check alarm's phone surface: full-bleed above #mhead, in flow — it pushes the app down
        instead of floating over it (G2.1 mobil); only the signal-coloured bottom edge stays */

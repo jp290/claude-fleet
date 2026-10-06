@@ -150,8 +150,18 @@ export interface InstanceSource {
   branch: string | null; head: string | null; dirty: number | null; measuredAt: number | null;
   target: { branch: string; head: string | null; ahead: number | null } | null;
 }
-const INSTANCE_BRANCH_RE = /^(?!-)[A-Za-z0-9._/-]{1,200}$/;
-const instanceBranch = (v: unknown): string | null => typeof v === "string" && INSTANCE_BRANCH_RE.test(v) ? v : null;
+// A BRANCH NAME AS GIT ALLOWS IT, not a positive list: `+`, `@`, `#` and umlauts are valid branch
+// names and must not read "unbekannt". Refused are exactly git check-ref-format's rules — control
+// characters and space, ~ ^ : ? * [ \, "..", "@{", "//", a lone "@", a leading "-", a leading or
+// trailing "/", a trailing "." or ".lock", a component starting with "." or ending in ".lock" —
+// plus a length cap. The band renders it as text (textContent), never as markup.
+const INSTANCE_BRANCH_MAX = 200;
+const instanceBranch = (v: unknown): string | null => {
+  if (typeof v !== "string" || v.length === 0 || v.length > INSTANCE_BRANCH_MAX || v === "@") return null;
+  if (/[\x00-\x20\x7f~^:?*[\\]/.test(v) || /\.\.|@\{|\/\//.test(v)) return null;
+  if (v.startsWith("-") || v.startsWith("/") || v.endsWith("/") || v.endsWith(".")) return null;
+  return v.split("/").some((c) => c.startsWith(".") || c.endsWith(".lock")) ? null : v;
+};
 const instanceCount = (v: unknown): number | null => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
 const instanceSha = (v: unknown): string | null => typeof v === "string" && /^[0-9a-f]{40}$/.test(v) ? v : null;
 export function instanceSourceFrom(value: unknown): InstanceSource | null {

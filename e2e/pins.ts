@@ -28,7 +28,8 @@ import { basename, join, resolve } from "node:path";
 import {
   FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_AUDIENCES, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
   RULEBOOK_BACKREF_HEADING,
-  FRAGMENT_TITLES, fragmentFileName, renderRulebook, renderBackref, renderRolePointers, rulebookBody, type RulebookFragment,
+  FRAGMENT_TITLES, ROLE_SECTION_CUT, fragmentFileName, fragmentSections, renderRulebook, renderBackref, renderRoleRulebook,
+  rulebookBody, type RoleAudience, type RoleRulebook, type RulebookFragment,
 } from "../rulebook";
 import {
   SYSTEM_CAPABILITIES, SELF_GET_ADAPTER_PROBE, QUESTION_ROUTES,
@@ -5306,7 +5307,7 @@ await import(pathToFileURL(process.argv[2]).href);
     `bytes=${Buffer.byteLength(habits)}`);
   const habitsRule = (src: string): string[] => {
     const start = src.indexOf("const shellSingleQuote =");
-    const end = src.indexOf("const RULEBOOK_AB_VALUE =", start);
+    const end = src.indexOf("// THE ROLE CUT IS ON BY DEFAULT", start);
     const ac = src.indexOf("function agentCmd(");
     if (start < 0 || end <= start || ac < 0) return ["source anchor missing"];
     const prelude = src.slice(start, end).replaceAll("import.meta.dir", JSON.stringify("/scratch/it's a repo"));
@@ -5320,8 +5321,7 @@ await import(pathToFileURL(process.argv[2]).href);
         try {
           const code = transpiler.transformSync(`const BASE_CMD = ${JSON.stringify(harness)};
             const DEFAULT_MODEL = "default";
-            const RULEBOOK_AB_ENABLED = false;
-            const RULEBOOK_AB_RENDERS = null;
+            const rulebookRenderForSession = () => null;
             const HARNESS_MODEL_FLAG = "--model";
             ${prelude}\n${body}\nreturn agentCmd("00000000-0000-4000-8000-000000000000", false, "chosen", "low");`);
           const cmd: unknown = new Function("process", "console", code)(
@@ -5828,8 +5828,13 @@ await import(pathToFileURL(process.argv[2]).href);
   {
     const fullOk = FRAGMENTS_FOR.voll.length === RULEBOOK_FRAGMENTS.length
       && RULEBOOK_FRAGMENTS.every((f, i) => FRAGMENTS_FOR.voll[i] === f);
-    const mainOk = FRAGMENTS_FOR.main.join(",") === "loader,einstieg,lane-discipline,self-scheduling";
-    const orchestratorOk = FRAGMENTS_FOR.orchestrator.join(",") === "loader,einstieg,supervisor,self-scheduling,deploy";
+    // a role's FRAGMENTS_FOR is exactly the fragments its section cut draws from — two tables that
+    // must not tell different stories about the same render
+    const drawsFrom = (a: RoleAudience): string => RULEBOOK_FRAGMENTS.filter((f) => ROLE_SECTION_CUT[a][f] !== "aus").join(",");
+    const mainOk = FRAGMENTS_FOR.main.join(",") === "loader,einstieg,lane-discipline,self-scheduling,deploy"
+      && FRAGMENTS_FOR.main.join(",") === drawsFrom("main");
+    const orchestratorOk = FRAGMENTS_FOR.orchestrator.join(",") === "loader,einstieg,self-scheduling,deploy"
+      && FRAGMENTS_FOR.orchestrator.join(",") === drawsFrom("orchestrator");
     const lane = FRAGMENTS_FOR.lane;
     const laneOk = lane.length > 0 && lane.length < RULEBOOK_FRAGMENTS.length
       && new Set(lane).size === lane.length
@@ -5846,26 +5851,136 @@ await import(pathToFileURL(process.argv[2]).href);
     try { renderRulebook("voll", new Map()); } catch { threw = true; }
     pin(RULE_HOLE, threw);
   }
+  // "hoechstens ~35 KB" for the orchestrator's start (card 2026-10-06); the measured cut is 34 297 B
+  const ORCHESTRATOR_RENDER_MAX_B = 35_000;
+  // --- THE ROLE CUT (2026-10-06): a MAIN and the orchestrator get a SECTION-level render with an
+  // anchor for every section they do not carry. Two claims make that cut believable, and both are
+  // held here on fixtures — no checkout needed, the renderer is pure:
+  //   PARTITION: heading + sections reproduce each fragment byte for byte (cutting cannot reword);
+  //   COMPLETENESS: every section is either in the render body or named in its anchor block with a
+  //   file that holds exactly its bytes — a rule a role does not carry is still one `cat` away.
+  // The fixture is built FROM ROLE_SECTION_CUT, so every omission slug names a real fixture section
+  // and the omission path is exercised, not just the "no slug matched, everything carried" path.
+  const roleCutHolds = (r: RoleRulebook, frag: ReadonlyMap<RulebookFragment, string>, anchorDir: string): string[] => {
+    const bad: string[] = [];
+    const at = r.text.indexOf(`\n${RULEBOOK_BACKREF_HEADING}\n`);
+    const body = at < 0 ? r.text : r.text.slice(0, at);
+    const block = at < 0 ? "" : r.text.slice(at);
+    if (at < 0) bad.push("no anchor block");
+    if (!block.includes(`cat ${anchorDir}/<anker>.md`)) bad.push("anchor block names no read path");
+    for (const f of RULEBOOK_FRAGMENTS) {
+      const { head, sections } = fragmentSections(f, frag.get(f) ?? "");
+      if (head + sections.map((x) => x.text).join("") !== frag.get(f)) bad.push(`${f}: not a partition`);
+    }
+    for (const sec of r.sections) {
+      const t = sec.text.replace(/\n+$/, "");
+      if (sec.carried) {
+        if (!body.includes(t)) bad.push(`${sec.anchor}: carried but not in the body`);
+        continue;
+      }
+      if (body.includes(t)) bad.push(`${sec.anchor}: omitted but still in the body`);
+      const file = sec.via === null ? undefined : r.files.get(`${sec.via}.md`);
+      if (sec.via === null || !block.includes(`\`${sec.via}\``)) bad.push(`${sec.anchor}: no named anchor`);
+      else if (file === undefined || !file.includes(t)) bad.push(`${sec.anchor}: anchor ${sec.via} does not hold it`);
+    }
+    return bad;
+  };
   {
-    const orch = renderRolePointers("orchestrator", "/fixture/repo");
-    const main = renderRolePointers("main", "/fixture/repo");
-    pin("M4 role pointers give one trigger and source path for every omitted fragment",
-      orch.includes("bevor du selbst eine Suite faehrst") && orch.includes("/fixture/repo/rulebook/lane-discipline.md")
-        && orch.includes("vor graphify query/update") && !orch.includes("/fixture/repo/rulebook/deploy.md")
-        && main.includes("bevor du Modell/Effort") && main.includes("/fixture/repo/rulebook/supervisor.md")
-        && main.includes("vor POST /api/deploy") && main.includes("/fixture/repo/rulebook/deploy.md")
-        && main.includes("/fixture/repo/rulebook/graphify.md"),
-      `orchestrator=${Buffer.byteLength(orch)} B, main=${Buffer.byteLength(main)} B`);
+    const fixture = new Map<RulebookFragment, string>(RULEBOOK_FRAGMENTS.map((f) => {
+      const cut = ROLE_SECTION_CUT.orchestrator[f], other = ROLE_SECTION_CUT.main[f];
+      const slugs = [...new Set([...(typeof cut === "object" ? cut.ohne : []), ...(typeof other === "object" ? other.ohne : [])])];
+      return [f, [`## ${f}\n\nprose before the first bullet of ${f}\n`, ...slugs.map((sl) => `- **${sl.split("-").join(" ")}** rule text of ${f}/${sl}\n  wrapped line\n`),
+        `- **kept rule of ${f}**\n`].join("")];
+    }));
+    const dir = "/fixture/repo/rulebook/render/0123456789abcdef/abschnitte";
+    const detail: string[] = [];
+    let ok = true;
+    for (const a of ["orchestrator", "main"] as const) {
+      const r = renderRoleRulebook(a, fixture, { repoRoot: "/fixture/repo", anchorDir: dir, sourceHash: "0123456789abcdef" });
+      const bad = roleCutHolds(r, fixture, dir);
+      const omitted = r.sections.filter((x) => !x.carried).length;
+      const wantOmitted = RULEBOOK_FRAGMENTS.reduce((n, f) => {
+        const c = ROLE_SECTION_CUT[a][f];
+        return n + (c === "aus" ? fragmentSections(f, fixture.get(f) ?? "").sections.length : c === "ganz" ? 0 : c.ohne.length);
+      }, 0);
+      if (bad.length || r.staleOmissions.length || omitted !== wantOmitted || !r.text.includes("cat /fixture/repo/CLAUDE.md")) ok = false;
+      detail.push(`${a}: ${r.sections.length - omitted} carried, ${omitted}/${wantOmitted} anchored${bad.length ? `; ${bad.slice(0, 4).join("; ")}` : ""}`);
+    }
+    pin("the role render is a partition of the fragments and anchors every section it does not carry", ok, detail.join(" | "));
+
+    // …and the SERVER half writes what the block names. The four functions are lifted out of
+    // server.ts and run against a throwaway checkout (the habits-prompt pin's pattern): every
+    // anchor the written render lists must resolve to a file holding its section, `off` must
+    // answer null, and a CLAUDE.md that is not the render of rulebook/ must fall back — once
+    // logged, never thrown — because a throw at this seam is a spawn that never happens.
+    const lift = (name: string): string => {
+      const from = server.indexOf(name);
+      return from < 0 ? "" : server.slice(from, server.indexOf("\n}\n", from) + 3);
+    };
+    const parts = ["function readRulebookFragments(", "function writeRenderFile(", "let rulebookRenderRefusal",
+      "function rulebookRenderForSession("].map(lift);
+    const roleFn = lift("function roleRulebookRender(");
+    const tmp = mkdtempSync(join(tmpdir(), "pins-rolecut-"));
+    const seen: string[] = [];
+    try {
+      mkdirSync(join(tmp, RULEBOOK_DIR));
+      for (const [f, t] of fixture) writeFileSync(join(tmp, RULEBOOK_DIR, fragmentFileName(f)), t);
+      writeFileSync(join(tmp, "CLAUDE.md"), renderRulebook("voll", fixture));
+      if (parts.some((x) => x === "") || roleFn === "") throw new Error("server functions not found");
+      const code = new Bun.Transpiler({ loader: "ts" }).transformSync([...parts.slice(0, 3), roleFn, parts[3]].join("\n")
+        .replace("let rulebookRenderRefusal", "var rulebookRenderRefusal")
+        .replaceAll("import.meta.dir", JSON.stringify(tmp))
+        + "\nreturn rulebookRenderForSession;");
+      const make = (mode: string, logs: string[]) => new Function("RULEBOOK_CUT_MODE", "RULEBOOK_FRAGMENTS", "RULEBOOK_DIR",
+        "fragmentFileName", "renderRulebook", "renderRoleRulebook", "createHash", "readFileSync", "writeFileSync", "existsSync",
+        "mkdirSync", "console", code)(mode, RULEBOOK_FRAGMENTS, RULEBOOK_DIR, fragmentFileName, renderRulebook,
+        renderRoleRulebook, createHash, readFileSync, writeFileSync, existsSync, mkdirSync,
+        { error: (l: string) => logs.push(l) }) as (id: string, role: RoleAudience) => { arm: string; render: { path: string } } | null;
+      const logs: string[] = [];
+      const cut = make("rolle", logs)("0abc", "orchestrator");
+      const text = cut ? readFileSync(join(cut.render.path, "CLAUDE.md"), "utf8") : "";
+      const anchorDir = /cat (\S+)\/<anker>\.md/.exec(text)?.[1] ?? "";
+      const anchors = [...text.matchAll(/^- `([^`]+)` — /gm)].map((m) => m[1]!);
+      const unresolved = anchors.filter((x) => !existsSync(join(anchorDir, `${x}.md`)));
+      if (!cut || cut.arm !== "cut" || anchors.length === 0 || unresolved.length) seen.push(`cut: ${cut?.arm ?? "null"}, ${anchors.length} anchors, unresolved ${unresolved.slice(0, 3).join(",")}`);
+      if (make("voll", logs)("0abc", "main") !== null) seen.push("off did not answer null");
+      const a = make("ab", logs)("0abc", "main"), b2 = make("ab", logs)("1abc", "main");
+      if (a?.arm !== "A" || readFileSync(join(a.render.path, "CLAUDE.md"), "utf8") !== renderRulebook("voll", fixture) || b2?.arm !== "B")
+        seen.push(`ab arms: ${a?.arm}/${b2?.arm}`);
+      writeFileSync(join(tmp, "CLAUDE.md"), "hand edit\n");
+      const driftLogs: string[] = [];
+      const drifted = make("rolle", driftLogs);
+      const d1 = drifted("0abc", "orchestrator"), d2 = drifted("0abc", "main");
+      if (d1 !== null || d2 !== null || driftLogs.length !== 1) seen.push(`drift: ${d1 === null}/${d2 === null}, ${driftLogs.length} log line(s)`);
+      rmSync(join(tmp, RULEBOOK_DIR, fragmentFileName("deploy")));
+      if (make("rolle", [])("0abc", "orchestrator") !== null) seen.push("a missing fragment did not answer null");
+    } catch (e) {
+      seen.push(`threw: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+    pin("the server writes every anchor file its role render names, `off` answers null, and drift falls back without throwing",
+      seen.length === 0, seen.join("; "));
+  }
+  {
     const agent = server.slice(server.indexOf("function agentCmd("), server.indexOf("\n}\n", server.indexOf("function agentCmd(")));
-    pin("M4 default-off command changes only inside the enabled role branch, shared by new and resume",
-      server.includes('const RULEBOOK_AB_ENABLED = ["1", "true", "on", "yes"].includes(RULEBOOK_AB_VALUE ?? "");')
-        && server.includes('["0", "off", "false", "no"].includes(RULEBOOK_AB_VALUE)')
-        && agent.indexOf('if (RULEBOOK_AB_ENABLED && sessionId && rulebookRole && RULEBOOK_AB_RENDERS)') > agent.indexOf('resume ? "--resume" : "--session-id"')
-        && agent.includes('CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1')
-        && agent.includes('claudeMdExcludes: [root]') && agent.includes('--add-dir')
+    const spawnFrom = server.indexOf("function roleRulebookRender(");
+    const spawnFn = spawnFrom > 0 ? server.slice(spawnFrom, server.indexOf("\n}\n", spawnFrom)) : "";
+    // default ON, `off` the way back, `ab` the experiment; and a render that cannot be made answers
+    // null (the monolith) instead of throwing — the boot-time throw was a srv restart loop waiting
+    // for the day the cut became the default
+    pin("the role cut is on by default, `off` restores the full render, and a failed render falls back instead of throwing",
+      server.includes('process.env.FLEET_RULEBOOK_ROLE_CUT')
+        && /if \(\["0", "false", "off", "no"\]\.includes\(raw\)\) return "voll";/.test(server)
+        && /console\.error\(`FLEET_RULEBOOK_ROLE_CUT=\$\{JSON\.stringify\(raw\)\} is invalid; the role cut stays on`\);\n  return "rolle";/.test(server)
+        && agent.indexOf("rulebookRenderForSession(sessionId, rulebookRole)") > agent.indexOf('resume ? "--resume" : "--session-id"')
+        && agent.includes("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
+        && agent.includes("claudeMdExcludes: [root]") && agent.includes("--add-dir")
+        && spawnFn !== "" && !spawnFn.includes("throw ") && spawnFn.includes("catch (e)")
+        && !server.includes("prepareRulebookAbRenders")
         && server.includes('rulebookRole: "main" | "orchestrator" | null')
-        && server.includes('rolle: rulebookRole, arm, renderHash'),
-      "one conditional after the shared new/resume command");
+        && server.includes("rolle: rulebookRole, arm, renderHash"),
+      `agentCmd branch=${agent.includes("rulebookRenderForSession(")}, render fn=${spawnFn !== ""}, throws=${spawnFn.includes("throw ")}`);
   }
 
   // --- the probe table. Rows wrap: a cell may run over several physical lines (P7's does), and a
@@ -5912,9 +6027,17 @@ await import(pathToFileURL(process.argv[2]).href);
   const why = SOURCE_DIR === null ? "source checkout not locatable from here"
     : `rulebook/ not readable in the source checkout (${unreadable.length}/${RULEBOOK_FRAGMENTS.length} fragment(s))`;
 
+  // The role cut on the REAL fragments: the fixture pin above proves the renderer, these two prove
+  // the cut this tree ships still fits the rulebook as it stands. Inputs: the source's fragments
+  // and this tree's ROLE_SECTION_CUT — so, like RULE_RENDER, red is this tree's own once its
+  // rulebook.ts differs from the source's, and the source's own otherwise (pinSource).
+  const RULE_ROLE_REAL = `on the real fragments both role renders anchor every section they omit, and the orchestrator's is at most ${ORCHESTRATOR_RENDER_MAX_B} B`;
+  const RULE_ROLE_STALE = "every ROLE_SECTION_CUT omission names a section of the real fragments";
   if (unreadable.length > 0) {
     skip(RULE_RENDER, why);
     skip(RULE_PLACED, why);
+    skip(RULE_ROLE_REAL, why);
+    skip(RULE_ROLE_STALE, why);
   } else {
     const rendered = renderRulebook("voll", fragments);
     const monolith = ((): string | null => {
@@ -5948,6 +6071,21 @@ await import(pathToFileURL(process.argv[2]).href);
       pin(RULE_PLACED, rows.length > 0 && misplaced.length === 0,
         `${rows.length - misplaced.length}/${rows.length} placed, ${unique} of them in that fragment alone${misplaced.length ? `; misplaced: ${misplaced.join(",")}` : ""}`);
     }
+
+    // the anchor directory the server would name, at its real length — the block's bytes count
+    const dir = `${SOURCE_DIR}/${RULEBOOK_DIR}/render/0123456789abcdef/abschnitte`;
+    const real = (["orchestrator", "main"] as const).map((a) => ({ a, r: renderRoleRulebook(a, fragments,
+      { repoRoot: SOURCE_DIR ?? "", anchorDir: dir, sourceHash: "0123456789abcdef" }) }));
+    const bad = real.flatMap(({ a, r }) => roleCutHolds(r, fragments, dir).map((x) => `${a}: ${x}`));
+    const orchB = Buffer.byteLength(real[0]!.r.text);
+    pinSource(RULE_ROLE_REAL, bad.length === 0 && orchB <= ORCHESTRATOR_RENDER_MAX_B,
+      real.map(({ a, r }) => `${a} ${Buffer.byteLength(r.text)} B, ${r.sections.filter((x) => x.carried).length}/${r.sections.length} carried`).join(" | ")
+        + ` of voll ${Buffer.byteLength(rendered)} B${bad.length ? `; ${bad.slice(0, 4).join("; ")}` : ""}`,
+      IN_SOURCE || !sameRenderer);
+    // a stale omission is the SAFE failure (the renamed section is carried, the render grows), so
+    // it warns rather than reds; the size cap above is what stops the growth
+    const stale = [...new Set(real.flatMap(({ r }) => r.staleOmissions))];
+    pin(RULE_ROLE_STALE, stale.length === 0, stale.length ? `now carried: ${stale.join(", ")}` : "", true);
   }
 
   // --- 6c. The back-reference block, and the one seam it protects. A lane no longer HOLDS four of

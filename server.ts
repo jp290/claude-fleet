@@ -35,7 +35,7 @@ import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor,
   type LocalProof, type LocalProofStep } from "./verify-proportion";
 import { moduleListFrom } from "./suite-modules";
 import {
-  RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRolePointers, rulebookBody,
+  RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRoleRulebook, rulebookBody,
   type RulebookFragment,
 } from "./rulebook";
 import { planContext, planProgramContext, programContextPacksFrom, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
@@ -284,11 +284,25 @@ if (HABITS_PROMPT_VALUE !== undefined && !HABITS_PROMPT_ENABLED
     && !["0", "false", "off", "no"].includes(HABITS_PROMPT_VALUE))
   console.error("[fleet] FLEET_HABITS_PROMPT is invalid; habits prompt remains off");
 const HABITS_PROMPT_PATH = `${import.meta.dir}/fleet-gepflogenheiten.md`;
-const RULEBOOK_AB_VALUE = process.env.FLEET_RULEBOOK_AB?.toLowerCase();
-const RULEBOOK_AB_ENABLED = ["1", "true", "on", "yes"].includes(RULEBOOK_AB_VALUE ?? "");
-if (RULEBOOK_AB_VALUE !== undefined && !RULEBOOK_AB_ENABLED
-    && !["0", "off", "false", "no"].includes(RULEBOOK_AB_VALUE))
-  console.error(`FLEET_RULEBOOK_AB=${JSON.stringify(process.env.FLEET_RULEBOOK_AB)} is invalid; experiment remains off`);
+// THE ROLE CUT IS ON BY DEFAULT (owner 2026-10-06: „[Zitat entfernt]“
+// ). A claude orchestrator or Program-MAIN in the
+// server checkout starts with its role render (rulebook.ts#renderRoleRulebook) instead of the
+// 82 863-B monolith. `FLEET_RULEBOOK_ROLE_CUT=off` is the way back to the full render for every
+// role; `ab` keeps the preregistered A/B (arm A full, arm B cut), and the older
+// `FLEET_RULEBOOK_AB=on` still means `ab` when the new switch is unset. An unrecognised value says
+// so in one line and keeps the default.
+type RulebookCutMode = "rolle" | "voll" | "ab";
+const RULEBOOK_CUT_MODE: RulebookCutMode = (() => {
+  const raw = process.env.FLEET_RULEBOOK_ROLE_CUT?.trim().toLowerCase();
+  if (raw === undefined || raw === "") {
+    return ["1", "true", "on", "yes"].includes(process.env.FLEET_RULEBOOK_AB?.trim().toLowerCase() ?? "") ? "ab" : "rolle";
+  }
+  if (["1", "true", "on", "yes"].includes(raw)) return "rolle";
+  if (["0", "false", "off", "no"].includes(raw)) return "voll";
+  if (raw === "ab") return "ab";
+  console.error(`FLEET_RULEBOOK_ROLE_CUT=${JSON.stringify(raw)} is invalid; the role cut stays on`);
+  return "rolle";
+})();
 // model names are validated at SET time (MODEL_RE, the open/lane routes) — this string is
 // baked into a shell line, so nothing unvalidated may ever reach it. This is ALSO the claude
 // adapter's spawnCmd (HARNESSES calls this function rather than restating it).
@@ -333,9 +347,9 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // plugins and the claude.ai connectors too); a lane that needs one is a browser lane. Nothing is
     // written to ~/.claude/settings.json — the profile lives on this line only (pinned).
     if (!browserMcp) cmd += " --strict-mcp-config";
-    if (RULEBOOK_AB_ENABLED && sessionId && rulebookRole && RULEBOOK_AB_RENDERS) {
-      const arm = parseInt(sessionId[0]!, 16) % 2 === 0 ? "A" : "B";
-      const render = RULEBOOK_AB_RENDERS[arm === "A" ? "voll" : rulebookRole];
+    const rulebook = sessionId && rulebookRole ? rulebookRenderForSession(sessionId, rulebookRole) : null;
+    if (rulebook) {
+      const render = rulebook.render;
       const root = `${import.meta.dir}/CLAUDE.md`;
       const settings = JSON.stringify({ claudeMdExcludes: [root] });
       cmd = `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 ${cmd} --settings ${shellSingleQuote(settings)} --add-dir ${shellSingleQuote(render.path)}`;
@@ -7035,28 +7049,73 @@ function readRulebookFragments(repo: string): Map<RulebookFragment, string> | nu
   return m;
 }
 
-type RulebookAbRender = { path: string; hash: string };
-function prepareRulebookAbRenders(): Record<"voll" | "main" | "orchestrator", RulebookAbRender> {
-  const fragments = readRulebookFragments(import.meta.dir);
-  if (!fragments) throw new Error("FLEET_RULEBOOK_AB requires all rulebook/ fragments in the server checkout");
-  const out = {} as Record<"voll" | "main" | "orchestrator", RulebookAbRender>;
-  for (const role of ["voll", "main", "orchestrator"] as const) {
-    const body = renderRulebook(role, fragments)
-      + (role === "voll" ? "" : renderRolePointers(role, import.meta.dir));
-    const hash = createHash("sha256").update(body).digest("hex").slice(0, 16);
-    const path = `${import.meta.dir}/${RULEBOOK_DIR}/render/${hash}`;
-    const file = `${path}/CLAUDE.md`;
-    mkdirSync(path, { recursive: true });
-    if (existsSync(file)) {
-      if (readFileSync(file, "utf8") !== body) throw new Error(`rulebook render hash collision: ${hash}`);
-    } else writeFileSync(file, body, { mode: 0o600 });
-    out[role] = { path, hash };
-  }
-  if (readFileSync(`${import.meta.dir}/CLAUDE.md`, "utf8") !== readFileSync(`${out.voll.path}/CLAUDE.md`, "utf8"))
-    throw new Error("FLEET_RULEBOOK_AB requires CLAUDE.md to equal the full rulebook render");
-  return out;
+// A role render on disk: `path` is the directory handed to `--add-dir` (it holds exactly one
+// CLAUDE.md), `hash` the render's own content hash for the ledger.
+type RulebookRender = { path: string; hash: string };
+type RulebookSessionRender = { arm: "A" | "B" | "cut"; render: RulebookRender };
+
+// Write a file whose bytes are fixed by the directory it lives in (a source-hash directory): an
+// existing file is left alone when it already holds those bytes and replaced when it does not —
+// a half-written file from a crashed spawn must not become the permanent answer for that hash.
+function writeRenderFile(file: string, body: string): void {
+  if (existsSync(file) && readFileSync(file, "utf8") === body) return;
+  writeFileSync(file, body, { mode: 0o600 });
 }
-const RULEBOOK_AB_RENDERS = RULEBOOK_AB_ENABLED ? prepareRulebookAbRenders() : null;
+
+// The impure half of the role cut, prepared AT SPAWN rather than at boot, for two reasons. The
+// source moves under a running server (a fragment edit plus re-render needs no restart), and the
+// boot-time version THREW when CLAUDE.md and the fragments disagreed — harmless behind an opt-in
+// experiment, a srv restart loop once the cut is the default (note 4a33d84a). So every failure
+// here answers `null`, and `null` means the session gets what every session got before: the
+// monolith CLAUDE.md of its cwd. One log line per source state, not one per spawn.
+//
+// Layout, all under the gitignored `rulebook/`: `render/<source hash>/<role>/CLAUDE.md` is the
+// add-dir, and `render/<source hash>/abschnitte/<anchor>.md` holds every section some role render
+// leaves out — the files its anchor block names. Keyed by the SOURCE hash (all seven fragments),
+// not the render's own hash, because the render quotes the anchor directory and a directory named
+// after the bytes that name it cannot exist.
+let rulebookRenderRefusal = "";
+function roleRulebookRender(role: "main" | "orchestrator" | "voll"): RulebookRender | null {
+  const refuse = (why: string): null => {
+    if (why !== rulebookRenderRefusal) console.error(`[fleet] rulebook role cut unavailable (${why}); role sessions get the monolith CLAUDE.md`);
+    rulebookRenderRefusal = why;
+    return null;
+  };
+  const fragments = readRulebookFragments(import.meta.dir);
+  if (!fragments) return refuse("rulebook/ fragments not readable in the server checkout");
+  try {
+    const voll = renderRulebook("voll", fragments);
+    // the monolith is what claudeMdExcludes takes away; a role render of a DIFFERENT source would
+    // be a second rulebook, and the loader contract stops work over exactly that contradiction
+    if (readFileSync(`${import.meta.dir}/CLAUDE.md`, "utf8") !== voll)
+      return refuse("CLAUDE.md is not the render of rulebook/ — re-render it (rulebook.ts header)");
+    const sourceHash = createHash("sha256").update(voll).digest("hex").slice(0, 16);
+    const base = `${import.meta.dir}/${RULEBOOK_DIR}/render/${sourceHash}`;
+    let body = voll;
+    if (role !== "voll") {
+      const r = renderRoleRulebook(role, fragments, { repoRoot: import.meta.dir, anchorDir: `${base}/abschnitte`, sourceHash });
+      mkdirSync(`${base}/abschnitte`, { recursive: true });
+      for (const [name, text] of r.files) writeRenderFile(`${base}/abschnitte/${name}`, text);
+      body = r.text;
+    }
+    mkdirSync(`${base}/${role}`, { recursive: true });
+    writeRenderFile(`${base}/${role}/CLAUDE.md`, body);
+    rulebookRenderRefusal = "";
+    return { path: `${base}/${role}`, hash: createHash("sha256").update(body).digest("hex").slice(0, 16) };
+  } catch (e) {
+    return refuse(e instanceof Error ? e.message : String(e));
+  }
+}
+
+// The one function both the command line (agentCmd) and the ledger (ensureSlot) ask, so they cannot
+// disagree by construction — only by a fragment edit landing in the milliseconds between the two.
+// The A/B arm is the first hex digit of the session id, as preregistered; resume recomputes it.
+function rulebookRenderForSession(sessionId: string, role: "main" | "orchestrator"): RulebookSessionRender | null {
+  if (RULEBOOK_CUT_MODE === "voll") return null;
+  const arm = RULEBOOK_CUT_MODE === "ab" ? (parseInt(sessionId[0] ?? "0", 16) % 2 === 0 ? "A" : "B") : "cut";
+  const render = roleRulebookRender(arm === "A" ? "voll" : role);
+  return render ? { arm, render } : null;
+}
 
 // The bytes a lane's CLAUDE.md is SUPPOSED to hold, given this source checkout: the three lane
 // fragments plus the back-reference block naming the four it does not get. `null` = this repo has
@@ -7213,7 +7272,13 @@ async function laneScaffoldFor(root: string, path: string, harness: Harness): Pr
   // CLAUDE.md stays in this list as the FALLBACK ONLY: the branch above wrote the lane rendering
   // where a `rulebook/` exists, and the `existsSync(path/f)` guard then skips it here.
   // CLAUDE.md is the one that is WRITTEN rather than copied: a lane gets the LANE rendering of the
-  // rulebook — 3 of 7 fragments, ~29 KB instead of ~62 — and the file must still be called exactly
+  // rulebook — 3 of 7 fragments. Measured 2026-10-06 on the source checkout (source hash e0cdf04b):
+  // full render 82 863 B, lane render 21 936 B. The two other roles are not served here — they
+  // live in the main checkout and get their render through agentCmd (roleRulebookRender): the
+  // orchestrator 34 297 B (37 of 110 sections), a Program-MAIN 54 436 B (77 of 110), each with an
+  // anchor for every section it does not carry. Bytes, not tokens; at the measured ~0.5 token per
+  // byte of this German markdown (docs/messungen/2026-09-27-session-bloat.md) the full render is
+  // ~41 000 tokens of every main-checkout session's start. And the file must still be called exactly
   // CLAUDE.md (nothing else is auto-loaded) and still be gitignored (an untracked copy blocks
   // `land`), so it keeps every guard the copies have. `laneRulebookFor` null → no readable
   // `rulebook/` in the source, which is the ordinary state of a FOREIGN task.repo: fall back to
@@ -8284,7 +8349,7 @@ async function waitForSlotTeardownTestLatch(occupant: SlotStreamOccupant, target
 // `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
 // identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
 function rulebookRoleForSpawn(s: Slot, occupant: SlotSpawnOccupant): "main" | "orchestrator" | null {
-  if (!RULEBOOK_AB_ENABLED || s.worktree || resolve(occupant.cwd) !== import.meta.dir) return null;
+  if (RULEBOOK_CUT_MODE === "voll" || s.worktree || resolve(occupant.cwd) !== import.meta.dir) return null;
   const foundingMain = programs.some((p) => p.status === "active" && p.founding?.target.slot === s.id
     && p.founding.target.openedAt === s.openedAt);
   if (foundingMain || positionRole(s) === "program-main") return "main";
@@ -8391,9 +8456,9 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         }
         throw unavailable;
       }
-      if (rulebookRole && RULEBOOK_AB_RENDERS) {
-        const arm = parseInt(candidate[0]!, 16) % 2 === 0 ? "A" : "B";
-        const renderHash = RULEBOOK_AB_RENDERS[arm === "A" ? "voll" : rulebookRole].hash;
+      const rulebook = rulebookRole ? rulebookRenderForSession(candidate, rulebookRole) : null;
+      if (rulebookRole && rulebook) {
+        const { arm, render: { hash: renderHash } } = rulebook;
         await appendEvent(RULEBOOK_AB_LEDGER_FILE, { sessionId: candidate, rolle: rulebookRole, arm, renderHash });
       }
       if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;

@@ -38,8 +38,10 @@ export type RulebookFragment = (typeof RULEBOOK_FRAGMENTS)[number];
  */
 export const FRAGMENTS_FOR: Record<RulebookAudience, readonly RulebookFragment[]> = {
   lane: ["loader", "lane-discipline", "self-scheduling"],
-  main: ["loader", "einstieg", "lane-discipline", "self-scheduling"],
-  orchestrator: ["loader", "einstieg", "supervisor", "self-scheduling", "deploy"],
+  // main and orchestrator: the fragments their render draws ANY section from. Which sections, and
+  // the anchors for the rest, is ROLE_SECTION_CUT below — renderRoleRulebook, not renderRulebook.
+  main: ["loader", "einstieg", "lane-discipline", "self-scheduling", "deploy"],
+  orchestrator: ["loader", "einstieg", "self-scheduling", "deploy"],
   voll: [...RULEBOOK_FRAGMENTS],
 };
 
@@ -94,19 +96,228 @@ export const FRAGMENT_TITLES: Record<RulebookFragment, string> = {
   graphify: "graphify",
 };
 
-const ROLE_POINTER_TRIGGERS: Partial<Record<RulebookFragment, string>> = {
+const ROLE_POINTER_TRIGGERS: Record<RulebookFragment, string> = {
+  loader: "wenn eine Regel einer anderen widerspricht",
+  einstieg: "beim Antritt einer MAIN",
   "lane-discipline": "bevor du selbst eine Suite faehrst, eine Lane-Tuer rufst oder einen roten Check beurteilst",
   supervisor: "bevor du Modell/Effort eines lebenden Slots setzt oder einen fremden Composer leerst",
+  "self-scheduling": "bevor du dich selbst terminierst",
   deploy: "vor POST /api/deploy, kill-session -t srv, launchctl, einem Audit-Urteil oder einer Harness-/Modellnamen-Aenderung",
   graphify: "vor graphify query/update",
 };
 
-export function renderRolePointers(audience: "main" | "orchestrator", repoRoot: string): string {
-  const missing = RULEBOOK_FRAGMENTS.filter((f) => !FRAGMENTS_FOR[audience].includes(f));
-  return ["", RULEBOOK_BACKREF_HEADING, "",
-    `Diese Fassung traegt ${FRAGMENTS_FOR[audience].length} von ${RULEBOOK_FRAGMENTS.length} Teilen. Die anderen liegen untracked im Quell-Checkout:`,
-    "", ...missing.map((f) => `- ${FRAGMENT_TITLES[f]} — ${ROLE_POINTER_TRIGGERS[f]}: \`cat ${repoRoot}/${RULEBOOK_DIR}/${fragmentFileName(f)}\``),
-    ""].join("\n");
+// --- THE ROLE CUT: sections, not fragments ------------------------------------------------------
+// Whole fragments are too coarse for a MAIN or the orchestrator: `einstieg` (33 KB on 2026-10-06)
+// and `deploy` (23 KB) each mix what a role needs at every start with what it needs once a week.
+// So a role render is cut one level lower, at the SECTION — a top-level bullet of a fragment with
+// everything wrapped or indented under it, or the prose before a fragment's first bullet. The
+// fragments carry no sub-headings; the bullet IS the unit their authors wrote a rule as.
+//
+// Two properties make that cut safe to believe, and the pins hold both:
+// (1) PARTITION. Heading plus sections concatenated reproduce a fragment byte for byte, so cutting
+//     cannot lose or reword a rule — it can only leave one out of a render.
+// (2) EVERY OMISSION IS AN ANCHOR. A role render ends with a block naming each section it does not
+//     carry (or the whole fragment, where none of it is carried) and a file holding exactly those
+//     bytes. A role that does not know a rule EXISTS cannot ask for it; a named anchor it can.
+
+/** One cut unit of a fragment. `anchor` is the file name (without `.md`) the omitted copy is read from. */
+export interface RulebookSection {
+  readonly fragment: RulebookFragment;
+  readonly slug: string;
+  readonly anchor: string;
+  readonly title: string;
+  readonly text: string;
+}
+
+const ANCHOR_TITLE_MAX = 52;
+
+function sectionTitle(text: string): string {
+  const flat = text.replace(/\s+/g, " ").replace(/^- /, "").trim();
+  const bold = /^\*\*(.+?)\*\*/.exec(flat);
+  const t = (bold ? bold[1] : flat).replace(/\*\*/g, "").replace(/[:.]$/, "").trim();
+  return t.length <= ANCHOR_TITLE_MAX ? t : `${t.slice(0, ANCHOR_TITLE_MAX - 1).trimEnd()}…`;
+}
+
+function sectionSlug(title: string): string {
+  const words = title.toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+    .normalize("NFKD").replace(/[̀-ͯ]/g, "").match(/[a-z0-9]+/g) ?? [];
+  return words.slice(0, 5).join("-") || "abschnitt";
+}
+
+/**
+ * Split one fragment into its heading and its sections. Pure; the heading is the leading `## `
+ * lines plus the blank lines after them, and is never a section of its own — it travels with
+ * whatever part of the fragment a render carries. Slugs are unique within a fragment (`-2`, `-3`).
+ */
+export function fragmentSections(fragment: RulebookFragment, text: string): { head: string; sections: RulebookSection[] } {
+  const lines = text.split(/(?<=\n)/);
+  let i = 0;
+  while (i < lines.length && lines[i]!.startsWith("## ")) i++;
+  while (i < lines.length && lines[i]!.trim() === "") i++;
+  const head = lines.slice(0, i).join("");
+  const chunks: string[] = [];
+  let cur = "";
+  for (const l of lines.slice(i)) {
+    if (l.startsWith("- ") && cur !== "") { chunks.push(cur); cur = ""; }
+    cur += l;
+  }
+  if (cur !== "") chunks.push(cur);
+  const seen = new Map<string, number>();
+  const sections = chunks.map((chunk) => {
+    const title = sectionTitle(chunk);
+    const base = sectionSlug(title);
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    const slug = n === 1 ? base : `${base}-${n}`;
+    return { fragment, slug, anchor: `${fragment}--${slug}`, title, text: chunk };
+  });
+  return { head, sections };
+}
+
+/** What a role carries of one fragment: all of it, none of it, or all but the named section slugs. */
+export type FragmentCut = "ganz" | "aus" | { readonly ohne: readonly string[] };
+export type RoleAudience = "main" | "orchestrator";
+
+/**
+ * The role cut, by OMISSION LIST and never by keep-list, on purpose: a section whose lead words
+ * change gets a new slug, and with an omission list that section is then DELIVERED (the render
+ * grows, the size pin says so) instead of silently dropping out of the role's start. The failure
+ * this direction buys is a few hundred bytes too many, never a rule too few.
+ *
+ * orchestrator: steers MAINs, judges their reports, chooses models, deploys, talks to the owner.
+ *   It does not drive lanes, brief workers or run suites — that is the MAIN's work, and the
+ *   sections about it are anchors here.
+ * main: everything a Program-MAIN did get (loader, einstieg, lane-discipline, self-scheduling)
+ *   minus the lane-only doors it answers 409 on and the orchestrator-only Astra rule, plus the
+ *   three audit/verify sections of `deploy` that note 4a33d84a requires before the cut goes live
+ *   (docs/messungen/2026-09-27-regelbuch-je-rolle.md §2: 1 395 tokens a MAIN reads in deploy).
+ */
+export const ROLE_SECTION_CUT: Record<RoleAudience, Record<RulebookFragment, FragmentCut>> = {
+  orchestrator: {
+    loader: "ganz",
+    einstieg: { ohne: [
+      "idle-heisst-nicht-fertig-vier", "die-regel-darueber-sagt-wie", "der-land-takt-seriell-ja",
+      "git-checkout-datei-im-lane", "und-ein-schmutziger-haupt-checkout", "pruefe-das-trotzdem-vor-einem",
+      "wenn-du-eine-gpt-lane", "eine-lane-muss-nicht-claude", "codex-dispatch-wartet-auf-readiness",
+      "codex-tui-sub-agent-ansicht", "steward-konvention-der-slot-mit",
+      "post-api-self-tasks-id", "zwei-scope-regeln-entgegengesetzt-und", "nicht-lane-only",
+      "doc-kollision-lane-haupt-checkout",
+    ] },
+    "lane-discipline": "aus",
+    supervisor: "aus",
+    "self-scheduling": "ganz",
+    deploy: { ohne: [
+      "deploy-von-server-ts-client", "der-oeffentliche-main-und-die", "health-check-nach-deploy-curl",
+      "der-verify-gate-ist-dreiwertig",
+      "land-pfad-flags-in-watchdog", "fleet-lane-autoclose-der-automatische",
+      "stand-2026-09-06-scharf", "und-die-env-probe-dazu", "full-access-ist-der-normalzustand",
+      "lese-reichweite-provider-reichweite-und", "eine-fixture-fuer-ein-ausfuehrbares",
+      "agenten-tool-scoping-allowedtools-ist", "ein-cast-auf-eine-netz",
+      "die-gast-konsole-ist-entfernt", "ein-share-hat-keinen-modus", "auto-3-der-reviewer-laeuft",
+      "modell-tiers-default-model-sessions", "der-worker-eines-repos-wird",
+      "harness-adapter-fleet-cmd-muss", "get-api-sessions-traegt-pro",
+      "modellnamen-mit-suffix-die-1m", "launchd-kontext-hat-weder-local",
+    ] },
+    graphify: "aus",
+  },
+  main: {
+    loader: "ganz",
+    einstieg: { ohne: ["codex-kontingent-sinnvoll-verbrauchen-astra", "steward-konvention-der-slot-mit"] },
+    "lane-discipline": { ohne: [
+      "suite-offer", "vor-dem-done-report-drift", "was-dich-wirklich-gated-ist", "bist-du-eine-clarify-lane",
+      "report-only-the-slice-summary", "claude-md-ist-gitignored-und", "dein-docs-regal-ist-ein",
+      "set-the-done-criterion-its", "review-sweep-ts-ist-die", "die-suiten-leiten-sock-port",
+      "e2e-claude-gate-sh-hat", "fleet-e2e-ts-is-a",
+    ] },
+    supervisor: "aus",
+    "self-scheduling": "ganz",
+    deploy: { ohne: [
+      "deploy-von-server-ts-client", "das-repo-ist-seit-2026", "der-oeffentliche-main-und-die",
+      "health-check-nach-deploy-curl", "land-pfad-flags-in-watchdog",
+      "fleet-lane-autoclose-der-automatische", "stand-2026-09-06-scharf",
+      "und-die-env-probe-dazu", "full-access-ist-der-normalzustand", "lese-reichweite-provider-reichweite-und",
+      "eine-fixture-fuer-ein-ausfuehrbares", "agenten-tool-scoping-allowedtools-ist",
+      "stufe-2-der-post-land", "ein-cast-auf-eine-netz", "ein-deploy-setzt-die-idle",
+      "deploy-laeuft-ueber-verb-2", "die-gast-konsole-ist-entfernt", "ein-share-hat-keinen-modus",
+      "der-dispatcher-ist-an-startet", "auto-3-der-reviewer-laeuft", "modell-tiers-default-model-sessions",
+      "der-worker-eines-repos-wird", "harness-adapter-fleet-cmd-muss", "get-api-sessions-traegt-pro",
+      "modellnamen-mit-suffix-die-1m", "launchd-kontext-hat-weder-local",
+    ] },
+    graphify: "aus",
+  },
+};
+
+export interface RoleRulebook {
+  /** The CLAUDE.md a role session loads: carried sections, then the anchor block. */
+  readonly text: string;
+  /** Anchor file name (with `.md`) → its exact bytes; the caller writes them into `anchorDir`. */
+  readonly files: ReadonlyMap<string, string>;
+  /** Every section of every fragment, with what this render did with it. */
+  readonly sections: readonly (RulebookSection & { readonly carried: boolean; readonly via: string | null })[];
+  /** Omission-list entries that name no section of the source: a renamed rule, now carried. */
+  readonly staleOmissions: readonly string[];
+}
+
+/**
+ * Render one role's rulebook. Pure, like the rest of this module: the anchor directory and the
+ * source hash are handed in by the caller, which is the side that knows where it may write.
+ * Throws on a missing or empty fragment, exactly as `renderRulebook` does.
+ */
+export function renderRoleRulebook(
+  audience: RoleAudience,
+  contents: ReadonlyMap<RulebookFragment, string>,
+  o: { repoRoot: string; anchorDir: string; sourceHash: string },
+): RoleRulebook {
+  const cut = ROLE_SECTION_CUT[audience];
+  let out = RULEBOOK_PREAMBLE;
+  const files = new Map<string, string>();
+  const sections: (RulebookSection & { carried: boolean; via: string | null })[] = [];
+  const wholeOut: RulebookFragment[] = [];
+  const partOut: RulebookSection[] = [];
+  const staleOmissions: string[] = [];
+  for (const f of RULEBOOK_FRAGMENTS) {
+    const body = contents.get(f);
+    if (body === undefined || body.trim() === "") throw new Error(`rulebook fragment missing or empty: ${f}`);
+    const { head, sections: secs } = fragmentSections(f, body);
+    const c = cut[f];
+    const ohne = typeof c === "object" ? new Set(c.ohne) : null;
+    if (ohne) for (const slug of ohne) if (!secs.some((s) => s.slug === slug)) staleOmissions.push(`${f}--${slug}`);
+    const kept = c === "ganz" ? secs : c === "aus" ? [] : secs.filter((s) => !ohne?.has(s.slug));
+    if (kept.length === 0) {
+      wholeOut.push(f);
+      files.set(`${f}.md`, body);
+      for (const s of secs) sections.push({ ...s, carried: false, via: f });
+      continue;
+    }
+    out += `\n${(head + kept.map((s) => s.text).join("")).replace(/\n+$/, "")}\n`;
+    for (const s of secs) {
+      const carried = kept.includes(s);
+      sections.push({ ...s, carried, via: carried ? null : s.anchor });
+      if (!carried) { partOut.push(s); files.set(`${s.anchor}.md`, `${s.text.replace(/\n+$/, "")}\n`); }
+    }
+  }
+  const carriedCount = sections.filter((s) => s.carried).length;
+  const lines = [
+    "",
+    RULEBOOK_BACKREF_HEADING,
+    "",
+    `Du hast die ${audience.toUpperCase()}-Fassung: ${carriedCount} von ${sections.length} Abschnitten. Jeder andere ist ein`,
+    "Anker unten — lies ihn, BEVOR du tust, was sein Titel nennt (es ist der Anfang seiner Regel):",
+    "",
+    `    cat ${o.anchorDir}/<anker>.md`,
+    "",
+    `Voll-Render, alle sieben Teile: \`cat ${o.repoRoot}/CLAUDE.md\`.`,
+    "",
+    "Ganze Teile:",
+    ...wholeOut.map((f) => `- \`${f}\` — ${FRAGMENT_TITLES[f]}, ${ROLE_POINTER_TRIGGERS[f]}`),
+    "",
+    "Einzelne Abschnitte:",
+    ...partOut.map((s) => `- \`${s.anchor}\` — ${s.title}`),
+    "",
+    `Erzeugt aus ${RULEBOOK_DIR}/, Quell-Hash ${o.sourceHash} (über alle ${RULEBOOK_FRAGMENTS.length} Fragmente).`,
+    "",
+  ];
+  return { text: out + lines.join("\n"), files, sections, staleOmissions };
 }
 
 /**

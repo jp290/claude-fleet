@@ -53,7 +53,7 @@ import {
   type ContextPackMode,
   type ContextPackTrigger,
 } from "./context-packs";
-import { composerArrival, composerBuffer, composerHoldsExactly, composerRows,
+import { composerArrival, composerBuffer, composerCollapsedPaste, composerDeliveryResidue, composerHoldsExactly, composerRows,
   type ComposerArrival, type ComposerForm } from "./composer";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
@@ -141,7 +141,7 @@ import {
   type LaneFleetEvent, type MergeFleetEvent, type AuditFleetEvent, type DeployFleetEvent,
   type CommandJobFleetEvent,
   type ClarificationFleetEvent, type FleetReportFleetEvent,
-  type FleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportFulfilled, type FleetReportDecision,
+  type FleetEvent, type StuckDeliveryFact, type StuckDeliveryFleetEvent, type ClarificationRequest, type FleetReport, type FleetReportDisposition, type FleetReportFulfilled, type FleetReportDecision,
   type AttentionKind,
   type LaneSuiteFleetEvent, type HarnessBlockFleetEvent, type SuccessionDebtFleetEvent, type MessageFleetEvent, type SuccessionDebt,
   type LaneReviewFleetEvent, type AnsatzReview, type TaskReviewMode,
@@ -9438,18 +9438,71 @@ async function rollbackOwnComposerPayload(
 // until its deadline; other sends keep their original first-difference answer. A prefix seen in
 // that Watch window still forbids submission unless a later frame proves completion.
 async function awaitArrival(s: Slot, bound: BoundSlotPane, payload: string,
-  waitMs = ACCEPT_WAIT_MS, retryDiffers = false): Promise<ComposerArrival> {
+  waitMs = ACCEPT_WAIT_MS, retryDiffers = false,
+  onRows?: (rows: readonly string[]) => void): Promise<ComposerArrival> {
   const started = Date.now();
   let last: ComposerArrival = "differs";
   let sawPartial = false;
   for (;;) {
     if (!sameBoundPane(s, bound)) return last;
     const read = await readExactComposer(s, bound);
+    if (read.kind === "rows") onRows?.(read.rows);
     last = read.kind === "rows" ? composerArrival(read.rows, payload) : "differs";
     if (last === "complete" || (last === "differs" && !retryDiffers)) return last;
     if (retryDiffers && last === "partial") sawPartial = true;
     if (Date.now() - started >= waitMs) return retryDiffers && sawPartial ? "partial" : last;
     await Bun.sleep(100);
+  }
+}
+
+const STUCK_DELIVERY_READ_MS = 3000;
+const stuckDeliveryProbes = new Map<number, string>();
+const stuckDeliveries = new Map<number, { occupant: SlotStreamOccupant; fact: StuckDeliveryFact }>();
+
+function stuckDeliveryFor(s: Slot): StuckDeliveryFact | null {
+  const held = stuckDeliveries.get(s.id);
+  if (!held) return null;
+  if (sameSlotStreamOccupant(s, held.occupant)) return held.fact;
+  stuckDeliveries.delete(s.id);
+  return null;
+}
+
+async function observeStuckDelivery(s: Slot, bound: BoundSlotPane, sendId: string, path: SendPath,
+  payload: string, collapsedDisplay: string | null, senders: readonly SlotStreamOccupant[]): Promise<void> {
+  const started = Date.now();
+  try {
+    await Bun.sleep(1000);
+    while (Date.now() - started <= STUCK_DELIVERY_READ_MS) {
+      if (!sameBoundPane(s, bound) || stuckDeliveryProbes.get(s.id) !== sendId) return;
+      const read = await readExactComposer(s, bound);
+      if (!sameBoundPane(s, bound) || stuckDeliveryProbes.get(s.id) !== sendId
+        || Date.now() - started > STUCK_DELIVERY_READ_MS) return;
+      const composer = read.kind === "rows" ? composerDeliveryResidue(read.rows, payload, collapsedDisplay) : null;
+      if (composer) {
+        const fact: StuckDeliveryFact = { kind: "delivery-stuck", sendId, path,
+          slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId, observedAt: Date.now(), composer };
+        stuckDeliveries.set(s.id, { occupant: bound.occupant, fact });
+        const notified = new Set<number>();
+        for (const sender of senders) {
+          const receiver = slotFrom(sender.slot);
+          if (!receiver || !sameSlotStreamOccupant(receiver, sender) || notified.has(sender.slot)) continue;
+          notified.add(sender.slot);
+          const event: StuckDeliveryFleetEvent = { id: randomBytes(12).toString("hex"), watchId: null,
+            receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt,
+            receiverSessionId: receiver.sessionId, receiverIdleSec: 0, subjectSlot: s.id,
+            kind: "delivery-stuck", payload: fact, createdAt: fact.observedAt,
+            status: "inbox", delivery: "inbox", attempts: 0, deliveredAt: null, acknowledgedAt: null };
+          fleetEvents = [...fleetEvents, event];
+        }
+        await saveStateNow();
+        return;
+      }
+      await Bun.sleep(250);
+    }
+  } catch (e) {
+    logError("observeStuckDelivery", e);
+  } finally {
+    if (stuckDeliveryProbes.get(s.id) === sendId) stuckDeliveryProbes.delete(s.id);
   }
 }
 // Poll the composer until `until` holds, within the window. Returns the last residue read.
@@ -9587,6 +9640,7 @@ async function submitFleetResidue(s: Slot, bound: BoundSlotPane): Promise<string
 }
 
 type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true;
+  senders?: readonly SlotStreamOccupant[];
   deliveryClass?: DeliveryClass; subscribedWatch?: true; beforeSend?: (receiver: Slot) => Promise<void>;
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
   eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string; inboxId?: string;
@@ -9850,6 +9904,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       // these, and a hint typed inside a merged paste is as delivered as one typed alone
       const { acceptance } = await sendText(s, payload, true,
         { path: "bundle", ...(ordered.length === 1 ? { path: ordered[0]!.options.path } : {}),
+          senders: ordered.flatMap((entry) => entry.options.senders ?? []),
           rollbackOwnPayload: true, requireAgent: true,
           deliveryClass: immediate ? "sofort" : "buendelbar", bypassQueue: true,
           paneInboxNotice: bundleNotice(ordered),
@@ -9915,6 +9970,13 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
   return bundle.inflight;
 }
 async function sendText(s: Slot, given: string, submit: boolean, options: SendTextOptions): Promise<{ acceptance: Acceptance }> {
+  if (!options.senders) {
+    const actor = auditActorScope.getStore();
+    const sender = actor?.kind === "session" ? slotFrom(actor.slot) : null;
+    const stamp = sender && sender.openedAt === (actor?.kind === "session" ? actor.openedAt : null)
+      ? slotStreamOccupant(sender) : null;
+    options = { ...options, senders: stamp ? [stamp] : [] };
+  }
   const origin = { slot: s.id, openedAt: s.openedAt };
   if (!options.bypassQueue) {
   const address = options.address ?? deliveryAddress(s);
@@ -9971,6 +10033,10 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // was refused before the paste, which is the case a caller-written row would have had to guess at.
   const payloadBytes = Buffer.byteLength(text, "utf8");
   let pasted = 0;
+  const probeId = randomBytes(12).toString("hex");
+  const deliveryRead: { pane: BoundSlotPane | null; collapsedDisplay: string | null } = {
+    pane: null, collapsedDisplay: null,
+  };
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes can interleave with them and reorder pty input
   const task = s.inputChain.then(async () => {
@@ -9990,6 +10056,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
     if (!target || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
       throw new SendRefused("slot pane unavailable or changed before send — nothing typed");
     const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms, bootSettleMs };
+    deliveryRead.pane = bound;
     const observes = !!bound.composer;
     if (options.path === "owner") {
       const readiness = await paneReadiness(s);
@@ -10070,6 +10137,8 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       const pb = await tmux("paste-buffer", "-p", "-b", buf, "-t", bound.paneId);
       if (pb.code !== 0) throw new Error("tmux paste-buffer failed — session gone?");
       pasted = payloadBytes; // the bytes are in the pane from here on, whatever the submit half does
+      stuckDeliveryProbes.set(s.id, probeId);
+      stuckDeliveries.delete(s.id);
       await waitForSendTestLatch(SEND_AFTER_PASTE_TEST_LATCH, "after-paste", bound, text);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed after paste");
       if (!submit) return { acceptance: "not-applicable" as const };
@@ -10087,7 +10156,8 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
         // the normal 3 s ceiling even when a suite shortens ordinary composer probes to 800 ms.
         const watchEvent = options.path === "fleet-event";
         const arrivalWaitMs = watchEvent ? Math.max(ACCEPT_WAIT_MS, 3000) : ACCEPT_WAIT_MS;
-        arrival = await awaitArrival(s, bound, composed, arrivalWaitMs, watchEvent);
+        arrival = await awaitArrival(s, bound, composed, arrivalWaitMs, watchEvent,
+          (rows) => { deliveryRead.collapsedDisplay = composerCollapsedPaste(rows, header ?? ""); });
         // identity first: a slot that changed under the window must report THAT, not a verdict.
         if (!sameBoundPane(s, bound)) throw new Error("slot changed during arrival probe");
         if (arrival === "partial") throw new SendNotAccepted(
@@ -10134,10 +10204,16 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // neighbours, so it can neither delay nor fail the send it records.
   try {
     const result = await task;
+    if (result.acceptance === "unobservable" && deliveryRead.pane?.composer && pasted > 0 && submit)
+      void observeStuckDelivery(s, deliveryRead.pane, probeId, options.path, composed, deliveryRead.collapsedDisplay, options.senders ?? []);
+    else if (stuckDeliveryProbes.get(s.id) === probeId) stuckDeliveryProbes.delete(s.id);
     auditSend(s, options.path, pasted, result.acceptance, options.deliveryClass, options.reportId,
       options.inboxId, options.programEventId);
     return result;
   } catch (e) {
+    if (deliveryRead.pane?.composer && pasted > 0 && submit)
+      void observeStuckDelivery(s, deliveryRead.pane, probeId, options.path, composed, deliveryRead.collapsedDisplay, options.senders ?? []);
+    else if (stuckDeliveryProbes.get(s.id) === probeId) stuckDeliveryProbes.delete(s.id);
     auditSend(s, options.path, pasted, sendFailureDelivery(e), options.deliveryClass, options.reportId,
       options.inboxId, options.programEventId);
     if (e instanceof SendRefused) await options.onRefused?.(s);
@@ -23495,6 +23571,9 @@ function fleetEventMessage(event: FleetEvent): string {
       + `${event.payload.respawned ? "the successor stands without its founding brief" : "no successor opened"} — ${event.payload.reason}`
     : event.kind === "message"
     ? `[fleet] message ${event.payload.messageId} to ${addressLabel(event.payload.to)} escalated to owner — original address remains stored`
+    : event.kind === "delivery-stuck"
+    ? `[fleet] delivery ${event.payload.sendId} still visible in slot ${event.subjectSlot}'s composer`
+      + ` (${event.payload.composer.kind}, ${event.payload.composer.visibleChars} chars, observed ${event.payload.observedAt}); no key sent by this sensor`
     : laneWatchMessage(event.subjectSlot, event.subjectBranch, event, laneSelfWord(event));
   return text;
 }
@@ -43393,7 +43472,8 @@ Bun.serve<WSData>({
         // 182 857 B on the live fleet (2026-09-13) of which the board rendered none, and it made the
         // 14 KiB budget in e2e/tasks.ts a wager on fleet activity. Every row, including events whose
         // receiver has gone and that cannot appear in any current /api/self row: GET /api/events.
-        events: fleetEvents.filter((e) => e.kind !== "message").filter(opsPollVisible).map(opsPollRow),
+        events: fleetEvents.filter((e): e is Exclude<FleetEvent, StuckDeliveryFleetEvent> => e.kind !== "delivery-stuck")
+          .filter((e) => e.kind !== "message").filter(opsPollVisible).map(opsPollRow),
         // ONE NUMBER, on purpose: the attention inbox rides the app's most expensive path as the count of
         // rows that still want the owner; the bodies are behind GET /api/attention. OMITTED AT ZERO like
         // harness/effort: this payload is measured against a 12 KiB budget (e2e/tasks.ts, docs/data-saver.md
@@ -43553,6 +43633,7 @@ Bun.serve<WSData>({
             ...(paneModel?.modelPushedAt ? { modelPushedAt: paneModel.modelPushedAt } : {}),
             // an owner /send waiting for an empty composer (THE PARKED SEND); omitted when none waits
             ...(parked ? { parkedSend: parked } : {}),
+            ...(stuckDeliveryFor(s) ? { stuckDelivery: stuckDeliveryFor(s) } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
             ...(s.worktree && s.webSearch ? { webSearch: true } : {}),

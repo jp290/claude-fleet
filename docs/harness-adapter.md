@@ -811,6 +811,46 @@ Netzwerkkosten werden nicht als null behauptet.
     `composerRows` + `composerHoldsExactly`; Lebenszyklus-Falsifizierer: `e2e/watch.ts` und der
     Raw-Mode-Stand-in in `e2e-isolated.sh`.
 
+### Nachlese einer im Composer verbliebenen Zustellung
+
+`sendText` startet nach einem unsicheren Send mit tatsächlich gepasteten Bytes eine reine
+Nachlese: erster Read 1 s nach dem Send-Ergebnis, Ende nach höchstens 3 s, dazwischen 250 ms.
+Nur dieselbe Slot-Belegung und dieselbe Pane werden gelesen; ein neuer Fleet-Paste beendet
+die alte Nachlese. `observed`, ein Adapter ohne Composer und `submit:false` starten keine.
+Ein `delivery-stuck`-Fakt bedeutet ausschließlich: dieser zuordenbare Rest war zum angegebenen
+`observedAt` noch sichtbar. Er ändert keines der vier ACP-25-Wörter. Ohne passenden Read im
+Fenster bleibt der Befund unbekannt; die Abwesenheit eines Fakts beweist keine Annahme.
+
+Gemessen 2026-10-06 an Claude Code 2.1.291 in einer eigenen 160×38-Pane, ohne Enter und ohne
+Modellturn: 80 gepastete Zeilen stehen als nicht gedimmtes `[Pasted text #1 +79 lines]` hinter
+der getippten Fleet-Kopfzeile. `composerBuffer` liest diese ganze Anzeige;
+`composerArrival` ist `differs`, `composerHoldsExactly` ist `false`. Der Placeholder erklärt
+also allein kein `unobservable`: solange diese Zeile im Akzeptanzfenster lesbar bleibt,
+ist der vorhandene Acceptance-Befund `not-observed`. `unobservable` entsteht bei fehlender
+Composer-Zeile oder bei leerem Composer ohne zuvor vollständig gelesene Nutzlast (oder ohne
+beobachteten lebenden Agenten). Ob genau das die historische Zustellung vom 05.10. betraf,
+bleibt ohne deren Frames unbekannt.
+
+Für die Nachlese zählt Claude **apply**: vollständiger Payload oder dieselbe Fleet-Kopfzeile
+mit demselben vor Enter gemessenen Paste-Placeholder. Letzterer heißt `collapsed-paste`,
+niemals byte-exakte Nutzlast; seine verborgenen Bytes bleiben unbekannt und erlauben keinen
+Rollback. Fremde, ergänzte oder geänderte Anzeigen zählen nicht. Codex, Pi, pi-zai und pi-ox
+sind **apply** für vollständig rekonstruierbare Nutzlast; ihre nicht gemessenen
+Placeholder-Formen sind **unsupported**. Adapter ohne Composer sind **not-applicable**.
+
+`GET /api/sessions` trägt am Empfänger `stuckDelivery` mit Send-ID, Pfad, Belegung,
+Beobachtungszeit und `composer:{kind,visibleChars}`, ohne Payload-Text. Das ist ein flüchtiger
+Messbefund bis zum nächsten Fleet-Paste, Belegungswechsel oder Server-Neustart, kein Live-Read
+bei jedem Board-Poll. Ein Self-Absender erhält genau ein dauerhaftes `FleetEvent` der Art
+`delivery-stuck` pro Send, bei einem Bundle je unterschiedlichem Absender. Dessen exakte
+Belegung wird vor dem Schreiben erneut geprüft. Der Fakt wird als `delivery:"inbox"` über
+`GET /api/self/events` gelesen und dort quittiert; ohne Self-Prinzipal gibt es kein Event.
+Der Sensor tippt, löscht oder sendet nichts erneut. Der Client bleibt unverändert und
+unterstützt keine eigene Darstellung dieses neuen Fakts; die typisierte API ist die Fläche.
+`e2e/stuck-delivery.ts` belegt Payload-Rest, eingeklappten Rest, verzögertes Wiedererscheinen,
+angenommenen Send, fremde Anzeige, fehlenden Self-Absender und Belegungswechsel sowie die
+unveränderten Eingabebytes und Tastenzähler.
+
 ### `pi-zai`: Z.ai-Coding-Plan-Profil in Pi mit genau zwei Modellen
 
 `pi-zai` ist Pi auf Z.ais Coding Plan. Eine Task-Auswahl lautet `{"harness":"pi-zai"}` (Default

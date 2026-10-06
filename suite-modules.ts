@@ -185,6 +185,7 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "trace" },
   { module: "konzepte" },
   { module: "role-address" },
+  { module: "stuck-delivery" },
   { module: "steward-core",
     reads: ["ctx.gapRepo", "ctx.auditPath", "ctx.plantedTranscript", "ctx.plantedTranscriptBytes",
       "ctx.plantedModel", "server:srv-env-after-restart"],

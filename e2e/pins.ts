@@ -712,7 +712,7 @@ const server = serverU.text;
   const mint = executable(mintSpan?.text ?? "");
   const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"\n'
     + '    || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review"\n'
-    + '    || e.kind === "succession-debt" || e.kind === "message";';
+    + '    || e.kind === "succession-debt" || e.kind === "message" || e.kind === "delivery-stuck";';
   const mixedCommandBinding = 'const watchBindingValid = e.kind === "command-job" || watchless === (e.watchId === null);';
   const watchlessEquivalence = parser.includes(watchlessKinds)
     && parser.split(mixedCommandBinding).length - 1 === 1
@@ -6460,7 +6460,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_KINDS = "the FleetEvent kind set is closed";
   const expected = ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit",
     "deploy-terminal", "command-job", "lane-suite", "clarification-request", "fleet-report",
-    "harness-block", "lane-review", "succession-debt", "message"].sort();
+    "harness-block", "lane-review", "succession-debt", "message", "delivery-stuck"].sort();
   const signals = read("lane-signals.ts");
   const laneKinds = (signals.match(/export type LaneWatchEventKind =([^;\n]+)/)?.[1] ?? "")
     .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);

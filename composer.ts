@@ -149,6 +149,27 @@ export function composerHoldsExactly(rows: readonly string[], payload: string): 
   return walk(0, 0);
 }
 
+export type DeliveryComposerResidue = {
+  kind: "exact-payload" | "collapsed-paste";
+  visibleChars: number;
+};
+
+export function composerCollapsedPaste(rows: readonly string[], header: string): string | null {
+  if (!header) return null;
+  const label = rows.join("").match(/\[Pasted text #\d+ \+\d+ lines\]$/)?.[0];
+  const display = label ? header + label : null;
+  return display && composerHoldsExactly(rows, display) ? display : null;
+}
+
+export function composerDeliveryResidue(rows: readonly string[], payload: string,
+  collapsedDisplay: string | null): DeliveryComposerResidue | null {
+  const visibleChars = rows.reduce((n, row) => n + row.length, 0);
+  if (composerHoldsExactly(rows, payload)) return { kind: "exact-payload", visibleChars };
+  if (collapsedDisplay && composerHoldsExactly(rows, collapsedDisplay))
+    return { kind: "collapsed-paste", visibleChars };
+  return null;
+}
+
 // THE PRE-SUBMIT HALF, and it answers a different question than the two readers above: not "is this
 // exactly Fleet's payload" (rollback, which must be exact because it erases) but "has the whole
 // payload ARRIVED yet". Measured 2026-08-30 on event e1ff06ac9911f854e752d71a: the receiver pane

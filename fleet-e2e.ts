@@ -77,6 +77,7 @@ import * as stateSnapshot from "./e2e/state-snapshot";
 import * as trace from "./e2e/trace";
 import * as konzepte from "./e2e/konzepte";
 import * as roleAddress from "./e2e/role-address";
+import * as stuckDelivery from "./e2e/stuck-delivery";
 import * as trail from "./e2e/trail";
 import * as trailstats from "./e2e/trailstats";
 
@@ -372,6 +373,9 @@ const steps: Step[] = [
   // slots of its own and needs nothing another module wrote — only that no slot holds the role yet
   { unit: "role-address", module: "role-address", run: async () => {
     await roleAddress.run();
+  } },
+  { unit: "stuck-delivery", module: "stuck-delivery", run: async () => {
+    await stuckDelivery.run();
   } },
 
   // --- steward principal: scoped token, typed+capped sends, read-only fleet-wide access ---

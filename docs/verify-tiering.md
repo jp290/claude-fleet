@@ -5308,6 +5308,7 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `trace` | — | — | allein |
 | `konzepte` | — | — | allein |
 | `role-address` | — | — | allein |
+| `stuck-delivery` | — | — | allein |
 | `steward-core` | `ctx.gapRepo` `ctx.auditPath` `ctx.plantedTranscript` `ctx.plantedTranscriptBytes` `ctx.plantedModel` `server:srv-env-after-restart` | `sc.token` `sc.stewGet` `sc.stewPost` `sc.slot` `sc.cwd` `sc.settleForSteward` | 7: slots autos share self-token intake restart steward-core |
 | `steward-outcomes` | `sc.stewGet` `sc.stewPost` `sc.slot` `sc.settleForSteward` | — | 8: slots autos share self-token intake restart steward-core steward-outcomes |
 | `security` | `ctx.shICookie` `ctx.auditPath` `sc.token` `sc.stewGet` | — | 8: slots autos share self-token intake restart steward-core security |

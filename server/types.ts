@@ -473,10 +473,25 @@ interface MessageFleetEvent extends FleetEventBase {
   kind: "message";
   payload: { messageId: string; to: MessageAddress };
 }
+interface StuckDeliveryFact {
+  kind: "delivery-stuck";
+  sendId: string;
+  path: string;
+  slot: number;
+  openedAt: number;
+  sessionId: string | null;
+  observedAt: number;
+  composer: { kind: "exact-payload" | "collapsed-paste"; visibleChars: number };
+}
+interface StuckDeliveryFleetEvent extends FleetEventBase {
+  subjectSlot: number;
+  kind: "delivery-stuck";
+  payload: StuckDeliveryFact;
+}
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
   | CommandJobFleetEvent | LaneSuiteFleetEvent | ClarificationFleetEvent | FleetReportFleetEvent
   | HarnessBlockFleetEvent | LaneReviewFleetEvent | SuccessionDebtFleetEvent
-  | MessageFleetEvent;
+  | MessageFleetEvent | StuckDeliveryFleetEvent;
 
 // `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
 // persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
@@ -747,7 +762,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   // Command jobs are mixed: a Watch or the offering lane's automatic verdict rail may mint them.
   const watchless = e.kind === "clarification-request" || e.kind === "fleet-report"
     || e.kind === "lane-suite" || e.kind === "harness-block" || e.kind === "lane-review"
-    || e.kind === "succession-debt" || e.kind === "message";
+    || e.kind === "succession-debt" || e.kind === "message" || e.kind === "delivery-stuck";
   const watchBindingValid = e.kind === "command-job" || watchless === (e.watchId === null);
   // …and the kinds that may name the OWNER instead of a session. Same list on both sides of the
   // equivalence below, so a kind can never be admitted to one half and not the other.
@@ -1027,6 +1042,25 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       || typeof to === "string") return null;
     return { ...base, subjectSlot: Number(e.subjectSlot), kind: e.kind,
       payload: { messageId: p.messageId, to } };
+  }
+  if (e.kind === "delivery-stuck") {
+    const p = e.payload as Partial<StuckDeliveryFact> | undefined;
+    if (ownerReceiver || e.delivery !== "inbox" || !p || p.kind !== "delivery-stuck"
+      || !["inbox", "acknowledged", "receiver-gone"].includes(String(e.status))
+      || e.attempts !== 0 || e.deliveredAt !== null
+      || !Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || p.slot !== e.subjectSlot
+      || typeof p.slot !== "number"
+      || typeof p.sendId !== "string" || !/^[0-9a-f]{24}$/.test(p.sendId)
+      || typeof p.path !== "string" || !p.path
+      || typeof p.openedAt !== "number" || !Number.isFinite(p.openedAt) || p.openedAt <= 0
+      || !(p.sessionId === null || typeof p.sessionId === "string")
+      || typeof p.observedAt !== "number" || !Number.isFinite(p.observedAt) || p.observedAt <= 0
+      || !p.composer || !["exact-payload", "collapsed-paste"].includes(p.composer.kind)
+      || !Number.isInteger(p.composer.visibleChars) || p.composer.visibleChars <= 0) return null;
+    return { ...base, subjectSlot: Number(e.subjectSlot), kind: e.kind,
+      payload: { kind: p.kind, sendId: p.sendId, path: p.path, slot: p.slot, openedAt: p.openedAt,
+        sessionId: p.sessionId, observedAt: p.observedAt,
+        composer: { kind: p.composer.kind, visibleChars: p.composer.visibleChars } } };
   }
   if (e.kind === "lane-review") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
@@ -3407,6 +3441,7 @@ export type {
   BoxPin, WSData, Share, ShareComment, Auto, WatchBase, LaneWatch, MergeWatch, AuditWatch,
   DeployWatch, CommandJobWatch, Watch, FleetEventStatus, FleetEventRecoveryState,
   FleetEventRecovery, FleetEventBase, LaneFleetEvent, MergeFleetEvent, AuditFleetEvent,
+  StuckDeliveryFact, StuckDeliveryFleetEvent,
   DeployFleetEvent, CommandJobFleetEvent, LaneSuiteFleetEvent, ClarificationFleetEvent, FleetReportFleetEvent,
   HelperCmdCheck, HarnessBlockFleetEvent, AnsatzReview, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
   FleetEvent, ClarificationStatus,

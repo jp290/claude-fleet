@@ -2644,11 +2644,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // A FAILED READ IS NOT AN EMPTY SESSION — each of the four reads behind this column says so in
   // its own words, where its content would have been.
   check("client: a failed brief, lane map, transcript or error read is NAMED, not rendered as empty",
-    /The session brief could not be read/.test(boardSrc)
+    /Der Session-Brief konnte nicht gelesen werden/.test(boardSrc)
     && /The lane map could not be read/.test(boardSrc)
     && /The transcript could not be read/.test(boardSrc)
     && /The error list could not be read/.test(cliSrc)
-    && /This is a failed read, not an empty session/.test(boardSrc),
+    && /Das ist ein fehlgeschlagener Zugriff, keine leere Sitzung/.test(boardSrc),
     "the failure sections in renderBoard");
   check("client: the errors fetch can no longer end in an unhandled rejection",
     /void api\("\/api\/errors"\)[\s\S]{0,700}?\}\)\.catch\(\(\) => \{/.test(cliSrc),

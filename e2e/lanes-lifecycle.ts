@@ -907,7 +907,7 @@ async function workplacesChecks(): Promise<void> {
       const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
       return new Function("slots", "DISPATCH_REPO", "gitRead", "testinstanzCommand", "existsSync", "realpathSync", "statSync", "lstatSync", "HOST", "commandJobs", "laneSuiteJobs", "mergeLast", "mergeParked", "serverRuns",
         "runningPostLandAudit", "auditQueue", "auditQueueGroups", "auditCmdFor", "repoCanon", "localFailNames", "POSTLAND_AUDIT_FILE", "validAuditRow", "helperClaims", "auditShardRuns", "coverKey", "auditClaimableSince", "standContext",
-        `const { REPO_DIR, HELPER_UPDATE_REPO, BOOT_HEAD, bootHeadReady, INSTANCE_NAME, INSTANCE_LINKS, helperDevices, helperUpdates, repoBases, instanceNameFrom, repoGraph, roleOf, readFileSync, resolve, dirname } = standContext;\n${js}\nreturn { repo: workplaceRepo, read: workplaces, observations: workplaceCheckObservations, checks: workplaceChecks, audits: workplaceAuditReading };`)(occupants, realpathSync(b),
+        `const { REPO_DIR, HELPER_UPDATE_REPO, BOOT_HEAD, bootHeadReady, INSTANCE_NAME, INSTANCE_LINKS, INSTANCE_SOURCE, helperDevices, helperUpdates, repoBases, instanceNameFrom, repoGraph, roleOf, readFileSync, resolve, dirname } = standContext;\n${js}\nreturn { repo: workplaceRepo, read: workplaces, observations: workplaceCheckObservations, checks: workplaceChecks, audits: workplaceAuditReading };`)(occupants, realpathSync(b),
         async (repo: string, ...args: string[]) => {
           gitCalls?.push(args[0]);
           if (notesFail && args[0] === "log") return { code: 128, out: "" };
@@ -926,7 +926,7 @@ async function workplacesChecks(): Promise<void> {
           return row;
         }, sources.claims ?? new Map(), sources.auditShards ?? new Map(),
         (c: { branch: string; mainAfter: string; at: number }) => JSON.stringify([c.branch, c.mainAfter, c.at]), sources.claimableSince ?? new Map(), { REPO_DIR: realpathSync(b), HELPER_UPDATE_REPO: realpathSync(b), BOOT_HEAD: bOverhaul, bootHeadReady: Promise.resolve(),
-          INSTANCE_NAME: "fixture", INSTANCE_LINKS: [{ name: "other", url: "http://fixture.invalid/" }], helperDevices: new Map(), helperUpdates: new Map(), repoBases: {}, instanceNameFrom, repoGraph, roleOf, readFileSync, resolve, dirname, ...sources.stands as object }) as { observations: (repo: string, notes: { rows: unknown[] }, audits: { rows: unknown[]; reason: string }) => WorkplaceCheckObservation[];
+          INSTANCE_NAME: "fixture", INSTANCE_LINKS: [{ name: "other", url: "http://fixture.invalid/" }], INSTANCE_SOURCE: null, helperDevices: new Map(), helperUpdates: new Map(), repoBases: {}, instanceNameFrom, repoGraph, roleOf, readFileSync, resolve, dirname, ...sources.stands as object }) as { observations: (repo: string, notes: { rows: unknown[] }, audits: { rows: unknown[]; reason: string }) => WorkplaceCheckObservation[];
           checks: (repo: string, branch: string | null, head: string | null, observations: WorkplaceCheckObservation[], auditReason: string,
             reasons: Array<{ field: string; reason: string }>) => WorkplaceChecks;
           audits: () => Promise<{ rows: unknown[]; reason: string }>;

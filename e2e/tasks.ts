@@ -3287,6 +3287,9 @@ export async function run(ctx: Ctx): Promise<void> {
         ACCEPT_WAIT_MS: 200, awaitArrival: async () => "complete", SendNotAccepted: NotAccepted,
         rollbackOwnComposerPayload: async () => "cleared", auditSend: () => {},
         sendFailureDelivery: () => "refused",
+        auditActorScope: { getStore: () => undefined },
+        stuckDeliveryProbes: new Map<number, string>(), stuckDeliveries: new Map<number, unknown>(),
+        observeStuckDelivery: () => { throw new Error("observed fixture must not start the residue sensor"); },
       };
       const bindings = Object.keys(deps).map((name) => `const ${name} = d[${JSON.stringify(name)}];`).join("\n");
       const send = new Function("d", `${bindings}\n${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}\nreturn sendText;`)(deps) as

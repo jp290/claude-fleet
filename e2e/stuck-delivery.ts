@@ -127,9 +127,16 @@ export async function run(): Promise<void> {
   check("stuck-delivery collapsed paste counts only with the previously read header and label",
     collapsed === header + label && composerDeliveryResidue(rows, payload, collapsed)?.kind === "collapsed-paste"
       && composerDeliveryResidue(rows, payload, null) === null);
-  for (const foreign of [header + label + " owner", "owner " + header + label, header + "[Pasted text #2 +79 lines]"])
+  const wrappedLabel = composerRows(form,
+    `❯ ${header}[Pasted text #1 +79\n  lines]\n${"─".repeat(40)}\n`) ?? [];
+  check("stuck-delivery collapsed label survives one omitted space at a visual row boundary",
+    composerCollapsedPaste(wrappedLabel, header) === header + label
+      && composerDeliveryResidue(wrappedLabel, payload, collapsed)?.kind === "collapsed-paste");
+  for (const foreign of [header + label + " owner", "owner " + header + label, header + "[Pasted text #2 +79 lines]",
+    header + "[Pasted text #1 +79lines]"])
     check("stuck-delivery foreign composer is not the measured paste: " + foreign.slice(-32),
-      composerDeliveryResidue([foreign], payload, collapsed) === null);
+      composerDeliveryResidue([foreign], payload, collapsed) === null
+        && composerCollapsedPaste([foreign], header) !== header + label);
   check("stuck-delivery dim hint is empty and never a delivery remainder",
     composerDeliveryResidue(composerRows(form, "❯ \x1b[2mTry a prompt\x1b[0m\n") ?? [], payload, collapsed) === null);
 

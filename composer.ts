@@ -156,7 +156,8 @@ export type DeliveryComposerResidue = {
 
 export function composerCollapsedPaste(rows: readonly string[], header: string): string | null {
   if (!header) return null;
-  const label = rows.join("").match(/\[Pasted text #\d+ \+\d+ lines\]$/)?.[0];
+  const parts = rows.join("").match(/\[Pasted ?text ?#(\d+) ?\+(\d+) ?lines\]$/);
+  const label = parts ? `[Pasted text #${parts[1]} +${parts[2]} lines]` : null;
   const display = label ? header + label : null;
   return display && composerHoldsExactly(rows, display) ? display : null;
 }

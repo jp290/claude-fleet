@@ -7,7 +7,7 @@
 // manifest bytes and the repo facts, and performs no filesystem, git, env, or network read.
 import { createHash } from "node:crypto";
 import { validateContextPacks, validUseWhen, type ContextPackRepoFacts } from "./context-pack-validator";
-import { CONTEXT_PACKS, type ContextPackCapability, type ContextPackMode, type ContextPackSource,
+import { CONTEXT_PACKS, type ContextPackCapability, type ContextPackHardness, type ContextPackMode, type ContextPackSource,
   type ContextPackTrigger } from "./context-packs";
 import { contextOmissionFor, resolveContextHarness, type ContextPlan, type ContextPlanInput,
   type ContextPlanOmissionReason, type ContextPlanRule, type ContextPlanSelection } from "./context-plan";
@@ -141,6 +141,7 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
     }
 
     const pack = record as unknown as ContextPlanRule & {
+      readonly hardness: ContextPackHardness;
       readonly sources: readonly ContextPackSource[];
       readonly estimatedBytes: number;
       readonly sourceHash?: string;
@@ -157,6 +158,7 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
     }
     selected.push({
       id,
+      hardness: pack.hardness,
       sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })),
       estimatedBytes: pack.estimatedBytes,
       // The validator already condemned any pack whose useWhen is unusable, so this re-check can

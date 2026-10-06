@@ -2,6 +2,7 @@ import {
   CONTEXT_PACKS,
   CONTEXT_PACK_HARNESSES,
   type ContextPackCapability,
+  type ContextPackHardness,
   type ContextPackMode,
   type ContextPackSource,
   type ContextPackStatus,
@@ -42,6 +43,7 @@ export interface ContextPlanInput {
 // claim nobody made. Absent here means the renderer omits the line, never the pointer.
 export type ContextPlanSelection = {
   readonly id: string;
+  readonly hardness: ContextPackHardness;
   readonly useWhen?: string;
   readonly sources: readonly ContextPackSource[];
   readonly estimatedBytes: number;
@@ -52,6 +54,7 @@ export type ContextPlanSelection = {
   readonly origin?: "program";
 } | {
   readonly id: string;
+  readonly hardness: ContextPackHardness;
   readonly useWhen?: string;
   readonly sources: { readonly privateSourceId: string };
   readonly estimatedBytes: number;
@@ -99,7 +102,7 @@ export interface ContextPlan {
   readonly omitted: readonly { readonly id: string; readonly why: ContextPlanOmissionReason }[];
 }
 
-/** Freshly derive advisory context pointers from plain facts. No result is persisted here. */
+/** Freshly derive context pointers from plain facts. No result is persisted here. */
 export function planContext(input: ContextPlanInput): ContextPlan {
   const harness = resolveContextHarness(input.harness);
   const triggers = new Set<ContextPackTrigger>(input.triggers);
@@ -117,8 +120,8 @@ export function planContext(input: ContextPlanInput): ContextPlan {
       continue;
     }
     selected.push("sources" in pack
-      ? { id: pack.id, useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })), estimatedBytes: pack.estimatedBytes }
-      : { id: pack.id, useWhen: pack.useWhen, sources: { privateSourceId: pack.privateSourceId }, estimatedBytes: pack.estimatedBytes });
+      ? { id: pack.id, hardness: pack.hardness, useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })), estimatedBytes: pack.estimatedBytes }
+      : { id: pack.id, hardness: pack.hardness, useWhen: pack.useWhen, sources: { privateSourceId: pack.privateSourceId }, estimatedBytes: pack.estimatedBytes });
   }
 
   return { selected, omitted };
@@ -264,7 +267,7 @@ export function planProgramContext(input: ProgramContextPlanInput): ContextPlan 
     if (input.program?.status === "complete") omitted.push({ id: pack.id, why: "program-complete" });
     else if (!pack.sources.every((source) => input.trackedPaths.has(source.path))) omitted.push({ id: pack.id, why: "source-unavailable" });
     // estimatedBytes 0: a Program pack declares no size, and nothing here reads the source to guess one.
-    else selected.push({ id: pack.id, useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })),
+    else selected.push({ id: pack.id, hardness: "guidance", useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })),
       estimatedBytes: 0, origin: "program" });
   }
   return { selected, omitted };

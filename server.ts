@@ -18130,6 +18130,7 @@ async function laneSnippetBlock(lanePath: string, head: string,
 
 type ContextReceiptSelection = {
   id: string;
+  hardness: ContextPlanSelection["hardness"];
   useWhen?: string;
   anchors: readonly { path: string; anchor: string }[] | { privateSourceId: string };
   sourceHash?: string;
@@ -18184,11 +18185,17 @@ function availableContextPlan(plan: ContextPlan): ContextPlan {
 function renderContextAnchorBlock(input: ContextPlan): string {
   const plan = availableContextPlan(input);
   if (plan.selected.length === 0) return "";
-  const lines = ["ContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"];
-  for (const pack of plan.selected) {
-    lines.push(pack.useWhen ? `- ${pack.id} — ${pack.useWhen}` : `- ${pack.id}`);
-    if ("privateSourceId" in pack.sources) lines.push(...renderPrivatePackLines(privatePackResolutionOf(pack, pack.sources.privateSourceId)));
-    else for (const source of pack.sources) lines.push(`  ${source.path} | ${source.anchor}`);
+  const lines = ["ContextPlan v2 anchors (fresh pointers; no source content is copied):"];
+  for (const hardness of ["hard", "guidance"] as const) {
+    const packs = plan.selected.filter((pack) => pack.hardness === hardness);
+    if (packs.length === 0) continue;
+    lines.push(hardness === "hard" ? "Bindend (hard):" : "Hinweise (guidance):");
+    for (const pack of packs) {
+      const label = `- ${pack.id} [${pack.hardness}]`;
+      lines.push(pack.useWhen ? `${label} — ${pack.useWhen}` : label);
+      if ("privateSourceId" in pack.sources) lines.push(...renderPrivatePackLines(privatePackResolutionOf(pack, pack.sources.privateSourceId)));
+      else for (const source of pack.sources) lines.push(`  ${source.path} | ${source.anchor}`);
+    }
   }
   return `\n\n${lines.join("\n")}`;
 }
@@ -18203,10 +18210,11 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[]): Co
     // A Program pack says so on its row; every other row stays byte-identical to before the field.
     const origin = "origin" in selection && selection.origin === "program" ? { origin: selection.origin } : {};
     if (!("privateSourceId" in selection.sources))
-      return { id: selection.id, ...useWhen, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash, ...origin };
+      return { id: selection.id, hardness: selection.hardness, ...useWhen, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash, ...origin };
     const resolved = privatePackResolutionOf(selection, selection.sources.privateSourceId);
     return {
       id: selection.id,
+      hardness: selection.hardness,
       ...useWhen,
       anchors: { privateSourceId: selection.sources.privateSourceId },
       ...sourceHash,

@@ -330,7 +330,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   const seedsOnly = planContext(laneFacts);
   const ownLane = planProgramContext({ program: { status: "active", contextPacks: stored }, trackedPaths: progTracked });
   check("program packs: a lane of the Program gets its pack selected, marked origin program, pointers intact",
-    ownLane.omitted.length === 0 && JSON.stringify(ownLane.selected) === JSON.stringify([{ id: "grok-antwort-1",
+    ownLane.omitted.length === 0 && JSON.stringify(ownLane.selected) === JSON.stringify([{ id: "grok-antwort-1", hardness: "guidance",
       useWhen: "Bevor du eine Delegations-Zeile baust", sources: [{ path: "docs/messungen/grok-1.md", anchor: "## §1 Delegation" }],
       estimatedBytes: 0, origin: "program" }]), JSON.stringify(ownLane));
   const confirmedLane = planProgramContext({ program: { status: "confirmed", contextPacks: stored }, trackedPaths: progTracked });
@@ -727,6 +727,25 @@ export function readDelivered(lines: readonly string[], id: string):
   return null;
 }
 
+function contextDeliverySeam(konzeptRoot: string | null) {
+  const server = readFileSync(join(import.meta.dir, "..", "server.ts"), "utf8");
+  const functions = ["declaredSourceHash", "privatePackResolutionOf", "availableContextPlan",
+    "renderContextAnchorBlock", "contextReceiptSelections"].map((name) => {
+    const from = server.indexOf(`function ${name}(`);
+    return server.slice(from, server.indexOf("\n}", from) + 2);
+  }).join("\n");
+  return new Function("KONZEPT_ROOT", "CONTEXT_PACKS",
+    "resolvePrivatePack", "renderPrivatePackLines", new Bun.Transpiler({ loader: "ts" }).transformSync(
+      `const privatePackResolutions = new WeakMap();\n${functions}\n`
+      + "return { availableContextPlan, renderContextAnchorBlock, contextReceiptSelections };"))(
+    konzeptRoot, CONTEXT_PACKS, resolvePrivatePack, renderPrivatePackLines) as {
+      availableContextPlan: (plan: ReturnType<typeof planContext>) => ReturnType<typeof planContext> & {
+        omitted: readonly { id: string; why: string; reason?: string | null }[] };
+      renderContextAnchorBlock: (plan: ReturnType<typeof planContext>) => string;
+      contextReceiptSelections: (selected: ReturnType<typeof planContext>["selected"]) => { id: string; hardness: string }[];
+    };
+}
+
 // --- PRIVATE PACKS (Program Konzeptgedaechtnis 31aa88ea, Schnitt 4). The konzept seed is selected for
 // claude and codex lanes and MAINs of this tree (never a Pi harness), and its id resolves under a FIXTURE private root to the
 // current fassung's path plus one of three hash verdicts. Each verdict is produced by a NAMED mutation
@@ -791,25 +810,9 @@ function privatePackChecks(check: ContextPlanCheck): void {
     const resolve = (r: string | null = root) => resolvePrivatePack(r, K, declared);
     const block = (r: ReturnType<typeof resolve>): string => renderPrivatePackLines(r).join("\n");
 
-    const server = readFileSync(join(import.meta.dir, "..", "server.ts"), "utf8");
-    const functions = ["declaredSourceHash", "privatePackResolutionOf", "availableContextPlan",
-      "renderContextAnchorBlock", "contextReceiptSelections"].map((name) => {
-      const from = server.indexOf(`function ${name}(`);
-      return server.slice(from, server.indexOf("\n}", from) + 2);
-    }).join("\n");
-    const delivery = (konzeptRoot: string | null) => new Function("KONZEPT_ROOT", "CONTEXT_PACKS",
-      "resolvePrivatePack", "renderPrivatePackLines", new Bun.Transpiler({ loader: "ts" }).transformSync(
-        `const privatePackResolutions = new WeakMap();\n${functions}\n`
-        + "return { availableContextPlan, renderContextAnchorBlock, contextReceiptSelections };"))(
-      konzeptRoot, CONTEXT_PACKS, resolvePrivatePack, renderPrivatePackLines) as {
-        availableContextPlan: (plan: ReturnType<typeof planContext>) => ReturnType<typeof planContext> & {
-          omitted: readonly { id: string; why: string; reason?: string | null }[] };
-        renderContextAnchorBlock: (plan: ReturnType<typeof planContext>) => string;
-        contextReceiptSelections: (selected: ReturnType<typeof planContext>["selected"]) => { id: string }[];
-      };
     const deliveredPlan = (konzeptRoot: string | null) => {
-      const seam = delivery(konzeptRoot);
-      const plan = seam.availableContextPlan({ selected: [{ id: "konzept-claude-fleet",
+      const seam = contextDeliverySeam(konzeptRoot);
+      const plan = seam.availableContextPlan({ selected: [{ id: "konzept-claude-fleet", hardness: "guidance",
         sources: { privateSourceId: K }, sourceHash: declared, estimatedBytes: 0 }], omitted: [] });
       return { plan, block: seam.renderContextAnchorBlock(plan), receipt: seam.contextReceiptSelections(plan.selected) };
     };
@@ -833,6 +836,10 @@ function privatePackChecks(check: ContextPlanCheck): void {
     check("private delivery: drift remains visible and selected",
       driftDelivery.block.includes("hash drift") && driftDelivery.receipt[0]?.id === "konzept-claude-fleet"
       && driftDelivery.plan.omitted.length === 0, JSON.stringify(driftDelivery));
+
+    check("private delivery: the brief and receipt both retain the private pack's guidance degree",
+      driftDelivery.block.includes("- konzept-claude-fleet [guidance]")
+        && driftDelivery.receipt[0]?.hardness === "guidance", JSON.stringify(driftDelivery));
 
     const matched = resolve();
     const matchBlock = block(matched);
@@ -1027,6 +1034,35 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
     JSON.stringify(CONTEXT_PACK_HARNESSES));
   const seedPlan = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating",
     triggers: [...bootstrapFacts.triggers], capabilities: bootstrapFacts.capabilities });
+  const laneSeeds = planContext({ sourceTree: "fleet", ...laneFacts });
+  const deliveryPlan = { selected: [...laneSeeds.selected, ...lanePlan.selected],
+    omitted: [...laneSeeds.omitted, ...lanePlan.omitted] };
+  const seam = contextDeliverySeam(null);
+  const delivered = seam.availableContextPlan(deliveryPlan);
+  const block = seam.renderContextAnchorBlock(delivered);
+  const receipt = seam.contextReceiptSelections(delivered.selected);
+  const binding = block.split("Bindend (hard):\n")[1]?.split("Hinweise (guidance):\n")[0] ?? "";
+  const guidance = block.split("Hinweise (guidance):\n")[1] ?? "";
+  check("context hardness: real manifest and seeds retain portable-core hard and haltung-worker guidance",
+    laneSeeds.selected.find((pack) => pack.id === "portable-core")?.hardness === "hard"
+      && lanePlan.selected.find((pack) => pack.id === "haltung-worker")?.hardness === "guidance",
+    summary(deliveryPlan));
+  check("context hardness: the real brief binds portable-core and presents haltung-worker as a hint",
+    binding.includes("- portable-core [hard] — ") && guidance.includes("- haltung-worker [guidance] — ")
+      && !binding.includes("haltung-worker") && !guidance.includes("portable-core") && !block.includes("advisory"), block);
+  check("context hardness: every delivered pack shows its degree and receipt records that same degree",
+    delivered.selected.length > 0 && delivered.selected.every((pack) =>
+      block.includes(`- ${pack.id} [${pack.hardness}]`)
+        && receipt.find((row) => row.id === pack.id)?.hardness === pack.hardness), JSON.stringify(receipt));
+  check("context hardness: an empty plan emits no block or group heading",
+    seam.renderContextAnchorBlock({ selected: [], omitted: [] }) === "");
+  for (const hardness of ["hard", "guidance"] as const) {
+    const selected = delivered.selected.filter((pack) => pack.hardness === hardness);
+    const only = seam.renderContextAnchorBlock({ selected, omitted: [] });
+    check(`context hardness: a ${hardness}-only plan omits the other group's heading`,
+      selected.length > 0 && only.includes(hardness === "hard" ? "Bindend (hard):" : "Hinweise (guidance):")
+        && !only.includes(hardness === "hard" ? "Hinweise (guidance):" : "Bindend (hard):"), only);
+  }
   check("orchestration trigger: the bootstrap plan does NOT select the seed pack task-queue — the pack is absent",
     !seedPlan.selected.some((pack) => pack.id === "task-queue")
       && !(CONTEXT_PACKS as readonly { id: string }[]).some((pack) => pack.id === "task-queue"),

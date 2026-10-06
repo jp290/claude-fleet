@@ -2074,27 +2074,31 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // one-sentence tooltip that explains it. "Rail"→"Kind", "Suites"→"Checks", „[Zitat entfernt]“→
   // "offered check run", "queued suite"→"queued check run", "suite gate · held by pid N"→
   // "check run busy · pid N" are MAIN-derived (Slot 13, aus audit→check) — owner sighting open.
-  check("G0.5 succession block: the rows read Kind/Handoff in owner words and their tooltips explain in German",
-    cliSrc.includes('srow("Kind", sc.rail') && !cliSrc.includes('srow("Rail"')
-    && cliSrc.includes("this kind's own threshold is 0") && !cliSrc.includes("this rail's own threshold is 0")
-    && cliSrc.includes("gegen diese Zahl misst der Server, wann die Session weitergeben soll (intern: succession fill · threshold)")
+  // Since card R3 the succession block is ONE line with a popover, and its words went further than
+  // K9's: no "Kind"/"Handoff"/"Rail" at all — Kontext, Übergabe bei, Hinweis, Weg, Diese Session.
+  check("G0.5 succession block: the handover line and its popover speak owner words, the tooltips explain in German",
+    cliSrc.includes('row("Weg", [way], wayH)') && !cliSrc.includes('srow("Rail"') && !cliSrc.includes('srow("Kind"')
+    && cliSrc.includes('rail: "für diese Art Session auf 0 gestellt"') && !cliSrc.includes("this rail's own threshold is 0")
+    && cliSrc.includes("gegen diese Zahl misst der Server, wann die Session weitergeben soll.")
     && !cliSrc.includes("the measurement the succession threshold is compared against")
-    && cliSrc.includes("Die Nachfolge ist eine frische Session auf DIESEM Worktree")
+    && cliSrc.includes('lane: ["neue Session im selben Worktree", "Gleicher Branch, gleicher Slot;')
     && !cliSrc.includes("watches, autos and reports carry by id"),
-    "srow labels + tooltips in src/client.ts");
-  check("G0.5 suite stretch: the meter reads Checks, its status lines and ball names carry no suite/audit/gate",
-    cliSrc.includes('el("span", "smtitle", "Checks")') && !cliSrc.includes('"smtitle", "Suites"')
+    "contextRow + handoverRows in src/board.ts");
+  check("G0.5 suite stretch: the strip reads Prüfungen, its status lines and run names carry no suite/audit/gate",
+    cliSrc.includes('return { text: `Prüfungen · ${text}`, tone, title };') && !cliSrc.includes('"smtitle", "Suites"')
     && !cliSrc.includes("suite gate ·") && cliSrc.includes("check run busy · ")
     && cliSrc.includes("⏳ post-land check · ") && !cliSrc.includes("⏳ post-land audit · ")
     && cliSrc.includes("waiting for its check · ") && !cliSrc.includes("waiting for an audit · ")
     && cliSrc.includes("Angefragt, nicht gestartet") && !cliSrc.includes("asked for, not started")
-    && cliSrc.includes("Keine Lesung der Prüfsperre vorhanden") && !cliSrc.includes("nothing on the gate")
+    && cliSrc.includes("Die Sperre dieses Rechners ist nicht gemeldet") && !cliSrc.includes("nothing on the gate")
     && cliSrc.includes("· Klick öffnet die Lane") && !cliSrc.includes("click to open the lane"),
     "meter head, gate lock head, audit rows in src/client.ts");
+  // since card R4 the due restart is the Arbeitsorte's Live row itself, not a line of its own
   check("G0.5 deploy due: consequence + action in owner words, the command and srv/bundle live in the tooltip",
-    cliSrc.includes("the running server is ") && !cliSrc.includes("srv is running") && !cliSrc.includes("restart srv")
-    && cliSrc.includes("the code in the browser is older than src/") && !cliSrc.includes("client bundle"),
-    "deploySection in src/client.ts");
+    cliSrc.includes('restartDue || st.target?.codeBehind === true ? "Neustart fällig" : "Live"') && !cliSrc.includes("srv is running") && !cliSrc.includes("restart srv")
+    && cliSrc.includes('nm.append(el("b", "", "Seite neu bauen"), " · der Code im Browser ist älter als src/");') && !cliSrc.includes("client bundle")
+    && !cliSrc.includes("export function deploySection("),
+    "the Live row in src/board.ts#arbeitsorteSection");
   check("G0.5 slotact strip: the hover actions explain in German, not in internal verbs",
     cliSrc.includes("Diese Session beenden — was sie gerade tut, geht verloren (intern: kill).")
     && !cliSrc.includes('title = "kill session"')
@@ -6523,7 +6527,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       if (width === 1200) await evaluate(`localStorage.setItem('fleet.board', '1')`);
       await navigate("http://fleet.fixture/");
       await wait(ready, 12000);
-      const openExplorerBtn = `[...document.querySelectorAll('button')].find((b) => /explorer/i.test(b.textContent) && window.__fx.shown(b))`;
+      // the Files tab's glyph (card R2) names itself by its accessible name, the window's word by its text
+      const openExplorerBtn = `[...document.querySelectorAll('button')].find((b) => /explorer/i.test(b.textContent || b.getAttribute('aria-label') || '') && window.__fx.shown(b))`;
       if (!await wait(openExplorerBtn, 4000)) {
         // ℹ: the pane's corner button, or on the phone upright the open island's
         const cornerInfo = `[...document.querySelectorAll('.boardtoggle')].find((b) => window.__fx.shown(b))`;
@@ -8901,7 +8906,9 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       // mid-spring — a click aimed at ℹ while the glass still widened landed on the free glass under load and closed it
       await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: phone ? "reduce" : "no-preference" }] });
       await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
+      // the rights block is the tab "Rechte" under "Mehr zu dieser Session" since card R2: opened, as after a click
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${slot}], focused: 0 }));
+        localStorage.setItem('fleet.board.folds', JSON.stringify(['rechte']));
         localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); ${failFirstRead ? `localStorage.setItem('probe.failGrant', '${slot}');` : ""}
         ${longProject ? `localStorage.setItem('probe.longProject', ${JSON.stringify(JSON.stringify(longProject))});` : ""} })()`);
       await navigate(`${o.base}/`);
@@ -8915,6 +8922,9 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
           return i.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })()`, 5000);
         await click(`document.querySelector('#minfo')`);
       }
+      // the Arbeitsorte above the tabs draw after their own read and push the column down by their
+      // height: a click aimed before that lands on whatever moved under it
+      await wait(`!!document.querySelector('#boardbody .ranke .rk') || !/lese die Arbeitsorte/.test(document.querySelector('#boardbody .ranke')?.innerText ?? 'lese die Arbeitsorte')`, 10000);
       return wait(`${RB}`, 10000);
     };
     const startVideo = async (name: string) => {
@@ -9017,12 +9027,12 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         claims["PROBE: the Info opens on slot A with its rights block"] = await openOn(width, height, A.slot);
         await startVideo(`${width}-info`);
         await wait(`${GR}?.innerText.includes('Nie zugewiesen')`);
-        const order = await evaluate<{ keys: string[]; afterSetup: boolean }>(`(() => { const body = document.querySelector('#boardbody');
-          const secs = [...body.children]; const r = ${RB}; const su = body.querySelector('.bsetup');
+        const order = await evaluate<{ keys: string[]; afterSetup: boolean }>(`(() => { const r = ${RB};
+          const tabs = [...document.querySelectorAll('#boardbody .bmoresec .btab')].map((t) => t.dataset.tab);
           return { keys: [...r.querySelectorAll('.rgkey')].map((k) => k.textContent),
-            afterSetup: !!su && secs.indexOf(su) < secs.indexOf(r) && secs.slice(secs.indexOf(r) + 1).every((s) => !s.classList.contains('bsetup')) }; })()`);
+            afterSetup: tabs.indexOf('setup') >= 0 && tabs.indexOf('setup') < tabs.indexOf('rechte') && !!r.closest('.btab[data-tab="rechte"]') }; })()`);
         facts.order = order;
-        claims["board: the block \"Rechte\" stands after the context and names Eigene Arbeit · Projektsichten · Ausführung · Deine Sicht"] =
+        claims["board: the block \"Rechte\" is the tab after Setup under \"Mehr\" and names Eigene Arbeit · Projektsichten · Ausführung · Deine Sicht"] =
           order.afterSetup && order.keys.join("|") === "Eigene Arbeit|Projektsichten|Ausführung|Deine Sicht";
         const aText0 = await grantText();
         claims["board: a session without a grant reads \"Keine · Nie zugewiesen\", read from the server, no PATCH"] =

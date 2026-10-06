@@ -621,8 +621,9 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   eigene Schwelle (Vielfaches von 5 zwischen 5 und 95, `null` = zurück auf den Env-Wert der Schiene) und
   ob `tickMigrate` ihr den Hinweis überhaupt schreibt (`nudge: false` = nie). Der Env-Wert
   (`FLEET_MIGRATE_PCT` / `FLEET_LANE_MIGRATE_PCT`) bleibt der Default und der Hauptschalter bleibt
-  `FLEET_MIGRATE_PCT`; die succession facts tragen dazu `defaultPct`, `pctFrom` (`session` | `fleet`) und
-  `nudgeOn`, und `thresholdPct` ist schon der wirksame Wert. Gespeichert wird in `Slot.handover`
+  `FLEET_MIGRATE_PCT`; die succession facts tragen dazu `defaultPct`, `pctFrom` (`session` | `fleet`),
+  `nudgeOn` und `sessionPct` (der gesetzte eigene Wert, auch solange ein Tor `thresholdPct` auf `null`
+  hält), und `thresholdPct` ist schon der wirksame Wert. Gespeichert wird in `Slot.handover`
   (`server/types.ts#HandoverSetting`), in fleet.json mit seiner Belegung; eine neue Belegung — auch die
   Nachfolgerin einer Lane — beginnt auf den Fleet-Werten. Fleet-Werte selbst sind keine Einstellung:
   `null` + Hinweis an speichert nichts. Ablehnungen: jede Self-Credential (Header oder Bearer) 401 wie an

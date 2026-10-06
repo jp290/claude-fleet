@@ -65,6 +65,7 @@ export interface BriefSuccession {
   // threshold above is this session's own, and whether the hint is on. An older server sends none of
   // the three — successionOf reads them as the fleet's values then.
   defaultPct: number; pctFrom: "session" | "fleet"; nudgeOn: boolean;
+  sessionPct?: number | null;
 }
 export interface BriefSetup { profile: "standard" | "game-maker" | null;
   repo: string | null; head: string | null;
@@ -1111,28 +1112,6 @@ export interface BundleStaleInfo {
 }
 export let deployGapInfo: DeployGapInfo | null = null;
 export let bundleStaleInfo: BundleStaleInfo | null = null;
-export function deploySection(): HTMLElement | null {
-  const codeDue = deployGapInfo?.codeBehind === true;
-  const bundleDue = bundleStaleInfo?.stale === true;
-  if (!codeDue && !bundleDue) return null;
-  const sec = el("div", "bsec balert");
-  // no title row of its own, so the reach rides the first line: this is the BOX, not the pane
-  sec.appendChild(scopeTag("machine"));
-  if (codeDue) {
-    const n = deployGapInfo?.behindCount ?? null;
-    const row = el("div", "bstate",
-      `⚠ deploy due · the running server is ${n === null ? "behind HEAD" : `${n} commit${n === 1 ? "" : "s"} behind`} — restart it`);
-    row.title = "Der laufende Server bootet von einem älteren Commit als HEAD, und der Unterschied berührt Server-Code — starte ihn neu, dann läuft dieser Baum (intern: gegen den COMMITTETEN Baum gemessen, nicht die Arbeitskopie).";
-    sec.appendChild(row);
-  }
-  if (bundleDue) {
-    const row = el("div", "bstate", "⚠ deploy due · the code in the browser is older than src/ — rebuild it");
-    row.title = "Der Browser zeigt einen älteren Stand — im Terminal `bun run build` ausführen, dann ist er aktuell (intern: public/*.js sind gitignorierte Bauartefakte).";
-    sec.appendChild(row);
-  }
-  return sec;
-}
-
 // --- has the server thrown? -------------------------------------------------------------------
 // The counterpart to the audit trail: that one shows what Fleet DID, this one what broke while it
 // was doing it. Until now the only channel was an unrotated server.log that e2e-stage.sh calls
@@ -1914,8 +1893,8 @@ function handoverRows(c: BoardCtx, sc: BriefSuccession): HTMLElement[] {
   const rows: HTMLElement[] = [];
   rows.push(row("Kontext", [sc.fill ? `${tok(sc.fill.usedTokens)} von ${tok(sc.fill.windowTokens)} · ` : "nicht messbar",
     ...(sc.fill ? [el("b", "", `${Math.round(sc.fill.pct)} %`)] : [])]));
-  const pct = sc.thresholdPct ?? (sc.pctFrom === "session" ? null : sc.defaultPct);
-  const cur = pct ?? sc.defaultPct;
+  // the effective threshold; while a gate keeps it null, the owner's own value, else the rail's
+  const cur = sc.thresholdPct ?? sc.sessionPct ?? sc.defaultPct;
   const step = el("span", "stepper");
   const minus = el("button", "", "−") as HTMLButtonElement;
   minus.type = "button";
@@ -2324,14 +2303,16 @@ function boardTab(key: string, title: string, sum: string, fill: (body: HTMLElem
   }
   return box;
 }
-// the rights summary needs the grant, which only the rights block reads; this asks the same owner
-// route at most every 15 s per occupant, riding the repaint (no loop), and says "unbekannt" when it
-// could not read — never "keine" (G6.5)
+// the rights summary needs the grant, which only the rights block reads; while the tab is CLOSED this
+// asks the same owner route at most every 15 s per occupant, riding the repaint (no loop), and says
+// "unbekannt" when it could not read — never "keine" (G6.5). An open tab is the block itself, which
+// reads for itself: the summary then keeps its last answer and adds no second request.
 const grantSum = new Map<number, { openedAt: number | undefined; at: number; text: string }>();
 const grantBusy = new Set<number>();
 function grantSummary(s: SlotInfo): string {
   const g = grantSum.get(s.id);
   const fresh = g && g.openedAt === s.openedAt;
+  if (boardFolds.has("rechte")) return fresh ? g.text : "Projektsichten im Reiter";
   if ((!fresh || Date.now() - g.at > 15_000) && !grantBusy.has(s.id)) {
     grantBusy.add(s.id);
     const openedAt = s.openedAt;

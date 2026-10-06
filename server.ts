@@ -24433,6 +24433,9 @@ interface SuccessionFacts {
   // env value it falls back to, whether `thresholdPct` is this session's own (`pctFrom: "session"`),
   // and whether the tick may write the hint at all. The effective threshold above already applies it.
   defaultPct: number; pctFrom: "session" | "fleet"; nudgeOn: boolean;
+  // the owner's own value as set, even while a gate above keeps `thresholdPct` null — so the
+  // popover shows what was set instead of the rail's default; null = none set
+  sessionPct: number | null;
 }
 // the threshold the tick compares against for THIS session: the owner's own value where one is set,
 // otherwise the rail's env value (FLEET_LANE_MIGRATE_PCT for a lane, FLEET_MIGRATE_PCT for a main)
@@ -24492,6 +24495,7 @@ function successionFacts(s: Slot): SuccessionFacts {
     defaultPct: railPct(lane),
     pctFrom: s.handover && s.handover.occupant.openedAt === s.openedAt && s.handover.thresholdPct !== null ? "session" : "fleet",
     nudgeOn: handoverNudgeOn(s),
+    sessionPct: s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.thresholdPct : null,
   };
 }
 

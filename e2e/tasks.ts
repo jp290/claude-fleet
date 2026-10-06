@@ -1278,10 +1278,11 @@ export async function run(ctx: Ctx): Promise<void> {
       delSrc.includes("askRisk(") && /qAct\(t\.id, "delete"\)/.test(delSrc)
       && !taskClientSource.includes('mk("✕ delete", "delete"'),
       delSrc.includes("askRisk(") ? "renderQueueDetail danger zone" : "direct-act delete button back or block moved");
-    const bringStart = taskClientSource.indexOf('item("Bring session back"');
-    const bringEnd = taskClientSource.indexOf("top.appendChild(menu);", bringStart);
+    // the restart sits in the session's ⋯ of Info as "Session zurückholen" since card R1 (src/board.ts#kopfItems)
+    const bringStart = taskClientSource.indexOf('popItem("Session zurückholen"');
+    const bringEnd = taskClientSource.indexOf("\n  return items;", bringStart);
     const bringSrc = bringStart >= 0 && bringEnd > bringStart ? taskClientSource.slice(bringStart, bringEnd) : "";
-    check("dialog helper: Bring session back asks through the helper — no native confirm()",
+    check("dialog helper: Session zurückholen asks through the helper — no native confirm()",
       bringSrc.includes("askRisk(") && !bringSrc.includes("confirm("),
       bringSrc.includes("askRisk(") ? "board session menu" : "restart item moved or native confirm back");
     const escStart = taskClientSource.indexOf('if (e.key === "Escape") {\n    // the picker and the review window');

@@ -3133,8 +3133,11 @@
   #board .btabbtn .sum { justify-self: end; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: var(--chat-ui-fs); color: var(--chat-faint); }
   #board .btabx { margin-left: 2px; }
-  #board .btabbody { padding: 2px 2px 8px 22px; }
+  #board .btabbody { padding: 2px 0 8px 17px; } /* the body starts under the tab's title (chevron 12 + gap 5) */
   #board .btabbody .brights { padding: 0; }
+  /* the rights block keeps the column's width: its project paths are cut by the width they get
+     (src/rights.ts#pathLine), and 17 px of indent cost the last path segment its room */
+  #board .btab[data-tab="rechte"] .btabbody { padding-left: 0; }
   #board .btabbody .bsrow .bskey { width: 86px; }
   #board .btabbody > .bwthead { display: flex; gap: 2px; margin: 0 0 6px -7px; }
   #board .bnopane { margin-top: var(--b-sec-a); padding-top: var(--b-sec-b); border-top: 1px solid var(--chat-edge-soft); }

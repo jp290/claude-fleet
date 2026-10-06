@@ -105,7 +105,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // the setting as it was. A self credential — even this lane's own — never reaches the door. ---
   {
     const L = lnTok.slot;
-    type Facts = { thresholdPct: number | null; thresholdOff: string | null; defaultPct: number; pctFrom: string; nudgeOn: boolean };
+    type Facts = { thresholdPct: number | null; thresholdOff: string | null; defaultPct: number; pctFrom: string; nudgeOn: boolean; sessionPct: number | null };
     type View = { slot: number; openedAt: number | null; setting: { thresholdPct: number | null; nudge: boolean } | null;
       step: number; min: number; max: number; succession: Facts | null };
     const hv = async (slot = L): Promise<{ status: number; body: View }> => {
@@ -126,7 +126,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const effective = (f: Facts | null | undefined) => !!f && (f.thresholdOff === null ? f.thresholdPct === 35 : f.thresholdPct === null);
     check("handover: PATCH sets 35 % and the hint off for THIS occupant — the answer and the brief carry the session's value",
       set.status === 200 && setB.setting?.thresholdPct === 35 && setB.setting.nudge === false && setB.succession?.pctFrom === "session"
-        && setB.succession.nudgeOn === false && effective(setB.succession)
+        && setB.succession.nudgeOn === false && setB.succession.sessionPct === 35 && effective(setB.succession)
         && brief.succession?.pctFrom === "session" && brief.succession.nudgeOn === false && effective(brief.succession),
       JSON.stringify({ status: set.status, setB, brief: brief.succession }));
     let persisted: unknown = null;
@@ -175,7 +175,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const back = await hp({ expectedOpenedAt: opened, thresholdPct: null, nudge: true });
     const backB = (await back.json().catch(() => ({}))) as View;
     check("handover: null and the hint on return the session to the fleet's values — no record is kept",
-      back.status === 200 && backB.setting === null && backB.succession?.pctFrom === "fleet" && backB.succession.nudgeOn === true,
+      back.status === 200 && backB.setting === null && backB.succession?.pctFrom === "fleet" && backB.succession.nudgeOn === true
+        && backB.succession.sessionPct === null,
       JSON.stringify(backB));
   }
 

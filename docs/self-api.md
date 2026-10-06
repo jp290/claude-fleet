@@ -414,8 +414,10 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 **`POST /api/self/succeed` — der Ausgang einer MAIN-Session.** Welche Übergabe verlangt wird, hängt an der
 Schiene (`server.ts#handleSelfSucceed`): eine ungebundene Session (Orchestrator, Controller, Legacy-MAIN)
 schreibt seit e3e5084a einen **Linien-Record** (unten) und braucht KEINEN
-`HANDOFF.md`-Commit mehr; eine Standard-Program-MAIN übergibt ihren Program-Record (§Program-MAIN); nur
-der Game-Maker behält den frischen, sauberen `HANDOFF.md`-Commit mit seinem Checkpoint. Dann:
+`HANDOFF.md`-Commit mehr; eine Standard-Program-MAIN übergibt ihren Program-Record (§Program-MAIN) —
+bindet sie mehrere Programs, die Records ALLER, an dieselbe Nachfolgerin (§Bindung, Antwort
+`companions`); nur der Game-Maker behält den frischen, sauberen `HANDOFF.md`-Commit mit seinem
+Checkpoint (und folgt nie im Verbund mit anderen Programs: 409 mit Namen). Dann:
 
 ```
 curl -X POST http://<fleet-host>:<port>/api/self/succeed \
@@ -694,6 +696,72 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   `e2e/verify-queue.ts` §2q, an einem privaten Lock-Verzeichnis — in die echte Schlange zu
   schreiben wäre ein Phantom-Contender vor jeder Suite dieser Maschine.
 
+
+## Bindung — eine MAIN, n Programs (seit 2026-10-06)
+
+Owner 2026-10-06 abends: „[Zitat entfernt]“ — je Projekt (Repo) genau eine dauerhafte MAIN mit
+Nachfolge; Programs sind endliche Vorhaben darin. Eine MAIN führt also n aktive Programs ihres
+Projekts zugleich. Bis dahin hieß ein zweites aktives Program auf derselben Belegung
+`ambiguous Program-MAIN binding` und nahm der Session jedes Recht.
+
+**Die Bindung ist eine MENGE** (`server.ts#boundProgramsForMain`): alle aktiven Programs, deren
+`main` dieselbe Belegung nennt (slot UND openedAt). `server.ts#boundProgramForMain(s, programId?)`
+antwortet über diese Menge, und drei Ablehnungen bleiben drei verschiedene Sätze (alle 409), weil sie
+auf drei verschiedene Reparaturen zeigen:
+
+| Fall | Satz |
+| --- | --- |
+| nicht gebunden | `not the current bound MAIN of an active program — attention is raised by a program's own main session` |
+| Wahl nötig | `this session is bound MAIN of N active programs (<ids>) on slot <n> openedAt <t> — name the one this act belongs to as programId` |
+| fremd | `program <id> is not one of the programs this session is bound MAIN of (<eigene>)` bzw. die türeigene `belongs to no program of this MAIN — … rows of programs <ids>` |
+
+**Wo das Program herkommt:**
+
+- **Aus dem Objekt** — jede Tür, die eine Zeile, einen Report oder eine Lane betrifft, liest das
+  Program des Objekts und prüft, dass es zu den eigenen gehört: release, hold, land, spawn, brief,
+  notes, comment/read/withdraw, park, variant-winner, confirm-cards (je Zeile), fleet-report
+  accept/reject und `batch` (je Report), die Stellvertreter-Tür `lanes/:slot/suite-offer`, die
+  Inbox-Quittung (`inbox/:id/read`, der Eintrag nennt sein Program), `memory?task=`. Hier gibt es
+  keine Wahl und kein Body-Feld.
+- **Aus einer WAHL** — Türen ohne solches Objekt: `POST /api/self/tasks`, `POST /api/self/attention`,
+  `POST /api/self/messages`, `POST /api/self/program-context-packs` (Body-Feld `programId`),
+  `GET /api/self/inbox` und `GET /api/self/memory` (Query `program=`). Eine einzige Bindung antwortet
+  ohne Wahl wie bisher. Die alte Regel „kein Body-Feld nominiert ein Program" heißt jetzt: **ein
+  Body-Feld darf nur unter den eigenen wählen** — ein fremdes ist 409, nie ein Treffer.
+- **Lesend über alle**: `program-execution` projiziert jedes gebundene Program, `fleet-report` (GET),
+  `attention` (GET), `messages` (GET) und `position.waitingOnMe` zeigen die Zeilen aller eigenen
+  Programs; `position.programIds` nennt sie (`position.programId` nur bei genau einem).
+
+**Die strenge Kante:** wer eine Lane, einen Report oder ein Land einem fremden Program zuordnen
+könnte, umginge dessen Owner-Bestätigung. Darum gibt es an diesen Türen keine Wahl, nur die Ableitung
+aus dem Objekt — und die Identitätsprüfung des Lands fragt das Program der ZEILE.
+
+**Rückweg:** Report und Rückfrage einer Lane erreichen die MAIN über das Program ihrer Zeile
+(`clarificationReceiverFor`, `openFleetReport`) — n Programs, ein Empfänger. Das Zustellbudget gehört
+dem Occupant: jedes seiner Programs liest dasselbe bekannte Budget, die Notiz sagt `one budget shared
+by the N active programs this MAIN holds`.
+
+**Ein Program an eine schon lebende MAIN binden (Owner):** `POST /api/programs/:id/bootstrap-main`
+mit `{"slot": <n>}` gründet NICHTS — es bindet das aktive Program an die Session auf Slot n, die
+bereits gebundene MAIN mindestens eines anderen aktiven Programs sein muss
+(`server.ts#attachProgramToLiveMain`). Eine lebende Bindung wird nie verdrängt (409), dieselbe
+Belegung ist `existing:true`, eine stale Bindung wird laut ersetzt (`replaced`, Lineage `rebound`),
+ein Founding in Flug oder ausstehend lehnt ab, ein Game-Maker-Program bindet und wird nicht gebunden.
+Lineage-Eintrag `via:"attach"`, Trail-Zeile `program_main_attach`, ein Hinweis in die Pane der MAIN
+nach dem Speichern. Ohne `slot` gründet die Route wie bisher eine neue Session.
+
+**Merkzettel:** `POST /api/self/tasks` mit `"programId": null` filed eine `notiz` am PROJEKT —
+Zeile mit `repo`, ohne Program — für einen Fehler, den kein laufendes Vorhaben verursacht hat. Sie
+startet nichts (release 409), zählt gegen den Advisory-Deckel des Projekts, und nur `kind:"notiz"`
+ist dort erlaubt (400 sonst). Die MAIN liest sie über `GET /api/self/tasks/:id` (eigenes Repo;
+kommentieren/zurückziehen nur, wenn sie sie selbst filed), `program-execution` listet die offenen als
+`projectNotes`; der Owner sieht sie als gewöhnliche Zeile.
+
+**Nachfolge:** `POST /api/self/succeed` einer MAIN mit n Programs übergibt ALLE an eine Nachfolgerin
+(`docs/controller.md` §Nachfolge). Das erste Program trägt Founding-Marker und Receipt, die übrigen
+(`companions`) werden im selben Schnitt reserviert, erfasst (eigener `handover`), im Brief genannt,
+umgebunden (Lineage `succeed`), ihre offenen Attention- und Rückfragezeilen gehen mit. Antwort:
+`companions: [<ids>]`. Ein Satz mit einem Game-Maker-Program wird mit Namen abgelehnt.
 
 ## Program-MAIN-Ausführungsschiene (der Gründungsbrief benennt sie)
 
@@ -1386,7 +1454,8 @@ on, it does not fill the queue its own MAIN releases from`.
 **Optionales `repo`:** Ohne das Feld zielt die pending Zeile weiter auf das Git-Repo des
 MAIN-Checkouts. Eine exakt gebundene Program-MAIN darf beim Filen ein anderes Repo benennen, wenn
 es bereits in der Liste offener Arbeits-Repos des Dispatch-Ticks steht oder das konfigurierte
-`FLEET_DISPATCH_REPO` ist. Der Body setzt nie die `programId`; sie kommt aus der Bindung.
+`FLEET_DISPATCH_REPO` ist. Die `programId` kommt aus der Bindung; eine MAIN mehrerer Programs WÄHLT
+sie mit dem Body-Feld `programId` unter ihren eigenen (§Bindung), `null` ist der Merkzettel.
 `base`, `card` und `files.unknownPaths` werden gegen das Ziel-Repo geprüft. Ein leeres, falsch
 typisiertes oder unbekanntes `repo` wird als 400 abgewiesen und mintet keine Zeile. Falls das Repo
 während der asynchronen Vorbereitung aus der Liste fällt, lautet die Antwort 409 und es wird
@@ -1456,7 +1525,7 @@ hat.
   **vor `await readJson(req)`** — das ist der erste await des Pfades, ein Snapshot im Handler wäre
   schon zu spät. Recycelter Slot → 409 `slot <n> was recycled while this row was being prepared …
   nothing filed`.
-- **Danach die Program-Bindung** (`boundProgramForMain`, gleiche Program-ID verlangt): der Owner
+- **Danach die Program-Bindung** (`boundProgramForMain(s, program.id)`, gleiche Program-ID verlangt): der Owner
   kann das Program stilllegen oder die MAIN neu binden, ohne den Slot anzufassen. Verschoben → 409
   `this session's MAIN binding moved from program <alt> to <neu> … nothing filed`.
 
@@ -1769,12 +1838,11 @@ ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das
     `a lane may not release a queue row — releasing is the bracket above lanes`. Eine Lane FÜHRT
     die Zeile aus, auf die sie gegründet wurde; sie füllt nicht die Queue, aus der ihre eigene MAIN
     freigibt. Der `⚙ steward` darf.
-  - **keine Program-Bindung** (409): `not the current bound MAIN of an active program …` — und
-    getrennt davon **mehrdeutige Bindung** (409): `ambiguous Program-MAIN binding: N active
-    programs name slot …`. Zwei Ablehnungen, weil sie auf zwei verschiedene Reparaturen zeigen.
+  - **keine Program-Bindung** (409): `not the current bound MAIN of an active program …`.
   - **unbekannte Zeile** (404): `unknown task`.
   - **fremdes Program** (409): `task belongs to no program of this MAIN — a Program-MAIN releases
-    only rows of program <id>`. Eine Zeile ohne Program (`programId` null) ist niemandes; für sie
+    only rows of program <id>` (bei mehreren: `programs <ids>`). Das Program kommt aus der ZEILE
+    und muss eines der gebundenen sein (§Bindung). Eine Zeile ohne Program (`programId` null) ist niemandes; für sie
     bleibt der `▸ queue`-Knopf des Owners die einzige Tür.
   - **`kind != auftrag`** (409): `a <kind> is advisory — the dispatcher never runs this` —
     wortgleich mit den zwei bestehenden Türen.
@@ -1953,8 +2021,9 @@ Antwort: `{ok:true, sessionIdMatch, hold:{by:"main",slot,at,grund,until?,watchId
 beim ersten Setzen ein `task_hold`-Event (`… held grund="…"` bzw. `grund=null`), beim Nachtrag
 `… regrund grund="…"`; das Aufheben durch die MAIN schreibt `… lifted grund=…`, durch den
 `▸ queue` des Owners `… lifted by=owner grund=…`. Ablehnungen: Lane (409 `a lane may not hold a
-queue row …`) · Body mit fremdem Feld oder leerem Grund (400) · keine/mehrdeutige Bindung (409,
-`boundProgramForMain`) · unbekannt (404) · fremdes Program (409 `… holds only rows of program <id>`)
+queue row …`) · Body mit fremdem Feld oder leerem Grund (400) · keine Bindung (409,
+`boundProgramForMain`) · unbekannt (404) · fremdes Program (409 `… holds only rows of program <id>`,
+das Program kommt aus der Zeile, §Bindung)
 · `kind != auftrag` (409) · Status weder `pending` noch `queued` (409) · kein git-Checkout oder
 anderes Repo (409).
 
@@ -1978,7 +2047,7 @@ curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/park \
 
 Erfolg: `{ok:true,candidate,sessionIdMatch}`. Die Lane endet, der Worktree bleibt, und alle vom
 Candidate benannten Zeilen bleiben `sent` mit `slot:null`. Ablehnungen: Lane-Token und Steward
-(409) · keine/mehrdeutige MAIN-Bindung (409, Wortlaut von `boundProgramForMain`) · unbekannte
+(409) · keine MAIN-Bindung (409, Wortlaut von `boundProgramForMain`) · unbekannte
 Zeile (404) · fremdes Program (409) · Zeile ohne lebende Program-Lane (409) · ungueltige Frist
 (400) · danach saemtliche benannten Ablehnungen von `server.ts#mintReviewCandidate`. Der Body kann
 weder Slot noch Program nominieren; beides wird aus Zeile und MAIN-Bindung gelesen.
@@ -2000,10 +2069,11 @@ curl -X POST http://<fleet-host>:<port>/api/self/tasks/confirm-cards \
   -d '{"ids":["<taskId>","<taskId>"]}'
 ```
 
-- **Body:** nur `ids` (1–20, eindeutig). Jedes andere Feld ⇒ 400; das Program kommt aus der
-  Bindung, der Repo aus dem eigenen Checkout, die Pfade aus der Karte der Zeile.
+- **Body:** nur `ids` (1–20, eindeutig). Jedes andere Feld ⇒ 400; das Program kommt aus jeder
+  Zeile und muss eines der gebundenen sein (ein Stapel darf mehrere eigene Programs umfassen), der
+  Repo aus dem eigenen Checkout, die Pfade aus der Karte der Zeile.
 - **Ganz oder gar nicht (409, nichts geschrieben):** Lane (`a lane may not confirm a card surface …`),
-  keine/mehrdeutige Bindung (Wortlaut von `boundProgramForMain`), eine Id eines anderen Programs,
+  keine Bindung (Wortlaut von `boundProgramForMain`), eine Id eines fremden Programs,
   eine Zeile, die nicht auf den eigenen Checkout zielt. Unbekannte Id ⇒ 404.
 - **Übersprungen und in `skipped[{id, reason}]` benannt:** keine Karte, eine `surface.*`-Lücke
   (die Lücken stehen im Grund), eine Karte ohne Datei-Fläche,
@@ -2482,8 +2552,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 ```
 
 - **Scope: Program-gebunden, Nicht-Lane.** Beide Verben lesen **keinen Body** — das Program kommt aus
-  der Bindung (`boundProgramForMain`), der Eintrag aus dem Pfad. Ein `slot`- oder `programId`-Feld
-  gibt es strukturell nicht zu ignorieren, dieselbe Regel wie bei `/api/self/tasks/:id/release`.
+  der Bindung (`boundProgramForMain`), der Eintrag aus dem Pfad. Eine MAIN mehrerer Programs wählt
+  das gelesene mit `GET /api/self/inbox?program=<id>` unter ihren eigenen; die Quittung braucht keine
+  Wahl, der Eintrag nennt sein Program (§Bindung).
 - **Antwort GET:** `{program, unread, dropped, entries: [{id, kind, at, ref, readBy, readAt,
   subject}], unknown: []}`, **neueste zuerst**. `kind` ist genau eines von `attention-answer` ·
   `fleet-report` · `audit-red` · `ambient-land`. `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
@@ -2634,11 +2705,12 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   stellbar):
   - **Lane** (409): `a lane has no program inbox — a lane files its result, its MAIN reads the inbox`.
   - **nicht gebunden** (409): `not the current bound MAIN of an active program — attention is raised
-    by a program's own main session`, bzw. `ambiguous Program-MAIN binding: …` — wörtlich die Sätze
-    von `boundProgramForMain`, damit „[Zitat entfernt]“ und „[Zitat entfernt]“ zwei verschiedene
-    Dinge bleiben.
+    by a program's own main session`, bzw. ohne `?program=` bei mehreren Programs der Wahl-Satz —
+    wörtlich die Sätze von `boundProgramForMain`, damit „[Zitat entfernt]“ und „[Zitat entfernt]“
+     zwei verschiedene Dinge bleiben.
   - **unbekannter Eintrag** (404): `unknown inbox entry`.
-  - **fremdes Program** (409): `inbox entry belongs to another Program — this MAIN reads program <id>`.
+  - **fremdes Program** (409): `inbox entry belongs to another Program — this MAIN reads program <id>`
+    (bei mehreren: `programs <ids>`).
 - **Was der Loader mit einem alten `fleet.json` tut:** eine Program-Zeile **ohne** den Key lädt ohne
   ihn und bekommt **kein** Backfill (Abwesenheit heißt „es wurde nie ein Eintrag geschrieben"); eine
   Zeile **mit** unlesbarem Record lädt als ABSENT und wird gemeldet (`console.error` +
@@ -2750,14 +2822,16 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 ```
 
 - **Absender (`server.ts#messageSenderFor`):** Absender ist, wer die Session IST — aus der Bindung
-  abgeleitet, nie aus dem Body. Eine gebundene Program-MAIN sendet als `{kind:"program",id}`.
+  abgeleitet, nie aus dem Body. Eine gebundene Program-MAIN sendet als `{kind:"program",id}`; bindet
+  sie mehrere Programs, WÄHLT das Body-Feld `programId` unter ihren eigenen (ohne Wahl 409, eine Wahl
+  durch eine Nicht-MAIN 409). Gelesen wird an alle eigenen Program-Adressen.
   Die einzige lebende Session mit Orchestratorin-Label sendet als
   `{kind:"role",role:"orchestrator"}`; das Label gewährt keine weiteren Rechte.
   Eine ungebundene Nicht-Lane-Nicht-Steward-Session sendet als
   `{kind:"session",slot,openedAt}` ausschließlich an `role:"orchestrator"` (sonst 409).
   Die Lane sendet weiterhin nie (409 mit dem bisherigen Satz); der Steward wird mit eigenem
-  Satz abgelehnt. Eine mehrdeutige Program- oder Orchestratorin-Bindung wird nicht zur
-  ungebundenen Session.
+  Satz abgelehnt. Eine MAIN ohne Wahl unter mehreren Programs oder eine mehrdeutige
+  Orchestratorin-Bindung wird nicht zur ungebundenen Session.
 - **Adress-Union, geschlossen (`server/types.ts#MessageAddress`, `#loadMessageAddress`):**
   `{kind:"program",id}` | `{kind:"role",role}` | `{kind:"session",slot,openedAt}` |
   `{kind:"lane",slot,openedAt}`. Occupant-Adressen enthalten genau diese drei Felder, einen
@@ -2875,7 +2949,7 @@ noch von einer eigenen Adresse ist, bekommt dieselbe **404 `unknown message`** (
 | Lane (kein Steward) | 409 | `a lane does not address principals — a lane files its result, and its MAIN speaks for the program` |
 | Weder gebundene MAIN noch Orchestratorin | 409 | der Satz von `boundProgramForMain` |
 | GET/read ohne jede Adresse | 409 | `not a principal with an address — this rail answers a bound Program-MAIN or the unique live Orchestrator` |
-| Fremder Body-Schlüssel | 400 | `body reads only to, payload, idempotencyKey, replyTo — […] is not read: the SENDER is derived from this session's binding and can never be named in a body` |
+| Fremder Body-Schlüssel | 400 | `body reads only to, payload, idempotencyKey, replyTo, programId — […] is not read: the SENDER is derived from this session's binding (programId only picks among its own programs) and can never be named in a body` |
 | `payload.kind` unbekannt | 400 | `payload kind must be one of text` |
 | `payload.text` leer/über 2000 | 400 | `payload text must be a non-empty string of at most 2000 chars` |
 | `idempotencyKey` leer/über 200 | 400 | `idempotencyKey must be a non-empty string of at most 200 chars` |
@@ -3393,8 +3467,8 @@ curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 - **Ablehnungen, alle 409 mit Satz:** ein Slot ohne lebende Lane (kein `worktree`, kein `cwd`, der
   Steward) auf beiden Türen; auf der MAIN-Tür zuerst eine LANE als Aufruferin (auch für ihren eigenen
   Slot — die eigene Tür ist `/api/self/suite-offer`), dann eine Session ohne Program-Bindung
-  (`server.ts#boundProgramForMain`, dessen Wortlaut), dann eine Lane, deren `programId` nicht das
-  Program der MAIN ist. Ein unbekannter Slot ist **404**. Belegt in `e2e/lane-suite.ts` (LS.12).
+  (`server.ts#boundProgramForMain`, dessen Wortlaut), dann eine Lane, deren `programId` nicht eines
+  der Programs der MAIN ist. Ein unbekannter Slot ist **404**. Belegt in `e2e/lane-suite.ts` (LS.12).
 
 
 ## fleet-report — `POST /api/self/fleet-report`, `GET /api/self/fleet-report`
@@ -3690,8 +3764,9 @@ curl -s -X POST http://<fleet-host>:<port>/api/self/fleet-report/<report-id>/acc
   prüft `decision.by` gegen `receiver` auf derselben Occupation: eine Zeile kann strukturell kein
   Occupant-Urteil eines Prinzipals tragen, an den sie nie gefilet wurde.
 - **Bei `basis:"program"` entscheidet die aktuell gebundene MAIN des Programs.** Die Self-Tür
-  leitet das Program mit `boundProgramForMain` aus ihrem Token ab und vergleicht dessen ID mit
-  `provenance.programId`; kein gespeichertes Empfänger-Tripel kann eine Nachfolgerin aussperren.
+  liest das Program aus `provenance.programId` des Reports und fragt `boundProgramForMain`, ob es
+  eines der Programs ihres Tokens ist (§Bindung); kein gespeichertes Empfänger-Tripel kann eine
+  Nachfolgerin aussperren.
 - **Die erste Entscheidung gewinnt.** Ein zweiter Aufruf ist 409 (`fleet report was already
   accepted|rejected`, die stehende `decision` im Body) und die Zeile bleibt unverändert — auch bei
   identischer Wiederholung. Ein Report wird EINMAL beurteilt; sonst überschriebe eine spätere
@@ -4276,7 +4351,10 @@ oder aufgelöste Verdikt, bei dem nichts landet), aber ein gelandeter Task errei
 **Die Ablehnungsleiter, in dieser Reihenfolge, jede mit eigenem Satz** (die Sätze sind
 unterscheidbar, weil sie den Aufrufer an verschiedene Stellen schicken):
 
-1. nicht gebunden · mehrdeutig gebunden — zwei verschiedene Ablehnungen, wie an allen Self-Türen.
+1. nicht gebunden (§Bindung). Danach, noch VOR der Zeile: hat KEINE Bindung dieser Belegung die
+   lebende `sessionId` aufgezeichnet, die Identitäts-Ablehnung von Sprosse 2 — so hängt sie nie davon
+   ab, welche Zeile genannt wurde. Dann die Zeile (404), ihr Program unter den eigenen (409 `belongs
+   to no program of this MAIN`), und Sprosse 2 noch einmal gegen GENAU dieses Program.
 2. **`sessionId` muss EXAKT stimmen.** Die einzige Route, die sie GATET statt sie nur zu melden:
    `slot+openedAt` allein identifiziert die Okkupation, aber Landen ist der Akt, bei dem ein
    unbestätigter Occupant kein kleineres Problem ist. Beide Seiten `null` zählt als exakt (eine
@@ -4620,12 +4698,11 @@ als EIN additives Feld je Program:
 
 **Es ist kein Land-Urteil und darf nie als eines gelesen werden.** Die Tür vergleicht die beiden
 Werte DIREKT — beide `null` ist für sie ein exakter Treffer, ein `null` auf nur einer Seite eine
-Ablehnung; hier heißen beide `unknown`. Und sie verlangt zusätzlich ein `active` Programm, eine
-EINDEUTIGE Bindung (`ambiguous Program-MAIN binding`) und eine Policy — nichts davon sieht diese
-Projektion an. Sie meldet IDENTITÄT; die Autorität bleibt, wo sie entschieden wird. Konsequenz für
-zwei Programme auf derselben Okkupation: das Zustellbudget (V1b) wird dort `unknown`, `health`
-NICHT — ein Budget gehört einem Occupant und lässt sich nicht teilen, ein Identitätsvergleich ist
-pro Bindung wohldefiniert, und was die Mehrdeutigkeit kostet, lehnt die Tür selbst ab.
+Ablehnung; hier heißen beide `unknown`. Und sie verlangt zusätzlich ein `active` Programm, dass das
+Program der gelandeten ZEILE eines der gebundenen ist (§Bindung), und eine Policy — nichts davon sieht
+diese Projektion an. Sie meldet IDENTITÄT; die Autorität bleibt, wo sie entschieden wird. Zwei
+Programme auf derselben Okkupation (eine MAIN je Projekt): das Zustellbudget (V1b) ist dasselbe
+bekannte Budget auf beiden, als geteilt benannt; `health` ist pro Bindung wohldefiniert.
 
 **Reine PROJEKTION:** nichts wird geschrieben, nichts persistiert, pro Request neu gerechnet — wie
 `occupancy` und das Rückweg-Budget daneben, weil der Occupant zwischen zwei Reads sterben kann.

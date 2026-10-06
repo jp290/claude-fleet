@@ -165,6 +165,14 @@ Wo ein Verb `<slot>` nimmt (`ctx`, `watch lane|merge`, `land`, `wait merge`), da
   `handover`; offene Lane-Rückfragen und sofort fällige FleetEvents gehen an die Nachfolgerin.
   Nicht übertragbare Zeilen stehen mit ID und Grund in `handover.lost`; der Brief zeigt nur Vorschauen. Die Nachfolgerin liest Program-/Task-/Report-/Inbox-/
   Handover-Fakten und optional HANDOFF-Rest. Nichts wird neu armiert; Lücken bleiben `unknown`.
+  **Eine MAIN mehrerer Programs** (je Projekt eine MAIN, Owner 2026-10-06; `docs/self-api.md`
+  §Bindung) übergibt ALLE in einer Nachfolge: das erste Program trägt Founding-Marker und Receipt,
+  jedes weitere wird im selben Schnitt umgebunden und bekommt seinen eigenen `handover`, seine
+  Lineage (`succeed`), seine offenen Attention- und Rückfragezeilen. Ein Program, das der Owner
+  währenddessen abschließt oder umbindet, geht nicht mit und behält seinen Record. Ein Verbund mit
+  einem Game-Maker-Program wird mit Namen abgelehnt (409). Nach einem Absturz zwischen Kill und
+  Bindungsschnitt stehen die mitgehenden Programs stale; der Owner bindet sie mit
+  `bootstrap-main {slot}` an die Nachfolgerin.
 - **Ungebundene Legacy-Session, damit auch ein ungebundener Controller:** kein `HANDOFF.md`-Commit mehr
   als Gate (seit e3e5084a). Die Nachfolge schreibt einen Linien-Record (`docs/self-api.md` §Linien-Record):
   Pflichten nur per ID, dazu `intent` (≤ 2000 Zeichen) ODER `pointer` auf einen committeten, datierten

@@ -155,10 +155,18 @@ async function instanceBandChecks(): Promise<void> {
 
   // wire — the suite server runs like the live fleet: no FLEET_INSTANCE_SOURCE
   type SessionsInstance = { instance?: { name?: string | null; source?: unknown } };
+  type WorktreesRepos = { repos?: { repo: string }[]; stands?: { kind: string }[] };
   const sessions = async () => await (await get("/api/sessions")).json() as SessionsInstance;
   const noBand = (b: SessionsInstance) => !!b.instance && !("source" in b.instance);
   const plain = await sessions();
   check("band wire: a server without FLEET_INSTANCE_SOURCE (the live fleet) sends no instance.source", noBand(plain), JSON.stringify(plain.instance));
+  // THE COPY IS NOT A WORKPLACE OF ITSELF (owner, 2026-10-06): with the variable the server's own
+  // checkout leaves the Arbeitsorte repo list (its only possible row there is an unreadable
+  // placeholder), without it the list is unchanged. Same server, one restart, both sides.
+  const selfRepo = realpathSync(REPO);
+  const plainWp = await (await get("/api/worktrees")).json() as WorktreesRepos;
+  check("band wire: the live fleet lists its own checkout as a workplace (the unchanged live picture)",
+    (plainWp.repos ?? []).some((r) => r.repo === selfRepo), JSON.stringify((plainWp.repos ?? []).map((r) => r.repo)));
   const sample = lane(3, 0);
   try {
     await restartSrv({ FLEET_INSTANCE_SOURCE: JSON.stringify(sample) });
@@ -166,6 +174,11 @@ async function instanceBandChecks(): Promise<void> {
     check("band wire: a test instance carries its recorded stand as instance.source, folded by the shared parser",
       JSON.stringify(shown.instance?.source) === JSON.stringify(instanceSourceFrom(JSON.stringify(sample))), JSON.stringify(shown.instance));
     check("band wire MUTATION: the no-band predicate is red on the answer of a server started WITH the variable", !noBand(shown));
+    const markedWp = await (await get("/api/worktrees")).json() as WorktreesRepos;
+    check("band wire: a test instance does not list its own copy as a workplace, the live-server stand stays",
+      !(markedWp.repos ?? []).some((r) => r.repo === selfRepo) && (markedWp.stands ?? []).some((s) => s.kind === "live-server"),
+      JSON.stringify((markedWp.repos ?? []).map((r) => r.repo)));
+    check("band wire MUTATION: the no-copy predicate is red on the live fleet's own answer", (plainWp.repos ?? []).some((r) => r.repo === selfRepo));
     await restartSrv({ FLEET_INSTANCE_SOURCE: "{not json" });
     const garbled = await sessions();
     const garbledText = garbled.instance?.source ? instanceBandText(instanceSourceFrom(JSON.stringify(garbled.instance.source))!, clock).text : null;
@@ -201,6 +214,206 @@ async function instanceBandChecks(): Promise<void> {
     }
   } catch (error) {
     check("band DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false, error instanceof Error ? error.message : String(error));
+  }
+}
+
+// THE SNAPSHOT TELLS THE TRUTH ABOUT ITSELF (owner, 2026-10-06): a snapshot copy has no .git, so
+// without help it reads „[Zitat entfernt]“, loses its helper devices silently and — via
+// the strip's old sessionId drop — every Program binding, whose card then said "An keinen Auftrag,
+// kein Program gebunden" about a session that IS a Program-MAIN. One claim per statement, each
+// with the mutation that must turn it red, stated next to it and RUN:
+//   script  — testinstanz.sh keeps a Program's binding (sessionId inside main becomes null, never
+//             dropped) and snapshot panes run `cat` as the stand-in; mutation: the exception or the
+//             binding replaced by the old lines is red.
+//   source  — the machine group paints the test-instance row and the helper placeholder only from
+//             instance.source; mutation: the placeholder condition removed is red.
+//   wire    — covered in instanceBandChecks above (same restarts): the copy leaves /api/worktrees'
+//             repo list only when the variable is set.
+//   DOM     — the real client bundle in Chromium at 1200×900 and 390×844 against a fixture wire:
+//             snapshot pages paint the Testinstanz row, the helper placeholder, the carried binding
+//             (or "Im Snapshot nicht belegt" when the binding cannot be read) and the brief-fail
+//             sentence; the live page paints the old picture and none of the snapshot lines.
+async function snapshotTruthChecks(): Promise<void> {
+  const src = dirname(realpathSync(`${ROOT}/node_modules`));
+  const stripped = (text: string) => text.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+
+  // script — the strip's binding exception and the pane stand-in
+  const tiScript = readFileSync(`${src}/testinstanz.sh`, "utf8");
+  const code = stripped(tiScript);
+  const keepsBinding = (t: string) => /k==='sessionId'&&parent==='main'/.test(t) && /\[k,null\]/.test(t)
+    && /FLEET_CMD="\$TI_AGENT_CMD"/.test(t);
+  check("snapshot script: the strip keeps a Program's main binding — sessionId inside main becomes null, not dropped",
+    keepsBinding(code), code.slice(code.indexOf("const strip="), code.indexOf("const strip=") + 120));
+  check("snapshot script MUTATION: the old strip (exception removed, drop without parent) loses every binding",
+    !keepsBinding(code.replace(/if\(k==='sessionId'&&parent==='main'\)return \[\[k,null\]\];/, ""))
+    && !keepsBinding(code.replace(/\[k,null\]/, "[k,'gone']")));
+  const snapshotCat = (t: string) => /snapshot\] then/.test(t) && /TI_AGENT_CMD='cat'/.test(t)
+    && /TI_AGENT_CMD='true'/.test(t) && t.indexOf("TI_AGENT_CMD='cat'") < t.indexOf("TI_AGENT_CMD='true'");
+  check("snapshot script: snapshot panes run the cat stand-in, mixed keeps true (its painters type shell loops)",
+    snapshotCat(code), "");
+  check("snapshot script MUTATION: the old FLEET_CMD=true for the snapshot is red",
+    !snapshotCat(code.replace("TI_AGENT_CMD='cat'", "TI_AGENT_CMD='true'")));
+
+  // source — the board paints the snapshot rows only from instance.source (comments stripped first)
+  const boardCode = stripped(readFileSync(`${src}/src/board.ts`, "utf8"));
+  const wired = (c: string) => c.includes("here.appendChild(testInstanceStandRow(instanceSource))")
+    && c.includes('el("b", "", "Testinstanz")')
+    && /instanceSource && !helpers\.size/.test(c)
+    && c.includes('machineHead("Helfer", "in der Testinstanz nicht gemeldet"');
+  check("snapshot board: the machine group paints the Testinstanz row and the helper placeholder only from instance.source",
+    wired(boardCode), "");
+  check("snapshot board MUTATION: without the placeholder condition the helper claim is red",
+    !wired(boardCode.replace("instanceSource && !helpers.size", "false && instanceSource && !helpers.size")));
+
+  // DOM — three pages per width: carried binding, unreadable binding, live fleet
+  try {
+    const dom = await snapshotBoardDom(src);
+    for (const v of dom.views) {
+      const p = v.pages;
+      check(`snapshot DOM ${v.size}: the machine group says "Testinstanz · Stand beim Start" and never "Live · läuft auf unbekannt"`,
+        p.carried.rowText.startsWith("Testinstanz · Stand beim Start ") && !p.carried.rowText.includes("Live · läuft auf"),
+        JSON.stringify(p.carried.rowText));
+      check(`snapshot DOM ${v.size}: the helper devices stand as "in der Testinstanz nicht gemeldet"`,
+        p.carried.helperText === "in der Testinstanz nicht gemeldet", JSON.stringify(p.carried.helperText));
+      check(`snapshot DOM ${v.size}: the copy is no workplace — no repo group row under the machine`,
+        p.carried.repoRows === 0, JSON.stringify(p.carried.repoRows));
+      check(`snapshot DOM ${v.size}: a carried binding reads "Ihr Program", never "An keinen Auftrag, kein Program gebunden"`,
+        p.carried.rights.includes("Ihr Program") && !p.carried.rights.includes("An keinen Auftrag"),
+        JSON.stringify(p.carried.rights).slice(0, 300));
+      check(`snapshot DOM ${v.size}: a binding the snapshot cannot carry reads "Im Snapshot nicht belegt", never "Keine"`,
+        p.unknown.rights.includes("Im Snapshot nicht belegt") && !p.unknown.rights.includes("An keinen Auftrag"),
+        JSON.stringify(p.unknown.rights).slice(0, 300));
+      check(`snapshot DOM ${v.size}: a failed brief read stands as a sentence with the ground, the column is not empty`,
+        p.carried.brief?.includes("No git in this folder") === true && p.carried.briefLen > 40, JSON.stringify(p.carried.brief));
+      check(`snapshot DOM ${v.size} MUTATION: without the sentence paint the brief claim is red`,
+        p.mutant.brief !== null && !p.mutant.brief.includes("No git in this folder"), JSON.stringify(p.mutant.brief));
+      check(`snapshot DOM ${v.size} MUTATION: the same predicates over the live page are red — "Live" row, no placeholder, "Keine" rights`,
+        p.live.rowText.startsWith("Live · läuft auf") && p.live.helperText === null
+        && p.live.rights.includes("An keinen Auftrag, kein Program gebunden") && !p.live.rowText.includes("Testinstanz"),
+        JSON.stringify({ row: p.live.rowText, helper: p.live.helperText, rights: p.live.rights.slice(0, 120) }));
+    }
+  } catch (error) {
+    check("snapshot DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false, error instanceof Error ? error.message : String(error));
+  }
+}
+
+// THE SNAPSHOT BOARD IN A REAL BROWSER (the rig of instanceBandDom, fed with the board's wire):
+// the built bundle behind a fixture origin; three loads per width (1200×900, 390×844) — a snapshot
+// with a carried binding, a snapshot whose carried binding cannot be read, and the live fleet.
+interface SnapshotPageFacts { rowText: string; helperText: string | null; repoRows: number; rights: string; brief: string | null; briefLen: number }
+async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts; mutant: SnapshotPageFacts } }[] }> {
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const SENTENCE = "The session brief could not be read";
+  if (!appJs.includes(SENTENCE)) throw new Error("brief-fail sentence not found in the built bundle");
+  const mutantJs = appJs.replaceAll(SENTENCE, "gone from this bundle");
+  const S = "e".repeat(40);
+  const workPlaces = { repos: [], measuredAt: 1, cacheMs: 10000, stands: [{ kind: "live-server", repo: "/x", name: null, path: null,
+    head: null, basis: "boot-head", codeScope: "server", observedAt: 1, branch: null, target: null, remote: null, reasons: [] }] };
+  const slots = Array.from({ length: 16 }, (_, i) => ({ id: i + 1, cwd: i === 10 ? "/x" : null,
+    label: i === 10 ? "Elektrowerkstatt · MAIN" : null, openedAt: i === 10 ? 1000 : null, lastOutput: 0 }));
+  const program = (main: unknown) => ({ id: "a".repeat(24), status: "active", title: "Elektrowerkstatt", createdAt: 1,
+    ...(main === undefined ? {} : { main }) });
+  const digest = [{ id: "a".repeat(24), status: "active", title: "Elektrowerkstatt", createdAt: 1 }];
+  const scratch = mkdtempSync(resolve(process.env.TMPDIR ?? "/tmp", "fleet-snapshot-dom-"));
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("snapshot DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let log = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + log); })(),
+      Bun.sleep(45000).then(() => { throw new Error("browser CDP startup timeout: " + log); }),
+    ]);
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let wire = { source: undefined as unknown, programs: [] as unknown[] };
+    let serveMutant = false;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timer = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timer); ok(v); }, bad });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, body: string, type: string, status = 200) => send("Fetch.fulfillRequest", { requestId, responseCode: status,
+      responseHeaders: [{ name: "content-type", value: type }], body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string } };
+      const p = new URL(request.url).pathname;
+      if (p === "/") return void reply(requestId, indexHtml, "text/html");
+      if (p === "/app.js") return void reply(requestId, serveMutant ? mutantJs : appJs, "text/javascript");
+      if (p === "/api/sessions") return void reply(requestId, JSON.stringify({ now: 1, chips: [], tasks: [], programs: digest, slots,
+        instance: wire.source === undefined ? { name: null } : { name: null, source: wire.source } }), "application/json");
+      if (p === "/api/worktrees") return void reply(requestId, JSON.stringify(workPlaces), "application/json");
+      if (p === "/api/programs") return void reply(requestId, JSON.stringify({ programs: wire.programs }), "application/json");
+      if (p === "/api/slots/11/brief") return void reply(requestId, JSON.stringify({ error: "not a git repository", git: "none",
+        sessionStart: null, setup: {}, succession: null }), "application/json", 400);
+      return void reply(requestId, JSON.stringify({ error: "fixture: not served" }), "application/json", 404);
+    };
+    const target = await send("Target.createTarget", { url: "about:blank" });
+    sessionId = String((await send("Target.attachToTarget", { targetId: String(target.targetId), flatten: true })).sessionId);
+    await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+    await send("Runtime.enable");
+    const evaluate = async <T>(expression: string): Promise<T> =>
+      ((await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result as { value: T }).value;
+    const load = async (source: unknown, programs: unknown[], mutant = false): Promise<SnapshotPageFacts> => {
+      wire = { source, programs };
+      serveMutant = mutant;
+      await send("Page.navigate", { url: "http://fleet.fixture/?token=fixture" });
+      await evaluate(`new Promise((ok) => { const until = Date.now() + 10000; const tick = () => {
+        if (document.readyState === 'complete' && document.querySelectorAll('.slot').length) return ok(true);
+        if (Date.now() > until) return ok(true); setTimeout(tick, 60); }; tick(); })`);
+      return await evaluate(`(async () => {
+        const until = Date.now() + 12000;
+        const open = () => { const b = document.querySelector('.boardtoggle'); if (b) b.dispatchEvent(new MouseEvent('click', { bubbles: true })); return document.body.classList.contains('board'); };
+        while (Date.now() < until) {
+          const el = document.querySelector('.slot[data-slot="11"]');
+          if (el) el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          if (document.body.classList.contains('board') || open()) break;
+          await new Promise(r => setTimeout(r, 120));
+        }
+        const until2 = Date.now() + 12000;
+        while (Date.now() < until2) {
+          if (document.querySelectorAll('#board .rgv').length) break;
+          await new Promise(r => setTimeout(r, 120));
+        }
+        await new Promise(r => setTimeout(r, 900));
+        const row = document.querySelector('#board .zr.stand');
+        const helper = [...document.querySelectorAll('#board .zr.mach')].find(m => m.querySelector('.nm')?.textContent === 'Helfer');
+        const rights = [...document.querySelectorAll('#board .rgv')].map(v => v.textContent).join(' | ');
+        const brief = document.querySelector('#board .bfail .bstate, #board .bempty');
+        return { rowText: row ? row.textContent : '(no row)', helperText: helper ? helper.querySelector('.cnt')?.textContent ?? null : null,
+          repoRows: document.querySelectorAll('#board .zd').length, rights,
+          brief: brief ? brief.textContent : null, briefLen: (document.getElementById('board')?.textContent ?? '').length };
+      })()`);
+    };
+    const carriedMain = { slot: 11, openedAt: 1000, sessionId: null, boundAt: 2 };
+    const views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts; mutant: SnapshotPageFacts } }[] = [];
+    for (const [width, height, mobile] of [[1200, 900, false], [390, 844, true]] as const) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
+      const source = { head: S, branch: "fleet/snapshot", dirty: 0, measuredAt: 1, target: { branch: "overhaul", head: "d".repeat(40), ahead: 2 } };
+      const carried = await load(source, [program(carriedMain)]);
+      const unknown = await load(source, [program({ sessionId: null })]);
+      const mutant = await load(source, [program(carriedMain)], true);
+      const live = await load(undefined, [program(undefined)]);
+      views.push({ size: `${width}x${height}`, pages: { carried, unknown, mutant, live } });
+    }
+    return { views };
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
   }
 }
 
@@ -1189,6 +1402,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   await helperRepoChecks();
   await workplacesChecks();
   await instanceBandChecks();
+  await snapshotTruthChecks();
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
   // assertions fail on real teardown paths.
   {

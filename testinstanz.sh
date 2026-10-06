@@ -196,10 +196,17 @@ ti_serve() {
   # TWO COMPUTERS, as the live fleet has them (mac + workhorse), so the device display has something
   # to show; "mac" is THIS instance's own origin, so the board marks it as here. The workhorse link
   # only navigates when clicked. FLEET_TI_INSTANCES= (set, empty) gives the single-host board.
+  # AND WHAT RUNS IN A PANE (owner, 2026-10-06): FLEET_CMD=true exits at once, the pane falls through
+  # to its shell, and every delivery then stands there as „[Zitat entfernt]“ — the instance
+  # looks broken. In snapshot mode the stand-in is plain `cat` (the rig of e2e/watch.ts): it reads
+  # the pane's tty, echoes whatever is typed as text, executes nothing, and no agent is behind it.
+  # mixed keeps `true`: its painters type shell loops, which a shell must run.
   if [ "${TI_KIND:-}" = snapshot ]; then
     TI_TWO=""
+    TI_AGENT_CMD='cat'
   else
     TI_TWO='[{"name":"mac","url":"http://'"$(ti_addr):$PORT"'"},{"name":"workhorse","url":"'"$(ti_workhorse_url)"'"}]'
+    TI_AGENT_CMD='true'
   fi
   TI_INST="${FLEET_TI_INSTANCES-$TI_TWO}"
   TI_NAME="${FLEET_TI_INSTANCE-mac}"
@@ -217,7 +224,7 @@ ti_serve() {
   [ -n "$TI_SHOWN" ] || TI_SHOWN='{}'
   ( cd "$DIR" && exec env -i HOME="$DIR/home" PATH="$DIR/bin:$PATH" TMPDIR="${TMPDIR:-/tmp}" \
       LANG=en_US.UTF-8 \
-      FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD=true \
+      FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD="$TI_AGENT_CMD" \
       FLEET_INSTANCE="$TI_NAME" FLEET_INSTANCES="$TI_INST" FLEET_INSTANCE_SOURCE="$TI_SHOWN" FLEET_LANE_SUCCEED_MAX=5 \
       FLEET_KONZEPT_ROOT="$TI_KONZ" FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
   echo $! > "$PIDF"
@@ -323,7 +330,18 @@ console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\
       bun "$SRC/testinstanz-snapshot.js" || { echo "up: snapshot failed — nothing started" >&2; exit 1; }
     TI_SNAPSHOT_DIR="$DIR" bun - <<'JS'
 const dir=process.env.TI_SNAPSHOT_DIR;
-const strip=(v)=>Array.isArray(v)?v.map(strip):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([k])=>!['selfToken','sessionId','worktree','helperDevices','shares','commandJobs','suiteOffers','watches','autos','lanePreviews'].includes(k)).map(([k,x])=>[k,strip(x)])):v;
+// sessionId disappears everywhere EXCEPT inside a Program's `main`: there it is replaced by null,
+// not dropped. The server's loader fail-closes a main without the key (sessionId must be null or a
+// string), so a dropped key silently deleted EVERY Program binding in the copy — the owner read
+// „[Zitat entfernt]“ (2026-10-06). null keeps the binding (slot+openedAt survive
+// intact) and honestly reports the session-id half as unmatched.
+const strip=(v,parent)=>Array.isArray(v)?v.map((x)=>strip(x,parent)):v&&typeof v==='object'
+ ?Object.fromEntries(Object.entries(v).flatMap(([k,x])=>{
+   if(k==='sessionId'&&parent==='main')return [[k,null]];
+   if(['selfToken','sessionId','worktree','helperDevices','shares','commandJobs','suiteOffers','watches','autos','lanePreviews'].includes(k))return [];
+   return [[k,strip(x,k)]];
+  }))
+ :v;
 const file=Bun.file(`${dir}/fleet.json`),state=strip(await file.json());
 state.dispatch=false;state.autosOn=false;
 await Bun.write(file,JSON.stringify(state));

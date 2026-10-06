@@ -5,7 +5,7 @@ import { popover } from "./popover";
 import { openLaneFounding } from "./founding";
 import { askRisk } from "./dialog";
 import { Shell, openShell } from "./shell";
-import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow, type WorkplaceCheck, type WorkplaceChecks, type WorkplaceRepo, type WorkplaceRow, type WorkplaceStand, type Workplaces } from "./protocol";
+import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow, instanceBandText, type InstanceSource, type WorkplaceCheck, type WorkplaceChecks, type WorkplaceRepo, type WorkplaceRow, type WorkplaceStand, type Workplaces } from "./protocol";
 import { projectHue } from "./marks";
 import { METER_STATIONS, MeterBall, MeterStation, laneDisplayName, laneTail, meterKind, meterLine, meterRuns, mmss, suiteMeter } from "./suitemeter";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
@@ -16,10 +16,17 @@ import { serverClock } from "./composer";
 import { rightsHoldFocus, rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
 
+// WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
+// poll — set only on an instance testinstanz.sh started, never on the live fleet. Null there, and
+// every reader of it (the Arbeitsorte rows, the rights wording) keeps exactly the live picture.
+let instanceSource: InstanceSource | null = null;
+export function setInstanceSource(s: InstanceSource | null) { instanceSource = s; }
+
 // the rights block reads the queue's lists through the board, never by import (src/rights.ts#wireRights)
 wireRights({
   tasks: () => tasksList, programs: () => programsList, programsPoll: () => programsPoll,
   programsRead: () => programsRead, loadPrograms: () => loadPrograms(),
+  source: () => instanceSource,
   openSheet: (repo) => { openQueue(); qSelect(`repo:${repo}`); },
 });
 
@@ -2688,6 +2695,25 @@ function standRow(label: string | null, st: WorkplaceStand): HTMLElement {
     + (s.title ? ` — ${s.title}` : "");
   return row;
 }
+// THE TEST INSTANCE'S OWN ROW, in the machine group: the same words the band above the app paints
+// (src/protocol.ts#instanceBandText, minus the branch — the row sits under the machine's name), so
+// both sights of one fact cannot drift. Neutral square: the copy is neither live nor waiting.
+function testInstanceStandRow(source: InstanceSource): HTMLElement {
+  const row = el("div", "zr stand");
+  row.dataset.kind = "live-server";
+  row.appendChild(el("span", "nd leer"));
+  const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
+  const nm = el("span", "nm");
+  nm.appendChild(el("b", "", "Testinstanz"));
+  nm.appendChild(document.createTextNode(" · "));
+  band.segments.slice(1).forEach((seg, i) => {
+    if (i) nm.appendChild(document.createTextNode(" · "));
+    for (const run of seg) nm.appendChild(run.mono ? el("span", "mono", run.t) : document.createTextNode(run.t));
+  });
+  row.appendChild(nm);
+  row.title = band.title;
+  return row;
+}
 function machineHead(name: string, sub: string, title: string): HTMLElement {
   const row = el("div", "zr mach");
   const fx = el("span", "fx");
@@ -2754,15 +2780,22 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   here.appendChild(machineHead(instanceName ?? "Dieser Rechner", instanceName ? "dieser Rechner" : "",
     "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest"));
   const lives = (wp.stands ?? []).filter((st) => st.kind === "live-server");
-  for (const st of lives) here.appendChild(standRow("Live", st));
-  if (!lives.length && deployGapInfo) {
-    // an older server without stands: the deploy gap alone, said as plainly
-    const row = el("div", "zr stand");
-    row.dataset.kind = "live-server";
-    row.appendChild(el("span", `nd ${deployGapInfo.codeBehind ? "wait" : "live"}`));
-    const n = deployGapInfo.behindCount;
-    row.appendChild(el("span", "nm", `Live · läuft auf ${sha7(deployGapInfo.bootHead) ?? "unbekannt"}${n === null ? "" : n === 0 ? " · neuester Stand" : ` · ${n} hinter`}`));
-    here.appendChild(row);
+  if (instanceSource) {
+    // A TEST INSTANCE DOES NOT CALL ITSELF LIVE (owner, 2026-10-06): the copy has no .git, so its
+    // boot head is unreadable and standRow would read „[Zitat entfernt]“. It names itself
+    // and carries the stand measured BEFORE the copy (instance.source), in the band's own words.
+    here.appendChild(testInstanceStandRow(instanceSource));
+  } else {
+    for (const st of lives) here.appendChild(standRow("Live", st));
+    if (!lives.length && deployGapInfo) {
+      // an older server without stands: the deploy gap alone, said as plainly
+      const row = el("div", "zr stand");
+      row.dataset.kind = "live-server";
+      row.appendChild(el("span", `nd ${deployGapInfo.codeBehind ? "wait" : "live"}`));
+      const n = deployGapInfo.behindCount;
+      row.appendChild(el("span", "nm", `Live · läuft auf ${sha7(deployGapInfo.bootHead) ?? "unbekannt"}${n === null ? "" : n === 0 ? " · neuester Stand" : ` · ${n} hinter`}`));
+      here.appendChild(row);
+    }
   }
   sec.appendChild(here);
 
@@ -2781,6 +2814,15 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     const g = el("div", "grp");
     g.appendChild(machineHead(name, "Helfer", "Ein Helfer-Gerät dieser Fleet — sein Stand ist sein letzter Bericht"));
     for (const st of list) g.appendChild(standRow(st.kind === "helper-daemon" ? "Helfer-Dienst" : "Instanz", st));
+    sec.appendChild(g);
+  }
+  if (instanceSource && !helpers.size) {
+    // HELPER DEVICES NEVER VANISH SILENTLY (owner, 2026-10-06): a snapshot carries none (their data
+    // is stripped at the copy), so the group says so instead of being absent. The live fleet keeps
+    // its old picture: helpers stand when they report, and a fleet truly without any says nothing.
+    const g = el("div", "grp");
+    g.appendChild(machineHead("Helfer", "in der Testinstanz nicht gemeldet",
+      "Helfer-Geräte gehören zur echten Fleet — der Kopiervorgang einer Testinstanz trägt sie nicht über, darum meldet diese Instanz keinen."));
     sec.appendChild(g);
   }
   for (const st of (wp.stands ?? []).filter((x) => x.kind === "linked-instance")) {

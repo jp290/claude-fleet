@@ -1,7 +1,7 @@
 import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } from "./protocol";
 import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
-import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
+import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, setInstanceSource, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, renderWorkplaceField, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
@@ -7280,7 +7280,9 @@ export async function refresh() {
       typeof l?.name === "string" && INSTANCE_NAME_RE.test(l.name)
       && typeof l.url === "string" && INSTANCE_URL_RE.test(l.url));
     renderInstanceHead();
-    renderInstanceBand(data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source)));
+    const tiSource = data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source));
+    renderInstanceBand(tiSource);
+    setInstanceSource(tiSource);
     briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;
     autosOnSrv = typeof data.autosOn === "boolean" ? data.autosOn : null;

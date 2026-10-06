@@ -26,6 +26,7 @@
 // The board (src/board.ts#renderBoard) and the founding window (src/founding.ts) only hang these
 // in; the block keeps its state per slot and occupant here.
 import { api, el, fleet, type SlotInfo, type TaskInfo } from "./client";
+import type { InstanceSource } from "./protocol";
 import type { ProgramDigest, ProgramInfo } from "./queue";
 
 // THE BOARD'S READS, handed in by src/board.ts (wireRights) instead of imported: the founding window
@@ -38,11 +39,12 @@ export interface RightsBoard {
   programsPoll(): ProgramDigest[];
   programsRead(): "unread" | "ok" | "fail";
   loadPrograms(): Promise<void>;
+  source(): InstanceSource | null;
   openSheet(repo: string): void;
 }
 let board: RightsBoard = {
   tasks: () => [], programs: () => [], programsPoll: () => [], programsRead: () => "unread",
-  loadPrograms: async () => {}, openSheet: () => {},
+  loadPrograms: async () => {}, source: () => null, openSheet: () => {},
 };
 export function wireRights(b: RightsBoard) { board = b; }
 
@@ -591,6 +593,15 @@ function ownWork(row: SlotInfo): HTMLElement {
       v.append(el("span", "rgval", "Unbekannt"),
         sub(board.programsRead() === "fail" ? "Die Programs sind gerade nicht lesbar — ob sie eines führt, ist nicht gemessen."
           : "Die Programs werden gelesen — ob sie eines führt, steht gleich hier."));
+    } else if (board.programs().some((x) => x.status === "active" && x.main
+        && (typeof x.main.slot !== "number" || typeof x.main.openedAt !== "number"))) {
+      // A BINDING THAT CANNOT BE READ IS NEVER "KEINE" (owner, 2026-10-06): an active program
+      // whose main is present but carries no complete slot+openedAt pair could still name THIS
+      // session — the honest answer is "not documented", worded by what this instance is.
+      const snap = board.source() !== null;
+      v.append(el("span", "rgval", snap ? "Im Snapshot nicht belegt" : "Nicht belegt"),
+        sub(snap ? "Ob diese Session ein Program führt, trägt der Snapshot nicht — das heißt nicht „keine“."
+                 : "Ob diese Session ein Program führt, ist gerade nicht belegt — das heißt nicht „keine“."));
     } else {
       v.append(el("span", "rgmute", "Keine"), sub(`An keinen Auftrag, kein Program gebunden.${/\borchestrator\b/i.test(row.label ?? "") ? " Die Rolle gibt kein Leserecht." : ""}`));
     }

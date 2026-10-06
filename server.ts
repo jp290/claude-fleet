@@ -7684,7 +7684,14 @@ async function workplaceStands(repos: WorkplaceRepo[], measuredAt: number): Prom
   return out;
 }
 async function workplaces(): Promise<Workplaces> {
-  const repos = [...new Set([...knownRepos(), REPO_DIR, ...(HELPER_UPDATE_REPO ? [HELPER_UPDATE_REPO] : [])].map((r) => { try { return realpathSync(r); } catch { return r; } }))];
+  const allRepos = [...new Set([...knownRepos(), REPO_DIR, ...(HELPER_UPDATE_REPO ? [HELPER_UPDATE_REPO] : [])].map((r) => { try { return realpathSync(r); } catch { return r; } }))];
+  // THE COPY IS NOT A WORKPLACE OF ITSELF (owner, 2026-10-06): on a test instance the server's own
+  // directory is the snapshot copy — no .git, so its only possible repo row is an unreadable
+  // placeholder the owner reads as a second Arbeitsort the fleet works in. It leaves the list with
+  // INSTANCE_SOURCE, the one mark testinstanz.sh hands every instance it starts; the live fleet
+  // (unset) keeps REPO_DIR exactly as before.
+  const self = (() => { try { return realpathSync(REPO_DIR); } catch { return REPO_DIR; } })();
+  const repos = INSTANCE_SOURCE ? allRepos.filter((r) => r !== self) : allRepos;
   const key = JSON.stringify([repos, [...helperDevices.values()].map((d) => [d.id, d.name, d.daemonSha, d.instance, d.repos, d.lastSeen, helperUpdates.get(d.id)]), slots.filter((s) => s.cwd).map((s) => [s.id, s.openedAt, s.cwd, s.worktree?.base, s.worktree?.baseSha])]);
   if (!workplacesCache || workplacesCache.key !== key || Date.now() - workplacesCache.at >= WORKPLACES_CACHE_MS) {
     const entry: NonNullable<typeof workplacesCache> = { key, at: Number.POSITIVE_INFINITY, value: workplaceAuditReading().then((audits) => Promise.all(repos.map(async (repo): Promise<WorkplaceRepo> => {

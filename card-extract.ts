@@ -218,7 +218,7 @@ const namesRepoVerify = (verify: string, command: string): boolean => {
 // The isolated suite is not a gate step (verify-proportion.ts#LOCAL_PROOF_STEPS stays the gate's
 // chain) and is named by its trail label.
 const ISOLATED_STEP = "isolated";
-const PREVIEW_CONDITION = /\b(?:localProof|isolatedPreview)\b/i;
+const PREVIEW_CONDITION = /\bisolatedPreview\b/i;
 const FULL_CHAIN_ALIAS = /\b(?:volle\s+kette|full\s+chain)\b/gi;
 const ISOLATED_ALIAS = /(?<![\w./-])(?:\.\/)?e2e-isolated(?:\.sh)?(?![\w-])(?!\.\w)/gi;
 function verifyAliased(verify: string): { verify: string; aliased: boolean } {

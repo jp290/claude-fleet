@@ -22,6 +22,9 @@ const bodyOf = async <T>(response: Response): Promise<T> => {
 
 export function runCardRules(check: (name: string, ok: boolean, detail?: string) => void): void {
   const unconditional = [
+    "GET /api/self/gate -> localProof.steps in Reihenfolge nach AGENTS.md Verify; bun install --frozen-lockfile, bun e2e/pins.ts, tsc, bun run build; Gate-Suiten via POST /api/self/jobs; volle Vorschau ueber POST /api/self/suite-offer; je Tail ALL PASS.",
+    "GET /api/self/gate -> localProof.steps nach AGENTS.md Verify (install, pins, tsc mit voller Dateiliste, build, gewaehlte clean-review/security/claude-gate ueber jobs), geschuldete ./e2e-isolated.sh-Vorschau ueber suite-offer, literal ALL PASS",
+    "GET /api/self/gate -> localProof.steps in Reihenfolge; volle Vorschau ueber POST /api/self/suite-offer",
     "install, pins, tsc, build (AGENTS.md §Verify woertlich), dann Suite-Offer (./e2e-isolated.sh-Vorschau ueber POST /api/self/suite-offer)",
     "AGENTS.md §Verify: volle install→pins→Strict-tsc→build→clean-review→security→claude-gate-Kette unten wortgetreu; danach volle ./e2e-isolated.sh-Preview über suite-offer {} auf exakt demselben Freeze.",
     "./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh && ./e2e-isolated.sh; zuvor install, pins, tsc und build aus AGENTS.md §Verify, unten wortgetreu.",
@@ -39,11 +42,9 @@ export function runCardRules(check: (name: string, ok: boolean, detail?: string)
         && result.gaps.some((gap) => gap.includes("nur wenn localProof.isolatedPreview es verlangt")), line);
   }
   const conditional = [
-    "GET /api/self/gate -> localProof.steps in Reihenfolge nach AGENTS.md Verify; bun install --frozen-lockfile, bun e2e/pins.ts, tsc, bun run build; Gate-Suiten via POST /api/self/jobs; volle Vorschau ueber POST /api/self/suite-offer; je Tail ALL PASS.",
-    "GET /api/self/gate -> localProof.steps nach AGENTS.md Verify (install, pins, tsc mit voller Dateiliste, build, gewaehlte clean-review/security/claude-gate ueber jobs), geschuldete ./e2e-isolated.sh-Vorschau ueber suite-offer, literal ALL PASS",
     "bun e2e/pins.ts; Vorschau nur wenn localProof.isolatedPreview es verlangt",
     "./e2e-isolated.sh nur wenn isolatedPreview true ist", "bun e2e/pins.ts", "full chain",
-    `./e2e-isolated.sh ${"x".repeat(450)} nur wenn localProof es verlangt`,
+    `./e2e-isolated.sh ${"x".repeat(450)} nur wenn localProof.isolatedPreview es verlangt`,
   ];
   for (const line of conditional)
     check("(VR.card accept) a conditional preview or ordinary gate proof has no preview gap",

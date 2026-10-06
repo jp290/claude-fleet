@@ -83,10 +83,10 @@ async function instanceBandChecks(): Promise<void> {
   const src = dirname(realpathSync(`${ROOT}/node_modules`));
   const fx = mkdtempSync(`${ROOT}/ti-band-`);
   const git = (...a: string[]) => spawnSync("git", ["-C", fx, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...a], { encoding: "utf8" });
-  const measure = (target?: string) => {
+  const measure = (target?: string, script = `${fx}/testinstanz.sh`) => {
     const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: process.env.TMPDIR ?? "/tmp" };
     if (target !== undefined) env.FLEET_TI_TARGET = target;
-    const r = spawnSync("sh", [`${fx}/testinstanz.sh`, "source"], { env, encoding: "utf8" });
+    const r = spawnSync("sh", [script, "source"], { env, encoding: "utf8" });
     try { return { code: r.status, json: JSON.parse(r.stdout) as Record<string, unknown> & { target?: { branch?: string; head?: string | null; ahead?: number | null } | null }, raw: r.stdout }; }
     catch { return { code: r.status, json: null, raw: r.stdout + r.stderr }; }
   };
@@ -115,6 +115,24 @@ async function instanceBandChecks(): Promise<void> {
     check("band measure: a lane fully on overhaul with a clean tree reads 'alles schon auf overhaul'",
       ff.status === 0 && m0.json?.target?.ahead === 0 && m0.json.dirty === 0
         && instanceBandText(instanceSourceFrom(m0.raw.trim())!, clock).text.endsWith("alles schon auf overhaul"), m0.raw);
+    // a merge of the target into the lane brings the target's content, it is not lane work: the
+    // count stays 0. Mutation: the same measurement by a copy of the script without --no-merges
+    // counts the merge commit (1) → red.
+    writeFileSync(`${fx}/four.txt`, "four\n");
+    const merged = [git("checkout", "-q", "overhaul"), git("add", "-A"), git("commit", "-qm", "four on target"),
+      git("checkout", "-q", "fleet/r11-fixture"), git("merge", "--no-ff", "-qm", "merge overhaul", "overhaul")];
+    const mMerge = measure("overhaul");
+    // inside the fixture: the script measures the directory it lives in (untracked, so `dirty` moves, the count does not)
+    const noMergesGone = `${fx}/testinstanz-nomerges.sh`;
+    writeFileSync(noMergesGone, readFileSync(`${fx}/testinstanz.sh`, "utf8").replace('"--no-merges",', ""));
+    const mMutant = measure("overhaul", noMergesGone);
+    rmSync(noMergesGone, { force: true });
+    check("band measure: a merge of overhaul into the lane counts 0 and reads 'alles schon auf overhaul'",
+      merged.every((r) => r.status === 0) && mMerge.json?.target?.ahead === 0 && mMerge.json.dirty === 0
+        && instanceBandText(instanceSourceFrom(mMerge.raw.trim())!, clock).text.endsWith("alles schon auf overhaul"),
+      `${merged.map((r) => r.stderr).join("").slice(0, 200)} ${mMerge.raw}`);
+    check("band measure MUTATION: the script without --no-merges counts the merge commit",
+      mMutant.json?.target?.ahead === 1, mMutant.raw);
     const unset = measure(), bogus = measure("no-such-branch");
     check("band measure: no target given is target null (never a guessed branch), an unknown branch has no count",
       unset.code === 0 && unset.json?.target === null && bogus.json?.target?.branch === "no-such-branch"

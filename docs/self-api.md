@@ -3370,8 +3370,8 @@ Breite um, nichts wird abgeschnitten. Die Live-Instanz zeigt kein Band.
   `sourceBefore=` gespeichert (die vier bisherigen Felder bleiben, `status --json` und
   `recordedSource.before` lesen weiter nur diese). `./testinstanz.sh source` druckt dieselbe
   Messung, ohne etwas zu starten. `ahead` zählt Commits von `head`, deren Änderung nicht auf dem
-  Ziel liegt (`git rev-list --count --cherry-pick --right-only ziel...head`): eine per Rebase
-  gelandete Lane zählt 0. `dirty` ist die Zahl der Porcelain-Zeilen.
+  Ziel liegt (`git rev-list --count --no-merges --cherry-pick --right-only ziel...head`): eine per
+  Rebase gelandete Lane zählt 0, ein Merge des Ziels in die Lane zählt nicht mit. `dirty` ist die Zahl der Porcelain-Zeilen.
 - **Ziel, nie geraten:** `FLEET_TI_TARGET`; der Server setzt es bei `up` auf die aufgezeichnete
   Basis des Slots, der den Arbeitsort belegt (`Slot.worktree.base`), ein Arbeitsort ohne Session
   bekommt keins. Von Hand in einer Lane-Pane liest das Script `lane.base` aus `GET /api/self`

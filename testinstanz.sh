@@ -91,7 +91,9 @@ case "$DIR" in "$SRC"|"$SRC"/*) echo "refused: the instance may not live inside 
 # WHAT THE INSTANCE SHOWS, measured on the SOURCE before anything is copied (ranke-notiz R11): head,
 # branch, porcelain line count, and — against the TARGET the work wants to land on — how many of
 # head's commits are not on it yet. `--cherry-pick --right-only` drops commits whose change the
-# target already carries, so a lane landed by rebase reads 0 rather than its old count.
+# target already carries, so a lane landed by rebase reads 0 rather than its old count; `--no-merges`
+# drops merge commits, which have no patch to compare — a `git merge <target>` into the lane brings
+# the target's content, it is not lane work missing there.
 # The target is never guessed: FLEET_TI_TARGET (the server passes the lane's recorded base), else
 # the lane's own `base` from GET /api/self when this runs in a lane pane (FLEET_SELF_URL + token,
 # read in-process so the token never reaches a command line), else none — and the band says
@@ -110,7 +112,7 @@ if(!name&&process.env.FLEET_SELF_TOKEN&&process.env.FLEET_SELF_URL){
 let target=null;
 if(name&&run("check-ref-format","--branch",name)!==null){
   const th=run("rev-parse","--verify","--quiet","refs/heads/"+name+"^{commit}");
-  const n=th&&head?run("rev-list","--count","--cherry-pick","--right-only",th+"..."+head):null;
+  const n=th&&head?run("rev-list","--count","--no-merges","--cherry-pick","--right-only",th+"..."+head):null;
   target={branch:name,head:th,ahead:n!==null&&/^\d+$/.test(n)?Number(n):null};
 }
 console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\n").filter(Boolean).length,measuredAt,target}));'

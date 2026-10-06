@@ -144,8 +144,9 @@ export function instanceNameFrom(value: unknown): string | null {
 // PRESENCE IS THE TEST-INSTANCE MARK. Unset or empty → null → no `source` on the wire and no band:
 // the live fleet never sets it. Set but unreadable → every field null, never dropped: an instance
 // that was meant to say its stand and cannot says "unbekannt", it does not fall silent.
-// `target.ahead` counts commits of `head` whose change is not on `target` (git rev-list
-// --cherry-pick --right-only, so a lane already landed by rebase reads 0, not its old count).
+// `target.ahead` counts commits of `head` whose change is not on `target` (git rev-list --no-merges
+// --cherry-pick --right-only, so a lane already landed by rebase reads 0, not its old count, and a
+// merge of the target into the lane adds nothing).
 export interface InstanceSource {
   branch: string | null; head: string | null; dirty: number | null; measuredAt: number | null;
   target: { branch: string; head: string | null; ahead: number | null } | null;

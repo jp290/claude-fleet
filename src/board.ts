@@ -1396,6 +1396,23 @@ export async function renderBoard() {
     const mg = mgRes?.ok ? ((await mgRes.json()) as MergeState) : null;
     if (mg?.running) mergeWatch.add(slot);
     if (boardPop && boardPop.slot !== slot) boardPop = null; // it was another session's menu
+    // the focus moved to another pane while we were fetching — this render describes
+    // the wrong slot; drop it (the re-run below paints the right one)
+    if (panes[focused]?.slot !== slot) { boardAgain = true; return; }
+    // rebuild in place but keep the reading position — AND the keyboard focus. Every node here
+    // is new on every tick, so a focused control was dropped to <body> three times a minute; a
+    // stable key (the element's own text plus its class) finds its successor after the swap.
+    // Both are read HERE, before the first section is built: a section that keeps its element
+    // across ticks (the rights' grant host, src/rights.ts#paintGrant) takes it out of the live
+    // column while the new nodes are assembled, the column is that much shorter for a moment, and
+    // a scrollTop read then is already clamped — the restore jumped the column under the pointer.
+    // From here to the swap nothing awaits, so the values are still the reader's at the swap.
+    const y = boardBody.scrollTop;
+    const focusKey = ((): string | null => {
+      const a = document.activeElement;
+      if (!(a instanceof HTMLElement) || !boardBody.contains(a)) return null;
+      return `${a.tagName}\u0000${a.className}\u0000${(a.textContent ?? "").slice(0, 40)}`;
+    })();
     const nodes: HTMLElement[] = [];
     // THE COLUMN TELLS ONE STORY, top to bottom (docs/design/rechter-tab-notiz.md §3–§3d, Variante 3A,
     // owner-Ja 2026-10-05: „[Zitat entfernt]“): alarms only when due → ARBEITSORTE
@@ -1475,18 +1492,6 @@ export async function renderBoard() {
     // a one-line summary each (G3.2); which tab is open is remembered per browser (src/prefs.ts)
     const msec = moreSection(c);
     nodes.push(msec);
-    // the focus moved to another pane while we were fetching — this render describes
-    // the wrong slot; drop it (the re-run below paints the right one)
-    if (panes[focused]?.slot !== slot) { boardAgain = true; return; }
-    // rebuild in place but keep the reading position — AND the keyboard focus. Every node here
-    // is new on every tick, so a focused control was dropped to <body> three times a minute; a
-    // stable key (the element's own text plus its class) finds its successor after the swap.
-    const y = boardBody.scrollTop;
-    const focusKey = ((): string | null => {
-      const a = document.activeElement;
-      if (!(a instanceof HTMLElement) || !boardBody.contains(a)) return null;
-      return `${a.tagName}\u0000${a.className}\u0000${(a.textContent ?? "").slice(0, 40)}`;
-    })();
     perfRebuild("renderBoard");
     boardBody.replaceChildren(...nodes);
     drawRankeLines(boardBody);

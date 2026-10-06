@@ -2853,7 +2853,12 @@
   #board .ranke { --rk-row: 24px; --rk-sub: 20px; --rk-grp: 8px; --rk-lvl: 10px; --rk-rail: 28px;
     --rk-cols: var(--rk-rail) 22px minmax(0, 1fr) 30px 42px 14px; }
   #board .ranke h3 { display: flex; align-items: center; gap: 6px; min-height: 24px; margin-bottom: 4px; }
-  #board .ranke h3 { flex-wrap: wrap; row-gap: 2px; }
+  /* one line at 300 px whatever the font: a wider sans (the Linux helper's) shortens the checks word
+     with an ellipsis instead of breaking the head; the phone keeps the wrap below */
+  #board .ranke h3 { flex-wrap: nowrap; row-gap: 2px; }
+  #board .ranke h3 .rkseg { flex: none; }
+  #board .ranke h3 .meterbtn { min-width: 0; }
+  #board .ranke h3 .meterbtn .mw { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #board .ranke h3 .act { margin-left: auto; display: flex; align-items: center; gap: 4px; font-weight: 500; letter-spacing: 0; min-width: 0; }
   #board .rkseg { display: inline-flex; border: 1px solid var(--chat-edge); border-radius: var(--r1); overflow: hidden; }
   #board .rkseg button { display: inline-grid; place-items: center; width: 20px; border: 0; border-radius: 0; min-height: 20px; padding: 0; background: transparent;
@@ -3147,7 +3152,7 @@
     /* the rest of the column at the phone's floor: a target 40 px, a reading row 32 px (§3b) */
     #board { --b-row: 40px; --b-hit: 40px; --b-fold: 40px; --b-grp: 12px; }
     #board .bsec h3 { font-size: 12px; min-height: 28px; }
-    #board .ranke h3 { min-height: 40px; }
+    #board .ranke h3 { min-height: 40px; flex-wrap: wrap; }
     #board .meterbtn { min-height: 40px; padding: 0 8px; }
     #board .bkv { min-height: 32px; font-size: 13px; }
     #board .bkv > .k { font-size: 12px; }

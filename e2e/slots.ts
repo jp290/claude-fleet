@@ -9039,6 +9039,20 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
           /^Keine/.test(aText0) && aText0.includes("Nie zugewiesen") && (await patches(A.slot)).length === 0
           && (await net()).some((r) => r.slot === A.slot && r.door === "memory-grant" && r.m === "GET" && r.status === 200);
         await shot(width, "frei");
+        // a repaint keeps the reading position: the column scrolled to its end stays there. The grant
+        // host is kept across ticks (src/rights.ts#paintGrant), so building the next column took it out
+        // of the live one; a scrollTop read after that was short by its height, and every tick jumped
+        // the column under the pointer — the click aimed at Zuweisen landed on the row above
+        // (src/board.ts#renderBoard reads the position before the first section is built).
+        const keep = await evaluate<{ before: number; after: number; max: number; rebuilt: boolean } | null>(`new Promise((ok) => {
+          const bb = document.querySelector('#boardbody'); if (!bb) return ok(null);
+          bb.scrollTop = bb.scrollHeight; const before = bb.scrollTop; let fin = false;
+          const done = (rebuilt) => { if (fin) return; fin = true; mo.disconnect(); ok({ before, after: bb.scrollTop, max: bb.scrollHeight - bb.clientHeight, rebuilt }); };
+          const mo = new MutationObserver(() => setTimeout(() => done(true), 50)); mo.observe(bb, { childList: true });
+          setTimeout(() => done(false), 8000); })`);
+        facts.keep = keep;
+        claims["board: a repaint keeps the reading position — the column scrolled to its end, under the rights block, stays where it was"] =
+          !!keep && keep.rebuilt && keep.before > 0 && Math.abs(keep.after - Math.min(keep.before, keep.max)) <= 1;
         await click(rk("open"));
         const edOpen = await wait(`${RB}?.querySelector('.rged')`);
         await click(rk(`p:${kRepo}`));
@@ -10884,6 +10898,19 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
           facts.info = { kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
           claims[`${it}the column's head says "Info"`] = phone ? n.shellInfo : n.title === "Info";
           if (!phone && hasSession) claims[`${it}the Arbeitsorte's head — title, the name switch, the checks strip — stays one line at 300 px`] = n.headH > 0 && n.headH <= 26;
+          // …whatever the font: the Linux helper's sans is wider than this Mac's, and its head broke into two
+          // lines in `land`. Letter-spacing stands in for that font on every machine; the checks word is cut
+          // with … instead (public/index.html, `.ranke h3 .meterbtn .mw`), its full text stays its name.
+          if (!phone && st === "land") {
+            const wide = await evaluate<{ h: number; word: string; cut: boolean; inside: boolean } | null>(`(() => { const h3 = document.querySelector('#boardbody .ranke h3'); if (!h3) return null;
+              const css = document.createElement('style'); css.textContent = '#board .ranke h3, #board .ranke h3 * { letter-spacing: 1px !important; }'; document.head.append(css);
+              const mw = h3.querySelector('.meterbtn .mw'); const out = { h: Math.round(h3.getBoundingClientRect().height), word: mw ? mw.textContent : '', cut: !!mw && mw.scrollWidth > mw.clientWidth,
+                inside: [...h3.querySelectorAll('*')].every((e) => e.getBoundingClientRect().right <= h3.getBoundingClientRect().right + 0.5) };
+              css.remove(); return out; })()`);
+            facts.wideHead = wide;
+            claims[`${it}with a wider font the Arbeitsorte's head still stays one line inside the column — the checks word is cut with …, its text whole`] =
+              !!wide && wide.h > 0 && wide.h <= 26 && wide.cut && wide.inside && wide.word === "Prüfungen · 1 läuft";
+          }
           claims[`${it}the checks strip is a word button in the Arbeitsorte's head, the pinned strip under the column head is gone`] =
             n.meter.inHead && !n.oldMeter && n.meter.btn === (st === "land" ? "Prüfungen · 1 läuft" : st === "leer" ? "Prüfungen · frei · 1 Helfer" : "Prüfungen · frei");
           // the order of the sections after the alarms: Arbeitsorte → Session → Changes → Notizblock → History → Mehr

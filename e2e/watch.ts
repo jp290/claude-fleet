@@ -2513,6 +2513,13 @@ export async function run(): Promise<void> {
       const noAgentBody = await noAgent.clone().json() as { agent?: string; receipt?: { delivery: string } };
       const noAgentMessage = "send refused — no live agent in the pane; nothing was typed";
       const legacy = (_status: number, _body: unknown): string => draftMessage;
+      // Fire-and-forget audit appends can still be pending 2 ms after the refusal; read their ledger within 3 s.
+      await until(() => zeroBytes(start), {
+        timeoutMs: 3000, what: "no-agent refusal's zero-byte row reaches the asynchronous audit ledger",
+      }).catch((error: unknown) => {
+        if (error instanceof UntilTimeout) return null;
+        throw error;
+      });
       check("owner send: no-agent refuses zero bytes and the old refused-to-draft formatter fails",
         noAgent.status === 409 && noAgentBody.agent === "no-agent" && noAgentBody.receipt?.delivery === "refused"
           && zeroBytes(start) && await replay(noAgent, noAgentMessage) && !await replay(noAgent, noAgentMessage, legacy),

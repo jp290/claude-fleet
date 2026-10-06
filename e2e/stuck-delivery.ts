@@ -140,6 +140,30 @@ export async function run(): Promise<void> {
   check("stuck-delivery dim hint is empty and never a delivery remainder",
     composerDeliveryResidue(composerRows(form, "❯ \x1b[2mTry a prompt\x1b[0m\n") ?? [], payload, collapsed) === null);
 
+  const sendSource = readFileSync(`${ROOT}/server.ts`, "utf8").replace(/^\s*\/\/.*$/gm, "");
+  const captureSource = sendSource.match(/\(rows\) => \{ deliveryRead\.collapsedDisplay[^}]+\}/)?.[0];
+  check("stuck-delivery SETUP: the arrival callback is readable", captureSource !== undefined);
+  if (captureSource) {
+    const gapRows = composerRows(form, "❯ \x1b[2mTry a prompt\x1b[0m\n") ?? [];
+    const retainsLabel = (source: string): boolean => {
+      const state: { collapsedDisplay: string | null } = { collapsedDisplay: null };
+      const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(`const capture = ${source};`);
+      const capture = new Function("deliveryRead", "composerCollapsedPaste", "header", `${compiled}; return capture;`)(
+        state, composerCollapsedPaste, header) as (frameRows: readonly string[]) => void;
+      // frame | rendering           | exclusive owner
+      // 0     | known label         | arrival callback
+      // 1     | hint, without label | arrival callback
+      for (const frameRows of [rows, gapRows]) capture(frameRows);
+      return state.collapsedDisplay === collapsed
+        && composerDeliveryResidue(rows, payload, state.collapsedDisplay)?.kind === "collapsed-paste";
+    };
+    check("stuck-delivery a missing-label frame preserves the previously measured identity",
+      retainsLabel(captureSource));
+    const overwrite = captureSource.replace("??=", "=");
+    check("stuck-delivery mutation: overwriting with a missing label loses the identity",
+      overwrite !== captureSource && !retainsLabel(overwrite));
+  }
+
   const dir = mkdtempSync(`${ROOT}/stuck-delivery-`);
   const modeFile = `${dir}/mode`, stateFile = `${dir}/state`;
   writeFileSync(`${dir}/fixture.c`, fixture);

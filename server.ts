@@ -10157,7 +10157,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
         const watchEvent = options.path === "fleet-event";
         const arrivalWaitMs = watchEvent ? Math.max(ACCEPT_WAIT_MS, 3000) : ACCEPT_WAIT_MS;
         arrival = await awaitArrival(s, bound, composed, arrivalWaitMs, watchEvent,
-          (rows) => { deliveryRead.collapsedDisplay = composerCollapsedPaste(rows, header ?? ""); });
+          (rows) => { deliveryRead.collapsedDisplay ??= composerCollapsedPaste(rows, header ?? ""); });
         // identity first: a slot that changed under the window must report THAT, not a verdict.
         if (!sameBoundPane(s, bound)) throw new Error("slot changed during arrival probe");
         if (arrival === "partial") throw new SendNotAccepted(

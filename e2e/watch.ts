@@ -2428,7 +2428,10 @@ export async function run(): Promise<void> {
         && busyReason === "gate=busy — nothing typed" && await replay(ownerResponse, null),
         JSON.stringify({ ...ownerDetail, reason: busyReason }));
       await machineRelease(machine, busyStart, "the same machine bundle after the busy gate opens");
-      for (let i = 0; i < 120 && count(machine) < 1; i++) await Bun.sleep(50); // wait on the delivery itself, never on ticks
+      // "exactly once, never repastes" is an ABSENCE claim: no observable positive proof that the
+      // NEXT delivery tick ran exists on the API (needs a delivery-tick counter/latch), so the
+      // fixed window stays at its old length — see the measurement note's server-sensor line.
+      await Bun.sleep(AUTOS_TICK_MS * 3);
       check("owner send: gate release delivers the retained machine exactly once, never repastes the owner",
         count(machine) === 1 && count(ownerText) === 1, JSON.stringify({ owner: count(ownerText), machine: count(machine) }));
       await post(`/api/autos/${autoId}/delete`, {});

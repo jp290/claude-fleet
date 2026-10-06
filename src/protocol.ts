@@ -179,7 +179,8 @@ export function instanceSourceFrom(value: unknown): InstanceSource | null {
 
 // THE BAND'S WORDS, one pure function so the claim is checkable without a browser. A run marked
 // `mono` is a branch or a sha (G0.3). Nothing is guessed: a missing value is the word "unbekannt",
-// and "alles schon auf ‹ziel›" needs BOTH counts measured as zero.
+// a count needs the target's sha measured with it ("Abgleich mit ‹ziel› unbekannt" otherwise), and
+// "alles schon auf ‹ziel›" needs BOTH counts measured as zero.
 export interface InstanceBandRun { t: string; mono?: boolean }
 export interface InstanceBandText { segments: InstanceBandRun[][]; text: string; title: string }
 export function instanceBandText(s: InstanceSource, clock: (ms: number) => string): InstanceBandText {
@@ -194,7 +195,8 @@ export function instanceBandText(s: InstanceSource, clock: (ms: number) => strin
       const on = { t: target.branch, mono: true };
       const commits = target.ahead === null ? null : target.ahead === 1 ? "1 Commit" : `${target.ahead} Commits`;
       const files = s.dirty === null ? null : s.dirty === 1 ? "1 Datei ohne Commit" : `${s.dirty} Dateien ohne Commit`;
-      if (target.ahead === null) segments.push([{ t: "was noch nicht auf " }, on, { t: " ist: unbekannt" }]);
+      // a count is only a comparison when the target's own sha was measured with it
+      if (target.head === null || target.ahead === null) segments.push([{ t: "Abgleich mit " }, on, { t: " unbekannt" }]);
       else if (target.ahead === 0 && s.dirty === 0) segments.push([{ t: "alles schon auf " }, on]);
       else if (s.dirty === null) segments.push([{ t: target.ahead === 0 ? "alle Commits schon auf " : `${commits} noch nicht auf ` }, on, { t: ", Dateien ohne Commit: unbekannt" }]);
       else segments.push([{ t: `${[target.ahead ? commits : null, s.dirty ? files : null].filter(Boolean).join(" und ")} noch nicht auf ` }, on]);

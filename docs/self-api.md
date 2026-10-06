@@ -3361,8 +3361,9 @@ Keine Live-Bindings, Helper-/Job-/Watch-Übertragung, Merge/Land/Deploy/Undo ode
 Eine mit `testinstanz.sh up` gestartete Instanz zeigt oben eine ruhige Zeile: Zweig, Stand beim
 Start (kurze Sha) und was davon noch nicht im Ziel ist — „3 Commits noch nicht auf overhaul“,
 „1 Commit und 2 Dateien ohne Commit noch nicht auf overhaul“, „alles schon auf overhaul“; fehlt
-eine Angabe, steht „unbekannt“ („Stand unbekannt“, „Ziel unbekannt“). Die Live-Instanz zeigt kein
-Band.
+eine Angabe, steht „unbekannt“ („Stand unbekannt“, „Ziel unbekannt“; ohne gemessene Ziel-Sha oder
+Zählung „Abgleich mit ‹ziel› unbekannt“). Eine Zeile, solange sie passt; lange Namen brechen in jeder
+Breite um, nichts wird abgeschnitten. Die Live-Instanz zeigt kein Band.
 
 - **Messung vor dem Kopieren:** `testinstanz.sh#ti_measure` liefert
   `{head,branch,dirty,measuredAt,target:{branch,head,ahead}|null}` und wird unverändert als

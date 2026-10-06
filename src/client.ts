@@ -201,11 +201,12 @@ function renderInstanceBand(source: InstanceSource | null) {
   const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
   const parts: Node[] = [];
   band.segments.forEach((seg, i) => {
-    if (i > 0) parts.push(el("span", "tisep", " · "));
     const span = el("span", "tiseg");
-    // the glyph rides inside the first segment, so on a phone it wraps WITH the branch, never alone
+    // the glyph rides inside the first segment and each separator closes its segment, so a wrapped
+    // line never starts with a lone glyph or a "·"
     if (i === 0) span.append(icon("ranke"));
     for (const run of seg) span.append(run.mono ? el("span", "timono", run.t) : document.createTextNode(run.t));
+    if (i < band.segments.length - 1) span.append(el("span", "tisep", " · "));
     parts.push(span);
   });
   tiBand.replaceChildren(...parts);

@@ -53,22 +53,26 @@
      never renders, and the “seen” receipt is the same card at its quietest. */
   #plaudit { display: none; }
   /* THE TESTINSTANZ BAND (ranke-notiz R11, grammatik G2.3): which branch and stand a test instance
-     shows and what of it is not on its target yet. One quiet line IN FLOW above everything — it
+     shows and what of it is not on its target yet. One quiet line (it wraps rather than clips) IN FLOW above everything — it
      pushes the app down, never covers it. Material G0.1 (void ground, soft lower edge, mute ink,
      shas and branches in mono); no signal colour, because nothing here is wrong or waiting (G0.2).
      Only a test instance ever shows it: src/client.ts#renderInstanceBand sets html.tiband from
      instance.source, which the live fleet never sends. */
-  #tiband { display: flex; align-items: center; min-height: 24px; padding: 3px 12px; box-sizing: border-box;
+  #tiband { display: block; min-height: 24px; padding: 3px 12px; box-sizing: border-box;
     background: var(--chat-void); border-bottom: 1px solid var(--chat-edge-soft); color: var(--chat-mute);
-    font-family: var(--chat-sans); font-size: var(--chat-ui-fs); font-weight: 400; line-height: 1.4;
-    white-space: nowrap; overflow: hidden; }
+    font-family: var(--chat-sans); font-size: var(--chat-ui-fs); font-weight: 400; line-height: 1.4; }
   #tiband[hidden] { display: none; }
   #tiband svg { display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -2px; color: var(--chat-faint); }
-  #tiband .tiseg { flex: none; }
-  #tiband .tiseg:first-of-type { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* ONE line while it fits; a long branch or target name breaks onto the next line in EVERY width,
+     never clipped. Plain text flow, not flex: a wrapped flex line was sized ~4 px short of its
+     two-line segment (measured 900 × 700), so the band's own height would not hold it. Each segment
+     is an inline-block no wider than the band and wraps inside itself
+     (claim: e2e/lanes-lifecycle.ts#instanceBandDom at 900 × 700 and 390 × 844) */
+  #tiband .tiseg { display: inline-block; max-width: 100%; vertical-align: top; overflow-wrap: anywhere; }
   #tiband .timono { font-family: var(--chat-mono); color: var(--chat-prose); }
-  #tiband .tisep { flex: none; white-space: pre; color: var(--chat-faint); }
+  #tiband .tisep { white-space: pre; vertical-align: top; color: var(--chat-faint); }
   html.tiband body { display: flex; flex-direction: column; height: 100dvh; height: var(--vvh, 100dvh); }
+  html.tiband #tiband { flex: none; } /* the band keeps its full height; only #app gives way */
   html.tiband #app { flex: 1 1 auto; min-height: 0; height: auto; }
   .plasec { display: block;
     padding: 10px 12px; border-radius: var(--r2); color: var(--chat-ink); line-height: 1.45;
@@ -3476,11 +3480,8 @@
   /* --- mobile: phones in any orientation (short landscape counts too) --- */
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     #app { flex-direction: column; height: 100dvh; height: var(--vvh, 100dvh); }
-    /* the test-instance band on a phone breaks into lines instead of cutting its words (G2 Mobil):
-       EVERY segment may shrink to the line and wrap inside it — a long branch or target name is
-       broken, never clipped (claim: e2e/lanes-lifecycle.ts#instanceBandDom at 390 × 844) */
-    #tiband { flex-wrap: wrap; white-space: normal; overflow: visible; padding: 6px 12px; row-gap: 2px; }
-    #tiband .tiseg, #tiband .tiseg:first-of-type { flex: 0 1 auto; min-width: 0; overflow: visible; overflow-wrap: anywhere; }
+    /* the test-instance band on a phone: a little more air around its (usually two) lines */
+    #tiband { padding: 6px 12px; }
 
     /* the check alarm's phone surface: full-bleed above #mhead, in flow — it pushes the app down
        instead of floating over it (G2.1 mobil); only the signal-coloured bottom edge stays */

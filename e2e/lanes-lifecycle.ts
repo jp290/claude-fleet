@@ -53,6 +53,14 @@ async function instanceBandChecks(): Promise<void> {
     guessed.every(neverGuessed), JSON.stringify(guessed.map((b) => b?.text)));
   check("band words MUTATION: the never-guessed predicate is red on a text that claims 'alles schon' without a count",
     !neverGuessed({ segments: [], title: "", text: "Zweig x · Stand beim Start aaaaaaa · alles schon auf overhaul" }));
+  // a count is a comparison only when the target's sha was measured with it. Mutation: the text a
+  // band would show if it ignored the missing sha ("3 Commits …") → the predicate is red.
+  const unmatched = words({ ...lane(3, 0), target: { branch: "overhaul", head: null, ahead: 3 } });
+  const noBlindCount = (text: string | undefined) => !!text && text.endsWith("Abgleich mit overhaul unbekannt") && !/Commit|alles schon/.test(text.split(" · ")[2] ?? "");
+  check("band words: without a measured target sha the band says 'Abgleich mit overhaul unbekannt', no count",
+    noBlindCount(unmatched?.text) && noBlindCount(words(lane(null, 0))?.text), unmatched?.text);
+  check("band words MUTATION: the no-blind-count predicate is red on a count shown without the target sha",
+    !noBlindCount("Zweig fleet/r11-fixture · Stand beim Start aaaaaaa · 3 Commits noch nicht auf overhaul"));
   const PROCESS = /\b(baton|audit|gate|suite|deploy)\b/i;
   const every = [three, all, none, ...guessed, words(lane(1, 2)), words(lane(0, 1))];
   check("band words: no process word in any band text or tooltip (G0.5)",
@@ -158,38 +166,42 @@ async function instanceBandChecks(): Promise<void> {
   check("band client MUTATION: the wiring predicate is red without the hidden toggle",
     !wired(client.replace("tiBand.hidden = !source;", ""), html) && !wired(client, html.replace('<div id="tiband" hidden></div>', '<div id="tiband"></div>')));
 
-  // DOM — the real client bundle in Chromium at 390 × 844 with a long branch and a long target:
-  // nothing clipped, the target sentence whole. Mutation: the phone rule with `flex: none` back.
+  // DOM — the real client bundle in Chromium at 900 × 700 and 390 × 844 with a long branch and a long
+  // target: nothing clipped in either width, the target sentence whole. Mutation: segments that may not
+  // shrink below their text (`flex: none` in the review's words).
   try {
     const dom = await instanceBandDom(src);
-    check("band DOM SETUP: Chromium paints the band from a fixture instance.source", dom.real.shown && dom.real.text === dom.expected,
-      JSON.stringify(dom.real).slice(0, 600));
-    check("band DOM 390x844: with a long branch and target no segment overflows and the target sentence stands whole in the band",
-      dom.real.shown && dom.real.clipped.length === 0 && dom.real.bandOverflow === false && dom.real.lastWhole, JSON.stringify(dom.real).slice(0, 900));
-    check("band DOM 390x844 MUTATION: with flex:none back on the phone segments the same claim is red",
-      dom.mutant.shown && (dom.mutant.clipped.length > 0 || dom.mutant.bandOverflow || !dom.mutant.lastWhole), JSON.stringify(dom.mutant).slice(0, 900));
-    check("band DOM: without instance.source (the live fleet) the band is hidden and the app starts at the top",
-      dom.live.shown === false && dom.live.htmlClass === false && dom.live.appTop === 0, JSON.stringify(dom.live));
+    for (const v of dom.views) {
+      check(`band DOM SETUP ${v.size}: Chromium paints the band from a fixture instance.source`, v.real.shown && v.real.text === dom.expected,
+        JSON.stringify(v.real).slice(0, 600));
+      check(`band DOM ${v.size}: with a long branch and target no segment overflows and the target sentence stands whole in the band`,
+        v.real.shown && v.real.clipped.length === 0 && v.real.bandOverflow === false && v.real.lastWhole, JSON.stringify(v.real).slice(0, 900));
+      check(`band DOM ${v.size} MUTATION: with unshrinkable segments (flex:none / nowrap) the same claim is red`,
+        v.mutant.shown && (v.mutant.clipped.length > 0 || v.mutant.bandOverflow || !v.mutant.lastWhole), JSON.stringify(v.mutant).slice(0, 900));
+      check(`band DOM ${v.size}: without instance.source (the live fleet) the band is hidden and the app starts at the top`,
+        v.live.shown === false && v.live.htmlClass === false && v.live.appTop === 0, JSON.stringify(v.live));
+    }
   } catch (error) {
     check("band DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false, error instanceof Error ? error.message : String(error));
   }
 }
 
 // THE BAND IN A REAL BROWSER: the real client bundle behind a fixture origin (the rig of
-// e2e/slots.ts#runPhoneIslandDom, cut down to one page and three facts). Three loads at 390 × 844:
-// the band with long names, the same with the phone rule mutated back to `flex: none`, and an
-// /api/sessions without instance.source. A browser that cannot run is the PROBE line — red, never a skip.
-interface BandDomFacts { shown: boolean; htmlClass: boolean; appTop: number; text: string; clipped: string[]; bandOverflow: boolean; lastWhole: boolean }
-async function instanceBandDom(sourceRoot: string): Promise<{ real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts; expected: string }> {
+// e2e/slots.ts#runPhoneIslandDom, cut down to one page and three facts). Three loads per width
+// (900 × 700, 390 × 844): the band with long names, the same with segments that cannot shrink
+// (nowrap), and an /api/sessions without instance.source. A browser that cannot run is the PROBE line — red, never a skip.
+interface BandDomFacts { shown: boolean; htmlClass: boolean; appTop: number; text: string; clipped: string[]; bandOverflow: boolean; lastWhole: boolean; boxes: number[][] }
+async function instanceBandDom(sourceRoot: string): Promise<{ views: { size: string; real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts }[]; expected: string }> {
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
-  const phoneRule = "#tiband .tiseg, #tiband .tiseg:first-of-type { flex: 0 1 auto; min-width: 0;";
-  if (!indexHtml.includes(phoneRule)) throw new Error("phone rule for #tiband .tiseg not found in public/index.html");
-  const mutantHtml = indexHtml.replace(phoneRule, "#tiband .tiseg:first-of-type { flex: 0 1 auto; min-width: 0;");
+  const segmentRule = "#tiband .tiseg { display: inline-block; max-width: 100%; vertical-align: top; overflow-wrap: anywhere; }";
+  if (!indexHtml.includes(segmentRule)) throw new Error("segment rule for #tiband .tiseg not found in public/index.html");
+  // the mutation: a segment that may not shrink below its own text (the `flex: none` of the review)
+  const mutantHtml = indexHtml.replace(segmentRule, "#tiband .tiseg { display: inline-block; white-space: nowrap; }");
   const source = { head: "c".repeat(40), branch: "fleet/261006-ein-sehr-langer-zweigname-der-ueber-die-breite-eines-telefons-hinausgeht-2b6c",
-    dirty: 2, measuredAt: 1, target: { branch: "integration/ueberarbeitung-mit-einem-sehr-langen-zielnamen", head: "d".repeat(40), ahead: 12 } };
+    dirty: 2, measuredAt: 1, target: { branch: "integration/ueberarbeitung-mit-einem-sehr-langen-zielnamen-der-auch-am-desktop-nicht-in-eine-zeile-passt", head: "d".repeat(40), ahead: 12 } };
   const expected = instanceBandText(instanceSourceFrom(JSON.stringify(source))!, () => "").text;
   const scratch = mkdtempSync(resolve(process.env.TMPDIR ?? "/tmp", "fleet-band-dom-"));
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -236,7 +248,6 @@ async function instanceBandDom(sourceRoot: string): Promise<{ real: BandDomFacts
     sessionId = String((await send("Target.attachToTarget", { targetId: String(target.targetId), flatten: true })).sessionId);
     await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
     await send("Runtime.enable");
-    await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     const evaluate = async <T>(expression: string): Promise<T> =>
       ((await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result as { value: T }).value;
     const load = async (html: string, src: unknown): Promise<BandDomFacts> => {
@@ -244,17 +255,24 @@ async function instanceBandDom(sourceRoot: string): Promise<{ real: BandDomFacts
       await send("Page.navigate", { url: "http://fleet.fixture/?token=fixture" });
       await evaluate(`new Promise((ok) => { const until = Date.now() + 8000; const tick = () => {
         const b = document.getElementById('tiband'); if ((b && document.readyState === 'complete' && (${src === undefined} ? Date.now() > until - 6000 : !b.hidden)) || Date.now() > until) return ok(true); setTimeout(tick, 50); }; tick(); })`);
-      return await evaluate<BandDomFacts>(`(() => { const b = document.getElementById('tiband'), r = b.getBoundingClientRect();
+      return await evaluate<BandDomFacts>(`(() => { const b = document.getElementById('tiband'), cs = getComputedStyle(b), o = b.getBoundingClientRect();
+        const r = { left: o.left + parseFloat(cs.paddingLeft), right: o.right - parseFloat(cs.paddingRight), top: o.top, bottom: o.bottom - parseFloat(cs.paddingBottom) - parseFloat(cs.borderBottomWidth) };
         const segs = [...b.querySelectorAll('.tiseg')], last = segs[segs.length - 1];
         const lr = last ? last.getBoundingClientRect() : null;
         return { shown: !b.hidden && getComputedStyle(b).display !== 'none', htmlClass: document.documentElement.classList.contains('tiband'),
           appTop: Math.round(document.getElementById('app').getBoundingClientRect().top), text: b.textContent,
           clipped: segs.filter((s) => s.scrollWidth > s.clientWidth || s.getBoundingClientRect().right > r.right + 0.5).map((s) => s.textContent.slice(0, 40)),
           bandOverflow: b.scrollWidth > b.clientWidth || document.documentElement.scrollWidth > innerWidth,
-          lastWhole: !!lr && lr.left >= r.left - 0.5 && lr.right <= r.right + 0.5 && lr.bottom <= r.bottom + 0.5 && last.scrollWidth <= last.clientWidth }; })()`);
+          lastWhole: !!lr && lr.left >= r.left - 0.5 && lr.right <= r.right + 0.5 && lr.bottom <= r.bottom + 0.5 && last.scrollWidth <= last.clientWidth,
+          boxes: [r, lr].filter(Boolean).map((x) => [x.left, x.right, x.top, x.bottom].map((n) => Math.round(n * 100) / 100)) }; })()`);
     };
-    const real = await load(indexHtml, source), mutant = await load(mutantHtml, source), live = await load(indexHtml, undefined);
-    return { real, mutant, live, expected };
+    const views: { size: string; real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts }[] = [];
+    for (const [width, height, mobile] of [[900, 700, false], [390, 844, true]] as const) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
+      const real = await load(indexHtml, source), mutant = await load(mutantHtml, source), live = await load(indexHtml, undefined);
+      views.push({ size: `${width}x${height}`, real, mutant, live });
+    }
+    return { views, expected };
   } finally {
     socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
   }

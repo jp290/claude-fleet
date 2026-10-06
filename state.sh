@@ -114,8 +114,9 @@ def output():
         else:
             result.append(g)
     print('\n'.join(result))
-def named(row):
-    return f"{row.get('id', row.get('programId', 'unknown'))} title={compact(row.get('title', 'unknown'))} basis={row.get('titleBasis', 'unknown: missing-title-source')}"
+def title(value):
+    text = str(value)
+    return compact(text if len(text) <= 80 else text[:80] + '... [title-shortened]')
 def boundary_door(row):
     if row.get('kind') in ('start', 'audit'): return f"./ctl.sh task {row.get('id')}"
     return 'GET /api/operational-view'
@@ -136,11 +137,11 @@ def operational(view):
         emit('unknown operational data reason=missing-or-unreadable; detail: GET /api/operational-view')
         return
     group('program', data.get('bindings'), 'GET /api/operational-view', lambda r:
-          f"{r.get('programId')} status={r.get('status', 'unknown')} binding={r.get('state', 'unknown')} slot={r.get('slot')} openedAt={r.get('openedAt')} sessionId={r.get('sessionId')} title={compact(r.get('title', 'unknown'))} basis={r.get('titleBasis', 'unknown')}", accept=lambda r: r.get('status', 'unknown') in ('active', 'unknown'))
+          f"{r.get('programId')} status={r.get('status', 'unknown')} binding={r.get('state', 'unknown')} slot={r.get('slot')} openedAt={r.get('openedAt')} sessionId={r.get('sessionId')} title={title(r.get('title', 'unknown'))} basis={r.get('titleBasis', 'unknown')}", accept=lambda r: r.get('status', 'unknown') in ('active', 'unknown'))
     group('boundary', data.get('exceptions'), 'GET /api/operational-view', lambda r:
-          f"{r.get('kind')} {r.get('id')} phase={r.get('phase', 'unknown')} door={boundary_door(r)} reason={r.get('reason', 'unknown')} title={compact(r.get('title', 'unknown'))} related={compact(r.get('related', r.get('relatedIds', [])))} basis={r.get('titleBasis', 'unknown')}")
+          f"{r.get('kind')} {r.get('id')} phase={r.get('phase', 'unknown')} door={boundary_door(r)} reason={r.get('reason', 'unknown')} title={title(r.get('title', 'unknown'))} related={compact(r.get('related', r.get('relatedIds', [])))} basis={r.get('titleBasis', 'unknown')}")
     group('row', data.get('rows'), 'GET /api/operational-view', lambda r:
-          f"{named(r)} status={r.get('status', 'unknown')} program={r.get('programId')} held={r.get('held')} after={compact(r.get('after'))} door=./ctl.sh task {r.get('id')}")
+          f"{r.get('id')} status={r.get('status', 'unknown')} program={r.get('programId')} held={r.get('held')} after={compact(r.get('after'))} door=./ctl.sh task {r.get('id')} title={title(r.get('title', 'unknown'))} basis={r.get('titleBasis', 'unknown: missing-title-source')}")
     group('startable', data.get('startable'), 'GET /api/operational-view', lambda r:
           f"{r.get('id')} by={r.get('by')} phase=STARTABLE door=./ctl.sh task {r.get('id')} (action door rechecks)")
     group('message', data.get('messages'), 'GET /api/operational-view', accept=lambda r: r.get('unread') is not False)
@@ -207,7 +208,7 @@ def execution(view, self):
         emit('unknown handover reason=unreadable-record')
     group('execution-unknown', p.get('unknown'), 'GET /api/self/program-execution', limit=2)
     group('task', p.get('tasks', {}).get('rows'), 'GET /api/self/program-execution', lambda r:
-          f"{r.get('id')} status={r.get('status', 'unknown')} phase={r.get('phase', 'unknown')} door={r.get('nextAction') or 'none; observe the named phase'} title={compact(r.get('text', 'unknown').splitlines()[0] if r.get('text') else 'unknown')} basis={compact(r.get('phaseBasis'))} note={compact(r.get('note'))}")
+          f"{r.get('id')} status={r.get('status', 'unknown')} phase={r.get('phase', 'unknown')} door={r.get('nextAction') or 'none; observe the named phase'} title={title(r.get('text', 'unknown').splitlines()[0] if r.get('text') else 'unknown')} basis={compact(r.get('phaseBasis'))} note={compact(r.get('note'))}")
     group('clarifications', p.get('clarifications'), 'GET /api/self/clarifications')
 try:
     if not os.environ.get('FLEET_SELF_TOKEN'):

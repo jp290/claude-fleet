@@ -485,6 +485,18 @@ await import(pathToFileURL(process.argv[2]).href);
       check("start MAIN shows five of ten own open tasks with an explicit remainder",
         ownTasks.stdout.includes("task count=10 omitted=5") && ownTasks.stdout.split("\n").filter((line) => line.startsWith("task open-task")).length === 5 && budget(ownTasks.stdout));
       program.tasks.rows = manyTasks;
+      const namedRows = [data.rows[data.rows.length-1]!, data.bindings[data.bindings.length-1]!, data.exceptions[data.exceptions.length-1]!];
+      const oldTitles = namedRows.map((row) => row.title);
+      for (const row of namedRows) row.title = "ä".repeat(160);
+      const titleProbe = readRole("orchestrator");
+      const titledRow = titleProbe.stdout.split("\n").find((line) => line.startsWith("row task1 ")) ?? "";
+      const titledBoundary = titleProbe.stdout.split("\n").find((line) => line.startsWith("boundary start task1 ")) ?? "";
+      const titledProgram = titleProbe.stdout.split("\n").find((line) => line.startsWith("program program1 ")) ?? "";
+      check("start 160-character titles retain row status, dependencies and full action door before shortened text",
+        ["status=queued", "program=program1", "held=True", "after=[]", "door=./ctl.sh task task1"].every((value) => titledRow.includes(value))
+        && titledBoundary.includes("phase=unknown door=./ctl.sh task task1")
+        && titledProgram.includes("status=active binding=bound slot=2 openedAt=1 sessionId=main1") && budget(titleProbe.stdout), titledRow);
+      namedRows.forEach((row, i) => { row.title = oldTitles[i]!; });
       // These controls grow lines and UTF-8 bytes independently; both must be rejected.
       check("start budget predicate rejects 81 lines and a single 10001-byte UTF-8 line",
         !budget("x\n".repeat(81)) && !budget("ä".repeat(5000) + "x"));

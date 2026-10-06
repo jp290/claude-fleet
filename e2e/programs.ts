@@ -858,8 +858,9 @@ export async function run(ctx: Ctx): Promise<void> {
   const promiseSources = [{ path: "AGENTS.md", anchor: "## Repo contract" }, { path: "docs/promise.md", anchor: "## Product promise" }];
   const expectedPromiseHash = observedSourceHash(promiseSources,
     new Map(promiseSources.map((source) => [source.path, blobSha(manifestRepo, source.path)])));
-  const expectedBlock = "\n\nContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"
-    + "\n- product-promise"
+  const expectedBlock = "\n\nContextPlan v2 anchors (fresh pointers; no source content is copied):"
+    + "\nHinweise (guidance):"
+    + "\n- product-promise [guidance]"
     + "\n  AGENTS.md | ## Repo contract"
     + "\n  docs/promise.md | ## Product promise";
   check("Program-MAIN carrier: the delivered block is exactly the validated repo anchors, and nothing else moved",
@@ -869,6 +870,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN carrier receipt: the repo pack is a selected row WITH the observed source version, the bad pointer a named omission, and the hash recomputes",
     !!carrierOn.receipt && JSON.stringify(carrierOn.receipt.selected) === JSON.stringify([{
       id: "product-promise",
+      hardness: "guidance",
       anchors: [{ path: "AGENTS.md", anchor: "## Repo contract" },
         { path: "docs/promise.md", anchor: "## Product promise" }],
       sourceHash: expectedPromiseHash,
@@ -9373,7 +9375,7 @@ export async function run(ctx: Ctx): Promise<void> {
     "PROGRAM-CONTEXT-PACKS FIXTURE — a lane of the Program that carries a pack");
   const cpProgramReceipt = cpProgramLane.receipt;
   const cpBlob = cpProgramReceipt ? gitIn(cpProgramReceipt.repo, "rev-parse", `${cpProgramReceipt.head}:AGENTS.md`).stdout.trim() : "";
-  const cpExpectedRow = { id: cpPack.id, useWhen: cpPack.useWhen, anchors: cpPack.sources,
+  const cpExpectedRow = { id: cpPack.id, hardness: "guidance", useWhen: cpPack.useWhen, anchors: cpPack.sources,
     sourceHash: observedSourceHash(cpPack.sources, new Map([["AGENTS.md", cpBlob]])), origin: "program" };
   check("program-context-packs (4a): the Program's dispatched lane receipts the pack with origin:\"program\" and its observed source version — and no other row claims that origin",
     cpProgramLane.status === 200 && !!cpProgramReceipt && cpProgramReceipt.programId === mainProgram.id

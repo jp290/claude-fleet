@@ -82,13 +82,19 @@ def group(name, rows, door, render=None, limit=5, accept=lambda r: True):
     if render is None: render = lambda row: f'door={door} {compact(row)}'
     ordered = newest(eligible)
     if name == 'audit': ordered.sort(key=lambda r: r.get('result') != 'red')
-    lines.append({'name': name, 'count': len(rows), 'terminal': terminal_count,
-                  'filtered': len(rows)-terminal_count-len(eligible), 'open': len(eligible), 'door': door,
-                  'rows': [short(f'{name} {render(r)}', 280, door) for r in ordered[:limit]]})
+    entry = {'name': name, 'count': len(rows), 'terminal': terminal_count,
+             'filtered': len(rows)-terminal_count-len(eligible), 'open': len(eligible), 'door': door,
+             'rows': [short(f'{name} {render(r)}', 280, door) for r in ordered[:limit]]}
+    if name == 'watches':
+        # scharf = armed and never fired (firing stores armed=false AND firedAt); the rest spent.
+        entry['armed'] = sum(1 for r in rows if isinstance(r, dict) and r.get('armed') and r.get('firedAt') is None)
+        entry['spent'] = len(rows) - entry['armed']
+    lines.append(entry)
 def output():
     header = [f'start-output HTTP={http if http is not None else "unknown"} observations=separate; GET-only; no ack/re-arm'] + reads
     def summary(g, shown):
         counts = f"{g['name']} count={g['count']}"
+        if g['name'] == 'watches': counts += f" armed={g['armed']} spent={g['spent']}"
         for key, value in [('omitted', g['open']-shown), ('terminal', g['terminal']), ('filtered', g['filtered'])]:
             if value: counts += f' {key}={value}'
         return f"{counts}; detail: {g['door']}"
@@ -118,6 +124,33 @@ def output():
 def title(value):
     text = str(value)
     return compact(text if len(text) <= 80 else text[:80] + '... [title-shortened]')
+CARD_LINE = re.compile(r'^\s*(KLASSE|ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|WEB|VERIFY|DONE|DELEGATION|VERBOTEN)\s*:[ \t]*(.*)$', re.I)
+CARD_REQUIRED = ('GROESSE', 'FLAECHE', 'VERIFY', 'DONE')
+def card_goal(text):
+    # card-extract.ts#parseFormattedCard: optional [title] line, header block, then the FIRST
+    # PARAGRAPH is the goal. A half header block stays prose, so text that merely opens with
+    # "DONE:" keeps its first-line reading instead of inventing a card.
+    lines = text.split('\n')
+    at = 0
+    while at < len(lines) and not lines[at].strip(): at += 1
+    if at < len(lines) and lines[at].lstrip().startswith('[') and not CARD_LINE.match(lines[at]): at += 1
+    seen = set()
+    while at < len(lines):
+        hit = CARD_LINE.match(lines[at])
+        if not hit: break
+        key = hit.group(1).upper().replace('Ö', 'OE').replace('Ä', 'AE')
+        if key in seen: return None
+        seen.add(key)
+        at += 1
+    if not all(k in seen for k in CARD_REQUIRED) or not seen & {'ROLLE', 'KLASSE'}: return None
+    rest = lines[at:]
+    start = next((i for i, line in enumerate(rest) if line.strip()), -1)
+    if start < 0: return None
+    stop = next((i for i, line in enumerate(rest) if i > start and not line.strip()), len(rest))
+    return ' '.join(rest[start:stop]).strip()
+def row_title(text):
+    if not text: return 'unknown'
+    return card_goal(text) or text.splitlines()[0]
 def after(value):
     if not isinstance(value, list): return 'unknown'
     return compact(value[:3]) + (f'+{len(value)-3}' if len(value) > 3 else '')
@@ -212,7 +245,7 @@ def execution(view, self):
         emit('unknown handover reason=unreadable-record')
     group('execution-unknown', p.get('unknown'), 'GET /api/self/program-execution', limit=2)
     group('task', p.get('tasks', {}).get('rows'), 'GET /api/self/program-execution', lambda r:
-          f"{r.get('id')} status={r.get('status', 'unknown')} phase={r.get('phase', 'unknown')} door={r.get('nextAction') or 'none; observe the named phase'} title={title(r.get('text', 'unknown').splitlines()[0] if r.get('text') else 'unknown')} basis={compact(r.get('phaseBasis'))} note={compact(r.get('note'))}")
+          f"{r.get('id')} status={r.get('status', 'unknown')} phase={r.get('phase', 'unknown')} door={r.get('nextAction') or 'none; observe the named phase'} title={title(row_title(r.get('text')))} basis={compact(r.get('phaseBasis'))} note={compact(r.get('note'))}")
     group('clarifications', p.get('clarifications'), 'GET /api/self/clarifications')
 try:
     if not os.environ.get('FLEET_SELF_TOKEN'):

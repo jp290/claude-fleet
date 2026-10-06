@@ -293,7 +293,7 @@ await import(pathToFileURL(process.argv[2]).href);
         sources: {queue: {state: "fresh", revision: "r1", computedRevision: "r1", basis: "tasks"}}, unknown: [],
         data: {bindings: [{programId: "program1", title: "Program title", titleBasis: "programs:program1.title", status: "active",
           state: "bound", slot: 2, openedAt: 1, sessionId: "main1", slotLabel: "MAIN", slotLabelBasis: "exact-occupant"}],
-          rows: [{id: "task1", title: "Task title", titleBasis: "tasks:task1.card.ziel", status: "queued", programId: "program1", held: true, after: []}],
+          rows: [{id: "task1", title: "Task title", titleBasis: "tasks:task1.card.ziel", status: "queued", programId: "program1", held: true, after: [] as string[]}],
           exceptions: [{kind: "start", id: "task1", title: "Task title", titleBasis: "tasks:task1.card.ziel", reason: "collision", related: [{id: "task2", title: "Blocking title", titleBasis: "tasks:task2.text:first-line"}]}],
           messages: [] as {id: string; unread: boolean; state: string; holder: null}[],
           audits: [] as {taskId: string; state: string; result: string}[], startable: [] as {id: string; by: string}[],
@@ -454,7 +454,7 @@ await import(pathToFileURL(process.argv[2]).href);
         ["row count=207", "terminal=180", "program count=82", "terminal=68", "boundary count=49",
           "message count=201", "filtered=190", "audit count=89 terminal=89"].every((v) => bigOrch.stdout.includes(v))
         && bigMain.stdout.includes("task count=52") && bigMain.stdout.includes("terminal=44")
-        && !/^(row done|program complete|audit \{|message .*"unread":false|task done)/m.test(bigOrch.stdout + bigMain.stdout));
+        && !/^(row done|program complete|audit .*\{|message .*"unread":false|task done)/m.test(bigOrch.stdout + bigMain.stdout));
       const normalize = (s: string) => s.replace(/fetchedAt=\d+/g, "fetchedAt=CLOCK")
         .replace(/count=\d+|omitted=\d+|terminal=\d+|filtered=\d+/g, "COUNT");
       const growOlder = <T extends object>(rows: T[]) => { if (rows.length >= 2) rows.unshift({...rows[0]!, ...{at: -1}}); };
@@ -474,7 +474,7 @@ await import(pathToFileURL(process.argv[2]).href);
       const blocked = readRole("orchestrator");
       const nonTaskBoundary = blocked.stdout.split("\n").find((line) => line.startsWith("boundary binding program-boundary "));
       check("start terminal red audit stays a visible blocker while green terminal audits remain counts",
-        blocked.stdout.includes('audit {"taskId":"red-audit","state":"terminal","result":"red"') && budget(blocked.stdout),
+        blocked.stdout.includes('audit door=./ctl.sh audits {"taskId":"red-audit","state":"terminal","result":"red"') && budget(blocked.stdout),
         blocked.stdout.split("\n").filter((line) => line.startsWith("audit ")).join("\n"));
       check("start non-task boundary never invents a task door",
         nonTaskBoundary?.includes("door=GET /api/operational-view") === true && !nonTaskBoundary.includes("./ctl.sh task"), nonTaskBoundary);
@@ -488,14 +488,19 @@ await import(pathToFileURL(process.argv[2]).href);
       const namedRows = [data.rows[data.rows.length-1]!, data.bindings[data.bindings.length-1]!, data.exceptions[data.exceptions.length-1]!];
       const oldTitles = namedRows.map((row) => row.title);
       for (const row of namedRows) row.title = "ä".repeat(160);
+      const dependencyRow = data.rows[data.rows.length-1]!;
+      const oldAfter = dependencyRow.after;
+      dependencyRow.after = Array.from({length: 20}, (_, i) => `dependency-${i}`);
       const titleProbe = readRole("orchestrator");
       const titledRow = titleProbe.stdout.split("\n").find((line) => line.startsWith("row task1 ")) ?? "";
       const titledBoundary = titleProbe.stdout.split("\n").find((line) => line.startsWith("boundary start task1 ")) ?? "";
       const titledProgram = titleProbe.stdout.split("\n").find((line) => line.startsWith("program program1 ")) ?? "";
-      check("start 160-character titles retain row status, dependencies and full action door before shortened text",
-        ["status=queued", "program=program1", "held=True", "after=[]", "door=./ctl.sh task task1"].every((value) => titledRow.includes(value))
+      check("start 20 dependencies and 160-character titles retain status and full door before bounded variable fields",
+        ["status=queued", "program=program1", "held=True", 'after=["dependency-0","dependency-1","dependency-2"]+17', "door=./ctl.sh task task1"].every((value) => titledRow.includes(value))
+        && titledRow.indexOf("door=") < titledRow.indexOf("after=")
         && titledBoundary.includes("phase=unknown door=./ctl.sh task task1")
         && titledProgram.includes("status=active binding=bound slot=2 openedAt=1 sessionId=main1") && budget(titleProbe.stdout), titledRow);
+      dependencyRow.after = oldAfter;
       namedRows.forEach((row, i) => { row.title = oldTitles[i]!; });
       // These controls grow lines and UTF-8 bytes independently; both must be rejected.
       check("start budget predicate rejects 81 lines and a single 10001-byte UTF-8 line",

@@ -73,12 +73,13 @@ def ended(row, name):
     if not isinstance(row, dict): return False
     if name == 'audit': return row.get('state') == 'terminal' and row.get('result') == 'green'
     return row.get('status', row.get('state')) in terminal
-def group(name, rows, door, render=compact, limit=5, accept=lambda r: True):
+def group(name, rows, door, render=None, limit=5, accept=lambda r: True):
     if not isinstance(rows, list):
         emit(f'unknown {name} reason=missing-or-unreadable; detail: {door}')
         return
     terminal_count = sum(ended(r, name) for r in rows)
     eligible = [r for r in rows if not ended(r, name) and accept(r)]
+    if render is None: render = lambda row: f'door={door} {compact(row)}'
     ordered = newest(eligible)
     if name == 'audit': ordered.sort(key=lambda r: r.get('result') != 'red')
     lines.append({'name': name, 'count': len(rows), 'terminal': terminal_count,
@@ -117,6 +118,9 @@ def output():
 def title(value):
     text = str(value)
     return compact(text if len(text) <= 80 else text[:80] + '... [title-shortened]')
+def after(value):
+    if not isinstance(value, list): return 'unknown'
+    return compact(value[:3]) + (f'+{len(value)-3}' if len(value) > 3 else '')
 def boundary_door(row):
     if row.get('kind') in ('start', 'audit'): return f"./ctl.sh task {row.get('id')}"
     return 'GET /api/operational-view'
@@ -130,18 +134,18 @@ def operational(view):
     emit(f"observedRevision={view.get('observedRevision')} pending={view.get('pending')} inflight={view.get('inflight')} failed={view.get('failed')}", door='GET /api/operational-view')
     sources = view.get('sources')
     group('source-state', [{'id': k, **v} for k, v in sources.items()] if isinstance(sources, dict) else None,
-          'GET /api/operational-view', lambda r: f"{r.get('id')} state={r.get('state', 'unknown')} revision={r.get('revision')} basis={r.get('basis', 'unknown')}")
-    group('unknown', view.get('unknown'), 'GET /api/operational-view', lambda r: f"{r.get('id')} reason={r.get('reason')}")
+          'GET /api/operational-view', lambda r: f"{r.get('id')} state={r.get('state', 'unknown')} door=GET /api/operational-view revision={r.get('revision')} basis={r.get('basis', 'unknown')}")
+    group('unknown', view.get('unknown'), 'GET /api/operational-view', lambda r: f"door=GET /api/operational-view {r.get('id')} reason={r.get('reason')}")
     data = view.get('data')
     if not isinstance(data, dict):
         emit('unknown operational data reason=missing-or-unreadable; detail: GET /api/operational-view')
         return
     group('program', data.get('bindings'), 'GET /api/operational-view', lambda r:
-          f"{r.get('programId')} status={r.get('status', 'unknown')} binding={r.get('state', 'unknown')} slot={r.get('slot')} openedAt={r.get('openedAt')} sessionId={r.get('sessionId')} title={title(r.get('title', 'unknown'))} basis={r.get('titleBasis', 'unknown')}", accept=lambda r: r.get('status', 'unknown') in ('active', 'unknown'))
+          f"{r.get('programId')} status={r.get('status', 'unknown')} binding={r.get('state', 'unknown')} slot={r.get('slot')} openedAt={r.get('openedAt')} sessionId={r.get('sessionId')} door=GET /api/operational-view title={title(r.get('title', 'unknown'))} basis={r.get('titleBasis', 'unknown')}", accept=lambda r: r.get('status', 'unknown') in ('active', 'unknown'))
     group('boundary', data.get('exceptions'), 'GET /api/operational-view', lambda r:
           f"{r.get('kind')} {r.get('id')} phase={r.get('phase', 'unknown')} door={boundary_door(r)} reason={r.get('reason', 'unknown')} title={title(r.get('title', 'unknown'))} related={compact(r.get('related', r.get('relatedIds', [])))} basis={r.get('titleBasis', 'unknown')}")
     group('row', data.get('rows'), 'GET /api/operational-view', lambda r:
-          f"{r.get('id')} status={r.get('status', 'unknown')} program={r.get('programId')} held={r.get('held')} after={compact(r.get('after'))} door=./ctl.sh task {r.get('id')} title={title(r.get('title', 'unknown'))} basis={r.get('titleBasis', 'unknown: missing-title-source')}")
+          f"{r.get('id')} status={r.get('status', 'unknown')} held={r.get('held')} door=./ctl.sh task {r.get('id')} program={r.get('programId')} after={after(r.get('after'))} title={title(r.get('title', 'unknown'))} basis={r.get('titleBasis', 'unknown: missing-title-source')}")
     group('startable', data.get('startable'), 'GET /api/operational-view', lambda r:
           f"{r.get('id')} by={r.get('by')} phase=STARTABLE door=./ctl.sh task {r.get('id')} (action door rechecks)")
     group('message', data.get('messages'), 'GET /api/operational-view', accept=lambda r: r.get('unread') is not False)

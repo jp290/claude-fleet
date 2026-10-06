@@ -3078,7 +3078,7 @@ await import(pathToFileURL(process.argv[2]).href);
         const stale = run(script, "--brief", "fresh", {...fixture, freshness: "unknown", data: null,
           unknown: [{id: "git", reason: "stale"}]});
         pin(`${name} --brief carries stale source ID/reason and claims no startable row`,
-          stale.status === 0 && stale.stdout.includes("unknown git reason=stale") && !stale.stdout.includes("startable row1"));
+          stale.status === 0 && (name === "state.sh" ? stale.stdout.includes("unknown door=GET /api/operational-view git reason=stale") : stale.stdout.includes("unknown git reason=stale")) && !stale.stdout.includes("startable row1"));
         const many = run(script, "--brief", "fresh", {...fixture, data: {...fixture.data,
           exceptions: Array.from({length: 100}, (_, i) => ({kind: "audit", id: `row${i}`, reason: "unknown"}))}});
         pin(`${name} --brief preserves its boundary budget contract with explicit overflow`,

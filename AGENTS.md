@@ -274,6 +274,8 @@ anchor that counts code strips whole-line comments first (the `fleet-e2e-securit
 a commented-out line still satisfies an exact string anchor, so the check passes a line that is
 gone — count over the filtered code and let a mutation prove the check can fail.
 
+E2E-Fixtures: `e2e/harness.ts#post` ersetzt seine Standard-Header durch eigene Header; diese brauchen `content-type: application/json` (`server.ts#readJson`). Leere Verzeichnisse werden nicht in Git-Lanes uebernommen: benoetigte Pfade in der Lane anlegen (`e2e/verify-rules.ts#run`).
+
 ## If you are a Codex or Pi lane
 
 You have full local access (since 2026-08-12): edit, commit, reach the Fleet API and run the full

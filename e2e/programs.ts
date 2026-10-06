@@ -3149,8 +3149,12 @@ export async function run(ctx: Ctx): Promise<void> {
   // Two active bindings on one occupation are no longer ambiguous (one MAIN per project,
   // 2026-10-06): such a succession moves BOTH, which the one-MAIN block at the end of this file
   // proves on its own Programs. This fixture's second binding has served its load check above and
-  // is completed BEFORE the succession below, so mainProgram's succession stays the one under test.
-  await programPost(ambiguousProgram.id, "complete");
+  // is completed BEFORE the succession below, so mainProgram's succession stays the one under test —
+  // with {force:true} and checked, because a silent 409 here would hand it to that succession.
+  const ambiguousCompleted = await programPost(ambiguousProgram.id, "complete", { force: true });
+  check("two-binding fixture cleanup: the injected second Program is completed before the succession",
+    ambiguousCompleted.ok && (await ownerPrograms()).find((p) => p.id === ambiguousProgram.id)?.status === "complete",
+    String(ambiguousCompleted.status));
 
   // --- A DELIVERY THAT FAILS AFTER AN IN-PLACE RESPAWN, on a throwaway Program so the main one
   // keeps its predecessor for the handover fixture below. Since server.ts#respawnInPlace the

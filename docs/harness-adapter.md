@@ -921,10 +921,14 @@ Keychain-Lookups und die Umgebung fremder Prozesse — das Paar `process-info*` 
 `sysctl-read kern.procargs*`. Bis 2026-10-06 sperrte die sysctl-Hälfte `^kern.proc` ganz; die engere
 Form lässt `KERN_PROC_PID` (pid, Startzeit, 16-Byte-Name, kein argv, kein env) offen, weil der
 Suite-Mutex einen fremden Halter an seiner Startzeit erkennt. Gemessen 2026-10-06 mit `bun:ffi`:
-ohne Zaun 445 lesbare procargs (20 mit `FLEET_TOKEN=`), mit dem Paar 3 bis 6 — der eigene Baum, kein
-`FLEET_TOKEN` —, und 618 fremde Startzeiten. **Jede Dateiregel nennt ihre Operationen explizit,** nie
-`file-read*`: eine Regel auf `file-read-data` schlägt eine auf `file-read*` in BEIDER Reihenfolge
-(gemessen auf macOS 26.3) — eine Wildcard-Sperre in (C) hätte gegen jede Öffnung in (B) verloren.
+ohne Zaun 445 lesbare procargs (20 mit `FLEET_TOKEN=`), mit dem Paar 3 bis 6 — die eigene
+Prozessgruppe, kein `FLEET_TOKEN` —, und 618 fremde Startzeiten. Lesbar bleibt genau die
+Prozessgruppe des Lesers (Eltern, Geschwister, Cousins darin offen; ein Kind in eigener Gruppe oder
+Session zu, gemessen 2026-10-06); eine Gruppe reicht nie über ihre Session hinaus, und tmux
+startet jede Pane als eigene Session — lesbar bleibt nur, was in dieser Pane läuft. **Jede
+Dateiregel nennt ihre Operationen explizit,** nie `file-read*`: eine Regel auf `file-read-data`
+schlägt eine auf `file-read*` in BEIDER Reihenfolge (gemessen auf macOS 26.3) — eine
+Wildcard-Sperre in (C) hätte gegen jede Öffnung in (B) verloren.
 `e2e/pins.ts` hält Reihenfolge, Operationen und das git-Schreibverbot am erzeugten Profil.
 
 *Umgebung hinter dem Zaun.* `HOME`, `TMPDIR`, bun-Cache, clang-Modulcache und `CFFIXED_USER_HOME`

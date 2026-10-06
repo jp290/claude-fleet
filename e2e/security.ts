@@ -19,7 +19,7 @@
 // a slot dies or is recycled (`server.ts` ~1147), and no secret reaches the audit log or any
 // non-owner-readable payload.
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { afterTick, AUTOS_TICK_MS, BASE, H, REPO, ROOT, TOKEN, check, get, post, readText, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
 
@@ -1627,19 +1627,26 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
       `${hookCtl.trim().slice(-40)} | ${hookW.trim().slice(-80)} | ${cfgW.trim().slice(-80)}`);
     // THE PROCESS CHANNEL, both halves of one rule: a FOREIGN process's argv/env (sysctl
     // KERN_PROCARGS2) is closed behind the fence, its start time (KERN_PROC_PID, what the suite mutex
-    // proves a holder by) stays readable. The foreign process is this runner itself. Only lengths
-    // and a birth string are printed, never a byte of the environment.
+    // proves a holder by) stays readable. FOREIGN means another process GROUP: behind the fence the
+    // probe's own group stays readable (measured 2026-10-06 — parent, siblings and cousins in the
+    // group open, a child moved to its own group or session closed), so this runner, whose spawnSync
+    // children share its group, measures nothing; the first run of this canary read it on both sides.
+    // The foreign process is a detached sleep (own session, own group). Only lengths are printed,
+    // never a byte of the environment.
+    const foreign = spawn("/bin/sleep", ["120"], { detached: true, stdio: "ignore" });
+    foreign.unref();
     const kinfo = `bun -e 'const { dlopen, FFIType, ptr } = require("bun:ffi");
 const c = dlopen("/usr/lib/libSystem.B.dylib", { sysctl: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 } });
 const q = (mib, cap) => { const b = new Uint8Array(cap); const n = new BigUint64Array([BigInt(cap)]); return c.symbols.sysctl(ptr(new Int32Array(mib)), mib.length, ptr(b), ptr(n), null, 0) === 0 ? Number(n[0]) : -1; };
-const pid = ${process.pid};
-console.log("procargs=" + q([1, 49, pid], 262144) + " kinfo=" + q([1, 14, 1, pid], 1024));'`;
-    const pa = (o: string, k: string): number => Number(new RegExp(`${k}=(-?\\d+)`).exec(o)?.[1] ?? "NaN");
+for (const [k, pid] of [["", ${foreign.pid ?? 0}], ["group", ${process.pid}]]) console.log(k + "procargs=" + q([1, 49, pid], 262144) + " " + k + "kinfo=" + q([1, 14, 1, pid], 1024));'`;
+    const pa = (o: string, k: string): number => Number(new RegExp(`(?:^|\\s)${k}=(-?\\d+)`).exec(o)?.[1] ?? "NaN");
     const paOpen = pzRun(kinfo, false);
     const paFenced = pzRun(kinfo, true);
+    foreign.kill();
     check("§6a process channel: a foreign process's argv/env is readable without the fence and closed behind it, its birth readable on both sides",
-      pa(paOpen, "procargs") > 0 && pa(paFenced, "procargs") === -1 && pa(paOpen, "kinfo") >= 16 && pa(paFenced, "kinfo") >= 16,
-      `open: ${paOpen.trim().slice(-50)} | fenced: ${paFenced.trim().slice(-50)}`);
+      (foreign.pid ?? 0) > 0 && pa(paOpen, "procargs") > 0 && pa(paFenced, "procargs") === -1
+        && pa(paOpen, "kinfo") >= 16 && pa(paFenced, "kinfo") >= 16,
+      `open: ${paOpen.trim().replace(/\s+/g, " ").slice(-90)} | fenced: ${paFenced.trim().replace(/\s+/g, " ").slice(-90)}`);
   } else {
     // No usable seatbelt here — another platform, or this run already sits behind one (a fenced
     // pi-zai lane): the wrapper names a pass-through stand-in, so nothing above the marker check

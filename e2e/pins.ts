@@ -4348,7 +4348,7 @@ await import(pathToFileURL(process.argv[2]).href);
   // process-info-others + sysctl kern.procargs (either alone left 508–531 PIDs' environments
   // readable), T2 the live tmux socket — present even when the fixture names no socket of its own.
   // Mutation: strike any one of those lines in server/pi-zai-fence.ts and this row is red. What the
-  // rules DO (EPERM, the own tree's PIDs only) is executed, not read, in e2e/security.ts §6a.
+  // rules DO (EPERM, the own process group's PIDs only) is executed, not read, in e2e/security.ts §6a.
   {
     const RULE_PZ_FENCE = "pi-zai's generated read fence holds the three measured rules: fleet.json/.env regex, process-info+sysctl pair, live tmux socket";
     const fx = { home: "/Users/fx", fleetDir: "/Users/fx/claude-fleet", agentDir: "/Users/fx/.config/claude-fleet/pi-zai-agent",

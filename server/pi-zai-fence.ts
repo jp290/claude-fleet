@@ -200,8 +200,11 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     // half names kern.procargs* only, not every kern.proc*: KERN_PROC_PID (kinfo_proc — pid, start
     // time, a 16-byte command name, no argv, no env) must stay readable, because the suite mutex
     // proves a foreign holder's identity by its start time (e2e-stage.sh#_st_birth_of). Measured
-    // 2026-10-06: this pair leaves 3 PIDs' procargs readable (the probe's own tree) and 618 foreign
-    // births; the old `^kern[.]proc` pair left the same 3 procargs and 1 foreign birth.
+    // 2026-10-06: this pair leaves 3 PIDs' procargs readable and 618 foreign births; the old
+    // `^kern[.]proc` pair left the same 3 procargs and 1 foreign birth. What stays readable is the
+    // probe's own PROCESS GROUP — parent, siblings and cousins inside it open, a child moved to its
+    // own group or session closed (measured the same day). A group never spans sessions, and tmux
+    // starts every pane as its own session: what stays readable stays inside this pane.
     + "(deny process-info* (target others))"
     + `(deny sysctl-read (sysctl-name-regex #"^kern[.]procargs"))`
     + `(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.security.agent"))`;

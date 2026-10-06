@@ -94,6 +94,8 @@ case "$DIR" in "$SRC"|"$SRC"/*) echo "refused: the instance may not live inside 
 # target already carries, so a lane landed by rebase reads 0 rather than its old count; `--no-merges`
 # drops merge commits, which have no patch to compare — a `git merge <target>` into the lane brings
 # the target's content, it is not lane work missing there.
+# THE LIMIT, accepted: a merge that carries its OWN conflict resolution is not counted either —
+# lanes land by rebase, so that is the rare edge, and --no-merges is the chosen trade.
 # The target is never guessed: FLEET_TI_TARGET (the server passes the lane's recorded base), else
 # the lane's own `base` from GET /api/self when this runs in a lane pane (FLEET_SELF_URL + token,
 # read in-process so the token never reaches a command line), else none — and the band says

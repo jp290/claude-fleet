@@ -369,7 +369,7 @@ export async function run(ctx: Ctx): Promise<void> {
     taskId: string | null; originId: string | null; programId: string | null;
     slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
     mode: string; triggers: string[];
-    selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string;
+    selected: { id: string; hardness: "hard" | "guidance"; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string;
       private?: { verdict: string; version: number | null } }[];
     omitted: { id: string; why: string; reason?: string | null }[];
     deliveredBytes: number; truncated: boolean;
@@ -5824,7 +5824,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("the v2 block states each selected pack's purpose exactly once, whatever its source count",
       !!fReceipt && fReceipt.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
       && fReceipt.selected.every((pack) => typeof pack.useWhen === "string" && pack.useWhen.length > 0
-        && useWhenLines.filter((line) => line === `- ${pack.id} — ${pack.useWhen}`).length === 1)
+        && useWhenLines.filter((line) => line === `- ${pack.id} [${pack.hardness}] — ${pack.useWhen}`).length === 1)
       && useWhenLines.length === 2,
       `${JSON.stringify(useWhenLines)} ${JSON.stringify(fReceipt?.selected ?? null)}`);
     const konzeptRow = fReceipt?.selected.find((pack) => pack.id === "konzept-claude-fleet");

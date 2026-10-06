@@ -900,14 +900,19 @@ fand 212 erfolgreiche Reads auf 157 Pfade außerhalb des eigenen Worktrees, alle
 Jetzt, in dieser Reihenfolge (SBPL: die spätere Regel gewinnt innerhalb derselben Operation):
 **(A) geschlossen** für Inhalt, Verzeichnislisten, xattrs und Schreiben: das ganze Home, `/private/tmp`
 und das Darwin-Per-User-Verzeichnis (`getconf DARWIN_USER_TEMP_DIR`, darin `$TMPDIR` und der
-User-Cache — dort liegen Graph-, Audit- und Suite-Kopien des Fleet-Betriebs). Metadaten (`stat`)
+User-Cache — dort liegen Graph-, Audit- und Suite-Kopien des Fleet-Betriebs; liefert `getconf` auf
+darwin nichts, entsteht KEIN Profil und pi startet nicht, `server/pi-zai-fence.ts#piZaiFenceProfile`,
+gepinnt). Metadaten (`stat`)
 bleiben offen: realpath, getcwd und jede Aufwärtssuche (git, bun, node) brauchen sie; ein Name muss
 dafür schon bekannt sein, Auflisten ist zu. **(B) wieder geöffnet** nur der Standardbedarf der
 Zählung: der eigene Worktree (RW), das eigene Temp-Home `/private/tmp/fleet-pi-zai/<hash(cwd)>` (RW),
 das pi-zai-Agent-Verzeichnis (RW), der Suite-Mutex `fleet-e2e.lock` samt `.q` und `/tmp/tmux-<uid>`
 (RW), lesend die PATH-Verzeichnisse unter Home und das Paket-Root des gestarteten `pi`, lesend das
 gemeinsame git-Verzeichnis einer Worktree-Lane, schreibend davon nur `objects/`, das eigene
-Admin-Verzeichnis, der EINE eigene Branch (Ref, Lock, Reflog) und `packed-refs.lock` (git 2.50 nimmt
+Admin-Verzeichnis, der EINE eigene Branch (Ref, Lock, Reflog) — sein Name kommt aus Fleets
+Lane-Datensatz (`Slot.worktree.branch`), nie aus `<admin>/HEAD`: das liegt im beschreibbaren
+Admin-Verzeichnis, und eine Lane, die es auf `refs/heads/main` umbog, hätte beim nächsten Spawn `main`
+bekommen; ohne Datensatz kein Branch-Schreibrecht, gepinnt — und `packed-refs.lock` (git 2.50 nimmt
 es nach jedem Commit und gibt es leer zurück; ein Umbenennen über `packed-refs` bleibt verweigert,
 gemessen). **(C) nie, auch innerhalb einer Öffnung:** `fleet.json*`/`.env*` im Server-Checkout
 (Regex), `~/.ssh`, der Key, `~/.config/claude-fleet/secrets`, die Logins von codex/claude/gh/

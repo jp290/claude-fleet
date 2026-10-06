@@ -62,12 +62,17 @@ export function parsePiZaiDenyRoots(raw: string | undefined): string[] | null {
 // `<common>/worktrees/<name>`, whose `commondir` names the shared `<common>`. Read with fs only
 // (spawn lines are built synchronously), never by running git. null = .git is a directory inside
 // cwd (a clone lane, a main session) or no repository at all: the cwd opening already covers it.
+// The writable branch is NOT read from the worktree: `<admin>/HEAD` sits in the admin dir the fence
+// opens for writing, so a lane could re-aim it at refs/heads/main and the NEXT spawn would grant that
+// ref. It comes from Fleet's own lane record (server.ts: the slot's worktree.branch) instead; no
+// record (a pi-zai session in a worktree Fleet did not make) = no branch write at all. The pointers
+// this function DOES follow (`.git`, `commondir`) are in the fence's never-write set.
 export interface PiZaiGit {
   common: string;  // the shared git dir, read-only but for objects/ and the own branch
   admin: string;   // this worktree's own admin dir, writable but for the files that point git elsewhere
-  ref: string | null; // HEAD's symbolic ref ("refs/heads/…"); null = detached, no branch write
+  ref: string | null; // "refs/heads/<Fleet's lane branch>"; null = no lane record, no branch write
 }
-export function piZaiGitOf(realCwd: string): PiZaiGit | null {
+export function piZaiGitOf(realCwd: string, laneBranch: string | null): PiZaiGit | null {
   try {
     if (statSync(`${realCwd}/.git`).isDirectory()) return null;
     const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(`${realCwd}/.git`, "utf8"));
@@ -75,8 +80,7 @@ export function piZaiGitOf(realCwd: string): PiZaiGit | null {
     const admin = realpathSync(isAbsolute(m[1]) ? m[1] : resolve(realCwd, m[1]));
     const commonRaw = readFileSync(`${admin}/commondir`, "utf8").trim();
     const common = realpathSync(isAbsolute(commonRaw) ? commonRaw : resolve(admin, commonRaw));
-    const head = /^ref:\s*(refs\/heads\/\S+)\s*$/.exec(readFileSync(`${admin}/HEAD`, "utf8"));
-    return { common, admin, ref: head ? head[1] : null };
+    return { common, admin, ref: laneBranch ? `refs/heads/${laneBranch}` : null };
   } catch { return null; }
 }
 
@@ -105,6 +109,10 @@ export interface PiZaiFenceInput {
   // darwin's per-user temp dir (`getconf DARWIN_USER_TEMP_DIR`, realpath), inside the closed tmpRoots;
   // names where SwiftPM's atomic writes go (PIZAI_NSIRD_TOOLS). Absent or null: no such opening.
   userTemp?: string | null;
+  // true on darwin: the per-user dir then MUST be named — userTemp resolved and its parent among
+  // tmpRoots — or NO profile is built. getconf answering nothing would otherwise leave $TMPDIR, the
+  // user cache and every Fleet copy in them readable while the profile still looked complete.
+  darwin?: boolean;
 }
 
 // The tools whose atomic writes behind the fence are let through. Foundation's atomic write stages
@@ -142,6 +150,7 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
   if (i.tmpRoots.length === 0) return null;
   const g = i.git;
   const userTemp = i.userTemp ?? null;
+  if (i.darwin && !(userTemp && i.tmpRoots.includes(dirname(userTemp)))) return null;
   const paths = [...(userTemp ? [userTemp] : []), i.home, i.fleetDir, i.agentDir, i.keyFile, i.cwd, own, ...socks, ...denyRoots,
     ...i.tmpRoots, i.ownTmp, i.suiteLock, i.tmuxDir, ...i.toolRoots, ...(g ? [g.common, g.admin] : [])];
   if (!paths.every((p) => FENCE_PATH_RE.test(p) && !p.split("/").includes(".."))) return null;

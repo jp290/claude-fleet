@@ -472,7 +472,10 @@ interface Harness {
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
     container: string; containerContext: string; cwd: string; browserMcp: boolean;
     context: SlotContext | null; rulebookRole: "main" | "orchestrator" | null;
-    remoteName: string | null; webSearch?: boolean }): string;
+    remoteName: string | null; webSearch?: boolean;
+    // the slot's lane branch from Fleet's own record (Slot.worktree.branch), null for a non-lane.
+    // Only pi-zai reads it: its fence grants writing that ONE ref, never one read from the worktree.
+    laneBranch?: string | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -918,7 +921,7 @@ function piZaiDevPath(): string {
   return piZaiDevPathMemo;
 }
 // null = the fence cannot be BUILT for this cwd; the spawn line then starts no pi (PI_ZAI_FENCE_FAILED).
-function piZaiFenceFor(cwd: string): string | null {
+function piZaiFenceFor(cwd: string, laneBranch: string | null): string | null {
   const home = realpathLoose(HOME);
   const realCwd = realpathLoose(cwd);
   return piZaiFenceProfile({
@@ -927,8 +930,8 @@ function piZaiFenceFor(cwd: string): string | null {
     tmuxDir: `${realpathLoose(process.env.TMUX_TMPDIR || "/tmp")}/tmux-${process.getuid?.() ?? 0}`, sockets: [SOCK],
     denyRoots: PI_ZAI_DENY_ROOTS,
     tmpRoots: piZaiTmpRoots(), ownTmp: piZaiTmpFor(realpathLoose("/tmp"), realCwd),
-    suiteLock: realpathLoose(SUITE_LOCK), toolRoots: piZaiToolRoots(home), git: piZaiGitOf(realCwd),
-    userTemp: piZaiUserTemp(),
+    suiteLock: realpathLoose(SUITE_LOCK), toolRoots: piZaiToolRoots(home), git: piZaiGitOf(realCwd, laneBranch),
+    userTemp: piZaiUserTemp(), darwin: process.platform === "darwin",
   });
 }
 // The pane's one line when pi is NOT started because its fence failed — unbuildable, or the self-test
@@ -1101,7 +1104,7 @@ const PI_ZAI_HARNESS: Harness = {
     // The fence wraps pi ALONE: `$(cat key)` runs in this outer shell, so the key reaches pi's env
     // while the key FILE stays denied to pi and every child (trap (a) of the measurement). The
     // session dir is created out here because the fence denies creating it under sessions/.
-    const profile = piZaiFenceFor(o.cwd);
+    const profile = piZaiFenceFor(o.cwd, o.laneBranch ?? null);
     if (!profile) {
       console.error(`pi-zai: no read fence buildable for ${o.cwd} — pi not started`);
       return `${guard}printf '%s\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}`;
@@ -8369,7 +8372,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
           browserMcp: !s.worktree || occupant.browser, context: occupant.context, rulebookRole,
-          webSearch: h.id === "codex" && occupant.webSearch,
+          webSearch: h.id === "codex" && occupant.webSearch, laneBranch: s.worktree?.branch ?? null,
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);

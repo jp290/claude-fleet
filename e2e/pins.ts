@@ -55,7 +55,7 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX
 import { modulesEnv } from "../helper-daemon/daemon";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
-import { LIVE_TMUX_SOCK, PIZAI_NSIRD_TOOLS, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
+import { LIVE_TMUX_SOCK, PIZAI_NSIRD_TOOLS, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile, piZaiGitOf } from "../server/pi-zai-fence";
 import { readJsonl } from "../briefstats";
 import { quotaPosition, newResetEntries } from "../codex-quota";
 import {
@@ -4426,6 +4426,53 @@ await import(pathToFileURL(process.argv[2]).href);
       pin("pi-zai's fence lets SwiftPM stage atomic writes in the per-user temp dir: named tools, create and unlink only",
         Object.values(nsirdParts).every(Boolean), JSON.stringify(nsirdParts));
     }
+    // THE WRITABLE BRANCH COMES FROM FLEET, NEVER FROM THE WORKTREE. <admin>/HEAD lies in the admin dir
+    // the fence opens for writing: a lane that re-aimed it at refs/heads/main would have had main
+    // granted on its next spawn. Fixture: a worktree whose HEAD names main, handed Fleet's record
+    // branch — the ref is the record's, null without one, and main appears in no generated rule.
+    // Mutation: read HEAD again in piZaiGitOf, or drop laneBranch at the spawn — red.
+    const pzForSrc = server.slice(server.indexOf("function piZaiFenceFor("), server.indexOf("\n}\n", server.indexOf("function piZaiFenceFor(")));
+    {
+      const pzFenceSrc = readFileSync(new URL("../server/pi-zai-fence.ts", import.meta.url), "utf8");
+      const wt = realpathSync(mkdtempSync(`${tmpdir()}/pi-zai-head-`));
+      try {
+        mkdirSync(`${wt}/common/worktrees/lane-x`, { recursive: true });
+        mkdirSync(`${wt}/cwd`);
+        writeFileSync(`${wt}/cwd/.git`, `gitdir: ${wt}/common/worktrees/lane-x\n`);
+        writeFileSync(`${wt}/common/worktrees/lane-x/commondir`, "../..\n");
+        writeFileSync(`${wt}/common/worktrees/lane-x/HEAD`, "ref: refs/heads/main\n");
+        const g = piZaiGitOf(`${wt}/cwd`, "fleet/lane-x");
+        const gNone = piZaiGitOf(`${wt}/cwd`, null);
+        const p = g ? piZaiFenceProfile({ ...fx, git: g }) ?? "" : "";
+        const fnSrc = pzFenceSrc.slice(pzFenceSrc.indexOf("export function piZaiGitOf("), pzFenceSrc.indexOf("\n}\n", pzFenceSrc.indexOf("export function piZaiGitOf(")));
+        const headParts = {
+          recordRef: g?.ref === "refs/heads/fleet/lane-x" && g.common === `${wt}/common`,
+          noRecordNoRef: gNone !== null && gNone.ref === null,
+          mainNowhere: p.includes(`(literal "${wt}/common/refs/heads/fleet/lane-x")`) && !p.includes("refs/heads/main"),
+          neverReadsHead: fnSrc.length > 0 && !fnSrc.includes("HEAD"),
+          spawnPassesRecord: /\blaneBranch: s\.worktree\?\.branch \?\? null\b/.test(server)
+            && /\bpiZaiFenceFor\(o\.cwd, o\.laneBranch \?\? null\)/.test(server) && /\bgit: piZaiGitOf\(realCwd, laneBranch\)/.test(pzForSrc),
+        };
+        pin("pi-zai's writable branch is Fleet's lane record, never the worktree's own HEAD",
+          Object.values(headParts).every(Boolean), JSON.stringify(headParts));
+      } finally { rmSync(wt, { recursive: true, force: true }); }
+    }
+    // DARWIN FAILS CLOSED: without a resolved per-user temp dir (getconf answered nothing) the per-user
+    // dir would stay open — $TMPDIR, the user cache and Fleet's copies in them — while the profile
+    // still looked complete. On darwin no userTemp, or one outside the closed tmpRoots, builds NO
+    // profile, and pi does not start. Mutation: drop the darwin check or the server's darwin flag — red.
+    {
+      const ut = "/private/var/folders/fx/fx/T";
+      const darwinParts = {
+        noUserTemp: piZaiFenceProfile({ ...fx, darwin: true }) === null && piZaiFenceProfile({ ...fx, darwin: true, userTemp: null }) === null,
+        outsideRoots: piZaiFenceProfile({ ...fx, darwin: true, userTemp: "/private/var/folders/zz/zz/T" }) === null,
+        resolvedBuilds: (piZaiFenceProfile({ ...fx, darwin: true, userTemp: ut }) ?? "").startsWith("(version 1)"),
+        offDarwinBuilds: (piZaiFenceProfile({ ...fx, darwin: false }) ?? "").startsWith("(version 1)"),
+        serverPasses: /\buserTemp: piZaiUserTemp\(\), darwin: process\.platform === "darwin",/.test(pzForSrc),
+      };
+      pin("pi-zai builds NO fence on darwin when the per-user temp dir is unresolved, so pi does not start",
+        Object.values(darwinParts).every(Boolean), JSON.stringify(darwinParts));
+    }
     pin("pi-zai builds NO fence when a tool root would re-open home, or no temp root is named",
       piZaiFenceProfile({ ...fx, toolRoots: ["/Users/fx"] }) === null && piZaiFenceProfile({ ...fx, toolRoots: ["/Users"] }) === null
         && piZaiFenceProfile({ ...fx, tmpRoots: [] }) === null && piZaiFenceProfile({ ...fx, git: { ...fx.git, ref: "refs/heads/a\"b" } }) === null,
@@ -4478,7 +4525,7 @@ await import(pathToFileURL(process.argv[2]).href);
     // ...and the adapter uses it the only safe way: a self-test at /usr/bin/true that refuses pi on
     // failure, the absolute fence binary, and pi (never the key read) inside the fence.
     pin(`${RULE_PZ_FENCE} — the pi-zai spawn line self-tests the fence and wraps pi alone`,
-      /const profile = piZaiFenceFor\(o\.cwd\);/.test(pzCode) && pzCode.includes("${sbx} /usr/bin/true; } `")
+      /const profile = piZaiFenceFor\(o\.cwd, o\.laneBranch \?\? null\);/.test(pzCode) && pzCode.includes("${sbx} /usr/bin/true; } `")
         && pzCode.includes("|| { printf '%s\\\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}; }; `")
         && pzCode.includes(`ZAI_API_KEY="$(cat '\${PI_ZAI_KEY_FILE}')" \${sbx} \${cmd}`)
         && /\n\s*const PI_ZAI_SANDBOX_EXEC = \(\(\) => \{\n\s*const path = process\.env\.FLEET_PI_ZAI_SANDBOX_EXEC \?\? "\/usr\/bin\/sandbox-exec";/.test(server),

@@ -4357,7 +4357,7 @@ async function loadGit(slot: number, cwd: string): Promise<void> {
   // never parsed.
   const e = res ? ((await res.json().catch(() => null)) as { error?: string; git?: string } | null) : null;
   fxGit.set(cwd, { error: e?.git === "none"
-    ? "No git in this folder — changes, history and lanes apply only to a repository."
+    ? "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository."
     : e?.error ?? "git status could not be read" });
 }
 // What both homes paint, derived in ONE place so the card and the window cannot disagree about

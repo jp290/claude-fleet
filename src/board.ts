@@ -1781,18 +1781,18 @@ export async function renderBoard() {
       // wrong, the folder simply has no repository for Changes, History, Files or Lanes to read
       const ng = el("div", "bsec");
       ng.appendChild(boardHead("Changes", "session"));
-      const e = el("div", "bempty", "No git in this folder — changes, history and lanes apply only to a repository.");
-      e.title = `${s.cwd} is a plain folder; the session, its prompts and its setup are read as usual`;
+      const e = el("div", "bempty", "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository.");
+      e.title = `${s.cwd} ist ein einfacher Ordner; Sitzung, Prompts und Setup werden wie gewohnt gelesen`;
       ng.appendChild(e);
       nodes.push(ng);
     }
     if (briefErr) {
       const fail = el("div", "bsec bfail");
       fail.appendChild(boardHead("Changes, history and lanes are missing", "session"));
-      fail.appendChild(el("div", "bstate", `The session brief could not be read — ${briefErr}.`));
+      fail.appendChild(el("div", "bstate", `Der Session-Brief konnte nicht gelesen werden — ${briefErr}.`));
       // the server names the cause (folder gone, unreadable, git error — server.ts#cwdGitBody), so
       // the sentence no longer guesses at it; a plain folder never reaches here (noGit above)
-      fail.appendChild(el("div", "bempty", "This is a failed read, not an empty session. The column keeps trying."));
+      fail.appendChild(el("div", "bempty", "Das ist ein fehlgeschlagener Zugriff, keine leere Sitzung. Die Spalte versucht es weiter."));
       nodes.push(fail);
     }
     if (brief) {

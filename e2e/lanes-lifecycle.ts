@@ -283,10 +283,10 @@ async function snapshotTruthChecks(): Promise<void> {
       check(`snapshot DOM ${v.size}: a binding the snapshot cannot carry reads "Im Snapshot nicht belegt", never "Keine"`,
         p.unknown.rights.includes("Im Snapshot nicht belegt") && !p.unknown.rights.includes("An keinen Auftrag"),
         JSON.stringify(p.unknown.rights).slice(0, 300));
-      check(`snapshot DOM ${v.size}: a failed brief read stands as a sentence with the ground, the column is not empty`,
-        p.carried.brief?.includes("No git in this folder") === true && p.carried.briefLen > 40, JSON.stringify(p.carried.brief));
-      check(`snapshot DOM ${v.size} MUTATION: without the sentence paint the brief claim is red`,
-        p.mutant.brief !== null && !p.mutant.brief.includes("No git in this folder"), JSON.stringify(p.mutant.brief));
+      check(`snapshot DOM ${v.size}: a git:none brief stands as the board's calm sentence, the column is not empty`,
+        p.carried.brief?.includes("Kein Git in diesem Ordner") === true && p.carried.briefLen > 40, JSON.stringify(p.carried.brief));
+      check(`snapshot DOM ${v.size} MUTATION: without the sentence the painted calm is gone and the claim is red`,
+        p.mutant.brief !== null && !p.mutant.brief.includes("Kein Git in diesem Ordner"), JSON.stringify(p.mutant.brief));
       check(`snapshot DOM ${v.size} MUTATION: the same predicates over the live page are red — "Live" row, no placeholder, "Keine" rights`,
         p.live.rowText.startsWith("Live · läuft auf") && p.live.helperText === null
         && p.live.rights.includes("An keinen Auftrag, kein Program gebunden") && !p.live.rowText.includes("Testinstanz"),
@@ -306,9 +306,13 @@ async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: st
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
-  const SENTENCE = "The session brief could not be read";
-  if (!appJs.includes(SENTENCE)) throw new Error("brief-fail sentence not found in the built bundle");
-  const mutantJs = appJs.replaceAll(SENTENCE, "gone from this bundle");
+  // the board's two brief sentences, both German (UI-MAIN 2026-10-06): this fixture's pages answer
+  // git:none, so the painted card is the calm one — the MUTANT must kill THAT sentence, a mutation
+  // of the failed-read sentence could never turn the brief claim red on a git:none page.
+  const CALM = "Kein Git in diesem Ordner";
+  const FAILED = "Der Session-Brief konnte nicht gelesen werden";
+  if (!appJs.includes(CALM) || !appJs.includes(FAILED)) throw new Error("brief sentences not found in the built bundle");
+  const mutantJs = appJs.replaceAll(CALM, "aus diesem Bundle genommen");
   const S = "e".repeat(40);
   const workPlaces = { repos: [], measuredAt: 1, cacheMs: 10000, stands: [{ kind: "live-server", repo: "/x", name: null, path: null,
     head: null, basis: "boot-head", codeScope: "server", observedAt: 1, branch: null, target: null, remote: null, reasons: [] }] };

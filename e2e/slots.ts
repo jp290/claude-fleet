@@ -4193,7 +4193,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("client: the board tells a plain folder (git:none) from a failed brief read",
       /const noGit = !briefRes\.ok && briefBody\?\.git === "none" \? briefBody : null;/.test(boardSrc)
         && /const briefErr = briefRes\.ok \|\| noGit \? null :/.test(boardSrc)
-        && /No git in this folder — changes, history and lanes apply only to a repository\./.test(boardSrc),
+        && /Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository\./.test(boardSrc),
       "renderBoard's brief read");
     // the window's own read (src/client.ts#loadGit) makes the SAME kind decision the board makes:
     // a plain folder is drawn calmly — the board noGit card's very sentence — while gone,
@@ -4209,7 +4209,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         if (!ternary) return null;
         try { return new Function(`return (e) => (${ternary});`)() as (e: { error?: string; git?: string } | null) => string; } catch { return null; }
       })();
-      const calm = "No git in this folder — changes, history and lanes apply only to a repository.";
+      const calm = "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository.";
       check("client: the file window's loadGit draws git:none with the board's calm sentence and keeps the server's named error for every other kind",
         pick !== null
           && pick({ git: "none", error: "not a git repository" }) === calm

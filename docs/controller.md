@@ -171,8 +171,9 @@ Wo ein Verb `<slot>` nimmt (`ctx`, `watch lane|merge`, `land`, `wait merge`), da
   Lineage (`succeed`), seine offenen Attention- und Rückfragezeilen. Ein Program, das der Owner
   währenddessen abschließt oder umbindet, geht nicht mit und behält seinen Record. Ein Verbund mit
   einem Game-Maker-Program wird mit Namen abgelehnt (409). Nach einem Absturz zwischen Kill und
-  Bindungsschnitt stehen die mitgehenden Programs stale; der Owner bindet sie mit
-  `bootstrap-main {slot}` an die Nachfolgerin.
+  Bindungsschnitt stehen die mitgehenden Programs stale; steht eine gebundene Nachfolgerin, bindet
+  der Owner sie mit `bootstrap-main {slot}` an sie, sonst gründet er das erste Program neu und bindet
+  die übrigen an dessen MAIN.
 - **Ungebundene Legacy-Session, damit auch ein ungebundener Controller:** kein `HANDOFF.md`-Commit mehr
   als Gate (seit e3e5084a). Die Nachfolge schreibt einen Linien-Record (`docs/self-api.md` §Linien-Record):
   Pflichten nur per ID, dazu `intent` (≤ 2000 Zeichen) ODER `pointer` auf einen committeten, datierten

@@ -930,9 +930,11 @@ ohne Zaun 445 lesbare procargs (20 mit `FLEET_TOKEN=`), mit dem Paar 3 bis 6 —
 *Umgebung hinter dem Zaun.* `HOME`, `TMPDIR`, bun-Cache, clang-Modulcache und `CFFIXED_USER_HOME`
 zeigen ins eigene Temp-Home (ein Werkzeug, das seinen Cache unters echte Home schreiben wollte,
 stürbe sonst an `EPERM`; git liest so auch kein `~/.gitconfig` — die Identität steht in der
-Repo-Config); `PATH` beginnt mit den echten Binaries des Developer-Verzeichnisses statt der
-xcrun-Shims (xcrun schlüsselt seinen Cache nach `HOME` und versuchte sonst bei jedem git-Aufruf einen
-verweigerten Schreibzugriff); `gc.auto=0`/`maintenance.auto=false` per `GIT_CONFIG_*`, weil ein
+Repo-Config); `PATH` beginnt mit `usr/bin` des Developer-Verzeichnisses, also dem echten git statt
+des xcrun-Shims (xcrun schlüsselt seinen Cache nach `HOME` und versuchte sonst bei jedem git-Aufruf
+einen verweigerten Schreibzugriff); Compiler bleiben bei ihren Shims, die das SDK liefern — ein
+nacktes Toolchain-clang fand `poll.h` nicht —, und drucken je Aufruf eine
+`couldn't create cache file`-Zeile auf stderr; `gc.auto=0`/`maintenance.auto=false` per `GIT_CONFIG_*`, weil ein
 automatisches pack-refs das gemeinsame `packed-refs` umschreiben würde. **Private Lane-Kopien:** eine
 pi-zai-Lane bekommt weder `CLAUDE.md` noch `OWNER.md` noch `.env` noch
 `.claude/settings.local.json` (`server.ts#laneScaffoldFor`, beim Anlegen und beim Harness-Wechsel des
@@ -945,7 +947,7 @@ jeden Prozess — hinter dem Zaun stirbt dann jedes `bun` an `EPERM`, ohne Zaun 
 `.git/hooks`, `git config`, ein fremder Ref, der `.git`-Zeiger und der Live-Socket verweigert. Grün:
 `git status`/`show`/`commit`/`reset --soft`, `bun install --frozen-lockfile`, `bun e2e/pins.ts`,
 `tsc`, `bun run build`, `pi --version`, ein pi-Start bis zum Gauge `0.0%/1.0M` mit pis eigenem
-Bash-Werkzeug (erbt den Zaun), `curl` an die Self-API, `swiftc` mit `SDKROOT=$(xcrun --show-sdk-path)`.
+Bash-Werkzeug (erbt den Zaun), `curl` an die Self-API, `cc` und `swiftc` (kompilieren und laufen).
 Ein lokaler Suite-Lauf hinter dem Zaun nimmt den Mutex wieder (`e2e-stage.sh#_st_birth_kinfo`, unten).
 
 **Offen bleibt:** das eigene Env (`ZAI_API_KEY`, der eigene `FLEET_SELF_TOKEN`); das Netz — was
@@ -959,7 +961,8 @@ Review und Gate, nicht dieser Zaun. **Native Builds:** `swift build --disable-sa
 dem Zaun mit `encountered an I/O error (code: 1) while reading …/output-file-map.json`, `xcodebuild`
 (unsigniert, eigene `-derivedDataPath`/`-resultBundlePath`/`-clonedSourcePackagesDirPath`) mit
 `Could not resolve package dependencies: permissionDenied`; ohne Zaun mit derselben Umgebung beide
-grün — ungeklärt, vermutlich das Per-User-Verzeichnis (`confstr`, nicht `$TMPDIR`). SwiftPMs eigener
+grün — ungeklärt, vermutlich das Per-User-Verzeichnis (`confstr`, nicht `$TMPDIR`); auch mit
+`SDKROOT=$(xcrun --show-sdk-path)` unverändert rot. SwiftPMs eigener
 Manifest-Sandkasten ist ein verschachteltes `sandbox-exec`, und macOS verweigert `sandbox_apply` unter
 JEDEM äußeren Profil mit einer Regel (gemessen, das alte Profil eingeschlossen); darum fährt
 `e2e-isolated.sh` hinter einem Zaun den pass-through-Stand-in wie off-darwin, und `e2e/security.ts`

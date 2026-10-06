@@ -894,20 +894,20 @@ function piZaiToolRoots(home: string): string[] {
   }
   return [...new Set(roots)].filter((r) => r.startsWith(`${home}/`));
 }
-// The active developer dir's own bins, put FIRST on the fenced PATH. /usr/bin/git, clang, swiftc and
-// their siblings are xcrun shims, and xcrun keys its lookup cache (in the closed per-user temp dir)
-// by HOME: behind the fence's own HOME every git call missed it, retried a write there and printed
-// an EPERM line (measured 2026-10-06, 0.2–2.8 s per call). The binaries the shims would have found,
-// found directly: the developer dir's usr/bin (git, make) and, under Xcode, the default toolchain's
-// (clang, swift, ld). "" off darwin or without a developer dir: the PATH then stays as it is.
+// The active developer dir's usr/bin, put FIRST on the fenced PATH. /usr/bin/git is an xcrun shim,
+// and xcrun keys its lookup cache (in the closed per-user temp dir) by HOME: behind the fence's own
+// HOME every git call missed it, retried a write there and printed an EPERM line (measured
+// 2026-10-06, 0.2–2.8 s per call). The git the shim would have found, found directly. NOT the
+// toolchain's bin: a bare clang from there knows no SDK (the shim supplies it), and the suite's own
+// C fixture died at `poll.h file not found` — compilers keep their shims and the one stderr line.
+// "" off darwin or without a developer dir: the PATH then stays as it is.
 let piZaiDevPathMemo: string | undefined;
 function piZaiDevPath(): string {
   if (piZaiDevPathMemo !== undefined) return piZaiDevPathMemo;
   piZaiDevPathMemo = "";
   if (process.platform === "darwin") {
     const dev = Bun.spawnSync(["/usr/bin/xcode-select", "-p"]).stdout.toString().trim();
-    if (SPAWN_PATH_RE.test(dev) && existsSync(`${dev}/usr/bin/git`))
-      piZaiDevPathMemo = [`${dev}/Toolchains/XcodeDefault.xctoolchain/usr/bin`, `${dev}/usr/bin`].filter((d) => existsSync(d)).join(":");
+    if (SPAWN_PATH_RE.test(dev) && existsSync(`${dev}/usr/bin/git`)) piZaiDevPathMemo = `${dev}/usr/bin`;
   }
   return piZaiDevPathMemo;
 }

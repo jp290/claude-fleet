@@ -1836,9 +1836,12 @@ function contextRow(c: BoardCtx): HTMLElement {
     + ` · ${!sc.nudgeOn ? "Hinweis aus" : sc.nudges ? `Hinweis ${sc.nudges}× gegeben` : "Hinweis noch nicht gegeben"}`;
   popTrigger("ueb", c.slot, sw);
   const v: (Node | string)[] = [el("span", "fill", fill), " · ", sw];
-  if (!sc.nudgeOn) v.push(el("span", "s1", "Hinweis aus"));
-  else if (sc.gaveUp) v.push(el("span", "s1", `nach ${sc.nudges} Hinweisen aufgehört`));
-  else if (sc.nudges) v.push(el("span", "s1", `Hinweis ${sc.nudgedAt ? clockOf(sc.nudgedAt) : "gegeben"}`));
+  // the hint is only news where a threshold can fire — "Übergabe aus" already says the rest
+  if (sc.thresholdPct !== null) {
+    if (!sc.nudgeOn) v.push(el("span", "s1", "Hinweis aus"));
+    else if (sc.gaveUp) v.push(el("span", "s1", `nach ${sc.nudges} Hinweisen aufgehört`));
+    else if (sc.nudges) v.push(el("span", "s1", `Hinweis ${sc.nudgedAt ? clockOf(sc.nudgedAt) : "gegeben"}`));
+  }
   const r = kvRow("Kontext", v, "ctx");
   const fillEl = r.querySelector<HTMLElement>(".fill");
   if (fillEl) fillEl.title = sc.fill

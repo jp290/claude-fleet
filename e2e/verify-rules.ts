@@ -67,7 +67,6 @@ export async function run(): Promise<void> {
   if (!REPO) return;
   const repo = `${ROOT}/verify-rules-repo`;
   mkdirSync(`${repo}/docs`, { recursive: true });
-  mkdirSync(`${repo}/e2e`, { recursive: true });
   const git = (cwd: string, ...args: string[]) => {
     const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
     if (result.status !== 0) throw new Error(`verify-rules git ${args[0]} failed: ${result.stderr.slice(0, 160)}`);
@@ -118,19 +117,27 @@ export async function run(): Promise<void> {
         response.status === 400 && answer.error === REQUIRED && !("offer" in answer), JSON.stringify(answer));
     }
     const helperToken = (await bodyOf<{ token: string }>(await get("/api/helper/token"))).token;
-    const beat = () => post("/api/helper/device", { deviceId: "verifyrulesdev01", name: "verify rules" }, { "x-fleet-helper-token": helperToken });
+    const helperHeaders = { "x-fleet-helper-token": helperToken, "content-type": "application/json" };
+    const beat = async (): Promise<boolean> => {
+      const response = await post("/api/helper/device", { deviceId: "verifyrulesdev01", name: "verify rules" }, helperHeaders);
+      const answer = await bodyOf<{ error?: string }>(response);
+      check("(VR.door helper fixture) the isolated helper heartbeat is accepted before minting",
+        response.ok, `HTTP ${response.status}${answer.error ? `: ${answer.error}` : ""}`);
+      return response.ok;
+    };
     for (const owedReason of REASONS) {
-      await beat();
+      if (!await beat()) return;
       const response = await offer({ owedReason });
       const answer = await bodyOf<Answer>(response);
       check("(VR.door self accept) each named obligation mints an open full offer",
         response.ok && answer.offer?.state === "open" && !!answer.offer.id && answer.offer.modules === undefined, JSON.stringify(answer));
       check("(VR.door self cleanup) the unclaimed offer withdraws", (await withdraw()).ok);
     }
+    mkdirSync(`${lane.cwd}/e2e`, { recursive: true });
     writeFileSync(`${lane.cwd}/e2e/rule.ts`, "export const rule = true;\n");
     commit();
     check("(VR.door true fixture) an e2e diff owes the preview", (await proof()).isolatedPreview === true);
-    await beat();
+    if (!await beat()) return;
     const response = await offer();
     const answer = await bodyOf<Answer>(response);
     check("(VR.door true) true still mints an open full offer without a reason",
@@ -138,7 +145,7 @@ export async function run(): Promise<void> {
     const repeated = await bodyOf<Answer>(await offer());
     check("(VR.door true existing) retry returns the same offer", repeated.existing === true && repeated.offer?.id === answer.offer?.id);
     check("(VR.door true cleanup) the unclaimed offer withdraws", (await withdraw()).ok);
-    await post("/api/helper/device", { deviceId: "verifyrulesdev01", name: "verify rules", mode: "quiet" }, { "x-fleet-helper-token": helperToken });
+    await post("/api/helper/device", { deviceId: "verifyrulesdev01", name: "verify rules", mode: "quiet" }, helperHeaders);
   } finally {
     await post(`/api/slots/${lane.slot}/kill`, {});
   }

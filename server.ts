@@ -285,7 +285,7 @@ if (HABITS_PROMPT_VALUE !== undefined && !HABITS_PROMPT_ENABLED
   console.error("[fleet] FLEET_HABITS_PROMPT is invalid; habits prompt remains off");
 const HABITS_PROMPT_PATH = `${import.meta.dir}/fleet-gepflogenheiten.md`;
 // THE ROLE CUT IS ON BY DEFAULT (owner 2026-10-06: „[Zitat entfernt]“
-// ). A claude orchestrator or Program-MAIN in the
+// ). Every non-lane claude session in the
 // server checkout starts with its role render (rulebook.ts#renderRoleRulebook) instead of the
 // 82 863-B monolith. `FLEET_RULEBOOK_ROLE_CUT=off` is the way back to the full render for every
 // role; `ab` keeps the preregistered A/B (arm A full, arm B cut), and the older
@@ -8367,16 +8367,17 @@ async function waitForSlotTeardownTestLatch(occupant: SlotStreamOccupant, target
   throw new Error("slot teardown E2E latch timed out before release");
 }
 
-// `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
-// identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
 function rulebookRoleForSpawn(s: Slot, occupant: SlotSpawnOccupant): "main" | "orchestrator" | null {
+  // Lanes have their own render; another checkout owns its own rulebook. Only these boundaries
+  // and the explicit full-render switch bypass role selection here.
   if (RULEBOOK_CUT_MODE === "voll" || s.worktree || resolve(occupant.cwd) !== import.meta.dir) return null;
-  const foundingMain = programs.some((p) => p.status === "active" && p.founding?.target.slot === s.id
-    && p.founding.target.openedAt === s.openedAt);
-  if (foundingMain || positionRole(s) === "program-main") return "main";
-  return positionRole(s) === "orchestrator" ? "orchestrator" : null;
+  // Binding can happen after spawn: project MAINs, unbound sessions, Owner conversations and
+  // the steward all start with MAIN's cut. Omitted sections remain reachable through its anchors.
+  return positionRole(s) === "orchestrator" ? "orchestrator" : "main";
 }
 
+// `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
+// identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
 async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal"): Promise<void> {
   if (slotTeardownInflight.has(s.id)) return;
   // ASLEEP ON PURPOSE (sleepSlot): the absent pane is the state, not damage. Every caller — the 2 s

@@ -5941,6 +5941,56 @@ await import(pathToFileURL(process.argv[2]).href);
     const parts = ["function readRulebookFragments(", "function writeRenderFile(", "let rulebookRenderRefusal",
       "function rulebookRenderForSession("].map(lift);
     const roleFn = lift("function roleRulebookRender(");
+    {
+      const spawnParts = ["function rulebookRoleForSpawn(", "function positionRole(",
+        "function mainBindingOf(", "function boundProgramsForMain(", "function mainUnboundError("].map(lift);
+      const labelFrom = server.indexOf("const ORCHESTRATOR_LABEL_RE =");
+      const labelSource = labelFrom < 0 ? "" : server.slice(labelFrom, server.indexOf("\n\n", labelFrom));
+      const repo = "/fixture/repo";
+      const slot = { id: 2, openedAt: 100, label: "Claude Fleet · MAIN", worktree: null };
+      const target = { slot: slot.id, openedAt: slot.openedAt };
+      const cuts: string[] = [], exclusions: string[] = [];
+      try {
+        if (spawnParts.some((x) => x === "") || !labelSource) throw new Error("spawn role functions not found");
+        const code = new Bun.Transpiler({ loader: "ts" }).transformSync(
+          [...spawnParts, labelSource].join("\n").replaceAll("import.meta.dir", JSON.stringify(repo))
+          + "\nreturn rulebookRoleForSpawn;");
+        type SpawnSlot = { id: number; openedAt: number; label: string | null; worktree: { branch: string } | null };
+        type SpawnProgram = { status: string; main?: typeof target; founding?: { target: typeof target } };
+        const select = (mode: string, programs: SpawnProgram[] = []) => new Function("RULEBOOK_CUT_MODE", "programs", "resolve", code)(
+          mode, programs, resolve) as (s: SpawnSlot, occupant: { cwd: string }) => "main" | "orchestrator" | null;
+        for (const label of [null, "Claude Fleet · MAIN", "Owner", "⚙ steward", "🎛 Orchestrator", "Orchestratorin"]) {
+          const want = label === "🎛 Orchestrator" || label === "Orchestratorin" ? "orchestrator" : "main";
+          const got = select("rolle")({ ...slot, label }, { cwd: `${repo}/.` });
+          if (got !== want) cuts.push(`${label ?? "unlabelled"}: ${got}, want ${want}`);
+          if (select("voll")({ ...slot, label }, { cwd: repo }) !== null) exclusions.push(`off/${label}: not null`);
+        }
+        for (const programs of [
+          [{ status: "active", founding: { target } }],
+          [{ status: "active", main: target }],
+          [{ status: "active", main: target }, { status: "active", main: target }],
+        ]) {
+          const got = select("rolle", programs)(slot, { cwd: repo });
+          if (got !== "main") cuts.push(`founding/bound MAIN: ${got}`);
+        }
+        if (select("ab")(slot, { cwd: repo }) !== "main") cuts.push("A/B generic session has no MAIN role");
+        for (const label of ["Claude Fleet · MAIN", "🎛 Orchestrator"]) {
+          const s = { ...slot, label };
+          if (select("rolle")({ ...s, worktree: { branch: "lane" } }, { cwd: repo }) !== null)
+            exclusions.push(`lane/${label}: not null`);
+          for (const cwd of ["/fixture/foreign", `${repo}/child`]) {
+            if (select("rolle")(s, { cwd }) !== null) exclusions.push(`${cwd}/${label}: not null`);
+          }
+        }
+      } catch (e) {
+        const detail = `threw: ${e instanceof Error ? e.message : String(e)}`;
+        cuts.push(detail); exclusions.push(detail);
+      }
+      pin("every non-lane spawn in the server checkout gets MAIN by default, including before binding; the orchestrator gets its own cut",
+        cuts.length === 0, cuts.join("; "));
+      pin("spawn role selection declines the cut only for off, lanes or another checkout",
+        exclusions.length === 0, exclusions.join("; "));
+    }
     const tmp = mkdtempSync(join(tmpdir(), "pins-rolecut-"));
     const seen: string[] = [];
     try {

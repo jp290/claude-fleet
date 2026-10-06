@@ -3062,7 +3062,9 @@ Grund; Angebot, Modulfilter und Helfer-Fallback bleiben gleich. Ein unbekannter 
 antwortet **409** `preview obligation unknown — read localProof before offering or running locally`.
 GET/withdraw lesen bestehende Angebote weiterhin; Stellvertreter-Tueren und MAIN-Command-Jobs
 sind davon unberuehrt.
-`card-extract.ts#validateCard` verweigert VERIFY-Zeilen, die eine Vorschau ohne Bedingung verlangen.
+`card-extract.ts#validateCard` verweigert VERIFY-Zeilen, die eine Vorschau ohne Bezug auf
+`localProof` oder `isolatedPreview` verlangen; "geschuldet", "owed" und ein Owner-Verlangen
+allein sind keine Bedingung aus der Maschinenquelle.
 
 **`modules` (optional, seit 2026-09-28) — die EINGEENGTE Vorschau.** Genau das, was
 `/api/self/gate` als `localProof.modules` empfiehlt: `FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`,

@@ -218,6 +218,7 @@ const namesRepoVerify = (verify: string, command: string): boolean => {
 // The isolated suite is not a gate step (verify-proportion.ts#LOCAL_PROOF_STEPS stays the gate's
 // chain) and is named by its trail label.
 const ISOLATED_STEP = "isolated";
+const PREVIEW_CONDITION = /\b(?:localProof|isolatedPreview)\b/i;
 const FULL_CHAIN_ALIAS = /\b(?:volle\s+kette|full\s+chain)\b/gi;
 const ISOLATED_ALIAS = /(?<![\w./-])(?:\.\/)?e2e-isolated(?:\.sh)?(?![\w-])(?!\.\w)/gi;
 function verifyAliased(verify: string): { verify: string; aliased: boolean } {
@@ -227,7 +228,7 @@ function verifyAliased(verify: string): { verify: string; aliased: boolean } {
   if (!full && !isolated) return { verify, aliased: false };
   const steps = [...(full ? LOCAL_PROOF_STEPS : []), ...(isolated ? [ISOLATED_STEP] : [])].join(", ");
   const rest = verify.replace(FULL_CHAIN_ALIAS, "").replace(ISOLATED_ALIAS, "");
-  return { verify: namesChainStep(rest) || (isolated && /localProof|isolatedPreview|geschuldet|owed|wenn.*verlangt/i.test(verify))
+  return { verify: namesChainStep(rest) || (isolated && PREVIEW_CONDITION.test(verify))
     ? `${steps} — ${verify}` : steps, aliased: true };
 }
 
@@ -255,7 +256,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   // whole command, so the brief shows what the gate runs; any other value is cut as before.
   const fullVerify = typeof raw.verify === "string" ? collapse(raw.verify) : "";
   const previewNamed = fullVerify.search(ISOLATED_ALIAS) >= 0 || /suite-offer|volle\s+vorschau|full\s+preview/i.test(fullVerify);
-  const previewConditional = /localProof|isolatedPreview|geschuldet|owed|wenn.*verlangt/i.test(fullVerify);
+  const previewConditional = PREVIEW_CONDITION.test(fullVerify);
   if (previewNamed && !previewConditional)
     gaps.push("verify: preview not owed by a card — Vorschau nur wenn localProof.isolatedPreview es verlangt; eine VERIFY-Zeile erweitert die Regel nicht");
   const verbatim = typeof repoCommand === "string" && !!fullVerify && fullVerify === collapse(repoCommand);

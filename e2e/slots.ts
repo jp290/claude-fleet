@@ -2289,7 +2289,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // never a skip.
   try {
     for (const result of await runSettingsDom(sourceRoot)) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      // the late steps' facts first: the first steps' fill the 1500 characters on their own, and a red
+      // explorer or Checks claim arrived without the facts that say why (preview 86431fe8bd67)
+      const { explorerSteps, explorer, meter, ...early } = result.facts as Record<string, unknown>;
+      const facts = JSON.stringify({ explorerSteps, explorer, meter, ...early }).slice(0, 1500);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`settings DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }
@@ -6180,13 +6183,27 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     };
     const typeText = async (text: string) => { fx.inputs.push(`type ${JSON.stringify(text)}`); await send("Input.insertText", { text }); await evaluate("new Promise(r => setTimeout(r, 20))"); };
     const click = async (expression: string): Promise<boolean> => {
-      const point = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
-        e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      // aimed until it holds: the Info column settles while its sections load, and on a loaded machine
+      // a press aimed once landed one tab higher — the Files glyph's click opened "Rechte" instead of
+      // the explorer (preview 86431fe8bd67; here at 4× CPU throttle). Two aims 120 ms apart must agree
+      // and the point must be on the target; after ~2.4 s it presses anyway, as it always did.
+      const aim = `(() => { const e = ${expression}; if (!e) return null; e.scrollIntoView({ block: 'nearest' });
+        const r = e.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2, h = document.elementFromPoint(x, y);
+        return { x, y, on: !!h && (h === e || e.contains(h)) }; })()`;
+      let point = await evaluate<{ x: number; y: number; on: boolean } | null>(aim);
+      for (let i = 0; point && i < 20; i++) {
+        await evaluate("new Promise(r => setTimeout(r, 120))");
+        const again = await evaluate<{ x: number; y: number; on: boolean } | null>(aim);
+        const held = !!again && Math.abs(again.x - point.x) < 1 && Math.abs(again.y - point.y) < 1;
+        point = again;
+        if (held && point!.on) break;
+      }
       if (!point) { missing.push(expression.slice(0, 120)); return false; }
       fx.inputs.push(`click ${Math.round(point.x)},${Math.round(point.y)}`);
-      await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
-      await send("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
-      await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+      const at = { x: point.x, y: point.y };
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at });
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", ...at, button: "left", clickCount: 1 });
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at, button: "left", clickCount: 1 });
       await evaluate("new Promise(r => setTimeout(r, 40))");
       return true;
     };
@@ -6537,11 +6554,16 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       }
       const explorerOpened = await wait(openExplorerBtn, 8000);
       if (explorerOpened) {
-        await click(openExplorerBtn);
-        await wait(`document.querySelector('#shell-files .fxmore')`);
-        await click(`[...document.querySelectorAll('#shell-files .fxline')].find((l) => l.textContent.includes('README'))?.querySelector('.fxmore')`);
-        await click(`[...document.querySelectorAll('.fxmenuitem')].find((b) => /Rename|Umbenennen/.test(b.textContent))`);
-        await wait(`document.querySelector('.fxwritepanel')`);
+        // each step of the way to the dialog, so a dialog that never opened names the step that failed
+        const steps: Record<string, unknown> = {};
+        steps.explorer = await click(openExplorerBtn);
+        steps.listing = await wait(`document.querySelector('#shell-files .fxmore')`);
+        steps.more = await click(`[...document.querySelectorAll('#shell-files .fxline')].find((l) => l.textContent.includes('README'))?.querySelector('.fxmore')`);
+        steps.menu = await wait(`[...document.querySelectorAll('.fxmenuitem')].some((b) => /Rename|Umbenennen/.test(b.textContent))`, 4000);
+        steps.item = await click(`[...document.querySelectorAll('.fxmenuitem')].find((b) => /Rename|Umbenennen/.test(b.textContent))`);
+        steps.panel = await wait(`document.querySelector('.fxwritepanel')`);
+        if (!steps.panel) steps.seen = await evaluate<string>(`(() => { const f = document.querySelector('#shell-files'); return (f ? 'files: ' + f.innerText : 'no #shell-files; active: ' + window.__fx.desc(document.activeElement)).replace(/\\s+/g, ' ').slice(0, 300); })()`);
+        facts.explorerSteps = steps;
         await shot(width, "explorer-rename");
         const dlg = (await evaluate<Record<string, unknown> | null>(`(() => { const p = document.querySelector('.fxwritepanel');
           const cs = (e) => e ? getComputedStyle(e).fontFamily : null;

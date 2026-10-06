@@ -613,11 +613,21 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
 
   // --- steward journal: the typed durable pulse ledger (POST/GET /api/steward/journal), the
   // delta anchor that survives /clear. The route acks without awaiting the append chain, so
-  // settle briefly before each read. ---
+  // every read below waits on the record itself — its server-stamped ts at the tail — never on
+  // a guessed flush delay. ---
+  const jSettled = async (ts: number | undefined): Promise<void> => {
+    if (ts === undefined) return;
+    for (let i = 0; i < 60; i++) {
+      const tail = ((await (await stewGet("/api/steward/journal?tail=1")).json()) as
+        { records?: { ts?: number }[] }).records?.[0]?.ts;
+      if (tail === ts) return;
+      await Bun.sleep(50);
+    }
+  };
   const jPost1 = await stewPost("/api/steward/journal", { counts: { "healthy-running": 3, "stalled-dirty": 1 }, decisions_surfaced: 1, changed: true });
   const jPost1J = (await jPost1.json()) as { ok?: boolean; ts?: number };
   check("steward journal accepts a typed record", jPost1.ok && jPost1J.ok === true && typeof jPost1J.ts === "number", JSON.stringify(jPost1J));
-  await Bun.sleep(200);
+  await jSettled(jPost1J.ts);
   const jGet1J = (await (await stewGet("/api/steward/journal?tail=1")).json()) as { records: { kind?: string; counts?: Record<string, number>; decisions_surfaced?: number; changed?: boolean; ts?: number }[] };
   const r1 = jGet1J.records?.[0];
   check("steward journal returns the record it stored, server-stamped",
@@ -641,8 +651,9 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
     .slots.find((x) => x.id === lnStew.slot)?.worktree?.branch ?? "";
   const jInject = await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false,
     lanes: { evil: { head: "deadbeef", landed: true } } });
+  const jInjectJ = (await jInject.json()) as { ok?: boolean; ts?: number };
   check("journal POST carrying a body-supplied lanes key is still accepted", jInject.ok, String(jInject.status));
-  await Bun.sleep(200);
+  await jSettled(jInjectJ.ts);
   type LaneRec = { kind?: string; lanes?: Record<string, { head?: string | null; base?: string | null; landed?: boolean; repo?: string }> };
   const jLanesRec = ((await (await stewGet("/api/steward/journal?tail=1")).json()) as { records: LaneRec[] }).records?.[0];
   check("rundgang record carries the SERVER-stamped lane map with the lane's real HEAD sha",
@@ -1051,8 +1062,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   const getSLL = async (): Promise<SLL> =>
     ((await (await stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { sinceLastLook?: SLL }).sinceLastLook ?? null;
   // anchor a fresh prior (stamps the lane at its current HEAD), then commit → advanced
-  await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
-  await Bun.sleep(300);
+  const jAnchorA = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false })).json()) as { ts?: number };
+  await jSettled(jAnchorA.ts);
   writeFileSync(`${lnStew.cwd}/cursor-probe.txt`, "commit-cursor probe\n");
   laneGit(lnStew.cwd, "add", "cursor-probe.txt");
   laneGit(lnStew.cwd, "commit", "-qm", "cursor probe");
@@ -1065,8 +1076,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
     `${JSON.stringify({ ts: Date.now(), kind: "rundgang", counts: {}, decisions_surfaced: 0, changed: false })}\n`, { flag: "a" });
   check("a prior record without lanes yields sinceLastLook null (honest, not fake-empty)", (await getSLL()) === null);
   // fresh prior with the commit stamped; then land the branch owner-side + open a new lane
-  await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
-  await Bun.sleep(300);
+  const jAnchorB = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false })).json()) as { ts?: number };
+  await jSettled(jAnchorB.ts);
   const lv = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   const lvBranch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
     .slots.find((x) => x.id === lv.slot)?.worktree?.branch ?? "";
@@ -1082,8 +1093,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // stamp a prior that includes the unlanded lane, then tear its slot down WITHOUT merging →
   // vanishedUnlanded (the "sessions vanished" insurance); amend the landed lane's head →
   // rewritten (prior head no longer an ancestor), flagged honestly with no fake delta
-  await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
-  await Bun.sleep(300);
+  const jAnchorC = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false })).json()) as { ts?: number };
+  await jSettled(jAnchorC.ts);
   await post(`/api/slots/${lv.slot}/kill`, {});
   laneGit(lnStew.cwd, "commit", "--amend", "-qm", "cursor probe rewritten");
   const sllGone = await getSLL();

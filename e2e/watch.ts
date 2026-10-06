@@ -684,7 +684,7 @@ async function runFoundingWordWatch(): Promise<void> {
       { slots: { id: number; git: { ahead?: number; dirty?: number } | null }[] })
       .slots.find((x) => x.id === lane.slot)?.git ?? null;
     if (fwGit?.ahead === 1 && fwGit.dirty === 0) break;
-    await Bun.sleep(500);
+    await Bun.sleep(250);
   }
   const fwTok = fwSlot(lane.slot)?.selfToken ?? "";
   const fwBefore = fwSlot(lane.slot)?.openedAt ?? 0;
@@ -1487,14 +1487,14 @@ export async function run(): Promise<void> {
       const [doomed, living] = subjectLanes;
       const livingLead = await laneLeadNow(living);
       let subjectsReady = false;
-      for (let i = 0; i < 90 && !subjectsReady; i++) {
+      for (let i = 0; i < 180 && !subjectsReady; i++) {
         const rows = ((await (await get("/api/sessions")).json()) as
           { slots: { id: number; git: { ahead?: number; dirty?: number } | null }[] }).slots;
         subjectsReady = subjectLanes.every((lane) => {
           const row = rows.find((x) => x.id === lane.slot);
           return row?.git?.ahead === 1 && row.git.dirty === 0;
         });
-        if (!subjectsReady) await Bun.sleep(500);
+        if (!subjectsReady) await Bun.sleep(250);
       }
       check("subject fixture: two distinct committed+clean lanes exist for the same receiver",
         subjectsReady && doomed.slot !== living.slot && doomed.branch !== living.branch,
@@ -1915,12 +1915,12 @@ export async function run(): Promise<void> {
         spawnSync("git", ["-C", doomedLane.cwd, "add", "acp27-tick-window.txt"]);
         spawnSync("git", ["-C", doomedLane.cwd, "commit", "-qm", "acp27 tick window subject"]);
         let tickSubjectReady = false;
-        for (let i = 0; i < 90 && !tickSubjectReady; i++) {
+        for (let i = 0; i < 180 && !tickSubjectReady; i++) {
           const row = ((await (await get("/api/sessions")).json()) as
             { slots: { id: number; git: { ahead?: number; dirty?: number } | null }[] }).slots
             .find((x) => x.id === doomedLane.slot);
           tickSubjectReady = row?.git?.ahead === 1 && row.git.dirty === 0;
-          if (!tickSubjectReady) await Bun.sleep(500);
+          if (!tickSubjectReady) await Bun.sleep(250);
         }
         check("tick-window fixture: the subject lane is committed and clean, so its completion mints one event",
           tickSubjectReady, JSON.stringify({ slot: doomedLane.slot, branch: doomedLane.branch }));
@@ -2014,12 +2014,12 @@ export async function run(): Promise<void> {
     // Only structural prerequisites exposed by this poll: committed+clean target facts and the
     // armed subscription. `lastOutput>0` is not required by idleSec:0 and was a false fixture gate.
     let targetReady = false;
-    for (let i = 0; i < 60 && !targetReady; i++) {
+    for (let i = 0; i < 120 && !targetReady; i++) {
       const rows = ((await (await get("/api/sessions")).json()) as
         { slots: { id: number; git: { ahead?: number; dirty?: number } | null }[] }).slots;
       const row = rows.find((x) => x.id === uTgt.slot);
       targetReady = row?.git?.ahead === 1 && row.git.dirty === 0;
-      if (!targetReady) await Bun.sleep(500);
+      if (!targetReady) await Bun.sleep(250);
     }
     check("watch pi-unfenced kill-switch fixture: target is measurably committed+clean",
       targetReady, String(targetReady));
@@ -2037,8 +2037,8 @@ export async function run(): Promise<void> {
       (await post("/api/autos/switch", { on: true })).ok);
 
     let delivered: FleetEventRow | undefined;
-    for (let i = 0; i < 45 && delivered?.status !== "delivered"; i++) {
-      await Bun.sleep(1000);
+    for (let i = 0; i < 180 && delivered?.status !== "delivered"; i++) {
+      await Bun.sleep(250);
       delivered = subscribedJ.watch?.id ? await eventForWatch(subscribedJ.watch.id) : undefined;
     }
     const oldPolicySkip = "skipped — harness pi-unfenced is not automatable";
@@ -2428,7 +2428,7 @@ export async function run(): Promise<void> {
         && busyReason === "gate=busy — nothing typed" && await replay(ownerResponse, null),
         JSON.stringify({ ...ownerDetail, reason: busyReason }));
       await machineRelease(machine, busyStart, "the same machine bundle after the busy gate opens");
-      await Bun.sleep(AUTOS_TICK_MS * 3);
+      for (let i = 0; i < 120 && count(machine) < 1; i++) await Bun.sleep(50); // wait on the delivery itself, never on ticks
       check("owner send: gate release delivers the retained machine exactly once, never repastes the owner",
         count(machine) === 1 && count(ownerText) === 1, JSON.stringify({ owner: count(ownerText), machine: count(machine) }));
       await post(`/api/autos/${autoId}/delete`, {});
@@ -3679,9 +3679,16 @@ export async function run(): Promise<void> {
           const starvedWatch = await post(`/api/slots/${main}/watch`,
             { kind: "audit", repo: REPO, mainAfter: starvedMainAfter, idleSec: 1 });
           const starvedWatchId = ((await starvedWatch.json()) as { watch?: { id: string } }).watch?.id ?? "";
-          // the receiver's lastOutput is its boot stamp; let the other event's 1 s idle gate be
-          // satisfiable on its own terms before the report's paste is allowed to happen
-          await Bun.sleep(1200);
+          // the receiver's lastOutput is its boot stamp; the other event's 1 s idle gate must age
+          // through on its own terms before the report's paste is allowed to happen — read the
+          // gate itself (the server's own now - lastOutput), never a clock of our own.
+          for (let i = 0; i < 40; i++) {
+            const sx = ((await (await get("/api/sessions")).json()) as
+              { now: number; slots: { id: number; lastOutput: number }[] });
+            const sl = sx.slots.find((x) => x.id === main);
+            if (sl && sx.now - sl.lastOutput >= 1000) break;
+            await Bun.sleep(100);
+          }
           writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
           const starvedOffered = await reachedLatch(beforePasteLatch);
           const rowAt5 = await reportRow(rowId);
@@ -4236,7 +4243,12 @@ export async function run(): Promise<void> {
     // lane is killed or recycled — and the owner's unread result would read as „[Zitat entfernt]“
     // while nobody had read anything. BREAKS IF the mint stamps `?? s.id` instead of `?? null`.
     await post(`/api/slots/${taskLane.slot}/kill`, {});
-    await Bun.sleep(500);
+    for (let i = 0; i < 40; i++) { // the teardown itself is the positive fact: wait until the slot is really gone
+      const sx = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; cwd: string | null }[] });
+      if (sx.slots.find((x) => x.id === taskLane.slot)?.cwd == null) break;
+      await Bun.sleep(50);
+    }
     const afterKill = (await fleetReportEventRows()).find((e) => e.id === inboxEvent?.id);
     await restartSrv();
     const afterRestart = (await fleetReportEventRows()).find((e) => e.id === inboxEvent?.id);
@@ -5321,8 +5333,8 @@ export async function run(): Promise<void> {
       .map((w) => `${w.slot}: ${w.want}`);
     let d2SvBefore = await d2Sv();
     let d2Missing = d2Unmet(d2SvBefore);
-    for (let i = 0; i < 60 && d2Missing.length > 0; i++) {
-      await Bun.sleep(1000);
+    for (let i = 0; i < 240 && d2Missing.length > 0; i++) {
+      await Bun.sleep(250);
       d2SvBefore = await d2Sv();
       d2Missing = d2Unmet(d2SvBefore);
     }
@@ -5373,12 +5385,12 @@ export async function run(): Promise<void> {
     for (const f of [d2Latch, `${d2Latch}.reached`, `${d2Latch}.release`]) rmSync(f, { force: true });
     await restartSrv({ FLEET_LANE_AUTOCLOSE: "1", FLEET_TEST_SLOT_TEARDOWN_LATCH: d2Latch });
     let closedBoth = false;
-    for (let i = 0; i < 120 && !closedBoth; i++) {
+    for (let i = 0; i < 480 && !closedBoth; i++) {
       const live = await liveSlots();
       closedBoth = (live.find((x) => x.id === acceptedLane.slot)?.cwd ?? null) === null
         && (live.find((x) => x.id === rejectedLane.slot)?.cwd ?? null) === null
         && (live.find((x) => x.id === lockedLane.slot)?.cwd ?? null) === null;
-      if (!closedBoth) await Bun.sleep(1000);
+      if (!closedBoth) await Bun.sleep(250);
     }
     const d2LiveAfter = await liveSlots();
     const acceptedRows = await outcomesOf(acceptedLane.branch);
@@ -5534,9 +5546,9 @@ export async function run(): Promise<void> {
     // refused it a moment ago now takes it exactly as it took the accepted lane — same row shape.
     const d2Confirm = await post(`/api/tasks/${d2ClarifyTaskId}/criterion-confirm`, {});
     let clarifyClosed = false;
-    for (let i = 0; i < 60 && !clarifyClosed; i++) {
+    for (let i = 0; i < 240 && !clarifyClosed; i++) {
       clarifyClosed = ((await liveSlots()).find((x) => x.id === clarifyLane.slot)?.cwd ?? null) === null;
-      if (!clarifyClosed) await Bun.sleep(1000);
+      if (!clarifyClosed) await Bun.sleep(250);
     }
     const clarifyRows = await outcomesOf(clarifyLane.branch);
     const clarifyRow = clarifyRows[0] as { disposition?: string;
@@ -5605,9 +5617,9 @@ export async function run(): Promise<void> {
     rmSync(`${dirtyLane.cwd}/d2-uncommitted.txt`, { force: true });
     await restartSrv(); // plain: the stated FLEET_LANE_AUTOCLOSE=0 rides along, so the flag is off again
     let disarmedSpent = false;
-    for (let i = 0; i < 60 && !disarmedSpent; i++) {
+    for (let i = 0; i < 240 && !disarmedSpent; i++) {
       disarmedSpent = await d2SpentNow(dirtyLane.slot);
-      if (!disarmedSpent) await Bun.sleep(1000);
+      if (!disarmedSpent) await Bun.sleep(250);
     }
     await Bun.sleep(Math.max(3000, AUTOS_TICK_MS * 8));
     const disarmedLive = await liveSlots();

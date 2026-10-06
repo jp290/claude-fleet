@@ -693,7 +693,7 @@ await import(pathToFileURL(process.argv[2]).href);
   writeFileSync(cardFile, JSON.stringify(payload));
   const filedCard = await ctl(["file", cardFile, "--json"]);
   const filedId = (filedCard.json as { task?: { id?: string } })?.task?.id ?? "";
-  interface FiledRow { id: string; status: string; source?: string;
+  interface FiledRow { id: string; status: string; source?: string; programId?: string;
     card?: { valid: boolean; rolle: { harness: string; model: string; effort: string }; surface: { files: string[]; symbols: string[] }; verboten: string[] };
     comments?: { text: string }[] }
   const queueRows = async (): Promise<FiledRow[]> =>
@@ -701,12 +701,100 @@ await import(pathToFileURL(process.argv[2]).href);
   const filedRow = (await queueRows()).find((t) => t.id === filedId);
   check("ctl file: the Self door stores a pending row with a valid author card",
     filedCard.code === 0 && !!filedId && filedRow?.card?.valid === true && filedRow.status === "pending"
-      && filedRow.source === "main", `exit=${filedCard.code} id=${filedId} status=${filedRow?.status} error=${filedCard.err}`);
+      && filedRow.source === "main" && filedRow.programId === programId,
+    `exit=${filedCard.code} id=${filedId} status=${filedRow?.status} error=${filedCard.err}`);
   check("ctl file: author role and array values survive the real filing unchanged",
     filedRow?.card?.rolle.harness === "codex" && filedRow.card.rolle.model === "gpt-6.1-sol"
       && filedRow.card.rolle.effort === "high" && filedRow.card.surface.files.join() === "code.txt"
       && filedRow.card.surface.symbols.length === 0 && filedRow.card.verboten.join() === "No dispatch",
     `role=${JSON.stringify(filedRow?.card?.rolle)} files=${JSON.stringify(filedRow?.card?.surface.files)}`);
+  writeFileSync(sendFile, "ctl Program choice message");
+  interface SentMessage { message?: { id: string; from: { kind: string; id: string }; payload: { text: string } } }
+  const singleSend = await ctl(["send", "--orchestrator", sendFile, "--json"]);
+  check("ctl send --orchestrator: a single bound Program sends without a choice flag",
+    singleSend.code === 0 && (singleSend.json as SentMessage)?.message?.from.kind === "program"
+      && (singleSend.json as SentMessage)?.message?.from.id === programId
+      && (singleSend.json as SentMessage)?.message?.payload.text === "ctl Program choice message",
+    `exit=${singleSend.code} error=${singleSend.err}`);
+
+  await post(`/api/programs/${foreignProgramId}/confirm`, {});
+  await post(`/api/programs/${foreignProgramId}/activate`, {});
+  await stopSrv();
+  const multiState = stateFile();
+  const secondProgram = (multiState.programs as typeof programRows).find((p) => p.id === foreignProgramId)!;
+  secondProgram.main = fixtureProgram.main;
+  for (const p of multiState.programs as typeof programRows) {
+    if (p.id === programId || p.id === foreignProgramId) {
+      for (const entry of p.inbox?.entries ?? []) { entry.readBy = null; entry.readAt = null; }
+    }
+  }
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(multiState, null, 2));
+  await restartSrv();
+  const choiceInbox = await ctl(["inbox"]);
+  const choiceFile = await ctl(["file", cardFile, "--json"]);
+  const choiceSend = await ctl(["send", "--orchestrator", sendFile, "--json"]);
+  check("ctl inbox: two bound Programs require a named --program choice with both IDs",
+    choiceInbox.code === 1 && choiceInbox.err.includes("./ctl.sh inbox") && choiceInbox.err.includes("--program <id>")
+      && choiceInbox.err.includes(programId) && choiceInbox.err.includes(foreignProgramId)
+      && !choiceInbox.err.includes("name the one this act belongs to as programId"), choiceInbox.err);
+  check("ctl file: two bound Programs require a named --program choice and create no row",
+    choiceFile.code === 1 && choiceFile.err.includes("./ctl.sh file") && choiceFile.err.includes("--program <id>")
+      && choiceFile.err.includes(programId) && choiceFile.err.includes(foreignProgramId)
+      && (await queueRows()).filter((r) => r.programId === programId || r.programId === foreignProgramId).length === 1,
+    choiceFile.err);
+  check("ctl send --orchestrator: two bound Programs require a named --program choice and report sent:false",
+    choiceSend.code === 1 && choiceSend.out.includes('"sent": false')
+      && choiceSend.out.includes("./ctl.sh send --orchestrator") && choiceSend.out.includes("--program <id>")
+      && choiceSend.out.includes(programId) && choiceSend.out.includes(foreignProgramId), choiceSend.out);
+  const firstInbox = await ctl(["inbox", "--program", programId, "--json"]);
+  const secondInbox = await ctl(["inbox", "--program", foreignProgramId, "--json"]);
+  check("ctl inbox --program: each choice reads only that Program's entries",
+    firstInbox.code === 0 && secondInbox.code === 0
+      && (firstInbox.json as { entries: { id: string }[] }).entries.map((e) => e.id).join() === [...entryIds].reverse().join()
+      && (secondInbox.json as { entries: { id: string }[] }).entries.map((e) => e.id).join() === foreignInboxId,
+    `first=${firstInbox.code} second=${secondInbox.code}`);
+  const multiAckAll = await ctl(["inbox", "--ack-all", "--program", foreignProgramId, "--json"]);
+  const untouchedInbox = await ctl(["inbox", "--program", programId, "--json"]);
+  check("ctl inbox --program --ack-all: receipts and the follow-up read stay in the selected Program",
+    multiAckAll.code === 0 && (multiAckAll.json as { unread: number }).unread === 0
+      && (multiAckAll.json as { acknowledged: string[] }).acknowledged.join() === foreignInboxId
+      && untouchedInbox.code === 0 && (untouchedInbox.json as { unread: number }).unread === 2,
+    `ack=${multiAckAll.code} untouched=${untouchedInbox.code}`);
+  const firstFiled = await ctl(["file", cardFile, "--program", programId, "--json"]);
+  const secondFiled = await ctl(["file", "--program", foreignProgramId, cardFile, "--json"]);
+  const choiceFiledIds = [firstFiled, secondFiled].map((r) => (r.json as { task?: { id: string } })?.task?.id ?? "");
+  const chosenRows = await queueRows();
+  check("ctl file --program: either bound Program receives its own pending row",
+    firstFiled.code === 0 && secondFiled.code === 0
+      && chosenRows.find((r) => r.id === choiceFiledIds[0])?.programId === programId
+      && chosenRows.find((r) => r.id === choiceFiledIds[1])?.programId === foreignProgramId
+      && choiceFiledIds.every((id) => chosenRows.find((r) => r.id === id)?.status === "pending"),
+    `first=${firstFiled.code} second=${secondFiled.code}`);
+  const firstSent = await ctl(["send", "--orchestrator", "--program", programId, sendFile, "--json"]);
+  const secondSent = await ctl(["send", "--program", foreignProgramId, "--orchestrator", sendFile, "--json"]);
+  check("ctl send --orchestrator --program: either Program becomes the actual message sender",
+    firstSent.code === 0 && secondSent.code === 0
+      && (firstSent.json as SentMessage)?.message?.from.id === programId
+      && (secondSent.json as SentMessage)?.message?.from.id === foreignProgramId
+      && (firstSent.json as SentMessage)?.message?.payload.text === "ctl Program choice message"
+      && (secondSent.json as SentMessage)?.message?.payload.text === "ctl Program choice message",
+    `first=${firstSent.code} second=${secondSent.code}`);
+  const foreignChoice = "f".repeat(64);
+  const foreignRead = await ctl(["inbox", "--program", foreignChoice]);
+  const foreignFile = await ctl(["file", cardFile, "--program", foreignChoice]);
+  const foreignSend = await ctl(["send", "--orchestrator", sendFile, "--program", foreignChoice, "--json"]);
+  check("ctl --program: all three verbs preserve the server's foreign-Program refusal",
+    [foreignRead, foreignFile, foreignSend].every((r) => r.code === 1
+      && (r.out + r.err).includes(`program ${foreignChoice} is not one of the programs this session is bound MAIN of`)),
+    `read=${foreignRead.code} file=${foreignFile.code} send=${foreignSend.code}`);
+  const multiEvents = await ctl(["events", "--json"]);
+  check("ctl events: two Program bindings still read occupant events without a choice flag",
+    multiEvents.code === 0 && Array.isArray((multiEvents.json as { events?: unknown[] })?.events), multiEvents.err);
+  await stopSrv();
+  const singleState = stateFile();
+  delete (singleState.programs as typeof programRows).find((p) => p.id === foreignProgramId)!.main;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(singleState, null, 2));
+  await restartSrv();
   writeFileSync(cardFile, JSON.stringify({ ...payload, repo: REPO }));
   const ownerFiled = await ctl(["file", cardFile, "--json"], { FLEET_SELF_TOKEN: "" });
   const ownerFiledId = (ownerFiled.json as { task?: { id?: string } })?.task?.id ?? "";
@@ -747,6 +835,20 @@ await import(pathToFileURL(process.argv[2]).href);
       && malformedVerboten.err.includes("got string") && writePosts === 0
       && (await queueRows()).map((t) => t.id).sort().join() === rowsBeforeMalformed,
     `exit=${malformedVerboten.code} posts=${writePosts} error=${malformedVerboten.err}`);
+  writeFileSync(cardFile, JSON.stringify({ ...payload, programId: foreignProgramId }));
+  const conflictingChoice = await ctl(["file", cardFile, "--program", programId], boundaryEnv);
+  check("ctl file --program: a conflicting cardjson Program is rejected before a POST",
+    conflictingChoice.code === 2 && conflictingChoice.err.includes("--program conflicts with cardjson programId")
+      && writePosts === 0, conflictingChoice.err);
+  const invalidChoices: CtlRun[] = [];
+  for (const args of [["inbox"], ["file", cardFile], ["send", "--orchestrator", sendFile]]) {
+    for (const flags of [["--program"], ["--program", "ABC"], ["--program", programId, "--program", foreignProgramId]]) {
+      invalidChoices.push(await ctl([...args, ...flags], boundaryEnv));
+    }
+  }
+  check("ctl --program: missing, malformed and duplicate choices fail locally for every choice verb",
+    invalidChoices.length === 9 && invalidChoices.every((r) => r.code === 2 && r.err.includes("exactly one --program <id>"))
+      && writePosts === 0, invalidChoices.map((r) => `${r.code}:${r.err.trim()}`).join("; "));
   boundary.stop(true);
 
   const sendProbe = await openLane(REPO, "ctlsendpin");
@@ -793,7 +895,7 @@ await import(pathToFileURL(process.argv[2]).href);
     [readInbox, acknowledged, ackAll, unknownInbox, foreignInbox, filedCard, ownerFiled, commented, longComment, malformedList, malformedVerboten, sentLane, nonLane, recycledLane]
       .every((r) => ![TOKEN, selfTok].some((token) => r.out.includes(token) || r.err.includes(token))), "credential strings absent");
   await post(`/api/slots/${sendProbe.slot}/kill`, {});
-  for (const id of [filedId, ownerFiledId].filter(Boolean)) await post(`/api/tasks/${id}/delete`, {});
+  for (const id of [filedId, ownerFiledId, ...choiceFiledIds].filter(Boolean)) await post(`/api/tasks/${id}/delete`, {});
   for (const path of [cardFile, commentFile, sendFile]) rmSync(path, { force: true });
   await stopSrv();
   const cleanInboxState = stateFile();
@@ -1686,9 +1788,13 @@ await import(pathToFileURL(process.argv[2]).href);
     `exit ${unknownProgram.code} ${unknownProgram.err.slice(0, 200)}`);
 
   const sendPosts: { body: { slot?: number; text?: string; openedAt?: number }; auth: string | null }[] = [];
-  const selfPosts: { body: { to?: { kind?: string; role?: string; slot?: number; openedAt?: number }; payload?: { kind?: string; text?: string }; idempotencyKey?: string };
+  const selfPosts: { body: { to?: { kind?: string; role?: string; slot?: number; openedAt?: number }; payload?: { kind?: string; text?: string }; idempotencyKey?: string; programId?: string };
     token: string | null; auth: string | null }[] = [];
   let selfExecution: unknown = { session: { slot: 4, openedAt: 4000 }, programs: [{
+    programId: "aa".repeat(12),
+    authority: { boundSlot: 4, boundOpenedAt: 4000, executionState: "active" }, lanes: { rows: [] },
+  }, {
+    programId: "bb".repeat(12),
     authority: { boundSlot: 4, boundOpenedAt: 4000, executionState: "active" },
     lanes: { rows: [{ slot: 9, openedAt: 9000 }] },
   }] };
@@ -1765,10 +1871,11 @@ await import(pathToFileURL(process.argv[2]).href);
     `exit ${sendOk.code} posts=${JSON.stringify(sendPosts.map((p) => p.body))} ${sendOk.err.slice(0, 160)}`);
   const noOwnerEnv = { ...stubEnv, FLEET_CTL_HOME: `${ROOT}/ctl-no-owner-home`, FLEET_CTL_TOKEN: "", FLEET_TOKEN: "" };
   const selfLane = await ctl(["send", "--lane", "9", msgFile, "--json"], noOwnerEnv);
-  check("ctl send --lane: a bound Program-MAIN addresses its projected Lane with only the self token",
+  check("ctl send --lane: a MAIN of two Programs derives the sender Program from its projected Lane",
     selfLane.code === 0 && selfPosts.length === 1 && selfPosts[0]?.body.to?.kind === "lane"
       && selfPosts[0]?.body.to.slot === 9 && selfPosts[0]?.body.to.openedAt === 9000
       && selfPosts[0]?.body.payload?.text === "ctl send probe text\n"
+      && selfPosts[0]?.body.programId === "bb".repeat(12)
       && !!selfPosts[0]?.body.idempotencyKey && selfPosts[0]?.token === selfTok && selfPosts[0]?.auth === null
       && (selfLane.json as { status?: number })?.status === 200,
     `exit=${selfLane.code} post=${JSON.stringify(selfPosts[0]?.body.to)} auth=${selfPosts[0]?.auth}`);

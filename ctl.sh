@@ -45,16 +45,16 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
   watch lane|merge <slot> | audit <sha> [--repo <path>] [--idle <sec>] [--json]
                                    arm one self-watch; idleSec defaults to 0
   events [--ack] [--json]          your own FleetEvents; --ack closes the delivered ones
-  inbox [--ack <id>|--ack-all] [--json]   read your Program inbox; acknowledge one or the unread entries
+  inbox [--program <id>] [--ack <id>|--ack-all] [--json]   read your Program inbox; acknowledge one or the unread entries
   comment <taskId> <textfile> [--json]    append an owner comment (1–2000 characters)
-  file <cardjson> [--json]         file a pending task with an author card; self credential when present
+  file <cardjson> [--program <id>] [--json]   file a pending task with an author card; self credential when present
   land <slot> [--wait] [--json]    POST the land; --wait blocks to the verdict and arms the audit watch
   dispatch <taskId> [--force] [--json]   hand-start a queued row, refusing over the lane cap
   wait merge <slot> [--json]       block until that lane's merge is terminal
   wait change [--tasks a,b,c] [--json]   block until fleet state moves, then print what moved
   send --main <programId> <textfile> [--json]
                                    resolve the Program's bound MAIN slot NOW, refuse a lane/dead/recycled one, then /send
-  send --orchestrator <textfile> [--json]
+  send --orchestrator <textfile> [--program <id>] [--json]
                                    address the Orchestrator through /api/self/messages with the self token
   send --lane <slot> <textfile> [--json]
                                    read the lane occupant now, then /send with its openedAt pin
@@ -163,6 +163,12 @@ const readState = () => JSON.parse(fs.readFileSync(HOME + "/fleet.json", "utf8")
 const ownerH = () => ({ "content-type": "application/json", authorization: "Bearer " + process.env.CTL_TOKEN,
   ...(process.env.FLEET_SELF_TOKEN ? { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } : {}) });
 const selfH = () => ({ "content-type": "application/json", "x-fleet-self-token": process.env.CTL_SELF });
+const chosenProgram = process.env.CTL_CHOICE;
+const selfError = (r, verb) => {
+  const error = r.body?.error ?? "refused";
+  const choice = r.status === 409 && /^this session is bound MAIN of \d+ active programs \(([^)]+)\).*name the one this act belongs to as programId$/.exec(error);
+  return choice ? `choose a Program: ./ctl.sh ${verb} … --program <id> (available: ${choice[1]})` : error;
+};
 const api = async (path, opts = {}) => {
   const r = await fetch(URL_ + path, opts);
   const text = await r.text();
@@ -223,7 +229,14 @@ if [ "$verb" = "wait" ] || [ "$verb" = "commit" ]; then
 fi
 
 CTL_JSON=0
-export CTL_JSON
+CTL_CHOICE=""
+export CTL_JSON CTL_CHOICE
+program_choice() {
+  [ -z "$CTL_CHOICE" ] && printf '%s' "$2" | grep -Eq '^[0-9a-f]{1,64}$' || {
+    printf '%s: give exactly one --program <id> (1–64 lowercase hex characters)\n' "$1" >&2; exit 2;
+  }
+  CTL_CHOICE=$2
+}
 
 case "$verb" in
 
@@ -232,6 +245,7 @@ inbox)
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) CTL_JSON=1 ;;
+      --program) program_choice inbox "${2:-}"; shift ;;
       --ack) [ -z "$ack" ] && [ $# -ge 2 ] || { printf 'inbox: give exactly one --ack <id> or --ack-all\n' >&2; exit 2; }; shift; ack=$1
         printf '%s' "$ack" | grep -Eq '^[0-9a-f]{24}$' || { printf 'inbox: bad entry id\n' >&2; exit 2; } ;;
       --ack-all) [ -z "$ack" ] || { printf 'inbox: give exactly one --ack <id> or --ack-all\n' >&2; exit 2; }; ack=all ;;
@@ -244,7 +258,8 @@ inbox)
   js_head
   cat >> "$CTL_TMP" <<'EOF'
 const ack = process.env.CTL_ACK;
-const fail = (r) => { console.error(`inbox: ${r.status} ${r.body?.error ?? "refused"}`); process.exit(1); };
+const fail = (r) => { console.error(`inbox: ${r.status} ${selfError(r, "inbox")}`); process.exit(1); };
+const inboxPath = "/api/self/inbox" + (chosenProgram ? `?program=${encodeURIComponent(chosenProgram)}` : "");
 let r;
 const acknowledged = [];
 if (ack && ack !== "all") {
@@ -252,7 +267,7 @@ if (ack && ack !== "all") {
   if (!r.ok) fail(r);
   acknowledged.push(ack);
 }
-r = await api("/api/self/inbox", { headers: selfH() });
+r = await api(inboxPath, { headers: selfH() });
 if (!r.ok) fail(r);
 if (ack === "all") {
   for (const entry of r.body.entries ?? []) {
@@ -261,7 +276,7 @@ if (ack === "all") {
     if (!read.ok) fail(read);
     acknowledged.push(entry.id);
   }
-  r = await api("/api/self/inbox", { headers: selfH() });
+  r = await api(inboxPath, { headers: selfH() });
   if (!r.ok) fail(r);
 }
 out({ ...r.body, acknowledged }, [`inbox: unread=${r.body.unread} dropped=${r.body.dropped} acknowledged=${acknowledged.length}`,
@@ -276,6 +291,7 @@ comment|file)
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) CTL_JSON=1 ;;
+      --program) [ "$verb" = "file" ] || { printf 'comment: unknown flag --program\n' >&2; exit 2; }; program_choice file "${2:-}"; shift ;;
       --*) printf '%s: unknown flag %s\n' "$verb" "$1" >&2; exit 2 ;;
       *) if [ "$verb" = "comment" ] && [ -z "$target" ]; then target=$1
          elif [ -z "$input" ]; then input=$1
@@ -304,6 +320,10 @@ if (verb === "comment") {
   try { body = JSON.parse(raw); } catch { reject("cardjson must be valid JSON"); }
   const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
   if (!object(body) || !object(body.card) || !object(body.card.surface)) reject("expected task body with card.surface object");
+  if (chosenProgram) {
+    if (body.programId !== undefined && body.programId !== chosenProgram) reject("--program conflicts with cardjson programId");
+    body.programId = chosenProgram;
+  }
   if (body.queue !== undefined && body.queue !== false) reject("file only creates pending rows; queue must be false");
   if (typeof body.text !== "string" || !body.text.trim() || body.text.length > 20000) reject("text must be 1–20000 chars");
   const list = (value, name, required = false) => {
@@ -325,7 +345,7 @@ if (verb === "comment") {
   headers = process.env.CTL_FILE_AUTH === "self" ? selfH() : ownerH();
 }
 const r = await api(path, { method: "POST", headers, body: JSON.stringify(body) });
-const error = r.ok ? null : (r.body?.error ?? "refused");
+const error = r.ok ? null : selfError(r, verb);
 if (!r.ok) console.error(`${verb}: ${r.status} ${error}`);
 out({ ok: r.ok, status: r.status, task: r.body?.task ?? null, comment: r.body?.comment ?? null, error },
   [`${verb}: ${r.status} ${r.ok ? (r.body?.task?.id ?? r.body?.comment?.id ?? "ok") : error}`]);
@@ -1353,6 +1373,7 @@ send)
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) CTL_JSON=1 ;;
+      --program) program_choice send "${2:-}"; shift ;;
       --main) [ -z "$mode" ] && [ $# -ge 2 ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=main; shift; program=$1 ;;
       --orchestrator) [ -z "$mode" ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=orchestrator ;;
       --lane) [ -z "$mode" ] && [ $# -ge 2 ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=lane; shift; lane=$1 ;;
@@ -1365,6 +1386,7 @@ send)
     esac
     shift
   done
+  [ -z "$CTL_CHOICE" ] || [ "$mode" = "orchestrator" ] || { printf 'send: --program applies to --orchestrator; --main names its target and --lane derives its Program from the lane\n' >&2; exit 2; }
   if [ "$mode" = "lane" ]; then
     [ -f "$textfile" ] && [ -s "$textfile" ] || { printf 'send --lane: give a nonempty text file\n' >&2; exit 2; }
     if [ -n "${FLEET_SELF_TOKEN:-}" ] && printf '%s' "$lane" | grep -Eq '^[0-9]+$'; then
@@ -1395,7 +1417,7 @@ if (!execution.ok || !session || !binding || !target || typeof target.openedAt !
 const key = "ctl-lane-" + require("node:crypto").randomBytes(12).toString("hex");
 const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
   body: JSON.stringify({ to: { kind: "lane", slot: targetSlot, openedAt: target.openedAt },
-    payload: { kind: "text", text }, idempotencyKey: key }) });
+    payload: { kind: "text", text }, idempotencyKey: key, ...(binding.programId ? { programId: binding.programId } : {}) }) });
 const error = r.ok ? null : (r.body?.error ?? "refused");
 if (error) console.error(`send --lane: ${r.status} ${error}`);
 out({ ok: r.ok, sent: r.ok, slot: targetSlot, openedAt: target.openedAt, status: r.status,
@@ -1444,11 +1466,12 @@ const text = fs.readFileSync(process.env.CTL_TEXTFILE, "utf8");
 const key = "ctl-orchestrator-" + require("node:crypto").randomBytes(12).toString("hex");
 const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
   body: JSON.stringify({ to: { kind: "role", role: "orchestrator" },
-    payload: { kind: "text", text }, idempotencyKey: key }) });
+    payload: { kind: "text", text }, idempotencyKey: key, ...(chosenProgram ? { programId: chosenProgram } : {}) }) });
+const error = r.ok ? null : selfError(r, "send --orchestrator");
 out({ ok: r.ok, sent: r.ok, status: r.status, message: r.body?.message ?? null,
   holder: r.body?.holder ?? null, escalatedTo: r.body?.escalatedTo ?? null,
-  error: r.ok ? null : (r.body?.error ?? null) },
-  [`send --orchestrator: ${r.status} ${r.ok ? `message ${r.body?.message?.id ?? "?"}` : (r.body?.error ?? "refused")}`]);
+  error },
+  [`send --orchestrator: ${r.status} ${r.ok ? `message ${r.body?.message?.id ?? "?"}` : error}`]);
 process.exit(r.ok ? 0 : 1);
 EOF
     js_run

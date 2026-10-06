@@ -2291,8 +2291,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     for (const result of await runSettingsDom(sourceRoot)) {
       // the late steps' facts first: the first steps' fill the 1500 characters on their own, and a red
       // explorer or Checks claim arrived without the facts that say why (preview 86431fe8bd67)
-      const { explorerSteps, explorer, meter, ...early } = result.facts as Record<string, unknown>;
-      const facts = JSON.stringify({ explorerSteps, explorer, meter, ...early }).slice(0, 1500);
+      const { unsettled, explorerSteps, explorer, meter, ...early } = result.facts as Record<string, unknown>;
+      const facts = JSON.stringify({ unsettled, explorerSteps, explorer, meter, ...early }).slice(0, 1500);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`settings DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }
@@ -6147,6 +6147,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     // a click target or element that does not exist is a FACT of the run (it fails the claims that
     // need it), never an abort — one missing control must not hide every other measurement
     const missing: string[] = [];
+    const unsettled: string[] = [];
     // an expression that throws (its element is missing) answers null and is noted in `missing`
     const evaluate = async <T>(expression: string): Promise<T> => {
       const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
@@ -6186,7 +6187,9 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       // aimed until it holds: the Info column settles while its sections load, and on a loaded machine
       // a press aimed once landed one tab higher — the Files glyph's click opened "Rechte" instead of
       // the explorer (preview 86431fe8bd67; here at 4× CPU throttle). Two aims 120 ms apart must agree
-      // and the point must be on the target; after ~2.4 s it presses anyway, as it always did.
+      // and the point must be on the target. One that never settles in ~2.4 s is NOT pressed: it would
+      // hit another element and fail a later claim under the wrong name — it is noted in `unsettled`,
+      // and the PROBE claim below fails as itself.
       const aim = `(() => { const e = ${expression}; if (!e) return null; e.scrollIntoView({ block: 'nearest' });
         const r = e.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2, h = document.elementFromPoint(x, y);
         return { x, y, on: !!h && (h === e || e.contains(h)) }; })()`;
@@ -6199,6 +6202,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         if (held && point!.on) break;
       }
       if (!point) { missing.push(expression.slice(0, 120)); return false; }
+      if (!point.on) { unsettled.push(`click target never settled: ${expression.replace(/\s+/g, " ").slice(0, 120)}`); return false; }
       fx.inputs.push(`click ${Math.round(point.x)},${Math.round(point.y)}`);
       const at = { x: point.x, y: point.y };
       await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at });
@@ -6869,6 +6873,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
 
       if (artifacts) { await send("Page.stopScreencast"); writeFileSync(resolve(artifacts, `video-${width}`, "times.json"), JSON.stringify(frameTimes)); recording = null; }
       facts.missing = missing.splice(0);
+      facts.unsettled = unsettled.splice(0);
+      claims["PROBE: every click was pressed on its target once it held still under the pointer"] = (facts.unsettled as string[]).length === 0;
       facts.inputs = fx.inputs; facts.requests = fx.requests; facts.allPosts = fx.posts;
       facts.nativeDialogs = nativeDialogs.splice(0);
       results.push({ width, height, claims, facts });
